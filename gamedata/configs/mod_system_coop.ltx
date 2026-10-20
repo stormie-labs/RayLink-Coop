@@ -3,6 +3,11 @@
 ; Character of a remote player in the host world (and avatar of other players on clients).
 ; Spawned by the engine (coop_join.cpp), driven by network snapshots, never by AI.
 ; The player's key and nick live in its custom data ([coop] section).
+; Animation mods (W8, GAMMA pass): the avatar is a stalker, so NPC animation packs such as xrMPE NPC Animations
+; (Chemzs) apply to it with no line here - every stalker visual loads meshes\actors\stalker_animation*.omf plus all
+; meshes\actors\modded_stalker_animations\*.omf (engine SkeletonAnimated.cpp). The avatar replays its owner's
+; motions by id (coop_players.cpp), so every player of a session needs the same animation mods (the host's mod
+; list check refuses a player whose files differ).
 [coop_player_avatar]:sim_default_stalker_0
 $spawn                  = "coop\player_avatar"
 character_profile       = sim_default_stalker_0

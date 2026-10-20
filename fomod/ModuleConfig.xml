@@ -1,0 +1,224 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Anomaly Coop: Mod Organizer 2 installer (FOMOD 5.0). Archive layout (tools\package.ps1):
+     core\gamedata    our scripts, configs, UI, textures
+     engine\bin       AnomalyCoopDX11AVX.exe (our engine build; own name, stock exes stay untouched)
+     engine\gamedata  scripts and configs of that engine build
+     Everything goes into the MO2 mod; MO2 serves the mod's bin\ and gamedata\ as the game's (the Anomaly game
+     plugin's data folder is the game root), so the exe can run straight from the mod. Third-party mods
+     (MCM, FDDA, xrMPE animations) are not bundled: the add-ons step only explains them. -->
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
+  <moduleName>Anomaly Coop</moduleName>
+  <requiredInstallFiles>
+    <folder source="engine\bin" destination="bin" priority="0"/>
+    <folder source="engine\gamedata" destination="gamedata" priority="0"/>
+    <folder source="core\gamedata" destination="gamedata" priority="1"/>
+  </requiredInstallFiles>
+  <installSteps order="Explicit">
+
+    <installStep name="Your game / Ваша игра">
+      <optionalFileGroups order="Explicit">
+        <group name="What does this MO2 manage? / Чем управляет этот MO2?" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="Anomaly 1.5.3">
+              <description>Anomaly 1.5.3 with your own mods (or none).
+
+Anomaly 1.5.3 с вашими модами (или без них).</description>
+              <conditionFlags><flag name="gamma">Off</flag></conditionFlags>
+              <typeDescriptor><type name="Recommended"/></typeDescriptor>
+            </plugin>
+            <plugin name="G.A.M.M.A.">
+              <description>G.A.M.M.A. modpack. Anomaly Coop detects the GAMMA mods it supports by itself; MCM and FDDA are already in GAMMA.
+
+Сборка G.A.M.M.A. Поддерживаемые моды GAMMA Anomaly Coop находит сам; MCM и FDDA в GAMMA уже есть.</description>
+              <conditionFlags><flag name="gamma">On</flag></conditionFlags>
+              <typeDescriptor><type name="Optional"/></typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+
+    <installStep name="Engine / Движок">
+      <optionalFileGroups order="Explicit">
+        <group name="How will you start the co-op exe? / Как будете запускать exe кооператива?" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="Straight from the mod through MO2 / Прямо из мода через MO2">
+              <description>bin\AnomalyCoopDX11AVX.exe stays inside this MO2 mod. MO2 shows the mod's bin\ and gamedata\ to the game as if they were in the Anomaly folder, so nothing is copied and the game folder stays clean. After the installer: add the exe to MO2's executables (the last page shows how).
+Your other exes (AnomalyDX11AVX.exe and the rest) are not touched.
+
+bin\AnomalyCoopDX11AVX.exe остаётся внутри этого мода MO2. MO2 показывает игре bin\ и gamedata\ мода так, будто они лежат в папке Anomaly: ничего не копируется, папка игры остаётся чистой. После установщика добавьте exe в программы MO2 (как - на последней странице).
+Остальные exe (AnomalyDX11AVX.exe и другие) не трогаются.</description>
+              <conditionFlags><flag name="exe">mod</flag></conditionFlags>
+              <typeDescriptor>
+                <dependencyType>
+                  <defaultType name="Recommended"/>
+                  <patterns>
+                    <pattern>
+                      <dependencies><flagDependency flag="gamma" value="On"/></dependencies>
+                      <type name="Optional"/>
+                    </pattern>
+                  </patterns>
+                </dependencyType>
+              </typeDescriptor>
+            </plugin>
+            <plugin name="A copy in the game's bin folder / Копия в папке bin игры">
+              <description>Also copy AnomalyCoopDX11AVX.exe into &lt;Anomaly&gt;\bin by hand (the last page shows where it is). Recommended for G.A.M.M.A.: GAMMA's ReShade (bin\dxgi.dll) and other files next to the exe load only for an exe that really lies in &lt;Anomaly&gt;\bin. Also use it if the first way does not start.
+The file has its own name: it replaces nothing, and the GAMMA launcher does not remove it when it restores its exes.
+
+Дополнительно скопируйте AnomalyCoopDX11AVX.exe в &lt;Anomaly&gt;\bin вручную (где он лежит - на последней странице). Рекомендуется для G.A.M.M.A.: ReShade из GAMMA (bin\dxgi.dll) и другие файлы рядом с exe подхватываются только exe, который реально лежит в &lt;Anomaly&gt;\bin. Подходит и если первый способ не запускается.
+У файла своё имя: он ничего не заменяет, и лаунчер GAMMA не удаляет его, когда восстанавливает свои exe.</description>
+              <conditionFlags><flag name="exe">copy</flag></conditionFlags>
+              <typeDescriptor>
+                <dependencyType>
+                  <defaultType name="Optional"/>
+                  <patterns>
+                    <pattern>
+                      <dependencies><flagDependency flag="gamma" value="On"/></dependencies>
+                      <type name="Recommended"/>
+                    </pattern>
+                  </patterns>
+                </dependencyType>
+              </typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+
+    <installStep name="Add-ons (install separately) / Дополнения (ставятся отдельно)">
+      <optionalFileGroups order="Explicit">
+        <group name="Mods Anomaly Coop works with - not included, install them separately / Моды, с которыми работает Anomaly Coop - не входят в архив, ставятся отдельно" type="SelectAny">
+          <plugins order="Explicit">
+            <plugin name="Mod Configuration Menu (MCM)">
+              <description>Not needed by Anomaly Coop: its own settings are in Options - Co-op. If your other mods use MCM, the host's MCM settings of the game rules are applied to every player, and each player keeps his own interface settings.
+Get it: github.com/RAX-Anomaly/Anomaly-Mod-Configuration-Menu (also on ModDB). Install it as a separate MO2 mod.
+
+Для Anomaly Coop не нужен: его настройки - в Опции - Кооператив. Если ваши моды используют MCM, настройки правил игры из MCM хоста действуют у всех игроков, а настройки интерфейса у каждого свои.
+Где взять: github.com/RAX-Anomaly/Anomaly-Mod-Configuration-Menu (есть и на ModDB). Ставится отдельным модом MO2.</description>
+              <conditionFlags><flag name="addon_mcm">On</flag></conditionFlags>
+              <typeDescriptor>
+                <dependencyType>
+                  <defaultType name="Optional"/>
+                  <patterns>
+                    <pattern>
+                      <dependencies><flagDependency flag="gamma" value="On"/></dependencies>
+                      <type name="NotUsable"/>
+                    </pattern>
+                  </patterns>
+                </dependencyType>
+              </typeDescriptor>
+            </plugin>
+            <plugin name="Food, Drug and Drinks Animations (FDDA)">
+              <description>Animations of eating, drinking and using medicine. With Anomaly Coop the other players see them too (on your character, as you play them).
+Get it: ModDB, "Food, Drug and Drinks Animations" for Anomaly 1.5 (or FDDA Redone). Install it as a separate MO2 mod. Every player of a session needs the same mods.
+
+Анимации еды, питья и медицины. С Anomaly Coop их видят и другие игроки (на вашем персонаже, когда вы их проигрываете).
+Где взять: ModDB, "Food, Drug and Drinks Animations" для Anomaly 1.5 (или FDDA Redone). Ставится отдельным модом MO2. У всех игроков сессии должен быть одинаковый набор модов.</description>
+              <conditionFlags><flag name="addon_fdda">On</flag></conditionFlags>
+              <typeDescriptor>
+                <dependencyType>
+                  <defaultType name="Optional"/>
+                  <patterns>
+                    <pattern>
+                      <dependencies><flagDependency flag="gamma" value="On"/></dependencies>
+                      <type name="NotUsable"/>
+                    </pattern>
+                  </patterns>
+                </dependencyType>
+              </typeDescriptor>
+            </plugin>
+            <plugin name="xrMPE NPC animations (Chemzs)">
+              <description>New stalker movement animations (walk, run, sprint, crouch) for all NPCs. Other players' characters are stalkers too, so with it they move much more like players: more animations, matching movement speeds.
+Get it: ModDB, "xrMPE NPC Animations" by Chemzs (Anomaly / GAMMA version). Install it as a separate MO2 mod, any priority below Anomaly Coop. Every player of a session needs the same mods.
+
+Новые анимации движения сталкеров (шаг, бег, спринт, присед) для всех NPC. Персонажи других игроков - тоже сталкеры, поэтому с ним они двигаются заметно больше похоже на игроков: больше анимаций, подходящие скорости.
+Где взять: ModDB, "xrMPE NPC Animations" от Chemzs (версия для Anomaly / GAMMA). Ставится отдельным модом MO2, с любым приоритетом ниже Anomaly Coop. У всех игроков сессии должен быть одинаковый набор модов.</description>
+              <conditionFlags><flag name="addon_xrmpe">On</flag></conditionFlags>
+              <typeDescriptor><type name="Optional"/></typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+
+    <installStep name="Last step / Последний шаг">
+      <visible><flagDependency flag="exe" value="mod"/></visible>
+      <optionalFileGroups order="Explicit">
+        <group name="After the installer closes / Когда установщик закроется" type="SelectAll">
+          <plugins order="Explicit">
+            <plugin name="1. Enable Anomaly Coop, highest priority / Включите Anomaly Coop, наивысший приоритет">
+              <description>Tick Anomaly Coop in MO2's left list, then right-click it - Send to... - Highest priority (its files must win over other mods).
+
+Отметьте Anomaly Coop в левом списке MO2, затем правый клик по нему - Send to... - Highest priority (его файлы должны перекрывать другие моды).</description>
+              <conditionFlags><flag name="step_enable">On</flag></conditionFlags>
+              <typeDescriptor><type name="Required"/></typeDescriptor>
+            </plugin>
+            <plugin name="2. Add the exe to MO2 / Добавьте exe в MO2">
+              <description>MO2 - Tools - Executables... (Ctrl+E) - "+" - Add empty:
+  Title: Anomaly Coop
+  Binary: &lt;your Anomaly folder&gt;\bin\AnomalyCoopDX11AVX.exe - type the path (the file is inside the mod, the "..." browser does not show it)
+  Start in: leave empty.
+OK, then pick "Anomaly Coop" in the list at the top right and press Run. Same for every player.
+
+MO2 - Tools - Executables... (Ctrl+E) - "+" - Add empty:
+  Title: Anomaly Coop
+  Binary: &lt;папка Anomaly&gt;\bin\AnomalyCoopDX11AVX.exe - впишите путь вручную (файл внутри мода, обзор "..." его не покажет)
+  Start in: оставьте пустым.
+OK, затем выберите "Anomaly Coop" в списке справа вверху и нажмите Run. Так же у каждого игрока.</description>
+              <conditionFlags><flag name="step_exe">On</flag></conditionFlags>
+              <typeDescriptor><type name="Required"/></typeDescriptor>
+            </plugin>
+            <plugin name="3. Nickname and play / Ник и игра">
+              <description>Main menu - Co-op: set your nickname, then "Host a game" or "Join a game". The host plays from a loaded game; the others join by address. Everybody needs the same version of Anomaly Coop and the same mods. If the game does not start from the mod, copy the exe as described in the readme (way 2).
+
+Главное меню - Кооператив: задайте ник, затем "Создать игру" или "Подключиться". Хост играет из загруженной игры, остальные подключаются по адресу. У всех должна быть одна версия Anomaly Coop и одинаковые моды. Если игра не запускается из мода, скопируйте exe, как описано в readme (способ 2).</description>
+              <conditionFlags><flag name="step_play">On</flag></conditionFlags>
+              <typeDescriptor><type name="Required"/></typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+
+    <installStep name="Last step / Последний шаг">
+      <visible><flagDependency flag="exe" value="copy"/></visible>
+      <optionalFileGroups order="Explicit">
+        <group name="After the installer closes / Когда установщик закроется" type="SelectAll">
+          <plugins order="Explicit">
+            <plugin name="1. Enable Anomaly Coop, highest priority / Включите Anomaly Coop, наивысший приоритет">
+              <description>Tick Anomaly Coop in MO2's left list, then right-click it - Send to... - Highest priority (its files must win over other mods).
+
+Отметьте Anomaly Coop в левом списке MO2, затем правый клик по нему - Send to... - Highest priority (его файлы должны перекрывать другие моды).</description>
+              <conditionFlags><flag name="step_enable">On</flag></conditionFlags>
+              <typeDescriptor><type name="Required"/></typeDescriptor>
+            </plugin>
+            <plugin name="2. Copy the exe into the game / Скопируйте exe в игру">
+              <description>Right-click Anomaly Coop in MO2 - Open in Explorer - bin\AnomalyCoopDX11AVX.exe: copy it into &lt;your Anomaly folder&gt;\bin (next to AnomalyDX11AVX.exe). Only this one file; nothing is replaced. Repeat after every Anomaly Coop update.
+
+Правый клик по Anomaly Coop в MO2 - Open in Explorer - bin\AnomalyCoopDX11AVX.exe: скопируйте его в &lt;папка Anomaly&gt;\bin (рядом с AnomalyDX11AVX.exe). Только этот файл, ничего не заменяется. Повторяйте после каждого обновления Anomaly Coop.</description>
+              <conditionFlags><flag name="step_copy">On</flag></conditionFlags>
+              <typeDescriptor><type name="Required"/></typeDescriptor>
+            </plugin>
+            <plugin name="3. Add the exe to MO2 / Добавьте exe в MO2">
+              <description>MO2 - Tools - Executables... (Ctrl+E) - "+" - Add from file... - &lt;your Anomaly folder&gt;\bin\AnomalyCoopDX11AVX.exe, Title: Anomaly Coop, Start in: leave as it is (the bin folder).
+OK, then pick "Anomaly Coop" in the list at the top right and press Run. Same for every player.
+
+MO2 - Tools - Executables... (Ctrl+E) - "+" - Add from file... - &lt;папка Anomaly&gt;\bin\AnomalyCoopDX11AVX.exe, Title: Anomaly Coop, Start in: оставьте как есть (папка bin).
+OK, затем выберите "Anomaly Coop" в списке справа вверху и нажмите Run. Так же у каждого игрока.</description>
+              <conditionFlags><flag name="step_exe">On</flag></conditionFlags>
+              <typeDescriptor><type name="Required"/></typeDescriptor>
+            </plugin>
+            <plugin name="4. Nickname and play / Ник и игра">
+              <description>Main menu - Co-op: set your nickname, then "Host a game" or "Join a game". The host plays from a loaded game; the others join by address. Everybody needs the same version of Anomaly Coop and the same mods.
+
+Главное меню - Кооператив: задайте ник, затем "Создать игру" или "Подключиться". Хост играет из загруженной игры, остальные подключаются по адресу. У всех должна быть одна версия Anomaly Coop и одинаковые моды.</description>
+              <conditionFlags><flag name="step_play">On</flag></conditionFlags>
+              <typeDescriptor><type name="Required"/></typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+
+  </installSteps>
+</config>

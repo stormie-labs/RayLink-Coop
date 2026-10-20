@@ -1,22 +1,67 @@
 <?xml version="1.0" encoding="windows-1251"?>
-<!-- Anomaly Coop: extra elements of the new character window (scripts\coop_menu_char.script). The window itself
-     uses the stock ui_mm_faction_select.xml; these sit where the stock screen has the start map (coop_char:title,
-     info) and the game options (status). Coordinates are relative to main_dialog:frame_back, the same in the 4:3
-     and 16:9 stock layouts. -->
+<!-- Anomaly Coop: new character window of a joining player (scripts\coop_menu_char.script), 4:3 layout.
+     16:9 is ui_coop_menu_char_16.xml (the engine picks it by the screen ratio, like the stock _16 files).
+     The window is the stock new game screen (ui_mm_faction_select.xml: frame art, faction picture, description,
+     relations, loadout lists, faction popup); everything below fills what the stock screen uses for the start map,
+     the portrait, the start location list and the game options. Coordinates are relative to
+     main_dialog:frame_back, i.e. the same space as the stock elements.
+     Panels of the stock frame art (4:3): character 7..435 x 7..266, squares 11..84 / 101..174 x 283..330,
+     name strip 187..435 x 274..335, bottom panel 6..890 x 393..587, button strip y 585..620. -->
 <w>
 	<coop_shade x="0" y="0" width="1024" height="768" stretch="1">
 		<texture r="0" g="0" b="0" a="200">ui_icons_PDA_tooltips</texture>
 	</coop_shade>
 
 	<coop_char>
-		<title x="8" y="10" width="336" height="32" stretch="1">
-			<text complex_mode="0" r="240" g="200" b="120" align="c" vert_align="c" font="graffiti22">st_coop_char_title</text>
-		</title>
-		<info x="18" y="50" width="318" height="210" stretch="1">
-			<text complex_mode="1" r="215" g="215" b="215" align="l" vert_align="t" font="letterica16"></text>
+		<!-- over the level picture (stock box_map), under the stock description and relations: keeps them readable -->
+		<map_dim x="2" y="2" width="438" height="270" stretch="1">
+			<texture r="0" g="0" b="0" a="150">coop_ally_white</texture>
+		</map_dim>
+
+		<!-- second square (stock portrait): the player's colour on the minimap, PDA and the party panel -->
+		<color_bg x="94" y="274" width="86" height="63" stretch="1">
+			<texture r="0" g="0" b="0" a="120">coop_ally_white</texture>
+		</color_bg>
+		<color_icon x="117" y="285" width="40" height="40" stretch="1">
+			<texture>coop_ally_arrow_64</texture>
+		</color_icon>
+		<color_cap x="94" y="346" width="86" height="21">
+			<text r="170" g="170" b="170" font="letterica16" align="c" vert_align="c">st_coop_char_color</text>
+		</color_cap>
+
+		<!-- stock start location list: where the character appears -->
+		<start x="186" y="346" width="252" height="21">
+			<text complex_mode="1" r="150" g="150" b="150" font="letterica16" align="l" vert_align="c"/>
+		</start>
+
+		<!-- bottom panel (stock game options): what this window is, the host's rules, the answer of the host -->
+		<cap x="10" y="391" width="132" height="22">
+			<text r="250" g="250" b="250" font="letterica18" align="c">st_coop_char_title</text>
+		</cap>
+		<info x="26" y="430" width="404" height="110">
+			<text complex_mode="1" r="200" g="200" b="200" font="letterica16" align="l" vert_align="t"/>
 		</info>
-		<status x="14" y="424" width="690" height="60" stretch="1">
-			<text complex_mode="1" r="240" g="200" b="120" align="l" vert_align="t" font="letterica18"></text>
+		<sep x="447" y="432" width="1" height="104" stretch="1">
+			<texture r="255" g="255" b="255" a="40">coop_ally_white</texture>
+		</sep>
+		<facts x="466" y="430" width="404" height="110">
+			<text complex_mode="1" r="150" g="150" b="150" font="letterica16" align="l" vert_align="t"/>
+		</facts>
+		<status_bg x="16" y="547" width="864" height="30" stretch="1">
+			<texture r="0" g="0" b="0" a="110">coop_ally_white</texture>
+		</status_bg>
+		<status x="26" y="547" width="846" height="30">
+			<text complex_mode="1" r="240" g="200" b="120" font="letterica18" align="l" vert_align="c"/>
 		</status>
+
+		<!-- the stock screen has Back / Random / Start here; two buttons, centred under the panel -->
+		<btn_later x="309" y="591" width="136" height="27" stretch="1">
+			<text r="150" g="150" b="150" font="letterica18" align="c">st_coop_char_btn_later</text>
+			<texture>ui_inGame2_button</texture>
+		</btn_later>
+		<btn_start x="453" y="591" width="136" height="27" stretch="1">
+			<text r="150" g="150" b="150" font="letterica18" align="c">st_coop_char_btn_start</text>
+			<texture>ui_inGame2_button</texture>
+		</btn_start>
 	</coop_char>
 </w>

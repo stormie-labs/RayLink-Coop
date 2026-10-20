@@ -49,7 +49,7 @@ function inject_button(xml_file_name, xml_obj)
 		local ok, added = pcall(inject_list, xml_obj, list_name)
 		if ok and added then n = n + 1 end
 	end
-	if n > 0 then printf("[coop-menu] Co-op button added to %d main menu list(s) of %s", n, xml_file_name) end
+	if n > 0 then printf("[coop-menu] Co-op button added to %s main menu list(s) of %s", n, xml_file_name) end -- printf: %s only
 end
 
 -- Options > Controls > Common: "Co-op: chat" (kb_coop_chat, strings in st_coop_core.xml).

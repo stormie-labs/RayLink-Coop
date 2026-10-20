@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<fomod>
+  <Name>Anomaly Coop</Name>
+  <Author>Anomaly Coop</Author>
+  <Version>0.1.0</Version>
+  <Description>Co-op for S.T.A.L.K.E.R. Anomaly 1.5.3: up to 8 players (a host and 7 guests) in one Zone. Own engine build (AnomalyCoopDX11AVX.exe) + scripts. / Кооператив для S.T.A.L.K.E.R. Anomaly 1.5.3: до 8 игроков (хост и 7 гостей) в одной Зоне. Своя сборка движка (AnomalyCoopDX11AVX.exe) и скрипты.</Description>
+  <Groups>
+    <element>Multiplayer</element>
+  </Groups>
+</fomod>

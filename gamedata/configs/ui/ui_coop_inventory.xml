@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop (W8): inventory additions, scripts\coop_ui.script. 4:3; ui_coop_inventory_16.xml for wide screens.
+     give_money: envelope button placed at run time right of player:money of ui_inventory.xml (reskins that move the
+     money keep it there). CUI3tButton reads coop_icon_mail_e/_h/_t/_d (configs\ui\textures_descr\ui_coop_icons.xml). -->
+<w>
+	<give_money x="0" y="0" width="24" height="16" stretch="1">
+		<texture>coop_icon_mail</texture>
+	</give_money>
+</w>

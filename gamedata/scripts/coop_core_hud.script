@@ -9,7 +9,8 @@
 	   survival state (coop.life_of, W5 C1) wins over the reported state when it exists.
 	2. Party panel on the HUD, top right: one entry per other player, sorted by peer id (host first), in the
 	   player's colour (tab, nick, host star). Up to 4 players: portrait cards like the stock companion slot
-	   (distance or state plate, red pulsing medic badge while down, grey portrait when dead/spectating, health bar);
+	   (distance or state plate, red pulsing medic badge while down, grey portrait when dead/spectating, health bar;
+	   W8: an eye badge while spectating, an amber warning while the player's status stopped coming);
 	   5..7 players, or 4 on a screen too low for the cards (720p, 768p): compact rows. Scaled with the screen
 	   height (1080p and below = stock pixel size), hidden with the main HUD (inventory, PDA, scope) at once.
 	   The stock companion column moves left of the panel only while the two would overlap.
@@ -199,6 +200,29 @@ local function hud_visible()
 	return not ok or v == true
 end
 
+-- Why main_hud_shown() says no (status line only): the parts of the stock check (_g.script).
+local function hidden_why()
+	if not party_enabled then return "disabled by the player" end
+	local why = {}
+	local function add(cond, text) if cond then why[#why + 1] = text end end
+	pcall(function()
+		add(rawget(_G, "_HUD_STATE") == false, "HUD indicators off")
+		local am = rawget(_G, "actor_menu")
+		add(am and am.last_mode ~= 0, "actor menu open")
+		local pda_m = rawget(_G, "pda")
+		add(pda_m and pda_m.dialog_closed ~= true, "talk dialog open")
+		local guis = rawget(_G, "_GUIs")
+		if type(guis) == "table" then
+			for name in pairs(guis) do why[#why + 1] = "UI " .. tostring(name) .. " registered" end
+		end
+		local gcc = rawget(_G, "get_console_cmd")
+		add(gcc and gcc(1, "hud_draw") == false, "hud_draw 0")
+		local ax = rawget(_G, "axr_main")
+		add(ax and (ax.binoc_is_zoomed or ax.scoped_weapon_is_zoomed), "zoomed")
+	end)
+	return #why > 0 and table.concat(why, ", ") or "?"
+end
+
 local function argb(a, rgb)
 	return GetARGB(a, rgb[1], rgb[2], rgb[3])
 end
@@ -209,6 +233,29 @@ local CLR = {
 		spec = { 105, 105, 105 }, respawn = { 105, 105, 105 }, unknown = { 170, 170, 170 } },
 }
 local GREYED = { dead = true, spec = true, respawn = true, unknown = true }
+-- Badge in the middle of a card's portrait / before a row's state text (W8 icons: ui_coop_icons.xml).
+-- rgb = texture tint; nil keeps the icon's own colours ("down" pulses in Pulse()).
+local BADGE = {
+	down = { tex = "coop_ally_badge_48" },
+	spec = { tex = "coop_icon_eye_48", rgb = { 175, 175, 175 } },
+	unknown = { tex = "coop_icon_alert_48" },
+}
+
+local function set_badge(entry, state)
+	local bd = BADGE[state]
+	entry.badge.e:Show(bd ~= nil)
+	if not bd then return nil end
+	if entry._badge ~= bd.tex then
+		entry.badge.e:InitTexture(bd.tex)
+		entry.badge.e:SetStretchTexture(true)
+		entry._badge = bd.tex
+	end
+	if state ~= "down" then
+		local c = bd.rgb or { 255, 255, 255 }
+		entry.badge.e:SetTextureColor(GetARGB(255, c[1], c[2], c[3]))
+	end
+	return bd
+end
 
 -- Screen metrics: s = entry scale (1 at 1080p and below), k = px@1080 -> 1024x768 units.
 local function metrics()
@@ -395,7 +442,7 @@ function UICoopParty:FillCard(c, v)
 	local tw = text ~= "" and text_width(c.info.e, c.info.w * m.kx, c.info.h * m.ky) or 0
 	c.info_bg.e:Show(text ~= "")
 	c.info_bg.e:SetWndSize(vector2():set(math_min(tw + 4 * m.kx, 80 * m.kx), c.info_bg.h * m.ky))
-	c.badge.e:Show(v.state == "down")
+	set_badge(c, v.state)
 	c.hp.e:Show(v.hp ~= nil and not greyed)
 	if v.hp then c.hp.e:SetProgressPos(v.hp) end
 end
@@ -420,8 +467,7 @@ function UICoopParty:FillRow(r, v)
 	local tw = text ~= "" and text_width(r.info.e, r.info.w * m.kx, r.info.h * m.ky) or 0
 	local right = (r.info.x + r.info.w) * m.kx
 	local used = tw
-	r.badge.e:Show(v.state == "down")
-	if v.state == "down" then
+	if set_badge(r, v.state) then
 		r.badge.e:SetWndPos(vector2():set(right - tw - (r.badge.w + 2) * m.kx, r.badge.y * m.ky))
 		used = tw + (r.badge.w + 2) * m.kx
 	end
@@ -594,6 +640,19 @@ function print_status()
 	log("hud: status out %d, in %d (bad %d), players with status %d | party panel %s, %s",
 		stats.status_out, stats.status_in, stats.status_bad, n, PARTY and "on" or "off",
 		party_enabled and "enabled" or "disabled by the player")
+	-- every other player as the panel sees him: one line answers "why is there no card for X"
+	local ok, list = pcall(views)
+	if ok and type(list) == "table" then
+		local parts = {}
+		for _, v in ipairs(list) do
+			local st = status[v.peer]
+			parts[#parts + 1] = string_format("#%d %s %s%s, %s, status %s", v.peer, tostring(v.nick), v.state,
+				v.host and " (host)" or "", v.dist and string_format("%.0f m", v.dist) or "no avatar",
+				st and string_format("%.0f s ago", (time_global() - st.at) / 1000) or "never")
+		end
+		log("hud: panel %s, %d other player(s)%s%s", PARTY and (PARTY.vis and "visible" or ("hidden: " .. hidden_why()))
+			or "off", #list, #parts > 0 and ": " or "", table.concat(parts, "; "))
+	end
 	local A = allies()
 	if A then pcall(A.print_status) end
 	map_call("print_status")

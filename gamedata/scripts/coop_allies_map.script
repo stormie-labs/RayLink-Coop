@@ -287,8 +287,9 @@ function placed_count()
 	return n
 end
 
+-- Anomaly's printf substitutes %s only: format here, print the finished line.
 function print_status()
-	printf("[coop-allies] markers %s, placed %d (spots added %d, removed %d, hint updates %d)",
+	log(nil, "markers %s, placed %d (spots added %d, removed %d, hint updates %d)",
 		ready == nil and "not checked" or (ready and "on" or "off"), placed_count(), stats.added, stats.removed, stats.hints)
 end
 

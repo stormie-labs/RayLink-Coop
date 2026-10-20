@@ -170,7 +170,31 @@
 		<text>Новый персонаж</text>
 	</string>
 	<string id="st_coop_char_info">
-		<text>Хост создал вам нового персонажа (%s). Выберите группировку и стартовое снаряжение, как в новой игре; очки - по экономике хоста.</text>
+		<text>Хост %s создал для вас нового персонажа (%s). Выберите группировку и стартовое снаряжение, как в новой игре: набор группировки выдаётся бесплатно, остальное покупается за очки. Сколько очков - зависит от экономики у хоста.</text>
+	</string>
+	<string id="st_coop_char_color">
+		<text>Ваш цвет</text>
+	</string>
+	<string id="st_coop_char_start">
+		<text>Старт: %s, рядом с группой</text>
+	</string>
+	<string id="st_coop_char_start_near">
+		<text>Старт: рядом с группой</text>
+	</string>
+	<string id="st_coop_char_ready">
+		<text>Когда будете готовы, нажмите «Готово». «Позже» закроет окно - хост предложит выбор снова.</text>
+	</string>
+	<string id="st_coop_char_host">
+		<text>Хост:</text>
+	</string>
+	<string id="st_coop_char_eco">
+		<text>Экономика:</text>
+	</string>
+	<string id="st_coop_char_points">
+		<text>Очки на снаряжение:</text>
+	</string>
+	<string id="st_coop_char_money">
+		<text>Деньги группировки:</text>
 	</string>
 	<string id="st_coop_char_btn_start">
 		<text>Готово</text>

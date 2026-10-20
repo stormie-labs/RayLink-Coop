@@ -1,0 +1,143 @@
+--[[
+	Anomaly Coop - Useful Idiots (bellyillish, G.A.M.M.A. "450- Useful Idiots") for several players
+	gamedata\scripts\coop_npc_idiots.script (W8, GAMMA pass; same job as xrRazom's xrr_rewrites\xrr_useful_idiots.ltx)
+
+	Useful Idiots replaces xr_danger.is_danger in its package illish.patches.xr_danger (a require()'d .lua that
+	z_idiots_patches.script loads at its file scope). The last check of that function tells the player from
+	everybody else by a literal "dangerObject:id() == 0" / "~= 0". On the host a client's character has another
+	id, so a neutral NPC ignored a client's gunfire that it reacts to from the host.
+
+	Fix: a package searcher, put in front of Lua's file searcher at this file's scope (axr_main loads every
+	script by name before any on_game_start, coop_* before z_idiots_patches). For that one package it reads the
+	file, replaces the two comparisons with coop_idiots_player_id() and compiles the text under the file's own
+	name. All-or-nothing: if a text is not there exactly once (another version of the mod), the package loads
+	untouched and the log says why. Without Useful Idiots, or on an exe without co-op, nothing happens.
+	Outside a session coop_idiots_player_id(id) is id == 0: single player behaves exactly like the mod.
+
+	For other scripts / status: coop_npc_idiots.state = { installed, applied, file, why }
+--]]
+
+local tostring, type, ipairs, pcall = tostring, type, ipairs, pcall
+local string_format = string.format
+
+MODULE = "illish.patches.xr_danger"
+PAIRS = {
+	{ "dangerObject:id() == 0", "coop_idiots_player_id(dangerObject:id())" },
+	{ "dangerObject:id() ~= 0", "not coop_idiots_player_id(dangerObject:id())" },
+}
+
+state = { installed = false, applied = false, tried = false, file = nil, why = nil }
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	local pf = rawget(_G, "printf")
+	if pf then pcall(pf, "[coop-npc:idiots] %s", ok and line or tostring(fmt)) end
+end
+
+-- Player check used by the rewritten package: the host's actor (id 0) or any co-op player's character.
+local is_player -- coop_npc_players' global, found on first use
+_G.coop_idiots_player_id = function(id)
+	if id == 0 then return true end
+	if not is_player then
+		is_player = rawget(_G, "coop_npc_is_player_id")
+		if not is_player then
+			pcall(function() return coop_npc_players end) -- _G.__index loads it; it defines the global
+			is_player = rawget(_G, "coop_npc_is_player_id")
+		end
+		if not is_player then return false end
+	end
+	return is_player(id) == true
+end
+
+local function count(text, s)
+	local n, i = 0, 1
+	while true do
+		local a, b = text:find(s, i, true)
+		if not a then return n end
+		n, i = n + 1, b + 1
+	end
+end
+
+-- Text with every pair replaced, or nil + why (each "from" must be there exactly once).
+function rewrite(text)
+	for _, p in ipairs(PAIRS) do
+		local n = count(text, p[1])
+		if n ~= 1 then return nil, string_format("'%s' found %d time(s)", p[1], n) end
+	end
+	for _, p in ipairs(PAIRS) do
+		local a, b = text:find(p[1], 1, true)
+		text = text:sub(1, a - 1) .. p[2] .. text:sub(b + 1)
+	end
+	return text
+end
+
+-- Where require() would look (package.path), then the game's scripts folder.
+local function candidates(name)
+	local rel = name:gsub("%.", "\\")
+	local out = {}
+	for pat in tostring(package.path or ""):gmatch("[^;]+") do
+		out[#out + 1] = (pat:gsub("%?", rel))
+	end
+	local ok, root = pcall(function() return getFS():update_path("$game_scripts$", "") end)
+	if ok and type(root) == "string" and root ~= "" then
+		if not root:match("[\\/]$") then root = root .. "\\" end
+		out[#out + 1] = root .. rel .. ".lua"
+	end
+	return out
+end
+
+local function searcher(name)
+	if name ~= MODULE or state.tried then return nil end
+	state.tried = true -- one attempt per Lua state; a failure falls through to the normal searchers
+	for _, path in ipairs(candidates(name)) do
+		local fh = io.open(path, "rb")
+		if fh then
+			local text = fh:read("*a")
+			fh:close()
+			local new, why = rewrite(text or "")
+			if not new then
+				state.why = why
+				log("! %s: %s - loaded untouched, a client's gunfire keeps the single-player rule", path, why)
+				return nil
+			end
+			local chunk, err = loadstring(new, "@" .. path)
+			if not chunk then
+				state.why = tostring(err)
+				log("! %s: rewritten text does not compile (%s) - loaded untouched", path, tostring(err))
+				return nil
+			end
+			state.applied, state.file = true, path
+			log("%s: danger from any co-op player counts like the player's", path)
+			return chunk
+		end
+	end
+	state.why = "file not found"
+	log("! %s: file not found next to package.path - loaded untouched", name)
+	return nil
+end
+
+function install()
+	if not rawget(_G, "coop") then return false end -- exe without co-op: the mod as it is
+	local loaders = type(package) == "table" and package.loaders
+	if type(loaders) ~= "table" then return false end
+	for _, f in ipairs(loaders) do
+		if f == searcher then return true end
+	end
+	if package.loaded[MODULE] then
+		state.why = "loaded before this script"
+		log("! %s was loaded before the co-op searcher: not patched", MODULE)
+		return false
+	end
+	table.insert(loaders, 2, searcher) -- after package.preload, before the .lua file searcher
+	state.installed = true
+	return true
+end
+
+function print_status()
+	log("Useful Idiots: searcher %s, %s%s", state.installed and "on" or "off",
+		state.applied and ("patched " .. tostring(state.file)) or (state.tried and "not patched" or "package not loaded"),
+		state.why and (" (" .. state.why .. ")") or "")
+end
+
+local ok, err = pcall(install)
+if not ok then log("! install: %s", tostring(err)) end

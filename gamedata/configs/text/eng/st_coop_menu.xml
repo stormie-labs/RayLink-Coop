@@ -170,7 +170,31 @@
 		<text>New character</text>
 	</string>
 	<string id="st_coop_char_info">
-		<text>The host made a new character for you (%s). Choose a faction and starting gear as in a new game; points follow the host's economy.</text>
+		<text>The host %s has made a new character for you (%s). Pick a faction and starting gear as in a new game: the faction kit is free, the rest is bought with points. How many points you get depends on the host's economy setting.</text>
+	</string>
+	<string id="st_coop_char_color">
+		<text>Your colour</text>
+	</string>
+	<string id="st_coop_char_start">
+		<text>Start: %s, next to the group</text>
+	</string>
+	<string id="st_coop_char_start_near">
+		<text>Start: next to the group</text>
+	</string>
+	<string id="st_coop_char_ready">
+		<text>Press Done when you are ready. Later closes this window; the host will offer it again.</text>
+	</string>
+	<string id="st_coop_char_host">
+		<text>Host:</text>
+	</string>
+	<string id="st_coop_char_eco">
+		<text>Economy:</text>
+	</string>
+	<string id="st_coop_char_points">
+		<text>Points for gear:</text>
+	</string>
+	<string id="st_coop_char_money">
+		<text>Faction money:</text>
 	</string>
 	<string id="st_coop_char_btn_start">
 		<text>Done</text>

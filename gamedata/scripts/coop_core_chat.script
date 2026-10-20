@@ -8,6 +8,8 @@
 	coop_main.on_chat(nick, text) -> on_line(). The last lines are kept in coop.stash, so a level load keeps
 	the history; while the window is closed a HUD feed shows new lines for a few seconds.
 	Commands (never sent): /help, /players, /go (host: move the group to the level a player asked for).
+	Look (W8): nicks in the player's colour (coop_allies palette), feed lines on dark plates sized to the text,
+	an envelope (configs\ui\textures_descr\ui_coop_icons.xml) before the window title.
 
 	For other scripts:
 		coop_core_chat.system(text)        a local line (not sent)
@@ -131,6 +133,29 @@ local function line_text(l)
 	return l.nick .. ": " .. l.text
 end
 
+-- Player colour of a nick (W6 palette, slot = peer id) or nil: players who left keep the plain colour.
+local function nick_rgb(nick)
+	local al = rawget(_G, "coop_allies")
+	if not (al and al.color and nick and nick ~= "") then return nil end
+	for _, p in ipairs(players()) do
+		if p.nick == nick and type(p.id) == "number" then
+			local ok, r, g, b = pcall(al.color, p.id)
+			if ok and r then return { r, g, b } end
+		end
+	end
+	return nil
+end
+
+-- The line with colour codes: nick in the player's colour, text in the kind's colour (alpha for the fade).
+local function line_rich(l, alpha)
+	alpha = alpha or 255
+	local c = COLORS[l.kind] or COLORS.other
+	local body = string_format("%%c[%d,%d,%d,%d]", alpha, c[1], c[2], c[3])
+	if l.kind == "sys" or not l.nick or l.nick == "" then return body .. l.text end
+	local n = nick_rgb(l.nick) or c
+	return string_format("%%c[%d,%d,%d,%d]", alpha, n[1], n[2], n[3]) .. l.nick .. ":" .. body .. " " .. l.text
+end
+
 local function argb(kind, alpha)
 	local c = COLORS[kind] or COLORS.other
 	return GetARGB(alpha or 255, c[1], c[2], c[3])
@@ -240,6 +265,12 @@ function UICoopChat:__init() super()
 	xml:ParseFile(XML_FILE)
 	self.box = xml:InitStatic("chat", self)
 	xml:InitFrame("chat:frame", self.box)
+	local icon = xml:InitStatic("chat:icon", self.box)
+	pcall(function() -- the layout is stretched on wide screens: keep the envelope's shape
+		local dev = device()
+		local k = (dev.width / dev.height) / (1024 / 768)
+		if k > 1.01 then icon:SetWndSize(vector2():set(icon:GetWidth() / k, icon:GetHeight())) end
+	end)
 	self.title = xml:InitTextWnd("chat:title", self.box)
 	self.history = xml:InitScrollView("chat:history", self.box)
 	self.input = xml:InitEditBox("chat:input", self.box)
@@ -257,7 +288,7 @@ function UICoopChat:Refill()
 	self.history:Clear()
 	for _, l in ipairs(lines) do
 		local row = self.xml:InitTextWnd("chat:row", nil)
-		row:SetText(line_text(l))
+		row:SetText(line_rich(l))
 		row:SetTextColor(argb(l.kind))
 		row:AdjustHeightToText()
 		self.history:AddWindow(row, true)
@@ -334,12 +365,18 @@ function UICoopChatFeed:__init() super()
 	local xml = CScriptXmlInit()
 	xml:ParseFile(XML_FILE)
 	self.box = xml:InitStatic("chat_feed", self)
-	self.rows = {}
+	self.rows, self.plates = {}, {}
+	for i = 1, FEED_LINES do
+		local p = xml:InitStatic("chat_feed:plate", self.box) -- dark plate under the line, sized to the text
+		p:Show(false)
+		self.plates[i] = p
+	end
 	for i = 1, FEED_LINES do
 		local r = xml:InitTextWnd("chat_feed:line", self.box)
 		r:Show(false)
 		self.rows[i] = r
 	end
+	self.line_w = self.rows[1]:GetWidth()
 	self.next_at = 0
 end
 
@@ -353,32 +390,50 @@ local function hud_visible()
 	return not ok or v == true
 end
 
+local PLATE_PAD_X, PLATE_PAD_Y, PLATE_GAP = 5, 1, 3 -- units around a line's text, between lines
+local PLATE_ALPHA = 120
+
 function UICoopChatFeed:Refresh(tg)
-	local rows = self.rows
+	local rows, plates = self.rows, self.plates
 	local used = 0
 	if not is_open() and hud_visible() then
 		local y = self.box:GetHeight()
+		local max_w = self.line_w - PLATE_PAD_X * 2
 		for i = #lines, 1, -1 do
 			local l = lines[i]
 			local age = l.at >= 0 and (tg - l.at) or FEED_MS
 			if age >= FEED_MS or used >= FEED_LINES then break end
 			used = used + 1
-			local r = rows[used]
+			local r, p = rows[used], plates[used]
+			local left = FEED_MS - age
+			local alpha = left < FADE_MS and math.floor(255 * left / FADE_MS) or 255
+			-- width of the plain text first (AdjustWidthToText counts colour codes too), then the coloured one
+			r:SetWndSize(vector2():set(max_w, r:GetHeight()))
 			r:SetText(line_text(l))
+			r:AdjustWidthToText()
+			local w = math.min(r:GetWidth(), max_w)
+			r:SetWndSize(vector2():set(w, r:GetHeight()))
+			r:SetText(line_rich(l, alpha))
 			r:AdjustHeightToText()
-			y = y - r:GetHeight()
+			y = y - r:GetHeight() - PLATE_PAD_Y * 2
 			if y < 0 then
 				used = used - 1
 				break
 			end
-			r:SetWndPos(vector2():set(0, y))
-			local left = FEED_MS - age
-			local alpha = left < FADE_MS and math.floor(255 * left / FADE_MS) or 255
+			r:SetWndPos(vector2():set(PLATE_PAD_X, y + PLATE_PAD_Y))
 			r:SetTextColor(argb(l.kind, alpha))
 			r:Show(true)
+			p:SetWndPos(vector2():set(0, y))
+			p:SetWndSize(vector2():set(w + PLATE_PAD_X * 2, r:GetHeight() + PLATE_PAD_Y * 2))
+			p:SetTextureColor(GetARGB(math.floor(PLATE_ALPHA * alpha / 255), 0, 0, 0))
+			p:Show(true)
+			y = y - PLATE_GAP
 		end
 	end
-	for i = used + 1, FEED_LINES do rows[i]:Show(false) end
+	for i = used + 1, FEED_LINES do
+		rows[i]:Show(false)
+		plates[i]:Show(false)
+	end
 end
 
 function UICoopChatFeed:Update()
@@ -453,11 +508,22 @@ function set_feed_enabled(on)
 	if not feed_enabled then feed_off() end
 end
 
+-- The window hidden some other way than Close() (the engine closing dialogs): its UI registration would stay and
+-- keep main_hud_shown() false for good (stock HUD indicators, party panel and this feed hidden). Drop it.
+local function unregister_stale()
+	local guis = rawget(_G, "_GUIs")
+	if type(guis) == "table" and guis.UICoopChat and not is_open() and rawget(_G, "Unregister_UI") then
+		pcall(Unregister_UI, "UICoopChat")
+		log("chat window was closed without Close(): its UI registration removed")
+	end
+end
+
 local next_tick = 0
 local function actor_on_update()
 	local tg = time_global()
 	if tg < next_tick then return end
 	next_tick = tg + 500
+	unregister_stale()
 	if live() and feed_enabled then
 		feed_on()
 	elseif live() then

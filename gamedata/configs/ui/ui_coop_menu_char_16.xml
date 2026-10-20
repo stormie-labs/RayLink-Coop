@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop: new character window of a joining player (scripts\coop_menu_char.script), 16:9 layout.
+     Same elements as ui_coop_menu_char.xml; x and widths follow the stock ui_mm_faction_select_16.xml (about
+     0.8 of 4:3), square icons 0.75 wide so they stay square on the screen.
+     Panels of the stock frame art (16:9): character 6..348 x 7..266, squares 9..67 / 81..139 x 283..330,
+     name strip 150..348 x 274..335, bottom panel 5..712 x 393..587, button strip y 585..620. -->
+<w>
+	<coop_shade x="0" y="0" width="1024" height="768" stretch="1">
+		<texture r="0" g="0" b="0" a="200">ui_icons_PDA_tooltips</texture>
+	</coop_shade>
+
+	<coop_char>
+		<map_dim x="1" y="2" width="350" height="270" stretch="1">
+			<texture r="0" g="0" b="0" a="150">coop_ally_white</texture>
+		</map_dim>
+
+		<color_bg x="75" y="274" width="68" height="63" stretch="1">
+			<texture r="0" g="0" b="0" a="120">coop_ally_white</texture>
+		</color_bg>
+		<color_icon x="94" y="285" width="30" height="40" stretch="1">
+			<texture>coop_ally_arrow_64</texture>
+		</color_icon>
+		<color_cap x="75" y="346" width="68" height="21">
+			<text r="170" g="170" b="170" font="letterica16" align="c" vert_align="c">st_coop_char_color</text>
+		</color_cap>
+
+		<start x="149" y="346" width="201" height="21">
+			<text complex_mode="1" r="150" g="150" b="150" font="letterica16" align="l" vert_align="c"/>
+		</start>
+
+		<cap x="8" y="391" width="105" height="22">
+			<text r="250" g="250" b="250" font="letterica18" align="c">st_coop_char_title</text>
+		</cap>
+		<info x="21" y="430" width="323" height="110">
+			<text complex_mode="1" r="200" g="200" b="200" font="letterica16" align="l" vert_align="t"/>
+		</info>
+		<sep x="358" y="432" width="1" height="104" stretch="1">
+			<texture r="255" g="255" b="255" a="40">coop_ally_white</texture>
+		</sep>
+		<facts x="373" y="430" width="323" height="110">
+			<text complex_mode="1" r="150" g="150" b="150" font="letterica16" align="l" vert_align="t"/>
+		</facts>
+		<status_bg x="13" y="547" width="691" height="30" stretch="1">
+			<texture r="0" g="0" b="0" a="110">coop_ally_white</texture>
+		</status_bg>
+		<status x="21" y="547" width="677" height="30">
+			<text complex_mode="1" r="240" g="200" b="120" font="letterica18" align="l" vert_align="c"/>
+		</status>
+
+		<btn_later x="247" y="591" width="108" height="27" stretch="1">
+			<text r="150" g="150" b="150" font="letterica18" align="c">st_coop_char_btn_later</text>
+			<texture>ui_inGame2_button</texture>
+		</btn_later>
+		<btn_start x="362" y="591" width="108" height="27" stretch="1">
+			<text r="150" g="150" b="150" font="letterica18" align="c">st_coop_char_btn_start</text>
+			<texture>ui_inGame2_button</texture>
+		</btn_start>
+	</coop_char>
+</w>

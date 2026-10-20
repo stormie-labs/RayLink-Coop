@@ -301,6 +301,44 @@ local FACTION_CELL = {
 	renegade = { 4, 1 }, greh = { 4, 2 }, isg = { 4, 3 },
 }
 
+-- Levels with a picture in the stock new game screen (configs\ui\textures_descr\ui_new_game.xml: ui_new_game_map_<level>).
+local LEVEL_PICTURES = {
+	l01_escape = true, l02_garbage = true, l03_agroprom = true, l03u_agr_underground = true, l04_darkvalley = true,
+	l05_bar = true, l06_rostok = true, l07_military = true, l08_yantar = true, l09_deadcity = true, l10_limansk = true,
+	l10_radar = true, l10_red_forest = true, l11_hospital = true, l11_pripyat = true, l12_stancia = true,
+	k00_marsh = true, k01_darkscape = true, k02_trucks_cemetery = true, jupiter = true, pripyat = true, zaton = true,
+}
+
+local C_LABEL, C_VALUE = "%c[255,150,150,150]", "%c[255,225,225,225]"
+local C_READY, C_WAIT, C_BAD = "%c[255,170,170,170]", "%c[255,240,200,120]", "%c[255,240,120,100]"
+
+local function host_nick()
+	for _, p in ipairs(api and api.players() or {}) do
+		if p.id == 0 then return tostring(p.nick or "?") end
+	end
+	return "?"
+end
+
+local function level_name()
+	local ok, n = pcall(function() return level.name() end)
+	return ok and type(n) == "string" and n or nil
+end
+
+-- The player's colour (W6 palette, slot = peer id): r, g, b.
+local function own_color()
+	local al = rawget(_G, "coop_allies")
+	if al == nil then
+		local ok, m = pcall(function() return coop_allies end)
+		al = ok and m or nil
+	end
+	local peer = api and api.self_id and api.self_id() or 1
+	if type(al) == "table" and al.color then
+		local ok, r, g, b = pcall(al.color, peer)
+		if ok and r then return r, g, b end
+	end
+	return 83, 140, 224
+end
+
 class "UICoopNewChar" (CUIScriptWnd)
 
 function UICoopNewChar:__init() super()
@@ -318,6 +356,10 @@ end
 function UICoopNewChar:__finalize()
 end
 
+-- Layout: the stock new game screen (ui_mm_faction_select.xml, its _16 twin on wide screens) in the stock drawing
+-- order, plus ui_coop_menu_char.xml (_16) where the stock screen has the start map, the portrait, the start list
+-- and the game options: level picture under the description, the player's colour, the start line, and the
+-- bottom panel with what this is, the host's rules and the host's answer.
 function UICoopNewChar:InitControls()
 	local xml = CScriptXmlInit()
 	self.xml = xml
@@ -328,11 +370,17 @@ function UICoopNewChar:InitControls()
 
 	own:InitFrame("coop_shade", self)
 	self.dialog = xml:InitStatic("main_dialog:frame_back", self)
+	-- under the frame art
+	self.box_map = xml:InitStatic("main_dialog:box_map", self.dialog)
+	self.map_dim = own:InitStatic("coop_char:map_dim", self.dialog)
 	self.box_faction = xml:InitStatic("main_dialog:box_faction", self.dialog)
+	own:InitStatic("coop_char:color_bg", self.dialog)
+	self.color_icon = own:InitStatic("coop_char:color_icon", self.dialog)
 	self.box_item = xml:InitStatic("main_dialog:box_item", self.dialog)
 	self.box_item_temp = xml:InitStatic("main_dialog:box_item", self.dialog)
 	xml:InitStatic("main_dialog:frame_front", self.dialog)
 
+	-- stock texts
 	self.text_descr = xml:InitTextWnd("main_dialog:text_descr", nil)
 	self.scroll_desc = xml:InitScrollView("main_dialog:scroll_desc", self.dialog)
 	self.scroll_desc:AddWindow(self.text_descr, true)
@@ -348,12 +396,19 @@ function UICoopNewChar:InitControls()
 		xml:InitStatic("main_dialog:" .. cap, self.dialog)
 	end
 
-	self.btn_start = xml:Init3tButton("main_dialog:btn_start", self.dialog)
-	self.btn_start:TextControl():SetText(tr("st_coop_char_btn_start"))
+	-- co-op texts
+	own:InitStatic("coop_char:color_cap", self.dialog)
+	self.start = own:InitTextWnd("coop_char:start", self.dialog)
+	own:InitStatic("coop_char:cap", self.dialog)
+	self.info = own:InitTextWnd("coop_char:info", self.dialog)
+	own:InitStatic("coop_char:sep", self.dialog)
+	self.facts = own:InitTextWnd("coop_char:facts", self.dialog)
+	own:InitStatic("coop_char:status_bg", self.dialog)
+	self.status = own:InitTextWnd("coop_char:status", self.dialog)
+
+	self.btn_start = own:Init3tButton("coop_char:btn_start", self.dialog)
 	self:Register(self.btn_start, "btn_start")
-	local back = xml:Init3tButton("main_dialog:btn_back", self.dialog)
-	back:TextControl():SetText(tr("st_coop_char_btn_later"))
-	self:Register(back, "btn_back")
+	self:Register(own:Init3tButton("coop_char:btn_later", self.dialog), "btn_back")
 	self:Register(xml:Init3tButton("main_dialog:btn_faction", self.dialog), "btn_faction")
 
 	self.CC = {}
@@ -367,11 +422,6 @@ function UICoopNewChar:InitControls()
 	end
 	self.ck_reset = xml:Init3tButton("main_dialog:check_reset", self.dialog)
 	self:Register(self.ck_reset, "check_reset")
-
-	-- co-op texts where the stock screen has the map and the game options
-	own:InitStatic("coop_char:title", self.dialog)
-	self.info = own:InitTextWnd("coop_char:info", self.dialog)
-	self.status = own:InitTextWnd("coop_char:status", self.dialog)
 
 	-- faction popup
 	self.black_1 = xml:InitStatic("main_dialog:popup_faction:frame_black", self.dialog)
@@ -399,18 +449,67 @@ function UICoopNewChar:Fill(o)
 	self.offer = o
 	local nick = tostring(o.nick or "")
 	self.name:SetText(nick)
-	self.info:SetText(tr("st_coop_char_info", nick))
-	self.status:SetText("")
+	self.info:SetText(tr("st_coop_char_info", host_nick(), nick))
+	self:SetStatus("ready")
 	self.access = true
 	self.btn_start:Enable(true)
+	-- where the character appears: the level the player is on now (the host's world, next to the group)
+	local lvl = level_name()
+	if lvl and LEVEL_PICTURES[lvl] then
+		self.box_map:InitTexture("ui_new_game_map_" .. lvl)
+		self.box_map:SetStretchTexture(true)
+		self.box_map:Show(true)
+		self.map_dim:Show(true)
+	else
+		self.box_map:Show(false)
+		self.map_dim:Show(false)
+	end
+	local lvl_name = lvl and game.translate_string(lvl)
+	if lvl_name and lvl_name ~= "" and lvl_name ~= lvl then
+		self.start:SetText(tr("st_coop_char_start", lvl_name))
+	else
+		self.start:SetText(tr("st_coop_char_start_near"))
+	end
+	local r, g, b = own_color()
+	self.color_icon:SetTextureColor(GetARGB(255, r, g, b))
 	self:UpdateAll()
+end
+
+-- Status line of the bottom panel: "ready" (hint), "waiting", or a refusal text.
+function UICoopNewChar:SetStatus(kind, text)
+	if kind == "ready" then
+		self.status:SetText(C_READY .. tr("st_coop_char_ready"))
+	elseif kind == "waiting" then
+		self.status:SetText(C_WAIT .. tr("st_coop_char_waiting"))
+	else
+		self.status:SetText(C_BAD .. tostring(text or ""))
+	end
+end
+
+-- Host's rules for this character (right part of the bottom panel); money follows the chosen faction.
+function UICoopNewChar:UpdateFacts()
+	local o = self.offer or {}
+	local eco = math.max(1, math.min(3, tonumber(o.eco) or 1))
+	local points = tonumber(o.points) or budget(eco)
+	local rows = {
+		{ "st_coop_char_host", host_nick() },
+		{ "st_coop_char_eco", game.translate_string("st_econ_" .. eco) },
+		{ "st_coop_char_points", tostring(math.floor(points)) },
+		{ "st_coop_char_money", tostring(faction_money(self.faction)) .. " RU" },
+	}
+	local parts = {}
+	for _, row in ipairs(rows) do
+		parts[#parts + 1] = C_LABEL .. tr(row[1]) .. " " .. C_VALUE .. tostring(row[2])
+	end
+	self.facts:SetText(table.concat(parts, "\\n"))
 end
 
 function UICoopNewChar:UpdateAll()
 	local f = self.faction
 	self.box_faction:InitTexture("ui_new_game_flair_" .. f)
 	self.box_faction:SetStretchTexture(true)
-	self.text_money:SetText(tostring(faction_money(f)))
+	self.text_money:SetText(tostring(faction_money(f)) .. " RU")
+	self:UpdateFacts()
 	self:UpdateDescr()
 	self:LoadLoadout()
 end
@@ -544,12 +643,12 @@ function UICoopNewChar:OnStart()
 	local buy = table.concat(self:Bought(), ",")
 	local ok, why = api.send_event("menu.new_character", encode({ faction = self.faction, buy = buy }), 0)
 	if not ok then
-		self.status:SetText(tr("st_coop_char_refused", tostring(why)))
+		self:SetStatus("bad", tr("st_coop_char_refused", tostring(why)))
 		return
 	end
 	state.waiting = true
 	self.btn_start:Enable(false)
-	self.status:SetText(tr("st_coop_char_waiting"))
+	self:SetStatus("waiting")
 	log("choice sent: %s, bought: %s", self.faction, buy ~= "" and buy or "-")
 end
 
@@ -643,7 +742,7 @@ local function on_result(payload, from)
 	end
 	if GUI and GUI:IsShown() then
 		GUI.btn_start:Enable(true)
-		GUI.status:SetText(text)
+		GUI:SetStatus("bad", text)
 	end
 end
 

@@ -12,6 +12,9 @@
 
 	Uses only engine classes and functions, nothing from a running level: the main menu has no actor.
 	Texts: configs\text\*\st_coop_menu.xml (st_coop_ui_*), the English text here when an id is missing.
+
+	In game (W8): an envelope button right of the player's money in the inventory (configs\ui\ui_coop_inventory.xml,
+	wraps ui_inventory.UIInventory:UpdateCharacter) - give money to another player via coop_economy_money.
 --]]
 
 local MAX_PER_GROUP = 40 -- files listed per group, the rest is summed up by kind
@@ -333,4 +336,161 @@ function on_rejected(info)
 	log("host refusal shown: %s (missing %s, extra %s, different %s)", tostring(info.reason),
 		tostring(info.missing_total or 0), tostring(info.extra_total or 0), tostring(info.differ_total or 0))
 	show(title, summary, lines, footer)
+end
+
+-------------------------------------------------------------------------------
+-- Inventory (W8): an envelope button right of the player's money gives money to another player.
+-- The transfer itself is coop_economy_money.give_money (rules, host check, refunds); this is only the way in,
+-- besides the item context menu "Give money to ...". Shown in the plain inventory mode of a live session with
+-- somebody else in it and money transfers allowed by the host (economy/money_transfer).
+-------------------------------------------------------------------------------
+local GIVE_AMOUNTS = { 100, 500, 1000, 5000, 10000, 50000 }
+
+local function session_live()
+	local api = rawget(_G, "coop")
+	if not api then return false end
+	local ok, v = pcall(function() return api.is_active() and (api.is_host() or api.is_live()) end)
+	return ok and v == true
+end
+
+local function other_players()
+	local api = rawget(_G, "coop")
+	local out = {}
+	local ok, list = pcall(function() return api and api.players() end)
+	for _, p in ipairs(ok and type(list) == "table" and list or {}) do
+		if not p.is_self and type(p.id) == "number" then out[#out + 1] = p end
+	end
+	table.sort(out, function(a, b) return a.id < b.id end)
+	return out
+end
+
+local function mod_of(name)
+	local m = rawget(_G, name)
+	if m == nil then
+		local ok, mm = pcall(function() return _G[name] end) -- _G.__index loads the script
+		m = ok and mm or nil
+	end
+	return type(m) == "table" and m or nil
+end
+
+local function money_allowed()
+	local ec = mod_of("coop_economy_core")
+	if ec and ec.rule then
+		local ok, v = pcall(ec.rule, "money_transfer")
+		if ok and v == false then return false end
+	end
+	return true
+end
+
+local function give(peer, amount)
+	local em = mod_of("coop_economy_money")
+	if not (em and em.give_money) then return false end
+	local ok, res = pcall(em.give_money, peer, amount)
+	if not ok then log("! give_money: %s", tostring(res)) end
+	return ok and res == true
+end
+
+local function money_text(amount)
+	return tostring(amount) .. " " .. T("st_coop_eco_currency", "RU")
+end
+
+-- Amount choice at the cursor (the cell properties box of the inventory).
+local function amounts_menu(ui, peer)
+	local have = db.actor and db.actor:money() or 0
+	local actions, names, params = {}, {}, {}
+	for _, a in ipairs(GIVE_AMOUNTS) do
+		if a <= have then
+			actions[#actions + 1] = "coop_ui_GiveAmount"
+			names[#names + 1] = money_text(a)
+			params[#params + 1] = { peer, a }
+		end
+	end
+	if have > 0 then
+		actions[#actions + 1] = "coop_ui_GiveAmount"
+		names[#names + 1] = T("st_coop_eco_money_all", "All (%s)", money_text(have))
+		params[#params + 1] = { peer, have }
+	end
+	if #names == 0 then
+		give(peer, 0) -- says "You have no money to give."
+		return
+	end
+	ui.item_props:Reset(GetCursorPosition(), actions, names, params)
+end
+
+-- The properties box closes itself after an action: the next list opens on the next update.
+local function later(ui, f)
+	if rawget(_G, "CreateTimeEvent") then
+		CreateTimeEvent("coop_ui", "money_menu", 0, function()
+			pcall(f, ui)
+			return true
+		end)
+	else
+		f(ui)
+	end
+end
+
+local function on_money_button(ui)
+	local list = other_players()
+	if #list == 0 then return end
+	if #list == 1 then
+		amounts_menu(ui, list[1].id)
+		return
+	end
+	local actions, names, params = {}, {}, {}
+	for _, p in ipairs(list) do
+		actions[#actions + 1] = "coop_ui_MoneyTo"
+		names[#names + 1] = T("st_coop_eco_give_money_to", "Give money to %s...", tostring(p.nick))
+		params[#params + 1] = { p.id }
+	end
+	ui.item_props:Reset(GetCursorPosition(), actions, names, params)
+end
+
+local function money_button(ui)
+	local want = session_live() and ui.mode == "inventory" and money_allowed() and #other_players() > 0
+		and mod_of("coop_economy_money") ~= nil
+	local btn = ui.coop_ui_money_btn
+	if not btn then
+		if not want then return end
+		local xml = CScriptXmlInit()
+		xml:ParseFile("ui_coop_inventory.xml")
+		btn = xml:Init3tButton("give_money", ui.player_dialog)
+		ui.coop_ui_money_btn = btn
+		ui:Register(btn, "coop_ui_give_money")
+		ui:AddCallback("coop_ui_give_money", ui_events.BUTTON_CLICKED, function() on_money_button(ui) end, ui)
+	end
+	-- right of the money readout (its text is right-aligned), centred on it
+	local m = ui.player_money
+	local p = m:GetWndPos()
+	btn:SetWndPos(vector2():set(p.x + m:GetWidth() + 3, p.y + (m:GetHeight() - btn:GetHeight()) / 2))
+	btn:Show(want)
+end
+
+local patched_cls = nil
+
+function patch_inventory()
+	local inv = mod_of("ui_inventory")
+	local cls = inv and inv.UIInventory
+	if not (cls and type(cls.UpdateCharacter) == "function") or patched_cls == cls then return false end
+	patched_cls = cls
+	local orig = cls.UpdateCharacter
+	function cls:UpdateCharacter(...)
+		local r = orig(self, ...)
+		local ok, err = pcall(money_button, self)
+		if not ok then log("! inventory money button: %s", tostring(err)) end
+		return r
+	end
+	function cls:coop_ui_MoneyTo(peer)
+		later(self, function(ui) amounts_menu(ui, peer) end)
+	end
+	function cls:coop_ui_GiveAmount(peer, amount)
+		if give(peer, amount) then pcall(function() self:UpdateCharacter() end) end
+	end
+	return true
+end
+
+-- In game only (the main menu has no inventory). Must not throw: axr_main runs on_game_start in one loop.
+function on_game_start()
+	if not rawget(_G, "coop") then return end -- an exe without co-op: stock inventory
+	local ok, err = pcall(patch_inventory)
+	if not ok then log("! inventory patch: %s", tostring(err)) end
 end
