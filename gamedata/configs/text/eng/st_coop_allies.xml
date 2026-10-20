@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop: allies UI (W6) - party panel labels and PDA map hints of other players.
+     Used by scripts\coop_allies_map.script and scripts\coop_core_hud.script. Keep labels short:
+     the panel plate is 80 px wide at 1080p (state + " 0:42" countdown). -->
+<string_table>
+	<string id="st_coop_allies_m">
+		<text>m</text>
+	</string>
+	<string id="st_coop_allies_km">
+		<text>km</text>
+	</string>
+	<string id="st_coop_allies_down">
+		<text>DOWN</text>
+	</string>
+	<string id="st_coop_allies_dead">
+		<text>DEAD</text>
+	</string>
+	<string id="st_coop_allies_spec">
+		<text>SPECTATING</text>
+	</string>
+	<string id="st_coop_allies_respawn">
+		<text>RESPAWN</text>
+	</string>
+	<string id="st_coop_allies_unknown">
+		<text>NO SIGNAL</text>
+	</string>
+</string_table>

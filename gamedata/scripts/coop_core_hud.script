@@ -1,22 +1,24 @@
 --[[
-	Anomaly Coop - core group: who is where (gamedata\scripts\coop_core_hud.script)
-	Layout configs\ui\ui_coop_core.xml (party) + the stock companion slot of ui_hud.xml.
+	Anomaly Coop - core group: who is where (gamedata\scripts\coop_core_hud.script). W4 core, reworked by W6 (allies UI).
+	Layout configs\ui\ui_coop_core.xml (party, party_row) + the stock companion slot of ui_hud.xml.
+	Colours and state rules: coop_allies.script. Map markers: coop_allies_map.script (+ modxml_coop_allies.script).
 
-	1. Status: every player sends its own health, state (alive / down / dead), community and portrait to the
-	   others ("core.status", about once a second, more often on a change). Proxies are not harmed on the
-	   other machines, so their engine health tells nothing; this is the only source of a teammate's health.
-	2. Party panel on the HUD (right edge, the stock companion column moves left while it is shown): one slot
-	   per other player with portrait, nick, health bar, distance and state; the host has the leader marker,
-	   the marker colour is the player's community. Hidden with the main HUD.
-	3. PDA and minimap markers for other players: spot type "coop_player_location" (added to map_spots.xml
-	   below), an arrow that turns with the player, with an edge pointer on the minimap so a teammate out of
-	   sight can be followed. The map spot hook of coop_story replicates every non-local spot type, so the
-	   markers are placed only when the engine reports this type as local (coop.spot_is_local, see Requests in
-	   the W4 core report); otherwise they stay off and a log line says why. Name tags over heads are drawn by
-	   the engine (coop_presence, console coop_nametags).
+	1. Status: every player sends its own health, state, community, portrait and bleed-out time to the others
+	   ("core.status", about once a second, more often on a change). Proxies are not harmed on the other machines,
+	   so their engine health tells nothing; this is the only source of a teammate's health. The engine's
+	   survival state (coop.life_of, W5 C1) wins over the reported state when it exists.
+	2. Party panel on the HUD, top right: one entry per other player, sorted by peer id (host first), in the
+	   player's colour (tab, nick, host star). Up to 4 players: portrait cards like the stock companion slot
+	   (distance or state plate, red pulsing medic badge while down, grey portrait when dead/spectating, health bar);
+	   5..7 players, or 4 on a screen too low for the cards (720p, 768p): compact rows. Scaled with the screen
+	   height (1080p and below = stock pixel size), hidden with the main HUD (inventory, PDA, scope) at once.
+	   The stock companion column moves left of the panel only while the two would overlap.
+	3. Minimap / PDA markers of other players: coop_allies_map (arrow in the player's colour turning with his
+	   heading, edge pointer, "needs help" overlay, grey marker when dead), updated 5 times a second.
 
 	For other scripts:
-		coop_core_hud.status_of(peer) -> { h = 0..1, s = "alive"|"down"|"dead", f = community, i = icon, at } | nil
+		coop_core_hud.status_of(peer) -> { h = 0..1, s = state, f = community, i = icon, b = bleed s | nil, at } | nil
+		coop_core_hud.views() -> list of other players { peer, slot, nick, host, state, bleed, hp, avatar, dist, icon }
 		coop_core_hud.set_party_enabled(bool) / set_spots_enabled(bool)
 --]]
 
@@ -24,47 +26,29 @@ local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
 
 local string_format = string.format
 local tostring, tonumber, type, ipairs, pairs, pcall = tostring, tonumber, type, ipairs, pairs, pcall
+local math_max, math_min, math_floor = math.max, math.min, math.floor
 
 local EV_STATUS = "core.status"
 local STATUS_MS = 1000 -- check own status this often
 local STATUS_KEEPALIVE_MS = 5000 -- resend an unchanged status
-local STATUS_STALE_MS = 15000 -- no status for this long: shown as unknown
-local REFRESH_MS = 400 -- party panel
-local SPOTS_MS = 1000
-local MAX_SLOTS = 4
-local EDGE_GAP_PX = 10 -- panel to the right screen edge, pixels
-local COMP_GAP_PX = 8 -- panel to the stock companion column, pixels
+local PANEL_MS = 500 -- party panel refresh (2 Hz)
+local SPOTS_MS = 200 -- map markers (5 Hz)
+local MAX_ENTRIES = 7 -- host + 7 clients
+local FULL_MAX = 4 -- up to this many: portrait cards, more: compact rows
 local XML_FILE = "ui_coop_core.xml"
-local SPOT = "coop_player_location"
 local NO_ICON = "ui\\ui_noise"
+local TOP_UNITS = 74 -- panel top in the 1024x768 space: below the stock hud_timer (0..66)
+local BOTTOM_UNITS = 340 -- portrait cards must end above this: stock warning icons (icons_scroll_view) start at 350
+local EDGE_PX = 10 -- panel to the right screen edge, px at 1080p
+local GAP_UNITS = 6 -- panel to the companion column
 
-local SPOT_XML = [[
-<coop_player_location hint="">
-	<level_map spot="coop_player_level_spot" pointer="quest_pointer"/>
-	<mini_map spot="coop_player_mini_spot" pointer="quest_pointer"/>
-</coop_player_location>
-<coop_player_level_spot width="22" height="22" heading="1" stretch="1" alignment="c" location_level="5">
-	<texture r="90" g="200" b="255">ui_icons_newPDA_manArrow</texture>
-</coop_player_level_spot>
-<coop_player_mini_spot width="9" height="18" heading="1" stretch="1" alignment="c" location_level="10">
-	<texture r="90" g="200" b="255">ui_hud_map_arrow</texture>
-</coop_player_mini_spot>
-]]
-local SPOT_FILES = {
-	[ [[ui\map_spots.xml]] ] = true,
-	[ [[ui\map_spots_16.xml]] ] = true,
-	[ [[ui\map_spots_21.xml]] ] = true,
-}
+-- px at 1080p of one entry (the XML coordinates are in the same pixels)
+local CARD = { w = 90, h = 67, gap = 10 }
+local ROW = { w = 160, h = 26, gap = 4 }
 
 local function log(fmt, ...)
 	local ok, line = pcall(string_format, fmt, ...)
 	printf("[coop-hud] %s", ok and line or tostring(fmt))
-end
-
-local function tr(id, fallback)
-	local ok, s = pcall(game.translate_string, id)
-	if not ok or type(s) ~= "string" or s == id then return fallback or id end
-	return s
 end
 
 local function live()
@@ -81,22 +65,44 @@ local function codec()
 	return rawget(_G, "coop_main") or coop_main
 end
 
+local function allies()
+	return rawget(_G, "coop_allies") or coop_allies
+end
+
+local function amap()
+	return rawget(_G, "coop_allies_map") or coop_allies_map
+end
+
+-- coop_allies / coop_allies_map ship with this file; if one of them failed to load, say so once and keep quiet.
+local missing_logged = false
+local function modules_ok()
+	if allies() and amap() then return true end
+	if not missing_logged then
+		missing_logged = true
+		printf("[coop-hud] ! coop_allies.script or coop_allies_map.script is missing: no party panel, no markers")
+	end
+	return false
+end
+
+local function map_call(name, ...)
+	local m = amap()
+	local f = m and m[name]
+	if not f then return false end
+	return pcall(f, ...)
+end
+
 local party_enabled, spots_enabled = true, true
-local stats = { status_out = 0, status_in = 0, status_bad = 0, spots_added = 0, spots_removed = 0 }
+local stats = { status_out = 0, status_in = 0, status_bad = 0 }
 
 -------------------------------------------------------------------------------
 -- Status
 -------------------------------------------------------------------------------
-local status = {} -- peer id -> { h, s, f, i, at }
+local status = {} -- peer id -> { h, s, f, i, b, at }
 local sent = { payload = nil, at = 0 }
 
-local LIFE = { alive = "alive", wounded = "down", dead = "dead", spectating = "dead", respawning = "dead" }
-
 local function own_state(actor)
-	if api.life_of then -- engine survival state (Request), when present
-		local ok, s = pcall(api.life_of, 0)
-		if ok and LIFE[s] then return LIFE[s] end
-	end
+	local s = allies().engine_state(0) -- engine survival state (W5 C1), when present
+	if s then return s end
 	if not actor:alive() then return "dead" end
 	return actor.health <= 0.011 and "down" or "alive" -- a player who is down is pinned at 1% health
 end
@@ -106,11 +112,15 @@ local function send_status(tg)
 	if not actor then return end
 	local icon = actor:character_icon()
 	local t = {
-		h = math.floor(math.max(0, math.min(1, actor.health)) * 100 + 0.5) / 100,
+		h = math_floor(math_max(0, math_min(1, actor.health)) * 100 + 0.5) / 100,
 		s = own_state(actor),
 		f = tostring(actor:character_community() or ""),
 		i = type(icon) == "string" and icon or "",
 	}
+	if t.s == "down" then
+		local b = allies().engine_bleed(0)
+		if b then t.b = math_min(b, 3600) end
+	end
 	local payload = codec().encode(t)
 	if payload == sent.payload and tg - sent.at < STATUS_KEEPALIVE_MS then return end
 	if api.send_event(EV_STATUS, payload, -1) then
@@ -120,22 +130,63 @@ local function send_status(tg)
 end
 
 local function on_status(payload, from)
-	if type(from) ~= "number" then return end
+	if type(from) ~= "number" or not allies() then return end
 	local t = codec().decode(payload)
 	local h = tonumber(t.h)
 	local s = t.s
-	if not (h and h >= 0 and h <= 1 and (s == "alive" or s == "down" or s == "dead")) then
+	if not (h and h >= 0 and h <= 1 and allies().is_wire_state(s)) then
 		stats.status_bad = stats.status_bad + 1
 		return
 	end
 	local f = type(t.f) == "string" and #t.f <= 40 and t.f:match("^[%w_]*$") and t.f or ""
 	local i = type(t.i) == "string" and #t.i <= 96 and t.i:match("^[%w_\\/%.]*$") and t.i or ""
-	status[from] = { h = h, s = s, f = f, i = i, at = time_global() }
+	local b = tonumber(t.b)
+	b = (s == "down" and b and b >= 0 and b <= 3600) and math_floor(b) or nil
+	status[from] = { h = h, s = s, f = f, i = i, b = b, at = time_global() }
 	stats.status_in = stats.status_in + 1
 end
 
 function status_of(peer)
 	return status[peer]
+end
+
+-------------------------------------------------------------------------------
+-- Other players as the UI sees them
+-------------------------------------------------------------------------------
+local function avatar_of(p)
+	local id = p.avatar_id
+	if type(id) ~= "number" or id <= 0 or id >= 65535 then return nil, nil end
+	local obj = level.object_by_id(id)
+	return obj, obj and id or nil
+end
+
+function views(tg)
+	tg = tg or time_global()
+	local A = allies()
+	local list, by_avatar = {}, {}
+	local actor = db.actor
+	for _, p in ipairs(players()) do
+		if not p.is_self and type(p.id) == "number" then
+			local st = status[p.id]
+			local state, bleed = A.state_of(p, st, tg)
+			local fresh = st and (tg - st.at) <= A.STATUS_STALE_MS
+			local obj, id = avatar_of(p)
+			local icon = st and st.i ~= "" and st.i or nil
+			if not icon and obj then
+				local ok, ic = pcall(obj.character_icon, obj)
+				icon = ok and type(ic) == "string" and ic ~= "" and ic or nil
+			end
+			local v = {
+				peer = p.id, slot = A.slot(p.id), nick = tostring(p.nick or "?"), host = p.id == 0,
+				state = state, bleed = bleed, hp = fresh and st.h or nil, avatar = id, icon = icon,
+				dist = (obj and actor) and obj:position():distance_to(actor:position()) or nil,
+			}
+			list[#list + 1] = v
+			if id then by_avatar[id] = v end
+		end
+	end
+	table.sort(list, function(a, b) return a.peer < b.peer end)
+	return list, by_avatar
 end
 
 -------------------------------------------------------------------------------
@@ -148,38 +199,50 @@ local function hud_visible()
 	return not ok or v == true
 end
 
-local function slot_width(s)
-	local w = 0
-	for _, e in pairs(s) do
-		local r = e:GetWndPos().x + e:GetWidth()
-		if r > w then w = r end
-	end
-	return w
+local function argb(a, rgb)
+	return GetARGB(a, rgb[1], rgb[2], rgb[3])
+end
+
+local CLR = {
+	text = { 215, 215, 215 }, grey = { 150, 150, 150 },
+	portrait = { alive = { 255, 255, 255 }, down = { 255, 165, 155 }, dead = { 105, 105, 105 },
+		spec = { 105, 105, 105 }, respawn = { 105, 105, 105 }, unknown = { 170, 170, 170 } },
+}
+local GREYED = { dead = true, spec = true, respawn = true, unknown = true }
+
+-- Screen metrics: s = entry scale (1 at 1080p and below), k = px@1080 -> 1024x768 units.
+local function metrics()
+	local dev = device()
+	local W, H = dev.width, dev.height
+	local s = math_max(1, H / 1080)
+	return { W = W, H = H, s = s, kx = s * 1024 / W, ky = s * 768 / H }
+end
+
+-- An XML element whose coordinates are px@1080, relative to its entry; the originals are kept for a relayout.
+local function el(e)
+	local p = e:GetWndPos()
+	return { e = e, x = p.x, y = p.y, w = e:GetWidth(), h = e:GetHeight() }
+end
+
+local function fit(t, m)
+	t.e:SetWndPos(vector2():set(t.x * m.kx, t.y * m.ky))
+	t.e:SetWndSize(vector2():set(t.w * m.kx, t.h * m.ky))
+end
+
+-- Width (units) of the text now in a CUITextWnd; the window keeps the given size.
+local function text_width(wnd, w_u, h_u)
+	local ok = pcall(function() wnd:AdjustWidthToText() end)
+	local tw = ok and wnd:GetWidth() or 0
+	wnd:SetWndSize(vector2():set(w_u, h_u))
+	return tw
 end
 
 class "UICoopParty" (CUIScriptWnd)
 
 function UICoopParty:__init() super()
-	self.slots = {}
 	self.next_at = 0
-	self.clr = {
-		def = GetARGB(255, 255, 255, 255),
-		stalker = GetARGB(255, 255, 255, 100),
-		bandit = GetARGB(255, 120, 201, 79),
-		ecolog = GetARGB(255, 255, 128, 100),
-		csky = GetARGB(255, 100, 200, 255),
-		dolg = GetARGB(255, 255, 100, 100),
-		freedom = GetARGB(255, 100, 255, 100),
-		killer = GetARGB(255, 100, 100, 255),
-		army = GetARGB(255, 100, 128, 255),
-		monolith = GetARGB(255, 120, 201, 79),
-	}
-	self.state_clr = {
-		alive = { icon = GetARGB(255, 255, 255, 255), name = GetARGB(255, 230, 230, 230) },
-		down = { icon = GetARGB(255, 255, 80, 80), name = GetARGB(255, 255, 95, 95) },
-		dead = { icon = GetARGB(255, 110, 110, 110), name = GetARGB(255, 135, 135, 135) },
-		unknown = { icon = GetARGB(255, 170, 170, 170), name = GetARGB(255, 175, 175, 175) },
-	}
+	self.cards, self.rows = {}, {}
+	self.shown = {} -- entries in use this refresh (for the per-frame pulse)
 	self:InitControls()
 end
 
@@ -190,111 +253,236 @@ function UICoopParty:InitControls()
 	local hud = utils_xml.get_hud_xml()
 	local xml = CScriptXmlInit()
 	xml:ParseFile(XML_FILE)
-	self.dialog = hud:InitStatic("companion_list", self)
-	for i = 1, MAX_SLOTS do
-		local s = {}
-		s.base = hud:InitStatic("companion_list:slot", self.dialog)
-		s.background = hud:InitStatic("companion_list:slot:background", s.base)
-		s.icon = hud:InitStatic("companion_list:slot:icon", s.base)
-		s.hp = hud:InitProgressBar("companion_list:slot:health", s.base)
-		s.name_bg = xml:InitStatic("party:name_bg", s.base)
-		s.name = xml:InitTextWnd("party:name", s.base)
-		s.dist = xml:InitTextWnd("party:dist", s.base)
-		s.role_shadow = hud:InitStatic("companion_list:slot:team_role", s.base) -- first: drawn behind
-		s.role = hud:InitStatic("companion_list:slot:team_role", s.base)
-		for _, e in pairs(s) do utils_xml.correct_ratio(e) end
-		s.name:SetFont(GetFontSmall())
-		s.dist:SetFont(GetFontSmall())
-		local rp = s.role:GetWndPos()
-		s.role_shadow:SetWndPos(vector2():set(rp.x + 1, rp.y + 2))
-		s.role_shadow:SetTextureColor(GetARGB(255, 0, 0, 0))
-		local h = s.background:GetHeight()
-		s.base:SetWndPos(vector2():set(0, (8 - i) * (h + 10))) -- the companion column's bottom-up rows
-		s.base:Show(false)
-		self.slots[i] = s
+	for i = 1, FULL_MAX do
+		local c = {}
+		c.base = el(hud:InitStatic("companion_list:slot", self))
+		local b = c.base.e
+		c.background = el(hud:InitStatic("companion_list:slot:background", b))
+		c.icon = el(hud:InitStatic("companion_list:slot:icon", b))
+		c.hp = el(hud:InitProgressBar("companion_list:slot:health", b))
+		c.strip = el(xml:InitStatic("party:strip", b))
+		c.info_bg = el(xml:InitStatic("party:info_bg", b))
+		c.info = el(xml:InitTextWnd("party:info", b))
+		c.badge = el(xml:InitStatic("party:badge", b))
+		c.name_bg = el(xml:InitStatic("party:name_bg", b))
+		c.name = el(xml:InitTextWnd("party:name", b))
+		c.host = el(xml:InitStatic("party:host", b))
+		b:Show(false)
+		self.cards[i] = c
 	end
-	-- Slots are pixel sized after correct_ratio, the container x is in 1024 space: anchor at the right edge.
-	local ratio_w = 1024 / device().width
-	local pos = self.dialog:GetWndPos()
-	self.col_w = slot_width(self.slots[1])
-	self.dialog:SetWndPos(vector2():set(1024 - self.col_w - EDGE_GAP_PX * ratio_w, pos.y))
+	for i = 1, MAX_ENTRIES do
+		local r = {}
+		r.base = el(xml:InitStatic("party_row", self))
+		local b = r.base.e
+		r.bg = el(xml:InitStatic("party_row:bg", b))
+		r.strip = el(xml:InitStatic("party_row:strip", b))
+		r.host = el(xml:InitStatic("party_row:host", b))
+		r.name = el(xml:InitTextWnd("party_row:name", b))
+		r.badge = el(xml:InitStatic("party_row:badge", b))
+		r.info = el(xml:InitTextWnd("party_row:info", b))
+		r.hp = el(xml:InitProgressBar("party_row:health", b))
+		b:Show(false)
+		self.rows[i] = r
+	end
+	self:Relayout()
 end
 
--- While the panel shows somebody, the stock companion column moves left of it.
-function UICoopParty:PlaceCompanions(on)
+function UICoopParty:Relayout()
+	local m = metrics()
+	self.m = m
+	for _, set in ipairs({ self.cards, self.rows }) do
+		for _, entry in ipairs(set) do
+			for k, t in pairs(entry) do
+				if k ~= "base" then fit(t, m) end
+			end
+			local b = entry.base
+			b.e:SetWndSize(vector2():set(b.w * m.kx, b.h * m.ky))
+			-- the bar's own textures keep their XML size: the progress strip follows the bar (scissored anyway)
+			pcall(function() entry.hp.e:GetProgressStatic():SetWndSize(vector2():set(entry.hp.w * m.kx, entry.hp.h * m.ky)) end)
+		end
+	end
+	for _, c in ipairs(self.cards) do pcall(function() c.name.e:SetEllipsis(true) end) end
+	for _, r in ipairs(self.rows) do pcall(function() r.name.e:SetEllipsis(true) end) end
+end
+
+-- Entry i (1-based) of a layout: position in 1024x768 units, top right, downwards.
+function UICoopParty:Place(entry, i, L)
+	local m = self.m
+	local x_px = m.W - EDGE_PX * m.s - L.w * m.s
+	local y_px = TOP_UNITS * m.H / 768 + (i - 1) * (L.h + L.gap) * m.s
+	entry.base.e:SetWndPos(vector2():set(x_px * 1024 / m.W, y_px * 768 / m.H))
+end
+
+function UICoopParty:Bounds(n, L)
+	if n == 0 then return nil end
+	local m = self.m
+	local w_u = L.w * m.s * 1024 / m.W
+	local r = 1024 - EDGE_PX * m.s * 1024 / m.W
+	local t = TOP_UNITS
+	local b = t + (n * (L.h + L.gap) - L.gap) * m.s * 768 / m.H
+	return { l = r - w_u, r = r, t = t, b = b }
+end
+
+-- The stock companion column (right edge, bottom up) moves left of the panel only while they would overlap.
+function UICoopParty:PlaceCompanions(rect)
 	local mod = rawget(_G, "axr_companions")
 	local chud = mod and mod.HUD
 	if self.comp_hud and self.comp_hud ~= chud then
 		self.comp_hud, self.comp_x = nil, nil -- recreated by its owner: nothing to restore
 	end
 	if not (chud and chud.dialog) then return end
-	if on and not self.comp_hud then
-		local cpos = chud.dialog:GetWndPos()
+	local cpos = chud.dialog:GetWndPos()
+	local need = false
+	if rect then
+		local base_x = self.comp_x or cpos.x
+		for _, info in pairs(chud.companion_info or {}) do
+			local b = type(info) == "table" and info.base
+			if b and b:IsShown() then
+				local top = cpos.y + b:GetWndPos().y
+				local bottom = top + b:GetHeight()
+				local left, right = base_x + b:GetWndPos().x, base_x + b:GetWndPos().x + b:GetWidth()
+				if top < rect.b + GAP_UNITS and bottom > rect.t and left < rect.r and right > rect.l then
+					need = true
+					self.comp_w = b:GetWidth()
+					break
+				end
+			end
+		end
+	end
+	if need and not self.comp_hud then
 		self.comp_hud, self.comp_x = chud, cpos.x
-		local my = self.dialog:GetWndPos()
-		chud.dialog:SetWndPos(vector2():set(my.x - self.col_w - COMP_GAP_PX * (1024 / device().width), cpos.y))
-	elseif not on and self.comp_hud then
-		local cpos = chud.dialog:GetWndPos()
+		chud.dialog:SetWndPos(vector2():set(rect.l - (self.comp_w or 0) - GAP_UNITS, cpos.y))
+	elseif not need and self.comp_hud then
 		chud.dialog:SetWndPos(vector2():set(self.comp_x, cpos.y))
 		self.comp_hud, self.comp_x = nil, nil
 	end
 end
 
-function UICoopParty:Fill(s, p, tg)
-	local st = status[p.id]
-	if st and tg - st.at > STATUS_STALE_MS then st = nil end
-	local obj = p.avatar_id and level.object_by_id(p.avatar_id) or nil
-	local state = st and st.s or "unknown"
-
-	local icon = st and st.i ~= "" and st.i or (obj and obj:character_icon()) or NO_ICON
-	if type(icon) ~= "string" or icon == "" then icon = NO_ICON end
-	if s._icon ~= icon then
-		s.icon:InitTexture(icon)
-		s._icon = icon
+local function info_text(v)
+	local M = amap()
+	if v.state == "alive" then return M.format_distance(v.dist) or "", CLR.text end
+	local label = M.state_text(v.state) or ""
+	if v.state == "down" then
+		if v.bleed then label = label .. " " .. M.format_time(v.bleed) end
+		return label, { allies().state_color("down") }
 	end
-	local sc = self.state_clr[state] or self.state_clr.unknown
-	s.icon:SetTextureColor(sc.icon)
-	s.name:SetTextColor(sc.name)
-	s.name:SetText(tostring(p.nick or "?"))
-	s.hp:SetProgressPos(st and st.h or 0)
+	return label, CLR.grey
+end
 
-	local dist = ""
-	if state == "down" then
-		dist = tr("st_coop_core_state_down", "DOWN")
-	elseif state == "dead" then
-		dist = tr("st_coop_core_state_dead", "DEAD")
-	elseif obj and db.actor then
-		dist = string_format("%.0f m", obj:position():distance_to(db.actor:position()))
+function UICoopParty:FillCard(c, v)
+	local A = allies()
+	local rgb = { A.color(v.peer) }
+	local greyed = GREYED[v.state]
+	local icon = v.icon or NO_ICON
+	if c._icon ~= icon then
+		c.icon.e:InitTexture(icon)
+		c._icon = icon
 	end
-	s.dist:SetText(dist)
+	c.icon.e:SetTextureColor(argb(255, CLR.portrait[v.state] or CLR.portrait.alive))
+	c.strip.e:SetTextureColor(argb(greyed and 110 or 255, rgb))
+	-- the nick runs to the card's right edge, or to the host star
+	local nw = v.host and c.name.w or (c.name.w + c.host.w)
+	c.name.e:SetWndSize(vector2():set(nw * self.m.kx, c.name.h * self.m.ky))
+	c.name.e:SetText(v.nick)
+	c.name.e:SetTextColor(argb(255, greyed and CLR.grey or rgb))
+	c.host.e:Show(v.host)
+	c.host.e:SetTextureColor(argb(greyed and 140 or 255, rgb))
+	local text, clr = info_text(v)
+	c.info.e:SetText(text)
+	c.info.e:SetTextColor(argb(255, clr))
+	-- the plate hugs the text (2 px padding), never wider than the portrait
+	local m = self.m
+	local tw = text ~= "" and text_width(c.info.e, c.info.w * m.kx, c.info.h * m.ky) or 0
+	c.info_bg.e:Show(text ~= "")
+	c.info_bg.e:SetWndSize(vector2():set(math_min(tw + 4 * m.kx, 80 * m.kx), c.info_bg.h * m.ky))
+	c.badge.e:Show(v.state == "down")
+	c.hp.e:Show(v.hp ~= nil and not greyed)
+	if v.hp then c.hp.e:SetProgressPos(v.hp) end
+end
 
-	local mark = p.id == 0 and "ui_minimap_squad_leader" or "ui_minimap_point"
-	if s._mark ~= mark then
-		s.role:InitTexture(mark)
-		s.role_shadow:InitTexture(mark)
-		s._mark = mark
+function UICoopParty:FillRow(r, v)
+	local A = allies()
+	local rgb = { A.color(v.peer) }
+	local greyed = GREYED[v.state]
+	local m = self.m
+	r.strip.e:SetTextureColor(argb(greyed and 110 or 255, rgb))
+	r.host.e:Show(v.host)
+	r.host.e:SetTextureColor(argb(greyed and 140 or 255, rgb))
+	-- right part first: distance / state (down: medic badge + countdown)
+	local text, clr
+	if v.state == "down" then
+		text, clr = v.bleed and amap().format_time(v.bleed) or "", { A.state_color("down") }
+	else
+		text, clr = info_text(v)
 	end
-	local comm = st and st.f or (obj and obj:character_community()) or ""
-	comm = tostring(comm):gsub("^actor_", "")
-	s.role:SetTextureColor(self.clr[comm] or self.clr.def)
+	r.info.e:SetText(text)
+	r.info.e:SetTextColor(argb(255, clr))
+	local tw = text ~= "" and text_width(r.info.e, r.info.w * m.kx, r.info.h * m.ky) or 0
+	local right = (r.info.x + r.info.w) * m.kx
+	local used = tw
+	r.badge.e:Show(v.state == "down")
+	if v.state == "down" then
+		r.badge.e:SetWndPos(vector2():set(right - tw - (r.badge.w + 2) * m.kx, r.badge.y * m.ky))
+		used = tw + (r.badge.w + 2) * m.kx
+	end
+	-- the nick: after the host star, up to 4 px before the right part (long nicks end with an ellipsis)
+	local nx = (v.host and (r.name.x + 12) or r.name.x) * m.kx
+	r.name.e:SetWndPos(vector2():set(nx, r.name.y * m.ky))
+	r.name.e:SetWndSize(vector2():set(math_max(10 * m.kx, right - used - 4 * m.kx - nx), r.name.h * m.ky))
+	r.name.e:SetText(v.nick)
+	r.name.e:SetTextColor(argb(255, greyed and CLR.grey or rgb))
+	r.bg.e:SetTextureColor(GetARGB(160, 0, 0, 0))
+	r.hp.e:Show(v.hp ~= nil and not greyed)
+	if v.hp then r.hp.e:SetProgressPos(v.hp) end
 end
 
 function UICoopParty:Refresh(tg)
-	local others = {}
-	if party_enabled and live() and hud_visible() then
-		for _, p in ipairs(players()) do
-			if not p.is_self then others[#others + 1] = p end
-		end
-		table.sort(others, function(a, b) return (tonumber(a.id) or 0) < (tonumber(b.id) or 0) end)
+	local list = {}
+	self.vis = party_enabled and hud_visible()
+	if self.vis and live() then
+		list = views(tg)
 	end
-	self:PlaceCompanions(#others > 0)
-	for i = 1, MAX_SLOTS do
-		local s, p = self.slots[i], others[i]
-		if p then
-			self:Fill(s, p, tg)
-			s.base:Show(true)
+	local m = metrics()
+	if not self.m or m.W ~= self.m.W or m.H ~= self.m.H then self:Relayout() end
+	local n = math_min(#list, MAX_ENTRIES)
+	-- portrait cards for a few players while they fit above the warning icons (small screens: rows earlier)
+	local full = n <= FULL_MAX and (n == 0 or self:Bounds(n, CARD).b <= BOTTOM_UNITS)
+	self.shown = {}
+	for i = 1, FULL_MAX do
+		local c, v = self.cards[i], full and list[i] or nil
+		if v then
+			self:FillCard(c, v)
+			self:Place(c, i, CARD)
+			c.base.e:Show(true)
+			self.shown[#self.shown + 1] = { kind = "card", entry = c, down = v.state == "down" }
 		else
-			s.base:Show(false)
+			c.base.e:Show(false)
+		end
+	end
+	for i = 1, MAX_ENTRIES do
+		local r, v = self.rows[i], (not full) and list[i] or nil
+		if v then
+			self:FillRow(r, v)
+			self:Place(r, i, ROW)
+			r.base.e:Show(true)
+			self.shown[#self.shown + 1] = { kind = "row", entry = r, down = v.state == "down" }
+		else
+			r.base.e:Show(false)
+		end
+	end
+	self.bounds = self:Bounds(n, full and CARD or ROW)
+	self:PlaceCompanions(self.bounds)
+end
+
+-- Every frame: the "needs help" badge (and the compact row behind it) breathes.
+function UICoopParty:Pulse(tg)
+	local k = 0.5 + 0.5 * math.sin(tg * 0.0057)
+	for _, s in ipairs(self.shown) do
+		if s.down then
+			s.entry.badge.e:SetTextureColor(GetARGB(math_floor(150 + 105 * k), 255, 255, 255))
+			if s.kind == "row" then
+				s.entry.bg.e:SetTextureColor(GetARGB(math_floor(160 + 40 * k), math_floor(40 + 90 * k), 8, 6))
+			end
 		end
 	end
 end
@@ -302,13 +490,17 @@ end
 function UICoopParty:Update()
 	CUIScriptWnd.Update(self)
 	local tg = time_global()
-	if tg < self.next_at then return end
-	self.next_at = tg + REFRESH_MS
-	local ok, err = pcall(self.Refresh, self, tg)
-	if not ok then
-		self.next_at = tg + 5000
-		log("! party panel refresh failed: %s", tostring(err))
+	-- inventory / PDA / scope opened or closed: hide or show at once, not at the next 2 Hz refresh
+	if (party_enabled and hud_visible()) ~= self.vis then self.next_at = 0 end
+	if tg >= self.next_at then
+		self.next_at = tg + PANEL_MS
+		local ok, err = pcall(self.Refresh, self, tg)
+		if not ok then
+			self.next_at = tg + 5000
+			log("! party panel refresh failed: %s", tostring(err))
+		end
 	end
+	if self.shown[1] then pcall(self.Pulse, self, tg) end
 end
 
 local PARTY -- HUD dialog, while this Lua state lives
@@ -327,116 +519,42 @@ end
 
 local function party_off()
 	if not PARTY then return end
-	pcall(PARTY.PlaceCompanions, PARTY, false)
+	pcall(PARTY.PlaceCompanions, PARTY, nil)
 	pcall(function() get_hud():RemoveDialogToRender(PARTY) end)
 	PARTY = nil
 end
 
 function set_party_enabled(on)
 	party_enabled = on and true or false
-end
-
--------------------------------------------------------------------------------
--- PDA / minimap markers
--------------------------------------------------------------------------------
-local spot_ready -- nil: not checked in this Lua state
-local placed = {} -- local object id -> hint text (markers placed by this machine)
-
-local function spots_allowed()
-	if spot_ready ~= nil then return spot_ready end
-	spot_ready = false
-	if not (api and api.spot_is_local) then
-		log("player markers on the PDA map are off: coop.spot_is_local is missing (engine request, W4 core)")
-		return false
-	end
-	local ok, is_local = pcall(api.spot_is_local, SPOT)
-	if not (ok and is_local == true) then
-		log("player markers on the PDA map are off: the engine replicates spot type '%s'", SPOT)
-		return false
-	end
-	-- AddMapLocation asserts on a type that map_spots.xml lacks: check that the injection works here.
-	local okx, has = pcall(function()
-		local x = CScriptXmlInit()
-		x:ParseFile("map_spots.xml")
-		return x:NodeExist(SPOT, 0)
-	end)
-	spot_ready = okx and has == true
-	if not spot_ready then log("! spot type '%s' is not in map_spots.xml (DXML on_xml_read did not run)", SPOT) end
-	return spot_ready
-end
-
-local function spot_hint(p)
-	local st = status[p.id]
-	local text = tostring(p.nick or "?")
-	if st and st.s == "down" then
-		text = text .. " - " .. tr("st_coop_core_state_down", "DOWN")
-	elseif st and st.s == "dead" then
-		text = text .. " - " .. tr("st_coop_core_state_dead", "DEAD")
-	end
-	return text
-end
-
-local function remove_spot(id)
-	if level.map_has_object_spot(id, SPOT) ~= 0 then
-		level.map_remove_object_spot(id, SPOT)
-		stats.spots_removed = stats.spots_removed + 1
-	end
-	placed[id] = nil
-end
-
-local function update_spots()
-	local want = {}
-	if spots_enabled and live() and level.present() and spots_allowed() then
-		for _, p in ipairs(players()) do
-			local id = p.avatar_id
-			if not p.is_self and type(id) == "number" and id > 0 and id < 65535 and level.object_by_id(id) then
-				want[id] = p
-			end
-		end
-	end
-	for id in pairs(placed) do
-		if not want[id] then remove_spot(id) end
-	end
-	for id, p in pairs(want) do
-		local hint = spot_hint(p)
-		if level.map_has_object_spot(id, SPOT) == 0 then
-			level.map_add_object_spot(id, SPOT, hint)
-			stats.spots_added = stats.spots_added + 1
-			placed[id] = hint
-		elseif placed[id] ~= hint then
-			level.map_change_spot_hint(id, SPOT, hint)
-			placed[id] = hint
-		end
-	end
-end
-
-local function clear_spots()
-	for id in pairs(placed) do pcall(remove_spot, id) end
-	placed = {}
+	if PARTY then PARTY.next_at = 0 end
 end
 
 function set_spots_enabled(on)
 	spots_enabled = on and true or false
 end
 
-local function on_xml_read(xml_file_name, xml_obj)
-	if not SPOT_FILES[xml_file_name] then return end
-	local ok, err = pcall(function()
-		if #xml_obj:query(SPOT) > 0 then return end
-		xml_obj:insertFromXMLString(SPOT_XML)
-	end)
-	if not ok then log("! map spot type not added to %s: %s", tostring(xml_file_name), tostring(err)) end
-end
-
 -------------------------------------------------------------------------------
 -- Update, callbacks
 -------------------------------------------------------------------------------
 local next_status, next_spots = 0, 0
+local spots_down = false -- somebody is down: the overlay pulses every frame
+
+local function update_spots(tg)
+	local _, by_avatar = views(tg)
+	local M = amap()
+	M.sync(by_avatar, spots_enabled)
+	spots_down = false
+	for _, v in pairs(by_avatar) do
+		if v.state == "down" then spots_down = true end
+	end
+	spots_down = spots_down and M.is_ready()
+end
 
 local function actor_on_update()
 	if not api then return end
 	local tg = time_global()
 	if live() then
+		if not modules_ok() then return end
 		party_on()
 		if tg >= next_status then
 			next_status = tg + STATUS_MS
@@ -445,14 +563,19 @@ local function actor_on_update()
 		end
 		if tg >= next_spots then
 			next_spots = tg + SPOTS_MS
-			local ok, err = pcall(update_spots)
+			local ok, err = pcall(update_spots, tg)
 			if not ok then
 				next_spots = tg + 10000
 				log("! player markers: %s", tostring(err))
 			end
 		end
+		if spots_down then
+			local ok = map_call("pulse", tg)
+			if not ok then spots_down = false end
+		end
 	elseif not api.is_active() then
-		if next(placed) then clear_spots() end
+		map_call("clear")
+		spots_down = false
 		if next(status) then status = {} end
 		sent.payload = nil
 		party_off()
@@ -460,23 +583,24 @@ local function actor_on_update()
 end
 
 local function actor_on_net_destroy()
-	clear_spots()
+	map_call("clear")
+	spots_down = false
 	party_off()
 end
 
 function print_status()
 	local n = 0
 	for _ in pairs(status) do n = n + 1 end
-	local m = 0
-	for _ in pairs(placed) do m = m + 1 end
-	log("hud: status out %d, in %d (bad %d), players with status %d | party panel %s | markers %s, placed %d (added %d, removed %d)",
+	log("hud: status out %d, in %d (bad %d), players with status %d | party panel %s, %s",
 		stats.status_out, stats.status_in, stats.status_bad, n, PARTY and "on" or "off",
-		spot_ready == nil and "not checked" or (spot_ready and "on" or "off"), m, stats.spots_added, stats.spots_removed)
+		party_enabled and "enabled" or "disabled by the player")
+	local A = allies()
+	if A then pcall(A.print_status) end
+	map_call("print_status")
 end
 
 function on_game_start()
 	if not api then return end -- an exe without co-op: nothing of this runs
-	RegisterScriptCallback("on_xml_read", on_xml_read)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("actor_on_net_destroy", actor_on_net_destroy)
 	local cm = codec()

@@ -1,0 +1,299 @@
+--[[
+	Anomaly Coop - allies UI (W6): other players on the minimap and the PDA map (gamedata\scripts\coop_allies_map.script)
+
+	Marker of another player = a map spot on his avatar object:
+	- coop_ally_<slot> (slot 0..7 = peer id, colour from coop_allies): an arrow in the player's colour that turns
+	  with his heading (heading="1": CMapLocation::CalcDirection uses the avatar's direction), with an edge pointer
+	  in the same colour when he is outside the minimap circle / the PDA map view (pointer=).
+	- coop_ally_down: "needs help" overlay added on top of the arrow while the player is down: a red ring around
+	  the arrow + a medic badge, pulsing (alpha, here, every frame), red edge pointer.
+	- coop_ally_dead: grey marker instead of the arrow (dead, spectating, respawning).
+	Hint on the PDA map: nick in his colour, distance, state.
+
+	Engine facts this relies on (read in map_location.cpp / map_spot.cpp / UIMap.cpp / UIZoneMap.cpp):
+	- Spot types must exist in map_spots.xml (AddMapLocation R_ASSERTs otherwise): added by DXML from
+	  modxml_coop_allies.script; before the first marker map_spots.xml is parsed here once to make sure.
+	- A heading spot is not aspect-corrected at load, the renderer applies kx while rotating: square sizes.
+	  A spot without stretch="1" is drawn at the texture's native size. Texture ids without a backslash take their
+	  rect from textures_descr (configs\ui\textures_descr\ui_coop_allies.xml), so the minimap spot is not cropped.
+	- The relation dot (green/yellow) of the avatar hides itself while another location with a minimap spot exists
+	  for the same object (CRelationMapLocation::Update).
+	- Edge pointers draw only while the location's pointer is enabled. CMapLocation starts with it disabled and
+	  CGameTaskManager::UpdateTasks disables all pointers every frame (only the active task gets it back), and Lua
+	  cannot reach CMapLocation::EnablePointer. Needs the engine side (W6 request): keep pointers of coop_* spot
+	  types enabled. Until then the arrows work, the pointers stay hidden.
+	- The map spot hook of coop_story replicates any spot type the engine does not treat as local: the markers
+	  are placed only when coop.spot_is_local says yes for every type here (W5 C1: prefix coop_ is local).
+	- Spots added by map_add_object_spot are not serializable: never written into the host's save.
+--]]
+
+local api = rawget(_G, "coop")
+
+local tostring, type, pairs, pcall, math_floor, string_format = tostring, type, pairs, pcall, math.floor, string.format
+
+TYPE_DOWN = "coop_ally_down"
+TYPE_DEAD = "coop_ally_dead"
+local SLOTS = 8
+
+function ally_type(slot)
+	return "coop_ally_" .. tostring(slot)
+end
+
+-- Sizes in UI units (1024x768 space, map spots are not pixel-snapped). Minimap circle is ~154 units across.
+local SIZE = {
+	lvl_arrow = 26, lvl_ptr = 14, lvl_down = 42, lvl_dead = 20,
+	mini_arrow = 16, mini_ptr = 11, mini_down = 27, mini_dead = 12,
+}
+local LEVEL = { dead = 11, arrow = 12, down = 13 } -- PDA draw order; stock spots use -3..10
+
+local log_once = {}
+local function log(key, fmt, ...)
+	if key and log_once[key] then return end
+	if key then log_once[key] = true end
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-allies] %s", ok and line or tostring(fmt))
+end
+
+local function tr(id, fallback)
+	local ok, s = pcall(game.translate_string, id)
+	if not ok or type(s) ~= "string" or s == id then return fallback or id end
+	return s
+end
+
+-------------------------------------------------------------------------------
+-- map_spots.xml additions (built from the palette)
+-------------------------------------------------------------------------------
+local function tex(id, r, g, b)
+	if r then return string_format('<texture r="%d" g="%d" b="%d">%s</texture>', r, g, b, id) end
+	return string_format("<texture>%s</texture>", id)
+end
+
+local function spot(name, w, heading, level, texture)
+	return string_format('<%s width="%d" height="%d"%s stretch="1" alignment="c"%s>%s</%s>', name, w, w,
+		heading and ' heading="1"' or "", level and string_format(' location_level="%d"', level) or "", texture, name)
+end
+
+function spot_xml()
+	local allies = rawget(_G, "coop_allies") or coop_allies
+	local out = {}
+	for s = 0, SLOTS - 1 do
+		local r, g, b = allies.slot_color(s)
+		local t = ally_type(s)
+		out[#out + 1] = string_format('<%s hint=""><level_map spot="%s_lvl" pointer="%s_lptr"/>'
+			.. '<mini_map spot="%s_mini" pointer="%s_mptr"/></%s>', t, t, t, t, t, t)
+		out[#out + 1] = spot(t .. "_lvl", SIZE.lvl_arrow, true, LEVEL.arrow, tex("coop_ally_arrow_64", r, g, b))
+		out[#out + 1] = spot(t .. "_mini", SIZE.mini_arrow, true, LEVEL.arrow, tex("coop_ally_arrow_32", r, g, b))
+		out[#out + 1] = spot(t .. "_lptr", SIZE.lvl_ptr, true, nil, tex("coop_ally_ptr_32", r, g, b))
+		out[#out + 1] = spot(t .. "_mptr", SIZE.mini_ptr, true, nil, tex("coop_ally_ptr_32", r, g, b))
+	end
+	local dr, dg, db = allies.state_color("down")
+	local t = TYPE_DOWN
+	out[#out + 1] = string_format('<%s hint=""><level_map spot="%s_lvl" pointer="%s_lptr"/>'
+		.. '<mini_map spot="%s_mini" pointer="%s_mptr"/></%s>', t, t, t, t, t, t)
+	out[#out + 1] = spot(t .. "_lvl", SIZE.lvl_down, false, LEVEL.down, tex("coop_ally_down_64"))
+	out[#out + 1] = spot(t .. "_mini", SIZE.mini_down, false, LEVEL.down, tex("coop_ally_down_48"))
+	out[#out + 1] = spot(t .. "_lptr", SIZE.lvl_ptr, true, nil, tex("coop_ally_ptr_32", dr, dg, db))
+	out[#out + 1] = spot(t .. "_mptr", SIZE.mini_ptr, true, nil, tex("coop_ally_ptr_32", dr, dg, db))
+	local gr, gg, gb = allies.state_color("dead")
+	t = TYPE_DEAD
+	out[#out + 1] = string_format('<%s hint=""><level_map spot="%s_lvl"/><mini_map spot="%s_mini"/></%s>', t, t, t, t)
+	out[#out + 1] = spot(t .. "_lvl", SIZE.lvl_dead, false, LEVEL.dead, tex("coop_ally_dead_64", gr, gg, gb))
+	out[#out + 1] = spot(t .. "_mini", SIZE.mini_dead, false, LEVEL.dead, tex("coop_ally_dead_32", gr, gg, gb))
+	return table.concat(out, "\n")
+end
+
+-- DXML: called from modxml_coop_allies for map_spots*.xml (the file may pass more than once per process).
+function inject(xml_obj)
+	local ok, err = pcall(function()
+		if #xml_obj:query(ally_type(0)) > 0 then return end
+		xml_obj:insertFromXMLString(spot_xml())
+	end)
+	if not ok then log(nil, "! map spot types not added: %s", tostring(err)) end
+end
+
+-------------------------------------------------------------------------------
+-- Readiness (once per Lua state)
+-------------------------------------------------------------------------------
+local ready -- nil: not checked yet
+
+local function check_ready()
+	if ready ~= nil then return ready end
+	ready = false
+	if not (api and api.spot_is_local) then
+		log("nolocal", "markers of other players are off: coop.spot_is_local is missing (engine request W5 C1)")
+		return false
+	end
+	for _, t in pairs({ ally_type(0), ally_type(SLOTS - 1), TYPE_DOWN, TYPE_DEAD }) do
+		local ok, is_local = pcall(api.spot_is_local, t)
+		if not (ok and is_local == true) then
+			log("replicated", "markers of other players are off: the engine replicates spot type '%s'", t)
+			return false
+		end
+	end
+	local okx, has = pcall(function()
+		local x = CScriptXmlInit()
+		x:ParseFile("map_spots.xml")
+		return x:NodeExist(ally_type(0), 0) and x:NodeExist(TYPE_DOWN, 0) and x:NodeExist(TYPE_DEAD, 0)
+	end)
+	ready = okx and has == true
+	if not ready then log("noxml", "! spot types coop_ally_* are not in map_spots.xml (modxml_coop_allies did not run)") end
+	return ready
+end
+
+function is_ready()
+	return ready == true
+end
+
+-------------------------------------------------------------------------------
+-- Markers
+-------------------------------------------------------------------------------
+local placed = {} -- avatar id -> { main = spot type, down = bool, hint = string }
+local stats = { added = 0, removed = 0, hints = 0 }
+
+local function has_spot(id, t)
+	return level.map_has_object_spot(id, t) ~= 0
+end
+
+local function add_spot(id, t, hint)
+	if not has_spot(id, t) then
+		level.map_add_object_spot(id, t, hint)
+		stats.added = stats.added + 1
+	else
+		level.map_change_spot_hint(id, t, hint)
+	end
+end
+
+local function remove_spot(id, t)
+	if has_spot(id, t) then
+		level.map_remove_object_spot(id, t)
+		stats.removed = stats.removed + 1
+	end
+end
+
+local function drop(id)
+	local p = placed[id]
+	if not p then return end
+	if p.main then pcall(remove_spot, id, p.main) end
+	if p.down then pcall(remove_spot, id, TYPE_DOWN) end
+	placed[id] = nil
+end
+
+local function fmt_dist(d)
+	if not d then return nil end
+	if d < 100 then return string_format("%d", math_floor(d + 0.5)) .. " " .. tr("st_coop_allies_m", "m") end
+	if d < 1000 then return string_format("%d", math_floor(d / 10 + 0.5) * 10) .. " " .. tr("st_coop_allies_m", "m") end
+	return string_format("%.1f", d / 1000) .. " " .. tr("st_coop_allies_km", "km")
+end
+format_distance = fmt_dist
+
+local function fmt_time(sec)
+	sec = math.max(0, math_floor(sec))
+	return string_format("%d:%02d", math_floor(sec / 60), sec % 60)
+end
+format_time = fmt_time
+
+local STATE_TEXT = {
+	down = { "st_coop_allies_down", "NEEDS HELP" },
+	dead = { "st_coop_allies_dead", "DEAD" },
+	spec = { "st_coop_allies_spec", "SPECTATING" },
+	respawn = { "st_coop_allies_respawn", "RESPAWNING" },
+	unknown = { "st_coop_allies_unknown", "NO SIGNAL" },
+}
+
+function state_text(state)
+	local s = STATE_TEXT[state]
+	return s and tr(s[1], s[2]) or nil
+end
+
+-- Hint: "<nick in his colour>\n<distance> - <state>" (complex text: \n is the two-char sequence)
+function hint_of(v)
+	local allies = rawget(_G, "coop_allies") or coop_allies
+	local nick = tostring(v.nick or "?"):gsub("%%", "")
+	local line2 = fmt_dist(v.dist) or ""
+	local st = state_text(v.state)
+	if st then
+		if v.state == "down" and v.bleed then st = st .. " " .. fmt_time(v.bleed) end
+		local r, g, b = allies.state_color(v.state)
+		if r then st = string_format("%%c[255,%d,%d,%d]%s%%c[default]", r, g, b, st) end
+		line2 = line2 ~= "" and (line2 .. " - " .. st) or st
+	end
+	return allies.text_tag(v.peer) .. nick .. "%c[default]" .. (line2 ~= "" and ("\\n" .. line2) or "")
+end
+
+local function main_type(v)
+	if v.state == "dead" or v.state == "spec" or v.state == "respawn" then return TYPE_DEAD end
+	return ally_type(v.slot)
+end
+
+-- views: { [avatar id] = { peer, slot, nick, state, bleed, dist } } for every other player with an avatar here.
+-- enabled=false or not ready: every marker is removed.
+function sync(views, enabled)
+	if not (enabled and level.present() and check_ready()) then
+		clear()
+		return
+	end
+	for id in pairs(placed) do
+		if not views[id] then drop(id) end
+	end
+	for id, v in pairs(views) do
+		local p = placed[id] or {}
+		placed[id] = p
+		local hint = hint_of(v)
+		local main = main_type(v)
+		if p.main ~= main then
+			if p.main then remove_spot(id, p.main) end
+			p.main, p.hint = main, nil
+		end
+		if p.hint ~= hint or not has_spot(id, main) then
+			add_spot(id, main, hint)
+			stats.hints = stats.hints + 1
+		end
+		local want_down = v.state == "down"
+		if want_down then
+			if not p.down or p.hint ~= hint or not has_spot(id, TYPE_DOWN) then add_spot(id, TYPE_DOWN, hint) end
+		elseif p.down then
+			remove_spot(id, TYPE_DOWN)
+		end
+		p.down, p.hint = want_down, hint
+	end
+end
+
+function clear()
+	for id in pairs(placed) do drop(id) end
+	placed = {}
+end
+
+-- Every frame while somebody is down: the overlay breathes (alpha 140..255, ~0.9 Hz). Statics are fetched
+-- each time (never kept: the engine owns them and may destroy the location).
+function pulse(tg)
+	local any = false
+	for id, p in pairs(placed) do
+		if p.down then
+			any = true
+			local a = math_floor(197 + 58 * math.sin(tg * 0.0057))
+			local clr = GetARGB(a, 255, 255, 255)
+			local ok, st = pcall(level.map_get_object_minimap_spot_static, id, TYPE_DOWN)
+			if ok and st then st:SetTextureColor(clr) end
+			ok, st = pcall(level.map_get_object_spot_static, id, TYPE_DOWN)
+			if ok and st then st:SetTextureColor(clr) end
+		end
+	end
+	return any
+end
+
+function placed_count()
+	local n = 0
+	for _ in pairs(placed) do n = n + 1 end
+	return n
+end
+
+function print_status()
+	printf("[coop-allies] markers %s, placed %d (spots added %d, removed %d, hint updates %d)",
+		ready == nil and "not checked" or (ready and "on" or "off"), placed_count(), stats.added, stats.removed, stats.hints)
+end
+
+-- A new Lua state (level change, load) starts without markers; the engine drops object spots with their level.
+function reset()
+	placed = {}
+	ready = nil
+end

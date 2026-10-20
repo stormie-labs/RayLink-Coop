@@ -1,0 +1,158 @@
+--[[
+	Anomaly Coop - allies UI (W6): player colours and the state of other players (gamedata\scripts\coop_allies.script)
+
+	One colour per player, the same on every machine and everywhere a player is shown (minimap/PDA arrows,
+	party panel, name tags of C++ coop_presence, chat). Colours: configs\mod_system_coop.ltx [coop_player_colors];
+	slot = the player's session peer id (host 0, clients 1..7), ids >= 8 wrap.
+
+	Player state for the UI: "alive" | "down" (wounded, needs help) | "dead" | "spec" (spectating) |
+	"respawn" | "unknown" (no status from that player yet). The engine's survival state wins when it exists
+	(coop.life_of), otherwise the player's own "core.status" report (coop_core_hud).
+
+	For other scripts:
+		coop_allies.slot(peer) -> 0..7
+		coop_allies.color(peer) -> r, g, b           coop_allies.slot_color(slot) -> r, g, b
+		coop_allies.argb(peer [, alpha]) -> ARGB     coop_allies.text_tag(peer) -> "%c[255,r,g,b]" (text colour code)
+		coop_allies.state_color(state) -> r, g, b    ("down" red, "dead"/"spec"/"respawn" grey, else nil)
+		coop_allies.state_of(player, status) -> state, bleed_seconds|nil
+--]]
+
+local api = rawget(_G, "coop")
+
+local tonumber, tostring, type, math_floor, string_format = tonumber, tostring, type, math.floor, string.format
+
+SLOTS = 8
+SECTION = "coop_player_colors"
+STATUS_STALE_MS = 15000 -- no status for this long: state unknown
+
+-- Defaults = the shipped ltx values (used when the section or a line is missing or broken).
+local DEFAULT = {
+	[0] = { 217, 177, 96 }, { 83, 140, 224 }, { 146, 190, 154 }, { 206, 202, 253 },
+	{ 211, 117, 79 }, { 111, 211, 203 }, { 224, 218, 164 }, { 161, 134, 178 },
+}
+local DEFAULT_DOWN = { 226, 58, 48 }
+local DEFAULT_DEAD = { 150, 150, 150 }
+
+local palette -- slot -> {r, g, b}, plus .down / .dead; read once per Lua state
+
+local function parse_rgb(s)
+	if type(s) ~= "string" then return nil end
+	local r, g, b = s:match("^%s*(%d+)%s*,%s*(%d+)%s*,%s*(%d+)")
+	r, g, b = tonumber(r), tonumber(g), tonumber(b)
+	if not (r and g and b) then return nil end
+	local function c(v) return math.max(0, math.min(255, math_floor(v))) end
+	return { c(r), c(g), c(b) }
+end
+
+local function read_line(ini, key)
+	local ok, v = pcall(function()
+		if ini:section_exist(SECTION) and ini:line_exist(SECTION, key) then return ini:r_string(SECTION, key) end
+	end)
+	return ok and parse_rgb(v) or nil
+end
+
+local function load_palette()
+	local p = {}
+	local ini = rawget(_G, "ini_sys")
+	if not ini then
+		local ok, sys = pcall(function() return system_ini() end)
+		ini = ok and sys or nil
+	end
+	for i = 0, SLOTS - 1 do
+		p[i] = ini and read_line(ini, "color_" .. i) or DEFAULT[i]
+	end
+	p.down = ini and read_line(ini, "down") or DEFAULT_DOWN
+	p.dead = ini and read_line(ini, "dead") or DEFAULT_DEAD
+	return p
+end
+
+local function pal()
+	if not palette then palette = load_palette() end
+	return palette
+end
+
+function reload_palette()
+	palette = nil
+	return pal()
+end
+
+function slot(peer)
+	peer = tonumber(peer) or 0
+	return math_floor(peer) % SLOTS
+end
+
+function slot_color(s)
+	local c = pal()[s] or DEFAULT[0]
+	return c[1], c[2], c[3]
+end
+
+function color(peer)
+	return slot_color(slot(peer))
+end
+
+function argb(peer, a)
+	local r, g, b = color(peer)
+	return GetARGB(a or 255, r, g, b)
+end
+
+function text_tag(peer)
+	local r, g, b = color(peer)
+	return string_format("%%c[255,%d,%d,%d]", r, g, b)
+end
+
+function state_color(state)
+	local p = pal()
+	local c = (state == "down" and p.down) or ((state == "dead" or state == "spec" or state == "respawn") and p.dead) or nil
+	if not c then return nil end
+	return c[1], c[2], c[3]
+end
+
+-------------------------------------------------------------------------------
+-- State of another player
+-------------------------------------------------------------------------------
+local LIFE = { alive = "alive", wounded = "down", dead = "dead", spectating = "spec", respawning = "respawn" }
+local WIRE = { alive = true, down = true, dead = true, spec = true, respawn = true }
+
+-- Engine survival state of a local object id (0 = me, avatar id = another player), nil when unknown.
+function engine_state(local_id)
+	if not (api and api.life_of and type(local_id) == "number") then return nil end
+	local ok, s = pcall(api.life_of, local_id)
+	return ok and LIFE[s] or nil
+end
+
+-- Seconds left before a downed player bleeds out, from the engine (nil when unknown).
+function engine_bleed(local_id)
+	if not (api and api.bleed_left and type(local_id) == "number") then return nil end
+	local ok, ms = pcall(api.bleed_left, local_id)
+	ms = ok and tonumber(ms) or nil
+	if not ms or ms < 0 then return nil end
+	return math_floor(ms / 1000 + 0.5)
+end
+
+function is_wire_state(s)
+	return WIRE[s] == true
+end
+
+-- player: an entry of coop.players(); st: status from core.status ({ s, b, at, ... }) or nil.
+-- No status yet (a player who just joined): "alive". A status that stopped coming: "unknown".
+function state_of(player, st, tg)
+	local fresh = st and tg and (tg - (st.at or 0)) <= STATUS_STALE_MS and st or nil
+	local s = player and engine_state(player.avatar_id)
+	if not s then s = (fresh and fresh.s) or (st and "unknown") or "alive" end
+	local bleed
+	if s == "down" then
+		bleed = player and engine_bleed(player.avatar_id) or nil
+		if not bleed and fresh and type(fresh.b) == "number" then
+			bleed = math.max(0, fresh.b - math_floor((tg - fresh.at) / 1000))
+		end
+	end
+	return s, bleed
+end
+
+function print_status()
+	local p = pal()
+	local parts = {}
+	for i = 0, SLOTS - 1 do parts[#parts + 1] = string_format("%d=%d,%d,%d", i, p[i][1], p[i][2], p[i][3]) end
+	printf("[coop-allies] palette %s | engine life_of %s, bleed_left %s", table.concat(parts, " "),
+		tostring(api and api.life_of ~= nil), tostring(api and api.bleed_left ~= nil))
+end

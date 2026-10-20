@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="windows-1251"?>
 <!-- Anomaly Coop (core group): text chat window, chat feed on the HUD, party panel additions.
-     Used by scripts\coop_core_chat.script and scripts\coop_core_hud.script. 1024x768 space, stretched.
-     Textures are stock Anomaly ones. -->
+     Used by scripts\coop_core_chat.script and scripts\coop_core_hud.script. Chat: 1024x768 space, stretched.
+     Party panel (W6): see its comment. Textures: stock Anomaly + coop_ally_* (configs\ui\textures_descr\ui_coop_allies.xml). -->
 <w>
 	<!-- Chat window: history + input line. Opened with the "chat" key action or Enter. -->
 	<chat x="8" y="292" width="540" height="244" stretch="1">
@@ -31,17 +31,70 @@
 		</line>
 	</chat_feed>
 
-	<!-- Party panel: one slot per other player. The slot frame, portrait, role marker and health bar are the
-	     stock companion_list:slot nodes of ui_hud.xml (so HUD restyles apply); these nodes are added on top. -->
+	<!-- Party panel (W6 allies UI, scripts\coop_core_hud.script): other players, top right, under the stock
+	     hud_timer area. Coordinates of everything below are PIXELS AT 1080p, relative to the card / row; the
+	     script scales them by max(1, screen height / 1080) and converts to the 1024x768 space, so a card is
+	     90x67 px at 1080p (the stock companion slot) and 120x89 px at 1440p.
+	     Up to 4 other players: portrait cards (the slot frame, portrait and health bar are the stock
+	     companion_list:slot nodes of ui_hud.xml, so HUD restyles apply; party:* adds on top). 5..7 players:
+	     compact rows (party_row:*). Colours of strips / nicks / stars come from [coop_player_colors]. -->
 	<party>
-		<name_bg x="5" y="43" width="80" height="12" stretch="1">
-			<texture r="0" g="0" b="0" a="160">ui_inGame2_companion_hud_slot</texture>
+		<!-- player colour tab on the card's left edge -->
+		<strip x="0" y="0" width="3" height="67" stretch="1">
+			<texture>coop_ally_white</texture>
+		</strip>
+		<!-- top-left plate over the portrait: distance, or the state ("NEEDS HELP 0:42", "DEAD") -->
+		<info_bg x="5" y="4" width="40" height="13" stretch="1">
+			<texture r="0" g="0" b="0" a="175">coop_ally_white</texture>
+		</info_bg>
+		<info x="7" y="4" width="76" height="13" stretch="1">
+			<text complex_mode="0" r="215" g="215" b="215" align="l" vert_align="c" font="letterica16"/>
+		</info>
+		<!-- red medic badge in the middle of the portrait while the player is down (pulses) -->
+		<badge x="30" y="15" width="30" height="30" stretch="1">
+			<texture>coop_ally_badge_48</texture>
+		</badge>
+		<name_bg x="5" y="42" width="80" height="13" stretch="1">
+			<texture r="0" g="0" b="0" a="175">coop_ally_white</texture>
 		</name_bg>
-		<name x="7" y="42" width="76" height="13" stretch="1">
+		<name x="8" y="42" width="64" height="13" stretch="1">
 			<text complex_mode="0" r="230" g="230" b="230" align="l" vert_align="c" font="letterica16"/>
 		</name>
-		<dist x="5" y="4" width="68" height="13" stretch="1">
-			<text complex_mode="0" r="215" g="215" b="215" align="r" vert_align="t" font="letterica16"/>
-		</dist>
+		<!-- session host -->
+		<host x="72" y="42" width="13" height="13" stretch="1">
+			<texture>coop_ally_star_32</texture>
+		</host>
 	</party>
+
+	<party_row x="0" y="0" width="160" height="26">
+		<bg x="0" y="0" width="160" height="26" stretch="1">
+			<texture r="0" g="0" b="0" a="160">coop_ally_white</texture>
+		</bg>
+		<strip x="0" y="0" width="3" height="26" stretch="1">
+			<texture>coop_ally_white</texture>
+		</strip>
+		<host x="6" y="2" width="12" height="12" stretch="1">
+			<texture>coop_ally_star_32</texture>
+		</host>
+		<name x="8" y="1" width="82" height="14" stretch="1">
+			<text complex_mode="0" r="230" g="230" b="230" align="l" vert_align="c" font="letterica16"/>
+		</name>
+		<badge x="94" y="1" width="14" height="14" stretch="1">
+			<texture>coop_ally_badge_48</texture>
+		</badge>
+		<info x="90" y="1" width="66" height="14" stretch="1">
+			<text complex_mode="0" r="200" g="200" b="200" align="r" vert_align="c" font="letterica16"/>
+		</info>
+		<health x="8" y="18" width="148" height="4" stretch="1" horz="1" min="0" max="1" pos="0">
+			<background x="0" y="0" width="148" height="4" stretch="1">
+				<texture r="62" g="74" b="74">ui_inGame2_companion_health_bar</texture>
+			</background>
+			<progress stretch="1">
+				<texture>ui_inGame2_companion_health_bar</texture>
+			</progress>
+			<min_color r="255" g="50" b="50"/>
+			<middle_color r="255" g="255" b="80"/>
+			<max_color r="70" g="255" b="120"/>
+		</health>
+	</party_row>
 </w>

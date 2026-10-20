@@ -8,3 +8,25 @@ $spawn                  = "coop\player_avatar"
 character_profile       = sim_default_stalker_0
 spec_rank               = experienced
 community               = stalker
+
+; Player colours (W6 allies UI). One colour per player, the same everywhere the player is shown: minimap and PDA
+; map arrows and edge pointers, the party panel, name tags over heads (C++ coop_presence), chat nicks.
+; Slot of a player = his session peer id (coop.players() "id"): the host is always 0, a client gets the lowest free
+; id 1..7 when he joins (xrCoop/coop_session.cpp). The id is the same on every machine and does not change while
+; the player stays connected; a player who reconnects gets the lowest free id again (usually his old one).
+; Ids >= 8 wrap (id % 8). Lua: coop_allies.color(peer) / argb(peer, a) / text_tag(peer).
+; Values "r,g,b" 0..255. Chosen for the dark olive Zone map: muted (no neon), light enough (L* 58..86) for a dark
+; map with the icons' black outline for bright roads, no pure red (red = needs help) and no grey (grey = dead),
+; checked under protanopia/deuteranopia/tritanopia simulation (Machado 2009): min CIEDE2000 between any two
+; colours 14 for normal vision, ~9-10 for colour-blind; slots 0-3 (usual sessions) are the most distinct set.
+[coop_player_colors]
+color_0                 = 217,177,96    ; sand   #D9B160 (host)
+color_1                 = 83,140,224    ; blue   #538CE0
+color_2                 = 146,190,154   ; sage   #92BE9A
+color_3                 = 206,202,253   ; lilac  #CECAFD
+color_4                 = 211,117,79    ; rust   #D3754F
+color_5                 = 111,211,203   ; aqua   #6FD3CB
+color_6                 = 224,218,164   ; khaki  #E0DAA4
+color_7                 = 161,134,178   ; mauve  #A186B2
+down                    = 226,58,48     ; needs help (wounded): marker ring, panel badge and label
+dead                    = 150,150,150   ; dead / spectating / respawning: marker and panel

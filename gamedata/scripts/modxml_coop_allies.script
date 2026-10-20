@@ -1,0 +1,24 @@
+--[[
+	Anomaly Coop - allies UI (W6): map spot types of other players (gamedata\scripts\modxml_coop_allies.script)
+	The modxml_ prefix makes dxml_core call on_xml_read() at script start-up, before the engine first reads
+	map_spots.xml (it does so once per process, on the first map location). Adds coop_ally_0..7, coop_ally_down and
+	coop_ally_dead, built from the player palette (coop_allies_map.spot_xml). The engine reads the aspect-resolved
+	name: map_spots_16.xml (16:9), map_spots.xml (4:3 and 21:9). Nothing happens on an exe without co-op.
+--]]
+
+local FILES = {
+	[ [[ui\map_spots.xml]] ] = true,
+	[ [[ui\map_spots_16.xml]] ] = true,
+	[ [[ui\map_spots_21.xml]] ] = true,
+}
+
+local function on_read(xml_file_name, xml_obj)
+	if not FILES[xml_file_name] then return end
+	local m = rawget(_G, "coop_allies_map") or coop_allies_map
+	m.inject(xml_obj)
+end
+
+function on_xml_read()
+	if not rawget(_G, "coop") then return end
+	RegisterScriptCallback("on_xml_read", on_read)
+end
