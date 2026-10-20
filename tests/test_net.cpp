@@ -1405,3 +1405,45 @@ TEST(callbacks_may_use_the_session_freely)
 	Reader r(a_got[0].bytes.data(), a_got[0].bytes.size());
 	CHECK_EQ(r.u32(), uint32_t(1));
 }
+
+// ============================================================================ keep-alive (W9)
+
+TEST(held_link_survives_a_long_owner_stall)
+{
+	// A client loading a level does not pump the network for many seconds. While it holds the link, the
+	// transport's helper thread keeps answering, the host does not drop it, and what the host sent meanwhile
+	// is delivered once the client pumps again.
+	Node host("Boss", 37043), cl("Alice", 37043);
+	host.cfg.peer_timeout_ms = 1500;
+	cl.cfg.peer_timeout_ms = 1500;
+	start_and_join(host, {&cl}, 37043);
+	cl.s.hold_connection(10000);
+	host.s.send_chat("while you were loading");
+	t::pump_for({&host.s}, 4000); // the client's owner thread is "blocked": only the host pumps
+	CHECK(host.left.empty());
+	CHECK_EQ(host.s.peers().size(), size_t(1));
+	CHECK(cl.s.keepalive_services() > 0);
+	cl.s.hold_connection(0);
+	REQUIRE(t::pump_until({&host.s, &cl.s}, 3000, [&] { return !cl.chat.empty(); }));
+	CHECK_EQ(cl.chat[0].second, std::string("while you were loading"));
+	CHECK(!cl.disconnected);
+	t::pump_for({&host.s, &cl.s}, 2500); // released, but pumping: still connected
+	CHECK(host.left.empty());
+	CHECK(!cl.disconnected);
+}
+
+TEST(stall_without_hold_or_after_it_expired_drops_the_peer)
+{
+	// A crashed client (stuck on an error dialog) pumps nothing and holds nothing: dropped by the silence
+	// timeout. A hold is bounded: once it expires the same happens.
+	Node host("Boss", 37044), cl("Alice", 37044);
+	host.cfg.peer_timeout_ms = 1500;
+	start_and_join(host, {&cl}, 37044);
+	cl.s.hold_connection(700);
+	const uint64_t t0 = t::now_ms();
+	REQUIRE(t::pump_until({&host.s}, 15000, [&] { return !host.left.empty(); }));
+	const uint64_t took = t::now_ms() - t0;
+	CHECK(took >= 700 + 1000);
+	CHECK(host.left[0].second.find("lost") != std::string::npos);
+	CHECK(host.s.peers().empty());
+}
