@@ -21,14 +21,34 @@ SKIP = [
 ]
 
 
+SOURCE_EXT = (".cpp", ".h", ".hpp", ".inl", ".c", ".md")
+SOURCE_DIRS = ("src/xrGame", "src/xrCoop", "src/xrEngine", "src/xrServerEntities", "src/xrCore")
+
+
+def same_text(a: Path, b: Path) -> bool:
+    return b.is_file() and a.read_bytes().replace(b"\r\n", b"\n") == b.read_bytes().replace(b"\r\n", b"\n")
+
+
 def changed_files():
+    """Uncommitted files plus every source file whose content differs from the CI tree: committed work
+    in the main tree is not in the CI worktree either (git status alone missed it, 2026-10-20 19:45)."""
     out = subprocess.run(["git", "-C", str(MAIN), "status", "--porcelain", "-uall"], capture_output=True,
                          text=True, check=True).stdout
+    seen = set()
     for line in out.splitlines():
         path = line[3:].strip().strip('"')
         if " -> " in path:
             path = path.split(" -> ", 1)[1]
-        yield path.replace("\\", "/")
+        path = path.replace("\\", "/")
+        seen.add(path)
+        yield path
+    for d in SOURCE_DIRS:
+        for src in (MAIN / d).rglob("*"):
+            if src.suffix.lower() not in SOURCE_EXT or not src.is_file():
+                continue
+            rel = src.relative_to(MAIN).as_posix()
+            if rel not in seen and not same_text(src, CI / rel):
+                yield rel
 
 
 def main():
@@ -42,9 +62,12 @@ def main():
         if not src.is_file():
             continue
         dst = CI / rel
+        if same_text(src, dst):
+            continue  # already there: copying would only force a rebuild
         if not dry:
             dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
+            # copy, not copy2: a fresh mtime, or MSBuild keeps the old .obj of an older source
+            shutil.copy(src, dst)
         copied.append(rel)
         if rel.startswith("src/xrGame/coop/") and rel.endswith((".cpp", ".h")):
             new_coop.append("coop\\" + Path(rel).name)

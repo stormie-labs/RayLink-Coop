@@ -195,13 +195,28 @@ local function load_manifest()
 	settings.c_functions = setting(ini, "c_functions", settings.c_functions)
 	settings.protect = setting(ini, "protect_client_callbacks", settings.protect)
 	settings.disable_dev_debug = setting(ini, "disable_dev_debug", settings.disable_dev_debug)
-	for _, d in ipairs(DOMAIN_ORDER) do
-		for _, key in ipairs(section_keys(ini, d)) do
-			key = key:lower()
-			if key:sub(-1) == "*" then
-				prefixes[#prefixes + 1] = { key:sub(1, -2), d }
-			else
-				exact[key] = d
+	-- Domain lists: coop_domains.ltx, then every configs\coop_domains_*.ltx (one per feature group, same
+	-- sections; a later file wins for an exact name). Settings come from the main file only.
+	local inis = { ini }
+	local flist = getFS():file_list_open_ex("$game_config$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "coop_domains_*.ltx")
+	local extra = {}
+	for i = 0, (flist and flist:Size() or 0) - 1 do
+		extra[#extra + 1] = flist:GetAt(i):NameFull()
+	end
+	table.sort(extra)
+	for _, name in ipairs(extra) do
+		local ok_x, x = pcall(ini_file, name)
+		if ok_x and x then inis[#inis + 1] = x else log("! cannot read configs\\%s", name) end
+	end
+	for _, src in ipairs(inis) do
+		for _, d in ipairs(DOMAIN_ORDER) do
+			for _, key in ipairs(section_keys(src, d)) do
+				key = key:lower()
+				if key:sub(-1) == "*" then
+					prefixes[#prefixes + 1] = { key:sub(1, -2), d }
+				else
+					exact[key] = d
+				end
 			end
 		end
 	end
@@ -212,9 +227,12 @@ local function load_manifest()
 		if #a[1] ~= #b[1] then return #a[1] > #b[1] end
 		return rank[a[2]] > rank[b[2]]
 	end)
-	for _, k in ipairs(section_keys(ini, "callbacks_always")) do callbacks_always[k] = true end
-	for _, k in ipairs(section_keys(ini, "callbacks_host")) do callbacks_host[k] = true end
-	blocked_functions = section_keys(ini, "blocked_functions")
+	blocked_functions = {}
+	for _, src in ipairs(inis) do
+		for _, k in ipairs(section_keys(src, "callbacks_always")) do callbacks_always[k] = true end
+		for _, k in ipairs(section_keys(src, "callbacks_host")) do callbacks_host[k] = true end
+		for _, k in ipairs(section_keys(src, "blocked_functions")) do blocked_functions[#blocked_functions + 1] = k end
+	end
 end
 
 local domain_cache = {}
