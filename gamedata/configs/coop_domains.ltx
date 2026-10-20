@@ -1,0 +1,145 @@
+; Anomaly Coop - Lua execution domains (DESIGN D6), read by scripts\coop_main.script.
+;
+; On a co-op CLIENT every function that is registered through RegisterScriptCallback, AddUniqueCall
+; or CreateTimeEvent is classified by the script FILE that defines it (debug.getinfo source):
+;   host    - world logic: quests, simulation, squads, emission, death loot, stashes, news generation.
+;             Runs only on the host; on a client the call is skipped.
+;   owner   - the local actor: its needs, item use, own effects. Runs on the machine that owns the actor.
+;   view    - UI, HUD, sound, visuals, data helpers. Runs everywhere.
+;   blocked - debug and cheat tools. Never runs on a client (R-6.6), runs on the host.
+; On a client owner/view calls are wrapped in pcall: a Lua error is logged and counted, the session
+; continues (R-11.4). On the host nothing is wrapped.
+;
+; Unknown scripts get [settings] default (host = fail closed: an unpatched addon cannot change the world
+; from a client, R-11.1). Add an addon's script here to let it run on clients.
+; Entries are script names without ".script", lowercase. A trailing * matches a prefix; the exact name wins
+; over a prefix, a longer prefix over a shorter one. If a name is listed twice, the later section wins in
+; the order view, owner, host, blocked.
+
+[settings]
+default                    = host     ; scripts not listed below
+c_functions                = view     ; engine C functions registered as callbacks
+protect_client_callbacks   = true     ; pcall owner/view callbacks on clients (R-11.4)
+disable_dev_debug          = true     ; force DEV_DEBUG/DEV_DEBUG_DEV off on clients (debug spawner, R-6.6)
+
+; Callback names that run on clients whatever the script's domain: they only read data or adapt the UI.
+[callbacks_always]
+load_state
+on_pstor_load_all
+on_xml_read
+on_localization_change
+on_screen_resolution_changed
+
+; Callback names that never run on clients, even for owner/view scripts (ALife/simulation driven, saving).
+[callbacks_host]
+squad_on_npc_creation
+squad_on_enter_smart
+squad_on_leave_smart
+squad_on_npc_death
+squad_on_update
+squad_on_first_update
+squad_on_add_npc
+squad_on_after_game_vertex_change
+squad_on_after_level_change
+smart_terrain_on_update
+on_try_respawn
+fill_start_position
+se_stalker_on_spawn
+save_state
+on_pstor_save_all
+
+[view]
+coop_*
+_g
+_g_patches
+global
+axr_main
+axr_keybind
+alife_storage_manager
+callbacks_gameobject
+dxml_core
+modxml_*
+options_*
+ui_*
+utils_*
+lua_extensions
+ltx_help_ex
+lua_help_ex
+imgui_helper
+_imgui_groups
+fakelens
+true_first_person_death
+aaa_sound_object_patch
+sound_ambient
+xrs_dyn_music
+closecaption
+actor_menu
+pda
+pda_actor
+pda_flagger
+txr_routes
+bind_dynamic_light
+mob_trade
+
+[owner]
+actor_effects
+actor_status
+actor_status_sleep
+actor_status_thirst
+arszi_psy
+bind_item
+game_statistics
+gameplay_radioactive_water
+item_artefact
+item_backpack
+item_cooking
+item_device
+item_map_kit
+item_money
+item_parts
+item_radio
+item_repair
+item_tent
+item_weapon
+itms_manager
+level_environment
+xr_weapon_jam
+
+; Listed for clarity and to override the prefixes above; everything unlisted is host anyway.
+[host]
+surge_manager                ; clients mirror the host's phases (coop_main), see MODLOG
+psi_storm_manager
+ui_mm_faction_select         ; new-game setup
+pda_smart_terrain_warfare    ; PDA orders to warfare squads
+warfare_faction_control
+game_autosave                ; clients never save (R-9.2)
+game_autosave_new
+game_setup
+game_difficulties            ; gameplay settings belong to the host (R-11.3)
+dynamic_news_manager
+treasure_manager
+death_manager
+axr_task_manager
+axr_companions
+
+[blocked]
+ui_debug_*
+ui_map_debug_ex
+xrs_debug_tools
+debug_cmd_list
+imgui_lua_debug
+lua_help_imgui
+zz_ui_debug_inputs
+
+; Module functions replaced by a "disabled on a co-op client" message on clients (debug spawner etc.).
+[blocked_functions]
+ui_debug_launcher.start_debug_main
+ui_debug_launcher.start_item_spawner
+ui_debug_launcher.start_obj_spawner
+ui_debug_launcher.start_executer
+ui_debug_launcher.start_faction_changer
+ui_debug_launcher.start_workshop
+ui_debug_item.start
+ui_debug_item.start_weapon
+ui_debug_item.start_outfit
+ui_debug_item.start_artfact

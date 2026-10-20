@@ -1,0 +1,973 @@
+--[[
+	Anomaly Coop - Lua layer (gamedata\scripts\coop_main.script)
+
+	Engine API (namespace `coop`, nil on an exe without co-op):
+		coop.is_active() coop.is_host() coop.is_client() coop.is_live() coop.self_id()
+		coop.players()            -> { {id, nick, avatar_id (local id or nil), rtt, is_self}, ... }
+		coop.avatar_of(peer)      -> local object id of that player's character, or nil
+		coop.peer_of_avatar(id)   -> peer id, or nil
+		coop.to_host_id(id) coop.to_local_id(id)
+		coop.send_event(name, payload, target) -> true | false, reason   (target: -1/nil all, 0 host, N peer)
+		coop.send_chat(text)
+
+	Called by the engine:
+		coop_main.on_event(name, payload, from)   a Msg::ScriptEvent arrived
+		coop_main.on_chat(nick, text)             a chat line from another player
+		coop_main.print_status()                  part of the coop_status console command
+
+	For addons:
+		coop_main.add_event_handler(name, func)  -- func(payload, from, name)
+		coop_main.remove_event_handler(name, func)
+		coop_main.encode(flat_table) / coop_main.decode(string)   -- safe flat key/value payloads
+		RegisterScriptCallback("coop_on_event", func(name, payload, from))
+		RegisterScriptCallback("coop_on_chat", func(nick, text))
+
+	What this script does on a co-op CLIENT (nothing of it runs on the host or in single player):
+	1. Domain filter (DESIGN D6, R-11.1, R-11.4). Every function registered through RegisterScriptCallback
+	   (axr_main.callback_set), AddUniqueCall or CreateTimeEvent is classified by the script file that
+	   defines it, using configs\coop_domains.ltx. Host-domain functions are skipped while this machine is
+	   a client; owner/view functions run inside pcall, so a Lua error is logged and counted instead of
+	   ending the session. Callbacks registered before this script loaded are reclassified once.
+	2. Restrictions: save/load UI paths answer "host only" (R-9.2; the engine gates the console
+	   commands too); debug spawner / debug menu are disabled (R-6.6).
+	3. Emission and psi-storm (R-10.1): the client's own managers never start by themselves. The host
+	   sends the phase (started, elapsed game seconds, time factor) and its cover verdict for this
+	   player; the client runs the stock update() with that phase to get the same visuals and sounds,
+	   with NPC killing, task giving and the final kill switched off. The final kill comes from the host
+	   as an event when the player's character is outside a shelter at the host's kill moment.
+	4. Chat lines from the engine are shown as PDA news.
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace
+
+local string_format = string.format
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+
+-------------------------------------------------------------------------------
+-- Logging and counters
+-------------------------------------------------------------------------------
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-lua] %s", ok and line or tostring(fmt))
+end
+
+local stats = {
+	skipped = 0, -- host-domain calls skipped on this client
+	errors = 0, -- Lua errors caught on this client (R-11.4)
+	events_in = 0,
+	event_errors = 0,
+	chat = 0,
+}
+
+-- script name -> { domain, regs = {what = count}, skipped, errors }
+local seen = {}
+
+local function seen_entry(script, domain)
+	local s = seen[script]
+	if not s then
+		s = { domain = domain or "?", regs = {}, skipped = 0, errors = 0 }
+		seen[script] = s
+	end
+	return s
+end
+
+local function report_error(script, what, err)
+	local s = seen_entry(script)
+	s.errors = s.errors + 1
+	stats.errors = stats.errors + 1
+	if s.errors <= 3 or s.errors % 100 == 0 then
+		log("! lua error in %s (%s), #%d, the session continues: %s", tostring(script), tostring(what), s.errors, tostring(err))
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Public helpers
+-------------------------------------------------------------------------------
+function is_active() return api ~= nil and api.is_active() end
+function is_host() return api ~= nil and api.is_host() end
+function is_client() return api ~= nil and api.is_client() end
+
+local function esc(s)
+	return (tostring(s):gsub("[%%;=]", function(c) return string_format("%%%02X", c:byte()) end))
+end
+
+local function unesc(s)
+	return (s:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end))
+end
+
+-- Flat table of string/number/boolean values -> "k=v;k=v". No code, no nesting: safe for network input.
+function encode(t)
+	local keys = {}
+	for k in pairs(t) do keys[#keys + 1] = tostring(k) end
+	table.sort(keys)
+	local out = {}
+	for i = 1, #keys do
+		local k = keys[i]
+		local v = t[k]
+		local tv = type(v)
+		local s
+		if tv == "number" then
+			s = "n" .. tostring(v)
+		elseif tv == "boolean" then
+			s = v and "b1" or "b0"
+		else
+			s = "s" .. tostring(v)
+		end
+		out[#out + 1] = esc(k) .. "=" .. esc(s)
+	end
+	return table.concat(out, ";")
+end
+
+function decode(str)
+	local t = {}
+	if type(str) ~= "string" then return t end
+	for pair in str:gmatch("[^;]+") do
+		local k, v = pair:match("^([^=]*)=(.*)$")
+		if k and v then
+			k, v = unesc(k), unesc(v)
+			local tag, body = v:sub(1, 1), v:sub(2)
+			if tag == "n" then
+				t[k] = tonumber(body)
+			elseif tag == "b" then
+				t[k] = (body == "1")
+			else
+				t[k] = body
+			end
+		end
+	end
+	return t
+end
+
+-------------------------------------------------------------------------------
+-- Domain manifest (configs\coop_domains.ltx)
+-------------------------------------------------------------------------------
+local DOMAIN_ORDER = { "view", "owner", "host", "blocked" } -- later wins for duplicates
+local exact = {} -- script -> domain
+local prefixes = {} -- { {prefix, domain}, ... } longest first
+local callbacks_always = {}
+local callbacks_host = {}
+local blocked_functions = {}
+local settings = {
+	default = "host",
+	c_functions = "view",
+	protect = true,
+	disable_dev_debug = true,
+}
+local manifest_loaded = false
+
+local function trim(s)
+	return (s:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function section_keys(ini, sec)
+	local out = {}
+	if not ini:section_exist(sec) then return out end
+	for i = 0, ini:line_count(sec) - 1 do
+		local _, key = ini:r_line(sec, i, "", "")
+		if type(key) == "string" then
+			key = trim(key)
+			if key ~= "" then out[#out + 1] = key end
+		end
+	end
+	return out
+end
+
+local function setting(ini, key, def)
+	if not ini:line_exist("settings", key) then return def end
+	local v = trim(tostring(ini:r_string("settings", key) or ""))
+	if v == "" then return def end
+	if type(def) == "boolean" then
+		v = v:lower()
+		return v == "true" or v == "1" or v == "on" or v == "yes"
+	end
+	return v:lower()
+end
+
+local function load_manifest()
+	if manifest_loaded then return end
+	manifest_loaded = true
+	local ok, ini = pcall(ini_file, "coop_domains.ltx")
+	if not (ok and ini and ini:section_exist("view")) then
+		log("! configs\\coop_domains.ltx not found, every script is host-domain on clients")
+		return
+	end
+	settings.default = setting(ini, "default", settings.default)
+	settings.c_functions = setting(ini, "c_functions", settings.c_functions)
+	settings.protect = setting(ini, "protect_client_callbacks", settings.protect)
+	settings.disable_dev_debug = setting(ini, "disable_dev_debug", settings.disable_dev_debug)
+	for _, d in ipairs(DOMAIN_ORDER) do
+		for _, key in ipairs(section_keys(ini, d)) do
+			key = key:lower()
+			if key:sub(-1) == "*" then
+				prefixes[#prefixes + 1] = { key:sub(1, -2), d }
+			else
+				exact[key] = d
+			end
+		end
+	end
+	-- Longest prefix first; for equal prefixes the later section (DOMAIN_ORDER) wins.
+	local rank = {}
+	for i, d in ipairs(DOMAIN_ORDER) do rank[d] = i end
+	table.sort(prefixes, function(a, b)
+		if #a[1] ~= #b[1] then return #a[1] > #b[1] end
+		return rank[a[2]] > rank[b[2]]
+	end)
+	for _, k in ipairs(section_keys(ini, "callbacks_always")) do callbacks_always[k] = true end
+	for _, k in ipairs(section_keys(ini, "callbacks_host")) do callbacks_host[k] = true end
+	blocked_functions = section_keys(ini, "blocked_functions")
+end
+
+local domain_cache = {}
+local function domain_of_script(script)
+	local d = domain_cache[script]
+	if d then return d end
+	if script == "[C]" then
+		d = settings.c_functions
+	elseif script == "?" then
+		d = settings.default
+	else
+		d = exact[script]
+		if not d then
+			for i = 1, #prefixes do
+				local p = prefixes[i]
+				if script:sub(1, #p[1]) == p[1] then
+					d = p[2]
+					break
+				end
+			end
+		end
+		d = d or settings.default
+	end
+	domain_cache[script] = d
+	return d
+end
+
+-- Script file (lowercase, no extension) that defines function f: "[C]" for engine functions, "?" if unknown.
+local function script_of(f)
+	if type(f) ~= "function" then return "?" end
+	local ok, info = pcall(debug.getinfo, f, "S")
+	if not (ok and info) then return "?" end
+	if info.what == "C" then return "[C]" end
+	local src = info.source or ""
+	local name = src:match("([^\\/]+)%.[sS][cC][rR][iI][pP][tT]$") or src:match("([^\\/]+)%.[lL][uU][aA]$")
+	return name and name:lower() or "?"
+end
+
+local function classify(f, what)
+	local script = script_of(f)
+	local d = domain_of_script(script)
+	if what then
+		if callbacks_host[what] then
+			d = "host"
+		elseif callbacks_always[what] and d ~= "blocked" then
+			d = "view"
+		end
+	end
+	local s = seen_entry(script, domain_of_script(script))
+	local key = what or "?"
+	s.regs[key] = (s.regs[key] or 0) + 1
+	return script, d
+end
+
+-------------------------------------------------------------------------------
+-- Client filter: guards
+-------------------------------------------------------------------------------
+local client_mode = false -- true while this machine is a co-op client; refreshed every frame
+local filter_installed = false
+local wrappers = setmetatable({}, { __mode = "k" }) -- functions/tables created by us
+
+local function pc_ret(script, what, err_ret, ok, ...)
+	if ok then return ... end
+	report_error(script, what, (...))
+	return err_ret
+end
+
+-- skip_ret: returned when a host-domain call is skipped on a client.
+-- err_ret:  returned when a protected call failed. For unique calls and time events `true` unregisters
+--           the broken function instead of calling it again every frame.
+local function guard(f, script, d, what, skip_ret, err_ret)
+	local w
+	if d == "host" or d == "blocked" then
+		local s = seen_entry(script)
+		w = function(...)
+			if client_mode then
+				s.skipped = s.skipped + 1
+				stats.skipped = stats.skipped + 1
+				return skip_ret
+			end
+			return f(...)
+		end
+	else
+		w = function(...)
+			if client_mode and settings.protect then
+				return pc_ret(script, what, err_ret, pcall(f, ...))
+			end
+			return f(...)
+		end
+	end
+	wrappers[w] = true
+	return w
+end
+
+-- axr_main callbacks: name -> { [original] = wrapper }
+local wrapped = {}
+local axr_intercepts -- axr_main's local `intercepts` table, if reachable
+
+local function find_upvalue(fn, wanted)
+	if type(fn) ~= "function" then return nil end
+	for i = 1, 255 do
+		local n, v = debug.getupvalue(fn, i)
+		if n == nil then return nil end
+		if n == wanted then return v end
+	end
+	return nil
+end
+
+local function get_intercepts()
+	if axr_intercepts then return axr_intercepts end
+	local am = axr_main
+	if not am then return nil end
+	local t = find_upvalue(am.callback_set, "intercepts") or find_upvalue(am.make_callback, "intercepts")
+	if type(t) == "table" then axr_intercepts = t end
+	return axr_intercepts
+end
+
+-- Returns the object to register instead of fu (fu itself if it cannot be classified).
+local function wrap_entry(name, fu)
+	if wrappers[fu] then return fu end
+	local m = wrapped[name]
+	if not m then
+		m = {}
+		wrapped[name] = m
+	end
+	local w = m[fu]
+	if w then return w end
+	local tf = type(fu)
+	if tf == "function" then
+		local script, d = classify(fu, name)
+		w = guard(fu, script, d, name, nil, nil)
+	elseif tf == "table" or tf == "userdata" then
+		-- axr_main convention: object with a method named like the callback, called as obj[name](obj, ...)
+		local ok, method = pcall(function() return fu[name] end)
+		if not (ok and type(method) == "function") then return fu end
+		local script, d = classify(method, name)
+		local g = guard(function(...)
+			local mm = fu[name]
+			if mm then return mm(fu, ...) end
+		end, script, d, name, nil, nil)
+		w = {}
+		w[name] = function(_, ...) return g(...) end
+		wrappers[w] = true
+	else
+		return fu
+	end
+	m[fu] = w
+	return w
+end
+
+-- Callbacks registered before this script loaded: reclassify them in place (keeps their priority).
+local function rewrap_registered()
+	local intercepts = get_intercepts()
+	if type(intercepts) ~= "table" then
+		log("! axr_main callback table not reachable: callbacks registered before coop_main are not filtered")
+		return
+	end
+	local n = 0
+	for name, t in pairs(intercepts) do
+		if type(t) == "table" then
+			local list = {}
+			for fu, v in pairs(t) do
+				if not wrappers[fu] then
+					list[#list + 1] = fu
+					list[#list + 1] = v
+				end
+			end
+			for i = 1, #list, 2 do
+				local fu, v = list[i], list[i + 1]
+				local w = wrap_entry(name, fu)
+				if w ~= fu then
+					t[fu] = nil
+					t[w] = v
+					n = n + 1
+				end
+			end
+		end
+	end
+	if n > 0 then log("%d callback(s) registered before coop_main were classified", n) end
+end
+
+local function install_client_filter()
+	if filter_installed then return end
+	filter_installed = true
+	client_mode = true
+	load_manifest()
+
+	-- 1. axr_main callbacks (RegisterScriptCallback -> axr_main.callback_set)
+	local am = axr_main
+	if am and type(am.callback_set) == "function" and type(am.callback_unset) == "function" then
+		get_intercepts() -- before callback_set is replaced (its upvalues lead to the table)
+		rewrap_registered()
+		local orig_set, orig_unset = am.callback_set, am.callback_unset
+		am.callback_set = function(name, fu)
+			if fu == nil then return orig_set(name, fu) end
+			return orig_set(name, wrap_entry(name, fu))
+		end
+		am.callback_unset = function(name, fu)
+			local m = wrapped[name]
+			local w = m and fu ~= nil and m[fu]
+			if w then
+				m[fu] = nil
+				return orig_unset(name, w)
+			end
+			return orig_unset(name, fu)
+		end
+	else
+		log("! axr_main.callback_set not found: script callbacks are not filtered on this client")
+	end
+
+	-- 2. Per-frame functors (AddUniqueCall -> level.add_call)
+	local orig_add, orig_rem = _G.AddUniqueCall, _G.RemoveUniqueCall
+	if type(orig_add) == "function" then
+		local uc = setmetatable({}, { __mode = "kv" })
+		_G.AddUniqueCall = function(f)
+			if type(f) ~= "function" or wrappers[f] then return orig_add(f) end
+			local w = uc[f]
+			if not w then
+				local script, d = classify(f, "unique_call")
+				w = guard(f, script, d, "unique_call", false, true)
+				uc[f] = w
+			end
+			return orig_add(w)
+		end
+		if type(orig_rem) == "function" then
+			_G.RemoveUniqueCall = function(f)
+				return orig_rem((f ~= nil and uc[f]) or f)
+			end
+		end
+	end
+
+	-- 3. Time events (CreateTimeEvent). A skipped host event returns true, which removes it.
+	local orig_cte = _G.CreateTimeEvent
+	if type(orig_cte) == "function" then
+		_G.CreateTimeEvent = function(ev_id, act_id, timer, f, ...)
+			if type(f) == "function" and not wrappers[f] then
+				local script, d = classify(f, "time_event")
+				f = guard(f, script, d, "time_event", true, true)
+			end
+			return orig_cte(ev_id, act_id, timer, f, ...)
+		end
+	end
+
+	-- 4. Debug mode is a cheat menu in Anomaly (spawner, teleports): off on clients (R-6.6).
+	if settings.disable_dev_debug and (rawget(_G, "DEV_DEBUG") or rawget(_G, "DEV_DEBUG_DEV")) then
+		_G.DEV_DEBUG = false
+		_G.DEV_DEBUG_DEV = false
+		log("debug mode (-dbg) is disabled while connected as a co-op client")
+	end
+
+	log("client filter installed: default domain '%s', %s", settings.default,
+		settings.protect and "owner/view callbacks protected" or "owner/view callbacks unprotected")
+end
+
+-------------------------------------------------------------------------------
+-- Messages on screen
+-------------------------------------------------------------------------------
+local function hud_msg(text)
+	local am = rawget(_G, "actor_menu")
+	local shown = false
+	if am and am.set_msg then
+		shown = pcall(am.set_msg, 1, text, 4)
+	end
+	log("%s", text)
+	return shown
+end
+
+-------------------------------------------------------------------------------
+-- Script events
+-------------------------------------------------------------------------------
+local handlers = {} -- name -> { [func] = true }
+
+function add_event_handler(name, func)
+	if type(name) ~= "string" or type(func) ~= "function" then return false end
+	handlers[name] = handlers[name] or {}
+	handlers[name][func] = true
+	return true
+end
+
+function remove_event_handler(name, func)
+	if handlers[name] then handlers[name][func] = nil end
+end
+
+local function callback_exists(name)
+	local t = get_intercepts()
+	return t ~= nil and t[name] ~= nil
+end
+
+local function ensure_callback(name)
+	if callback_exists(name) then return end
+	if type(rawget(_G, "AddScriptCallback")) == "function" then
+		pcall(AddScriptCallback, name)
+	end
+end
+
+-- Engine entry: a Msg::ScriptEvent for this machine. `from` is the sender's peer id (0 = host).
+function on_event(name, payload, from)
+	stats.events_in = stats.events_in + 1
+	local hs = handlers[name]
+	if hs then
+		for f in pairs(hs) do
+			local ok, err = pcall(f, payload, from, name)
+			if not ok then
+				stats.event_errors = stats.event_errors + 1
+				report_error(script_of(f), "event " .. tostring(name), err)
+			end
+		end
+	end
+	if callback_exists("coop_on_event") then
+		local ok, err = pcall(SendScriptCallback, "coop_on_event", name, payload, from)
+		if not ok then report_error("coop_on_event", tostring(name), err) end
+	end
+end
+
+-- Engine entry: chat line from another player (R-1.7). Shown as a PDA news line.
+function on_chat(nick, text)
+	stats.chat = stats.chat + 1
+	nick, text = tostring(nick), tostring(text)
+	local shown = false
+	local actor = db and db.actor
+	if actor then
+		shown = pcall(function()
+			actor:give_game_news("Co-op: " .. nick, text, "ui_iconsTotal_grouping", 0, 7000)
+		end)
+		local snd = rawget(_G, "xr_sound")
+		if shown and snd and snd.set_sound_play then
+			pcall(snd.set_sound_play, AC_ID, "pda_tips")
+		end
+	end
+	if not shown then log("<%s> %s", nick, text) end
+	if callback_exists("coop_on_chat") then
+		pcall(SendScriptCallback, "coop_on_chat", nick, text)
+	end
+end
+
+-- Lua side of coop_main.say: same as the coop_chat console command.
+function say(text)
+	if api and type(text) == "string" and text ~= "" then return api.send_chat(text) end
+	return false
+end
+
+-------------------------------------------------------------------------------
+-- Emission and psi-storm (R-10.1)
+-------------------------------------------------------------------------------
+local surge_cls_patched, host_hooks = false, false
+local env_host = { sig = nil, next_send = 0, serial = 0, kill_sent = {} }
+local env_cl = { have = false, s = false, sg = 0, p = false, pg = 0, tf = nil, cover = true, at = 0,
+	next_tick = 0, req_at = 0, mirror_errors = 0 }
+
+local function surge_mgr()
+	local mod = rawget(_G, "surge_manager") or surge_manager
+	return mod and mod.get_surge_manager and mod.get_surge_manager()
+end
+
+local function psi_mgr()
+	local mod = rawget(_G, "psi_storm_manager") or psi_storm_manager
+	return mod and mod.get_psi_storm_manager and mod.get_psi_storm_manager()
+end
+
+-- Started?, game seconds since the start.
+local function env_phase(m)
+	if not (m and m.started == true and m.inited_time) then return false, 0 end
+	local ok, gs = pcall(function() return game.get_game_time():diffSec(m.inited_time) end)
+	return true, (ok and gs) or 0
+end
+
+-- The surge script's own shelter test (surge covers from misc\surge_manager.ltx) applied to a proxy.
+local function proxy_in_cover(obj)
+	if GetEvent and GetEvent("underground") then return true end
+	local sm = surge_mgr()
+	if not sm then return true end
+	if sm.init_surge_covers then sm:init_surge_covers() end
+	return sm:pos_in_cover(obj:position()) == true
+end
+
+local function players()
+	if not api then return {} end
+	local ok, list = pcall(api.players)
+	return ok and list or {}
+end
+
+-- Host: the stock surge decided to kill unsheltered people now (2nd wave or the end). Same verdict for
+-- every remote player's character, once per emission. The wave position is not used for proxies.
+local function host_surge_kill_check(m)
+	if not (api and api.is_host()) then return end
+	if db.actor and load_var and load_var(db.actor, "surge_immuned", false) == true then return end
+	if m and m.survive and xr_logic and db.actor
+		and xr_logic.pick_section_from_condlist(db.actor, nil, m.survive) == "true" then
+		return
+	end
+	for _, p in ipairs(players()) do
+		if not p.is_self and env_host.kill_sent[p.id] ~= env_host.serial then
+			local obj = p.avatar_id and level.object_by_id(p.avatar_id)
+			if obj and obj:alive() and not proxy_in_cover(obj) then
+				env_host.kill_sent[p.id] = env_host.serial
+				api.send_event("coop_env_kill", encode({ kind = "surge" }), p.id)
+				log("emission: %s (#%d) is outside a shelter, kill sent", tostring(p.nick), p.id)
+			end
+		end
+	end
+end
+
+local function install_host_hooks()
+	host_hooks = true
+	local mod = rawget(_G, "surge_manager") or surge_manager
+	local cls = mod and mod.CSurgeManager
+	if not cls then
+		log("! surge_manager.CSurgeManager not found, emission kills are not sent to clients")
+		return
+	end
+	for _, fname in ipairs({ "kill_actor_at_pos", "kill_all_unhided" }) do
+		local ok, orig = pcall(function() return cls[fname] end)
+		if ok and type(orig) == "function" then
+			cls[fname] = function(self, ...)
+				local r = orig(self, ...)
+				local okc, err = pcall(host_surge_kill_check, self)
+				if not okc then report_error("coop_main", "surge kill check", err) end
+				return r
+			end
+		end
+	end
+end
+
+local function host_env_tick()
+	local s_on, s_gs = env_phase(surge_mgr())
+	local p_on, p_gs = env_phase(psi_mgr())
+	local sig = (s_on and "s" or "-") .. (p_on and "p" or "-")
+	local tg = time_global()
+	if sig ~= env_host.sig then
+		if s_on and not (env_host.sig or ""):find("s", 1, true) then
+			env_host.serial = env_host.serial + 1 -- a new emission: everybody can be caught again
+		end
+		env_host.sig = sig
+		env_host.next_send = 0
+	end
+	if tg < env_host.next_send then return end
+	local active = s_on or p_on
+	env_host.next_send = tg + (active and 1000 or 10000)
+	local tf = level.get_time_factor()
+	for _, p in ipairs(players()) do
+		if not p.is_self then
+			local cover = true
+			if active then
+				local obj = p.avatar_id and level.object_by_id(p.avatar_id)
+				cover = (obj == nil) or proxy_in_cover(obj)
+			end
+			api.send_event("coop_env", encode({ s = s_on, sg = s_gs, p = p_on, pg = p_gs, tf = tf, c = cover }), p.id)
+		end
+	end
+end
+
+-- Client: stop the parts of the stock managers that change the world or decide the actor's death.
+local function patch_env_classes_for_client()
+	if surge_cls_patched then return end
+	surge_cls_patched = true
+	local function neutralize(cls, names)
+		if not cls then return 0 end
+		local n = 0
+		for _, fname in ipairs(names) do
+			local ok, f = pcall(function() return cls[fname] end)
+			if ok and type(f) == "function" then
+				cls[fname] = function() end
+				n = n + 1
+			end
+		end
+		return n
+	end
+	local sm_mod = rawget(_G, "surge_manager") or surge_manager
+	local pm_mod = rawget(_G, "psi_storm_manager") or psi_storm_manager
+	local n = neutralize(sm_mod and sm_mod.CSurgeManager, { "kill_objects_at_pos", "kill_crows_at_pos",
+		"turn_to_zombie", "explode", "kill_actor_at_pos", "kill_all_unhided", "give_surge_hide_task" })
+	n = n + neutralize(pm_mod and pm_mod.CPsiStormManager, { "kill_objects_at_pos", "kill_crows_at_pos",
+		"give_psi_storm_hide_task" })
+	log("emission/psi-storm: %d world-changing method(s) disabled, phases follow the host", n)
+end
+
+local function set_inited(m, game_sec)
+	local now = game.get_game_time()
+	local d = game.CTime()
+	d:setHMSms(0, 0, math.max(0, math.floor(game_sec)), 0)
+	now:sub(d)
+	m.inited_time = now
+end
+
+-- Runs fn with the host's cover verdict as this actor's "current_safe_cover".
+local function with_cover(cover, fn, what)
+	local saved = GetEvent("current_safe_cover")
+	SetEvent("current_safe_cover", cover and true or false)
+	local ok, err = pcall(fn)
+	SetEvent("current_safe_cover", saved)
+	if not ok then
+		env_cl.mirror_errors = env_cl.mirror_errors + 1
+		report_error("coop_main", what, err)
+	end
+end
+
+local function mirror_start_surge(m)
+	if not m._state_loaded then
+		m:initialize()
+		m._state_loaded = true
+	end
+	m.game_time_factor = level.get_time_factor()
+	if m.finalize then m:finalize() end
+	m.started, m.finished = true, false
+	m.task_given = true -- the hide task is the host's business
+	m.blowout_waves, m.objects_to_kill, m.stages, m.body_tears = {}, {}, {}, {}
+	m.hitFactor, m.zombie_count = 0, 0
+	m.effector_set, m.second_message_given, m.ui_disabled = false, false, false
+	m.blowout_sound, m.wave_sound = false, false
+	pcall(SendScriptCallback, "actor_on_interaction", "anomalies", nil, "emission_start")
+	log("emission started by the host")
+end
+
+local function mirror_start_psi(m)
+	surge_mgr() -- psi initialize() reads surge_manager.SurgeManager.ini
+	if not m._state_loaded then
+		m:initialize()
+		m._state_loaded = true
+	end
+	m.game_time_factor = level.get_time_factor()
+	if m.finalize then m:finalize() end
+	m.started, m.finished = true, false
+	m.hitFactor = 0
+	m.stages, m.vortexes, m.humanParticles = {}, {}, {}
+	m.next_vortex_at = nil
+	m.task_given = true
+	pcall(SendScriptCallback, "actor_on_interaction", "anomalies", nil, "psi_storm_start")
+	log("psi-storm started by the host")
+end
+
+local function mirror_update(m, game_sec, what)
+	m.first_update = true -- the host already validated level and options
+	m.task_given = true
+	set_inited(m, game_sec)
+	with_cover(env_cl.cover, function() m:update() end, what)
+end
+
+local function client_env_tick()
+	if not env_cl.have or not db.actor then return end
+	local tg = time_global()
+	if tg < env_cl.next_tick then return end
+	env_cl.next_tick = tg + 1000
+	if tg - env_cl.at > 15000 then return end -- the host is silent: hold the current phase
+	local dt = (tg - env_cl.at) / 1000 * (env_cl.tf or level.get_time_factor())
+
+	local sm = surge_mgr()
+	if sm then
+		if env_cl.s then
+			if not sm.started then mirror_start_surge(sm) end
+			mirror_update(sm, env_cl.sg + dt, "emission mirror")
+		elseif sm.started then
+			with_cover(true, function() sm:end_surge() end, "emission end")
+			log("emission ended by the host")
+		end
+	end
+	local pm = psi_mgr()
+	if pm then
+		if env_cl.p then
+			if not pm.started then mirror_start_psi(pm) end
+			mirror_update(pm, env_cl.pg + dt, "psi-storm mirror")
+		elseif pm.started then
+			with_cover(true, function() pm:finish() end, "psi-storm end")
+			log("psi-storm ended by the host")
+		end
+	end
+
+	-- After start/stop (they remember the factor to restore), follow the host's time factor.
+	local tf = env_cl.tf
+	if tf and tf > 0 and math.abs(level.get_time_factor() - tf) > 0.001 then
+		level.set_time_factor(tf)
+	end
+end
+
+add_event_handler("coop_env", function(payload, from)
+	if from ~= 0 or not (api and api.is_client()) then return end
+	local t = decode(payload)
+	local s, p = t.s == true, t.p == true
+	if s ~= env_cl.s or p ~= env_cl.p or not env_cl.have then
+		env_cl.next_tick = 0 -- a phase change is applied on the next frame, not after the 1 s step
+	end
+	env_cl.s, env_cl.sg = s, tonumber(t.sg) or 0
+	env_cl.p, env_cl.pg = p, tonumber(t.pg) or 0
+	env_cl.tf = tonumber(t.tf)
+	env_cl.cover = t.c ~= false
+	env_cl.at = time_global()
+	env_cl.have = true
+end)
+
+add_event_handler("coop_env_req", function(payload, from)
+	if api and api.is_host() then env_host.next_send = 0 end
+end)
+
+add_event_handler("coop_env_kill", function(payload, from)
+	if from ~= 0 or not (api and api.is_client()) then return end
+	local actor = db.actor
+	if not (actor and actor:alive()) then return end
+	if load_var and load_var(actor, "surge_immuned", false) == true then return end
+	log("caught outside a shelter by the emission (host decision)")
+	actor:kill(actor)
+end)
+
+-------------------------------------------------------------------------------
+-- Client restrictions (R-9.2 saves, R-6.6 debug tools)
+-------------------------------------------------------------------------------
+local client_patched = false
+
+local function on_before_save_input(flags, typ, text)
+	if client_mode and type(flags) == "table" then
+		flags.ret = true
+		hud_msg("Co-op: only the host saves the game")
+	end
+end
+
+local function on_before_load_input(dik, bind, flags)
+	if client_mode and type(flags) == "table" then
+		flags.ret = true
+		hud_msg("Co-op: loading is disabled while connected (coop_disconnect first)")
+	end
+end
+
+local function patch_main_menu()
+	local mod = rawget(_G, "ui_main_menu") or ui_main_menu
+	local cls = mod and mod.main_menu
+	if not cls then return end
+	local texts = {
+		OnButton_save_clicked = "Co-op: only the host saves the game",
+		OnButton_load_clicked = "Co-op: loading is disabled while connected (coop_disconnect first)",
+		OnButton_last_save = "Co-op: loading is disabled while connected (coop_disconnect first)",
+	}
+	for fname, text in pairs(texts) do
+		local ok, orig = pcall(function() return cls[fname] end)
+		if ok and type(orig) == "function" then
+			cls[fname] = function(self, ...)
+				if client_mode then
+					hud_msg(text)
+					return
+				end
+				return orig(self, ...)
+			end
+		end
+	end
+end
+
+local function stub_blocked_functions()
+	local n = 0
+	for _, full in ipairs(blocked_functions) do
+		local modname, fname = full:match("^([%w_]+)%.([%w_]+)$")
+		if modname then
+			local ok, mod = pcall(function() return _G[modname] end)
+			if ok and type(mod) == "table" and type(mod[fname]) == "function" then
+				local orig = mod[fname]
+				mod[fname] = function(...)
+					if client_mode then
+						hud_msg("Co-op: debug tools are disabled on a client")
+						return
+					end
+					return orig(...)
+				end
+				n = n + 1
+			end
+		end
+	end
+	if n > 0 then log("%d debug tool entry point(s) disabled on this client", n) end
+end
+
+local function install_client_patches()
+	if client_patched then return end
+	client_patched = true
+	local ok, err = pcall(patch_env_classes_for_client)
+	if not ok then report_error("coop_main", "emission patch", err) end
+	ok, err = pcall(patch_main_menu)
+	if not ok then report_error("coop_main", "main menu patch", err) end
+	ok, err = pcall(stub_blocked_functions)
+	if not ok then report_error("coop_main", "debug tools patch", err) end
+end
+
+-------------------------------------------------------------------------------
+-- Update
+-------------------------------------------------------------------------------
+local next_tick = 0
+
+local function actor_on_update()
+	if not api then return end
+	client_mode = filter_installed and api.is_client()
+	local tg = time_global()
+	if tg < next_tick then return end
+	next_tick = tg + 250
+	if api.is_host() then
+		if not host_hooks then install_host_hooks() end
+		host_env_tick()
+	elseif api.is_client() and api.is_live() then
+		if not client_patched then install_client_patches() end
+		if not env_cl.have and tg >= env_cl.req_at then
+			env_cl.req_at = tg + 15000
+			api.send_event("coop_env_req", "", 0)
+		end
+		client_env_tick()
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Diagnostics (coop_status)
+-------------------------------------------------------------------------------
+function print_status()
+	local role = not api and "no engine API" or api.is_host() and "host" or api.is_client() and "client" or "off"
+	log("role %s, filter %s, client mode %s | skipped host calls %d, caught lua errors %d, events in %d (%d handler errors), chat %d",
+		role, filter_installed and "on" or "off", tostring(client_mode), stats.skipped, stats.errors,
+		stats.events_in, stats.event_errors, stats.chat)
+	if filter_installed then
+		local names = {}
+		for script in pairs(seen) do names[#names + 1] = script end
+		table.sort(names, function(a, b)
+			local da, db_ = seen[a].domain, seen[b].domain
+			if da ~= db_ then return da < db_ end
+			return a < b
+		end)
+		for _, script in ipairs(names) do
+			local s = seen[script]
+			local regs = {}
+			for what, c in pairs(s.regs) do regs[#regs + 1] = c > 1 and (what .. "x" .. c) or what end
+			table.sort(regs)
+			log("  %-8s %-34s skipped %6d errors %4d | %s", s.domain, script, s.skipped, s.errors, table.concat(regs, " "))
+		end
+	end
+	if api and api.is_host() then
+		log("emission sync: phase '%s', emission #%d", tostring(env_host.sig), env_host.serial)
+	elseif env_cl.have then
+		log("emission mirror: emission %s (%.0f game s), psi-storm %s (%.0f game s), cover %s, last state %d ms ago, errors %d",
+			tostring(env_cl.s), env_cl.sg, tostring(env_cl.p), env_cl.pg, tostring(env_cl.cover),
+			time_global() - env_cl.at, env_cl.mirror_errors)
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Start
+-------------------------------------------------------------------------------
+function on_game_start()
+	if not api then return end
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("on_before_save_input", on_before_save_input)
+	RegisterScriptCallback("on_before_load_input", on_before_load_input)
+	if filter_installed then install_client_patches() end
+end
+
+-- Loaded by axr_main.on_game_start() before any script's on_game_start runs, so the filter sees
+-- (almost) every registration. The Lua state is recreated for every loaded world, and on a client
+-- that happens while the engine is in the "loading the host's world" phase.
+
+-- Created at load time (like dxml_core does) so addons can register in their own on_game_start.
+ensure_callback("coop_on_event")
+ensure_callback("coop_on_chat")
+
+if api and api.is_client() then
+	local ok, err = pcall(install_client_filter)
+	if not ok then log("! client filter failed to install: %s", tostring(err)) end
+end
