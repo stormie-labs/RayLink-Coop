@@ -1,0 +1,359 @@
+--[[
+	Anomaly Coop - travelling as a group (gamedata\scripts\coop_economy_travel.script)
+	SPEC R-4.4 (scripted teleports act on the group), R-9.4 (fast travel and guides move the group).
+
+	Who travels and what happens to the others:
+	  - Fast travel and backpack travel (PDA map menu), marsh guides (dialogs_mlr *_guid): with the party rule
+	    on (core rule party_fast_travel) everybody must be within gather_radius of the traveller, else the
+	    travel is refused with a tip. The traveller moves as in single player; the players who stood within
+	    gather_radius of the start are moved to the destination too ("economy.tp"). The time cost of the
+	    travel is applied once, by the host (coop_economy_group).
+	  - Travel to another level (fast travel to an offline point, guides of ka_travel): the engine turns a
+	    client's level change into a request to the host, the host moves the whole group (coop_join), so only
+	    the time cost is handled here.
+	  - xr_effects.teleport_actor (story teleports): the players within teleport_radius of the teleported
+	    player follow to the same point and heading. A replicated restrictor's teleport is left to the NPC
+	    group (coop_npc_logic sends it to the restrictor's audience); this covers the rest (NPC logic on the
+	    host, scripts, and every machine when coop_npc_logic is absent).
+	  - Guide routes (txr_routes.open_route): a route opened on any machine is opened on every machine.
+	Outside a session every wrapper calls the stock function unchanged.
+
+	For other scripts:
+		coop_economy_travel.group_teleport(dest, heading, origin, radius, kind)  this player moved from origin
+		    to dest; the players around origin follow (dest/origin: vectors or {x,y,z}; heading nil = keep)
+
+	Events:
+		economy.tp     mover -> host -> others   { x, y, z, h (optional), ox, oy, oz, r, l = level, k = kind, n = nick }
+		economy.route  any -> host -> others     { a, b }  (txr_routes short level names)
+--]]
+
+local core = coop_economy_core
+local group = coop_economy_group
+
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+
+local MOVE_EPS = 2.0 -- m: a travel that moved the actor less than this is not a travel
+local WATCH_MS = 1500 -- a move done a bit later (delayed teleports) is still caught
+local WATCH_JUMP = 25.0 -- m: a later move must be at least this long (walking is not a travel)
+local MAX_RADIUS = 200
+local ARRIVE_EPS = 3.0 -- m: a player already this close to the destination stays put
+local SPREAD = 1.0 -- m: arrivals are spread a little so the group does not stack
+
+local installed = false
+local watch = nil -- { kind, radius, heading, o = origin, l = level, until_ms }
+local applying_route = false
+local stats = { sent = 0, applied = 0, skipped = 0, relayed = 0, vetoed = 0, routes_out = 0, routes_in = 0 }
+
+local function vec_of(v)
+	if not v then return nil end
+	return { x = tonumber(v.x), y = tonumber(v.y), z = tonumber(v.z) }
+end
+
+local function level_name()
+	local ok, n = pcall(level.name)
+	return ok and n or ""
+end
+
+-------------------------------------------------------------------------------
+-- Group teleport
+-------------------------------------------------------------------------------
+local function make_payload(dest, heading, origin, radius, kind)
+	local t = { x = dest.x, y = dest.y, z = dest.z, ox = origin.x, oy = origin.y, oz = origin.z,
+		r = math.min(radius or 0, MAX_RADIUS), l = level_name(), k = kind or "travel", n = core.nick_of(core.self_id()) }
+	if heading then t.h = heading end
+	return t
+end
+
+-- Validated teleport from the wire, or nil.
+local function read_tp(t)
+	local p = {
+		x = core.num(t.x, -1e5, 1e5), y = core.num(t.y, -1e5, 1e5), z = core.num(t.z, -1e5, 1e5),
+		ox = core.num(t.ox, -1e5, 1e5), oy = core.num(t.oy, -1e5, 1e5), oz = core.num(t.oz, -1e5, 1e5),
+		r = core.num(t.r, 0, MAX_RADIUS), h = t.h ~= nil and core.num(t.h, -100, 100) or nil,
+		l = type(t.l) == "string" and t.l or nil, k = core.word(t.k, 16) or "travel",
+	}
+	if not (p.x and p.y and p.z and p.ox and p.oy and p.oz and p.r and p.l) then return nil end
+	if t.h ~= nil and not p.h then return nil end
+	return p
+end
+
+-- This machine's actor follows when it stood within the radius of the origin on the same level.
+local function apply_tp(p, by)
+	local actor = db.actor
+	if not actor or p.l ~= level_name() then return false end
+	local mine = core.position_of_id(0)
+	if not mine then return false end
+	local dest = { x = p.x, y = p.y, z = p.z }
+	if core.dist(mine, { x = p.ox, y = p.oy, z = p.oz }) > p.r or core.dist(mine, dest) <= ARRIVE_EPS then
+		stats.skipped = stats.skipped + 1
+		return false
+	end
+	local v = vector():set(p.x + (math.random() - 0.5) * SPREAD, p.y, p.z + (math.random() - 0.5) * SPREAD)
+	actor:set_actor_position(v)
+	if p.h then actor:set_actor_direction(p.h) end
+	pcall(level.add_pp_effector, "sleep_fade.ppe", 5528, false)
+	stats.applied = stats.applied + 1
+	core.log("followed %s (%s) to %.1f %.1f %.1f", tostring(by), p.k, p.x, p.y, p.z)
+	return true
+end
+
+function group_teleport(dest, heading, origin, radius, kind)
+	dest, origin = vec_of(dest), vec_of(origin)
+	if not (core.live() and dest and origin and dest.x and origin.x) or core.others_count() == 0 then return false end
+	if (radius or 0) <= 0 then return false end
+	local t = make_payload(dest, heading, origin, radius, kind)
+	stats.sent = stats.sent + 1
+	if core.is_host() then
+		core.send_clients("tp", t)
+	else
+		core.send("tp", t, 0)
+	end
+	return true
+end
+
+-- Host: a client moved; follow if close, and tell the other clients.
+local function host_on_tp(t, from)
+	local p = read_tp(t)
+	if not (p and core.player(from)) then return end
+	t.n = core.nick_of(from)
+	apply_tp(p, t.n)
+	stats.relayed = stats.relayed + core.send_clients("tp", t, from)
+end
+
+-- Check whether the local actor moved since `origin` and broadcast the group teleport.
+local function moved_check(w, threshold)
+	if not db.actor or w.l ~= level_name() then return true end -- level change: the host moves the group
+	local now_pos = core.position_of_id(0)
+	if now_pos and core.dist(now_pos, w.o) >= threshold then
+		group_teleport(now_pos, w.heading, w.o, w.radius, w.kind)
+		return true
+	end
+	return false
+end
+
+local function pack_n(...) return { n = select("#", ...), ... } end
+
+-- Runs fn(...) (a travel of this player); afterwards the players around the start follow.
+-- dest: where fn puts the actor when the caller knows it (else the actor's position after the call).
+local function travel_call(kind, radius, heading, arm_time, dest, fn, ...)
+	local w = { kind = kind, radius = radius, heading = heading, o = core.position_of_id(0), l = level_name() }
+	local res
+	if arm_time then
+		res = pack_n(group.with_arm("travel", fn, ...))
+	else
+		res = pack_n(fn(...))
+	end
+	if w.o and radius > 0 then
+		if dest and w.l == level_name() then
+			if core.dist(dest, w.o) >= MOVE_EPS then group_teleport(dest, heading, w.o, radius, kind) end
+		elseif not moved_check(w, MOVE_EPS) then
+			w.until_ms = core.now() + WATCH_MS
+			watch = w
+		end
+	end
+	return unpack(res, 1, res.n)
+end
+
+-------------------------------------------------------------------------------
+-- Stock patches
+-------------------------------------------------------------------------------
+local function is_travel_prop(prop)
+	if type(prop) ~= "string" or prop == "" then return false end
+	if prop == core.tr("bp_to", "\1") then return true end
+	local prefix = core.tr("st_pda_fast_travel_to", "\1") .. " "
+	return prop:sub(1, #prefix) == prefix
+end
+
+local function selected_prop(property_ui)
+	local ok, prop = pcall(function()
+		local item = property_ui:GetSelectedItem()
+		return item and item:GetTextItem():GetText()
+	end)
+	return ok and prop or nil
+end
+
+local function patch_pda()
+	local pda = core.mod("pda")
+	if not (pda and type(pda.property_box_clicked) == "function") then
+		core.log("! pda.property_box_clicked missing: fast travel is not a group travel")
+		return
+	end
+	local orig = pda.property_box_clicked
+	pda.property_box_clicked = function(property_ui, ...)
+		if not (core.live() and db.actor) or core.others_count() == 0 or not is_travel_prop(selected_prop(property_ui)) then
+			return orig(property_ui, ...)
+		end
+		local party = group.party_fast_travel()
+		if party and group.veto_if_ungathered() then
+			stats.vetoed = stats.vetoed + 1
+			return
+		end
+		return travel_call("travel", party and group.gather_radius() or 0, nil, true, nil, orig, property_ui, ...)
+	end
+end
+
+-- In-level guides of the stock game (dialog actions that move the actor).
+local GUIDES = {
+	dialogs_mlr = { "marsh_post_guid", "marsh_pump_water_guid", "marsh_old_church_guid", "marsh_tech_yard_guid" },
+}
+
+local function patch_guides()
+	for modname, list in pairs(GUIDES) do
+		local m = core.mod(modname)
+		for _, fname in ipairs(list) do
+			local orig = m and m[fname]
+			if type(orig) == "function" then
+				m[fname] = function(...)
+					if not (core.live() and db.actor) or core.others_count() == 0 then return orig(...) end
+					local party = group.party_fast_travel()
+					if party and group.veto_if_ungathered() then
+						stats.vetoed = stats.vetoed + 1
+						return
+					end
+					return travel_call("guide", party and group.gather_radius() or 0, nil, true, nil, orig, ...)
+				end
+			end
+		end
+	end
+	-- Guides to other levels (ka_travel): the level change is the host's; only the time cost is routed.
+	local ka = core.mod("ka_travel")
+	if ka then
+		local names = {}
+		for k, v in pairs(ka) do
+			if type(v) == "function" and type(k) == "string" and k:find("^travel_to_") then names[#names + 1] = k end
+		end
+		for _, k in ipairs(names) do
+			local orig = ka[k]
+			ka[k] = function(...)
+				if not core.live() then return orig(...) end
+				return group.with_arm("travel", orig, ...)
+			end
+		end
+	end
+end
+
+-- True when the NPC group's restrictor logic (coop_npc_logic) already sends this teleport to its audience:
+-- the effect of a replicated restrictor on the host, and every relayed run on a client.
+local function routed_by_npc_group(npc)
+	local nl = rawget(_G, "coop_npc_logic")
+	if not (nl and type(nl.deliver) == "function") then return false end
+	if core.is_client() then return true end
+	local ok, r = pcall(function() return npc ~= nil and nl.is_replicated(npc:id()) == true end)
+	return ok and r == true
+end
+
+local function patch_teleport_actor()
+	local xe = core.mod("xr_effects")
+	if not (xe and type(xe.teleport_actor) == "function") then
+		core.log("! xr_effects.teleport_actor missing: story teleports move one player")
+		return
+	end
+	local orig = xe.teleport_actor
+	xe.teleport_actor = function(actor, npc, p, ...)
+		if not (core.live() and db.actor and type(p) == "table" and p[1]) or core.others_count() == 0
+			or routed_by_npc_group(npc) then
+			return orig(actor, npc, p, ...)
+		end
+		local heading, dest = nil, nil
+		local ok, d = pcall(function() return vec_of(patrol(p[1]):point(0)) end)
+		if ok and d and d.x then dest = d end
+		if p[2] ~= nil then
+			local okh, h = pcall(function()
+				return -patrol(p[2]):point(0):sub(patrol(p[1]):point(0)):getH()
+			end)
+			if okh and type(h) == "number" then heading = h end
+		end
+		return travel_call("story", core.rule("teleport_radius") or 50, heading, false, dest, orig, actor, npc, p, ...)
+	end
+end
+
+local orig_open_route = nil
+
+-- Opens a route here without announcing it again (silent, as the stock bulk opening does).
+local function open_route_local(a, b)
+	if not orig_open_route then return false end
+	applying_route = true
+	local ok, err = pcall(orig_open_route, a, b, true)
+	applying_route = false
+	if not ok then core.log("! route %s-%s: %s", a, b, tostring(err)) end
+	return ok
+end
+
+local function patch_routes()
+	local tr = core.mod("txr_routes")
+	if not (tr and type(tr.open_route) == "function") then return end
+	local orig = tr.open_route
+	orig_open_route = orig
+	tr.open_route = function(m1, m2, no_msg, ...)
+		local r = orig(m1, m2, no_msg, ...)
+		if not applying_route and core.live() and type(m1) == "string" and type(m2) == "string" and core.others_count() > 0 then
+			stats.routes_out = stats.routes_out + 1
+			if core.is_host() then
+				core.send_clients("route", { a = m1, b = m2 })
+			else
+				core.send("route", { a = m1, b = m2 }, 0)
+			end
+		end
+		return r
+	end
+end
+
+local function install()
+	if installed then return end
+	installed = true
+	patch_pda()
+	patch_guides()
+	patch_teleport_actor()
+	patch_routes()
+end
+
+-------------------------------------------------------------------------------
+-- Events
+-------------------------------------------------------------------------------
+local function on_route(t, from)
+	local a, b = core.word(t.a, 32), core.word(t.b, 32)
+	if not (a and b and orig_open_route) then return end
+	if core.is_host() then
+		if from <= 0 then return end
+		open_route_local(a, b)
+		core.send_clients("route", { a = a, b = b }, from)
+	elseif from == 0 then
+		open_route_local(a, b)
+	else
+		return
+	end
+	stats.routes_in = stats.routes_in + 1
+end
+
+local function register_events()
+	core.on("tp", function(t, from)
+		if core.is_host() then
+			if from > 0 then host_on_tp(t, from) end
+		elseif from == 0 then
+			local p = read_tp(t)
+			if p then apply_tp(p, t.n) end
+		end
+	end)
+	core.on("route", on_route)
+end
+
+-------------------------------------------------------------------------------
+-- Update, status, start
+-------------------------------------------------------------------------------
+local function actor_on_update()
+	local w = watch
+	if not w then return end
+	if moved_check(w, WATCH_JUMP) or core.now() > w.until_ms then watch = nil end
+end
+
+function print_status()
+	core.log("travel: teleports sent %d, followed %d, not followed %d, relayed %d, refused (not gathered) %d | routes out %d, in %d",
+		stats.sent, stats.applied, stats.skipped, stats.relayed, stats.vetoed, stats.routes_out, stats.routes_in)
+end
+
+function on_game_start()
+	if not core.engine() then return end
+	install()
+	register_events()
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+end

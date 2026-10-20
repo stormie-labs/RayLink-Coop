@@ -1,0 +1,392 @@
+--[[
+	Anomaly Coop - NPC group (W4 "npc"): faction disguise for every player (SPEC R-3.4).
+	Port of the behaviour of xrRazom 1.4 xrr_patch_disguise (own code, our event API; xrRazom did the
+	suspicion in its engine, here it is Lua on the host).
+
+	Stock gameplay_disguise splits into the player's side (outfit swap -> community, equipment, speed,
+	sudden actions, HUD bar) and the NPC side (npc_on_update: does this NPC see the player, how suspicious
+	is it, expose). In a session:
+	  - The player's side runs on the player's own machine (gameplay_disguise is in the owner domain, see
+	    coop_domains_npc.ltx). The community it sets reaches the player's proxy through coop_story.
+	  - A client reports its disguise every 2 s (npc.disg): disguised?, true/current faction, the item part
+	    of the stock suspicion formula, its speed factor and sudden-action spike.
+	  - The host runs the stock NPC-side formula for every disguised client against its proxy: per NPC
+	    memory (first/last seen, enemy memory), awareness by rank, stay time, distance, speed, items, spike,
+	    minus 50 while the NPC fights someone else. The highest suspicion is the player's meter.
+	  - Over the break point the host applies the world part of the stock expose (faction relation and
+	    goodwill hits) and tells the player (npc.disg_expose): its machine drops the disguise, takes the
+	    reputation hit and shows the news. The meter and "does anybody see / remember me" go to the player
+	    every 2 s (npc.disg_meter), so the HUD bar and the "someone saw you" refusal of a disguise work there.
+	Single player and the host's own player: stock code, untouched.
+
+	Events: npc.disg (client -> host), npc.disg_meter / npc.disg_expose (host -> that client).
+	Stock functions wrapped: gameplay_disguise.anybody_see, anybody_remember, hud_update (on a client only).
+--]]
+
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+
+local TAG = "disguise"
+local P -- coop_npc_players
+
+local function log(fmt, ...) P.log(TAG, fmt, ...) end
+local function report(what, err) P.report(TAG, what, err) end
+
+local EV_STATE, EV_METER, EV_EXPOSE = "npc.disg", "npc.disg_meter", "npc.disg_expose"
+local STEP_MS = 2000
+local TIME_F = 6
+local ZONES = { "bar_arena_surge_hide_a1", "bar_arena_ug_surge_hide_a1" } -- stock: no suspicion inside
+
+local installed = false
+local host_on = false
+local orig = {}
+local stats = { reports_out = 0, reports_in = 0, exposed = 0, meters = 0 }
+
+local function gd() return _G["gameplay_disguise"] end
+local function opt(key, def)
+	local ok, v = pcall(ui_options.get, "gameplay/disguise/" .. key)
+	if ok and v ~= nil then return v end
+	return def
+end
+
+-------------------------------------------------------------------------------
+-- Player side (client): report, host-fed sight/memory/meter, expose
+-------------------------------------------------------------------------------
+local mine = { spike = 0, next_report = 0, sent_sig = nil, meter = 0, seen = false, rem = false, at = -100000 }
+
+local ITEMS = { "active_item", "weapon", "outfit", "helmet", "backpack", "inventory" }
+
+-- 100 - weighted average of the enabled examinate_* values (the item half of the stock formula).
+local function item_factor()
+	local g = gd()
+	local n, sum = 0, 0
+	for _, k in ipairs(ITEMS) do
+		if opt(k, true) then
+			local f = g["examinate_" .. k]
+			local v = type(f) == "function" and tonumber(f()) or 0
+			n = n + 1
+			sum = sum + v * (tonumber(opt(k .. "_factor", 1)) or 1)
+		end
+	end
+	if n == 0 then return 1 end
+	return 100 - sum / n
+end
+
+local function client_report(now)
+	local g = gd()
+	if not (g and g.is_actor_disguised and db.actor) then return end
+	local disguised = g.is_actor_disguised() == true
+	local cur = (character_community(db.actor) or ""):gsub("^actor_", "")
+	local def = g.get_default_comm and g.get_default_comm() or cur
+	local sig = tostring(disguised) .. cur .. def
+	if not disguised and sig == mine.sent_sig and now < mine.next_report + 30000 then return end
+	if now < mine.next_report and sig == mine.sent_sig then return end
+	mine.next_report = now + STEP_MS
+	local spike = mine.spike
+	if spike > 0 and game_achievements and game_achievements.has_achievement("unforeseen_guest") then
+		spike = math.max(spike - 15, 0)
+	end
+	local t = { d = disguised, c = cur, def = def, sk = spike }
+	if disguised then
+		t.itm = item_factor()
+		t.sp = g.examinate_speed and tonumber(g.examinate_speed()) or 1
+	end
+	mine.spike = 0
+	if P.send(EV_STATE, t, 0) then
+		mine.sent_sig = sig
+		stats.reports_out = stats.reports_out + 1
+	end
+end
+
+local function fresh() return time_global() - mine.at < 6000 end
+
+local function client_on_meter(t)
+	mine.meter = math.max(0, math.min(100, tonumber(t.v) or 0))
+	mine.seen = t.s == true
+	mine.rem = t.m == true
+	mine.at = time_global()
+end
+
+local function client_on_expose(t)
+	local g = gd()
+	if not (g and db.actor) then return end
+	stats.exposed = stats.exposed + 1
+	local def = g.get_default_comm and g.get_default_comm() or "stalker"
+	if g.set_msg then g.set_msg("st_disguse_actor_exposed", def) end
+	if g.set_comm then g.set_comm(def) end
+	local rep = tonumber(t.r) or 0
+	if rep ~= 0 and game_statistics and game_statistics.increment_reputation then
+		game_statistics.increment_reputation(rep)
+	end
+	if type(t.n) == "string" and t.n ~= "" and dynamic_news_helper then
+		local kind = t.e == true and "st_news_disguse_enemy_expose_" or "st_news_disguse_natural_expose_"
+		local msg = game.translate_string(kind .. tostring(math.random(1, 4)))
+		local comm_name = ", " .. game.translate_string("st_dyn_news_comm_" .. tostring(t.c) .. "_6")
+		local who = t.n .. (comm_name:find("_6") and "" or comm_name)
+		pcall(dynamic_news_helper.send_tip, msg, who, 2, nil, type(t.ic) == "string" and t.ic or nil, nil, "npc")
+	end
+	mine.meter, mine.sent_sig = 0, nil
+end
+
+local h = { tmr = 0, val = 1 }
+
+-- The stock bar, fed by the host's meter (the stock one reads NPC updates that never run on a client).
+local function client_hud_update()
+	local g = gd()
+	local hud = get_hud()
+	local hud_d = hud:GetCustomStatic("bar_disguise")
+	if not (g.is_actor_disguised() and not db.actor:is_talking()) then
+		if hud_d ~= nil then hud:RemoveCustomStatic("bar_disguise") end
+		return
+	end
+	if hud_d == nil then
+		hud:AddCustomStatic("bar_disguise", true)
+		hud_d = hud:GetCustomStatic("bar_disguise")
+		local w = hud_d and hud_d:wnd()
+		if w then w:SetAutoDelete(true) end
+	end
+	local tg = time_global()
+	if h.tmr >= tg then return end
+	h.tmr = tg + 500
+	local wnd = hud_d and hud_d:wnd()
+	if not wnd then return end
+	local val = fresh() and mine.meter or 0
+	if val > h.val and val - h.val > 10 then
+		h.val = h.val + 10
+	elseif val < h.val and h.val - val > 10 then
+		h.val = h.val - 10
+	end
+	h.val = math.max(0, math.min(100, h.val))
+	wnd:TextControl():SetTextST(g.hud_val_to_str(h.val))
+	wnd:TextControl():SetTextColor(GetARGB(255, math.floor(255 * h.val / 100), math.floor(255 * (100 - h.val) / 100), 50))
+end
+
+local function patch_player_side()
+	local g = gd()
+	if not g then return end
+	local function wrap(name, client_f)
+		local f = g[name]
+		if type(f) ~= "function" or orig[name] then return end
+		orig[name] = f
+		g[name] = function(...)
+			if P.client_live() then return client_f(...) end
+			return f(...)
+		end
+	end
+	wrap("anybody_see", function() return fresh() and mine.seen end)
+	wrap("anybody_remember", function() return fresh() and mine.rem end)
+	wrap("hud_update", client_hud_update)
+end
+
+-------------------------------------------------------------------------------
+-- NPC side (host): suspicion of every NPC for every disguised client
+-------------------------------------------------------------------------------
+local players_state = {} -- peer -> { d, c, def, itm, sp, sk, at, high = {v, id}, mem = {npc id -> memory}, next_cool }
+local ini_cfg
+
+local function cfg()
+	if ini_cfg then return ini_cfg end
+	local ini = ini_file("plugins\\disguise.ltx")
+	local function f(sec, key, def) return ini and ini:r_float_ex(sec, key) or def end
+	ini_cfg = {
+		break_point = f("diguise_controls", "break_point", 90),
+		usual_memo = f("diguise_controls", "usual_memory_limit", 10),
+		enemy_memo = f("diguise_controls", "enemy_memory_limit", 30),
+		memory_multi = f("diguise_controls", "memory_multi", 10),
+		relation_hit = f("relation_impact", "relation_hit", -75),
+		reputation_hit = f("relation_impact", "reputation_hit", -100),
+		goodwill_hit = f("relation_impact", "goodwill_hit", -50),
+	}
+	return ini_cfg
+end
+
+local function host_on_state(t, from)
+	if type(t.c) ~= "string" or type(t.def) ~= "string" then return end
+	stats.reports_in = stats.reports_in + 1
+	local s = players_state[from] or { high = { v = 0, id = false }, mem = {}, next_cool = 0 }
+	players_state[from] = s
+	s.d = t.d == true
+	s.c, s.def = t.c, t.def
+	s.itm = math.max(0, math.min(100, tonumber(t.itm) or 1))
+	s.sp = math.max(0.1, math.min(10, tonumber(t.sp) or 1))
+	s.sk = math.max(0, math.min(100, tonumber(t.sk) or 0))
+	s.at = time_global()
+end
+
+local function in_disguise_zone(obj)
+	for _, name in ipairs(ZONES) do
+		local z = db.zone_by_name and db.zone_by_name[name]
+		if z and z:inside(obj:position()) then return true end
+	end
+	return false
+end
+
+local function expose(s, peer, npc, comm, is_enem)
+	local c = cfg()
+	local rep = 0
+	if not is_enem and comm ~= s.def then
+		if opt_alife_dynamic_relations() and not game_relations.is_faction_unaffected(comm)
+			and not game_relations.is_faction_unaffected(s.def)
+			and not game_relations.is_faction_pair_unaffected(comm, s.def) then
+			game_relations.change_faction_relations(comm, s.def, c.relation_hit)
+		end
+		game_relations.change_factions_community_num(comm, s.def, c.goodwill_hit)
+		rep = math.floor(c.reputation_hit)
+	end
+	for _, m in pairs(s.mem) do m.memo = m.memo * c.memory_multi end
+	s.d = false
+	s.high = { v = 0, id = false }
+	stats.exposed = stats.exposed + 1
+	P.send(EV_EXPOSE, { c = comm, e = is_enem and true or false, r = rep, n = npc:character_name(), ic = npc:character_icon() }, peer)
+	log("player #%s exposed by %s (%s)", tostring(peer), npc:name(), comm)
+end
+
+function opt_alife_dynamic_relations()
+	local ok, v = pcall(ui_options.get, "alife/general/dynamic_relations")
+	return ok and v == true
+end
+
+local function stay_factor(m)
+	if not opt("stay_time", true) then return 1 end
+	local f = tonumber(opt("stay_time_factor", 20)) or 20
+	local secs = game.get_game_time():diffSec(m.first) / TIME_F
+	return secs > f and secs / f or 1
+end
+
+local function dist_factor(d)
+	if not opt("distance", true) then return 1 end
+	local f = tonumber(opt("distance_factor", 5)) or 5
+	d = d > 1 and d or 1
+	return d < f and f / d or 1
+end
+
+local function npc_on_update(npc)
+	if not host_on or next(players_state) == nil or not (npc and npc:alive()) then return end
+	local g = gd()
+	if not g then return end
+	local id = npc:id()
+	local comm = character_community(npc)
+	for peer, s in pairs(players_state) do
+		local proxy = P.object_of_peer(peer)
+		if proxy and proxy:id() ~= 0 then
+			local m = s.mem[id]
+			if npc:see(proxy) and not in_disguise_zone(proxy) then
+				if not m then
+					local c = cfg()
+					local is_enem = game_relations.is_factions_enemies(s.def, comm)
+					local memo = (is_enem and c.enemy_memo or c.usual_memo) * TIME_F
+					m = { is_enem = is_enem, memo = math.floor(memo * math.random(80, 120) / 100),
+						awareness = g.get_npc_awareness and g.get_npc_awareness(npc:section()) or 1 }
+					s.mem[id] = m
+				end
+				local now = game.get_game_time()
+				m.first = m.first or now
+				m.last = now
+				if s.d and not game_relations.is_factions_enemies(s.c, comm) then
+					local be = npc:best_enemy()
+					local busy = be and be:id() ~= proxy:id() and 50 or 0
+					local susp = m.awareness * (stay_factor(m) * dist_factor(npc:position():distance_to(proxy:position())) * s.sp) * s.itm
+						+ s.sk - busy
+					susp = math.floor(math.max(1, math.min(100, susp)))
+					m.susp = susp
+					if susp > s.high.v then
+						s.high = { v = susp, id = id }
+					elseif s.high.id == id and susp < s.high.v then
+						s.high.v = s.high.v - 5
+					end
+					if s.high.v > cfg().break_point then expose(s, peer, npc, comm, m.is_enem) end
+				end
+			elseif m then
+				m.first = nil
+				if m.last and game.get_game_time():diffSec(m.last) > m.memo then s.mem[id] = nil end
+			end
+		end
+	end
+end
+
+local function host_tick(now)
+	for peer, s in pairs(players_state) do
+		local proxy = P.object_of_peer(peer)
+		if not proxy or now - (s.at or 0) > 60000 then
+			players_state[peer] = nil
+		elseif now >= s.next_cool then
+			s.next_cool = now + STEP_MS
+			-- Stock cool-down: the watching NPC lost sight, or the player is not disguised any more.
+			local hid = s.high.id
+			local npc = hid and level.object_by_id(hid)
+			if not s.d or not (npc and npc:alive()) or not npc:see(proxy) then
+				s.high.v = math.max(0, s.high.v - 5)
+				if s.high.v == 0 then s.high.id = false end
+			end
+			local seen, rem = false, false
+			local gt = game.get_game_time()
+			for nid, m in pairs(s.mem) do
+				if m.last and gt:diffSec(m.last) < m.memo then rem = true end
+				local o = level.object_by_id(nid)
+				if o and o:alive() and o:see(proxy) then seen = true end
+			end
+			if s.d or seen or rem then
+				P.send(EV_METER, { v = s.high.v, s = seen, m = rem }, peer)
+				stats.meters = stats.meters + 1
+			end
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Install, update, events
+-------------------------------------------------------------------------------
+local next_tick = 0
+
+local function actor_on_update()
+	local now = time_global()
+	if now < next_tick then return end
+	next_tick = now + 250
+	host_on = installed and P.host_with_clients()
+	if host_on then
+		local ok, err = pcall(host_tick, now)
+		if not ok then report("host tick", err) end
+	elseif P.client_live() then
+		local ok, err = pcall(client_report, now)
+		if not ok then report("report", err) end
+	else
+		players_state = {}
+	end
+end
+
+local function guarded_npc_update(npc)
+	local ok, err = pcall(npc_on_update, npc)
+	if not ok then report("npc update", err) end
+end
+
+local function on_drop() if P.client_live() then mine.spike = math.max(mine.spike, 15) end end
+local function on_zoom() if P.client_live() then mine.spike = math.max(mine.spike, 30) end end
+
+function print_status()
+	local n = 0
+	for _ in pairs(players_state) do n = n + 1 end
+	log("installed %s | reports out %d in %d, players tracked %d, meters %d, exposed %d | errors %d",
+		tostring(installed), stats.reports_out, stats.reports_in, n, stats.meters, stats.exposed, P.error_count(TAG))
+end
+
+function on_game_start()
+	P = coop_npc_players
+	if not rawget(_G, "coop") then return end
+	if not installed then
+		local ok, err = pcall(patch_player_side)
+		if not ok then report("install", err) end
+		installed = true
+	end
+	P.on(EV_STATE, host_on_state, "host", TAG)
+	P.on(EV_METER, client_on_meter, "client", TAG)
+	P.on(EV_EXPOSE, client_on_expose, "client", TAG)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("npc_on_update", guarded_npc_update)
+	RegisterScriptCallback("actor_on_item_drop", on_drop)
+	RegisterScriptCallback("actor_on_weapon_zoom_in", on_zoom)
+end
+
+function _set_host_on(v) host_on = v end
+function _players_state() return players_state end
+function _mine() return mine end
+function _npc_on_update(npc) return npc_on_update(npc) end
+function _host_tick(now) return host_tick(now) end

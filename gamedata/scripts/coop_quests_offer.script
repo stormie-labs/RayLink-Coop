@@ -1,0 +1,642 @@
+--[[
+	Anomaly Coop - task offers prepared by the host (gamedata\scripts\coop_quests_offer.script), W4 "quests".
+	Ports the offer half of xrRazom's xrr_patch_quests + xrr_quest_serialize + xrr_patch_pda_taskboard.
+	SPEC R-7.3 (texts and targets are computed by the host), R-7.8 (quest dialogs work for every player).
+
+	Why: an NPC's "any work?" offer runs the task's on_job_descr / fetch_func effects (pick a target
+	squad, a bounty, a stash, a fetch item, a delivery recipient) when the text is shown. On a client
+	these read a frozen ALife copy, and their world side (pinned target squads, spawns) never reaches
+	the host. So the host builds the offer:
+	  client: the dialog window opens (GUI_on_show "Dialog") -> quests.offer_req {n = npc, k = kind}
+	  host:   generate_available_tasks + on_job_descr + fetch_func for every offered task, as if its
+	          actor talked to that NPC (talk shims below), and sends per task the task vars it made and
+	          the offer lines it drew (quests.offer_t), then the ordered list (quests.offer).
+	  client: generate_available_tasks uses the host's list (tasks the group already has are left out),
+	          text_npc_has_task shows the host's offer: the task vars go into the client's pstor, the
+	          host's offer lines are shown, a fetch offer is drawn locally in the client's language.
+	          Taking the task is coop_tasks' give request; the vars travel with it.
+	No answer yet (or another kind of list) -> the stock local generation runs, as before.
+
+	Host talk shims while it prepares an offer: db.actor:is_talking() = true, give_talk_message2 and
+	give_game_news captured (nothing is shown on the host), mob_trade.GetTalkingNpc / get_speaker /
+	"used_npc_id" = that NPC, CreateTimeEvent with timer 0 runs at once (the offer lines are drawn by
+	such events). Everything is put back afterwards, also on errors.
+
+	Host after a client's give (coop_tasks calls host_after_give): the host-side parts of an offer the
+	client's own dialog prepared (DRX storyline/mechanic offers stay local) - assault target squad
+	pinned, bounty target squad kept in task_squads; if the client brought no task var, the host runs
+	on_job_descr itself.
+--]]
+
+local qc = coop_quests_core
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+local table_concat = table.concat
+
+local TAG = "offer"
+local OFFER_TTL = 180000 -- ms a host offer stays usable on the client
+local REQ_GAP = 1000 -- ms between two requests for one NPC
+local BATCH_TIMEOUT = 5 -- s the taskboard waits for the host
+local MAX_DIST_DIALOG = 30 -- m between the requester's character and the NPC (host check)
+local MAX_DIST_BOARD = 200 -- m for the PDA taskboard
+local MAX_MSGS = 4
+
+-- iTheon's taskboard (lizzardman) treats these non-"sim_" NPCs as sim task givers (its local list).
+local SIM_OVERRIDES = {
+	bar_visitors_garik_stalker_guard = true,
+	bar_visitors_zhorik_stalker_guard2 = true,
+	bar_arena_guard = true,
+	bar_dolg_general_zoneguard_stalker = true,
+	mil_smart_terrain_7_7_freedom_bodyguard_stalker = true,
+	mil_smart_terrain_7_7_freedom_bodyguard2_stalker = true,
+}
+
+local stats = {
+	req_out = 0, req_in = 0, refused = 0, offers_in = 0, used = 0, local_gen = 0, shown = 0,
+	after_give = 0, pinned = 0, rerun = 0,
+}
+
+local function now() return time_global() end
+
+local function ini() return task_manager and task_manager.task_ini end
+
+local function r_str(sec, key)
+	local i = ini()
+	if not i then return nil end
+	local ok, v = pcall(i.r_string_ex, i, sec, key)
+	return ok and v or nil
+end
+
+local function atm() return rawget(_G, "axr_task_manager") or axr_task_manager end
+
+local function tmgr()
+	local ok, tm = pcall(task_manager.get_task_manager)
+	return ok and tm or nil
+end
+
+-- The task's own pstor vars (key = id or "<id>_...").
+local function task_vars(id)
+	local out = {}
+	local st = db.actor and db.storage[db.actor:id()]
+	local ps = st and st.pstor
+	if not ps then return out end
+	local n = #id
+	for k, v in pairs(ps) do
+		if type(k) == "string" and k:sub(1, n) == id and (#k == n or k:sub(n + 1, n + 1) == "_") then
+			local tv = type(v)
+			if tv == "string" or tv == "number" or tv == "boolean" or tv == "table" then out[k] = v end
+		end
+	end
+	return out
+end
+
+-- Direct pstor write: the host has these values already (no save_var routing).
+local function put_vars(vars)
+	if type(vars) ~= "table" or not db.actor then return end
+	local st = db.storage[db.actor:id()]
+	if not st then return end
+	st.pstor = st.pstor or {}
+	for k, v in pairs(vars) do
+		if type(k) == "string" then st.pstor[k] = v end
+	end
+end
+
+local function is_sim_section(sec)
+	if type(sec) ~= "string" then return false end
+	if SIM_OVERRIDES[sec] then return true end
+	return sec:find("sim_", 1, true) ~= nil or sec:find("simulation_", 1, true) ~= nil
+end
+
+-- The fetch var a task's fetch_func fills: first argument of the setup effect (stock: "<id>_fetch").
+local function fetch_var_of(tid)
+	local f = r_str(tid, "fetch_func")
+	local name = f and f:match("%(%s*([^:%)%s]+)")
+	return name or (tid .. "_fetch")
+end
+
+-------------------------------------------------------------------------------
+-- Host: offer generation
+-------------------------------------------------------------------------------
+local cap = { on = false, msgs = nil }
+
+local function cap_msg(caption, text, icon, templ)
+	if not (cap.on and cap.msgs) or #cap.msgs >= MAX_MSGS then return end
+	cap.msgs[#cap.msgs + 1] = {
+		c = tostring(caption or ""), t = tostring(text or ""), i = tostring(icon or ""),
+		p = tostring(templ or "iconed_answer_item"),
+	}
+end
+
+-- Runs fn as if the host's actor talked to npc. Returns pcall's results.
+function with_talk(npc, fn, ...)
+	local saved = {}
+	local mt = rawget(_G, "mob_trade") or mob_trade
+	if mt then
+		saved.gtn = mt.GetTalkingNpc
+		mt.GetTalkingNpc = function() return npc end
+	end
+	saved.speaker = rawget(_G, "get_speaker")
+	_G.get_speaker = function() return npc end
+	local have_events = type(rawget(_G, "GetEvent")) == "function" and type(rawget(_G, "SetEvent")) == "function"
+	if have_events then
+		saved.used = GetEvent("used_npc_id")
+		SetEvent("used_npc_id", npc:id())
+	end
+	saved.cte = rawget(_G, "CreateTimeEvent")
+	local real_cte = saved.cte
+	_G.CreateTimeEvent = function(ev_id, act_id, timer, f, ...)
+		if (tonumber(timer) or 0) <= 0 and type(f) == "function" then
+			if cap.on then
+				local ok, err = pcall(f, ...)
+				if not ok then qc.report(TAG, "offer line", err) end
+			end
+			return -- a deferred offer line nobody sees on the host
+		end
+		return real_cte(ev_id, act_id, timer, f, ...)
+	end
+
+	local res = { qc.with_actor({
+		is_talking = function() return true end,
+		give_talk_message2 = function(_, caption, text, icon, templ) cap_msg(caption, text, icon, templ) end,
+		give_game_news = function() return nil end,
+	}, fn, ...) }
+
+	_G.CreateTimeEvent = saved.cte
+	if have_events then SetEvent("used_npc_id", saved.used) end
+	_G.get_speaker = saved.speaker
+	if mt then mt.GetTalkingNpc = saved.gtn end
+	return unpack(res)
+end
+
+-- Host, inside with_talk: the offer of one task (vars it made, lines it drew).
+local function capture(tid)
+	local d = { msgs = {} }
+	cap.msgs = d.msgs
+	local on_jd = r_str(tid, "on_job_descr")
+	if on_jd then
+		cap.on = true
+		local ok, err = pcall(function()
+			local cond = xr_logic.parse_condlist(db.actor, "task_manager", "condlist", on_jd)
+			if cond then xr_logic.pick_section_from_condlist(db.actor, db.actor, cond) end
+		end)
+		cap.on = false
+		if not ok then qc.report(TAG, "on_job_descr " .. tid, err) end
+	end
+	if r_str(tid, "fetch_descr") then
+		local a = atm()
+		if a and a.trigger_fetch_func then
+			local ok, err = pcall(a.trigger_fetch_func, tid) -- its "needs:" line is drawn by the client
+			if not ok then qc.report(TAG, "fetch_func " .. tid, err) end
+		end
+	end
+	cap.msgs = nil
+	d.vars = task_vars(tid)
+	local a = atm()
+	local b = a and a.bounties_by_id
+	if type(b) == "table" and type(b[tid]) == "number" then d.bounty = b[tid] end
+	return d
+end
+
+local function host_generate(npc, is_sim)
+	local a = atm()
+	if not (a and a.generate_available_tasks) then return nil, {} end
+	local id = npc:id()
+	local list, data = {}, {}
+	local ok, err = with_talk(npc, function()
+		if a.clear_skipped_tasks then a.clear_skipped_tasks() end
+		a.generate_available_tasks(npc, is_sim and true or nil)
+		local av = a.available_tasks and a.available_tasks[id]
+		if type(av) == "table" then
+			for _, tid in ipairs(av) do list[#list + 1] = tid end
+		end
+		for _, tid in ipairs(list) do
+			local okc, d = pcall(capture, tid)
+			if okc then data[tid] = d else qc.report(TAG, "capture " .. tostring(tid), d) end
+		end
+	end)
+	if not ok then
+		qc.report(TAG, "generate for " .. tostring(npc:name()), err)
+		return nil, {}
+	end
+	return list, data
+end
+
+local last_req = {} -- "peer:npc" -> time
+
+local function host_on_offer_req(t, from)
+	if not qc.is_host() or type(from) ~= "number" or from == 0 then return end
+	stats.req_in = stats.req_in + 1
+	local npc_id, seq = tonumber(t.n), tonumber(t.q) or 0
+	local kind = t.k == "sim" and "sim" or "dyn"
+	local npc = npc_id and level.object_by_id(npc_id)
+	local function refuse(why)
+		stats.refused = stats.refused + 1
+		qc.send("offer", { n = npc_id or 0, q = seq, k = kind, e = why, l = "" }, from)
+	end
+	if not (npc and IsStalker(npc) and npc:alive()) then return refuse("npc") end
+	local key = tostring(from) .. ":" .. npc_id
+	if last_req[key] and now() - last_req[key] < REQ_GAP then return end
+	last_req[key] = now()
+	local av = qc.avatar_obj(from)
+	local max = t.b and MAX_DIST_BOARD or MAX_DIST_DIALOG
+	if av and npc:position():distance_to_sqr(av:position()) > max * max then return refuse("far") end
+
+	local list, data = host_generate(npc, kind == "sim")
+	if not list then return refuse("error") end
+	for _, tid in ipairs(list) do
+		local d = data[tid] or {}
+		local msg = { n = npc_id, q = seq, i = tid }
+		local v = qc.ser(d.vars or {})
+		if v and #v <= qc.MAX_BLOB then msg.v = v end
+		local m = qc.ser(d.msgs or {})
+		if m and #m <= 4000 then msg.m = m end
+		if d.bounty then msg.bt = d.bounty end
+		qc.send("offer_t", msg, from)
+	end
+	qc.send("offer", { n = npc_id, q = seq, k = kind, l = table_concat(list, ","), c = #list }, from)
+end
+
+-------------------------------------------------------------------------------
+-- Client: offers from the host
+-------------------------------------------------------------------------------
+local offers = {} -- local npc id -> { q, kind, list, tasks = {tid = {vars, msgs, bounty}}, at, complete }
+local incoming = {} -- seq -> { npc, tasks }
+local seq = 0
+local batch = nil -- { pending = {npc_id = true}, left, done }
+
+local function batch_note(npc_id)
+	local b = batch
+	if not (b and b.pending[npc_id]) then return end
+	b.pending[npc_id] = nil
+	b.left = b.left - 1
+	if b.left <= 0 then
+		batch = nil
+		if b.done then
+			local ok, err = pcall(b.done)
+			if not ok then qc.report(TAG, "taskboard refresh", err) end
+		end
+	end
+end
+
+-- Client: asks the host for the offer of one NPC (local object). board = from the PDA taskboard.
+function request_offer(npc, kind, board)
+	if not (qc.client_live() and npc) then return false end
+	local id = npc:id()
+	local o = offers[id]
+	if o and o.asked and now() - o.asked < REQ_GAP then return true end
+	seq = seq + 1
+	kind = kind or (is_sim_section(npc:section()) and "sim" or "dyn")
+	for q, inc in pairs(incoming) do
+		if now() - inc.at > 60000 then incoming[q] = nil end -- never answered
+	end
+	incoming[seq] = { npc = id, tasks = {}, at = now() }
+	offers[id] = offers[id] or { tasks = {} }
+	offers[id].asked = now()
+	local ok = qc.send("offer_req", { n = qc.to_host_id(id), k = kind, q = seq, b = board and true or nil }, 0)
+	if ok then stats.req_out = stats.req_out + 1 end
+	return ok
+end
+
+-- Client: offers for several NPCs, then done() (at the latest after BATCH_TIMEOUT). False if a batch
+-- is already running.
+function request_offers(npcs, done, board)
+	if batch then return false end
+	local b = { pending = {}, left = 0, done = done }
+	batch = b
+	for _, npc in ipairs(npcs or {}) do
+		local id = npc:id()
+		if not b.pending[id] and request_offer(npc, nil, board) then
+			b.pending[id] = true
+			b.left = b.left + 1
+		end
+	end
+	if b.left == 0 then
+		batch = nil
+		if done then pcall(done) end
+		return true
+	end
+	CreateTimeEvent("coop_quests_offer", "batch_timeout", BATCH_TIMEOUT, function()
+		if batch == b then
+			batch = nil
+			if b.done then
+				local ok, err = pcall(b.done)
+				if not ok then qc.report(TAG, "taskboard refresh", err) end
+			end
+		end
+		return true
+	end)
+	return true
+end
+
+local function client_on_offer_t(t, from)
+	if from ~= 0 or not qc.is_client() then return end
+	local inc = incoming[tonumber(t.q)]
+	if not (inc and type(t.i) == "string" and t.i ~= "") then return end
+	local d = { vars = {}, msgs = {} }
+	if type(t.v) == "string" then
+		local v = qc.des(t.v)
+		if type(v) == "table" then
+			for k, x in pairs(v) do
+				if type(k) == "string" and k:sub(1, #t.i) == t.i then d.vars[k] = x end
+			end
+		end
+	end
+	if type(t.m) == "string" then
+		local m = qc.des(t.m)
+		if type(m) == "table" then
+			for i = 1, math.min(#m, MAX_MSGS) do
+				local x = m[i]
+				if type(x) == "table" then
+					d.msgs[#d.msgs + 1] = {
+						c = tostring(x.c or ""), t = tostring(x.t or ""), i = tostring(x.i or ""),
+						p = type(x.p) == "string" and x.p ~= "" and x.p or "iconed_answer_item",
+					}
+				end
+			end
+		end
+	end
+	if type(t.bt) == "number" then d.bounty = qc.to_local_id(t.bt) end
+	inc.tasks[t.i] = d
+end
+
+local function client_on_offer(t, from)
+	if from ~= 0 or not qc.is_client() then return end
+	local q = tonumber(t.q)
+	local inc = q and incoming[q]
+	incoming[q or -1] = nil
+	local npc_id = inc and inc.npc or qc.to_local_id(tonumber(t.n))
+	if not npc_id then return end
+	stats.offers_in = stats.offers_in + 1
+	if type(t.e) == "string" then
+		qc.log(TAG, "host refused the offer of #%s: %s", tostring(npc_id), t.e)
+		batch_note(npc_id)
+		return
+	end
+	local list = {}
+	for tid in tostring(t.l or ""):gmatch("[^,]+") do list[#list + 1] = tid end
+	offers[npc_id] = {
+		q = q, kind = t.k == "sim" and "sim" or "dyn", list = list, tasks = inc and inc.tasks or {},
+		at = now(), complete = true,
+	}
+	batch_note(npc_id)
+end
+
+local function fresh_offer(npc_id, kind)
+	local o = offers[npc_id]
+	if not (o and o.complete and o.kind == kind and now() - o.at < OFFER_TTL) then return nil end
+	return o
+end
+
+-- The talking NPC on this machine (pda.script's way).
+local function talking_npc()
+	local id = type(rawget(_G, "GetEvent")) == "function" and GetEvent("used_npc_id")
+	local o = id and level.object_by_id(id)
+	if o then return o end
+	for _, st in pairs(db.storage) do
+		local obj = st.object
+		if obj and obj:id() ~= db.actor:id() then
+			local ok, talking = pcall(obj.is_talking, obj)
+			if ok and talking then return obj end
+		end
+	end
+	return nil
+end
+
+local function on_gui_show(name)
+	if name ~= "Dialog" or not qc.client_live() then return end
+	local npc = talking_npc()
+	if npc and IsStalker(npc) then request_offer(npc) end
+end
+
+-- Offer lines on the client, one frame later (the talk window must be settled).
+local function show_lines(tid, d, fetch)
+	local lines = {}
+	for _, m in ipairs(d.msgs or {}) do lines[#lines + 1] = m end
+	CreateTimeEvent("coop_quests_offer", "lines_" .. tid, 0, function()
+		if not db.actor then return true end
+		for _, m in ipairs(lines) do
+			pcall(db.actor.give_talk_message2, db.actor, m.c, m.t, m.i, m.p)
+		end
+		local tf = qc.mod("tasks_fetch")
+		if fetch and tf and type(tf.postpone_fetch_for_next_frame) == "function" then
+			pcall(tf.postpone_fetch_for_next_frame, fetch.var, fetch.sec, fetch.cnt)
+		end
+		return true
+	end)
+end
+
+-- Applies the host's offer of tid on this client: vars, bounty; returns the fetch info if any.
+local function adopt(tid, d)
+	put_vars(d.vars)
+	local a = atm()
+	if d.bounty and a and type(a.bounties_by_id) == "table" then a.bounties_by_id[tid] = d.bounty end
+	if not r_str(tid, "fetch_descr") then return nil end
+	local var = fetch_var_of(tid)
+	local sec = d.vars and d.vars[var]
+	if type(sec) ~= "string" then return nil end
+	local cnt = tonumber(d.vars[var .. "_count"]) or 1
+	local name = ui_item and ui_item.get_sec_name and ui_item.get_sec_name(sec) or sec
+	dialogs._FETCH_TEXT = name
+	return { var = var, sec = sec, cnt = cnt, name = name }
+end
+
+local function client_task_text(a, b)
+	local npc = dialogs.who_is_npc(a, b)
+	if not npc then return nil end
+	local id = npc:id()
+	local av = atm().available_tasks[id]
+	local tid = av and av[1]
+	local o = offers[id]
+	local d = tid and o and o.complete and o.tasks[tid]
+	if not d then return nil end
+	local fetch = adopt(tid, d)
+	show_lines(tid, d, fetch)
+	stats.shown = stats.shown + 1
+	local fd = r_str(tid, "fetch_descr")
+	if fd and fetch then
+		return strformat(game.translate_string(fd), fetch.name or "")
+	end
+	return game.translate_string(r_str(tid, "job_descr") or "st_no_available_task")
+end
+
+-------------------------------------------------------------------------------
+-- Client wrappers
+-------------------------------------------------------------------------------
+local function patch_client()
+	local a = atm()
+	if a and type(a.generate_available_tasks) == "function" then
+		local orig = a.generate_available_tasks
+		a.generate_available_tasks = function(npc, is_sim, ...)
+			if not (qc.client_live() and npc) then return orig(npc, is_sim, ...) end
+			local id = npc:id()
+			local o = fresh_offer(id, is_sim and "sim" or "dyn")
+			if not o then
+				stats.local_gen = stats.local_gen + 1
+				return orig(npc, is_sim, ...)
+			end
+			local tm = tmgr()
+			local ti = tm and tm.task_info or {}
+			local list = a.available_tasks[id]
+			if type(list) ~= "table" then
+				list = {}
+				a.available_tasks[id] = list
+			else
+				empty_table(list)
+			end
+			for _, tid in ipairs(o.list) do
+				if ti[tid] == nil then list[#list + 1] = tid end
+			end
+			stats.used = stats.used + 1
+		end
+	else
+		qc.log(TAG, "! axr_task_manager.generate_available_tasks not found: offers stay local")
+	end
+
+	if dialogs and type(dialogs.text_npc_has_task) == "function" then
+		local orig = dialogs.text_npc_has_task
+		dialogs.text_npc_has_task = function(a1, b1, ...)
+			if qc.client_live() then
+				local ok, res = pcall(client_task_text, a1, b1)
+				if ok and res then return res end
+				if not ok then qc.report(TAG, "offer text", res) end
+			end
+			return orig(a1, b1, ...)
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- PDA taskboard (iTheon's, lizzardman's custom version): rows from the host's offers
+-------------------------------------------------------------------------------
+local function patch_taskboard()
+	local pt = qc.mod("pda_taskboard")
+	local ut = qc.mod("ui_pda_taskboard_tab")
+	if not (type(pt) == "table" and type(ut) == "table" and ut.pda_taskboard_tab) then return end
+	local tab = ut.pda_taskboard_tab
+	local orig_refresh = tab.OnBtnRefreshClicked
+	local orig_prepare = pt.prepare_task
+	local orig_details = pt.get_details
+	if type(orig_refresh) == "function" and type(pt.get_nearby_npcs) == "function" and type(pt.refresh_tasks) == "function" then
+		tab.OnBtnRefreshClicked = function(self, ...)
+			if not qc.client_live() then return orig_refresh(self, ...) end
+			if self.task_list and self.task_list.RemoveAll then self.task_list:RemoveAll() end
+			local npcs = {}
+			local ok, list = pcall(pt.get_nearby_npcs)
+			if ok and type(list) == "table" then npcs = list end
+			local started = request_offers(npcs, function()
+				pt.refresh_tasks()
+				if self.DrawCategoryList then self:DrawCategoryList() end
+			end, true)
+			if not started then return orig_refresh(self, ...) end
+		end
+	end
+	if type(orig_prepare) == "function" then
+		pt.prepare_task = function(task_data, ...)
+			if not (qc.client_live() and type(task_data) == "table") then return orig_prepare(task_data, ...) end
+			local o = offers[task_data.npc_id]
+			local d = o and o.complete and o.tasks[task_data.task_id]
+			if not d then return orig_prepare(task_data, ...) end
+			-- never run on_job_descr here: world side effects for every task of every NPC around
+			adopt(task_data.task_id, d) -- task vars + dialogs._FETCH_TEXT for the description below
+			if type(pt.get_long_task_description) == "function" then
+				local okd, txt = pcall(pt.get_long_task_description, task_data)
+				if okd then task_data.task_description = txt end
+			end
+		end
+	end
+	if type(orig_details) == "function" then
+		pt.get_details = function(task_info, ...)
+			local res = orig_details(task_info, ...)
+			if res or not (qc.client_live() and type(task_info) == "table") then return res end
+			for _, o in pairs(offers) do
+				local d = o.complete and o.tasks[task_info.task_id]
+				local m = d and d.msgs and d.msgs[1]
+				if m then return { task_title = m.c, task_details = m.t, task_icon = m.i } end
+			end
+			return nil
+		end
+	end
+	qc.log(TAG, "PDA taskboard: rows of a client come from the host's offers")
+end
+
+-------------------------------------------------------------------------------
+-- Host: after a client's give request
+-------------------------------------------------------------------------------
+local function pin_squad(squad_id, stay)
+	local squad = type(squad_id) == "number" and alife_object(squad_id)
+	if not squad then return false end
+	local soc = qc.mod("sim_offline_combat")
+	if soc and type(soc.task_squads) == "table" then soc.task_squads[squad_id] = true end
+	if stay then pcall(function() squad.stay_time = game.get_game_time() end) end
+	stats.pinned = stats.pinned + 1
+	return true
+end
+
+-- The giver as a talking NPC for on_job_descr effects (a squad gives through its commander).
+local function giver_npc(giver)
+	if type(giver) ~= "number" then return nil end
+	local o = level.object_by_id(giver)
+	if o and IsStalker(o) then return o end
+	local se = alife_object(giver)
+	local ok, cid = pcall(function() return se and se.commander_id and se:commander_id() end)
+	o = ok and cid and level.object_by_id(cid)
+	return o and IsStalker(o) and o or nil
+end
+
+function host_after_give(id, from, giver, got_vars)
+	if not qc.is_host() then return end
+	stats.after_give = stats.after_give + 1
+	local on_jd = r_str(id, "on_job_descr") or ""
+	-- the client's dialog brought no task var: the host prepares the task itself
+	if on_jd ~= "" and not (got_vars and got_vars[id]) and load_var(db.actor, id) == nil then
+		local npc = giver_npc(giver)
+		if npc then
+			stats.rerun = stats.rerun + 1
+			local ok, err = with_talk(npc, function()
+				local cond = xr_logic.parse_condlist(db.actor, "task_manager", "condlist", on_jd)
+				if cond then xr_logic.pick_section_from_condlist(db.actor, db.actor, cond) end
+			end)
+			if not ok then qc.report(TAG, "host on_job_descr " .. id, err) end
+		end
+	end
+	if on_jd:find("setup_assault_task", 1, true) then
+		local var = load_var(db.actor, id)
+		if type(var) == "table" then pin_squad(var.squad_id, true) end
+	end
+	if on_jd:find("setup_bounty_task", 1, true) then
+		local a = atm()
+		local target = a and type(a.bounties_by_id) == "table" and a.bounties_by_id[id]
+		local se = type(target) == "number" and alife_object(target)
+		if se and se.group_id and se.group_id ~= 65535 then pin_squad(se.group_id, false) end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Status, start
+-------------------------------------------------------------------------------
+function print_status()
+	local n = 0
+	for _ in pairs(offers) do n = n + 1 end
+	qc.log(TAG, "requests out %d in %d refused %d | offers in %d used %d, local lists %d, shown %d | %d NPC offers kept | after give %d, squads pinned %d, host on_job_descr %d",
+		stats.req_out, stats.req_in, stats.refused, stats.offers_in, stats.used, stats.local_gen, stats.shown, n,
+		stats.after_give, stats.pinned, stats.rerun)
+end
+
+local installed = false
+local function install()
+	if installed then return end
+	installed = true
+	local ok, err = pcall(patch_client)
+	if not ok then qc.report(TAG, "install client wrappers", err) end
+	ok, err = pcall(patch_taskboard)
+	if not ok then qc.report(TAG, "install taskboard", err) end
+end
+
+function on_game_start()
+	if not qc.engine() then return end
+	qc.on("offer_req", host_on_offer_req, TAG)
+	qc.on("offer_t", client_on_offer_t, TAG)
+	qc.on("offer", client_on_offer, TAG)
+	RegisterScriptCallback("GUI_on_show", on_gui_show)
+	-- after every script's on_game_start: these wrappers are the last link of any mod's chain
+	RegisterScriptCallback("actor_on_first_update", install)
+end

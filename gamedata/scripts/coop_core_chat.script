@@ -1,0 +1,490 @@
+--[[
+	Anomaly Coop - core group: text chat (gamedata\scripts\coop_core_chat.script)
+	Layout configs\ui\ui_coop_core.xml (chat, chat_feed), strings configs\text\{rus,eng}\st_coop_core.xml.
+
+	Open: the engine key action "chat" (Options > Controls > Common > "Co-op: chat", added to that list in game;
+	or console `bind chat kY`), or Enter while Enter has no game action. Enter sends and closes, Esc closes.
+	Transport: coop.send_chat -> every player. Every line, ours included, comes back from the engine through
+	coop_main.on_chat(nick, text) -> on_line(). The last lines are kept in coop.stash, so a level load keeps
+	the history; while the window is closed a HUD feed shows new lines for a few seconds.
+	Commands (never sent): /help, /players, /go (host: move the group to the level a player asked for).
+
+	For other scripts:
+		coop_core_chat.system(text)        a local line (not sent)
+		coop_core_chat.open() / close() / is_open()
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local string_format = string.format
+local tostring, tonumber, type, ipairs, pairs, pcall = tostring, tonumber, type, ipairs, pairs, pcall
+
+local MAX_LINES = 40 -- history kept
+local FEED_LINES = 6 -- lines in the HUD feed
+local FEED_MS = 12000 -- a new line stays in the feed this long
+local FADE_MS = 2000 -- last part of FEED_MS: fading out
+local MAX_LEN = 200 -- characters per line (also max_symb_count of the input)
+local STASH_KEY = "coop_core_chat"
+local XML_FILE = "ui_coop_core.xml"
+
+local COLORS = { -- r, g, b
+	other = { 230, 230, 230 },
+	self = { 170, 225, 170 },
+	sys = { 240, 200, 120 },
+}
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-chat] %s", ok and line or tostring(fmt))
+end
+
+-- Translated string, or the English fallback when the string table does not have the id.
+local function tr(id, fallback)
+	local ok, s = pcall(game.translate_string, id)
+	if not ok or type(s) ~= "string" or s == id then return fallback or id end
+	return s
+end
+
+local function live()
+	return api ~= nil and api.is_active() and (api.is_host() or api.is_live())
+end
+
+local function players()
+	if not api then return {} end
+	local ok, list = pcall(api.players)
+	return ok and type(list) == "table" and list or {}
+end
+
+local function my_nick()
+	for _, p in ipairs(players()) do
+		if p.is_self then return p.nick end
+	end
+end
+
+-- Text from the network or the player: one line, no UI colour codes, capped.
+local function clean(s)
+	s = tostring(s or "")
+	s = s:gsub("[%c]", " ")
+	s = s:gsub("\\n", " ")
+	s = s:gsub("%%c%[", "%%c (")
+	if #s > MAX_LEN * 2 then s = s:sub(1, MAX_LEN * 2) end
+	return s
+end
+
+local function trim(s)
+	return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+-------------------------------------------------------------------------------
+-- History
+-------------------------------------------------------------------------------
+local lines = {} -- { nick, text, kind ("other" | "self" | "sys"), at (time_global, -1 for restored lines) }
+local version = 0
+local stats = { shown = 0, sent = 0, refused = 0, commands = 0 }
+
+local function save_history()
+	if not (api and api.stash_set) then return end
+	local cm = rawget(_G, "coop_main")
+	if not (cm and cm.encode) then return end
+	local t = { n = #lines }
+	for i, l in ipairs(lines) do
+		t["k" .. i] = l.kind
+		t["n" .. i] = l.nick or ""
+		t["t" .. i] = l.text
+	end
+	pcall(api.stash_set, STASH_KEY, cm.encode(t))
+end
+
+local function load_history()
+	if not (api and api.stash_get) then return end
+	local cm = rawget(_G, "coop_main") or coop_main
+	if not (cm and cm.decode) then return end
+	local ok, s = pcall(api.stash_get, STASH_KEY)
+	if not (ok and type(s) == "string" and s ~= "") then return end
+	local t = cm.decode(s)
+	local n = math.min(tonumber(t.n) or 0, MAX_LINES)
+	local restored = {}
+	for i = 1, n do
+		local kind = t["k" .. i]
+		if COLORS[kind] and type(t["t" .. i]) == "string" then
+			restored[#restored + 1] = { kind = kind, nick = tostring(t["n" .. i] or ""), text = t["t" .. i], at = -1 }
+		end
+	end
+	for _, l in ipairs(lines) do restored[#restored + 1] = l end -- lines that came before this (rare)
+	while #restored > MAX_LINES do table.remove(restored, 1) end
+	lines = restored
+	version = version + 1
+end
+
+local GUI -- forward: the chat window
+
+local function add(kind, nick, text)
+	lines[#lines + 1] = { kind = kind, nick = nick, text = clean(text), at = time_global() }
+	while #lines > MAX_LINES do table.remove(lines, 1) end
+	version = version + 1
+	save_history()
+	if GUI and GUI:IsShown() then pcall(GUI.Refill, GUI) end
+end
+
+local function line_text(l)
+	if l.kind == "sys" or not l.nick or l.nick == "" then return l.text end
+	return l.nick .. ": " .. l.text
+end
+
+local function argb(kind, alpha)
+	local c = COLORS[kind] or COLORS.other
+	return GetARGB(alpha or 255, c[1], c[2], c[3])
+end
+
+-- A local line, not sent to anybody.
+function system(text)
+	add("sys", nil, tostring(text or ""))
+end
+
+-- Engine chat line (coop_main.on_chat). Returns true: shown here.
+function on_line(nick, text)
+	nick = clean(nick)
+	local me = my_nick()
+	local kind = (me and nick == me) and "self" or "other"
+	add(kind, nick, text)
+	stats.shown = stats.shown + 1
+	if kind == "other" then
+		local snd = rawget(_G, "xr_sound")
+		if snd and snd.set_sound_play and db.actor then pcall(snd.set_sound_play, AC_ID, "pda_tips") end
+	end
+	return true
+end
+
+-------------------------------------------------------------------------------
+-- Commands
+-------------------------------------------------------------------------------
+local function cmd_help()
+	system(tr("st_coop_core_chat_help1", "/players - who is in the session"))
+	system(tr("st_coop_core_chat_help2", "/go - (host) move the group to the level a player asked for"))
+	system(tr("st_coop_core_chat_help3", "/help - this list"))
+end
+
+local function cmd_players()
+	local list = players()
+	table.sort(list, function(a, b) return (tonumber(a.id) or 0) < (tonumber(b.id) or 0) end)
+	system(string_format("%s %d", tr("st_coop_core_players", "Players:"), #list))
+	for _, p in ipairs(list) do
+		local parts = { tostring(p.nick) }
+		if p.id == 0 then parts[#parts + 1] = tr("st_coop_core_tag_host", "(host)") end
+		if p.is_self then
+			parts[#parts + 1] = tr("st_coop_core_tag_you", "(you)")
+		else
+			parts[#parts + 1] = string_format(tr("st_coop_core_ping", "ping %d ms"), tonumber(p.rtt) or 0)
+			local obj = p.avatar_id and level.object_by_id(p.avatar_id)
+			if obj and db.actor then
+				parts[#parts + 1] = string_format("%.0f m", obj:position():distance_to(db.actor:position()))
+			end
+		end
+		system("  " .. table.concat(parts, "  "))
+	end
+end
+
+local function cmd_go()
+	if not (api and api.is_host()) then
+		system(tr("st_coop_core_go_host_only", "Only the host can move the group."))
+		return
+	end
+	local pl = rawget(_G, "coop_core_player")
+	if pl and pl.accept_transition then
+		pl.accept_transition()
+	else
+		exec_console_cmd("coop_accept_transition")
+	end
+end
+
+local COMMANDS = { help = cmd_help, players = cmd_players, go = cmd_go }
+
+local function command(text)
+	stats.commands = stats.commands + 1
+	local name = text:match("^/(%S+)")
+	local f = name and COMMANDS[name:lower()]
+	if f then
+		local ok, err = pcall(f)
+		if not ok then log("! command /%s failed: %s", tostring(name), tostring(err)) end
+	else
+		system(tr("st_coop_core_chat_unknown", "Unknown command. /help lists them."))
+	end
+end
+
+local function submit(text)
+	text = trim(text)
+	if text == "" then return end
+	if text:sub(1, 1) == "/" then
+		command(text)
+		return
+	end
+	if #text > MAX_LEN then text = text:sub(1, MAX_LEN) end
+	local ok = live() and api.send_chat and api.send_chat(text)
+	if ok then
+		stats.sent = stats.sent + 1
+	else
+		stats.refused = stats.refused + 1
+		system(tr("st_coop_core_chat_not_sent", "Not sent: no co-op session."))
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Chat window
+-------------------------------------------------------------------------------
+class "UICoopChat" (CUIScriptWnd)
+
+function UICoopChat:__init() super()
+	self:SetWndRect(Frect():set(0, 0, 1024, 768))
+	local xml = CScriptXmlInit()
+	self.xml = xml
+	xml:ParseFile(XML_FILE)
+	self.box = xml:InitStatic("chat", self)
+	xml:InitFrame("chat:frame", self.box)
+	self.title = xml:InitTextWnd("chat:title", self.box)
+	self.history = xml:InitScrollView("chat:history", self.box)
+	self.input = xml:InitEditBox("chat:input", self.box)
+	self:Register(self.input, "input")
+	self.hint = xml:InitTextWnd("chat:hint", self.box)
+	self:AddCallback("input", ui_events.EDIT_TEXT_COMMIT, self.OnCommit, self)
+	self.title:SetText(tr("st_coop_core_chat_title", "Co-op chat"))
+	self.hint:SetText(tr("st_coop_core_chat_hint", "Enter - send, Esc - close, /help - commands"))
+end
+
+function UICoopChat:__finalize()
+end
+
+function UICoopChat:Refill()
+	self.history:Clear()
+	for _, l in ipairs(lines) do
+		local row = self.xml:InitTextWnd("chat:row", nil)
+		row:SetText(line_text(l))
+		row:SetTextColor(argb(l.kind))
+		row:AdjustHeightToText()
+		self.history:AddWindow(row, true)
+		row:SetAutoDelete(true)
+	end
+	self.history:ScrollToEnd()
+end
+
+function UICoopChat:Open()
+	self:Refill()
+	self.input:SetText("")
+	self:ShowDialog(true)
+	self.input:CaptureFocus(true)
+	if rawget(_G, "Register_UI") then Register_UI("UICoopChat", "coop_core_chat") end
+end
+
+function UICoopChat:Close()
+	self.input:CaptureFocus(false)
+	if self:IsShown() then self:HideDialog() end
+	if rawget(_G, "Unregister_UI") then Unregister_UI("UICoopChat") end
+end
+
+-- Enter in the input line (the edit box sends EDIT_TEXT_COMMIT and drops its focus).
+function UICoopChat:OnCommit()
+	if not self:IsShown() then return end
+	local text = self.input:GetText()
+	self.input:SetText("")
+	self:Close()
+	submit(text)
+end
+
+function UICoopChat:OnKeyboard(dik, keyboard_action)
+	local res = CUIScriptWnd.OnKeyboard(self, dik, keyboard_action)
+	if keyboard_action == ui_events.WINDOW_KEY_PRESSED then
+		if dik == DIK_keys.DIK_ESCAPE then
+			self:Close()
+			return true
+		elseif not res and (dik == DIK_keys.DIK_RETURN or dik == DIK_keys.DIK_NUMPADENTER) then
+			self:OnCommit() -- the input had lost its focus (mouse click)
+			return true
+		end
+	end
+	return res
+end
+
+function open()
+	if not live() then return false end
+	local ok, err = pcall(function()
+		if not GUI then GUI = UICoopChat() end
+		if not GUI:IsShown() then GUI:Open() end
+	end)
+	if not ok then
+		log("! chat window failed: %s", tostring(err))
+		GUI = nil
+	end
+	return ok
+end
+
+function close()
+	if GUI and GUI:IsShown() then GUI:Close() end
+end
+
+function is_open()
+	return GUI ~= nil and GUI:IsShown()
+end
+
+-------------------------------------------------------------------------------
+-- HUD feed
+-------------------------------------------------------------------------------
+class "UICoopChatFeed" (CUIScriptWnd)
+
+function UICoopChatFeed:__init() super()
+	self:SetWndRect(Frect():set(0, 0, 1024, 768))
+	local xml = CScriptXmlInit()
+	xml:ParseFile(XML_FILE)
+	self.box = xml:InitStatic("chat_feed", self)
+	self.rows = {}
+	for i = 1, FEED_LINES do
+		local r = xml:InitTextWnd("chat_feed:line", self.box)
+		r:Show(false)
+		self.rows[i] = r
+	end
+	self.next_at = 0
+end
+
+function UICoopChatFeed:__finalize()
+end
+
+local function hud_visible()
+	local f = rawget(_G, "main_hud_shown")
+	if not f then return true end
+	local ok, v = pcall(f)
+	return not ok or v == true
+end
+
+function UICoopChatFeed:Refresh(tg)
+	local rows = self.rows
+	local used = 0
+	if not is_open() and hud_visible() then
+		local y = self.box:GetHeight()
+		for i = #lines, 1, -1 do
+			local l = lines[i]
+			local age = l.at >= 0 and (tg - l.at) or FEED_MS
+			if age >= FEED_MS or used >= FEED_LINES then break end
+			used = used + 1
+			local r = rows[used]
+			r:SetText(line_text(l))
+			r:AdjustHeightToText()
+			y = y - r:GetHeight()
+			if y < 0 then
+				used = used - 1
+				break
+			end
+			r:SetWndPos(vector2():set(0, y))
+			local left = FEED_MS - age
+			local alpha = left < FADE_MS and math.floor(255 * left / FADE_MS) or 255
+			r:SetTextColor(argb(l.kind, alpha))
+			r:Show(true)
+		end
+	end
+	for i = used + 1, FEED_LINES do rows[i]:Show(false) end
+end
+
+function UICoopChatFeed:Update()
+	CUIScriptWnd.Update(self)
+	local tg = time_global()
+	if tg < self.next_at then return end
+	self.next_at = tg + 100
+	local ok, err = pcall(self.Refresh, self, tg)
+	if not ok then
+		self.next_at = tg + 5000
+		log("! feed refresh failed: %s", tostring(err))
+	end
+end
+
+local FEED -- HUD dialog, while this Lua state lives
+
+local function feed_on()
+	if FEED then return end
+	local ok, err = pcall(function()
+		FEED = UICoopChatFeed()
+		get_hud():AddDialogToRender(FEED)
+	end)
+	if not ok then
+		FEED = nil
+		log("! chat feed failed: %s", tostring(err))
+	end
+end
+
+local function feed_off()
+	if not FEED then return end
+	pcall(function() get_hud():RemoveDialogToRender(FEED) end)
+	FEED = nil
+end
+
+-------------------------------------------------------------------------------
+-- Keys, keybinding list, callbacks
+-------------------------------------------------------------------------------
+local not_bound -- dik_to_bind() of a key nobody binds (F15): "no action"
+
+local function enter_is_free(dik)
+	if not_bound == nil then
+		local ok, v = pcall(dik_to_bind, DIK_keys.DIK_F15)
+		not_bound = ok and v or false
+	end
+	return not_bound ~= false and dik_to_bind(dik) == not_bound
+end
+
+local function is_chat_key(dik)
+	local bind = dik_to_bind(dik)
+	if key_bindings.kCHAT and bind == key_bindings.kCHAT then return true end
+	if dik == DIK_keys.DIK_RETURN or dik == DIK_keys.DIK_NUMPADENTER then
+		return enter_is_free(dik)
+	end
+	return false
+end
+
+local function on_key_press(dik)
+	if is_open() or not live() or not db.actor then return end
+	if not is_chat_key(dik) then return end
+	local check = rawget(_G, "Check_UI")
+	if check and check() then return end
+	open()
+end
+
+-- Adds "Co-op: chat" (engine action "chat") to the Common group of the key bindings in the options.
+local function on_xml_read(xml_file_name, xml_obj)
+	if xml_file_name ~= [[ui\ui_keybinding.xml]] then return end
+	local ok, err = pcall(function()
+		local groups = xml_obj:query("group[name=kb_grp_common]")
+		local g = groups and groups[1]
+		if not g then return end
+		if #xml_obj:query("command[id=kb_coop_chat]") > 0 then return end
+		xml_obj:insertFromXMLString([[<command id="kb_coop_chat" exe="chat"/>]], g, #g.kids)
+	end)
+	if not ok then log("! keybinding entry not added: %s", tostring(err)) end
+end
+
+local next_tick = 0
+local function actor_on_update()
+	local tg = time_global()
+	if tg < next_tick then return end
+	next_tick = tg + 500
+	if live() then
+		feed_on()
+	elseif api and not api.is_active() then
+		if is_open() then close() end
+		feed_off()
+	end
+end
+
+local function actor_on_net_destroy()
+	if is_open() then close() end
+	feed_off()
+	GUI = nil
+end
+
+function print_status()
+	log("chat: %d line(s) kept, shown %d, sent %d, refused %d, commands %d, window %s, feed %s", #lines,
+		stats.shown, stats.sent, stats.refused, stats.commands, is_open() and "open" or "closed", FEED and "on" or "off")
+end
+
+function on_game_start()
+	if not api then return end -- an exe without co-op: nothing of this runs
+	RegisterScriptCallback("on_xml_read", on_xml_read)
+	RegisterScriptCallback("on_key_press", on_key_press)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("actor_on_net_destroy", actor_on_net_destroy)
+	load_history()
+end

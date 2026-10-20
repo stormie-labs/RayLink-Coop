@@ -1,0 +1,341 @@
+--[[
+	Anomaly Coop - NPC group (W4 "npc"): player helpers shared by every coop_npc_* script.
+
+	Stock world logic (xr_logic, xr_meet, xr_conditions, restrictors, mods) assumes ONE player: db.actor.
+	In a session the host runs that logic, and every other player exists on the host as a stalker of
+	section coop_player_avatar (proxy). These helpers answer "which players are here" on any machine:
+	  host:   db.actor (the host's player) + the proxies of the clients
+	  client: db.actor (this client's player) + the avatars of the other players (puppets)
+	Outside a session every helper degrades to the single-player answer (db.actor only).
+
+	API (module coop_npc_players):
+	  active() is_host() is_client() client_live() host_with_clients()
+	  self_peer() players() to_host(id) to_local(id)
+	  others()                -> { game_object, ... } other players' characters here (alive, cached per frame)
+	  everyone()              -> db.actor (if alive) + others() (cached per frame, do not modify)
+	  peer_of(obj_or_id)      -> peer id of the player that object stands for, or nil
+	  object_of_peer(peer)    -> that player's character on this machine (db.actor for self), or nil
+	  is_player_id(id)        -> true for the local actor and for any player avatar
+	  nearest(pos)            -> nearest player object, squared distance (math.huge if nobody)
+	  nearest_dist_sqr(pos)   -> squared distance to the nearest player
+	  any_within(pos, r)      -> true if some player is within r metres
+	  with_identity(obj, f, ...) runs f with db.actor (and story id "actor") pointing at obj; restores both
+	  send(name, t, target)   -> coop.send_event with a flat table payload (coop_main.encode)
+	  on(name, f, who)        -> event handler; who = "host" (runs on the host, from a client) or "client"
+	                             (runs on a client, from the host); f(t, from) gets the decoded table
+	  setting(key, def)       -> [coop_npc] value from configs\coop_domains_npc.ltx (number/bool/string)
+	  log(tag, fmt, ...) report(tag, what, err)
+	Globals for rewritten mod code (coop_npc_compat): coop_npc_is_player_id(id), coop_npc_multi(),
+	coop_npc_any_player_within(obj, r).
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace (nil on an exe without co-op)
+
+local tostring, tonumber, type, pairs, ipairs, pcall, select = tostring, tonumber, type, pairs, ipairs, pcall, select
+local string_format = string.format
+
+-------------------------------------------------------------------------------
+-- Logging
+-------------------------------------------------------------------------------
+local errors = {} -- tag -> count
+
+function log(tag, fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-npc:%s] %s", tostring(tag), ok and line or tostring(fmt))
+end
+
+function report(tag, what, err)
+	local n = (errors[tag] or 0) + 1
+	errors[tag] = n
+	if n <= 10 or n % 100 == 0 then
+		log(tag, "! %s (#%d): %s", tostring(what), n, tostring(err))
+	end
+end
+
+function error_count(tag)
+	return errors[tag] or 0
+end
+
+-------------------------------------------------------------------------------
+-- Roles
+-------------------------------------------------------------------------------
+function active()
+	if not api then return false end
+	local ok, v = pcall(api.is_active)
+	return ok and v == true
+end
+
+function is_host()
+	return active() and api.is_host() == true
+end
+
+function is_client()
+	return active() and api.is_client() == true
+end
+
+function client_live()
+	return is_client() and api.is_live() == true
+end
+
+function self_peer()
+	if not api then return 0 end
+	local ok, v = pcall(api.self_id)
+	return ok and tonumber(v) or 0
+end
+
+function players()
+	if not api then return {} end
+	local ok, list = pcall(api.players)
+	return ok and type(list) == "table" and list or {}
+end
+
+-- Host with at least one other player in the session.
+function host_with_clients()
+	if not is_host() then return false end
+	for _, p in ipairs(players()) do
+		if not p.is_self then return true end
+	end
+	return false
+end
+
+function to_host(id)
+	if not (api and api.to_host_id and type(id) == "number") then return id end
+	local ok, v = pcall(api.to_host_id, id)
+	return ok and tonumber(v) or id
+end
+
+function to_local(id)
+	if not (api and api.to_local_id and type(id) == "number") then return id end
+	local ok, v = pcall(api.to_local_id, id)
+	return ok and tonumber(v) or id
+end
+
+-------------------------------------------------------------------------------
+-- Player objects (cached per frame: these run per NPC per update)
+-------------------------------------------------------------------------------
+-- with_identity state: while it runs, db.actor is another player; helpers keep using the real one.
+local depth = 0
+local identity_actor = nil
+
+local function real_actor()
+	if depth > 0 then return identity_actor end
+	return db.actor
+end
+
+local cache_at = -1
+local cache_others = {}
+local cache_everyone = {}
+local cache_peer_by_id = {}
+
+local function refresh()
+	local now = time_global()
+	if now == cache_at then return end
+	cache_at = now
+	cache_others = {}
+	cache_everyone = {}
+	cache_peer_by_id = {}
+	local a = real_actor()
+	if a and a:alive() then cache_everyone[1] = a end
+	if not active() then return end
+	for _, p in ipairs(players()) do
+		if not p.is_self and type(p.avatar_id) == "number" then
+			cache_peer_by_id[p.avatar_id] = p.id
+			local obj = level.object_by_id(p.avatar_id)
+			if obj then
+				local ok, alive = pcall(obj.alive, obj)
+				if ok and alive then
+					cache_others[#cache_others + 1] = obj
+					cache_everyone[#cache_everyone + 1] = obj
+				end
+			end
+		end
+	end
+end
+
+-- Drops the per-frame cache (tests, session changes inside one frame).
+function invalidate()
+	cache_at = -1
+end
+
+function others()
+	refresh()
+	return cache_others
+end
+
+-- Shared per-frame list: callers must not change it.
+function everyone()
+	refresh()
+	return cache_everyone
+end
+
+local function id_of(x)
+	if type(x) == "number" then return x end
+	if x and type(x.id) == "function" then return x:id() end
+	if x and type(x.id) == "number" then return x.id end
+	return nil
+end
+
+function peer_of(obj_or_id)
+	local id = id_of(obj_or_id)
+	if id == nil then return nil end
+	if id == 0 then return self_peer() end
+	refresh()
+	local p = cache_peer_by_id[id]
+	if p ~= nil then return p end
+	if api and api.peer_of_avatar and active() then
+		local ok, v = pcall(api.peer_of_avatar, id)
+		if ok and type(v) == "number" then return v end
+	end
+	return nil
+end
+
+function object_of_peer(peer)
+	if type(peer) ~= "number" then return nil end
+	if peer == self_peer() then return real_actor() end
+	if not (api and api.avatar_of) then return nil end
+	local ok, id = pcall(api.avatar_of, peer)
+	if not (ok and type(id) == "number") then return nil end
+	return level.object_by_id(id)
+end
+
+function is_player_id(id)
+	if id == 0 then return true end
+	if type(id) ~= "number" or not active() then return false end
+	return peer_of(id) ~= nil
+end
+
+function is_proxy(obj_or_id)
+	local id = id_of(obj_or_id)
+	return id ~= nil and id ~= 0 and is_player_id(id)
+end
+
+local function pos_of(x)
+	if x and type(x.position) == "function" then return x:position() end
+	return x
+end
+
+function nearest(pos)
+	pos = pos_of(pos)
+	local best, best_d = nil, math.huge
+	if not pos then return nil, best_d end
+	local a = real_actor()
+	if a and a:alive() then
+		best, best_d = a, a:position():distance_to_sqr(pos)
+	end
+	for _, o in ipairs(others()) do
+		local d = o:position():distance_to_sqr(pos)
+		if d < best_d then best, best_d = o, d end
+	end
+	return best, best_d
+end
+
+function nearest_dist_sqr(pos)
+	local _, d = nearest(pos)
+	return d
+end
+
+function any_within(pos, r)
+	return nearest_dist_sqr(pos) <= (tonumber(r) or 0) ^ 2
+end
+
+-------------------------------------------------------------------------------
+-- Identity scope: stock code that reads db.actor / story id "actor" runs for another player.
+-------------------------------------------------------------------------------
+local function finish(saved_actor, reg, saved_story, ok, ...)
+	db.actor = saved_actor
+	if reg then reg.actor = saved_story end
+	depth = depth - 1
+	if depth == 0 then identity_actor = nil end
+	if not ok then error((...), 0) end
+	return ...
+end
+
+function with_identity(obj, f, ...)
+	if not (obj and db.actor) or obj:id() == db.actor:id() then return f(...) end
+	local saved_actor = db.actor
+	local so = _G["story_objects"]
+	local reg = so and type(so.object_id_by_story_id) == "table" and so.object_id_by_story_id or nil
+	local saved_story = reg and reg.actor
+	if depth == 0 then identity_actor = saved_actor end
+	depth = depth + 1
+	db.actor = obj
+	if reg then reg.actor = obj:id() end
+	return finish(saved_actor, reg, saved_story, pcall(f, ...))
+end
+
+-- True while some code runs under with_identity (nested wrappers must not swap again).
+function in_identity()
+	return depth > 0
+end
+
+-------------------------------------------------------------------------------
+-- Events
+-------------------------------------------------------------------------------
+local function cmain()
+	return rawget(_G, "coop_main") or coop_main
+end
+
+function encode(t)
+	local m = cmain()
+	return m and m.encode and m.encode(t) or ""
+end
+
+function decode(s)
+	local m = cmain()
+	return m and m.decode and m.decode(s) or {}
+end
+
+function send(name, t, target)
+	if not (api and active()) then return false end
+	local ok, sent = pcall(api.send_event, name, encode(t or {}), target)
+	return ok and sent == true
+end
+
+-- who: "host" = handled on the host, sender must be a client; "client" = handled on a client, sender must
+-- be the host; nil = any machine, any sender. Errors are logged, never thrown (R-11.4).
+function on(name, f, who, tag)
+	local m = cmain()
+	if not (m and m.add_event_handler) then
+		log(tag or "events", "! coop_main.add_event_handler missing: %s not handled", name)
+		return false
+	end
+	return m.add_event_handler(name, function(payload, from)
+		if who == "host" and not (is_host() and type(from) == "number" and from ~= 0) then return end
+		if who == "client" and not (is_client() and from == 0) then return end
+		local ok, err = pcall(f, decode(payload), from)
+		if not ok then report(tag or "events", "event " .. name, err) end
+	end)
+end
+
+-------------------------------------------------------------------------------
+-- Settings ([coop_npc] in configs\coop_domains_npc.ltx; every value has a default in code)
+-------------------------------------------------------------------------------
+local settings_ini = false
+
+function setting(key, def)
+	if settings_ini == false then
+		local ok, ini = pcall(ini_file, "coop_domains_npc.ltx")
+		settings_ini = ok and ini or nil
+	end
+	local ini = settings_ini
+	if not (ini and ini:section_exist("coop_npc") and ini:line_exist("coop_npc", key)) then return def end
+	local v = tostring(ini:r_string("coop_npc", key) or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	if type(def) == "number" then return tonumber(v) or def end
+	if type(def) == "boolean" then
+		v = v:lower()
+		if v == "" then return def end
+		return v == "true" or v == "1" or v == "on" or v == "yes"
+	end
+	return v ~= "" and v or def
+end
+
+-------------------------------------------------------------------------------
+-- Globals for rewritten mod code (coop_npc_compat)
+-------------------------------------------------------------------------------
+_G.coop_npc_is_player_id = function(id) return is_player_id(id) end
+_G.coop_npc_multi = function() return #others() > 0 end
+_G.coop_npc_any_player_within = function(obj, r)
+	local p = pos_of(obj)
+	if not p then return false end
+	return any_within(p, r)
+end

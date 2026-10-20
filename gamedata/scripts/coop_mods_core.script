@@ -1,0 +1,748 @@
+--[[
+	Anomaly Coop - shared helpers for third-party mod patches (gamedata\scripts\coop_mods_core.script), W4 "mods".
+
+	Every coop_mods_*.script builds on this file. Nothing here changes the game by itself: it only offers
+	helpers, and every helper is inert outside a co-op session (single player behaves like stock).
+
+	Session:   active() is_host() is_client() live_client()
+	Modules:   mod(name) -> module table or nil (a missing addon is not an error; the file is checked first)
+	           fn(tbl, key) -> function or nil
+	           wrap(tbl, key, label, make) -> true, orig   (tbl[key] = make(orig); listed in coop_status)
+	           upvalue(f, name) / find_local(module, name) -> value, holder, index (file locals of a script)
+	Players:   players() self_peer() avatar(peer) peer_of(id) is_player(id) is_remote_player(id)
+	           player_objects() -> { {peer=, obj=}, ... } (online characters on this machine)
+	           nearest_player(pos) -> obj, dist_sqr      root_of(id) -> top parent id
+	           holder_peer(item_id) -> peer that carries the item (root parent is a player character)
+	Identity:  as_player(obj, f, ...) -> pcall results, db.actor = obj for one synchronous call (host only)
+	           identity_peer() -> peer of the swapped identity inside such a call, else nil
+	Network:   on(verb, f, side)     f(t, from): t = decoded flat table; side "host" / "client" / nil
+	           on_big(verb, f, side) f(str, from): reassembled chunked string
+	           send(verb, t, target) to_host(verb, t) to_all(verb, t) send_big(verb, str, target)
+	           Event names on the wire: "mods.<verb>". Ids in payloads are in HOST numbering: hid() / lid().
+	Host:      give(peer, section, cond) -> true when an item was created in that player's character
+	           teleport(peer, pos)   fx_sound(path) fx_cam(anm, id, loop) fx_stop_cam(id)
+	Data:      ser(v) -> string | nil, why     deser(str) -> value | nil, why   (no code is ever loaded)
+	Text:      text(id, fallback)  hud(id, fallback)
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local tostring, tonumber, type, pairs, ipairs, pcall, select = tostring, tonumber, type, pairs, ipairs, pcall, select
+local string_format, string_sub, string_byte, string_find = string.format, string.sub, string.byte, string.find
+local table_concat, math_floor, math_huge = table.concat, math.floor, math.huge
+
+local PREFIX = "mods."
+local MAX_PAYLOAD = 15000 -- engine limit is 16 KiB
+local CHUNK = 4800 -- raw bytes per piece: coop_main.encode may triple them (%XX escapes of ; = %)
+local MAX_BIG = 256 * 1024
+
+-------------------------------------------------------------------------------
+-- Logging, counters
+-------------------------------------------------------------------------------
+stats = { sent = 0, send_failed = 0, received = 0, rejected = 0, limited = 0, errors = 0, big_in = 0, big_dropped = 0 }
+
+function log(tag, fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-mods] [%s] %s", tostring(tag), ok and line or tostring(fmt))
+end
+
+local err_count = {}
+function report(tag, what, e)
+	stats.errors = stats.errors + 1
+	local k = tostring(tag) .. ":" .. tostring(what)
+	local n = (err_count[k] or 0) + 1
+	err_count[k] = n
+	if n <= 3 or n % 100 == 0 then
+		log(tag, "! %s failed (#%d): %s", tostring(what), n, tostring(e))
+	end
+end
+
+-- Lines for coop_status (each family adds its own through status_line).
+local status_lines = {}
+function status_line(tag, f)
+	status_lines[tag] = f
+end
+
+-------------------------------------------------------------------------------
+-- Session
+-------------------------------------------------------------------------------
+function active()
+	return api ~= nil and api.is_active() == true
+end
+
+function is_host()
+	return api ~= nil and api.is_active() == true and api.is_host() == true
+end
+
+function is_client()
+	return api ~= nil and api.is_active() == true and api.is_client() == true
+end
+
+function live_client()
+	return is_client() and api.is_live() == true
+end
+
+function engine()
+	return api
+end
+
+-------------------------------------------------------------------------------
+-- Modules and wrapping
+-------------------------------------------------------------------------------
+local fs_cache = {}
+
+-- Script module by name, or nil. The file is checked before _G is touched, so an absent addon costs nothing.
+function mod(name)
+	if type(name) ~= "string" then return nil end
+	local m = rawget(_G, name)
+	if m == nil then
+		local known = fs_cache[name]
+		if known == nil then
+			local ok, ex = pcall(function() return getFS():exist("$game_scripts$", name .. ".script") end)
+			known = (not ok) or (ex ~= nil and ex ~= false) -- cannot check: let _G decide
+			fs_cache[name] = known
+		end
+		if not known then return nil end
+		local ok, r = pcall(function() return _G[name] end) -- _G.__index loads gamedata\scripts\<name>.script
+		m = ok and r or nil
+	end
+	return type(m) == "table" and m or nil
+end
+
+function fn(tbl, key)
+	if type(tbl) ~= "table" and type(tbl) ~= "userdata" then return nil end
+	local ok, v = pcall(function() return tbl[key] end)
+	return ok and type(v) == "function" and v or nil
+end
+
+wrapped = {} -- labels of everything wrapped, for the report and coop_status
+
+-- tbl[key] = make(orig). Returns true, orig; false when there is nothing to wrap.
+function wrap(tbl, key, label, make)
+	local orig = fn(tbl, key)
+	if not orig then return false end
+	local w = make(orig)
+	if type(w) ~= "function" then return false end
+	tbl[key] = w
+	wrapped[#wrapped + 1] = label
+	return true, orig
+end
+
+-- A callback the mod registered by value: register the wrapper instead.
+function swap_callback(name, old, new)
+	if type(old) == "function" then pcall(UnregisterScriptCallback, name, old) end
+	if type(new) == "function" then RegisterScriptCallback(name, new) end
+end
+
+function upvalue(f, name)
+	if type(f) ~= "function" then return nil end
+	for i = 1, 255 do
+		local n, v = debug.getupvalue(f, i)
+		if n == nil then return nil end
+		if n == name then return v, f, i end
+	end
+	return nil
+end
+
+-- Upvalue `name` of f, or of a function f keeps as an upvalue (a wrapper around the original).
+local function upvalue_deep(f, name)
+	local val, holder, idx = upvalue(f, name)
+	if holder then return val, holder, idx end
+	for i = 1, 255 do
+		local n, v = debug.getupvalue(f, i)
+		if n == nil then break end
+		if type(v) == "function" then
+			val, holder, idx = upvalue(v, name)
+			if holder then return val, holder, idx end
+		end
+	end
+	return nil
+end
+
+-- A file local of a script: looked up as an upvalue of the module's functions and class methods
+-- (also behind one wrapper).
+function find_local(module, name)
+	if type(module) ~= "table" then return nil end
+	local fns = {}
+	for _, v in pairs(module) do
+		if type(v) == "function" then fns[#fns + 1] = v end
+	end
+	for _, cls in pairs(module) do
+		if type(cls) == "table" or type(cls) == "userdata" then
+			pcall(function()
+				for _, f in pairs(cls) do if type(f) == "function" then fns[#fns + 1] = f end end
+			end)
+		end
+	end
+	for _, f in ipairs(fns) do
+		local val, holder, idx = upvalue_deep(f, name)
+		if holder then return val, holder, idx end
+	end
+	return nil
+end
+
+-------------------------------------------------------------------------------
+-- Ids and players
+-------------------------------------------------------------------------------
+-- local id -> host numbering (only the actor/own proxy pair differs on a client)
+function hid(id)
+	if not (api and type(id) == "number") then return id end
+	local ok, v = pcall(api.to_host_id, id)
+	return ok and v or id
+end
+
+function lid(id)
+	if not (api and type(id) == "number") then return id end
+	local ok, v = pcall(api.to_local_id, id)
+	return ok and v or id
+end
+
+function players()
+	if not api then return {} end
+	local ok, list = pcall(api.players)
+	return ok and type(list) == "table" and list or {}
+end
+
+function self_peer()
+	if not api then return 0 end
+	local ok, v = pcall(api.self_id)
+	return ok and type(v) == "number" and v >= 0 and v or 0
+end
+
+-- Online character of a peer on this machine (own peer = db.actor), or nil.
+function avatar(peer)
+	if type(peer) ~= "number" then return nil end
+	if peer == self_peer() then return db.actor end
+	if not api then return nil end
+	local ok, id = pcall(api.avatar_of, peer)
+	if not (ok and type(id) == "number") then return nil end
+	if id == 0 then return db.actor end
+	return level.object_by_id(id)
+end
+
+-- Peer whose character has this local id, or nil.
+function peer_of(id)
+	if not (api and type(id) == "number") then return nil end
+	if id == 0 then return self_peer() end
+	local ok, p = pcall(api.peer_of_avatar, id)
+	return ok and type(p) == "number" and p or nil
+end
+
+function nick_of(peer)
+	for _, p in ipairs(players()) do
+		if p.id == peer then return p.nick end
+	end
+	return nil
+end
+
+function is_player(id)
+	return id == 0 or (active() and peer_of(id) ~= nil)
+end
+
+function is_remote_player(id)
+	if not (active() and type(id) == "number" and id ~= 0) then return false end
+	local p = peer_of(id)
+	return p ~= nil and p ~= self_peer()
+end
+
+function player_objects()
+	local out = {}
+	if db.actor then out[1] = { peer = self_peer(), obj = db.actor } end
+	if not active() then return out end
+	for _, p in ipairs(players()) do
+		if not p.is_self and type(p.avatar_id) == "number" then
+			local obj = level.object_by_id(p.avatar_id)
+			if obj then out[#out + 1] = { peer = p.id, obj = obj } end
+		end
+	end
+	return out
+end
+
+function nearest_player(pos)
+	local best, best_d
+	for _, p in ipairs(player_objects()) do
+		local ok, d = pcall(function() return p.obj:position():distance_to_sqr(pos) end)
+		if ok and d and (best_d == nil or d < best_d) then best, best_d = p.obj, d end
+	end
+	return best, best_d or math_huge
+end
+
+-- Top parent of an object (the object itself when it has none).
+function root_of(id)
+	local sim = alife()
+	local cur = id
+	for _ = 1, 16 do
+		local se = sim and type(cur) == "number" and cur < 65535 and sim:object(cur)
+		if not se then return cur end
+		local p = se.parent_id
+		if not p or p == 65535 then return cur end
+		cur = p
+	end
+	return cur
+end
+
+function holder_peer(item_id)
+	local r = root_of(item_id)
+	if r == nil or r == item_id then return nil end
+	return peer_of(r)
+end
+
+-------------------------------------------------------------------------------
+-- Identity: run a function with db.actor = another player's character (host)
+-------------------------------------------------------------------------------
+local identity = nil -- { obj, peer }
+
+local function finish_identity(real, ok, ...)
+	db.actor = real
+	identity = nil
+	return ok, ...
+end
+
+function as_player(obj, f, ...)
+	local real = db.actor
+	if obj == nil or obj == real or identity ~= nil then return pcall(f, ...) end
+	identity = { obj = obj, peer = peer_of(obj:id()) }
+	db.actor = obj
+	return finish_identity(real, pcall(f, ...))
+end
+
+function identity_peer()
+	return identity and identity.peer or nil
+end
+
+function identity_obj()
+	return identity and identity.obj or nil
+end
+
+-------------------------------------------------------------------------------
+-- Network
+-------------------------------------------------------------------------------
+-- Host side flood guard: per sender and verb, burst then a steady rate.
+local buckets = {}
+local limits = {} -- verb -> { burst, per_s }
+
+function set_limit(verb, burst, per_s)
+	limits[verb] = { burst, per_s }
+end
+
+local function rate_ok(from, verb)
+	if from == 0 or not is_host() then return true end
+	local lim = limits[verb] or { 20, 10 }
+	local k = tostring(from) .. ":" .. verb
+	local b = buckets[k]
+	local now = time_global()
+	if not b then
+		b = { tokens = lim[1], at = now }
+		buckets[k] = b
+	end
+	b.tokens = math.min(lim[1], b.tokens + (now - b.at) * lim[2] / 1000)
+	b.at = now
+	if b.tokens < 1 then return false end
+	b.tokens = b.tokens - 1
+	return true
+end
+
+local function side_ok(side, from)
+	if side == "host" then return is_host() and type(from) == "number" and from ~= 0 end
+	if side == "client" then return is_client() and from == 0 end
+	return true
+end
+
+function on(verb, f, side)
+	local cm = mod("coop_main")
+	if not (cm and cm.add_event_handler) then return false end
+	return cm.add_event_handler(PREFIX .. verb, function(payload, from)
+		stats.received = stats.received + 1
+		if not side_ok(side, from) then
+			stats.rejected = stats.rejected + 1
+			return
+		end
+		if not rate_ok(from, verb) then
+			stats.limited = stats.limited + 1
+			return
+		end
+		local t = cm.decode(payload)
+		local ok, e = pcall(f, t, from)
+		if not ok then report("net", verb, e) end
+	end)
+end
+
+function send(verb, t, target)
+	if not active() then return false end
+	local cm = mod("coop_main")
+	local payload = type(t) == "table" and cm and cm.encode(t) or tostring(t or "")
+	if #payload > MAX_PAYLOAD then
+		log("net", "! %s not sent: %d bytes", verb, #payload)
+		stats.send_failed = stats.send_failed + 1
+		return false
+	end
+	local ok, sent = pcall(api.send_event, PREFIX .. verb, payload, target or -1)
+	if ok and sent == true then
+		stats.sent = stats.sent + 1
+		return true
+	end
+	stats.send_failed = stats.send_failed + 1
+	return false
+end
+
+function to_host(verb, t) return send(verb, t, 0) end
+function to_all(verb, t) return send(verb, t, -1) end
+function to_peer(peer, verb, t) return send(verb, t, peer) end
+
+-- Chunked strings (> one event). Each piece: k = transfer key, i = index, n = count, d = data.
+local big_seq = 0
+local big_in = {} -- "<from>:<verb>" -> { k, n, parts, got, bytes }
+
+function send_big(verb, str, target)
+	if type(str) ~= "string" or #str > MAX_BIG then return false end
+	big_seq = big_seq + 1
+	local key = tostring(time_global()) .. "-" .. big_seq
+	local n = math.max(1, math.ceil(#str / CHUNK))
+	for i = 1, n do
+		local piece = string_sub(str, (i - 1) * CHUNK + 1, i * CHUNK)
+		if not send(verb, { k = key, i = i, n = n, d = piece }, target) then return false end
+	end
+	return true
+end
+
+function on_big(verb, f, side)
+	return on(verb, function(t, from)
+		local key, i, n, d = t.k, tonumber(t.i), tonumber(t.n), t.d
+		if type(key) ~= "string" or not (i and n) or type(d) ~= "string" or n < 1 or n > 64 or i < 1 or i > n then
+			stats.big_dropped = stats.big_dropped + 1
+			return
+		end
+		local slot = tostring(from) .. ":" .. verb
+		local b = big_in[slot]
+		if not b or b.k ~= key then
+			b = { k = key, n = n, parts = {}, got = 0, bytes = 0 }
+			big_in[slot] = b
+		end
+		if b.n ~= n or b.parts[i] then return end
+		b.parts[i] = d
+		b.got = b.got + 1
+		b.bytes = b.bytes + #d
+		if b.bytes > MAX_BIG then
+			big_in[slot] = nil
+			stats.big_dropped = stats.big_dropped + 1
+			return
+		end
+		if b.got < b.n then return end
+		big_in[slot] = nil
+		stats.big_in = stats.big_in + 1
+		f(table_concat(b.parts), from)
+	end, side)
+end
+
+-------------------------------------------------------------------------------
+-- Host: items to a player, teleports, effects for everybody
+-------------------------------------------------------------------------------
+function give(peer, section, cond)
+	if not (is_host() and type(section) == "string" and ini_sys:section_exist(section)) then return false end
+	local obj = avatar(peer)
+	if not obj then return false end
+	local t = type(cond) == "number" and { cond = math.max(0, math.min(1, cond)) } or nil
+	local ok, se = pcall(alife_create_item, section, obj, t)
+	if not ok then
+		report("host", "give " .. section, se)
+		return false
+	end
+	return se ~= nil
+end
+
+-- Calls fn(obj) once the object with this id (and section) is online here; gives up after timeout_ms.
+local online_seq = 0
+function when_online(id, section, fn, timeout_ms)
+	if type(id) ~= "number" then return end
+	online_seq = online_seq + 1
+	local deadline = time_global() + (timeout_ms or 10000)
+	CreateTimeEvent("coop_mods_online", tostring(id) .. "_" .. online_seq, 0, function()
+		local obj = level.object_by_id(id)
+		if obj and (section == nil or obj:section() == section) then
+			local ok, e = pcall(fn, obj)
+			if not ok then report("core", "when_online", e) end
+			return true
+		end
+		return time_global() > deadline
+	end)
+end
+
+local function vec(x, y, z)
+	return vector():set(tonumber(x) or 0, tonumber(y) or 0, tonumber(z) or 0)
+end
+_vec = vec
+
+-- Moves a player's own actor (the owner moves its character; the host only asks).
+function teleport(peer, pos)
+	if not (pos and is_host()) then return false end
+	if peer == self_peer() then
+		if db.actor then db.actor:set_actor_position(pos) end
+		return true
+	end
+	return to_peer(peer, "tp", { x = pos.x, y = pos.y, z = pos.z })
+end
+
+local function sound_path_ok(p)
+	return type(p) == "string" and #p > 0 and #p < 256 and not string_find(p, "..", 1, true)
+end
+
+function fx_sound(path)
+	if not sound_path_ok(path) then return end
+	if is_host() then to_all("fx", { s = path }) end
+end
+
+function fx_cam(anm, id, loop)
+	if is_host() and sound_path_ok(anm) then to_all("fx", { c = anm, i = tonumber(id) or 0, l = loop and true or false }) end
+end
+
+function fx_stop_cam(id)
+	if is_host() then to_all("fx", { x = tonumber(id) or 0 }) end
+end
+
+-------------------------------------------------------------------------------
+-- Safe serializer for nested tables of numbers, strings and booleans.
+--   n<number>;  s<len>:<bytes>  t  f  {key value key value ...}
+-------------------------------------------------------------------------------
+local MAX_DEPTH = 12
+local MAX_ITEMS = 50000
+
+local function ser_into(v, out, depth, budget)
+	local tv = type(v)
+	if tv == "number" then
+		if v ~= v then return false, "nan" end
+		if v == math_huge then out[#out + 1] = "n1e999;"
+		elseif v == -math_huge then out[#out + 1] = "n-1e999;"
+		elseif v == math_floor(v) and v > -2147483648 and v < 2147483647 then out[#out + 1] = string_format("n%d;", v)
+		else out[#out + 1] = string_format("n%.17g;", v) end
+		return true
+	elseif tv == "string" then
+		out[#out + 1] = "s" .. #v .. ":" .. v
+		return true
+	elseif tv == "boolean" then
+		out[#out + 1] = v and "t" or "f"
+		return true
+	elseif tv == "table" then
+		if depth >= MAX_DEPTH then return false, "too deep" end
+		out[#out + 1] = "{"
+		for k, x in pairs(v) do
+			budget.n = budget.n + 1
+			if budget.n > MAX_ITEMS then return false, "too many values" end
+			local tk = type(k)
+			if (tk == "number" or tk == "string" or tk == "boolean") then
+				local mark = #out
+				local ok = ser_into(k, out, depth + 1, budget)
+				if ok then ok = ser_into(x, out, depth + 1, budget) end
+				if not ok then
+					for j = #out, mark + 1, -1 do out[j] = nil end -- skip what cannot travel (functions, userdata)
+				end
+			end
+		end
+		out[#out + 1] = "}"
+		return true
+	end
+	return false, "type " .. tv
+end
+
+function ser(v)
+	local out = {}
+	local ok, why = ser_into(v, out, 0, { n = 0 })
+	if not ok then return nil, why end
+	return table_concat(out)
+end
+
+function deser(str)
+	if type(str) ~= "string" then return nil, "not a string" end
+	local pos, len, items = 1, #str, 0
+	local parse
+	parse = function(depth)
+		if depth > MAX_DEPTH then error("too deep", 0) end
+		local c = string_sub(str, pos, pos)
+		if c == "n" then
+			local e = string_find(str, ";", pos + 1, true)
+			if not e then error("bad number", 0) end
+			local v = tonumber(string_sub(str, pos + 1, e - 1))
+			if v == nil then error("bad number", 0) end
+			pos = e + 1
+			return v
+		elseif c == "s" then
+			local e = string_find(str, ":", pos + 1, true)
+			local n = e and tonumber(string_sub(str, pos + 1, e - 1))
+			if not n or n < 0 or e + n > len then error("bad string", 0) end
+			local v = string_sub(str, e + 1, e + n)
+			pos = e + n + 1
+			return v
+		elseif c == "t" then pos = pos + 1; return true
+		elseif c == "f" then pos = pos + 1; return false
+		elseif c == "{" then
+			pos = pos + 1
+			local t = {}
+			while true do
+				if pos > len then error("unterminated table", 0) end
+				if string_sub(str, pos, pos) == "}" then
+					pos = pos + 1
+					return t
+				end
+				items = items + 1
+				if items > MAX_ITEMS then error("too many values", 0) end
+				local k = parse(depth + 1)
+				if type(k) == "table" then error("table key", 0) end
+				t[k] = parse(depth + 1)
+			end
+		end
+		error("bad token at " .. pos, 0)
+	end
+	local ok, v = pcall(parse, 0)
+	if not ok then return nil, v end
+	if pos ~= len + 1 then return nil, "trailing data" end
+	return v
+end
+
+-------------------------------------------------------------------------------
+-- Notifications from the engine or other coop scripts (see Requests in the W4 report).
+-- They call these entry points when they exist; nothing here depends on them being called.
+--   coop_mods_core.on_actor_revived(reviver_peer, medkit_section)   owner of the revived actor, after a revive
+--   coop_mods_core.on_container_opened(peer, container_id)          host, a client opened a box or a corpse
+--   coop_mods_core.on_new_character(peer)                           host, a player joined with a new character
+--   coop_mods_core.on_avatar_step(avatar_id, material, power, move_state)   any machine, footstep of an avatar
+-------------------------------------------------------------------------------
+local listeners = {} -- name -> { f, ... }
+
+function listen(name, f)
+	if type(f) ~= "function" then return end
+	listeners[name] = listeners[name] or {}
+	local l = listeners[name]
+	l[#l + 1] = f
+end
+
+local function fire(name, ...)
+	local l = listeners[name]
+	if not l then return end
+	for i = 1, #l do
+		local ok, e = pcall(l[i], ...)
+		if not ok then report("hook", name, e) end
+	end
+end
+
+local revive = { last = -100000, low_since = nil }
+
+function on_actor_revived(reviver_peer, medkit_section)
+	if not active() then return end
+	revive.last = time_global()
+	fire("actor_revived", reviver_peer, medkit_section)
+end
+
+-- Until the engine reports revives: a downed player's health is pinned just above zero and the revive sets
+-- it in one step, so "near zero for a while, then at least 0.1" counts as a revive (healing up from near
+-- zero counts too; the listeners only lift values that are at zero).
+local function revive_poll()
+	if not (listeners.actor_revived and db.actor) then return end
+	local tg = time_global()
+	local h = db.actor.health
+	if type(h) ~= "number" then return end
+	if h < 0.03 then
+		revive.low_since = revive.low_since or tg
+	elseif revive.low_since then
+		local was = revive.low_since
+		revive.low_since = nil
+		if h >= 0.1 and tg - was > 1000 and tg - revive.last > 3000 then
+			revive.last = tg
+			fire("actor_revived", nil, nil)
+		end
+	end
+end
+
+function on_container_opened(peer, container_id)
+	if is_host() then fire("container_opened", peer, container_id) end
+end
+
+function on_new_character(peer)
+	if is_host() then fire("new_character", peer) end
+end
+
+function on_avatar_step(avatar_id, material, power, move_state)
+	if active() then fire("avatar_step", avatar_id, material, power, move_state) end
+end
+
+-------------------------------------------------------------------------------
+-- Text
+-------------------------------------------------------------------------------
+function text(id, fallback)
+	local ok, s = pcall(game.translate_string, id)
+	if ok and type(s) == "string" and s ~= id and s ~= "" then return s end
+	return fallback or id
+end
+
+function hud(id, fallback)
+	local s = text(id, fallback)
+	local am = rawget(_G, "actor_menu")
+	if am and am.set_msg then pcall(am.set_msg, 1, s, 4) end
+	log("hud", "%s", s)
+end
+
+-------------------------------------------------------------------------------
+-- Status (appended to coop_status) and receivers that every machine needs
+-------------------------------------------------------------------------------
+function print_status()
+	log("core", "role %s | events sent %d (failed %d), received %d (rejected %d, rate-limited %d), big %d (dropped %d), errors %d",
+		is_host() and "host" or is_client() and "client" or "off", stats.sent, stats.send_failed, stats.received,
+		stats.rejected, stats.limited, stats.big_in, stats.big_dropped, stats.errors)
+	local tags = {}
+	for tag in pairs(status_lines) do tags[#tags + 1] = tag end
+	table.sort(tags)
+	for _, tag in ipairs(tags) do
+		local ok, line = pcall(status_lines[tag])
+		if ok and line then log(tag, "%s", tostring(line)) end
+	end
+	if #wrapped > 0 then log("core", "wrapped: %s", table_concat(wrapped, ", ")) end
+end
+
+local cams = {}
+
+local function on_fx(t, from)
+	if t.s and sound_path_ok(t.s) then
+		local snd = xr_sound and xr_sound.get_safe_sound_object and xr_sound.get_safe_sound_object(t.s)
+		if snd and db.actor then snd:play(db.actor, 0, sound_object.s2d) end
+	end
+	if t.c and sound_path_ok(t.c) then
+		local id = tonumber(t.i) or 0
+		level.add_cam_effector(t.c, id, t.l == true, "")
+		cams[id] = true
+	end
+	if t.x then
+		local id = tonumber(t.x) or 0
+		if cams[id] then level.remove_cam_effector(id); cams[id] = nil end
+	end
+end
+
+local function on_tp(t, from)
+	local x, y, z = tonumber(t.x), tonumber(t.y), tonumber(t.z)
+	if not (x and y and z and db.actor) then return end
+	log("core", "moved by the host to [%.1f %.1f %.1f]", x, y, z)
+	db.actor:set_actor_position(vec(x, y, z))
+end
+
+local status_hooked = false
+local function hook_status()
+	if status_hooked then return end
+	local cm = mod("coop_main")
+	if not (cm and type(cm.print_status) == "function") then return end
+	status_hooked = true
+	local orig = cm.print_status
+	cm.print_status = function(...)
+		orig(...)
+		local ok, e = pcall(print_status)
+		if not ok then log("core", "! status: %s", tostring(e)) end
+	end
+end
+
+local function actor_on_update()
+	if active() then revive_poll() end
+end
+
+function on_game_start()
+	if not api then return end
+	on("fx", on_fx, "client")
+	on("tp", on_tp, "client")
+	hook_status()
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+end

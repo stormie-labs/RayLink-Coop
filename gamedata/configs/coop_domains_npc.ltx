@@ -1,0 +1,16 @@
+; Anomaly Coop - Lua execution domains of the NPC group (W4 "npc"), read by scripts\coop_main.script after
+; coop_domains.ltx (same sections and rules, see that file). The coop_npc_* scripts are view-domain through
+; the coop_* prefix of the main file and decide host/client themselves.
+
+[owner]
+gameplay_disguise          ; the player's half of the disguise (outfit -> community, HUD bar, sudden actions)
+                           ; runs on the player's machine; the NPC half is judged by the host
+                           ; (coop_npc_disguise). Its npc_on_update never fires for client puppets.
+bind_campfire              ; matches on a campfire and the campfire hints are the player's; lighting goes to
+                           ; the host (coop_npc_world), the flame comes back through coop_objects
+
+; Settings of the coop_npc_* scripts (not a domain section; coop_main ignores it).
+[coop_npc]
+scene_radius               = 30     ; m: a story scene (arrival that disables the UI or teleports) also takes
+                                    ; the players this close to those who walked in; 0 = the whole level
+sound_radius               = 80     ; m: NPC voices started by Lua reach a client this close to the NPC

@@ -1,0 +1,451 @@
+--[[
+	Anomaly Coop - economy group, shared helpers (gamedata\scripts\coop_economy_core.script)
+
+	No behaviour of its own: the other coop_economy_*.script files use it. Nothing here changes the game
+	outside a co-op session.
+
+	For other scripts:
+		coop_economy_core.rule(key)              session rule of the economy group (RULES below); the host's
+		                                          value when coop_settings provides it, else the default
+		coop_economy_core.pack(v) / unpack(s)    nested Lua value <-> string (deterministic, no code: safe for
+		                                          network input); tables, strings, numbers, booleans, CTime
+		coop_economy_core.players()              { {id, nick, avatar_id, is_self, obj, pos}, ... } on this machine
+		coop_economy_core.far_players(center, radius, except_peer) -> { nick, ... } not within radius
+	Events of the group are named "economy.<what>"; payloads are coop_main.encode tables.
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local string_format = string.format
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+local math_floor, math_huge = math.floor, math.huge
+
+-------------------------------------------------------------------------------
+-- Session rules. Defaults; the host sets them through coop_settings.rule(key) when that exists.
+-------------------------------------------------------------------------------
+RULES = {
+	party_fast_travel = true, -- fast travel / guides need everyone within gather_radius; the group moves together
+	gather_radius = 20, -- m
+	sleep_rule = "vote", -- host | gather | vote | safe_or_vote (R-10.2)
+	sleep_radius = 6, -- m, sleep_rule = gather
+	vote_timeout = 30, -- s, an unanswered vote is a "no"
+	teleport_radius = 50, -- m, a scripted teleport takes the players around its trigger along (R-4.4)
+	travel_time = true, -- a group travel moves the clock once, on the host
+	max_skip_hours = 48, -- largest time skip the host accepts from a player
+	money_transfer = true, -- players may give each other money (R-6.7)
+	max_money_transfer = 1000000,
+	give_radius = 5, -- m, "Give to <player>" in the inventory menu
+}
+
+local RULE_KIND = {}
+for k, v in pairs(RULES) do RULE_KIND[k] = type(v) end
+
+function rule(key)
+	local def = RULES[key]
+	local cs = rawget(_G, "coop_settings")
+	if api and cs and type(cs.rule) == "function" then
+		local ok, v = pcall(cs.rule, "economy/" .. key)
+		if ok and v ~= nil then
+			local kind = RULE_KIND[key]
+			if kind == "number" then
+				v = tonumber(v)
+			elseif kind == "boolean" then
+				if type(v) ~= "boolean" then v = (v == "true" or v == "1" or v == 1) end
+			else
+				v = tostring(v)
+			end
+			if v ~= nil then return v end
+		end
+	end
+	return def
+end
+
+-------------------------------------------------------------------------------
+-- Session state
+-------------------------------------------------------------------------------
+function engine() return api end
+function in_session() return api ~= nil and api.is_active() end
+function is_host() return api ~= nil and api.is_active() and api.is_host() end
+function is_client() return api ~= nil and api.is_active() and api.is_client() end
+-- Host, or a client that finished loading the host's world.
+function live() return api ~= nil and api.is_active() and api.is_live() end
+function self_id() return api and api.self_id() or -1 end
+
+-------------------------------------------------------------------------------
+-- Logging and messages
+-------------------------------------------------------------------------------
+function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-eco] %s", ok and line or tostring(fmt))
+end
+
+-- Script module by name, or nil (a missing addon is not an error).
+function mod(name)
+	local m = rawget(_G, name)
+	if m == nil then
+		local ok, r = pcall(function() return _G[name] end) -- _G.__index loads gamedata\scripts\<name>.script
+		m = ok and r or nil
+	end
+	return type(m) == "table" and m or nil
+end
+
+-- Translated string; `fallback` (English) when the id is unknown.
+function tr(id, fallback)
+	local g = rawget(_G, "game")
+	if g and g.translate_string then
+		local ok, s = pcall(g.translate_string, id)
+		if ok and type(s) == "string" and s ~= id then return s end
+	end
+	return fallback or id
+end
+
+function fmt(id, fallback, ...)
+	local ok, s = pcall(string_format, tr(id, fallback), ...)
+	return ok and s or tr(id, fallback)
+end
+
+-- PDA tip (news) with a HUD line as fallback.
+function tip(text, ms)
+	local actor = db and db.actor
+	local nm = rawget(_G, "news_manager")
+	if actor and nm and nm.send_tip then
+		if pcall(nm.send_tip, actor, text, nil, nil, ms or 6000) then return end
+	end
+	hud(text)
+end
+
+function hud(text)
+	local am = rawget(_G, "actor_menu")
+	if not (am and am.set_msg and pcall(am.set_msg, 1, text, 4)) then log("%s", text) end
+end
+
+function now() return time_global() end
+
+-------------------------------------------------------------------------------
+-- Events
+-------------------------------------------------------------------------------
+local PREFIX = "economy."
+
+-- target: nil/-1 everybody else, 0 host, N player N. Returns true when queued.
+function send(name, t, target)
+	if not api then return false end
+	local ok, sent, why = pcall(api.send_event, PREFIX .. name, coop_main.encode(t or {}), target or -1)
+	if not (ok and sent) then
+		log("! %s%s not sent: %s", PREFIX, name, tostring(ok and why or sent))
+		return false
+	end
+	return true
+end
+
+-- Host: the same event to every live client except `except` (the host re-sends it, so `from` is 0 there).
+function send_clients(name, t, except)
+	local n = 0
+	for _, p in ipairs(players()) do
+		if not p.is_self and p.id ~= except then
+			if send(name, t, p.id) then n = n + 1 end
+		end
+	end
+	return n
+end
+
+-- func(t, from, payload). Registered once per Lua state; coop_main runs it inside pcall.
+local registered = {}
+function on(name, func)
+	if registered[name] then return end
+	local cm = rawget(_G, "coop_main") or mod("coop_main")
+	if not (cm and cm.add_event_handler) then return end
+	registered[name] = true
+	cm.add_event_handler(PREFIX .. name, function(payload, from)
+		func(coop_main.decode(payload), tonumber(from) or -1, payload)
+	end)
+end
+
+-------------------------------------------------------------------------------
+-- Ids, players, positions
+-------------------------------------------------------------------------------
+-- Ids on the wire are in host numbering; only the pair (0, my proxy) differs on a client.
+function host_id(id)
+	if api and api.to_host_id and type(id) == "number" then
+		local ok, v = pcall(api.to_host_id, id)
+		if ok and type(v) == "number" then return v end
+	end
+	return id
+end
+
+function local_id(id)
+	if api and api.to_local_id and type(id) == "number" then
+		local ok, v = pcall(api.to_local_id, id)
+		if ok and type(v) == "number" then return v end
+	end
+	return id
+end
+
+local function copy_vec(p)
+	return p and { x = p.x, y = p.y, z = p.z } or nil
+end
+
+-- Position of a game object or server entity id on this machine, plain table or nil.
+function position_of_id(id)
+	if type(id) ~= "number" then return nil end
+	if id == 0 and db and db.actor then return copy_vec(db.actor:position()) end
+	local obj = level.object_by_id(id)
+	if obj then return copy_vec(obj:position()) end
+	local sim = rawget(_G, "alife") and alife()
+	local se = sim and sim:object(id)
+	return se and copy_vec(se.position) or nil
+end
+
+-- Everybody in the session as seen here; obj = game object of the character (nil while offline here).
+function players()
+	local out = {}
+	if not (api and api.is_active()) then return out end
+	local ok, list = pcall(api.players)
+	if not (ok and type(list) == "table") then return out end
+	for _, p in ipairs(list) do
+		local e = { id = p.id, nick = p.nick or "?", avatar_id = p.avatar_id, is_self = p.is_self == true }
+		if e.is_self then
+			e.avatar_id = 0
+			e.obj = db and db.actor
+		elseif e.avatar_id then
+			e.obj = level.object_by_id(e.avatar_id)
+		end
+		if e.obj then
+			e.pos = copy_vec(e.obj:position())
+		elseif e.avatar_id and api.is_host() then
+			e.pos = position_of_id(e.avatar_id) -- a client's ALife copy is frozen: offline = unknown there
+		end
+		out[#out + 1] = e
+	end
+	return out
+end
+
+function player(peer)
+	for _, p in ipairs(players()) do
+		if p.id == peer then return p end
+	end
+end
+
+function nick_of(peer)
+	local p = player(peer)
+	return p and p.nick or ("#" .. tostring(peer))
+end
+
+-- Number of other players in the session (cheap: no positions).
+function others_count()
+	if not (api and api.is_active()) then return 0 end
+	local ok, list = pcall(api.players)
+	if not (ok and type(list) == "table") then return 0 end
+	local n = 0
+	for _, p in ipairs(list) do
+		if not p.is_self then n = n + 1 end
+	end
+	return n
+end
+
+function dist(a, b)
+	local dx, dy, dz = a.x - b.x, a.y - b.y, a.z - b.z
+	return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
+
+-- Nicks of players (except `except_peer`) farther than `radius` from `center`, or with no known position.
+function far_players(center, radius, except_peer)
+	local far = {}
+	for _, p in ipairs(players()) do
+		if p.id ~= except_peer then
+			if not (center and p.pos and dist(center, p.pos) <= radius) then far[#far + 1] = p.nick end
+		end
+	end
+	return far
+end
+
+-- Root parent of a server entity (the entity itself when it lies in the world).
+function root_of(id)
+	local sim = alife()
+	local se = sim and sim:object(id)
+	local guard = 0
+	while se and se.parent_id and se.parent_id ~= 65535 and guard < 16 do
+		local parent = sim:object(se.parent_id)
+		if not parent then break end
+		se = parent
+		guard = guard + 1
+	end
+	return se and se.id or nil
+end
+
+-------------------------------------------------------------------------------
+-- Validation of network input
+-------------------------------------------------------------------------------
+-- Finite number within [lo, hi], or nil.
+function num(v, lo, hi)
+	v = tonumber(v)
+	if v == nil or v ~= v or v == math_huge or v == -math_huge then return nil end
+	if lo and v < lo then return nil end
+	if hi and v > hi then return nil end
+	return v
+end
+
+function int(v, lo, hi)
+	v = num(v, lo, hi)
+	if v == nil or v ~= math_floor(v) then return nil end
+	return v
+end
+
+-- Short identifier-like string, or nil.
+function word(v, max_len)
+	if type(v) ~= "string" or v == "" or #v > (max_len or 64) then return nil end
+	if v:find("[^%w_%.%-:]") then return nil end
+	return v
+end
+
+-------------------------------------------------------------------------------
+-- pack / unpack: deterministic serialisation of nested values (sorted keys), safe to parse.
+--   _ nil   T true   F false   n<number>;   s<len>:<bytes>   {<key><value>...}   c<packed CTime table>
+-------------------------------------------------------------------------------
+local MAX_DEPTH = 12
+local MAX_NODES = 20000
+
+local function key_less(a, b)
+	local ta, tb = type(a), type(b)
+	if ta ~= tb then return ta == "number" end
+	return a < b
+end
+
+local function is_ctime(v)
+	if type(v) ~= "userdata" then return false end
+	local ok, r = pcall(function() return v.diffSec ~= nil and v.dateToString ~= nil end)
+	return ok and r
+end
+
+local function pack_into(out, v, depth)
+	local tv = type(v)
+	if tv == "nil" then
+		out[#out + 1] = "_"
+	elseif tv == "boolean" then
+		out[#out + 1] = v and "T" or "F"
+	elseif tv == "number" then
+		if v ~= v or v == math_huge or v == -math_huge then
+			out[#out + 1] = "_"
+		elseif v == math_floor(v) and v > -1e15 and v < 1e15 then
+			out[#out + 1] = string_format("n%d;", v)
+		else
+			out[#out + 1] = string_format("n%.17g;", v)
+		end
+	elseif tv == "string" then
+		out[#out + 1] = "s" .. #v .. ":" .. v
+	elseif tv == "table" then
+		if depth <= 0 then
+			out[#out + 1] = "_"
+			return
+		end
+		local keys = {}
+		for k in pairs(v) do
+			local tk = type(k)
+			if tk == "string" or (tk == "number" and k == k) then keys[#keys + 1] = k end
+		end
+		table.sort(keys, key_less)
+		out[#out + 1] = "{"
+		for i = 1, #keys do
+			local k = keys[i]
+			pack_into(out, k, depth)
+			pack_into(out, v[k], depth - 1)
+		end
+		out[#out + 1] = "}"
+	elseif is_ctime(v) then
+		local ud = rawget(_G, "utils_data")
+		local ok, t = pcall(function() return ud.CTime_to_table(v) end)
+		if ok and type(t) == "table" then
+			out[#out + 1] = "c"
+			pack_into(out, t, 2)
+		else
+			out[#out + 1] = "_"
+		end
+	else
+		out[#out + 1] = "_" -- functions, other userdata: not data
+	end
+end
+
+function pack(v)
+	local out = {}
+	pack_into(out, v, MAX_DEPTH)
+	return table.concat(out)
+end
+
+-- Returns value, next position; raises on malformed input (unpack() catches).
+local function unpack_at(s, i, depth, budget)
+	budget.n = budget.n + 1
+	if budget.n > MAX_NODES then error("too many nodes") end
+	local c = s:sub(i, i)
+	if c == "_" then return nil, i + 1 end
+	if c == "T" then return true, i + 1 end
+	if c == "F" then return false, i + 1 end
+	if c == "n" then
+		local j = s:find(";", i + 1, true)
+		if not j then error("number") end
+		local v = tonumber(s:sub(i + 1, j - 1))
+		if v == nil then error("number") end
+		return v, j + 1
+	end
+	if c == "s" then
+		local j = s:find(":", i + 1, true)
+		if not j then error("string") end
+		local len = tonumber(s:sub(i + 1, j - 1))
+		if not len or len < 0 or j + len > #s then error("string length") end
+		return s:sub(j + 1, j + len), j + len + 1
+	end
+	if c == "{" then
+		if depth <= 0 then error("too deep") end
+		local t = {}
+		i = i + 1
+		while true do
+			local d = s:sub(i, i)
+			if d == "}" then return t, i + 1 end
+			if d == "" then error("unterminated table") end
+			local k
+			k, i = unpack_at(s, i, depth - 1, budget)
+			local v
+			v, i = unpack_at(s, i, depth - 1, budget)
+			if (type(k) == "string" or type(k) == "number") and v ~= nil then t[k] = v end
+		end
+	end
+	if c == "c" then
+		local t
+		t, i = unpack_at(s, i + 1, 3, budget)
+		local ud = rawget(_G, "utils_data")
+		if type(t) == "table" and ud and ud.CTime_from_table then
+			local ok, ct = pcall(ud.CTime_from_table, t)
+			if ok then return ct, i end
+		end
+		return t, i
+	end
+	error("bad tag")
+end
+
+-- value or nil, error
+function unpack(s)
+	if type(s) ~= "string" or s == "" then return nil, "empty" end
+	local ok, v, i = pcall(unpack_at, s, 1, MAX_DEPTH + 1, { n = 0 })
+	if not ok then return nil, tostring(v) end
+	if i ~= #s + 1 then return nil, "trailing data" end
+	return v
+end
+
+function copy(v)
+	if type(v) ~= "table" then return v end
+	return (unpack(pack(v)))
+end
+
+-------------------------------------------------------------------------------
+-- Diagnostics: one line per economy script (for coop_status)
+-------------------------------------------------------------------------------
+local MODULES = { "coop_economy_group", "coop_economy_travel", "coop_economy_world", "coop_economy_mdata",
+	"coop_economy_money", "coop_economy_intent" }
+
+function print_status()
+	for _, name in ipairs(MODULES) do
+		local m = rawget(_G, name)
+		if m and m.print_status then
+			local ok, err = pcall(m.print_status)
+			if not ok then log("! %s.print_status: %s", name, tostring(err)) end
+		end
+	end
+end

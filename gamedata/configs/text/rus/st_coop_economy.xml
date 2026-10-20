@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop - economy group (W4): group travel, time skips, giving money and items. -->
+<string_table>
+	<string id="st_coop_eco_travel_far">
+		<text>Для перемещения все игроки должны быть не дальше %d м (далеко: %s).</text>
+	</string>
+	<string id="st_coop_eco_time_skipped">
+		<text>%s: прошло %d ч %02d мин (%s).</text>
+	</string>
+	<string id="st_coop_eco_kind_sleep">
+		<text>сон</text>
+	</string>
+	<string id="st_coop_eco_kind_wait">
+		<text>ожидание</text>
+	</string>
+	<string id="st_coop_eco_kind_travel">
+		<text>переход</text>
+	</string>
+	<string id="st_coop_eco_waiting_group">
+		<text>Спрашиваем группу...</text>
+	</string>
+	<string id="st_coop_eco_vote_sleep">
+		<text>%s хочет поспать %d ч. Согласны?</text>
+	</string>
+	<string id="st_coop_eco_vote_wait">
+		<text>%s хочет переждать время. Согласны?</text>
+	</string>
+	<string id="st_coop_eco_deny_host_only">
+		<text>В этой сессии пропускать время может только хост.</text>
+	</string>
+	<string id="st_coop_eco_deny_far">
+		<text>Чтобы поспать, все должны быть рядом (далеко: %s).</text>
+	</string>
+	<string id="st_coop_eco_deny_no">
+		<text>%s не хочет пропускать время.</text>
+	</string>
+	<string id="st_coop_eco_deny_timeout">
+		<text>Нет ответа от: %s.</text>
+	</string>
+	<string id="st_coop_eco_deny_left">
+		<text>Голосование отменено (%s вышел).</text>
+	</string>
+	<string id="st_coop_eco_deny_busy">
+		<text>Другой пропуск времени ещё решается.</text>
+	</string>
+	<string id="st_coop_eco_deny_bad">
+		<text>Хост отклонил пропуск времени.</text>
+	</string>
+	<string id="st_coop_eco_currency">
+		<text>руб.</text>
+	</string>
+	<string id="st_coop_eco_give_to">
+		<text>Отдать: %s</text>
+	</string>
+	<string id="st_coop_eco_item_given">
+		<text>%s передано игроку %s.</text>
+	</string>
+	<string id="st_coop_eco_give_money_to">
+		<text>Дать денег: %s...</text>
+	</string>
+	<string id="st_coop_eco_money_all">
+		<text>Все (%s)</text>
+	</string>
+	<string id="st_coop_eco_money_out">
+		<text>Вы передали %s игроку %s.</text>
+	</string>
+	<string id="st_coop_eco_money_in">
+		<text>%s передал вам %s.</text>
+	</string>
+	<string id="st_coop_eco_money_back">
+		<text>Деньги возвращены: %s (%s).</text>
+	</string>
+	<string id="st_coop_eco_money_why_off">
+		<text>передача денег выключена</text>
+	</string>
+	<string id="st_coop_eco_money_why_gone">
+		<text>получателя нет в игре</text>
+	</string>
+	<string id="st_coop_eco_money_why_bad">
+		<text>перевод отклонён</text>
+	</string>
+	<string id="st_coop_eco_money_off">
+		<text>В этой сессии передача денег выключена.</text>
+	</string>
+	<string id="st_coop_eco_money_none">
+		<text>Нет денег для передачи.</text>
+	</string>
+	<string id="st_coop_eco_money_no_target">
+		<text>Этого игрока нет рядом.</text>
+	</string>
+</string_table>

@@ -1,0 +1,304 @@
+--[[
+	Anomaly Coop - NPC group (W4 "npc"): companions for every player (SPEC R-4.3).
+	Port of the behaviour of xrRazom 1.4 xrr_patch_companions, extended: a client's companion follows that
+	client, not the host (xrRazom put every companion in the host's squad).
+
+	Companions are squads in the host's ALife (axr_companions). A client's dialog runs on the client, where
+	the squads are frozen copies, so:
+	Client: the companion dialog actions (recruit, dismiss, every order: wait/follow, stealth, combat type,
+	  distance, patrol, waypoints, looting) are not run locally; they go to the host (npc.comp).
+	Host: runs the stock action for that player: the player becomes the squad's leader; waypoint orders run
+	  with "the actor" = the player's proxy (dropped where that player stands). While a companion of a client thinks (axr_beh), "actor" in its logic is that client's
+	  proxy: it follows, covers and keeps distance to its own player. The leader is saved with the game.
+	  The NPC flags the dialogs read (npcx_is_companion, npcx_beh_*) are mirrored to the leader's machine
+	  (npc.comp_info); other clients see the NPC as nobody's companion of theirs.
+	Not covered: companion hotkeys of a client (axr_companions.on_key_release is host-domain), companions
+	  given by tasks (they join the host), the squad-level travel target offline (follows the host).
+
+	Events (ids in host numbering):
+	  npc.comp       client -> host  { f = "module.function", i = npc }
+	  npc.comp_info  host -> client  { i = npc, s = "flag1,flag2,..." }
+	Stock functions wrapped: dialogs_axr_companion.<the actions below>, dialogs_lostzone and dialogs_agr_u
+	companion setters (if present), axr_beh.action_beh.execute.
+--]]
+
+local tostring, tonumber, type, pairs, ipairs, pcall, next = tostring, tonumber, type, pairs, ipairs, pcall, next
+
+local TAG = "companions"
+local P -- coop_npc_players
+
+local function log(fmt, ...) P.log(TAG, fmt, ...) end
+local function report(what, err) P.report(TAG, what, err) end
+
+local EV_CMD, EV_INFO = "npc.comp", "npc.comp_info"
+
+-- Dialog actions forwarded to the host. Value: "add" / "remove" changes the leader, true = an order.
+local ACTIONS = {
+	["dialogs_axr_companion.become_actor_companion"] = "add",
+	["dialogs_axr_companion.remove_companions_from_squad"] = "remove",
+	["dialogs_lostzone.set_stalker_living_legend_as_companion"] = "add",
+	["dialogs_lostzone.set_degtyarev_taskforce_squad_as_companion"] = "add",
+	["dialogs_lostzone.dismiss_speaker_companion"] = "remove",
+	["dialogs_agr_u.set_speaker_as_companion"] = "add",
+}
+for _, n in ipairs({
+	"set_companion_to_stealth_substate", "set_companion_to_default_substate", "set_companion_to_wait_state",
+	"set_companion_to_follow_state", "set_companion_to_attack_state", "set_companion_to_ignore_combat_state",
+	"set_companion_to_attack_only_actor_combat_enemy_state", "switch_companion_distance",
+	"set_companion_hide_in_cover", "set_companion_combat_type_camper", "set_companion_combat_type_monolith",
+	"set_companion_combat_type_default", "switch_companion_patrol_mode", "companion_add_waypoints",
+	"companion_remove_waypoints", "switch_companion_gather_items", "switch_companion_loot_corpses",
+}) do
+	ACTIONS["dialogs_axr_companion." .. n] = true
+end
+
+-- Orders that use db.actor's position (stock: waypoints are dropped where the player stands).
+local POSITIONAL = { ["dialogs_axr_companion.companion_add_waypoints"] = true }
+
+-- NPC info portions the companion dialogs read.
+local FLAGS = {
+	"npcx_is_companion", "npcx_beh_cannot_dismiss", "npcx_beh_substate_stealth", "npcx_beh_ignore_combat",
+	"npcx_beh_ignore_actor_enemies", "npcx_beh_wait", "npcx_beh_distance_far", "npcx_beh_hide_in_cover",
+	"npcx_beh_combat_tactics_camper", "npcx_beh_combat_tactics_monolith", "npcx_beh_patrol_mode",
+	"npcx_beh_gather_items", "npcx_beh_loot_corpses",
+}
+
+local installed = false
+local host_on = false
+local orig = {}
+local leaders = {} -- host: squad id -> proxy id (host numbering) of the client that leads it
+local stats = { cmd_out = 0, cmd_in = 0, refused = 0, info_out = 0, info_in = 0, follow = 0 }
+
+local function resolve(full)
+	local mod, fn = full:match("^([%w_]+)%.([%w_]+)$")
+	local m = mod and _G[mod]
+	return m, fn
+end
+
+local function squad_of(npc)
+	local ok, sq = pcall(get_object_squad, npc)
+	return ok and sq or nil
+end
+
+-------------------------------------------------------------------------------
+-- Client: dialog actions go to the host
+-------------------------------------------------------------------------------
+local function patch_client_actions()
+	for full in pairs(ACTIONS) do
+		local m, fn = resolve(full)
+		local f = m and m[fn]
+		if type(f) == "function" and not orig[full] then
+			orig[full] = f
+			m[fn] = function(a, b, ...)
+				if not P.client_live() then return f(a, b, ...) end
+				local npc = (a and a:id() == 0) and b or a
+				if npc and P.send(EV_CMD, { f = full, i = P.to_host(npc:id()) }, 0) then
+					stats.cmd_out = stats.cmd_out + 1
+				end
+			end
+		end
+	end
+end
+
+local function client_on_info(t)
+	if type(t.i) ~= "number" or type(t.s) ~= "string" then return end
+	local npc = level.object_by_id(P.to_local(t.i))
+	if not npc then return end
+	stats.info_in = stats.info_in + 1
+	local on = {}
+	for flag in t.s:gmatch("[%w_]+") do on[flag] = true end
+	for _, flag in ipairs(FLAGS) do
+		local has = npc:has_info(flag)
+		if on[flag] and not has then
+			npc:give_info_portion(flag)
+		elseif not on[flag] and has then
+			npc:disable_info_portion(flag)
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Host: run the action for the player, keep the leader, mirror the flags
+-------------------------------------------------------------------------------
+local function flags_of(npc)
+	local t = {}
+	for _, flag in ipairs(FLAGS) do
+		if npc:has_info(flag) then t[#t + 1] = flag end
+	end
+	return table.concat(t, ",")
+end
+
+local sent_info = {} -- npc id -> peer -> string
+
+local function push_info(npc, leader_peer)
+	local id = npc:id()
+	sent_info[id] = sent_info[id] or {}
+	for _, p in ipairs(P.players()) do
+		if not p.is_self then
+			local s = (p.id == leader_peer) and flags_of(npc) or ""
+			if sent_info[id][p.id] ~= s and P.send(EV_INFO, { i = id, s = s }, p.id) then
+				sent_info[id][p.id] = s
+				stats.info_out = stats.info_out + 1
+			end
+		end
+	end
+end
+
+local function members(squad)
+	local list = {}
+	if not squad then return list end
+	for k in squad:squad_members() do
+		local st = db.storage[k.id]
+		local o = st and st.object or level.object_by_id(k.id)
+		if o then list[#list + 1] = o end
+	end
+	return list
+end
+
+local function host_on_cmd(t, from)
+	local full = t.f
+	local kind = type(full) == "string" and ACTIONS[full]
+	if not kind or type(t.i) ~= "number" then return end
+	local npc = level.object_by_id(t.i)
+	local who = P.object_of_peer(from)
+	if not (npc and npc:alive() and who) then return end
+	if npc:position():distance_to_sqr(who:position()) > 225 then -- 15 m: the dialog was face to face
+		stats.refused = stats.refused + 1
+		return
+	end
+	local m, fn = resolve(full)
+	local f = orig[full] or (m and m[fn])
+	if type(f) ~= "function" then return end
+	local squad = squad_of(npc)
+	local leader = squad and leaders[squad.id]
+	if kind ~= "add" and squad and axr_companions and axr_companions.companion_squads[squad.id] and leader ~= who:id() then
+		stats.refused = stats.refused + 1 -- somebody else's companion
+		return
+	end
+	stats.cmd_in = stats.cmd_in + 1
+	-- (host actor, npc) makes dialogs.who_is_npc pick the NPC. Orders placed at "the actor's" position run
+	-- with the client's proxy as db.actor; the rest as stock (they only touch the NPC and its squad).
+	if POSITIONAL[full] then
+		P.with_identity(who, f, db.actor, npc)
+	else
+		f(db.actor, npc)
+	end
+	squad = squad_of(npc)
+	if squad then
+		if kind == "add" and axr_companions.companion_squads[squad.id] then
+			leaders[squad.id] = who:id()
+		elseif kind == "remove" then
+			leaders[squad.id] = nil
+		end
+	end
+	for _, o in ipairs(members(squad)) do push_info(o, from) end
+	if not squad then push_info(npc, from) end
+end
+
+-- The proxy leading this NPC's squad, or nil (no leader, the host leads, or the proxy is gone).
+function leader_of(npc)
+	local squad = squad_of(npc)
+	local id = squad and leaders[squad.id]
+	if not id then return nil end
+	local p = level.object_by_id(id)
+	if p and P.is_proxy(p) then return p end
+	return nil
+end
+
+local function patch_beh()
+	local ab = _G["axr_beh"] and axr_beh.action_beh
+	local ex = ab and ab.execute
+	if type(ex) ~= "function" or orig.beh then return end
+	orig.beh = ex
+	ab.execute = function(self, ...)
+		if host_on and next(leaders) ~= nil and not P.in_identity() then
+			local lead = leader_of(self.object)
+			if lead then
+				stats.follow = stats.follow + 1
+				return P.with_identity(lead, ex, self, ...)
+			end
+		end
+		return ex(self, ...)
+	end
+end
+
+local function host_refresh()
+	if not axr_companions then return end
+	for squad_id, proxy_id in pairs(leaders) do
+		local squad = alife_object(squad_id)
+		if not (squad and axr_companions.companion_squads[squad_id]) then
+			leaders[squad_id] = nil -- dismissed by the host, dead or released
+		else
+			local peer = P.peer_of(proxy_id)
+			if peer then
+				for _, o in ipairs(members(squad)) do push_info(o, peer) end
+			end
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Install, update, events, save
+-------------------------------------------------------------------------------
+local next_tick, next_refresh = 0, 0
+
+local function actor_on_update()
+	local now = time_global()
+	if now < next_tick then return end
+	next_tick = now + 250
+	host_on = installed and P.host_with_clients()
+	if host_on and now >= next_refresh then
+		next_refresh = now + 2000
+		local ok, err = pcall(host_refresh)
+		if not ok then report("refresh", err) end
+	end
+	if not host_on then sent_info = {} end
+end
+
+local function save_state(m_data)
+	if next(leaders) == nil then
+		m_data.coop_npc_leaders = nil
+		return
+	end
+	local t = {}
+	for k, v in pairs(leaders) do t[k] = v end
+	m_data.coop_npc_leaders = t
+end
+
+local function load_state(m_data)
+	leaders = {}
+	if type(m_data.coop_npc_leaders) == "table" then
+		for k, v in pairs(m_data.coop_npc_leaders) do
+			if type(k) == "number" and type(v) == "number" then leaders[k] = v end
+		end
+	end
+end
+
+function print_status()
+	local n = 0
+	for _ in pairs(leaders) do n = n + 1 end
+	log("installed %s | squads led by clients %d | orders out %d in %d refused %d | flags out %d in %d | follow ticks %d | errors %d",
+		tostring(installed), n, stats.cmd_out, stats.cmd_in, stats.refused, stats.info_out, stats.info_in, stats.follow,
+		P.error_count(TAG))
+end
+
+function on_game_start()
+	P = coop_npc_players
+	if not rawget(_G, "coop") then return end
+	if not installed then
+		for _, s in ipairs({ { "client actions", patch_client_actions }, { "beh", patch_beh } }) do
+			local ok, err = pcall(s[2])
+			if not ok then report("install " .. s[1], err) end
+		end
+		installed = true
+	end
+	P.on(EV_CMD, host_on_cmd, "host", TAG)
+	P.on(EV_INFO, client_on_info, "client", TAG)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("save_state", save_state)
+	RegisterScriptCallback("load_state", load_state)
+end
+
+function _set_host_on(v) host_on = v end
+function _leaders() return leaders end
+function _stats() return stats end

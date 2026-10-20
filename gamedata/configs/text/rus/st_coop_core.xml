@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop: core group (W4) - chat, party panel, join/leave notices, saves, level moves, mutant loot.
+     Used by scripts\coop_core_*.script. -->
+<string_table>
+	<string id="kb_coop_chat">
+		<text>Кооп: чат</text>
+	</string>
+	<string id="st_coop_core_caption">
+		<text>Кооп</text>
+	</string>
+	<string id="st_coop_core_chat_title">
+		<text>Чат кооператива</text>
+	</string>
+	<string id="st_coop_core_chat_hint">
+		<text>Enter - отправить, Esc - закрыть, /help - команды</text>
+	</string>
+	<string id="st_coop_core_chat_help1">
+		<text>/players - кто в сессии</text>
+	</string>
+	<string id="st_coop_core_chat_help2">
+		<text>/go - (хост) перевести группу на локацию, куда просится игрок</text>
+	</string>
+	<string id="st_coop_core_chat_help3">
+		<text>/help - этот список</text>
+	</string>
+	<string id="st_coop_core_chat_unknown">
+		<text>Неизвестная команда. /help - список команд.</text>
+	</string>
+	<string id="st_coop_core_chat_not_sent">
+		<text>Не отправлено: нет кооп-сессии.</text>
+	</string>
+	<string id="st_coop_core_players">
+		<text>Игроки:</text>
+	</string>
+	<string id="st_coop_core_tag_host">
+		<text>(хост)</text>
+	</string>
+	<string id="st_coop_core_tag_you">
+		<text>(вы)</text>
+	</string>
+	<string id="st_coop_core_ping">
+		<text>пинг %d мс</text>
+	</string>
+	<string id="st_coop_core_go_host_only">
+		<text>Переводить группу может только хост.</text>
+	</string>
+	<string id="st_coop_core_state_down">
+		<text>РАНЕН</text>
+	</string>
+	<string id="st_coop_core_state_dead">
+		<text>МЁРТВ</text>
+	</string>
+	<string id="st_coop_core_session_host">
+		<text>Вы ведёте кооп-сессию.</text>
+	</string>
+	<string id="st_coop_core_session_client">
+		<text>Подключено к кооп-сессии игрока %s.</text>
+	</string>
+	<string id="st_coop_core_connecting">
+		<text>%s подключается...</text>
+	</string>
+	<string id="st_coop_core_joined">
+		<text>%s в игре.</text>
+	</string>
+	<string id="st_coop_core_left">
+		<text>%s вышел из игры.</text>
+	</string>
+	<string id="st_coop_core_save_asked">
+		<text>Хосту отправлен запрос на быстрое сохранение.</text>
+	</string>
+	<string id="st_coop_core_save_wait">
+		<text>Хост уже сохраняет игру, подождите.</text>
+	</string>
+	<string id="st_coop_core_save_done">
+		<text>Хост сохранил игру.</text>
+	</string>
+	<string id="st_coop_core_saved_by">
+		<text>Быстрое сохранение по запросу %s.</text>
+	</string>
+	<string id="st_coop_core_save_busy">
+		<text>Хост сейчас не может сохраниться (открыто меню или диалог).</text>
+	</string>
+	<string id="st_coop_core_save_dead">
+		<text>Хост сейчас не может сохраниться.</text>
+	</string>
+	<string id="st_coop_core_save_refused">
+		<text>Игра хоста сейчас не разрешает сохранение.</text>
+	</string>
+	<string id="st_coop_core_save_error">
+		<text>Быстрое сохранение у хоста не удалось.</text>
+	</string>
+	<string id="st_coop_core_vote">
+		<text>%s стоит у перехода на другую локацию. Напишите /go в чате, чтобы перейти группой.</text>
+	</string>
+	<string id="st_coop_core_moving">
+		<text>Группа переходит на другую локацию...</text>
+	</string>
+	<string id="st_coop_core_mloot_busy">
+		<text>Эту тушу уже разделывает другой игрок.</text>
+	</string>
+</string_table>

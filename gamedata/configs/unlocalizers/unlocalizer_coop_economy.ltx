@@ -1,0 +1,16 @@
+; Anomaly Coop - economy group (W4): file-local tables made reachable as module fields (modded exes
+; unlocalizer, see unlocalizer_modded_exes_bind_item.ltx for the rules). Sections merge with other
+; unlocalizer files; bind_item item_uses / item_condition are already unlocalized by modded exes.
+
+; scripts\coop_economy_world.script: the host applies a client's pickup of a game_setup world item (loot spot,
+; next world item, map mark) and writes the rolled condition / ammo / uses onto the item before anybody takes it.
+[game_setup]
+world_itm_info
+world_itm_off
+world_itm_num
+world_itm_on
+limited_uses
+
+; Same, for devices: their condition is also kept in item_device's own table.
+[item_device]
+dev_condition

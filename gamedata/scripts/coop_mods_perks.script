@@ -1,0 +1,261 @@
+--[[
+	Anomaly Coop - combat perks of third-party mods (gamedata\scripts\coop_mods_perks.script), W4 "mods".
+
+	Perk-Based Artefacts (perk_based_artefacts) and Haru's Skill System (haru_skills) read the belt and the skills
+	of `db.actor`, the player of THIS machine. In a session a client's shot is applied on the host, where db.actor is
+	the host's character, so without this file the host's artefacts and skills would boost a client's damage and the
+	host would gain skill experience for it.
+
+	Host:   a hit whose draftsman is another player's character, and a death caused by one, skip the host's own perk
+	        and skill handlers (the shooter's perks belong to the shooter's machine, see Requests: the client should
+	        raise its own before-hit handlers before it forwards a hit). A client's death perks ask for their world
+	        part (loot and meat next to the corpse, the corpse removed or blown up) with mods.pba_corpse; the host
+	        checks that this player killed the creature, that it is the first request for it and that every
+	        section is one the perk tables name.
+	Client: death perks of a creature this player killed run here with this player's belt. World spawns and the
+	        corpse release they make are collected instead of being refused by the engine, and sent to the host.
+	Per player: perk_based_artefacts_cooldowns, skills_levels (coop_mods_pdata).
+--]]
+
+local api = rawget(_G, "coop")
+
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+
+local function C() return coop_mods_core end
+local function P() return coop_mods_pdata end
+local function log(fmt, ...) C().log("perks", fmt, ...) end
+
+local MAX_SECTIONS = 25
+local EXTRA_SECTIONS = { "ied_new_blow" } -- created by a perk's code, not named in its tables
+
+local st = { skipped_hits = 0, skipped_deaths = 0, corpse_out = 0, corpse_in = 0, corpse_refused = 0 }
+local installed = {}
+
+local function remote_drafts(s_hit)
+	local ok, id = pcall(function() return s_hit.draftsman:id() end)
+	return ok and C().is_remote_player(id)
+end
+
+local function remote_who(who)
+	local ok, id = pcall(function() return who:id() end)
+	return ok and C().is_remote_player(id)
+end
+
+local function own_who(who)
+	local ok, id = pcall(function() return who:id() end)
+	return ok and id == 0
+end
+
+-------------------------------------------------------------------------------
+-- Haru's skills
+-------------------------------------------------------------------------------
+local skills_orig, skills_wrapper = nil, nil
+
+local function install_skills()
+	local hs = C().mod("haru_skills")
+	if not hs then return end
+	P().register("skills_levels", { prime = { "haru_skills" } })
+	local ok, orig = C().wrap(hs, "creature_on_before_hit", "haru_skills.creature_on_before_hit", function(orig)
+		return function(npc, s_hit, ...)
+			if C().is_host() and s_hit and remote_drafts(s_hit) then
+				st.skipped_hits = st.skipped_hits + 1
+				return
+			end
+			return orig(npc, s_hit, ...)
+		end
+	end)
+	if ok then
+		skills_orig, skills_wrapper = orig, hs.creature_on_before_hit
+		installed[#installed + 1] = "haru_skills"
+	end
+end
+
+-- After every on_game_start: the mod may have registered the original by value.
+local function rebind_skills()
+	if not skills_wrapper then return end
+	for _, name in ipairs({ "npc_on_before_hit", "monster_on_before_hit" }) do
+		C().swap_callback(name, skills_orig, skills_wrapper)
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Perk-Based Artefacts
+-------------------------------------------------------------------------------
+local allowed = nil -- host: sections a death perk may ask for
+
+local function collect_sections(t, out, depth)
+	if depth > 4 then return end
+	for _, v in pairs(t) do
+		if type(v) == "string" then
+			if #v < 128 and ini_sys:section_exist(v) then out[v] = true end
+		elseif type(v) == "table" then
+			collect_sections(v, out, depth + 1)
+		end
+	end
+end
+
+local function allowed_sections()
+	if allowed then return allowed end
+	allowed = {}
+	local pba = C().mod("perk_based_artefacts")
+	if pba and type(pba.artefact_props) == "table" then
+		local ok, e = pcall(collect_sections, pba.artefact_props, allowed, 0)
+		if not ok then C().report("perks", "section list", e) end
+	end
+	for _, s in ipairs(EXTRA_SECTIONS) do
+		if ini_sys:section_exist(s) then allowed[s] = true end
+	end
+	return allowed
+end
+
+local function is_before_hit(pba, tbl)
+	return tbl ~= nil and (tbl == pba.artefact_on_npc_before_hit_functions or tbl == pba.artefact_on_monster_before_hit_functions)
+end
+
+local function is_death(pba, tbl)
+	return tbl ~= nil and (tbl == pba.artefact_on_npc_death_functions or tbl == pba.artefact_on_monster_death_functions)
+end
+
+-- Client: a perk's world part is collected while the death handlers run.
+local function client_death(orig, tbl, victim, who, ...)
+	local cap = { spawn = {}, release = false }
+	local vid = victim:id()
+	local real_create, real_release, real_release_id = _G.alife_create, _G.alife_release, _G.alife_release_id
+	_G.alife_create = function(sec, pos, lv, gv, id, state)
+		if lv ~= true and id == nil and type(sec) == "string" then
+			cap.spawn[#cap.spawn + 1] = sec
+			return nil
+		end
+		return real_create(sec, pos, lv, gv, id, state)
+	end
+	_G.alife_release = function(se, ...)
+		local ok, id = pcall(function() return type(se.id) == "function" and se:id() or se.id end)
+		if ok and id == vid then
+			cap.release = true
+			return
+		end
+		return real_release(se, ...)
+	end
+	_G.alife_release_id = function(id, ...)
+		if id == vid then
+			cap.release = true
+			return
+		end
+		return real_release_id(id, ...)
+	end
+	local ok, e = pcall(orig, tbl, victim, who, ...)
+	_G.alife_create, _G.alife_release, _G.alife_release_id = real_create, real_release, real_release_id
+	if not ok then C().report("perks", "death perks", e) end
+	if #cap.spawn == 0 and not cap.release then return end
+	local n = math.min(#cap.spawn, MAX_SECTIONS)
+	local s = table.concat(cap.spawn, "|", 1, n)
+	if C().to_host("pba_corpse", { v = C().hid(vid), s = s, r = cap.release }) then st.corpse_out = st.corpse_out + 1 end
+end
+
+-- Host: the world part of a client's death perks.
+local served = {} -- victim id -> true (once per corpse)
+
+local function killed_by(victim_id, killer_id)
+	local s = db.storage[victim_id]
+	return s ~= nil and s.death_by_id == killer_id
+end
+
+local function spawn_near(sec, victim)
+	local pos = victim:position()
+	local a = math.random() * 2 * math.pi
+	local r = 0.3 + math.random() * 0.4
+	local p = vector():set(pos.x + math.cos(a) * r, pos.y + 0.5, pos.z + math.sin(a) * r)
+	return alife_create(sec, p, victim:level_vertex_id(), victim:game_vertex_id())
+end
+
+local function host_corpse(t, from)
+	local id = C().lid(tonumber(t.v))
+	local victim = type(id) == "number" and id ~= 0 and id < 65535 and level.object_by_id(id)
+	local who = C().avatar(from)
+	if not (victim and who and (IsStalker(victim) or IsMonster(victim)) and not victim:alive()
+		and killed_by(id, who:id()) and not served[id]) then
+		st.corpse_refused = st.corpse_refused + 1
+		log("corpse request on %s from #%s refused: not that player's fresh kill", tostring(id), tostring(from))
+		return
+	end
+	served[id] = true
+	st.corpse_in = st.corpse_in + 1
+	local ok_list = allowed_sections()
+	local explode = nil
+	local n = 0
+	for sec in tostring(t.s or ""):gmatch("[^|]+") do
+		n = n + 1
+		if n > MAX_SECTIONS then break end
+		if ok_list[sec] then
+			local se = spawn_near(sec, victim)
+			local cls = se and ini_sys:r_string_ex(sec, "class") or ""
+			if se and cls:find("EXPLO", 1, true) then explode = se end
+		end
+	end
+	if explode then
+		C().when_online(explode.id, explode:section_name(), function(obj)
+			if t.r == true then pcall(alife_release_id, id) end
+			obj:explode(0)
+		end, 5000)
+	elseif t.r == true then
+		pcall(alife_release_id, id)
+	end
+end
+
+local function install_pba()
+	local pba = C().mod("perk_based_artefacts")
+	if not pba then return end
+	P().register("perk_based_artefacts_cooldowns", { prime = { "perk_based_artefacts" } })
+	local ok = C().wrap(pba, "process_artefacts", "perk_based_artefacts.process_artefacts", function(orig)
+		return function(tbl, ...)
+			if not C().active() then return orig(tbl, ...) end
+			if C().is_host() then
+				if is_before_hit(pba, tbl) then
+					local _, s_hit = ...
+					if s_hit and remote_drafts(s_hit) then
+						st.skipped_hits = st.skipped_hits + 1
+						return
+					end
+				elseif is_death(pba, tbl) then
+					local _, who = ...
+					if who and remote_who(who) then
+						st.skipped_deaths = st.skipped_deaths + 1
+						return
+					end
+				end
+			elseif C().is_client() and is_death(pba, tbl) then
+				local victim, who = ...
+				if victim and who and own_who(who) then return client_death(orig, tbl, ...) end
+			end
+			return orig(tbl, ...)
+		end
+	end)
+	if ok then
+		C().on("pba_corpse", host_corpse, "host")
+		C().set_limit("pba_corpse", 10, 2)
+		installed[#installed + 1] = "perk_based_artefacts"
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Start
+-------------------------------------------------------------------------------
+local rebound = false
+local function actor_on_update()
+	if rebound then return end
+	rebound = true
+	local ok, e = pcall(rebind_skills)
+	if not ok then C().report("perks", "rebind skills", e) end
+end
+
+function on_game_start()
+	if not api then return end
+	install_skills()
+	install_pba()
+	if #installed == 0 then return end
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	C().status_line("perks", function()
+		return string.format("%s | host: skipped hits %d, deaths %d, corpse requests %d (refused %d) | client: corpse requests %d",
+			table.concat(installed, ", "), st.skipped_hits, st.skipped_deaths, st.corpse_in, st.corpse_refused, st.corpse_out)
+	end)
+end

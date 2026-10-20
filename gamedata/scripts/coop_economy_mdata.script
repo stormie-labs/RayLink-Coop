@@ -1,0 +1,581 @@
+--[[
+	Anomaly Coop - script data that must follow items and players (gamedata\scripts\coop_economy_mdata.script)
+
+	Clients load the host's save, so all Lua data (alife_storage_manager m_data) is right at join. After that
+	four kinds of it would drift; each has its own channel here. Everything is a no-op outside a session.
+
+	1. se_object store (se_save_var / se_load_var, m_data.se_object[id]): per-entity script vars such as an
+	   item's parts condition ("parts"), a strapped weapon, a patched outfit ("unpatched"), a looted mutant
+	   ("looted"), NPC PDA info. A change on any machine goes to the host; the host checks the sender may
+	   write it (the item is in his inventory, or the var is a world flag players set), stores it and sends
+	   it to everybody else. Host changes go to all clients. Companion / death-drop / release flags are the
+	   host's (refused from clients). "pathpoint*" (companion walking) is not sent.
+	2. Item riders (m_data[key][item_id]) of addons that keep per-item state in their own m_data table
+	   (Powered Exos, 3DSS marks, Meat Spoiling, GAMMA pouches ...): the machine that holds the item polls its
+	   inventory and sends changed entries; the host stores and relays them. Addons declare keys with
+	   coop_economy_mdata.declare_item_key(key, { apply = function(id, value) end }).
+	3. Per-player m_data of stock scripts (sleepiness, thirst, psy health of arszi_psy, disguise, detector,
+	   radio frequency: MANIFEST): a client never saves, and its world comes from the host's save, where these
+	   keys hold the HOST's values. The client sends its own values to the host every 15 s when they changed;
+	   the host keeps them in its m_data under coop_peer_mdata[<character id>] (inside the host save, P4).
+	   When a client loads the host's world, its own values replace the host's in m_data right after the
+	   save is read (alife_storage_manager.on_before_load_state), before any load_state callback (first
+	   visit: the keys are cleared, the scripts start from their defaults). Third-party mod keys (skills, XP,
+	   perks ...) are carried by coop_mods_pdata (mods group); a key it owns is skipped here.
+	   coop_economy_mdata.register_player_key(key, provider): provider() returns the current value on a
+	   client (default: the live m_data entry).
+	4. World m_data keys that only the host writes but clients read (player-made stashes of addons ...):
+	   polled on the host, sent to clients on change. coop_economy_mdata.register_world_key(key).
+
+	Events (values are coop_economy_core.pack strings):
+		economy.se   any -> host -> others   { n, i1, v1, d1, ... }   id (host numbering), var, value
+		economy.imd  any -> host -> others   { n, i1, k1, d1, ... }   id, m_data key, value
+		economy.pmd  client -> host          { k, d }                 per-player key, value (nil = cleared)
+		economy.wmd  host -> clients         { k, d }                 world key, value
+--]]
+
+local core = coop_economy_core
+
+local tostring, tonumber, type, pairs, ipairs, pcall, next = tostring, tonumber, type, pairs, ipairs, pcall, next
+
+local FLUSH_MS = 300
+local ITEM_POLL_MS = 1000
+local PLAYER_POLL_MS = 15000
+local WORLD_POLL_MS = 2000
+local MAX_VALUE = 12000 -- bytes of one packed value
+local MAX_BATCH = 12000 -- bytes of one batch payload (the engine limit is 16 KiB)
+local PENDING_MS = 30000 -- a change for an entity that does not exist here yet waits this long
+local PEER_STORE = "coop_peer_mdata"
+
+local installed = false
+local applying = false -- writing data that came from the network: do not send it again
+local orig_save_var = nil
+
+local stats = {
+	se_out = 0, se_in = 0, se_refused = 0, se_pending = 0,
+	imd_out = 0, imd_in = 0, imd_refused = 0,
+	pmd_out = 0, pmd_in = 0, pmd_applied = 0,
+	wmd_out = 0, wmd_in = 0, errors = 0, oversize = 0,
+}
+
+local function m_data()
+	local asm = rawget(_G, "alife_storage_manager")
+	local ok, m = pcall(function() return asm.get_state() end)
+	return ok and type(m) == "table" and m or nil
+end
+
+-- Sends `entries` ({ {id, key, packed}, ... }) as batches of `name`.
+local function send_batches(name, entries, target, except)
+	local batch, size, n = {}, 0, 0
+	local function flush()
+		if n == 0 then return end
+		batch.n = n
+		if core.is_host() then
+			core.send_clients(name, batch, except)
+		else
+			core.send(name, batch, target or 0)
+		end
+		batch, size, n = {}, 0, 0
+	end
+	for _, e in ipairs(entries) do
+		local len = #e[3] + #tostring(e[2]) + 16
+		if len > MAX_VALUE then
+			stats.oversize = stats.oversize + 1
+			core.log("! %s %s/%s not sent: %d bytes", name, tostring(e[1]), tostring(e[2]), len)
+		else
+			if size + len > MAX_BATCH then flush() end
+			n = n + 1
+			batch["i" .. n], batch["k" .. n], batch["d" .. n] = e[1], e[2], e[3]
+			size = size + len
+		end
+	end
+	flush()
+end
+
+local function read_batch(t)
+	local out = {}
+	local n = core.int(t.n, 0, 2000) or 0
+	for i = 1, n do
+		local id = core.int(t["i" .. i], 0, 65534)
+		local key = type(t["k" .. i]) == "string" and #t["k" .. i] <= 64 and t["k" .. i] or nil
+		local d = t["d" .. i]
+		if id and key and type(d) == "string" and #d <= MAX_VALUE then
+			local v, err = core.unpack(d)
+			if err == nil or d == "_" then out[#out + 1] = { id = id, key = key, value = v, packed = d } end
+		end
+	end
+	return out
+end
+
+-------------------------------------------------------------------------------
+-- 1. se_object store
+-------------------------------------------------------------------------------
+-- Never accepted from a client (NPC state the host's world logic owns).
+local SE_HOST_ONLY = {
+	companion = true, companion_cannot_dismiss = true, companion_cannot_teleport = true, death_dropped = true,
+	dont_release = true, do_not_deactivate = true, healing_charge = true,
+}
+-- Accepted from a client on any entity (flags a player sets on world objects he deals with).
+local SE_WORLD_VARS = {
+	looted = true, parts = true, info = true, unpatched = true, strapped_item = true,
+	last_seen_level = true, last_seen_time = true,
+}
+
+local se_out = {} -- "id\0var" -> { id (host numbering), var, packed }
+local se_sig = {} -- "id\0var" -> packed value last sent / received
+local se_wait = {} -- changes for entities not here yet: { id (local), var, value, packed, until_ms }
+local se_next_flush = 0
+
+local function not_sent(var)
+	return type(var) ~= "string" or var:sub(1, 9) == "pathpoint"
+end
+
+local function se_wrapper(id, name, varname, val, ...)
+	orig_save_var(id, name, varname, val, ...)
+	if applying or type(id) ~= "number" or not core.live() or not_sent(varname) or core.others_count() == 0 then return end
+	local packed = core.pack(val)
+	local hid = core.host_id(id)
+	local key = tostring(hid) .. "\0" .. varname
+	if se_sig[key] == packed then return end
+	se_sig[key] = packed
+	se_out[key] = { hid, varname, packed }
+end
+
+local function se_flush()
+	if next(se_out) == nil then return end
+	local entries = {}
+	for _, e in pairs(se_out) do entries[#entries + 1] = e end
+	se_out = {}
+	table.sort(entries, function(a, b) return a[1] < b[1] or (a[1] == b[1] and a[2] < b[2]) end)
+	stats.se_out = stats.se_out + #entries
+	send_batches("se", entries, 0)
+end
+
+-- Writes a value that came from the network. False when the entity does not exist here (yet).
+local function se_store(local_id, var, value)
+	local m = m_data()
+	if not (m and type(m.se_object) == "table") then return false end
+	if m.se_object[local_id] == nil and value ~= nil and not alife_object(local_id) then return false end
+	applying = true
+	local ok, err = pcall(orig_save_var, local_id, nil, var, value)
+	applying = false
+	if not ok then
+		stats.errors = stats.errors + 1
+		core.log("! se var %s/%s: %s", tostring(local_id), var, tostring(err))
+	end
+	return true
+end
+
+local function client_may_write(from, hid, var)
+	if SE_HOST_ONLY[var] then return false end
+	if SE_WORLD_VARS[var] then return alife_object(hid) ~= nil end
+	local p = core.player(from)
+	return p ~= nil and p.avatar_id ~= nil and core.root_of(hid) == p.avatar_id
+end
+
+local function on_se(t, from)
+	local host = core.is_host()
+	if host and from <= 0 then return end
+	if not host and from ~= 0 then return end
+	local relay = {}
+	for _, e in ipairs(read_batch(t)) do
+		if not_sent(e.key) then
+			-- ignore
+		elseif host and not client_may_write(from, e.id, e.key) then
+			stats.se_refused = stats.se_refused + 1
+		else
+			local lid = host and e.id or core.local_id(e.id)
+			se_sig[tostring(e.id) .. "\0" .. e.key] = e.packed
+			stats.se_in = stats.se_in + 1
+			if not se_store(lid, e.key, e.value) then
+				stats.se_pending = stats.se_pending + 1
+				se_wait[#se_wait + 1] = { lid, e.key, e.value, until_ms = core.now() + PENDING_MS }
+			end
+			if host then relay[#relay + 1] = { e.id, e.key, e.packed } end
+		end
+	end
+	if host and #relay > 0 then send_batches("se", relay, nil, from) end
+end
+
+local function se_retry()
+	if #se_wait == 0 then return end
+	local keep, t = {}, core.now()
+	for _, w in ipairs(se_wait) do
+		if not se_store(w[1], w[2], w[3]) and t < w.until_ms then keep[#keep + 1] = w end
+	end
+	se_wait = keep
+end
+
+-------------------------------------------------------------------------------
+-- 2. Item riders: m_data[key][item_id]
+-------------------------------------------------------------------------------
+local item_keys = {} -- { {key, apply}, ... }
+local item_base = {} -- item id (local) -> { key -> packed }
+local item_seeded = false
+local item_next_poll = 0
+
+function declare_item_key(key, opts)
+	if type(key) ~= "string" then return end
+	for _, d in ipairs(item_keys) do
+		if d.key == key then
+			if opts and opts.apply then d.apply = opts.apply end
+			return
+		end
+	end
+	item_keys[#item_keys + 1] = { key = key, apply = opts and opts.apply }
+end
+
+local function item_decl(key)
+	for _, d in ipairs(item_keys) do
+		if d.key == key then return d end
+	end
+end
+
+local function item_store(m, d, id, value)
+	local tbl = m[d.key]
+	if type(tbl) == "table" then
+		tbl[id] = value
+	elseif value ~= nil then
+		m[d.key] = { [id] = value }
+	end
+	if d.apply then
+		local ok, err = pcall(d.apply, id, value)
+		if not ok then core.log("! item rider %s apply: %s", d.key, tostring(err)) end
+	end
+end
+
+local function item_poll()
+	local m = m_data()
+	if not (m and db.actor) then return end
+	local silent = not item_seeded
+	item_seeded = true
+	local out = {}
+	db.actor:iterate_inventory(function(_, item)
+		local id = item:id()
+		local b = item_base[id]
+		if not b then
+			b = {}
+			item_base[id] = b
+		end
+		for _, d in ipairs(item_keys) do
+			local tbl = m[d.key]
+			local packed = core.pack(type(tbl) == "table" and tbl[id] or nil)
+			if b[d.key] ~= packed then
+				b[d.key] = packed
+				if not silent then out[#out + 1] = { core.host_id(id), d.key, packed } end
+			end
+		end
+	end, db.actor)
+	if #out > 0 then
+		stats.imd_out = stats.imd_out + #out
+		send_batches("imd", out, 0)
+	end
+end
+
+local function on_imd(t, from)
+	local host = core.is_host()
+	if host and from <= 0 then return end
+	if not host and from ~= 0 then return end
+	local m = m_data()
+	if not m then return end
+	local relay = {}
+	local p = host and core.player(from)
+	for _, e in ipairs(read_batch(t)) do
+		local d = item_decl(e.key)
+		if not d then
+			-- an addon this machine does not have
+		elseif host and not (p and p.avatar_id and core.root_of(e.id) == p.avatar_id) then
+			stats.imd_refused = stats.imd_refused + 1
+		else
+			local lid = host and e.id or core.local_id(e.id)
+			item_store(m, d, lid, e.value)
+			item_base[lid] = item_base[lid] or {}
+			item_base[lid][e.key] = e.packed
+			stats.imd_in = stats.imd_in + 1
+			if host then relay[#relay + 1] = { e.id, e.key, e.packed } end
+		end
+	end
+	if host and #relay > 0 then send_batches("imd", relay, nil, from) end
+end
+
+local function declare_builtin_item_keys()
+	local list = {
+		{ "item_exo_device", "exo_devices" }, -- Powered Exos: power and PSU
+		{ "z_mark_switch", "mark_switch_current_marks" }, -- Mark Switch / 3DSS reticle
+		{ "scripted_canted_irons", "scripted_canted_irons" }, -- 3DSS canted sights
+		{ "magnifier_switch", "magnifier_switch_bone_states" }, -- 3DSS magnifier
+		{ "meat_spoiling", "expiration_table" }, -- Meat Spoiling clock
+		{ "mag_pouches", "pouches" }, -- GAMMA Mags Reloaded pouches
+		{ "speed_loaders", "speed_loaders" },
+	}
+	for _, e in ipairs(list) do
+		if rawget(_G, e[1]) or core.mod(e[1]) then declare_item_key(e[2]) end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- 3. Per-player m_data
+-------------------------------------------------------------------------------
+-- Top-level m_data keys that belong to one player. provider(): the current value on this machine.
+local function from_save_state(modname, key)
+	return function()
+		local m = core.mod(modname)
+		if not (m and type(m.save_state) == "function") then return nil, false end
+		local t = {}
+		local ok = pcall(m.save_state, t)
+		return t[key], ok
+	end
+end
+
+-- Stock keys only: third-party mod keys (skills, XP, perks, ...) travel through coop_mods_pdata (mods group);
+-- a key that file owns is skipped here.
+MANIFEST = {
+	sleep = from_save_state("actor_status_sleep", "sleep"), -- sleepiness
+	drink = from_save_state("actor_status_thirst", "drink"), -- thirst
+	psy_table = from_save_state("arszi_psy", "psy_table"), -- psy health (arszi_psy)
+	disguise_state = false, -- gameplay_disguise (live m_data entry)
+	detector_was_active = false, -- actor_effects
+	RF_freq = false, -- item_radio frequency
+}
+
+function register_player_key(key, provider)
+	if type(key) == "string" then MANIFEST[key] = type(provider) == "function" and provider or false end
+end
+
+local function owned_elsewhere(key)
+	local pd = rawget(_G, "coop_mods_pdata")
+	if not (pd and type(pd.owns) == "function") then return false end
+	local ok, r = pcall(pd.owns, key)
+	return ok and r == true
+end
+
+local pmd_sig = {} -- key -> packed value last sent
+local pmd_next_poll = 0
+local pmd_loaded_for = nil -- m_data table the surrogate was applied to
+
+local function pmd_current(m, key)
+	local provider = MANIFEST[key]
+	if provider then
+		local ok, v, used = pcall(provider)
+		if ok and used ~= false then return v end
+	end
+	return m[key]
+end
+
+local function pmd_poll()
+	local m = m_data()
+	if not m then return end
+	for key in pairs(MANIFEST) do
+		local packed = not owned_elsewhere(key) and core.pack(pmd_current(m, key)) or nil
+		if packed and pmd_sig[key] ~= packed then
+			if #packed > MAX_VALUE then
+				stats.oversize = stats.oversize + 1
+				pmd_sig[key] = packed
+			elseif core.send("pmd", { k = key, d = packed }, 0) then
+				pmd_sig[key] = packed
+				stats.pmd_out = stats.pmd_out + 1
+			end
+		end
+	end
+end
+
+-- Host: entry of a player's character in its m_data store (created on demand).
+local function peer_store(m, avatar_id, create)
+	local root = m[PEER_STORE]
+	if type(root) ~= "table" then
+		if not create then return nil end
+		root = {}
+		m[PEER_STORE] = root
+	end
+	local se = alife_object(avatar_id)
+	local name = se and se:name()
+	local e = root[avatar_id]
+	if e and name and e.name ~= name then -- the id was reused by another entity
+		e = nil
+		root[avatar_id] = nil
+	end
+	if not e and create and name then
+		e = { name = name, keys = {} }
+		root[avatar_id] = e
+	end
+	return e
+end
+
+local function on_pmd(t, from)
+	if not core.is_host() or from <= 0 then return end
+	local key = type(t.k) == "string" and t.k or nil
+	if not (key and MANIFEST[key] ~= nil and type(t.d) == "string" and #t.d <= MAX_VALUE) then return end
+	local v, err = core.unpack(t.d)
+	if err and t.d ~= "_" then return end
+	local p = core.player(from)
+	local m = m_data()
+	if not (p and p.avatar_id and m) then return end
+	local e = peer_store(m, p.avatar_id, true)
+	if not e then return end
+	e.keys[key] = v
+	stats.pmd_in = stats.pmd_in + 1
+end
+
+-- Client loading the host's world: its own per-player values replace the host's before load_state runs.
+local function apply_surrogate(m)
+	if type(m) ~= "table" or pmd_loaded_for == m then return end
+	pmd_loaded_for = m
+	local my = core.host_id(0)
+	local root = m[PEER_STORE]
+	local e = type(root) == "table" and root[my] or nil
+	local keys = type(e) == "table" and type(e.keys) == "table" and e.keys or {}
+	local n = 0
+	pmd_sig = {}
+	for key in pairs(MANIFEST) do
+		if not owned_elsewhere(key) then
+			m[key] = core.copy(keys[key])
+			pmd_sig[key] = core.pack(keys[key]) -- the host already has these: only changes are sent
+			if keys[key] ~= nil then n = n + 1 end
+		end
+	end
+	stats.pmd_applied = n
+	core.log("own player data applied before load_state: %d key(s)%s", n, e and "" or " (first visit: defaults)")
+end
+
+-- alife_storage_manager.CALifeStorageManager_load reads the save's m_data, calls on_before_load_state(), then
+-- fires load_state: the client's own values go in between. Installed in on_game_start (before the load).
+local function patch_load_state()
+	local asm = core.mod("alife_storage_manager")
+	if not (asm and type(asm.on_before_load_state) == "function") then
+		core.log("! alife_storage_manager.on_before_load_state missing: player data of clients is the host's")
+		return
+	end
+	local orig = asm.on_before_load_state
+	asm.on_before_load_state = function(...)
+		local r = orig(...)
+		if core.is_client() then
+			local ok, err = pcall(apply_surrogate, m_data())
+			if not ok then core.log("! player data: %s", tostring(err)) end
+		end
+		return r
+	end
+end
+
+-------------------------------------------------------------------------------
+-- 4. World m_data keys (host -> clients)
+-------------------------------------------------------------------------------
+local world_keys = { "player_created_stashes", "workshop_stashes" }
+local wmd_sig = {}
+local wmd_seeded = false -- clients got the current values with the host's save
+local wmd_next_poll = 0
+
+function register_world_key(key)
+	if type(key) ~= "string" then return end
+	for _, k in ipairs(world_keys) do
+		if k == key then return end
+	end
+	world_keys[#world_keys + 1] = key
+end
+
+local function wmd_poll()
+	local m = m_data()
+	if not m then return end
+	local silent = not wmd_seeded
+	wmd_seeded = true
+	for _, key in ipairs(world_keys) do
+		local packed = core.pack(m[key])
+		if wmd_sig[key] ~= packed then
+			wmd_sig[key] = packed
+			if silent then
+				-- baseline
+			elseif #packed > MAX_VALUE then
+				stats.oversize = stats.oversize + 1
+			else
+				core.send_clients("wmd", { k = key, d = packed })
+				stats.wmd_out = stats.wmd_out + 1
+			end
+		end
+	end
+end
+
+local function on_wmd(t, from)
+	if core.is_host() or from ~= 0 then return end
+	local key = type(t.k) == "string" and t.k or nil
+	local known = false
+	for _, k in ipairs(world_keys) do
+		if k == key then known = true break end
+	end
+	if not (known and type(t.d) == "string") then return end
+	local v, err = core.unpack(t.d)
+	if err and t.d ~= "_" then return end
+	local m = m_data()
+	if m then
+		m[key] = v
+		stats.wmd_in = stats.wmd_in + 1
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Install, update, status
+-------------------------------------------------------------------------------
+local function install()
+	if installed then return end
+	installed = true
+	orig_save_var = rawget(_G, "se_save_var")
+	if type(orig_save_var) == "function" then
+		_G.se_save_var = se_wrapper
+	else
+		core.log("! se_save_var missing: entity script vars are not synced")
+	end
+	declare_builtin_item_keys()
+	patch_load_state()
+end
+
+local function server_entity_on_unregister(se_obj)
+	local id = se_obj and se_obj.id
+	if type(id) == "number" then item_base[id] = nil end
+end
+
+local function actor_on_update()
+	if not core.live() then return end
+	local t = core.now()
+	if t >= se_next_flush then
+		se_next_flush = t + FLUSH_MS
+		local ok, err = pcall(se_flush)
+		if not ok then core.log("! se flush: %s", tostring(err)) end
+		se_retry()
+	end
+	if core.others_count() == 0 then
+		item_seeded = false -- nobody to tell: the next pass seeds again silently (a joiner loads a fresh save)
+		wmd_seeded = false
+		return
+	end
+	if #item_keys > 0 and t >= item_next_poll then
+		item_next_poll = t + ITEM_POLL_MS
+		local ok, err = pcall(item_poll)
+		if not ok then core.log("! item riders: %s", tostring(err)) end
+	end
+	if core.is_client() and t >= pmd_next_poll then
+		pmd_next_poll = t + PLAYER_POLL_MS
+		local ok, err = pcall(pmd_poll)
+		if not ok then core.log("! player data: %s", tostring(err)) end
+	end
+	if core.is_host() and t >= wmd_next_poll then
+		wmd_next_poll = t + WORLD_POLL_MS
+		local ok, err = pcall(wmd_poll)
+		if not ok then core.log("! world data: %s", tostring(err)) end
+	end
+end
+
+function print_status()
+	core.log("mdata: se vars out %d, in %d, refused %d, waited %d | item riders [%d keys] out %d, in %d, refused %d | player data out %d, in %d, applied at load %d | world keys out %d, in %d | oversize %d, errors %d",
+		stats.se_out, stats.se_in, stats.se_refused, stats.se_pending, #item_keys, stats.imd_out, stats.imd_in,
+		stats.imd_refused, stats.pmd_out, stats.pmd_in, stats.pmd_applied, stats.wmd_out, stats.wmd_in, stats.oversize,
+		stats.errors)
+end
+
+function on_game_start()
+	if not core.engine() then return end
+	install()
+	core.on("se", on_se)
+	core.on("imd", on_imd)
+	core.on("pmd", on_pmd)
+	core.on("wmd", on_wmd)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("server_entity_on_unregister", server_entity_on_unregister)
+end

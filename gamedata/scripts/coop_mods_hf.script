@@ -1,0 +1,917 @@
+--[[
+	Anomaly Coop - Hideout Furniture family (gamedata\scripts\coop_mods_hf.script), W4 "mods".
+
+	Hideout Furniture (Aoldri), Hideout Furniture Expansion (stove), Gadgets for Hideout Furniture (artefact
+	harvester, weapon showcase) and the placed radio of Hideout Furniture. Furniture is world state: the host
+	creates and removes it, keeps its data and owns the hidden boxes behind workbenches, stoves and harvesters.
+	A client runs the player's half (placement preview, dialogs, tool and fuel use from its own inventory) and
+	asks the host for the world half:
+
+	  mods.hf_place    client -> host  { i item, s section, x y z, ax ay az, d data }  place an item
+	  mods.hf_pickup   client -> host  { o object }            pack furniture up (the mod's own pickup, run with
+	                                                           the requester's character as the actor)
+	  mods.hf_lamp     client -> host  { o, on }               lamp on/off (tools already used by the client)
+	  mods.hf_refuel   client -> host  { o }                   lamp refuelled (fuel already used by the client)
+	  mods.hf_box      client -> host  { k kind, o owner }     the hidden box of a workbench / stove / harvester
+	  mods.hf_box_r    host -> client  { k, o, b box | -1 }    answer; the client opens the box when it is online
+	  mods.hf_data     host -> all     { o, d data | x }       furniture data changed (hf_obj_manager)
+	  mods.hf_show     client -> host  { c case, i item, m 1|0, s section }   mount / unmount a showcase item
+	  mods.hf_show_map host -> all     { c, m map }            what a showcase displays now
+	  mods.hf_radio    host -> all     { o, on, p, q, k, c, v, n }   what a placed radio plays
+	  mods.hf_radio_ctl client -> host { o, a action, p, q }   a client pressed a radio button
+	The host checks that the requester's character is near the furniture and, for placing, that the item is in
+	the requester's inventory and places exactly the section the item names.
+--]]
+
+local api = rawget(_G, "coop")
+
+local tostring, tonumber, type, pairs, ipairs, pcall, next = tostring, tonumber, type, pairs, ipairs, pcall, next
+
+local function C() return coop_mods_core end
+local function log(fmt, ...) C().log("hf", fmt, ...) end
+
+local NEAR = 15 -- metres between the requester's character and the furniture
+local installed = {}
+local st = { place = 0, pickup = 0, lamp = 0, box = 0, refused = 0, data_out = 0, data_in = 0, radio_out = 0, radio_in = 0 }
+
+local function refuse(what, from, why)
+	st.refused = st.refused + 1
+	log("%s from #%s refused: %s", what, tostring(from), why)
+end
+
+local function near(obj, who, dist)
+	local ok, d = pcall(function() return obj:position():distance_to_sqr(who:position()) end)
+	return ok and d <= (dist or NEAR) * (dist or NEAR)
+end
+
+local function m_data() return alife_storage_manager.get_state() end
+
+local function wrapper_of(id)
+	local b = C().mod("bind_hf_base")
+	local f = b and C().fn(b, "get_wrapper")
+	if not f then return nil end
+	local ok, w = pcall(f, id)
+	return ok and w or nil
+end
+
+-------------------------------------------------------------------------------
+-- Hidden boxes (workbench, stove, harvester): asked from the host, opened when online
+-------------------------------------------------------------------------------
+local resolvers = {} -- host: kind -> function(owner_obj) -> box id
+local link_tables = { workshop = "workshop_stashes", stove = "stove_stashes" } -- client mirrors the link here
+local waiting = {} -- client: "kind:id" -> { at, on_ready }
+
+local function known_link(kind, owner_id)
+	local key = link_tables[kind]
+	local t = key and m_data()[key]
+	return type(t) == "table" and t[owner_id] or nil
+end
+
+local function open_box(box_id)
+	C().when_online(box_id, nil, function(box)
+		if hide_hud_inventory then hide_hud_inventory() end
+		box:use(db.actor)
+	end, 10000)
+end
+
+local function ask_box(kind, owner_id, on_ready)
+	local key = kind .. ":" .. tostring(owner_id)
+	local w = waiting[key]
+	if w and time_global() - w.at < 10000 then
+		w.on_ready = on_ready or w.on_ready
+		return
+	end
+	waiting[key] = { at = time_global(), on_ready = on_ready }
+	C().to_host("hf_box", { k = kind, o = C().hid(owner_id) })
+end
+
+local function host_box(t, from)
+	local kind, owner = t.k, C().lid(tonumber(t.o))
+	local resolve = type(kind) == "string" and resolvers[kind]
+	local obj = resolve and type(owner) == "number" and level.object_by_id(owner)
+	local who = C().avatar(from)
+	local box = -1
+	if not (obj and who and near(obj, who)) then
+		refuse("hf_box " .. tostring(kind), from, "unknown or far furniture")
+	else
+		local ok, id = pcall(resolve, obj)
+		if ok and type(id) == "number" then
+			box = id
+			st.box = st.box + 1
+		elseif not ok then
+			C().report("hf", "box " .. kind, id)
+		end
+	end
+	C().to_peer(from, "hf_box_r", { k = kind, o = t.o, b = box })
+end
+
+local function client_box_answer(t)
+	local kind, owner, box = t.k, C().lid(tonumber(t.o)), tonumber(t.b)
+	if type(kind) ~= "string" or not owner then return end
+	local key = kind .. ":" .. tostring(owner)
+	local w = waiting[key]
+	waiting[key] = nil
+	if not box or box < 0 or box >= 65535 then
+		C().hud("st_coop_mods_hf_box_refused", "The host could not open this storage.")
+		return
+	end
+	box = C().lid(box)
+	local tname = link_tables[kind]
+	if tname then
+		local m = m_data()
+		if type(m[tname]) ~= "table" then m[tname] = {} end
+		m[tname][owner] = box
+	end
+	if w and w.on_ready then
+		local ok, e = pcall(w.on_ready, box)
+		if not ok then C().report("hf", "box open", e) end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Furniture data (hf_obj_manager): the host's copy is mirrored
+-------------------------------------------------------------------------------
+local data_orig = {} -- update_data / delete_data originals
+
+local function host_publish_data(id)
+	local hm = C().mod("hf_obj_manager")
+	local get = hm and C().fn(hm, "get_data")
+	if not get then return end
+	local ok, d = pcall(get, id)
+	local s = ok and type(d) == "table" and C().ser(d) or nil
+	if s and #s < 4500 then -- encode may triple it
+		C().to_all("hf_data", { o = id, d = s })
+	elseif not (ok and d) then
+		C().to_all("hf_data", { o = id, x = true })
+	end
+	st.data_out = st.data_out + 1
+end
+
+local function scalar_table(d, max)
+	if type(d) ~= "table" then return nil end
+	local out, n = {}, 0
+	for k, v in pairs(d) do
+		local tv = type(v)
+		if type(k) == "string" and (tv == "number" or tv == "string" or tv == "boolean") then
+			n = n + 1
+			if n > (max or 64) then break end
+			out[k] = v
+		end
+	end
+	return out
+end
+
+local function client_data(t)
+	local id = C().lid(tonumber(t.o))
+	if not (id and data_orig.update and data_orig.delete) then return end
+	st.data_in = st.data_in + 1
+	pcall(data_orig.delete, id)
+	if t.x == true then return end
+	local d = C().deser(t.d)
+	if type(d) == "table" and next(d) then pcall(data_orig.update, id, d) end
+end
+
+local function install_data_mirror()
+	local hm = C().mod("hf_obj_manager")
+	if not hm then return end
+	C().wrap(hm, "update_data", "hf_obj_manager.update_data", function(orig)
+		data_orig.update = orig
+		return function(id, ...)
+			local r = orig(id, ...)
+			if C().is_host() then host_publish_data(id) end
+			return r
+		end
+	end)
+	C().wrap(hm, "delete_data", "hf_obj_manager.delete_data", function(orig)
+		data_orig.delete = orig
+		return function(id, ...)
+			local r = orig(id, ...)
+			if C().is_host() then C().to_all("hf_data", { o = id, x = true }) end
+			return r
+		end
+	end)
+	C().on("hf_data", client_data, "client")
+end
+
+-------------------------------------------------------------------------------
+-- Placing and packing up
+-------------------------------------------------------------------------------
+local orig_create = nil
+local place_item = nil -- client: the item being placed (kept away from the mod, the host spends it)
+
+local function euler(rot)
+	if type(rot) ~= "table" and type(rot) ~= "userdata" then return nil end
+	local ok, w = pcall(function() return rot.w end)
+	if ok and w ~= nil then
+		local ok2, v = pcall(function() return rot:to_euler_angles() end)
+		if ok2 and v then return v end
+		return nil
+	end
+	local ok3, v = pcall(function() return vector():set(rot.x, rot.y, rot.z) end)
+	return ok3 and v or nil
+end
+
+local function client_place(section, loc, rot, lvid, gvid, item_id)
+	local ang = euler(rot)
+	if not ang then
+		C().report("hf", "place", "unknown rotation")
+		return
+	end
+	local data = {}
+	local hm = C().mod("hf_obj_manager")
+	local get = hm and C().fn(hm, "get_data")
+	if get then
+		local ok, d = pcall(get, item_id)
+		if ok and type(d) == "table" then data = scalar_table(d) or {} end
+	end
+	local item = level.object_by_id(item_id)
+	if item then data.condition = item:condition() end
+	C().to_host("hf_place", {
+		i = C().hid(item_id), s = section, x = loc.x, y = loc.y, z = loc.z, ax = ang.x, ay = ang.y, az = ang.z,
+		d = C().ser(data) or "",
+	})
+end
+
+local function host_place(t, from)
+	local item_id = C().lid(tonumber(t.i))
+	local se = type(item_id) == "number" and item_id < 65535 and alife_object(item_id)
+	local who = C().avatar(from)
+	local section = t.s
+	if not (se and who and C().root_of(item_id) == who:id()) then return refuse("hf_place", from, "item not in the player's inventory") end
+	local psec = ini_sys:r_string_ex(se:section_name(), "placeable_section")
+	if not (type(section) == "string" and psec == section) then return refuse("hf_place", from, "section does not match the item") end
+	local x, y, z = tonumber(t.x), tonumber(t.y), tonumber(t.z)
+	if not (x and y and z) then return refuse("hf_place", from, "bad position") end
+	local pos = vector():set(x, y, z)
+	if pos:distance_to_sqr(who:position()) > NEAR * NEAR then return refuse("hf_place", from, "too far") end
+	local ang = vector():set(tonumber(t.ax) or 0, tonumber(t.ay) or 0, tonumber(t.az) or 0)
+	-- Graph vertices of the requester's character (a few metres away): never taken from the network.
+	local ok, res = pcall(orig_create, section, pos, ang, who:level_vertex_id(), who:game_vertex_id())
+	local obj_id = ok and (type(res) == "number" and res or (res and res.id)) or nil
+	if not obj_id then return refuse("hf_place", from, "the mod did not create " .. section .. " (" .. tostring(res) .. ")") end
+	local hm = C().mod("hf_obj_manager")
+	local data = scalar_table(C().deser(t.d))
+	if data and next(data) and hm and hm.update_data then pcall(hm.update_data, obj_id, data) end
+	if hm and hm.delete_data then pcall(hm.delete_data, item_id) end
+	alife_release_id(item_id)
+	st.place = st.place + 1
+	log("placed %s -> %d for #%s", section, obj_id, tostring(from))
+end
+
+-- Packing up: the box behind a workbench must be empty first (only items travel back, not box contents).
+local function client_pickup(obj_id)
+	local box_id = known_link("workshop", obj_id)
+	local box = box_id and level.object_by_id(box_id)
+	if box and not box:is_inv_box_empty() then
+		C().hud("st_coop_mods_hf_empty_first", "Empty the workbench stash before packing it up.")
+		return
+	end
+	C().to_host("hf_pickup", { o = C().hid(obj_id) })
+end
+
+local function host_pickup(t, from)
+	local id = C().lid(tonumber(t.o))
+	local obj = type(id) == "number" and id ~= 0 and level.object_by_id(id)
+	local who = C().avatar(from)
+	if not (obj and who and near(obj, who)) then return refuse("hf_pickup", from, "unknown or far furniture") end
+	local hm = C().mod("hf_obj_manager")
+	local data = hm and hm.get_data and select(2, pcall(hm.get_data, id))
+	if type(data) == "table" and data.is_world_obj then return refuse("hf_pickup", from, "a world object") end
+	for _, kind in ipairs({ "workshop", "stove" }) do
+		local box_id = known_link(kind, id)
+		local box = box_id and level.object_by_id(box_id)
+		if box and not box:is_inv_box_empty() then return refuse("hf_pickup", from, "its storage is not empty") end
+	end
+	-- The mod's own pickup for this kind of furniture, with the requester's character as the actor:
+	-- the item (and anything the mod hands back) goes into that player's inventory.
+	local w = wrapper_of(id)
+	local pick = w and w.pickup
+	if type(pick) ~= "function" then return refuse("hf_pickup", from, "no binder for the object") end
+	local ok, e = C().as_player(who, pick, w)
+	if not ok then
+		C().report("hf", "pickup", e)
+		return
+	end
+	st.pickup = st.pickup + 1
+	for _, kind in ipairs({ "workshop", "stove" }) do
+		local tname = link_tables[kind]
+		local tt = m_data()[tname]
+		if type(tt) == "table" and tt[id] and not alife_object(tt[id]) then tt[id] = nil end
+	end
+end
+
+local function dialog_pickup(field)
+	return function(orig)
+		return function(self, ...)
+			if not C().is_client() then return orig(self, ...) end
+			local id = self[field]
+			pcall(function() self:Close() end)
+			if type(id) == "number" then client_pickup(id) end
+		end
+	end
+end
+
+local function install_furniture()
+	local b = C().mod("bind_hf_base")
+	local pf = C().mod("placeable_furniture")
+	if not (b or pf) then return end
+	installed[#installed + 1] = "hideout_furniture"
+
+	-- placing
+	if pf and C().fn(pf, "create_object") then
+		C().wrap(pf, "create_object", "placeable_furniture.create_object", function(orig)
+			orig_create = orig
+			return function(section, loc, rot, lvid, gvid, ...)
+				if not C().is_client() then return orig(section, loc, rot, lvid, gvid, ...) end
+				local item = place_item
+				place_item = nil
+				-- Furniture the mod spawns from its own lists (map objects) is the host's.
+				if item and section and loc and rot then
+					local ok, e = pcall(client_place, section, loc, rot, lvid, gvid, item)
+					if not ok then C().report("hf", "place request", e) end
+				end
+				return nil
+			end
+		end)
+		C().wrap(pf, "func_place_item", "placeable_furniture.func_place_item", function(orig)
+			return function(obj, ...)
+				if not C().is_client() then return orig(obj, ...) end
+				local sec = obj and ini_sys:r_string_ex(obj:section(), "placeable_section")
+				local start = C().fn(pf, "start_placing_item")
+				if sec and start then
+					place_item = obj:id()
+					return start(sec)
+				end
+				place_item = obj and obj:id() or nil
+				return orig(obj, ...)
+			end
+		end)
+		C().on("hf_place", host_place, "host")
+		C().set_limit("hf_place", 5, 1)
+	end
+
+	-- packing up: every entry point a client can use
+	if b and b.hf_binder_wrapper then
+		local function wrap_wrapper_pickup(cls, label)
+			C().wrap(cls, "pickup", label, function(orig)
+				return function(self, ...)
+					if not C().is_client() then return orig(self, ...) end
+					local ok, pickable = pcall(function() return self.is_pickupable == nil or self:is_pickupable() end)
+					if ok and not pickable then return end
+					local id = self.object and self.object:id()
+					if id then client_pickup(id) end
+					return true
+				end
+			end)
+		end
+		wrap_wrapper_pickup(b.hf_binder_wrapper, "bind_hf_base.hf_binder_wrapper.pickup")
+		local bw = C().mod("bind_workshop_furniture")
+		if bw and bw.hf_workshop_wrapper then
+			wrap_wrapper_pickup(bw.hf_workshop_wrapper, "bind_workshop_furniture.hf_workshop_wrapper.pickup")
+		end
+	end
+	if pf then
+		C().wrap(pf, "pickup_obj", "placeable_furniture.pickup_obj", function(orig)
+			return function(obj, ...)
+				if not (C().is_client() and obj) then return orig(obj, ...) end
+				local w = wrapper_of(obj:id())
+				local ok, pickable = pcall(function() return not w or w.is_pickupable == nil or w:is_pickupable() end)
+				if ok and not pickable then return end
+				client_pickup(obj:id())
+			end
+		end)
+	end
+	local light, piano, radio, ws = C().mod("ui_furniture_light"), C().mod("ui_furniture_piano"),
+		C().mod("placeable_radio"), C().mod("ui_furniture_workshop")
+	C().wrap(light and light.UIFurnitureLight, "Pickup", "ui_furniture_light.UIFurnitureLight.Pickup", dialog_pickup("light_id"))
+	C().wrap(piano and piano.UIFurniturePiano, "Pickup", "ui_furniture_piano.UIFurniturePiano.Pickup", dialog_pickup("obj_id"))
+	C().wrap(radio and radio.UIFurnitureRadio, "Pickup", "placeable_radio.UIFurnitureRadio.Pickup", dialog_pickup("obj_id"))
+	C().wrap(ws and ws.UIFurnitureWorkshop, "Pickup", "ui_furniture_workshop.UIFurnitureWorkshop.Pickup", dialog_pickup("obj_id"))
+	C().on("hf_pickup", host_pickup, "host")
+	C().set_limit("hf_pickup", 5, 1)
+
+	-- lamps
+	if light then
+		local _, orig_toggle = C().wrap(light, "toggle_light", "ui_furniture_light.toggle_light", function(orig)
+			return function(obj_id, ...)
+				if not C().is_client() then return orig(obj_id, ...) end
+				local ok, e = pcall(function()
+					local hm = C().mod("hf_obj_manager")
+					local d = hm and hm.get_data and hm.get_data(obj_id)
+					local turning_on = not (type(d) == "table" and d.is_on)
+					if turning_on then
+						-- Tools and matches the lamp needs come from this player's inventory.
+						local se = alife_object(obj_id)
+						local sec = se and se:section_name()
+						local tools = sec and parse_list and parse_list(ini_sys, sec, "require_tool") or {}
+						if sec and ini_sys:r_bool_ex(sec, "require_matches", false) then
+							tools[#tools + 1] = "matches"
+							tools[#tools + 1] = "box_matches"
+						end
+						if #tools > 0 then
+							local used = false
+							for _, tool in ipairs(tools) do
+								local it = db.actor:object(tool)
+								if it then
+									if utils_item.is_degradable(it) then utils_item.degrade(it, 0.05) else utils_item.discharge(it) end
+									used = true
+									break
+								end
+							end
+							if not used then
+								C().hud("st_ui_campfire_prereq", "You need a tool to light this.")
+								return
+							end
+						end
+					end
+					C().to_host("hf_lamp", { o = C().hid(obj_id), on = turning_on })
+				end)
+				if not ok then C().report("hf", "lamp", e) end
+			end
+		end)
+		C().on("hf_lamp", function(t, from)
+			local id = C().lid(tonumber(t.o))
+			local obj = type(id) == "number" and level.object_by_id(id)
+			local who = C().avatar(from)
+			if not (obj and who and near(obj, who)) then return refuse("hf_lamp", from, "unknown or far lamp") end
+			local hm = C().mod("hf_obj_manager")
+			if hm and hm.update_data then
+				hm.update_data(id, { is_on = t.on == true })
+			elseif orig_toggle then
+				C().as_player(who, orig_toggle, id)
+			end
+			st.lamp = st.lamp + 1
+		end, "host")
+
+		C().wrap(light.UIFurnitureLight, "Refuel", "ui_furniture_light.UIFurnitureLight.Refuel", function(orig)
+			return function(self, ...)
+				if not C().is_client() then return orig(self, ...) end
+				local fuel = ini_sys:r_string_ex(self.section or "", "fuel_section") or "charcoal"
+				local item = db.actor:object(fuel)
+				if item then
+					alife_release(item) -- this player's own item: the host removes it for everybody
+					C().to_host("hf_refuel", { o = C().hid(self.light_id) })
+					local w = wrapper_of(self.light_id)
+					if w then w.fuel = 1.0 end -- the binder keeps fuel in itself
+				else
+					C().hud("st_coop_mods_hf_no_fuel", "I don't have any fuel for this.")
+				end
+				pcall(function() self:Close() end)
+			end
+		end)
+		C().on("hf_refuel", function(t, from)
+			local id = C().lid(tonumber(t.o))
+			local obj = type(id) == "number" and level.object_by_id(id)
+			local who = C().avatar(from)
+			if not (obj and who and near(obj, who)) then return refuse("hf_refuel", from, "unknown or far lamp") end
+			local w = wrapper_of(id)
+			local hm = C().mod("hf_obj_manager")
+			if w then w.fuel = 1.0 elseif hm and hm.update_data then hm.update_data(id, { condition = 1.0 }) end
+		end, "host")
+		C().set_limit("hf_lamp", 6, 2)
+	end
+
+	-- workbench box
+	if ws and C().fn(ws, "GetStash") then
+		local _, orig_get = C().wrap(ws, "GetStash", "ui_furniture_workshop.GetStash", function(orig)
+			return function(wb, ...)
+				if C().is_client() then return known_link("workshop", wb) end -- never creates on a client
+				return orig(wb, ...)
+			end
+		end)
+		resolvers.workshop = function(obj) return orig_get(obj:id()) end
+		C().wrap(ws, "UseWorkshop", "ui_furniture_workshop.UseWorkshop", function(orig)
+			return function(wb, ...)
+				if not C().is_client() then return orig(wb, ...) end
+				ask_box("workshop", wb, function(box)
+					local open = C().fn(ws, "OpenWorkshop")
+					C().when_online(box, nil, function()
+						if open then open(box) else open_box(box) end
+					end, 10000)
+				end)
+			end
+		end)
+		C().wrap(ws.UIFurnitureWorkshop, "AccessStash", "ui_furniture_workshop.UIFurnitureWorkshop.AccessStash", function(orig)
+			return function(self, ...)
+				if not C().is_client() then return orig(self, ...) end
+				local wb = self.obj_id
+				pcall(function() self:Close() end)
+				if type(wb) == "number" then ask_box("workshop", wb, open_box) end
+			end
+		end)
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Hideout Furniture Expansion: the stove's box
+-------------------------------------------------------------------------------
+local function install_stove()
+	local us = C().mod("ui_stove_furniture")
+	if not (us and C().fn(us, "access_inventory")) then return end
+	installed[#installed + 1] = "hf_expansion"
+	local _, orig_access = C().wrap(us, "access_inventory", "ui_stove_furniture.access_inventory", function(orig)
+		return function(obj, ...)
+			if not C().is_client() then return orig(obj, ...) end
+			if obj then ask_box("stove", obj:id(), open_box) end
+		end
+	end)
+	resolvers.stove = function(obj)
+		orig_access(obj)
+		RemoveTimeEvent(obj:id(), "container") -- the box opens for the requester, not on the host
+		local t = m_data().stove_stashes
+		return type(t) == "table" and t[obj:id()] or nil
+	end
+	C().wrap(us, "start_dialog", "ui_stove_furniture.start_dialog", function(orig)
+		return function(obj_id, ...)
+			if C().is_client() and type(obj_id) == "number" and not known_link("stove", obj_id) then
+				ask_box("stove", obj_id, nil) -- the link is known before a button needs it
+			end
+			return orig(obj_id, ...)
+		end
+	end)
+	C().wrap(us.UICookStove, "UseCook", "ui_stove_furniture.UICookStove.UseCook", function(orig)
+		return function(self, ...)
+			if C().is_client() and not known_link("stove", self.obj_id) then
+				C().hud("st_coop_mods_hf_syncing", "The stove's storage is still syncing, try again.")
+				return
+			end
+			return orig(self, ...)
+		end
+	end)
+end
+
+-------------------------------------------------------------------------------
+-- Gadgets: artefact harvester box, weapon showcase
+-------------------------------------------------------------------------------
+local show = { orig_spawn = nil, orig_remove = nil }
+
+local function ws_tables(ws)
+	ws.weapon_displays = ws.weapon_displays or {}
+	ws.weapon_display_slots = ws.weapon_display_slots or {}
+	ws.weapon_display_sections = ws.weapon_display_sections or {}
+	return ws.weapon_displays, ws.weapon_display_slots, ws.weapon_display_sections
+end
+
+-- "item:world:slot:section|..." for one case.
+local function encode_case(ws, case_id)
+	local guns, slots, secs = ws_tables(ws)
+	local case = guns[case_id]
+	if type(case) ~= "table" then return "" end
+	local cslots, csecs = slots[case_id] or {}, secs[case_id] or {}
+	local out = {}
+	for item_id, world_id in pairs(case) do
+		local slot = ""
+		for s, id in pairs(cslots) do
+			if id == world_id then slot = tostring(s) break end
+		end
+		out[#out + 1] = string.format("%s:%s:%s:%s", tostring(item_id), tostring(world_id), slot, tostring(csecs[item_id] or ""))
+	end
+	return table.concat(out, "|")
+end
+
+local function apply_case(ws, case_id, map)
+	local guns, slots, secs = ws_tables(ws)
+	if map == "" then
+		guns[case_id], slots[case_id], secs[case_id] = nil, nil, nil
+		return
+	end
+	local g, sl, sc = {}, {}, {}
+	for entry in map:gmatch("[^|]+") do
+		local a, b, c, d = entry:match("^(%d+):(%d+):(%d*):(.*)$")
+		local item_id, world_id = tonumber(a), tonumber(b)
+		if item_id and world_id then
+			g[item_id] = world_id
+			if tonumber(c) then sl[tonumber(c)] = world_id end
+			if d and d ~= "" then sc[item_id] = d end
+		end
+	end
+	guns[case_id], slots[case_id], secs[case_id] = g, sl, sc
+end
+
+local function publish_case(ws, case_id)
+	if C().is_host() then C().to_all("hf_show_map", { c = case_id, m = encode_case(ws, case_id) }) end
+end
+
+local function install_gadgets()
+	local bh = C().mod("bind_artifact_harvester")
+	if bh and C().fn(bh, "open_harvester_stash") and C().fn(bh, "harvester_save_state") then
+		installed[#installed + 1] = "hf_gadgets.harvester"
+		local _, orig_open = C().wrap(bh, "open_harvester_stash", "bind_artifact_harvester.open_harvester_stash", function(orig)
+			return function(id, ...)
+				if not C().is_client() then return orig(id, ...) end
+				ask_box("harvester", id, open_box)
+			end
+		end)
+		resolvers.harvester = function(obj)
+			local id = obj:id()
+			orig_open(id)
+			RemoveTimeEvent("hf_artifact_harvester_stash", "open_" .. tostring(id))
+			local m = m_data()
+			bh.harvester_save_state(m) -- the mod publishes its box table only here
+			return type(m.harvester_stashes) == "table" and m.harvester_stashes[id] or nil
+		end
+	end
+
+	local ws = C().mod("weapon_showcase")
+	if not (ws and C().fn(ws, "spawn_displayed_item") and C().fn(ws, "remove_displayed_item")) then return end
+	installed[#installed + 1] = "hf_gadgets.showcase"
+	C().wrap(ws, "spawn_displayed_item", "weapon_showcase.spawn_displayed_item", function(orig)
+		show.orig_spawn = orig
+		return function(case_id, item_id, gun_number, item_sec, ...)
+			if C().is_client() then
+				C().to_host("hf_show", { c = C().hid(case_id), i = C().hid(item_id), m = 1, s = item_sec or "" })
+				return nil
+			end
+			local r = orig(case_id, item_id, gun_number, item_sec, ...)
+			publish_case(ws, case_id)
+			return r
+		end
+	end)
+	C().wrap(ws, "remove_displayed_item", "weapon_showcase.remove_displayed_item", function(orig)
+		show.orig_remove = orig
+		return function(item_id, world_item_id, case_id, ...)
+			if C().is_client() then
+				C().to_host("hf_show", { c = C().hid(case_id), i = C().hid(item_id), m = 0 })
+				return true
+			end
+			local r = orig(item_id, world_item_id, case_id, ...)
+			publish_case(ws, case_id)
+			return r
+		end
+	end)
+	-- The host's displays are world objects: a client never re-creates them.
+	C().wrap(ws, "respawn_weapon_displays", "weapon_showcase.respawn_weapon_displays", function(orig)
+		return function(...)
+			if C().is_client() then return true end
+			return orig(...)
+		end
+	end)
+	C().on("hf_show", function(t, from)
+		local case_id, item_id = C().lid(tonumber(t.c)), C().lid(tonumber(t.i))
+		local case = type(case_id) == "number" and level.object_by_id(case_id)
+		local who = C().avatar(from)
+		if not (case and who and type(item_id) == "number" and near(case, who)) then return refuse("hf_show", from, "unknown or far case") end
+		if t.m == 1 then
+			local se = alife_object(item_id)
+			if not (se and se.parent_id == case_id) then return refuse("hf_show", from, "the item is not in that case") end
+			local sec = (type(t.s) == "string" and t.s ~= "") and t.s or nil
+			pcall(show.orig_spawn, case_id, item_id, nil, sec)
+		else
+			local guns = ws.weapon_displays or {}
+			local world_id = guns[case_id] and guns[case_id][item_id]
+			if world_id then pcall(show.orig_remove, item_id, world_id, case_id) end
+		end
+		publish_case(ws, case_id)
+	end, "host")
+	C().on("hf_show_map", function(t)
+		local case_id = C().lid(tonumber(t.c))
+		if case_id and type(t.m) == "string" then apply_case(ws, case_id, t.m) end
+	end, "client")
+	C().set_limit("hf_show", 6, 2)
+end
+
+-------------------------------------------------------------------------------
+-- Placed radio (placeable_radio): the host's programme plays on every machine
+-------------------------------------------------------------------------------
+local R = { P = nil, W = nil, orig = {}, catalog = nil, loc = {}, state = {}, seen = setmetatable({}, { __mode = "k" }),
+	pub = {}, next_refresh = 0 }
+
+local KIND_TRACK, KIND_SESSION = 0, 1
+
+local function radio_local(name)
+	local l = R.loc[name]
+	if l == nil then
+		local v, holder, idx = C().find_local(R.P, name)
+		l = { v = v, holder = holder, idx = idx }
+		R.loc[name] = l
+	end
+	if l.holder then
+		local _, v = debug.getupvalue(l.holder, l.idx)
+		return v
+	end
+	return R.P[name]
+end
+
+local function set_radio_local(name, value)
+	local l = R.loc[name]
+	if l and l.holder then debug.setupvalue(l.holder, l.idx, value) elseif R.P[name] ~= nil then R.P[name] = value end
+end
+
+local function lower(s) return string.lower((string.gsub(s or "", "/", "\\"))) end
+
+local function list_names(path)
+	local names, index = {}, {}
+	local ok, fl = pcall(function() return getFS():file_list_open("$game_sounds$", path, bit_or(FS.FS_ListFiles, FS.FS_RootOnly)) end)
+	local n = ok and fl and fl:Size() or 0
+	for i = 1, n do
+		local name = fl:GetAt(i - 1):sub(1, -5)
+		names[i], index[lower(name)] = name, i
+	end
+	return { names = names, index = index }
+end
+
+local function radio_catalog()
+	if R.catalog then return R.catalog end
+	local pc, ps = radio_local("path_radio_ch"), radio_local("path_radio_session")
+	if type(pc) ~= "table" or type(ps) ~= "table" then return nil end
+	local cat = {}
+	for ch = 1, #pc do
+		cat[ch] = { p = pc[ch], q = ps[ch], [KIND_TRACK] = list_names(pc[ch]), [KIND_SESSION] = list_names(ps[ch]) }
+	end
+	R.catalog = cat
+	return cat
+end
+
+local function channel_of(p, q)
+	local cat = radio_catalog()
+	if not cat then return nil end
+	for ch, c in ipairs(cat) do
+		if lower(c.p) == lower(p) and lower(c.q) == lower(q) then return ch end
+	end
+	return nil
+end
+
+local function radio_ok(w)
+	return w and w.object and type(w.radio_ch) == "table" and type(w.radio_session) == "table"
+		and type(w.radio_now) == "table" and type(w.radio_session_now) == "table"
+end
+
+local function playing(w)
+	local ch = w.radio_selected
+	if not (type(ch) == "number" and w.radio_ch[ch]) then return nil end
+	local si, ti = w.radio_session_now[ch], w.radio_now[ch]
+	local s = w.radio_session[ch] and w.radio_session[ch][si]
+	if s and s:playing() then return KIND_SESSION, si, s end
+	s = w.radio_ch[ch][ti]
+	if s and s:playing() then return KIND_TRACK, ti, s end
+	return nil
+end
+
+local function stop_music(w)
+	for _, name in ipairs({ "radio_ch", "radio_ch_out", "radio_session", "radio_session_out" }) do
+		for _, chan in pairs(w[name] or {}) do
+			for _, snd in pairs(chan) do pcall(function() snd:stop() end) end
+		end
+	end
+end
+
+local function host_radio_publish(w, force)
+	local id = w.object:id()
+	local cat = radio_catalog()
+	if not cat then return end
+	local kind, idx = playing(w)
+	local ch = w.radio_selected
+	local on = w.radio_state == true
+	local c = cat[ch]
+	local clip = (on and c and kind and c[kind].names[idx]) or ""
+	local vol = tonumber(radio_local("radio_vol")) or 0.5
+	local p = R.pub[id] or { n = 0 }
+	R.pub[id] = p
+	local sig = table.concat({ tostring(on), tostring(ch), tostring(kind), clip, string.format("%.2f", vol) }, "|")
+	if sig == p.sig and not force then return end
+	if sig ~= p.sig then p.n = p.n + 1 end
+	p.sig = sig
+	C().to_all("hf_radio", { o = id, on = on, p = c and c.p or "", q = c and c.q or "", k = kind or -1, c = clip, v = vol, n = p.n })
+	st.radio_out = st.radio_out + 1
+end
+
+local function client_radio_apply(w)
+	local id = w.object:id()
+	local s = R.state[id]
+	if not s or R.seen[w] == s then return end
+	R.seen[w] = s
+	stop_music(w)
+	local ch = channel_of(s.p, s.q)
+	w.radio_state = s.on == true
+	w.radio_selected = ch or 0
+	local cat = radio_catalog()
+	local kind = tonumber(s.k)
+	if not (s.on and ch and cat and (kind == KIND_TRACK or kind == KIND_SESSION)) then return end
+	local i = cat[ch][kind].index[lower(s.c)]
+	if not i then return end -- a clip this install does not have: silence rather than something else
+	local snd
+	if kind == KIND_SESSION then
+		w.radio_session_now[ch] = i
+		snd = w.radio_session[ch][i]
+	else
+		w.radio_now[ch] = i
+		snd = w.radio_ch[ch][i]
+	end
+	if snd then
+		pcall(function()
+			snd:play_at_pos(w.object, w.object:position(), 0, sound_object.s3d)
+			snd.volume = math.max(0, math.min(1, (tonumber(s.v) or 0.5) - (tonumber(radio_local("psi_vol")) or 0)))
+		end)
+	end
+end
+
+local RADIO_ACTIONS = { action_radio_start = true, action_radio_stop = true, action_radio_ch = true,
+	action_radio_v_up = true, action_radio_v_down = true }
+
+local function install_radio()
+	R.P = C().mod("placeable_radio")
+	R.W = R.P and R.P.placeable_radio_wrapper
+	if not (R.W and C().fn(R.W, "update") and C().mod("bind_hf_base")) then return end
+	-- File locals are looked up before the methods that hold them are wrapped.
+	for _, name in ipairs({ "path_radio_ch", "path_radio_session", "radio_vol", "psi_vol", "safety_lock" }) do radio_local(name) end
+	if not radio_catalog() then
+		log("placed radio: station lists not found, radio not synced")
+		return
+	end
+	installed[#installed + 1] = "hf_radio"
+	C().wrap(R.W, "update", "placeable_radio.placeable_radio_wrapper.update", function(orig)
+		R.orig.update = orig
+		return function(w, delta, ...)
+			if not (C().active() and radio_ok(w)) then return orig(w, delta, ...) end
+			if C().is_host() then
+				local r = orig(w, delta, ...)
+				local ok, e = pcall(host_radio_publish, w, false)
+				if not ok then C().report("hf", "radio publish", e) end
+				return r
+			end
+			local ok, e = pcall(client_radio_apply, w)
+			if not ok then C().report("hf", "radio apply", e) end
+			-- The mod's own picker stays shut on a client (safety lock); noise and emission effects still run.
+			local lock = radio_local("safety_lock")
+			set_radio_local("safety_lock", true)
+			local ok2, r = pcall(orig, w, delta, ...)
+			set_radio_local("safety_lock", lock)
+			if not ok2 then C().report("hf", "radio update", r) end
+			return r
+		end
+	end)
+	for name in pairs(RADIO_ACTIONS) do
+		C().wrap(R.W, name, "placeable_radio.placeable_radio_wrapper." .. name, function(orig)
+			R.orig[name] = orig
+			return function(w, value, ...)
+				if not (C().is_client() and radio_ok(w)) then return orig(w, value, ...) end
+				local t = { o = C().hid(w.object:id()), a = name }
+				if name == "action_radio_ch" then
+					local c = radio_catalog() and radio_catalog()[value]
+					if not c then return false end
+					t.p, t.q = c.p, c.q
+				end
+				C().to_host("hf_radio_ctl", t)
+				return false -- the radio follows the host's state
+			end
+		end)
+	end
+	C().on("hf_radio_ctl", function(t, from)
+		local id = C().lid(tonumber(t.o))
+		local w = type(id) == "number" and wrapper_of(id)
+		local who = C().avatar(from)
+		local action = t.a
+		if not (w and radio_ok(w) and who and near(w.object, who) and RADIO_ACTIONS[action] and R.orig[action]) then
+			return refuse("hf_radio_ctl", from, "unknown radio or action")
+		end
+		local arg = nil
+		if action == "action_radio_ch" then
+			arg = channel_of(tostring(t.p or ""), tostring(t.q or ""))
+			if not arg then return refuse("hf_radio_ctl", from, "station not installed on the host") end
+		end
+		pcall(R.orig[action], w, arg)
+		host_radio_publish(w, true)
+	end, "host")
+	C().on("hf_radio", function(t)
+		local id = C().lid(tonumber(t.o))
+		if not id then return end
+		R.state[id] = { on = t.on == true, p = tostring(t.p or ""), q = tostring(t.q or ""), k = t.k, c = tostring(t.c or ""), v = t.v, n = t.n }
+		st.radio_in = st.radio_in + 1
+	end, "client")
+	C().set_limit("hf_radio_ctl", 8, 3)
+end
+
+-- Host: radios that are on are announced again now and then (late joiners, lost state).
+local function host_radio_refresh()
+	if not (R.W and C().is_host()) then return end
+	local tg = time_global()
+	if tg < R.next_refresh then return end
+	R.next_refresh = tg + 20000
+	for id, p in pairs(R.pub) do
+		local w = wrapper_of(id)
+		if w and radio_ok(w) and w.radio_state then pcall(host_radio_publish, w, true) end
+		if not w then R.pub[id] = nil end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Start
+-------------------------------------------------------------------------------
+function on_game_start()
+	if not api then return end
+	install_furniture()
+	install_stove()
+	install_gadgets()
+	install_data_mirror()
+	install_radio()
+	if #installed == 0 then return end
+	C().on("hf_box", host_box, "host")
+	C().on("hf_box_r", client_box_answer, "client")
+	C().set_limit("hf_box", 6, 2)
+	RegisterScriptCallback("actor_on_update", host_radio_refresh)
+	C().status_line("hf", function()
+		return string.format("%s | placed %d, packed %d, lamps %d, boxes %d, refused %d | data out %d in %d | radio out %d in %d",
+			table.concat(installed, ", "), st.place, st.pickup, st.lamp, st.box, st.refused, st.data_out, st.data_in,
+			st.radio_out, st.radio_in)
+	end)
+end

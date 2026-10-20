@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop - mods group (W4): third-party mod patches (scripts\coop_mods_*.script). -->
+<string_table>
+	<string id="st_coop_mods_hf_box_refused">
+		<text>The host could not open this storage.</text>
+	</string>
+	<string id="st_coop_mods_hf_empty_first">
+		<text>Empty the workbench stash before packing it up.</text>
+	</string>
+	<string id="st_coop_mods_hf_no_fuel">
+		<text>I don't have any fuel for this.</text>
+	</string>
+	<string id="st_coop_mods_hf_syncing">
+		<text>The stove's storage is still syncing, try again.</text>
+	</string>
+</string_table>

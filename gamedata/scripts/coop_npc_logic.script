@@ -1,0 +1,873 @@
+--[[
+	Anomaly Coop - NPC group (W4 "npc"): xr_logic for several players (restrictors, actor conditions,
+	actor effects). Port of the behaviour of xrRazom 1.4 xrr_patch_restrictor_logic, xrr_patch_logic_section
+	and xrr_patch_logic_heal on our architecture (own code, our event API).
+
+	Stock xr_logic reacts to ONE actor. In a session:
+	Host (runs the world logic):
+	  - Switch conditions that name the actor (on_actor_dist_le/ge[_nvis], on_actor_in_zone/not_in_zone,
+	    on_actor_inside/outside) are evaluated against every player: the host's actor and the clients' proxies.
+	    This applies to restrictors, NPCs, monsters and physic objects alike (a local restrictor excepted).
+	  - xr_conditions dist_to_actor_le/ge, actor_see_npc, actor_near_smart, actor_in_zone, actor_out_zone
+	    answer for the nearest / any player when asked about the host's actor.
+	  - A restrictor whose condlists change more than this machine (infos, spawns, any effect except the
+	    UI/tutorial ones) is "replicated": the host is the only one that switches it and broadcasts every
+	    section change (npc.logic). One whose effects never leave the machine (tutorial hints, UI) is "local"
+	    and runs vanilla on every machine for its own player.
+	  - Effects that act on "the actor" (disable_ui, kill_actor, teleport_actor, run_tutorial, ...) fired
+	    by a replicated restrictor's condlist go to its audience: the players that walked in (or stood within
+	    the trigger distance), plus, for scenes (an arrival that disables the UI or teleports), everybody
+	    within [coop_npc] scene_radius of them. The host runs the effect only if its own player is in the
+	    audience; the others get it as npc.fx and run it on their own actor. enable_ui/enable_imput/
+	    stop_tutorial always run on the host too (an unlock never hurts, sr_cutscene locks outside condlists).
+	Client:
+	  - Never evaluates a replicated restrictor (no switch, no condlist, no on_value of sr_timer): it takes
+	    the host's section (npc.logic), so the section schemes (no-weapon zones, psy antenna, postprocess,
+	    cutscenes) run for this client's own player. It asks for every section once it is live
+	    (npc.logic_req -> npc.logic_all).
+	  - Crow spawner and fake-monster restrictor schemes never run on a client (they create world objects,
+	    which a client would forward to the host as duplicates).
+	Both: logic heal (sessions only) - a join save written before an object's first logic update keeps its
+	loaded logic state instead of writing a blank one, and a loaded "nil" section that no condlist can
+	produce is re-derived.
+
+	Events (ids in host numbering):
+	  npc.logic      host -> all     { i = object, s = section | "nil" }
+	  npc.logic_req  client -> host  { } (all sections) | { i = object }
+	  npc.logic_all  host -> client  { n, i1, s1, i2, s2, ... } (chunks of <= 150)
+	  npc.fx         host -> one     { i = object | -1, f = effect name, a = args "p1:p2" }  (actor effects)
+	API: deliver(name, npc, p), audience_of(npc), is_replicated(id), register_actor_effect(name, always)
+	Stock functions wrapped: xr_logic.try_switch_to_another_section, determine_section_to_activate,
+	initialize_obj, switch_to_section, pick_section_from_condlist, save_obj; sr_timer.action_timer.update;
+	sr_crow_spawner.crowkiller.update; sr_monster.fake_monster.update; xr_conditions.dist_to_actor_le,
+	dist_to_actor_ge, actor_see_npc, actor_near_smart, actor_in_zone, actor_out_zone; xr_effects.<actor effects>.
+--]]
+
+local tostring, tonumber, type, pairs, ipairs, pcall, next = tostring, tonumber, type, pairs, ipairs, pcall, next
+local string_format, table_concat = string.format, table.concat
+
+local TAG = "logic"
+local P -- coop_npc_players
+
+local function log(fmt, ...) P.log(TAG, fmt, ...) end
+local function report(what, err) P.report(TAG, what, err) end
+
+local EV_SECTION, EV_REQ, EV_ALL, EV_FX = "npc.logic", "npc.logic_req", "npc.logic_all", "npc.fx"
+local CHUNK = 150
+local PENDING_TTL = 120000
+local KILL_RELAY_MS = 500
+
+-- Switch conditions that name the actor; the first four can be an arrival (a player comes in).
+local ACTOR_CONDS = {
+	on_actor_dist_le = true, on_actor_dist_le_nvis = true, on_actor_dist_ge = true, on_actor_dist_ge_nvis = true,
+	on_actor_in_zone = true, on_actor_not_in_zone = true, on_actor_inside = true, on_actor_outside = true,
+}
+local ARRIVAL_CONDS = {
+	on_actor_dist_le = true, on_actor_dist_le_nvis = true, on_actor_in_zone = true, on_actor_inside = true,
+}
+-- Effects that only touch the machine they run on (its UI or tutorial): a restrictor with nothing else is local.
+local MACHINE_EFFECTS = {
+	run_tutorial = true, stop_tutorial = true, disable_ui = true, disable_ui_only = true, enable_ui = true,
+}
+-- Effects that take a player out of play: an arrival that fires one is a scene.
+local GATHERS = { disable_ui = true, disable_ui_only = true, teleport_actor = true }
+-- Effects on db.actor: true = audience only, "always" = also on the host whatever the audience.
+local ACTOR_FX = {
+	disable_ui = true, disable_ui_only = true, run_tutorial = true, kill_actor = true, hit_actor = true,
+	save_actor_position = true, restore_actor_position = true, teleport_actor = true,
+	bar_arena_teleport = true, bar_arena_teleport_2 = true, bar_arena_weapon_slot = true,
+	enable_ui = "always", enable_imput = "always", stop_tutorial = "always",
+}
+-- A kill that spares whoever holds the item (judged on each player's machine).
+local KILL_GATES = { x16_timer_restrictor = "good_psy_helmet" }
+
+local STYPE_RESTRICTOR = 4
+local installed = false
+local host_on = false -- host with at least one client (refreshed every 250 ms)
+local applying = false -- client: applying a host section
+local replaying = false -- client: running a relayed effect
+local ctx = {} -- host: stack of replicated restrictors whose condlist is being evaluated
+
+local orig = {}
+local stats = { switched_team = 0, sections_out = 0, sections_in = 0, fx_out = 0, fx_in = 0, healed = 0, refused = 0 }
+
+-------------------------------------------------------------------------------
+-- Classification
+-------------------------------------------------------------------------------
+local function block_is_shared(bare)
+	for kind, name in bare:gmatch("([=+%-!])([%w_%.]+)") do
+		if kind ~= "=" or not MACHINE_EFFECTS[name] then return true end
+	end
+	return false
+end
+
+local function block_gathers(bare)
+	for name in bare:gmatch("=([%w_%.]+)") do
+		if GATHERS[name] then return true end
+	end
+	return false
+end
+
+-- Walks every line of an ini. visit(section, key, value) returns true to stop. False if the ini cannot be read.
+local function each_line(ini, visit)
+	local stop = false
+	local function on_section(sec)
+		for i = 0, ini:line_count(sec) - 1 do
+			local _, key, value = ini:r_line(sec, i, "", "")
+			if visit(sec, key, value) then return true end
+		end
+		return false
+	end
+	-- The engine functor must get a boolean back and must never see a Lua error.
+	local ok = pcall(ini.section_for_each, ini, function(sec)
+		if stop then return true end
+		local okv, r = pcall(on_section, sec)
+		stop = (not okv) or r == true
+		return stop
+	end)
+	return ok
+end
+
+-- shared: some effect leaves the machine; positional: some switch waits for a player to arrive;
+-- gathers: some effect takes the player out of play.
+function scan_ini(ini)
+	local shared, positional, gathers = false, false, false
+	if not ini then return true, false, false end
+	local ok = each_line(ini, function(_, key, value)
+		if type(key) == "string" and ARRIVAL_CONDS[(key:gsub("%d+$", ""))] then positional = true end
+		if type(value) == "string" and value:find("%", 1, true) then
+			for block in value:gmatch("%%([^%%]*)%%") do
+				local bare = block:gsub("%b()", "")
+				if not shared and block_is_shared(bare) then shared = true end
+				if not gathers and block_gathers(bare) then gathers = true end
+			end
+		end
+		return shared and positional and gathers
+	end)
+	if not ok then shared = true end -- unreadable: host-authoritative
+	return shared, positional, gathers
+end
+
+local function classify(st, ini)
+	if st.coop_local ~= nil then return end
+	local shared, positional, gathers = scan_ini(ini or st.ini)
+	st.coop_local = not shared
+	st.coop_positional = positional
+	st.coop_scene = positional and gathers
+end
+
+local function storage_of(obj)
+	if not obj then return nil end
+	local id = obj.id
+	if type(id) == "function" then id = obj:id() end
+	return type(id) == "number" and db.storage[id] or nil
+end
+
+local function restrictor_st(obj)
+	local st = storage_of(obj)
+	if st and st.stype == STYPE_RESTRICTOR then
+		if st.coop_local == nil and st.ini then classify(st) end
+		return st
+	end
+	return nil
+end
+
+function is_replicated(id)
+	local st = db.storage[id]
+	return st ~= nil and st.stype == STYPE_RESTRICTOR and st.coop_local == false
+end
+
+local function is_local_restrictor(obj)
+	local st = restrictor_st(obj)
+	return st ~= nil and st.coop_local == true
+end
+
+-------------------------------------------------------------------------------
+-- Audience (host)
+-------------------------------------------------------------------------------
+local function add_inside(zone, aud)
+	for _, p in ipairs(P.everyone()) do
+		if zone:inside(p:position()) then aud[p:id()] = true end
+	end
+end
+
+local function add_within(pos, r2, aud)
+	for _, p in ipairs(P.everyone()) do
+		if p:position():distance_to_sqr(pos) <= r2 then aud[p:id()] = true end
+	end
+end
+
+-- Scene: whoever stands within scene_radius of a player that walked in (of the trigger when nobody did).
+local function add_nearby(from, aud)
+	local r = P.setting("scene_radius", 30)
+	local r2 = r > 0 and r * r or math.huge
+	local centres = {}
+	for id in pairs(aud) do
+		local o = level.object_by_id(id)
+		if o then centres[#centres + 1] = o:position() end
+	end
+	if #centres == 0 then centres[1] = from:position() end
+	for _, p in ipairs(P.everyone()) do
+		local pp = p:position()
+		for _, c in ipairs(centres) do
+			if pp:distance_to_sqr(c) <= r2 then
+				aud[p:id()] = true
+				break
+			end
+		end
+	end
+end
+
+-- c = the arrival condition that fired: the players it matched start the audience.
+local function restart_audience(npc, st, c)
+	local aud = {}
+	st.coop_aud = aud
+	local zone = c.name == "on_actor_in_zone" and db.zone_by_name[c.v1] or nil
+	st.coop_trigger_zone = zone
+	if c.name == "on_actor_dist_le" or c.name == "on_actor_dist_le_nvis" then
+		local d = tonumber(c.v1) or 0
+		add_within(npc:position(), d * d, aud)
+	else
+		add_inside(zone or npc, aud)
+	end
+	if st.coop_scene then add_nearby(zone or npc, aud) end
+end
+
+local function audience(npc, st)
+	if st.coop_arrival then
+		restart_audience(npc, st, st.coop_arrival)
+		st.coop_arrival = nil
+	end
+	local aud = st.coop_aud
+	if not aud then
+		aud = {}
+		st.coop_aud = aud
+	end
+	if st.coop_scene then return aud end -- a scene keeps who its arrival gathered
+	add_inside(st.coop_trigger_zone or npc, aud)
+	-- Nobody inside and nobody recorded, in a restrictor no player walks into: a story trigger.
+	if not st.coop_positional and next(aud) == nil then
+		for _, p in ipairs(P.everyone()) do aud[p:id()] = true end
+	end
+	return aud
+end
+
+-- The restrictor whose condlist the host is evaluating for the group right now, or nil.
+local function current(npc)
+	local top = ctx[#ctx]
+	if not (top and host_on) then return nil end
+	if npc and top.npc_id ~= (type(npc.id) == "function" and npc:id() or npc.id) then return nil end
+	return top.st
+end
+
+-- nil = not a replicated restrictor's condlist on a host with clients.
+function audience_of(npc)
+	local st = current(npc)
+	return st and audience(npc, st) or nil
+end
+
+-------------------------------------------------------------------------------
+-- Actor effects
+-------------------------------------------------------------------------------
+local function args_of(p)
+	if type(p) ~= "table" then return "" end
+	local t = {}
+	for i = 1, #p do t[i] = tostring(p[i]) end
+	return table_concat(t, ":")
+end
+
+local function relay(aud, npc_id, name, args)
+	local host_actor = db.actor and db.actor:id()
+	for id in pairs(aud) do
+		if id ~= host_actor then
+			local peer = P.peer_of(id)
+			if peer and P.send(EV_FX, { i = npc_id, f = name, a = args }, peer) then
+				stats.fx_out = stats.fx_out + 1
+			end
+		end
+	end
+end
+
+-- true = run the effect on this machine, false = skip it, nil = not a replicated restrictor's condlist.
+function deliver(name, npc, p)
+	if replaying then return true end
+	if not installed or not P.active() then return nil end
+	local st = restrictor_st(npc)
+	if not (st and st.coop_local == false) then return nil end
+	if P.is_client() then return true end -- a scheme's own call (sr_cutscene): this player's
+	if not current(npc) then return true end -- scheme-internal on the host: vanilla
+	local aud = audience(npc, st)
+	local mine = db.actor ~= nil and aud[db.actor:id()] == true
+	if name == "kill_actor" then
+		-- A gated kill fires every tick until it is done: relay at most twice a second.
+		local now = time_global()
+		if now >= (st.coop_kill_at or 0) then
+			st.coop_kill_at = now + KILL_RELAY_MS
+			relay(aud, npc:id(), name, "")
+		end
+		local gate = KILL_GATES[npc:name()]
+		return mine and not (gate and db.actor:object(gate))
+	end
+	relay(aud, npc:id(), name, args_of(p))
+	return mine or ACTOR_FX[name] == "always"
+end
+
+local function wrap_effect(name)
+	local f = xr_effects and xr_effects[name]
+	if type(f) ~= "function" or orig["fx_" .. name] then return end
+	orig["fx_" .. name] = f
+	xr_effects[name] = function(actor, npc, p)
+		if deliver(name, npc, p) == false then return end
+		return f(actor, npc, p)
+	end
+end
+
+-- For other scripts (mods group): an effect that acts on db.actor joins the audience routing.
+function register_actor_effect(name, always)
+	if type(name) ~= "string" then return end
+	ACTOR_FX[name] = always and "always" or true
+	if installed then wrap_effect(name) end
+end
+
+-------------------------------------------------------------------------------
+-- Host: switching against every player
+-------------------------------------------------------------------------------
+local function sees_player(npc, pos, r2)
+	if not npc:alive() then return false end
+	for _, p in ipairs(P.everyone()) do
+		if npc:see(p) and (not r2 or p:position():distance_to_sqr(pos) <= r2) then return true end
+	end
+	return false
+end
+
+local function zone_has_player(zone)
+	if not zone then return false end
+	for _, p in ipairs(P.everyone()) do
+		if zone:inside(p:position()) then return true end
+	end
+	return false
+end
+
+-- st.logic is rebuilt on every scheme switch: the verdict keys on its identity.
+local function has_actor_conds(st, l)
+	if st.coop_logic_seen ~= l then
+		local found = false
+		for _, c in pairs(l) do
+			if ACTOR_CONDS[c.name] then
+				found = true
+				break
+			end
+		end
+		st.coop_logic_seen, st.coop_actor_conds = l, found
+	end
+	return st.coop_actor_conds
+end
+
+-- Vanilla's loop with the actor conditions read against every alive player.
+local function team_try_switch(npc, st, actor, l)
+	local npc_id = npc:id()
+	local ost = db.storage[npc_id] or {}
+	local replicated = ost.stype == STYPE_RESTRICTOR and ost.coop_local == false
+	local pos, nd
+	local function near()
+		pos = pos or npc:position()
+		if not nd then nd = P.nearest_dist_sqr(pos) end
+		return nd
+	end
+	local switched = false
+	for _, c in pairs(l) do
+		local name, fire = c.name, false
+		if name == "on_actor_dist_le" then
+			pos = pos or npc:position()
+			local d = tonumber(c.v1) or 0
+			fire = sees_player(npc, pos, d * d)
+		elseif name == "on_actor_dist_le_nvis" then
+			local d = tonumber(c.v1) or 0
+			fire = near() <= d * d
+		elseif name == "on_actor_dist_ge" then
+			local d = tonumber(c.v1) or 0
+			fire = near() > d * d and sees_player(npc)
+		elseif name == "on_actor_dist_ge_nvis" then
+			local d = tonumber(c.v1) or 0
+			fire = near() > d * d
+		elseif name == "on_signal" then
+			fire = st.signals and st.signals[c.v1]
+		elseif name == "on_info" then
+			fire = true
+		elseif name == "on_timer" then
+			fire = time_global() >= (ost.activation_time or 0) + c.v1
+		elseif name == "on_game_timer" then
+			fire = game.get_game_time():diffSec(ost.activation_game_time) >= c.v1
+		elseif name == "on_actor_in_zone" then
+			fire = zone_has_player(db.zone_by_name[c.v1])
+		elseif name == "on_actor_not_in_zone" then
+			fire = not zone_has_player(db.zone_by_name[c.v1])
+		elseif name == "on_npc_in_zone" then
+			fire = utils_obj.npc_in_zone(level.object_by_id(c.npc_id), db.zone_by_name[c.v2])
+		elseif name == "on_npc_not_in_zone" then
+			fire = not utils_obj.npc_in_zone(level.object_by_id(c.npc_id), db.zone_by_name[c.v2])
+		elseif name == "on_actor_inside" then
+			fire = zone_has_player(npc)
+		elseif name == "on_actor_outside" then
+			fire = not zone_has_player(npc)
+		else
+			printf("WARNING: object '%s': try_switch_to_another_section: unknown condition '%s' encountered", npc:name(), tostring(name))
+		end
+		if fire then
+			-- An arrival restarts the audience only once its condlist delivers an effect or switches.
+			local arrival = replicated and ARRIVAL_CONDS[name]
+			if arrival then ost.coop_arrival = c end
+			switched = xr_logic.switch_to_section(npc, st.ini, xr_logic.pick_section_from_condlist(actor, npc, c.condlist))
+			if arrival and ost.coop_arrival then
+				if switched == true and ost.active_section then restart_audience(npc, ost, c) end
+				ost.coop_arrival = nil
+			end
+		end
+		if switched == true then break end
+	end
+	if switched then stats.switched_team = stats.switched_team + 1 end
+	return switched
+end
+
+local function try_switch(npc, st, actor)
+	if installed and npc and P.active() then
+		if host_on then
+			local l = st and st.logic
+			if actor and l and has_actor_conds(st, l) and not is_local_restrictor(npc) then
+				return team_try_switch(npc, st, actor, l)
+			end
+		elseif P.is_client() then
+			local ost = restrictor_st(npc)
+			if ost and ost.coop_local == false then return false end
+		end
+	end
+	return orig.try_switch(npc, st, actor)
+end
+
+-------------------------------------------------------------------------------
+-- Sections: host broadcasts, client applies
+-------------------------------------------------------------------------------
+local pending = {} -- client: local id -> { s = section, t = received }
+
+local function broadcast_section(id, section)
+	if P.send(EV_SECTION, { i = id, s = section or "nil" }, -1) then
+		stats.sections_out = stats.sections_out + 1
+	end
+end
+
+local function switch_to_section(npc, ini, section)
+	local st = installed and npc and P.active() and restrictor_st(npc)
+	if not (st and st.coop_local == false) then
+		return orig.switch(npc, ini, section)
+	end
+	if P.is_client() then
+		if not applying then
+			stats.refused = stats.refused + 1
+			return false
+		end
+		return orig.switch(npc, ini, section)
+	end
+	local switched = orig.switch(npc, ini, section)
+	if switched then
+		if not st.active_section then st.coop_aud, st.coop_trigger_zone = nil, nil end
+		if host_on then broadcast_section(npc:id(), st.active_section) end
+	end
+	return switched
+end
+
+local function client_request(id)
+	P.send(EV_REQ, id and { i = P.to_host(id) } or {}, 0)
+end
+
+-- A client never runs the active= pick of a replicated restrictor: it takes the host's section.
+local function determine_section(npc, ini, section_logic, actor)
+	if installed and P.is_client() then
+		local st = db.storage[npc:id()]
+		if st and st.stype == STYPE_RESTRICTOR then
+			classify(st, ini)
+			if st.coop_local == false then
+				local p = pending[npc:id()]
+				pending[npc:id()] = nil
+				if p and (p.s == "nil" or ini:section_exist(p.s)) then return p.s end
+				client_request(npc:id())
+				return "nil"
+			end
+		end
+	end
+	return orig.determine(npc, ini, section_logic, actor)
+end
+
+-- custom_data caps at 4 KiB, so real logic often lives in the cfg-linked ltx.
+local function resolve_logic_ini(obj)
+	local ini = obj:spawn_ini()
+	if not (ini and ini:section_exist("logic")) then return ini end
+	local cfg = ini:r_string_ex("logic", "cfg")
+	if cfg and cfg ~= "" then
+		local ok, linked = pcall(ini_file, cfg)
+		if ok and linked and linked:section_exist("logic") then return linked end
+	end
+	return ini
+end
+
+-- A saved "nil" is a real deactivation only if some condlist can produce it (unreadable: trust the save).
+local function can_reach_nil(ini)
+	local reach = false
+	local ok = each_line(ini, function(_, _, value)
+		if type(value) == "string" and value:find("%f[%w]nil%f[%W]") then reach = true end
+		return reach
+	end)
+	return reach or not ok
+end
+
+local function initialize(obj, st, loaded, actor, stype)
+	if installed and loaded and P.active() and st and st.loaded_active_section == "nil" then
+		if st.loaded_section_logic == nil then
+			loaded = false -- saved before its first logic update: derive it again
+		else
+			local ini = resolve_logic_ini(obj)
+			if ini and ini:section_exist("logic") and ini:line_exist("logic", "active") and not can_reach_nil(ini) then
+				loaded = false
+			end
+		end
+		if not loaded then
+			stats.healed = stats.healed + 1
+			log("logic heal: %s had a blank saved section, derived again", obj:name())
+		end
+	end
+	orig.initialize(obj, st, loaded, actor, stype)
+	if not (installed and stype == STYPE_RESTRICTOR and st and P.active()) then return end
+	classify(st)
+	if st.coop_local ~= false then return end
+	if host_on then
+		broadcast_section(obj:id(), st.active_section)
+	elseif P.is_client() then
+		local p = pending[obj:id()]
+		if p then
+			pending[obj:id()] = nil
+			local target = p.s ~= "nil" and p.s or nil
+			if st.active_section ~= target and (p.s == "nil" or st.ini:section_exist(p.s)) then
+				applying = true
+				local ok, err = pcall(orig.switch, obj, st.ini, p.s)
+				applying = false
+				if not ok then report("apply pending " .. tostring(p.s), err) end
+			end
+		end
+	end
+end
+
+-- Saved before initialize_obj ran: the loaded state still sits in loaded_*, write that, not a blank one.
+local function save_obj(obj, packet)
+	local st = installed and obj and P.active() and db.storage[obj:id()]
+	if st and st.section_logic == nil and st.loaded_active_section ~= nil then
+		local keep = { st.ini_filename, st.section_logic, st.active_section, st.gulag_name }
+		st.ini_filename = st.loaded_ini_filename
+		st.section_logic = st.loaded_section_logic
+		st.active_section = st.loaded_active_section ~= "nil" and st.loaded_active_section or nil
+		st.gulag_name = st.loaded_gulag_name ~= "" and st.loaded_gulag_name or nil
+		local ok, err = pcall(orig.save_obj, obj, packet)
+		st.ini_filename, st.section_logic, st.active_section, st.gulag_name = keep[1], keep[2], keep[3], keep[4]
+		if not ok then error(err, 0) end
+		return
+	end
+	return orig.save_obj(obj, packet)
+end
+
+-- Returns true when done (applied, refused or not ours), false to retry later.
+local function try_apply(id, section)
+	local st = db.storage[id]
+	if not (st and st.stype == STYPE_RESTRICTOR and st.ini) then return false end
+	classify(st)
+	if st.coop_local then return true end
+	if section ~= "nil" and not st.ini:section_exist(section) then
+		log("! section %s of %s is unknown here, refused", tostring(section), tostring(id))
+		return true
+	end
+	local target = section ~= "nil" and section or nil
+	if st.active_section == target then return true end
+	local obj = level.object_by_id(id)
+	if not obj then return false end
+	applying = true
+	local ok, err = pcall(orig.switch, obj, st.ini, section)
+	applying = false
+	if not ok then report("apply section " .. tostring(section), err) end
+	stats.sections_in = stats.sections_in + 1
+	return true
+end
+
+local function client_on_section(host_id, section)
+	if type(host_id) ~= "number" or type(section) ~= "string" or section == "" then return end
+	local id = P.to_local(host_id)
+	if not try_apply(id, section) then pending[id] = { s = section, t = time_global() } end
+end
+
+local function client_retry_pending()
+	local now = time_global()
+	for id, p in pairs(pending) do
+		if try_apply(id, p.s) or now - p.t > PENDING_TTL then pending[id] = nil end
+	end
+end
+
+local function host_send_all(peer)
+	local t, n = {}, 0
+	local function flush()
+		if n > 0 then
+			t.n = n
+			P.send(EV_ALL, t, peer)
+		end
+		t, n = {}, 0
+	end
+	for _, zone in pairs(db.zone_by_name or {}) do
+		local ok, id = pcall(zone.id, zone)
+		local st = ok and db.storage[id]
+		if st and st.stype == STYPE_RESTRICTOR and st.ini then
+			classify(st)
+			if st.coop_local == false then
+				n = n + 1
+				t["i" .. n] = id
+				t["s" .. n] = st.active_section or "nil"
+				if n >= CHUNK then flush() end
+			end
+		end
+	end
+	flush()
+end
+
+-------------------------------------------------------------------------------
+-- Effects relayed to this client
+-------------------------------------------------------------------------------
+local function client_on_fx(t)
+	local name = t.f
+	if type(name) ~= "string" or not ACTOR_FX[name] or not db.actor then return end
+	local f = xr_effects and xr_effects[name]
+	if type(f) ~= "function" then return end
+	local npc = type(t.i) == "number" and t.i >= 0 and level.object_by_id(P.to_local(t.i)) or nil
+	if name == "kill_actor" and npc then
+		local gate = KILL_GATES[npc:name()]
+		if gate and db.actor:object(gate) then return end
+	end
+	local args = type(t.a) == "string" and t.a or ""
+	local p = args ~= "" and xr_logic.parse_func_params(args) or {}
+	stats.fx_in = stats.fx_in + 1
+	replaying = true
+	local ok, err = pcall(f, db.actor, npc, p)
+	replaying = false
+	if not ok then report("relayed effect " .. name, err) end
+end
+
+-------------------------------------------------------------------------------
+-- Host: actor conditions for every player
+-------------------------------------------------------------------------------
+-- Only when asked about the host's own actor: combat condlists pass the enemy as `actor`.
+local function team_actor(actor, npc)
+	return host_on and actor ~= nil and actor:id() == 0 and not is_local_restrictor(npc)
+end
+
+local function patch_conditions()
+	local xc = xr_conditions
+	if not xc then return end
+	local function wrap(name, make)
+		local f = xc[name]
+		if type(f) ~= "function" or orig["c_" .. name] then return end
+		orig["c_" .. name] = f
+		xc[name] = make(f)
+	end
+	wrap("dist_to_actor_le", function(f) return function(actor, npc, p)
+		if team_actor(actor, npc) and p and p[1] ~= nil and npc then
+			return P.nearest_dist_sqr(npc:position()) <= tonumber(p[1]) ^ 2
+		end
+		return f(actor, npc, p)
+	end end)
+	wrap("dist_to_actor_ge", function(f) return function(actor, npc, p)
+		if team_actor(actor, npc) and p and p[1] ~= nil and npc then
+			return P.nearest_dist_sqr(npc:position()) >= tonumber(p[1]) ^ 2
+		end
+		return f(actor, npc, p)
+	end end)
+	-- A proxy has no vision of its own (a puppet): "the player sees it" = it sees the player.
+	wrap("actor_see_npc", function(f) return function(actor, npc, p)
+		local r = f(actor, npc, p)
+		if r or not team_actor(actor, npc) or not npc or not npc:alive() then return r end
+		for _, o in ipairs(P.others()) do
+			if npc:see(o) then return true end
+		end
+		return r
+	end end)
+	wrap("actor_near_smart", function(f) return function(actor, npc, p)
+		if not (host_on and db.actor and p and p[1]) then return f(actor, npc, p) end
+		local smart = SIMBOARD and SIMBOARD.smarts_by_names[p[1]]
+		if not (smart and smart.online) then return false end
+		local dist = p[2] and tonumber(p[2]) or 50
+		return P.nearest_dist_sqr(smart.position) < dist * dist
+	end end)
+	wrap("actor_in_zone", function(f) return function(actor, npc, p)
+		if not (team_actor(actor, npc) and p) then return f(actor, npc, p) end
+		for i = 1, #p do
+			if zone_has_player(db.zone_by_name[p[i]]) then return true end
+		end
+		return false
+	end end)
+	wrap("actor_out_zone", function(f) return function(actor, npc, p)
+		if not (team_actor(actor, npc) and p and p[1]) then return f(actor, npc, p) end
+		local zone = db.zone_by_name[p[1]]
+		if not zone then return f(actor, npc, p) end
+		return not zone_has_player(zone)
+	end end)
+end
+
+-------------------------------------------------------------------------------
+-- Host: condlist context of replicated restrictors
+-------------------------------------------------------------------------------
+local function id_of(npc)
+	local id = npc.id
+	if type(id) == "function" then return npc:id() end
+	return id
+end
+
+local function pick_section(obj, npc, condlist)
+	if not host_on or npc == nil then return orig.pick(obj, npc, condlist) end
+	local ok_id, id = pcall(id_of, npc) -- npc can be a game object, a server object or a squad
+	local st = ok_id and type(id) == "number" and db.storage[id]
+	if not (st and st.stype == STYPE_RESTRICTOR and st.coop_local == false) then
+		return orig.pick(obj, npc, condlist)
+	end
+	ctx[#ctx + 1] = { st = st, npc_id = id }
+	local ok, r = pcall(orig.pick, obj, npc, condlist)
+	ctx[#ctx] = nil
+	if not ok then error(r, 0) end
+	return r
+end
+
+-------------------------------------------------------------------------------
+-- Client: restrictor schemes that must not run here
+-------------------------------------------------------------------------------
+local function patch_schemes()
+	-- on_value picks run their %effects% before any switch could be refused.
+	local timer = _G["sr_timer"] and sr_timer.action_timer
+	local tu = timer and timer.update
+	if type(tu) == "function" and not orig.timer then
+		orig.timer = tu
+		timer.update = function(self, delta)
+			local st = installed and P.is_client() and restrictor_st(self.object)
+			if st and st.coop_local == false and self.st then
+				local on_value = self.st.on_value
+				self.st.on_value = {}
+				local ok, err = pcall(tu, self, delta)
+				self.st.on_value = on_value
+				if not ok then error(err, 0) end
+				return
+			end
+			return tu(self, delta)
+		end
+	end
+	-- They create and release world objects: only the host's copies run.
+	local function host_only(mod, cls)
+		local m = _G[mod]
+		local c = m and m[cls]
+		local u = c and c.update
+		if type(u) ~= "function" or orig[mod] then return end
+		orig[mod] = u
+		c.update = function(self, ...)
+			if installed and P.is_client() then return end
+			return u(self, ...)
+		end
+	end
+	host_only("sr_crow_spawner", "crowkiller")
+	host_only("sr_monster", "fake_monster")
+end
+
+-------------------------------------------------------------------------------
+-- Install, update, events
+-------------------------------------------------------------------------------
+local function install()
+	if installed then return end
+	if not (xr_logic and xr_logic.try_switch_to_another_section) then
+		log("! xr_logic not found: restrictor logic is single-player only")
+		return
+	end
+	STYPE_RESTRICTOR = modules and modules.stype_restrictor or STYPE_RESTRICTOR
+	orig.try_switch = xr_logic.try_switch_to_another_section
+	orig.determine = xr_logic.determine_section_to_activate
+	orig.initialize = xr_logic.initialize_obj
+	orig.switch = xr_logic.switch_to_section
+	orig.pick = xr_logic.pick_section_from_condlist
+	orig.save_obj = xr_logic.save_obj
+	xr_logic.try_switch_to_another_section = try_switch
+	xr_logic.determine_section_to_activate = determine_section
+	xr_logic.initialize_obj = initialize
+	xr_logic.switch_to_section = switch_to_section
+	xr_logic.pick_section_from_condlist = pick_section
+	xr_logic.save_obj = save_obj
+	installed = true
+	for name in pairs(ACTOR_FX) do wrap_effect(name) end
+	local steps = { { "conditions", patch_conditions }, { "schemes", patch_schemes } }
+	for _, s in ipairs(steps) do
+		local ok, err = pcall(s[2])
+		if not ok then report("install " .. s[1], err) end
+	end
+end
+
+local next_tick, asked_at = 0, -1
+
+local function actor_on_update()
+	local now = time_global()
+	if now < next_tick then return end
+	next_tick = now + 250
+	host_on = installed and P.host_with_clients()
+	if not installed then return end
+	if P.client_live() then
+		if asked_at < 0 or (now - asked_at > 60000 and next(pending) ~= nil) then
+			asked_at = now
+			client_request(nil)
+		end
+		if next(pending) ~= nil then client_retry_pending() end
+	elseif not P.active() then
+		asked_at = -1
+		pending = {}
+	end
+end
+
+local function register_events()
+	P.on(EV_SECTION, function(t) client_on_section(t.i, t.s) end, "client", TAG)
+	P.on(EV_ALL, function(t)
+		local n = tonumber(t.n) or 0
+		for k = 1, math.min(n, CHUNK) do client_on_section(t["i" .. k], t["s" .. k]) end
+	end, "client", TAG)
+	P.on(EV_FX, client_on_fx, "client", TAG)
+	P.on(EV_REQ, function(t, from)
+		if type(t.i) == "number" then
+			local st = db.storage[t.i]
+			if st and st.stype == STYPE_RESTRICTOR and st.coop_local == false then
+				P.send(EV_SECTION, { i = t.i, s = st.active_section or "nil" }, from)
+			end
+		else
+			host_send_all(from)
+		end
+	end, "host", TAG)
+end
+
+function print_status()
+	local n_rep, n_loc = 0, 0
+	for _, st in pairs(db.storage or {}) do
+		if type(st) == "table" and st.stype == STYPE_RESTRICTOR then
+			if st.coop_local == false then n_rep = n_rep + 1 elseif st.coop_local then n_loc = n_loc + 1 end
+		end
+	end
+	local n_pend = 0
+	for _ in pairs(pending) do n_pend = n_pend + 1 end
+	log("installed %s, restrictors replicated %d local %d | team switches %d, sections out %d in %d pending %d, refused %d | effects out %d in %d | healed %d | errors %d",
+		tostring(installed), n_rep, n_loc, stats.switched_team, stats.sections_out, stats.sections_in, n_pend,
+		stats.refused, stats.fx_out, stats.fx_in, stats.healed, P.error_count(TAG))
+end
+
+function on_game_start()
+	P = coop_npc_players
+	if not rawget(_G, "coop") then return end -- exe without co-op: nothing to do
+	local ok, err = pcall(install)
+	if not ok then report("install", err) end
+	register_events()
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+end
+
+-- Tests and diagnostics.
+function _state() return { host_on = host_on, pending = pending, stats = stats, ctx = ctx } end
+function _set_host_on(v) host_on = v end

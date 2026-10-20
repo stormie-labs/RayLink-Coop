@@ -12,7 +12,9 @@
 
 	Called by the engine:
 		coop_main.on_event(name, payload, from)   a Msg::ScriptEvent arrived
-		coop_main.on_chat(nick, text)             a chat line from another player
+		coop_main.on_chat(nick, text)             a chat line (ours included) -> coop_core_chat
+		coop_main.on_transition_vote(nick)        host: a player at a level exit asks to move the group
+		                                          (requested from the engine, W4 core) -> coop_core_player
 		coop_main.print_status()                  part of the coop_status console command
 
 	For addons:
@@ -29,13 +31,17 @@
 	   a client; owner/view functions run inside pcall, so a Lua error is logged and counted instead of
 	   ending the session. Callbacks registered before this script loaded are reclassified once.
 	2. Restrictions: save/load UI paths answer "host only" (R-9.2; the engine gates the console
-	   commands too); debug spawner / debug menu are disabled (R-6.6).
+	   commands too), a quicksave is asked from the host instead (coop_core_player); debug spawner /
+	   debug menu are disabled (R-6.6).
 	3. Emission and psi-storm (R-10.1): the client's own managers never start by themselves. The host
 	   sends the phase (started, elapsed game seconds, time factor) and its cover verdict for this
 	   player; the client runs the stock update() with that phase to get the same visuals and sounds,
 	   with NPC killing, task giving and the final kill switched off. The final kill comes from the host
 	   as an event when the player's character is outside a shelter at the host's kill moment.
-	4. Chat lines from the engine are shown as PDA news.
+	4. Chat lines from the engine go to coop_core_chat (PDA news if it is missing).
+	The core group's other scripts (W4): coop_core_hud (status, party panel, PDA markers),
+	coop_core_player (own Lua state kept by the host, join/leave notices, quicksave, level moves),
+	coop_core_world (host news, mutant loot, stashes, trader profiles).
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace
@@ -198,11 +204,15 @@ local function load_manifest()
 	-- Domain lists: coop_domains.ltx, then every configs\coop_domains_*.ltx (one per feature group, same
 	-- sections; a later file wins for an exact name). Settings come from the main file only.
 	local inis = { ini }
-	local flist = getFS():file_list_open_ex("$game_config$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "coop_domains_*.ltx")
 	local extra = {}
-	for i = 0, (flist and flist:Size() or 0) - 1 do
-		extra[#extra + 1] = flist:GetAt(i):NameFull()
-	end
+	local ok_list, list_err = pcall(function() -- a failure here must not cost the main file's domains
+		local flist = getFS():file_list_open_ex("$game_config$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly),
+			"coop_domains_*.ltx")
+		for i = 0, (flist and flist:Size() or 0) - 1 do
+			extra[#extra + 1] = flist:GetAt(i):NameFull()
+		end
+	end)
+	if not ok_list then log("! configs\\coop_domains_*.ltx not listed: %s", tostring(list_err)) end
 	table.sort(extra)
 	for _, name in ipairs(extra) do
 		local ok_x, x = pcall(ini_file, name)
@@ -547,13 +557,23 @@ function on_event(name, payload, from)
 	end
 end
 
--- Engine entry: chat line from another player (R-1.7). Shown as a PDA news line.
+-- Engine entry: a chat line (R-1.7), ours included. Shown in the chat (coop_core_chat: window, HUD feed,
+-- history); a PDA news line if that script is missing.
 function on_chat(nick, text)
 	stats.chat = stats.chat + 1
 	nick, text = tostring(nick), tostring(text)
 	local shown = false
+	local chat = rawget(_G, "coop_core_chat")
+	if chat and chat.on_line then
+		local ok, r = pcall(chat.on_line, nick, text)
+		if ok then
+			shown = r == true
+		else
+			report_error("coop_core_chat", "chat line", r)
+		end
+	end
 	local actor = db and db.actor
-	if actor then
+	if actor and not shown then
 		shown = pcall(function()
 			actor:give_game_news("Co-op: " .. nick, text, "ui_iconsTotal_grouping", 0, 7000)
 		end)
@@ -572,6 +592,18 @@ end
 function say(text)
 	if api and type(text) == "string" and text ~= "" then return api.send_chat(text) end
 	return false
+end
+
+-- Engine entry (host, requested from coop_join: host_on_transition_vote): a player stands at a level exit and
+-- asks the group to move. coop_core_player shows it and arms /go.
+function on_transition_vote(nick)
+	local pl = rawget(_G, "coop_core_player")
+	if pl and pl.on_transition_vote then
+		local ok, err = pcall(pl.on_transition_vote, tostring(nick))
+		if ok then return end
+		report_error("coop_core_player", "transition vote", err)
+	end
+	hud_msg("Co-op: " .. tostring(nick) .. " wants to move the group (console: coop_accept_transition)")
 end
 
 -------------------------------------------------------------------------------
@@ -842,6 +874,12 @@ local client_patched = false
 local function on_before_save_input(flags, typ, text)
 	if client_mode and type(flags) == "table" then
 		flags.ret = true
+		-- A quicksave (type 2: F5, the menu's quicksave) is asked from the host (coop_core_player).
+		local pl = rawget(_G, "coop_core_player")
+		if typ == 2 and pl and pl.request_quicksave then
+			local ok, asked = pcall(pl.request_quicksave)
+			if ok and asked then return end
+		end
 		hud_msg("Co-op: only the host saves the game")
 	end
 end
@@ -963,6 +1001,14 @@ function print_status()
 		log("emission mirror: emission %s (%.0f game s), psi-storm %s (%.0f game s), cover %s, last state %d ms ago, errors %d",
 			tostring(env_cl.s), env_cl.sg, tostring(env_cl.p), env_cl.pg, tostring(env_cl.cover),
 			time_global() - env_cl.at, env_cl.mirror_errors)
+	end
+	-- core group scripts (chat, party HUD and markers, player state, shared world pieces)
+	for _, name in ipairs({ "coop_core_chat", "coop_core_hud", "coop_core_player", "coop_core_world" }) do
+		local m = rawget(_G, name)
+		if m and m.print_status then
+			local ok, err = pcall(m.print_status)
+			if not ok then log("! %s.print_status: %s", name, tostring(err)) end
+		end
 	end
 end
 

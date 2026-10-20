@@ -1,0 +1,412 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop: co-op menu, new character, co-op options (scripts\coop_menu*.script). -->
+<string_table>
+	<string id="ui_coop_mm_btn">
+		<text>Кооператив</text>
+	</string>
+	<string id="st_coop_menu_title">
+		<text>Кооператив</text>
+	</string>
+	<string id="st_coop_menu_tab_host">
+		<text>Создать игру</text>
+	</string>
+	<string id="st_coop_menu_tab_join">
+		<text>Подключиться</text>
+	</string>
+	<string id="st_coop_menu_tab_steam">
+		<text>Steam (позже)</text>
+	</string>
+	<string id="st_coop_menu_nick">
+		<text>Ник:</text>
+	</string>
+	<string id="st_coop_menu_port">
+		<text>Порт (UDP):</text>
+	</string>
+	<string id="st_coop_menu_address">
+		<text>Адрес хоста:</text>
+	</string>
+	<string id="st_coop_menu_address_hint">
+		<text>IP или IP:порт, например 192.168.1.10 или 203.0.113.5:27960</text>
+	</string>
+	<string id="st_coop_menu_recent">
+		<text>Недавние:</text>
+	</string>
+	<string id="st_coop_menu_btn_host_now">
+		<text>Открыть текущую игру</text>
+	</string>
+	<string id="st_coop_menu_btn_host_load">
+		<text>Загрузить сохранение</text>
+	</string>
+	<string id="st_coop_menu_btn_host_last">
+		<text>Последнее сохранение</text>
+	</string>
+	<string id="st_coop_menu_btn_host_new">
+		<text>Новая игра</text>
+	</string>
+	<string id="st_coop_menu_btn_connect">
+		<text>Подключиться</text>
+	</string>
+	<string id="st_coop_menu_btn_disconnect">
+		<text>Отключиться</text>
+	</string>
+	<string id="st_coop_menu_btn_cancel">
+		<text>Отменить</text>
+	</string>
+	<string id="st_coop_menu_btn_close">
+		<text>Закрыть</text>
+	</string>
+	<string id="st_coop_menu_host_ingame">
+		<text>Игра загружена: друзья подключатся к вашему миру. Для игры через интернет пробросьте UDP-порт %s на роутере.</text>
+	</string>
+	<string id="st_coop_menu_host_menu">
+		<text>Игра не загружена. Выберите, с чего начать: сессия откроется сама, когда уровень загрузится.</text>
+	</string>
+	<string id="st_coop_menu_host_dead">
+		<text>Ваш персонаж мёртв: сначала загрузите сохранение.</text>
+	</string>
+	<string id="st_coop_menu_pending">
+		<text>Сессия откроется на порту %s, как только загрузится игра.</text>
+	</string>
+	<string id="st_coop_menu_steam_hint">
+		<text>Лобби Steam появятся в следующей версии. Пока - подключение по IP.</text>
+	</string>
+	<string id="st_coop_menu_join_ingame">
+		<text>Подключение закроет текущую игру: несохранённый прогресс пропадёт.</text>
+	</string>
+	<string id="st_coop_menu_status">
+		<text>Состояние:</text>
+	</string>
+	<string id="st_coop_menu_phase_off">
+		<text>нет сессии</text>
+	</string>
+	<string id="st_coop_menu_phase_hosting">
+		<text>вы хост, порт %s</text>
+	</string>
+	<string id="st_coop_menu_phase_connecting">
+		<text>подключение к %s...</text>
+	</string>
+	<string id="st_coop_menu_phase_handshaked">
+		<text>хост принял вас, ждём мир...</text>
+	</string>
+	<string id="st_coop_menu_phase_receiving_world">
+		<text>загружаем мир хоста...</text>
+	</string>
+	<string id="st_coop_menu_phase_loading_world">
+		<text>загрузка уровня...</text>
+	</string>
+	<string id="st_coop_menu_phase_live">
+		<text>в игре хоста %s</text>
+	</string>
+	<string id="st_coop_menu_players">
+		<text>Игроки: %s из %s</text>
+	</string>
+	<string id="st_coop_menu_you">
+		<text>вы</text>
+	</string>
+	<string id="st_coop_menu_host">
+		<text>хост</text>
+	</string>
+	<string id="st_coop_menu_joining">
+		<text>входит</text>
+	</string>
+	<string id="st_coop_menu_ms">
+		<text>%s мс</text>
+	</string>
+	<string id="st_coop_menu_nobody">
+		<text>Пока никого.</text>
+	</string>
+	<string id="st_coop_menu_error">
+		<text>Ошибка: %s</text>
+	</string>
+	<string id="st_coop_menu_left">
+		<text>Сессия закрыта.</text>
+	</string>
+	<string id="st_coop_menu_err_nick">
+		<text>Введите ник: 1-32 символа, без кавычек и ;</text>
+	</string>
+	<string id="st_coop_menu_err_port">
+		<text>Порт - число от 1 до 65535.</text>
+	</string>
+	<string id="st_coop_menu_err_address">
+		<text>Введите адрес хоста: IP или IP:порт.</text>
+	</string>
+	<string id="st_coop_menu_err_busy">
+		<text>Сначала отключитесь от текущей сессии.</text>
+	</string>
+	<string id="st_coop_menu_reason_ContentMismatch">
+		<text>ваш список модов отличается от хоста</text>
+	</string>
+	<string id="st_coop_menu_reason_BuildMismatch">
+		<text>другая сборка Anomaly Coop</text>
+	</string>
+	<string id="st_coop_menu_reason_ProtocolMismatch">
+		<text>другая версия кооператива</text>
+	</string>
+	<string id="st_coop_menu_reason_DuplicateKey">
+		<text>ваш ключ игрока уже используется в сессии</text>
+	</string>
+	<string id="st_coop_menu_reason_SessionFull">
+		<text>сессия заполнена</text>
+	</string>
+	<string id="st_coop_menu_reason_HostNotReady">
+		<text>хост не в загруженной игре</text>
+	</string>
+	<string id="st_coop_menu_reason_Kicked">
+		<text>хост удалил вас из сессии</text>
+	</string>
+	<string id="st_coop_menu_reason_Timeout">
+		<text>превышено время ожидания</text>
+	</string>
+	<string id="st_coop_menu_reason_Malformed">
+		<text>ошибка соединения</text>
+	</string>
+	<string id="st_coop_menu_reason_lost">
+		<text>соединение потеряно</text>
+	</string>
+	<string id="st_coop_menu_reason_start">
+		<text>не удалось начать</text>
+	</string>
+	<string id="st_coop_char_title">
+		<text>Новый персонаж</text>
+	</string>
+	<string id="st_coop_char_info">
+		<text>Хост создал вам нового персонажа (%s). Выберите группировку и стартовое снаряжение, как в новой игре; очки - по экономике хоста.</text>
+	</string>
+	<string id="st_coop_char_btn_start">
+		<text>Готово</text>
+	</string>
+	<string id="st_coop_char_btn_later">
+		<text>Позже</text>
+	</string>
+	<string id="st_coop_char_waiting">
+		<text>Ждём ответа хоста...</text>
+	</string>
+	<string id="st_coop_char_done">
+		<text>Ваш персонаж: %s. Снаряжение и деньги - в инвентаре.</text>
+	</string>
+	<string id="st_coop_char_refused">
+		<text>Хост отклонил выбор: %s</text>
+	</string>
+	<string id="st_coop_char_reason_not_new">
+		<text>персонаж уже создан</text>
+	</string>
+	<string id="st_coop_char_reason_faction">
+		<text>эта группировка недоступна</text>
+	</string>
+	<string id="st_coop_char_reason_items">
+		<text>этого снаряжения нет в списке группировки</text>
+	</string>
+	<string id="st_coop_char_reason_points">
+		<text>не хватает очков</text>
+	</string>
+	<string id="st_coop_char_reason_no_character">
+		<text>у хоста ещё нет вашего персонажа</text>
+	</string>
+	<string id="st_coop_char_reason_busy">
+		<text>хост занят, попробуйте ещё раз</text>
+	</string>
+	<string id="st_coop_char_later_hint">
+		<text>Окно выбора откроется снова через минуту.</text>
+	</string>
+	<string id="st_coop_char_host_news">
+		<text>%s теперь в группировке: %s.</text>
+	</string>
+	<string id="ui_mm_menu_coop">
+		<text>Кооператив</text>
+	</string>
+	<string id="ui_mm_menu_coop_player">
+		<text>Игрок</text>
+	</string>
+	<string id="ui_mm_menu_coop_session">
+		<text>Правила сессии</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_nick">
+		<text>Ник</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_nick_desc">
+		<text>Ваше имя в кооперативе: его видят над головой и в чате. Действует со следующей сессии.</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_host_port">
+		<text>Порт для создания игры (UDP)</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_host_port_desc">
+		<text>Порт, на котором ваша игра ждёт игроков, когда вы хост. По умолчанию 27960; для игры через интернет пробросьте его на роутере.</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_nametags">
+		<text>Имена над игроками</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_nametags_desc">
+		<text>Показывать ники других игроков над головой.</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_nametags_dist">
+		<text>Расстояние рядом с именем</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_nametags_dist_desc">
+		<text>Добавлять к имени над игроком расстояние в метрах.</text>
+	</string>
+	<string id="st_coop_opt_session_note">
+		<text>Это правила хоста. Пока вы подключены к чужой игре, действуют правила хоста, а эти поля заблокированы; ваши значения работают, когда хост - вы.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_friendly_fire">
+		<text>Огонь по своим</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_friendly_fire_desc">
+		<text>Игроки могут ранить друг друга.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_share_rewards">
+		<text>Делить награды за задания</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_share_rewards_desc">
+		<text>Деньги за задание делятся между игроками в сети, а не достаются тому, кто его сдал.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_death_mode">
+		<text>Когда игрок погибает</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_death_mode_desc">
+		<text>Хардкор: игрок только наблюдает до следующей загрузки. Возрождение: снова в игре, но без снаряжения. Возрождение со снаряжением: снова в игре со всем добром.</text>
+	</string>
+	<string id="st_coop_opt_death_hardcore">
+		<text>Хардкор</text>
+	</string>
+	<string id="st_coop_opt_death_respawn">
+		<text>Возрождение</text>
+	</string>
+	<string id="st_coop_opt_death_respawn_keep">
+		<text>Возрождение со снаряжением</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_bleedout">
+		<text>Время на помощь раненому, с</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_bleedout_desc">
+		<text>Сколько секунд раненого можно поднять, прежде чем он погибнет.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_revive_health">
+		<text>Здоровье после помощи</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_revive_health_desc">
+		<text>Здоровье поднятого игрока (1 - полное).</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_respawn_delay">
+		<text>Задержка возрождения, с</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_respawn_delay_desc">
+		<text>Через сколько секунд погибший игрок возвращается (режимы с возрождением).</text>
+	</string>
+	<string id="st_coop_ui_kind_archive">
+		<text>архивы (db)</text>
+	</string>
+	<string id="st_coop_ui_kind_script">
+		<text>скрипты</text>
+	</string>
+	<string id="st_coop_ui_kind_config">
+		<text>конфиги</text>
+	</string>
+	<string id="st_coop_ui_kind_texture">
+		<text>текстуры</text>
+	</string>
+	<string id="st_coop_ui_kind_mesh">
+		<text>модели/анимации</text>
+	</string>
+	<string id="st_coop_ui_kind_sound">
+		<text>звуки</text>
+	</string>
+	<string id="st_coop_ui_kind_other">
+		<text>прочие файлы</text>
+	</string>
+	<string id="st_coop_ui_more_log">
+		<text>ещё %s - в логе</text>
+	</string>
+	<string id="st_coop_ui_and_more">
+		<text>... и ещё %s: %s</text>
+	</string>
+	<string id="st_coop_ui_missing">
+		<text>Нет у вас (есть у хоста)</text>
+	</string>
+	<string id="st_coop_ui_extra">
+		<text>Лишнее у вас (у хоста нет)</text>
+	</string>
+	<string id="st_coop_ui_differ">
+		<text>Другая версия (есть у обоих, файлы отличаются)</text>
+	</string>
+	<string id="st_coop_ui_no_list">
+		<text>Список хоста не пришёл; подробности в логе.</text>
+	</string>
+	<string id="st_coop_ui_mods_summary">
+		<text>Хост отказал в подключении: ваши файлы игры не совпадают с файлами хоста. Установите те же моды тех же версий, что у хоста (или пусть хост подстроится под вас), и подключитесь снова. Архивы и скрипты идут первыми: по их именам обычно видно аддон.</text>
+	</string>
+	<string id="st_coop_ui_mods_footer">
+		<text>Полный список: %s (строки "missing here", "extra here", "different").</text>
+	</string>
+	<string id="st_coop_ui_mods_title">
+		<text>Ваш список модов отличается от хоста</text>
+	</string>
+	<string id="st_coop_ui_key_how">
+		<text>Как исправить на этом ПК:</text>
+	</string>
+	<string id="st_coop_ui_key_step1">
+		<text>1. Закройте игру.</text>
+	</string>
+	<string id="st_coop_ui_key_step2">
+		<text>2. Удалите этот файл:</text>
+	</string>
+	<string id="st_coop_ui_key_step3">
+		<text>3. Запустите игру и подключитесь снова. Новый ключ создастся сам.</text>
+	</string>
+	<string id="st_coop_ui_key_what">
+		<text>Что это меняет:</text>
+	</string>
+	<string id="st_coop_ui_key_what_text">
+		<text>Хост узнаёт игроков по этому ключу, а не по нику. С новым ключом хост создаст вам нового персонажа; игрок, чью папку вы скопировали, сохранит своего. Не делайте этого на ПК, чей персонаж должен остаться.</text>
+	</string>
+	<string id="st_coop_ui_host_message">
+		<text>Сообщение хоста:</text>
+	</string>
+	<string id="st_coop_ui_key_summary">
+		<text>Ваш ключ игрока уже использует другой игрок в этой сессии. Так бывает, если папку игры скопировали у другого игрока: файл ключа копируется вместе с ней, а один ключ на двоих нельзя.</text>
+	</string>
+	<string id="st_coop_ui_key_title">
+		<text>Ваш ключ игрока уже используется</text>
+	</string>
+	<string id="st_coop_ui_key_footer">
+		<text>Ключ - случайный файл, созданный при первом запуске кооператива. В нём нет паролей и данных аккаунтов.</text>
+	</string>
+	<string id="st_coop_ui_title_default">
+		<text>Хост отказал в подключении</text>
+	</string>
+	<string id="st_coop_ui_title_ProtocolMismatch">
+		<text>Другая версия кооператива</text>
+	</string>
+	<string id="st_coop_ui_title_BuildMismatch">
+		<text>Другая сборка игры</text>
+	</string>
+	<string id="st_coop_ui_title_SessionFull">
+		<text>Сессия заполнена</text>
+	</string>
+	<string id="st_coop_ui_title_HostNotReady">
+		<text>Хост не готов</text>
+	</string>
+	<string id="st_coop_ui_title_Kicked">
+		<text>Вас удалили из сессии</text>
+	</string>
+	<string id="st_coop_ui_title_Timeout">
+		<text>Превышено время ожидания</text>
+	</string>
+	<string id="st_coop_ui_title_Malformed">
+		<text>Ошибка соединения</text>
+	</string>
+	<string id="st_coop_ui_hint_not_ready">
+		<text>Чтобы принимать игроков, хост должен быть в загруженной игре, а не в главном меню.</text>
+	</string>
+	<string id="st_coop_ui_hint_full">
+		<text>Попросите хоста увеличить лимит игроков или дождитесь, пока кто-то выйдет.</text>
+	</string>
+	<string id="st_coop_ui_hint_build">
+		<text>Установите ту же сборку Anomaly Coop, что у хоста (и bin\, и gamedata\).</text>
+	</string>
+	<string id="st_coop_ui_reason_code">
+		<text>Код причины: %s</text>
+	</string>
+	<string id="st_coop_opt_locked_note">
+		<text>Кооператив: заблокированные опции этой страницы задаёт хост, пока вы подключены. Ваши значения вернутся после выхода.</text>
+	</string>
+</string_table>

@@ -1,0 +1,591 @@
+--[[
+	Anomaly Coop - NPC group (W4 "npc"): world things that assumed one player.
+	Port of the behaviour of xrRazom 1.4 xrr_patch_mines, xrr_patch_anomalies, xrr_patch_activatables,
+	xrr_patch_silent_kills and the stock-game part of xrr_patch_stealth_kill_detection (own code, our events).
+	Covered by C++ and not repeated here: anomaly field states and campfire flames (coop_objects ZoneState),
+	anomaly damage to players (each owner computes its own, coop_objects), artefact movement (host physics,
+	coop_objects), doors and buttons (a client's use goes to the host, coop_objects), explosions (host only).
+
+	Mines (txr_mines):
+	  - A client's "plant" goes to the host (npc.mine): the host creates the charge where the client stands
+	    and arms it (proximity or timer). Stock plant_bomb on a client would fail (a client's alife create
+	    returns no object) and leave the charge unarmed on the host.
+	  - Proximity charges trigger on the clients' proxies too (the stock check only sees db.actor, NPCs and
+	    monsters). A client's charge blames that client: its blast hits NPCs "from" the client's proxy.
+	Anomalies (bind_anomaly_field):
+	  - Dynamic anomalies are not switched on next to ANY player (stock: next to the host only).
+	  - Pulse anomalies (thunderbolts in bad weather) strike around every player, rolled by the host, and are
+	    seen, heard and felt on every machine (npc.pulse); the psi/shock hit is applied by each machine to its
+	    own player.
+	  - An artefact a client picked up from an anomaly zone is forgotten by the zone on the host (the stock
+	    hook is the host's own pickup), so the zone's reset after an emission does not delete it from the
+	    client's inventory.
+	Campfires (bind_campfire, owner domain on clients): a client lighting or putting out a fire asks the
+	  host (npc.fire); the engine then shows the host's flame to everybody.
+	Instruments: guitar / harmonica music is heard at the player's character on the other machines (npc.isnd).
+	Silent kills (gameplay_silent_kills): the host judges a client's stealth stab / silenced headshot with the
+	  stock rules applied to the client's proxy, and NPCs that later find such a corpse with a player nearby
+	  are alerted (stock: only for db.actor).
+
+	Events (ids in host numbering):
+	  npc.mine   client -> host  { s = item section, m = mode, d = delay, x, y, z, lv, gv }
+	  npc.pulse  host -> client  { x, y, z }
+	  npc.fire   client -> host  { i = campfire object, on = bool }
+	  npc.isnd   any -> all      { p = sound path, a = player's character }
+	Stock functions wrapped: txr_mines.plant_bomb; bind_anomaly_field.dyn_anomalies_update,
+	pulse_anomaly_update; bind_campfire.campfire_go_on, campfire_go_off; itms_manager.use_guitar,
+	use_harmonica. Callbacks: npc_on_before_hit, npc_on_update, monster_on_update, save_state, load_state.
+--]]
+
+local tostring, tonumber, type, pairs, ipairs, pcall, next = tostring, tonumber, type, pairs, ipairs, pcall, next
+
+local TAG = "world"
+local P -- coop_npc_players
+
+local function log(fmt, ...) P.log(TAG, fmt, ...) end
+local function report(what, err) P.report(TAG, what, err) end
+
+local EV_MINE, EV_PULSE, EV_FIRE, EV_ISND = "npc.mine", "npc.pulse", "npc.fire", "npc.isnd"
+
+local installed = false
+local host_on = false
+local orig = {}
+local stats = { mines_out = 0, mines_in = 0, blasts = 0, blame = 0, pulses = 0, pulses_in = 0, fire_out = 0, fire_in = 0,
+	music = 0, silent = 0, alerts = 0, artefacts = 0 }
+
+local function vec(x, y, z) return vector():set(tonumber(x) or 0, tonumber(y) or 0, tonumber(z) or 0) end
+
+-------------------------------------------------------------------------------
+-- Mines
+-------------------------------------------------------------------------------
+local PLANTED = { mine_new = "mine_new_blow", ied_rpg_new = "rpg_new_blow", ied_new = "ied_new_blow" }
+local FX = { mine_new = "mine", ied_rpg_new = "ied_rpg", ied_new = "ied" }
+local MODE_PROX, MODE_TIMER = 0, 1
+local TRIGGER_RADIUS = 2.5
+local FUSE = 5
+
+local mines = {} -- host: planted id -> { exp, mode, planter = proxy id, active }
+
+local function tss() return game.get_game_time():diffSec(level.get_start_time()) end
+
+local function client_plant(obj, mode, delay)
+	local sec = obj:section()
+	if not PLANTED[sec] then return orig.plant(obj, mode, delay) end
+	if FX[sec] and actor_effects then pcall(actor_effects.play_item_fx, FX[sec]) end
+	local a = db.actor
+	local pos = a:position()
+	local sent = P.send(EV_MINE, { s = sec, m = tonumber(mode) or MODE_PROX, d = tonumber(delay) or FUSE,
+		x = pos.x, y = pos.y, z = pos.z, lv = a:level_vertex_id(), gv = a:game_vertex_id() }, 0)
+	if sent then
+		stats.mines_out = stats.mines_out + 1
+		alife_release_id(obj:id()) -- the host releases the item from our character
+	end
+end
+
+local function host_on_mine(t, from)
+	local planted = type(t.s) == "string" and PLANTED[t.s]
+	local who = P.object_of_peer(from)
+	if not (planted and who) then return end
+	local pos = vec(t.x, t.y, t.z)
+	if who:position():distance_to_sqr(pos) > 25 then return end -- planted where the player stands
+	local lv, gv = tonumber(t.lv), tonumber(t.gv)
+	if not (lv and gv) then return end
+	local se = alife_create(planted, pos, lv, gv)
+	if not se then return end
+	local mode = (t.m == MODE_TIMER) and MODE_TIMER or MODE_PROX
+	local delay = math.max(1, math.min(120, tonumber(t.d) or FUSE))
+	mines[se.id] = { exp = tss() + delay * level.get_time_factor(), mode = mode, planter = who:id(), active = true }
+	stats.mines_in = stats.mines_in + 1
+end
+
+local function blast(id)
+	local m = mines[id]
+	if not (m and m.active) then return end
+	local obj = level.object_by_id(id)
+	if obj then
+		m.active = false
+		stats.blasts = stats.blasts + 1
+		obj:explode(0)
+	end
+end
+
+local function near_mine(obj)
+	if next(mines) == nil or not (obj and obj:alive()) then return end
+	local now = tss()
+	local pos = obj:position()
+	for id, m in pairs(mines) do
+		if m.active and m.mode == MODE_PROX and now >= m.exp then
+			local mine = level.object_by_id(id)
+			if mine and mine:position():distance_to(pos) <= TRIGGER_RADIUS then blast(id) end
+		end
+	end
+end
+
+local function host_mines_tick()
+	-- Stock proximity charges: the proxies get no update callback of their own.
+	local tm = _G["txr_mines"]
+	if tm and tm.generic_on_update and type(tm._mines) == "table" and next(tm._mines) ~= nil then
+		for _, p in ipairs(P.others()) do pcall(tm.generic_on_update, p) end
+	end
+	if next(mines) == nil then return end
+	local now = tss()
+	for id, m in pairs(mines) do
+		if not alife_object(id) then
+			mines[id] = nil
+		elseif m.active then
+			if m.mode == MODE_TIMER and now >= m.exp then
+				blast(id)
+			elseif m.mode == MODE_PROX then
+				for _, p in ipairs(P.everyone()) do near_mine(p) end
+			end
+		end
+	end
+end
+
+-- A client's charge hits as its planter (stock does the same for the host's charges with db.actor).
+local function mine_blame(npc, shit, bone_id, flags)
+	local d = shit and shit.draftsman
+	local m = d and mines[d:id()]
+	if not m then return end
+	local planter = level.object_by_id(m.planter)
+	if not planter then return end
+	local h = hit(shit)
+	h.draftsman = planter
+	npc:hit(h)
+	flags.ret_value = false
+	stats.blame = stats.blame + 1
+end
+
+-------------------------------------------------------------------------------
+-- Anomalies
+-------------------------------------------------------------------------------
+local SAFE_DIST_SQR = 15 * 15 -- stock dyn_ano_safe_dist
+
+local function dyn_update()
+	if not host_on then return orig.dyn() end
+	local baf = bind_anomaly_field
+	local lvl = level.name()
+	local t = baf.dyn_anomalies and baf.dyn_anomalies[lvl]
+	if not t then return true end
+	for id, state in pairs(t) do
+		local obj = level.object_by_id(id)
+		if obj and P.nearest_dist_sqr(obj:position()) > SAFE_DIST_SQR then
+			obj:enable_anomaly()
+			if state == false then obj:disable_anomaly() end
+			if baf.add_marker then baf.add_marker(lvl, obj:section(), id, state) end
+		end
+	end
+	return true
+end
+
+-- Stock pulse tuning (bind_anomaly_field file locals).
+local PA = { snd_distance = 150, snd_delay = 5.5, p_hit = 10, e_hit = 20, hit_delay = 11.5, article = 50, max = 150,
+	delay = 2 * 60 * 1000 }
+local PA_CHANCE = { clear = 0, partly = 0, cloudy = 10, rain = 15, storm = 25, foggy = 0 }
+local PA_MAPS = {
+	k00_marsh = 0.5, k01_darkscape = 1, k02_trucks_cemetery = 1, l01_escape = 0.2, l02_garbage = 0.7,
+	l03_agroprom = 0.5, l04_darkvalley = 0.5, l06_rostok = 1, l07_military = 0.5, l08_yantar = 0.7,
+	l09_deadcity = 0.5, l10_red_forest = 1, jupiter = 1, pripyat = 1, zaton = 1, l13_generators = 1.5,
+	l12_stancia_2 = 1.5, l12_stancia = 1.5, l11_pripyat = 0.2, l10_radar = 1, y04_pole = 0.7,
+}
+local pa = { light = nil, pfx = nil, close = nil, far = nil, seq = 0, next_at = {} }
+
+local function pa_assets()
+	if not pa.pfx then pa.pfx = particles_object("generator\\generator_accum_thunderbolt") end
+	if not pa.close then pa.close = sound_object("anomaly\\emi_blowout") end
+	if not pa.far then pa.far = sound_object("anomaly\\emi_blowout_01") end
+	if not pa.light then
+		local l = script_light()
+		l.range = 100
+		l.lanim = "koster_01_electra"
+		l.lanim_brightness = 0.025
+		l.volumetric = true
+		l.volumetric_quality = 1
+		l.volumetric_distance = 0.25
+		l.volumetric_intensity = 0.05
+		pa.light = l
+	end
+end
+
+local function pa_sound(pos)
+	if not db.actor then return true end
+	local snd = distance_2d(db.actor:position(), pos) > PA.snd_distance and pa.far or pa.close
+	if snd then
+		if snd:playing() then snd:stop() end
+		snd:play_at_pos(db.actor, pos)
+		snd.volume = 1
+	end
+	pa.light:set_position(pos)
+	pa.light.enabled = true
+	pa.light:update()
+	return true
+end
+
+local function pa_hit_one(kind, dist, range, ppe, ppe_id)
+	local power = math.cos(dist * math.pi / range) + 1
+	local h = hit()
+	h.type = kind
+	local immune = level_environment.is_actor_immune()
+		or (kind == hit.telepatic and dialogs_yantar and dialogs_yantar.actor_has_psi_helmet())
+	h.power = immune and 0 or surge_manager.SurgeManager:hit_power(power, h.type)
+	h.impulse = 0
+	h.direction = VEC_Z
+	h.draftsman = db.actor
+	db.actor:hit(h)
+	level.remove_pp_effector(ppe_id)
+	level.add_pp_effector(ppe, ppe_id, false)
+	level.set_pp_effector_factor(ppe_id, h.power)
+end
+
+local function pa_hit(pos)
+	pa.light.lanim_brightness = 0.2
+	pa.light.volumetric_distance = 1
+	pa.light.volumetric_intensity = 0.1
+	if not db.actor or GetEvent("current_safe_cover") then return true end
+	local dist = distance_2d(db.actor:position(), pos)
+	if dist < PA.article then SendScriptCallback("actor_on_interaction", "anomalies", nil, "pulse") end
+	if dist < PA.p_hit then pa_hit_one(hit.telepatic, dist, PA.p_hit, "psi_fade.ppe", 666) end
+	if dist < PA.e_hit then pa_hit_one(hit.shock, dist, PA.e_hit, "electro_fade.ppe", 667) end
+	return true
+end
+
+local function pa_dim()
+	pa.light.lanim_brightness = 0.025
+	pa.light.volumetric_distance = 0.25
+	pa.light.volumetric_intensity = 0.05
+	pa.light.enabled = false
+	return true
+end
+
+local function do_pulse(pos)
+	pa_assets()
+	pa.pfx:play_at_pos(pos)
+	pa.seq = pa.seq + 1
+	local s = tostring(pa.seq)
+	CreateTimeEvent("coop_npc_pulse", "snd" .. s, PA.snd_delay, pa_sound, pos)
+	CreateTimeEvent("coop_npc_pulse", "hit" .. s, PA.hit_delay, pa_hit, pos)
+	CreateTimeEvent("coop_npc_pulse", "lgt" .. s, PA.hit_delay + 0.5, pa_dim)
+end
+
+-- The host rolls a strike around every player (stock: around db.actor), each on its own timer.
+local function pulse_update()
+	if not (P.is_host() and P.active()) then return orig.pulse() end
+	if pa.light and pa.light.enabled then pa.light:update() end
+	if bLevelUnderground then return end
+	local tg = time_global()
+	local lvl_factor = PA_MAPS[level.name()] or 0
+	local wm = level_weathers.get_weather_manager()
+	local chance = PA_CHANCE[wm and wm:get_curr_weather() or ""] or 1
+	for _, p in ipairs(P.everyone()) do
+		local id = p:id()
+		local at = pa.next_at[id]
+		if not at then
+			pa.next_at[id] = tg + PA.delay
+		elseif tg >= at then
+			pa.next_at[id] = tg + PA.delay
+			if math.random(100) <= chance * lvl_factor then
+				local pos = p:position()
+				local ang = math.rad(math.random(0, 359))
+				local d = math.random(0, PA.max)
+				local at_pos = vector():set(pos.x + math.cos(ang) * d, pos.y + 60, pos.z + math.sin(ang) * d)
+				do_pulse(at_pos)
+				P.send(EV_PULSE, { x = at_pos.x, y = at_pos.y, z = at_pos.z }, -1)
+				stats.pulses = stats.pulses + 1
+			end
+		end
+	end
+end
+
+-- A client's pickup of a zone artefact happens on its proxy here: the zone must forget it, or its next
+-- turn_off (after an emission) releases the artefact out of that player's inventory.
+local function artefact_sweep()
+	local baz = _G["bind_anomaly_zone"]
+	local t = baz and baz.parent_zones_by_artefact_id
+	if type(t) ~= "table" then return end
+	for id, zone in pairs(t) do
+		local obj = level.object_by_id(id)
+		local parent = obj and obj:parent()
+		if parent and P.is_proxy(parent) and zone and zone.on_artefact_take then
+			local ok, err = pcall(zone.on_artefact_take, zone, obj)
+			if ok then stats.artefacts = stats.artefacts + 1 else report("artefact take", err) end
+		end
+	end
+end
+
+local function client_on_pulse(t)
+	if not db.actor then return end
+	stats.pulses_in = stats.pulses_in + 1
+	do_pulse(vec(t.x, t.y, t.z))
+end
+
+-------------------------------------------------------------------------------
+-- Campfires
+-------------------------------------------------------------------------------
+local function campfire_id(cf)
+	local bc = bind_campfire
+	for id, binder in pairs(bc.campfires_all or {}) do
+		if binder and rawequal(binder.campfire, cf) then return id end
+	end
+	-- Fallback: the nearest campfire object within reach.
+	local obj = bc.get_nearby_campfire and bc.get_nearby_campfire(2.5, false)
+	return obj and obj:id() or nil
+end
+
+local function wrap_campfire(name, on)
+	local bc = _G["bind_campfire"]
+	local f = bc and bc[name]
+	if type(f) ~= "function" or orig[name] then return end
+	orig[name] = f
+	bc[name] = function(a, b)
+		if not P.client_live() then return f(a, b) end
+		-- go_on(obj, cf) / go_off(cf): the stock code runs (effects, message, matches use); its turn_on is
+		-- refused here by the engine, so the host is asked. rain_pass decides whether lighting worked.
+		local cf = on and b or a
+		cf = cf or bc.get_nearby_campfire(2, true)
+		local passed = not on
+		local rp = bc.rain_pass
+		if on and type(rp) == "function" then
+			bc.rain_pass = function(...)
+				local r = rp(...)
+				passed = r and true or false
+				return r
+			end
+		end
+		local ok, err = pcall(f, a, b)
+		if on and type(rp) == "function" then bc.rain_pass = rp end
+		if not ok then report(name, err) end
+		if cf and passed then
+			local id = campfire_id(cf)
+			if id and P.send(EV_FIRE, { i = P.to_host(id), on = on }, 0) then stats.fire_out = stats.fire_out + 1 end
+		end
+	end
+end
+
+local function host_on_fire(t, from)
+	if type(t.i) ~= "number" then return end
+	local who = P.object_of_peer(from)
+	local bc = _G["bind_campfire"]
+	local binder = bc and bc.campfires_all and bc.campfires_all[t.i]
+	if not (who and binder and binder.campfire and binder.object) then return end
+	if binder.object:position():distance_to_sqr(who:position()) > 16 then return end -- 4 m
+	stats.fire_in = stats.fire_in + 1
+	local cf = binder.campfire
+	if t.on == true and not cf:is_on() then
+		cf:turn_on()
+	elseif t.on == false and cf:is_on() then
+		cf:turn_off()
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Instruments
+-------------------------------------------------------------------------------
+local function play_instrument(kind, count)
+	local path = "music\\" .. kind .. "_" .. tostring(math.random(count))
+	local snd = sound_object(path)
+	if not snd then return end
+	local period = snd:length()
+	snd:play_no_feedback(db.actor, 0, 0, db.actor:position(), 1.0, 1.0)
+	actor_effects.play_continuous_effect(period)
+	if P.active() and P.send(EV_ISND, { p = path, a = P.to_host(0) }, -1) then stats.music = stats.music + 1 end
+end
+
+local function on_isnd(t)
+	if type(t.p) ~= "string" or not t.p:match("^music\\[%w_]+$") or type(t.a) ~= "number" then return end
+	local who = level.object_by_id(P.to_local(t.a))
+	if not who or who:id() == 0 then return end
+	local snd = sound_object(t.p)
+	if snd then snd:play_at_pos(who, who:position(), 0, sound_object.s3d) end
+end
+
+-------------------------------------------------------------------------------
+-- Silent kills by clients (stock rules, the proxy in place of db.actor)
+-------------------------------------------------------------------------------
+local victims = {} -- host: npc id -> { until = tss(), by = proxy id }
+
+local function silent_kill(npc, shit, bone_id, flags)
+	local sk = _G["gameplay_silent_kills"]
+	if not (sk and sk.feature_enabled and sk.feature_enabled()) then return end
+	if not (sk.melee_enabled() or sk.gun_enabled()) then return end
+	local who = shit and shit.draftsman
+	if not (who and P.is_proxy(who)) then return end
+	local weapon = who:active_item()
+	if not weapon then return end
+	local be = npc:best_enemy()
+	if be and be:id() == who:id() then return end
+	if sk.anybody_see(who) or sk.anybody_see(npc) then return end
+	local to_player = sk.closest_npc_dist(who, npc)
+	local to_victim = sk.closest_npc_dist(npc, who)
+	local function kill()
+		local h = hit(shit)
+		h.draftsman = weapon
+		h.power = 100
+		npc:hit(h)
+		victims[npc:id()] = { till = tss() + sk.get_fresh_time(), by = who:id() }
+		flags.ret_value = false
+		stats.silent = stats.silent + 1
+		local compat = _G["coop_npc_compat"]
+		if compat and compat.credit_silent_kill then pcall(compat.credit_silent_kill, who) end
+	end
+	if sk.melee_enabled() and sk.valid_backstab_weapon(weapon) and shit.type == hit.wound
+		and to_player > sk.backstab_hear_range() and to_victim > sk.backstab_hear_range() then
+		return kill()
+	end
+	if sk.headshot_only() and bone_id ~= 15 then return end
+	if sk.gun_enabled() and shit.type == hit.fire_wound and sk.valid_silent_weapon(weapon)
+		and to_player > sk.silent_weapon_hear_range(weapon) and to_victim > sk.silent_weapon_hear_range(weapon) then
+		return kill()
+	end
+end
+
+-- An NPC that sees a fresh victim with a player near it turns on that player (stock: db.actor only).
+local function corpse_alert(npc)
+	if next(victims) == nil then return end
+	local sk = _G["gameplay_silent_kills"]
+	local now = tss()
+	local suspect = sk and sk.get_suspect_dist and sk.get_suspect_dist() or 10
+	for id, v in pairs(victims) do
+		local dead = level.object_by_id(id)
+		if not dead or now > v.till then
+			victims[id] = nil
+		elseif npc:see(dead) and not game_relations.is_factions_enemies(npc:character_community(), dead:character_community()) then
+			for _, p in ipairs(P.everyone()) do
+				if npc:see(p) and p:position():distance_to(dead:position()) < suspect then
+					local h = hit()
+					h.type = hit.fire_wound
+					h.power = 0
+					h.impulse = 0
+					h.direction = VEC_Y
+					h.draftsman = p
+					npc:hit(h)
+					victims[id] = nil
+					stats.alerts = stats.alerts + 1
+					break
+				end
+			end
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Install, callbacks, events
+-------------------------------------------------------------------------------
+local function install()
+	local tm = _G["txr_mines"]
+	if tm and type(tm.plant_bomb) == "function" then
+		orig.plant = tm.plant_bomb
+		tm.plant_bomb = function(obj, mode, delay)
+			if P.client_live() then return client_plant(obj, mode, delay) end
+			return orig.plant(obj, mode, delay)
+		end
+	end
+	local baf = _G["bind_anomaly_field"]
+	if baf and type(baf.dyn_anomalies_update) == "function" then
+		orig.dyn = baf.dyn_anomalies_update
+		baf.dyn_anomalies_update = dyn_update
+	end
+	if baf and type(baf.pulse_anomaly_update) == "function" then
+		orig.pulse = baf.pulse_anomaly_update
+		baf.pulse_anomaly_update = pulse_update
+	end
+	wrap_campfire("campfire_go_on", true)
+	wrap_campfire("campfire_go_off", false)
+	local im = _G["itms_manager"]
+	if im then
+		for name, spec in pairs({ use_guitar = { "guitar", 28 }, use_harmonica = { "harmonica", 5 } }) do
+			if type(im[name]) == "function" and not orig[name] then
+				orig[name] = im[name]
+				im[name] = function(obj)
+					if not P.active() then return orig[name](obj) end
+					return play_instrument(spec[1], spec[2])
+				end
+			end
+		end
+	end
+end
+
+local function guard(what, f)
+	return function(...)
+		if not host_on then return end
+		local ok, err = pcall(f, ...)
+		if not ok then report(what, err) end
+	end
+end
+
+local next_tick, next_sweep = 0, 0
+
+local function actor_on_update()
+	local now = time_global()
+	if now < next_tick then return end
+	next_tick = now + 250
+	host_on = installed and P.host_with_clients()
+	if host_on then
+		local ok, err = pcall(host_mines_tick)
+		if not ok then report("mines", err) end
+		if now >= next_sweep then
+			next_sweep = now + 2000
+			ok, err = pcall(artefact_sweep)
+			if not ok then report("artefact sweep", err) end
+		end
+	end
+end
+
+local function save_state(m_data)
+	if next(mines) == nil then
+		m_data.coop_npc_mines = nil
+		return
+	end
+	local t = {}
+	for id, m in pairs(mines) do
+		if m.active then t[id] = { exp = m.exp, mode = m.mode, planter = m.planter } end
+	end
+	m_data.coop_npc_mines = t
+end
+
+local function load_state(m_data)
+	mines = {}
+	if type(m_data.coop_npc_mines) == "table" then
+		for id, m in pairs(m_data.coop_npc_mines) do
+			if type(id) == "number" and type(m) == "table" then
+				mines[id] = { exp = tonumber(m.exp) or 0, mode = m.mode == MODE_TIMER and MODE_TIMER or MODE_PROX,
+					planter = tonumber(m.planter) or 0, active = true }
+			end
+		end
+	end
+end
+
+function print_status()
+	local n = 0
+	for _ in pairs(mines) do n = n + 1 end
+	log("installed %s | mines out %d in %d armed %d blasts %d blamed %d | pulses %d in %d | campfire out %d in %d | music %d | silent kills %d alerts %d | zone artefacts released to players %d | errors %d",
+		tostring(installed), stats.mines_out, stats.mines_in, n, stats.blasts, stats.blame, stats.pulses, stats.pulses_in,
+		stats.fire_out, stats.fire_in, stats.music, stats.silent, stats.alerts, stats.artefacts, P.error_count(TAG))
+end
+
+function on_game_start()
+	P = coop_npc_players
+	if not rawget(_G, "coop") then return end
+	if not installed then
+		local ok, err = pcall(install)
+		if not ok then report("install", err) end
+		installed = true
+	end
+	P.on(EV_MINE, host_on_mine, "host", TAG)
+	P.on(EV_FIRE, host_on_fire, "host", TAG)
+	P.on(EV_PULSE, client_on_pulse, "client", TAG)
+	P.on(EV_ISND, on_isnd, nil, TAG)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("npc_on_before_hit", guard("mine blame", mine_blame))
+	RegisterScriptCallback("npc_on_before_hit", guard("silent kill", silent_kill))
+	RegisterScriptCallback("npc_on_update", guard("npc update", function(npc)
+		near_mine(npc)
+		corpse_alert(npc)
+	end))
+	RegisterScriptCallback("monster_on_update", guard("monster update", near_mine))
+	RegisterScriptCallback("save_state", save_state)
+	RegisterScriptCallback("load_state", load_state)
+end
+
+function _set_host_on(v) host_on = v end
+function _mines() return mines end
+function _stats() return stats end

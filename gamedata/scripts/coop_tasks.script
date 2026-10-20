@@ -37,7 +37,21 @@
 	  coop_tasks.party_count(section, min_condition)      -> number (multi-use items count their uses)
 	    Host: the host's actor + the characters of all connected players. Client: own actor + the other
 	    players' characters as mirrored here.
+	  coop_tasks.party_object(section) -> item of that section held by another player's character, or nil
+	  coop_tasks.party_holds_id(item_id, section) -> true if a player character holds that item
 	  coop_tasks.recipient(task_id) -> peer that would get the reward now (host only)
+	  coop_tasks.taker(task_id) -> peer that took the task (host only; 0 = the host)
+	  coop_tasks.reward_peer() -> client peer that gets the effects being run now, or nil (host only)
+	  coop_tasks.run_as(peer, fn, ...) -> runs fn as a request of that player (host: gives / turn-ins
+	    inside belong to that player)
+	  coop_tasks.with_task_owner(task_id, fn, ...) -> runs fn with the effects keyed to the actor going
+	    to the player who took the task (host: items a status functor hands out, news)
+	  coop_tasks.with_recipient(peer, fn, ...) -> the same for a given player (host)
+	  coop_tasks.in_reward_scope() -> true while such effects belong to one player (host)
+	  coop_tasks.party_take(section, amount) -> removes that many items from the group (host), count
+	  coop_tasks.give_to_peer(peer, money, sections) -> money / items for one player (host)
+	  coop_tasks.set_local_task(task_id) -> a personal task (xrRazom xrr_local_tasks): given, checked
+	    and finished on the machine that has it, never sent to the host or mirrored
 	Called by the engine: coop_tasks.host_note(task_id, "taker"|"finisher", peer)  (coop_story.cpp requests)
 --]]
 
@@ -258,16 +272,42 @@ local function actor_pstor(create)
 	return st.pstor
 end
 
+-- The task's own vars: the key is the task id or starts with "<id>_" (not "<id>0", another task's).
+local function is_task_key(k, id)
+	if type(k) ~= "string" then return false end
+	local n = #id
+	if k:sub(1, n) ~= id then return false end
+	return #k == n or k:sub(n + 1, n + 1) == "_"
+end
+
 local function task_vars(id)
 	local out = {}
 	local ps = actor_pstor(false)
 	if not ps then return out end
-	local n = #id
 	for k, v in pairs(ps) do
-		if type(k) == "string" and k:sub(1, n) == id and var_value_ok(v) then out[k] = v end
+		if is_task_key(k, id) and var_value_ok(v) then out[k] = v end
 	end
 	return out
 end
+
+-- Personal tasks (xrRazom xrr_local_tasks): never routed to the host, never mirrored.
+local local_tasks = {}
+local function is_local(id) return type(id) == "string" and local_tasks[id] == true end
+
+-- Needs the engine side too: coop_story must give/finish the engine task of such an id locally as well.
+-- Without coop.story_local_task the request is refused (the engine would still send the task to the host).
+function set_local_task(id)
+	if type(id) ~= "string" or id == "" then return false end
+	if not (api and api.story_local_task) then
+		log("! personal task '%s' not set: the engine has no coop.story_local_task", id)
+		return false
+	end
+	local ok = pcall(api.story_local_task, id)
+	if ok then local_tasks[id] = true end
+	return ok
+end
+
+function is_local_task(id) return is_local(id) end
 
 -- Bounty targets are chosen while the dialog builds its text (setup_bounty_task) and kept in
 -- axr_task_manager.bounties_by_id, not in the pstor: they travel with the task too.
@@ -342,6 +382,33 @@ function party_has(section, count, min_cond)
 	return party_count(section, min_cond) >= (tonumber(count) or 1)
 end
 
+-- An item of `section` in another player's character on this machine (not the own actor), or nil.
+function party_object(section)
+	if type(section) ~= "string" or not active() then return nil end
+	for _, h in ipairs(party()) do
+		if not h.self then
+			local ok, o = pcall(h.obj.object, h.obj, section)
+			if ok and o then return o end
+		end
+	end
+	return nil
+end
+
+-- True if the item `item_id` (of `section`, if given) is held by a player character on this machine.
+function party_holds_id(item_id, section)
+	if type(item_id) ~= "number" then return false end
+	local o = level.object_by_id(item_id)
+	if not o then return false end
+	if section and o:section() ~= section then return false end
+	local ok, p = pcall(o.parent, o)
+	if not (ok and p) then return false end
+	local pid = p:id()
+	for _, h in ipairs(party()) do
+		if h.obj:id() == pid then return true end
+	end
+	return false
+end
+
 -------------------------------------------------------------------------------
 -- Host state
 -------------------------------------------------------------------------------
@@ -407,7 +474,7 @@ local function host_scan(force)
 	if not tm or type(tm.task_info) ~= "table" then return end
 	local seen = {}
 	for id, tsk in pairs(tm.task_info) do
-		if type(id) == "string" then
+		if type(id) == "string" and not is_local(id) then
 			seen[id] = true
 			local s = task_record(id, tsk)
 			if force or host.sent[id] ~= s then
@@ -497,6 +564,20 @@ function recipient(id)
 	return r or 0
 end
 
+function taker(id)
+	return host.taker[id] or 0
+end
+
+-- Host: runs fn as if `peer` had asked for it through a task request (give_task inside = its task).
+function run_as(peer, fn, ...)
+	local prev = host.exec_peer
+	host.exec_peer = tonumber(peer) ~= 0 and tonumber(peer) or nil
+	local res = { pcall(fn, ...) }
+	host.exec_peer = prev
+	if not res[1] then error(res[2], 0) end
+	return unpack(res, 2)
+end
+
 -- coop_story.cpp: a client asked through the engine requests (TaskReqGive / TaskReqState).
 function host_note(id, kind, peer)
 	peer = tonumber(peer)
@@ -529,10 +610,13 @@ local ops = {}
 
 function ops.give(tm, id, t, from)
 	if tm.task_info[id] ~= nil and engine_task_running(id) then return false end
+	local got_vars = {}
 	if type(t.v) == "string" then
-		local n = #id
 		for k, v in pairs(unpack_payload(t.v)) do
-			if type(k) == "string" and k:sub(1, n) == id and var_value_ok(v) then save_var(db.actor, k, v) end
+			if is_task_key(k, id) and var_value_ok(v) then
+				save_var(db.actor, k, v)
+				got_vars[k] = true
+			end
 		end
 	end
 	local b = bounties()
@@ -541,7 +625,16 @@ function ops.give(tm, id, t, from)
 	host.taker[id] = from
 	host.finisher[id] = nil
 	tm:give_task(id, giver)
-	return tm.task_info[id] ~= nil
+	local given = tm.task_info[id] ~= nil
+	if given then
+		-- host-side parts of the offer the client's dialog prepared (pinned target squads, ...)
+		local qo = rawget(_G, "coop_quests_offer")
+		if type(qo) == "table" and type(qo.host_after_give) == "function" then
+			local ok, err = pcall(qo.host_after_give, id, from, giver, got_vars)
+			if not ok then report("after give " .. id, err) end
+		end
+	end
+	return given
 end
 
 local function finish(method)
@@ -641,6 +734,40 @@ local function host_task_callback(orig, tsk, state)
 	ctx = prev
 	if not ok then report("task callback " .. id, err) end
 	if rcpt ~= 0 then log("rewards of '%s' go to #%s%s", id, tostring(rcpt), share and " (money shared)" or "") end
+end
+
+-- Client peer the effects being run now are keyed to (items into its character, news to it), or nil.
+function reward_peer()
+	return ctx ~= nil and ctx.rcpt ~= 0 and ctx.rcpt or nil
+end
+
+-- True while a task's rewards / status effects are being handed out (they belong to one player).
+function in_reward_scope()
+	return ctx ~= nil
+end
+
+-- Host: runs fn with the effects keyed to the actor (items, news, money, goodwill) going to `peer`.
+function with_recipient(peer, fn, ...)
+	peer = tonumber(peer)
+	if ctx ~= nil or not is_host() or not peer or peer == 0 or not avatar_obj(peer) then return fn(...) end
+	ctx = { task = "", rcpt = peer, share = false, status = true }
+	local res = { pcall(fn, ...) }
+	ctx = nil
+	if not res[1] then error(res[2], 0) end
+	return unpack(res, 2)
+end
+
+-- Host: a task's status / target functors run with the actor's effects going to the player who took it
+-- (a measuring device handed out on the first check lands in that player's character).
+function with_task_owner(id, fn, ...)
+	if ctx ~= nil or not is_host() or type(id) ~= "string" then return fn(...) end
+	local t = host.taker[id]
+	if not t or t == 0 or not avatar_obj(t) then return fn(...) end
+	ctx = { task = id, rcpt = t, share = false, status = true }
+	local res = { pcall(fn, ...) }
+	ctx = nil
+	if not res[1] then error(res[2], 0) end
+	return unpack(res, 2)
 end
 
 local function patch_rewards()
@@ -869,6 +996,50 @@ local function party_remove(sec, amt)
 	local removed = amt - left
 	if removed > 0 then news_manager.relocate_item(db.actor, "out", sec, removed) end
 	if left > 0 then log("! group had %d x %s less than the task takes", left, sec) end
+	return removed
+end
+
+-- Host: takes up to `amt` items of `sec` from the group (the player the effects are keyed to first,
+-- then the host, then the others). Returns how many were taken.
+function party_take(sec, amt)
+	if not is_host() or type(sec) ~= "string" then return 0 end
+	amt = tonumber(amt) or 1
+	if amt <= 0 then return 0 end
+	local ok, n = pcall(party_remove, sec, amt)
+	if not ok then
+		report("party_take " .. sec, n)
+		return 0
+	end
+	return n or 0
+end
+
+-- Host: money and items for one player (0 = the host's own actor). Items are spawned by the host into
+-- that player's character; the player sees the news on its own machine.
+function give_to_peer(peer, money, sections)
+	if not is_host() then return end
+	peer = tonumber(peer) or 0
+	money = math_floor(tonumber(money) or 0)
+	local mine = peer == 0 or peer == self_peer()
+	if money ~= 0 then
+		if mine then
+			if money > 0 then dialogs.relocate_money(db.actor, money, "in") else db.actor:give_money(money) end
+		else
+			send_reward(peer, { k = "money", n = money })
+		end
+	end
+	if type(sections) == "table" then
+		local obj = mine and db.actor or avatar_obj(peer)
+		for _, sec in ipairs(sections) do
+			if type(sec) == "string" and sec ~= "" and obj then
+				create_plain(sec, obj)
+				if mine then
+					news_manager.relocate_item(db.actor, "in", sec, 1)
+				else
+					send_reward(peer, { k = "news", ty = "in", s = sec, n = 1 })
+				end
+			end
+		end
+	end
 end
 
 -- Fetch reward (stock: one second later, from the host's inventory): bring the items to the host's actor,
@@ -1119,9 +1290,8 @@ local function apply_vars(id, vars)
 	local ps = actor_pstor(true)
 	if not ps then return end
 	local keys = {}
-	local n = #id
 	for k, v in pairs(vars) do
-		if type(k) == "string" and k:sub(1, n) == id then
+		if is_task_key(k, id) then
 			ps[k] = v
 			keys[k] = true
 		end
@@ -1132,7 +1302,7 @@ end
 local function client_apply_state(s)
 	local rec = unpack_payload(s)
 	local id = rec.i
-	if type(id) ~= "string" or id == "" then return end
+	if type(id) ~= "string" or id == "" or is_local(id) then return end
 	local tm = tmgr()
 	if not tm or type(tm.task_info) ~= "table" then return end
 	stats.state_in = stats.state_in + 1
@@ -1218,7 +1388,7 @@ local function client_on_list(payload)
 	end
 	local drop = {}
 	for id, tsk in pairs(tm.task_info) do
-		if not listed[id] then
+		if not listed[id] and not is_local(id) then
 			local data = stub_data(tsk)
 			if not (data and data.pending_at and now() - data.pending_at < PENDING_MS) then drop[#drop + 1] = id end
 		end
@@ -1245,6 +1415,10 @@ local function client_give(tm, id, giver)
 	local gid = tonumber(giver)
 	local extra = { g = gid and to_host_id(gid) or nil }
 	local v = pack(task_vars(id), true)
+	if #v > 9000 then
+		log("! task vars of '%s' too long (%d characters), the host keeps its own", id, #v)
+		v = ""
+	end
 	if v ~= "" then extra.v = v end
 	local b = bounties()
 	if b and type(b[id]) == "number" then extra.bt = to_host_id(b[id]) end
@@ -1364,6 +1538,7 @@ local function patch_task_manager()
 
 	patch_method("give_task", function(orig)
 		return function(self, id, giver, ...)
+			if is_local(id) then return orig(self, id, giver, ...) end
 			if is_client() then
 				if not client_live() then return end -- loading the host's world: the host has it already
 				local ok, res = pcall(client_give, self, id, giver)
@@ -1384,6 +1559,7 @@ local function patch_task_manager()
 	for name, op in pairs({ set_task_completed = "complete", set_task_failed = "fail", set_task_cancelled = "cancel" }) do
 		patch_method(name, function(orig)
 			return function(self, id, ...)
+				if is_local(id) then return orig(self, id, ...) end
 				if is_client() then
 					if client_live() then
 						local ok, err = pcall(client_finish, self, id, op)
@@ -1405,25 +1581,36 @@ local function patch_task_manager()
 		end)
 	end
 
-	-- A client never evaluates tasks: the host's scripts do, its state is mirrored here.
+	-- A client never evaluates the group's tasks: the host's scripts do, its state is mirrored here.
+	-- Personal tasks are checked where they are.
 	patch_method("update", function(orig)
 		return function(self, ...)
-			if is_client() then return end
+			if is_client() then
+				if next(local_tasks) and type(self.task_info) == "table" then
+					for id, tsk in pairs(self.task_info) do
+						if is_local(id) and not stub_data(tsk) and type(tsk.check_task) == "function" then
+							local ok, err = pcall(tsk.check_task, tsk, self)
+							if not ok then report("local task " .. id, err) end
+						end
+					end
+				end
+				return
+			end
 			return orig(self, ...)
 		end
 	end)
 	for _, name in ipairs({ "task_complete", "task_fail" }) do
 		patch_method(name, function(orig)
-			return function(self, ...)
-				if is_client() then return false end
-				return orig(self, ...)
+			return function(self, id, ...)
+				if is_client() and not is_local(id) then return false end
+				return orig(self, id, ...)
 			end
 		end)
 		local f = mod[name]
 		if type(f) == "function" then
-			mod[name] = function(...)
-				if is_client() then return false end
-				return f(...)
+			mod[name] = function(id, ...)
+				if is_client() and not is_local(id) then return false end
+				return f(id, ...)
 			end
 		end
 	end
@@ -1431,7 +1618,11 @@ local function patch_task_manager()
 	local cb = mod.task_callback
 	if type(cb) == "function" then
 		mod.task_callback = function(tsk, state)
-			if is_client() then return end -- results come from the host (silently, see coop_story)
+			if is_client() then
+				local ok, id = pcall(function() return tsk:get_id() end)
+				if ok and is_local(id) then return cb(tsk, state) end
+				return -- results come from the host (silently, see coop_story)
+			end
 			if is_host() then return host_task_callback(cb, tsk, state) end
 			return cb(tsk, state)
 		end
@@ -1527,6 +1718,12 @@ function print_status()
 		for id, peer in pairs(host.taker) do
 			if peer ~= 0 and tm and tm.task_info and tm.task_info[id] then log("  '%s' taken by #%s", id, tostring(peer)) end
 		end
+	end
+	-- the rest of the quests group (offers, group items, story, PDA)
+	local qc = rawget(_G, "coop_quests_core")
+	if type(qc) == "table" and type(qc.print_status) == "function" then
+		local ok, err = pcall(qc.print_status)
+		if not ok then report("quests status", err) end
 	end
 end
 

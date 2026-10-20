@@ -1,0 +1,298 @@
+--[[
+	Anomaly Coop - NPC group (W4 "npc"): third-party mods (G.A.M.M.A. and friends) that assume one player.
+	Port of the behaviour of xrRazom 1.4 xrr_patch_ai_rework, xrr_patch_night_mutants, xrr_patch_stealth,
+	xrr_patch_stealth_kill_detection, xrr_patch_rostok_peace_zone and of its rewrite configs
+	configs\xrr_rewrites\*.ltx (gamma_ai, silent_kills, trader_autoinject, useful_idiots).
+
+	Every patch activates only when its mod's script exists; nothing here touches plain Anomaly 1.5.3 except
+	what is said. Outside a session every patched function answers exactly like the original.
+
+	Wrappers (host, with clients):
+	  - schemes_ai_gamma.scheme_camper / scheme_cover (G.A.M.M.A. AI Rework): asked about a proxy, they run
+	    with "the actor" = that proxy (they only recognise db.actor as the player).
+	  - night_mutants.se_obj_outside_spawn_radius: a spawn point must be outside the radius of every player.
+	  - visual_memory_manager.get_visible_value (Stealth Overhaul, only with stealth_mcm): a proxy is judged
+	    like the player.
+	  - gameplay_peace_zone (Rostok Duty peace zone): crimes are tracked per player (by proxy), so a client
+	    shooting Duty does not set the host's crime bit and a client without crimes is not attacked.
+	  - Stealth Kill Detection (Catspaw): a client's silent kill judged by the host (coop_npc_world) is
+	    credited to that client's statistics (npc.stat).
+	Rewrites (consumer in xrRazom: its engine's script loader, which replaced literal text in a mod script
+	before compiling it). Here: when the mod's script is a loose file, its text is read, the literal
+	comparisons with id 0 / db.actor are replaced by calls of coop_npc_players' globals (all-or-nothing per
+	file), and the body is run again into the module before its on_game_start. A packed or changed file is
+	left untouched (logged). Targets: xr_danger (G.A.M.M.A. copy only), schemes_ai_gamma,
+	visual_memory_manager (Stealth Overhaul copy only), stealth_kill_detection, trader_autoinject.
+	Not ported: illish.patches.xr_danger (Useful Idiots, a require()'d .lua package), and the stock
+	gameplay_silent_kills rewrite (coop_npc_world judges clients' silent kills with the stock rules instead).
+
+	Events: npc.stat host -> client { k = statistic id }
+--]]
+
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+
+local TAG = "compat"
+local P -- coop_npc_players
+
+local function log(fmt, ...) P.log(TAG, fmt, ...) end
+local function report(what, err) P.report(TAG, what, err) end
+
+local EV_STAT = "npc.stat"
+
+local installed = false
+local host_on = false
+local orig = {}
+local applied = {} -- what got installed, for coop_status
+
+local function mod(name)
+	local ok, m = pcall(function() return _G[name] end)
+	return ok and type(m) == "table" and m or nil
+end
+
+-------------------------------------------------------------------------------
+-- Source rewrites (data from xrRazom's configs\xrr_rewrites, aimed at our globals)
+-------------------------------------------------------------------------------
+local REWRITES = {
+	xr_danger = {
+		{ "st.stage >= 2 and killer and killer:id() == 0", "st.stage >= 2 and killer and coop_npc_is_player_id(killer:id())" },
+		{ "elseif (killer and killer:id() == 0", "elseif (killer and coop_npc_is_player_id(killer:id())" },
+	},
+	schemes_ai_gamma = {
+		{ "if who:id() == AC_ID then", "if coop_npc_is_player_id(who:id()) then" },
+	},
+	visual_memory_manager = {
+		{ "vision_memory[npc:id()] = {}", "vision_memory[npc:id()] = coop_npc_multi() and vision_memory[npc:id()] or {}" },
+		{ "marked[npc:id()] = marked[npc:id()] or true", "marked[coop_npc_multi() and (npc:id() * 65536 + shit.draftsman:id()) or npc:id()] = true" },
+		{ "marked[member:id()] = marked[member:id()] or true", "marked[coop_npc_multi() and (member:id() * 65536 + shit.draftsman:id()) or member:id()] = true" },
+		{ "if marked[npc:id()] then", "if marked[coop_npc_multi() and (npc:id() * 65536 + who:id()) or npc:id()] then" },
+		{ "local memory_factor = 0", "local memory_factor = 0 if coop_npc_multi() then actor_marked = 0 end" },
+	},
+	stealth_kill_detection = {
+		{ "if (killer_id ~= 0) then return end", "if not coop_npc_is_player_id(killer_id) then return end" },
+	},
+	trader_autoinject = {
+		{ "npc:position():distance_to(db.actor:position()) > 20", "(not coop_npc_any_player_within(npc, 20))" },
+	},
+}
+
+local function count_plain(s, needle)
+	local n, at = 0, 1
+	while true do
+		local i = s:find(needle, at, true)
+		if not i then return n end
+		n = n + 1
+		at = i + #needle
+	end
+end
+
+local function replace_plain(s, from, to)
+	local i = s:find(from, 1, true)
+	return s:sub(1, i - 1) .. to .. s:sub(i + #from)
+end
+
+-- Pure part, testable: applies every pair once, in order; nil + reason if any `from` is not there exactly once.
+function rewrite_text(src, pairs_list)
+	for i, pr in ipairs(pairs_list) do
+		local n = count_plain(src, pr[1])
+		if n ~= 1 then return nil, string.format("pair %d found %d times", i, n) end
+		src = replace_plain(src, pr[1], pr[2])
+	end
+	return src
+end
+
+local function read_script(name)
+	local fs = getFS and getFS()
+	if not fs then return nil end
+	local ok, path = pcall(fs.update_path, fs, "$game_scripts$", name .. ".script")
+	if not (ok and type(path) == "string") then return nil end
+	local fh = io.open(path, "rb")
+	if not fh then return nil end
+	local src = fh:read("*a")
+	fh:close()
+	return src, path
+end
+
+local function apply_rewrite(name, list)
+	local m = mod(name)
+	if not m then return end -- mod absent
+	local src, path = read_script(name)
+	if not src then
+		log("rewrite %s skipped: not a loose file", name)
+		return
+	end
+	local out, why = rewrite_text(src, list)
+	if not out then
+		log("rewrite %s skipped (another version of the script): %s", name, why)
+		return
+	end
+	-- Same environment the engine gives a script: the module table, `this`, script_name().
+	local header = "local this = ... local function script_name() return \"" .. name .. "\" end "
+	local chunk, err = loadstring(header .. out, "@" .. path)
+	if not chunk then
+		report("rewrite " .. name, err)
+		return
+	end
+	setfenv(chunk, m)
+	local ok, rerr = pcall(chunk, m)
+	if not ok then
+		report("rewrite " .. name, rerr)
+		return
+	end
+	applied[#applied + 1] = "rewrite:" .. name
+	log("rewrite %s applied (%d change(s))", name, #list)
+end
+
+-------------------------------------------------------------------------------
+-- Wrappers
+-------------------------------------------------------------------------------
+local function wrap_ai_rework()
+	local m = mod("schemes_ai_gamma")
+	if not m then return end
+	for _, name in ipairs({ "scheme_camper", "scheme_cover" }) do
+		local f = m[name]
+		-- A zero-argument stub (another mod disabled it) answers a constant: nothing to do.
+		local nparams = type(f) == "function" and debug.getinfo(f, "u").nparams -- nil on LuaJIT 2.0
+		if type(f) == "function" and (nparams == nil or nparams > 0) and not orig[name] then
+			orig[name] = f
+			m[name] = function(enemy, npc, actor, ...)
+				if not (host_on and enemy and P.is_proxy(enemy)) then return f(enemy, npc, actor, ...) end
+				local ok, r = pcall(P.with_identity, enemy, f, enemy, npc, actor, ...)
+				if not ok then
+					report(name, r)
+					return false
+				end
+				return r
+			end
+			applied[#applied + 1] = "ai_rework." .. name
+		end
+	end
+end
+
+local function wrap_night_mutants()
+	local m = mod("night_mutants")
+	local f = m and m.se_obj_outside_spawn_radius
+	if type(f) ~= "function" or orig.night then return end
+	orig.night = f
+	m.se_obj_outside_spawn_radius = function(se_obj, ...)
+		if not f(se_obj, ...) then return false end -- too close to the host's player
+		if not (host_on and se_obj) then return true end
+		for _, p in ipairs(P.others()) do
+			local ok, outside = pcall(P.with_identity, p, f, se_obj, ...)
+			if not ok then
+				report("night_mutants radius", outside)
+			elseif not outside then
+				return false
+			end
+		end
+		return true
+	end
+	applied[#applied + 1] = "night_mutants"
+end
+
+local function wrap_stealth()
+	if not mod("stealth_mcm") then return end
+	local m = mod("visual_memory_manager")
+	local f = m and m.get_visible_value
+	if type(f) ~= "function" or orig.vis then return end
+	orig.vis = f
+	-- The engine looks this function up by name on every call.
+	m.get_visible_value = function(npc, who, ...)
+		if host_on and who and P.is_proxy(who) then
+			local ok, r = pcall(P.with_identity, who, f, npc, who, ...)
+			if ok and type(r) == "number" then return r end
+		end
+		return f(npc, who, ...)
+	end
+	applied[#applied + 1] = "stealth"
+end
+
+-- Rostok peace zone: crimes per player.
+local crime = {} -- proxy id -> true
+
+local function wrap_peace_zone()
+	local m = mod("gameplay_peace_zone")
+	if not (m and type(m.npcs_friendly_to_community) == "function" and type(m.level_is_bar) == "function") then return end
+	if orig.peace then return end
+	local friendly = m.npcs_friendly_to_community
+	orig.peace = friendly
+	-- Both call sites pass the player second: false for a proxy keeps the mod's single crime bit off it.
+	m.npcs_friendly_to_community = function(a, b, com, ...)
+		if host_on and b and P.is_proxy(b) then return false end
+		return friendly(a, b, com, ...)
+	end
+	local function pair(npc, who)
+		if character_community(npc) == "arena_enemy" then return false end
+		return friendly(npc, who, "dolg") and true or false
+	end
+	RegisterScriptCallback("npc_on_before_hit", function(npc, s_hit)
+		local who = s_hit and s_hit.draftsman
+		if not (host_on and who and P.is_proxy(who)) then return end
+		if m.level_is_bar() and pair(npc, who) then crime[who:id()] = true end
+	end)
+	RegisterScriptCallback("on_enemy_eval", function(npc, ene, flags)
+		if not (host_on and ene and P.is_proxy(ene)) or crime[ene:id()] then return end
+		if m.level_is_bar() and IsStalker(npc) and pair(npc, ene) then
+			flags.override = true
+			flags.result = false
+		end
+	end)
+	RegisterScriptCallback("save_state", function(m_data) m_data.coop_npc_peace_crime = crime end)
+	RegisterScriptCallback("load_state", function(m_data)
+		crime = type(m_data.coop_npc_peace_crime) == "table" and m_data.coop_npc_peace_crime or {}
+	end)
+	RegisterScriptCallback("on_level_changing", function() crime = {} end)
+	applied[#applied + 1] = "peace_zone"
+end
+
+-- Called by coop_npc_world after a client's silent kill.
+function credit_silent_kill(proxy)
+	if not mod("stealth_kill_detection") then return end
+	local peer = P.peer_of(proxy)
+	if peer then P.send(EV_STAT, { k = "silent_kills" }, peer) end
+end
+
+local function client_on_stat(t)
+	if t.k ~= "silent_kills" or not game_statistics then return end
+	local s = game_statistics.actor_statistics
+	if type(s) == "table" and s.silent_kills == nil then s.silent_kills = { count = 0, rank = 5, rept = 0 } end
+	pcall(game_statistics.increment_statistic, "silent_kills")
+end
+
+-------------------------------------------------------------------------------
+-- Install
+-------------------------------------------------------------------------------
+local next_tick = 0
+
+local function actor_on_update()
+	local now = time_global()
+	if now < next_tick then return end
+	next_tick = now + 250
+	host_on = installed and P.host_with_clients()
+end
+
+function print_status()
+	log("installed %s | active: %s | errors %d", tostring(installed),
+		#applied > 0 and table.concat(applied, ", ") or "nothing (no supported mod found)", P.error_count(TAG))
+end
+
+function on_game_start()
+	P = coop_npc_players
+	if not rawget(_G, "coop") then return end
+	if not installed then
+		installed = true
+		for name, list in pairs(REWRITES) do
+			local ok, err = pcall(apply_rewrite, name, list)
+			if not ok then report("rewrite " .. name, err) end
+		end
+		for _, s in ipairs({ { "ai_rework", wrap_ai_rework }, { "night_mutants", wrap_night_mutants },
+			{ "stealth", wrap_stealth }, { "peace_zone", wrap_peace_zone } }) do
+			local ok, err = pcall(s[2])
+			if not ok then report("install " .. s[1], err) end
+		end
+	end
+	P.on(EV_STAT, client_on_stat, "client", TAG)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+end
+
+function _set_host_on(v) host_on = v end
+function _applied() return applied end

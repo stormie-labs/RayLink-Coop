@@ -1,0 +1,426 @@
+--[[
+	Anomaly Coop - small third-party mod patches (gamedata\scripts\coop_mods_misc.script), W4 "mods".
+
+	Each patch installs only when its mod is present and does nothing outside a co-op session.
+
+	Experience Framework (experience_core)     XP, skills, traits, own XP tasks, potion buff are per player
+	                                           (coop_mods_pdata, sub-keys of experience_framework_savedata;
+	                                           NPC levels nls_storage stay the host's).
+	Wearable Devices (wd_core)                 worn devices and Promin modules are per player (coop_mods_pdata).
+	Quick Action Wheel (haru_qaw)              the layout is per player; entries whose item is not in this
+	                                           player's inventory any more are dropped at the first update.
+	Kill Tracker (ish_kill_tracker)            a player's character is named by the player's nick; the mod's
+	                                           own records are per player (keys found from its save_state).
+	Guitar / harmonica (guitar_anim, harmonica_anim)  the song a player plays is heard at that player's
+	                                           character on every machine (event mods.song).
+	Immersive Sleep (ui_sleep_dialog)          the tiredness veto judges the most tired player of the group
+	                                           (mods.sleepy client -> host, mods.sleepy_max host -> all).
+	Zone Customization Project (smr_loot)      bonus loot is rolled by the host only; a client's container is
+	                                           rolled by the host when the engine reports its opening.
+	Personal Adjustable Waypoint               the waypoint task is personal (coop_tasks.set_local_task, needs
+	                                           coop.story_local_task in the engine); a player's character is
+	                                           named by the nick.
+	Body Health System (zzz_player_injuries)   after a co-op revive head/torso get back above zero and the medkit
+	                                           heals the limbs (the mod's own heal never runs on a revive);
+	                                           head_tbl is per player.
+	Oleh's Extended MovementSFX                footsteps of other players' characters (when the engine reports
+	                                           avatar steps through coop_mods_core.on_avatar_step).
+--]]
+
+local api = rawget(_G, "coop")
+
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+
+local function C() return coop_mods_core end
+local function P() return coop_mods_pdata end
+
+local installed = {}
+
+local function log(tag, fmt, ...) C().log(tag, fmt, ...) end
+
+-------------------------------------------------------------------------------
+-- Experience Framework, Wearable Devices, Quick Action Wheel, Kill Tracker: per-player keys
+-------------------------------------------------------------------------------
+local EF_SUBS = { "XP", "skills_savedata", "traits_savedata", "tasks_manager", "potion_xp_buff" }
+
+local WD_KEYS = {
+	"wd_bracer_worn", "wd_bracer_worn_id",
+	"metro_watch_worn", "metro_watch_worn_id",
+	"vektor_worn", "vektor_worn_id",
+	"wd_promin_worn", "wd_promin_worn_id",
+	"wd_glowstick_section", "wd_glowstick_section_id",
+	"wd_slots_loadout", "wd_slots_loadout_ids",
+	"wd_promin_modules", "wd_promin_page",
+}
+
+local function install_pdata()
+	if C().mod("experience_core") then
+		P().register("experience_framework_savedata", { subs = EF_SUBS, prime = { "experience_core" } })
+		installed[#installed + 1] = "experience_framework"
+	end
+	if C().mod("wd_core") then
+		for _, k in ipairs(WD_KEYS) do P().register(k, { prime = { "wd_core" } }) end
+		installed[#installed + 1] = "wearable_devices"
+	end
+	if C().mod("haru_quick_action_wheel_mcm") then
+		P().register("haru_qaw", { prime = { "haru_quick_action_wheel_mcm" } })
+		installed[#installed + 1] = "quick_action_wheel"
+	end
+	if C().mod("ish_kill_tracker") then
+		local n = P().register_module("ish_kill_tracker")
+		installed[#installed + 1] = "kill_tracker(" .. n .. " keys)"
+	end
+end
+
+-- Wheel entries that name an item by id: the item must be in this player's own inventory.
+local function qaw_drop_lost_entries()
+	if not C().is_client() then return end
+	local qaw = alife_storage_manager.get_state().haru_qaw
+	local mcm = C().mod("haru_quick_action_wheel_mcm")
+	local tm = mcm and mcm.TAB_MANAGER
+	if type(qaw) ~= "table" or type(qaw.tabs) ~= "table" or not (tm and type(tm.classes) == "table") then return end
+	local dropped = 0
+	for _, tab in pairs(qaw.tabs) do
+		if type(tab) == "table" then
+			for i = #tab, 1, -1 do
+				local e = tab[i]
+				local cls = type(e) == "table" and tm.classes[e.class]
+				if type(cls) == "table" and cls.is_obj then
+					local se = type(e.id) == "number" and e.id < 65535 and alife_object(e.id)
+					if not (se and se.parent_id == 0 and se:section_name() == e.section) then
+						if type(tab.__ids) == "table" and e.id then tab.__ids[e.id] = nil end
+						table.remove(tab, i)
+						dropped = dropped + 1
+					end
+				end
+			end
+		end
+	end
+	if dropped > 0 then log("qaw", "%d wheel entr(ies) dropped: their item is not in this inventory", dropped) end
+end
+
+local function install_kill_tracker()
+	local ikt = C().mod("ish_kill_tracker")
+	C().wrap(ikt, "safename", "ish_kill_tracker.safename", function(orig)
+		return function(obj, ...)
+			if C().active() and obj then
+				local ok, id = pcall(function() return obj:id() end)
+				if ok and C().is_remote_player(id) then
+					local nick = C().nick_of(C().peer_of(id))
+					if nick and nick ~= "" then return nick end
+				end
+			end
+			return orig(obj, ...)
+		end
+	end)
+end
+
+-------------------------------------------------------------------------------
+-- Guitar / harmonica: the song is heard at the player's character everywhere
+-------------------------------------------------------------------------------
+local songs = {} -- peer -> sound object playing on this machine
+
+local function announcing(orig)
+	return function(...)
+		if not C().active() then return orig(...) end
+		local real = _G.sound_object
+		local track, snd
+		local proxy = setmetatable({}, {
+			__call = function(_, name, ...)
+				local s = real(name, ...)
+				if track == nil then track, snd = name, s end
+				return s
+			end,
+			__index = function(_, k) return real[k] end,
+		})
+		_G.sound_object = proxy
+		local res = { pcall(orig, ...) }
+		_G.sound_object = real
+		if not res[1] then error(res[2], 0) end
+		if type(track) == "string" and snd then
+			local ok, len = pcall(function() return snd:length() end)
+			C().to_all("song", { s = track, l = ok and tonumber(len) or 0 })
+		end
+		return unpack(res, 2)
+	end
+end
+
+local function on_song(t, from)
+	local track = t.s
+	if type(track) ~= "string" or #track > 200 or track:find("..", 1, true) then return end
+	local obj = C().avatar(from)
+	if not obj or obj:id() == 0 then return end
+	local old = songs[from]
+	if old then pcall(function() old:stop() end) end
+	local ok, snd = pcall(sound_object, track)
+	if not (ok and snd) then return end
+	pcall(function() snd:play_at_pos(obj, obj:position(), 0, sound_object.s3d) end)
+	songs[from] = snd
+end
+
+local guitar_done = false
+local function install_guitar()
+	if guitar_done or not api then return end
+	guitar_done = true
+	C().wrap(C().mod("guitar_anim"), "play_guitar", "guitar_anim.play_guitar", announcing)
+	C().wrap(C().mod("harmonica_anim"), "play_harmonica", "harmonica_anim.play_harmonica", announcing)
+end
+
+-------------------------------------------------------------------------------
+-- Immersive Sleep: the group's most tired player decides
+-------------------------------------------------------------------------------
+local QUANT = 100
+local SLEEP_TICK_MS = 5000
+local sleep = { peers = {}, party = 0, sent = nil, pushed = nil, next_tick = 0 }
+
+local function own_sleepiness()
+	local ok, v = pcall(actor_status_sleep.get_last_sleep)
+	return ok and type(v) == "number" and v or 0
+end
+
+local function quant(v) return math.floor(v / QUANT) * QUANT end
+
+local function host_party_max()
+	local m = own_sleepiness()
+	local online = {}
+	for _, p in ipairs(C().players()) do online[p.id] = true end
+	for peer, v in pairs(sleep.peers) do
+		if not online[peer] then sleep.peers[peer] = nil elseif v > m then m = v end
+	end
+	return m
+end
+
+local function party_view()
+	if C().is_host() then return host_party_max() end
+	return math.max(own_sleepiness(), sleep.party)
+end
+
+-- Scoped: other readers of get_last_sleep (stat bars) never see the group's value.
+local function with_sleepiness(value, f, ...)
+	local m = actor_status_sleep
+	local cur = m.get_last_sleep
+	m.get_last_sleep = function() return value end
+	local ok, e = pcall(f, ...)
+	m.get_last_sleep = cur
+	if not ok then C().report("sleep", "sleep dialog", e) end
+end
+
+local function sleep_tick()
+	local tg = time_global()
+	if tg < sleep.next_tick then return end
+	sleep.next_tick = tg + SLEEP_TICK_MS
+	if C().is_host() then
+		local q = quant(host_party_max())
+		if q ~= sleep.pushed then
+			sleep.pushed = q
+			C().to_all("sleepy_max", { v = q })
+		end
+	elseif C().live_client() then
+		local q = quant(own_sleepiness())
+		if q ~= sleep.sent then
+			sleep.sent = q
+			C().to_host("sleepy", { v = q })
+		end
+	end
+end
+
+local function install_sleep()
+	local dlg, ass = C().mod("ui_sleep_dialog"), C().mod("actor_status_sleep")
+	if not (dlg and C().fn(dlg, "get_immersive_sleep_hours") and ass and C().fn(ass, "get_last_sleep")) then return end
+	local cls = dlg.UISleep
+	if not cls then return end
+	C().wrap(cls, "TestAndShow", "ui_sleep_dialog.UISleep.TestAndShow", function(orig)
+		return function(self, ...)
+			if not C().active() then return orig(self, ...) end
+			with_sleepiness(party_view(), orig, self, ...)
+		end
+	end)
+	C().wrap(cls, "OnButtonSleep", "ui_sleep_dialog.UISleep.OnButtonSleep", function(orig)
+		return function(self, ...)
+			if not C().active() then return orig(self, ...) end
+			with_sleepiness(party_view(), orig, self, ...)
+		end
+	end)
+	C().on("sleepy", function(t, from)
+		local v = tonumber(t.v)
+		if v then sleep.peers[from] = math.max(0, math.min(10000, v)) end
+	end, "host")
+	C().on("sleepy_max", function(t)
+		local v = tonumber(t.v)
+		if v then sleep.party = math.max(0, math.min(10000, v)) end
+	end, "client")
+	RegisterScriptCallback("actor_on_update", sleep_tick)
+	installed[#installed + 1] = "immersive_sleep"
+end
+
+-------------------------------------------------------------------------------
+-- Zone Customization Project: loot rolled by the host
+-------------------------------------------------------------------------------
+local function install_zcp()
+	local smr = C().mod("smr_loot")
+	if not smr then return end
+	local ok, orig_spawn = C().wrap(smr, "try_spawn", "smr_loot.try_spawn", function(orig)
+		return function(box, ...)
+			if C().is_client() then return end -- the host rolls; its loot reaches clients as world items
+			return orig(box, ...)
+		end
+	end)
+	C().wrap(smr, "try_spawn_mag", "smr_loot.try_spawn_mag", function(orig)
+		return function(box, ...)
+			if C().is_client() then return end
+			return orig(box, ...)
+		end
+	end)
+	if ok then
+		-- A client's container: rolled with that player's character as the actor (magazines for its guns).
+		C().listen("container_opened", function(peer, id)
+			local box = level.object_by_id(id)
+			local who = C().avatar(peer)
+			if box and who then
+				local done, e = C().as_player(who, smr.try_spawn, box)
+				if not done then C().report("zcp", "roll for a client", e) end
+			end
+		end)
+	end
+	installed[#installed + 1] = "zcp"
+end
+
+-------------------------------------------------------------------------------
+-- Personal Adjustable Waypoint
+-------------------------------------------------------------------------------
+local function install_paw()
+	if not C().mod("tasks_placeable_waypoints") then return end
+	-- Personal task: given, checked and finished on this machine only (quests group, coop_tasks).
+	local ct = C().mod("coop_tasks")
+	local ok = ct and type(ct.set_local_task) == "function" and ct.set_local_task("task_placeable_waypoint")
+	if not ok then log("paw", "the waypoint task could not be made personal: it is handled like a group task") end
+	local r = C().mod("ui_paw_reticle")
+	C().wrap(r and r.UIPAWReticle, "GetTargetName", "ui_paw_reticle.UIPAWReticle.GetTargetName", function(orig)
+		return function(self, obj, ...)
+			if C().active() and obj then
+				local ok, id = pcall(function() return obj:id() end)
+				if ok and C().is_remote_player(id) then
+					local nick = C().nick_of(C().peer_of(id))
+					if nick and nick ~= "" then return nick end
+				end
+			end
+			return orig(self, obj, ...)
+		end
+	end)
+	installed[#installed + 1] = "paw"
+end
+
+-------------------------------------------------------------------------------
+-- Body Health System: revive
+-------------------------------------------------------------------------------
+local PARTS = { "head", "torso", "leftarm", "rightarm", "leftleg", "rightleg" }
+
+local function bhs_tables(b)
+	return b and type(b.health) == "table" and type(b.maxhp) == "table" and type(b.timedhp) == "table"
+end
+
+local function bhs_on_revived(reviver, section)
+	local b = C().mod("zzz_player_injuries")
+	if not (bhs_tables(b) and db.actor) then return end
+	-- The mod keeps the player down while head or torso is at zero.
+	if (b.health.head or 0) <= 0 then b.health.head = 1 end
+	if (b.health.torso or 0) <= 0 then b.health.torso = 1 end
+	local kit = type(b.medkits) == "table" and type(section) == "string" and b.medkits[section]
+	if type(kit) == "table" then
+		for _, k in ipairs(PARTS) do
+			local bonus = tonumber(kit[k])
+			local hp, max = tonumber(b.health[k]), tonumber(b.maxhp[k])
+			if bonus and hp and max then
+				local add = math.max(0, math.min(bonus, max - hp))
+				b.health[k] = hp + add
+				b.timedhp[k] = (tonumber(b.timedhp[k]) or 0) + add
+			end
+		end
+		b.medkits.lastregen = time_global()
+		b.medkits.timedhealth = kit.timeregen
+	end
+	-- What the mod's own load reads back.
+	if utils_obj and utils_obj.save_var then
+		for _, k in ipairs(PARTS) do
+			pcall(utils_obj.save_var, db.actor, "health." .. k, b.health[k])
+			pcall(utils_obj.save_var, db.actor, "timedhp." .. k, b.timedhp[k])
+		end
+	end
+	log("bhs", "revived (%s): head %s, torso %s", tostring(section), tostring(b.health.head), tostring(b.health.torso))
+end
+
+local function install_bhs()
+	local b = C().mod("zzz_player_injuries")
+	if not bhs_tables(b) then return end
+	P().register("head_tbl", { prime = { "zzz_player_injuries" } })
+	C().listen("actor_revived", bhs_on_revived)
+	installed[#installed + 1] = "bhs"
+end
+
+-------------------------------------------------------------------------------
+-- Oleh's Extended MovementSFX: other players' footsteps
+-------------------------------------------------------------------------------
+local STEP_DIR = "footstep\\n_"
+local last_variant = {}
+
+local function on_avatar_step(avatar_id, material, power, move_state)
+	local fs = C().mod("footstep_sounds")
+	local obj = type(avatar_id) == "number" and avatar_id ~= 0 and level.object_by_id(avatar_id)
+	if not (fs and type(fs.available_materials) == "table" and obj) then return end
+	local mat = fs.available_materials[material] or fs.available_materials["default"]
+	if type(mat) ~= "string" or mat == "water_" then return end
+	local last = last_variant[avatar_id]
+	local n = math.random(last and 5 or 6)
+	if last and n >= last then n = n + 1 end
+	last_variant[avatar_id] = n
+	local ok, snd = pcall(sound_object, STEP_DIR .. mat .. n)
+	if ok and snd then
+		pcall(function()
+			snd:play_at_pos(obj, obj:position(), 0, sound_object.s3d)
+			snd.volume = math.min(1, math.max(0.1, tonumber(power) or 0.5))
+		end)
+	end
+end
+
+local function install_oleh()
+	if not (C().mod("footstep_sounds") and (C().mod("oleh_sound_utils") or C().mod("extended_movement_sounds")
+		or C().mod("extended_movement_sounds_mcm"))) then return end
+	C().listen("avatar_step", on_avatar_step)
+	installed[#installed + 1] = "oleh_movement"
+end
+
+-------------------------------------------------------------------------------
+-- Start
+-------------------------------------------------------------------------------
+local function actor_on_first_update()
+	if C().is_client() then
+		local ok, e = pcall(qaw_drop_lost_entries)
+		if not ok then C().report("qaw", "drop lost entries", e) end
+	end
+end
+
+function on_game_start()
+	if not api then return end
+	install_pdata()
+	install_kill_tracker()
+	install_guitar()
+	if C().mod("guitar_anim") or C().mod("harmonica_anim") then
+		C().on("song", on_song)
+		installed[#installed + 1] = "guitar_anim"
+	end
+	install_sleep()
+	install_zcp()
+	install_paw()
+	install_bhs()
+	install_oleh()
+	if C().mod("haru_quick_action_wheel_mcm") then RegisterScriptCallback("actor_on_first_update", actor_on_first_update) end
+	C().status_line("misc", function()
+		return "installed: " .. (#installed > 0 and table.concat(installed, ", ") or "none (mods absent)")
+	end)
+end
+
+-- Load time (before any on_game_start): the song functions may be captured by other mods at their start.
+if api then
+	local ok, e = pcall(install_guitar)
+	if not ok then printf("[coop-mods] [misc] ! guitar patch: %s", tostring(e)) end
+end

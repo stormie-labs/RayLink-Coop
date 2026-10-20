@@ -1,0 +1,437 @@
+--[[
+	Anomaly Coop - radios (gamedata\scripts\coop_mods_radio.script), W4 "mods".
+
+	RF receiver (stock item_radio)
+	  The host owns the RF sources: hidden stashes per level (RF_stashes) and task targets (RF_targets). A client
+	  loads them with the host's save; afterwards the host compares both tables every 2 s and sends the changes
+	  (mods.rf { a adds "id:freq:dist,..", r removals "id,..", s stash adds "lvl:id:freq,..", x stash removals }).
+	  A target whose object has not reached the client yet waits until it does. The tuned frequency is the
+	  player's own (RF_freq, a stock key: coop_economy_mdata).
+	Zone FM (stock ui_pda_radio_tab)
+	  Every machine runs its own channel clock; the host's decides. When a channel moves to another track or
+	  station ident the host sends its file name (mods.fm { ch, k kind, n name }) and clients switch to the same
+	  file; every 30 s the host repeats the current state for late joiners.
+	RF Receiver Hidden Packages (tb_rf_receiver_packages)
+	  The package, its ambush and the reminders are the host's. A client never spawns them; it follows the
+	  host's package through the RF targets and runs only the hunting half (scanner, pickup, reward into its
+	  own inventory). When a client picks the package up the host closes its own package state.
+--]]
+
+local api = rawget(_G, "coop")
+
+local tostring, tonumber, type, pairs, ipairs, pcall, next = tostring, tonumber, type, pairs, ipairs, pcall, next
+
+local function C() return coop_mods_core end
+local function log(fmt, ...) C().log("radio", fmt, ...) end
+
+local installed = {}
+local st = { rf_out = 0, rf_in = 0, fm_out = 0, fm_in = 0, fm_missing = 0, pkg_closed = 0 }
+
+-------------------------------------------------------------------------------
+-- RF sources (item_radio)
+-------------------------------------------------------------------------------
+local rf = { sent_t = {}, sent_s = {}, pending = {}, next_tick = 0, IR = nil }
+
+local function rf_host_diff()
+	local IR = rf.IR
+	local targets = type(IR.RF_targets) == "table" and IR.RF_targets or {}
+	local stashes = type(IR.RF_stashes) == "table" and IR.RF_stashes or {}
+	local adds, rems, sadds, srems = {}, {}, {}, {}
+	local now_t = {}
+	for id, v in pairs(targets) do
+		if type(id) == "number" and type(v) == "table" then
+			local sig = string.format("%d:%d:%d", id, tonumber(v.freq) or 0, tonumber(v.dist) or 200)
+			now_t[id] = sig
+			if rf.sent_t[id] ~= sig then adds[#adds + 1] = sig end
+		end
+	end
+	for id in pairs(rf.sent_t) do
+		if not now_t[id] then rems[#rems + 1] = tostring(id) end
+	end
+	local now_s = {}
+	for lvl, ids in pairs(stashes) do
+		if type(lvl) == "string" and type(ids) == "table" and not lvl:find("[:,]") then
+			for id, freq in pairs(ids) do
+				if type(id) == "number" then
+					local k = lvl .. ":" .. id
+					local sig = string.format("%s:%d", k, tonumber(freq) or 0)
+					now_s[k] = sig
+					if rf.sent_s[k] ~= sig then sadds[#sadds + 1] = sig end
+				end
+			end
+		end
+	end
+	for k in pairs(rf.sent_s) do
+		if not now_s[k] then srems[#srems + 1] = k end
+	end
+	if #adds + #rems + #sadds + #srems == 0 then return end
+	local t = { a = table.concat(adds, ","), r = table.concat(rems, ","), s = table.concat(sadds, ","), x = table.concat(srems, ",") }
+	if C().to_all("rf", t) then
+		rf.sent_t, rf.sent_s = now_t, now_s
+		st.rf_out = st.rf_out + 1
+	end
+end
+
+local function rf_client_reconcile()
+	local IR = rf.IR
+	if type(IR.RF_targets) ~= "table" then IR.RF_targets = {} end
+	for id, v in pairs(rf.pending) do
+		if alife_object(id) then
+			IR.RF_targets[id] = v
+			rf.pending[id] = nil
+		end
+	end
+end
+
+local function rf_client_apply(t)
+	local IR = rf.IR
+	if not IR then return end
+	st.rf_in = st.rf_in + 1
+	if type(IR.RF_targets) ~= "table" then IR.RF_targets = {} end
+	if type(IR.RF_stashes) ~= "table" then IR.RF_stashes = {} end
+	for e in tostring(t.a or ""):gmatch("[^,]+") do
+		local id, freq, dist = e:match("^(%d+):(%-?%d+):(%-?%d+)$")
+		id = C().lid(tonumber(id))
+		if id then rf.pending[id] = { freq = tonumber(freq), dist = tonumber(dist) } end
+	end
+	for e in tostring(t.r or ""):gmatch("[^,]+") do
+		local id = C().lid(tonumber(e))
+		if id then
+			rf.pending[id] = nil
+			IR.RF_targets[id] = nil
+		end
+	end
+	for e in tostring(t.s or ""):gmatch("[^,]+") do
+		local lvl, id, freq = e:match("^([^:]+):(%d+):(%-?%d+)$")
+		if lvl then
+			IR.RF_stashes[lvl] = IR.RF_stashes[lvl] or {}
+			IR.RF_stashes[lvl][tonumber(id)] = tonumber(freq)
+		end
+	end
+	for e in tostring(t.x or ""):gmatch("[^,]+") do
+		local lvl, id = e:match("^([^:]+):(%d+)$")
+		if lvl and IR.RF_stashes[lvl] then IR.RF_stashes[lvl][tonumber(id)] = nil end
+	end
+	rf_client_reconcile()
+end
+
+local function install_rf()
+	local IR = C().mod("item_radio")
+	if not (IR and C().fn(IR, "add_target")) then return end
+	rf.IR = IR
+	installed[#installed + 1] = "item_radio"
+	C().on("rf", rf_client_apply, "client")
+end
+
+local function rf_tick()
+	local tg = time_global()
+	if tg < rf.next_tick then return end
+	rf.next_tick = tg + 2000
+	if C().is_host() then
+		local ok, e = pcall(rf_host_diff)
+		if not ok then C().report("radio", "rf diff", e) end
+	elseif C().is_client() and next(rf.pending) then
+		local ok, e = pcall(rf_client_reconcile)
+		if not ok then C().report("radio", "rf reconcile", e) end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Zone FM (ui_pda_radio_tab)
+-------------------------------------------------------------------------------
+local KIND_TRACK, KIND_SESSION = 0, 1
+local fm = { R = nil, loc = {}, names = {}, slots = {}, sent = {}, next_tick = 0, next_full = 0 }
+
+local function fm_local(name)
+	local l = fm.loc[name]
+	if l == nil then
+		local _, holder, idx = C().find_local(fm.R, name)
+		l = { holder = holder, idx = idx }
+		fm.loc[name] = l
+	end
+	if l.holder then
+		local _, v = debug.getupvalue(l.holder, l.idx)
+		return v
+	end
+	return fm.R[name]
+end
+
+local function fm_list(path)
+	local out = {}
+	local ok, fl = pcall(function() return getFS():file_list_open("$game_sounds$", path, bit_or(FS.FS_ListFiles, FS.FS_RootOnly)) end)
+	local n = ok and fl and fl:Size() or 0
+	for i = 1, n do out[i] = fl:GetAt(i - 1):sub(1, -5) end
+	return out
+end
+
+-- The tab lists the same folders; listing them again maps a track index back to its file name.
+local function fm_build()
+	local ch_t, ses_t = fm_local("radio_ch"), fm_local("radio_session")
+	local pc, ps = fm_local("path_radio_ch"), fm_local("path_radio_session")
+	if not (type(ch_t) == "table" and type(ses_t) == "table" and type(pc) == "table" and type(ps) == "table") then return false end
+	for ch = 1, #ch_t do
+		local tracks, sessions = fm_list(pc[ch] or ""), fm_list(ps[ch] or "")
+		if type(ch_t[ch]) == "table" and type(ses_t[ch]) == "table" and #tracks == #ch_t[ch] and #sessions == #ses_t[ch] then
+			fm.names[ch] = { [KIND_TRACK] = tracks, [KIND_SESSION] = sessions }
+			fm.slots[ch] = { [KIND_TRACK] = {}, [KIND_SESSION] = {} }
+			for i, n in ipairs(tracks) do fm.slots[ch][KIND_TRACK][n] = i end
+			for i, n in ipairs(sessions) do fm.slots[ch][KIND_SESSION][n] = i end
+		else
+			log("Zone FM channel %d: track list differs from the tab's, not synced", ch)
+		end
+	end
+	return next(fm.names) ~= nil
+end
+
+local function fm_current(ch)
+	local ses_t, ses_now = fm_local("radio_session"), fm_local("radio_session_now")
+	local ch_t, now = fm_local("radio_ch"), fm_local("radio_now")
+	local s = ses_t[ch] and ses_t[ch][ses_now[ch]]
+	if s and s:playing() then return KIND_SESSION, ses_now[ch] end
+	local t = ch_t[ch] and ch_t[ch][now[ch]]
+	if t and t:playing() then return KIND_TRACK, now[ch] end
+	return nil
+end
+
+-- Outdoor speakers keep the clip they last played until it ends; stopping them makes them follow the clock.
+local function fm_cut_speakers(ch)
+	for _, name in ipairs({ "radio_ch_out", "radio_session_out" }) do
+		local t = fm_local(name)
+		for _, snd in pairs(t and t[ch] or {}) do pcall(function() snd:stop() end) end
+	end
+end
+
+local function fm_host_tick(full)
+	for ch in pairs(fm.names) do
+		local kind, idx = fm_current(ch)
+		local key = kind and (kind .. ":" .. idx) or ""
+		if kind and (key ~= fm.sent[ch] or full) then
+			if key ~= fm.sent[ch] then fm_cut_speakers(ch) end
+			fm.sent[ch] = key
+			C().to_all("fm", { ch = ch, k = kind, n = fm.names[ch][kind][idx] })
+			st.fm_out = st.fm_out + 1
+		end
+	end
+end
+
+local function fm_client_apply(t)
+	local ch, kind, name = tonumber(t.ch), tonumber(t.k), t.n
+	if not (ch and fm.slots[ch] and (kind == KIND_TRACK or kind == KIND_SESSION) and type(name) == "string" and db.actor) then return end
+	st.fm_in = st.fm_in + 1
+	local idx = fm.slots[ch][kind][name]
+	if not idx then
+		st.fm_missing = st.fm_missing + 1
+		return
+	end
+	local ck, ci = fm_current(ch)
+	if ck == kind and ci == idx then return end
+	local ch_t, ses_t = fm_local("radio_ch"), fm_local("radio_session")
+	local now, ses_now = fm_local("radio_now"), fm_local("radio_session_now")
+	pcall(function() ch_t[ch][now[ch]]:stop() end)
+	pcall(function() ses_t[ch][ses_now[ch]]:stop() end)
+	fm_cut_speakers(ch)
+	local obj
+	if kind == KIND_SESSION then
+		ses_now[ch] = idx
+		obj = ses_t[ch][idx]
+	else
+		now[ch] = idx
+		obj = ch_t[ch][idx]
+	end
+	if obj then
+		pcall(function()
+			obj:play(db.actor, 0.5, sound_object.s2d) -- just behind the host, so the tab still sees a busy channel
+			obj.volume = 0 -- the tab sets the real volume on its next update
+		end)
+	end
+end
+
+local function install_fm()
+	local R = C().mod("ui_pda_radio_tab")
+	if not R then return end
+	fm.R = R
+	local ok, built = pcall(fm_build)
+	if not (ok and built) then
+		log("Zone FM clock not reachable, channels not synced")
+		return
+	end
+	installed[#installed + 1] = "zone_fm"
+	C().on("fm", fm_client_apply, "client")
+end
+
+local function fm_tick()
+	if not (fm.R and next(fm.names) and C().is_host()) then return end
+	local tg = time_global()
+	if tg < fm.next_tick then return end
+	fm.next_tick = tg + 1000
+	local full = tg >= fm.next_full
+	if full then fm.next_full = tg + 30000 end
+	local ok, e = pcall(fm_host_tick, full)
+	if not ok then C().report("radio", "fm", e) end
+end
+
+-------------------------------------------------------------------------------
+-- RF Receiver Hidden Packages
+-------------------------------------------------------------------------------
+local PKG_PREFIX = "quest_tb_package_"
+local pkg = { TB = nil, tracked = nil, examined = {}, next_tick = 0, orig_take = nil }
+
+local function pkg_clear_local()
+	local tb, IR = pkg.TB, rf.IR
+	pkg.tracked = nil
+	tb.tb_package_active = false
+	tb.tb_target_item = 0
+	tb.tb_package_in_level = "empty"
+	tb.tb_reminder = "empty"
+	tb.tb_scan_time = 4000
+	if IR then
+		IR.tb_in_range = false
+		IR.tb_sound_object = false
+		IR.tb_flash_time = 0
+	end
+end
+
+-- Client: the host's package (an RF target) becomes the mod's current package here.
+local function pkg_client_follow()
+	local tb, IR = pkg.TB, rf.IR
+	local targets = IR and type(IR.RF_targets) == "table" and IR.RF_targets or {}
+	if pkg.tracked then
+		if targets[pkg.tracked] then return end
+		pkg_clear_local()
+	end
+	for id in pairs(pkg.examined) do
+		if not targets[id] then pkg.examined[id] = nil end
+	end
+	for id, target in pairs(targets) do
+		if pkg.examined[id] == nil then
+			local se = alife_object(id)
+			pkg.examined[id] = se ~= nil and se:section_name():find(PKG_PREFIX, 1, true) ~= nil
+			if pkg.examined[id] and type(target) == "table" and target.freq then
+				pkg.tracked = id
+				tb.tb_target_item = id
+				tb.tb_freq = target.freq
+				tb.tb_package_in_level = alife():level_name(game_graph():vertex(se.m_game_vertex_id):level_id())
+				tb.tb_package_active = true
+				tb.tb_badguy_spawned = true -- the ambush is the host's
+				tb.tb_scan_time = 4000
+				log("following the host's package %d", id)
+				return
+			end
+		end
+	end
+end
+
+-- Client pickup: the reward goes into this player's own inventory (created by the host on request).
+local function pkg_client_take(item)
+	local tb = pkg.TB
+	if not item then return end
+	if item:id() == tb.tb_target_item and tb.tb_package_active then
+		if rf.IR then rf.IR.clear_target(tb.tb_target_item) end
+		pkg_clear_local()
+	end
+	local n = item:section():match("^" .. PKG_PREFIX .. "(%d+)$")
+	if not n then return end
+	local reward = "quest_package_" .. n
+	if not ini_sys:section_exist(reward) then return end
+	alife_create_item(reward, db.actor)
+	tb.tb_bonus_items = (tb.tb_bonus_items or 0) + 1
+	alife_release(item)
+	if ui_mcm and ui_mcm.get and ui_mcm.get("RF_package_patch/unpacking") == "automatic" then
+		local deadline = time_global() + 5000
+		CreateTimeEvent("coop_mods_rf", "unpack_" .. n, 0.5, function()
+			local got = db.actor and db.actor:object(reward)
+			if got then
+				if itms_manager and itms_manager.use_package_random then pcall(itms_manager.use_package_random, got) end
+				return true
+			end
+			return time_global() > deadline
+		end)
+	end
+end
+
+-- Host: a client picked the package up (its pickup never reaches the host's own callback).
+local function pkg_host_check()
+	local tb, IR = pkg.TB, rf.IR
+	local id = tonumber(tb.tb_target_item)
+	if not (tb.tb_package_active and id and id > 0 and id < 65535) then return end
+	local se = alife_object(id)
+	if not se then return end
+	local root = C().root_of(id)
+	if root == id or not C().is_remote_player(root) then return end
+	log("package %d picked up by player #%s, closed", id, tostring(C().peer_of(root)))
+	if IR then IR.clear_target(id) end
+	RemoveTimeEvent(id, "remind_about_radio_package")
+	pkg_clear_local()
+	tb.tb_badguy_spawned = false
+	st.pkg_closed = st.pkg_closed + 1
+end
+
+local function install_packages()
+	local tb = C().mod("tb_rf_receiver_packages")
+	if not (tb and rf.IR) then return end
+	pkg.TB = tb
+	installed[#installed + 1] = "rf_packages"
+	local function client_only(name, ret)
+		C().wrap(tb, name, "tb_rf_receiver_packages." .. name, function(orig)
+			return function(...)
+				if C().is_client() then return ret end
+				return orig(...)
+			end
+		end)
+	end
+	-- The spawning half is the host's.
+	client_only("tb_radio_thing", false)
+	client_only("failsafepackagespawn", false)
+	client_only("spawn_some_badguys", nil)
+	client_only("checkrelationchange", true) -- true ends the mod's time event
+	client_only("remindaboutpackage", true) -- the host's reminders reach everybody as news
+	pkg.orig_take = tb.actor_on_item_take
+end
+
+local pkg_rebound = false
+local function pkg_tick()
+	if not pkg.TB then return end
+	if C().is_client() and not pkg_rebound then
+		pkg_rebound = true
+		C().swap_callback("actor_on_item_take", pkg.orig_take, pkg_client_take)
+		if custom_functor_autoinject and custom_functor_autoinject.remove_functor then
+			pcall(custom_functor_autoinject.remove_functor, "pda_package_cancel") -- cancelling is the host's
+		end
+	end
+	local tg = time_global()
+	if tg < pkg.next_tick then return end
+	pkg.next_tick = tg + 2000
+	local ok, e
+	if C().is_host() then
+		ok, e = pcall(pkg_host_check)
+	elseif C().is_client() then
+		ok, e = pcall(pkg_client_follow)
+	else
+		return
+	end
+	if not ok then C().report("radio", "packages", e) end
+end
+
+-------------------------------------------------------------------------------
+-- Start
+-------------------------------------------------------------------------------
+local function actor_on_update()
+	if not C().active() then return end
+	if rf.IR then rf_tick() end
+	fm_tick()
+	pkg_tick()
+end
+
+function on_game_start()
+	if not api then return end
+	install_rf()
+	install_fm()
+	install_packages()
+	if #installed == 0 then return end
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	C().status_line("radio", function()
+		return string.format("%s | rf out %d in %d (pending %d) | fm out %d in %d (missing here %d) | packages closed for clients %d",
+			table.concat(installed, ", "), st.rf_out, st.rf_in, (function() local n = 0 for _ in pairs(rf.pending) do n = n + 1 end return n end)(),
+			st.fm_out, st.fm_in, st.fm_missing, st.pkg_closed)
+	end)
+end

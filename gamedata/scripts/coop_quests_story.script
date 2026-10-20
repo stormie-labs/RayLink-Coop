@@ -1,0 +1,506 @@
+--[[
+	Anomaly Coop - story effects, story dialogs and task guards (gamedata\scripts\coop_quests_story.script),
+	W4 "quests". Ports xrRazom's xrr_patch_quest_story_effects, xrr_patch_quest_story_dialogs,
+	xrr_patch_quest_spawns, the client guards of xrr_patch_task_guards, xrr_patch_quest_drx (what our
+	routing does not cover already), xrr_patch_drx_da and xrr_patch_new_storylines (mine).
+	SPEC R-7.6, R-7.7, R-8.3, R-11.1.
+
+	Condlists (restrictor / object logic) can run on a client too, and a client's info portions only
+	arrive back from the host, so its condlist can fire again until then. A condlist that pays, changes
+	goodwill or relations runs on the host as well, so on a client these effects are skipped inside a
+	condlist (the host's run counts once). Task effects stay: coop_tasks sends them to the host, where a
+	repeat changes nothing. A dialog action or a script call (outside any condlist) runs for the speaker
+	as before (R-8.3).
+	Host: such a condlist reward outside a task (story logic: restrictors, scenes) goes to every player:
+	the host's own run pays the host, each client gets the same reward (money rolled per player, items
+	spawned by the host into the player's character, rank/reputation effects run on the player's machine).
+	Task rewards (on_complete) stay with the player who turned the task in (coop_tasks).
+
+	World spawns of story quests (documents, decoder, PDAs, gate, quest weapons, MLR spawns, Fanatic's
+	ball artefact) only exist when the host creates them. On a client: inside a condlist they are skipped
+	(the host runs the same logic), as a dialog action / script call they are sent to the host, which runs
+	them for that player (quests.act "fx").
+	Effects that need the host's ALife caches and crash or misfire on a client copy (spy / smart control /
+	top 10 setup, anomaly scanner field, mutant data location, barrier first spawn, ...) do nothing on a
+	client; the host sets such a task up itself when the client takes it (coop_quests_offer).
+	Yantar psi helmets: when one player gets a helmet from Sakharov, every player gets the same helmet
+	(the psi field checks the local actor).
+	Mod patches (only with the mod installed): Dynamic Anomalies Overhaul flash mine - the time jump is the
+	host's, once per mine, a client's hit asks the host; New Storylines mine - beside the player nearest to
+	the restrictor, not beside the host.
+--]]
+
+local qc = coop_quests_core
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+local math_floor, math_random, math_ceil = math.floor, math.random, math.ceil
+
+local TAG = "story"
+
+-- Skipped on a client inside a condlist: the host's run of the same logic counts.
+local SUPPRESS_ON_CLIENT = {
+	"reward_money", "reward_random_money", "reward_random_money_by_dist", "reward_item_cost_mult_and_remove",
+	"drx_sl_money_task_payment", "reward_exact_money",
+	"inc_faction_goodwill_to_actor", "dec_faction_goodwill_to_actor", "complete_task_inc_goodwill",
+	"fail_task_dec_goodwill", "inc_goodwill_by_tasker_comm", "inc_goodwill_by_tasker_id", "dec_goodwill_by_tasker_id",
+	"actor_friend", "actor_neutral", "actor_enemy", "set_speaker_as_enemy", "set_squad_neutral_to_actor",
+	"set_squad_friend_to_actor", "set_squad_enemy_to_actor", "set_squad_goodwill", "set_squad_goodwill_to_npc",
+	"set_npc_sympathy", "set_squad_community_goodwill", "reset_faction_goodwill",
+	-- relative stage steps would add up while the condlist repeats; give / finish / set stage are not
+	-- here: coop_tasks sends them to the host, where a repeat changes nothing
+	"inc_task_stage", "dec_task_stage",
+	"reward_item", "reward_random_item", "reward_stash", "give_item", "give_items", "give_letter", "give_actor",
+	"relocate_item", "give_treasure", "drx_sl_reward_random_rifle", "drx_sl_reward_random_artefact",
+	"increase_rank", "decrease_rank", "increase_rep", "decrease_rep", "devushka_quest_one_reward",
+}
+
+local function eco()
+	local gd = qc.mod("game_difficulties")
+	local ok, v = pcall(function() return gd.get_eco_factor("rewards") end)
+	return ok and tonumber(v) or 1
+end
+
+local function roll_money(lo, hi)
+	local m = eco()
+	local min_v = ((tonumber(lo) or 500) * m) / 50
+	local max_v = ((tonumber(hi) or (min_v + 1000)) * m) / 50
+	if max_v < min_v then max_v = min_v end
+	return math_random(math_ceil(min_v), math_ceil(max_v)) * 50
+end
+
+-- Host: what a client gets for a story reward the host just got: money, item sections, or
+-- "relay" (the effect runs on the client's machine for its own actor).
+local SHARE = {
+	reward_money = function(p) return math_floor((tonumber(p[1]) or 500) * eco()) end,
+	reward_random_money = function(p) return roll_money(p[1], p[2]) end,
+	reward_random_money_by_dist = function(p)
+		local var = load_var(db.actor, p[1])
+		local lt = type(var) == "table" and var.lvl_task or level.name()
+		local lg = type(var) == "table" and var.lvl_target
+		local n = 1
+		if lt and lg and txr_routes and txr_routes.get_shortest_path_num then
+			n = txr_routes.get_shortest_path_num(lt, lg) or 1
+		end
+		local money = roll_money(p[2], p[3])
+		return money + math_ceil(n * money * (tonumber(p[4]) or 0.2))
+	end,
+	reward_exact_money = function(p) return tonumber(p[1]) or 1 end,
+	reward_item = function(p) return 0, { p[1] } end,
+	reward_random_item = function(p) if #p > 0 then return 0, { p[math_random(#p)] } end return 0 end,
+	give_actor = function(p) local t = {} for _, v in pairs(p) do t[#t + 1] = v end return 0, t end,
+	give_letter = function(p) return 0, { p[1] } end,
+	drx_sl_reward_random_rifle = "relay",
+	drx_sl_reward_random_artefact = "relay",
+	increase_rank = "relay",
+	decrease_rank = "relay",
+	increase_rep = "relay",
+	decrease_rep = "relay",
+	devushka_quest_one_reward = "relay",
+}
+
+-- World changes only the host makes. Client: skipped inside a condlist, sent to the host otherwise.
+local HOST_EFFECTS = {
+	"spawn_item_at_pos", "spawn_strelok_notes", "spawn_x8_documents", "spawn_monolith_shard",
+	"spawn_stitch_decoder", "spawn_contact_lost_pda", "spawn_jupiter_documents", "jup_b219_restore_gate",
+	"barrier_defense_first_spawn", "ht_add_mine", "ht_init_second_task_2",
+}
+
+-- Client: no-op (they read host ALife caches that are empty or stale on a client).
+local CLIENT_NOOP_EFFECTS = {
+	setup_spy_task = true, pick_anomaly_scanner_field = false, setup_smart_control_task = false,
+	setup_top_10_task = false, multifetch_remove = false, recover_mutant_data_location = false,
+	recover_mutant_data_unset = false,
+}
+local CLIENT_FALSE_CONDITIONS = {
+	"validate_anomaly_scanner_field", "validate_smart_control_task", "mutants_in_map_ge",
+	"recover_mutant_data_precondition", "all_attackers_dead",
+}
+
+local stats = { suppressed = 0, shared = 0, forwarded = 0, fx_run = 0, guards = 0, helmets = 0, flash = 0 }
+
+local function ct() return rawget(_G, "coop_tasks") or coop_tasks end
+local function party() return qc.mod("coop_quests_party") end
+
+-- Host: not inside a task's reward / check (those belong to one player, see coop_tasks).
+local function story_scope()
+	local t = ct()
+	if t and t.in_reward_scope and t.in_reward_scope() then return false end
+	local p = party()
+	if p and p.checking_task and p.checking_task() then return false end
+	return true
+end
+
+local function clients()
+	local out = {}
+	for _, p in ipairs(qc.players()) do
+		if not p.is_self and p.avatar_id then out[#out + 1] = p.id end
+	end
+	return out
+end
+
+local function params_flat(p, t)
+	t = t or {}
+	if type(p) == "table" then
+		for i = 1, 8 do
+			if p[i] ~= nil then t["p" .. i] = tostring(p[i]) end
+		end
+	end
+	return t
+end
+
+local function params_of(t)
+	local p = {}
+	for i = 1, 8 do
+		local v = t["p" .. i]
+		if v == nil then break end
+		p[i] = tostring(v)
+	end
+	return p
+end
+
+-------------------------------------------------------------------------------
+-- Condlist rewards: client skip, host share
+-------------------------------------------------------------------------------
+local in_reward = false
+
+local function share_reward(name, p)
+	local rule = SHARE[name]
+	if not rule then return end
+	for _, peer in ipairs(clients()) do
+		if rule == "relay" then
+			qc.send("relay", params_flat(p, { f = name }), peer)
+		else
+			local ok, money, items = pcall(rule, p)
+			if ok then
+				ct().give_to_peer(peer, money or 0, items)
+			else
+				qc.report(TAG, "share " .. name, money)
+			end
+		end
+		stats.shared = stats.shared + 1
+	end
+end
+
+local function patch_condlist_effects()
+	local xe = qc.mod("xr_effects")
+	if not xe then return end
+	for _, name in ipairs(SUPPRESS_ON_CLIENT) do
+		local orig = xe[name]
+		if type(orig) == "function" then
+			xe[name] = function(actor, npc, p, ...)
+				if not qc.active() then return orig(actor, npc, p, ...) end
+				if qc.is_client() then
+					if qc.in_condlist() then
+						stats.suppressed = stats.suppressed + 1
+						return
+					end
+					return orig(actor, npc, p, ...)
+				end
+				-- host: the outermost reward of a story condlist goes to everybody
+				local share = not in_reward and qc.in_condlist() and SHARE[name] ~= nil
+					and qc.host_party() and story_scope()
+				local prev = in_reward
+				in_reward = true
+				local res = { pcall(orig, actor, npc, p, ...) }
+				in_reward = prev
+				if not res[1] then error(res[2], 0) end
+				if share then
+					local ok, err = pcall(share_reward, name, type(p) == "table" and p or {})
+					if not ok then qc.report(TAG, "share " .. name, err) end
+				end
+				return unpack(res, 2)
+			end
+		end
+	end
+end
+
+-- Client: a story effect for this player's own actor (rank, reputation, random rifle, ...).
+local function client_on_relay(t, from)
+	if from ~= 0 or not qc.is_client() or type(t.f) ~= "string" or SHARE[t.f] ~= "relay" then return end
+	local f = xr_effects[t.f]
+	if type(f) == "function" then f(db.actor, nil, params_of(t)) end
+end
+
+-------------------------------------------------------------------------------
+-- Host-only world effects
+-------------------------------------------------------------------------------
+local fx_orig = {} -- name -> original function (host runs these for clients)
+
+local function npc_host_id(actor, npc)
+	for _, o in ipairs({ npc, actor }) do
+		local ok, id = pcall(function() return o:id() end)
+		if ok and type(id) == "number" and db.actor and id ~= db.actor:id() then return qc.to_host_id(id) end
+	end
+	return nil
+end
+
+local function patch_host_effects()
+	local xe = qc.mod("xr_effects")
+	if not xe then return end
+	for _, name in ipairs(HOST_EFFECTS) do
+		local orig = xe[name]
+		if type(orig) == "function" then
+			fx_orig[name] = orig
+			xe[name] = function(actor, npc, p, ...)
+				if not qc.is_client() then return orig(actor, npc, p, ...) end
+				if qc.in_condlist() then return end -- the host's logic makes it
+				if qc.client_live() then
+					local t = params_flat(p, { f = name, n = npc_host_id(actor, npc) })
+					if qc.request_host_action("fx", t) then stats.forwarded = stats.forwarded + 1 end
+				end
+			end
+		end
+	end
+
+	local mu = qc.mod("mlr_utils")
+	if type(mu) == "table" and type(mu.spawn_item) == "function" then
+		local orig = mu.spawn_item
+		fx_orig.mlr_spawn_item = function(_, _, p) return orig(p[1]) end
+		mu.spawn_item = function(name, ...)
+			if not qc.is_client() then return orig(name, ...) end
+			if qc.in_condlist() then return end
+			if qc.client_live() and type(name) == "string" then
+				qc.request_host_action("fx", { f = "mlr_spawn_item", p1 = name })
+				stats.forwarded = stats.forwarded + 1
+			end
+		end
+	end
+
+	local dm = qc.mod("dialogs_mlr")
+	if type(dm) == "table" and type(dm.give_task_fanat_training_2) == "function" then
+		local orig = dm.give_task_fanat_training_2
+		fx_orig.fanat_training_2 = function() return orig() end
+		dm.give_task_fanat_training_2 = function(...)
+			if not qc.client_live() then return orig(...) end
+			-- the task and the artefact in Fanatic's stash: the host does both, the task is this player's
+			qc.request_host_action("fx", { f = "fanat_training_2" })
+			stats.forwarded = stats.forwarded + 1
+		end
+	end
+end
+
+local function host_fx(from, t)
+	local f = type(t.f) == "string" and fx_orig[t.f]
+	if not f then
+		qc.log(TAG, "! host effect '%s' from #%s refused", tostring(t.f), tostring(from))
+		return
+	end
+	local npc = tonumber(t.n) and level.object_by_id(tonumber(t.n)) or nil
+	stats.fx_run = stats.fx_run + 1
+	f(db.actor, npc, params_of(t))
+end
+
+-------------------------------------------------------------------------------
+-- Client guards
+-------------------------------------------------------------------------------
+local function patch_client_guards()
+	local xe = qc.mod("xr_effects")
+	local xc = rawget(_G, "xr_conditions") or xr_conditions
+	if xe then
+		for name, ret in pairs(CLIENT_NOOP_EFFECTS) do
+			local orig = xe[name]
+			if type(orig) == "function" then
+				xe[name] = function(...)
+					if qc.is_client() then
+						stats.guards = stats.guards + 1
+						return ret or nil
+					end
+					return orig(...)
+				end
+			end
+		end
+	end
+	if xc then
+		for _, name in ipairs(CLIENT_FALSE_CONDITIONS) do
+			local orig = xc[name]
+			if type(orig) == "function" then
+				xc[name] = function(...)
+					if qc.is_client() then return false end
+					return orig(...)
+				end
+			end
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Yantar psi helmets for every player
+-------------------------------------------------------------------------------
+local HELMETS = { bad = "bad_psy_helmet", good = "good_psy_helmet" }
+
+local function has_helmet(obj, sec)
+	local ok, o = pcall(obj.object, obj, sec)
+	return ok and o ~= nil
+end
+
+-- Host: everybody but `except` (peer) gets the helmet if they have none.
+local function host_share_helmet(kind, except)
+	local sec = HELMETS[kind]
+	if not sec then return end
+	for _, c in ipairs(qc.characters()) do
+		if c.peer ~= except and not has_helmet(c.obj, sec) then
+			ct().give_to_peer(c.peer == qc.self_peer() and 0 or c.peer, 0, { sec })
+			stats.helmets = stats.helmets + 1
+		end
+	end
+end
+
+local function patch_helmets()
+	local dy = qc.mod("dialogs_yantar")
+	if type(dy) ~= "table" then return end
+	for kind, fname in pairs({ bad = "give_player_bad_psi_helmet", good = "give_player_good_psi_helmet" }) do
+		local orig = dy[fname]
+		if type(orig) == "function" then
+			dy[fname] = function(...)
+				local r = orig(...)
+				if qc.client_live() then
+					qc.request_host_action("helmet", { k = kind })
+				elseif qc.host_party() then
+					host_share_helmet(kind, qc.self_peer())
+				end
+				return r
+			end
+		end
+	end
+end
+
+local function host_helmet(from, t)
+	if HELMETS[t.k] then host_share_helmet(t.k, from) end
+end
+
+-------------------------------------------------------------------------------
+-- New Storylines (Hidden Threat): the ambush mine beside the player nearest to the restrictor
+-------------------------------------------------------------------------------
+local function patch_new_storylines()
+	local xe = qc.mod("xr_effects")
+	if not (xe and fx_orig.ht_add_mine) then return end
+	local orig = fx_orig.ht_add_mine
+	local function mine(actor, npc, p)
+		if not qc.host_party() then return orig(actor, npc, p) end
+		local pos = npc and pcall(npc.position, npc) and npc:position() or db.actor:position()
+		local who = qc.nearest_character(pos) or db.actor
+		if who:id() == db.actor:id() then return orig(actor, npc, p) end
+		local wp = who:position()
+		alife_create("tch_ht_quest_mine_blow", vector():set(wp.x - 1, wp.y, wp.z), who:level_vertex_id(), who:game_vertex_id())
+	end
+	fx_orig.ht_add_mine = mine
+	local client_side = xe.ht_add_mine
+	xe.ht_add_mine = function(actor, npc, p, ...)
+		if qc.is_client() then return client_side(actor, npc, p, ...) end
+		return mine(actor, npc, p)
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Dynamic Anomalies Overhaul: flash mine time jump
+-------------------------------------------------------------------------------
+local FLASH_DEDUPE_MS = 10000
+local flash_seen = {} -- zone host id -> time
+
+local function with_time_jump(jump, fn, ...)
+	local lvl = rawget(_G, "level")
+	local orig = lvl and lvl.change_game_time
+	if not orig then return fn(...) end
+	lvl.change_game_time = jump
+	local res = { pcall(fn, ...) }
+	lvl.change_game_time = orig
+	if not res[1] then error(res[2], 0) end
+	return unpack(res, 2)
+end
+
+-- Host: the jump of one mine, once in the dedupe window.
+local function host_flash(zone_id, d, h, m)
+	local t = time_global()
+	if zone_id and flash_seen[zone_id] and t - flash_seen[zone_id] < FLASH_DEDUPE_MS then return false end
+	if zone_id then flash_seen[zone_id] = t end
+	level.change_game_time(tonumber(d) or 0, h, m)
+	pcall(function() level_weathers.get_weather_manager():select_weather(true) end)
+	pcall(function() surge_manager.get_surge_manager().time_forwarded = true end)
+	pcall(function() psi_storm_manager.get_psi_storm_manager().time_forwarded = true end)
+	stats.flash = stats.flash + 1
+	return true
+end
+
+local dao_hits = nil -- DAO's actor hit table, when the mod is installed
+
+local function patch_dao()
+	local da = rawget(_G, "drx_da_main") -- optional mod: loaded by axr_main if present
+	local hits = type(da) == "table" and da.anomalies_hit_functions
+	if type(hits) ~= "table" or type(hits.zone_mine_flash) ~= "function" then return end
+	dao_hits = hits
+	local orig = hits.zone_mine_flash
+	hits.zone_mine_flash = function(s_hit, bone_id, flags, actor, ...)
+		if not qc.active() then return orig(s_hit, bone_id, flags, actor, ...) end
+		local zone = s_hit and s_hit.draftsman and s_hit.draftsman:id()
+		if qc.is_client() then
+			-- its delayed health / thirst / sleep part is a time event of a host-domain script: re-wrap
+			-- it here so it runs on this player's machine
+			local real_cte = _G.CreateTimeEvent
+			_G.CreateTimeEvent = function(ev, act, timer, f, ...)
+				if type(f) == "function" then
+					local inner = f
+					f = function(...) return inner(...) end
+				end
+				return real_cte(ev, act, timer, f, ...)
+			end
+			local res = { pcall(with_time_jump, function(d, h, m)
+				qc.request_host_action("flash", { z = zone and qc.to_host_id(zone), h = h, m = m })
+			end, orig, s_hit, bone_id, flags, actor, ...) }
+			_G.CreateTimeEvent = real_cte
+			if not res[1] then error(res[2], 0) end
+			return unpack(res, 2)
+		end
+		return with_time_jump(function(d, h, m) host_flash(zone, d, h, m) end, orig, s_hit, bone_id, flags, actor, ...)
+	end
+	qc.log(TAG, "Dynamic Anomalies Overhaul: the flash mine time jump is the host's")
+end
+
+-- Client: DAO's own hit callback is host-domain (skipped here); the local actor's anomaly hits go
+-- through its table from here.
+local function client_before_hit(s_hit, bone_id, flags)
+	if not dao_hits or not qc.client_live() or not (s_hit and s_hit.draftsman) then return end
+	local f = dao_hits[s_hit.draftsman:section()]
+	if type(f) == "function" then f(s_hit, bone_id, flags, db.actor) end
+end
+
+local function host_on_flash(from, t)
+	local h, m = math_floor(tonumber(t.h) or -1), math_floor(tonumber(t.m) or -1)
+	if h < 0 or h > 12 or m < 0 or m > 59 then return end
+	host_flash(tonumber(t.z), 0, h, m)
+end
+
+-------------------------------------------------------------------------------
+-- Status, start
+-------------------------------------------------------------------------------
+function print_status()
+	qc.log(TAG, "client condlist effects skipped %d, story rewards shared %d | world effects sent to the host %d, run for clients %d | client guards %d, helmets %d, flash jumps %d",
+		stats.suppressed, stats.shared, stats.forwarded, stats.fx_run, stats.guards, stats.helmets, stats.flash)
+end
+
+local installed = false
+local function install()
+	if installed then return end
+	installed = true
+	for _, s in ipairs({
+		{ "condlist effects", patch_condlist_effects }, { "host effects", patch_host_effects },
+		{ "client guards", patch_client_guards }, { "helmets", patch_helmets },
+		{ "new storylines", patch_new_storylines }, { "dao", patch_dao },
+	}) do
+		local ok, err = pcall(s[2])
+		if not ok then qc.report(TAG, "install " .. s[1], err) end
+	end
+end
+
+-- Condlists with these effects keep their info portions on a client (coop_quests_core, engine permitting).
+local HOLD_INFO_EFFECTS = { "create_squad", "create_squad_member", "spawn_object", "spawn_object_in" }
+
+function on_game_start()
+	if not qc.engine() then return end
+	qc.add_hold_effects(HOST_EFFECTS)
+	qc.add_hold_effects(HOLD_INFO_EFFECTS)
+	qc.register_host_action("fx", host_fx)
+	qc.register_host_action("helmet", host_helmet)
+	qc.register_host_action("flash", host_on_flash)
+	qc.on("relay", client_on_relay, TAG)
+	RegisterScriptCallback("actor_on_before_hit", client_before_hit)
+	RegisterScriptCallback("actor_on_first_update", install)
+end

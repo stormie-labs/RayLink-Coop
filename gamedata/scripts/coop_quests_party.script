@@ -1,0 +1,536 @@
+--[[
+	Anomaly Coop - quest items and positions of the whole group (gamedata\scripts\coop_quests_party.script),
+	W4 "quests". Ports the "team pass" half of xrRazom's xrr_patch_quests, the party parts of
+	xrr_patch_task_guards (barrier defense) and the host-side fixes of its tasks_stash.script /
+	tasks_pump_station_defense.script replacements (wrapped here, the stock files stay as they are).
+	SPEC R-7.5 (quest items count from any player), R-7.6.
+
+	Only the host evaluates tasks (coop_tasks). While it checks a task (CGeneralTask:check_task) and other
+	players are connected:
+	  - db.actor:object(section) also finds the item in another player's character, and
+	    utils_item.has_item_by_id(nil, id) is true when any player character holds that item: status and
+	    target functors that ask "does the actor have it" count the group (fetch, delivery, fate, measure,
+	    anomaly scanner, DRX retrieve, ...);
+	  - effects keyed to the actor go to the player who took the task (coop_tasks.with_task_owner): a
+	    measuring device or a detector handed out on the first check lands in that player's character;
+	  - for the task types that measure "is the actor there" (measure, fate, anomaly scanner, pump station
+	    defense) db.actor:position() / level_vertex_id() / game_vertex_id() are those of the player nearest
+	    to the task target, so whoever goes there advances the task (and ambushes spawn around that player).
+	Per type: recover mutant data / recover item on corpse / chimera scan / delivery package / Agroprom
+	underground documents / barrier distance count the group; DRX quest stash target follows the quest
+	item; a stash whose item already exists is not created again; pump station guards a missing trigger.
+	Conditions actor_has_item / _amount / _count count the group on every machine.
+	Client: the anomaly measurement HUD runs on the player who stands there with the device (the host's
+	functor only sees the result info); remove_item takes what the player lacks from the group (host).
+	RF targets the host adds (fate PDA, stitch decoder) are added on the clients too.
+--]]
+
+local qc = coop_quests_core
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+
+local TAG = "party"
+local MEASURE_DIST = 10 -- tasks_measure anomaly_measure_dist
+local BARRIER_SMART = "mil_smart_terrain_3_8"
+local PUMP_SMART = "mar_smart_terrain_5_8"
+local CHIMERA_RANGE = 20
+
+-- Status functors that compare the actor's position with the task target: name -> reference
+-- (true = the task's current target, a string = that smart terrain).
+local POSITION_FUNCTORS = {
+	measure_task = true,
+	fate_task = true,
+	anomaly_scanner_task_status = true,
+	gd_task_status_functor = PUMP_SMART,
+}
+
+local stats = { checks = 0, near_other = 0, stage_fix = 0, stash_flag = 0, takes = 0, measure_arm = 0, rf = 0 }
+
+local function ct() return rawget(_G, "coop_tasks") or coop_tasks end
+
+local in_check = nil -- host: id of the task being checked
+function checking_task() return in_check end
+
+local function party_on() return qc.host_party() end
+
+local function smart_pos(name)
+	local sb = rawget(_G, "SIMBOARD")
+	local sm = sb and sb.smarts_by_names and sb.smarts_by_names[name]
+	return sm and sm.position
+end
+
+-- Server object of an id: its holder's id if it sits in an inventory, else its own.
+local function holder_id(se)
+	if not se then return nil end
+	if se.parent_id and se.parent_id ~= 65535 then return se.parent_id end
+	return se.id
+end
+
+local function held_by_character(item_id)
+	local se = type(item_id) == "number" and alife_object(item_id)
+	return se and se.parent_id ~= 65535 and qc.is_character_id(se.parent_id) or false
+end
+
+-- True if a character other than this machine's actor holds an item of `sec`.
+local function other_holds(sec)
+	local t = ct()
+	return t and t.party_object and t.party_object(sec) ~= nil or false
+end
+
+-------------------------------------------------------------------------------
+-- Host: task checks with the group's inventory and positions
+-------------------------------------------------------------------------------
+local function ref_position(tsk, ref)
+	if type(ref) == "string" then return smart_pos(ref) end
+	local tid = tsk.current_target
+	if type(tid) ~= "number" then
+		-- no target yet (first check): the task var's target, as the stock target functors use it
+		local var = load_var(db.actor, tsk.id)
+		tid = type(var) == "table" and var.target_id or nil
+	end
+	local se = type(tid) == "number" and alife_object(tid)
+	if not se then return nil end
+	if se.parent_id and se.parent_id ~= 65535 then se = alife_object(se.parent_id) or se end
+	return se.position
+end
+
+local function patch_check_task()
+	local to = rawget(_G, "task_objects") or task_objects
+	local cls = to and to.CGeneralTask
+	if not cls then
+		qc.log(TAG, "! task_objects.CGeneralTask not found: task checks see only the host's inventory")
+		return
+	end
+	local ok, orig = pcall(function() return cls.check_task end)
+	if not (ok and type(orig) == "function") then
+		qc.log(TAG, "! CGeneralTask:check_task not found")
+		return
+	end
+	local w = function(self, tm, ...)
+		-- the stock check runs every frame and returns at once until its next check time
+		if self.check_time and self.last_check_task == nil and time_global() < self.check_time then
+			return orig(self, tm, ...)
+		end
+		if not party_on() or in_check or not db.actor then return orig(self, tm, ...) end
+		stats.checks = stats.checks + 1
+		local a = db.actor
+		local real_object = a.object
+		local fields = {
+			object = function(me, sec, ...)
+				local o = real_object(me, sec, ...)
+				if o or type(sec) ~= "string" then return o end
+				return ct().party_object(sec)
+			end,
+		}
+		local ref = POSITION_FUNCTORS[self.status_functor]
+		if ref then
+			local pos = ref_position(self, ref)
+			local who = pos and qc.nearest_character(pos)
+			if who and who:id() ~= a:id() then
+				stats.near_other = stats.near_other + 1
+				fields.position = function() return who:position() end
+				fields.level_vertex_id = function() return who:level_vertex_id() end
+				fields.game_vertex_id = function() return who:game_vertex_id() end
+			end
+		end
+		in_check = self.id
+		local args = { ... }
+		local okc, err = pcall(ct().with_task_owner, self.id, function()
+			local okw, e = qc.with_actor(fields, orig, self, tm, unpack(args))
+			if not okw then error(e, 0) end
+		end)
+		in_check = nil
+		if not okc then qc.report(TAG, "check " .. tostring(self.id), err) end
+	end
+	local set_ok = pcall(function() cls.check_task = w end)
+	if not set_ok then qc.log(TAG, "! CGeneralTask:check_task could not be patched") end
+end
+
+-- has_item_by_id(nil, id): the actor's item -> any player character's item (both machines).
+local function patch_has_item_by_id()
+	local ui = rawget(_G, "utils_item") or utils_item
+	if not (ui and type(ui.has_item_by_id) == "function") then return end
+	local orig = ui.has_item_by_id
+	ui.has_item_by_id = function(npc, id, section, ...)
+		local r = orig(npc, id, section, ...)
+		if r or npc ~= nil or not qc.active() then return r end
+		return ct().party_holds_id(id, section)
+	end
+end
+
+-- Item conditions see the group (both machines).
+local function patch_conditions()
+	local xc = rawget(_G, "xr_conditions") or xr_conditions
+	if not xc then return end
+	local has = xc.actor_has_item
+	if type(has) == "function" then
+		xc.actor_has_item = function(actor, npc, p, ...)
+			local r = has(actor, npc, p, ...)
+			if r or not qc.active() or type(p) ~= "table" or type(p[1]) ~= "string" then return r end
+			return other_holds(p[1])
+		end
+	end
+	local amount = xc.actor_has_item_amount
+	if type(amount) == "function" then
+		xc.actor_has_item_amount = function(actor, npc, p, ...)
+			local r = amount(actor, npc, p, ...)
+			if r or not qc.active() or type(p) ~= "table" or type(p[1]) ~= "string" then return r end
+			local need = tonumber(p[2])
+			return need ~= nil and ct().party_count(p[1]) >= need
+		end
+	end
+	local count = xc.actor_has_item_count
+	if type(count) == "function" then
+		xc.actor_has_item_count = function(actor, npc, p, ...)
+			local r = count(actor, npc, p, ...)
+			if r or not qc.active() or type(p) ~= "table" or type(p[1]) ~= "string" then return r end
+			local need = tonumber(p[2])
+			if not need then return r end
+			local n = 0
+			for _, c in ipairs(qc.characters()) do
+				pcall(c.obj.iterate_inventory, c.obj, function(_, item)
+					if item:section() == p[1] then n = n + 1 end
+				end, nil)
+			end
+			return n >= need
+		end
+	end
+	-- Freedom barrier defense: the distance of the nearest player, not of the host
+	local barrier = xc.distance_to_barrier
+	if type(barrier) == "function" then
+		xc.distance_to_barrier = function(a, b, c, ...)
+			if not party_on() then return barrier(a, b, c, ...) end
+			if not (type(c) == "table" and c[1] and tonumber(c[2])) then return barrier(a, b, c, ...) end
+			local pos = smart_pos(BARRIER_SMART)
+			local d = pos and qc.min_dist_sqr(pos, true)
+			if not d then return barrier(a, b, c, ...) end
+			local lim = tonumber(c[2]) ^ 2
+			if c[1] == "le" then return d <= lim end
+			if c[1] == "ge" then return d >= lim end
+			return barrier(a, b, c, ...)
+		end
+	end
+end
+
+local function patch_task_types()
+	local tsf = qc.mod("task_status_functor")
+	local tf = qc.mod("task_functor")
+
+	-- Sakharov's mutant data: the device in another player's character counts as delivered
+	if type(tsf) == "table" and type(tsf.recover_mutant_data_status) == "function" then
+		local orig = tsf.recover_mutant_data_status
+		tsf.recover_mutant_data_status = function(tsk, task_id, ...)
+			local prev = tsk and tsk.stage
+			local r = orig(tsk, task_id, ...)
+			if party_on() and r == nil and tsk and tsk.stage == 1 and (prev or 0) >= 1
+				and other_holds("recover_mutant_data_device") then
+				tsk.stage = 2
+				stats.stage_fix = stats.stage_fix + 1
+			end
+			return r
+		end
+	end
+
+	-- Recover item on corpse: "held by the actor" = held by a player character
+	local rioc = qc.mod("tasks_recover_item_on_corpse")
+	if type(rioc) == "table" and type(rioc.has_item) == "function" then
+		local orig = rioc.has_item
+		rioc.has_item = function(item_id, owner_id, ...)
+			local r = orig(item_id, owner_id, ...)
+			if r or not party_on() or (owner_id ~= nil and owner_id ~= 0) then return r end
+			return held_by_character(item_id)
+		end
+	end
+
+	-- Chimera scan: the scanner with any player, any player close to the chimera
+	local chim = qc.mod("tasks_chimera_scan")
+	if type(chim) == "table" then
+		if type(chim.has_id) == "function" then
+			local orig = chim.has_id
+			chim.has_id = function(id, ...)
+				local r = orig(id, ...)
+				if r or not party_on() then return r end
+				return held_by_character(id)
+			end
+		end
+		if type(chim.in_range) == "function" then
+			local orig = chim.in_range
+			chim.in_range = function(chid, ...)
+				local r = orig(chid, ...)
+				if r or not party_on() then return r end
+				local o = type(chid) == "number" and level.object_by_id(chid)
+				local d = o and qc.min_dist_sqr(o:position())
+				return d ~= nil and d < CHIMERA_RANGE * CHIMERA_RANGE
+			end
+		end
+	end
+
+	-- Delivery: the package may be in another player's character
+	local xe = qc.mod("xr_effects")
+	if xe and type(xe.remove_delivery_item) == "function" then
+		local orig = xe.remove_delivery_item
+		xe.remove_delivery_item = function(actor, npc, p, ...)
+			if party_on() and type(p) == "table" and p[1] then
+				local var = load_var(db.actor, p[1])
+				local sec = type(var) == "table" and var.item_1_sec
+				if type(sec) == "string" and not db.actor:object(sec) and other_holds(sec) then
+					stats.takes = stats.takes + ct().party_take(sec, 1)
+					return
+				end
+			end
+			return orig(actor, npc, p, ...)
+		end
+	end
+
+	-- DRX quest stash (stock tasks_stash.script, fixes of xrRazom's replacement)
+	if type(tsf) == "table" and type(tsf.drx_sl_quest_item_task_status) == "function" then
+		local orig = tsf.drx_sl_quest_item_task_status
+		tsf.drx_sl_quest_item_task_status = function(tsk, task_id, ...)
+			local r = orig(tsk, task_id, ...)
+			if qc.is_host() and type(task_id) == "string" then
+				-- the item exists already (a reload, another stash): stop creating it every check
+				local var = load_var(db.actor, task_id)
+				if type(var) == "table" and not var.stash_created and var.stash_type then
+					local se = get_story_se_item and get_story_se_item("drx_sl_quest_item_" .. tostring(var.stash_type))
+					if se then
+						var.stash_created = true
+						save_var(db.actor, task_id, var)
+						stats.stash_flag = stats.stash_flag + 1
+					end
+				end
+			end
+			return r
+		end
+	end
+	if type(tf) == "table" and type(tf.drx_sl_quest_item_task_target) == "function" then
+		local orig = tf.drx_sl_quest_item_task_target
+		tf.drx_sl_quest_item_task_target = function(task_id, field, p, tsk, ...)
+			local r = orig(task_id, field, p, tsk, ...)
+			if not (party_on() and field == "target" and tsk and tsk.stage ~= 1) then return r end
+			-- the marker follows the quest item once somebody moved it out of the stash
+			local var = load_var(db.actor, task_id)
+			local se = type(var) == "table" and var.stash_type and get_story_se_item
+				and get_story_se_item("drx_sl_quest_item_" .. tostring(var.stash_type))
+			if se and se.parent_id ~= var.target_id then return holder_id(se) end
+			return r
+		end
+	end
+
+	-- Pump station defense (stock tasks_pump_station_defense.script, fixes of xrRazom's replacement)
+	local psd = qc.mod("tasks_pump_station_defense")
+	if type(psd) == "table" and type(psd.dist_from_trigger) == "function" then
+		local orig = psd.dist_from_trigger
+		psd.dist_from_trigger = function(...)
+			if not qc.active() then return orig(...) end
+			local ok, d = pcall(orig, ...) -- the trigger corpse may be offline / gone
+			if ok and d then return d end
+			return 1
+		end
+	end
+	if type(tf) == "table" and type(tf.gd_task_target_functor) == "function" then
+		local orig = tf.gd_task_target_functor
+		tf.gd_task_target_functor = function(task_id, field, p, tsk, ...)
+			local r = orig(task_id, field, p, tsk, ...)
+			-- stage 6 (back to the commander): a squad giver id can be missing
+			if r == nil and qc.active() and tsk and tsk.stage == 6 then return tsk.task_giver_id or tsk.current_target end
+			return r
+		end
+	end
+
+	-- Agroprom underground: the documents with any player
+	local agr = qc.mod("dialogs_agr_u")
+	if type(agr) == "table" and type(agr.actor_has_agr_u_docs) == "function" then
+		local orig = agr.actor_has_agr_u_docs
+		agr.actor_has_agr_u_docs = function(a, b, ...)
+			local r = orig(a, b, ...)
+			if r or not qc.active() then return r end
+			return other_holds("main_story_1_quest_case")
+		end
+		if type(agr.take_agr_u_docs) == "function" then
+			local take = agr.take_agr_u_docs
+			agr.take_agr_u_docs = function(a, b, ...)
+				if qc.active() and db.actor and not db.actor:object("main_story_1_quest_case")
+					and other_holds("main_story_1_quest_case") then
+					local npc = dialogs.who_is_npc(a, b)
+					give_to_npc("main_story_1_quest_case", npc)
+					return
+				end
+				return take(a, b, ...)
+			end
+		end
+	end
+end
+
+-- An item of `sec` from the group handed to npc (host does it; a client asks the host).
+function give_to_npc(sec, npc)
+	if not (type(sec) == "string" and npc) then return end
+	if qc.is_client() then
+		qc.request_host_action("give_npc", { s = sec, n = qc.to_host_id(npc:id()) })
+		return
+	end
+	if db.actor:object(sec) then
+		itms_manager.relocate_item_from_actor(db.actor, npc, sec, 1)
+		return
+	end
+	if ct().party_take(sec, 1) > 0 then alife_create_item(sec, npc) end
+end
+
+local function host_give_npc(from, t)
+	local npc = tonumber(t.n) and level.object_by_id(tonumber(t.n))
+	if not (npc and type(t.s) == "string" and ini_sys:section_exist(t.s)) then return end
+	local who = qc.avatar_obj(from)
+	if who and npc:position():distance_to_sqr(who:position()) > 900 then return end
+	ct().with_recipient(from, give_to_npc, t.s, npc) -- the "item given" news goes to that player
+end
+
+-------------------------------------------------------------------------------
+-- Client: quest items the player lacks come from the group
+-------------------------------------------------------------------------------
+local function count_own(sec)
+	local n = 0
+	pcall(db.actor.iterate_inventory, db.actor, function(_, item)
+		if item:section() == sec then n = n + 1 end
+	end, nil)
+	return n
+end
+
+local function patch_client_removal()
+	local xe = qc.mod("xr_effects")
+	if not (xe and type(xe.remove_item) == "function") then return end
+	local orig = xe.remove_item
+	xe.remove_item = function(actor, npc, p, ...)
+		if not (qc.client_live() and type(p) == "table" and type(p[1]) == "string" and db.actor) then
+			return orig(actor, npc, p, ...)
+		end
+		local need = tonumber(p[2]) or 1
+		local own = count_own(p[1])
+		local r = orig(actor, npc, p, ...)
+		if own < need and not qc.in_condlist() then
+			qc.request_host_action("take", { s = p[1], n = need - own })
+		end
+		return r
+	end
+end
+
+local function host_take(from, t)
+	local n = math.floor(tonumber(t.n) or 0)
+	if not (type(t.s) == "string" and n > 0 and n <= 50 and ini_sys:section_exist(t.s)) then return end
+	stats.takes = stats.takes + (ct().with_recipient(from, ct().party_take, t.s, n) or 0)
+end
+
+-------------------------------------------------------------------------------
+-- Client: anomaly measurement where the player stands
+-------------------------------------------------------------------------------
+local measure = { armed = nil, next = 0 }
+
+local function measure_tick()
+	local tm = qc.mod("tasks_measure")
+	if not (tm and tm.start_measurement_hud and db.actor) then return end
+	local t = time_global()
+	if t < measure.next then return end
+	measure.next = t + 500
+	local det = db.actor:active_detector()
+	local armed = nil
+	if det then
+		local mgr = task_manager.get_task_manager()
+		for tid in pairs(mgr and mgr.task_info or {}) do
+			local var = load_var(db.actor, tid)
+			if type(var) == "table" and var.item_1_sec and var.target_id
+				and (det:id() == var.item_1_id or det:section() == var.item_1_sec)
+				and not has_alife_info(tid .. "_measurment_finished") then
+				local se = alife_object(var.target_id)
+				-- the anomaly, not the device itself (stage 0 targets the device)
+				if se and se.parent_id == 65535 and se.position:distance_to(db.actor:position()) <= MEASURE_DIST then
+					armed = tid
+					break
+				end
+			end
+		end
+	end
+	if armed then
+		if measure.armed ~= armed then stats.measure_arm = stats.measure_arm + 1 end
+		tm.start_measurement_hud(armed)
+	elseif measure.armed then
+		tm.close_measurement_hud()
+	end
+	measure.armed = armed
+end
+
+local function actor_on_update()
+	if qc.client_live() then
+		local ok, err = pcall(measure_tick)
+		if not ok then qc.report(TAG, "measure", err) end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- RF targets (fate PDA, stitch decoder): the host's list on every machine
+-------------------------------------------------------------------------------
+local function patch_rf()
+	local ir = qc.mod("item_radio")
+	if not (ir and type(ir.add_target) == "function") then return end
+	local add = ir.add_target
+	ir.add_target = function(id, freq, dist, ...)
+		local r = add(id, freq, dist, ...)
+		if qc.host_party() and type(id) == "number" then
+			local e = ir.RF_targets and ir.RF_targets[id]
+			if e then
+				qc.send("rf", { i = id, f = tonumber(e.freq), d = tonumber(e.dist) }, -1)
+				stats.rf = stats.rf + 1
+			end
+		end
+		return r
+	end
+	if type(ir.clear_target) == "function" then
+		local clear = ir.clear_target
+		ir.clear_target = function(id, ...)
+			local r = clear(id, ...)
+			if qc.host_party() and type(id) == "number" then qc.send("rf", { i = id, x = true }, -1) end
+			return r
+		end
+	end
+end
+
+local function client_on_rf(t, from)
+	if from ~= 0 or not qc.is_client() then return end
+	local ir = qc.mod("item_radio")
+	local id = tonumber(t.i)
+	if not (ir and id) then return end
+	id = qc.to_local_id(id)
+	if t.x then
+		if ir.RF_targets then ir.RF_targets[id] = nil end
+	elseif tonumber(t.f) then
+		ir.RF_targets = ir.RF_targets or {}
+		ir.RF_targets[id] = { freq = tonumber(t.f), dist = tonumber(t.d) or 200 }
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Status, start
+-------------------------------------------------------------------------------
+function print_status()
+	qc.log(TAG, "task checks with the group %d (another player nearer %d), stage fixes %d, stash flags %d, items taken %d, measure HUD armed %d, RF targets sent %d",
+		stats.checks, stats.near_other, stats.stage_fix, stats.stash_flag, stats.takes, stats.measure_arm, stats.rf)
+end
+
+local installed = false
+local function install()
+	if installed then return end
+	installed = true
+	for _, s in ipairs({
+		{ "check_task", patch_check_task }, { "has_item_by_id", patch_has_item_by_id },
+		{ "conditions", patch_conditions }, { "task types", patch_task_types },
+		{ "client removal", patch_client_removal }, { "rf", patch_rf },
+	}) do
+		local ok, err = pcall(s[2])
+		if not ok then qc.report(TAG, "install " .. s[1], err) end
+	end
+end
+
+function on_game_start()
+	if not qc.engine() then return end
+	qc.register_host_action("take", host_take)
+	qc.register_host_action("give_npc", host_give_npc)
+	qc.on("rf", client_on_rf, TAG)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("actor_on_first_update", install)
+end

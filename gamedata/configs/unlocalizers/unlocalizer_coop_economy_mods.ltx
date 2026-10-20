@@ -1,0 +1,27 @@
+; Anomaly Coop - economy group (W4), ported from xrRazom's unlocalizers for the addon patches of the "mods"
+; group (glowsticks, hideout radio, Zone FM). These only turn file-locals into module fields (same values,
+; same behaviour); sections of scripts that are not installed do nothing. Duplicates in other unlocalizer
+; files are harmless (the engine keeps one set per script).
+
+; zz_glowstick_mcm (addon): live glowsticks, id -> { section, charge }
+[zz_glowstick_mcm]
+glowsticks
+
+; placeable_radio (Hideout Furniture addon): station catalog and the shared volume / lock controls
+[placeable_radio]
+path_radio_ch
+path_radio_session
+radio_ch_names
+radio_frequencies
+radio_vol
+psi_vol
+safety_lock
+
+; ui_pda_radio_tab (stock PDA radio): the channel clock the PDA tab and the world speakers share
+[ui_pda_radio_tab]
+radio_ch
+radio_ch_out
+radio_now
+radio_session
+radio_session_out
+radio_session_now

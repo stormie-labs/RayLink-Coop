@@ -1,0 +1,554 @@
+--[[
+	Anomaly Coop - group actions and the shared clock (gamedata\scripts\coop_economy_group.script)
+	SPEC R-10.2 (sleep and time skips by the group's rule), R-9.4 (travel as a group).
+
+	Time belongs to the host (coop_worldstate: a client's level.change_game_time is refused there and only
+	logged on the host). This script decides WHEN the host moves the clock for a player:
+	  - sleep (ui_sleep_dialog) and time-passing items (GAMMA Wait.script "wait.wait") are proposals. The host
+	    applies its rule (core rule sleep_rule):
+	        host          only the host may skip time; a client's sleep is refused
+	        gather        everybody within sleep_radius of the sleeper
+	        vote          every other player accepts in a message box (default; no answer = no)
+	        safe_or_vote  a player standing in a shelter (or at a tent) accepts by himself, the others vote
+	    On approval the sleeper's machine runs the stock sleep; its level.change_game_time becomes an
+	    "economy.skip" with the approval ticket, and the host moves the clock (TimeSync reaches everybody).
+	  - travel (fast travel, backpack travel, guides): the time cost of a group travel lands once, on the host
+	    (coop_economy_travel arms it). A solo travel (party rule off) does not move the shared clock.
+	  - other players see a fade and a PDA line when the host skipped time for somebody.
+	Outside a session every wrapper calls the stock function unchanged.
+
+	For other scripts:
+		coop_economy_group.gather_radius() / party_fast_travel()
+		coop_economy_group.veto_if_ungathered(radius, msg_id, fallback) -> true = blocked, tip shown
+		coop_economy_group.request_skip(kind, minutes, cont) -> true = proposal sent, cont() runs on approval
+		coop_economy_group.with_arm(kind, fn, ...)   run fn; a level.change_game_time inside goes to the host
+
+	Events (payload coop_main.encode, sender checked on receipt):
+		economy.propose  initiator -> host     { t = initiator ticket, k = kind, m = minutes }
+		economy.vote     host -> voter         { t = host ticket, k, m, n = initiator nick, s = shelter counts }
+		economy.ballot   voter -> host         { t = host ticket, y = accepted }
+		economy.verdict  host -> initiator     { t = initiator ticket, ok, r = reason, n = nick that blocked }
+		economy.skip     initiator -> host     { k, t = initiator ticket (0 for travel), m = minutes }
+		economy.fade     host -> other players { k, m, n = nick }
+--]]
+
+local core = coop_economy_core
+
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+local math_floor = math.floor
+
+local KINDS = { sleep = true, wait = true, travel = true }
+local GRANT_MS = 120000 -- an approval is valid this long
+local ARM_MS = 60000 -- an approved skip must reach level.change_game_time within this time
+local TRAVEL_GAP_MS = 8000 -- travel skips: one per player per this time
+local TRAVEL_MAX_MIN = 12 * 60
+local FADE_PPE, FADE_ID = "sleep_fade.ppe", 5527
+
+local orig_cgt = nil -- level.change_game_time
+local installed = false
+
+local st = {
+	arm = nil, -- { kind, ticket, until } this machine's next level.change_game_time goes to the host
+	seq = 0, -- initiator tickets
+	pending = {}, -- initiator: ticket -> { kind, minutes, cont, at }
+	props = {}, -- host: host ticket -> proposal
+	hseq = 0,
+	grants = {}, -- host: "peer/ticket" -> { kind, minutes, until }
+	last_travel = {}, -- host: peer -> time of the last travel skip
+	ballot_box = nil, -- voter: open message box
+	bypass = false,
+}
+
+local stats = { proposals = 0, approved = 0, denied = 0, skips = 0, refused = 0, fades = 0, errors = 0 }
+
+-------------------------------------------------------------------------------
+-- Rules and the gather check (xrRazom group-action gate)
+-------------------------------------------------------------------------------
+function gather_radius() return core.rule("gather_radius") or 20 end
+function party_fast_travel() return core.rule("party_fast_travel") ~= false end
+
+local function my_pos()
+	return db.actor and core.position_of_id(0)
+end
+
+-- True = blocked: somebody is not within `radius` of this player (tip shown).
+function veto_if_ungathered(radius, msg_id, fallback)
+	if not (core.live() and db.actor) then return false end
+	local r = radius or gather_radius()
+	local far = core.far_players(my_pos(), r, core.self_id())
+	if #far == 0 then return false end
+	core.tip(core.fmt(msg_id or "st_coop_eco_travel_far", fallback or "All players must be within %d m to travel (far: %s).",
+		math_floor(r + 0.5), table.concat(far, ", ")))
+	return true
+end
+
+local function minutes_of(d, h, m)
+	return ((tonumber(d) or 0) * 24 + (tonumber(h) or 0)) * 60 + (tonumber(m) or 0)
+end
+
+local function apply_clock(minutes)
+	local mins = math_floor(minutes + 0.5)
+	local h = math_floor(mins / 60)
+	return orig_cgt(math_floor(h / 24), h % 24, mins % 60)
+end
+
+-------------------------------------------------------------------------------
+-- Arming: the next level.change_game_time on this machine is a group action
+-------------------------------------------------------------------------------
+local function take_arm()
+	local a = st.arm
+	if not a then return nil end
+	if core.now() > a.until_ms then
+		st.arm = nil
+		return nil
+	end
+	if not a.keep then st.arm = nil end
+	return a
+end
+
+local function pack_n(...) return { n = select("#", ...), ... } end
+
+-- Runs fn(...) with level.change_game_time going to the host as `kind` (every call during fn).
+-- An error inside fn is logged (the arm is always cleared) and the call returns nothing.
+function with_arm(kind, fn, ...)
+	local prev = st.arm
+	st.arm = { kind = kind, ticket = 0, until_ms = core.now() + ARM_MS, keep = true }
+	local res = pack_n(pcall(fn, ...))
+	st.arm = prev
+	if not res[1] then
+		stats.errors = stats.errors + 1
+		core.log("! %s: wrapped call failed: %s", kind, tostring(res[2]))
+		return nil
+	end
+	return unpack(res, 2, res.n)
+end
+
+-------------------------------------------------------------------------------
+-- Host: after a skip
+-------------------------------------------------------------------------------
+local function after_skip(kind, minutes, by_peer)
+	stats.skips = stats.skips + 1
+	if kind == "travel" then
+		pcall(function()
+			surge_manager.get_surge_manager().time_forwarded = true
+			psi_storm_manager.get_psi_storm_manager().time_forwarded = true
+			level_weathers.get_weather_manager():forced_weather_change()
+		end)
+	end
+	if minutes < 30 then return end
+	local nick = core.nick_of(by_peer)
+	core.send_clients("fade", { k = kind, m = math_floor(minutes), n = nick }, by_peer)
+	if by_peer ~= core.self_id() then
+		pcall(level.add_pp_effector, FADE_PPE, FADE_ID, false)
+		core.tip(core.fmt("st_coop_eco_time_skipped", "%s: %d h %02d min passed (%s).", nick,
+			math_floor(minutes / 60), math_floor(minutes % 60), core.tr("st_coop_eco_kind_" .. kind, kind)))
+	end
+end
+
+-------------------------------------------------------------------------------
+-- level.change_game_time wrapper (both roles)
+-------------------------------------------------------------------------------
+local function cgt_wrapper(d, h, m)
+	if not core.live() then return orig_cgt(d, h, m) end
+	local minutes = minutes_of(d, h, m)
+	local a = take_arm()
+	if core.is_host() then
+		local r = orig_cgt(d, h, m)
+		if a and minutes > 0 then after_skip(a.kind, minutes, core.self_id()) end
+		return r
+	end
+	if a then
+		if minutes > 0 then core.send("skip", { k = a.kind, t = a.ticket, m = math_floor(minutes + 0.5) }, 0) end
+		return
+	end
+	return orig_cgt(d, h, m) -- an unknown script: refused by the engine, the host is told (coop_worldstate)
+end
+
+-------------------------------------------------------------------------------
+-- Proposals: initiator side
+-------------------------------------------------------------------------------
+local host_open -- forward
+
+local REASONS = {
+	host_only = { "st_coop_eco_deny_host_only", "Only the host can skip time in this session." },
+	far = { "st_coop_eco_deny_far", "Everybody must be close to sleep (far: %s)." },
+	no = { "st_coop_eco_deny_no", "%s does not want to skip time." },
+	timeout = { "st_coop_eco_deny_timeout", "No answer from %s." },
+	left = { "st_coop_eco_deny_left", "The vote was cancelled (%s left)." },
+	busy = { "st_coop_eco_deny_busy", "Another time skip is being decided." },
+	bad = { "st_coop_eco_deny_bad", "The host refused the time skip." },
+}
+
+local function verdict_text(r, nick)
+	local e = REASONS[r] or REASONS.bad
+	return core.fmt(e[1], e[2], tostring(nick or "?"))
+end
+
+local function on_verdict_local(ticket, ok, reason, nick)
+	local p = st.pending[ticket]
+	if not p then return end
+	st.pending[ticket] = nil
+	if not ok then
+		stats.denied = stats.denied + 1
+		core.tip(verdict_text(reason, nick))
+		return
+	end
+	stats.approved = stats.approved + 1
+	st.arm = { kind = p.kind, ticket = ticket, until_ms = core.now() + ARM_MS }
+	st.bypass = true
+	local okc, err = pcall(p.cont)
+	st.bypass = false
+	if not okc then
+		stats.errors = stats.errors + 1
+		st.arm = nil
+		core.log("! %s continuation failed: %s", p.kind, tostring(err))
+	end
+end
+
+-- Starts a group decision about skipping `minutes` (0 = unknown, e.g. a book). cont() runs on approval,
+-- with this machine's next level.change_game_time sent to the host. Returns false outside a session or when
+-- nobody else plays (the caller goes on as in single player).
+function request_skip(kind, minutes, cont)
+	if st.bypass or not core.live() or not KINDS[kind] or core.others_count() == 0 then return false end
+	st.seq = st.seq + 1
+	local t = st.seq
+	st.pending[t] = { kind = kind, minutes = minutes or 0, cont = cont, at = core.now() }
+	stats.proposals = stats.proposals + 1
+	core.tip(core.tr("st_coop_eco_waiting_group", "Asking the group..."), 3000)
+	if core.is_host() then
+		host_open(core.self_id(), t, kind, minutes or 0)
+	else
+		core.send("propose", { t = t, k = kind, m = math_floor(minutes or 0) }, 0)
+	end
+	return true
+end
+
+-------------------------------------------------------------------------------
+-- Proposals: host side
+-------------------------------------------------------------------------------
+-- Voter: the vote ended without this player's answer mattering any more.
+local function close_ballot()
+	st.ballot_for = nil
+	local b = st.ballot_box
+	st.ballot_box = nil
+	if b then pcall(function() b.message_box:HideDialog() end) end
+end
+
+local function send_verdict(peer, ticket, ok, reason, nick)
+	if peer == core.self_id() then
+		on_verdict_local(ticket, ok, reason, nick)
+	else
+		core.send("verdict", { t = ticket, ok = ok, r = reason or "", n = nick or "" }, peer)
+	end
+end
+
+local function grant(peer, ticket, kind, minutes)
+	st.grants[tostring(peer) .. "/" .. tostring(ticket)] = { kind = kind, minutes = minutes, until_ms = core.now() + GRANT_MS }
+end
+
+local function close_prop(ht, ok, reason, nick)
+	local p = st.props[ht]
+	if not p then return end
+	st.props[ht] = nil
+	if ok then grant(p.from, p.ticket, p.kind, p.minutes) end
+	send_verdict(p.from, p.ticket, ok, reason, nick)
+	if not ok then
+		for peer in pairs(p.voters) do
+			if peer ~= core.self_id() then
+				core.send("verdict", { t = -ht, ok = false, r = reason or "", n = nick or "" }, peer)
+			else
+				core.tip(verdict_text(reason, nick))
+			end
+		end
+	end
+	if p.voters[core.self_id()] and st.ballot_for == ht then close_ballot() end
+	core.log("time skip '%s' by %s (%d min): %s%s", p.kind, core.nick_of(p.from), p.minutes, ok and "approved" or "refused",
+		ok and "" or (" (" .. tostring(reason) .. ")"))
+end
+
+local show_ballot -- forward
+
+host_open = function(from, ticket, kind, minutes)
+	local initiator = core.player(from)
+	if not initiator then return end
+	for _, p in pairs(st.props) do
+		if p.from == from then return send_verdict(from, ticket, false, "busy") end
+	end
+	local voters, nv = {}, 0
+	for _, p in ipairs(core.players()) do
+		if p.id ~= from and p.avatar_id then -- a player still loading the world has no say yet
+			voters[p.id] = true
+			nv = nv + 1
+		end
+	end
+	if nv == 0 then
+		grant(from, ticket, kind, minutes)
+		return send_verdict(from, ticket, true)
+	end
+	local rule = core.rule("sleep_rule")
+	if rule == "host" then
+		if from == core.self_id() then
+			grant(from, ticket, kind, minutes)
+			return send_verdict(from, ticket, true)
+		end
+		return send_verdict(from, ticket, false, "host_only")
+	elseif rule == "gather" then
+		local far = core.far_players(initiator.pos, core.rule("sleep_radius") or 6, from)
+		if #far > 0 then return send_verdict(from, ticket, false, "far", table.concat(far, ", ")) end
+		grant(from, ticket, kind, minutes)
+		return send_verdict(from, ticket, true)
+	end
+	st.hseq = st.hseq + 1
+	local ht = st.hseq
+	st.props[ht] = { from = from, ticket = ticket, kind = kind, minutes = minutes, voters = voters, yes = {},
+		deadline = core.now() + (core.rule("vote_timeout") or 30) * 1000 }
+	local msg = { t = ht, k = kind, m = math_floor(minutes), n = initiator.nick, s = (rule == "safe_or_vote") }
+	for peer in pairs(voters) do
+		if peer == core.self_id() then
+			show_ballot(msg)
+		else
+			core.send("vote", msg, peer)
+		end
+	end
+end
+
+local function host_ballot(from, ht, yes)
+	local p = st.props[ht]
+	if not (p and p.voters[from]) then return end
+	if not yes then return close_prop(ht, false, "no", core.nick_of(from)) end
+	p.yes[from] = true
+	for peer in pairs(p.voters) do
+		if not p.yes[peer] then return end
+	end
+	close_prop(ht, true)
+end
+
+local function host_tick()
+	local t = core.now()
+	for ht, p in pairs(st.props) do
+		local initiator_here = core.player(p.from) ~= nil
+		if not initiator_here then
+			close_prop(ht, false, "left", core.nick_of(p.from))
+		elseif t > p.deadline then
+			local missing = {}
+			for peer in pairs(p.voters) do
+				if not p.yes[peer] then missing[#missing + 1] = core.nick_of(peer) end
+			end
+			close_prop(ht, false, "timeout", table.concat(missing, ", "))
+		else
+			for peer in pairs(p.voters) do
+				if not p.yes[peer] and not core.player(peer) then p.voters[peer] = nil end -- a voter left: no veto
+			end
+			local all = true
+			for peer in pairs(p.voters) do
+				if not p.yes[peer] then all = false break end
+			end
+			if all then close_prop(ht, true) end
+		end
+	end
+	for k, g in pairs(st.grants) do
+		if t > g.until_ms then st.grants[k] = nil end
+	end
+end
+
+-- economy.skip from a client: apply an approved sleep/wait, or the time cost of a group travel.
+local function host_skip(from, t)
+	local kind = KINDS[t.k] and t.k or nil
+	local minutes = core.num(t.m, 1, (core.rule("max_skip_hours") or 48) * 60)
+	if not (kind and minutes) then
+		stats.refused = stats.refused + 1
+		return
+	end
+	if kind == "travel" then
+		local last = st.last_travel[from]
+		if not (core.rule("travel_time") and party_fast_travel()) or minutes > TRAVEL_MAX_MIN
+			or (last and core.now() - last < TRAVEL_GAP_MS) then
+			stats.refused = stats.refused + 1
+			core.log("travel time of %s (%d min) not applied (solo travel or too often)", core.nick_of(from), minutes)
+			return
+		end
+		st.last_travel[from] = core.now()
+	else
+		local key = tostring(from) .. "/" .. tostring(core.int(t.t, 0) or -1)
+		local g = st.grants[key]
+		if not (g and g.kind == kind and (g.minutes == 0 or minutes <= g.minutes + 60)) then
+			stats.refused = stats.refused + 1
+			core.log("! %s skip of %s (%d min) refused: no approval", kind, core.nick_of(from), minutes)
+			return
+		end
+		st.grants[key] = nil
+	end
+	apply_clock(minutes)
+	after_skip(kind, minutes, from)
+end
+
+-------------------------------------------------------------------------------
+-- Voter side
+-------------------------------------------------------------------------------
+local function in_shelter()
+	if GetEvent and GetEvent("current_safe_cover") then return true end
+	local tent = rawget(_G, "item_tent")
+	if tent and tent.get_nearby_tent then
+		local ok, r = pcall(tent.get_nearby_tent, 1.5)
+		if ok and r then return true end
+	end
+	return false
+end
+
+local function answer(ht, yes)
+	if core.is_host() then
+		host_ballot(core.self_id(), ht, yes)
+	else
+		core.send("ballot", { t = ht, y = yes == true }, 0)
+	end
+end
+
+show_ballot = function(t)
+	local ht = core.int(t.t, 1)
+	if not ht then return end
+	if t.s and in_shelter() then return answer(ht, true) end
+	local kind = KINDS[t.k] and t.k or "sleep"
+	local hours = math_floor((tonumber(t.m) or 0) / 60)
+	local text
+	if kind == "sleep" then
+		text = core.fmt("st_coop_eco_vote_sleep", "%s wants to sleep for %d h. Agree?", tostring(t.n), hours)
+	else
+		text = core.fmt("st_coop_eco_vote_wait", "%s wants to pass time. Agree?", tostring(t.n))
+	end
+	st.ballot_for = ht
+	local box = rawget(_G, "ui_dyn_msg_box") or core.mod("ui_dyn_msg_box")
+	local shown = false
+	if box and box.msg_box_ui then
+		shown = pcall(function()
+			st.ballot_box = box.msg_box_ui("message_box_yes_no", true, text,
+				function() if st.ballot_for == ht then st.ballot_for = nil; answer(ht, true) end end,
+				function() if st.ballot_for == ht then st.ballot_for = nil; answer(ht, false) end end)
+		end)
+	end
+	core.tip(text, 10000)
+	if not shown then core.log("! vote box not shown; the vote times out as a no") end
+end
+
+-------------------------------------------------------------------------------
+-- Stock patches
+-------------------------------------------------------------------------------
+local function patch_sleep()
+	local m = core.mod("ui_sleep_dialog")
+	local cls = m and m.UISleep
+	if not (cls and type(cls.OnButtonSleep) == "function") then
+		core.log("! ui_sleep_dialog.UISleep missing: sleep is not a group decision")
+		return
+	end
+	local orig = cls.OnButtonSleep
+	cls.OnButtonSleep = function(self, ...)
+		if st.bypass or not core.live() or self.forced then return orig(self, ...) end
+		local hours = 0
+		pcall(function() hours = self.time_track:GetIValue() end)
+		local args = pack_n(...)
+		local started = request_skip("sleep", (tonumber(hours) or 0) * 60, function() orig(self, unpack(args, 1, args.n)) end)
+		if not started then return orig(self, ...) end
+		pcall(function() self:Close() end)
+	end
+end
+
+local function patch_wait()
+	local w = rawget(_G, "wait") or core.mod("wait") -- GAMMA "Books Pass Time" (Wait.script); absent in stock
+	if not (w and type(w.wait) == "function") then return end
+	local orig = w.wait
+	w.wait = function(obj, ...)
+		if st.bypass or not core.live() then return orig(obj, ...) end
+		local args = pack_n(...)
+		if request_skip("wait", 0, function() orig(obj, unpack(args, 1, args.n)) end) then return end
+		return orig(obj, ...)
+	end
+	core.log("Wait.script patched: time-passing items are a group decision")
+end
+
+local function install()
+	if installed then return end
+	installed = true
+	if level and type(level.change_game_time) == "function" then
+		orig_cgt = level.change_game_time
+		level.change_game_time = cgt_wrapper
+	else
+		core.log("! level.change_game_time missing: time skips are not routed")
+	end
+	patch_sleep()
+	patch_wait()
+end
+
+-------------------------------------------------------------------------------
+-- Events
+-------------------------------------------------------------------------------
+local function register_events()
+	core.on("propose", function(t, from)
+		if not core.is_host() or from <= 0 then return end
+		local ticket = core.int(t.t, 1)
+		local kind = KINDS[t.k] and t.k ~= "travel" and t.k or nil
+		local minutes = core.num(t.m, 0, (core.rule("max_skip_hours") or 48) * 60)
+		if not (ticket and kind and minutes) then return end
+		host_open(from, ticket, kind, minutes)
+	end)
+	core.on("ballot", function(t, from)
+		if not core.is_host() or from <= 0 then return end
+		local ht = core.int(t.t, 1)
+		if ht then host_ballot(from, ht, t.y == true) end
+	end)
+	core.on("skip", function(t, from)
+		if not core.is_host() or from <= 0 then return end
+		host_skip(from, t)
+	end)
+	core.on("vote", function(t, from)
+		if from ~= 0 or core.is_host() then return end
+		show_ballot(t)
+	end)
+	core.on("verdict", function(t, from)
+		if from ~= 0 or core.is_host() then return end
+		local ticket = core.int(t.t)
+		if not ticket then return end
+		if ticket < 0 then -- a vote I was asked about ended
+			if st.ballot_for == -ticket then close_ballot() end
+			core.tip(verdict_text(t.r, t.n ~= "" and t.n or nil))
+			return
+		end
+		on_verdict_local(ticket, t.ok == true, t.r, t.n ~= "" and t.n or nil)
+	end)
+	core.on("fade", function(t, from)
+		if from ~= 0 or core.is_host() then return end
+		local minutes = core.num(t.m, 0, 1e6) or 0
+		local kind = KINDS[t.k] and t.k or "sleep"
+		stats.fades = stats.fades + 1
+		pcall(level.add_pp_effector, FADE_PPE, FADE_ID, false)
+		core.tip(core.fmt("st_coop_eco_time_skipped", "%s: %d h %02d min passed (%s).", tostring(t.n),
+			math_floor(minutes / 60), math_floor(minutes % 60), core.tr("st_coop_eco_kind_" .. kind, kind)))
+	end)
+end
+
+-------------------------------------------------------------------------------
+-- Update, status, start
+-------------------------------------------------------------------------------
+local next_tick = 0
+local function actor_on_update()
+	local t = core.now()
+	if t < next_tick then return end
+	next_tick = t + 500
+	if core.is_host() then host_tick() end
+	for ticket, p in pairs(st.pending) do -- the host never answered (left, dropped)
+		if t - p.at > ((core.rule("vote_timeout") or 30) + 30) * 1000 then st.pending[ticket] = nil end
+	end
+end
+
+function print_status()
+	local np = 0
+	for _ in pairs(st.props) do np = np + 1 end
+	core.log("group: rule %s, party travel %s (radius %d m) | proposals %d, approved %d, refused %d, skips applied %d, refused skips %d, fades %d, errors %d, open votes %d",
+		tostring(core.rule("sleep_rule")), tostring(party_fast_travel()), gather_radius(), stats.proposals, stats.approved,
+		stats.denied, stats.skips, stats.refused, stats.fades, stats.errors, np)
+end
+
+function on_game_start()
+	if not core.engine() then return end
+	install()
+	register_events()
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+end

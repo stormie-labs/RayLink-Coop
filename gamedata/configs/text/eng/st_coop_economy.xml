@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop - economy group (W4): group travel, time skips, giving money and items. -->
+<string_table>
+	<string id="st_coop_eco_travel_far">
+		<text>All players must be within %d m to travel (far: %s).</text>
+	</string>
+	<string id="st_coop_eco_time_skipped">
+		<text>%s: %d h %02d min passed (%s).</text>
+	</string>
+	<string id="st_coop_eco_kind_sleep">
+		<text>sleep</text>
+	</string>
+	<string id="st_coop_eco_kind_wait">
+		<text>waiting</text>
+	</string>
+	<string id="st_coop_eco_kind_travel">
+		<text>travel</text>
+	</string>
+	<string id="st_coop_eco_waiting_group">
+		<text>Asking the group...</text>
+	</string>
+	<string id="st_coop_eco_vote_sleep">
+		<text>%s wants to sleep for %d h. Agree?</text>
+	</string>
+	<string id="st_coop_eco_vote_wait">
+		<text>%s wants to pass time. Agree?</text>
+	</string>
+	<string id="st_coop_eco_deny_host_only">
+		<text>Only the host can skip time in this session.</text>
+	</string>
+	<string id="st_coop_eco_deny_far">
+		<text>Everybody must be close to sleep (far: %s).</text>
+	</string>
+	<string id="st_coop_eco_deny_no">
+		<text>%s does not want to skip time.</text>
+	</string>
+	<string id="st_coop_eco_deny_timeout">
+		<text>No answer from: %s.</text>
+	</string>
+	<string id="st_coop_eco_deny_left">
+		<text>The vote was cancelled (%s left).</text>
+	</string>
+	<string id="st_coop_eco_deny_busy">
+		<text>Another time skip is being decided.</text>
+	</string>
+	<string id="st_coop_eco_deny_bad">
+		<text>The host refused the time skip.</text>
+	</string>
+	<string id="st_coop_eco_currency">
+		<text>RU</text>
+	</string>
+	<string id="st_coop_eco_give_to">
+		<text>Give to %s</text>
+	</string>
+	<string id="st_coop_eco_item_given">
+		<text>%s given to %s.</text>
+	</string>
+	<string id="st_coop_eco_give_money_to">
+		<text>Give money to %s...</text>
+	</string>
+	<string id="st_coop_eco_money_all">
+		<text>All (%s)</text>
+	</string>
+	<string id="st_coop_eco_money_out">
+		<text>You gave %s to %s.</text>
+	</string>
+	<string id="st_coop_eco_money_in">
+		<text>%s gave you %s.</text>
+	</string>
+	<string id="st_coop_eco_money_back">
+		<text>Money returned: %s (%s).</text>
+	</string>
+	<string id="st_coop_eco_money_why_off">
+		<text>money transfers are off</text>
+	</string>
+	<string id="st_coop_eco_money_why_gone">
+		<text>the receiver is not in the game</text>
+	</string>
+	<string id="st_coop_eco_money_why_bad">
+		<text>transfer refused</text>
+	</string>
+	<string id="st_coop_eco_money_off">
+		<text>Money transfers are off in this session.</text>
+	</string>
+	<string id="st_coop_eco_money_none">
+		<text>You have no money to give.</text>
+	</string>
+	<string id="st_coop_eco_money_no_target">
+		<text>That player is not here.</text>
+	</string>
+</string_table>

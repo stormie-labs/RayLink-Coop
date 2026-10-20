@@ -1,0 +1,520 @@
+--[[
+	Anomaly Coop - weapon item mods (gamedata\scripts\coop_mods_mags.script), W4 "mods".
+
+	Anomaly Magazines Redux (magazines, magazine_binder, mags_patches)
+	  Magazine contents live in the script storage (mags_storage[id]), not in the engine item. Magazines a
+	  player carries travel as an item rider of coop_economy_mdata (declare_item_key, economy group); what the
+	  host changes itself (magazines in boxes, corpses, NPC weapons, the verbs below) goes to every client here
+	  (mods.mg_data host -> all). Without coop_economy_mdata a client reports its own magazines on mods.mg_data
+	  too. A client never takes the host's data for an item it carries. The magazines a player has loaded in
+	  the vest (carried_mags) are per player (coop_mods_pdata).
+	  Magazines in boxes and corpses, and weapons on the ground, are the host's: eject / unload / drag-drop of
+	  such items go to the host (mods.mg_eject, mg_unload, mg_drop, mg_geject) and run there; the magazine an
+	  eject from the ground makes goes into the requester's inventory.
+	  A new player's starter magazines are given by the host when it is told about a new character
+	  (coop_mods_core.on_new_character, see Requests).
+	Weapon Parts Overhaul (zzzz_arti_jamming_repairs, arti_jamming)
+	  Part conditions (item_parts, se_save_var "parts") are mirrored by coop_economy_mdata. Field-stripping a
+	  weapon in a box, a corpse or on the ground runs on the host (mods.wpo_strip), the parts go into the
+	  requester's inventory; swapping a part into such a weapon is checked by the host against the slot the
+	  client saw (mods.wpo_swap) and finished on the client when the host's new part state has arrived.
+--]]
+
+local api = rawget(_G, "coop")
+
+local tostring, tonumber, type, pairs, ipairs, pcall, next = tostring, tonumber, type, pairs, ipairs, pcall, next
+
+local function C() return coop_mods_core end
+local function log(fmt, ...) C().log("mags", fmt, ...) end
+
+local installed = {}
+local st = { data_out = 0, data_in = 0, verbs = 0, refused = 0, parts_out = 0, parts_in = 0, strips = 0, swaps = 0 }
+
+local function refuse(what, from, why)
+	st.refused = st.refused + 1
+	log("%s from #%s refused: %s", what, tostring(from), why)
+end
+
+local function near(obj, who, dist)
+	local ok, d = pcall(function() return obj:position():distance_to_sqr(who:position()) end)
+	return ok and d <= (dist or 12) * (dist or 12)
+end
+
+-- Is the item carried by this machine's own actor?
+local function own(id)
+	return type(id) == "number" and C().root_of(id) == 0 and id ~= 0
+end
+
+-- Box or dead body holding the item, or nil.
+local function container_of(obj)
+	local p = obj and obj:parent()
+	if not p or p:id() == 0 then return nil end
+	if IsInvbox(p) then return p end
+	if (IsStalker(p) or IsMonster(p)) and not p:alive() and not C().is_player(p:id()) then return p end
+	return nil
+end
+
+-------------------------------------------------------------------------------
+-- Per-item data mirror (mags_storage via magazine_binder.set_data)
+-------------------------------------------------------------------------------
+-- spec: { verb, get = f(id) -> value, set = f(id, value) (the original setter), dirty = {}, next = 0 }
+local mirrors = {}
+
+local function mirror_flush(m)
+	if not next(m.dirty) then return end
+	local tg = time_global()
+	if tg < m.next then return end
+	m.next = tg + 500
+	local host = C().is_host()
+	local batch, size, n = {}, 0, 0
+	for id in pairs(m.dirty) do
+		m.dirty[id] = nil
+		-- The host reports every change it knows of (a client's report included: the others need it once the
+		-- item leaves that player); a client reports what it carries, unless an item rider channel does.
+		if host or (own(id) and not m.client_elsewhere) then
+			local ok, v = pcall(m.get, id)
+			local s = ok and v ~= nil and C().ser(v) or ""
+			-- Raw sizes: coop_main.encode may triple them, the engine takes 16 KiB per event.
+			if s and #s < 3000 then
+				n = n + 1
+				batch["i" .. n] = C().hid(id)
+				batch["d" .. n] = s
+				size = size + #s + 16
+				if size > 4000 then break end
+			end
+		end
+	end
+	if n == 0 then return end
+	batch.n = n
+	if host then C().to_all(m.verb, batch) else C().to_host(m.verb, batch) end
+	m.out = (m.out or 0) + 1
+end
+
+local function mirror_receive(m, t, from)
+	local n = tonumber(t.n) or 0
+	local host = C().is_host()
+	for i = 1, math.min(n, 200) do
+		local id = C().lid(tonumber(t["i" .. i]))
+		local s = t["d" .. i]
+		if type(id) == "number" and id > 0 and id < 65535 and type(s) == "string" then
+			local accept
+			if host then
+				accept = C().holder_peer(id) == from -- only the carrier reports an item
+			else
+				accept = not own(id) -- never over what this player carries
+			end
+			if accept then
+				local v = nil
+				if s ~= "" then v = C().deser(s) end
+				local ok, e = pcall(m.set, id, v)
+				if not ok then C().report("mags", m.verb .. " apply", e) end
+				m.inn = (m.inn or 0) + 1
+				if host then m.dirty[id] = true end -- the other clients get it from the host
+			end
+		end
+	end
+end
+
+local function add_mirror(verb, get, set)
+	local m = { verb = verb, get = get, set = set, dirty = {}, next = 0 }
+	mirrors[#mirrors + 1] = m
+	C().on(verb, function(t, from) mirror_receive(m, t, from) end)
+	C().set_limit(verb, 40, 10)
+	return m
+end
+
+-------------------------------------------------------------------------------
+-- Magazines Redux
+-------------------------------------------------------------------------------
+local MG = { m = nil, b = nil, orig = {}, mirror = nil }
+
+local function mg_host_target(t, key, from, what)
+	local id = C().lid(tonumber(t[key]))
+	local obj = type(id) == "number" and id ~= 0 and level.object_by_id(id)
+	local who = C().avatar(from)
+	if not (obj and who) then return refuse(what, from, "unknown item") end
+	local cont = container_of(obj)
+	if not (cont and near(cont, who)) then return refuse(what, from, "not in a box or corpse near the player") end
+	return obj, cont, who
+end
+
+local function install_mags()
+	local m, b = C().mod("magazines"), C().mod("magazine_binder")
+	if not (m and b and C().fn(m, "eject_magazine") and C().fn(b, "set_data") and C().fn(b, "get_data")) then return end
+	MG.m, MG.b = m, b
+	installed[#installed + 1] = "mags_redux"
+	local P = C().mod("coop_mods_pdata")
+	if P then P.register("carried_mags", { prime = { "magazines", "magazine_binder" } }) end
+
+	-- data mirror
+	local _, orig_set = C().wrap(b, "set_data", "magazine_binder.set_data", function(orig)
+		return function(id, data, ...)
+			local r = orig(id, data, ...)
+			if MG.mirror and C().active() and type(id) == "number" then MG.mirror.dirty[id] = true end
+			return r
+		end
+	end)
+	MG.mirror = add_mirror("mg_data", function(id) return b.get_data(id) end, orig_set)
+	local em = C().mod("coop_economy_mdata")
+	if em and C().fn(em, "declare_item_key") then
+		em.declare_item_key("mags_storage", { apply = function(id, v) orig_set(id, v) end })
+		MG.mirror.client_elsewhere = true
+	end
+
+	-- container verbs
+	local function eject_wrapper(orig)
+		MG.orig.eject = MG.orig.eject or orig
+		return function(weapon, ...)
+			if not (C().is_client() and weapon and container_of(weapon)) then return orig(weapon, ...) end
+			C().to_host("mg_eject", { w = C().hid(weapon:id()) })
+		end
+	end
+	C().wrap(m, "eject_magazine", "magazines.eject_magazine", eject_wrapper)
+	local mp = C().mod("mags_patches")
+	-- It holds the eject by value; the mod's own functors pick the wrapper up in its later on_game_start.
+	if mp and C().fn(mp, "eject") then mp.eject = m.eject_magazine end
+	if mp and mp.print_err == nil and m.print_err then mp.print_err = m.print_err end
+
+	C().wrap(m, "func_unload_ammo", "magazines.func_unload_ammo", function(orig)
+		return function(obj, ...)
+			if not (C().is_client() and obj and container_of(obj)) then return orig(obj, ...) end
+			C().to_host("mg_unload", { m = C().hid(obj:id()) })
+		end
+	end)
+	C().wrap(m, "on_item_drag_dropped", "magazines.on_item_drag_dropped", function(orig)
+		MG.orig.drag = orig
+		return function(item, weapon, from_slot, to_slot, ...)
+			if C().is_client() and item and weapon and EDDListType
+				and from_slot == EDDListType.iDeadBodyBag and to_slot == EDDListType.iDeadBodyBag then
+				C().to_host("mg_drop", { i = C().hid(item:id()), w = C().hid(weapon:id()) })
+				return
+			end
+			return orig(item, weapon, from_slot, to_slot, ...)
+		end
+	end)
+	local dm = C().mod("ui_hud_dotmarks")
+	C().wrap(dm, "eject_mag_from_ground", "ui_hud_dotmarks.eject_mag_from_ground", function(orig)
+		MG.orig.geject = orig
+		return function(id, ...)
+			local wpn = id and level.object_by_id(id)
+			if C().is_client() and wpn and not wpn:parent() then
+				C().to_host("mg_geject", { w = C().hid(id) })
+				return
+			end
+			return orig(id, ...)
+		end
+	end)
+
+	C().on("mg_eject", function(t, from)
+		local wpn = mg_host_target(t, "w", from, "mg_eject")
+		if not wpn then return end
+		local ok, e = pcall(MG.orig.eject, wpn)
+		if not ok then C().report("mags", "eject", e) end
+		st.verbs = st.verbs + 1
+	end, "host")
+	C().on("mg_unload", function(t, from)
+		local mag = mg_host_target(t, "m", from, "mg_unload")
+		if not mag then return end
+		if not (b.is_magazine and b.is_magazine(mag)) or not C().fn(m, "fast_unload_magazine") then
+			return refuse("mg_unload", from, "not a magazine")
+		end
+		local data = b.get_data(mag:id())
+		if not (type(data) == "table" and type(data.loaded) == "table" and #data.loaded > 0) then
+			return refuse("mg_unload", from, "empty here")
+		end
+		local ok, e = pcall(m.fast_unload_magazine, mag)
+		if not ok then C().report("mags", "unload", e) end
+		st.verbs = st.verbs + 1
+	end, "host")
+	C().on("mg_drop", function(t, from)
+		local item, cont = mg_host_target(t, "i", from, "mg_drop")
+		if not item then return end
+		local wid = C().lid(tonumber(t.w))
+		local target = type(wid) == "number" and level.object_by_id(wid)
+		if not (target and target:parent() and target:parent():id() == cont:id()) then
+			return refuse("mg_drop", from, "target not in the same container")
+		end
+		if C().fn(m, "action_in_progress") and m.action_in_progress() then return refuse("mg_drop", from, "host busy") end
+		local ok, e
+		if IsAmmo(item) and b.is_magazine and b.is_magazine(target) and C().fn(m, "fast_load_magazine") then
+			local cal = b.get_magazine_caliber and b.get_magazine_caliber(target)
+			local fits = false
+			for _, sec in pairs(type(cal) == "table" and cal or {}) do
+				if sec == item:section() then fits = true break end
+			end
+			if not fits then return refuse("mg_drop", from, "ammo does not fit") end
+			ok, e = pcall(m.fast_load_magazine, target, item)
+		else
+			ok, e = pcall(MG.orig.drag, item, target, EDDListType.iDeadBodyBag, EDDListType.iDeadBodyBag)
+		end
+		if not ok then C().report("mags", "drop", e) end
+		st.verbs = st.verbs + 1
+	end, "host")
+	C().on("mg_geject", function(t, from)
+		local id = C().lid(tonumber(t.w))
+		local wpn = type(id) == "number" and level.object_by_id(id)
+		local who = C().avatar(from)
+		if not (wpn and who and not wpn:parent() and near(wpn, who, 4) and MG.orig.geject) then
+			return refuse("mg_geject", from, "no weapon on the ground there")
+		end
+		local ok, e = C().as_player(who, MG.orig.geject, id) -- the magazine goes to the requester
+		if not ok then C().report("mags", "ground eject", e) end
+		MG.mirror.dirty[id] = true
+		st.verbs = st.verbs + 1
+	end, "host")
+	for _, v in ipairs({ "mg_eject", "mg_unload", "mg_drop", "mg_geject" }) do C().set_limit(v, 10, 4) end
+
+	-- A new player's starter magazines (the mod gives them when a new game starts, which a client never runs).
+	C().listen("new_character", function(peer)
+		local who = C().avatar(peer)
+		if who and mp and C().fn(mp, "default_mags") then
+			local ok, e = C().as_player(who, mp.default_mags)
+			if not ok then C().report("mags", "starter magazines", e) end
+		end
+	end)
+end
+
+-- Client, first update: vest entries for magazines this player no longer carries are dropped.
+local function mags_check_loadout()
+	if not (MG.b and C().is_client()) then return end
+	local m = alife_storage_manager.get_state()
+	local carried = m.carried_mags
+	if type(carried) ~= "table" then return end
+	local storage = m.mags_storage
+	for id in pairs(carried) do
+		local se = type(id) == "number" and id < 65535 and alife_object(id)
+		if not (se and se.parent_id == 0 and MG.b.is_magazine and MG.b.is_magazine(se:section_name())) then
+			carried[id] = nil
+		elseif type(storage) == "table" and storage[id] then
+			carried[id] = storage[id]
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Weapon Parts Overhaul and part states
+-------------------------------------------------------------------------------
+local WPO = { w = nil, j = nil, orig_strip = nil, orig_replace = nil, strips = {}, swaps = {} }
+
+local function parts_of(wpn)
+	local ok, p = pcall(item_parts.get_parts_con, wpn)
+	return ok and type(p) == "table" and p or nil
+end
+
+local function strippable(parts, name)
+	if name then
+		local c = parts[name]
+		return c ~= nil and c ~= -1
+	end
+	for sec, c in pairs(parts) do
+		if c ~= -1 and WPO.w.is_part and WPO.w.is_part(sec) and not (WPO.j.is_barrel and WPO.j.is_barrel(sec)) then return true end
+	end
+	return false
+end
+
+local function wpo_tip(id, suffix)
+	local msg = C().text(id, id)
+	if suffix and ui_item and ui_item.get_sec_name then msg = msg .. " " .. ui_item.get_sec_name(suffix) end
+	if db.actor and news_manager and news_manager.send_tip then pcall(news_manager.send_tip, db.actor, msg, nil, "swiss_knife", 6000) end
+end
+
+-- Client: strips of one frame go out as one request.
+local function wpo_queue_strip(id, part)
+	local p = WPO.strips[id]
+	if not p then
+		p = { names = {}, all = false }
+		WPO.strips[id] = p
+		CreateTimeEvent("coop_mods_wpo", "strip_" .. id, 0, function()
+			local q = WPO.strips[id]
+			WPO.strips[id] = nil
+			if q then
+				C().to_host("wpo_strip", { w = C().hid(id), p = q.all and "" or table.concat(q.names, ",") })
+			end
+			return true
+		end)
+	end
+	if part then p.names[#p.names + 1] = part else p.all = true end
+end
+
+local function host_strip(t, from)
+	local id = C().lid(tonumber(t.w))
+	local wpn = type(id) == "number" and id ~= 0 and level.object_by_id(id)
+	local who = C().avatar(from)
+	if not (wpn and who) then return refuse("wpo_strip", from, "unknown weapon") end
+	local cont = wpn:parent()
+	if cont and not container_of(wpn) then return refuse("wpo_strip", from, "weapon is carried by someone") end
+	if not near(cont or wpn, who) then return refuse("wpo_strip", from, "too far") end
+	if not cont and wpn:get_ammo_in_magazine() > 0 then return refuse("wpo_strip", from, "loaded weapon on the ground") end
+	local parts = parts_of(wpn)
+	if not parts then return refuse("wpo_strip", from, "no parts") end
+	local names = nil
+	if type(t.p) == "string" and t.p ~= "" then
+		names = {}
+		for n in t.p:gmatch("[^,]+") do
+			if parts[n] and parts[n] ~= -1 then names[#names + 1] = n end
+		end
+		if #names == 0 then return end
+	end
+	-- The parts go into db.actor, here the requester's character.
+	if names then
+		for _, n in ipairs(names) do
+			local ok, e = C().as_player(who, WPO.orig_strip, id, n)
+			if not ok then
+				C().report("mags", "strip", e)
+				break
+			end
+		end
+	else
+		local ok, e = C().as_player(who, WPO.orig_strip, id, nil)
+		if not ok then C().report("mags", "strip", e) end
+	end
+	st.strips = st.strips + 1
+end
+
+local function host_swap(t, from)
+	local id = C().lid(tonumber(t.w))
+	local wpn = type(id) == "number" and id ~= 0 and level.object_by_id(id)
+	local who = C().avatar(from)
+	local sec, pcon, prev = t.s, tonumber(t.c), tonumber(t.p)
+	if not (wpn and who and type(sec) == "string" and pcon and prev and near(wpn, who)) then return refuse("wpo_swap", from, "bad request") end
+	if wpn:parent() and not container_of(wpn) then return refuse("wpo_swap", from, "weapon is carried by someone") end
+	local parts = parts_of(wpn)
+	if not (parts and parts[sec]) then return refuse("wpo_swap", from, "no such slot") end
+	if parts[sec] ~= prev then return refuse("wpo_swap", from, "slot changed meanwhile") end
+	parts[sec] = math.max(0, math.min(100, pcon))
+	item_parts.set_parts_con(id, parts)
+	pcall(function() wpn:force_unload_magazine(true) end)
+	local c = wpn:condition()
+	if c > 0.6 then wpn:set_condition(c - math.random(3, 3 + (t.t == true and 3 or 13)) / 100) end
+	st.swaps = st.swaps + 1
+end
+
+-- Client: a swap into a weapon this player does not carry is finished once the host's part state is here.
+local function wpo_parts_arrived(id)
+	local s = WPO.swaps[id]
+	if not s then return end
+	local wpn = level.object_by_id(id)
+	local parts = wpn and parts_of(wpn)
+	if not parts or parts[s.sec] == s.prev then return end
+	WPO.swaps[id] = nil
+	local part = level.object_by_id(s.part)
+	if part then
+		if s.prev == -1 then alife_release(part) else part:set_condition(s.prev / 100) end
+	end
+	if WPO.j.reset_cgd then pcall(WPO.j.reset_cgd) end
+	wpo_tip("st_news_parts_success", s.sec)
+end
+
+local function install_wpo()
+	local w, j = C().mod("zzzz_arti_jamming_repairs"), C().mod("arti_jamming")
+	if not (w and j and C().fn(w, "act_fieldstrip") and C().fn(j, "try_replace_part") and rawget(_G, "item_parts")) then return end
+	WPO.w, WPO.j = w, j
+	installed[#installed + 1] = "wpo"
+
+	C().wrap(w, "act_fieldstrip", "zzzz_arti_jamming_repairs.act_fieldstrip", function(orig)
+		WPO.orig_strip = orig
+		return function(id, part, ...)
+			if not C().is_client() then return orig(id, part, ...) end
+			local wpn = level.object_by_id(id)
+			if not wpn or own(id) then return orig(id, part, ...) end
+			wpo_queue_strip(id, part)
+		end
+	end)
+	C().wrap(j, "try_replace_part", "arti_jamming.try_replace_part", function(orig)
+		WPO.orig_replace = orig
+		local function routed(wpn, parts, part, using_tool, ...)
+			if not (C().is_client() and wpn and part and parts) then return orig(wpn, parts, part, using_tool, ...) end
+			local wpn_own, part_own = own(wpn:id()), own(part:id())
+			if wpn_own and part_own then return orig(wpn, parts, part, using_tool, ...) end
+			local sec = part:section()
+			if j.is_barrel and j.is_barrel(sec) then
+				wpo_tip("st_news_parts_barrel")
+				return
+			end
+			if not part_own then
+				-- Take the part first (an ordinary move the host arbitrates), then swap again.
+				local from_obj = part:parent()
+				if not from_obj then return end
+				local wid, pid = wpn:id(), part:id()
+				from_obj:transfer_item(part, db.actor)
+				local deadline = time_global() + 5000
+				CreateTimeEvent("coop_mods_wpo", "take_" .. pid, 0.1, function()
+					local p, ww = level.object_by_id(pid), level.object_by_id(wid)
+					if not (p and ww) then return true end
+					if own(pid) then
+						local pp = parts_of(ww)
+						if pp then routed(ww, pp, p, using_tool) end
+						return true
+					end
+					if time_global() > deadline then return true end
+					ResetTimeEvent("coop_mods_wpo", "take_" .. pid, 0.1)
+					return false
+				end)
+				return
+			end
+			local prev = parts[sec]
+			if prev == nil then return orig(wpn, parts, part, using_tool, ...) end
+			local wid = wpn:id()
+			WPO.swaps[wid] = { sec = sec, prev = prev, part = part:id() }
+			C().to_host("wpo_swap", { w = C().hid(wid), s = sec, c = math.floor(part:condition() * 100), t = using_tool and true or false, p = prev })
+			-- Finished once the host's part state for the slot has arrived (a refusal costs nothing).
+			local deadline = time_global() + 8000
+			CreateTimeEvent("coop_mods_wpo", "swap_" .. wid, 0.25, function()
+				if not WPO.swaps[wid] then return true end
+				wpo_parts_arrived(wid)
+				if not WPO.swaps[wid] then return true end
+				if time_global() > deadline then
+					WPO.swaps[wid] = nil
+					return true
+				end
+				ResetTimeEvent("coop_mods_wpo", "swap_" .. wid, 0.25)
+				return false
+			end)
+		end
+		return routed
+	end)
+	C().on("wpo_strip", host_strip, "host")
+	C().on("wpo_swap", host_swap, "host")
+	C().set_limit("wpo_strip", 8, 3)
+	C().set_limit("wpo_swap", 6, 2)
+end
+
+-------------------------------------------------------------------------------
+-- Start
+-------------------------------------------------------------------------------
+local first = false
+local function actor_on_update()
+	if not C().active() then return end
+	if not first then
+		first = true
+		local ok, e = pcall(mags_check_loadout)
+		if not ok then C().report("mags", "loadout check", e) end
+	end
+	for _, m in ipairs(mirrors) do
+		local ok, e = pcall(mirror_flush, m)
+		if not ok then C().report("mags", m.verb .. " flush", e) end
+	end
+end
+
+-- The mod registers its drag-drop handler by value in its own start: take that over at the first update.
+local rebound = false
+local function rebind()
+	if rebound or not (MG.m and MG.orig.drag) then return end
+	rebound = true
+	C().swap_callback("ActorMenu_on_item_drag_drop", MG.orig.drag, MG.m.on_item_drag_dropped)
+end
+
+function on_game_start()
+	if not api then return end
+	install_mags()
+	install_wpo()
+	if #installed == 0 then return end
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("actor_on_first_update", rebind)
+	C().status_line("mags", function()
+		local parts = {}
+		for _, m in ipairs(mirrors) do parts[#parts + 1] = string.format("%s out %d in %d", m.verb, m.out or 0, m.inn or 0) end
+		return string.format("%s | %s | container verbs %d, strips %d, swaps %d, refused %d",
+			table.concat(installed, ", "), table.concat(parts, ", "), st.verbs, st.strips, st.swaps, st.refused)
+	end)
+end

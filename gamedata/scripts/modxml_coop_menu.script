@@ -1,0 +1,63 @@
+--[[
+	Anomaly Coop - main menu seams of the co-op menu (W4 menu), gamedata\scripts\modxml_coop_menu.script
+	The modxml_ prefix is required: dxml_core loads modxml_*.script at script start-up (also in the cold-start
+	main menu) and calls their on_xml_read(), which is the only moment early enough to edit ui_mm_main*.xml.
+
+	- Adds a "Co-op" button (btn_coop) to the main menu button lists, injected into the parsed xml (no copy of
+	  the stock file, so menu skins of other mods keep working). Anchored before btn_options.
+	- Registers main_menu_on_init -> coop_menu.on_main_menu_init (button callback, quit wrappers).
+	- Adds the "Co-op" page to the options menu (coop_menu_options.install).
+	Does nothing on an exe without the co-op engine (namespace `coop` missing).
+--]]
+
+-- on_xml_read keys on the aspect-resolved name: _16 for 16:9, the bare name for 4:3.
+local FILES = {
+	[ [[ui\ui_mm_main.xml]] ] = true,
+	[ [[ui\ui_mm_main_16.xml]] ] = true,
+}
+
+-- Cold start (with / without a last save) and in game (alive / dead). Not menu_main_mm (multiplayer).
+local LISTS = { "menu_main", "menu_main_last_save", "menu_main_single", "menu_main_single_dead" }
+
+local BTN_NAME = "btn_coop"
+
+local function inject_list(xml_obj, list_name)
+	local list = xml_obj:query(list_name)[1]
+	if not list then return false end
+	local pos, present
+	xml_obj:iterateChildren(list, function(v, i)
+		local el = xml_obj:getElement(v)
+		local name = el and el.attr and el.attr.name
+		if name == BTN_NAME then
+			present = true
+			return true
+		end
+		if name == "btn_options" and not pos then pos = i end
+	end)
+	if present then return false end -- ui_mm_main.xml includes the _16 file: both may pass here
+	xml_obj:insertElement({ name = "btn", attr = { name = BTN_NAME, caption = "ui_coop_mm_btn" } }, list, pos)
+	return true
+end
+
+-- Module function, not a closure: dxml keeps one entry per function value.
+function inject_button(xml_file_name, xml_obj)
+	if not FILES[xml_file_name] then return end
+	local n = 0
+	for _, list_name in ipairs(LISTS) do
+		local ok, added = pcall(inject_list, xml_obj, list_name)
+		if ok and added then n = n + 1 end
+	end
+	if n > 0 then printf("[coop-menu] Co-op button added to %d main menu list(s) of %s", n, xml_file_name) end
+end
+
+function main_menu_init(menu)
+	coop_menu.on_main_menu_init(menu)
+end
+
+function on_xml_read()
+	if not rawget(_G, "coop") then return end -- vanilla exe: no co-op, no button
+	RegisterScriptCallback("on_xml_read", inject_button)
+	RegisterScriptCallback("main_menu_on_init", main_menu_init)
+	local ok, err = pcall(function() coop_menu_options.install() end)
+	if not ok then printf("! [coop-menu] options page not installed: %s", tostring(err)) end
+end

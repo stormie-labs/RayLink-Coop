@@ -11,6 +11,7 @@
 		coop_ui.show(title, summary, lines, footer)   lines: { "text" | { text = "...", color = <argb> }, ... }
 
 	Uses only engine classes and functions, nothing from a running level: the main menu has no actor.
+	Texts: configs\text\*\st_coop_menu.xml (st_coop_ui_*), the English text here when an id is missing.
 --]]
 
 local MAX_PER_GROUP = 40 -- files listed per group, the rest is summed up by kind
@@ -29,6 +30,25 @@ local function log(fmt, ...)
 	elseif engine_log then
 		pcall(engine_log, line)
 	end
+end
+
+-- Translated text with %s filled in order; the English fallback when the string table has no such id.
+local function T(id, fallback, ...)
+	local s
+	local g = rawget(_G, "game")
+	if g and g.translate_string then
+		local ok, r = pcall(g.translate_string, id)
+		if ok and type(r) == "string" and r ~= id and r ~= "" then s = r end
+	end
+	s = s or fallback
+	if select("#", ...) > 0 then
+		local args, i = { ... }, 0
+		s = s:gsub("%%s", function()
+			i = i + 1
+			return tostring(args[i])
+		end)
+	end
+	return s
 end
 
 local function argb(a, r, g, b)
@@ -165,6 +185,8 @@ local KINDS = {
 	{ "other", "other files" },
 }
 
+local function kind_name(k) return T("st_coop_ui_kind_" .. k[1], k[2]) end
+
 local function kind_of(path)
 	local p = path:lower()
 	if p:match("^db[\\/]") then return "archive" end
@@ -211,12 +233,12 @@ local function add_group(lines, title, list, total)
 		end
 		local parts = {}
 		for _, k in ipairs(KINDS) do
-			if by_kind[k[1]] then parts[#parts + 1] = string_format("%d %s", by_kind[k[1]], k[2]) end
+			if by_kind[k[1]] then parts[#parts + 1] = string_format("%d %s", by_kind[k[1]], kind_name(k)) end
 		end
 		local unlisted = total - #files -- beyond what the engine handed over
-		if unlisted > 0 then parts[#parts + 1] = string_format("%d more in the log", unlisted) end
-		lines[#lines + 1] = { text = string_format("      ... and %d more: %s", total - shown, table.concat(parts, ", ")),
-			color = c.dim }
+		if unlisted > 0 then parts[#parts + 1] = T("st_coop_ui_more_log", "%s more in the log", unlisted) end
+		lines[#lines + 1] = { text = "      " .. T("st_coop_ui_and_more", "... and %s more: %s", total - shown,
+			table.concat(parts, ", ")), color = c.dim }
 	end
 	lines[#lines + 1] = " "
 	return total
@@ -225,44 +247,49 @@ end
 local function content_mismatch(info)
 	local lines = {}
 	local n = 0
-	n = n + add_group(lines, "Missing on your side (the host has them)", info.missing, info.missing_total)
-	n = n + add_group(lines, "Extra on your side (the host does not have them)", info.extra, info.extra_total)
-	n = n + add_group(lines, "Different version (both have them, the files differ)", info.differ, info.differ_total)
+	n = n + add_group(lines, T("st_coop_ui_missing", "Missing on your side (the host has them)"), info.missing,
+		info.missing_total)
+	n = n + add_group(lines, T("st_coop_ui_extra", "Extra on your side (the host does not have them)"), info.extra,
+		info.extra_total)
+	n = n + add_group(lines, T("st_coop_ui_differ", "Different version (both have them, the files differ)"), info.differ,
+		info.differ_total)
 	if n == 0 then
-		lines[#lines + 1] = { text = "The host's list did not arrive; see the log for details.", color = colors().dim }
+		lines[#lines + 1] = { text = T("st_coop_ui_no_list", "The host's list did not arrive; see the log for details."),
+			color = colors().dim }
 	end
-	local summary = "The host refused the connection: your game files are not the same as the host's. "
-		.. "Install exactly the same mods in the same versions as the host (or the host matches yours), "
-		.. "then connect again. Archives and scripts are listed first: their names usually tell the addon."
-	local footer = string_format("Full list: %s (lines \"missing here\", \"extra here\", \"different\").",
+	local summary = T("st_coop_ui_mods_summary", "The host refused the connection: your game files are not the same as "
+		.. "the host's. Install exactly the same mods in the same versions as the host (or the host matches yours), "
+		.. "then connect again. Archives and scripts are listed first: their names usually tell the addon.")
+	local footer = T("st_coop_ui_mods_footer", "Full list: %s (lines \"missing here\", \"extra here\", \"different\").",
 		tostring(info.log_path or "the game log"))
-	return "Your mod list differs from the host's", summary, lines, footer
+	return T("st_coop_ui_mods_title", "Your mod list differs from the host's"), summary, lines, footer
 end
 
 local function duplicate_key(info)
 	local c = colors()
 	local key_path = tostring(info.key_path or "appdata\\coop_player.key")
 	local lines = {
-		{ text = "How to fix it on this PC:", color = c.head },
-		"      1. Close the game.",
-		"      2. Delete this file:",
+		{ text = T("st_coop_ui_key_how", "How to fix it on this PC:"), color = c.head },
+		"      " .. T("st_coop_ui_key_step1", "1. Close the game."),
+		"      " .. T("st_coop_ui_key_step2", "2. Delete this file:"),
 		{ text = "            " .. key_path, color = c.good },
-		"      3. Start the game and connect again. A new key is created automatically.",
+		"      " .. T("st_coop_ui_key_step3", "3. Start the game and connect again. A new key is created automatically."),
 		" ",
-		{ text = "What it changes:", color = c.head },
-		"      The host recognizes players by this key, not by the nickname. With a new key the host",
-		"      creates a new character for you; the player whose folder you copied keeps theirs.",
-		"      Do not do this on the PC whose character you want to keep.",
+		{ text = T("st_coop_ui_key_what", "What it changes:"), color = c.head },
+		"      " .. T("st_coop_ui_key_what_text", "The host recognizes players by this key, not by the nickname. With a "
+			.. "new key the host creates a new character for you; the player whose folder you copied keeps theirs. "
+			.. "Do not do this on the PC whose character you want to keep."),
 	}
 	if info.text and info.text ~= "" then
 		lines[#lines + 1] = " "
-		lines[#lines + 1] = { text = "Host message:", color = c.head }
+		lines[#lines + 1] = { text = T("st_coop_ui_host_message", "Host message:"), color = c.head }
 		lines[#lines + 1] = { text = "      " .. tostring(info.text), color = c.dim }
 	end
-	local summary = "Another player in this session already uses your player key. This happens when a game folder "
-		.. "is copied from another player: the key file is copied with it, and two players cannot share one key."
-	return "Your player key is already in use", summary, lines,
-		"The key is a random file made on the first co-op start. It holds no password or account data."
+	local summary = T("st_coop_ui_key_summary", "Another player in this session already uses your player key. This "
+		.. "happens when a game folder is copied from another player: the key file is copied with it, and two players "
+		.. "cannot share one key.")
+	return T("st_coop_ui_key_title", "Your player key is already in use"), summary, lines,
+		T("st_coop_ui_key_footer", "The key is a random file made on the first co-op start. It holds no password or account data.")
 end
 
 local TITLES = {
@@ -276,16 +303,20 @@ local TITLES = {
 }
 
 local function generic(info)
-	local title = TITLES[tostring(info.reason)] or "The host refused the connection"
+	local reason = tostring(info.reason)
+	local title = TITLES[reason] and T("st_coop_ui_title_" .. reason, TITLES[reason])
+		or T("st_coop_ui_title_default", "The host refused the connection")
 	local lines = {}
 	if info.reason == "HostNotReady" then
-		lines[#lines + 1] = "The host has to be in a loaded game (not in the main menu) to accept players."
+		lines[#lines + 1] = T("st_coop_ui_hint_not_ready",
+			"The host has to be in a loaded game (not in the main menu) to accept players.")
 	elseif info.reason == "SessionFull" then
-		lines[#lines + 1] = "Ask the host to raise the player limit or wait until somebody leaves."
+		lines[#lines + 1] = T("st_coop_ui_hint_full", "Ask the host to raise the player limit or wait until somebody leaves.")
 	elseif info.reason == "ProtocolMismatch" or info.reason == "BuildMismatch" then
-		lines[#lines + 1] = "Install the same Anomaly Coop build as the host (both bin\\ and gamedata\\)."
+		lines[#lines + 1] = T("st_coop_ui_hint_build",
+			"Install the same Anomaly Coop build as the host (both bin\\ and gamedata\\).")
 	end
-	return title, tostring(info.text or ""), lines, string_format("Reason code: %s", tostring(info.reason))
+	return title, tostring(info.text or ""), lines, T("st_coop_ui_reason_code", "Reason code: %s", reason)
 end
 
 -- Engine entry (coop_script.cpp): the host refused this player.

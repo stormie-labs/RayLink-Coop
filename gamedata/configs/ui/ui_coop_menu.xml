@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop: co-op window of the main menu (scripts\coop_menu.script). Host / Join / Steam tabs on top,
+     live session status below. Captions are string ids (configs\text\*\st_coop_menu.xml). Same layout for 4:3
+     and 16:9 (stretched like ui_options and ui_coop_diff.xml). -->
+<w>
+	<coop_shade x="0" y="0" width="1024" height="768" stretch="1">
+		<texture r="0" g="0" b="0" a="160">ui_icons_PDA_tooltips</texture>
+	</coop_shade>
+
+	<coop_menu x="152" y="64" width="720" height="640" stretch="1">
+		<frame x="0" y="0" width="720" height="640" stretch="1">
+			<texture>ui_inGame2_hint_wnd_main_window</texture>
+		</frame>
+
+		<cap x="30" y="14" width="660" height="34" stretch="1">
+			<text complex_mode="0" r="240" g="200" b="120" align="c" vert_align="c" font="graffiti22">st_coop_menu_title</text>
+		</cap>
+
+		<!-- tabs: a third (Steam) is in place but disabled until the Steam lobby milestone -->
+		<tab_host x="30" y="54" width="210" height="30" stretch="1">
+			<text align="c" vert_align="c" font="letterica18">st_coop_menu_tab_host</text>
+			<texture>ui_button_ordinary</texture>
+		</tab_host>
+		<tab_join x="255" y="54" width="210" height="30" stretch="1">
+			<text align="c" vert_align="c" font="letterica18">st_coop_menu_tab_join</text>
+			<texture>ui_button_ordinary</texture>
+		</tab_join>
+		<tab_steam x="480" y="54" width="210" height="30" stretch="1">
+			<text align="c" vert_align="c" font="letterica18">st_coop_menu_tab_steam</text>
+			<texture>ui_button_ordinary</texture>
+		</tab_steam>
+
+		<panel_frame x="30" y="90" width="660" height="290" stretch="1">
+			<texture>ui_inGame2_servers_list_frame</texture>
+		</panel_frame>
+
+		<!-- shared row: nickname -->
+		<cap_nick x="50" y="104" width="170" height="26" stretch="1">
+			<text r="220" g="220" b="220" align="l" vert_align="c" font="letterica18">st_coop_menu_nick</text>
+		</cap_nick>
+		<edit_nick x="230" y="104" width="250" height="26" max_symb_count="32" stretch="1">
+			<text x="4" r="240" g="240" b="240" font="letterica18" vert_align="c"></text>
+			<texture>ui_inGame2_edit_box_1</texture>
+		</edit_nick>
+
+		<!-- host tab -->
+		<cap_port x="50" y="138" width="170" height="26" stretch="1">
+			<text r="220" g="220" b="220" align="l" vert_align="c" font="letterica18">st_coop_menu_port</text>
+		</cap_port>
+		<edit_port x="230" y="138" width="110" height="26" max_symb_count="5" num_only="1" stretch="1">
+			<text x="4" r="240" g="240" b="240" font="letterica18" vert_align="c"></text>
+			<texture>ui_inGame2_edit_box_1</texture>
+		</edit_port>
+		<host_info x="50" y="174" width="620" height="54" stretch="1">
+			<text complex_mode="1" r="190" g="190" b="190" align="l" vert_align="t" font="letterica16"></text>
+		</host_info>
+		<btn_host_now x="50" y="232" width="300" height="32" stretch="1">
+			<text align="c" vert_align="c" font="letterica18">st_coop_menu_btn_host_now</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_host_now>
+		<btn_host_load x="50" y="274" width="196" height="32" stretch="1">
+			<text align="c" vert_align="c" font="letterica16">st_coop_menu_btn_host_load</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_host_load>
+		<btn_host_last x="262" y="274" width="196" height="32" stretch="1">
+			<text align="c" vert_align="c" font="letterica16">st_coop_menu_btn_host_last</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_host_last>
+		<btn_host_new x="474" y="274" width="196" height="32" stretch="1">
+			<text align="c" vert_align="c" font="letterica16">st_coop_menu_btn_host_new</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_host_new>
+		<pending_text x="50" y="320" width="460" height="48" stretch="1">
+			<text complex_mode="1" r="150" g="210" b="150" align="l" vert_align="c" font="letterica16"></text>
+		</pending_text>
+		<btn_cancel_pending x="530" y="328" width="140" height="30" stretch="1">
+			<text align="c" vert_align="c" font="letterica16">st_coop_menu_btn_cancel</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_cancel_pending>
+
+		<!-- join tab -->
+		<cap_address x="50" y="138" width="170" height="26" stretch="1">
+			<text r="220" g="220" b="220" align="l" vert_align="c" font="letterica18">st_coop_menu_address</text>
+		</cap_address>
+		<edit_address x="230" y="138" width="290" height="26" max_symb_count="64" stretch="1">
+			<text x="4" r="240" g="240" b="240" font="letterica18" vert_align="c"></text>
+			<texture>ui_inGame2_edit_box_1</texture>
+		</edit_address>
+		<btn_connect x="530" y="136" width="140" height="30" stretch="1">
+			<text align="c" vert_align="c" font="letterica18">st_coop_menu_btn_connect</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_connect>
+		<address_hint x="50" y="168" width="620" height="22" stretch="1">
+			<text r="150" g="150" b="150" align="l" vert_align="c" font="letterica16">st_coop_menu_address_hint</text>
+		</address_hint>
+		<join_info x="50" y="190" width="620" height="22" stretch="1">
+			<text complex_mode="1" r="220" g="170" b="110" align="l" vert_align="c" font="letterica16"></text>
+		</join_info>
+		<cap_recent x="50" y="218" width="170" height="24" stretch="1">
+			<text r="220" g="220" b="220" align="l" vert_align="c" font="letterica18">st_coop_menu_recent</text>
+		</cap_recent>
+		<!-- one row per remembered address, placed by the script under each other (step 30) -->
+		<btn_recent x="230" y="218" width="290" height="26" stretch="1">
+			<text align="l" vert_align="c" font="letterica16" x="8"></text>
+			<texture>ui_button_ordinary</texture>
+		</btn_recent>
+
+		<!-- steam tab (disabled for now) -->
+		<steam_info x="50" y="104" width="620" height="60" stretch="1">
+			<text complex_mode="1" r="190" g="190" b="190" align="l" vert_align="t" font="letterica16">st_coop_menu_steam_hint</text>
+		</steam_info>
+
+		<!-- live status -->
+		<status_frame x="30" y="388" width="660" height="196" stretch="1">
+			<texture>ui_inGame2_servers_list_frame</texture>
+		</status_frame>
+		<status_phase x="46" y="396" width="630" height="24" stretch="1">
+			<text complex_mode="1" r="235" g="235" b="235" align="l" vert_align="c" font="letterica18"></text>
+		</status_phase>
+		<status_error x="46" y="420" width="630" height="40" stretch="1">
+			<text complex_mode="1" r="240" g="120" b="100" align="l" vert_align="t" font="letterica16"></text>
+		</status_error>
+		<status_players x="46" y="462" width="630" height="22" stretch="1">
+			<text complex_mode="1" r="240" g="200" b="120" align="l" vert_align="c" font="letterica16"></text>
+		</status_players>
+		<status_scroll x="46" y="486" width="630" height="92" right_ident="0" left_ident="0" top_indent="0" bottom_indent="0" vert_interval="2" always_show_scroll="0" stretch="1"/>
+		<status_row x="0" y="0" width="610" height="20" stretch="1">
+			<text complex_mode="1" r="205" g="205" b="205" align="l" vert_align="c" font="letterica16"></text>
+		</status_row>
+
+		<btn_disconnect x="30" y="594" width="220" height="32" stretch="1">
+			<text align="c" vert_align="c" font="letterica18">st_coop_menu_btn_disconnect</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_disconnect>
+		<btn_close x="470" y="594" width="220" height="32" stretch="1">
+			<text align="c" vert_align="c" font="letterica18">st_coop_menu_btn_close</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_close>
+	</coop_menu>
+</w>

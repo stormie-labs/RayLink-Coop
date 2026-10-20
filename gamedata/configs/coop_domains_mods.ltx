@@ -1,0 +1,72 @@
+; Anomaly Coop - Lua execution domains of third-party mods (W4 "mods"), read by scripts\coop_main.script after
+; coop_domains.ltx (same sections and rules, see that file). Entries of mods that are not installed do nothing.
+; The coop_mods_*.script patches (view by the coop_* prefix) route the world half of these mods to the host;
+; what is listed here is the player's half that has to run on a client too. Everything unlisted stays host.
+
+[view]
+; Oleh's Extended MovementSFX / Dark Signal footsteps: sounds of the local player
+footstep_sounds
+eft_jump_sounds
+oleh_sound_utils
+oleh_sounds_mcm
+extended_movement_sounds
+extended_movement_sounds_mcm
+; Hideout Furniture: placement box drawing / ray helpers, placed radio sound and dialog
+aol_bbox
+thial_ray
+placeable_radio
+hf_mcm
+
+[owner]
+; Perk-Based Artefacts: the belt of the local player (host skips a client's hits, coop_mods_perks)
+perk_based_artefacts
+momopate_pba_tweaks
+; Haru's skills, Experience Framework, Wearable Devices: the local player's progress (coop_mods_pdata)
+haru_skills
+experience_*
+wd_*
+; Quick Action Wheel: actions on the local inventory
+haru_quick_action_wheel
+haru_quick_action_wheel_mcm
+; Body Health System: limbs of the local player
+zzz_player_injuries
+; Magazines Redux: reloading the local player's weapons (container verbs go to the host, coop_mods_mags)
+magazines
+magazine_binder
+mags_patches
+mag_support
+; Weapon Parts Overhaul: jamming and repairs of the local player's weapons
+arti_jamming
+zzzz_arti_jamming_repairs
+; Glowsticks, model drops, autolooter: the local player's item use (world half on the host, coop_mods_items)
+zz_glowstick_mcm
+model_dropper_mcm
+z_auto_looter
+; Hideout Furniture: placing furniture from the local inventory (the object is created by the host, coop_mods_hf)
+placeable_furniture
+; Gadgets: refusing to pick up a display copy from a showcase (displays are the host's, coop_mods_hf)
+weapon_showcase
+; GAMMA artefact melter dialog (workshop: items into / out of the own inventory are forwarded by the engine)
+grok_artefacts_melter
+; RF Receiver Hidden Packages: the hunting half (scanner, pickup); spawning is off on clients (coop_mods_radio)
+tb_rf_receiver_packages
+; Guitar / harmonica: the local player plays (others hear it, coop_mods_misc)
+guitar_anim
+harmonica_anim
+; Kill Tracker: the local player's kills
+ish_kill_tracker
+; Personal Adjustable Waypoint: the waypoint of the local player
+tasks_placeable_waypoints
+
+; Listed for clarity: world logic of these mods runs on the host only (unlisted scripts are host anyway).
+[host]
+nta_utils                    ; New Tasks Addon: triggers, spawns (coop_mods_nta)
+house_of_horrors_configs
+big_game_configs
+baba_yaga_configs
+mirage_configs
+hf_obj_manager               ; Hideout Furniture data (clients get it from mods.hf_data; load_state still runs)
+hf_map_objects               ; furniture spawned from the mod's own lists
+smr_loot                     ; Zone Customization Project bonus loot (coop_mods_misc)
+smr_amain_mcm
+grok_stashes_on_corpses      ; Stash Overhaul corpse stash rolls (coop_mods_items routes a client's search)

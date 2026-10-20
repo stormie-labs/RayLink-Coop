@@ -1,0 +1,239 @@
+--[[
+	Anomaly Coop - world rules that only knew the host's actor (gamedata\scripts\coop_economy_world.script)
+
+	Host side (all of it runs only on the host; game_setup and warfare are host-domain scripts):
+	  - Warfare auto-capture (smart_terrain_warfare.process_manual_capture): stock measures only the host's
+	    actor. During that call every player's character counts: a smart is captured when ANY player stands
+	    near it, and the capture is cancelled only when ALL players left. The capture tip goes to everybody.
+	  - World loot of game_setup (random world items with a rolled condition / ammo count / uses): stock applies
+	    the roll in actor_on_item_take, which a client's pickup never fires on the host. The host now writes the
+	    roll onto the item as soon as it is online here (whoever picks it up gets those values through the
+	    item state sync, coop_items), and a client's pickup (npc_on_item_take of the player's character)
+	    releases the loot spot, spawns the next world item and removes the map mark everywhere.
+	    Needs configs\unlocalizers\unlocalizer_coop_economy.ltx (game_setup locals become module fields).
+	Covered elsewhere (nothing to do here):
+	  - release_item_manager: a client's pickup/drop reaches the host as the player's character (a stalker with
+	    the stock binder) taking/dropping the item, so npc_on_item_take/npc_on_item_drop keep the aged-item
+	    tracker right.
+	  - Difficulty and economy factors: coop_settings (host-owned, pushed to clients, client setters locked).
+
+	Events:
+		economy.wf_tip      host -> clients  { s = smart name }        warfare auto-capture started
+		economy.loot_taken  host -> clients  { id, t = marker type }   a world loot item was picked up
+--]]
+
+local core = coop_economy_core
+
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+
+local stats = { captures_checked = 0, capture_tips = 0, baked = 0, peer_takes = 0, loot_marks = 0, errors = 0 }
+
+-------------------------------------------------------------------------------
+-- Warfare auto-capture
+-------------------------------------------------------------------------------
+local capture_depth = 0
+
+-- Positions of every player's character on the host (the host actor is measured by stock itself).
+local function other_player_positions()
+	local out = {}
+	for _, p in ipairs(core.players()) do
+		if not p.is_self and p.pos then out[#out + 1] = p.pos end
+	end
+	return out
+end
+
+local function patch_warfare()
+	local stw = core.mod("smart_terrain_warfare")
+	local wf = core.mod("warfare")
+	if not (stw and wf and type(stw.process_manual_capture) == "function" and type(wf.distance_to_xz_sqr) == "function") then
+		return
+	end
+	local orig = stw.process_manual_capture
+	stw.process_manual_capture = function(smart, ...)
+		if capture_depth > 0 or not core.is_host() or core.others_count() == 0 then return orig(smart, ...) end
+		local positions = other_player_positions()
+		if #positions == 0 then return orig(smart, ...) end
+		stats.captures_checked = stats.captures_checked + 1
+		local d0 = wf.distance_to_xz_sqr
+		-- Inside the call the second argument is always the host actor's position: use the nearest player.
+		wf.distance_to_xz_sqr = function(a, b)
+			local best = d0(a, b)
+			for i = 1, #positions do
+				local d = d0(a, positions[i])
+				if d < best then best = d end
+			end
+			return best
+		end
+		local before = stw.manual_point
+		capture_depth = capture_depth + 1
+		local ok, err = pcall(orig, smart, ...)
+		capture_depth = capture_depth - 1
+		wf.distance_to_xz_sqr = d0
+		if not ok then
+			stats.errors = stats.errors + 1
+			core.log("! warfare capture: %s", tostring(err))
+			return
+		end
+		local mp = stw.manual_point
+		if before == nil and type(mp) == "table" and mp[1] then
+			local se = alife_object(mp[1])
+			if se then
+				stats.capture_tips = stats.capture_tips + 1
+				core.send_clients("wf_tip", { s = se:name() })
+			end
+		end
+	end
+end
+
+local function show_capture_tip(smart_name)
+	local stw = core.mod("smart_terrain_warfare")
+	local name = smart_name
+	if stw and stw.translate_smart_name then
+		local ok, n = pcall(stw.translate_smart_name, smart_name)
+		if ok and n then name = n end
+	end
+	core.hud(core.fmt("st_wrfr_smrt_auto_capture", "Capturing %s", tostring(name)))
+end
+
+-------------------------------------------------------------------------------
+-- game_setup world loot
+-------------------------------------------------------------------------------
+local function gs_ready()
+	local gs = core.mod("game_setup")
+	if gs and type(gs.world_itm_on) == "table" and type(gs.world_itm_num) == "table" and type(gs.world_itm_off) == "table"
+		and type(gs.world_itm_info) == "table" and type(gs.limited_uses) == "table" then
+		return gs
+	end
+end
+
+-- Writes a rolled value onto item `id`. True when done (ammo needs the item online here).
+local function bake(gs, id, section, num)
+	local obj = level.object_by_id(id)
+	local bi = core.mod("bind_item")
+	if IsItem("ammo", section) then
+		if not obj then return false end
+		obj:ammo_set_count(num)
+		return true
+	elseif gs.limited_uses[section] then
+		if bi and type(bi.item_uses) == "table" then bi.item_uses[id] = num end
+		if obj then obj:set_remaining_uses(num) end
+		return obj ~= nil or (bi ~= nil and type(bi.item_uses) == "table")
+	elseif utils_item.is_degradable(nil, section) then
+		if bi and type(bi.item_condition) == "table" then bi.item_condition[id] = num end
+		local dev = core.mod("item_device")
+		if dev and type(dev.dev_condition) == "table" then dev.dev_condition[id] = num end
+		if obj then obj:set_condition(num) end
+		return obj ~= nil or (bi ~= nil and type(bi.item_condition) == "table")
+	end
+	return true -- nothing to roll for this section
+end
+
+-- Host: every rolled world item gets its value as soon as it can carry it.
+local function bake_pending()
+	local gs = gs_ready()
+	if not gs then return end
+	local id_of = {}
+	for id, name in pairs(gs.world_itm_on) do id_of[name] = id end
+	for name, num in pairs(gs.world_itm_num) do
+		local id = id_of[name]
+		local se = id and alife_object(id)
+		if se then
+			local ok, done = pcall(bake, gs, id, se:section_name(), num)
+			if not ok then
+				stats.errors = stats.errors + 1
+				core.log("! world loot %s: %s", tostring(name), tostring(done))
+				gs.world_itm_num[name] = nil
+			elseif done then
+				gs.world_itm_num[name] = nil
+				stats.baked = stats.baked + 1
+			end
+		end
+	end
+end
+
+-- Host: a player's character took an item (the client picked it up). Stock does this for the host actor.
+local function npc_on_item_take(npc, item)
+	if not (core.is_host() and npc and item) then return end
+	local peer = core.engine().peer_of_avatar(npc:id())
+	if peer == nil or peer == core.self_id() then return end
+	local gs = gs_ready()
+	if not gs then return end
+	local id = item:id()
+	local name = gs.world_itm_on[id]
+	if not name then return end
+	stats.peer_takes = stats.peer_takes + 1
+	local section = item:section()
+	pcall(gs.try_spawn_world_item)
+	gs.world_itm_on[id] = nil
+	gs.world_itm_off[name] = true
+	local num = gs.world_itm_num[name]
+	if num then
+		pcall(bake, gs, id, section, num)
+		gs.world_itm_num[name] = nil
+	end
+	local info = gs.world_itm_info[name]
+	if info and info.typ then
+		pcall(gs.remove_marker, id, info.typ)
+		stats.loot_marks = stats.loot_marks + 1
+		core.send_clients("loot_taken", { id = id, t = info.typ })
+	end
+	core.log("world loot %s(%s) taken by %s", section, tostring(id), core.nick_of(peer))
+end
+
+local function patch_game_setup()
+	local gs = core.mod("game_setup")
+	if not gs then return end
+	if not gs_ready() then
+		core.log("! game_setup locals not reachable (unlocalizer_coop_economy.ltx missing?): client pickups keep stock world loot rules")
+		return
+	end
+	local orig = gs.try_spawn_world_item
+	if type(orig) == "function" then
+		gs.try_spawn_world_item = function(...)
+			local r = orig(...)
+			if core.is_host() and core.others_count() > 0 then pcall(bake_pending) end
+			return r
+		end
+	end
+	RegisterScriptCallback("npc_on_item_take", npc_on_item_take)
+end
+
+-------------------------------------------------------------------------------
+-- Events, update, status, start
+-------------------------------------------------------------------------------
+local function register_events()
+	core.on("wf_tip", function(t, from)
+		if from ~= 0 or core.is_host() then return end
+		local s = core.word(t.s, 96)
+		if s then show_capture_tip(s) end
+	end)
+	core.on("loot_taken", function(t, from)
+		if from ~= 0 or core.is_host() then return end
+		local id = core.int(t.id, 1, 65534)
+		local typ = core.word(t.t, 64)
+		local gs = core.mod("game_setup")
+		if id and typ and gs and gs.remove_marker then pcall(gs.remove_marker, core.local_id(id), typ) end
+	end)
+end
+
+local next_bake = 0
+local function actor_on_update()
+	if not core.is_host() then return end
+	local t = core.now()
+	if t < next_bake then return end
+	next_bake = t + 1000
+	if core.others_count() > 0 then pcall(bake_pending) end
+end
+
+function print_status()
+	core.log("world: warfare checks %d, capture tips %d | world loot baked %d, client pickups %d, marks removed %d, errors %d",
+		stats.captures_checked, stats.capture_tips, stats.baked, stats.peer_takes, stats.loot_marks, stats.errors)
+end
+
+function on_game_start()
+	if not core.engine() then return end
+	patch_warfare()
+	patch_game_setup()
+	register_events()
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+end

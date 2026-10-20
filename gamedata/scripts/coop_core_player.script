@@ -1,0 +1,371 @@
+--[[
+	Anomaly Coop - core group: the player's own Lua state, who comes and goes, saves and level moves
+	(gamedata\scripts\coop_core_player.script)
+
+	1. Per-player Lua state. A client loads a copy of the host's save, and with it the HOST's Lua state. The engine
+	   keeps the character's health/satiety/radiation (coop_equip vitals) and rank/reputation (coop_story); thirst,
+	   sleepiness and psy health are carried by coop_economy_mdata / coop_mods_pdata. Left here:
+	   - game_statistics: kills, stashes found, field dressings ..., visited levels and smarts, found artefacts,
+	     anomaly maps, the rank/reputation baseline of the rank news. Achievements are NOT per player: the quests
+	     group shares them with the whole group (coop_quests_pda), so the host's set from the save is right.
+	   - the host's active boosters (drinks, drugs) that came with its save, instead of the player's own.
+	   Both go through the mods group's per-player channel (coop_mods_pdata: the host keeps every player's keys in
+	   its save, a client gets its own back right after the save is read, before any load_state; a new player
+	   starts fresh). Statistics: key "game_statistics" (its own save_state/load_state, without achievements).
+	   Boosters: key "coop_core_boosters" ("type,seconds,value|..."), applied to the actor once it is live.
+	   The rank news are re-baselined after a world load, so the restored rank does not pop "rank increased".
+	2. Join/leave notices on every machine (PDA tip + chat line), the session start notice once per session.
+	3. Quicksave on a client (F5, the menu): asks the host to quicksave ("core.save_req"); the host runs its own
+	   save gates (on_before_save_input) and saves with the stock quicksave, or answers why not.
+	4. Level exits: a client at a level exit asks the host to move the group (engine TransitionVote). The host
+	   accepts with /go in the chat (coop_accept_transition). If the engine tells Lua about the vote
+	   (coop_main.on_transition_vote, see Requests), the host gets a notice and the clients a fade before the move.
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local string_format = string.format
+local tostring, tonumber, type, ipairs, pairs, pcall = tostring, tonumber, type, ipairs, pairs, pcall
+
+local EV_SAVE_REQ = "core.save_req" -- client -> host: please quicksave
+local EV_SAVE_RES = "core.save_res" -- host -> client: ok, why
+local EV_MOVING = "core.moving" -- host -> clients: the group moves to another level now
+
+local ROSTER_MS = 1000
+local SAVE_REQ_GAP_MS = 10000
+local STASH_SEEN = "coop_core_session" -- coop.stash: the session-start notice was shown
+local KEY_STATS = "game_statistics"
+local KEY_BOOSTERS = "coop_core_boosters"
+-- game_statistics parts that belong to the player (actor_achievements are the group's)
+local STATS_SUBS = { "actor_statistics", "actor_visited_levels", "actor_visited_smarts", "actor_artefacts",
+	"actor_anomaly_maps", "actor_miscellaneous" }
+local MAX_BOOSTER_TYPE = 16 -- eBoostHpRestore..eBoostWoundImmunity; the engine hits NODEFAULT on anything else
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-player] %s", ok and line or tostring(fmt))
+end
+
+local function tr(id, fallback)
+	local ok, s = pcall(game.translate_string, id)
+	if not ok or type(s) ~= "string" or s == id then return fallback or id end
+	return s
+end
+
+local function codec()
+	return rawget(_G, "coop_main") or coop_main
+end
+
+local function live()
+	return api ~= nil and api.is_active() and (api.is_host() or api.is_live())
+end
+
+local function players()
+	if not api then return {} end
+	local ok, list = pcall(api.players)
+	return ok and type(list) == "table" and list or {}
+end
+
+local function nick_of(peer)
+	for _, p in ipairs(players()) do
+		if p.id == peer then return tostring(p.nick) end
+	end
+	return "#" .. tostring(peer)
+end
+
+-- PDA tip + a chat line.
+local function notice(text, icon)
+	local chat = rawget(_G, "coop_core_chat")
+	if chat and chat.system then pcall(chat.system, text) end
+	local actor = db.actor
+	if actor then
+		pcall(function()
+			actor:give_game_news(tr("st_coop_core_caption", "Co-op"), text, icon or "ui_iconsTotal_grouping", 0, 6000)
+		end)
+	end
+	log("%s", text)
+end
+
+local function hud_msg(text)
+	local am = rawget(_G, "actor_menu")
+	if am and am.set_msg then pcall(am.set_msg, 1, text, 4) end
+	log("%s", text)
+end
+
+local stats = { boosters_applied = 0, saves = 0, save_refused = 0 }
+
+-------------------------------------------------------------------------------
+-- 1. Per-player Lua state (through coop_mods_pdata)
+-------------------------------------------------------------------------------
+local pdata_ok = false -- our keys are registered with the per-player channel
+local after_load_done = false -- this Lua state: boosters applied, rank news re-baselined
+
+local function actor_conditions()
+	local actor = db.actor
+	local a = actor and actor:cast_Actor()
+	return a and a:conditions()
+end
+
+-- Current boosters of the local actor: "type,seconds,value|..." (seconds in 10 s steps).
+local function boosters_string()
+	local cond = actor_conditions()
+	if not cond then return nil end
+	local list = {}
+	cond:BoosterForEach(function(btype, btime, bvalue)
+		pcall(function()
+			if btime and btime > 0 then
+				list[#list + 1] = string_format("%d,%d,%.4f", btype, math.ceil(btime / 10) * 10, bvalue)
+			end
+		end)
+		return false -- the engine reads a bool: keep iterating
+	end)
+	return table.concat(list, "|")
+end
+
+-- Replaces the actor's boosters (the host's, from its save) with this player's.
+local function apply_boosters(s)
+	local cond = actor_conditions()
+	if not cond then return false end
+	cond:ClearAllBoosters()
+	for entry in tostring(s or ""):gmatch("[^|]+") do
+		local bt, btime, bval = entry:match("^(%d+),([%d%.]+),(%-?[%d%.]+)$")
+		bt, btime, bval = tonumber(bt), tonumber(btime), tonumber(bval)
+		if bt and btime and bval and bt <= MAX_BOOSTER_TYPE and btime > 0 and btime < 1000000
+			and math.abs(bval) < 100000 then
+			local b = SBooster()
+			b.m_type = bt
+			b.fBoostTime = btime
+			b.fBoostValue = bval
+			cond:ApplyBooster(b, "")
+			stats.boosters_applied = stats.boosters_applied + 1
+		end
+	end
+	return true
+end
+
+local function rebaseline_rank()
+	local gs = rawget(_G, "game_statistics")
+	if not (gs and db.actor) then return true end
+	pcall(gs.create_relations_tables)
+	pcall(gs.check_for_rank_change, true)
+	pcall(gs.check_for_reputation_change, true)
+	return true
+end
+
+local function register_pdata()
+	local pd = rawget(_G, "coop_mods_pdata") or coop_mods_pdata
+	if not (pd and type(pd.register) == "function") then
+		log("! coop_mods_pdata not found: statistics and boosters of a client stay the host's")
+		return
+	end
+	local ok1 = pd.register(KEY_STATS, { subs = STATS_SUBS, prime = { "game_statistics" } })
+	local ok2 = pd.register(KEY_BOOSTERS, { get = boosters_string })
+	pdata_ok = ok1 == true and ok2 == true
+	if not pdata_ok then log("! per-player keys not registered (%s, %s)", tostring(ok1), tostring(ok2)) end
+end
+
+-- Client, first live update of this Lua state: the restored keys are in m_data, the actor exists.
+local function client_after_load()
+	after_load_done = true
+	if pdata_ok then
+		local m = alife_storage_manager.get_state()
+		local s = type(m) == "table" and m[KEY_BOOSTERS] or nil
+		apply_boosters(type(s) == "string" and s or "") -- nothing stored: a new player has no boosters
+	end
+	rebaseline_rank()
+	CreateTimeEvent("coop_core_player", "rank_rebaseline", 5, rebaseline_rank) -- the engine's rank lands later
+end
+
+-------------------------------------------------------------------------------
+-- 2. Who comes and goes
+-------------------------------------------------------------------------------
+local roster = nil -- peer id -> { nick, joined }; nil until the first look in this Lua state
+local next_roster = 0
+
+local function roster_tick()
+	local now = {}
+	for _, p in ipairs(players()) do
+		if not p.is_self and type(p.id) == "number" then
+			now[p.id] = { nick = tostring(p.nick), joined = p.avatar_id ~= nil }
+		end
+	end
+	if roster == nil then -- first look: who is here already is no news
+		roster = now
+		if api.stash_get and api.stash_get(STASH_SEEN) ~= "1" then
+			if api.stash_set then api.stash_set(STASH_SEEN, "1") end
+			if api.is_host() then
+				notice(tr("st_coop_core_session_host", "You are hosting a co-op session."))
+			else
+				notice(string_format(tr("st_coop_core_session_client", "Connected to the co-op session of %s."),
+					nick_of(0)))
+			end
+		end
+		return
+	end
+	for id, p in pairs(now) do
+		local old = roster[id]
+		if not old then
+			if p.joined then
+				notice(string_format(tr("st_coop_core_joined", "%s joined the game."), p.nick))
+			else
+				notice(string_format(tr("st_coop_core_connecting", "%s is connecting..."), p.nick))
+			end
+		elseif p.joined and not old.joined then
+			notice(string_format(tr("st_coop_core_joined", "%s joined the game."), p.nick))
+		end
+	end
+	for id, old in pairs(roster) do
+		if not now[id] then
+			notice(string_format(tr("st_coop_core_left", "%s left the game."), old.nick))
+			local world = rawget(_G, "coop_core_world")
+			if world and world.on_peer_left then pcall(world.on_peer_left, id) end
+		end
+	end
+	roster = now
+end
+
+-------------------------------------------------------------------------------
+-- 3. Quicksave asked by a client
+-------------------------------------------------------------------------------
+local last_save_req = -SAVE_REQ_GAP_MS
+
+-- Client: called by coop_main for a quicksave (on_before_save_input type 2). True: the host was asked.
+function request_quicksave()
+	if not (api and api.is_client() and api.is_live()) then return false end
+	local tg = time_global()
+	if tg - last_save_req < SAVE_REQ_GAP_MS then
+		hud_msg(tr("st_coop_core_save_wait", "The host is saving already, wait a moment."))
+		return true
+	end
+	last_save_req = tg
+	api.send_event(EV_SAVE_REQ, "", 0)
+	hud_msg(tr("st_coop_core_save_asked", "Asked the host to quicksave."))
+	return true
+end
+
+local function host_can_save()
+	local actor = db.actor
+	if not (actor and actor:alive()) then return false, "dead" end
+	local am = rawget(_G, "actor_menu")
+	if am and am.is_hud_free and not am.is_hud_free() then return false, "busy" end
+	local flags = { ret = false }
+	SendScriptCallback("on_before_save_input", flags, 2, tr("st_ui_save", "Save"))
+	if flags.ret == true then return false, "refused" end
+	return true
+end
+
+local function on_save_req(payload, from)
+	if not (api and api.is_host()) then return end
+	local cm = codec()
+	local ok, why = host_can_save()
+	if ok then
+		local li = rawget(_G, "level_input") or level_input
+		local save = li and li.action_quick_save
+		local okc, err = false, "level_input.action_quick_save not found"
+		if type(save) == "function" then okc, err = pcall(save) end
+		if not okc then
+			ok, why = false, "error"
+			log("! quicksave for %s failed: %s", nick_of(from), tostring(err))
+		end
+	end
+	if ok then
+		stats.saves = stats.saves + 1
+		notice(string_format(tr("st_coop_core_saved_by", "Quicksave asked by %s."), nick_of(from)))
+	else
+		stats.save_refused = stats.save_refused + 1
+	end
+	api.send_event(EV_SAVE_RES, cm.encode({ ok = ok, why = why or "" }), from)
+end
+
+local SAVE_WHY = {
+	busy = { "st_coop_core_save_busy", "The host cannot save now (a menu or dialog is open)." },
+	dead = { "st_coop_core_save_dead", "The host cannot save now." },
+	refused = { "st_coop_core_save_refused", "The host's game does not allow saving now." },
+	error = { "st_coop_core_save_error", "The host's quicksave failed." },
+}
+
+local function on_save_res(payload, from)
+	if from ~= 0 or not (api and api.is_client()) then return end
+	local t = codec().decode(payload)
+	if t.ok == true then
+		hud_msg(tr("st_coop_core_save_done", "The host saved the game."))
+	else
+		local w = SAVE_WHY[t.why] or SAVE_WHY.refused
+		hud_msg(tr(w[1], w[2]))
+	end
+end
+
+-------------------------------------------------------------------------------
+-- 4. Level exits
+-------------------------------------------------------------------------------
+local vote = nil -- host: { nick, at } of the last transition vote the engine reported
+
+-- Host, engine (through coop_main.on_transition_vote): a player stands at a level exit.
+function on_transition_vote(nick)
+	vote = { nick = tostring(nick or "?"), at = time_global() }
+	notice(string_format(tr("st_coop_core_vote", "%s stands at a level exit. Type /go in the chat to move the group."),
+		vote.nick))
+end
+
+-- Host: /go in the chat.
+function accept_transition()
+	if not (api and api.is_host()) then return false end
+	if vote and time_global() - vote.at < 600000 then
+		api.send_event(EV_MOVING, codec().encode({ nick = vote.nick }), -1)
+		vote = nil
+		CreateTimeEvent("coop_core_player", "accept_transition", 0.6, function()
+			exec_console_cmd("coop_accept_transition")
+			return true
+		end)
+	else
+		exec_console_cmd("coop_accept_transition") -- the engine knows whether one is pending (console answer)
+	end
+	return true
+end
+
+local function on_moving(payload, from)
+	if from ~= 0 or not (api and api.is_client()) or not db.actor then return end
+	hud_msg(tr("st_coop_core_moving", "The group moves to another level..."))
+	pcall(level.add_pp_effector, "sleep_fade.ppe", 1313, false)
+end
+
+-------------------------------------------------------------------------------
+-- Update, callbacks
+-------------------------------------------------------------------------------
+local function actor_on_update()
+	if not api then return end
+	if not api.is_active() then
+		roster = nil
+		return
+	end
+	if not live() then return end
+	if api.is_client() and not after_load_done and db.actor then
+		local ok, err = pcall(client_after_load)
+		if not ok then log("! own state after the world load: %s", tostring(err)) end
+	end
+	local tg = time_global()
+	if tg >= next_roster then
+		next_roster = tg + ROSTER_MS
+		local ok, err = pcall(roster_tick)
+		if not ok then log("! roster: %s", tostring(err)) end
+	end
+end
+
+function print_status()
+	log("player: per-player keys %s, boosters applied %d | quicksaves for clients %d, refused %d",
+		pdata_ok and "registered" or "not registered", stats.boosters_applied, stats.saves, stats.save_refused)
+end
+
+function on_game_start()
+	if not api then return end -- an exe without co-op: nothing of this runs
+	register_pdata() -- before the save is read
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	local cm = codec()
+	if not (cm and cm.add_event_handler) then
+		log("! coop_main.add_event_handler not found: player events are not handled")
+		return
+	end
+	cm.add_event_handler(EV_SAVE_REQ, on_save_req)
+	cm.add_event_handler(EV_SAVE_RES, on_save_res)
+	cm.add_event_handler(EV_MOVING, on_moving)
+end

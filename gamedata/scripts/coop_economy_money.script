@@ -1,0 +1,321 @@
+--[[
+	Anomaly Coop - giving items and money to other players (gamedata\scripts\coop_economy_money.script)
+	SPEC R-6.7: every player has his own money; money and items can be passed between players.
+
+	Items: the inventory context menu (ui_inventory) gets "Give to <player>" for every player whose character
+	stands within give_radius. The action is the engine's own transfer to that character
+	(db.actor:transfer_item); on a client it becomes one ownership request that the host checks and applies
+	(coop_requests: never out of another player's pockets, within reach), so nothing new is needed on the wire.
+
+	Money: "Give money to <player>" opens a choice of amounts. The giver's money is taken first, on his own
+	machine (it is his, R-6.7); the host then credits the receiver ("economy.money_in", applied once per
+	transfer id) or, when the receiver is gone or the transfer is refused, returns it ("economy.money_back").
+	A receiver who left before the credit arrived gets it on his character in the host's world.
+
+	Events:
+		economy.money       giver -> host     { a = amount, to = peer, x = transfer id }
+		economy.money_in    host -> receiver  { a, x, n = giver nick }
+		economy.money_back  host -> giver     { a, x, r = reason }
+
+	For other scripts:
+		coop_economy_money.give_money(peer, amount) -> true when the transfer started
+--]]
+
+local core = coop_economy_core
+
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+local math_floor = math.floor
+
+local MAX_SLOTS = 8
+local AMOUNTS = { 100, 500, 1000, 5000, 10000, 50000 }
+local SEEN_KEEP = 200 -- transfer ids remembered against repeats (also across level loads, coop.stash)
+local STASH_KEY = "coop_eco_money_seen"
+
+local seq = 0
+local seen = nil -- transfer id -> true (applied here)
+local seen_list = {}
+local host_seen = {} -- host: transfer ids already handled
+local stats = { sent = 0, received = 0, returned = 0, refused = 0, items_given = 0 }
+
+-------------------------------------------------------------------------------
+-- Repeat protection (P6): an id is applied once on this machine for the whole session
+-------------------------------------------------------------------------------
+local function load_seen()
+	if seen then return end
+	seen, seen_list = {}, {}
+	local api = core.engine()
+	local raw = api and api.stash_get and api.stash_get(STASH_KEY)
+	if type(raw) == "string" then
+		for id in raw:gmatch("[^,]+") do
+			seen[id] = true
+			seen_list[#seen_list + 1] = id
+		end
+	end
+end
+
+local function mark_seen(id)
+	load_seen()
+	if seen[id] then return false end
+	seen[id] = true
+	seen_list[#seen_list + 1] = id
+	while #seen_list > SEEN_KEEP do
+		seen[table.remove(seen_list, 1)] = nil
+	end
+	local api = core.engine()
+	if api and api.stash_set then pcall(api.stash_set, STASH_KEY, table.concat(seen_list, ",")) end
+	return true
+end
+
+local function money_text(amount)
+	return tostring(amount) .. " " .. core.tr("st_coop_eco_currency", "RU")
+end
+
+-------------------------------------------------------------------------------
+-- Host
+-------------------------------------------------------------------------------
+local function credit_local(amount, x, from_nick)
+	if not db.actor then return false end
+	if not mark_seen(x) then return true end
+	db.actor:give_money(amount)
+	stats.received = stats.received + 1
+	core.tip(core.fmt("st_coop_eco_money_in", "%s gave you %s.", tostring(from_nick), money_text(amount)))
+	return true
+end
+
+local function refund_local(amount, x, reason)
+	if not mark_seen("r" .. x) then return end
+	db.actor:give_money(amount)
+	stats.returned = stats.returned + 1
+	core.tip(core.fmt("st_coop_eco_money_back", "Money returned: %s (%s).", money_text(amount),
+		core.tr("st_coop_eco_money_why_" .. tostring(reason), tostring(reason))))
+end
+
+-- Character of a player in the host world who is not connected: money goes onto it (P4).
+local function credit_character(avatar_id, amount)
+	local obj = level.object_by_id(avatar_id)
+	if obj then
+		return pcall(obj.give_money, obj, amount)
+	end
+	return false
+end
+
+local function host_transfer(from, to, amount, x)
+	if host_seen[x] then return end
+	host_seen[x] = true
+	local giver_nick = core.nick_of(from)
+	local reason = nil
+	if not core.rule("money_transfer") then
+		reason = "off"
+	elseif to == from then
+		reason = "bad"
+	end
+	local target = not reason and core.player(to) or nil
+	if not reason and not target then reason = "gone" end
+	if reason then
+		stats.refused = stats.refused + 1
+		if from == core.self_id() then
+			refund_local(amount, x, reason)
+		elseif core.player(from) then
+			core.send("money_back", { a = amount, x = x, r = reason }, from)
+		end
+		return
+	end
+	stats.sent = stats.sent + 1
+	core.log("money: %s gives %d to %s", giver_nick, amount, target.nick)
+	if target.is_self then
+		if not credit_local(amount, x, giver_nick) then core.send("money_back", { a = amount, x = x, r = "gone" }, from) end
+	elseif not core.send("money_in", { a = amount, x = x, n = giver_nick }, to) then
+		if not (target.avatar_id and credit_character(target.avatar_id, amount)) then
+			core.send("money_back", { a = amount, x = x, r = "gone" }, from)
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Giver
+-------------------------------------------------------------------------------
+function give_money(peer, amount)
+	if not (core.live() and db.actor) then return false end
+	if not core.rule("money_transfer") then
+		core.tip(core.tr("st_coop_eco_money_off", "Money transfers are off in this session."))
+		return false
+	end
+	amount = math_floor(tonumber(amount) or 0)
+	local have = db.actor:money()
+	if amount > have then amount = have end
+	local max = core.rule("max_money_transfer") or 1000000
+	if amount > max then amount = max end
+	if amount < 1 then
+		core.tip(core.tr("st_coop_eco_money_none", "You have no money to give."))
+		return false
+	end
+	local p = core.player(peer)
+	if not p or p.is_self then
+		core.tip(core.tr("st_coop_eco_money_no_target", "That player is not here."))
+		return false
+	end
+	seq = seq + 1
+	local x = string.format("%d.%d.%d", core.self_id(), time_global(), seq)
+	db.actor:give_money(-amount) -- the giver's money is his own: taken here first
+	core.tip(core.fmt("st_coop_eco_money_out", "You gave %s to %s.", money_text(amount), p.nick))
+	if core.is_host() then
+		host_transfer(core.self_id(), peer, amount, x)
+	elseif not core.send("money", { a = amount, to = peer, x = x }, 0) then
+		db.actor:give_money(amount)
+		return false
+	end
+	return true
+end
+
+-------------------------------------------------------------------------------
+-- Inventory menu (ui_inventory.UIInventory)
+-------------------------------------------------------------------------------
+local slots = {} -- index -> { peer, nick, avatar_id } (players near enough for an item)
+local money_slots = {} -- index -> { peer, nick }
+
+local function refresh_slots()
+	slots, money_slots = {}, {}
+	if not (core.live() and db.actor) then return end
+	local me = core.position_of_id(0)
+	local radius = core.rule("give_radius") or 5
+	for _, p in ipairs(core.players()) do
+		if not p.is_self then
+			if #money_slots < MAX_SLOTS then money_slots[#money_slots + 1] = { peer = p.id, nick = p.nick } end
+			if #slots < MAX_SLOTS and p.obj and p.pos and me and core.dist(me, p.pos) <= radius then
+				slots[#slots + 1] = { peer = p.id, nick = p.nick, avatar_id = p.avatar_id }
+			end
+		end
+	end
+end
+
+local function patch_inventory()
+	local inv = core.mod("ui_inventory")
+	local cls = inv and inv.UIInventory
+	if not (cls and type(cls.InitProperties) == "function") then return end
+
+	function cls:coop_eco_CondGive(obj, bag, fname, i)
+		return slots[i] ~= nil
+	end
+	function cls:coop_eco_NameGive(id, bag, fname, i)
+		local s = slots[i]
+		return s and core.fmt("st_coop_eco_give_to", "Give to %s", s.nick) or ""
+	end
+	function cls:coop_eco_ActionGive(id, bag, fname, i)
+		local s = slots[i]
+		if not (s and type(id) == "number" and id > 0 and id < 65535) then return end
+		local item = level.object_by_id(id)
+		local who = level.object_by_id(s.avatar_id)
+		if not (item and who) then
+			core.tip(core.tr("st_coop_eco_money_no_target", "That player is not here."))
+			return
+		end
+		local p = item:parent()
+		if not (p and p:id() == 0) then return end
+		local name = item:section()
+		pcall(function() name = ui_item.get_sec_name(item:section()) or name end)
+		db.actor:transfer_item(item, who) -- a client: one ownership request, the host decides (coop_requests)
+		stats.items_given = stats.items_given + 1
+		core.tip(core.fmt("st_coop_eco_item_given", "%s given to %s.", tostring(name), s.nick))
+	end
+	function cls:coop_eco_CondMoney(obj, bag, fname, i)
+		return money_slots[i] ~= nil and core.rule("money_transfer") ~= false
+	end
+	function cls:coop_eco_NameMoney(id, bag, fname, i)
+		local s = money_slots[i]
+		return s and core.fmt("st_coop_eco_give_money_to", "Give money to %s...", s.nick) or ""
+	end
+	function cls:coop_eco_ActionMoney(id, bag, fname, i)
+		local s = money_slots[i]
+		if not s then return end
+		-- The menu closes itself after this action: open the amount list on the next update.
+		local ui = self
+		CreateTimeEvent("coop_economy_money", "amounts", 0, function()
+			local actions, names, params = {}, {}, {}
+			local have = db.actor and db.actor:money() or 0
+			for _, a in ipairs(AMOUNTS) do
+				if a <= have then
+					actions[#actions + 1] = "coop_eco_GiveAmount"
+					names[#names + 1] = money_text(a)
+					params[#params + 1] = { s.peer, a }
+				end
+			end
+			if have > 0 then
+				actions[#actions + 1] = "coop_eco_GiveAmount"
+				names[#names + 1] = core.fmt("st_coop_eco_money_all", "All (%s)", money_text(have))
+				params[#params + 1] = { s.peer, have }
+			end
+			if #names == 0 then
+				core.tip(core.tr("st_coop_eco_money_none", "You have no money to give."))
+			else
+				pcall(function() ui.item_props:Reset(GetCursorPosition(), actions, names, params) end)
+			end
+			return true
+		end)
+	end
+	function cls:coop_eco_GiveAmount(peer, amount)
+		if give_money(peer, amount) then pcall(function() self:UpdateCharacter() end) end
+	end
+
+	local orig_init = cls.InitProperties
+	function cls:InitProperties(obj, bag, ...)
+		if core.live() then
+			refresh_slots()
+			if not self.coop_eco_props and type(self.properties) == "table" then
+				self.coop_eco_props = true
+				for i = 1, MAX_SLOTS do
+					self.properties["coop_eco_give_" .. i] = {
+						index = 40 + i, name_func = { "coop_eco_NameGive", i }, mode = { inventory = true },
+						cont = { actor_bag = true, actor_equ = true, actor_belt = true },
+						precondition1 = { "coop_eco_CondGive", i }, action = { "coop_eco_ActionGive", i },
+					}
+					self.properties["coop_eco_money_" .. i] = {
+						index = 50 + i, name_func = { "coop_eco_NameMoney", i }, mode = { inventory = true },
+						cont = { actor_bag = true, actor_equ = true, actor_belt = true },
+						precondition1 = { "coop_eco_CondMoney", i }, action = { "coop_eco_ActionMoney", i },
+					}
+				end
+			end
+		else
+			slots, money_slots = {}, {}
+		end
+		return orig_init(self, obj, bag, ...)
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Events, status, start
+-------------------------------------------------------------------------------
+local function register_events()
+	core.on("money", function(t, from)
+		if not core.is_host() or from <= 0 then return end
+		local amount = core.int(t.a, 1, core.rule("max_money_transfer") or 1000000)
+		local to = core.int(t.to, 0, 255)
+		local x = core.word(t.x, 48)
+		if not (amount and to and x) then return end
+		if x:match("^(%d+)%.") ~= tostring(from) then return end -- a giver names his own transfers
+		host_transfer(from, to, amount, x)
+	end)
+	core.on("money_in", function(t, from)
+		if from ~= 0 or core.is_host() or not db.actor then return end
+		local amount = core.int(t.a, 1, 1e8)
+		local x = core.word(t.x, 48)
+		if amount and x then credit_local(amount, x, t.n) end
+	end)
+	core.on("money_back", function(t, from)
+		if from ~= 0 or core.is_host() or not db.actor then return end
+		local amount = core.int(t.a, 1, 1e8)
+		local x = core.word(t.x, 48)
+		if amount and x and x:match("^(%d+)%.") == tostring(core.self_id()) then refund_local(amount, x, core.word(t.r, 16) or "bad") end
+	end)
+end
+
+function print_status()
+	core.log("money: transfers %d, received %d, returned %d, refused %d | items given %d", stats.sent, stats.received,
+		stats.returned, stats.refused, stats.items_given)
+end
+
+function on_game_start()
+	if not core.engine() then return end
+	patch_inventory()
+	register_events()
+end

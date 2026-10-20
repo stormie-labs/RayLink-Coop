@@ -1,0 +1,80 @@
+--[[
+	Anomaly Coop - "Co-op" page of the options menu (W4 menu), gamedata\scripts\coop_menu_options.script
+	Installed by modxml_coop_menu.on_xml_read (dxml start-up), before ui_options builds its tree.
+
+	Player group (every player sets their own; coop_settings.ltx: coop/coop_player/* = player):
+		nickname (console coop_nick), port for hosting ([options] coop/coop_player/host_port, read by coop_menu),
+		names above players and their distance (coop_nametags, coop_nametags_dist).
+	Session rules group (the host's values are used; coop_settings.ltx: coop/coop_session/* = host):
+		friendly fire, shared task rewards, death mode, bleed-out time, health after revive, respawn delay.
+		On a connected client the options window refuses edits of these and shows the lock note
+		(coop_settings: option lock), the values shown there are the player's own for when he hosts.
+	Console variables are saved by the engine in user.ltx (cfg_save on Apply), not in axr_options.ltx.
+--]]
+
+local installed = false
+
+local function check(id, cmd)
+	return { id = id, type = "check", val = 1, cmd = cmd }
+end
+
+local function slide(id, link)
+	return { id = "slide_" .. id, type = "slide", link = link, text = "ui_mm_menu_" .. id, size = { 512, 50 } }
+end
+
+function build_page()
+	return {
+		id = "coop", gr = {
+			{ id = "coop_player", sh = true, gr = {
+				slide("coop_player", "ui_options_slider_player"),
+				{ id = "nick", type = "input", val = 0, cmd = "coop_nick" },
+				{ id = "host_port", type = "input", val = 2, min = 1, max = 65535, def = 27960 },
+				check("nametags", "coop_nametags"),
+				check("nametags_dist", "coop_nametags_dist"),
+			}, },
+			{ id = "coop_session", sh = true, gr = {
+				slide("coop_session", "ui_options_slider_other"),
+				{ id = "note", type = "desc", text = "st_coop_opt_session_note", clr = { 255, 200, 200, 200 } },
+				check("friendly_fire", "coop_friendly_fire"),
+				check("share_rewards", "coop_share_rewards"),
+				{ id = "death_mode", type = "list", val = 0, cmd = "coop_death_mode", no_str = true,
+					content = {
+						{ "hardcore", "st_coop_opt_death_hardcore" },
+						{ "respawn", "st_coop_opt_death_respawn" },
+						{ "respawn_keep", "st_coop_opt_death_respawn_keep" },
+					} },
+				{ id = "bleedout", type = "track", val = 2, cmd = "coop_bleedout", min = 10, max = 600, step = 10 },
+				{ id = "revive_health", type = "track", val = 2, cmd = "coop_revive_health", min = 0.05, max = 1,
+					step = 0.05, prec = 2 },
+				{ id = "respawn_delay", type = "track", val = 2, cmd = "coop_respawn_delay", min = 0, max = 120, step = 5 },
+			}, },
+		},
+	}
+end
+
+local function has_page(list)
+	for i = 1, #list do
+		if type(list[i]) == "table" and list[i].id == "coop" then return true end
+	end
+	return false
+end
+
+-- Appends the page whenever ui_options (re)builds its tree. Append, never insert: init_opt_coder addresses stock
+-- subtrees by index. Idempotent per Lua state.
+function install()
+	if installed then return end
+	local uo = ui_options
+	if not (uo and type(uo.init_opt_base) == "function") then return end
+	installed = true
+	local base = uo.init_opt_base
+	uo.init_opt_base = function(...)
+		base(...)
+		if type(uo.options) == "table" and not has_page(uo.options) then
+			table.insert(uo.options, build_page())
+		end
+	end
+	-- Tree already built by someone before us: add the page now.
+	if type(uo.options) == "table" and #uo.options > 0 and not has_page(uo.options) then
+		table.insert(uo.options, build_page())
+	end
+end

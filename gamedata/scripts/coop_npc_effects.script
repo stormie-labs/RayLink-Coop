@@ -1,0 +1,394 @@
+--[[
+	Anomaly Coop - NPC group (W4 "npc"): what the host's world logic shows and plays reaches the players.
+	Port of the behaviour of xrRazom 1.4 xrr_patch_effects, the anabiotic part of xrr_patch_weather and
+	xrr_patch_arszi_psy (own code, our event API). Time, weather, emission and psi-storm phases are covered
+	by coop_worldstate (C++) and coop_main (Lua); sleep requests by coop_worldstate.
+
+	Host:
+	  - NPC and object voices started by Lua (xr_sound.set_sound_play: meet greetings, wounded calls, camp
+	    stories, restrictor play_sound) are played on the clients too (npc.snd), on the same object. Only
+	    sent when some client is within [coop_npc] sound_radius of the object. A theme of class actor_sound
+	    (a voice in the player's head) started by a replicated restrictor goes to its audience only.
+	  - Looped sounds started/stopped by Lua (xr_sound.play_sound_looped / stop_sound_looped) follow
+	    (npc.loop); the join save already carries the loops that play at join time.
+	  - Cosmetic actor effects of the world logic (camera effectors, complex postprocess, psy gluks,
+	    earthshake, actor sound, PDA tips) run on the host as before and are relayed (npc.cfx): to the audience of a
+	    replicated restrictor, or to everybody when no restrictor fired them. Not while the host's player
+	    is in a dialog (dialog effects belong to the talker, whose machine runs the dialog).
+	Any machine, in a session:
+	  - Anabiotic (bind_stalker_ext) no longer moves the group's clock or ends the emission for everybody:
+	    the player sleeps through it, "anabiotic_in_process" (the stock survive condition of the emission)
+	    is held until the emission and psi-storm are over (cap 5 min, 20 s if none comes).
+	  - arszi_psy: after a revive (coop_survival) a lethal psy health is lifted to a floor and its death
+	    scene counters are reset, so the player is not sent back down at once or left with a black screen.
+
+	Events (ids in host numbering):
+	  npc.snd   host -> client  { i = object, s = theme, f = faction?, p = point? }
+	  npc.loop  host -> client  { i = object, s = theme | "", on = bool }
+	  npc.cfx   host -> client  { f = effect, n = name/section, id = effector id, l = loop, v = fov }
+	Stock functions wrapped: xr_sound.set_sound_play, play_sound_looped, stop_sound_looped;
+	xr_effects.run_cam_effector, run_cam_effector_global, stop_cam_effector, run_postprocess,
+	stop_postprocess, play_sound_on_actor, yan_gluk, x18_gluk, aes_earthshake, warlab_stop_particle, send_tip;
+	bind_stalker_ext.anabiotic_callback, anabiotic_callback2.
+--]]
+
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+
+local TAG = "effects"
+local P -- coop_npc_players
+
+local function log(fmt, ...) P.log(TAG, fmt, ...) end
+local function report(what, err) P.report(TAG, what, err) end
+
+local EV_SND, EV_LOOP, EV_CFX = "npc.snd", "npc.loop", "npc.cfx"
+
+local installed = false
+local host_on = false
+local orig = {}
+local stats = { snd_out = 0, snd_in = 0, loop_out = 0, loop_in = 0, cfx_out = 0, cfx_in = 0, anabiotic = 0, psy_floor = 0 }
+
+local function logic_audience(npc)
+	local L = _G["coop_npc_logic"]
+	if not (L and L.audience_of and npc) then return nil end
+	local ok, aud = pcall(L.audience_of, npc)
+	return ok and aud or nil
+end
+
+-- Peers to receive something fired by `npc`: its restrictor audience, else every client (-1 = all).
+local function send_scoped(name, t, npc)
+	local aud = logic_audience(npc)
+	if not aud then
+		return P.send(name, t, -1)
+	end
+	local sent = false
+	local host_actor = db.actor and db.actor:id()
+	for id in pairs(aud) do
+		if id ~= host_actor then
+			local peer = P.peer_of(id)
+			if peer and P.send(name, t, peer) then sent = true end
+		end
+	end
+	return sent
+end
+
+-------------------------------------------------------------------------------
+-- Host: voices and looped sounds
+-------------------------------------------------------------------------------
+local function client_near(id)
+	local obj = level.object_by_id(id)
+	if not obj then return false end
+	local r = P.setting("sound_radius", 80)
+	local r2 = r * r
+	local pos = obj:position()
+	for _, o in ipairs(P.others()) do
+		if o:position():distance_to_sqr(pos) <= r2 then return true end
+	end
+	return false
+end
+
+local function plain(v)
+	local tv = type(v)
+	if tv == "number" or tv == "string" or tv == "boolean" then return v end
+	return nil
+end
+
+local function patch_sounds()
+	local xs = _G["xr_sound"]
+	if not xs then return end
+	local set_play = xs.set_sound_play
+	if type(set_play) == "function" and not orig.set_play then
+		orig.set_play = set_play
+		xs.set_sound_play = function(npc_id, sound, faction, point)
+			if not (host_on and type(npc_id) == "number" and npc_id ~= 0) then
+				return set_play(npc_id, sound, faction, point)
+			end
+			local before = xs.sound_table[npc_id]
+			local r = set_play(npc_id, sound, faction, point)
+			local after = xs.sound_table[npc_id]
+			local theme = sound_theme and sound_theme.theme[sound]
+			local started = after ~= nil and rawequal(after, theme)
+				and (before == nil or theme.play_always == true)
+			if started and not P.is_player_id(npc_id) then
+				local ok, err = pcall(function()
+					local npc = level.object_by_id(npc_id)
+					local t = { i = npc_id, s = sound, f = plain(faction), p = plain(point) }
+					local sent
+					if theme.class_id == "actor_sound" then
+						sent = send_scoped(EV_SND, t, npc)
+					elseif client_near(npc_id) then
+						sent = P.send(EV_SND, t, -1)
+					end
+					if sent then stats.snd_out = stats.snd_out + 1 end
+				end)
+				if not ok then report("voice relay", err) end
+			end
+			return r
+		end
+	end
+	local loop_play = xs.play_sound_looped
+	if type(loop_play) == "function" and not orig.loop_play then
+		orig.loop_play = loop_play
+		xs.play_sound_looped = function(npc_id, sound)
+			local t = host_on and type(npc_id) == "number" and xs.looped_sound[npc_id]
+			local was = t and t[sound] ~= nil
+			local r = loop_play(npc_id, sound)
+			if host_on and npc_id ~= 0 and not was then
+				local now = xs.looped_sound[npc_id]
+				if now and now[sound] ~= nil and P.send(EV_LOOP, { i = npc_id, s = sound, on = true }, -1) then
+					stats.loop_out = stats.loop_out + 1
+				end
+			end
+			return r
+		end
+	end
+	local loop_stop = xs.stop_sound_looped
+	if type(loop_stop) == "function" and not orig.loop_stop then
+		orig.loop_stop = loop_stop
+		xs.stop_sound_looped = function(npc_id, sound)
+			local busy = host_on and type(npc_id) == "number" and npc_id ~= 0 and xs.looped_sound[npc_id] ~= nil
+			local r = loop_stop(npc_id, sound)
+			if busy and P.send(EV_LOOP, { i = npc_id, s = type(sound) == "string" and sound or "", on = false }, -1) then
+				stats.loop_out = stats.loop_out + 1
+			end
+			return r
+		end
+	end
+end
+
+local function client_on_snd(t)
+	if type(t.i) ~= "number" or type(t.s) ~= "string" then return end
+	if not (sound_theme and sound_theme.theme[t.s]) then return end
+	local id = P.to_local(t.i)
+	if id ~= 0 and not level.object_by_id(id) then return end -- not online here
+	local point = t.p
+	if type(point) == "number" then point = P.to_local(point) end
+	stats.snd_in = stats.snd_in + 1
+	xr_sound.set_sound_play(id, t.s, t.f, point)
+end
+
+local function client_on_loop(t)
+	if type(t.i) ~= "number" or type(t.s) ~= "string" then return end
+	local id = P.to_local(t.i)
+	stats.loop_in = stats.loop_in + 1
+	if t.on == true then
+		if sound_theme and sound_theme.theme[t.s] then xr_sound.play_sound_looped(id, t.s) end
+	else
+		xr_sound.stop_sound_looped(id, t.s ~= "" and t.s or nil)
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Host: cosmetic actor effects
+-------------------------------------------------------------------------------
+local function relay_fx(npc, t)
+	if not host_on then return end
+	if db.actor and db.actor:is_talking() then return end
+	if send_scoped(EV_CFX, t, npc) then stats.cfx_out = stats.cfx_out + 1 end
+end
+
+local function num(v) return type(v) == "number" and v > 0 and v or nil end
+
+-- Effects that are pure visuals/sounds on the receiving machine: replayed by name with the same params.
+local REPLAY_BY_NAME = { yan_gluk = true, x18_gluk = true, aes_earthshake = true, warlab_stop_particle = true,
+	play_sound_on_actor = true, send_tip = true }
+
+local function patch_effects()
+	local xe = _G["xr_effects"]
+	if not xe then return end
+	local function wrap(name, after)
+		local f = xe[name]
+		if type(f) ~= "function" or orig["fx_" .. name] then return end
+		orig["fx_" .. name] = f
+		xe[name] = function(actor, npc, p, ...)
+			local r = f(actor, npc, p, ...)
+			if host_on then
+				local ok, err = pcall(after, npc, p)
+				if not ok then report("relay " .. name, err) end
+			end
+			return r
+		end
+	end
+	wrap("run_cam_effector", function(npc, p)
+		if p and p[1] then relay_fx(npc, { f = "cam", n = p[1], id = num(p[2]) or 0, l = p[3] == "true" }) end
+	end)
+	wrap("run_cam_effector_global", function(npc, p)
+		if p and p[1] then relay_fx(npc, { f = "cam", n = p[1], id = num(p[2]) or 0, l = false, v = type(p[3]) == "number" and p[3] or nil }) end
+	end)
+	wrap("stop_cam_effector", function(npc, p)
+		if p and num(p[1]) then relay_fx(npc, { f = "stop_cam", id = p[1] }) end
+	end)
+	wrap("run_postprocess", function(npc, p)
+		if p and p[1] then relay_fx(npc, { f = "pp", n = p[1], id = num(p[2]) or 0 }) end
+	end)
+	wrap("stop_postprocess", function(npc, p)
+		if p and num(p[1]) then relay_fx(npc, { f = "stop_pp", id = p[1] }) end
+	end)
+	for name in pairs(REPLAY_BY_NAME) do
+		wrap(name, function(npc, p)
+			local args = {}
+			if type(p) == "table" then for i = 1, #p do args[i] = tostring(p[i]) end end
+			relay_fx(npc, { f = "named", n = name, a = table.concat(args, ":") })
+		end)
+	end
+end
+
+local function client_on_cfx(t)
+	if not db.actor or type(t.f) ~= "string" then return end
+	stats.cfx_in = stats.cfx_in + 1
+	local id = tonumber(t.id) or 0
+	if t.f == "cam" and type(t.n) == "string" then
+		if id <= 0 then id = 1000 + math.random(100) end
+		local fov = tonumber(t.v)
+		if fov then
+			level.add_cam_effector("camera_effects\\" .. t.n .. ".anm", id, t.l == true, "", fov)
+		else
+			level.add_cam_effector("camera_effects\\" .. t.n .. ".anm", id, t.l == true, "")
+		end
+	elseif t.f == "stop_cam" and id > 0 then
+		level.remove_cam_effector(id)
+	elseif t.f == "pp" and type(t.n) == "string" then
+		if not ini_sys:section_exist(t.n) then return end
+		if id <= 0 then id = 2000 + math.random(100) end
+		level.add_complex_effector(t.n, id)
+	elseif t.f == "stop_pp" and id > 0 then
+		level.remove_complex_effector(id)
+	elseif t.f == "named" and REPLAY_BY_NAME[t.n] then
+		local f = orig["fx_" .. t.n] or (xr_effects and xr_effects[t.n])
+		if type(f) == "function" then
+			local p = (type(t.a) == "string" and t.a ~= "") and xr_logic.parse_func_params(t.a) or {}
+			f(db.actor, nil, p)
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Anabiotic in a session: sleep through the emission, the clock stays the group's
+-------------------------------------------------------------------------------
+local ana = { on = false, t0 = 0, seen = false, next_check = 0 }
+
+local function emission_on()
+	local sm = _G["surge_manager"]
+	local pm = _G["psi_storm_manager"]
+	local s = sm and sm.is_started and sm.is_started()
+	local p = pm and pm.is_started and pm.is_started()
+	return (s or p) and true or false
+end
+
+local function ana_poll(now)
+	if not ana.on or now < ana.next_check then return end
+	ana.next_check = now + 1000
+	local busy = emission_on()
+	if busy then ana.seen = true end
+	local held = now - ana.t0
+	if (ana.seen and not busy) or (not ana.seen and held > 20000) or held > 300000 then
+		ana.on, ana.seen = false, false
+		if has_alife_info("anabiotic_in_process") then disable_info("anabiotic_in_process") end
+		log("anabiotic: woke up (%s)", busy and "time cap" or "emission over")
+	end
+end
+
+local function patch_anabiotic()
+	local bse = _G["bind_stalker_ext"]
+	if not bse then return end
+	local cb1, cb2 = bse.anabiotic_callback, bse.anabiotic_callback2
+	if type(cb1) ~= "function" or type(cb2) ~= "function" or orig.ana1 then return end
+	orig.ana1, orig.ana2 = cb1, cb2
+	-- Stock: forwards the clock 35-45 minutes and may end the emission. In a session that would be the
+	-- whole group's clock: only the sleep remains.
+	bse.anabiotic_callback = function(...)
+		if not P.active() then return cb1(...) end
+		level.add_cam_effector("camera_effects\\surge_01.anm", 10, false, "bind_stalker_ext.anabiotic_callback2")
+		ana.on, ana.t0, ana.seen, ana.next_check = true, time_global(), false, 0
+		stats.anabiotic = stats.anabiotic + 1
+	end
+	-- Stock clears anabiotic_in_process here; in a session the poll clears it when the emission is over.
+	bse.anabiotic_callback2 = function(...)
+		if not P.active() then return cb2(...) end
+		xr_effects.enable_ui(db.actor, nil)
+		exec_console_cmd("snd_volume_music " .. tostring(_G.mus_vol))
+		exec_console_cmd("snd_volume_eff " .. tostring(_G.amb_vol))
+		_G.amb_vol = 0
+		_G.mus_vol = 0
+	end
+end
+
+-------------------------------------------------------------------------------
+-- arszi_psy after a revive
+-------------------------------------------------------------------------------
+local revive = { low = false }
+local PSY_LETHAL, PSY_FLOOR = 0.001, 0.3
+
+function on_actor_revived()
+	local ap = _G["arszi_psy"]
+	if not (ap and ap.get_psy_health and ap.set_psy_health) then return end
+	local psy = ap.get_psy_health()
+	if type(psy) == "number" and psy <= PSY_LETHAL then
+		ap.set_psy_health(PSY_FLOOR)
+		if ap.on_game_load then pcall(ap.on_game_load) end -- resets its death-scene stage and counter
+		if ap.remove_all_psy_ppe_effects then pcall(ap.remove_all_psy_ppe_effects) end
+		level.enable_input()
+		stats.psy_floor = stats.psy_floor + 1
+		log("revived: psy health %.3f -> %.2f", psy, PSY_FLOOR)
+	end
+end
+
+-- No revive callback from coop_survival yet: a revive pins the health just above zero, then sets it to the
+-- revive health in one step. coop_actor_revived (if the engine adds it) is used as well.
+local function revive_poll()
+	local a = db.actor
+	if not a then return end
+	local h = a.health
+	if h < 0.02 then
+		revive.low = true
+	elseif revive.low and h >= 0.1 then
+		revive.low = false
+		on_actor_revived()
+	elseif h >= 0.02 then
+		revive.low = false
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Install, update, events
+-------------------------------------------------------------------------------
+local next_tick = 0
+
+local function actor_on_update()
+	local now = time_global()
+	if now < next_tick then return end
+	next_tick = now + 500
+	host_on = installed and P.host_with_clients()
+	if not P.active() then return end
+	ana_poll(now)
+	revive_poll()
+end
+
+function print_status()
+	log("installed %s | voices out %d in %d, loops out %d in %d, effects out %d in %d | anabiotic %d (holding %s), psy floor %d | errors %d",
+		tostring(installed), stats.snd_out, stats.snd_in, stats.loop_out, stats.loop_in, stats.cfx_out, stats.cfx_in,
+		stats.anabiotic, tostring(ana.on), stats.psy_floor, P.error_count(TAG))
+end
+
+function on_game_start()
+	P = coop_npc_players
+	if not rawget(_G, "coop") then return end
+	if not installed then
+		local steps = { { "sounds", patch_sounds }, { "effects", patch_effects }, { "anabiotic", patch_anabiotic } }
+		for _, s in ipairs(steps) do
+			local ok, err = pcall(s[2])
+			if not ok then report("install " .. s[1], err) end
+		end
+		installed = true
+	end
+	P.on(EV_SND, client_on_snd, "client", TAG)
+	P.on(EV_LOOP, client_on_loop, "client", TAG)
+	P.on(EV_CFX, client_on_cfx, "client", TAG)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	if _G["axr_main"] then
+		pcall(AddScriptCallback, "coop_actor_revived")
+		pcall(RegisterScriptCallback, "coop_actor_revived", on_actor_revived)
+	end
+end
+
+function _set_host_on(v) host_on = v end
+function _stats() return stats end

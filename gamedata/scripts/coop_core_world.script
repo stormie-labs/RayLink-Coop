@@ -1,0 +1,636 @@
+--[[
+	Anomaly Coop - core group: shared world pieces the engine does not carry (gamedata\scripts\coop_core_world.script)
+
+	1. News. Dynamic news (deaths, gossip, warfare), faction radio messages and tips from logic that only the host
+	   runs (dynamic_news_manager, sim_offline_combat, tasks_defense, warfare, NPC remarks ...) are shown on the
+	   host only, because clients skip that logic (coop_main domains). The host sends them on ("core.news") and
+	   every client shows them with its own stock functions (own language, own PDA sounds). Task news are
+	   coop_tasks' business; the emission's own news come from the client's emission mirror (coop_main).
+	2. Mutant loot. Only one player at a time may cut up a mutant, and a looted mutant stays looted for everybody.
+	   A client asks the host ("core.mloot_open"); the host locks the corpse for it and answers with what is left
+	   (or "roll it yourself", "nothing to loot", "decayed", "busy"); the client's window then works as usual, and
+	   on close the client gives the rest back ("core.mloot_close"). Any change of the looted flag on the host
+	   (its own player, its NPCs, a client) goes to all clients ("core.mloot_edge").
+	3. Stashes. Clients skip treasure_manager (host logic). Filling a stash a client opens is coop_quests_pda's
+	   (quests group). Here: the first item a client takes from a filled stash counts it as found for that player
+	   ("core.box_take" -> "core.stash_found": statistic + stock "stash found" news), the host clears the cache
+	   and removes the PDA mark (replicated by coop_story).
+	4. Traders. NPC logic does not run on clients, so a trader's price conditions are never set there and the
+	   trade window would price with the defaults. When a client starts talking to an NPC, its trade profile is
+	   applied from the save and asked from the host, which also runs the stock restock check now
+	   ("core.trader_req" -> "core.trader_cfg"). Restocked items reach clients as normal world items.
+	5. FDDA (if installed): its HUD animation prefetch is skipped on co-op clients (xrRazom found it crashing
+	   the first update of a joining player).
+	Everything here is a no-op outside a co-op session.
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local string_format = string.format
+local tostring, tonumber, type, ipairs, pairs, pcall = tostring, tonumber, type, ipairs, pairs, pcall
+
+local EV_NEWS = "core.news"
+local EV_MLOOT_OPEN = "core.mloot_open" -- client -> host: id
+local EV_MLOOT_STATE = "core.mloot_state" -- host -> client: id, v (0 rest follows, 1 nothing, 2 decayed, 3 busy, 4 roll), i:<sec>=count
+local EV_MLOOT_CLOSE = "core.mloot_close" -- client -> host: id, m (more loot left), n (never rolled) | i:<sec>=count
+local EV_MLOOT_EDGE = "core.mloot_edge" -- host -> clients: id, l (looted)
+local EV_BOX_TAKE = "core.box_take" -- client -> host: id
+local EV_STASH_FOUND = "core.stash_found" -- host -> client
+local EV_TRADER_REQ = "core.trader_req" -- client -> host: id
+local EV_TRADER_CFG = "core.trader_cfg" -- host -> client: id, cfg
+
+local TICK_MS = 500
+local MLOOT_PENDING_MS = 5000 -- an unanswered open request is forgotten
+local MLOOT_UI_WAIT_MS = 2000 -- granted, but the loot window did not open: give the lock back
+local MLOOT_UI_WAIT_EA_MS = 20000 -- the same with FDDA (the window opens after the animation)
+local MLOOT_LOCK_MS = 300000 -- host: a lock nobody gave back
+local BOX_GAP_MS = 10000 -- a "found" report per box at most this often
+local TRADER_GAP_MS = 15000
+
+-- Scripts whose news only the host makes (callers of dynamic_news_helper.send_tip / news_manager.send_tip).
+-- Calls from anywhere else (the host player's own dialogs, other co-op scripts, addons) stay on the host.
+local SHARED_ORIGINS = {
+	dynamic_news_manager = true, sim_offline_combat = true, tasks_defense = true,
+	warfare = true, warfare_faction_control = true, sim_squad_warfare = true, smart_terrain_warfare = true,
+	xr_remark = true, mob_remark = true, sound_theme = true, z_barrier_defense_emission_fix = true,
+}
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-world] %s", ok and line or tostring(fmt))
+end
+
+local function tr(id, fallback)
+	local ok, s = pcall(game.translate_string, id)
+	if not ok or type(s) ~= "string" or s == id then return fallback or id end
+	return s
+end
+
+local function codec()
+	return rawget(_G, "coop_main") or coop_main
+end
+
+local function in_session()
+	return api ~= nil and api.is_active()
+end
+
+local function is_host()
+	return in_session() and api.is_host()
+end
+
+local function live_client()
+	return in_session() and api.is_client() and api.is_live()
+end
+
+local function msg(text)
+	local am = rawget(_G, "actor_menu")
+	if am and am.set_msg then pcall(am.set_msg, 1, text, 4) end
+end
+
+local function host_id(local_id)
+	return api.to_host_id(local_id) or local_id
+end
+
+local function local_id(id)
+	return api.to_local_id(id) or id
+end
+
+local stats = { news_out = 0, news_in = 0, mloot_req = 0, mloot_granted = 0, mloot_denied = 0, mloot_closed = 0,
+	mloot_edges = 0, stashes_found = 0, trader_req = 0, trader_applied = 0 }
+
+-------------------------------------------------------------------------------
+-- 1. News
+-------------------------------------------------------------------------------
+local news_applying = false -- client: showing a host news now
+
+local function plain(v)
+	local t = type(v)
+	return (t == "string" or t == "number" or t == "boolean") and v or nil
+end
+
+local function share(t)
+	if news_applying or not is_host() then return end
+	local ok = api.send_event(EV_NEWS, codec().encode(t), -1)
+	if ok then stats.news_out = stats.news_out + 1 end
+end
+
+-- Script names on the call stack above the news function. A caller that tail-calls the news function
+-- (`return news_manager.send_tip(...)`) leaves no frame and is not recognised.
+local function from_shared_origin()
+	for lvl = 3, 14 do
+		local ok, info = pcall(debug.getinfo, lvl, "S")
+		if not (ok and info) then break end
+		local name = (info.source or ""):match("([^\\/]+)%.[sS][cC][rR][iI][pP][tT]$")
+		if name and SHARED_ORIGINS[name:lower()] then return true end
+	end
+	return false
+end
+
+local function wrap_news()
+	local dnh = rawget(_G, "dynamic_news_helper") or dynamic_news_helper
+	if dnh and type(dnh.send_tip) == "function" and not dnh.__coop_core_shared then
+		dnh.__coop_core_shared = true
+		local orig = dnh.send_tip
+		dnh.send_tip = function(m, h, to, st, s, snd, ib)
+			local r = orig(m, h, to, st, s, snd, ib)
+			if r and is_host() and from_shared_origin() then
+				share({ k = "dyn", m = plain(m), h = plain(h), to = plain(to), st = plain(st), s = plain(s),
+					snd = plain(snd), ib = plain(ib) })
+			end
+			return r
+		end
+	end
+	local nm = rawget(_G, "news_manager") or news_manager
+	if nm and type(nm.send_sound) == "function" and not nm.__coop_core_shared then
+		nm.__coop_core_shared = true
+		local orig_sound = nm.send_sound
+		nm.send_sound = function(npc, faction, point, str, str2, delay_sound)
+			local r = orig_sound(npc, faction, point, str, str2, delay_sound)
+			if r and is_host() then
+				share({ k = "snd", f = plain(faction), p = plain(point), s = plain(str), s2 = plain(str2),
+					d = plain(delay_sound) })
+			end
+			return r
+		end
+		local orig_tip = nm.send_tip
+		nm.send_tip = function(actor, news_id, timeout, sender, showtime, sender_id)
+			local r = orig_tip(actor, news_id, timeout, sender, showtime, sender_id)
+			if r and is_host() and from_shared_origin() then
+				share({ k = "tip", id = plain(news_id), to = plain(timeout), s = type(sender) == "string" and sender or nil,
+					st = plain(showtime), sid = plain(sender_id) })
+			end
+			return r
+		end
+	end
+end
+
+local function str_arg(v, max)
+	return type(v) == "string" and #v <= (max or 512) and v or nil
+end
+
+local function on_news(payload, from)
+	if from ~= 0 or not live_client() or not db.actor then return end
+	local t = codec().decode(payload)
+	stats.news_in = stats.news_in + 1
+	news_applying = true
+	local ok, err = pcall(function()
+		if t.k == "dyn" then
+			local m = str_arg(t.m, 4000)
+			local dev = rawget(_G, "item_device")
+			local pda_ok = not (dev and dev.is_pda_charged) or dev.is_pda_charged(true) -- the stock gate, own PDA
+			if m and pda_ok then
+				dynamic_news_helper.send_tip(m, str_arg(t.h, 1000), tonumber(t.to), tonumber(t.st), str_arg(t.s, 128),
+					str_arg(t.snd, 64), str_arg(t.ib, 16))
+			end
+		elseif t.k == "snd" then
+			local f, s = str_arg(t.f, 64), str_arg(t.s, 512)
+			if f and s then
+				news_manager.send_sound(nil, f, str_arg(t.p, 128), s, str_arg(t.s2, 512), tonumber(t.d) or 0)
+			end
+		elseif t.k == "tip" then
+			local id = str_arg(t.id, 512)
+			if id then
+				news_manager.send_tip(db.actor, id, tonumber(t.to), str_arg(t.s, 128), tonumber(t.st), str_arg(t.sid, 128))
+			end
+		end
+	end)
+	news_applying = false
+	if not ok then log("! host news not shown: %s", tostring(err)) end
+end
+
+-------------------------------------------------------------------------------
+-- 2. Mutant loot
+-------------------------------------------------------------------------------
+local ml = rawget(_G, "ui_mutant_loot") -- set in install_mutant_loot
+local orig_start -- the start() found at install (FDDA may have wrapped it already)
+local locks = {} -- host: corpse id -> { peer, at }
+local pending = {} -- client: local corpse id -> time of the request
+local granted = {} -- client: local corpse id -> { at, shown }
+local decay_s = nil
+
+local function decay_time()
+	if not decay_s then
+		local ok, v = pcall(function()
+			return ini_file("items\\settings\\mutant_loot.ltx"):r_float_ex("mutant_loot_mod", "decay_time")
+		end)
+		decay_s = ok and tonumber(v) or 7200
+	end
+	return decay_s
+end
+
+local function loot_to_flat(loot, t)
+	if type(loot) ~= "table" then return t end
+	for sec, v in pairs(loot) do
+		local c = type(v) == "table" and tonumber(v.count) or nil
+		if type(sec) == "string" and c and c > 0 then t["i:" .. sec] = c end
+	end
+	return t
+end
+
+local function flat_to_loot(t)
+	local loot = {}
+	for k, v in pairs(t) do
+		if type(k) == "string" and k:sub(1, 2) == "i:" then
+			local sec, c = k:sub(3), tonumber(v)
+			if c and c > 0 and c < 1000 and ini_sys:section_exist(sec) then loot[sec] = { count = math.floor(c) } end
+		end
+	end
+	return loot
+end
+
+local function set_looted_local(obj, looted)
+	se_save_var(obj:id(), obj:name(), "looted", looted and true or false)
+	save_var(obj, "looted", looted and true or nil)
+end
+
+-- Host: the looted flag of a corpse changed; every client takes it over.
+local function edge(id, looted)
+	if not is_host() then return end
+	if api.send_event(EV_MLOOT_EDGE, codec().encode({ id = id, l = looted and true or false }), -1) then
+		stats.mloot_edges = stats.mloot_edges + 1
+	end
+end
+
+local function host_mloot_reply(to, id, v, loot)
+	local t = loot_to_flat(loot, { id = id, v = v })
+	if v == 0 or v == 4 then stats.mloot_granted = stats.mloot_granted + 1 else stats.mloot_denied = stats.mloot_denied + 1 end
+	api.send_event(EV_MLOOT_STATE, codec().encode(t), to)
+end
+
+local function host_grant(to, id, obj)
+	local loot = load_var(obj, "loot", nil)
+	if loot then host_mloot_reply(to, id, 0, loot) else host_mloot_reply(to, id, 4) end
+end
+
+local function on_mloot_open(payload, from)
+	if not is_host() then return end
+	stats.mloot_req = stats.mloot_req + 1
+	local id = tonumber(codec().decode(payload).id)
+	local obj = id and level.object_by_id(id)
+	if not (obj and IsMonster(obj) and not obj:alive()) then
+		host_mloot_reply(from, id or 0, 1)
+		return
+	end
+	local lock = locks[id]
+	if lock and lock.peer == from then -- a repeat of our own open: same answer
+		host_grant(from, id, obj)
+		return
+	end
+	if lock then
+		host_mloot_reply(from, id, 3)
+		return
+	end
+	local gui = ml and ml.GUI
+	if gui and gui:IsShown() and gui.id == id then -- the host player has it open
+		host_mloot_reply(from, id, 3)
+		return
+	end
+	local name = obj:name()
+	if se_load_var(id, name, "looted") then
+		host_mloot_reply(from, id, 1)
+		return
+	end
+	local st = db.storage[id]
+	if st and st.death_time and game.get_game_time():diffSec(st.death_time) > decay_time() then
+		se_save_var(id, name, "looted", true)
+		pcall(xr_corpse_detection.set_valuable_loot, id, false)
+		edge(id, true)
+		host_mloot_reply(from, id, 2)
+		return
+	end
+	-- Locked for this player: the host's own player and NPCs see it as looted until it comes back.
+	se_save_var(id, name, "looted", true)
+	save_var(obj, "looted", true)
+	pcall(xr_corpse_detection.set_valuable_loot, id, false)
+	locks[id] = { peer = from, at = time_global() }
+	host_grant(from, id, obj)
+end
+
+local function host_release(id, more, loot)
+	local obj = level.object_by_id(id)
+	if not obj then return end
+	if loot then save_var(obj, "loot", loot) end
+	se_save_var(id, obj:name(), "looted", not more)
+	save_var(obj, "looted", (not more) and true or nil)
+	pcall(xr_corpse_detection.set_valuable_loot, id, more and true or false)
+	edge(id, not more)
+end
+
+local function on_mloot_close(payload, from)
+	if not is_host() then return end
+	local t = codec().decode(payload)
+	local id = tonumber(t.id)
+	local lock = id and locks[id]
+	if not (lock and lock.peer == from) then return end -- stale or not this player's
+	locks[id] = nil
+	stats.mloot_closed = stats.mloot_closed + 1
+	host_release(id, t.m == true, (t.n ~= true) and flat_to_loot(t) or nil)
+end
+
+-- Host: a player left or a lock was never given back: the corpse is free again.
+local function release_locks(pred)
+	for id, lock in pairs(locks) do
+		if pred(lock) then
+			locks[id] = nil
+			pcall(host_release, id, true, nil)
+		end
+	end
+end
+
+function on_peer_left(peer)
+	if is_host() then release_locks(function(l) return l.peer == peer end) end
+end
+
+local function client_open(obj)
+	local id = obj:id()
+	se_save_var(id, obj:name(), "looted", false) -- the use callback marked it: the host decides
+	local tg = time_global()
+	if pending[id] and tg - pending[id] < MLOOT_PENDING_MS then return end
+	pending[id] = tg
+	api.send_event(EV_MLOOT_OPEN, codec().encode({ id = host_id(id) }), 0)
+end
+
+local function on_mloot_state(payload, from)
+	if from ~= 0 or not live_client() then return end
+	local t = codec().decode(payload)
+	local id = tonumber(t.id) and local_id(tonumber(t.id))
+	local v = tonumber(t.v)
+	if not (id and v) then return end
+	pending[id] = nil
+	local obj = level.object_by_id(id)
+	if not obj then
+		if v == 0 or v == 4 then -- granted, but the corpse is gone here: give the lock back
+			api.send_event(EV_MLOOT_CLOSE, codec().encode({ id = host_id(id), m = true, n = true }), 0)
+		end
+		return
+	end
+	if v == 0 or v == 4 then
+		if v == 0 then
+			save_var(obj, "loot", flat_to_loot(t)) -- what is left: FillList shows it instead of rolling
+		else
+			save_var(obj, "loot", nil) -- nothing stored on the host: FillList rolls here, for this looter
+		end
+		save_var(obj, "looted", nil)
+		se_save_var(id, obj:name(), "looted", true)
+		granted[id] = { at = time_global(), shown = false }
+		ml.start(obj, id, obj:section(), obj:clsid()) -- through the module: other wrappers (FDDA) stay in
+	elseif v == 1 or v == 2 then
+		save_var(obj, "loot", {})
+		set_looted_local(obj, true)
+		if v == 1 then
+			msg(tr("st_body_useless", "Nothing useful"))
+		else
+			msg(tr("st_body_decayed", "The body has decayed"))
+		end
+	elseif v == 3 then
+		msg(tr("st_coop_core_mloot_busy", "Another player is cutting up this body."))
+	end
+end
+
+local function on_mloot_edge(payload, from)
+	if from ~= 0 or not live_client() then return end
+	local t = codec().decode(payload)
+	local id = tonumber(t.id) and local_id(tonumber(t.id))
+	local obj = id and level.object_by_id(id)
+	if not obj or granted[id] then return end
+	set_looted_local(obj, t.l == true)
+end
+
+local function client_mloot_tick(tg)
+	for id, at in pairs(pending) do
+		if tg - at > MLOOT_PENDING_MS then pending[id] = nil end
+	end
+	local gui = ml and ml.GUI
+	local wait = rawget(_G, "enhanced_animations") and MLOOT_UI_WAIT_EA_MS or MLOOT_UI_WAIT_MS
+	for id, g in pairs(granted) do
+		if gui and gui:IsShown() and gui.id == id then
+			g.shown = true
+		elseif not g.shown and tg - g.at > wait then
+			-- The window never opened: give the lock back with what the cache holds now.
+			granted[id] = nil
+			local obj = level.object_by_id(id)
+			local left = obj and load_var(obj, "loot", nil)
+			local more = left == nil or not is_empty(left)
+			if obj then se_save_var(id, obj:name(), "looted", not more) end
+			local t = { id = host_id(id), m = more }
+			if left == nil then t.n = true else loot_to_flat(left, t) end
+			api.send_event(EV_MLOOT_CLOSE, codec().encode(t), 0)
+		end
+	end
+end
+
+local function install_mutant_loot()
+	ml = rawget(_G, "ui_mutant_loot") or ui_mutant_loot
+	if not (ml and type(ml.start) == "function" and ml.UIMutantLoot) or ml.__coop_core then
+		return
+	end
+	ml.__coop_core = true
+	orig_start = ml.start
+	ml.start = function(obj, ...)
+		if obj == nil or type(obj) == "number" or not live_client() then return orig_start(obj, ...) end
+		local id = obj:id()
+		if granted[id] or obj:clsid() == clsid.crow then
+			return orig_start(obj, ...) -- the host said yes (or FDDA re-enters); crows are not shared
+		end
+		client_open(obj)
+	end
+
+	local cls = ml.UIMutantLoot
+	local orig_set = cls.SetMutantState
+	cls.SetMutantState = function(self, is_more_loot, obj_mutant)
+		orig_set(self, is_more_loot, obj_mutant)
+		if not in_session() then return end
+		local id = self.id
+		local ok, err = pcall(function()
+			if api.is_client() then
+				if not (id and granted[id]) then return end
+				granted[id] = nil
+				local more = is_more_loot
+				if more == nil then more = not is_empty(self.loot) end
+				local t = loot_to_flat(self.loot, { id = host_id(id), m = more and true or false })
+				api.send_event(EV_MLOOT_CLOSE, codec().encode(t), 0)
+			elseif api.is_host() then
+				local obj = obj_mutant or level.object_by_id(id)
+				if obj then edge(id, se_load_var(id, obj:name(), "looted") and true or false) end
+			end
+		end)
+		if not ok then log("! mutant loot close: %s", tostring(err)) end
+	end
+
+	local orig_loot = ml.loot_mutant
+	ml.loot_mutant = function(section, cls_id, loot_table, npc, dont_create, victim)
+		local r = orig_loot(section, cls_id, loot_table, npc, dont_create, victim)
+		if is_host() and victim and npc and not dont_create and npc:id() ~= AC_ID then
+			pcall(edge, victim:id(), true) -- an NPC cut it up; the caller sets "looted" right after this
+		end
+		return r
+	end
+end
+
+-------------------------------------------------------------------------------
+-- 3. Stashes
+-------------------------------------------------------------------------------
+-- Filling a stash a client opens is coop_quests_pda's ("box" host action); here only "found".
+local take_sent = {} -- client: local box id -> time
+
+local function on_box_take(box, item)
+	if not (live_client() and box and IsInvbox(box)) then return end
+	local id = box:id()
+	local tg = time_global()
+	if take_sent[id] and tg - take_sent[id] < BOX_GAP_MS then return end
+	take_sent[id] = tg
+	api.send_event(EV_BOX_TAKE, codec().encode({ id = host_id(id) }), 0)
+end
+
+local function host_on_box_take(payload, from)
+	if not is_host() then return end
+	local id = tonumber(codec().decode(payload).id)
+	local tm = rawget(_G, "treasure_manager") or treasure_manager
+	if not (id and tm and type(tm.caches) == "table" and tm.caches[id] == true) then return end
+	tm.caches[id] = false
+	for _, spot in ipairs({ "treasure", "treasure_searched", "treasure_unique" }) do
+		if level.map_has_object_spot(id, spot) ~= 0 then level.map_remove_object_spot(id, spot) end
+	end
+	pcall(function()
+		local se = alife_object(id)
+		if se and item_radio and item_radio.clear_stash then
+			item_radio.clear_stash(alife():level_name(game_graph():vertex(se.m_game_vertex_id):level_id()), id)
+		end
+	end)
+	stats.stashes_found = stats.stashes_found + 1
+	api.send_event(EV_STASH_FOUND, "", from)
+end
+
+local function on_stash_found(payload, from)
+	if from ~= 0 or not live_client() then return end
+	pcall(game_statistics.increment_statistic, "stashes_found")
+	pcall(news_manager.send_treasure, 1)
+end
+
+-------------------------------------------------------------------------------
+-- 4. Traders
+-------------------------------------------------------------------------------
+local trader_asked = {} -- client: local npc id -> time
+
+local function valid_cfg(cfg)
+	return type(cfg) == "string" and #cfg <= 160 and cfg:match("^[%w_\\/%.%-]+%.ltx$") ~= nil
+		and getFS():exist("$game_config$", cfg) ~= nil
+end
+
+-- Client: trade profile (config + buy/sell conditions for this player) on the NPC object here.
+local function apply_profile(npc, cfg)
+	local tm = rawget(_G, "trade_manager") or trade_manager
+	if not (tm and npc) then return false end
+	local id = npc:id()
+	cfg = cfg or tm.get_trade_profile(id, "cfg_ltx")
+	if not valid_cfg(cfg) then return false end
+	tm.trade_init(npc, cfg)
+	local config = tm.get_trade_cfg(cfg)
+	if not config then return false end
+	tm.setup_buy_sell_conditions(npc, id, config)
+	stats.trader_applied = stats.trader_applied + 1
+	return true
+end
+
+local function on_menu_mode(mode)
+	if not (live_client() and (mode == 10 or mode == 2) and db.actor) then return end
+	local npc = db.actor:get_talking_npc()
+	if not npc then return end
+	local ok, err = pcall(apply_profile, npc, nil) -- from the save, at once
+	if not ok then log("! trade profile not applied: %s", tostring(err)) end
+	local id = npc:id()
+	local tg = time_global()
+	if trader_asked[id] and tg - trader_asked[id] < TRADER_GAP_MS then return end
+	trader_asked[id] = tg
+	stats.trader_req = stats.trader_req + 1
+	api.send_event(EV_TRADER_REQ, codec().encode({ id = host_id(id) }), 0)
+end
+
+local function host_on_trader_req(payload, from)
+	if not is_host() then return end
+	local id = tonumber(codec().decode(payload).id)
+	local npc = id and level.object_by_id(id)
+	local tm = rawget(_G, "trade_manager") or trade_manager
+	if not (npc and tm and npc:alive()) then return end
+	pcall(tm.update, npc, false) -- the stock restock check, now: the client trades the current stock
+	local cfg = tm.get_trade_profile(id, "cfg_ltx")
+	if type(cfg) ~= "string" then return end
+	api.send_event(EV_TRADER_CFG, codec().encode({ id = id, cfg = cfg }), from)
+end
+
+local function on_trader_cfg(payload, from)
+	if from ~= 0 or not live_client() then return end
+	local t = codec().decode(payload)
+	local id = tonumber(t.id) and local_id(tonumber(t.id))
+	local npc = id and level.object_by_id(id)
+	if npc and valid_cfg(t.cfg) then apply_profile(npc, t.cfg) end
+end
+
+-------------------------------------------------------------------------------
+-- 5. FDDA prefetch (only if the addon is installed)
+-------------------------------------------------------------------------------
+local function guard_fdda_prefetch()
+	if not (api and api.is_client()) then return end
+	local ok, m = pcall(function() return _G.ea_prefetcher end) -- loads the addon's script if it exists
+	if not (ok and type(m) == "table" and type(m.on_game_start) == "function") or m.__coop_core then return end
+	m.__coop_core = true
+	m.on_game_start = function()
+		log("FDDA animation prefetch skipped on a co-op client")
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Update, callbacks
+-------------------------------------------------------------------------------
+local next_tick = 0
+
+local function actor_on_update()
+	if not in_session() then return end
+	local tg = time_global()
+	if tg < next_tick then return end
+	next_tick = tg + TICK_MS
+	if api.is_host() then
+		release_locks(function(l) return tg - l.at > MLOOT_LOCK_MS end)
+	elseif api.is_live() then
+		local ok, err = pcall(client_mloot_tick, tg)
+		if not ok then log("! mutant loot tick: %s", tostring(err)) end
+	end
+end
+
+function print_status()
+	local n = 0
+	for _ in pairs(locks) do n = n + 1 end
+	local g = 0
+	for _ in pairs(granted) do g = g + 1 end
+	log("world: news out %d, in %d | mutant loot: requests %d, granted %d, denied %d, closed %d, edges %d, locks %d, open here %d | stashes found %d | traders: asked %d, applied %d",
+		stats.news_out, stats.news_in, stats.mloot_req, stats.mloot_granted, stats.mloot_denied, stats.mloot_closed,
+		stats.mloot_edges, n, g, stats.stashes_found, stats.trader_req, stats.trader_applied)
+end
+
+function on_game_start()
+	if not api then return end -- an exe without co-op: nothing of this runs
+	local ok, err = pcall(wrap_news)
+	if not ok then log("! news sharing not installed: %s", tostring(err)) end
+	ok, err = pcall(install_mutant_loot)
+	if not ok then log("! mutant loot sharing not installed: %s", tostring(err)) end
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("actor_on_item_take_from_box", on_box_take)
+	RegisterScriptCallback("ActorMenu_on_mode_changed", on_menu_mode)
+	local cm = codec()
+	if not (cm and cm.add_event_handler) then
+		log("! coop_main.add_event_handler not found: world events are not handled")
+		return
+	end
+	cm.add_event_handler(EV_NEWS, on_news)
+	cm.add_event_handler(EV_MLOOT_OPEN, on_mloot_open)
+	cm.add_event_handler(EV_MLOOT_STATE, on_mloot_state)
+	cm.add_event_handler(EV_MLOOT_CLOSE, on_mloot_close)
+	cm.add_event_handler(EV_MLOOT_EDGE, on_mloot_edge)
+	cm.add_event_handler(EV_BOX_TAKE, host_on_box_take)
+	cm.add_event_handler(EV_STASH_FOUND, on_stash_found)
+	cm.add_event_handler(EV_TRADER_REQ, host_on_trader_req)
+	cm.add_event_handler(EV_TRADER_CFG, on_trader_cfg)
+end
+
+-- Load time (before any on_game_start): the FDDA prefetch must be off before axr_main starts it.
+guard_fdda_prefetch()

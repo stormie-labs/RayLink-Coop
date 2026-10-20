@@ -1,0 +1,435 @@
+--[[
+	Anomaly Coop - quests group core (gamedata\scripts\coop_quests_core.script), W4 "quests".
+
+	Helpers shared by coop_tasks.script and the coop_quests_* scripts:
+	  - roles and logging;
+	  - ser()/des(): a safe codec for nested tables of strings, numbers and booleans (event payloads,
+	    PDA infos, task offers). No code is ever loaded from the network;
+	  - send()/on(): flat event payloads through coop_main.encode/decode, handlers wrapped in pcall;
+	  - the group's characters on this machine and distances to them;
+	  - host actions: a client asks the host to run a whitelisted world change for it (world spawns,
+	    quest items taken from the group). The host runs it as that player (coop_tasks.run_as);
+	  - condlist depth: true while xr_logic.pick_section_from_condlist runs (an effect fired by a
+	    condlist, as opposed to a dialog action or a script call);
+	  - with_actor(): per-call overrides of db.actor's methods. luabind looks into an object's own
+	    Lua table before its class, so db.actor.position = f changes db.actor:position() for that
+	    object only; the previous value is put back afterwards.
+	Nothing here changes the game outside a co-op session.
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace (nil on an exe without co-op)
+
+local tostring, tonumber, type, pairs, ipairs, pcall, next = tostring, tonumber, type, pairs, ipairs, pcall, next
+local string_format, table_concat = string.format, table.concat
+local unpack = unpack
+
+EVENT_PREFIX = "quests."
+MAX_BLOB = 12000 -- characters of one serialized value inside an event (payload limit is 16 KiB)
+
+-------------------------------------------------------------------------------
+-- Roles, logging
+-------------------------------------------------------------------------------
+function engine() return api end
+
+function active()
+	if not api then return false end
+	local ok, v = pcall(api.is_active)
+	return ok and v == true
+end
+function is_host() return active() and api.is_host() == true end
+function is_client() return active() and api.is_client() == true end
+function client_live() return is_client() and api.is_live() == true end
+
+function self_peer()
+	if not api then return 0 end
+	local ok, v = pcall(api.self_id)
+	return ok and tonumber(v) or 0
+end
+
+function players()
+	if not api then return {} end
+	local ok, list = pcall(api.players)
+	return ok and type(list) == "table" and list or {}
+end
+
+-- Host with at least one other player connected.
+function host_party()
+	if not is_host() then return false end
+	for _, p in ipairs(players()) do
+		if not p.is_self then return true end
+	end
+	return false
+end
+
+function to_host_id(id)
+	if not (api and api.to_host_id and type(id) == "number") then return id end
+	return api.to_host_id(id) or id
+end
+function to_local_id(id)
+	if not (api and api.to_local_id and type(id) == "number") then return id end
+	return api.to_local_id(id) or id
+end
+
+local errors = 0
+function log(tag, fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-quests][%s] %s", tostring(tag), ok and line or tostring(fmt))
+end
+
+function report(tag, what, err)
+	errors = errors + 1
+	if errors <= 20 or errors % 100 == 0 then
+		log(tag, "! %s: %s", tostring(what), tostring(err))
+	end
+end
+
+function error_count() return errors end
+
+-- A script module by name; through _G so the engine loads a script not loaded yet (nil if absent).
+function mod(name)
+	local m = rawget(_G, name)
+	if m == nil then
+		local ok, v = pcall(function() return _G[name] end)
+		m = ok and v or nil
+	end
+	return type(m) == "table" and m or nil
+end
+
+-------------------------------------------------------------------------------
+-- Nested codec: s<len>:<bytes> | n<number>; | T | F | { key value ... }
+-------------------------------------------------------------------------------
+local MAX_DEPTH = 8
+
+local function ser_into(v, out, depth)
+	local tv = type(v)
+	if tv == "string" then
+		out[#out + 1] = "s" .. #v .. ":" .. v
+	elseif tv == "number" then
+		if v ~= v or v == math.huge or v == -math.huge then return false end
+		out[#out + 1] = "n" .. string_format("%.17g", v) .. ";"
+	elseif tv == "boolean" then
+		out[#out + 1] = v and "T" or "F"
+	elseif tv == "table" then
+		if depth >= MAX_DEPTH then return false end
+		out[#out + 1] = "{"
+		for k, x in pairs(v) do
+			local tk = type(k)
+			if tk == "string" or tk == "number" then
+				local mark = #out
+				if not (ser_into(k, out, depth + 1) and ser_into(x, out, depth + 1)) then
+					for i = #out, mark + 1, -1 do out[i] = nil end -- unsupported entry: dropped
+				end
+			end
+		end
+		out[#out + 1] = "}"
+	else
+		return false
+	end
+	return true
+end
+
+-- Value -> string, nil if the value itself cannot be encoded (functions, userdata). Table entries
+-- holding unsupported values are left out.
+function ser(v)
+	local out = {}
+	if not ser_into(v, out, 0) then return nil end
+	return table_concat(out)
+end
+
+local function des_at(s, i, depth)
+	local tag = s:sub(i, i)
+	if tag == "s" then
+		local colon = s:find(":", i + 1, true)
+		if not colon then return nil end
+		local len = tonumber(s:sub(i + 1, colon - 1))
+		if not len or len < 0 or len % 1 ~= 0 or colon + len > #s then return nil end
+		return s:sub(colon + 1, colon + len), colon + len + 1
+	elseif tag == "n" then
+		local semi = s:find(";", i + 1, true)
+		if not semi then return nil end
+		local n = tonumber(s:sub(i + 1, semi - 1))
+		if not n or n ~= n then return nil end
+		return n, semi + 1
+	elseif tag == "T" then
+		return true, i + 1
+	elseif tag == "F" then
+		return false, i + 1
+	elseif tag == "{" then
+		if depth >= MAX_DEPTH then return nil end
+		local t = {}
+		local j = i + 1
+		while true do
+			if j > #s then return nil end
+			if s:sub(j, j) == "}" then return t, j + 1 end
+			local k, nj = des_at(s, j, depth + 1)
+			if k == nil or (type(k) ~= "string" and type(k) ~= "number") then return nil end
+			local v, nj2 = des_at(s, nj, depth + 1)
+			if v == nil then return nil end
+			t[k] = v
+			j = nj2
+		end
+	end
+	return nil
+end
+
+-- String -> value, nil if malformed (network input).
+function des(s)
+	if type(s) ~= "string" or s == "" or #s > 65536 then return nil end
+	local ok, v, j = pcall(des_at, s, 1, 0)
+	if not ok or v == nil or j ~= #s + 1 then return nil end
+	return v
+end
+
+-------------------------------------------------------------------------------
+-- Events
+-------------------------------------------------------------------------------
+local function cm() return rawget(_G, "coop_main") or coop_main end
+
+function encode(t)
+	local m = cm()
+	return m and m.encode and m.encode(t) or ""
+end
+
+function decode(s)
+	local m = cm()
+	if not (m and m.decode) then return {} end
+	local ok, t = pcall(m.decode, s)
+	return ok and type(t) == "table" and t or {}
+end
+
+-- Flat table to a peer (0 host, -1/nil everybody). Returns true if it went out.
+function send(name, t, target)
+	if not api then return false end
+	local payload = encode(t or {})
+	if #payload > 15800 then
+		report("core", "send " .. tostring(name), "payload too long (" .. #payload .. ")")
+		return false
+	end
+	local ok, sent = pcall(api.send_event, EVENT_PREFIX .. name, payload, target)
+	return ok and sent == true
+end
+
+-- fn(table, from_peer, raw_payload); errors are logged, never thrown into the network layer.
+function on(name, fn, tag)
+	local m = cm()
+	if not (m and m.add_event_handler) then
+		log("core", "! coop_main.add_event_handler not found: %s is not handled", name)
+		return false
+	end
+	return m.add_event_handler(EVENT_PREFIX .. name, function(payload, from)
+		local ok, err = pcall(fn, decode(payload), tonumber(from), payload)
+		if not ok then report(tag or "event", name, err) end
+	end)
+end
+
+-------------------------------------------------------------------------------
+-- The group's characters on this machine
+-------------------------------------------------------------------------------
+-- { {obj, peer, self, id}, ... }: own actor first, then the other connected players' characters.
+function characters()
+	local out = {}
+	if db and db.actor then out[1] = { obj = db.actor, peer = self_peer(), self = true, id = db.actor:id() } end
+	if not active() then return out end
+	for _, p in ipairs(players()) do
+		if not p.is_self and p.avatar_id then
+			local o = level.object_by_id(p.avatar_id)
+			if o then out[#out + 1] = { obj = o, peer = p.id, id = p.avatar_id } end
+		end
+	end
+	return out
+end
+
+-- Object id -> true for every player character on this machine (own actor included).
+function character_ids()
+	local set = {}
+	for _, c in ipairs(characters()) do set[c.id] = c end
+	return set
+end
+
+function is_character_id(id)
+	if type(id) ~= "number" then return false end
+	if db and db.actor and id == db.actor:id() then return true end
+	if not active() then return false end
+	for _, p in ipairs(players()) do
+		if p.avatar_id == id then return true end
+	end
+	return false
+end
+
+local function alive(o)
+	local ok, v = pcall(function() return o:alive() end)
+	return not ok or v ~= false
+end
+
+-- The living character nearest to pos: obj, peer, squared distance (flat = ignore height).
+function nearest_character(pos, flat)
+	if not pos then return nil end
+	local best, best_peer, best_d
+	for _, c in ipairs(characters()) do
+		if alive(c.obj) then
+			local p = c.obj:position()
+			local dx, dz = p.x - pos.x, p.z - pos.z
+			local d = dx * dx + dz * dz
+			if not flat then
+				local dy = p.y - pos.y
+				d = d + dy * dy
+			end
+			if not best_d or d < best_d then best, best_peer, best_d = c.obj, c.peer, d end
+		end
+	end
+	return best, best_peer, best_d
+end
+
+function min_dist_sqr(pos, flat)
+	local _, _, d = nearest_character(pos, flat)
+	return d
+end
+
+-- Host: the online character of a peer (0 / own peer = db.actor).
+function avatar_obj(peer)
+	peer = tonumber(peer)
+	if peer == nil then return nil end
+	if peer == 0 or peer == self_peer() then return db.actor end
+	if not api then return nil end
+	local ok, id = pcall(api.avatar_of, peer)
+	return ok and id and level.object_by_id(id) or nil
+end
+
+-------------------------------------------------------------------------------
+-- db.actor method overrides for one call
+-------------------------------------------------------------------------------
+-- fields: { method_name = function(self, ...) }. Returns ok, results of fn.
+function with_actor(fields, fn, ...)
+	local a = db and db.actor
+	if not a then return pcall(fn, ...) end
+	local saved = {}
+	for k, f in pairs(fields) do
+		saved[k] = a[k]
+		a[k] = f
+	end
+	local res = { pcall(fn, ...) }
+	for k in pairs(fields) do a[k] = saved[k] end
+	return unpack(res)
+end
+
+-------------------------------------------------------------------------------
+-- Condlist depth
+-------------------------------------------------------------------------------
+local condlist_depth = 0
+local holding_infos = false
+function in_condlist() return condlist_depth > 0 end
+
+-- Client, a condlist that runs a host-only world effect (a squad, a spawn) the client cannot make: the
+-- info portions it gives are kept on this machine (its own latch, so it does not fire again) and not
+-- sent to the host, whose own run of the same logic must still find its gate open and make the world
+-- change (xrRazom xrr_suppress_condlist_info_sync). Needs the engine side (coop.story_hold_infos);
+-- without it nothing changes. Decided when the outermost condlist starts (a "+info" may come before the
+-- effect), released when it returns.
+local hold_effects = {}
+function add_hold_effects(names)
+	for _, n in ipairs(names or {}) do hold_effects[n] = true end
+end
+
+-- condlist = parse_condlist() result: { {section, checks, sets}, ... }, sets = { {name, kind, params} }
+local function wants_hold(condlist)
+	if type(condlist) ~= "table" then return false end
+	for i = 1, #condlist do
+		local sets = type(condlist[i]) == "table" and condlist[i][3]
+		if type(sets) == "table" then
+			for j = 1, #sets do
+				local s = sets[j]
+				if type(s) == "table" and (s[2] == 3 or s[2] == 4) and hold_effects[s[1]] then return true end
+			end
+		end
+	end
+	return false
+end
+
+local function install_condlist_tracker()
+	local xl = rawget(_G, "xr_logic") or xr_logic
+	if not (xl and type(xl.pick_section_from_condlist) == "function") then
+		log("core", "! xr_logic.pick_section_from_condlist not found: condlist effects are not told apart")
+		return
+	end
+	local orig = xl.pick_section_from_condlist
+	xl.pick_section_from_condlist = function(...)
+		if not active() then return orig(...) end
+		if condlist_depth == 0 and not holding_infos and api.story_hold_infos and is_client()
+			and wants_hold(select(3, ...)) then
+			holding_infos = pcall(api.story_hold_infos, true)
+		end
+		condlist_depth = condlist_depth + 1
+		local res = { pcall(orig, ...) }
+		condlist_depth = condlist_depth - 1
+		if condlist_depth == 0 and holding_infos then
+			holding_infos = false
+			pcall(api.story_hold_infos, false)
+		end
+		if not res[1] then error(res[2], 0) end
+		return unpack(res, 2)
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Host actions
+-------------------------------------------------------------------------------
+local actions = {} -- name -> fn(from_peer, table)
+local action_stats = { out = 0, in_ = 0, refused = 0 }
+
+-- Host side: fn(from, t) runs inside coop_tasks.run_as(from) (task gives / turn-ins are that player's).
+function register_host_action(name, fn)
+	if type(name) == "string" and type(fn) == "function" then actions[name] = fn end
+end
+
+-- Client side: t is a flat table of scalars (field "a" is reserved).
+function request_host_action(name, t)
+	t = t or {}
+	t.a = name
+	local ok = send("act", t, 0)
+	if ok then action_stats.out = action_stats.out + 1 end
+	return ok
+end
+
+local function host_on_action(t, from)
+	if not is_host() or type(from) ~= "number" or from == 0 then return end
+	local fn = type(t.a) == "string" and actions[t.a]
+	if not fn then
+		action_stats.refused = action_stats.refused + 1
+		log("core", "! unknown host action from #%s: %s", tostring(from), tostring(t.a))
+		return
+	end
+	action_stats.in_ = action_stats.in_ + 1
+	local ct = rawget(_G, "coop_tasks") or coop_tasks
+	local ok, err
+	if ct and ct.run_as then
+		ok, err = pcall(ct.run_as, from, fn, from, t)
+	else
+		ok, err = pcall(fn, from, t)
+	end
+	if not ok then report("core", "host action " .. tostring(t.a), err) end
+end
+
+-------------------------------------------------------------------------------
+-- Status, start
+-------------------------------------------------------------------------------
+function print_status()
+	local n = 0
+	for _ in pairs(actions) do n = n + 1 end
+	log("core", "host actions: %d registered, sent %d, run %d, refused %d | lua errors %d",
+		n, action_stats.out, action_stats.in_, action_stats.refused, errors)
+	for _, name in ipairs({ "coop_quests_offer", "coop_quests_party", "coop_quests_story", "coop_quests_pda" }) do
+		local m = rawget(_G, name)
+		if type(m) == "table" and type(m.print_status) == "function" then
+			local ok, err = pcall(m.print_status)
+			if not ok then report("core", name .. ".print_status", err) end
+		end
+	end
+end
+
+local started = false
+function on_game_start()
+	if not api or started then return end
+	started = true
+	install_condlist_tracker()
+	on("act", host_on_action, "core")
+end

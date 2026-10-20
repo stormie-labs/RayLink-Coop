@@ -1,0 +1,442 @@
+--[[
+	Anomaly Coop - item mods that touch the world (gamedata\scripts\coop_mods_items.script), W4 "mods".
+
+	A client may create and remove items only in its own inventory (the engine forwards those to the host and
+	refuses world objects, P7). These mods make world objects out of items, so the world half goes to the host:
+
+	Glowsticks (zz_glowstick_mcm)
+	  mods.gs_throw  client -> host { s section, t throw, c condition, x y z, dx dy dz, i item }
+	                 the host creates the glowing lamp at the client's hand/eye with the client's aim and burns it
+	                 down; a dropped glowstick (on the ground) is replaced by the lamp.
+	  mods.gs_pick   client -> host { l lamp }  the host removes a lit lamp and gives the glowstick back with its
+	                 charge. A client's own copy of the mod never picks lamps up or burns them (its table is empty).
+	Items Model Drop After Usage (model_dropper_mcm)
+	  mods.md_drop   client -> host { s section, a alted }  the mod's own drop runs on the host with the client's
+	                 character as the actor; the debris is removed once no player is within 65 m.
+	Autolooter (z_auto_looter)
+	  mods.al_del    client -> host { c container }  after the client looted, the host deletes the leftovers with
+	                 its own settings (not while the host itself is looting that container).
+	Stash Overhaul corpse stashes (grok_stashes_on_corpses)
+	  mods.gso_use   client -> host { n corpse }  the corpse's stash roll runs once, on the host, for that player.
+--]]
+
+local api = rawget(_G, "coop")
+
+local tostring, tonumber, type, pairs, ipairs, pcall, next = tostring, tonumber, type, pairs, ipairs, pcall, next
+
+local function C() return coop_mods_core end
+local function log(fmt, ...) C().log("items", fmt, ...) end
+
+local installed = {}
+local st = { gs_throw = 0, gs_pick = 0, md = 0, md_clean = 0, al = 0, gso = 0, refused = 0 }
+
+local function refuse(what, from, why)
+	st.refused = st.refused + 1
+	log("%s from #%s refused: %s", what, tostring(from), why)
+end
+
+local function near(obj, who, dist)
+	local ok, d = pcall(function() return obj:position():distance_to_sqr(who:position()) end)
+	return ok and d <= dist * dist
+end
+
+-------------------------------------------------------------------------------
+-- Glowsticks
+-------------------------------------------------------------------------------
+local LAMP = "lights_glowstick"
+local GS = { mod = nil, holder = nil, idx = nil }
+
+-- The mod's live lamp table (id -> { section, charge }); a file local that load_state replaces.
+local function gs_table()
+	local m = GS.mod
+	if not m then return nil end
+	if type(m.glowsticks) == "table" then return m.glowsticks end
+	if not GS.holder then
+		local _, holder, idx = C().find_local(m, "glowsticks")
+		GS.holder, GS.idx = holder, idx
+	end
+	if not GS.holder then return nil end
+	local _, v = debug.getupvalue(GS.holder, GS.idx)
+	return type(v) == "table" and v or nil
+end
+
+local function gs_clear_local_table()
+	local m = GS.mod
+	if type(m.glowsticks) == "table" then
+		m.glowsticks = {}
+	elseif GS.holder or gs_table() then
+		debug.setupvalue(GS.holder, GS.idx, {})
+	end
+end
+
+local function color_int(str)
+	local c = {}
+	for v in tostring(str):gmatch("[^,]+") do c[#c + 1] = math.max(0, math.min(255, math.floor((tonumber(v) or 0) * 255 + 0.5))) end
+	for i = 1, 4 do c[i] = c[i] or 0 end
+	return c, c[4] * 16777216 + c[1] * 65536 + c[2] * 256 + c[3]
+end
+
+-- Host: the lamp the mod would make, at the client's pose.
+local function host_create_lamp(section, pos, dir, lv, gv, charge, throw)
+	local se = alife_create(LAMP, pos, lv, gv)
+	if not se then return nil end
+	local data = utils_stpk and utils_stpk.get_lamp_data and utils_stpk.get_lamp_data(se)
+	if not data then
+		alife_release_id(se.id)
+		return nil
+	end
+	local light = ini_sys:r_string_ex(section, "light_section") or "glowstick_definition"
+	local hud = ini_sys:r_string_ex(section, "hud") or "device_glowstick_hud"
+	se.angle = vector():set(dir.x + math.random(-5, 5), dir.y + math.random(-5, 5), dir.z + math.random(-5, 5))
+	data.visual_name = ini_sys:r_string_ex(section, "visual") or "dynamics\\devices\\dev_glowstick\\dev_glowstick_glow"
+	data.light_flags = 47
+	if ini_sys:r_bool_ex(light, "volumetric", false) then
+		data.light_flags = data.light_flags + 64
+		data.volumetric_quality = ini_sys:r_float_ex(light, "volumetric_quality") or 0.5
+		data.volumetric_intensity = ini_sys:r_float_ex(light, "volumetric_intensity") or 0.5
+		data.volumetric_distance = ini_sys:r_float_ex(light, "volumetric_distance") or 0.5
+	end
+	local c, packed = color_int(ini_sys:r_string_ex(light, "color_r2") or "0.0,0.4,0.3,0.8")
+	data.main_color = packed
+	data.main_brightness = charge <= 0.01 and 0 or (c[1] + c[2] + c[3]) / 765 + 1
+	data.main_color_animator = ini_sys:r_string_ex(light, "color_animator") or "empty"
+	data.main_bone = ini_sys:r_string_ex(hud, "fire_bone") or "light_bone_2"
+	data.main_range = ini_sys:r_float_ex(light, "range_r2") or 15
+	utils_stpk.set_lamp_data(data, se)
+	local t = gs_table()
+	if t then t[se.id] = { section, charge } end -- the host's mod burns it down
+	local force = throw and (((ui_mcm and ui_mcm.get and ui_mcm.get("glowsticks/throw_force")) or 8) * 1000) or 100
+	local fx, fy, fz = dir.x * force, dir.y * force, dir.z * force
+	C().when_online(se.id, LAMP, function(obj)
+		local sh = obj:get_physics_shell()
+		if sh then sh:apply_force(fx, fy, fz) end
+	end, 2000)
+	return se.id
+end
+
+local function is_glowstick_item(section)
+	return type(section) == "string" and ini_sys:section_exist(section)
+		and (ini_sys:r_string_ex(section, "light_section") ~= nil or section:find("glowstick", 1, true) ~= nil)
+end
+
+local function host_gs_throw(t, from)
+	local who = C().avatar(from)
+	local section, throw = t.s, t.t == true
+	local x, y, z = tonumber(t.x), tonumber(t.y), tonumber(t.z)
+	if not (who and is_glowstick_item(section) and x and y and z) then return refuse("gs_throw", from, "bad request") end
+	local lv, gv = who:level_vertex_id(), who:game_vertex_id() -- never taken from the network
+	local pos = vector():set(x, y, z)
+	if pos:distance_to_sqr(who:position()) > 9 then return refuse("gs_throw", from, "not at the player") end
+	local dir = vector():set(tonumber(t.dx) or 0, tonumber(t.dy) or 0, tonumber(t.dz) or 0)
+	local charge = math.max(0, math.min(1, tonumber(t.c) or 0.01))
+	local item = nil
+	if not throw then
+		-- A dropped glowstick lies on the ground: it becomes the lamp.
+		local iid = C().lid(tonumber(t.i))
+		item = type(iid) == "number" and iid < 65535 and alife_object(iid)
+		if not (item and item:section_name() == section and (item.parent_id == nil or item.parent_id == 65535)) then
+			return refuse("gs_throw", from, "the dropped glowstick is not on the ground")
+		end
+	end
+	local id = host_create_lamp(section, pos, dir, lv, gv, charge, throw)
+	if not id then return refuse("gs_throw", from, "lamp not created") end
+	if item then alife_release_id(item.id) end
+	st.gs_throw = st.gs_throw + 1
+end
+
+local function host_gs_pick(t, from)
+	local id = C().lid(tonumber(t.l))
+	local se = type(id) == "number" and id < 65535 and alife_object(id)
+	local obj = se and level.object_by_id(id)
+	local who = C().avatar(from)
+	if not (se and obj and who and se:section_name() == LAMP and near(obj, who, 4)) then return refuse("gs_pick", from, "no lamp there") end
+	local tbl = gs_table()
+	local entry = tbl and tbl[id]
+	if not entry then return refuse("gs_pick", from, "lamp not tracked") end
+	local section, charge = entry[1] or "device_glowstick", tonumber(entry[2]) or 0
+	if charge <= 0.01 then return refuse("gs_pick", from, "burnt out") end
+	tbl[id] = nil
+	alife_release_id(id)
+	C().give(from, section, charge)
+	st.gs_pick = st.gs_pick + 1
+end
+
+local function client_gs_key(key)
+	if not (C().live_client() and db.actor) then return end
+	if dik_to_bind(key) ~= key_bindings.kUSE then return end
+	if _GUIs and not is_empty(_GUIs) then return end
+	if not game.hud_motion_allowed() or game.only_movekeys_allowed() then return end
+	level.iterate_nearest(db.actor:position(), 2, function(obj)
+		if not (obj and obj:section() == LAMP) then return false end
+		local p = game.world2ui(obj:position())
+		if p.x < 350 or p.x > 750 or p.y < 250 or p.y > 500 then return false end
+		local lamp = obj:get_hanging_lamp()
+		if not (lamp and lamp:is_on()) then return false end
+		C().to_host("gs_pick", { l = C().hid(obj:id()) })
+		return true
+	end)
+end
+
+local function install_glowsticks()
+	local m = C().mod("zz_glowstick_mcm")
+	if not (m and C().fn(m, "spawn_glowstick")) then return end
+	GS.mod = m
+	installed[#installed + 1] = "glowsticks"
+	C().wrap(m, "spawn_glowstick", "zz_glowstick_mcm.spawn_glowstick", function(orig)
+		return function(id, throw, ...)
+			if not C().is_client() then return orig(id, throw, ...) end
+			local itm = id and level.object_by_id(id)
+			if not itm or (not throw and itm:parent()) then return true end
+			local actor = db.actor
+			local ok, pos = pcall(function() return actor:bone_position(throw and "eye_left" or "bip01_l_hand") end)
+			pos = ok and pos or actor:position()
+			pos.y = pos.y + 0.1
+			local dir = device().cam_dir
+			C().to_host("gs_throw", { i = C().hid(id), s = itm:section(), t = throw and true or false, c = itm:condition(),
+				x = pos.x, y = pos.y, z = pos.z, dx = dir.x, dy = dir.y, dz = dir.z })
+			return true
+		end
+	end)
+	local binder = m.glowstick_binder
+	C().wrap(binder, "update", "zz_glowstick_mcm.glowstick_binder.update", function(orig)
+		return function(self, delta, ...)
+			if not C().is_client() then return orig(self, delta, ...) end
+			-- Burning down and removal are the host's; the client only shows the prompt.
+			if self.first_update then
+				self.first_update = nil
+				pcall(function()
+					if self.object:get_hanging_lamp():is_on() then self.object:set_tip_text("inventory_item_use") end
+				end)
+			end
+		end
+	end)
+	C().on("gs_throw", host_gs_throw, "host")
+	C().on("gs_pick", host_gs_pick, "host")
+	C().set_limit("gs_throw", 4, 1)
+	C().set_limit("gs_pick", 4, 2)
+	RegisterScriptCallback("on_key_press", client_gs_key)
+end
+
+-------------------------------------------------------------------------------
+-- Items Model Drop After Usage
+-------------------------------------------------------------------------------
+local MD_CLEAN_DIST = 65
+local md = { dropped = {}, next_clean = 0 } -- host: id -> position of a client's debris
+
+local function md_has_model(sec)
+	if type(sec) ~= "string" or #sec > 96 then return false end
+	if ini_sys:section_exist("dropper_" .. sec) then return true end
+	for i = 1, 5 do
+		if ini_sys:section_exist("dropper_" .. sec .. "_" .. i) then return true end
+	end
+	return false
+end
+
+local function host_md_drop(t, from)
+	local M = C().mod("model_dropper_mcm")
+	local who = C().avatar(from)
+	if not (M and who and md_has_model(t.s)) then return refuse("md_drop", from, "no model for that item") end
+	-- The mod's own drop with the requester's character as the actor; what it creates is ours to clean.
+	local real = _G.alife_create
+	local made = {}
+	_G.alife_create = function(...)
+		local se = real(...)
+		if se then made[#made + 1] = se end
+		return se
+	end
+	local ok, e = C().as_player(who, M.spawn_object, t.s, t.a == true)
+	_G.alife_create = real
+	if not ok then C().report("items", "model drop", e) end
+	for _, se in ipairs(made) do md.dropped[se.id] = vector():set(se.position) end
+	st.md = st.md + 1
+end
+
+local function host_md_clean()
+	if not next(md.dropped) then return end
+	local tg = time_global()
+	if tg < md.next_clean then return end
+	md.next_clean = tg + 5000
+	local players = C().player_objects()
+	for id, pos in pairs(md.dropped) do
+		local near_any = false
+		for _, p in ipairs(players) do
+			if p.obj:position():distance_to_sqr(pos) <= MD_CLEAN_DIST * MD_CLEAN_DIST then near_any = true break end
+		end
+		if not near_any then
+			local se = alife_object(id)
+			if se and se:section_name():find("^dropper_") then
+				alife_release(se)
+				st.md_clean = st.md_clean + 1
+			end
+			md.dropped[id] = nil
+		end
+	end
+end
+
+local function install_model_dropper()
+	local M = C().mod("model_dropper_mcm")
+	if not (M and C().fn(M, "spawn_object")) then return end
+	installed[#installed + 1] = "model_dropper"
+	C().wrap(M, "spawn_object", "model_dropper_mcm.spawn_object", function(orig)
+		return function(item_sec, alted, ...)
+			if not C().is_client() then return orig(item_sec, alted, ...) end
+			if alted then return true end -- the variants are the host's to expand
+			if md_has_model(item_sec) then C().to_host("md_drop", { s = item_sec, a = false }) end
+			return true
+		end
+	end)
+	C().on("md_drop", host_md_drop, "host")
+	C().set_limit("md_drop", 6, 1)
+end
+
+-------------------------------------------------------------------------------
+-- Autolooter
+-------------------------------------------------------------------------------
+local al = { pending = {} }
+
+local function al_contents_key(lm, cont)
+	local ok, items = pcall(lm.collect_items, cont)
+	if not (ok and type(items) == "table") then return "" end
+	local ids = {}
+	for id in pairs(items) do ids[#ids + 1] = tostring(id) end
+	table.sort(ids)
+	return table.concat(ids, ",")
+end
+
+-- The host's answers to the loot (unloaded rounds, moved items) take a moment: wait until the container is
+-- quiet, loot once more, then ask the host to delete what is left.
+local function al_request_when_settled(lm, cont)
+	local cid = cont:id()
+	if al.pending[cid] then return end
+	al.pending[cid] = true
+	local t0, last, quiet, looted = time_global(), nil, time_global(), false
+	CreateTimeEvent("coop_mods_al", "del_" .. cid, 0.25, function()
+		local c = level.object_by_id(cid)
+		if not c then
+			al.pending[cid] = nil
+			return true
+		end
+		local now = time_global()
+		if looted then
+			al.pending[cid] = nil
+			C().to_host("al_del", { c = C().hid(cid) })
+			return true
+		end
+		local key = al_contents_key(lm, c)
+		if key ~= last then last, quiet = key, now end
+		if now - t0 < 6000 and (now - t0 < 1000 or now - quiet < 500) then
+			ResetTimeEvent("coop_mods_al", "del_" .. cid, 0.25)
+			return false
+		end
+		if C().fn(lm, "handle_loot") then pcall(lm.handle_loot, c) end
+		looted = true
+		ResetTimeEvent("coop_mods_al", "del_" .. cid, 0.25)
+		return false
+	end)
+end
+
+local function host_looting(id)
+	local gui = ui_inventory and ui_inventory.GUI
+	local ok, shown = pcall(function() return gui and gui:IsShown() and gui.npc_id == id end)
+	return ok and shown == true
+end
+
+local function install_autolooter()
+	local lm = C().mod("z_auto_looter")
+	if not (lm and C().fn(lm, "handle_delete")) then return end
+	installed[#installed + 1] = "autolooter"
+	local _, orig_delete = C().wrap(lm, "handle_delete", "z_auto_looter.handle_delete", function(orig)
+		return function(cont, ...)
+			if not (C().is_client() and cont) then return orig(cont, ...) end
+			local cfg = type(lm.config) == "table" and lm.config or {}
+			if not (cfg.delete_body or cfg.delete_weapon or cfg.delete_armor or cfg.delete_misc) then return end
+			if cfg.delete_body and IsStalker(cont) and not cont:alive() and ui_inventory and ui_inventory.GUI then
+				pcall(function() if ui_inventory.GUI:IsShown() then ui_inventory.GUI:Close() end end)
+			end
+			al_request_when_settled(lm, cont)
+		end
+	end)
+	C().on("al_del", function(t, from)
+		local id = C().lid(tonumber(t.c))
+		local cont = type(id) == "number" and id ~= 0 and level.object_by_id(id)
+		local who = C().avatar(from)
+		if not (cont and who and near(cont, who, 12)) then return refuse("al_del", from, "unknown or far container") end
+		local corpse = (IsStalker(cont) or IsMonster(cont)) and not cont:alive()
+		if not (corpse or IsInvbox(cont)) or C().is_player(id) then return refuse("al_del", from, "not a corpse or a box") end
+		local placeable = C().fn(lm, "is_placable_stash")
+		if placeable and placeable(cont) then return refuse("al_del", from, "a player's stash") end
+		if host_looting(id) then return refuse("al_del", from, "the host is looting it") end
+		local cfg = type(lm.config) == "table" and lm.config or {}
+		if corpse and cfg.delete_body then
+			alife_release_id(id) -- the mod's body branch would close the host's own loot window
+		else
+			local ok, e = pcall(orig_delete, cont)
+			if not ok then C().report("items", "autolooter delete", e) end
+		end
+		st.al = st.al + 1
+	end, "host")
+	C().set_limit("al_del", 10, 2)
+end
+
+-------------------------------------------------------------------------------
+-- Stash Overhaul: corpse stashes
+-------------------------------------------------------------------------------
+local gso_served = {}
+
+local function install_gso()
+	local g = C().mod("grok_stashes_on_corpses")
+	if not (g and C().fn(g, "npc_on_use")) then return end
+	installed[#installed + 1] = "gso"
+	local _, orig_use = C().wrap(g, "npc_on_use", "grok_stashes_on_corpses.npc_on_use", function(orig)
+		return function(npc, ...)
+			if not (C().is_client() and npc) then return orig(npc, ...) end
+			if npc:alive() then return end
+			C().to_host("gso_use", { n = C().hid(npc:id()) })
+		end
+	end)
+	C().on("gso_use", function(t, from)
+		local id = C().lid(tonumber(t.n))
+		local npc = type(id) == "number" and id ~= 0 and level.object_by_id(id)
+		local who = C().avatar(from)
+		if not (npc and who and IsStalker(npc) and not npc:alive() and near(npc, who, 6)) then
+			return refuse("gso_use", from, "no corpse there")
+		end
+		-- Once per corpse while it lasts (ids are reused after a release).
+		local key = tostring(id) .. ":" .. npc:section()
+		if gso_served[key] then return end
+		gso_served[key] = true
+		local ok, e = C().as_player(who, orig_use, npc)
+		if not ok then C().report("items", "corpse stash", e) end
+		st.gso = st.gso + 1
+	end, "host")
+	C().set_limit("gso_use", 6, 2)
+end
+
+-------------------------------------------------------------------------------
+-- Start
+-------------------------------------------------------------------------------
+local first_done = false
+local function actor_on_update()
+	if C().is_host() then
+		host_md_clean()
+	elseif not first_done and C().is_client() and GS.mod then
+		-- The save's lamp table describes the host's lamps; a client never burns or picks them up itself.
+		first_done = true
+		local ok, e = pcall(gs_clear_local_table)
+		if not ok then C().report("items", "glowstick table", e) end
+	end
+end
+
+function on_game_start()
+	if not api then return end
+	install_glowsticks()
+	install_model_dropper()
+	install_autolooter()
+	install_gso()
+	if #installed == 0 then return end
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	C().status_line("items", function()
+		return string.format("%s | glowsticks thrown %d picked %d | drops %d cleaned %d | autoloot deletes %d | corpse stashes %d | refused %d",
+			table.concat(installed, ", "), st.gs_throw, st.gs_pick, st.md, st.md_clean, st.al, st.gso, st.refused)
+	end)
+end

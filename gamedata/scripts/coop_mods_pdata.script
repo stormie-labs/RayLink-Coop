@@ -1,0 +1,260 @@
+--[[
+	Anomaly Coop - per-player m_data of third-party mods (gamedata\scripts\coop_mods_pdata.script), W4 "mods".
+
+	A client never saves (R-9.2) and loads the HOST's save, so a mod that keeps the player's progress in the
+	script storage (XP, skills, worn devices, wheel layout, perk cooldowns ...) would show the host's progress on
+	every client and forget the client's own. For the keys registered here:
+
+	  Host:   keeps every player's values in its own save, m_data.coop_mods_pdata["<character id>"] =
+	          { t = token, d = { [key] = value } }, written when that player reports (event mods.pd, chunked),
+	          answered with mods.pd_ack { t = token }. The host's own values stay where the mod keeps them.
+	  Client: right after the save is read (alife_storage_manager.on_before_load_state, before any load_state
+	          callback) the registered keys are replaced with this player's values: the session stash
+	          (coop.stash, newer, survives level changes) when it builds on the host's record, otherwise the
+	          record from the save, otherwise nothing (a new player starts the mod fresh). Then every 15 s the
+	          client asks the listed modules to refresh their keys (module.save_state, if they have one) and
+	          sends the keys to the host when they changed.
+	  Keys with `subs` travel only partly (the rest of the table is world state and stays the host's).
+
+	Single player and the host's own data are untouched.
+
+	API (call from on_game_start, before the save is read):
+	  coop_mods_pdata.register(key, { subs = {..} | nil, prime = { "module", ... } | nil, get = function | nil })
+	  coop_mods_pdata.owns(key) -> true when this file carries the key (other per-player channels skip it)
+--]]
+
+local api = rawget(_G, "coop")
+
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+
+local STORE = "coop_mods_pdata" -- host m_data key
+local STASH = "coop_mods_pdata" -- client session stash key
+local REPORT_MS = 15000
+local AVATAR_SECTION = "coop_player_avatar"
+
+local keys = {} -- key -> { subs = list|nil, prime = list|nil }
+local order = {}
+
+local st = { token = nil, last = nil, next_report = 0, applied = 0, sent = 0, acks = 0, stored = 0, refused = 0 }
+
+local function C() return coop_mods_core end
+
+local function log(fmt, ...) C().log("pdata", fmt, ...) end
+
+function register(key, opts)
+	if type(key) ~= "string" or key == "" or key == STORE then return false end
+	opts = type(opts) == "table" and opts or {}
+	if not keys[key] then order[#order + 1] = key end
+	keys[key] = {
+		subs = type(opts.subs) == "table" and opts.subs or nil,
+		prime = type(opts.prime) == "table" and opts.prime or nil,
+		get = type(opts.get) == "function" and opts.get or nil, -- current value when the mod keeps it elsewhere
+	}
+	return true
+end
+
+function owns(key)
+	return keys[key] ~= nil
+end
+
+-- Registers every top-level key a module's save_state writes, found by running it on a scratch table at
+-- start (for mods that keep only the player's own records and whose key names are not known here).
+function register_module(name)
+	local M = C().mod(name)
+	local f = M and C().fn(M, "save_state")
+	if not f then return 0 end
+	local scratch = {}
+	local ok = pcall(f, scratch)
+	if not ok then return 0 end
+	local n = 0
+	for k in pairs(scratch) do
+		if type(k) == "string" and register(k, { prime = { name } }) then n = n + 1 end
+	end
+	return n
+end
+
+function registered()
+	return order
+end
+
+-------------------------------------------------------------------------------
+-- Client: restore at load, report on change
+-------------------------------------------------------------------------------
+local function stash_data(saved_token)
+	if not api then return nil end
+	local ok, s = pcall(api.stash_get, STASH)
+	if not (ok and type(s) == "string") then return nil end
+	local tok, body = s:match("^([^|]*)|(.*)$")
+	if not tok or tok ~= (saved_token or "") then return nil end
+	local d = C().deser(body)
+	return type(d) == "table" and d or nil
+end
+
+-- m = the client's freshly read script storage (the host's save).
+function apply_loaded(m)
+	if type(m) ~= "table" or #order == 0 then
+		if type(m) == "table" then m[STORE] = nil end
+		return
+	end
+	local my = C().hid(0)
+	if type(my) ~= "number" or my == 0 then
+		log("! own character id unknown: per-player mod data not restored")
+		m[STORE] = nil
+		return
+	end
+	local store = type(m[STORE]) == "table" and m[STORE] or {}
+	local rec = store[tostring(my)]
+	local saved_token = type(rec) == "table" and type(rec.t) == "string" and rec.t or nil
+	local data = type(rec) == "table" and type(rec.d) == "table" and rec.d or {}
+	local fresher = stash_data(saved_token)
+	local src = fresher and "session" or (rec and "host save" or "none (new player)")
+	data = fresher or data
+	for _, key in ipairs(order) do
+		local spec, v = keys[key], data[key]
+		if spec.subs then
+			local live = m[key]
+			if type(live) ~= "table" then
+				live = {}
+				m[key] = live
+			end
+			local from = type(v) == "table" and v or {}
+			for _, sk in ipairs(spec.subs) do live[sk] = from[sk] end
+		else
+			m[key] = v
+		end
+	end
+	m[STORE] = nil -- other players' records are the host's business
+	st.token = saved_token
+	st.applied = st.applied + 1
+	log("restored %d key(s) for character %d from %s", #order, my, src)
+end
+
+local function collect()
+	local m = alife_storage_manager.get_state()
+	local primed = {}
+	for _, key in ipairs(order) do
+		for _, name in ipairs(keys[key].prime or {}) do
+			if not primed[name] then
+				primed[name] = true
+				local M = C().mod(name)
+				local f = M and C().fn(M, "save_state")
+				if f then
+					local ok, e = pcall(f, m)
+					if not ok then C().report("pdata", name .. ".save_state", e) end
+				end
+			end
+		end
+	end
+	for _, key in ipairs(order) do
+		local get = keys[key].get
+		if get then
+			local ok, v = pcall(get)
+			if ok and v ~= nil then m[key] = v end
+		end
+	end
+	local d = {}
+	for _, key in ipairs(order) do
+		local v, subs = m[key], keys[key].subs
+		if subs and type(v) == "table" then
+			local t = {}
+			for _, sk in ipairs(subs) do t[sk] = v[sk] end
+			v = t
+		end
+		d[key] = v
+	end
+	return d
+end
+
+local function client_report(force)
+	if #order == 0 or not C().live_client() then return end
+	local tg = time_global()
+	if not force and tg < st.next_report then return end
+	st.next_report = tg + REPORT_MS
+	local s, why = C().ser(collect())
+	if not s then
+		C().report("pdata", "serialize", why)
+		return
+	end
+	if s == st.last then return end
+	if C().send_big("pd", s, 0) then
+		st.last = s
+		st.sent = st.sent + 1
+	end
+	pcall(api.stash_set, STASH, (st.token or "") .. "|" .. s)
+end
+
+local function on_ack(t, from)
+	if type(t.t) ~= "string" or #t.t > 64 then return end
+	st.token = t.t
+	st.acks = st.acks + 1
+	if st.last then pcall(api.stash_set, STASH, t.t .. "|" .. st.last) end
+end
+
+-------------------------------------------------------------------------------
+-- Host: store reports in the save
+-------------------------------------------------------------------------------
+local function host_store(s, from)
+	local pid = api.avatar_of(from)
+	local d = C().deser(s)
+	if type(pid) ~= "number" or type(d) ~= "table" then
+		st.refused = st.refused + 1
+		return
+	end
+	local clean = {}
+	for k, v in pairs(d) do
+		if keys[k] then clean[k] = v end
+	end
+	local m = alife_storage_manager.get_state()
+	if type(m[STORE]) ~= "table" then m[STORE] = {} end
+	local tok = string.format("%x%x", math.random(1, 0x7fffffff), time_global() % 0x10000)
+	m[STORE][tostring(pid)] = { t = tok, d = clean }
+	st.stored = st.stored + 1
+	C().to_peer(from, "pd_ack", { t = tok })
+end
+
+-- Records of characters that no longer exist (deleted players) are dropped when the host saves.
+local function host_save_state(m)
+	if not (C().is_host() and type(m) == "table" and type(m[STORE]) == "table") then return end
+	for k in pairs(m[STORE]) do
+		local id = tonumber(k)
+		local se = id and id < 65535 and alife_object(id)
+		if not (se and se:section_name() == AVATAR_SECTION) then m[STORE][k] = nil end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Wiring
+-------------------------------------------------------------------------------
+local function actor_on_update()
+	if C().is_client() then client_report(false) end
+end
+
+local function install_load_hook()
+	local asm = C().mod("alife_storage_manager")
+	return C().wrap(asm, "on_before_load_state", "alife_storage_manager.on_before_load_state", function(orig)
+		return function(...)
+			local r = orig(...)
+			if C().is_client() then
+				local ok, e = pcall(apply_loaded, alife_storage_manager.get_state())
+				if not ok then C().report("pdata", "restore", e) end
+			end
+			return r
+		end
+	end)
+end
+
+function status()
+	return string.format("%d key(s) [%s] | client: restored %d, reports %d, acks %d, token %s | host: stored %d, refused %d",
+		#order, table.concat(order, " "), st.applied, st.sent, st.acks, tostring(st.token), st.stored, st.refused)
+end
+
+function on_game_start()
+	if not api then return end
+	install_load_hook()
+	C().on_big("pd", host_store, "host")
+	C().on("pd_ack", on_ack, "client")
+	C().set_limit("pd", 70, 8)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("save_state", host_save_state)
+	C().status_line("pdata", status)
+end

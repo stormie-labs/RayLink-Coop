@@ -1,0 +1,412 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop: co-op menu, new character, co-op options (scripts\coop_menu*.script). -->
+<string_table>
+	<string id="ui_coop_mm_btn">
+		<text>Co-op</text>
+	</string>
+	<string id="st_coop_menu_title">
+		<text>Co-op</text>
+	</string>
+	<string id="st_coop_menu_tab_host">
+		<text>Host a game</text>
+	</string>
+	<string id="st_coop_menu_tab_join">
+		<text>Join a game</text>
+	</string>
+	<string id="st_coop_menu_tab_steam">
+		<text>Steam (later)</text>
+	</string>
+	<string id="st_coop_menu_nick">
+		<text>Nickname:</text>
+	</string>
+	<string id="st_coop_menu_port">
+		<text>Port (UDP):</text>
+	</string>
+	<string id="st_coop_menu_address">
+		<text>Host address:</text>
+	</string>
+	<string id="st_coop_menu_address_hint">
+		<text>IP or IP:port, e.g. 192.168.1.10 or 203.0.113.5:27960</text>
+	</string>
+	<string id="st_coop_menu_recent">
+		<text>Recent:</text>
+	</string>
+	<string id="st_coop_menu_btn_host_now">
+		<text>Host this game</text>
+	</string>
+	<string id="st_coop_menu_btn_host_load">
+		<text>Load a save</text>
+	</string>
+	<string id="st_coop_menu_btn_host_last">
+		<text>Last save</text>
+	</string>
+	<string id="st_coop_menu_btn_host_new">
+		<text>New game</text>
+	</string>
+	<string id="st_coop_menu_btn_connect">
+		<text>Connect</text>
+	</string>
+	<string id="st_coop_menu_btn_disconnect">
+		<text>Disconnect</text>
+	</string>
+	<string id="st_coop_menu_btn_cancel">
+		<text>Cancel</text>
+	</string>
+	<string id="st_coop_menu_btn_close">
+		<text>Close</text>
+	</string>
+	<string id="st_coop_menu_host_ingame">
+		<text>Your game is loaded: friends join your world. To play over the Internet forward UDP port %s on your router.</text>
+	</string>
+	<string id="st_coop_menu_host_menu">
+		<text>No game is loaded. Choose how to start: the session opens by itself once the level is loaded.</text>
+	</string>
+	<string id="st_coop_menu_host_dead">
+		<text>Your character is dead: load a save first.</text>
+	</string>
+	<string id="st_coop_menu_pending">
+		<text>The session opens on port %s as soon as the game is loaded.</text>
+	</string>
+	<string id="st_coop_menu_steam_hint">
+		<text>Steam lobbies come in a later version. For now connect by IP.</text>
+	</string>
+	<string id="st_coop_menu_join_ingame">
+		<text>Connecting closes your current game: unsaved progress is lost.</text>
+	</string>
+	<string id="st_coop_menu_status">
+		<text>Status:</text>
+	</string>
+	<string id="st_coop_menu_phase_off">
+		<text>no session</text>
+	</string>
+	<string id="st_coop_menu_phase_hosting">
+		<text>you host on port %s</text>
+	</string>
+	<string id="st_coop_menu_phase_connecting">
+		<text>connecting to %s...</text>
+	</string>
+	<string id="st_coop_menu_phase_handshaked">
+		<text>accepted by the host, waiting for the world...</text>
+	</string>
+	<string id="st_coop_menu_phase_receiving_world">
+		<text>downloading the host's world...</text>
+	</string>
+	<string id="st_coop_menu_phase_loading_world">
+		<text>loading the level...</text>
+	</string>
+	<string id="st_coop_menu_phase_live">
+		<text>in the host's game %s</text>
+	</string>
+	<string id="st_coop_menu_players">
+		<text>Players %s / %s:</text>
+	</string>
+	<string id="st_coop_menu_you">
+		<text>you</text>
+	</string>
+	<string id="st_coop_menu_host">
+		<text>host</text>
+	</string>
+	<string id="st_coop_menu_joining">
+		<text>joining</text>
+	</string>
+	<string id="st_coop_menu_ms">
+		<text>%s ms</text>
+	</string>
+	<string id="st_coop_menu_nobody">
+		<text>Nobody else yet.</text>
+	</string>
+	<string id="st_coop_menu_error">
+		<text>Error: %s</text>
+	</string>
+	<string id="st_coop_menu_left">
+		<text>The session was closed.</text>
+	</string>
+	<string id="st_coop_menu_err_nick">
+		<text>Enter a nickname: 1-32 characters, no quotes or ;</text>
+	</string>
+	<string id="st_coop_menu_err_port">
+		<text>The port is a number from 1 to 65535.</text>
+	</string>
+	<string id="st_coop_menu_err_address">
+		<text>Enter the host address: IP or IP:port.</text>
+	</string>
+	<string id="st_coop_menu_err_busy">
+		<text>Disconnect from the current session first.</text>
+	</string>
+	<string id="st_coop_menu_reason_ContentMismatch">
+		<text>your mod list differs from the host's</text>
+	</string>
+	<string id="st_coop_menu_reason_BuildMismatch">
+		<text>a different Anomaly Coop build</text>
+	</string>
+	<string id="st_coop_menu_reason_ProtocolMismatch">
+		<text>a different co-op version</text>
+	</string>
+	<string id="st_coop_menu_reason_DuplicateKey">
+		<text>your player key is already used in this session</text>
+	</string>
+	<string id="st_coop_menu_reason_SessionFull">
+		<text>the session is full</text>
+	</string>
+	<string id="st_coop_menu_reason_HostNotReady">
+		<text>the host is not in a loaded game</text>
+	</string>
+	<string id="st_coop_menu_reason_Kicked">
+		<text>removed by the host</text>
+	</string>
+	<string id="st_coop_menu_reason_Timeout">
+		<text>timed out</text>
+	</string>
+	<string id="st_coop_menu_reason_Malformed">
+		<text>connection error</text>
+	</string>
+	<string id="st_coop_menu_reason_lost">
+		<text>connection lost</text>
+	</string>
+	<string id="st_coop_menu_reason_start">
+		<text>could not start</text>
+	</string>
+	<string id="st_coop_char_title">
+		<text>New character</text>
+	</string>
+	<string id="st_coop_char_info">
+		<text>The host made a new character for you (%s). Choose a faction and starting gear as in a new game; points follow the host's economy.</text>
+	</string>
+	<string id="st_coop_char_btn_start">
+		<text>Done</text>
+	</string>
+	<string id="st_coop_char_btn_later">
+		<text>Later</text>
+	</string>
+	<string id="st_coop_char_waiting">
+		<text>Waiting for the host...</text>
+	</string>
+	<string id="st_coop_char_done">
+		<text>Your character: %s. Gear and money are in your inventory.</text>
+	</string>
+	<string id="st_coop_char_refused">
+		<text>The host refused the choice: %s</text>
+	</string>
+	<string id="st_coop_char_reason_not_new">
+		<text>your character is already set up</text>
+	</string>
+	<string id="st_coop_char_reason_faction">
+		<text>this faction is not available</text>
+	</string>
+	<string id="st_coop_char_reason_items">
+		<text>the gear is not in this faction's list</text>
+	</string>
+	<string id="st_coop_char_reason_points">
+		<text>not enough points</text>
+	</string>
+	<string id="st_coop_char_reason_no_character">
+		<text>the host has no character for you yet</text>
+	</string>
+	<string id="st_coop_char_reason_busy">
+		<text>the host is busy, try again</text>
+	</string>
+	<string id="st_coop_char_later_hint">
+		<text>The choice window opens again in a minute.</text>
+	</string>
+	<string id="st_coop_char_host_news">
+		<text>%s joined as %s.</text>
+	</string>
+	<string id="ui_mm_menu_coop">
+		<text>Co-op</text>
+	</string>
+	<string id="ui_mm_menu_coop_player">
+		<text>Player</text>
+	</string>
+	<string id="ui_mm_menu_coop_session">
+		<text>Session rules</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_nick">
+		<text>Nickname</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_nick_desc">
+		<text>Your name in co-op: other players see it above your head and in the chat. Applies to the next session.</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_host_port">
+		<text>Port for hosting (UDP)</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_host_port_desc">
+		<text>Port your game listens on when you host. 27960 by default; forward it on the router to play over the Internet.</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_nametags">
+		<text>Names above players</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_nametags_desc">
+		<text>Show other players' nicknames above their heads.</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_nametags_dist">
+		<text>Distance next to the name</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_nametags_dist_desc">
+		<text>Add the distance in meters to the name above a player.</text>
+	</string>
+	<string id="st_coop_opt_session_note">
+		<text>These are the host's rules. While you are connected to another player's game his rules apply and these fields are locked; they take effect when you host.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_friendly_fire">
+		<text>Friendly fire</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_friendly_fire_desc">
+		<text>Players can hurt each other.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_share_rewards">
+		<text>Share task rewards</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_share_rewards_desc">
+		<text>Task money is split among the players online instead of going to the one who finished the task.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_death_mode">
+		<text>When a player dies</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_death_mode_desc">
+		<text>Hardcore: the player only watches until the next load. Respawn: back to life without the gear. Respawn with gear: back to life with everything.</text>
+	</string>
+	<string id="st_coop_opt_death_hardcore">
+		<text>Hardcore</text>
+	</string>
+	<string id="st_coop_opt_death_respawn">
+		<text>Respawn</text>
+	</string>
+	<string id="st_coop_opt_death_respawn_keep">
+		<text>Respawn with gear</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_bleedout">
+		<text>Time to revive a downed player, s</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_bleedout_desc">
+		<text>How long a downed player can be revived by others before he dies.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_revive_health">
+		<text>Health after revive</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_revive_health_desc">
+		<text>Health of a player who was revived (1 = full).</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_respawn_delay">
+		<text>Respawn delay, s</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_respawn_delay_desc">
+		<text>Seconds before a dead player comes back (respawn modes).</text>
+	</string>
+	<string id="st_coop_ui_kind_archive">
+		<text>archives (db)</text>
+	</string>
+	<string id="st_coop_ui_kind_script">
+		<text>scripts</text>
+	</string>
+	<string id="st_coop_ui_kind_config">
+		<text>configs</text>
+	</string>
+	<string id="st_coop_ui_kind_texture">
+		<text>textures</text>
+	</string>
+	<string id="st_coop_ui_kind_mesh">
+		<text>models/animations</text>
+	</string>
+	<string id="st_coop_ui_kind_sound">
+		<text>sounds</text>
+	</string>
+	<string id="st_coop_ui_kind_other">
+		<text>other files</text>
+	</string>
+	<string id="st_coop_ui_more_log">
+		<text>%s more in the log</text>
+	</string>
+	<string id="st_coop_ui_and_more">
+		<text>... and %s more: %s</text>
+	</string>
+	<string id="st_coop_ui_missing">
+		<text>Missing on your side (the host has them)</text>
+	</string>
+	<string id="st_coop_ui_extra">
+		<text>Extra on your side (the host does not have them)</text>
+	</string>
+	<string id="st_coop_ui_differ">
+		<text>Different version (both have them, the files differ)</text>
+	</string>
+	<string id="st_coop_ui_no_list">
+		<text>The host's list did not arrive; see the log for details.</text>
+	</string>
+	<string id="st_coop_ui_mods_summary">
+		<text>The host refused the connection: your game files are not the same as the host's. Install exactly the same mods in the same versions as the host (or the host matches yours), then connect again. Archives and scripts are listed first: their names usually tell the addon.</text>
+	</string>
+	<string id="st_coop_ui_mods_footer">
+		<text>Full list: %s (lines "missing here", "extra here", "different").</text>
+	</string>
+	<string id="st_coop_ui_mods_title">
+		<text>Your mod list differs from the host's</text>
+	</string>
+	<string id="st_coop_ui_key_how">
+		<text>How to fix it on this PC:</text>
+	</string>
+	<string id="st_coop_ui_key_step1">
+		<text>1. Close the game.</text>
+	</string>
+	<string id="st_coop_ui_key_step2">
+		<text>2. Delete this file:</text>
+	</string>
+	<string id="st_coop_ui_key_step3">
+		<text>3. Start the game and connect again. A new key is created automatically.</text>
+	</string>
+	<string id="st_coop_ui_key_what">
+		<text>What it changes:</text>
+	</string>
+	<string id="st_coop_ui_key_what_text">
+		<text>The host recognizes players by this key, not by the nickname. With a new key the host creates a new character for you; the player whose folder you copied keeps theirs. Do not do this on the PC whose character you want to keep.</text>
+	</string>
+	<string id="st_coop_ui_host_message">
+		<text>Host message:</text>
+	</string>
+	<string id="st_coop_ui_key_summary">
+		<text>Another player in this session already uses your player key. This happens when a game folder is copied from another player: the key file is copied with it, and two players cannot share one key.</text>
+	</string>
+	<string id="st_coop_ui_key_title">
+		<text>Your player key is already in use</text>
+	</string>
+	<string id="st_coop_ui_key_footer">
+		<text>The key is a random file made on the first co-op start. It holds no password or account data.</text>
+	</string>
+	<string id="st_coop_ui_title_default">
+		<text>The host refused the connection</text>
+	</string>
+	<string id="st_coop_ui_title_ProtocolMismatch">
+		<text>Different co-op version</text>
+	</string>
+	<string id="st_coop_ui_title_BuildMismatch">
+		<text>Different game build</text>
+	</string>
+	<string id="st_coop_ui_title_SessionFull">
+		<text>The session is full</text>
+	</string>
+	<string id="st_coop_ui_title_HostNotReady">
+		<text>The host is not ready</text>
+	</string>
+	<string id="st_coop_ui_title_Kicked">
+		<text>Removed from the session</text>
+	</string>
+	<string id="st_coop_ui_title_Timeout">
+		<text>Connection timed out</text>
+	</string>
+	<string id="st_coop_ui_title_Malformed">
+		<text>Connection error</text>
+	</string>
+	<string id="st_coop_ui_hint_not_ready">
+		<text>The host has to be in a loaded game (not in the main menu) to accept players.</text>
+	</string>
+	<string id="st_coop_ui_hint_full">
+		<text>Ask the host to raise the player limit or wait until somebody leaves.</text>
+	</string>
+	<string id="st_coop_ui_hint_build">
+		<text>Install the same Anomaly Coop build as the host (both bin\ and gamedata\).</text>
+	</string>
+	<string id="st_coop_ui_reason_code">
+		<text>Reason code: %s</text>
+	</string>
+	<string id="st_coop_opt_locked_note">
+		<text>Co-op: the host sets the locked options of this page while you are connected. Your own values come back when you leave.</text>
+	</string>
+</string_table>

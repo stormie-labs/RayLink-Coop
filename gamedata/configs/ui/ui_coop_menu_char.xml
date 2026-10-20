@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop: extra elements of the new character window (scripts\coop_menu_char.script). The window itself
+     uses the stock ui_mm_faction_select.xml; these sit where the stock screen has the start map (coop_char:title,
+     info) and the game options (status). Coordinates are relative to main_dialog:frame_back, the same in the 4:3
+     and 16:9 stock layouts. -->
+<w>
+	<coop_shade x="0" y="0" width="1024" height="768" stretch="1">
+		<texture r="0" g="0" b="0" a="200">ui_icons_PDA_tooltips</texture>
+	</coop_shade>
+
+	<coop_char>
+		<title x="8" y="10" width="336" height="32" stretch="1">
+			<text complex_mode="0" r="240" g="200" b="120" align="c" vert_align="c" font="graffiti22">st_coop_char_title</text>
+		</title>
+		<info x="18" y="50" width="318" height="210" stretch="1">
+			<text complex_mode="1" r="215" g="215" b="215" align="l" vert_align="t" font="letterica16"></text>
+		</info>
+		<status x="14" y="424" width="690" height="60" stretch="1">
+			<text complex_mode="1" r="240" g="200" b="120" align="l" vert_align="t" font="letterica18"></text>
+		</status>
+	</coop_char>
+</w>

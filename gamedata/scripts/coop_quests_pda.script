@@ -1,0 +1,565 @@
+--[[
+	Anomaly Coop - PDA of the group (gamedata\scripts\coop_quests_pda.script), W4 "quests".
+	Ports xrRazom's xrr_patch_pda, xrr_patch_encyclopedia, xrr_patch_encyclopedia_messages_restored
+	and xrr_achievement_sync on our events.
+
+	Rankings: a client's ALife copy is frozen (NPC ranks of the join), so its PDA asks the host for the
+	ranking list (quests.rank_req, at most every 5 s) and draws the host's list; until the first answer
+	the stock local list is shown. On the host the players are in the list already (their characters
+	are stalkers there).
+	NPC PDAs: a dead stalker's PDA gets random messages (contact, stash, route, RF source) when it is
+	registered. Only the host generates them and sends them to every client (quests.pda); a client asks
+	for a PDA it has no messages for (quests.pda_req).
+	Stashes from PDA messages: the client's reveal is also done by the host (the host decides the
+	content, quests.act "stash"). Opening a stash box on a client asks the host to fill it
+	(treasure_manager.try_spawn_treasure, host-domain callback that does not run on a client).
+	Encyclopedia: an article or note one player unlocks is unlocked for everybody (articles silently,
+	notes with the PDA note signal). Encyclopedia Messages Restored is kept quiet for those.
+	Achievements: an achievement one player earns is earned by everybody, with its rewards on each
+	player's own machine (money, faction unlocks of the local config, rank / reputation); the stashes
+	of "Tourist" are created by the host only.
+--]]
+
+local qc = coop_quests_core
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+
+local TAG = "pda"
+local RANK_COOLDOWN = 5000
+local RANK_CHUNK = 25
+local BOX_GAP = 2000
+
+local stats = { rank_req = 0, rank_in = 0, pda_out = 0, pda_in = 0, pda_req = 0, stash = 0, box = 0, ency_out = 0, ency_in = 0, achv_out = 0, achv_in = 0 }
+
+-------------------------------------------------------------------------------
+-- Rankings
+-------------------------------------------------------------------------------
+local rank = { cache = nil, place = 0, last_req = 0, parts = nil, seq = 0, dirty = false }
+
+local function rank_name_of_se(se)
+	local ok, n = pcall(ranks.get_se_obj_rank_name, se)
+	return ok and n or "novice"
+end
+
+local function rep_key(v)
+	local ok, n = pcall(utils_obj.get_reputation_name, v)
+	return ok and n or "st_reputation_neutral"
+end
+
+local function host_on_rank_req(t, from)
+	if not qc.is_host() or type(from) ~= "number" or from == 0 then return end
+	local p = qc.mod("pda")
+	if not (p and p.calculate_rankings and p.get_coc_ranking_list) then return end
+	p.calculate_rankings()
+	local list = p.get_coc_ranking_list()
+	local size = p.get_rankings_array_size and p.get_rankings_array_size() or 100
+	local sim = alife()
+	local mine = qc.avatar_obj(from)
+	local mine_id = mine and mine:id()
+	local entries = {}
+	for i = 1, size do
+		local id = list[i]
+		if id == nil then break end
+		local e
+		if id == 0 then
+			local a = db.actor
+			e = { n = a:character_name(), r = a:character_rank(), c = a:character_community(), p = a:character_reputation(),
+				i = a:character_icon(), rn = ranks.get_obj_rank_name(a) }
+		else
+			local se = sim:object(id)
+			if se then
+				e = { n = se:character_name(), r = se:rank(), c = se:community(), p = se:reputation(),
+					i = se:character_icon(), rn = rank_name_of_se(se), me = (id == mine_id) or nil }
+			end
+		end
+		if e then
+			e.pn = rep_key(e.p or 0)
+			entries[#entries + 1] = e
+		end
+	end
+	-- the requester's place among all ranked stalkers and players
+	local my_rank = tonumber(t.r) or 0
+	local place = 1
+	if db.actor:character_rank() > my_rank then place = place + 1 end
+	for i = 1, 65534 do
+		local se = sim:object(i)
+		if se and i ~= mine_id and IsStalker(nil, se:clsid()) and se:alive() and se:community() ~= "zombied"
+			and se:community() ~= "trader" and not (story_objects and story_objects.story_id_by_object_id[se.id])
+			and se:rank() > my_rank then
+			place = place + 1
+		end
+	end
+	local parts = math.max(1, math.ceil(#entries / RANK_CHUNK))
+	for part = 1, parts do
+		local chunk = {}
+		for i = (part - 1) * RANK_CHUNK + 1, math.min(part * RANK_CHUNK, #entries) do chunk[#chunk + 1] = entries[i] end
+		qc.send("rank", { q = tonumber(t.q) or 0, k = part, m = parts, w = place, d = qc.ser(chunk) or "" }, from)
+	end
+end
+
+local function client_on_rank(t, from)
+	if from ~= 0 or not qc.is_client() then return end
+	local q, part, parts = tonumber(t.q), tonumber(t.k), tonumber(t.m)
+	if not (q and part and parts and parts <= 20) then return end
+	if not rank.parts or rank.parts.q ~= q then rank.parts = { q = q, got = 0, list = {} } end
+	local chunk = qc.des(t.d)
+	if type(chunk) ~= "table" then return end
+	rank.parts.list[part] = chunk
+	rank.parts.got = rank.parts.got + 1
+	if rank.parts.got < parts then return end
+	local all = {}
+	for i = 1, parts do
+		for _, e in ipairs(rank.parts.list[i] or {}) do
+			if type(e) == "table" then all[#all + 1] = e end
+		end
+	end
+	rank.cache = all
+	rank.place = tonumber(t.w) or 0
+	rank.parts = nil
+	rank.dirty = true
+	stats.rank_in = stats.rank_in + 1
+end
+
+local function rank_desc(e)
+	local mc = db.actor:character_community()
+	local comm = tostring(e.c or "stalker")
+	local fc = game_relations.is_factions_enemies(mc, comm) and "%c[255,255,1,1]"
+		or game_relations.is_factions_friends(mc, comm) and "%c[255,1,255,1]" or "%c[255,255,255,1]"
+	local rep = tonumber(e.p) or 0
+	local rc = rep <= -500 and "%c[255,255,1,1]" or rep >= 500 and "%c[255,1,255,1]" or "%c[255,255,255,1]"
+	return strformat([[ %s \n %s \n %s]],
+		game.translate_string("ui_st_community") .. ": " .. fc .. game.translate_string(comm) .. "%c[default]",
+		game.translate_string("ui_st_rank") .. ": %c[255,215,215,215]" .. game.translate_string("st_rank_" .. tostring(e.rn or "novice"))
+			.. " %c[255,110,110,255]" .. tostring(e.r or 0) .. "%c[default]",
+		game.translate_string("ui_st_reputation") .. ": " .. rc .. game.translate_string(tostring(e.pn or "st_reputation_neutral")) .. "%c[default]")
+end
+
+local function own_entry()
+	local a = db.actor
+	return { n = a:character_name(), r = a:character_rank(), c = a:character_community(), p = a:character_reputation(),
+		rn = ranks.get_obj_rank_name(a), pn = rep_key(a:character_reputation()), me = true }
+end
+
+local function patch_rankings()
+	local p = qc.mod("pda")
+	if not (type(p) == "table" and type(p.calculate_rankings) == "function") then return end
+	local size_of = function() return p.get_rankings_array_size and p.get_rankings_array_size() or 100 end
+	local function cached() return qc.client_live() and rank.cache ~= nil end
+	local function entry(i)
+		if i == size_of() + 1 then return own_entry() end
+		return rank.cache[i]
+	end
+
+	local calc = p.calculate_rankings
+	p.calculate_rankings = function(...)
+		if not qc.client_live() then return calc(...) end
+		local t = time_global()
+		if t - rank.last_req >= RANK_COOLDOWN and db.actor then
+			rank.last_req = t
+			rank.seq = rank.seq + 1
+			if qc.send("rank_req", { r = db.actor:character_rank(), q = rank.seq }, 0) then stats.rank_req = stats.rank_req + 1 end
+		end
+		if not rank.cache then return calc(...) end -- the stock list until the host answers
+	end
+
+	local can_show = p.coc_rankings_can_show
+	if type(can_show) == "function" then
+		p.coc_rankings_can_show = function(index, ...)
+			if not cached() then return can_show(index, ...) end
+			if has_alife_info("ui_pda_hide") then return false end
+			if index == size_of() + 1 then
+				-- the own row is drawn once more after a new answer so it shows the new place
+				if rank.dirty then
+					rank.dirty = false
+					return false
+				end
+				return true
+			end
+			return index <= #rank.cache
+		end
+	end
+	local set_name = p.coc_rankings_set_name
+	if type(set_name) == "function" then
+		p.coc_rankings_set_name = function(index, ...)
+			if not cached() then return set_name(index, ...) end
+			local e = entry(index)
+			if not e then return "" end
+			local own = index == size_of() + 1 or e.me
+			return strformat("%s. %s", own and rank.place or index, own and db.actor:character_name() or tostring(e.n or ""))
+		end
+	end
+	local set_desc = p.coc_rankings_set_description
+	if type(set_desc) == "function" then
+		p.coc_rankings_set_description = function(index, ...)
+			if not cached() then return set_desc(index, ...) end
+			local e = entry(index)
+			if not e then return "" end
+			if e.me then e = own_entry() end
+			local ok, s = pcall(rank_desc, e)
+			return ok and s or ""
+		end
+	end
+	local set_hint = p.coc_rankings_set_hint
+	if type(set_hint) == "function" then
+		p.coc_rankings_set_hint = function(index, ...)
+			if not cached() then return set_hint(index, ...) end
+			return ""
+		end
+	end
+	local set_icon = p.coc_rankings_set_icon
+	if type(set_icon) == "function" then
+		p.coc_rankings_set_icon = function(index, ...)
+			if not cached() then return set_icon(index, ...) end
+			local e = entry(index)
+			if not e then return "" end
+			if index == size_of() + 1 or e.me then return db.actor:character_icon() or "ui\\ui_noise" end
+			return type(e.i) == "string" and e.i ~= "" and e.i or "ui\\ui_noise"
+		end
+	end
+	local border = p.coc_rankings_show_border
+	if type(border) == "function" then
+		p.coc_rankings_show_border = function(index, ...)
+			if not cached() then return border(index, ...) end
+			if index == size_of() + 1 then return true end
+			local e = rank.cache[index]
+			return e and e.me == true or false
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- NPC PDA messages
+-------------------------------------------------------------------------------
+local pda_cache = {} -- local item id -> info (client)
+local applying_pda = false
+
+local function host_send_pda(id, target)
+	local info = se_load_var(id, nil, "info")
+	if type(info) ~= "table" then return end
+	local blob = qc.ser(info)
+	if not blob or #blob > qc.MAX_BLOB then
+		qc.log(TAG, "! PDA info of %s too long to send", tostring(id))
+		return
+	end
+	if qc.send("pda", { i = id, d = blob }, target) then stats.pda_out = stats.pda_out + 1 end
+end
+
+local function client_store_pda(id, info)
+	pda_cache[id] = info
+	if alife_object(id) then se_save_var(id, nil, "info", info) end
+end
+
+local function client_on_pda(t, from)
+	if from ~= 0 or not qc.is_client() then return end
+	local id = tonumber(t.i)
+	local info = qc.des(t.d)
+	if not (id and type(info) == "table") then return end
+	stats.pda_in = stats.pda_in + 1
+	client_store_pda(qc.to_local_id(id), info)
+end
+
+local function host_on_pda_req(t, from)
+	if not qc.is_host() or type(from) ~= "number" or from == 0 then return end
+	local id = tonumber(t.i)
+	if id and alife_object(id) then host_send_pda(id, from) end
+end
+
+local function patch_npc_pda()
+	local tab = qc.mod("ui_pda_npc_tab")
+	if type(tab) ~= "table" then return end
+	local reg = tab.register_pda
+	if type(reg) == "function" then
+		tab.register_pda = function(npc, pda_sec, pda_id, ...)
+			if qc.client_live() then return end -- the host's messages come with quests.pda
+			local r = reg(npc, pda_sec, pda_id, ...)
+			-- a dead stalker's PDA is loot now: everybody gets its messages (others are asked for when taken)
+			local dead = not npc or not pcall(npc.alive, npc) or not npc:alive()
+			if dead and qc.host_party() and type(pda_id) == "number" then
+				local ok, err = pcall(host_send_pda, pda_id, -1)
+				if not ok then qc.report(TAG, "send pda", err) end
+			end
+			return r
+		end
+	end
+	local view = tab.use_view
+	if type(view) == "function" then
+		tab.use_view = function(obj, ...)
+			if obj and qc.client_live() then
+				local id = obj:id()
+				if type(se_load_var(id, nil, "info")) ~= "table" then
+					if pda_cache[id] then
+						se_save_var(id, nil, "info", pda_cache[id])
+					else
+						qc.send("pda_req", { i = qc.to_host_id(id) }, 0)
+						stats.pda_req = stats.pda_req + 1
+						se_save_var(id, nil, "info", { state = "default", msg = {}, contact = {
+							name = game.translate_string("st_dyn_news_unknown_contact"), comm = "stalker",
+							icon = "ui\\ui_noise", rank = "novice", repu = 0 } })
+					end
+				end
+			end
+			return view(obj, ...)
+		end
+	end
+	-- a stash revealed by a PDA message: the host decides its content
+	local cls = tab.pda_npc_tab
+	local sel = cls and cls.OnSelectMessage
+	if type(sel) == "function" then
+		cls.OnSelectMessage = function(self, ...)
+			if not qc.client_live() then return sel(self, ...) end
+			local msg
+			pcall(function()
+				local item = self.message_list:GetSelectedItem()
+				local m = item and item.indx and self.msg and self.msg[item.indx]
+				if m and m.stash and not m.stash_read then msg = m end
+			end)
+			local r = sel(self, ...)
+			if msg and msg.stash_read then
+				local spot = level.map_has_object_spot(msg.stash, "treasure_searched") ~= 0 and "treasure_searched" or "treasure"
+				local hint = "%c[255,255,160,0]" .. game.translate_string(msg.topic_title or "")
+					.. "\\n%c[default]\\n%c[160,100,100,200]" .. game.translate_string("st_stash_of") .. " "
+					.. tostring(self.contact and self.contact.name or "")
+				qc.request_host_action("stash", { b = qc.to_host_id(msg.stash), s = spot, h = hint })
+				stats.stash = stats.stash + 1
+			end
+			return r
+		end
+	end
+end
+
+-- Client took an NPC PDA it has no messages for: ask the host now, before it is read.
+local function client_item_take(item)
+	if not (qc.client_live() and item) then return end
+	local dev = qc.mod("item_device")
+	local secs = type(dev) == "table" and dev.device_npc_pda
+	if not (type(secs) == "table" and secs[item:section()]) then return end
+	local id = item:id()
+	if pda_cache[id] or type(se_load_var(id, nil, "info")) == "table" then return end
+	qc.send("pda_req", { i = qc.to_host_id(id) }, 0)
+	stats.pda_req = stats.pda_req + 1
+end
+
+local function host_stash(from, t)
+	local tm = qc.mod("treasure_manager")
+	local b = tonumber(t.b)
+	if not (tm and tm.set_random_stash and b and alife_object(b)) then return end
+	local state = tm.caches and tm.caches[b]
+	if type(state) == "string" or state == true then return end -- filled or looted already
+	local spot = (t.s == "treasure_searched") and "treasure_searched" or "treasure"
+	tm.set_random_stash(spot, type(t.h) == "string" and t.h or nil, nil, b)
+end
+
+-- Client opened an inventory box: the host fills a revealed stash (its callback does not run here).
+local box_last = {}
+local function client_box_use(box, who)
+	if not (qc.client_live() and box and IsInvbox and IsInvbox(box)) then return end
+	if who and db.actor and who:id() ~= db.actor:id() then return end
+	local id = box:id()
+	local t = time_global()
+	if box_last[id] and t - box_last[id] < BOX_GAP then return end
+	box_last[id] = t
+	qc.request_host_action("box", { b = qc.to_host_id(id) })
+	stats.box = stats.box + 1
+end
+
+local function host_box(from, t)
+	local tm = qc.mod("treasure_manager")
+	local box = tonumber(t.b) and level.object_by_id(tonumber(t.b))
+	if not (tm and tm.try_spawn_treasure and box and IsInvbox(box)) then return end
+	local who = qc.avatar_obj(from)
+	if who and box:position():distance_to_sqr(who:position()) > 100 then return end
+	tm.try_spawn_treasure(box)
+end
+
+-------------------------------------------------------------------------------
+-- Encyclopedia
+-------------------------------------------------------------------------------
+local ency = { orig_note = nil, orig_article = nil, applying = false, mutes = {} }
+
+local function is_note(s) return s:find("encyclopedia__notes", 1, true) ~= nil end
+
+local function unlocked(s)
+	local enc = ui_pda_encyclopedia_tab
+	if is_note(s) then return enc.is_unlocked_note(s) == true end
+	return enc.is_unlocked_article(s) == true
+end
+
+-- Another mod that announces unlocks its own way registers that function here (muted while applying).
+function mute_during_apply(tbl, key)
+	if type(tbl) == "table" and type(key) == "string" then ency.mutes[#ency.mutes + 1] = { tbl = tbl, key = key } end
+end
+
+local function silently(fn, ...)
+	for _, m in ipairs(ency.mutes) do
+		m.saved = m.tbl[m.key]
+		m.tbl[m.key] = function() end
+	end
+	local res = { pcall(fn, ...) }
+	for i = #ency.mutes, 1, -1 do
+		local m = ency.mutes[i]
+		m.tbl[m.key], m.saved = m.saved, nil
+	end
+	return unpack(res)
+end
+
+local function apply_ency(s)
+	if type(s) ~= "string" or s == "" or unlocked(s) then return end
+	ency.applying = true
+	local ok, err
+	if is_note(s) then
+		ok, err = pcall(ency.orig_note, s) -- notes keep the PDA note signal
+	else
+		ok, err = silently(ency.orig_article, s)
+	end
+	ency.applying = false
+	if not ok then qc.report(TAG, "unlock " .. s, err) end
+	stats.ency_in = stats.ency_in + 1
+end
+
+local function announce_ency(s)
+	if ency.applying or not qc.active() then return end
+	if qc.is_client() then
+		if qc.client_live() then qc.send("ency", { s = s }, 0) end
+	elseif qc.host_party() then
+		qc.send("ency", { s = s }, -1)
+	end
+	stats.ency_out = stats.ency_out + 1
+end
+
+local function on_ency(t, from)
+	if type(t.s) ~= "string" or #t.s > 200 then return end
+	if qc.is_host() then
+		if type(from) ~= "number" or from == 0 then return end
+		apply_ency(t.s)
+		for _, p in ipairs(qc.players()) do
+			if not p.is_self and p.id ~= from then qc.send("ency", { s = t.s }, p.id) end
+		end
+	elseif from == 0 then
+		apply_ency(t.s)
+	end
+end
+
+local function patch_encyclopedia()
+	local enc = qc.mod("ui_pda_encyclopedia_tab")
+	if not (type(enc) == "table" and type(enc.unlock_note) == "function" and type(enc.unlock_article) == "function"
+		and type(enc.is_unlocked_note) == "function" and type(enc.is_unlocked_article) == "function") then
+		qc.log(TAG, "! encyclopedia functions not found: unlocks are not shared")
+		return
+	end
+	mute_during_apply(qc.mod("actor_menu"), "set_notification")
+	mute_during_apply(enc, "set_article")
+	for _, name in ipairs({ "zz_encyclopedia_messages_restored", "zz_Encyclopedia_messages_restored" }) do
+		local m = rawget(_G, name)
+		if type(m) == "table" and type(m.set_article) == "function" then mute_during_apply(m, "set_article") end
+	end
+	ency.orig_note, ency.orig_article = enc.unlock_note, enc.unlock_article
+	-- the tab's own calls resolve through its module table, so they hit these too
+	enc.unlock_note = function(s, ...)
+		local before = type(s) == "string" and unlocked(s)
+		local r = ency.orig_note(s, ...)
+		if type(s) == "string" and not before and unlocked(s) then announce_ency(s) end
+		return r
+	end
+	enc.unlock_article = function(s, ...)
+		local before = type(s) == "string" and unlocked(s)
+		local r = ency.orig_article(s, ...)
+		if type(s) == "string" and not before and unlocked(s) then announce_ency(s) end
+		return r
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Achievements
+-------------------------------------------------------------------------------
+local achv_applying = false
+
+local function has_achv(name)
+	local gs = qc.mod("game_statistics")
+	local ok, v = pcall(gs.has_actor_achievement, name)
+	return ok and v == true
+end
+
+-- The achievement for this machine's actor, rewards included (its own *_rewards function).
+local function apply_achv(name)
+	if has_achv(name) then return end
+	local ga = qc.mod("game_achievements")
+	local f = type(ga) == "table" and ga[name .. "_rewards"]
+	achv_applying = true
+	local ok, err
+	if type(f) == "function" then
+		if qc.is_client() then
+			-- "Tourist" stashes are the host's
+			local tm = qc.mod("treasure_manager")
+			local crs = tm and tm.create_random_stash
+			if crs then tm.create_random_stash = function() end end
+			ok, err = pcall(f)
+			if crs then tm.create_random_stash = crs end
+		else
+			ok, err = pcall(f)
+		end
+	else
+		ok, err = pcall(SendScriptCallback, "actor_on_achievement_earned", name, "")
+	end
+	achv_applying = false
+	if not ok then qc.report(TAG, "achievement " .. name, err) end
+	stats.achv_in = stats.achv_in + 1
+end
+
+local function on_earned(name)
+	if achv_applying or type(name) ~= "string" or not qc.active() then return end
+	if qc.is_client() then
+		if qc.client_live() then qc.send("achv", { a = name }, 0) end
+	elseif qc.host_party() then
+		qc.send("achv", { a = name }, -1)
+	end
+	stats.achv_out = stats.achv_out + 1
+end
+
+local function on_achv(t, from)
+	if type(t.a) ~= "string" or not t.a:match("^[%w_]+$") then return end
+	if qc.is_host() then
+		if type(from) ~= "number" or from == 0 then return end
+		apply_achv(t.a)
+		for _, p in ipairs(qc.players()) do
+			if not p.is_self and p.id ~= from then qc.send("achv", { a = t.a }, p.id) end
+		end
+	elseif from == 0 then
+		apply_achv(t.a)
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Status, start
+-------------------------------------------------------------------------------
+function print_status()
+	qc.log(TAG, "rankings: asked %d, answers %d, cached %s | NPC PDAs sent %d received %d asked %d | stash reveals %d, boxes %d | encyclopedia out %d in %d | achievements out %d in %d",
+		stats.rank_req, stats.rank_in, tostring(rank.cache and #rank.cache or "no"), stats.pda_out, stats.pda_in, stats.pda_req,
+		stats.stash, stats.box, stats.ency_out, stats.ency_in, stats.achv_out, stats.achv_in)
+end
+
+local installed = false
+local function install()
+	if installed then return end
+	installed = true
+	for _, s in ipairs({
+		{ "rankings", patch_rankings }, { "npc pda", patch_npc_pda }, { "encyclopedia", patch_encyclopedia },
+	}) do
+		local ok, err = pcall(s[2])
+		if not ok then qc.report(TAG, "install " .. s[1], err) end
+	end
+end
+
+function on_game_start()
+	if not qc.engine() then return end
+	qc.on("rank_req", host_on_rank_req, TAG)
+	qc.on("rank", client_on_rank, TAG)
+	qc.on("pda", client_on_pda, TAG)
+	qc.on("pda_req", host_on_pda_req, TAG)
+	qc.on("ency", on_ency, TAG)
+	qc.on("achv", on_achv, TAG)
+	qc.register_host_action("stash", host_stash)
+	qc.register_host_action("box", host_box)
+	RegisterScriptCallback("actor_on_achievement_earned", on_earned)
+	RegisterScriptCallback("physic_object_on_use_callback", client_box_use)
+	RegisterScriptCallback("actor_on_item_take", client_item_take)
+	RegisterScriptCallback("actor_on_first_update", install)
+end

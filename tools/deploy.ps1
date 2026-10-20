@@ -18,7 +18,8 @@
 param(
     [string]$GameDir  = 'E:\Anomaly',
     [string]$TestRoot = 'E:\AnomalyCoop',
-    [string]$BuiltExe = (Join-Path $PSScriptRoot '..\engine\_build\_game\bin_dbg\AnomalyDX11AVX.exe'),
+    # test builds come from the engine-ci worktree (tools\ci_sync.py); the main tree's _build is stale
+    [string]$BuiltExe = (Join-Path $PSScriptRoot '..\engine-ci\_build\_game\bin_dbg\AnomalyDX11AVX.exe'),
     [string]$EngineGamedata = (Join-Path $PSScriptRoot '..\engine\gamedata'),
     [string]$ModGamedata = (Join-Path $PSScriptRoot '..\gamedata'),
     [string]$ExeName  = 'AnomalyCoopDX11AVX.exe',

@@ -1,0 +1,274 @@
+--[[
+	Anomaly Coop - New Tasks Addon by iTheon (gamedata\scripts\coop_mods_nta.script), W4 "mods".
+
+	NTA tasks are ordinary tasks of the host's task manager, so coop_tasks already gives, mirrors and rewards them
+	like quests. What NTA itself does with `db.actor` is fixed here, on the host:
+
+	- Range helpers (nta_utils.actor_in_range, entity_in_range without an explicit point) measure from the nearest
+	  player of the group, not only from the host's character.
+	- Status functors of the NTA tasks that wait for "the actor" (to come near, to hold a position, to carry the
+	  item) are evaluated for the group: when the host's own pass changes nothing, the functor runs again once for
+	  every other player's character as the actor. The first pass that moves the stage wins; a defence fails only
+	  when no player holds the position any more.
+	- Teleports of the Baba Yaga and Mirage tasks move the player the task means (mods.tp to that player's machine).
+	- The Living Fire: a client's hit on Prometheus is judged for that player (his revenge burns and kills that
+	  player, not the host); the earthquake of the finale is shown on every machine.
+	- On a client NTA never spawns anything itself (nta_utils.spawn_at_position returns nil there).
+--]]
+
+local api = rawget(_G, "coop")
+
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+
+local function C() return coop_mods_core end
+local function log(fmt, ...) C().log("nta", fmt, ...) end
+
+local FUNCTORS = {
+	"house_of_horrors_task_status_functor",
+	"no_step_back_task_status_functor",
+	"hold_the_ground_task_status_functor",
+	"big_game_task_status_functor",
+	"baba_yaga_task_status_functor",
+	"mirage_task_status_functor",
+	"nta_stash_task_status_functor",
+}
+local PROMETHEUS_SID = "the_living_fire_prometheus"
+local QUAKE_CAM = 3
+
+local st = { party_stage = 0, party_hold = 0, teleports = 0, revenge = 0, errors = 0 }
+local late_done = false
+
+-------------------------------------------------------------------------------
+-- Range helpers
+-------------------------------------------------------------------------------
+local function install_helpers(nu)
+	C().wrap(nu, "actor_in_range", "nta_utils.actor_in_range", function(orig)
+		return function(vec, dist, ...)
+			if not (C().is_host() and vec and tonumber(dist)) then return orig(vec, dist, ...) end
+			local _, d = C().nearest_player(vec)
+			return d < dist * dist
+		end
+	end)
+	C().wrap(nu, "entity_in_range", "nta_utils.entity_in_range", function(orig)
+		return function(id, dist, vec, ...)
+			if vec or not (C().is_host() and tonumber(dist)) then return orig(id, dist, vec, ...) end
+			local se = alife_object(id)
+			if not se then return false end
+			local ok, cid = pcall(function() return se.commander_id and se:commander_id() end)
+			local lead = ok and cid and alife_object(cid) or se
+			local _, d = C().nearest_player(lead.position)
+			return d < dist * dist
+		end
+	end)
+	C().wrap(nu, "spawn_at_position", "nta_utils.spawn_at_position", function(orig)
+		return function(...)
+			if C().is_client() then return nil end
+			return orig(...)
+		end
+	end)
+end
+
+-------------------------------------------------------------------------------
+-- Status functors evaluated for the group
+-------------------------------------------------------------------------------
+local function others_here()
+	local out = {}
+	for _, p in ipairs(C().player_objects()) do
+		if p.obj ~= db.actor and p.obj:alive() then out[#out + 1] = p end
+	end
+	return out
+end
+
+local function party_functor(name, orig)
+	return function(tsk, task_id, ...)
+		if not (C().is_host() and type(tsk) == "table") or C().identity_peer() then return orig(tsk, task_id, ...) end
+		local pre = tsk.stage
+		local r = orig(tsk, task_id, ...)
+		if tsk.stage ~= pre or (r ~= nil and r ~= "fail") then return r end
+		local held = false
+		for _, p in ipairs(others_here()) do
+			local ok, r2 = C().as_player(p.obj, orig, tsk, task_id, ...)
+			if not ok then
+				st.errors = st.errors + 1
+				C().report("nta", name, r2)
+			elseif tsk.stage ~= pre then
+				st.party_stage = st.party_stage + 1
+				log("%s: stage %s -> %s by player #%s", task_id, tostring(pre), tostring(tsk.stage), tostring(p.peer))
+				if r2 == "fail" then return nil end
+				return r2
+			elseif r2 ~= nil and r2 ~= "fail" then
+				return r2
+			elseif r2 == nil then
+				held = true
+			end
+		end
+		if r == "fail" and held then
+			st.party_hold = st.party_hold + 1
+			return nil
+		end
+		return r
+	end
+end
+
+local function install_functors()
+	local tsf = C().mod("task_status_functor")
+	if not tsf then return 0 end
+	local n = 0
+	for _, name in ipairs(FUNCTORS) do
+		if C().wrap(tsf, name, "task_status_functor." .. name, function(orig) return party_functor(name, orig) end) then
+			n = n + 1
+		end
+	end
+	return n
+end
+
+-------------------------------------------------------------------------------
+-- Teleports for the player the task means
+-------------------------------------------------------------------------------
+local function teleport_wrapper(label, dest_of)
+	return function(orig)
+		return function(...)
+			local peer = C().identity_peer()
+			if not (C().is_host() and peer and peer ~= C().self_peer()) then return orig(...) end
+			local ok, dest = pcall(dest_of, orig)
+			if ok and dest then
+				C().teleport(peer, dest)
+				st.teleports = st.teleports + 1
+				log("%s: player #%s moved", label, tostring(peer))
+			else
+				log("! %s: destination unknown, player #%s not moved", label, tostring(peer))
+			end
+		end
+	end
+end
+
+local function install_teleports()
+	local by = C().mod("tasks_baba_yaga")
+	if by then
+		C().wrap(by, "teleport", "tasks_baba_yaga.teleport", teleport_wrapper("baba_yaga", function()
+			local cfg = C().mod("baba_yaga_configs")
+			return cfg and cfg.teleport_to_location and cfg.teleport_to_location.vector
+		end))
+	end
+	local mi = C().mod("tasks_mirage")
+	if mi then
+		C().wrap(mi, "teleport", "tasks_mirage.teleport", teleport_wrapper("mirage", function(orig)
+			local smart = C().upvalue(orig, "iron_forest_smart")
+			local se = smart and SIMBOARD and SIMBOARD:get_smart_by_name(smart)
+			return se and se.position
+		end))
+	end
+end
+
+-------------------------------------------------------------------------------
+-- The Living Fire
+-------------------------------------------------------------------------------
+local fire = { orig_hit = nil, wrapped_hit = nil }
+
+local function remote_drafts(s_hit)
+	local ok, id = pcall(function() return s_hit.draftsman:id() end)
+	return ok and C().is_remote_player(id) and id or nil
+end
+
+local function install_living_fire()
+	local lf = C().mod("tasks_the_living_fire")
+	if not lf then return end
+	local ok = C().wrap(lf, "npc_on_before_hit", "tasks_the_living_fire.npc_on_before_hit", function(orig)
+		fire.orig_hit = orig
+		return function(npc, s_hit, bone_id, ...)
+			-- Registered as a callback, this wrapper would run on clients (coop_* scripts are view): the mod's
+			-- script is host-only there.
+			if C().is_client() then return end
+			if C().is_host() and s_hit then
+				local id = remote_drafts(s_hit)
+				if id then
+					local who = level.object_by_id(id)
+					local done, e = C().as_player(who, orig, npc, s_hit, bone_id, ...)
+					if not done then C().report("nta", "living fire hit", e) end
+					return
+				end
+			end
+			return orig(npc, s_hit, bone_id, ...)
+		end
+	end)
+	if ok then fire.wrapped_hit = lf.npc_on_before_hit end
+
+	-- Revenge on a client's character: the burn at that character, the death on that player's machine.
+	C().wrap(lf, "prometheus_kill_actor", "tasks_the_living_fire.prometheus_kill_actor", function(orig)
+		return function(...)
+			local peer = C().identity_peer()
+			local who = C().identity_obj()
+			if not (C().is_host() and peer and who and peer ~= C().self_peer()) then return orig(...) end
+			st.revenge = st.revenge + 1
+			local id = who:id()
+			CreateTimeEvent("coop_mods_nta", "revenge_" .. tostring(id), 2, function()
+				local obj = level.object_by_id(id)
+				local nu = C().mod("nta_utils")
+				if obj and nu and nu.obj_position_to_spawn_config_partial and nu.spawn_helper then
+					local cfg = nu.obj_position_to_spawn_config_partial(obj)
+					cfg.section, cfg.is_anomaly = "zone_zhar", true
+					cfg.vector.y = cfg.vector.y - 1
+					pcall(nu.spawn_helper, cfg)
+				end
+				C().fx_sound([[new_tasks_addon\zhar_blow]])
+				C().to_peer(peer, "nta_kill", {})
+				return true
+			end)
+		end
+	end)
+
+	C().wrap(lf, "earthquake_effect", "tasks_the_living_fire.earthquake_effect", function(orig)
+		return function(...)
+			local r = orig(...)
+			if C().is_host() then
+				C().fx_sound([[new_tasks_addon\blowout_boom_02_old]])
+				C().fx_sound([[new_tasks_addon\earthquake_old]])
+				C().fx_cam([[camera_effects\earthquake.anm]], QUAKE_CAM, true)
+				CreateTimeEvent("coop_mods_nta", "quake_stop", 6, function()
+					C().fx_stop_cam(QUAKE_CAM)
+					return true
+				end)
+			end
+			return r
+		end
+	end)
+end
+
+local function rebind_living_fire()
+	if fire.wrapped_hit then C().swap_callback("npc_on_before_hit", fire.orig_hit, fire.wrapped_hit) end
+end
+
+local function on_kill_order()
+	if not db.actor then return end
+	log("killed by Prometheus' revenge")
+	db.actor:kill(db.actor)
+end
+
+-------------------------------------------------------------------------------
+-- Start
+-------------------------------------------------------------------------------
+-- Functors are added to task_status_functor and callbacks registered by NTA in its own on_game_start
+-- (after this file's): both are taken over at the first update.
+local function actor_on_update()
+	if late_done then return end
+	late_done = true
+	local ok, n = pcall(install_functors)
+	if not ok then C().report("nta", "functors", n) else log("%d task functor(s) evaluated for the group", n) end
+	ok, n = pcall(rebind_living_fire)
+	if not ok then C().report("nta", "living fire", n) end
+end
+
+function on_game_start()
+	if not api then return end
+	local nu = C().mod("nta_utils")
+	if not nu then return end
+	install_helpers(nu)
+	install_teleports()
+	install_living_fire()
+	C().on("nta_kill", on_kill_order, "client")
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	C().status_line("nta", function()
+		return string.format("group stage changes %d, defences held by others %d, teleports %d, revenges %d, errors %d",
+			st.party_stage, st.party_hold, st.teleports, st.revenge, st.errors)
+	end)
+end

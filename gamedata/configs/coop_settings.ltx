@@ -33,6 +33,7 @@ chunk_bytes         = 12000   ; payload size of one settings message (the engine
 gameplay/*
 alife/*
 video/weather/*               ; weather generation is world state
+coop/coop_session/*           ; co-op page: session rules (friendly fire, death mode, ...)
 
 [options_player]
 video/*
@@ -43,13 +44,60 @@ gameplay/general/player_name
 gameplay/general/outfit_portrait
 gameplay/general/show_tip_reputation
 alife/dynamic_news/message_duration
+coop/coop_player/*            ; co-op page: nickname, hosting port, name tags
 
 [mcm_host]
 ; <addon>/* or exact paths that must follow the host even if their words look cosmetic
+; Known addons whose options shape the shared world (seed list from xrRazom's MCM authority):
+drx_da/*                      ; Dynamic Anomalies Overhaul: density, cleanup, spawn chance
+body_health_system/*          ; limb injury thresholds and penalties
+craft_from_stashes/*
+customsquadsize/*             ; companion cap, squads are the host's
+dit/*                         ; tool wear on disassembly
+dph_loot_cond/*               ; corpse loot condition
+outfitdrop/*                  ; corpse outfit drop chances
+fftd/*                        ; fast travel cost and gating
+extra_level_transitions/*
+milpda/progressive/*          ; PDA access progression
+new_tasks_addon/*
+pda_taskboard/*
+perk_based_artefacts/*
+item_artefact/*
+exo/*                         ; exoskeleton drain, battery drops
+meat_spoiling/*
+smooth_prog/*                 ; upgrade and repair prices
+skill_system/*
+yasc/*                        ; where saving is allowed
+auto_looter/delete_body       ; releasing corpses and items is world state
+auto_looter/delete_armor
+auto_looter/delete_weapon
+auto_looter/delete_misc
 
 [mcm_player]
 ; <addon>/* or exact paths every player sets for themselves, e.g.:
 ; my_hud_addon/*
+; Per-machine keys of the addons above (logging, UI, commands that wear a checkbox, key modifiers):
+drx_da/debug_mode
+drx_da/save_after_cleanup
+drx_da/delete_dynamic_anomalies
+body_health_system/text_based_patch
+body_health_system/new_voice_sounds
+dit/consume_warning
+outfitdrop/debug
+fftd/gen/squad_tp_mod
+fftd/gen/show_zone_status_icon
+fftd/gen/nice_round_numbers
+fftd/gen/show_distdur
+fftd/gen/debuglogs_enabled
+fftd/gen/verbose_enabled
+extra_level_transitions/delete_level_transitions
+perk_based_artefacts/debug_mode
+item_artefact/enable_condition_bar
+exo/debug
+skill_system/modifier
+skill_system/debug
+yasc/enablenotifications
+auto_looter/*                 ; what a looter picks up or strips stays each player's own
 
 [words_always_player]
 key, keys, keybind, keybinds, bind, binding, bindings, hotkey, kb, mouse, sens, sensitivity, invert

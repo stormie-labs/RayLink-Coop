@@ -107,10 +107,10 @@ local cfg = { poll_ms = 3000, request_ms = 10000, chunk = 12000 }
 
 -- Used when the ltx is missing; the ltx adds to and overrides these.
 local BUILTIN = {
-	options_host = { "gameplay/*", "alife/*", "video/weather/*" },
+	options_host = { "gameplay/*", "alife/*", "video/weather/*", "coop/coop_session/*" },
 	options_player = { "video/*", "sound/*", "control/*", "other/*", "gameplay/general/player_name",
 		"gameplay/general/outfit_portrait", "gameplay/general/show_tip_reputation",
-		"alife/dynamic_news/message_duration" },
+		"alife/dynamic_news/message_duration", "coop/coop_player/*" },
 	words_always_player = { "key", "keybind", "bind", "hotkey", "mouse", "language", "debug" },
 	words_player = { "hud", "ui", "sound", "volume", "music", "color", "crosshair", "fov" },
 }
@@ -717,6 +717,84 @@ local function patch_menu_class(cls, src, what)
 	return true
 end
 
+-- Option lock (W4 menu, port of xrRazom's read-only panel lock): on a client, a page with host-owned options
+-- gets a note on top, the controls of those options are disabled and the page's presets are hidden for this
+-- render (a preset fills every option of the page at once). The refusal in CacheValue stays the safety net.
+local LOCK_TYPES = { check = true, list = true, input = true, track = true, radio_h = true, radio_v = true }
+local LOCK_NOTE = { id = "coop_locked_note", type = "desc", text = "st_coop_opt_locked_note", clr = { 255, 230, 140, 90 } }
+local lock_stats = { pages = 0, controls = 0, errors = 0 }
+
+local function locked_keys(src, curr_tree, path)
+	local out
+	for i = 1, #curr_tree.gr do
+		local v = curr_tree.gr[i]
+		if type(v) == "table" and LOCK_TYPES[v.type] and type(v.id) == "string" then
+			local key = path .. "/" .. v.id
+			if owner_src(src, key) == "host" then
+				out = out or {}
+				out[#out + 1] = key
+			end
+		end
+	end
+	return out
+end
+
+-- Control ids are "<path>/<option>/<n>" (UIOptions:Stacker); _Track is keyed "<path>/<option>".
+local function lock_matches(id, keys)
+	for i = 1, #keys do
+		local k = keys[i]
+		if id == k or id:sub(1, #k + 1) == k .. "/" then return true end
+	end
+	return false
+end
+
+local function set_register(dlg, fn) dlg.Register = fn end
+
+local function patch_option_lock(cls, src, what)
+	if not cls then return false end
+	local ok, orig_reset = pcall(function() return cls.Reset_opt end)
+	if not (ok and type(orig_reset) == "function") then return false end
+	cls.Reset_opt = function(self, curr_tree, path, flags, ...)
+		local keys = client_mode and type(curr_tree) == "table" and type(curr_tree.gr) == "table"
+			and type(path) == "string" and locked_keys(src, curr_tree, path)
+		if not keys then return orig_reset(self, curr_tree, path, flags, ...) end
+		-- Register(ctrl, id) is the only place every control of the page passes through: shadow it for this render.
+		local captured = {}
+		local orig_register = self.Register
+		local shadowed = type(orig_register) == "function" and pcall(set_register, self, function(wnd, ctrl, id, ...)
+			if type(id) == "string" then captured[#captured + 1] = { ctrl, id } end
+			return orig_register(wnd, ctrl, id, ...)
+		end)
+		local presets = curr_tree.presets
+		curr_tree.presets = nil
+		table.insert(curr_tree.gr, 1, LOCK_NOTE)
+		local ok2, err = pcall(orig_reset, self, curr_tree, path, flags, ...)
+		if curr_tree.gr[1] == LOCK_NOTE then table.remove(curr_tree.gr, 1) end -- the tree is shared with solo play
+		curr_tree.presets = presets
+		if shadowed then pcall(set_register, self, orig_register) end
+		if not ok2 then
+			lock_stats.errors = lock_stats.errors + 1
+			log("! %s: page %s failed to draw with the lock: %s", what, path, tostring(err))
+			return
+		end
+		lock_stats.pages = lock_stats.pages + 1
+		for _, c in ipairs(captured) do
+			if lock_matches(c[2], keys) then
+				if pcall(function() c[1]:Enable(false) end) then lock_stats.controls = lock_stats.controls + 1 end
+			end
+		end
+		if type(self._Track) == "table" then
+			for id, t in pairs(self._Track) do
+				if type(id) == "string" and type(t) == "table" and t.ctrl and lock_matches(id, keys) then
+					pcall(function() t.ctrl:Enable(false) end)
+				end
+			end
+		end
+	end
+	log("%s: pages with host-owned options are shown locked while connected", what)
+	return true
+end
+
 local menus_patched = false
 local function install_client_hooks()
 	if menus_patched then return end
@@ -726,6 +804,8 @@ local function install_client_hooks()
 	if uo then
 		local ok, err = pcall(patch_menu_class, uo.UIOptions, "o", "options menu")
 		if not ok then log("! options menu hook failed: %s", tostring(err)) end
+		ok, err = pcall(patch_option_lock, uo.UIOptions, "o", "options menu")
+		if not ok then log("! options lock failed: %s", tostring(err)) end
 	end
 
 	local mcm = mod("ui_mcm")
@@ -753,11 +833,13 @@ local function install_client_hooks()
 				return orig_set(id, ...)
 			end
 		end
-		for _, name in ipairs({ "UIMCM", "UIMCMMenu" }) do
+		for _, name in ipairs({ "UIMCM", "UIMCMMenu", "UI_MCM" }) do
 			local ok, cls = pcall(function() return mcm[name] end)
 			if ok and cls then
 				local ok2, err = pcall(patch_menu_class, cls, "m", "MCM menu")
 				if not ok2 then log("! MCM menu hook failed: %s", tostring(err)) end
+				ok2, err = pcall(patch_option_lock, cls, "m", "MCM menu")
+				if not ok2 then log("! MCM lock failed: %s", tostring(err)) end
 			end
 		end
 	end
@@ -898,6 +980,8 @@ function print_status()
 			stats.full_in, stats.delta_in, stats.requests)
 		log("client: overlaid reads %d, dropped writes %d, skipped saves %d, refused edits %d, factor sets %d, errors %d",
 			stats.reads, stats.blocked_writes, stats.skipped_saves, stats.refused, stats.factor_sets, stats.errors)
+		log("client: locked option pages drawn %d, controls disabled %d, lock errors %d", lock_stats.pages,
+			lock_stats.controls, lock_stats.errors)
 	end
 end
 

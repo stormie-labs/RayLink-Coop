@@ -1,0 +1,194 @@
+--[[
+	Anomaly Coop - player actions the host decides (gamedata\scripts\coop_economy_intent.script)
+
+	Some addon actions change the world in ways a client must not do itself (P7: deploy a furniture stash,
+	open a linked box, throw a glowstick that becomes a world object ...). An addon patch registers a verb on
+	every machine; a client's use becomes a request, the host runs the handler with the requesting player's
+	character, and the client waits until the result is visible in replicated state (an se var, a world
+	m_data key, an object coming online). The host itself runs the handler directly.
+
+	For other scripts (verbs are "<addon>:<action>", 1..48 characters):
+		coop_economy_intent.register(verb, handler)
+		    handler(obj_id, state, args, from_peer) runs on the host; obj_id in host numbering, state a number
+		    (0 is a valid value: compare with ~= 0), args a string (max 1024).
+		coop_economy_intent.request{ verb=, obj_id=, state=, args=, resolve=, on_ready=, timeout_ms=, poll_s= }
+		    resolve(obj_id) must only read replicated state; it is polled until it returns non-nil, then
+		    on_ready(value) runs. Without resolve the request is fire-and-forget. A request with the same verb
+		    and object is not sent again while one is waiting.
+		coop_economy_intent.is_inflight(verb, obj_id)
+		coop_economy_intent.requester_avatar(peer) -> game object of that player's character (host), or nil
+		coop_economy_intent.host_bridge(owner_id, key, value)   host: se_save_var only when the value changed
+		                                                          (coop_economy_mdata sends it to the clients)
+		coop_economy_intent.open_box_when_online(box_id, timeout_ms)
+		coop_economy_intent.linked_box_resolver(se_key, mirror_fn) / mdata_box_resolver(m_data_key)
+	Outside a session request() runs the handler locally (single player keeps working with the same code).
+
+	Events:
+		economy.intent  client -> host  { v = verb, o = object id, s = state, a = args }
+--]]
+
+local core = coop_economy_core
+
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+
+local registry = {}
+local inflight = {}
+local RATE_PER_S = 30 -- per player: more requests within one second are dropped
+local last_req = {} -- peer -> { at, n }
+local stats = { sent = 0, handled = 0, unknown = 0, dropped = 0, timeouts = 0 }
+
+function register(verb, handler)
+	if not (core.word(verb, 48) and type(handler) == "function") then
+		core.log("! intent: bad registration %s", tostring(verb))
+		return false
+	end
+	registry[verb] = handler
+	return true
+end
+
+local function dispatch(verb, obj_id, state, args, from)
+	local h = registry[verb]
+	if not h then
+		stats.unknown = stats.unknown + 1
+		core.log("! intent '%s' (object %s) has no handler here: dropped", tostring(verb), tostring(obj_id))
+		return
+	end
+	stats.handled = stats.handled + 1
+	local ok, err = pcall(h, obj_id, state, args, from)
+	if not ok then core.log("! intent '%s': %s", verb, tostring(err)) end
+end
+
+function requester_avatar(peer)
+	if peer == core.self_id() then return db.actor end
+	local p = core.player(peer)
+	return p and p.obj or nil
+end
+
+function host_bridge(owner_id, key, value)
+	if not (core.is_host() or not core.in_session()) then return end
+	if se_load_var(owner_id, nil, key) == value then return end
+	se_save_var(owner_id, nil, key, value)
+end
+
+function is_inflight(verb, obj_id)
+	return inflight[tostring(verb) .. ":" .. tostring(obj_id)] == true
+end
+
+function request(opts)
+	if type(opts) ~= "table" or not core.word(opts.verb, 48) or type(opts.obj_id) ~= "number" then return false end
+	local verb, obj_id = opts.verb, opts.obj_id
+	local resolve, on_ready = opts.resolve, opts.on_ready
+	local key = verb .. ":" .. obj_id
+	if resolve then
+		local v = resolve(obj_id)
+		if v ~= nil then
+			if on_ready then on_ready(v) end
+			return true
+		end
+		if inflight[key] then return true end
+	end
+	local state = opts.state
+	if type(state) ~= "number" then state = state and 1 or 0 end
+	local args = type(opts.args) == "string" and opts.args:sub(1, 1024) or ""
+	if not core.live() then
+		dispatch(verb, obj_id, state, args, 0) -- single player: same handler, here
+	elseif core.is_host() then
+		dispatch(verb, obj_id, state, args, core.self_id())
+	else
+		stats.sent = stats.sent + 1
+		core.send("intent", { v = verb, o = core.host_id(obj_id), s = state, a = args }, 0)
+	end
+	if not resolve then return true end
+	inflight[key] = true
+	local timeout = opts.timeout_ms or 12000
+	local poll_s = opts.poll_s or 0.5
+	local t0 = core.now()
+	CreateTimeEvent("coop_economy_intent", key, poll_s, function()
+		local v = resolve(obj_id)
+		if v ~= nil then
+			inflight[key] = nil
+			if on_ready then pcall(on_ready, v) end
+			return true
+		end
+		if core.now() - t0 > timeout then
+			inflight[key] = nil
+			stats.timeouts = stats.timeouts + 1
+			core.log("! intent '%s' on %s never resolved", verb, tostring(obj_id))
+			return true
+		end
+		ResetTimeEvent("coop_economy_intent", key, poll_s)
+		return false
+	end)
+	return true
+end
+
+function open_box_when_online(box_id, timeout_ms)
+	if type(box_id) ~= "number" then return end
+	local t0 = core.now()
+	CreateTimeEvent("coop_economy_intent", "open_box_" .. box_id, 0.1, function()
+		local box = level.object_by_id(box_id)
+		if box and db.actor then
+			pcall(hide_hud_inventory)
+			box:use(db.actor)
+			return true
+		end
+		if core.now() - t0 > (timeout_ms or 10000) then
+			core.log("! box %s never came online here: not opened", tostring(box_id))
+			return true
+		end
+		return false
+	end)
+end
+
+local function box_resolver(lookup, mirror_fn)
+	return function(owner_id)
+		local stash_id = lookup(owner_id)
+		local se = type(stash_id) == "number" and alife_object(stash_id)
+		if not (se and IsInvbox(nil, se:clsid())) then return nil end
+		if mirror_fn then pcall(mirror_fn, owner_id, stash_id) end
+		return stash_id
+	end
+end
+
+function linked_box_resolver(key, mirror_fn)
+	return box_resolver(function(owner_id) return se_load_var(owner_id, nil, key) end, mirror_fn)
+end
+
+function mdata_box_resolver(table_key)
+	return box_resolver(function(owner_id)
+		local map = alife_storage_manager.get_state()[table_key]
+		return type(map) == "table" and map[owner_id] or nil
+	end)
+end
+
+local function on_intent(t, from)
+	if not core.is_host() or from <= 0 then return end
+	local verb = core.word(t.v, 48)
+	local obj_id = core.int(t.o, 0, 65534)
+	local state = core.num(t.s, -1e9, 1e9) or 0
+	if not (verb and obj_id) then return end
+	local now = core.now()
+	local w = last_req[from]
+	if not w or now - w.at >= 1000 then
+		w = { at = now, n = 0 }
+		last_req[from] = w
+	end
+	w.n = w.n + 1
+	if w.n > RATE_PER_S then
+		stats.dropped = stats.dropped + 1
+		return
+	end
+	dispatch(verb, obj_id, state, type(t.a) == "string" and t.a:sub(1, 1024) or "", from)
+end
+
+function print_status()
+	local n = 0
+	for _ in pairs(registry) do n = n + 1 end
+	core.log("intents: %d verb(s), sent %d, handled %d, unknown %d, dropped %d, timeouts %d", n, stats.sent,
+		stats.handled, stats.unknown, stats.dropped, stats.timeouts)
+end
+
+function on_game_start()
+	if not core.engine() then return end
+	core.on("intent", on_intent)
+end
