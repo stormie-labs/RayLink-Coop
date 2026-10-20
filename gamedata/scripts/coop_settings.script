@@ -1,0 +1,923 @@
+--[[
+	Anomaly Coop - host-owned gameplay settings (R-11.3), gamedata\scripts\coop_settings.script
+
+	Gameplay options are decided by the host and pushed to every client; cosmetic options stay per player.
+	Which is which: configs\coop_settings.ltx (stock option groups listed explicitly, MCM by path rules,
+	unknown MCM options are host-owned). Covered stores:
+		o  stock options   axr_options.ltx [options]   ui_options.get / axr_main.config:r_value
+		m  MCM options     axr_options.ltx [mcm]       ui_mcm.get (Mod Configuration Menu addon)
+		g  gameplay difficulty factors   game_difficulties (kept in the save, changed from the options menu)
+		e  economy difficulty factors    game_difficulties
+		s  other values of the save's script storage that options change (trader buy condition)
+
+	Host: keeps a baseline of every host-owned value. A live client asks for it ("coop_set_req"), the host answers
+	with the full set ("coop_set", split into chunks) and broadcasts changes as deltas (on_option_change + poll).
+	Client: the host's values are an in-memory overlay. Reads of a host-owned key return the host's value; a key the
+	host has not stored reads as "not set", so both sides use the option's default. Nothing is written to the
+	client's axr_options.ltx: writes of host-owned keys are dropped, the options menus refuse such edits with a hint,
+	difficulty setters only accept the host's values. The overlay is kept in coop.stash for level loads and ends
+	with the session, after which the player's own values are back.
+
+	Wire format: coop_main.encode of a flat table
+		_t = "full" | "delta", _s = serial, _i/_n = chunk index/count (full only)
+		"<src>|<path>" = value          (src o/m: raw string as stored; g/e: number/boolean/string)
+		"x|<src>|<path>" = true         (delta: the host no longer has this key)
+
+	For other scripts:
+		coop_settings.owner_of(store, path) -> "host" | "player"   (store "options" / "mcm")
+		coop_settings.is_host_owned(store, path)
+		coop_settings.host_value(store, path) -> raw string or nil (client, host's value)
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local string_format = string.format
+local tostring, tonumber, type, pairs, ipairs, pcall, next = tostring, tonumber, type, pairs, ipairs, pcall, next
+
+local STASH_KEY = "coop_settings"
+local SRC_OF = { options = "o", mcm = "m" }
+local SECTION_OF = { o = "options", m = "mcm" }
+
+-- game_difficulties factor names (stock 1.5.3); keys found in the save's tables are added on top.
+local GAME_KEYS = { "type", "actor_immunities", "hit_power", "dispersion_base", "dispersion_factor",
+	"power_loss_bias", "weight", "thirst", "sleep", "radiation_day", "notify_geiger", "notify_anomaly" }
+local ECO_KEYS = { "type", "goodwill", "rewards", "repair", "upgrade", "buy", "sell", "artefact", "loots",
+	"money_loots", "stash_chance", "weapon_degradation", "battery_consumption", "random_items", "scope_chance",
+	"arty_chance", "restock", "percentage_parts", "limited_bolts", "arty_degradation", "bkpk_degradation",
+	"outfit_drops" }
+-- alife_storage_manager state values set from the options menu (ui_options functors), not in game_difficulties.
+local STORAGE_KEYS = { "trader_buy_condition_override" }
+
+-------------------------------------------------------------------------------
+-- Logging, counters, module access
+-------------------------------------------------------------------------------
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-settings] %s", ok and line or tostring(fmt))
+end
+
+local stats = {
+	full_in = 0, delta_in = 0, requests = 0, -- client
+	full_out = 0, delta_out = 0, oversize = 0, -- host
+	reads = 0, blocked_writes = 0, skipped_saves = 0, refused = 0, factor_sets = 0, errors = 0,
+}
+
+-- Script module by name, or nil (a missing addon such as ui_mcm is not an error).
+local function mod(name)
+	local m = rawget(_G, name)
+	if m == nil then
+		local ok, r = pcall(function() return _G[name] end) -- _G.__index loads gamedata\scripts\<name>.script
+		m = ok and r or nil
+	end
+	return type(m) == "table" and m or nil
+end
+
+local function now_ms()
+	return time_global and time_global() or 0
+end
+
+-- Short message on the HUD (no-op in menus) and in the log, at most every 1.5 s.
+local last_hint = { text = nil, at = -100000 }
+local function hint(text)
+	local t = now_ms()
+	if text == last_hint.text and t - last_hint.at < 1500 then return end
+	last_hint.text, last_hint.at = text, t
+	local am = mod("actor_menu")
+	if am and am.set_msg then pcall(am.set_msg, 1, text, 4) end
+	log("%s", text)
+end
+
+local function encode(t) return coop_main.encode(t) end
+local function decode(s) return coop_main.decode(s) end
+
+-------------------------------------------------------------------------------
+-- Classification (configs\coop_settings.ltx)
+-------------------------------------------------------------------------------
+local rules = {
+	loaded = false,
+	default = { o = "host", m = "host" },
+	exact = { o = {}, m = {} },
+	prefix_map = { o = {}, m = {} },
+	prefixes = { o = {}, m = {} }, -- { {prefix, owner}, ... } longest first, host first on equal length
+	always_player = { short = {}, long = {} },
+	host_words = { short = {}, long = {} },
+	player_words = { short = {}, long = {} },
+}
+local cfg = { poll_ms = 3000, request_ms = 10000, chunk = 12000 }
+
+-- Used when the ltx is missing; the ltx adds to and overrides these.
+local BUILTIN = {
+	options_host = { "gameplay/*", "alife/*", "video/weather/*" },
+	options_player = { "video/*", "sound/*", "control/*", "other/*", "gameplay/general/player_name",
+		"gameplay/general/outfit_portrait", "gameplay/general/show_tip_reputation",
+		"alife/dynamic_news/message_duration" },
+	words_always_player = { "key", "keybind", "bind", "hotkey", "mouse", "language", "debug" },
+	words_player = { "hud", "ui", "sound", "volume", "music", "color", "crosshair", "fov" },
+}
+
+local function trim(s)
+	return (s:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function section_keys(ini, sec)
+	local out = {}
+	if not ini:section_exist(sec) then return out end
+	for i = 0, ini:line_count(sec) - 1 do
+		local _, key = ini:r_line(sec, i, "", "")
+		if type(key) == "string" then
+			key = trim(key)
+			if key ~= "" then out[#out + 1] = key end
+		end
+	end
+	return out
+end
+
+local function add_rule(src, key, owner)
+	key = trim(key):lower()
+	if key == "" then return end
+	if key:sub(-1) == "*" then
+		rules.prefix_map[src][key:sub(1, -2)] = owner
+	else
+		rules.exact[src][key] = owner
+	end
+end
+
+local function add_words(set, line)
+	for w in line:gmatch("[^,%s]+") do
+		w = w:lower()
+		if #w <= 3 then
+			set.short[w] = true
+		else
+			set.long[#set.long + 1] = w
+		end
+	end
+end
+
+local function finish_prefixes()
+	for src, map in pairs(rules.prefix_map) do
+		local list = {}
+		for p, owner in pairs(map) do list[#list + 1] = { p, owner } end
+		table.sort(list, function(a, b)
+			if #a[1] ~= #b[1] then return #a[1] > #b[1] end
+			if a[2] ~= b[2] then return a[2] == "host" end
+			return a[1] < b[1]
+		end)
+		rules.prefixes[src] = list
+	end
+end
+
+local function load_rules()
+	if rules.loaded then return end
+	rules.loaded = true
+	for _, k in ipairs(BUILTIN.options_player) do add_rule("o", k, "player") end
+	for _, k in ipairs(BUILTIN.options_host) do add_rule("o", k, "host") end
+	for _, w in ipairs(BUILTIN.words_always_player) do add_words(rules.always_player, w) end
+	for _, w in ipairs(BUILTIN.words_player) do add_words(rules.player_words, w) end
+
+	local ok, ini = pcall(ini_file, "coop_settings.ltx")
+	if ok and ini and ini:section_exist("settings") then
+		local function setting(key, def)
+			if not ini:line_exist("settings", key) then return def end
+			local v = trim(tostring(ini:r_string("settings", key) or ""))
+			if v == "" then return def end
+			if type(def) == "number" then return tonumber(v) or def end
+			return v:lower()
+		end
+		rules.default.o = setting("options_default", rules.default.o) == "player" and "player" or "host"
+		rules.default.m = setting("mcm_default", rules.default.m) == "player" and "player" or "host"
+		cfg.poll_ms = math.max(500, setting("poll_ms", cfg.poll_ms))
+		cfg.request_ms = math.max(1000, setting("request_ms", cfg.request_ms))
+		cfg.chunk = math.min(15000, math.max(2000, setting("chunk_bytes", cfg.chunk)))
+		-- player sections first: on an exact duplicate the host entry wins
+		for _, src in ipairs({ "o", "m" }) do
+			local store = SECTION_OF[src]
+			for _, k in ipairs(section_keys(ini, store .. "_player")) do add_rule(src, k, "player") end
+			for _, k in ipairs(section_keys(ini, store .. "_host")) do add_rule(src, k, "host") end
+		end
+		for _, line in ipairs(section_keys(ini, "words_always_player")) do add_words(rules.always_player, line) end
+		for _, line in ipairs(section_keys(ini, "words_host")) do add_words(rules.host_words, line) end
+		for _, line in ipairs(section_keys(ini, "words_player")) do add_words(rules.player_words, line) end
+	else
+		log("! configs\\coop_settings.ltx not found: built-in rules, unknown MCM options are host-owned")
+	end
+	finish_prefixes()
+end
+
+local function has_word(path, set)
+	for tok in path:gmatch("%a+") do
+		if set.short[tok] then return true end
+		local long = set.long
+		for i = 1, #long do
+			local w = long[i]
+			if #tok >= #w and tok:sub(1, #w) == w then return true end
+		end
+	end
+	return false
+end
+
+local function decide(src, path)
+	local p = path:lower()
+	local owner = rules.exact[src][p]
+	if owner then return owner end
+	local list = rules.prefixes[src]
+	for i = 1, #list do
+		local e = list[i]
+		if p:sub(1, #e[1]) == e[1] then return e[2] end
+	end
+	if has_word(p, rules.always_player) then return "player" end
+	if has_word(p, rules.host_words) then return "host" end
+	if has_word(p, rules.player_words) then return "player" end
+	return rules.default[src] or "host"
+end
+
+local owner_cache = { o = {}, m = {} }
+
+local function owner_src(src, path)
+	if src == "g" or src == "e" then return "host" end
+	local cache = owner_cache[src]
+	if not cache or type(path) ~= "string" then return "player" end
+	local owner = cache[path]
+	if owner == nil then
+		load_rules()
+		local ok, r = pcall(decide, src, path)
+		owner = ok and r or "host"
+		cache[path] = owner
+	end
+	return owner
+end
+
+-- store: "options" (stock menu) or "mcm"
+function owner_of(store, path)
+	return owner_src(SRC_OF[store] or store, path)
+end
+
+function is_host_owned(store, path)
+	return owner_of(store, path) == "host"
+end
+
+-------------------------------------------------------------------------------
+-- Host: snapshot, baseline, deltas
+-------------------------------------------------------------------------------
+local host = { last = nil, serial = 0, next_poll = 0, dirty = true }
+
+local function add_factors(t, src, getter, keys, stored)
+	local gd = mod("game_difficulties")
+	if not (gd and type(gd[getter]) == "function") then return end
+	local seen = {}
+	local function put(k)
+		if seen[k] then return end
+		seen[k] = true
+		local ok, v = pcall(gd[getter], k)
+		if ok and v ~= nil and (type(v) == "number" or type(v) == "boolean" or type(v) == "string") then
+			t[src .. "|" .. k] = v
+		end
+	end
+	for _, k in ipairs(keys) do put(k) end
+	if type(stored) == "table" then
+		for k in pairs(stored) do
+			if type(k) == "string" then put(k) end
+		end
+	end
+end
+
+local function host_snapshot()
+	local t = {}
+	local am = mod("axr_main")
+	local config = am and am.config
+	if config then
+		for _, src in ipairs({ "o", "m" }) do
+			local ok, all = pcall(function() return config:collect_section(SECTION_OF[src]) end)
+			if ok and type(all) == "table" then
+				for k, v in pairs(all) do
+					if type(k) == "string" and owner_src(src, k) == "host" then
+						t[src .. "|" .. k] = tostring(v or "")
+					end
+				end
+			end
+		end
+	end
+	local st
+	local asm = mod("alife_storage_manager")
+	if asm and asm.get_state then
+		local ok, s = pcall(asm.get_state)
+		st = ok and type(s) == "table" and s or nil
+	end
+	add_factors(t, "g", "get_game_factor", GAME_KEYS, st and st.diff_game)
+	add_factors(t, "e", "get_eco_factor", ECO_KEYS, st and st.diff_eco)
+	if st then
+		for _, k in ipairs(STORAGE_KEYS) do
+			local v = st[k]
+			if type(v) == "number" or type(v) == "boolean" or type(v) == "string" then t["s|" .. k] = v end
+		end
+	end
+	return t
+end
+
+-- Splits entries into payloads below cfg.chunk bytes (exact sizes, coop_main.encode format).
+local function encode_chunks(entries, kind, serial)
+	local keys = {}
+	for k in pairs(entries) do keys[#keys + 1] = k end
+	table.sort(keys)
+	local groups, cur, size = {}, {}, 0
+	for _, k in ipairs(keys) do
+		local one = {}
+		one[k] = entries[k]
+		local sz = #encode(one) + 1
+		if sz > cfg.chunk then
+			stats.oversize = stats.oversize + 1
+			if stats.oversize <= 5 then log("! value of %s is too long to send (%d bytes), clients keep their own", k, sz) end
+		else
+			if size + sz > cfg.chunk and size > 0 then
+				groups[#groups + 1] = cur
+				cur, size = {}, 0
+			end
+			cur[k] = entries[k]
+			size = size + sz
+		end
+	end
+	if size > 0 or #groups == 0 then groups[#groups + 1] = cur end
+	local out = {}
+	for i, g in ipairs(groups) do
+		g._t, g._s, g._i, g._n = kind, serial, i, #groups
+		out[i] = encode(g)
+	end
+	return out
+end
+
+local function host_send(entries, kind, target)
+	host.serial = host.serial + 1
+	local payloads = encode_chunks(entries, kind, host.serial)
+	for _, p in ipairs(payloads) do
+		local ok, why = api.send_event("coop_set", p, target)
+		if not ok then
+			log("! settings %s to %s not sent: %s", kind, tostring(target), tostring(why))
+			return false
+		end
+	end
+	return #payloads
+end
+
+local function count(t)
+	local n = 0
+	for _ in pairs(t) do n = n + 1 end
+	return n
+end
+
+-- Compares the current values with the baseline and broadcasts what changed.
+local function host_flush_delta()
+	local snap = host_snapshot()
+	local last = host.last
+	host.last = snap
+	if not last then return 0 end
+	local delta, n = {}, 0
+	for k, v in pairs(snap) do
+		if last[k] ~= v then
+			delta[k] = v
+			n = n + 1
+		end
+	end
+	for k in pairs(last) do
+		if snap[k] == nil then
+			delta["x|" .. k] = true
+			n = n + 1
+		end
+	end
+	if n > 0 then
+		if host_send(delta, "delta", -1) then stats.delta_out = stats.delta_out + 1 end
+		log("host settings changed: %d value(s) sent to the players", n)
+	end
+	return n
+end
+
+local function players_count()
+	local ok, list = pcall(api.players)
+	return ok and type(list) == "table" and #list or 0
+end
+
+local function host_tick(t)
+	if t < host.next_poll and not host.dirty then return end
+	host.next_poll = t + cfg.poll_ms
+	host.dirty = false
+	if players_count() < 2 then return end -- nobody to tell; the baseline is refreshed when asked
+	host_flush_delta()
+end
+
+-------------------------------------------------------------------------------
+-- Client: overlay
+-------------------------------------------------------------------------------
+local client_mode = false -- this machine is a co-op client (refreshed every tick)
+local ov = nil -- { o = {path = raw}, m = {...}, g = {key = value}, e = {...} } host values, nil = none yet
+local ov_origin = nil -- "stash" | "host"
+local staging = nil -- full snapshot being assembled: { serial, data }
+local got_full = false -- a full snapshot arrived in this Lua state
+local next_request = 0
+local factors_pending = false
+local fire_pending = false
+local firing = false
+local released = false
+
+local function new_overlay() return { o = {}, m = {}, g = {}, e = {}, s = {} } end
+
+local function flatten(o)
+	local t = {}
+	for src, tbl in pairs(o) do
+		for k, v in pairs(tbl) do t[src .. "|" .. k] = v end
+	end
+	return t
+end
+
+local function put_entry(o, key, value)
+	local rsrc, rpath = key:match("^x|(%a)|(.*)$")
+	if rsrc then
+		if o[rsrc] then o[rsrc][rpath] = nil end
+		return true
+	end
+	local src, path = key:match("^(%a)|(.*)$")
+	if not (src and o[src]) then return false end
+	if src == "o" or src == "m" then
+		o[src][path] = tostring(value)
+	else
+		o[src][path] = value
+	end
+	return true
+end
+
+local function same_overlay(a, b)
+	if not (a and b) then return false end
+	for _, src in ipairs({ "o", "m", "g", "e", "s" }) do
+		for k, v in pairs(a[src]) do if b[src][k] ~= v then return false end end
+		for k, v in pairs(b[src]) do if a[src][k] ~= v then return false end end
+	end
+	return true
+end
+
+local function save_stash()
+	if not (ov and api and api.stash_set) then return end
+	local ok, payload = pcall(encode, flatten(ov))
+	if ok then
+		if not api.stash_set(STASH_KEY, payload) then log("! host settings not kept for level loads (%d bytes)", #payload) end
+	end
+end
+
+local function load_stash()
+	if not (api and api.stash_get) then return false end
+	local s = api.stash_get(STASH_KEY)
+	if type(s) ~= "string" or s == "" then return false end
+	local o = new_overlay()
+	for k, v in pairs(decode(s)) do put_entry(o, k, v) end
+	ov, ov_origin = o, "stash"
+	return true
+end
+
+-- Same conversion as ini_file_ex:r_value (typ 1 boolean, 2 number, else string).
+local function convert(raw, typ, def)
+	if raw == nil then return def end
+	if typ == 1 then return raw == "true" end
+	if typ == 2 then
+		local n = tonumber(raw)
+		if n == nil then return def end
+		return n
+	end
+	return raw
+end
+
+-- A raw string shaped like `sample` (the type the caller already gets).
+local function like(sample, raw)
+	local t = type(sample)
+	if t == "boolean" then return raw == "true" end
+	if t == "number" then return tonumber(raw) or sample end
+	if t == "string" then return raw end
+	if raw == "true" then return true end
+	if raw == "false" then return false end
+	return tonumber(raw) or raw
+end
+
+-- The stock option's plain default (no functor defaults: they may be random).
+local function stock_default(id)
+	local uo = mod("ui_options")
+	if not (uo and uo.get_opt_table and uo.check_opt_table) then return nil end
+	local ok, v = pcall(function()
+		if not uo.check_opt_table(id) then return nil end
+		local t = uo.get_opt_table(id)
+		if type(t) == "table" and type(t.def) ~= "table" and type(t.def) ~= "function" then return t.def end
+		return nil
+	end)
+	return ok and v or nil
+end
+
+function host_value(store, path)
+	local src = SRC_OF[store] or store
+	return ov and ov[src] and ov[src][path] or nil
+end
+
+-- ini_file_ex overlay for appdata\axr_options.ltx (covers ui_options.get, ui_mcm.get and direct reads).
+local axr_cfg = nil
+local function is_axr(self)
+	if axr_cfg == nil then
+		local am = mod("axr_main")
+		axr_cfg = am and am.config or false
+	end
+	return axr_cfg ~= false and rawequal(self, axr_cfg)
+end
+
+local w_allowed, w_blocked = false, false
+local ini_patched = false
+
+local function install_ini_overlay()
+	if ini_patched then return end
+	ini_patched = true
+	local cls = rawget(_G, "ini_file_ex")
+	if not cls then
+		log("! ini_file_ex not found: host settings cannot be applied on this client")
+		return
+	end
+	local ok_r, orig_r = pcall(function() return cls.r_value end)
+	local ok_w, orig_w = pcall(function() return cls.w_value end)
+	local ok_s, orig_s = pcall(function() return cls.save end)
+	if not (ok_r and type(orig_r) == "function" and ok_w and type(orig_w) == "function") then
+		log("! ini_file_ex methods not found: host settings cannot be applied on this client")
+		return
+	end
+
+	local function r_value(self, s, k, typ, def)
+		if ov and client_mode and (s == "options" or s == "mcm") and type(k) == "string" and is_axr(self) then
+			local src = SRC_OF[s]
+			if owner_src(src, k) == "host" then
+				stats.reads = stats.reads + 1
+				local raw = ov[src][k]
+				if raw == nil and src == "o" then
+					local d = stock_default(k)
+					if d ~= nil then return d end
+				end
+				return convert(raw, typ, def)
+			end
+		end
+		return orig_r(self, s, k, typ, def)
+	end
+
+	local function w_value(self, s, k, val, comment)
+		if client_mode and (s == "options" or s == "mcm") and type(k) == "string" and is_axr(self) then
+			if owner_src(SRC_OF[s], k) == "host" then
+				stats.blocked_writes = stats.blocked_writes + 1
+				w_blocked = true
+				if stats.blocked_writes <= 5 then log("write of host-owned %s/%s skipped on this client", s, k) end
+				return
+			end
+			w_allowed = true
+		end
+		return orig_w(self, s, k, val, comment)
+	end
+
+	-- A save after nothing but dropped writes (ui_options.get writing a default) would rewrite the file for nothing.
+	local function save(self, ...)
+		if is_axr(self) then
+			if client_mode and w_blocked and not w_allowed then
+				w_blocked = false
+				stats.skipped_saves = stats.skipped_saves + 1
+				return
+			end
+			w_allowed, w_blocked = false, false
+		end
+		return orig_s(self, ...)
+	end
+
+	local ok, err = pcall(function()
+		cls.r_value = r_value
+		cls.w_value = w_value
+		if ok_s and type(orig_s) == "function" then cls.save = save end
+	end)
+	if not ok then
+		log("! cannot hook ini_file_ex (%s): host settings cannot be applied on this client", tostring(err))
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Client: difficulty factors, menus, setters
+-------------------------------------------------------------------------------
+local gd_setters = nil -- original game_difficulties setters { g = set_game_factor, e = set_eco_factor }
+
+-- Brings game_difficulties to the host's factors. The setters also run the console commands and actor
+-- changes (immunities, hit power, carry weight, thirst, sleep...). give_info is muted: the "player changed the
+-- difficulty" info portion is the host's business.
+local function apply_factors(reason)
+	if not ov then return 0 end
+	if not (db and db.actor) then
+		factors_pending = true
+		return 0
+	end
+	factors_pending = false
+	local gd = mod("game_difficulties")
+	if not gd then return 0 end
+	local setters = gd_setters or { g = gd.set_game_factor, e = gd.set_eco_factor }
+	local getters = { g = gd.get_game_factor, e = gd.get_eco_factor }
+	local saved_give = rawget(_G, "give_info")
+	if saved_give then _G.give_info = function() end end
+	local n = 0
+	local ok, err = pcall(function()
+		for _, src in ipairs({ "g", "e" }) do
+			local set, get = setters[src], getters[src]
+			if type(set) == "function" and type(get) == "function" then
+				-- "type" first: it selects the difficulty preset the other factors fall back to
+				local keys = {}
+				for k in pairs(ov[src]) do keys[#keys + 1] = k end
+				table.sort(keys, function(a, b)
+					if (a == "type") ~= (b == "type") then return a == "type" end
+					return a < b
+				end)
+				for _, k in ipairs(keys) do
+					local v = ov[src][k]
+					if get(k) ~= v then
+						set(k, v)
+						n = n + 1
+					end
+				end
+			end
+		end
+		-- script storage values (the client's copy of the host's save; clients never save it)
+		local asm = mod("alife_storage_manager")
+		local st = asm and asm.get_state and asm.get_state()
+		if type(st) == "table" then
+			for k, v in pairs(ov.s) do
+				if st[k] ~= v then
+					st[k] = v
+					n = n + 1
+				end
+			end
+		end
+	end)
+	if saved_give then _G.give_info = saved_give end
+	if not ok then
+		stats.errors = stats.errors + 1
+		log("! applying the host's difficulty failed: %s", tostring(err))
+	end
+	if n > 0 then
+		stats.factor_sets = stats.factor_sets + n
+		log("%d difficulty/economy factor(s) set to the host's values (%s)", n, reason or "update")
+	end
+	return n
+end
+
+local function fire_option_change()
+	if not (db and db.actor) then
+		fire_pending = true
+		return
+	end
+	fire_pending = false
+	firing = true
+	local ok, err = pcall(SendScriptCallback, "on_option_change")
+	firing = false
+	if not ok then
+		stats.errors = stats.errors + 1
+		log("! on_option_change after the host's settings: %s", tostring(err))
+	end
+end
+
+local function menu_refused(self, id)
+	stats.refused = stats.refused + 1
+	local text = string_format("Co-op: \"%s\" is set by the host", id)
+	pcall(function()
+		self.coop_redraw = true
+		self.coop_hint = text
+	end)
+	hint(text)
+end
+
+-- Options window (ui_options.UIOptions) and MCM window: a pending edit of a host-owned option is not cached,
+-- the page is redrawn with the current (host) values on the next Update, the window shows why.
+local function patch_menu_class(cls, src, what)
+	if not cls then return false end
+	local ok, orig_cache = pcall(function() return cls.CacheValue end)
+	if not (ok and type(orig_cache) == "function") then return false end
+	cls.CacheValue = function(self, path, opt, value, v, ...)
+		if client_mode and value ~= nil and type(path) == "string" and type(opt) == "string" then
+			local id = path .. "/" .. opt
+			if owner_src(src, id) == "host" then
+				menu_refused(self, id)
+				return orig_cache(self, path, opt, nil, v, ...)
+			end
+		end
+		return orig_cache(self, path, opt, value, v, ...)
+	end
+	local ok_u, orig_update = pcall(function() return cls.Update end)
+	if ok_u and type(orig_update) == "function" then
+		cls.Update = function(self, ...)
+			orig_update(self, ...)
+			if self.coop_redraw then
+				self.coop_redraw = nil
+				pcall(function()
+					if self.last_curr_tree and self.last_path and self.Reset_opt then
+						self:Reset_opt(self.last_curr_tree, self.last_path)
+					end
+					if self.pending and self.coop_hint then self.pending:SetText(self.coop_hint) end
+				end)
+			end
+		end
+	end
+	log("%s: edits of host-owned options are refused while connected", what)
+	return true
+end
+
+local menus_patched = false
+local function install_client_hooks()
+	if menus_patched then return end
+	menus_patched = true
+
+	local uo = mod("ui_options")
+	if uo then
+		local ok, err = pcall(patch_menu_class, uo.UIOptions, "o", "options menu")
+		if not ok then log("! options menu hook failed: %s", tostring(err)) end
+	end
+
+	local mcm = mod("ui_mcm")
+	if mcm then
+		if type(mcm.get) == "function" then
+			local orig_get = mcm.get
+			-- MCM may cache values itself: the host's value wins for keys the host has stored.
+			mcm.get = function(id, ...)
+				local v = orig_get(id, ...)
+				if ov and client_mode and type(id) == "string" and owner_src("m", id) == "host" then
+					local raw = ov.m[id]
+					if raw ~= nil then return like(v, raw) end
+				end
+				return v
+			end
+		end
+		if type(mcm.set) == "function" then
+			local orig_set = mcm.set
+			mcm.set = function(id, ...)
+				if client_mode and type(id) == "string" and owner_src("m", id) == "host" then
+					stats.refused = stats.refused + 1
+					if stats.refused <= 5 then log("ui_mcm.set(%s) refused: set by the host", id) end
+					return
+				end
+				return orig_set(id, ...)
+			end
+		end
+		for _, name in ipairs({ "UIMCM", "UIMCMMenu" }) do
+			local ok, cls = pcall(function() return mcm[name] end)
+			if ok and cls then
+				local ok2, err = pcall(patch_menu_class, cls, "m", "MCM menu")
+				if not ok2 then log("! MCM menu hook failed: %s", tostring(err)) end
+			end
+		end
+	end
+
+	local gd = mod("game_difficulties")
+	if gd then
+		gd_setters = { g = gd.set_game_factor, e = gd.set_eco_factor }
+		for src, fname in pairs({ g = "set_game_factor", e = "set_eco_factor" }) do
+			local orig = gd_setters[src]
+			if type(orig) == "function" then
+				gd[fname] = function(key, val, ...)
+					if client_mode then
+						stats.refused = stats.refused + 1
+						hint("Co-op: difficulty and economy are set by the host")
+						return
+					end
+					return orig(key, val, ...)
+				end
+			end
+		end
+	end
+end
+
+-- New host values in place: factors, caches of other scripts (on_option_change), stash.
+local function after_change(changed, reason)
+	save_stash()
+	apply_factors(reason)
+	if changed then fire_option_change() end
+end
+
+local function on_settings(payload, from)
+	if from ~= 0 or not client_mode then return end
+	local t = decode(payload)
+	local kind, serial, i, n = t._t, tonumber(t._s), tonumber(t._i), tonumber(t._n)
+	t._t, t._s, t._i, t._n = nil, nil, nil, nil
+	if kind == "full" then
+		if i == 1 then staging = { serial = serial, data = new_overlay() } end
+		if not (staging and staging.serial == serial) then return end -- missed the start: wait for the next one
+		for k, v in pairs(t) do put_entry(staging.data, k, v) end
+		if i == n then
+			local data = staging.data
+			staging = nil
+			local changed = not same_overlay(ov, data)
+			ov, ov_origin = data, "host"
+			got_full = true
+			stats.full_in = stats.full_in + 1
+			log("host settings received: %d option(s), %d MCM option(s), %d difficulty factor(s)%s", count(ov.o),
+				count(ov.m), count(ov.g) + count(ov.e), changed and "" or " (unchanged)")
+			after_change(changed, "join")
+		end
+	elseif kind == "delta" then
+		local changed = false
+		for k, v in pairs(t) do
+			if ov and put_entry(ov, k, v) then changed = true end
+			if staging then put_entry(staging.data, k, v) end
+		end
+		stats.delta_in = stats.delta_in + 1
+		if ov and changed then
+			log("host changed %d setting(s)", count(t))
+			after_change(true, "host change")
+		end
+	end
+end
+
+local function on_settings_request(payload, from)
+	if not (api and api.is_host()) or from == 0 then return end
+	host_flush_delta() -- the others get what changed since the baseline, the newcomer gets the baseline
+	if host_send(host.last or {}, "full", from) then stats.full_out = stats.full_out + 1 end
+end
+
+-------------------------------------------------------------------------------
+-- Ticks and callbacks
+-------------------------------------------------------------------------------
+local next_tick = 0
+
+local function client_tick(t)
+	if factors_pending then apply_factors("level load") end
+	if fire_pending then fire_option_change() end
+	if not got_full and api.is_live() and t >= next_request then
+		next_request = t + cfg.request_ms
+		stats.requests = stats.requests + 1
+		api.send_event("coop_set_req", "", 0)
+	end
+end
+
+local function actor_on_update()
+	if not api then return end
+	local t = now_ms()
+	if t < next_tick then return end
+	next_tick = t + 250
+	local was_client = client_mode
+	client_mode = api.is_client()
+	if client_mode then
+		released = false
+		client_tick(t)
+	elseif was_client and ov and not released then
+		-- The session ended while this world is still loaded: the player's own values are back.
+		released = true
+		log("session ended: own settings are used again")
+		fire_option_change()
+	end
+	if api.is_host() then host_tick(t) end
+end
+
+local function on_option_change()
+	if firing or not api then return end
+	if api.is_host() then
+		host.dirty = true
+	elseif client_mode and ov then
+		-- Something changed a host-owned difficulty factor locally (an addon, a menu we did not hook): undo it.
+		if apply_factors("local change reverted") > 0 then hint("Co-op: difficulty and economy are set by the host") end
+	end
+end
+
+function on_game_start()
+	if not api then return end
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("on_option_change", on_option_change)
+	if client_mode then
+		local ok, err = pcall(install_client_hooks)
+		if not ok then log("! client hooks failed: %s", tostring(err)) end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Diagnostics (coop_status, through coop_main.print_status)
+-------------------------------------------------------------------------------
+function print_status()
+	if not api then return end
+	if api.is_host() then
+		local base = host.last and count(host.last) or 0
+		log("host: baseline %d value(s), sent full %d, delta %d, too long %d", base, stats.full_out, stats.delta_out,
+			stats.oversize)
+	elseif client_mode then
+		local o = ov or new_overlay()
+		log("client: host values %s (%s): %d option(s), %d MCM, %d factor(s) | full %d, delta %d, requests %d",
+			ov and "on" or "not received", tostring(ov_origin), count(o.o), count(o.m), count(o.g) + count(o.e),
+			stats.full_in, stats.delta_in, stats.requests)
+		log("client: overlaid reads %d, dropped writes %d, skipped saves %d, refused edits %d, factor sets %d, errors %d",
+			stats.reads, stats.blocked_writes, stats.skipped_saves, stats.refused, stats.factor_sets, stats.errors)
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Load time (every Lua state: new game, level load, client join)
+-------------------------------------------------------------------------------
+if api then
+	local cm = mod("coop_main")
+	if cm and cm.add_event_handler then
+		cm.add_event_handler("coop_set", on_settings)
+		cm.add_event_handler("coop_set_req", on_settings_request)
+	else
+		log("! coop_main not available: host settings are not synchronized")
+	end
+	if api.is_client() then
+		client_mode = true
+		install_ini_overlay()
+		if load_stash() then
+			factors_pending = true
+			log("host settings restored for this level: %d option(s), %d MCM option(s)", count(ov.o), count(ov.m))
+		end
+	end
+end

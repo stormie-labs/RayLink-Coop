@@ -104,6 +104,8 @@ item_weapon
 itms_manager
 level_environment
 xr_weapon_jam
+game_difficulties            ; applies the save's (= host's) difficulty to the local actor on load; values and
+                             ; changes come from the host through coop_settings (R-11.3)
 
 ; Listed for clarity and to override the prefixes above; everything unlisted is host anyway.
 [host]
@@ -115,7 +117,6 @@ warfare_faction_control
 game_autosave                ; clients never save (R-9.2)
 game_autosave_new
 game_setup
-game_difficulties            ; gameplay settings belong to the host (R-11.3)
 dynamic_news_manager
 treasure_manager
 death_manager

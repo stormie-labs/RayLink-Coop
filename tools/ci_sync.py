@@ -16,28 +16,7 @@ CI = ROOT / "engine-ci"
 
 # Work packages still running: their files stay out of the test build.
 SKIP = [
-    # WP2 events & requests
-    "src/xrGame/coop/coop_events.*", "src/xrGame/coop/coop_requests.*", "src/xrGame/Level_network.cpp",
-    "src/xrGame/xrServer_process_event*.cpp", "src/xrGame/alife_simulator_script.cpp",
-    "src/xrGame/ai/stalker/ai_stalker_fire.cpp", "src/xrGame/Actor.cpp",
-    # WP6 dialogs / trade / containers
-    "src/xrGame/coop/coop_dialog.*", "src/xrGame/coop/coop_trade.*", "src/xrGame/PhraseDialog*",
-    "src/xrGame/AI_PhraseDialogManager.cpp", "src/xrGame/PhraseDialogManager.cpp", "src/xrGame/ui/UITalk*",
-    "src/xrGame/ui/UIActorMenu*", "src/xrGame/Trade*.cpp", "src/xrGame/ai/trader/ai_trader.cpp",
-    "src/xrGame/InventoryBox.cpp",
-    # WP7 world objects
-    "src/xrGame/coop/coop_objects.*", "src/xrGame/PhysicObject.cpp", "src/xrGame/BreakableObject.cpp",
-    "src/xrGame/DestroyablePhysicsObject.cpp", "src/xrGame/PHDestroyable.cpp", "src/xrGame/CustomZone.cpp",
-    "src/xrGame/ZoneCampfire.cpp", "src/xrGame/Artefact.cpp", "src/xrGame/artefact_activation.cpp",
-    "src/xrGame/Explosive.cpp", "src/xrGame/Missile.cpp", "src/xrGame/Grenade.cpp", "src/xrGame/Bolt.cpp",
-    "src/xrGame/Car*.cpp", "src/xrGame/Helicopter*.cpp", "src/xrGame/WeaponStatMgun*.cpp",
-    # WP8 survival & presence
-    "src/xrGame/coop/coop_survival.*", "src/xrGame/coop/coop_presence.*", "src/xrGame/ActorCondition.cpp",
-    "src/xrGame/HUDManager.cpp", "src/xrGame/ui/UIHudStatesWnd*", "src/xrGame/Spectator.cpp",
-    # WP9 owned item state
-    "src/xrGame/coop/coop_items.*", "src/xrGame/Weapon*.cpp", "src/xrGame/inventory_item.cpp",
-    "src/xrGame/eatable_item.cpp", "src/xrGame/ui/UIInvUpgrade*", "src/xrGame/inventory_upgrade*",
-    # project files are patched separately
+    # all work packages landed (2026-10-20 17:59); project files are patched separately
     "src/xrGame/xrGame.vcxproj", "src/xrGame/xrGame.vcxproj.filters",
 ]
 

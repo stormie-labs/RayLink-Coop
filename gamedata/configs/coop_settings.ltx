@@ -1,0 +1,71 @@
+; Anomaly Coop - who owns which option in a co-op session (R-11.3), read by scripts\coop_settings.script.
+;
+;   host   - gameplay: difficulty, economy, A-Life, rules. The host's value is used on every client; a client
+;            cannot change it while connected (its own axr_options.ltx is not touched and is used again later).
+;   player - cosmetic: graphics, sound, HUD, controls, language. Every player keeps their own.
+;
+; Two option stores are covered, both in appdata\axr_options.ltx:
+;   options - Anomaly's own options menu (ui_options), paths like "gameplay/economy_diff/buy".
+;   mcm     - Mod Configuration Menu of addons (ui_mcm), paths like "<addon>/<page>/<option>".
+; Difficulty and economy factors (game_difficulties, stored in the save) are always host-owned.
+;
+; How a path is decided (first match wins):
+;   1. exact path in [<store>_host] / [<store>_player]
+;   2. longest prefix ("gameplay/*") in the same sections; for equal prefixes host wins
+;   3. words of the path (split at "/", "_", digits and other separators):
+;        a word from [words_always_player] -> player   (key bindings, mouse, language, debug)
+;        a word from [words_host]          -> host     (damage, loot, price, spawn, ...)
+;        a word from [words_player]        -> player   (hud, sound, color, ...)
+;      Words of 3 letters or less must match a whole word; longer ones match the start of a word
+;      ("anomal" matches "anomaly", "anomalies").
+;   4. [settings] <store>_default
+; Unknown MCM options are host-owned: an addon nobody classified cannot give players different rules.
+; To let players set an addon themselves, add "<addon>/*" to [mcm_player].
+
+[settings]
+options_default     = host
+mcm_default         = host
+poll_ms             = 3000    ; host: how often host-owned values are compared and changes sent
+request_ms          = 10000   ; client: asks again for the host's settings until they arrive
+chunk_bytes         = 12000   ; payload size of one settings message (the engine limit is 16 KiB)
+
+[options_host]
+gameplay/*
+alife/*
+video/weather/*               ; weather generation is world state
+
+[options_player]
+video/*
+sound/*
+control/*
+other/*
+gameplay/general/player_name
+gameplay/general/outfit_portrait
+gameplay/general/show_tip_reputation
+alife/dynamic_news/message_duration
+
+[mcm_host]
+; <addon>/* or exact paths that must follow the host even if their words look cosmetic
+
+[mcm_player]
+; <addon>/* or exact paths every player sets for themselves, e.g.:
+; my_hud_addon/*
+
+[words_always_player]
+key, keys, keybind, keybinds, bind, binding, bindings, hotkey, kb, mouse, sens, sensitivity, invert
+lang, language, font, debug, dbg, log, logging, verbose
+
+[words_host]
+damage, dmg, chance, price, cost, money, reward, loot, drop, spawn, respawn, weight, carry, stamina
+health, hp, heal, bleed, rad, radiation, hunger, thirst, sleep, armor, armour, resist, immun, protection
+degrad, condition, durability, repair, upgrade, craft, recipe, trade, trader, barter, econ, eco, difficult
+diff, ai, npc, mutant, monster, squad, faction, goodwill, reputation, rank, xp, exp, skill, perk, task
+quest, emission, surge, psi, anomal, artefact, artifact, stash, death, die, revive, hardcore, realism
+ballistic, recoil, dispersion, accuracy, jam, misfire, ammo, grenade, speed, cheat
+
+[words_player]
+hud, ui, gui, menu, icon, color, colour, clr, crosshair, fov, sound, snd, volume, vol, music, audio
+voice, subtitle, caption, notify, notification, message, msg, news, tip, hint, popup, display, show
+visual, graphic, shader, effect, fx, blur, bloom, flare, lens, light, shadow, camera, cam, bob, anim
+ppe, overlay, screen, pos, offset, scale, size, opacity, alpha, marker, widget, indicator, text, sort
+filter, minimap, map, pda, preview, tooltip, glow

@@ -1,0 +1,1556 @@
+--[[
+	Anomaly Coop - shared tasks in Lua (gamedata\scripts\coop_tasks.script), work package W3c.
+	SPEC R-7.2, R-7.5, R-7.6, R-7.8. Engine side: src\xrGame\coop\coop_story.cpp (WP4 + W3c).
+
+	One task manager for the whole group: the HOST's Anomaly task_manager. The engine layer (coop_story)
+	already mirrors the engine task list (texts, targets, states, PDA spots) to every client. This script
+	does the same for the Lua side and routes every task decision to the host:
+
+	Client (connected, in the host's world):
+	  - task_manager:give_task / set_task_completed / set_task_failed / set_task_cancelled are sent to the
+	    host (event coop_tq) and are NOT run locally, so on-give effects, on_complete, rewards and news run
+	    exactly once, on the host (R-7.8, item 4 of W3c). The task vars a dialog prepared in this player's
+	    pstor (fetch item, stash target, keys starting with the task id) travel with the give request.
+	  - The client never evaluates tasks (no status functors, no completion checks): its task_manager holds
+	    stubs mirrored from the host (stage, status, giver, task vars), so dialogs that read
+	    task_info[id].stage / .status / .task_giver_id offer the same turn-in and cancel options as on the
+	    host, for every task, including tasks the host gave after this client joined (R-7.2).
+	    A dialog script that writes stub.stage or stub.forced_status sends that to the host as well.
+	Host:
+	  - Runs the requests with Anomaly's own task_manager and remembers who took and who turned in a task.
+	    In the task callback the rewards go to the player who turned it in (R-7.6): money through the
+	    client's own money (event coop_trw, the client's money is reported back by the engine), items spawned
+	    by the host into that player's character, goodwill/faction effects keyed to that character. Console
+	    coop_share_rewards 1 splits money equally among the online players; items still go to the finisher.
+	  - Quest items count from any group member's inventory (R-7.5): fetch / stash status functors also count
+	    the other players' characters, and removing the items takes them from whoever holds them (the player
+	    who turned the task in first).
+	  - Broadcasts the Lua task state (coop_tl, on change, scanned every 0.5 s), a digest list every 10 s
+	    (coop_tl_list) and the full state on request (coop_tl_req).
+	  - Group task bookkeeping in the actor's pstor (keys "drx_sl_*": givers with outstanding tasks, the
+	    current storyline task, ...) is the host's: mirrored to clients (coop_tv); a client's save_var of
+	    such a key goes to the host (coop_tvd, counters as deltas), so a giver's "has a task for you" state
+	    is the same for everybody.
+
+	API for scripts (any machine):
+	  coop_tasks.party_has(section, count, min_condition) -> bool   (also coop.party_has when not set)
+	  coop_tasks.party_count(section, min_condition)      -> number (multi-use items count their uses)
+	    Host: the host's actor + the characters of all connected players. Client: own actor + the other
+	    players' characters as mirrored here.
+	  coop_tasks.recipient(task_id) -> peer that would get the reward now (host only)
+	Called by the engine: coop_tasks.host_note(task_id, "taker"|"finisher", peer)  (coop_story.cpp requests)
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace (nil on an exe without co-op)
+
+local tostring, tonumber, type, pairs, ipairs, pcall, next = tostring, tonumber, type, pairs, ipairs, pcall, next
+local string_format, string_char, table_concat, table_sort = string.format, string.char, table.concat, table.sort
+local math_floor, math_max = math.floor, math.max
+
+local EV_REQ = "coop_tq" -- client -> host: task operation
+local EV_STATE = "coop_tl" -- host -> client(s): Lua state of one task
+local EV_LIST = "coop_tl_list" -- host -> client(s): ids + digests of all tasks
+local EV_SYNC = "coop_tl_req" -- client -> host: send me everything
+local EV_REWARD = "coop_trw" -- host -> one client: money / news / personal effect for this player
+local EV_NEWS = "coop_tn" -- host -> clients: a task was completed / failed
+local EV_VARS = "coop_tv" -- host -> client(s): the group's shared task bookkeeping vars (whole set)
+local EV_VAR = "coop_tvd" -- client -> host: this client's dialog changed one of them
+
+-- Actor pstor keys that are task bookkeeping of the whole group (DRX storyline: givers with outstanding
+-- tasks, current storyline task, ...). Written by the giving dialog on whichever machine, read by dialog
+-- preconditions everywhere, cleared by on_complete on the host. Host-owned, mirrored, client writes routed.
+local SHARED_PREFIXES = { "drx_sl_" }
+
+local SCAN_MS = 500
+local LIST_MS = 10000
+local SYNC_RETRY_MS = 10000
+local PENDING_MS = 15000 -- provisional give / optimistic turn-in without an answer from the host
+local MAX_STATE = 12000 -- characters of one state message (event payload limit is 16 KiB)
+
+local CONTAINERS = { "lead_box", "af_aam", "af_aac", "af_iam" } -- artefact containers (stock suffixes)
+local FETCH_MIN_COND = { -- stock actor_has_fetch_item asks for a minimal condition on these two
+	esc_2_12_stalker_nimble_task_1 = 0.9,
+	jup_b220_trapper_task_3 = 0.9,
+}
+-- Effects that change the turning-in player's own character: run on that player's machine (R-3.4).
+local FORWARD_EFFECTS = { drx_sl_change_factions = true }
+
+-------------------------------------------------------------------------------
+-- Logging, roles
+-------------------------------------------------------------------------------
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-tasks] %s", ok and line or tostring(fmt))
+end
+
+local stats = {
+	req_out = 0, req_in = 0, refused = 0, state_out = 0, state_in = 0, lists = 0, syncs = 0,
+	rewards_routed = 0, rewards_in = 0, party_moves = 0, party_releases = 0, stage_by_party = 0, errors = 0,
+}
+
+local function report(what, err)
+	stats.errors = stats.errors + 1
+	if stats.errors <= 10 or stats.errors % 100 == 0 then
+		log("! %s: %s", tostring(what), tostring(err))
+	end
+end
+
+local function active()
+	if not api then return false end
+	local ok, v = pcall(api.is_active)
+	return ok and v == true
+end
+local function is_host() return active() and api.is_host() == true end
+local function is_client() return active() and api.is_client() == true end
+local function client_live() return is_client() and api.is_live() == true end
+
+local function self_peer()
+	local ok, v = pcall(api.self_id)
+	return ok and tonumber(v) or 0
+end
+
+local function players()
+	if not api then return {} end
+	local ok, list = pcall(api.players)
+	return ok and type(list) == "table" and list or {}
+end
+
+local function to_host_id(id)
+	if not (api and api.to_host_id and type(id) == "number") then return id end
+	return api.to_host_id(id) or id
+end
+local function to_local_id(id)
+	if not (api and api.to_local_id and type(id) == "number") then return id end
+	return api.to_local_id(id) or id
+end
+
+local function tmgr()
+	local mod = rawget(_G, "task_manager") or task_manager
+	if not (mod and mod.get_task_manager) then return nil end
+	local ok, tm = pcall(mod.get_task_manager)
+	return ok and tm or nil
+end
+
+local function now() return time_global() end
+
+-------------------------------------------------------------------------------
+-- Payloads: "k=v;k=v" of scalars, values may be one level of flat table ("t" + "k:v,k:v").
+-- No code is ever loaded from the network.
+-------------------------------------------------------------------------------
+local function esc(s)
+	return (tostring(s):gsub("[%%;=,:]", function(c) return string_format("%%%02X", c:byte()) end))
+end
+local function unesc(s)
+	return (s:gsub("%%(%x%x)", function(h) return string_char(tonumber(h, 16)) end))
+end
+
+local function enc_scalar(v)
+	local tv = type(v)
+	if tv == "number" then
+		if v ~= v or v == math.huge or v == -math.huge then return nil end
+		return "n" .. string_format("%.17g", v)
+	elseif tv == "boolean" then
+		return v and "b1" or "b0"
+	elseif tv == "string" then
+		return "s" .. v
+	end
+	return nil
+end
+
+local function dec_scalar(v)
+	local tag, body = v:sub(1, 1), v:sub(2)
+	if tag == "n" then return tonumber(body) end
+	if tag == "b" then return body == "1" end
+	if tag == "s" then return body end
+	return nil
+end
+
+-- flat table of scalars -> "k:v,..." (keys typed: "$" string, "#" number); nil if it holds anything else
+local function enc_flat(t)
+	local out = {}
+	for k, v in pairs(t) do
+		local ek
+		if type(k) == "string" then
+			ek = "$" .. k
+		elseif type(k) == "number" then
+			ek = "#" .. string_format("%.17g", k)
+		end
+		local ev = enc_scalar(v)
+		if not (ek and ev) then return nil end
+		out[#out + 1] = esc(ek) .. ":" .. esc(ev)
+	end
+	table_sort(out)
+	return table_concat(out, ",")
+end
+
+local function dec_flat(s)
+	local t = {}
+	for pair in s:gmatch("[^,]+") do
+		local k, v = pair:match("^([^:]*):(.*)$")
+		if k then
+			k = unesc(k)
+			local tag, body = k:sub(1, 1), k:sub(2)
+			local key = (tag == "#" and tonumber(body)) or (tag == "$" and body) or nil
+			local val = dec_scalar(unesc(v))
+			if key ~= nil and val ~= nil then t[key] = val end
+		end
+	end
+	return t
+end
+
+local function pack(t, allow_tables)
+	local out = {}
+	for k, v in pairs(t) do
+		if type(k) == "string" then
+			local ev
+			if type(v) == "table" then
+				if allow_tables then
+					local f = enc_flat(v)
+					ev = f and ("t" .. f) or nil
+				end
+			else
+				ev = enc_scalar(v)
+			end
+			if ev then out[#out + 1] = esc(k) .. "=" .. esc(ev) end
+		end
+	end
+	table_sort(out)
+	return table_concat(out, ";")
+end
+
+local function unpack_payload(s)
+	local t = {}
+	if type(s) ~= "string" then return t end
+	for pair in s:gmatch("[^;]+") do
+		local k, v = pair:match("^([^=]*)=(.*)$")
+		if k then
+			k, v = unesc(k), unesc(v)
+			if v:sub(1, 1) == "t" then
+				t[k] = dec_flat(v:sub(2))
+			else
+				local val = dec_scalar(v)
+				if val ~= nil then t[k] = val end
+			end
+		end
+	end
+	return t
+end
+
+local function digest(s)
+	local h = 5381
+	for i = 1, #s do h = (h * 33 + s:byte(i)) % 4294967296 end
+	return string_format("%08x", h)
+end
+
+-- Task vars a dialog or a task script keeps in the actor's pstor: keys that start with the task id
+-- (fetch item "<id>_fetch", counts, stash/delivery tables saved under "<id>").
+local function var_value_ok(v)
+	local tv = type(v)
+	if tv == "number" or tv == "string" or tv == "boolean" then return true end
+	return tv == "table" and enc_flat(v) ~= nil
+end
+
+local function actor_pstor(create)
+	local actor = db and db.actor
+	local st = actor and db.storage and db.storage[actor:id()]
+	if not st then return nil end
+	if not st.pstor and create then st.pstor = {} end
+	return st.pstor
+end
+
+local function task_vars(id)
+	local out = {}
+	local ps = actor_pstor(false)
+	if not ps then return out end
+	local n = #id
+	for k, v in pairs(ps) do
+		if type(k) == "string" and k:sub(1, n) == id and var_value_ok(v) then out[k] = v end
+	end
+	return out
+end
+
+-- Bounty targets are chosen while the dialog builds its text (setup_bounty_task) and kept in
+-- axr_task_manager.bounties_by_id, not in the pstor: they travel with the task too.
+local function bounties()
+	local atm = rawget(_G, "axr_task_manager") or axr_task_manager
+	local t = atm and atm.bounties_by_id
+	return type(t) == "table" and t or nil
+end
+
+local function is_shared_key(k)
+	if type(k) ~= "string" then return false end
+	for _, p in ipairs(SHARED_PREFIXES) do
+		if k:sub(1, #p) == p then return true end
+	end
+	return false
+end
+
+local function shared_vars()
+	local out = {}
+	local ps = actor_pstor(false)
+	if not ps then return out end
+	for k, v in pairs(ps) do
+		if is_shared_key(k) and var_value_ok(v) then out[k] = v end
+	end
+	return out
+end
+
+-------------------------------------------------------------------------------
+-- Group inventories (R-7.5)
+-------------------------------------------------------------------------------
+-- Characters of the group on this machine: own actor first, then the other connected players.
+local function party()
+	local out = {}
+	if db and db.actor then out[1] = { obj = db.actor, peer = self_peer(), self = true } end
+	if not active() then return out end
+	for _, p in ipairs(players()) do
+		if not p.is_self and p.avatar_id then
+			local o = level.object_by_id(p.avatar_id)
+			if o then out[#out + 1] = { obj = o, peer = p.id } end
+		end
+	end
+	return out
+end
+
+local function uses_of(sec)
+	return IsItem and IsItem("multiuse", sec) or nil
+end
+
+-- Units of `sec` in one inventory (multi-use items count their uses, like utils_item.get_amount mode 1).
+local function count_in(obj, sec, min_cond)
+	local n = 0
+	local multi = uses_of(sec)
+	local ok, err = pcall(function()
+		obj:iterate_inventory(function(_, item)
+			if item:section() == sec and (not min_cond or (item:condition() or 1) >= min_cond) then
+				n = n + (multi and item:get_remaining_uses() or 1)
+			end
+		end, nil)
+	end)
+	if not ok then report("count " .. tostring(sec), err) end
+	return n
+end
+
+function party_count(section, min_cond)
+	if type(section) ~= "string" or section == "" then return 0 end
+	local n = 0
+	for _, h in ipairs(party()) do n = n + count_in(h.obj, section, min_cond) end
+	return n
+end
+
+function party_has(section, count, min_cond)
+	return party_count(section, min_cond) >= (tonumber(count) or 1)
+end
+
+-------------------------------------------------------------------------------
+-- Host state
+-------------------------------------------------------------------------------
+local host = {
+	sent = {}, -- id -> last broadcast state string
+	taker = {}, -- id -> peer that took the task (0 = host)
+	finisher = {}, -- id -> peer that turned it in / cancelled it, until the task callback uses it
+	taker_note = {}, -- id -> peer told by the engine (coop_story) right before the give
+	exec_peer = nil, -- peer whose request is being executed
+	next_scan = 0,
+	next_list = 0,
+}
+local ctx = nil -- host: { task, rcpt (peer), share } while a task callback hands out rewards
+local raw_create = nil -- alife_create_item without the reward redirect
+
+local function share_rewards()
+	local ok, v = pcall(function() return get_console():get_integer("coop_share_rewards") end)
+	return ok and tonumber(v) == 1
+end
+
+-- Host: online character of a peer (0 = the host's actor).
+local function avatar_obj(peer)
+	if peer == nil then return nil end
+	if peer == 0 or peer == self_peer() then return db.actor end
+	local ok, id = pcall(api.avatar_of, peer)
+	return ok and id and level.object_by_id(id) or nil
+end
+
+local function has_clients()
+	for _, p in ipairs(players()) do
+		if not p.is_self then return true end
+	end
+	return false
+end
+
+local function send(name, payload, target)
+	local ok, sent = pcall(api.send_event, name, payload, target)
+	return ok and sent == true
+end
+
+local function task_record(id, tsk)
+	local rec = { i = id }
+	local ok, err = pcall(function()
+		if type(tsk.stage) == "number" then rec.st = tsk.stage end
+		if type(tsk.status) == "string" then rec.s = tsk.status end
+		if type(tsk.task_giver_id) == "number" then rec.g = tsk.task_giver_id end
+	end)
+	if not ok then report("task state " .. id, err) end
+	local b = bounties()
+	if b and type(b[id]) == "number" then rec.bt = b[id] end
+	local v = pack(task_vars(id), true)
+	if v ~= "" then rec.v = v end
+	local s = pack(rec)
+	if #s > MAX_STATE then
+		rec.v = nil -- too many vars: the state still goes out
+		s = pack(rec)
+	end
+	return s
+end
+
+local function host_scan(force)
+	local tm = tmgr()
+	if not tm or type(tm.task_info) ~= "table" then return end
+	local seen = {}
+	for id, tsk in pairs(tm.task_info) do
+		if type(id) == "string" then
+			seen[id] = true
+			local s = task_record(id, tsk)
+			if force or host.sent[id] ~= s then
+				host.sent[id] = s
+				send(EV_STATE, s, -1)
+				stats.state_out = stats.state_out + 1
+			end
+		end
+	end
+	for id in pairs(host.sent) do
+		if not seen[id] then
+			host.sent[id] = nil
+			send(EV_STATE, pack({ i = id, d = true }), -1)
+			stats.state_out = stats.state_out + 1
+		end
+	end
+	local sv = pack(shared_vars(), true)
+	if #sv > MAX_STATE then
+		if host.shared_sent ~= "" then log("! shared task vars too long (%d characters), not mirrored", #sv) end
+		sv = ""
+	end
+	if force or host.shared_sent ~= sv then
+		host.shared_sent = sv
+		send(EV_VARS, sv, -1)
+	end
+end
+
+local function host_list(target)
+	local list = {}
+	for id, s in pairs(host.sent) do list[#list + 1] = esc(id) .. ":" .. digest(s) end
+	table_sort(list)
+	local payload = table_concat(list, ",")
+	if #payload > 15000 then
+		log("! task list too long for one message (%d tasks), digest check skipped", #list)
+		return
+	end
+	send(EV_LIST, payload, target)
+	stats.lists = stats.lists + 1
+end
+
+-- The current state of one task (or its removal) to one player.
+local function host_send_state(id, peer)
+	local tm = tmgr()
+	local tsk = tm and tm.task_info and tm.task_info[id]
+	local s = tsk ~= nil and task_record(id, tsk) or pack({ i = id, d = true })
+	send(EV_STATE, s, peer)
+	stats.state_out = stats.state_out + 1
+end
+
+local function host_full_sync(peer)
+	host_scan(false) -- everybody gets pending changes first, so host.sent is current
+	local tm = tmgr()
+	if not tm then return end
+	for id in pairs(host.sent) do
+		send(EV_STATE, host.sent[id], peer)
+		stats.state_out = stats.state_out + 1
+	end
+	send(EV_VARS, host.shared_sent or "", peer)
+	host_list(peer)
+	stats.syncs = stats.syncs + 1
+end
+
+-- A client's dialog changed a shared bookkeeping var: counters as a delta (several players may count
+-- at once), anything else as the new value.
+local function host_on_var(payload, from)
+	if not is_host() or type(from) ~= "number" or from == 0 then return end
+	local t = unpack_payload(payload)
+	local k = t.k
+	local ps = actor_pstor(true)
+	if not (is_shared_key(k) and ps) then return end
+	if t.op == "add" and type(t.d) == "number" then
+		ps[k] = (tonumber(ps[k]) or 0) + t.d
+	elseif t.op == "set" and t.v ~= nil and var_value_ok(t.v) then
+		ps[k] = t.v
+	elseif t.op == "del" then
+		ps[k] = nil
+	else
+		return
+	end
+	host_scan(false)
+end
+
+-- Who gets the reward of `id` now: the player who turned it in, else who took it, else the host.
+function recipient(id)
+	local r = host.finisher[id]
+	if r == nil then r = host.taker[id] end
+	return r or 0
+end
+
+-- coop_story.cpp: a client asked through the engine requests (TaskReqGive / TaskReqState).
+function host_note(id, kind, peer)
+	peer = tonumber(peer)
+	if type(id) ~= "string" or not peer then return end
+	if kind == "taker" then
+		host.taker_note[id] = peer
+	elseif kind == "finisher" and host.finisher[id] == nil then
+		host.finisher[id] = peer
+	end
+end
+
+local function task_known(id)
+	local ini = task_manager and task_manager.task_ini
+	local ok, yes = pcall(function() return ini and ini:section_exist(id) end)
+	return ok and yes == true
+end
+
+local function host_talking()
+	local ok, yes = pcall(function() return db.actor:is_talking() end)
+	return ok and yes == true
+end
+
+local function engine_task_running(id)
+	local ok, t = pcall(function() return db.actor:get_task(id, true) end)
+	return ok and t ~= nil
+end
+
+-- Client request handlers (host). Return true when accepted; the state is then broadcast by the scan.
+local ops = {}
+
+function ops.give(tm, id, t, from)
+	if tm.task_info[id] ~= nil and engine_task_running(id) then return false end
+	if type(t.v) == "string" then
+		local n = #id
+		for k, v in pairs(unpack_payload(t.v)) do
+			if type(k) == "string" and k:sub(1, n) == id and var_value_ok(v) then save_var(db.actor, k, v) end
+		end
+	end
+	local b = bounties()
+	if b and type(t.bt) == "number" then b[id] = t.bt end
+	local giver = tonumber(t.g) -- host numbering == local numbering on the host
+	host.taker[id] = from
+	host.finisher[id] = nil
+	tm:give_task(id, giver)
+	return tm.task_info[id] ~= nil
+end
+
+local function finish(method)
+	return function(tm, id, t, from)
+		if tm.task_info[id] == nil or not engine_task_running(id) then return false end
+		if host.finisher[id] == nil then host.finisher[id] = from end
+		tm[method](tm, id)
+		return "pending" -- the task callback follows when the host checks its tasks
+	end
+end
+ops.complete = finish("set_task_completed")
+ops.fail = finish("set_task_failed")
+ops.cancel = finish("set_task_cancelled")
+
+function ops.stage(tm, id, t, from)
+	local tsk = tm.task_info[id]
+	local st = tonumber(t.st)
+	if tsk == nil or not st then return false end
+	tsk.stage = st
+	return true
+end
+
+local function host_on_request(payload, from)
+	if not is_host() or type(from) ~= "number" or from == 0 then return end
+	stats.req_in = stats.req_in + 1
+	local t = unpack_payload(payload)
+	local id, op = t.i, t.op
+	local fn = type(op) == "string" and ops[op]
+	if type(id) ~= "string" or id == "" or not fn or not task_known(id) then
+		stats.refused = stats.refused + 1
+		log("! bad task request from #%s: %s %s", tostring(from), tostring(op), tostring(id))
+		if type(id) == "string" and id ~= "" and #id <= 128 then host_send_state(id, from) end
+		return
+	end
+	local tm = tmgr()
+	if not tm then return end
+	host.exec_peer = from
+	local ok, res = pcall(fn, tm, id, t, from)
+	host.exec_peer = nil
+	if not ok then report("request " .. op .. " " .. id, res) end
+	if not ok or not res then
+		stats.refused = stats.refused + 1
+		host_send_state(id, from) -- the requester is behind: put its view back
+		return
+	end
+	log("#%s: %s '%s'", tostring(from), op, id)
+	if res ~= "pending" then host_scan(false) end
+end
+
+-------------------------------------------------------------------------------
+-- Host: rewards to the player who turned the task in (R-7.6)
+-------------------------------------------------------------------------------
+local function rcpt_client()
+	return ctx ~= nil and ctx.rcpt ~= 0 and ctx.rcpt or nil
+end
+
+local function is_my_actor(obj)
+	if obj == nil or not db.actor then return false end
+	if obj == db.actor then return true end
+	local ok, id = pcall(function()
+		local f = obj.id
+		if type(f) == "function" then return obj:id() end
+		return f
+	end)
+	return ok and id == db.actor:id()
+end
+
+local function send_reward(peer, t)
+	if t.t == nil and ctx then t.t = ctx.task end
+	if send(EV_REWARD, pack(t), peer) then stats.rewards_routed = stats.rewards_routed + 1 end
+end
+
+local function online_peers()
+	local list = { 0 }
+	for _, p in ipairs(players()) do
+		if not p.is_self and p.avatar_id and level.object_by_id(p.avatar_id) then list[#list + 1] = p.id end
+	end
+	return list
+end
+
+local function host_task_callback(orig, tsk, state)
+	local okid, id = pcall(function() return tsk:get_id() end)
+	if not (is_host() and okid and type(id) == "string") or not (state == task.completed or state == task.fail) then
+		return orig(tsk, state)
+	end
+	local rcpt = recipient(id)
+	host.finisher[id] = nil
+	if has_clients() then
+		send(EV_NEWS, pack({ i = id, ty = state == task.completed and "complete" or "fail" }), -1)
+	end
+	if rcpt ~= 0 and not avatar_obj(rcpt) then rcpt = 0 end -- left the game: the host takes it
+	local share = state == task.completed and share_rewards()
+	if rcpt == 0 and not share then return orig(tsk, state) end
+	local prev = ctx
+	ctx = { task = id, rcpt = rcpt, share = share }
+	local ok, err = pcall(orig, tsk, state)
+	ctx = prev
+	if not ok then report("task callback " .. id, err) end
+	if rcpt ~= 0 then log("rewards of '%s' go to #%s%s", id, tostring(rcpt), share and " (money shared)" or "") end
+end
+
+local function patch_rewards()
+	-- money
+	local dlg = rawget(_G, "dialogs") or dialogs
+	if dlg and type(dlg.relocate_money) == "function" then
+		local orig = dlg.relocate_money
+		dlg.relocate_money = function(victim, num, typ)
+			local n = tonumber(num)
+			if not (ctx and typ == "in" and n and n > 0) then return orig(victim, num, typ) end
+			local list = ctx.share and online_peers() or { ctx.rcpt }
+			local part = math_floor(n / #list)
+			local rest = n - part * #list
+			local rest_to = 0
+			for _, peer in ipairs(list) do
+				if peer == ctx.rcpt then rest_to = peer end
+			end
+			for _, peer in ipairs(list) do
+				local amount = part + (peer == rest_to and rest or 0)
+				if amount > 0 then
+					if peer == 0 then
+						orig(victim, amount, "in")
+					else
+						send_reward(peer, { k = "money", n = amount })
+					end
+				end
+			end
+		end
+	else
+		log("! dialogs.relocate_money not found: task money is not routed")
+	end
+
+	-- items into the turning-in player's character (host-authoritative spawn)
+	local create = rawget(_G, "alife_create_item")
+	if type(create) == "function" then
+		raw_create = create
+		_G.alife_create_item = function(section, obj, t)
+			local peer = rcpt_client()
+			if peer and is_my_actor(obj) then
+				local o = avatar_obj(peer)
+				if o then return create(section, o, t) end
+			end
+			return create(section, obj, t)
+		end
+	else
+		log("! alife_create_item not found: task items are not routed")
+	end
+
+	-- item news to the player who gets / gives the items
+	local nm = rawget(_G, "news_manager") or news_manager
+	if nm and type(nm.relocate_item) == "function" then
+		local orig = nm.relocate_item
+		nm.relocate_item = function(actor, typ, item, amount)
+			local peer = rcpt_client()
+			if peer and is_my_actor(actor) then
+				send_reward(peer, { k = "news", ty = tostring(typ), s = tostring(item), n = tonumber(amount) or 1 })
+				return true
+			end
+			return orig(actor, typ, item, amount)
+		end
+	end
+
+	-- goodwill rewards / penalties keyed to the player's own character
+	local xe = rawget(_G, "xr_effects") or xr_effects
+	if xe then
+		for _, fname in ipairs({ "inc_faction_goodwill_to_actor", "dec_faction_goodwill_to_actor" }) do
+			local orig = xe[fname]
+			if type(orig) == "function" then
+				xe[fname] = function(actor, npc, p)
+					local peer = rcpt_client()
+					if peer and type(p) == "table" and is_my_actor(actor) then
+						local o = avatar_obj(peer)
+						if o then
+							local r = orig(o, npc, { p[1], p[2] }) -- no message on the host
+							if p[3] and p[1] then
+								send_reward(peer, { k = "gw", c = tostring(p[1]), g = (tonumber(p[2]) or 0) > 0 })
+							end
+							return r
+						end
+					end
+					return orig(actor, npc, p)
+				end
+			end
+		end
+		-- payment for a money task: taken from the player who turned it in
+		local pay = xe.drx_sl_money_task_payment
+		if type(pay) == "function" then
+			xe.drx_sl_money_task_payment = function(actor, npc, p)
+				local peer = rcpt_client()
+				if peer and type(p) == "table" and p[1] ~= nil then
+					local money = tonumber(load_var(db.actor, p[1], 0)) or 0
+					if money > 0 then send_reward(peer, { k = "money", n = -money }) end
+					return
+				end
+				return pay(actor, npc, p)
+			end
+		end
+		-- effects on the player's own character run on that player's machine
+		for fname in pairs(FORWARD_EFFECTS) do
+			local orig = xe[fname]
+			if type(orig) == "function" then
+				xe[fname] = function(actor, npc, p)
+					local peer = rcpt_client()
+					if peer and type(p) == "table" then
+						local t = { k = "fx", f = fname }
+						for i = 1, 4 do
+							if p[i] ~= nil then t["p" .. i] = tostring(p[i]) end
+						end
+						send_reward(peer, t)
+						return
+					end
+					return orig(actor, npc, p)
+				end
+			end
+		end
+	end
+
+	-- delayed rewards (fetch pays one second later) keep the context
+	local cte = rawget(_G, "CreateTimeEvent")
+	if type(cte) == "function" then
+		_G.CreateTimeEvent = function(ev_id, act_id, timer, f, ...)
+			if ctx and type(f) == "function" then
+				local c, f0 = ctx, f
+				f = function(...)
+					local prev = ctx
+					ctx = c
+					local res = { pcall(f0, ...) }
+					ctx = prev
+					if not res[1] then
+						report("delayed task reward", res[2])
+						return true
+					end
+					return unpack(res, 2)
+				end
+			end
+			return cte(ev_id, act_id, timer, f, ...)
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Host: quest items of any group member (R-7.5)
+-------------------------------------------------------------------------------
+-- Holders to take items from: the player who turned the task in first, then the host, then the rest.
+local function holders()
+	local list, rest = {}, {}
+	local rc = rcpt_client()
+	local mine
+	for _, h in ipairs(party()) do
+		if h.self then
+			mine = h
+		elseif rc and h.peer == rc then
+			list[#list + 1] = h
+		else
+			rest[#rest + 1] = h
+		end
+	end
+	if mine then list[#list + 1] = mine end
+	for _, h in ipairs(rest) do list[#list + 1] = h end
+	return list
+end
+
+-- Releases up to `amt` items of `sec` held by h (each item counts 1, like xr_effects.remove_item).
+local function release_from(h, sec, amt)
+	local ids = {}
+	pcall(function()
+		h.obj:iterate_inventory(function(_, item)
+			if #ids < amt and item:section() == sec then ids[#ids + 1] = item:id() end
+		end, nil)
+	end)
+	for _, id in ipairs(ids) do alife_release_id(id) end
+	if not h.self then stats.party_releases = stats.party_releases + #ids end
+	return #ids
+end
+
+-- Moves up to `units` of `sec` from h to the host's actor (they arrive before a delayed stock reward runs).
+local function move_from(h, sec, units)
+	local moved = 0
+	local multi = uses_of(sec)
+	local items = {}
+	pcall(function()
+		h.obj:iterate_inventory(function(_, item)
+			if moved < units and item:section() == sec then
+				items[#items + 1] = item
+				moved = moved + (multi and item:get_remaining_uses() or 1)
+			end
+		end, nil)
+	end)
+	for _, item in ipairs(items) do h.obj:transfer_item(item, db.actor) end
+	stats.party_moves = stats.party_moves + #items
+	return moved
+end
+
+local function container_of(h, sec)
+	for _, cont in ipairs(CONTAINERS) do
+		local c = h.obj:object(sec .. "_" .. cont)
+		if c then return c, cont end
+	end
+	return nil
+end
+
+local function host_party_on() return is_host() and has_clients() end
+
+-- Spawn without the reward redirect (the item goes exactly where asked).
+local function create_plain(sec, obj)
+	local f = raw_create or rawget(_G, "alife_create_item")
+	return f(sec, obj)
+end
+
+local function count_items(obj, sec) -- items, not uses
+	local n = 0
+	pcall(function()
+		obj:iterate_inventory(function(_, item)
+			if item:section() == sec then n = n + 1 end
+		end, nil)
+	end)
+	return n
+end
+
+local function party_remove(sec, amt)
+	local left = amt
+	for _, h in ipairs(holders()) do
+		if left <= 0 then break end
+		left = left - release_from(h, sec, left)
+	end
+	local removed = amt - left
+	if removed > 0 then news_manager.relocate_item(db.actor, "out", sec, removed) end
+	if left > 0 then log("! group had %d x %s less than the task takes", left, sec) end
+end
+
+-- Fetch reward (stock: one second later, from the host's inventory): bring the items to the host's actor,
+-- the turning-in player's own items first.
+local function gather_fetch(var)
+	local sec = load_var(db.actor, var)
+	if type(sec) ~= "string" then return end
+	local need = tonumber(load_var(db.actor, var .. "_count")) or 1
+	local left = need
+	local rc = rcpt_client()
+	local list = holders()
+	if rc and list[1] and list[1].peer == rc then left = left - move_from(list[1], sec, left) end
+	left = left - count_in(db.actor, sec)
+	for _, h in ipairs(list) do
+		if left <= 0 then break end
+		if not h.self and h.peer ~= rc then left = left - move_from(h, sec, left) end
+	end
+	-- an artefact asked for may sit in a container another player carries
+	if left > 0 and sec:find("af_", 1, true) then
+		for _, h in ipairs(list) do
+			if left <= 0 then break end
+			if not h.self then
+				local c, cont = container_of(h, sec)
+				if c then
+					alife_release_id(c:id())
+					create_plain(sec, db.actor)
+					create_plain(cont, h.obj) -- the empty container stays with its owner
+					left = left - 1
+				end
+			end
+		end
+	end
+end
+
+local function patch_party_items()
+	local xe = rawget(_G, "xr_effects") or xr_effects
+	if not xe then return end
+
+	local remove_item = xe.remove_item
+	if type(remove_item) == "function" then
+		xe.remove_item = function(actor, npc, p)
+			if not (host_party_on() and type(p) == "table" and type(p[1]) == "string") then
+				return remove_item(actor, npc, p)
+			end
+			local amt = tonumber(p[2]) or 1
+			if not rcpt_client() and count_items(db.actor, p[1]) >= amt then return remove_item(actor, npc, p) end
+			local ok, err = pcall(party_remove, p[1], amt)
+			if not ok then
+				report("remove_item " .. p[1], err)
+				return remove_item(actor, npc, p)
+			end
+		end
+	end
+
+	local remove_fetch = xe.remove_fetch_item
+	if type(remove_fetch) == "function" then
+		xe.remove_fetch_item = function(actor, npc, p)
+			if not (host_party_on() and type(p) == "table" and p[1]) then return remove_fetch(actor, npc, p) end
+			local sec = load_var(db.actor, p[1])
+			if type(sec) ~= "string" then return remove_fetch(actor, npc, p) end
+			local amt = tonumber(p[2]) or tonumber(load_var(db.actor, p[1] .. "_count")) or 1
+			if not rcpt_client() and count_items(db.actor, sec) >= amt then return remove_fetch(actor, npc, p) end
+			local ok, err = pcall(party_remove, sec, amt)
+			if not ok then
+				report("remove_fetch_item " .. sec, err)
+				return remove_fetch(actor, npc, p)
+			end
+		end
+	end
+
+	local remove_art = xe.remove_artefact_item
+	if type(remove_art) == "function" then
+		-- true when one artefact (or its container) was taken from somebody in the group
+		local function party_remove_art(sec)
+			for _, h in ipairs(holders()) do
+				if release_from(h, sec, 1) > 0 then
+					news_manager.relocate_item(db.actor, "out", sec, 1)
+					return true
+				end
+				local c, cont = container_of(h, sec)
+				if c then
+					alife_release_id(c:id())
+					create_plain(cont, h.obj) -- the empty container stays with its owner
+					news_manager.relocate_item(db.actor, "out", sec, 1)
+					return true
+				end
+			end
+			return false
+		end
+		xe.remove_artefact_item = function(actor, npc, p)
+			if not (host_party_on() and type(p) == "table" and p[1]) then return remove_art(actor, npc, p) end
+			local sec = load_var(db.actor, p[1])
+			if type(sec) ~= "string" then return remove_art(actor, npc, p) end
+			local mine = { obj = db.actor, self = true }
+			if not rcpt_client() and (db.actor:object(sec) or container_of(mine, sec)) then return remove_art(actor, npc, p) end
+			local ok, done = pcall(party_remove_art, sec)
+			if not ok then report("remove_artefact_item " .. sec, done) end
+			if ok and done then return end
+			return remove_art(actor, npc, p)
+		end
+	end
+
+	local fetch_reward = xe.fetch_reward_and_remove
+	if type(fetch_reward) == "function" then
+		xe.fetch_reward_and_remove = function(actor, npc, p)
+			if host_party_on() and type(p) == "table" and p[1] then
+				local ok, err = pcall(gather_fetch, p[1])
+				if not ok then report("fetch gather " .. tostring(p[1]), err) end
+			end
+			return fetch_reward(actor, npc, p)
+		end
+	end
+
+	-- status functors: the task is ready to turn in when the group has the items
+	local tsf = rawget(_G, "task_status_functor")
+	if type(tsf) ~= "table" then
+		log("! task_status_functor not found: quest items count only from the host's inventory")
+		return
+	end
+	local function wrap_status(name, after)
+		local orig = tsf[name]
+		if type(orig) ~= "function" then return end
+		tsf[name] = function(tsk, task_id)
+			local r = orig(tsk, task_id)
+			if r == nil and host_party_on() and tsk and tsk.stage ~= 1 then
+				local ok, err = pcall(after, tsk, task_id)
+				if not ok then report("status " .. name, err) end
+			end
+			return r
+		end
+	end
+	wrap_status("actor_has_fetch_item", function(tsk, task_id)
+		local sec = load_var(db.actor, task_id .. "_fetch")
+		if type(sec) ~= "string" then return end
+		local need = tonumber(load_var(db.actor, task_id .. "_fetch_count")) or 1
+		local min_cond = FETCH_MIN_COND[task_id]
+		local n = party_count(sec, min_cond)
+		if not min_cond and sec:find("af_", 1, true) then
+			for _, cont in ipairs(CONTAINERS) do n = n + party_count(sec .. "_" .. cont) end
+		end
+		if n >= need then
+			tsk.stage = 1
+			stats.stage_by_party = stats.stage_by_party + 1
+		end
+	end)
+	wrap_status("actor_has_fetch_weapon_warfare", function(tsk, task_id)
+		local sec = load_var(db.actor, task_id .. "_fetch")
+		if type(sec) == "string" and party_count(sec, 0.6) > 0 then
+			tsk.stage = 1
+			stats.stage_by_party = stats.stage_by_party + 1
+		end
+	end)
+	wrap_status("drx_sl_quest_item_task_status", function(tsk, task_id)
+		local var = load_var(db.actor, task_id)
+		if type(var) == "table" and var.stash_created and var.stash_type
+			and party_count("drx_sl_quest_item_" .. tostring(var.stash_type)) > 0 then
+			tsk.stage = 1
+			stats.stage_by_party = stats.stage_by_party + 1
+		end
+	end)
+end
+
+-------------------------------------------------------------------------------
+-- Client: mirrored task stubs
+-------------------------------------------------------------------------------
+local cl = {
+	recv = {}, -- id -> last state string from the host
+	vars = {}, -- id -> { key = true } mirrored into our pstor
+	synced = false,
+	next_sync = 0,
+	next_check = 0,
+}
+
+local client_request -- forward
+
+local STUB_METHODS = {
+	check_task = function() end,
+	give_task = function() end,
+	give_reward = function() end,
+	reverse_task = function() end,
+	deactivate_task = function() end,
+	check_level = function() end,
+	remove_guider_spot = function() end,
+	save = function() end,
+	load = function() end,
+	load_state = function() return false end,
+	get_title = function(self) return self.title or "" end,
+	get_icon_name = function(self) return self.icon end,
+	-- Saved like a real task, so a game saved from this world after the session (if ever) still knows it.
+	save_state = function(self, m_data)
+		if type(m_data) ~= "table" or type(m_data.task_objects) ~= "table" then return end
+		m_data.task_objects[self.id] = {
+			status = self.status, stage = self.stage, task_giver_id = self.task_giver_id,
+		}
+	end,
+}
+
+local function stub_data(t)
+	if type(t) ~= "table" then return nil end
+	local mt = getmetatable(t)
+	return type(mt) == "table" and mt.__coop_data or nil
+end
+
+-- A dialog script writing a stub field the host owns: the host does it.
+local function on_stub_write(data, k, v)
+	if not client_live() then return end
+	if k == "stage" and type(v) == "number" then
+		client_request("stage", data.id, { st = v })
+	elseif k == "forced_status" and (v == "complete" or v == "fail") then
+		client_request(v == "complete" and "complete" or "fail", data.id)
+	elseif k == "cancelled_by_actor" and v == true then
+		client_request("cancel", data.id)
+	end
+end
+
+local function new_stub(id)
+	local data = { id = id, coop_stub = true, stage = 0, status = "selected" }
+	local mt = { __coop_data = data }
+	mt.__index = function(_, k)
+		local v = data[k]
+		if v == nil then v = STUB_METHODS[k] end
+		return v
+	end
+	mt.__newindex = function(_, k, v)
+		local old = data[k]
+		data[k] = v
+		if old ~= v then
+			local ok, err = pcall(on_stub_write, data, k, v)
+			if not ok then report("stub write", err) end
+		end
+	end
+	return setmetatable({}, mt), data
+end
+
+local function clear_vars(id, keep)
+	local ps = actor_pstor(false)
+	local old = cl.vars[id]
+	if ps and old then
+		for k in pairs(old) do
+			if not (keep and keep[k] ~= nil) then ps[k] = nil end
+		end
+	end
+	cl.vars[id] = nil
+end
+
+local function apply_vars(id, vars)
+	clear_vars(id, vars)
+	local ps = actor_pstor(true)
+	if not ps then return end
+	local keys = {}
+	local n = #id
+	for k, v in pairs(vars) do
+		if type(k) == "string" and k:sub(1, n) == id then
+			ps[k] = v
+			keys[k] = true
+		end
+	end
+	cl.vars[id] = keys
+end
+
+local function client_apply_state(s)
+	local rec = unpack_payload(s)
+	local id = rec.i
+	if type(id) ~= "string" or id == "" then return end
+	local tm = tmgr()
+	if not tm or type(tm.task_info) ~= "table" then return end
+	stats.state_in = stats.state_in + 1
+	if rec.d then
+		cl.recv[id] = nil
+		tm.task_info[id] = nil
+		clear_vars(id)
+		return
+	end
+	cl.recv[id] = s
+	local stub = tm.task_info[id]
+	local data = stub_data(stub)
+	if not data then
+		stub, data = new_stub(id) -- also replaces a task object this machine loaded with the join save
+	end
+	local status = rec.s or "selected"
+	local opt = data.optimistic
+	if opt and status ~= "completed" and status ~= "fail" and now() - opt.at < PENDING_MS then
+		status = data.status -- our turn-in is on its way: do not offer it again meanwhile
+	else
+		data.optimistic = nil
+	end
+	data.stage = rec.st
+	data.status = status
+	data.task_giver_id = rec.g and to_local_id(rec.g) or nil
+	data.pending_at = nil
+	tm.task_info[id] = stub
+	apply_vars(id, type(rec.v) == "string" and unpack_payload(rec.v) or {})
+	local b = bounties()
+	if b and type(rec.bt) == "number" then b[id] = to_local_id(rec.bt) end
+end
+
+local function client_apply_shared(payload)
+	local vars = unpack_payload(payload)
+	local ps = actor_pstor(true)
+	if not ps then return end
+	local drop = {}
+	for k in pairs(ps) do
+		if is_shared_key(k) and vars[k] == nil then drop[#drop + 1] = k end
+	end
+	for _, k in ipairs(drop) do ps[k] = nil end
+	for k, v in pairs(vars) do
+		if is_shared_key(k) then ps[k] = v end
+	end
+end
+
+-- save_var on this client's actor for a shared key: the host keeps the group's value.
+local function client_route_var(k, v)
+	local ps = actor_pstor(false)
+	local old = ps and ps[k]
+	local t = { k = k }
+	if v == nil then
+		t.op = "del"
+	elseif type(v) == "number" and (old == nil or type(old) == "number") then
+		t.op, t.d = "add", v - (old or 0)
+		if t.d == 0 then return end
+	elseif var_value_ok(v) then
+		t.op, t.v = "set", v
+	else
+		return
+	end
+	send(EV_VAR, pack(t, true), 0)
+end
+
+local function client_request_sync()
+	cl.next_sync = now() + SYNC_RETRY_MS
+	send(EV_SYNC, "", 0)
+end
+
+local function client_on_list(payload)
+	local tm = tmgr()
+	if not tm or type(tm.task_info) ~= "table" then return end
+	stats.lists = stats.lists + 1
+	local listed, differ = {}, false
+	for item in tostring(payload):gmatch("[^,]+") do
+		local k, d = item:match("^([^:]*):(.*)$")
+		if k then
+			k = unesc(k)
+			listed[k] = true
+			local mine = cl.recv[k]
+			if not mine or digest(mine) ~= d then differ = true end
+		end
+	end
+	local drop = {}
+	for id, tsk in pairs(tm.task_info) do
+		if not listed[id] then
+			local data = stub_data(tsk)
+			if not (data and data.pending_at and now() - data.pending_at < PENDING_MS) then drop[#drop + 1] = id end
+		end
+	end
+	for _, id in ipairs(drop) do
+		tm.task_info[id] = nil
+		cl.recv[id] = nil
+		clear_vars(id)
+	end
+	cl.synced = true
+	if differ and now() >= cl.next_sync then client_request_sync() end
+end
+
+client_request = function(op, id, extra)
+	if type(id) ~= "string" then return false end
+	local t = extra or {}
+	t.op, t.i = op, id
+	local ok = send(EV_REQ, pack(t), 0)
+	if ok then stats.req_out = stats.req_out + 1 end
+	return ok
+end
+
+local function client_give(tm, id, giver)
+	local gid = tonumber(giver)
+	local extra = { g = gid and to_host_id(gid) or nil }
+	local v = pack(task_vars(id), true)
+	if v ~= "" then extra.v = v end
+	local b = bounties()
+	if b and type(b[id]) == "number" then extra.bt = to_host_id(b[id]) end
+	if not client_request("give", id, extra) then return false end
+	local stub, data = new_stub(id)
+	data.task_giver_id = gid
+	data.pending_at = now()
+	tm.task_info[id] = stub
+	log("asked the host for task '%s'", id)
+	return true
+end
+
+local function client_finish(tm, id, op)
+	if not client_request(op, id) then return false end
+	local data = stub_data(tm.task_info[id])
+	if data and data.status ~= "completed" and data.status ~= "fail" then
+		data.optimistic = { at = now(), status = data.status }
+		data.status = op == "complete" and "completed" or "fail"
+	end
+	log("%s '%s' sent to the host", op, id)
+	return true
+end
+
+local function client_tick()
+	local t = now()
+	if not cl.synced and t >= cl.next_sync then client_request_sync() end
+	if t < cl.next_check then return end
+	cl.next_check = t + 1000
+	local tm = tmgr()
+	if not tm or type(tm.task_info) ~= "table" then return end
+	local stale = false
+	for _, tsk in pairs(tm.task_info) do
+		local data = stub_data(tsk)
+		if data then
+			if data.pending_at and t - data.pending_at >= PENDING_MS then
+				data.pending_at = nil
+				stale = true
+			end
+			local opt = data.optimistic
+			if opt and t - opt.at >= PENDING_MS then
+				data.status = opt.status
+				data.optimistic = nil
+				stale = true
+			end
+		end
+	end
+	if stale and t >= cl.next_sync then client_request_sync() end
+end
+
+-- Host events for this player
+local function client_on_reward(payload, from)
+	if from ~= 0 or not is_client() or not db.actor then return end
+	local t = unpack_payload(payload)
+	stats.rewards_in = stats.rewards_in + 1
+	if t.k == "money" and type(t.n) == "number" and t.n ~= 0 then
+		local n = math_floor(t.n)
+		if n > 0 then
+			dialogs.relocate_money(db.actor, n, "in")
+		else
+			db.actor:give_money(n)
+			news_manager.relocate_money(db.actor, "out", -n)
+		end
+	elseif t.k == "news" and type(t.s) == "string" then
+		news_manager.relocate_item(db.actor, t.ty == "out" and "out" or "in", t.s, tonumber(t.n) or 1)
+	elseif t.k == "gw" and type(t.c) == "string" then
+		local mlr = rawget(_G, "dialogs_mlr") or dialogs_mlr
+		if mlr and mlr.show_goodwill_change_message then mlr.show_goodwill_change_message(t.c, nil, nil, t.g == true) end
+	elseif t.k == "fx" and type(t.f) == "string" and FORWARD_EFFECTS[t.f] then
+		local f = xr_effects and xr_effects[t.f]
+		if type(f) == "function" then f(db.actor, nil, { t.p1, t.p2, t.p3, t.p4 }) end
+	end
+end
+
+local function client_on_news(payload, from)
+	if from ~= 0 or not is_client() or not db.actor then return end
+	local t = unpack_payload(payload)
+	if type(t.i) ~= "string" then return end
+	local tsk = db.actor:get_task(t.i, false)
+	if tsk then news_manager.send_task(db.actor, t.ty == "fail" and "fail" or "complete", tsk) end
+end
+
+-------------------------------------------------------------------------------
+-- task_manager patches (installed once; every wrapper checks the role when called)
+-------------------------------------------------------------------------------
+local patched = false
+
+local function patch_method(name, make)
+	local tm = tmgr()
+	local mod = rawget(_G, "task_manager") or task_manager
+	local cls = mod and mod.CRandomTask
+	if cls then
+		local ok, f = pcall(function() return cls[name] end)
+		if ok and type(f) == "function" then
+			local w = make(f)
+			local set_ok = pcall(function() cls[name] = w end)
+			local read_ok, back = pcall(function() return cls[name] end)
+			if set_ok and read_ok and back == w then return true end
+		end
+	end
+	if tm then -- the class is not reachable: patch the manager object itself
+		local ok, f = pcall(function() return tm[name] end)
+		if ok and type(f) == "function" then
+			local w = make(f)
+			if pcall(function() tm[name] = w end) then return true end
+		end
+	end
+	log("! task_manager:%s could not be patched", name)
+	return false
+end
+
+local function patch_task_manager()
+	local mod = rawget(_G, "task_manager") or task_manager
+	if not mod then
+		log("! task_manager not found: tasks are not shared in Lua")
+		return
+	end
+
+	patch_method("give_task", function(orig)
+		return function(self, id, giver, ...)
+			if is_client() then
+				if not client_live() then return end -- loading the host's world: the host has it already
+				local ok, res = pcall(client_give, self, id, giver)
+				if ok and res then return end
+				report("give " .. tostring(id), ok and "send failed" or res)
+				return
+			end
+			if is_host() and type(id) == "string" then
+				-- a follow-up task given by a reward belongs to the player who earned it
+				host.taker[id] = host.exec_peer or host.taker_note[id] or (ctx and ctx.rcpt) or 0
+				host.taker_note[id] = nil
+				host.finisher[id] = nil
+			end
+			return orig(self, id, giver, ...)
+		end
+	end)
+
+	for name, op in pairs({ set_task_completed = "complete", set_task_failed = "fail", set_task_cancelled = "cancel" }) do
+		patch_method(name, function(orig)
+			return function(self, id, ...)
+				if is_client() then
+					if client_live() then
+						local ok, err = pcall(client_finish, self, id, op)
+						if not ok then report(name .. " " .. tostring(id), err) end
+					end
+					return
+				end
+				if is_host() and type(id) == "string" and host.finisher[id] == nil then
+					-- a client's request, or the host turning it in in a dialog; a script completing it on
+					-- its own leaves the reward to the player who took the task
+					if host.exec_peer then
+						host.finisher[id] = host.exec_peer
+					elseif host_talking() then
+						host.finisher[id] = 0
+					end
+				end
+				return orig(self, id, ...)
+			end
+		end)
+	end
+
+	-- A client never evaluates tasks: the host's scripts do, its state is mirrored here.
+	patch_method("update", function(orig)
+		return function(self, ...)
+			if is_client() then return end
+			return orig(self, ...)
+		end
+	end)
+	for _, name in ipairs({ "task_complete", "task_fail" }) do
+		patch_method(name, function(orig)
+			return function(self, ...)
+				if is_client() then return false end
+				return orig(self, ...)
+			end
+		end)
+		local f = mod[name]
+		if type(f) == "function" then
+			mod[name] = function(...)
+				if is_client() then return false end
+				return f(...)
+			end
+		end
+	end
+
+	local cb = mod.task_callback
+	if type(cb) == "function" then
+		mod.task_callback = function(tsk, state)
+			if is_client() then return end -- results come from the host (silently, see coop_story)
+			if is_host() then return host_task_callback(cb, tsk, state) end
+			return cb(tsk, state)
+		end
+	end
+end
+
+local function patch_shared_vars()
+	local orig = rawget(_G, "save_var")
+	if type(orig) ~= "function" then
+		log("! save_var not found: shared task vars written on a client stay local")
+		return
+	end
+	_G.save_var = function(obj, k, v)
+		if client_live() and is_shared_key(k) and is_my_actor(obj) then
+			local ok, err = pcall(client_route_var, k, v)
+			if not ok then report("shared var " .. tostring(k), err) end
+		end
+		return orig(obj, k, v)
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Update, events, start
+-------------------------------------------------------------------------------
+local next_tick = 0
+
+local function actor_on_update()
+	if not api then return end
+	local t = now()
+	if t < next_tick then return end
+	next_tick = t + 250
+	if is_host() then
+		if not has_clients() then return end
+		if t >= host.next_scan then
+			host.next_scan = t + SCAN_MS
+			host_scan(false)
+		end
+		if t >= host.next_list then
+			host.next_list = t + LIST_MS
+			host_list(-1)
+		end
+	elseif client_live() then
+		client_tick()
+	end
+end
+
+local function guarded(what, f)
+	return function(...)
+		local ok, err = pcall(f, ...)
+		if not ok then report(what, err) end
+	end
+end
+
+local function register_events()
+	local cm = rawget(_G, "coop_main") or coop_main
+	if not (cm and cm.add_event_handler) then
+		log("! coop_main.add_event_handler not found: task events are not handled")
+		return
+	end
+	cm.add_event_handler(EV_REQ, guarded("task request", host_on_request))
+	cm.add_event_handler(EV_SYNC, guarded("task sync", function(_, from)
+		if is_host() and type(from) == "number" and from ~= 0 then host_full_sync(from) end
+	end))
+	cm.add_event_handler(EV_STATE, guarded("task state", function(payload, from)
+		if from == 0 and is_client() then client_apply_state(payload) end
+	end))
+	cm.add_event_handler(EV_LIST, guarded("task list", function(payload, from)
+		if from == 0 and is_client() then client_on_list(payload) end
+	end))
+	cm.add_event_handler(EV_REWARD, guarded("task reward", client_on_reward))
+	cm.add_event_handler(EV_NEWS, guarded("task news", client_on_news))
+	cm.add_event_handler(EV_VAR, guarded("shared var", host_on_var))
+	cm.add_event_handler(EV_VARS, guarded("shared vars", function(payload, from)
+		if from == 0 and is_client() then client_apply_shared(payload) end
+	end))
+end
+
+function print_status()
+	local role = not api and "no engine API" or is_host() and "host" or is_client() and "client" or "off"
+	local n_stub, n_real = 0, 0
+	local tm = tmgr()
+	if tm and type(tm.task_info) == "table" then
+		for _, tsk in pairs(tm.task_info) do
+			if stub_data(tsk) then n_stub = n_stub + 1 else n_real = n_real + 1 end
+		end
+	end
+	log("role %s, tasks: %d script, %d mirrored | requests out %d in %d refused %d | states out %d in %d, lists %d, syncs %d",
+		role, n_real, n_stub, stats.req_out, stats.req_in, stats.refused, stats.state_out, stats.state_in, stats.lists, stats.syncs)
+	log("rewards routed %d received %d, share %s | group items: moved %d released %d, stages %d | errors %d",
+		stats.rewards_routed, stats.rewards_in, tostring(share_rewards()), stats.party_moves, stats.party_releases,
+		stats.stage_by_party, stats.errors)
+	if is_host() then
+		for id, peer in pairs(host.taker) do
+			if peer ~= 0 and tm and tm.task_info and tm.task_info[id] then log("  '%s' taken by #%s", id, tostring(peer)) end
+		end
+	end
+end
+
+function on_game_start()
+	if not api then return end
+	if not patched then
+		patched = true
+		local steps = {
+			{ "task_manager", patch_task_manager },
+			{ "rewards", patch_rewards },
+			{ "group items", patch_party_items },
+			{ "shared vars", patch_shared_vars },
+			{ "events", register_events },
+		}
+		for _, s in ipairs(steps) do
+			local ok, err = pcall(s[2])
+			if not ok then report("install " .. s[1], err) end
+		end
+		if api.party_has == nil then
+			pcall(function()
+				api.party_has = party_has
+				api.party_count = party_count
+			end)
+		end
+	end
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+end
