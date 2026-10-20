@@ -243,8 +243,9 @@ local function host_place(t, from)
 	local x, y, z = tonumber(t.x), tonumber(t.y), tonumber(t.z)
 	if not (x and y and z) then return refuse("hf_place", from, "bad position") end
 	local pos = vector():set(x, y, z)
-	if pos:distance_to_sqr(who:position()) > NEAR * NEAR then return refuse("hf_place", from, "too far") end
-	local ang = vector():set(tonumber(t.ax) or 0, tonumber(t.ay) or 0, tonumber(t.az) or 0)
+	if not (pos:distance_to_sqr(who:position()) <= NEAR * NEAR) then return refuse("hf_place", from, "too far") end -- NaN too
+	local function fin(v) v = tonumber(v) or 0 if v ~= v or v == math.huge or v == -math.huge then return 0 end return v end
+	local ang = vector():set(fin(t.ax), fin(t.ay), fin(t.az))
 	-- Graph vertices of the requester's character (a few metres away): never taken from the network.
 	local ok, res = pcall(orig_create, section, pos, ang, who:level_vertex_id(), who:game_vertex_id())
 	local obj_id = ok and (type(res) == "number" and res or (res and res.id)) or nil
@@ -654,7 +655,7 @@ local function install_gadgets()
 		if t.m == 1 then
 			local se = alife_object(item_id)
 			if not (se and se.parent_id == case_id) then return refuse("hf_show", from, "the item is not in that case") end
-			local sec = (type(t.s) == "string" and t.s ~= "") and t.s or nil
+			local sec = (type(t.s) == "string" and t.s ~= "" and ini_sys:section_exist(t.s)) and t.s or nil -- W5
 			pcall(show.orig_spawn, case_id, item_id, nil, sec)
 		else
 			local guns = ws.weapon_displays or {}
@@ -897,13 +898,20 @@ end
 -------------------------------------------------------------------------------
 -- Start
 -------------------------------------------------------------------------------
+-- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
+-- error here would skip all the scripts after this one, single player included (W5).
+local function start_step(what, f)
+	local ok, err = pcall(f)
+	if not ok then printf("! [coop_mods_hf] %s failed: %s", what, tostring(err)) end
+end
+
 function on_game_start()
 	if not api then return end
-	install_furniture()
-	install_stove()
-	install_gadgets()
-	install_data_mirror()
-	install_radio()
+	start_step("install_furniture", install_furniture)
+	start_step("install_stove", install_stove)
+	start_step("install_gadgets", install_gadgets)
+	start_step("install_data_mirror", install_data_mirror)
+	start_step("install_radio", install_radio)
 	if #installed == 0 then return end
 	C().on("hf_box", host_box, "host")
 	C().on("hf_box_r", client_box_answer, "client")

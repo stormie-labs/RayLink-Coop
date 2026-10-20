@@ -230,10 +230,17 @@ function print_status()
 		stats.captures_checked, stats.capture_tips, stats.baked, stats.peer_takes, stats.loot_marks, stats.errors)
 end
 
+-- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
+-- error here would skip all the scripts after this one, single player included (W5).
+local function start_step(what, f)
+	local ok, err = pcall(f)
+	if not ok then printf("! [coop_economy_world] %s failed: %s", what, tostring(err)) end
+end
+
 function on_game_start()
 	if not core.engine() then return end
-	patch_warfare()
-	patch_game_setup()
+	start_step("patch_warfare", patch_warfare)
+	start_step("patch_game_setup", patch_game_setup)
 	register_events()
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 end

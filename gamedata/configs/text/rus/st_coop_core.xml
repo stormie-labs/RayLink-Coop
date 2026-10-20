@@ -89,6 +89,9 @@
 	<string id="st_coop_core_save_error">
 		<text>Ѕыстрое сохранение у хоста не удалось.</text>
 	</string>
+	<string id="st_coop_core_save_off">
+		<text>’ост не разрешает игрокам быстрые сохранени€.</text>
+	</string>
 	<string id="st_coop_core_vote">
 		<text>%s стоит у перехода на другую локацию. Ќапишите /go в чате, чтобы перейти группой.</text>
 	</string>

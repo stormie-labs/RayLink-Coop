@@ -445,15 +445,26 @@ local function patch_sleep()
 		local hours = 0
 		pcall(function() hours = self.time_track:GetIValue() end)
 		local args = pack_n(...)
-		local started = request_skip("sleep", (tonumber(hours) or 0) * 60, function() orig(self, unpack(args, 1, args.n)) end)
+		-- on approval, inside coop_mods_misc's group-sleepiness scope when that mod patch is on: its own
+		-- wrapper around this one ended with the click (W5)
+		local started = request_skip("sleep", (tonumber(hours) or 0) * 60, function()
+			local mm = rawget(_G, "coop_mods_misc")
+			if mm and type(mm.with_party_sleepiness) == "function" then
+				return mm.with_party_sleepiness(orig, self, unpack(args, 1, args.n))
+			end
+			orig(self, unpack(args, 1, args.n))
+		end)
 		if not started then return orig(self, ...) end
 		pcall(function() self:Close() end)
 	end
 end
 
 local function patch_wait()
-	local w = rawget(_G, "wait") or core.mod("wait") -- GAMMA "Books Pass Time" (Wait.script); absent in stock
-	if not (w and type(w.wait) == "function") then return end
+	-- GAMMA "Books Pass Time" (Wait.script); absent in stock. _g.script has a global FUNCTION wait(): only a
+	-- table is the mod (indexing the function threw here and broke every later on_game_start, W5).
+	local w = rawget(_G, "wait")
+	if type(w) ~= "table" then w = core.mod("wait") end
+	if not (type(w) == "table" and type(w.wait) == "function") then return end
 	local orig = w.wait
 	w.wait = function(obj, ...)
 		if st.bypass or not core.live() then return orig(obj, ...) end
@@ -546,9 +557,16 @@ function print_status()
 		stats.denied, stats.skips, stats.refused, stats.fades, stats.errors, np)
 end
 
+-- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
+-- error here would skip all the scripts after this one, single player included (W5).
+local function start_step(what, f)
+	local ok, err = pcall(f)
+	if not ok then printf("! [coop_economy_group] %s failed: %s", what, tostring(err)) end
+end
+
 function on_game_start()
 	if not core.engine() then return end
-	install()
+	start_step("install", install)
 	register_events()
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 end

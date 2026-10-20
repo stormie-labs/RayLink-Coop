@@ -352,21 +352,24 @@ local function install_condlist_tracker()
 		return
 	end
 	local orig = xl.pick_section_from_condlist
-	xl.pick_section_from_condlist = function(...)
-		if not active() then return orig(...) end
+	-- hot path (every condlist of every NPC on the host): fixed signature, no table per call; the stock
+	-- function returns one value (W5)
+	xl.pick_section_from_condlist = function(obj, npc, condlist, ...)
+		if not active() then return orig(obj, npc, condlist, ...) end
 		if condlist_depth == 0 and not holding_infos and api.story_hold_infos and is_client()
-			and wants_hold(select(3, ...)) then
-			holding_infos = pcall(api.story_hold_infos, true)
+			and wants_hold(condlist) then
+			local okh, held = pcall(api.story_hold_infos, true)
+			holding_infos = okh and held == true
 		end
 		condlist_depth = condlist_depth + 1
-		local res = { pcall(orig, ...) }
+		local ok, r = pcall(orig, obj, npc, condlist, ...)
 		condlist_depth = condlist_depth - 1
 		if condlist_depth == 0 and holding_infos then
 			holding_infos = false
 			pcall(api.story_hold_infos, false)
 		end
-		if not res[1] then error(res[2], 0) end
-		return unpack(res, 2)
+		if not ok then error(r, 0) end
+		return r
 	end
 end
 
@@ -427,9 +430,16 @@ function print_status()
 end
 
 local started = false
+-- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
+-- error here would skip all the scripts after this one, single player included (W5).
+local function start_step(what, f)
+	local ok, err = pcall(f)
+	if not ok then printf("! [coop_quests_core] %s failed: %s", what, tostring(err)) end
+end
+
 function on_game_start()
 	if not api or started then return end
 	started = true
-	install_condlist_tracker()
+	start_step("install_condlist_tracker", install_condlist_tracker)
 	on("act", host_on_action, "core")
 end

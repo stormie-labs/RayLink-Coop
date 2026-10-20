@@ -126,8 +126,9 @@ local function host_gs_throw(t, from)
 	if not (who and is_glowstick_item(section) and x and y and z) then return refuse("gs_throw", from, "bad request") end
 	local lv, gv = who:level_vertex_id(), who:game_vertex_id() -- never taken from the network
 	local pos = vector():set(x, y, z)
-	if pos:distance_to_sqr(who:position()) > 9 then return refuse("gs_throw", from, "not at the player") end
-	local dir = vector():set(tonumber(t.dx) or 0, tonumber(t.dy) or 0, tonumber(t.dz) or 0)
+	if not (pos:distance_to_sqr(who:position()) <= 9) then return refuse("gs_throw", from, "not at the player") end -- NaN too
+	local function unit(v) v = tonumber(v) or 0 if v ~= v then return 0 end return math.max(-1, math.min(1, v)) end
+	local dir = vector():set(unit(t.dx), unit(t.dy), unit(t.dz))
 	local charge = math.max(0, math.min(1, tonumber(t.c) or 0.01))
 	local item = nil
 	if not throw then
@@ -244,9 +245,9 @@ local function host_md_drop(t, from)
 		if se then made[#made + 1] = se end
 		return se
 	end
-	local ok, e = C().as_player(who, M.spawn_object, t.s, t.a == true)
-	_G.alife_create = real
-	if not ok then C().report("items", "model drop", e) end
+	local okp, ok, e = pcall(C().as_player, who, M.spawn_object, t.s, t.a == true)
+	_G.alife_create = real -- restored even if as_player itself failed (W5)
+	if not (okp and ok) then C().report("items", "model drop", okp and e or ok) end
 	for _, se in ipairs(made) do md.dropped[se.id] = vector():set(se.position) end
 	st.md = st.md + 1
 end
@@ -427,12 +428,19 @@ local function actor_on_update()
 	end
 end
 
+-- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
+-- error here would skip all the scripts after this one, single player included (W5).
+local function start_step(what, f)
+	local ok, err = pcall(f)
+	if not ok then printf("! [coop_mods_items] %s failed: %s", what, tostring(err)) end
+end
+
 function on_game_start()
 	if not api then return end
-	install_glowsticks()
-	install_model_dropper()
-	install_autolooter()
-	install_gso()
+	start_step("install_glowsticks", install_glowsticks)
+	start_step("install_model_dropper", install_model_dropper)
+	start_step("install_autolooter", install_autolooter)
+	start_step("install_gso", install_gso)
 	if #installed == 0 then return end
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	C().status_line("items", function()

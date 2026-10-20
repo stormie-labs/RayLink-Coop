@@ -261,6 +261,12 @@ local function on_new_character(payload, from)
 	local money = faction_money(faction)
 	log("player #%d: faction %s, %d NPC item(s) removed, %d item(s) given, money %d", from, faction, removed, given, money)
 	reply(from, { ok = true, faction = faction, money = money, items = given })
+	-- other groups' start kit of a new character (W5: Mags Redux magazines, coop_mods_core listeners)
+	local mc = rawget(_G, "coop_mods_core")
+	if mc and type(mc.on_new_character) == "function" then
+		local okm, errm = pcall(mc.on_new_character, from)
+		if not okm then log("! new character hook: %s", tostring(errm)) end
+	end
 	local nick = "?"
 	for _, p in ipairs(api.players()) do
 		if p.id == from then nick = p.nick end

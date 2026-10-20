@@ -248,9 +248,16 @@ function status()
 		#order, table.concat(order, " "), st.applied, st.sent, st.acks, tostring(st.token), st.stored, st.refused)
 end
 
+-- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
+-- error here would skip all the scripts after this one, single player included (W5).
+local function start_step(what, f)
+	local ok, err = pcall(f)
+	if not ok then printf("! [coop_mods_pdata] %s failed: %s", what, tostring(err)) end
+end
+
 function on_game_start()
 	if not api then return end
-	install_load_hook()
+	start_step("install_load_hook", install_load_hook)
 	C().on_big("pd", host_store, "host")
 	C().on("pd_ack", on_ack, "client")
 	C().set_limit("pd", 70, 8)

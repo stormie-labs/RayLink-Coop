@@ -41,6 +41,9 @@ local function log(fmt, ...) P.log(TAG, fmt, ...) end
 local function report(what, err) P.report(TAG, what, err) end
 
 local EV_SND, EV_LOOP, EV_CFX = "npc.snd", "npc.loop", "npc.cfx"
+-- client -> host { on = bool }: this player sleeps on an anabiotic (per-player emission immunity, W5;
+-- coop_main's host kill check asks is_anabiotic(peer))
+local EV_ANA = "npc.anabiotic"
 
 local installed = false
 local host_on = false
@@ -163,7 +166,14 @@ local function client_on_snd(t)
 	local point = t.p
 	if type(point) == "number" then point = P.to_local(point) end
 	stats.snd_in = stats.snd_in + 1
-	xr_sound.set_sound_play(id, t.s, t.f, point)
+	-- its subtitle news (news_manager.send_sound) comes from the host as core.news (coop_core_world): not
+	-- twice (W5)
+	local nm = rawget(_G, "news_manager")
+	local send = nm and nm.send_sound
+	if type(send) == "function" then nm.send_sound = function() return false end end
+	local ok, err = pcall(xr_sound.set_sound_play, id, t.s, t.f, point)
+	if type(send) == "function" then nm.send_sound = send end
+	if not ok then error(err, 0) end
 end
 
 local function client_on_loop(t)
@@ -264,7 +274,43 @@ end
 -------------------------------------------------------------------------------
 -- Anabiotic in a session: sleep through the emission, the clock stays the group's
 -------------------------------------------------------------------------------
-local ana = { on = false, t0 = 0, seen = false, next_check = 0 }
+local ana = { on = false, t0 = 0, seen = false, next_check = 0, used_at = nil }
+local ana_peers = {} -- host: peer -> time_global() until which that player counts as sleeping
+local ANA_USE_MS = 15000 -- use -> first callback: the stock camera effector runs 10 s
+local ANA_MAX_MS = 300000 + ANA_USE_MS + 30000 -- the owner's cap, the effector and a margin
+
+-- Client: the info portion is this player's own (C1.2 coop.story_hold_infos keeps it off the host's story).
+-- Without that engine function it stays the group's story, as before W5.
+local function hold_local(fn, ...)
+	local api = rawget(_G, "coop")
+	local hold = P.is_client() and api and api.story_hold_infos
+	if hold then pcall(hold, true) end
+	local ok, err = pcall(fn, ...)
+	if hold then pcall(hold, false) end
+	if not ok then error(err, 0) end
+end
+
+local function ana_tell(on)
+	if P.is_client() then P.send(EV_ANA, { on = on == true }, 0) end
+end
+
+-- This machine's player sleeps on an anabiotic (or is falling asleep): coop_main ignores an emission kill.
+function anabiotic_self()
+	return ana.on or (ana.used_at ~= nil and time_global() - ana.used_at < ANA_USE_MS)
+end
+
+-- Host: that player sleeps on an anabiotic (coop_main spares him at the emission's kill moment).
+function is_anabiotic(peer)
+	local u = ana_peers[peer]
+	if u and time_global() < u then return true end
+	ana_peers[peer] = nil
+	return false
+end
+
+local function host_on_ana(t, from)
+	ana_peers[from] = (t.on == true) and (time_global() + ANA_MAX_MS) or nil
+	log("anabiotic: player #%d %s", from, t.on == true and "falls asleep" or "woke up")
+end
 
 local function emission_on()
 	local sm = _G["surge_manager"]
@@ -281,8 +327,9 @@ local function ana_poll(now)
 	if busy then ana.seen = true end
 	local held = now - ana.t0
 	if (ana.seen and not busy) or (not ana.seen and held > 20000) or held > 300000 then
-		ana.on, ana.seen = false, false
-		if has_alife_info("anabiotic_in_process") then disable_info("anabiotic_in_process") end
+		ana.on, ana.seen, ana.used_at = false, false, nil
+		if has_alife_info("anabiotic_in_process") then hold_local(disable_info, "anabiotic_in_process") end
+		ana_tell(false)
 		log("anabiotic: woke up (%s)", busy and "time cap" or "emission over")
 	end
 end
@@ -293,6 +340,21 @@ local function patch_anabiotic()
 	local cb1, cb2 = bse.anabiotic_callback, bse.anabiotic_callback2
 	if type(cb1) ~= "function" or type(cb2) ~= "function" or orig.ana1 then return end
 	orig.ana1, orig.ana2 = cb1, cb2
+	-- The use itself (stock gives anabiotic_in_process there): on a client the info stays this player's and the
+	-- host learns who sleeps. bind_stalker reads this field when the actor spawns, after on_game_start.
+	local use = bse.actor_on_item_use
+	if type(use) == "function" then
+		orig.use = use
+		bse.actor_on_item_use = function(binder, item, ...)
+			if not (P.active() and item) then return use(binder, item, ...) end
+			local ok, sec = pcall(item.section, item)
+			if not (ok and sec == "drug_anabiotic") then return use(binder, item, ...) end
+			ana.used_at = time_global()
+			if not P.is_client() then return use(binder, item, ...) end
+			ana_tell(true)
+			return hold_local(use, binder, item, ...)
+		end
+	end
 	-- Stock: forwards the clock 35-45 minutes and may end the emission. In a session that would be the
 	-- whole group's clock: only the sleep remains.
 	bse.anabiotic_callback = function(...)
@@ -315,7 +377,7 @@ end
 -------------------------------------------------------------------------------
 -- arszi_psy after a revive
 -------------------------------------------------------------------------------
-local revive = { low = false }
+local revive = { low = false, engine = false }
 local PSY_LETHAL, PSY_FLOOR = 0.001, 0.3
 
 function on_actor_revived()
@@ -332,9 +394,15 @@ function on_actor_revived()
 	end
 end
 
--- No revive callback from coop_survival yet: a revive pins the health just above zero, then sets it to the
+local function engine_revived(reviver_peer, medkit_section)
+	revive.engine, revive.low = true, false
+	on_actor_revived()
+end
+
+-- Until the engine reports revives (older exe): a revive pins the health just above zero, then sets it to the
 -- revive health in one step. coop_actor_revived (if the engine adds it) is used as well.
 local function revive_poll()
+	if revive.engine then return end -- the engine reports revives (coop_actor_revived)
 	local a = db.actor
 	if not a then return end
 	local h = a.health
@@ -359,6 +427,11 @@ local function actor_on_update()
 	next_tick = now + 500
 	host_on = installed and P.host_with_clients()
 	if not P.active() then return end
+	-- host: a save made during the hold comes back with anabiotic_in_process set and no hold in this Lua
+	-- state; the poll clears it after the emission (or 20 s), or the host would be immune for good (W5)
+	if not ana.on and P.is_host() and has_alife_info("anabiotic_in_process") then
+		ana.on, ana.t0, ana.seen, ana.next_check = true, now, false, 0
+	end
 	ana_poll(now)
 	revive_poll()
 end
@@ -384,10 +457,9 @@ function on_game_start()
 	P.on(EV_LOOP, client_on_loop, "client", TAG)
 	P.on(EV_CFX, client_on_cfx, "client", TAG)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
-	if _G["axr_main"] then
-		pcall(AddScriptCallback, "coop_actor_revived")
-		pcall(RegisterScriptCallback, "coop_actor_revived", on_actor_revived)
-	end
+	P.on(EV_ANA, host_on_ana, "host", TAG)
+	-- created by coop_main at load; fired by the engine on the revived player's machine (C1.6)
+	RegisterScriptCallback("coop_actor_revived", engine_revived)
 end
 
 function _set_host_on(v) host_on = v end

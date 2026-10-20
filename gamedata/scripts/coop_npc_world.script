@@ -86,11 +86,12 @@ local function host_on_mine(t, from)
 	local planted = type(t.s) == "string" and PLANTED[t.s]
 	local who = P.object_of_peer(from)
 	if not (planted and who) then return end
-	local pos = vec(t.x, t.y, t.z)
-	if who:position():distance_to_sqr(pos) > 25 then return end -- planted where the player stands
-	local lv, gv = tonumber(t.lv), tonumber(t.gv)
-	if not (lv and gv) then return end
-	local se = alife_create(planted, pos, lv, gv)
+	local x, y, z = tonumber(t.x), tonumber(t.y), tonumber(t.z)
+	if not (x and y and z) then return end
+	local pos = vec(x, y, z)
+	if not (who:position():distance_to_sqr(pos) <= 25) then return end -- planted where the player stands (NaN too)
+	-- graph vertices of the planter's own character, never from the network (a bad lvid crashes the engine, W5)
+	local se = alife_create(planted, pos, who:level_vertex_id(), who:game_vertex_id())
 	if not se then return end
 	local mode = (t.m == MODE_TIMER) and MODE_TIMER or MODE_PROX
 	local delay = math.max(1, math.min(120, tonumber(t.d) or FUSE))

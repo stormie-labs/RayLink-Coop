@@ -7,6 +7,8 @@
 	  the stock file, so menu skins of other mods keep working). Anchored before btn_options.
 	- Registers main_menu_on_init -> coop_menu.on_main_menu_init (button callback, quit wrappers).
 	- Adds the "Co-op" page to the options menu (coop_menu_options.install).
+	- Adds "Co-op: chat" (engine action "chat", coop_core_chat) to the Common key bindings (W5: here, so the
+	  entry is there in the cold-start main menu too).
 	Does nothing on an exe without the co-op engine (namespace `coop` missing).
 --]]
 
@@ -50,6 +52,19 @@ function inject_button(xml_file_name, xml_obj)
 	if n > 0 then printf("[coop-menu] Co-op button added to %d main menu list(s) of %s", n, xml_file_name) end
 end
 
+-- Options > Controls > Common: "Co-op: chat" (kb_coop_chat, strings in st_coop_core.xml).
+function inject_keybinding(xml_file_name, xml_obj)
+	if xml_file_name ~= [[ui\ui_keybinding.xml]] then return end
+	local ok, err = pcall(function()
+		local groups = xml_obj:query("group[name=kb_grp_common]")
+		local g = groups and groups[1]
+		if not g then return end
+		if #xml_obj:query("command[id=kb_coop_chat]") > 0 then return end
+		xml_obj:insertFromXMLString([[<command id="kb_coop_chat" exe="chat"/>]], g, #g.kids)
+	end)
+	if not ok then printf("! [coop-menu] chat key binding entry not added: %s", tostring(err)) end
+end
+
 function main_menu_init(menu)
 	coop_menu.on_main_menu_init(menu)
 end
@@ -57,6 +72,7 @@ end
 function on_xml_read()
 	if not rawget(_G, "coop") then return end -- vanilla exe: no co-op, no button
 	RegisterScriptCallback("on_xml_read", inject_button)
+	RegisterScriptCallback("on_xml_read", inject_keybinding)
 	RegisterScriptCallback("main_menu_on_init", main_menu_init)
 	local ok, err = pcall(function() coop_menu_options.install() end)
 	if not ok then printf("! [coop-menu] options page not installed: %s", tostring(err)) end

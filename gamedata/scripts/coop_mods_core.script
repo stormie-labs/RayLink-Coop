@@ -128,10 +128,15 @@ function wrap(tbl, key, label, make)
 	return true, orig
 end
 
--- A callback the mod registered by value: register the wrapper instead.
+-- A callback the mod registered by value: register the wrapper instead. Only where the mod's own one is
+-- registered now (an MCM toggle may have left it off; single player must stay as the mod set it, W5).
 function swap_callback(name, old, new)
-	if type(old) == "function" then pcall(UnregisterScriptCallback, name, old) end
-	if type(new) == "function" then RegisterScriptCallback(name, new) end
+	if type(old) ~= "function" or type(new) ~= "function" then return end
+	local cm = rawget(_G, "coop_main")
+	local reg = cm and cm.callback_registered and cm.callback_registered(name, old)
+	if reg == false then return end
+	pcall(UnregisterScriptCallback, name, old)
+	RegisterScriptCallback(name, new)
 end
 
 function upvalue(f, name)
@@ -188,13 +193,15 @@ end
 function hid(id)
 	if not (api and type(id) == "number") then return id end
 	local ok, v = pcall(api.to_host_id, id)
-	return ok and v or id
+	if ok then return v end -- nil: the engine rejected it (NaN, fraction, out of range), W5
+	return nil
 end
 
 function lid(id)
 	if not (api and type(id) == "number") then return id end
 	local ok, v = pcall(api.to_local_id, id)
-	return ok and v or id
+	if ok then return v end -- nil: rejected (level.object_by_id(NaN) would be the actor, W5)
+	return nil
 end
 
 function players()
@@ -623,19 +630,32 @@ local function fire(name, ...)
 	end
 end
 
-local revive = { last = -100000, low_since = nil }
+local revive = { last = -100000, low_since = nil, engine = false, by_poll = false }
 
 function on_actor_revived(reviver_peer, medkit_section)
 	if not active() then return end
 	revive.last = time_global()
+	revive.by_poll = false
 	fire("actor_revived", reviver_peer, medkit_section)
+end
+
+-- The engine's callback (C1.6, W5): from now on the health poll below is off. A revive the poll already
+-- reported in the last 3 s is not reported twice.
+local function engine_revived(reviver_peer, medkit_section)
+	revive.engine = true
+	revive.low_since = nil
+	if revive.by_poll and time_global() - revive.last < 3000 then
+		revive.by_poll = false
+		return
+	end
+	on_actor_revived(tonumber(reviver_peer), type(medkit_section) == "string" and medkit_section or nil)
 end
 
 -- Until the engine reports revives: a downed player's health is pinned just above zero and the revive sets
 -- it in one step, so "near zero for a while, then at least 0.1" counts as a revive (healing up from near
 -- zero counts too; the listeners only lift values that are at zero).
 local function revive_poll()
-	if not (listeners.actor_revived and db.actor) then return end
+	if revive.engine or not (listeners.actor_revived and db.actor) then return end
 	local tg = time_global()
 	local h = db.actor.health
 	if type(h) ~= "number" then return end
@@ -646,13 +666,15 @@ local function revive_poll()
 		revive.low_since = nil
 		if h >= 0.1 and tg - was > 1000 and tg - revive.last > 3000 then
 			revive.last = tg
+			revive.by_poll = true
 			fire("actor_revived", nil, nil)
 		end
 	end
 end
 
 function on_container_opened(peer, container_id)
-	if is_host() then fire("container_opened", peer, container_id) end
+	peer, container_id = tonumber(peer), tonumber(container_id)
+	if is_host() and peer and container_id then fire("container_opened", peer, container_id) end
 end
 
 function on_new_character(peer)
@@ -660,7 +682,7 @@ function on_new_character(peer)
 end
 
 function on_avatar_step(avatar_id, material, power, move_state)
-	if active() then fire("avatar_step", avatar_id, material, power, move_state) end
+	if active() and tonumber(avatar_id) then fire("avatar_step", tonumber(avatar_id), material, power, move_state) end
 end
 
 -------------------------------------------------------------------------------
@@ -721,20 +743,6 @@ local function on_tp(t, from)
 	db.actor:set_actor_position(vec(x, y, z))
 end
 
-local status_hooked = false
-local function hook_status()
-	if status_hooked then return end
-	local cm = mod("coop_main")
-	if not (cm and type(cm.print_status) == "function") then return end
-	status_hooked = true
-	local orig = cm.print_status
-	cm.print_status = function(...)
-		orig(...)
-		local ok, e = pcall(print_status)
-		if not ok then log("core", "! status: %s", tostring(e)) end
-	end
-end
-
 local function actor_on_update()
 	if active() then revive_poll() end
 end
@@ -743,6 +751,10 @@ function on_game_start()
 	if not api then return end
 	on("fx", on_fx, "client")
 	on("tp", on_tp, "client")
-	hook_status()
+	-- coop_status: coop_main.print_status calls print_status above (W5)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
+	-- engine notifications (W5); coop_main creates the callback names at load
+	RegisterScriptCallback("coop_actor_revived", engine_revived)
+	RegisterScriptCallback("coop_on_container_opened", on_container_opened)
+	RegisterScriptCallback("coop_avatar_step", on_avatar_step)
 end

@@ -89,6 +89,9 @@
 	<string id="st_coop_core_save_error">
 		<text>The host's quicksave failed.</text>
 	</string>
+	<string id="st_coop_core_save_off">
+		<text>The host does not allow quicksaves from players.</text>
+	</string>
 	<string id="st_coop_core_vote">
 		<text>%s stands at a level exit. Type /go in the chat to move the group.</text>
 	</string>

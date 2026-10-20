@@ -114,7 +114,15 @@ end
 -- Host: a client moved; follow if close, and tell the other clients.
 local function host_on_tp(t, from)
 	local p = read_tp(t)
-	if not (p and core.player(from)) then return end
+	local pl = p and core.player(from)
+	if not pl then return end
+	-- the sender stands at one end of that move (its character here may lag a snapshot): a made-up origin
+	-- at the host's feet would move the host (W5)
+	local at = pl.avatar_id and core.position_of_id(pl.avatar_id)
+	if not (at and (core.dist(at, { x = p.ox, y = p.oy, z = p.oz }) <= 30 or core.dist(at, p) <= 30)) then
+		stats.refused = (stats.refused or 0) + 1
+		return
+	end
 	t.n = core.nick_of(from)
 	apply_tp(p, t.n)
 	stats.relayed = stats.relayed + core.send_clients("tp", t, from)
@@ -351,9 +359,16 @@ function print_status()
 		stats.sent, stats.applied, stats.skipped, stats.relayed, stats.vetoed, stats.routes_out, stats.routes_in)
 end
 
+-- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
+-- error here would skip all the scripts after this one, single player included (W5).
+local function start_step(what, f)
+	local ok, err = pcall(f)
+	if not ok then printf("! [coop_economy_travel] %s failed: %s", what, tostring(err)) end
+end
+
 function on_game_start()
 	if not core.engine() then return end
-	install()
+	start_step("install", install)
 	register_events()
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 end

@@ -199,8 +199,23 @@ local function cfg()
 	return ini_cfg
 end
 
+-- Communities a report may name (an unknown one indexes past the engine's relation table, W5).
+local COMMUNITIES = nil
+local function community_ok(c)
+	if type(c) ~= "string" then return false end
+	if COMMUNITIES == nil then
+		COMMUNITIES = {}
+		local gr = rawget(_G, "game_relations") or game_relations
+		for _, f in ipairs(gr and type(gr.factions_table_all) == "table" and gr.factions_table_all or {}) do
+			COMMUNITIES[f] = true
+		end
+	end
+	if next(COMMUNITIES) == nil then return #c <= 32 and c:match("^[%a_]+$") ~= nil end -- no list: a plain word
+	return COMMUNITIES[c] == true
+end
+
 local function host_on_state(t, from)
-	if type(t.c) ~= "string" or type(t.def) ~= "string" then return end
+	if not (community_ok(t.c) and community_ok(t.def)) then return end
 	stats.reports_in = stats.reports_in + 1
 	local s = players_state[from] or { high = { v = 0, id = false }, mem = {}, next_cool = 0 }
 	players_state[from] = s
@@ -229,7 +244,10 @@ local function expose(s, peer, npc, comm, is_enem)
 			and not game_relations.is_faction_pair_unaffected(comm, s.def) then
 			game_relations.change_faction_relations(comm, s.def, c.relation_hit)
 		end
-		game_relations.change_factions_community_num(comm, s.def, c.goodwill_hit)
+		-- the community's goodwill to this player's character (stock passes the community name as the object
+		-- id there: no luabind overload, a crash on the host, W5)
+		local who = P.object_of_peer(peer)
+		if who then game_relations.change_factions_community_num(comm, who:id(), c.goodwill_hit) end
 		rep = math.floor(c.reputation_hit)
 	end
 	for _, m in pairs(s.mem) do m.memo = m.memo * c.memory_multi end

@@ -493,7 +493,18 @@ local function like(sample, raw)
 end
 
 -- The stock option's plain default (no functor defaults: they may be random).
+local default_cache = {} -- id -> found default (W5: this runs inside every overlaid read; not found = asked again,
+                         -- the options tree may not be built yet)
+local stock_default_uncached
 local function stock_default(id)
+	local c = default_cache[id]
+	if c ~= nil then return c end
+	local v = stock_default_uncached(id)
+	if v ~= nil then default_cache[id] = v end
+	return v
+end
+
+stock_default_uncached = function(id)
 	local uo = mod("ui_options")
 	if not (uo and uo.get_opt_table and uo.check_opt_table) then return nil end
 	local ok, v = pcall(function()
@@ -508,6 +519,62 @@ end
 function host_value(store, path)
 	local src = SRC_OF[store] or store
 	return ov and ov[src] and ov[src][path] or nil
+end
+
+-------------------------------------------------------------------------------
+-- Session rules of the feature groups (W5): rule("economy/gather_radius"), rule("core/client_quicksave")
+-- = the option coop/coop_session/<name> of the Co-op options page (coop_menu_options). The host's value on a
+-- connected client (host-owned path, the axr_options overlay below), this machine's own value elsewhere, the
+-- page default when it was never set; nil for an unknown rule (the caller keeps its own default).
+-------------------------------------------------------------------------------
+local RULE_GROUPS = { economy = true, core = true }
+local rule_defs = nil -- option id -> { val = 0|1|2, def = value }
+local rule_cache, rule_cache_at = {}, -100000
+
+local function rule_def(name)
+	if rule_defs == nil then
+		rule_defs = {}
+		local mo = mod("coop_menu_options")
+		local ok, page = pcall(function() return mo and mo.build_page() end)
+		if ok and type(page) == "table" then
+			for _, g in ipairs(page.gr or {}) do
+				if g.id == "coop_session" then
+					for _, o in ipairs(g.gr or {}) do
+						if type(o.id) == "string" and o.val then rule_defs[o.id] = { val = o.val, def = o.def } end
+					end
+				end
+			end
+		end
+	end
+	return rule_defs[name]
+end
+
+function rule(key)
+	if type(key) ~= "string" then return nil end
+	local grp, name = key:match("^([%w_]+)/([%w_]+)$")
+	if not (grp and RULE_GROUPS[grp]) then return nil end
+	local d = rule_def(name)
+	if not d then return nil end
+	local tg = now_ms()
+	if tg - rule_cache_at > 2000 or tg < rule_cache_at then rule_cache, rule_cache_at = {}, tg end
+	local c = rule_cache[name]
+	if c == nil then
+		local v
+		local am = mod("axr_main")
+		local cfg = am and am.config
+		if cfg then
+			local ok, r = pcall(function() return cfg:r_value("options", "coop/coop_session/" .. name, d.val) end)
+			if ok then v = r end
+		end
+		if v == nil then v = d.def end
+		c = { v }
+		rule_cache[name] = c
+	end
+	return c[1]
+end
+
+local function rules_changed()
+	rule_cache_at = -100000
 end
 
 -- ini_file_ex overlay for appdata\axr_options.ltx (covers ui_options.get, ui_mcm.get and direct reads).
@@ -865,6 +932,7 @@ end
 
 -- New host values in place: factors, caches of other scripts (on_option_change), stash.
 local function after_change(changed, reason)
+	rules_changed()
 	save_stash()
 	apply_factors(reason)
 	if changed then fire_option_change() end
@@ -904,8 +972,13 @@ local function on_settings(payload, from)
 	end
 end
 
+local last_request = {} -- host: peer -> time of its last full-settings request (W5: at most every 2 s)
+
 local function on_settings_request(payload, from)
-	if not (api and api.is_host()) or from == 0 then return end
+	if not (api and api.is_host()) or type(from) ~= "number" or from == 0 then return end
+	local tg = now_ms()
+	if last_request[from] and tg - last_request[from] < 2000 and tg >= last_request[from] then return end
+	last_request[from] = tg
 	host_flush_delta() -- the others get what changed since the baseline, the newcomer gets the baseline
 	if host_send(host.last or {}, "full", from) then stats.full_out = stats.full_out + 1 end
 end
@@ -945,6 +1018,7 @@ local function actor_on_update()
 end
 
 local function on_option_change()
+	rules_changed()
 	if firing or not api then return end
 	if api.is_host() then
 		host.dirty = true

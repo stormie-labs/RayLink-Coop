@@ -258,13 +258,20 @@ local function actor_on_update()
 	if not ok then C().report("nta", "living fire", n) end
 end
 
+-- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
+-- error here would skip all the scripts after this one, single player included (W5).
+local function start_step(what, f)
+	local ok, err = pcall(f)
+	if not ok then printf("! [coop_mods_nta] %s failed: %s", what, tostring(err)) end
+end
+
 function on_game_start()
 	if not api then return end
 	local nu = C().mod("nta_utils")
 	if not nu then return end
 	install_helpers(nu)
-	install_teleports()
-	install_living_fire()
+	start_step("install_teleports", install_teleports)
+	start_step("install_living_fire", install_living_fire)
 	C().on("nta_kill", on_kill_order, "client")
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	C().status_line("nta", function()

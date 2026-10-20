@@ -397,7 +397,8 @@ local function team_try_switch(npc, st, actor, l)
 		elseif name == "on_timer" then
 			fire = time_global() >= (ost.activation_time or 0) + c.v1
 		elseif name == "on_game_timer" then
-			fire = game.get_game_time():diffSec(ost.activation_game_time) >= c.v1
+			-- a nil CTime into the luabind diffSec is a native crash, not a Lua error (W5)
+			fire = ost.activation_game_time ~= nil and game.get_game_time():diffSec(ost.activation_game_time) >= c.v1
 		elseif name == "on_actor_in_zone" then
 			fire = zone_has_player(db.zone_by_name[c.v1])
 		elseif name == "on_actor_not_in_zone" then

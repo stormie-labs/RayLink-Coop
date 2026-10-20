@@ -422,11 +422,18 @@ local function actor_on_update()
 	pkg_tick()
 end
 
+-- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
+-- error here would skip all the scripts after this one, single player included (W5).
+local function start_step(what, f)
+	local ok, err = pcall(f)
+	if not ok then printf("! [coop_mods_radio] %s failed: %s", what, tostring(err)) end
+end
+
 function on_game_start()
 	if not api then return end
-	install_rf()
-	install_fm()
-	install_packages()
+	start_step("install_rf", install_rf)
+	start_step("install_fm", install_fm)
+	start_step("install_packages", install_packages)
 	if #installed == 0 then return end
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	C().status_line("radio", function()

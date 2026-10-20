@@ -302,9 +302,14 @@ function set_local_task(id)
 		log("! personal task '%s' not set: the engine has no coop.story_local_task", id)
 		return false
 	end
-	local ok = pcall(api.story_local_task, id)
-	if ok then local_tasks[id] = true end
-	return ok
+	-- true = the engine keeps it local; false = refused (id over 256 chars, more than 1024 tasks)
+	local ok, res = pcall(api.story_local_task, id)
+	if ok and res then
+		local_tasks[id] = true
+		return true
+	end
+	log("! personal task '%s' refused by the engine (%s)", id, ok and "limit" or tostring(res))
+	return false
 end
 
 function is_local_task(id) return is_local(id) end
@@ -727,7 +732,8 @@ local function host_task_callback(orig, tsk, state)
 	end
 	if rcpt ~= 0 and not avatar_obj(rcpt) then rcpt = 0 end -- left the game: the host takes it
 	local share = state == task.completed and share_rewards()
-	if rcpt == 0 and not share then return orig(tsk, state) end
+	-- W5: also for the host's own task (rcpt 0): without the reward scope the story wrapper
+	-- (coop_quests_story) took its on_complete rewards for a story condlist and paid every client too
 	local prev = ctx
 	ctx = { task = id, rcpt = rcpt, share = share }
 	local ok, err = pcall(orig, tsk, state)
@@ -843,7 +849,8 @@ local function patch_rewards()
 						if o then
 							local r = orig(o, npc, { p[1], p[2] }) -- no message on the host
 							if p[3] and p[1] then
-								send_reward(peer, { k = "gw", c = tostring(p[1]), g = (tonumber(p[2]) or 0) > 0 })
+								send_reward(peer, { k = "gw", c = tostring(p[1]),
+									g = fname == "inc_faction_goodwill_to_actor" and (tonumber(p[2]) or 0) > 0 })
 							end
 							return r
 						end
@@ -1551,6 +1558,16 @@ local function patch_task_manager()
 				host.taker[id] = host.exec_peer or host.taker_note[id] or (ctx and ctx.rcpt) or 0
 				host.taker_note[id] = nil
 				host.finisher[id] = nil
+				if ctx == nil then
+					-- W5: on_init (start items, PDAs) is the taker's, not a story reward for the whole group
+					local t = host.taker[id]
+					if t ~= 0 and not avatar_obj(t) then t = 0 end
+					ctx = { task = id, rcpt = t, share = false }
+					local res = { pcall(orig, self, id, giver, ...) }
+					ctx = nil
+					if not res[1] then error(res[2], 0) end
+					return unpack(res, 2)
+				end
 			end
 			return orig(self, id, giver, ...)
 		end

@@ -244,6 +244,24 @@
 	<string id="ui_mm_coop_coop_player_nametags_dist_desc">
 		<text>Add the distance in meters to the name above a player.</text>
 	</string>
+	<string id="ui_mm_coop_coop_player_party_hud">
+		<text>Party panel</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_party_hud_desc">
+		<text>Show the other players (health, distance) on the right of the HUD.</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_player_spots">
+		<text>Player markers</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_player_spots_desc">
+		<text>Show the other players on the PDA map and the minimap.</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_chat_feed">
+		<text>Chat lines on the HUD</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_chat_feed_desc">
+		<text>Show new chat lines for a few seconds while the chat window is closed.</text>
+	</string>
 	<string id="st_coop_opt_session_note">
 		<text>These are the host's rules. While you are connected to another player's game his rules apply and these fields are locked; they take effect when you host.</text>
 	</string>
@@ -291,6 +309,90 @@
 	</string>
 	<string id="ui_mm_coop_coop_session_respawn_delay_desc">
 		<text>Seconds before a dead player comes back (respawn modes).</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_client_quicksave">
+		<text>Players may ask for a quicksave</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_client_quicksave_desc">
+		<text>A player's quicksave key asks the host to quicksave the game.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_party_fast_travel">
+		<text>Fast travel as a group</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_party_fast_travel_desc">
+		<text>Fast travel and guides need every player nearby; the whole group moves together.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_gather_radius">
+		<text>Gathering radius, m</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_gather_radius_desc">
+		<text>How close the players must stand for a group fast travel.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_sleep_rule">
+		<text>Sleeping</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_sleep_rule_desc">
+		<text>Who decides when a player sleeps or waits: a vote of all players, a vote unless everybody is in a shelter, everybody must gather, or the host alone.</text>
+	</string>
+	<string id="st_coop_opt_sleep_vote">
+		<text>Vote</text>
+	</string>
+	<string id="st_coop_opt_sleep_safe_or_vote">
+		<text>Shelter or vote</text>
+	</string>
+	<string id="st_coop_opt_sleep_gather">
+		<text>Everybody together</text>
+	</string>
+	<string id="st_coop_opt_sleep_host">
+		<text>Host decides</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_sleep_radius">
+		<text>Sleeping together radius, m</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_sleep_radius_desc">
+		<text>How close the players must be for "everybody together".</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_vote_timeout">
+		<text>Vote time, s</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_vote_timeout_desc">
+		<text>A player who does not answer in time votes no.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_teleport_radius">
+		<text>Scripted teleport radius, m</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_teleport_radius_desc">
+		<text>Players this close to a story teleport go along.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_travel_time">
+		<text>Travel takes time</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_travel_time_desc">
+		<text>A group travel moves the clock once, on the host.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_max_skip_hours">
+		<text>Longest time skip, h</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_max_skip_hours_desc">
+		<text>Largest sleep or wait the host accepts from a player.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_money_transfer">
+		<text>Players may give money</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_money_transfer_desc">
+		<text>"Give money" in the inventory menu.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_max_money_transfer">
+		<text>Largest money gift</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_max_money_transfer_desc">
+		<text>The most money one gift may carry.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_give_radius">
+		<text>Give distance, m</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_give_radius_desc">
+		<text>How close a player must be for "Give to" in the inventory menu.</text>
 	</string>
 	<string id="st_coop_ui_kind_archive">
 		<text>archives (db)</text>

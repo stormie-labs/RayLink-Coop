@@ -425,6 +425,15 @@ end
 
 local function patched_safemode(actor, npc)
 	if host_on and actor and actor:id() ~= 0 and P.is_proxy(actor) then
+		-- the player's own "weapon lowered" state (C1.9, W5); nil = unknown (older sender): the weapon in hands
+		local api = rawget(_G, "coop")
+		if api and api.player_safemode and api.peer_of_avatar then
+			local ok, peer = pcall(api.peer_of_avatar, actor:id())
+			if ok and peer then
+				local ok2, safe = pcall(api.player_safemode, peer)
+				if ok2 and safe ~= nil then return safe == true end
+			end
+		end
 		local item = actor:active_item()
 		return not (item and IsWeapon(item))
 	end

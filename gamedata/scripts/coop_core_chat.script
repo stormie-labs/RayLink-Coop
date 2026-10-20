@@ -2,7 +2,7 @@
 	Anomaly Coop - core group: text chat (gamedata\scripts\coop_core_chat.script)
 	Layout configs\ui\ui_coop_core.xml (chat, chat_feed), strings configs\text\{rus,eng}\st_coop_core.xml.
 
-	Open: the engine key action "chat" (Options > Controls > Common > "Co-op: chat", added to that list in game;
+	Open: the engine key action "chat" (Options > Controls > Common > "Co-op: chat", added by modxml_coop_menu;
 	or console `bind chat kY`), or Enter while Enter has no game action. Enter sends and closes, Esc closes.
 	Transport: coop.send_chat -> every player. Every line, ours included, comes back from the engine through
 	coop_main.on_chat(nick, text) -> on_line(). The last lines are kept in coop.stash, so a level load keeps
@@ -443,17 +443,14 @@ local function on_key_press(dik)
 	open()
 end
 
--- Adds "Co-op: chat" (engine action "chat") to the Common group of the key bindings in the options.
-local function on_xml_read(xml_file_name, xml_obj)
-	if xml_file_name ~= [[ui\ui_keybinding.xml]] then return end
-	local ok, err = pcall(function()
-		local groups = xml_obj:query("group[name=kb_grp_common]")
-		local g = groups and groups[1]
-		if not g then return end
-		if #xml_obj:query("command[id=kb_coop_chat]") > 0 then return end
-		xml_obj:insertFromXMLString([[<command id="kb_coop_chat" exe="chat"/>]], g, #g.kids)
-	end)
-	if not ok then log("! keybinding entry not added: %s", tostring(err)) end
+-- "Co-op: chat" in the key bindings (Options > Controls > Common) is added by modxml_coop_menu (W5): dxml start-up,
+-- so the entry is there in the main menu too, not only in game.
+
+-- HUD feed on/off (the player's option coop/coop_player/chat_feed, applied by coop_menu_options). The window stays.
+local feed_enabled = true
+function set_feed_enabled(on)
+	feed_enabled = on and true or false
+	if not feed_enabled then feed_off() end
 end
 
 local next_tick = 0
@@ -461,8 +458,10 @@ local function actor_on_update()
 	local tg = time_global()
 	if tg < next_tick then return end
 	next_tick = tg + 500
-	if live() then
+	if live() and feed_enabled then
 		feed_on()
+	elseif live() then
+		feed_off()
 	elseif api and not api.is_active() then
 		if is_open() then close() end
 		feed_off()
@@ -480,11 +479,17 @@ function print_status()
 		stats.shown, stats.sent, stats.refused, stats.commands, is_open() and "open" or "closed", FEED and "on" or "off")
 end
 
+-- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
+-- error here would skip all the scripts after this one, single player included (W5).
+local function start_step(what, f)
+	local ok, err = pcall(f)
+	if not ok then printf("! [coop_core_chat] %s failed: %s", what, tostring(err)) end
+end
+
 function on_game_start()
 	if not api then return end -- an exe without co-op: nothing of this runs
-	RegisterScriptCallback("on_xml_read", on_xml_read)
 	RegisterScriptCallback("on_key_press", on_key_press)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("actor_on_net_destroy", actor_on_net_destroy)
-	load_history()
+	start_step("load_history", load_history)
 end

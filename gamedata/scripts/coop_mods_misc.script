@@ -224,6 +224,13 @@ local function sleep_tick()
 	end
 end
 
+-- For coop_economy_group: a sleep approved by the group vote runs after the dialog's own call (and this
+-- wrapper's scope) ended; it runs f inside the same group-sleepiness scope (W5).
+function with_party_sleepiness(f, ...)
+	if not (sleep.on and C().active()) then return f(...) end
+	return with_sleepiness(party_view(), f, ...)
+end
+
 local function install_sleep()
 	local dlg, ass = C().mod("ui_sleep_dialog"), C().mod("actor_status_sleep")
 	if not (dlg and C().fn(dlg, "get_immersive_sleep_hours") and ass and C().fn(ass, "get_last_sleep")) then return end
@@ -250,6 +257,7 @@ local function install_sleep()
 		if v then sleep.party = math.max(0, math.min(10000, v)) end
 	end, "client")
 	RegisterScriptCallback("actor_on_update", sleep_tick)
+	sleep.on = true
 	installed[#installed + 1] = "immersive_sleep"
 end
 
@@ -399,20 +407,27 @@ local function actor_on_first_update()
 	end
 end
 
+-- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
+-- error here would skip all the scripts after this one, single player included (W5).
+local function start_step(what, f)
+	local ok, err = pcall(f)
+	if not ok then printf("! [coop_mods_misc] %s failed: %s", what, tostring(err)) end
+end
+
 function on_game_start()
 	if not api then return end
-	install_pdata()
-	install_kill_tracker()
-	install_guitar()
+	start_step("install_pdata", install_pdata)
+	start_step("install_kill_tracker", install_kill_tracker)
+	start_step("install_guitar", install_guitar)
 	if C().mod("guitar_anim") or C().mod("harmonica_anim") then
 		C().on("song", on_song)
 		installed[#installed + 1] = "guitar_anim"
 	end
-	install_sleep()
-	install_zcp()
-	install_paw()
-	install_bhs()
-	install_oleh()
+	start_step("install_sleep", install_sleep)
+	start_step("install_zcp", install_zcp)
+	start_step("install_paw", install_paw)
+	start_step("install_bhs", install_bhs)
+	start_step("install_oleh", install_oleh)
 	if C().mod("haru_quick_action_wheel_mcm") then RegisterScriptCallback("actor_on_first_update", actor_on_first_update) end
 	C().status_line("misc", function()
 		return "installed: " .. (#installed > 0 and table.concat(installed, ", ") or "none (mods absent)")

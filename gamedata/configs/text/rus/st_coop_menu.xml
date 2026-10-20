@@ -244,6 +244,24 @@
 	<string id="ui_mm_coop_coop_player_nametags_dist_desc">
 		<text>Добавлять к имени над игроком расстояние в метрах.</text>
 	</string>
+	<string id="ui_mm_coop_coop_player_party_hud">
+		<text>Панель группы</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_party_hud_desc">
+		<text>Показывать других игроков (здоровье, расстояние) справа на экране.</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_player_spots">
+		<text>Метки игроков</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_player_spots_desc">
+		<text>Показывать других игроков на карте КПК и миникарте.</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_chat_feed">
+		<text>Строки чата на экране</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_chat_feed_desc">
+		<text>Показывать новые строки чата несколько секунд, пока окно чата закрыто.</text>
+	</string>
 	<string id="st_coop_opt_session_note">
 		<text>Это правила хоста. Пока вы подключены к чужой игре, действуют правила хоста, а эти поля заблокированы; ваши значения работают, когда хост - вы.</text>
 	</string>
@@ -291,6 +309,90 @@
 	</string>
 	<string id="ui_mm_coop_coop_session_respawn_delay_desc">
 		<text>Через сколько секунд погибший игрок возвращается (режимы с возрождением).</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_client_quicksave">
+		<text>Игроки могут просить быстрое сохранение</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_client_quicksave_desc">
+		<text>Клавиша быстрого сохранения у игрока просит хоста сохранить игру.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_party_fast_travel">
+		<text>Быстрое перемещение группой</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_party_fast_travel_desc">
+		<text>Для перемещения и проводников все игроки должны быть рядом; группа перемещается вместе.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_gather_radius">
+		<text>Радиус сбора, м</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_gather_radius_desc">
+		<text>Насколько близко должны стоять игроки для перемещения группой.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_sleep_rule">
+		<text>Сон</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_sleep_rule_desc">
+		<text>Кто решает, когда игрок спит или ждёт: голосование всех, голосование, если не все в укрытии, сбор всех вместе или только хост.</text>
+	</string>
+	<string id="st_coop_opt_sleep_vote">
+		<text>Голосование</text>
+	</string>
+	<string id="st_coop_opt_sleep_safe_or_vote">
+		<text>Укрытие или голосование</text>
+	</string>
+	<string id="st_coop_opt_sleep_gather">
+		<text>Все вместе</text>
+	</string>
+	<string id="st_coop_opt_sleep_host">
+		<text>Решает хост</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_sleep_radius">
+		<text>Радиус сна вместе, м</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_sleep_radius_desc">
+		<text>Насколько близко должны быть игроки для режима "все вместе".</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_vote_timeout">
+		<text>Время голосования, с</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_vote_timeout_desc">
+		<text>Кто не ответил вовремя, голосует "нет".</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_teleport_radius">
+		<text>Радиус сюжетного телепорта, м</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_teleport_radius_desc">
+		<text>Игроки рядом с сюжетным телепортом перемещаются вместе.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_travel_time">
+		<text>Перемещение занимает время</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_travel_time_desc">
+		<text>Перемещение группы двигает часы один раз, у хоста.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_max_skip_hours">
+		<text>Наибольший пропуск времени, ч</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_max_skip_hours_desc">
+		<text>Самый долгий сон или ожидание, которое хост примет от игрока.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_money_transfer">
+		<text>Игроки могут дарить деньги</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_money_transfer_desc">
+		<text>Пункт "Дать денег" в меню инвентаря.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_max_money_transfer">
+		<text>Наибольший подарок</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_max_money_transfer_desc">
+		<text>Сколько денег можно передать за раз.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_give_radius">
+		<text>Дистанция передачи, м</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_give_radius_desc">
+		<text>Насколько близко должен быть игрок для пункта "Отдать" в меню инвентаря.</text>
 	</string>
 	<string id="st_coop_ui_kind_archive">
 		<text>архивы (db)</text>

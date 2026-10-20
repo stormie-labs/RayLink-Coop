@@ -371,6 +371,16 @@ function pack(v)
 end
 
 -- Returns value, next position; raises on malformed input (unpack() catches).
+local CTIME_RANGE = { Y = { 0, 9999 }, M = { 1, 12 }, D = { 1, 31 }, h = { 0, 23 }, m = { 0, 59 }, s = { 0, 59 },
+	ms = { 0, 999 } }
+local function ctime_ok(t)
+	for k, r in pairs(CTIME_RANGE) do
+		local v = t[k]
+		if type(v) ~= "number" or v ~= math_floor(v) or v < r[1] or v > r[2] then return false end
+	end
+	return true
+end
+
 local function unpack_at(s, i, depth, budget)
 	budget.n = budget.n + 1
 	if budget.n > MAX_NODES then error("too many nodes") end
@@ -411,7 +421,8 @@ local function unpack_at(s, i, depth, budget)
 		local t
 		t, i = unpack_at(s, i + 1, 3, budget)
 		local ud = rawget(_G, "utils_data")
-		if type(t) == "table" and ud and ud.CTime_from_table then
+		-- CTime:set is luabind: a non-number is a crash pcall cannot catch, a huge month loops (W5)
+		if type(t) == "table" and ctime_ok(t) and ud and ud.CTime_from_table then
 			local ok, ct = pcall(ud.CTime_from_table, t)
 			if ok then return ct, i end
 		end

@@ -244,6 +244,12 @@ function request_quicksave()
 end
 
 local function host_can_save()
+	-- host rule (Options > Co-op > session rules, coop_settings.rule, W5)
+	local cs = rawget(_G, "coop_settings")
+	if cs and cs.rule then
+		local ok, allowed = pcall(cs.rule, "core/client_quicksave")
+		if ok and allowed == false then return false, "off" end
+	end
 	local actor = db.actor
 	if not (actor and actor:alive()) then return false, "dead" end
 	local am = rawget(_G, "actor_menu")
@@ -254,9 +260,17 @@ local function host_can_save()
 	return true
 end
 
+local last_save_by = {} -- host: peer -> time of its last quicksave request (W5: the client's gate is its own)
+
 local function on_save_req(payload, from)
-	if not (api and api.is_host()) then return end
+	if not (api and api.is_host()) or type(from) ~= "number" or from == 0 then return end
 	local cm = codec()
+	local tg = time_global()
+	if last_save_by[from] and tg - last_save_by[from] < SAVE_REQ_GAP_MS and tg >= last_save_by[from] then
+		api.send_event(EV_SAVE_RES, cm.encode({ ok = false, why = "busy" }), from)
+		return
+	end
+	last_save_by[from] = tg
 	local ok, why = host_can_save()
 	if ok then
 		local li = rawget(_G, "level_input") or level_input
@@ -282,6 +296,7 @@ local SAVE_WHY = {
 	dead = { "st_coop_core_save_dead", "The host cannot save now." },
 	refused = { "st_coop_core_save_refused", "The host's game does not allow saving now." },
 	error = { "st_coop_core_save_error", "The host's quicksave failed." },
+	off = { "st_coop_core_save_off", "The host does not allow quicksaves from players." },
 }
 
 local function on_save_res(payload, from)
@@ -356,9 +371,16 @@ function print_status()
 		pdata_ok and "registered" or "not registered", stats.boosters_applied, stats.saves, stats.save_refused)
 end
 
+-- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
+-- error here would skip all the scripts after this one, single player included (W5).
+local function start_step(what, f)
+	local ok, err = pcall(f)
+	if not ok then printf("! [coop_core_player] %s failed: %s", what, tostring(err)) end
+end
+
 function on_game_start()
 	if not api then return end -- an exe without co-op: nothing of this runs
-	register_pdata() -- before the save is read
+	start_step("register_pdata", register_pdata) -- before the save is read
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	local cm = codec()
 	if not (cm and cm.add_event_handler) then

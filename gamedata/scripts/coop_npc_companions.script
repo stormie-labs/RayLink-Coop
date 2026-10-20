@@ -171,8 +171,9 @@ local function host_on_cmd(t, from)
 	if type(f) ~= "function" then return end
 	local squad = squad_of(npc)
 	local leader = squad and leaders[squad.id]
-	if kind ~= "add" and squad and axr_companions and axr_companions.companion_squads[squad.id] and leader ~= who:id() then
-		stats.refused = stats.refused + 1 -- somebody else's companion
+	-- somebody's companion already: orders only from its leader, and nobody recruits it away (W5)
+	if squad and axr_companions and axr_companions.companion_squads[squad.id] and (kind == "add" or leader ~= who:id()) then
+		stats.refused = stats.refused + 1
 		return
 	end
 	stats.cmd_in = stats.cmd_in + 1

@@ -248,10 +248,17 @@ local function actor_on_update()
 	if not ok then C().report("perks", "rebind skills", e) end
 end
 
+-- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
+-- error here would skip all the scripts after this one, single player included (W5).
+local function start_step(what, f)
+	local ok, err = pcall(f)
+	if not ok then printf("! [coop_mods_perks] %s failed: %s", what, tostring(err)) end
+end
+
 function on_game_start()
 	if not api then return end
-	install_skills()
-	install_pba()
+	start_step("install_skills", install_skills)
+	start_step("install_pba", install_pba)
 	if #installed == 0 then return end
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	C().status_line("perks", function()

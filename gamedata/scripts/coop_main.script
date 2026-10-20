@@ -526,6 +526,16 @@ function remove_event_handler(name, func)
 	if handlers[name] then handlers[name][func] = nil end
 end
 
+-- Is f registered for the callback `name` (itself, or the client filter's wrapper of it)? nil = unknown.
+function callback_registered(name, f)
+	local t = get_intercepts()
+	if type(t) ~= "table" or type(t[name]) ~= "table" or f == nil then return nil end
+	if t[name][f] then return true end
+	local m = wrapped[name]
+	local w = m and m[f]
+	return w ~= nil and t[name][w] ~= nil
+end
+
 local function callback_exists(name)
 	local t = get_intercepts()
 	return t ~= nil and t[name] ~= nil
@@ -648,15 +658,23 @@ end
 
 -- Host: the stock surge decided to kill unsheltered people now (2nd wave or the end). Same verdict for
 -- every remote player's character, once per emission. The wave position is not used for proxies.
+-- A remote player sleeping through the emission on an anabiotic (coop_npc_effects keeps it per player, W5).
+-- The stock survive condition ({+anabiotic_in_process}) is the HOST actor's and no longer spares everybody.
+local function anabiotic(peer)
+	local fx = rawget(_G, "coop_npc_effects")
+	if not (fx and fx.is_anabiotic) then return false end
+	local ok, r = pcall(fx.is_anabiotic, peer)
+	return ok and r == true
+end
+
 local function host_surge_kill_check(m)
 	if not (api and api.is_host()) then return end
 	if db.actor and load_var and load_var(db.actor, "surge_immuned", false) == true then return end
-	if m and m.survive and xr_logic and db.actor
-		and xr_logic.pick_section_from_condlist(db.actor, nil, m.survive) == "true" then
-		return
-	end
 	for _, p in ipairs(players()) do
-		if not p.is_self and env_host.kill_sent[p.id] ~= env_host.serial then
+		if not p.is_self and env_host.kill_sent[p.id] ~= env_host.serial and anabiotic(p.id) then
+			-- spared at this kill moment only: one who wakes before the next one is judged then
+			log("emission: %s (#%d) sleeps on an anabiotic, spared", tostring(p.nick), p.id)
+		elseif not p.is_self and env_host.kill_sent[p.id] ~= env_host.serial then
 			local obj = p.avatar_id and level.object_by_id(p.avatar_id)
 			if obj and obj:alive() and not proxy_in_cover(obj) then
 				env_host.kill_sent[p.id] = env_host.serial
@@ -862,6 +880,14 @@ add_event_handler("coop_env_kill", function(payload, from)
 	local actor = db.actor
 	if not (actor and actor:alive()) then return end
 	if load_var and load_var(actor, "surge_immuned", false) == true then return end
+	local fx = rawget(_G, "coop_npc_effects")
+	if fx and fx.anabiotic_self then
+		local ok, sleeping = pcall(fx.anabiotic_self)
+		if ok and sleeping then
+			log("emission kill ignored: this player sleeps on an anabiotic")
+			return
+		end
+	end
 	log("caught outside a shelter by the emission (host decision)")
 	actor:kill(actor)
 end)
@@ -974,6 +1000,15 @@ end
 -------------------------------------------------------------------------------
 -- Diagnostics (coop_status)
 -------------------------------------------------------------------------------
+STATUS_MODULES = {
+	"coop_core_chat", "coop_core_hud", "coop_core_player", "coop_core_world",
+	"coop_economy_core",
+	"coop_npc_logic", "coop_npc_effects", "coop_npc_meet", "coop_npc_companions", "coop_npc_disguise",
+	"coop_npc_world", "coop_npc_compat",
+	"coop_tasks",
+	"coop_mods_core",
+}
+
 function print_status()
 	local role = not api and "no engine API" or api.is_host() and "host" or api.is_client() and "client" or "off"
 	log("role %s, filter %s, client mode %s | skipped host calls %d, caught lua errors %d, events in %d (%d handler errors), chat %d",
@@ -1002,8 +1037,9 @@ function print_status()
 			tostring(env_cl.s), env_cl.sg, tostring(env_cl.p), env_cl.pg, tostring(env_cl.cover),
 			time_global() - env_cl.at, env_cl.mirror_errors)
 	end
-	-- core group scripts (chat, party HUD and markers, player state, shared world pieces)
-	for _, name in ipairs({ "coop_core_chat", "coop_core_hud", "coop_core_player", "coop_core_world" }) do
+	-- every group's own lines (W5): core, economy (all its modules), npc, quests (coop_tasks -> coop_quests_*),
+	-- mods (all families). coop_settings is printed by the engine itself.
+	for _, name in ipairs(STATUS_MODULES) do
 		local m = rawget(_G, name)
 		if m and m.print_status then
 			local ok, err = pcall(m.print_status)
@@ -1030,6 +1066,13 @@ end
 -- Created at load time (like dxml_core does) so addons can register in their own on_game_start.
 ensure_callback("coop_on_event")
 ensure_callback("coop_on_chat")
+-- Fired by the engine (W5), subscribed by coop_npc_effects / coop_mods_core:
+--   coop_actor_revived(reviver_peer, medkit_section)   revived player's machine (C1.6)
+--   coop_on_container_opened(peer, container_id)       host, a client opened a box or a corpse (C1.8)
+--   coop_avatar_step(avatar_id, material, power, move_state)   any machine, a player's proxy stepped (C2.2)
+ensure_callback("coop_actor_revived")
+ensure_callback("coop_on_container_opened")
+ensure_callback("coop_avatar_step")
 
 if api and api.is_client() then
 	local ok, err = pcall(install_client_filter)

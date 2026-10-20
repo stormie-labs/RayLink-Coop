@@ -383,6 +383,15 @@ local function patch_new_storylines()
 		alife_create("tch_ht_quest_mine_blow", vector():set(wp.x - 1, wp.y, wp.z), who:level_vertex_id(), who:game_vertex_id())
 	end
 	fx_orig.ht_add_mine = mine
+	-- Its restrictor cutscene effects act on db.actor: they go to the restrictor's audience (coop_npc_logic,
+	-- W5). Not the MOVES one (ht_ds_domik_st_prestart_cut_scene teleports and spawns: stays the host's).
+	local nl = rawget(_G, "coop_npc_logic")
+	if nl and type(nl.register_actor_effect) == "function" then
+		for _, e in ipairs({ { "ht_pri_b35_teleport_actor" }, { "ht_pri_a17_play_sound" }, { "ht_run_postprocess" },
+			{ "ht_run_cam_effector_global" }, { "ht_stop_postprocess", true }, { "stop_cam_effector", true } }) do
+			if type(xe[e[1]]) == "function" then pcall(nl.register_actor_effect, e[1], e[2]) end
+		end
+	end
 	local client_side = xe.ht_add_mine
 	xe.ht_add_mine = function(actor, npc, p, ...)
 		if qc.is_client() then return client_side(actor, npc, p, ...) end
@@ -396,13 +405,17 @@ end
 local FLASH_DEDUPE_MS = 10000
 local flash_seen = {} -- zone host id -> time
 
+local real_cgt = nil -- level.change_game_time while with_time_jump has swapped it (host_flash calls this one)
+
 local function with_time_jump(jump, fn, ...)
 	local lvl = rawget(_G, "level")
 	local orig = lvl and lvl.change_game_time
 	if not orig then return fn(...) end
+	real_cgt = orig
 	lvl.change_game_time = jump
 	local res = { pcall(fn, ...) }
 	lvl.change_game_time = orig
+	real_cgt = nil
 	if not res[1] then error(res[2], 0) end
 	return unpack(res, 2)
 end
@@ -412,7 +425,10 @@ local function host_flash(zone_id, d, h, m)
 	local t = time_global()
 	if zone_id and flash_seen[zone_id] and t - flash_seen[zone_id] < FLASH_DEDUPE_MS then return false end
 	if zone_id then flash_seen[zone_id] = t end
-	level.change_game_time(tonumber(d) or 0, h, m)
+	-- the real one: inside with_time_jump level.change_game_time is the jump itself (W5: it recursed into
+	-- this function, hit the dedupe and the clock never moved). Numbers only: luabind has no nil overload.
+	local cgt = real_cgt or level.change_game_time
+	cgt(math_floor(tonumber(d) or 0), math_floor(tonumber(h) or 0), math_floor(tonumber(m) or 0))
 	pcall(function() level_weathers.get_weather_manager():select_weather(true) end)
 	pcall(function() surge_manager.get_surge_manager().time_forwarded = true end)
 	pcall(function() psi_storm_manager.get_psi_storm_manager().time_forwarded = true end)
@@ -464,8 +480,10 @@ end
 
 local function host_on_flash(from, t)
 	local h, m = math_floor(tonumber(t.h) or -1), math_floor(tonumber(t.m) or -1)
-	if h < 0 or h > 12 or m < 0 or m > 59 then return end
-	host_flash(tonumber(t.z), 0, h, m)
+	if not (h >= 0 and h <= 12 and m >= 0 and m <= 59) then return end -- also NaN
+	local z = tonumber(t.z)
+	if not (z and level.object_by_id(z)) then return end -- no zone: no dedupe, a free clock jump
+	host_flash(z, 0, h, m)
 end
 
 -------------------------------------------------------------------------------

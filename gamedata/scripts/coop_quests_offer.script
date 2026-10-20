@@ -234,7 +234,7 @@ local function host_on_offer_req(t, from)
 	end
 	if not (npc and IsStalker(npc) and npc:alive()) then return refuse("npc") end
 	local key = tostring(from) .. ":" .. npc_id
-	if last_req[key] and now() - last_req[key] < REQ_GAP then return end
+	if last_req[key] and now() - last_req[key] < REQ_GAP then return refuse("rate") end -- W5: answer, or a board batch waits
 	last_req[key] = now()
 	local av = qc.avatar_obj(from)
 	local max = t.b and MAX_DIST_BOARD or MAX_DIST_DIALOG
@@ -282,7 +282,7 @@ function request_offer(npc, kind, board)
 	if not (qc.client_live() and npc) then return false end
 	local id = npc:id()
 	local o = offers[id]
-	if o and o.asked and now() - o.asked < REQ_GAP then return true end
+	if o and o.asked and now() - o.asked < REQ_GAP then return true, false end -- asked already: no new answer comes
 	seq = seq + 1
 	kind = kind or (is_sim_section(npc:section()) and "sim" or "dyn")
 	for q, inc in pairs(incoming) do
@@ -293,7 +293,7 @@ function request_offer(npc, kind, board)
 	offers[id].asked = now()
 	local ok = qc.send("offer_req", { n = qc.to_host_id(id), k = kind, q = seq, b = board and true or nil }, 0)
 	if ok then stats.req_out = stats.req_out + 1 end
-	return ok
+	return ok, ok
 end
 
 -- Client: offers for several NPCs, then done() (at the latest after BATCH_TIMEOUT). False if a batch
@@ -304,7 +304,8 @@ function request_offers(npcs, done, board)
 	batch = b
 	for _, npc in ipairs(npcs or {}) do
 		local id = npc:id()
-		if not b.pending[id] and request_offer(npc, nil, board) then
+		local _, sent = request_offer(npc, nil, board)
+		if not b.pending[id] and sent then
 			b.pending[id] = true
 			b.left = b.left + 1
 		end
@@ -314,6 +315,8 @@ function request_offers(npcs, done, board)
 		if done then pcall(done) end
 		return true
 	end
+	-- a finished batch leaves its timeout queued, and CreateTimeEvent ignores a pair that exists (W5)
+	if type(rawget(_G, "RemoveTimeEvent")) == "function" then RemoveTimeEvent("coop_quests_offer", "batch_timeout") end
 	CreateTimeEvent("coop_quests_offer", "batch_timeout", BATCH_TIMEOUT, function()
 		if batch == b then
 			batch = nil

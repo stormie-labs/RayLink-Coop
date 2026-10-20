@@ -314,8 +314,15 @@ function print_status()
 		stats.returned, stats.refused, stats.items_given)
 end
 
+-- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
+-- error here would skip all the scripts after this one, single player included (W5).
+local function start_step(what, f)
+	local ok, err = pcall(f)
+	if not ok then printf("! [coop_economy_money] %s failed: %s", what, tostring(err)) end
+end
+
 function on_game_start()
 	if not core.engine() then return end
-	patch_inventory()
+	start_step("patch_inventory", patch_inventory)
 	register_events()
 end

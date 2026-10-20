@@ -101,7 +101,9 @@ local function mirror_receive(m, t, from)
 			if host then
 				accept = C().holder_peer(id) == from -- only the carrier reports an item
 			else
-				accept = not own(id) -- never over what this player carries
+				-- from the host only (a client's broadcast is relayed with that client as sender, W5); never
+				-- over what this player carries
+				accept = from == 0 and not own(id)
 			end
 			if accept then
 				local v = nil
@@ -172,7 +174,8 @@ local function install_mags()
 	C().wrap(m, "eject_magazine", "magazines.eject_magazine", eject_wrapper)
 	local mp = C().mod("mags_patches")
 	-- It holds the eject by value; the mod's own functors pick the wrapper up in its later on_game_start.
-	if mp and C().fn(mp, "eject") then mp.eject = m.eject_magazine end
+	-- only if it still is the stock eject (a replacement that calls mp.eject would loop through us, W5)
+	if mp and C().fn(mp, "eject") and rawequal(mp.eject, MG.orig.eject) then mp.eject = m.eject_magazine end
 	if mp and mp.print_err == nil and m.print_err then mp.print_err = m.print_err end
 
 	C().wrap(m, "func_unload_ammo", "magazines.func_unload_ammo", function(orig)
@@ -504,10 +507,17 @@ local function rebind()
 	C().swap_callback("ActorMenu_on_item_drag_drop", MG.orig.drag, MG.m.on_item_drag_dropped)
 end
 
+-- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
+-- error here would skip all the scripts after this one, single player included (W5).
+local function start_step(what, f)
+	local ok, err = pcall(f)
+	if not ok then printf("! [coop_mods_mags] %s failed: %s", what, tostring(err)) end
+end
+
 function on_game_start()
 	if not api then return end
-	install_mags()
-	install_wpo()
+	start_step("install_mags", install_mags)
+	start_step("install_wpo", install_wpo)
 	if #installed == 0 then return end
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("actor_on_first_update", rebind)
