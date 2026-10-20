@@ -97,6 +97,22 @@ if ($NewGame) {
     Write-Host "new game: $StartFaction at $StartMap as '$charName', $($kit.Money) RU, kit: $($kit.Loadout)"
 }
 
+# Test stand: the minimap is off by default in Anomaly 1.5.3 (ui_options show_minimap def=false), and the
+# allies' radar markers need it. Both instances share this file.
+$optFile = Join-Path $GameDir 'gamedata\configs\axr_options.ltx'
+if (Test-Path -LiteralPath $optFile) {
+    $cp = [System.Text.Encoding]::GetEncoding(1251)
+    $ol = [System.Collections.Generic.List[string]]::new()
+    $ol.AddRange([string[]][System.IO.File]::ReadAllLines($optFile, $cp))
+    $i = $ol.FindIndex([Predicate[string]]{ param($l) $l -match '^\s*video/hud/show_minimap\s*=' })
+    if ($i -ge 0) { $ol[$i] = '        video/hud/show_minimap           = true' }
+    else {
+        $s = $ol.FindIndex([Predicate[string]]{ param($l) $l -match '^\[options\]' })
+        if ($s -ge 0) { $ol.Insert($s + 1, '        video/hud/show_minimap           = true') }
+    }
+    [System.IO.File]::WriteAllLines($optFile, $ol, $cp)
+}
+
 $argv = @('-fsltx', "fsgame_$Instance.ltx", '-smap2048')
 if ($HostSession) { $argv += @('-coop_host', '27960') }
 if ($Connect) { $argv += @('-coop_connect', $Connect) }
