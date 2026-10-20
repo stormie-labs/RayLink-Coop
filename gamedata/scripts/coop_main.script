@@ -206,11 +206,17 @@ local function load_manifest()
 	local inis = { ini }
 	local extra = {}
 	local ok_list, list_err = pcall(function() -- a failure here must not cost the main file's domains
-		local flist = getFS():file_list_open_ex("$game_config$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly),
-			"coop_domains_*.ltx")
+		-- NOT file_list_open_ex: it rescans $game_config$ with flNeedCheck, under which the engine drops every
+		-- subfolder (CreateFile on a directory fails), so configs\ui\*, text\* ... vanish from the file system
+		-- and the next ui xml load is FATAL. file_list_open reads the existing file set without a rescan.
+		local flist = getFS():file_list_open("$game_config$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly))
 		for i = 0, (flist and flist:Size() or 0) - 1 do
-			extra[#extra + 1] = flist:GetAt(i):NameFull()
+			local name = flist:GetAt(i)
+			if type(name) == "string" and name:lower():match("^coop_domains_.+%.ltx$") then
+				extra[#extra + 1] = name
+			end
 		end
+		if flist then flist:Free() end
 	end)
 	if not ok_list then log("! configs\\coop_domains_*.ltx not listed: %s", tostring(list_err)) end
 	table.sort(extra)
