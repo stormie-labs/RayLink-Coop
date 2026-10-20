@@ -1,0 +1,8 @@
+﻿temp/
+build/
+*.pdb
+*.exe
+*.dll
+*.db*
+.env
+
