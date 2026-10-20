@@ -216,3 +216,17 @@
   вошёл и живёт, метки союзников и панель группы включились. Миникарта: в Anomaly 1.5.3 выключена по умолчанию, а
   `ui_options.func_hud_minimap` читает опцию строкой ("false" — истина в Lua) → появляется после любой правки настроек
   (стоковый баг); `launch.ps1` включает её на стенде.
+- 2026-10-20 22:15 — два вылета клиента, оба исправлены (в игре перепроверка после ci_build15):
+  1) FATAL `sim_board.script:140` `create_squad`: на клиенте работал онлайн-биндер смарт-террейна
+     (`bind_smart_terrain.smart_terrain_binder:update` → `se_smart_terrain:update()` → респаун →
+     `SIMBOARD:create_squad`); `alife():create` на клиенте отклоняется (nil), стоковый код индексирует nil.
+     Биндеры объектов — не колбэки, фильтр доменов их не ловит. Исправлено: на клиенте биндер зовёт только
+     `object_binder.update` (coop_main, проект `a822a0a`). ⚠️ Остальные биндеры объектов не проверены — в очередь.
+  2) Access violation (без FATAL-окна, минидамп 22:11:53) в `lua_next` ← `CScriptEngine::function_object` ←
+     `level_input.on_key_press` ← `CLevel::IR_OnKeyboardPress` ← `IR_OnActivate` ← `CInput::iCapture` ←
+     `IGame_Level::Load`: при загрузке уровня клиента движок «повторял» зажатые клавиши движения в Lua до готовности
+     уровня. Исправлено: `IR_OnActivate` ничего не повторяет при `!bReady` (движок `800565e`).
+- 2026-10-20 22:40 — миникарта снова пропала: `deploy.ps1` зеркалит gamedata `robocopy /MIR` → удалял
+  `configs\axr_options.ltx` (настройки игры) при каждой выкладке; `launch.ps1` не находил `[options]` в свежем
+  файле и не включал миникарту. Исправлено: `/MIR /XF axr_options.ltx` (исключённое не копируется и не удаляется —
+  проверено на тестовых папках), `launch.ps1` дописывает `[options]` в свежий файл.

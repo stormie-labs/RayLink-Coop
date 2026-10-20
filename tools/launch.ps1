@@ -109,6 +109,7 @@ if (Test-Path -LiteralPath $optFile) {
     else {
         $s = $ol.FindIndex([Predicate[string]]{ param($l) $l -match '^\[options\]' })
         if ($s -ge 0) { $ol.Insert($s + 1, '        video/hud/show_minimap           = true') }
+        else { $ol.Add('[options]'); $ol.Add('        video/hud/show_minimap           = true') } # fresh file
     }
     [System.IO.File]::WriteAllLines($optFile, $ol, $cp)
 }

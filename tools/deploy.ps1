@@ -71,7 +71,8 @@ if (-not $SkipGameBin) {
 
 # 3. gamedata: engine revision first, our mod on top
 $gd = Join-Path $TestRoot 'gamedata'
-& robocopy $EngineGamedata $gd /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+# axr_options.ltx is written by the game itself (player settings): excluded files are neither copied nor purged
+& robocopy $EngineGamedata $gd /MIR /XF axr_options.ltx /NFL /NDL /NJH /NJS /NP | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy engine gamedata failed: $LASTEXITCODE" }
 if (Test-Path -LiteralPath $ModGamedata) {
     & robocopy $ModGamedata $gd /E /NFL /NDL /NJH /NJS /NP | Out-Null
