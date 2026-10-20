@@ -968,9 +968,30 @@ local function stub_blocked_functions()
 	if n > 0 then log("%d debug tool entry point(s) disabled on this client", n) end
 end
 
+-- Smart terrains: the online binder runs the server object's update every tick (jobs, respawn ->
+-- SIMBOARD:create_squad). That is world simulation, the host's job: on a client alife():create is refused
+-- (nil) and the stock sim_board.create_squad indexes the result -> FATAL in a binder update. Binders are
+-- object classes, not callbacks, so the domain filter does not cover them.
+local function patch_smart_terrain_binder()
+	local m = bind_smart_terrain
+	local cls = m and m.smart_terrain_binder
+	if not (cls and type(cls.update) == "function") then return end
+	local orig = cls.update
+	cls.update = function(self, delta)
+		if api and api.is_client() then
+			object_binder.update(self, delta)
+			return
+		end
+		return orig(self, delta)
+	end
+	log("smart terrain binder: the world update (jobs, respawn) runs on the host only")
+end
+
 local function install_client_patches()
 	if client_patched then return end
 	client_patched = true
+	local ok_st, err_st = pcall(patch_smart_terrain_binder)
+	if not ok_st then report_error("coop_main", "smart terrain patch", err_st) end
 	local ok, err = pcall(patch_env_classes_for_client)
 	if not ok then report_error("coop_main", "emission patch", err) end
 	ok, err = pcall(patch_main_menu)
