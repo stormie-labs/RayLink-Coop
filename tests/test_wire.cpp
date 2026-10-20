@@ -296,6 +296,7 @@ TEST(msg_name_known_and_unknown)
 	CHECK_EQ(std::string(msg_name(Msg::PlayerState)), std::string("PlayerState"));
 	CHECK_EQ(std::string(msg_name(Msg::StateDump)), std::string("StateDump"));
 	CHECK_EQ(std::string(msg_name(uint16_t(0x0123))), std::string("EntitySnapshot"));
+	CHECK_EQ(std::string(msg_name(uint16_t(0x012C))), std::string("EntitySound"));
 	CHECK_EQ(std::string(msg_name(static_cast<Msg>(0x1234))), std::string("Msg_0x1234"));
 	CHECK_EQ(std::string(msg_name(static_cast<Msg>(0x0050))), std::string("Msg_0x0050"));
 	CHECK_EQ(std::string(msg_name(uint16_t(0xFFFF))), std::string("Msg_0xFFFF"));
@@ -318,7 +319,7 @@ TEST(msg_name_known_and_unknown)
 		Msg::ReqContainer, Msg::TimeSync, Msg::WeatherSync, Msg::Emission, Msg::ZoneState, Msg::InfoPortion,
 		Msg::TaskList, Msg::TaskUpdate, Msg::MapSpot, Msg::Relation, Msg::Progress, Msg::DialogLock,
 		Msg::DialogLockResult, Msg::DialogUnlock, Msg::DialogPhrases, Msg::DialogSelect, Msg::TradeOp,
-		Msg::ScriptEvent, Msg::StateDumpRequest, Msg::StateDump};
+		Msg::ScriptEvent, Msg::StateDumpRequest, Msg::StateDump, Msg::EntitySound};
 	for (Msg m : all)
 		CHECK(std::strncmp(msg_name(m), "Msg_0x", 6) != 0);
 }
@@ -474,4 +475,158 @@ TEST(handshake_structs_roundtrip)
 	Reader rp(wp.ptr(), wp.size());
 	CHECK(plain2.read(rp));
 	CHECK(plain2.reason == RejectReason::SessionFull && plain2.host_manifest.empty());
+}
+
+// ---------------------------------------------------------------- W5 C2: creature sounds and snapshot flags
+
+TEST(npc_sound_roundtrip_minimal_and_full)
+{
+	NpcSound a;
+	a.object = 1234;
+	a.path = "characters_voice\\human_01\\stalker\\fight\\enemy\\enemy_3";
+	a.delay_ms = 0;
+	Writer w;
+	a.write(w);
+	// u16 object + u8 flags + (varu len + bytes) + u16 delay: no optional fields
+	CHECK_EQ(w.size(), size_t(2 + 1 + 1 + a.path.size() + 2));
+	NpcSound a2;
+	Reader r(w.ptr(), w.size());
+	CHECK(a2.read(r));
+	CHECK(r.remaining() == 0);
+	CHECK(a2.object == 1234 && a2.flags == 0 && a2.path == a.path && a2.delay_ms == 0);
+	CHECK(a2.bone == 0xFFFF && a2.mask == 0 && a2.volume == 100);
+	CHECK(a2.offset[0] == 0.f && a2.offset[1] == 0.f && a2.offset[2] == 0.f);
+
+	NpcSound b;
+	b.object = 7;
+	b.flags = NpcSound::Bone | NpcSound::Mask | NpcSound::Offset | NpcSound::Volume | NpcSound::Follow;
+	b.path = "monsters\\bloodsucker\\attack_0";
+	b.delay_ms = 650;
+	b.bone = 15;
+	b.mask = 0xF0000001u;
+	b.offset[0] = 0.25f;
+	b.offset[1] = 1.7f;
+	b.offset[2] = -3.5f;
+	b.volume = 180;
+	Writer wb;
+	b.write(wb);
+	CHECK_EQ(wb.size(), size_t(2 + 1 + 1 + b.path.size() + 2 + 2 + 4 + 12 + 1));
+	NpcSound b2;
+	Reader rb(wb.ptr(), wb.size());
+	CHECK(b2.read(rb));
+	CHECK(b2.object == 7 && b2.flags == b.flags && b2.path == b.path && b2.delay_ms == 650);
+	CHECK(b2.bone == 15 && b2.mask == 0xF0000001u && b2.volume == 180);
+	CHECK(b2.offset[0] == 0.25f && b2.offset[1] == 1.7f && b2.offset[2] == -3.5f);
+
+	// A batch as Msg::EntitySound carries it: u8 count, entries back to back.
+	Writer batch;
+	batch.u8(2);
+	a.write(batch);
+	b.write(batch);
+	Reader rr(batch.ptr(), batch.size());
+	const uint8_t n = rr.u8();
+	CHECK_EQ(n, uint8_t(2));
+	NpcSound x, y;
+	CHECK(x.read(rr) && y.read(rr));
+	CHECK(x.path == a.path && y.path == b.path && y.mask == b.mask);
+	CHECK(rr.remaining() == 0);
+}
+
+TEST(npc_sound_read_rejects_bad_input)
+{
+	NpcSound b;
+	b.object = 9;
+	b.flags = NpcSound::Bone | NpcSound::Offset;
+	b.path = "characters_voice\\human_02\\bandit\\states\\idle\\idle_1";
+	b.bone = 3;
+	Writer w;
+	b.write(w);
+	// truncated anywhere: never ok
+	for (size_t cut = 0; cut < w.size(); ++cut)
+	{
+		NpcSound t;
+		Reader r(w.ptr(), cut);
+		CHECK(!t.read(r));
+	}
+	// unknown flag bit
+	{
+		Writer wu;
+		wu.u16(1);
+		wu.u8(0x80);
+		wu.str("ambient\\wind");
+		wu.u16(0);
+		NpcSound t;
+		Reader r(wu.ptr(), wu.size());
+		CHECK(!t.read(r));
+	}
+	// non-finite and absurd offsets
+	const float bad[] = {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), 5000.f};
+	for (float v : bad)
+	{
+		NpcSound o;
+		o.flags = NpcSound::Offset;
+		o.path = "weapons\\knife\\knife_1";
+		o.offset[1] = v;
+		Writer wo;
+		o.write(wo);
+		NpcSound t;
+		Reader r(wo.ptr(), wo.size());
+		CHECK(!t.read(r));
+	}
+	// path checked on read
+	{
+		NpcSound o;
+		o.path = "..\\..\\fsgame";
+		Writer wo;
+		o.write(wo);
+		NpcSound t;
+		Reader r(wo.ptr(), wo.size());
+		CHECK(!t.read(r));
+	}
+}
+
+TEST(sound_path_validation)
+{
+	CHECK(sound_path_valid("characters_voice\\human_01\\stalker\\fight\\enemy\\enemy_3"));
+	CHECK(sound_path_valid("monsters\\dog\\bark-1 v2.0"));
+	CHECK(sound_path_valid("a"));
+	CHECK(!sound_path_valid(""));
+	CHECK(!sound_path_valid(std::string(NpcSound::kMaxPath + 1, 'a')));
+	CHECK(sound_path_valid(std::string(NpcSound::kMaxPath, 'a')));
+	CHECK(!sound_path_valid("..\\gamedata\\x"));
+	CHECK(!sound_path_valid("a\\..\\b"));
+	CHECK(!sound_path_valid("\\absolute"));
+	CHECK(!sound_path_valid(".hidden"));
+	CHECK(!sound_path_valid("$game_sounds$\\x"));
+	CHECK(!sound_path_valid("c:\\windows\\x"));
+	CHECK(!sound_path_valid("a/b"));
+	CHECK(!sound_path_valid("Upper\\Case"));
+	CHECK(!sound_path_valid(std::string("nul\0byte", 8)));
+	CHECK(!sound_path_valid("tab\tchar"));
+}
+
+TEST(snapshot_anim_byte_packs_creature_flags)
+{
+	for (uint8_t count = 0; count <= 15; ++count)
+		for (uint8_t flags = 0; flags <= 15; ++flags)
+		{
+			const uint8_t b = pack_anim_byte(count, flags);
+			CHECK_EQ(anim_count_of(b), count);
+			CHECK_EQ(creature_flags_of(b), flags);
+		}
+	// Old layout (no flags) reads as flags 0: counts up to 4 are unchanged bytes.
+	CHECK_EQ(pack_anim_byte(4, 0), uint8_t(4));
+	CHECK_EQ(creature_flags_of(uint8_t(4)), uint8_t(0));
+	CHECK_EQ(pack_anim_byte(3, CreatureTorchLit), uint8_t(0x13));
+	// Out-of-range inputs are masked, never spill into the other nibble.
+	CHECK_EQ(anim_count_of(pack_anim_byte(0xFF, 0)), uint8_t(15));
+	CHECK_EQ(creature_flags_of(pack_anim_byte(0, 0xFF)), uint8_t(15));
+	static_assert(pack_anim_byte(2, CreatureTorchLit) == 0x12, "constexpr");
+}
+
+TEST(protocol_version_bumped_for_c2)
+{
+	CHECK(kProtocolVersion >= 3u);
+	CHECK(static_cast<uint16_t>(Msg::EntitySound) == 0x012C);
+	CHECK(static_cast<uint16_t>(Msg::EntitySound) > static_cast<uint16_t>(Msg::ItemState));
 }
