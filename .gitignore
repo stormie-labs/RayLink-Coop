@@ -6,3 +6,5 @@ build/
 *.db*
 .env
 
+engine/
+logic-md/

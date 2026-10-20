@@ -1,0 +1,10 @@
+; Anomaly Coop — sections added to system.ltx (DLTX: mod_system_*.ltx are merged at load).
+
+; Character of a remote player in the host world (and avatar of other players on clients).
+; Spawned by the engine (coop_join.cpp), driven by network snapshots, never by AI.
+; The player's key and nick live in its custom data ([coop] section).
+[coop_player_avatar]:sim_default_stalker_0
+$spawn                  = "coop\player_avatar"
+character_profile       = sim_default_stalker_0
+spec_rank               = experienced
+community               = stalker
