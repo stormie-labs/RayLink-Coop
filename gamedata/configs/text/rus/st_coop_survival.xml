@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop - смерть и эвакуация в кооп-сессии (F3, задача 8): экран погибшего игрока, который ждёт
+     возвращения на свой привал. Использует движок (coop_survival.cpp, CStringTable). -->
+<string_table>
+	<string id="st_coop_evac_title">
+		<text>Тебя вытащили...</text>
+	</string>
+	<string id="st_coop_evac_wait">
+		<text>Возвращение на привал через %d с</text>
+	</string>
+	<string id="st_coop_evac_watch">
+		<text>Смотришь: %s</text>
+	</string>
+	<string id="st_coop_evac_no_allies">
+		<text>Живых не осталось. Мир не откатывается.</text>
+	</string>
+</string_table>
