@@ -261,8 +261,53 @@ TEST(upgrades_plan_section_defaults)
 	// Without the defaults the same list would lose the upgrade.
 	CHECK(upgrades::plan({}, {up("up_fourtc", "fourtcd", {"fourtab"})})[0] == Verdict::NoParent);
 
-	// Defaults not in the tree are skipped like the engine would; defaults never show up unasked.
+	// Defaults not in the tree are skipped (counted as refused); defaults never show up unasked.
 	const std::vector<Verdict> odd = upgrades::plan({}, {up("a1", "A")}, {up("zz", "A", {}, false)});
 	CHECK(odd[0] == Verdict::Install);
 	CHECK(upgrades::plan({}, {}, defaults).empty());
+}
+
+TEST(upgrades_added_by_a_client)
+{
+	using upgrades::Verdict;
+	// GE_INSTALL_UPGRADE from a client (task 10b): the server entity's list has no section defaults, the next
+	// net_Spawn from scratch installs the defaults, then that list, then the new one.
+	const std::vector<upgrades::Upgrade> beretta_defaults = {
+	    up("up_fiftha", "fifthab"), up("up_thirda", "thirdab"), up("up_thirdd", "thirdcd")};
+	// Into a group a default already took: refused (FATAL result_e_group at the next spawn).
+	CHECK(upgrades::verdict_of_added({}, up("up_thirdc", "thirdcd"), beretta_defaults) == Verdict::GroupTaken);
+	// Needs the group of a default: fine.
+	CHECK(upgrades::verdict_of_added({}, up("up_fourta", "fourtab", {"thirdab"}), beretta_defaults) ==
+	    Verdict::Install);
+	// Needs the group of an earlier one from the entity's list: fine; before it: refused.
+	CHECK(upgrades::verdict_of_added({up("up_fourta", "fourtab", {"thirdab"})}, up("up_fourtc", "fourtcd", {"fourtab"}),
+	          beretta_defaults) == Verdict::Install);
+	CHECK(upgrades::verdict_of_added({}, up("up_fourtc", "fourtcd", {"fourtab"}), beretta_defaults) ==
+	    Verdict::NoParent);
+	// Already there: from the entity's list, or a default. Neither is relayed.
+	CHECK(upgrades::verdict_of_added({up("up_fourta", "fourtab", {"thirdab"})}, up("up_fourta", "fourtab", {"thirdab"}),
+	          beretta_defaults) == Verdict::Installed);
+	CHECK(upgrades::verdict_of_added({}, up("up_thirdd", "thirdcd"), beretta_defaults) == Verdict::Default);
+	CHECK(upgrades::verdict_of_added({up("up_thirdd", "thirdcd")}, up("up_thirdd", "thirdcd"), beretta_defaults) ==
+	    Verdict::Installed);
+	CHECK(upgrades::verdict_of_added({}, up("zz", "Z", {}, false), beretta_defaults) == Verdict::Unknown);
+}
+
+TEST(upgrades_broken_section_defaults)
+{
+	// A section whose own installed_upgrades break the tree rules: init_install would FATAL on any spawn of it.
+	size_t refused = 99;
+	upgrades::plan({}, {}, {up("a1", "A"), up("b1", "B", {"A"})}, &refused);
+	CHECK_EQ(refused, size_t(0));
+	upgrades::plan({}, {}, {up("a1", "A"), up("a2", "A")}, &refused); // same group twice
+	CHECK_EQ(refused, size_t(1));
+	upgrades::plan({}, {}, {up("b1", "B", {"A"}), up("a1", "A")}, &refused); // child before its parent
+	CHECK_EQ(refused, size_t(1));
+	upgrades::plan({}, {}, {up("zz", "Z", {}, false)}, &refused); // not in the tree
+	CHECK_EQ(refused, size_t(1));
+	upgrades::plan({}, {}, {up("a1", "A"), up("a1", "A")}, &refused); // a repeat: the engine skips it (installed)
+	CHECK_EQ(refused, size_t(0));
+	CHECK(upgrades::defaults_ok({up("a1", "A"), up("b1", "B", {"A"})}));
+	CHECK(!upgrades::defaults_ok({up("a1", "A"), up("a2", "A")}));
+	CHECK(upgrades::defaults_ok({}));
 }
