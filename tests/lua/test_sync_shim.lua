@@ -60,6 +60,28 @@ do
 	check(get(host, "world", "a") == 1, "the store is as it was after a refused import")
 end
 
+-- ---------------------------------------------------------------- sync_shim_join_save (T14 review I1)
+-- The world save the host writes for a joining player goes to that client whole: coop.sync stays out of it (other
+-- players' scopes; the client gets his own copy as SyncFull). m_data lives between saves in the stock storage manager:
+-- the key of the last normal save must not ride along either.
+do
+	print("sync_shim_join_save")
+	fake_sync.reset()
+	local host = fake_sync.machines()
+	as(host, shim.on_game_start)
+	set(host, "world", "a", 1)
+	set(host, "player", "p", "mine")
+	local m_data = {}
+	as(host, function() SendScriptCallback("save_state", m_data) end)
+	check(type(m_data.coop_sync) == "table", "a normal save holds coop.sync")
+	fake_sync.saving_for_join(true)
+	as(host, function() SendScriptCallback("save_state", m_data) end)
+	fake_sync.saving_for_join(false)
+	check(m_data.coop_sync == nil, "the save for a joining player holds no coop.sync, not even the last save's")
+	as(host, function() SendScriptCallback("save_state", m_data) end)
+	check(type(m_data.coop_sync) == "table" and m_data.coop_sync.scopes == 2, "the next normal save holds it again")
+end
+
 -- ---------------------------------------------------------------- sync_shim_handler_result
 -- A client's request gets the host handler's ok, result; a handler error is ok = false there, not an error.
 do
@@ -201,6 +223,28 @@ do
 	check(get(client, "player", "gift") == "x", "it reaches him as his own")
 	check(get(client, "player", "mine") == 1, "his own change is in his scope")
 	check(get(host, "player:" .. client.peer, "mine") == 1, "and the host has it under his key")
+
+	-- Ruling F2-31 (review I3): keys coop.* of a player scope are the host's (F3 checkpoints): his player cannot forge them.
+	ok, why = set(client, "player", "coop.checkpoint.cur", "forged")
+	check(ok == false and why == "not allowed: coop.* keys of a player scope are the host's", "a client cannot write coop.*")
+	check(set(host, "player:" .. client.peer, "coop.checkpoint.cur", "real") == true, "the host writes it")
+	fake_sync.pump()
+	check(get(client, "player", "coop.checkpoint.cur") == "real", "it reaches its player")
+	ok, why = set(client, "player", "coop.checkpoint.cur", nil)
+	check(ok == false, "he cannot remove it either")
+
+	-- Review I2: a value left out is nil, as everywhere in Lua (the engine took LUA_TNONE for a bad value).
+	check(set(client, "player", "mine", 2) == true, "set")
+	check(set(client, "player", "mine") == true, "set(scope, key) without a value removes the key")
+	fake_sync.pump()
+	check(get(host, "player:" .. client.peer, "mine") == nil, "removed at the host")
+	local answered
+	as(host, function() coop.sync.handler("x.ping", function(peer, args) return args == nil, "pong" end) end)
+	check(as(client, function() return coop.sync.request("x.ping") end) == true, "request(name) without args")
+	as(client, function() coop.sync.request("x.ping", nil, function(o, r) answered = o and r end) end)
+	fake_sync.pump()
+	check(answered == "pong", "the handler gets nil args")
+	check(as(host, function() return coop.sync.broadcast("fx.none") end) == true, "broadcast(name) without args")
 
 	-- A full copy at join: what goes to him, nothing of the others' player data.
 	local late = fake_sync.join()

@@ -473,6 +473,103 @@ TEST(sync_net_player_scope_of_a_character)
 	CHECK(s == ScopeId::player(mine));
 }
 
+TEST(sync_net_host_keys_of_a_player_scope)
+{
+	// Ruling F2-31 (T14 review I3): keys "coop.*" of a player scope are the host's (F3 keeps a player's checkpoint
+	// there through syncapi::player_set): his own player cannot forge them.
+	const ScopeId me = ScopeId::player(digest(2));
+	CHECK(sn::host_key(me, "coop.checkpoint.cur"));
+	CHECK(sn::host_key(me, "coop."));
+	CHECK(!sn::host_key(me, "coop"));
+	CHECK(!sn::host_key(me, "Coop.x"));
+	CHECK(!sn::host_key(me, "mod.coop.x"));
+	CHECK(!sn::host_key(ScopeId::object(4), "coop.x")); // only a player scope
+	CHECK(!sn::host_key(ScopeId::world(), "coop.x"));
+
+	Store s;
+	std::vector<sn::Delivery> out;
+	const uint32_t seq = 3;
+	CHECK(sn::host_set(s, me, "coop.checkpoint.cur", ss::make_string("forged"), 2, true, &seq, 2, out) ==
+	    SetResult::NotAllowed);
+	REQUIRE(out.size() == 1);
+	CHECK(out[0].peer == 2 && out[0].msg.flags == (sn::kAck | sn::kRefused) && out[0].msg.refused == SetResult::NotAllowed);
+	CHECK(s.get(me, "coop.checkpoint.cur") == nullptr);
+	CHECK(sn::client_check(s, me, "coop.x", ss::make_number(1), true) == SetResult::NotAllowed);
+	CHECK(sn::client_check(s, me, "coop.x", Value(), true) == SetResult::NotAllowed); // not removed by him either
+
+	// The host writes it, and it reaches its player; the player's own keys stay his.
+	out.clear();
+	CHECK(sn::host_set(s, me, "coop.checkpoint.cur", ss::make_string("real"), kHostPeer, false, nullptr, 2, out) ==
+	    SetResult::Ok);
+	REQUIRE(out.size() == 1);
+	CHECK(out[0].to == sn::Delivery::One && out[0].peer == 2 && out[0].msg.key == "coop.checkpoint.cur");
+	out.clear();
+	CHECK(sn::host_set(s, me, "mine", ss::make_number(1), 2, true, &seq, 2, out) == SetResult::Ok);
+	CHECK(sn::client_check(s, me, "mine", ss::make_number(2), true) == SetResult::Ok);
+	CHECK(sn::client_check(s, me, "mine", ss::make_number(2), false) == SetResult::NotAllowed); // not his scope
+}
+
+TEST(sync_net_host_reserve)
+{
+	// Ruling F2-31 (T14 review I3): what clients write never takes the room the host keeps for its own writes: a part of
+	// every player scope and of every object scope, and a part of the pool all player and object scopes share.
+	Store s;
+	std::vector<sn::Delivery> out;
+	const uint32_t seq = 1;
+	const ScopeId me = ScopeId::player(digest(2));
+	const Value chunk = ss::make_string(std::string(16000, 'x'));
+	int taken = 0;
+	for (int i = 0; i < 200; ++i)
+	{
+		out.clear();
+		const SetResult r = sn::host_set(s, me, "k" + std::to_string(i), chunk, 2, true, &seq, 2, out);
+		if (r != SetResult::Ok)
+		{
+			CHECK(r == SetResult::ScopeFull);
+			break;
+		}
+		++taken;
+	}
+	CHECK(taken > 0);
+	CHECK(s.bytes(me) <= ss::kMaxPlayerBytes - sn::kHostPlayerReserve);
+	CHECK(s.bytes(me) + ss::entry_bytes("k", chunk) > ss::kMaxPlayerBytes - sn::kHostPlayerReserve); // really full
+	// The host still writes his checkpoint into that scope.
+	CHECK(sn::host_set(s, me, "coop.checkpoint.cur", ss::make_string(std::string(8000, 'c')), kHostPeer, false, nullptr, 2,
+	          out) == SetResult::Ok);
+	// A removal by the player always goes through.
+	CHECK(sn::client_check(s, me, "k0", Value(), true) == SetResult::Ok);
+
+	// Object scopes: a client holding many items fills the pool up to the host's part of it, no further.
+	Store p;
+	size_t objects = 0;
+	bool full = false;
+	for (uint32_t id = 1; id < 2000 && !full; ++id)
+		for (int k = 0; k < 4 && !full; ++k)
+		{
+			out.clear();
+			const SetResult r = sn::host_set(p, ScopeId::object(id), "k" + std::to_string(k), chunk, 3, true, &seq,
+			    kInvalidPeer, out);
+			if (r == SetResult::ScopeFull && k == 3)
+				continue; // this object's own room (its reserve kept): the next object
+			if (r != SetResult::Ok)
+			{
+				CHECK(r == SetResult::ScopeFull);
+				full = true;
+			}
+			else if (k == 0)
+				++objects;
+		}
+	CHECK(full);
+	CHECK(objects > 100);
+	CHECK(p.pool_bytes() <= ss::kMaxPoolBytes - sn::kHostPoolReserve);
+	for (uint32_t id = 1; id <= 3; ++id)
+		CHECK(p.bytes(ScopeId::object(id)) <= ss::kMaxObjectBytes - sn::kHostObjectReserve);
+	// The host writes into the pool all the same: a new object, a player's checkpoint.
+	CHECK(sn::host_set(p, ScopeId::object(5000), "k", chunk, kHostPeer, false, nullptr, kInvalidPeer, out) == SetResult::Ok);
+	CHECK(sn::host_set(p, ScopeId::player(digest(9)), "coop.checkpoint.cur", chunk, kHostPeer, false, nullptr, kInvalidPeer,
+	          out) == SetResult::Ok);
+}
+
 TEST(sync_net_host_drop)
 {
 	// An object destroyed: its scope goes, and the clients drop theirs; a scope the host does not have sends nothing.

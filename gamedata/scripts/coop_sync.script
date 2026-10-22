@@ -7,8 +7,8 @@
 	before) starts empty: on_game_start clears what the previous world left, since a new game has no load_state.
 	The session scope is not saved; it lives while the session does.
 	The same goes for a single player game (no session): a mod that uses coop.sync keeps its data in the save there.
-	A client keeps only what the host sends him: he neither saves nor loads coop.sync (the world save he gets carries
-	the host's m_data.coop_sync, which he leaves alone).
+	A client keeps only what the host sends him: he neither saves nor loads coop.sync. The world save the host writes
+	for a joining player (coop.saving_for_join()) holds no coop.sync: the player gets his own copy from the engine.
 --]]
 
 local function api()
@@ -19,9 +19,20 @@ local function is_client()
 	return coop and coop.is_client and coop.is_client() or false
 end
 
+local function saving_for_join()
+	return coop and coop.saving_for_join and coop.saving_for_join() or false
+end
+
 function save_state(m_data)
 	local sync = api()
 	if not sync or is_client() then
+		return
+	end
+	-- F2 T14 fix 1 (review I1): the world save for a joining player goes to him whole; coop.sync stays out of it (other
+	-- players' scopes; he gets his own copy from the engine). m_data lives between saves (alife_storage_manager): the
+	-- key of the last normal save is cleared, not just left alone. The next normal save writes it again.
+	if saving_for_join() then
+		m_data.coop_sync = nil
 		return
 	end
 	m_data.coop_sync = sync.export()

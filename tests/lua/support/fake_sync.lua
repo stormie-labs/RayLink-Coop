@@ -15,6 +15,7 @@
 --                                             release of an object (its scope goes everywhere)
 --   fake_sync.vector(x, y, z), fake_sync.is_vector(v)   a `vector` stand-in: get() returns one for a vector value
 --   fake_sync.marshal.encode(t) / decode(s)   a stand-in for marshal: plain values, tables, vectors
+--   fake_sync.saving_for_join(on)             the host writes the world save of a joining player (coop.saving_for_join)
 -- A machine: { peer, host (bool), sync (its coop.sync table), stats = { lua_errors, handler_errors, refused, lost,
 --   expired, ... } }. Object and character ids are the same on every machine (the engine swaps the two character ids
 -- of a client: not modelled). Messages travel only in pump(), in order per link, as on the engine's one Reliable lane.
@@ -40,6 +41,12 @@ local DEFAULT_BURST, DEFAULT_PER_SEC = 20, 10 -- RequestLimits
 local MAX_BURST, MAX_PER_SEC, MAX_RULES = 1000, 1000, 256
 local CONTAINER_REACH = 15
 local MAX_RADIUS = 100000
+-- coop_syncnet.h, fix 1 (Ruling F2-31): keys "coop.*" of a player scope are the host's; the host's room in the scopes
+-- clients write (a part of every player scope, of every object scope, of the pool).
+local HOST_KEY_PREFIX = "coop."
+local HOST_RESERVE = { player = 65536, object = 8192 }
+local HOST_POOL_RESERVE = 1048576
+local HOST_KEY_WHY = "not allowed: coop.* keys of a player scope are the host's"
 local RESULT_WHY = {
 	BadKey = "bad key", BadValue = "bad value", TooBig = "value too large", ScopeFull = "scope full",
 	NotAllowed = "not allowed", Stale = "stale",
@@ -285,9 +292,13 @@ function F.reset()
 	machines = {}
 	F.objects, F.positions = {}, {}
 	F.now = 100000
+	F.join_saving = false
 end
 
 function F.advance(ms) F.now = F.now + ms end
+
+-- coop.saving_for_join() of the host while on (the engine: around the join save in coop_join host_send_save).
+function F.saving_for_join(on) F.join_saving = on and true or false end
 
 function F.spawn(id, holder, pos, box) F.objects[id] = { holder = holder, pos = pos and copy(pos), box = box } end
 function F.give(id, peer) F.objects[id].holder = peer end
@@ -365,19 +376,29 @@ local function player_peer_of(s)
 	end
 end
 
+local function host_key(s, key) return kind_of(s) == "player" and key:sub(1, #HOST_KEY_PREFIX) == HOST_KEY_PREFIX end
+
+-- A client's change before the store (coop_syncnet client_check).
+local function client_check(st, s, key, value, owner)
+	local k = kind_of(s)
+	if k == "world" or k == "session" or not owner or host_key(s, key) then return "NotAllowed" end
+	if value == nil then return "Ok" end
+	local sc = st.scopes[s]
+	local e = sc and sc.entries[key]
+	local old = e and e.cost or 0
+	local cost = entry_cost(key, value)
+	if (sc and sc.bytes or 0) - old + cost > SCOPE_LIMIT[k] - (HOST_RESERVE[k] or 0) then return "ScopeFull" end
+	if pooled(k) and st.pool - old + cost > POOL - HOST_POOL_RESERVE then return "ScopeFull" end
+	return "Ok"
+end
+
 -- Host (and single player): one change stamped from the one counter, told to whom it concerns (coop_syncnet host_set).
 local function host_change(h, s, key, value, by, by_owner, ack)
-	local k = kind_of(s)
 	local old = store_get(h.store, s, key)
 	local version = h.store.top + 1
-	local r
-	if (k == "world" or k == "session") and by ~= 0 then
-		r = "NotAllowed"
-	elseif pooled(k) and by ~= 0 and not by_owner then
-		r = "NotAllowed"
-	else
-		r = store_set(h.store, s, key, value, version)
-	end
+	local r = by == 0 and "Ok" or client_check(h.store, s, key, value, by_owner)
+	if r == "Ok" then r = store_set(h.store, s, key, value, version) end
+	local k = kind_of(s)
 	if r ~= "Ok" and r ~= "Same" then
 		if ack then send(h, by, { type = "set", ack = ack, refused = r, by = by }) end
 		return r
@@ -755,6 +776,10 @@ local function make_api(m)
 			m.stats.lua_sets = m.stats.lua_sets + 1
 			return true
 		end
+		if host_key(s, key) then
+			m.stats.lua_refused = m.stats.lua_refused + 1
+			return false, HOST_KEY_WHY
+		end
 		local owner = k == "player" or (k == "object" and F.objects[n.id] ~= nil and holder_of(n.id) == m.peer)
 		if k == "world" or k == "session" or not owner then
 			m.stats.lua_refused = m.stats.lua_refused + 1
@@ -1029,15 +1054,17 @@ end
 
 function F.as(m, fn, ...)
 	coop = coop or {}
-	local saved = { coop.sync, coop.is_host, coop.is_client, coop.self_id }
+	local saved = { coop.sync, coop.is_host, coop.is_client, coop.self_id, coop.saving_for_join }
 	local prev = F.current
 	coop.sync = m.sync
 	coop.is_host = function() return m.host end
 	coop.is_client = function() return not m.host end
 	coop.self_id = function() return m.peer end
+	coop.saving_for_join = function() return m.host and F.join_saving or false end
 	F.current = m
 	local r = { pcall(fn, ...) }
-	coop.sync, coop.is_host, coop.is_client, coop.self_id = saved[1], saved[2], saved[3], saved[4]
+	coop.sync, coop.is_host, coop.is_client, coop.self_id, coop.saving_for_join = saved[1], saved[2], saved[3], saved[4],
+		saved[5]
 	F.current = prev
 	if not r[1] then error(r[2], 0) end
 	return unpack(r, 2, table.maxn(r))
