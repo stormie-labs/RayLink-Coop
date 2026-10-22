@@ -692,7 +692,7 @@ TEST(limits_client_rate_rules)
 	};
 	const Expected expected[] = {{Msg::StateDumpRequest, 64, 50}, {Msg::TransitionVote, 4, 2000}, {Msg::PlayerEquip, 8, 400},
 		{Msg::PlayerVitals, 4, 1000}, {Msg::MapSpot, 32, 250}, {Msg::InfoPortion, 64, 50}, {Msg::StoryResync, 4, 5000},
-		{Msg::ScriptEvent, 64, 20}, {Msg::ReqMoney, 32, 100}, {Msg::DialogLock, 10, 1000}};
+		{Msg::ScriptEvent, 64, 20}, {Msg::ReqMoney, 32, 100}, {Msg::DialogLock, 10, 1000}, {Msg::CharChoice, 4, 2000}};
 	for (const Expected& e : expected)
 	{
 		const limits::RateRule* rule = nullptr;
@@ -1120,6 +1120,8 @@ constexpr Direction kDirections[] = {
 	{Msg::LevelChange, kHost},
 	{Msg::TransitionVote, kClient},
 	{Msg::AvatarList, kHost},
+	{Msg::CharOffer, kHost}, // protocol 8: a new key chooses his character before the world
+	{Msg::CharChoice, kClient},
 	// players: the owner sends, the host relays
 	{Msg::PlayerState, kBoth},
 	{Msg::PlayerVitals, kClient},
@@ -1244,5 +1246,48 @@ TEST(game_messages_the_wrong_way_are_refused)
 	CHECK(at_b == std::vector<uint16_t>{uint16_t(Msg::EntitySpawn)});
 	CHECK(at_host == std::vector<uint16_t>{uint16_t(Msg::DialogLock)});
 	CHECK(b.logged("unexpected DialogLock"));
+	CHECK(b.s.is_active() && !b.disconnected);
+}
+
+TEST(character_choice_messages_go_one_way)
+{
+	// Protocol 8: the offer of a new character comes from the host only (a client that sends one is kicked before any
+	// handler), the choice from clients only (a client ignores one from the host). The choice is rate limited at the
+	// host like every other request (limits_client_rate_rules): an honest player sends one per press of Done.
+	Node host("Boss", 37136), a("Al", 37136), b("Bo", 37136);
+	std::vector<uint16_t> at_host, at_b;
+	auto record = [](std::vector<uint16_t>& into, Msg type) {
+		return [&into, type](PeerId, Reader&) { into.push_back(uint16_t(type)); };
+	};
+	for (Msg m : {Msg::CharOffer, Msg::CharChoice})
+	{
+		host.s.on(m, record(at_host, m));
+		b.s.on(m, record(at_b, m));
+	}
+	host_and_join(host, {&a, &b}, 37136);
+	REQUIRE(b.s.self() == PeerId(2));
+
+	CharOfferMsg forged;
+	forged.eco = 3;
+	forged.points = 1000000;
+	Writer wf;
+	forged.write(wf);
+	a.s.send(kHostPeer, Lane::Reliable, Msg::CharOffer, wf);
+	REQUIRE(t::pump_until({&host.s, &a.s, &b.s}, 5000, [&] { return a.disconnected; }));
+	CHECK(at_host.empty());
+	CHECK(kicked(a, "unexpected CharOffer"));
+
+	CharChoiceMsg choice;
+	choice.faction = "stalker";
+	Writer wc;
+	choice.write(wc);
+	host.s.send(2, Lane::Reliable, Msg::CharChoice, wc); // only clients choose
+	host.s.send(2, Lane::Reliable, Msg::CharOffer, wf); // the right way, after it (reliable lane: in order)
+	b.s.send(kHostPeer, Lane::Reliable, Msg::CharChoice, wc);
+	REQUIRE(t::pump_until({&host.s, &b.s}, 3000, [&] { return at_b.size() == 1 && at_host.size() == 1; }));
+	t::pump_for({&host.s, &b.s}, 100);
+	CHECK(at_b == std::vector<uint16_t>{uint16_t(Msg::CharOffer)});
+	CHECK(at_host == std::vector<uint16_t>{uint16_t(Msg::CharChoice)});
+	CHECK(b.logged("unexpected CharChoice"));
 	CHECK(b.s.is_active() && !b.disconnected);
 }

@@ -18,6 +18,28 @@
 		menu.char_offer      host -> player   { eco, points, nick }            repeated every 60 s while new
 		menu.new_character   player -> host   { faction, buy = "sec,sec,..." } bought items only
 		menu.char_result     host -> player   { ok, faction, money, items } | { ok = false, reason }
+
+	Protocol 8 (owner, live test 2026-10-23: "first choose the faction, then appear where needed, in my faction"):
+	a player whose key has no character chooses BEFORE the world, in the main menu, and the events above are left for
+	characters still marked new in an older save. The engine (coop_join.cpp, xrCoop/coop_newchar.h) carries the offer
+	and the choice (Msg::CharOffer / Msg::CharChoice) and calls, on the main thread:
+		host:   join_terms() -> eco, points, story                the terms of the offer
+		        host_plan_character(peer, faction, buy) -> { ok, faction, money, where, x, y, z, lvid, gvid } |
+		                                                   { ok = false, reason }
+		                                                   the check, and where the character starts (no point: next to
+		                                                   the host)
+		        host_make_character(peer, proxy, faction, buy) -> true, money, items | false, reason
+		                                                   after the engine made the character there (offline, the
+		                                                   profile's supplies stripped, the faction's community): kit,
+		                                                   ammo and money; the world save follows
+		client: join_offer(eco, points, level, refusal, flags) -> shown   the window, main menu or game
+		        join_choice() -> faction, buy | nil        what Done gave, taken once
+		        join_closed(why)                           the world arrives: the window closes
+	Where (host_start, as the stock new game, ui_mm_faction_select.script on_game_load): one of the faction's starts of
+	plugins\new_game_start_locations.ltx at random (story mode: only those marked for it). Until split levels (F3a)
+	every player is on the host's level: a start on another level does not count; then a camp of the faction on the
+	host's level (a smart with base and the faction in misc\simulation_objects_props.ltx), nearest to the host; else
+	next to the host. F3a: SPLIT_LEVELS = true (and newchar::kOwnLevels in the engine) keeps the faction's own level.
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
@@ -30,6 +52,12 @@ local NEW_VAR = "coop_new_char"
 local OFFER_EVERY_MS = 60000
 local TICK_MS = 2000
 local LOADOUTS = "items\\settings\\new_game_loadouts.ltx"
+local START_LOCATIONS = "plugins\\new_game_start_locations.ltx"
+local HOOK_VAR = "coop_new_char_hook" -- made before the world: the mods' hook waits until the character is online
+local STASH_JOINED = "coop_char_joined" -- client: the faction chosen before the world, told once in it
+local SESSION_POLL_MS = 250
+-- F3a (split levels): true lets a new character start on his faction's own level (newchar::kOwnLevels in the engine)
+SPLIT_LEVELS = false
 
 -- Factions a player can pick (the stock screen's list; zombied is a cheat there). Each needs <f>_loadout.
 FACTIONS = { "stalker", "bandit", "csky", "dolg", "freedom", "killer", "army", "ecolog", "monolith",
@@ -167,6 +195,125 @@ local function host_eco()
 	return math.max(1, math.min(3, v))
 end
 
+-- Host check of a choice with the host's own config and economy tier:
+-- { items = {sec, ...} (free kit + bought), money } | nil, reason ("faction", "items", "points").
+function plan_kit(faction, buy)
+	faction = type(faction) == "string" and faction or ""
+	local eco = host_eco()
+	local kit = read_kit(faction, eco)
+	if not kit then return nil, "faction" end
+	local buys = explode(type(buy) == "string" and buy or "")
+	if #buys > 64 then return nil, "items" end
+	local ok, why = check_buys(kit, buys, budget(eco))
+	if not ok then return nil, why end
+	local items = {}
+	for _, s in ipairs(kit.free) do items[#items + 1] = s end
+	for _, s in ipairs(buys) do items[#items + 1] = s end
+	return { items = items, money = faction_money(faction) }
+end
+
+-------------------------------------------------------------------------------
+-- Where a new character starts (protocol 8)
+-------------------------------------------------------------------------------
+local ini_map_cache = nil
+local function ini_map()
+	if not ini_map_cache then ini_map_cache = ini_file(START_LOCATIONS) end
+	return ini_map_cache
+end
+
+-- The starts of a faction as the stock new game lists them (ui_mm_faction_select.script LoadMap, on_game_load):
+-- [<faction>_start_locations] id = picture_level[,story]. Story mode lists the ones marked true or false, a game
+-- without the story the ones not marked false. { {id, image, x, y, z, lvid, gvid}, ... } in the file's order.
+function faction_starts(faction, story, ini)
+	ini = ini or ini_map()
+	local list = tostring(faction) .. "_start_locations"
+	local out = {}
+	if not ini:section_exist(list) then return out end
+	for i = 0, (ini:line_count(list) or 0) - 1 do
+		local _, id, value = ini:r_line(list, i, "", "")
+		local t = explode(value)
+		local listed
+		if story then listed = t[2] == "true" or t[2] == "false" else listed = t[2] ~= "false" end
+		if listed and type(id) == "string" and id ~= "" and ini:section_exist(id) then
+			local x, y, z = ini:r_float_ex(id, "x"), ini:r_float_ex(id, "y"), ini:r_float_ex(id, "z")
+			local lvid, gvid = ini:r_float_ex(id, "lvid"), ini:r_float_ex(id, "gvid")
+			if x and y and z and lvid and gvid then
+				out[#out + 1] = { id = id, image = t[1], x = x, y = y, z = z, lvid = math.floor(lvid), gvid = math.floor(gvid) }
+			end
+		end
+	end
+	return out
+end
+
+-- Where a new character of `faction` starts: { where = "start:<id>" | "camp:<smart>", x, y, z, lvid, gvid } or nil
+-- (next to the host). opts: level (the level it must be on; nil = any, F3a), level_of(gvid) -> level, story,
+-- camp(faction) -> point | nil (a camp of the faction on that level), pick(n) -> 1..n.
+function start_for(faction, opts)
+	local here = {}
+	for _, s in ipairs(faction_starts(faction, opts.story)) do
+		if opts.level == nil or opts.level_of(s.gvid) == opts.level then here[#here + 1] = s end
+	end
+	if #here > 0 then
+		local s = here[math.max(1, math.min(#here, tonumber(opts.pick(#here)) or 1))]
+		s.where = "start:" .. s.id
+		return s
+	end
+	local camp = opts.camp and opts.camp(faction)
+	if camp then
+		camp.where = "camp:" .. tostring(camp.id)
+		return camp
+	end
+	return nil
+end
+
+local function level_of(gvid)
+	local gg = game_graph and game_graph()
+	if not (gg and type(gvid) == "number" and gg:valid_vertex_id(gvid)) then return nil end
+	return gg:vertex(gvid):level_id()
+end
+
+-- Host: the nearest smart terrain of the level that is a base of the faction (misc\simulation_objects_props.ltx
+-- base = 1 and <faction> = 1: squads of the faction live there), or nil.
+function faction_camp(faction, level, from)
+	local board = rawget(_G, "SIMBOARD")
+	if not (board and type(board.smarts) == "table" and level ~= nil) then return nil end
+	local best, best_d
+	for _, s in pairs(board.smarts) do
+		local smart = type(s) == "table" and s.smrt
+		local props = smart and smart.props
+		if props and (tonumber(props.base) or 0) > 0 and (tonumber(props[faction]) or 0) > 0
+			and level_of(smart.m_game_vertex_id) == level then
+			local p = smart.position
+			local d = 0
+			if from then d = (p.x - from.x) ^ 2 + (p.y - from.y) ^ 2 + (p.z - from.z) ^ 2 end
+			if not best or d < best_d then best, best_d = smart, d end
+		end
+	end
+	if not best then return nil end
+	local p = best.position
+	return { id = best:name(), x = p.x, y = p.y, z = p.z, lvid = best.m_level_vertex_id, gvid = best.m_game_vertex_id }
+end
+
+local function story_mode()
+	local h = rawget(_G, "has_alife_info")
+	return not (h and h("story_mode_disabled"))
+end
+
+-- Host: the start of a new character of `faction` (start_for with the host's level, its story mode, its camps).
+function host_start(faction)
+	local actor = db and db.actor
+	local level = actor and level_of(actor:game_vertex_id())
+	if level == nil and not SPLIT_LEVELS then return nil end
+	local from = actor and actor:position()
+	return start_for(faction, {
+		level = (not SPLIT_LEVELS) and level or nil,
+		level_of = level_of,
+		story = story_mode(),
+		camp = function(f) return faction_camp(f, level, from) end,
+		pick = function(n) return math.random(n) end,
+	})
+end
+
 -------------------------------------------------------------------------------
 -- Host
 -------------------------------------------------------------------------------
@@ -184,6 +331,31 @@ local function se_stalker_on_spawn(se)
 	end
 end
 
+local function nick_of(peer)
+	for _, p in ipairs(api.players()) do
+		if p.id == peer then return tostring(p.nick) end
+	end
+	return "?"
+end
+
+-- Other groups' start kit of a new character (W5: Mags Redux magazines, coop_mods_core listeners). Needs the
+-- character in the world (its game object).
+function new_character_hook(peer)
+	local mc = rawget(_G, "coop_mods_core")
+	if mc and type(mc.on_new_character) == "function" then
+		local okm, errm = pcall(mc.on_new_character, peer)
+		if not okm then log("! new character hook: %s", tostring(errm)) end
+	end
+end
+
+function host_news(peer, faction)
+	local nick = nick_of(peer)
+	pcall(function()
+		db.actor:give_game_news("Co-op", tr("st_coop_char_host_news", nick, game.translate_string("st_faction_" .. faction)),
+			"ui_iconsTotal_grouping", 0, 6000)
+	end)
+end
+
 local offered = {} -- peer -> time of the next offer
 
 local function host_tick()
@@ -192,6 +364,11 @@ local function host_tick()
 	for _, p in ipairs(api.players()) do
 		if not p.is_self then
 			seen[p.id] = true
+			-- protocol 8: a character made before the world gets the mods' kit once it is in the world
+			if p.avatar_id and se_load_var(p.avatar_id, nil, HOOK_VAR) == true and level.object_by_id(p.avatar_id) then
+				se_save_var(p.avatar_id, nil, HOOK_VAR, nil)
+				new_character_hook(p.id)
+			end
 			if p.avatar_id and is_new(p.avatar_id) then
 				if not offered[p.id] or t >= offered[p.id] then
 					offered[p.id] = t + OFFER_EVERY_MS
@@ -239,19 +416,12 @@ local function on_new_character(payload, from)
 	if not proxy then return reply(from, { ok = false, reason = "no_character" }) end
 	if not is_new(proxy) then return reply(from, { ok = false, reason = "not_new" }) end
 	local faction = type(t.faction) == "string" and t.faction or ""
-	local eco = host_eco()
-	local kit = read_kit(faction, eco)
-	if not kit then return reply(from, { ok = false, reason = "faction" }) end
-	local buys = explode(type(t.buy) == "string" and t.buy or "")
-	if #buys > 64 then return reply(from, { ok = false, reason = "items" }) end
-	local ok, why = check_buys(kit, buys, budget(eco))
-	if not ok then return reply(from, { ok = false, reason = why }) end
+	local plan, why = plan_kit(faction, t.buy)
+	if not plan then return reply(from, { ok = false, reason = why }) end
 	local npc = level.object_by_id(proxy)
 	if not npc then return reply(from, { ok = false, reason = "busy" }) end
 
-	local items = {}
-	for _, s in ipairs(kit.free) do items[#items + 1] = s end
-	for _, s in ipairs(buys) do items[#items + 1] = s end
+	local items = plan.items
 	local ok2, removed, given = pcall(apply_kit, npc, faction, items)
 	if not ok2 then
 		log("! kit for player #%d failed: %s", from, tostring(removed))
@@ -271,27 +441,73 @@ local function on_new_character(payload, from)
 	offered[from] = nil
 	log("player #%d: faction %s, %d NPC item(s) removed, %d item(s) given, money %d", from, faction, removed, given, money)
 	reply(from, { ok = true, faction = faction, money = money, items = given })
-	-- other groups' start kit of a new character (W5: Mags Redux magazines, coop_mods_core listeners)
-	local mc = rawget(_G, "coop_mods_core")
-	if mc and type(mc.on_new_character) == "function" then
-		local okm, errm = pcall(mc.on_new_character, from)
-		if not okm then log("! new character hook: %s", tostring(errm)) end
+	new_character_hook(from)
+	host_news(from, faction)
+end
+
+-------------------------------------------------------------------------------
+-- Host: a new character before the world (protocol 8; the engine's calls, see the header)
+-------------------------------------------------------------------------------
+-- The terms of the offer: the host's economy tier, the points it gives, and whether its game has the story on (which
+-- faction starts count, shown in the window).
+function join_terms()
+	local eco = host_eco()
+	return eco, budget(eco), story_mode()
+end
+
+-- The engine has a choice of player `peer`: refused, or accepted with the start of the character.
+function host_plan_character(peer, faction, buy)
+	if not (api and api.is_host()) then return { ok = false, reason = "busy" } end
+	local plan, why = plan_kit(faction, buy)
+	if not plan then
+		log("player #%s: choice refused (%s)", tostring(peer), tostring(why))
+		return { ok = false, reason = why }
 	end
-	local nick = "?"
-	for _, p in ipairs(api.players()) do
-		if p.id == from then nick = p.nick end
+	local t = { ok = true, faction = faction, money = plan.money }
+	local ok, s = pcall(host_start, faction)
+	if not ok then log("! start of %s: %s", tostring(faction), tostring(s)) end
+	if ok and s then
+		t.where, t.x, t.y, t.z, t.lvid, t.gvid = s.where, s.x, s.y, s.z, s.lvid, s.gvid
 	end
-	pcall(function()
-		db.actor:give_game_news("Co-op", tr("st_coop_char_host_news", nick, game.translate_string("st_faction_" .. faction)),
-			"ui_iconsTotal_grouping", 0, 6000)
-	end)
+	return t
+end
+
+-- The engine made the character (`proxy`, offline, its profile's supplies stripped, the faction's community): the
+-- kit, its ammo and the faction's money, as the in-world choice does; the world save follows. On false the engine
+-- releases the character and offers the choice again.
+function host_make_character(peer, proxy, faction, buy)
+	if not (api and api.is_host()) then return false, "busy" end
+	local plan, why = plan_kit(faction, buy)
+	if not plan then return false, why end
+	local se = alife_object(proxy)
+	if not se then return false, "no_character" end
+	local given = 0
+	for _, sec in ipairs(plan.items) do
+		if alife_create_item(sec, se) then given = given + 1 end
+	end
+	for sec, cnt in pairs(ammo_for(plan.items)) do
+		if alife_create_item(sec, se, { ammo = cnt }) then given = given + 1 end
+	end
+	local set_ok, set_why = false, "coop.money_set is missing"
+	if type(api.money_set) == "function" then set_ok, set_why = api.money_set(peer, plan.money) end
+	if not set_ok then
+		log("! money of player #%s not set: %s", tostring(peer), tostring(set_why))
+		return false, "busy"
+	end
+	se_save_var(proxy, nil, NEW_VAR, nil)
+	se_save_var(proxy, nil, HOOK_VAR, true)
+	log("player #%s: new character %d, faction %s, %d item(s), money %d, before the world", tostring(peer), proxy,
+		tostring(faction), given, plan.money)
+	host_news(peer, faction)
+	return true, plan.money, given
 end
 
 -------------------------------------------------------------------------------
 -- Client: the choice window
 -------------------------------------------------------------------------------
-local offer = nil -- last offer { eco, points, nick }
+local offer = nil -- last offer { eco, points, nick } (protocol 8 adds join = true, level, story, refusal)
 local state = { show = false, waiting = false, done = false }
+local join = { choice = nil } -- protocol 8: what Done gave, until the engine takes it (join_choice)
 GUI = nil
 
 local function unlocked_factions()
@@ -418,7 +634,8 @@ function UICoopNewChar:InitControls()
 
 	self.btn_start = own:Init3tButton("coop_char:btn_start", self.dialog)
 	self:Register(self.btn_start, "btn_start")
-	self:Register(own:Init3tButton("coop_char:btn_later", self.dialog), "btn_back")
+	self.btn_back = own:Init3tButton("coop_char:btn_later", self.dialog) -- Later; Leave before the world (protocol 8)
+	self:Register(self.btn_back, "btn_back")
 	self:Register(xml:Init3tButton("main_dialog:btn_faction", self.dialog), "btn_faction")
 
 	self.CC = {}
@@ -454,17 +671,29 @@ function UICoopNewChar:InitCallbacks()
 	end
 end
 
+-- The level the character appears on: before the world (protocol 8) the host's, from the offer; in the world the
+-- level the player is on now (the host's world).
+function UICoopNewChar:Level()
+	local o = self.offer or {}
+	if o.join then return o.level end
+	return level_name()
+end
+
 -- New offer (or the same again): texts, points of the host's tier, lists.
 function UICoopNewChar:Fill(o)
 	self.offer = o
 	local nick = tostring(o.nick or "")
 	self.name:SetText(nick)
-	self.info:SetText(tr("st_coop_char_info", host_nick(), nick))
-	self:SetStatus("ready")
+	self.info:SetText(tr(o.join and "st_coop_char_info_join" or "st_coop_char_info", host_nick(), nick))
+	self.btn_back:TextControl():SetText(tr(o.join and "st_coop_char_btn_leave" or "st_coop_char_btn_later"))
+	if o.refusal then
+		self:SetStatus("bad", tr("st_coop_char_refused", tr("st_coop_char_reason_" .. o.refusal)))
+	else
+		self:SetStatus("ready")
+	end
 	self.access = true
 	self.btn_start:Enable(true)
-	-- where the character appears: the level the player is on now (the host's world, next to the group)
-	local lvl = level_name()
+	local lvl = self:Level()
 	if lvl and LEVEL_PICTURES[lvl] then
 		self.box_map:InitTexture("ui_new_game_map_" .. lvl)
 		self.box_map:SetStretchTexture(true)
@@ -474,21 +703,33 @@ function UICoopNewChar:Fill(o)
 		self.box_map:Show(false)
 		self.map_dim:Show(false)
 	end
-	local lvl_name = lvl and game.translate_string(lvl)
-	if lvl_name and lvl_name ~= "" and lvl_name ~= lvl then
-		self.start:SetText(tr("st_coop_char_start", lvl_name))
-	else
-		self.start:SetText(tr("st_coop_char_start_near"))
-	end
 	local r, g, b = own_color()
 	self.color_icon:SetTextureColor(GetARGB(255, r, g, b))
 	self:UpdateAll()
 end
 
+-- Start line. In the world: next to the group on this level. Before the world (protocol 8): what the host will do with
+-- the chosen faction (host_start): its start on the host's level, else a camp of it there or next to the group.
+function UICoopNewChar:UpdateStart()
+	local o = self.offer or {}
+	local lvl = self:Level()
+	local lvl_name = lvl and game.translate_string(lvl)
+	if not (lvl_name and lvl_name ~= "" and lvl_name ~= lvl) then lvl_name = nil end
+	if o.join and lvl then
+		local here = start_preview(self.faction, lvl, o.story) == "start"
+		self.start:SetText(tr(here and "st_coop_char_start_faction" or "st_coop_char_start_camp", lvl_name or lvl))
+	elseif lvl_name and not o.join then
+		self.start:SetText(tr("st_coop_char_start", lvl_name))
+	else
+		self.start:SetText(tr("st_coop_char_start_near"))
+	end
+end
+
 -- Status line of the bottom panel: "ready" (hint), "waiting", or a refusal text.
 function UICoopNewChar:SetStatus(kind, text)
 	if kind == "ready" then
-		self.status:SetText(C_READY .. tr("st_coop_char_ready"))
+		local join_mode = self.offer and self.offer.join
+		self.status:SetText(C_READY .. tr(join_mode and "st_coop_char_ready_join" or "st_coop_char_ready"))
 	elseif kind == "waiting" then
 		self.status:SetText(C_WAIT .. tr("st_coop_char_waiting"))
 	else
@@ -520,6 +761,7 @@ function UICoopNewChar:UpdateAll()
 	self.box_faction:SetStretchTexture(true)
 	self.text_money:SetText(tostring(faction_money(f)) .. " RU")
 	self:UpdateFacts()
+	self:UpdateStart()
 	self:UpdateDescr()
 	self:LoadLoadout()
 end
@@ -651,6 +893,15 @@ end
 function UICoopNewChar:OnStart()
 	if not self.access or state.waiting then return end
 	local buy = table.concat(self:Bought(), ",")
+	if self.offer and self.offer.join then
+		-- protocol 8: the engine takes it (join_choice) and sends it to the host as a CharChoice
+		join.choice = { faction = self.faction, buy = buy }
+		state.waiting = true
+		self.btn_start:Enable(false)
+		self:SetStatus("waiting")
+		log("choice made before the world: %s, bought: %s", self.faction, buy ~= "" and buy or "-")
+		return
+	end
 	local ok, why = api.send_event("menu.new_character", encode({ faction = self.faction, buy = buy }), 0)
 	if not ok then
 		self:SetStatus("bad", tr("st_coop_char_refused", tostring(why)))
@@ -664,6 +915,14 @@ end
 
 function UICoopNewChar:OnLater()
 	if not self.access then return end
+	if self.offer and self.offer.join then
+		-- protocol 8: no world without a character: Leave ends the session (the co-op menu shows it)
+		self:Close()
+		offer, join.choice, state.waiting = nil, nil, false
+		log("left the session from the choice window")
+		if api and api.disconnect then pcall(api.disconnect) end
+		return
+	end
 	self:Close()
 	pcall(function() db.actor:give_game_news("Co-op", tr("st_coop_char_later_hint"), "ui_iconsTotal_grouping", 0, 5000) end)
 end
@@ -672,8 +931,25 @@ function UICoopNewChar:Close()
 	if self:IsShown() then self:HideDialog() end
 end
 
+-- Protocol 8: the window before the world follows the session: it ended (kicked, the host left) or the world is
+-- loading (join_closed did not come): closed.
+function UICoopNewChar:FollowSession()
+	if not (self.offer and self.offer.join and api and api.session_info) then return end
+	local now = now_ms()
+	if now < (self.next_session_poll or 0) then return end
+	self.next_session_poll = now + SESSION_POLL_MS
+	local ok, info = pcall(api.session_info)
+	if not ok or type(info) ~= "table" then return end
+	local phase = tostring(info.phase or "")
+	if not info.active or not (phase == "receiving-world" or phase == "handshaked" or phase == "connecting") then
+		log("choice window closed: session %s", info.active and phase or "ended")
+		join_closed(phase)
+	end
+end
+
 function UICoopNewChar:Update()
 	CUIScriptWnd.Update(self)
+	self:FollowSession()
 	if self.access then
 		local found = false
 		for _, cc in pairs(self.CC) do
@@ -693,7 +969,7 @@ function UICoopNewChar:OnKeyboard(dik, keyboard_action)
 		if keyboard_action == ui_events.WINDOW_KEY_PRESSED and dik == DIK_keys.DIK_ESCAPE then
 			if not self.access then
 				self:PopupFaction(false)
-			else
+			elseif not (self.offer and self.offer.join) then -- before the world Escape does not leave the session
 				self:OnLater()
 			end
 			return true
@@ -703,7 +979,8 @@ function UICoopNewChar:OnKeyboard(dik, keyboard_action)
 end
 
 local function show_window()
-	if not (offer and db and db.actor) or state.done then return false end
+	if not offer or state.done then return false end
+	if not offer.join and not (db and db.actor) then return false end -- in the world: once the actor exists
 	local ok, err = pcall(function()
 		if not GUI then GUI = UICoopNewChar() end
 		if not GUI:IsShown() then
@@ -756,6 +1033,69 @@ local function on_result(payload, from)
 end
 
 -------------------------------------------------------------------------------
+-- Client: the choice before the world (protocol 8; the engine's calls, see the header)
+-------------------------------------------------------------------------------
+-- Where the host will put a character of `faction` (host_start), as far as the client knows: "start" if the faction
+-- has a start on the host's level (by the start's picture: no game graph in the main menu), else "camp" (a camp of
+-- the faction there, or next to the group).
+function start_preview(faction, level, story)
+	if SPLIT_LEVELS then return "start" end
+	for _, s in ipairs(faction_starts(faction, story)) do
+		if s.image == level then return "start" end
+	end
+	return "camp"
+end
+
+local function own_nick()
+	for _, p in ipairs(api and api.players() or {}) do
+		if p.is_self then return tostring(p.nick or "") end
+	end
+	local ok, info = pcall(function() return api.session_info() end)
+	return ok and type(info) == "table" and tostring(info.nick or "") or ""
+end
+
+-- The host's offer (again after a refused choice: `refusal` is its reason code): the window, now. flags: 1 = the
+-- host's game has the story on. True if the window is shown (else the engine tries again).
+function join_offer(eco, points, level, refusal, flags)
+	if not api then return false end
+	offer = {
+		join = true,
+		eco = math.max(1, math.min(3, tonumber(eco) or 1)),
+		points = tonumber(points),
+		nick = own_nick(),
+		level = type(level) == "string" and level ~= "" and level or nil,
+		refusal = type(refusal) == "string" and refusal ~= "" and refusal or nil,
+		story = (math.floor(tonumber(flags) or 0) % 2) == 1,
+	}
+	join.choice = nil
+	state.waiting, state.done, state.show = false, false, false
+	if GUI and GUI:IsShown() then
+		local ok, err = pcall(GUI.Fill, GUI, offer)
+		if not ok then log("! new character window failed: %s", tostring(err)) end
+		return ok
+	end
+	return show_window()
+end
+
+-- What Done gave since the last call: faction, bought "sec,sec,..." (nil if nothing). Kept for the news in the world:
+-- the load rebuilds Lua, the session's stash stays.
+function join_choice()
+	local c = join.choice
+	join.choice = nil
+	if not c then return nil end
+	if api and api.stash_set then pcall(api.stash_set, STASH_JOINED, c.faction) end
+	return c.faction, c.buy
+end
+
+-- The world arrives (or the session ended): the window closes.
+function join_closed(why)
+	join.choice = nil
+	if offer and offer.join then offer = nil end
+	state.waiting = false
+	if GUI then pcall(GUI.Close, GUI) end
+end
+
+-------------------------------------------------------------------------------
 -- Callbacks
 -------------------------------------------------------------------------------
 local next_tick = 0
@@ -767,7 +1107,18 @@ local function actor_on_update()
 	if api.is_host() then
 		local ok, err = pcall(host_tick)
 		if not ok then log("! host tick: %s", tostring(err)) end
-	elseif state.show and not state.waiting then
+		return
+	end
+	-- protocol 8: the character chosen before the world, told once in it
+	local joined = api.stash_get and api.stash_get(STASH_JOINED)
+	if type(joined) == "string" and db and db.actor then
+		api.stash_set(STASH_JOINED, nil)
+		state.done = true
+		local name = game.translate_string("st_faction_" .. joined)
+		pcall(function() db.actor:give_game_news("Co-op", tr("st_coop_char_done", name), "ui_iconsTotal_grouping", 0, 7000) end)
+		log("in the world as %s (chosen before it)", joined)
+	end
+	if state.show and not state.waiting then
 		state.show = not show_window()
 	end
 end

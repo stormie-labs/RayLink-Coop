@@ -20,6 +20,9 @@ coop_menu = load_module("coop_menu") -- for tr()
 
 -- configs
 function ini_file(name)
+	if name == "plugins\\new_game_start_locations.ltx" then -- protocol 8: the faction starts of the stock new game
+		return ini_over(REF .. "configs/plugins/new_game_start_locations.ltx")
+	end
 	assert(name == "items\\settings\\new_game_loadouts.ltx", name)
 	return ini_over(REF .. "configs/items/settings/new_game_loadouts.ltx")
 end
@@ -53,7 +56,15 @@ coop = {
 	avatar_of = function(peer) for _, p in ipairs(PLAYERS) do if p.id == peer then return p.avatar_id end end end,
 	send_event = function(name, payload, target) SENT[#SENT + 1] = { name = name, t = PAYLOADS[payload], to = target }
 		return true end,
+	-- protocol 8 (the join flow): the session as the menu sees it, leaving it, strings kept for the session
+	session_info = function() return SESSION end,
+	disconnect = function() DISCONNECTS = DISCONNECTS + 1; SESSION = { active = false, phase = "off" }; return true end,
+	stash_set = function(k, v) STASH[k] = v; return true end,
+	stash_get = function(k) return STASH[k] end,
 }
+SESSION = { active = true, phase = "hosting" }
+DISCONNECTS = 0
+STASH = {}
 MONEY_REFUSE = nil -- a reason makes the ledger stand-in refuse
 install_money_stubs(coop, { is_host = function() return MODE == "host" end, refuse = function() return MONEY_REFUSE end }) -- calls go to MONEY_CALLS
 PAYLOADS = {}
@@ -69,7 +80,9 @@ function se_save_var(id, name, var, val) SE[id] = SE[id] or {}; SE[id][var] = va
 function se_load_var(id, name, var) return SE[id] and SE[id][var] end
 RELEASED, CREATED = {}, {}
 function alife_release_id(id) RELEASED[#RELEASED + 1] = id end
-function alife_create_item(sec, npc, t) CREATED[#CREATED + 1] = { sec = sec, parent = npc:id(), ammo = t and t.ammo }
+function alife_create_item(sec, npc, t) -- a game object (in the world) or a server object (before the world)
+	local parent = type(npc.id) == "function" and npc:id() or npc.id
+	CREATED[#CREATED + 1] = { sec = sec, parent = parent, ammo = t and t.ammo }
 	return { id = 9000 + #CREATED } end
 local function make_npc(id, items)
 	local n = { _id = id, items = items, community = "stalker" }
@@ -311,6 +324,244 @@ db.actor = saved_actor
 NOW = NOW + 5000
 CALLBACKS.actor_on_update()
 check(g2.shown, "client tick shows it once the actor exists")
+
+-------------------------------------------------------------------------------
+-- Protocol 8 (owner, live test 2026-10-23): a new key chooses faction and gear before the world, in the main menu;
+-- the host makes the character at its faction's start with the kit and the money, then sends the world.
+-------------------------------------------------------------------------------
+print("== faction starts (stock new game list)")
+local starts = mc.faction_starts("bandit", false)
+local ids = {}
+for _, st in ipairs(starts) do ids[#ids + 1] = st.id end
+check(table.concat(ids, ",") == "northern_factory,car_park,container_warehouse,pole_bandit_base",
+	"bandit starts outside story mode, commented lines skipped (" .. table.concat(ids, ",") .. ")")
+local story = mc.faction_starts("bandit", true)
+check(#story == 1 and story[1].id == "northern_factory" and story[1].image == "l04_darkvalley",
+	"story mode: only the starts marked for it (ui_mm_faction_select LoadMap)")
+local cp = starts[2]
+check(cp.gvid == 440 and cp.lvid == 436975 and math.abs(cp.x - 106.27) < 1e-6 and math.abs(cp.z + 1.75) < 1e-6
+	and cp.image == "l01_escape", "a start's point: lvid, gvid, x y z of its section")
+check(#mc.faction_starts("nope", false) == 0, "no list: no starts")
+
+-- the game graph of the test: the level of every start's vertex from its picture, but the Pole starts are on their own
+-- level although their picture says Cordon (the host goes by the game graph)
+GV_LEVEL = {}
+for _, f in ipairs({ "army", "bandit", "csky", "dolg", "ecolog", "freedom", "killer", "stalker", "monolith", "greh", "isg",
+	"renegade" }) do
+	for _, st in ipairs(mc.faction_starts(f, false)) do GV_LEVEL[st.gvid] = st.image end
+end
+GV_LEVEL[5328], GV_LEVEL[5341] = "pole", "pole"
+GV_LEVEL[1704] = "l05_bar"
+local function level_of(gv) return GV_LEVEL[gv] end
+local function first() return 1 end
+local function last_of(n) return n end
+
+local s1 = mc.start_for("bandit", { level = "l01_escape", level_of = level_of, story = false, pick = last_of })
+check(s1 and s1.id == "car_park" and s1.where == "start:car_park" and s1.gvid == 440,
+	"bandit, host on Cordon: the bandit start of Cordon (Pole is another level by its game vertex)")
+local s2 = mc.start_for("stalker", { level = "l01_escape", level_of = level_of, story = false, pick = last_of })
+check(s2 and s2.id == "rookie_village", "stalker, host on Cordon: the rookie village")
+local camp_asked
+local s3 = mc.start_for("dolg", { level = "l01_escape", level_of = level_of, story = false, pick = first,
+	camp = function(f) camp_asked = f; return { id = "esc_smart_terrain_5_7", x = 1, y = 2, z = 3, lvid = 11, gvid = 12 } end })
+check(camp_asked == "dolg" and s3 and s3.where == "camp:esc_smart_terrain_5_7" and s3.gvid == 12 and s3.lvid == 11,
+	"no start of the faction on the host's level: a camp of the faction there")
+check(mc.start_for("dolg", { level = "l01_escape", level_of = level_of, story = false, pick = first }) == nil,
+	"no camp either: nil (the engine puts him next to the host)")
+local s4 = mc.start_for("dolg", { level = nil, level_of = level_of, story = false, pick = last_of })
+check(s4 and s4.id == "abandoned_village" and s4.where == "start:abandoned_village",
+	"F3a (any level): the faction's own start, as the stock new game")
+local picks = {}
+local s5 = mc.start_for("killer", { level = nil, level_of = level_of, story = false,
+	pick = function(n) picks[#picks + 1] = n; return 2 end })
+check(picks[1] == 4 and #picks == 1 and s5.id == "construction_site", "one of the starts at random, like the stock default")
+
+print("== host: plan and make a character before the world")
+MODE = "host"
+ECO = 1
+function game_graph()
+	return {
+		valid_vertex_id = function(_, gv) return GV_LEVEL[gv] ~= nil end,
+		vertex = function(_, gv) return { level_id = function() return GV_LEVEL[gv] end } end,
+	}
+end
+INFOS = { story_mode_disabled = true }
+function has_alife_info(i) return INFOS[i] == true end
+local host_actor = {
+	give_game_news = function(self, cap, text) NEWS[#NEWS + 1] = text end,
+	game_vertex_id = function() return 454 end, -- Cordon, the rookie village
+	position = function() return { x = -220, y = -20, z = -160 } end,
+}
+db.actor = host_actor
+math.random = function(n) return n and 1 or 0.5 end
+
+local plan = mc.host_plan_character(1, "bandit", "wpn_ak74_old")
+check(plan.ok == true and plan.where == "start:car_park" and plan.gvid == 440 and plan.lvid == 436975
+	and math.abs(plan.x - 106.27) < 1e-6 and math.abs(plan.y + 2.86) < 1e-6, "bandit: at the bandit start of the host's level")
+check(plan.faction == "bandit" and plan.money == 1000, "the faction and its money")
+local bad = mc.host_plan_character(1, "zombied", "")
+check(bad.ok == false and bad.reason == "faction", "zombied refused")
+check(mc.host_plan_character(1, "bandit", "wpn_ak74_old,wpn_mp133").reason == "points", "points of the host's tier")
+check(mc.host_plan_character(1, "bandit", "wpn_pm").reason == "items", "the free kit cannot be bought")
+check(mc.host_plan_character(1, 7, nil).reason == "faction", "junk from the engine is refused, not an error")
+
+local function smart(name, gv, props, x, y, z)
+	return { name = function() return name end, m_game_vertex_id = gv, m_level_vertex_id = 5000 + gv,
+		position = { x = x, y = y, z = z }, props = props }
+end
+SIMBOARD = { smarts = {
+	[1] = { smrt = smart("esc_smart_terrain_5_7", 454, { base = 1, dolg = 1 }, 100, 0, 100) },
+	[2] = { smrt = smart("esc_smart_terrain_2_12", 454, { base = 1, dolg = 1 }, -200, -20, -150) },
+	[3] = { smrt = smart("esc_smart_terrain_4_9", 454, { base = 0, dolg = 1 }, -219, -20, -161) },
+	[4] = { smrt = smart("bar_dolg_general", 1704, { base = 1, dolg = 1 }, -220, -20, -160) },
+	[5] = { smrt = smart("esc_smart_terrain_3_16", 454, { base = 1, army = 1, dolg = 0 }, -220, -20, -160) },
+	[6] = { smrt = nil },
+} }
+local dolg = mc.host_plan_character(2, "dolg", "")
+check(dolg.ok and dolg.where == "camp:esc_smart_terrain_2_12" and dolg.gvid == 454 and dolg.lvid == 5454
+	and dolg.x == -200, "Duty, host on Cordon: the nearest Duty base of Cordon (not a lair, not another level or faction)")
+SIMBOARD = nil
+local alone = mc.host_plan_character(2, "dolg", "")
+check(alone.ok and alone.where == nil and alone.gvid == nil, "nothing of the faction here: no point (next to the host)")
+INFOS.story_mode_disabled = nil
+local st_plan = mc.host_plan_character(1, "bandit", "")
+check(st_plan.ok and st_plan.where == nil, "story mode: the bandit start of story mode is in Dark Valley: next to the host")
+INFOS.story_mode_disabled = true
+local t_eco, t_points, t_story = mc.join_terms()
+check(t_eco == 1 and t_points == 1000 and t_story == false, "terms of the offer: the host's economy tier, its points, no story")
+INFOS.story_mode_disabled = nil
+check(select(3, mc.join_terms()) == true, "terms of the offer: story mode on")
+INFOS.story_mode_disabled = true
+db.actor = nil
+local no_actor = mc.host_plan_character(1, "bandit", "")
+check(no_actor.ok and no_actor.where == nil, "no actor (cannot happen on a host): no point")
+db.actor = host_actor
+MODE = "client"
+check(mc.host_plan_character(1, "bandit", "").ok == false, "only a host plans")
+MODE = "host"
+
+SE_OBJ = {}
+function alife_object(id) return SE_OBJ[id] end
+SE_OBJ[900] = { id = 900, position = { x = 106.27, y = -2.86, z = -1.75 }, m_level_vertex_id = 436975, m_game_vertex_id = 440 }
+CALLBACKS.se_stalker_on_spawn({ id = 900, section_name = function() return "coop_player_avatar" end,
+	name = function() return "coop_player_avatar0900" end })
+check(mc.is_new(900), "the engine's spawn marks it new")
+for i = #MONEY_CALLS, 1, -1 do MONEY_CALLS[i] = nil end
+RELEASED, CREATED = {}, {}
+MONEY_REFUSE = "no character"
+local ok0, why0 = mc.host_make_character(1, 900, "bandit", "wpn_ak74_old")
+check(ok0 == false and why0 == "busy" and mc.is_new(900), "money refused: refused (the engine drops the character)")
+MONEY_REFUSE = nil
+for i = #MONEY_CALLS, 1, -1 do MONEY_CALLS[i] = nil end
+RELEASED, CREATED = {}, {}
+local news_before = #NEWS
+local ok1, money1, given1 = mc.host_make_character(1, 900, "bandit", "wpn_ak74_old")
+check(ok1 == true and money1 == 1000 and given1 == #CREATED and given1 > 3, "made: kit given (" .. tostring(given1) .. ")")
+check(CREATED[1].parent == 900, "into the server object: the character is offline until its player loads the world")
+local made = {}
+for _, c in ipairs(CREATED) do made[#made + 1] = c.sec .. (c.ammo and ("x" .. c.ammo) or "") end
+local made_s = table.concat(made, ",")
+check(made_s:find("trenchcoat_outfit", 1, true) and made_s:find("wpn_ak74_old", 1, true)
+	and made_s:find("ammo_5.45x39_fmjx30", 1, true), "faction kit + bought + ammo (" .. made_s .. ")")
+check(#RELEASED == 0, "nothing released by Lua: the engine strips the profile's supplies before")
+check(#MONEY_CALLS == 1 and MONEY_CALLS[1].fn == "money_set" and MONEY_CALLS[1].peer == 1 and MONEY_CALLS[1].n == 1000
+	and MONEY_CALLS[1].ok, "the faction's money on the host ledger")
+check(not mc.is_new(900), "not new: never offered in the world")
+check(#NEWS == news_before + 1 and NEWS[#NEWS]:find("Guest", 1, true) ~= nil, "host news with the nick")
+check(mc.host_make_character(1, 901, "bandit", "") == false, "no server object: refused")
+check(select(2, mc.host_make_character(1, 900, "zombied", "")) == "faction", "the choice is checked again")
+
+MC_HOOKS = {}
+coop_mods_core = { on_new_character = function(peer) MC_HOOKS[#MC_HOOKS + 1] = peer end }
+PLAYERS = { { id = 0, nick = "host", is_self = true, avatar_id = 0 }, { id = 1, nick = "Guest", avatar_id = 900, rtt = 20 } }
+NPCS[900] = nil
+local sent_before = #SENT
+NOW = NOW + 5000
+CALLBACKS.actor_on_update()
+check(#MC_HOOKS == 0 and #SENT == sent_before, "still loading (offline): no hook yet, and no offer (not new)")
+NPCS[900] = make_npc(900, {})
+NOW = NOW + 5000
+CALLBACKS.actor_on_update()
+check(#MC_HOOKS == 1 and MC_HOOKS[1] == 1, "in the world: the mods' new character hook (starter magazines) once")
+NOW = NOW + 5000
+CALLBACKS.actor_on_update()
+check(#MC_HOOKS == 1 and #SENT == sent_before, "only once")
+coop_mods_core = nil
+
+print("== client: the choice window before the world")
+MODE = "client"
+SENT = {}
+NEWS = {}
+SESSION = { active = true, phase = "receiving-world", nick = "Guest" }
+PLAYERS = { { id = 1, nick = "Guest", is_self = true }, { id = 0, nick = "Boss" } }
+db.actor = nil -- the main menu: no level
+local mj = load_module("coop_menu_char")
+check(mj.join_choice() == nil, "no choice before an offer")
+check(mj.join_offer(2, 700, "l01_escape", "", 0) == true, "the offer opens the window in the main menu (no actor)")
+local gj = mj.GUI
+check(gj and gj.shown and gj.points_left == 700, "window with the host's points")
+check(gj.name.text == "Guest" and gj.info.text == coop_menu.tr("st_coop_char_info_join", "Boss", "Guest"),
+	"the join text: the character is made when Done is pressed")
+check(gj.status.text:find(STRINGS.st_coop_char_ready_join, 1, true) ~= nil, "join hint in the status line")
+check(gj.registered.btn_back.text == STRINGS.st_coop_char_btn_leave, "the second button leaves the session")
+check(gj.box_map.texture == "ui_new_game_map_l01_escape" and gj.box_map.shown, "the host's level picture")
+check(gj.start.text == coop_menu.tr("st_coop_char_start_faction", "Cordon"), "stalker: at the faction's start on Cordon")
+click(gj, "btn_faction")
+click(gj, "btn_dolg")
+check(gj.start.text == coop_menu.tr("st_coop_char_start_camp", "Cordon"), "Duty: no Duty start on Cordon: a camp or the group")
+click(gj, "btn_start")
+check(#SENT == 0, "no script event: the engine takes the choice")
+local jf, jb = mj.join_choice()
+check(jf == "dolg" and jb == "", "the engine gets faction and bought gear")
+check(mj.join_choice() == nil, "taken once")
+check(STASH.coop_char_joined == "dolg", "kept for the news in the world (the load rebuilds Lua)")
+check(gj.btn_start.enabled == false and gj.status.text:find("Waiting for the host...", 1, true), "waiting for the world")
+check(mj.join_offer(2, 700, "l01_escape", "points", 0) == true, "refused: offered again")
+check(gj.shown and gj.btn_start.enabled and gj.faction == "dolg"
+	and gj.status.text:find(coop_menu.tr("st_coop_char_refused", STRINGS.st_coop_char_reason_points), 1, true),
+	"the refusal shown, the choice kept, Done again")
+gj:OnKeyboard(DIK_keys.DIK_ESCAPE, ui_events.WINDOW_KEY_PRESSED)
+check(gj.shown, "Escape does not leave the session")
+click(gj, "btn_faction")
+gj:OnKeyboard(DIK_keys.DIK_ESCAPE, ui_events.WINDOW_KEY_PRESSED)
+check(gj.shown and gj.access, "Escape closes the faction popup")
+mj.join_offer(2, 700, "l01_escape", "", 1) -- the host's game is in story mode
+click(gj, "btn_faction")
+click(gj, "btn_bandit")
+check(gj.start.text == coop_menu.tr("st_coop_char_start_camp", "Cordon"), "story mode: the bandit start of story mode is elsewhere")
+mj.join_closed("world")
+check(not gj.shown, "the world arrives: the window closes")
+check(mj.join_choice() == nil, "nothing left to send")
+mj.join_offer(2, 700, "l01_escape", "", 0)
+SESSION.phase = "loading-world"
+NOW = NOW + 1000
+gj:Update()
+check(not gj.shown, "the window follows the session (loading the world)")
+SESSION = { active = true, phase = "receiving-world", nick = "Guest" }
+mj.join_offer(2, 700, "", "", 0)
+check(gj.shown and gj.start.text == STRINGS.st_coop_char_start_near and gj.box_map.shown == false, "no level: next to the group")
+click(gj, "btn_back")
+check(not gj.shown and DISCONNECTS == 1, "Leave closes the window and the session")
+SESSION = { active = true, phase = "receiving-world", nick = "Guest" }
+mj.join_offer(2, 700, "l01_escape", "", 0)
+SESSION = { active = false, phase = "off" }
+NOW = NOW + 1000
+gj:Update()
+check(not gj.shown, "the session ended (kicked, host gone): the window closes")
+
+-- in the world after the load: a fresh Lua state; the choice made before the world is told once
+local mw = load_module("coop_menu_char")
+mw.on_game_start()
+SESSION = { active = true, phase = "live", nick = "Guest" }
+db.actor = { give_game_news = function(self, cap, text) NEWS[#NEWS + 1] = text end }
+NOW = NOW + 5000
+CALLBACKS.actor_on_update()
+check(NEWS[#NEWS] == coop_menu.tr("st_coop_char_done", "st_faction_dolg") and STASH.coop_char_joined == nil,
+	"in the world: news of the character chosen before it, once")
+local n_news = #NEWS
+NOW = NOW + 5000
+CALLBACKS.actor_on_update()
+check(#NEWS == n_news, "told once")
 
 -- string ids used by the script exist
 local fh = assert(io.open(ROOT .. "scripts/coop_menu_char.script", "r"))

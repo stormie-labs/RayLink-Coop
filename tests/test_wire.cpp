@@ -320,7 +320,7 @@ TEST(msg_name_known_and_unknown)
 		Msg::TaskList, Msg::TaskUpdate, Msg::MapSpot, Msg::Relation, Msg::Progress, Msg::DialogLock,
 		Msg::DialogLockResult, Msg::DialogUnlock, Msg::DialogPhrases, Msg::DialogSelect, Msg::TradeOp,
 		Msg::ScriptEvent, Msg::StateDumpRequest, Msg::StateDump, Msg::EntitySound, Msg::AvatarList,
-		Msg::MoneyBalance};
+		Msg::MoneyBalance, Msg::CharOffer, Msg::CharChoice};
 	for (Msg m : all)
 		CHECK(std::strncmp(msg_name(m), "Msg_0x", 6) != 0);
 }
@@ -789,4 +789,187 @@ TEST(avatar_list_rejects_bad_tables)
 	// The same rows in order are fine.
 	CHECK(read_table(avatar_table(3, {{0, 0}, {300, 1}, {301, 2}}), t));
 	CHECK_EQ(t.owners.size(), size_t(3));
+}
+
+// ---------------------------------------------------------------- protocol 8: a new character before the world
+
+// Owner, live test 2026-10-23: a player whose key has no character in the host's world chooses faction and gear before
+// the world is sent, not in the world after it. The host answers his JoinRequest with CharOffer, he answers with
+// CharChoice, the host makes the character at its faction's start and sends the world.
+TEST(protocol_version_bumped_for_character_before_world)
+{
+	static_assert(kProtocolVersion == 8u, "protocol 8: CharOffer / CharChoice (protocol 7 has not shipped)");
+	static_assert(static_cast<uint16_t>(Msg::CharOffer) == 0x0108, "join lifecycle range, append only");
+	static_assert(static_cast<uint16_t>(Msg::CharChoice) == 0x0109, "join lifecycle range, append only");
+	static_assert(static_cast<uint16_t>(Msg::CharOffer) >= static_cast<uint16_t>(Msg::GameBase), "a game message");
+	CHECK_EQ(std::string(msg_name(Msg::CharOffer)), std::string("CharOffer"));
+	CHECK_EQ(std::string(msg_name(Msg::CharChoice)), std::string("CharChoice"));
+	CHECK(msg_sender(Msg::CharOffer) == MsgSender::HostOnly);
+	CHECK(msg_sender(Msg::CharChoice) == MsgSender::ClientOnly);
+}
+
+TEST(char_name_validation)
+{
+	for (const char* ok : {"stalker", "wpn_ak74u", "ammo_5.45x39_fmj", "l01_escape", "af-ball", "Wpn_AK74", "a"})
+		CHECK_EQ(std::string(ok) + (char_name_valid(ok) ? " valid" : " invalid"), std::string(ok) + " valid");
+	for (const char* bad : {"", "a b", "a,b", "a;b", "..\\x", "x/y", "x\\y", "st\xC3\xA4r", "a\nb", "%s", "a=b", "[a]"})
+		CHECK_EQ(std::string(bad) + (char_name_valid(bad) ? " valid" : " invalid"), std::string(bad) + " invalid");
+	CHECK(char_name_valid(std::string(kMaxCharName, 'x')));
+	CHECK(!char_name_valid(std::string(kMaxCharName + 1, 'x')));
+	CHECK(char_name_valid(std::string(10, 'x'), 10));
+	CHECK(!char_name_valid(std::string(11, 'x'), 10));
+}
+
+TEST(char_offer_roundtrip)
+{
+	CharOfferMsg m;
+	m.eco = 3;
+	m.points = 400;
+	m.flags = CharOfferMsg::StoryMode;
+	m.level = "l01_escape";
+	m.refusal = "points";
+	Writer w;
+	m.write(w);
+	CHECK_EQ(w.size(), size_t(1 + 4 + 1 + 1 + 10 + 1 + 6));
+	CharOfferMsg back;
+	Reader r(w.ptr(), w.size());
+	CHECK(back.read(r));
+	CHECK_EQ(r.remaining(), size_t(0));
+	CHECK(back.eco == 3 && back.points == 400u && back.flags == CharOfferMsg::StoryMode);
+	CHECK_EQ(back.level, std::string("l01_escape"));
+	CHECK_EQ(back.refusal, std::string("points"));
+
+	// The first offer has no refusal; a host on a level without a name (cannot happen in game) sends none.
+	CharOfferMsg first;
+	first.eco = 1;
+	first.points = 1000;
+	Writer wf;
+	first.write(wf);
+	CharOfferMsg first2;
+	first2.refusal = "stale";
+	Reader rf(wf.ptr(), wf.size());
+	CHECK(first2.read(rf));
+	CHECK(first2.eco == 1 && first2.points == 1000u && first2.flags == 0 && first2.level.empty() && first2.refusal.empty());
+}
+
+TEST(char_offer_rejects_bad_input)
+{
+	CharOfferMsg good;
+	good.eco = 2;
+	good.points = 700;
+	good.level = "zaton";
+	good.refusal = "items";
+	Writer w;
+	good.write(w);
+	for (size_t cut = 0; cut < w.size(); ++cut)
+	{
+		CharOfferMsg m;
+		Reader r(w.ptr(), cut);
+		CHECK(!m.read(r));
+	}
+	auto offer = [](uint8_t eco, uint8_t flags, const std::string& level, const std::string& refusal) {
+		Writer b;
+		b.u8(eco);
+		b.u32(1000);
+		b.u8(flags);
+		b.str(level);
+		b.str(refusal);
+		CharOfferMsg m;
+		Reader r(b.ptr(), b.size());
+		return m.read(r);
+	};
+	CHECK(offer(1, 0, "jupiter", ""));
+	CHECK(offer(3, CharOfferMsg::StoryMode, "", "busy"));
+	CHECK(!offer(0, 0, "jupiter", "")); // economy tiers are 1..3
+	CHECK(!offer(4, 0, "jupiter", ""));
+	CHECK(!offer(1, 0x80, "jupiter", "")); // unknown flags
+	CHECK(!offer(1, 0, "..\\..\\x", "")); // the level picks a texture: a name only
+	CHECK(!offer(1, 0, std::string(CharOfferMsg::kMaxLevel + 1, 'l'), ""));
+	CHECK(!offer(1, 0, "jupiter", "st_coop char")); // the refusal picks a string id: a name only
+	CHECK(!offer(1, 0, "jupiter", std::string(CharOfferMsg::kMaxRefusal + 1, 'r')));
+}
+
+TEST(char_choice_roundtrip)
+{
+	CharChoiceMsg m;
+	m.faction = "bandit";
+	m.buy = {"wpn_ak74_old", "ammo_5.45x39_fmj", "wpn_ak74_old"};
+	CHECK(m.valid());
+	Writer w;
+	m.write(w);
+	CharChoiceMsg back;
+	Reader r(w.ptr(), w.size());
+	CHECK(back.read(r));
+	CHECK_EQ(r.remaining(), size_t(0));
+	CHECK_EQ(back.faction, std::string("bandit"));
+	CHECK(back.buy == m.buy);
+
+	// Nothing bought: the faction's free kit only.
+	CharChoiceMsg plain;
+	plain.faction = "stalker";
+	Writer wp;
+	plain.write(wp);
+	CHECK_EQ(wp.size(), size_t(1 + 7 + 1));
+	CharChoiceMsg plain2;
+	plain2.buy = {"stale"};
+	Reader rp(wp.ptr(), wp.size());
+	CHECK(plain2.read(rp));
+	CHECK(plain2.faction == "stalker" && plain2.buy.empty());
+
+	// As many items as a choice may carry.
+	CharChoiceMsg full;
+	full.faction = "isg";
+	full.buy.assign(CharChoiceMsg::kMaxBuy, "medkit");
+	CHECK(full.valid());
+	Writer wf;
+	full.write(wf);
+	CharChoiceMsg full2;
+	Reader rf(wf.ptr(), wf.size());
+	CHECK(full2.read(rf));
+	CHECK_EQ(full2.buy.size(), size_t(CharChoiceMsg::kMaxBuy));
+}
+
+TEST(char_choice_rejects_bad_input)
+{
+	CharChoiceMsg good;
+	good.faction = "dolg";
+	good.buy = {"wpn_pm", "medkit"};
+	Writer w;
+	good.write(w);
+	for (size_t cut = 0; cut < w.size(); ++cut)
+	{
+		CharChoiceMsg m;
+		m.buy = {"x"};
+		Reader r(w.ptr(), cut);
+		CHECK(!m.read(r));
+		CHECK(m.buy.empty());
+	}
+	auto choice = [](const std::string& faction, uint8_t count, std::initializer_list<const char*> items) {
+		Writer b;
+		b.str(faction);
+		b.u8(count);
+		for (const char* s : items)
+			b.str(s);
+		CharChoiceMsg m;
+		Reader r(b.ptr(), b.size());
+		return m.read(r);
+	};
+	CHECK(choice("army", 1, {"wpn_ak74"}));
+	CHECK(!choice("", 0, {})); // no faction
+	CHECK(!choice("army,bandit", 0, {}));
+	CHECK(!choice(std::string(kMaxCharName + 1, 'f'), 0, {}));
+	CHECK(!choice("army", 1, {""})); // an empty section
+	CHECK(!choice("army", 2, {"wpn_ak74", "wpn ak74"}));
+	CHECK(!choice("army", 1, {"wpn_ak74,wpn_pm"})); // one section per entry: the host's Lua splits nothing
+	CHECK(!choice("army", uint8_t(CharChoiceMsg::kMaxBuy + 1), {})); // more than a choice carries, before the bytes
+	// Validation on the sender's side: the client never sends what the host would refuse to read.
+	CharChoiceMsg bad;
+	bad.faction = "army";
+	bad.buy.assign(CharChoiceMsg::kMaxBuy + 1, "medkit");
+	CHECK(!bad.valid());
+	bad.buy = {"med kit"};
+	CHECK(!bad.valid());
+	bad.buy.clear();
+	bad.faction.clear();
+	CHECK(!bad.valid());
 }

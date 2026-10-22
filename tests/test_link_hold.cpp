@@ -76,3 +76,40 @@ TEST(first_frames_after_a_load_keep_the_link_until_live)
 	REQUIRE(t::pump_until({&host.s}, 15000, [&] { return !host.left.empty(); }));
 	CHECK(host.left[0].second.find("lost") != std::string::npos);
 }
+
+// Review of the live fixes: on_crash released the hold, but the next frame of the main thread (a crash on a worker
+// thread does not stop it at once) armed it again for kLoadHoldMs while precache frames ran: the crashed player stayed
+// "connected" for two minutes. A crash is for good: no frame and no load stage holds the link after it.
+TEST(link_hold_never_again_after_a_crash)
+{
+	link_hold::FrameState fs;
+	fs.load_steps_queued = true;
+	fs.precache_frames = true;
+	fs.joining_world = true;
+	CHECK(link_hold::keep_held(fs));
+	fs.crashed = true;
+	CHECK(!link_hold::keep_held(fs));
+	CHECK(!link_hold::may_arm(true)); // a load stage (on_blocking_work) after the crash
+	CHECK(link_hold::may_arm(false));
+}
+
+TEST(a_crash_while_coming_up_is_silence)
+{
+	Node host("Boss", 37211), cl("Alice", 37211);
+	host.cfg.peer_timeout_ms = 1500;
+	cl.cfg.peer_timeout_ms = 1500;
+	join_one(host, cl, 37211);
+
+	// The client loads (held), then crashes on a worker thread: on_crash releases the hold ...
+	cl.s.hold_connection(link_hold::kLoadHoldMs);
+	cl.s.hold_connection(0);
+	// ... and its main thread still runs a frame of its precache before the crash dialog stops it.
+	link_hold::FrameState fs;
+	fs.precache_frames = true;
+	fs.joining_world = true;
+	fs.crashed = true;
+	client_frame(cl, fs);
+	// It never pumps again: the host drops it after the silence timeout, not after kLoadHoldMs.
+	REQUIRE(t::pump_until({&host.s}, 15000, [&] { return !host.left.empty(); }));
+	CHECK(host.left[0].second.find("lost") != std::string::npos);
+}

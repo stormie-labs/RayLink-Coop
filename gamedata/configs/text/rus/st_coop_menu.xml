@@ -235,6 +235,21 @@
 	<string id="st_coop_char_host_news">
 		<text>%s теперь в группировке: %s.</text>
 	</string>
+	<string id="st_coop_char_info_join">
+		<text>Хост %s создаст для вас нового персонажа (%s), когда вы нажмёте «Готово». Выберите группировку и стартовое снаряжение, как в новой игре: набор группировки выдаётся бесплатно, остальное покупается за очки. Сколько очков - зависит от экономики у хоста. Затем вы войдёте в мир хоста в этой группировке.</text>
+	</string>
+	<string id="st_coop_char_ready_join">
+		<text>Когда будете готовы, нажмите «Готово»: хост создаст персонажа и пришлёт мир. «Отключиться» - выйти из сессии.</text>
+	</string>
+	<string id="st_coop_char_btn_leave">
+		<text>Отключиться</text>
+	</string>
+	<string id="st_coop_char_start_faction">
+		<text>Старт: %s, на старте группировки</text>
+	</string>
+	<string id="st_coop_char_start_camp">
+		<text>Старт: %s, в лагере группировки или рядом с группой</text>
+	</string>
 	<string id="ui_mm_menu_coop">
 		<text>Кооператив</text>
 	</string>
