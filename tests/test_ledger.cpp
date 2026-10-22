@@ -5,6 +5,7 @@
 #include "coop_ledger.h"
 
 #include <map>
+#include <string>
 #include <vector>
 
 using coop::Reader;
@@ -12,6 +13,7 @@ using coop::Writer;
 using coop::ledger::Allowance;
 using coop::ledger::apply_client_delta;
 using coop::ledger::Cause;
+using coop::ledger::character_key;
 using coop::ledger::check_transfer;
 using coop::ledger::client_view;
 using coop::ledger::Decision;
@@ -144,14 +146,14 @@ TEST(ledger_dialog_gain)
 TEST(ledger_dialog_cap_not_reset_by_lock_cycling)
 {
 	HostBook book;
-	book.start_session({300}); // a character from the save: full allowances (Ruling F2-10)
+	book.start_session({"k300"}); // a character from the save: full allowances (Ruling F2-10)
 	const Policy p;
 	const Receiver nobody;
 	uint32_t balance = 0;
 	uint32_t seq = 0;
 	auto send = [&](int32_t delta, Cause cause, bool lock, uint64_t now)
 	{
-		const Decision d = book.on_request(1, 300, req(++seq, delta, cause), balance, lock, nobody, p, now);
+		const Decision d = book.on_request(1, "k300", req(++seq, delta, cause), balance, lock, nobody, p, now);
 		if (d.verdict == Verdict::Applied)
 			balance = d.balance;
 		return d;
@@ -184,10 +186,10 @@ TEST(ledger_dialog_cap_not_reset_by_lock_cycling)
 TEST(ledger_allowance_survives_reconnect)
 {
 	HostBook book;
-	book.start_session({300, 301}); // characters from the save
+	book.start_session({"k300", "k301"}); // characters from the save
 	const Policy p;
 	const Receiver nobody;
-	Decision d = book.on_request(1, 300, req(41, 50000), 0, false, nobody, p, 0);
+	Decision d = book.on_request(1, "k300", req(41, 50000), 0, false, nobody, p, 0);
 	CHECK(d.verdict == Verdict::Applied);
 	CHECK_EQ(d.acked, 41u);
 	CHECK_EQ(d.gain_script, 50000u);
@@ -195,56 +197,55 @@ TEST(ledger_allowance_survives_reconnect)
 	book.peer_left(1);
 	CHECK_EQ(book.acked(1), 0u);
 	// The same character back as peer 2, a new game process numbering from 1.
-	d = book.on_request(2, 300, req(1, 1), 50000, false, nobody, p, 0); // the same moment: no refill either
+	d = book.on_request(2, "k300", req(1, 1), 50000, false, nobody, p, 0); // the same moment: no refill either
 	CHECK(!d.stale);
 	CHECK(d.verdict == Verdict::NoAllowance);
 	CHECK_EQ(d.balance, 50000u);
 	CHECK_EQ(book.acked(2), 1u);
 	// As peer 1 again, the old numbering going on.
-	d = book.on_request(1, 300, req(42, 1), 50000, false, nobody, p, 0);
+	d = book.on_request(1, "k300", req(42, 1), 50000, false, nobody, p, 0);
 	CHECK(d.verdict == Verdict::NoAllowance);
 	// Another character has his own.
-	d = book.on_request(3, 301, req(1, 50000), 0, false, nobody, p, 0);
+	d = book.on_request(3, "k301", req(1, 50000), 0, false, nobody, p, 0);
 	CHECK(d.verdict == Verdict::Applied);
-	REQUIRE(book.allowances(300) != nullptr);
-	CHECK(near(book.allowances(300)->script.tokens, 0));
+	REQUIRE(book.allowances("k300") != nullptr);
+	CHECK(near(book.allowances("k300")->script.tokens, 0));
 	// A dialog split is reported by allowance.
-	d = book.on_request(3, 301, req(2, 1000, Cause::Dialog), 50000, true, nobody, p, 0);
+	d = book.on_request(3, "k301", req(2, 1000, Cause::Dialog), 50000, true, nobody, p, 0);
 	CHECK(d.verdict == Verdict::Applied);
 	CHECK_EQ(d.gain_dialog, 1000u);
 	CHECK_EQ(d.gain_script, 0u);
 	// A new session keeps nothing.
 	book.reset();
-	CHECK(book.allowances(300) == nullptr);
+	CHECK(book.allowances("k300") == nullptr);
 	CHECK_EQ(book.acked(2), 0u);
 }
 
 TEST(ledger_stale_seq)
 {
 	HostBook book;
-	book.start_session({300});
+	book.start_session({"k300"});
 	const Policy p;
 	const Receiver nobody;
-	Decision d = book.on_request(1, 300, req(5, -100), 1000, false, nobody, p, 0);
+	Decision d = book.on_request(1, "k300", req(5, -100), 1000, false, nobody, p, 0);
 	CHECK(d.verdict == Verdict::Applied);
 	CHECK_EQ(d.balance, 900u);
 	// The same change again, an older one: nothing done, the answer says where we are.
-	d = book.on_request(1, 300, req(5, -100), 900, false, nobody, p, 0);
+	d = book.on_request(1, "k300", req(5, -100), 900, false, nobody, p, 0);
 	CHECK(d.stale);
 	CHECK_EQ(d.balance, 900u);
 	CHECK_EQ(d.acked, 5u);
-	d = book.on_request(1, 300, req(4, 50000), 900, false, nobody, p, 0);
+	d = book.on_request(1, "k300", req(4, 50000), 900, false, nobody, p, 0);
 	CHECK(d.stale);
 	CHECK_EQ(d.balance, 900u);
 	CHECK_EQ(book.acked(1), 5u);
-	REQUIRE(book.allowances(300) != nullptr); // made by the spend above
-	CHECK(!book.allowances(300)->script.started); // the stale gain touched nothing
-	d = book.on_request(1, 300, req(6, -100), 900, false, nobody, p, 0);
+	CHECK(book.allowances("k300") == nullptr); // a spend and a stale gain touch no allowance
+	d = book.on_request(1, "k300", req(6, -100), 900, false, nobody, p, 0);
 	CHECK(!d.stale);
 	CHECK_EQ(d.balance, 800u);
 	CHECK_EQ(d.acked, 6u);
 	// Refused changes are answered too, and count as answered.
-	d = book.on_request(1, 300, req(7, -5000), 800, false, nobody, p, 0);
+	d = book.on_request(1, "k300", req(7, -5000), 800, false, nobody, p, 0);
 	CHECK(d.verdict == Verdict::Insufficient);
 	CHECK_EQ(d.acked, 7u);
 	CHECK_EQ(d.balance, 800u);
@@ -280,12 +281,12 @@ TEST(ledger_transfer_checks)
 	Receiver host;
 	host.peer = 0;
 	host.present = true;
-	const Decision d = book.on_request(1, 300, req(1, -200, Cause::Transfer, 0), 700, false, host, p, 0);
+	const Decision d = book.on_request(1, "k300", req(1, -200, Cause::Transfer, 0), 700, false, host, p, 0);
 	CHECK(d.verdict == Verdict::Applied);
 	CHECK_EQ(d.balance, 500u);
 	CHECK_EQ(d.credit, 200u);
-	CHECK(book.allowances(300) == nullptr);
-	const Decision bad = book.on_request(1, 300, req(2, -200, Cause::Transfer, 9), 500, false, gone, p, 0);
+	CHECK(book.allowances("k300") == nullptr);
+	const Decision bad = book.on_request(1, "k300", req(2, -200, Cause::Transfer, 9), 500, false, gone, p, 0);
 	CHECK(bad.verdict == Verdict::Malformed);
 	CHECK_EQ(bad.credit, 0u);
 	CHECK_EQ(bad.balance, 500u);
@@ -298,61 +299,61 @@ TEST(ledger_transfer_checks)
 TEST(ledger_new_character_starts_empty)
 {
 	HostBook book;
-	book.start_session({300}); // 300 was in the save; 777 is new
-	CHECK(book.from_save(300));
-	CHECK(!book.from_save(777));
+	book.start_session({"k300"}); // 300 was in the save; 777 is new
+	CHECK(book.from_save("k300"));
+	CHECK(!book.from_save("k777"));
 	const Policy p;
 	const Receiver nobody;
 	const uint64_t t0 = 5000000; // well into the session
-	Decision d = book.on_request(4, 777, req(1, 1), 0, false, nobody, p, t0);
+	Decision d = book.on_request(4, "k777", req(1, 1), 0, false, nobody, p, t0);
 	CHECK(d.verdict == Verdict::NoAllowance);
-	d = book.on_request(4, 777, req(2, 1, Cause::Dialog), 0, true, nobody, p, t0);
+	d = book.on_request(4, "k777", req(2, 1, Cause::Dialog), 0, true, nobody, p, t0);
 	CHECK(d.verdict == Verdict::NoAllowance);
-	REQUIRE(book.allowances(777) != nullptr);
-	CHECK(book.allowances(777)->script.started);
-	CHECK(book.allowances(777)->dialog.started);
+	REQUIRE(book.allowances("k777") != nullptr);
+	CHECK(book.allowances("k777")->script.started);
+	CHECK(book.allowances("k777")->dialog.started);
 	// A spend is never limited.
-	d = book.on_request(4, 777, req(3, -1), 10, false, nobody, p, t0);
+	d = book.on_request(4, "k777", req(3, -1), 10, false, nobody, p, t0);
 	CHECK(d.verdict == Verdict::Applied);
 	// A minute later: the refills only (10000 script, 20000 dialog), not the bursts.
-	d = book.on_request(4, 777, req(4, 10001), 0, false, nobody, p, t0 + 60000);
+	d = book.on_request(4, "k777", req(4, 10001), 0, false, nobody, p, t0 + 60000);
 	CHECK(d.verdict == Verdict::NoAllowance);
-	d = book.on_request(4, 777, req(5, 10000), 0, false, nobody, p, t0 + 60000);
+	d = book.on_request(4, "k777", req(5, 10000), 0, false, nobody, p, t0 + 60000);
 	CHECK(d.verdict == Verdict::Applied);
-	d = book.on_request(4, 777, req(6, 20001, Cause::Dialog), 0, true, nobody, p, t0 + 60000);
+	d = book.on_request(4, "k777", req(6, 20001, Cause::Dialog), 0, true, nobody, p, t0 + 60000);
 	CHECK(d.verdict == Verdict::NoAllowance);
-	d = book.on_request(4, 777, req(7, 20000, Cause::Dialog), 0, true, nobody, p, t0 + 60000);
+	d = book.on_request(4, "k777", req(7, 20000, Cause::Dialog), 0, true, nobody, p, t0 + 60000);
 	CHECK(d.verdict == Verdict::Applied);
 	CHECK_EQ(d.gain_dialog, 20000u);
 	// Leaving and joining again with the same key changes nothing.
 	book.peer_left(4);
-	d = book.on_request(5, 777, req(1, 1), 0, false, nobody, p, t0 + 60000);
+	d = book.on_request(5, "k777", req(1, 1), 0, false, nobody, p, t0 + 60000);
 	CHECK(d.verdict == Verdict::NoAllowance);
 	// A new session: what the save holds then is "from the save".
-	book.start_session({300, 777});
-	d = book.on_request(5, 777, req(2, 50000), 0, false, nobody, p, t0 + 60000);
+	book.start_session({"k300", "k777"});
+	d = book.on_request(5, "k777", req(2, 50000), 0, false, nobody, p, t0 + 60000);
 	CHECK(d.verdict == Verdict::Applied);
 	// Without a list (reset) every character counts as new.
 	book.reset();
-	CHECK(!book.from_save(300));
+	CHECK(!book.from_save("k300"));
 }
 
 // Ruling F2-10: a returning player's character, in the save when the session started, has its full allowances.
 TEST(ledger_saved_character_keeps_burst)
 {
 	HostBook book;
-	book.start_session({300, 301});
+	book.start_session({"k300", "k301"});
 	const Policy p;
 	const Receiver nobody;
-	Decision d = book.on_request(1, 300, req(1, 50000), 0, false, nobody, p, 5000000);
+	Decision d = book.on_request(1, "k300", req(1, 50000), 0, false, nobody, p, 5000000);
 	CHECK(d.verdict == Verdict::Applied);
-	d = book.on_request(1, 300, req(2, 100000, Cause::Dialog), 50000, true, nobody, p, 5000000);
+	d = book.on_request(1, "k300", req(2, 100000, Cause::Dialog), 50000, true, nobody, p, 5000000);
 	CHECK(d.verdict == Verdict::Applied);
 	CHECK_EQ(d.gain_dialog, 100000u);
-	d = book.on_request(1, 300, req(3, 1), 150000, false, nobody, p, 5000000);
+	d = book.on_request(1, "k300", req(3, 1), 150000, false, nobody, p, 5000000);
 	CHECK(d.verdict == Verdict::NoAllowance);
 	// The other saved character has his own burst.
-	d = book.on_request(2, 301, req(1, 50000), 0, false, nobody, p, 5000000);
+	d = book.on_request(2, "k301", req(1, 50000), 0, false, nobody, p, 5000000);
 	CHECK(d.verdict == Verdict::Applied);
 }
 
@@ -378,14 +379,14 @@ TEST(ledger_transfer_order_keeps_money)
 	using coop::ledger::settle_transfer;
 	const Policy p;
 	HostBook book;
-	book.start_session({300, 301});
+	book.start_session({"k300", "k301"});
 
 	// Two players, two characters: the money moves.
 	Balances two;
 	two.character_of = {{1, 300}, {2, 301}};
 	two.money = {{300, 1000}, {301, 500}};
 	Receiver to{2, true, two.get(2)};
-	Decision d = book.on_request(1, 300, req(1, -400, Cause::Transfer, 2), two.get(1), false, to, p, 0);
+	Decision d = book.on_request(1, "k300", req(1, -400, Cause::Transfer, 2), two.get(1), false, to, p, 0);
 	REQUIRE(d.verdict == Verdict::Applied);
 	settle_transfer(two, 1, d.balance, 2, d.credit);
 	CHECK_EQ(two.money[300], 600u);
@@ -396,7 +397,7 @@ TEST(ledger_transfer_order_keeps_money)
 	one.character_of = {{1, 300}, {2, 300}};
 	one.money = {{300, 1000}};
 	Receiver self{2, true, one.get(2)};
-	d = book.on_request(1, 300, req(2, -400, Cause::Transfer, 2), one.get(1), false, self, p, 0);
+	d = book.on_request(1, "k300", req(2, -400, Cause::Transfer, 2), one.get(1), false, self, p, 0);
 	REQUIRE(d.verdict == Verdict::Applied);
 	settle_transfer(one, 1, d.balance, 2, d.credit);
 	CHECK_EQ(one.money[300], 1000u);
@@ -573,4 +574,110 @@ TEST(ledger_wire_truncated)
 	Reader cut_b(wire_b.data(), 7);
 	MoneyBalanceMsg got_b;
 	CHECK(!read(cut_b, got_b));
+}
+
+// Ruling F2-13 (review round 3, Important): the allowances refill only while the character is in the game. Leaving
+// freezes them; the first change after coming back starts the clock again without paying for the pause. Else a pool
+// of alts, each back after 5 minutes with full buckets, would print millions an hour.
+TEST(ledger_no_refill_while_offline)
+{
+	HostBook book;
+	book.start_session({"k300"}); // from the save: this holds for them as well
+	const Policy p;
+	const Receiver nobody;
+	Decision d = book.on_request(1, "k300", req(1, 50000), 0, false, nobody, p, 0);
+	CHECK(d.verdict == Verdict::Applied); // the script burst used up
+	d = book.on_request(1, "k300", req(2, 30000, Cause::Dialog), 50000, true, nobody, p, 0);
+	CHECK(d.verdict == Verdict::Applied); // 70000 left in the dialog allowance
+	book.peer_left(1);
+	// Ten minutes away, back as another connection: no more than he had when he left.
+	const uint64_t back = 600000;
+	d = book.on_request(2, "k300", req(1, 1), 80000, false, nobody, p, back);
+	CHECK(d.verdict == Verdict::NoAllowance);
+	d = book.on_request(2, "k300", req(2, 70001, Cause::Dialog), 80000, true, nobody, p, back);
+	CHECK(d.verdict == Verdict::NoAllowance);
+	d = book.on_request(2, "k300", req(3, 70000, Cause::Dialog), 80000, true, nobody, p, back);
+	CHECK(d.verdict == Verdict::Applied);
+	// A minute in the game: one refill of each.
+	d = book.on_request(2, "k300", req(4, 10001), 150000, false, nobody, p, back + 60000);
+	CHECK(d.verdict == Verdict::NoAllowance);
+	d = book.on_request(2, "k300", req(5, 10000), 150000, false, nobody, p, back + 60000);
+	CHECK(d.verdict == Verdict::Applied);
+	d = book.on_request(2, "k300", req(6, 20000, Cause::Dialog), 160000, true, nobody, p, back + 60000);
+	CHECK(d.verdict == Verdict::Applied);
+	CHECK_EQ(d.gain_dialog, 20000u);
+	// Away again, with only spends in between: still frozen.
+	book.peer_left(2);
+	d = book.on_request(3, "k300", req(1, -5), 180000, false, nobody, p, back + 3600000);
+	CHECK(d.verdict == Verdict::Applied);
+	d = book.on_request(3, "k300", req(2, 1), 179995, false, nobody, p, back + 3600000 + 30000);
+	CHECK(d.verdict == Verdict::NoAllowance);
+}
+
+// Ruling F2-13: a request refused by its form (a change of nothing, an unknown cause) and a spend touch no allowance
+// and start no clock: an alt cannot start its refill with a cheap request and come back later to a full bucket.
+TEST(ledger_malformed_does_not_start_clock)
+{
+	HostBook book;
+	book.start_session({"k300"}); // "k777" is new
+	const Policy p;
+	const Receiver nobody;
+	const uint64_t t0 = 1000000;
+	Decision d = book.on_request(1, "k777", req(1, 0), 100, false, nobody, p, t0);
+	CHECK(d.verdict == Verdict::Malformed);
+	d = book.on_request(1, "k777", req(2, 5, static_cast<Cause>(7)), 100, false, nobody, p, t0);
+	CHECK(d.verdict == Verdict::Malformed);
+	d = book.on_request(1, "k777", req(3, -10), 100, false, nobody, p, t0);
+	CHECK(d.verdict == Verdict::Applied);
+	CHECK(book.allowances("k777") == nullptr);
+	// Ten minutes in the game later: the clock starts at the first gain, empty.
+	d = book.on_request(1, "k777", req(4, 1), 90, false, nobody, p, t0 + 600000);
+	CHECK(d.verdict == Verdict::NoAllowance);
+	REQUIRE(book.allowances("k777") != nullptr);
+	d = book.on_request(1, "k777", req(5, 10000), 90, false, nobody, p, t0 + 660000);
+	CHECK(d.verdict == Verdict::Applied);
+	d = book.on_request(1, "k777", req(6, 1), 10090, false, nobody, p, t0 + 660000);
+	CHECK(d.verdict == Verdict::NoAllowance);
+	// A malformed request of a character from the save does not use his burst either.
+	d = book.on_request(2, "k300", req(1, 0), 0, false, nobody, p, t0);
+	CHECK(d.verdict == Verdict::Malformed);
+	CHECK(book.allowances("k300") == nullptr);
+}
+
+// Ruling F2-13 (minor): "from the save" is the player key the character is bound to (the digest on the "key" line of
+// its custom data, as coop_join finds it), not its entity id: an id freed and given to a new character later says
+// nothing about who plays it.
+TEST(ledger_from_save_by_key_not_id)
+{
+	const std::string a(64, 'a'), b(64, 'b');
+	const std::string ini_a = "[coop]\nkey = " + a + "\nnick = Al\n";
+	const std::string ini_b = "[coop]\nkey=" + b + "\nnick = " + a + "\n"; // another player's digest as a nick
+	CHECK_EQ(character_key(ini_a), a);
+	CHECK_EQ(character_key(ini_b), b);
+	CHECK(character_key("[coop]\nnick = Al\n").empty());
+	CHECK(character_key("").empty());
+	// A save from before R1 I1 keeps the key itself: its digest, as coop_join migrates it.
+	coop::PlayerKey key{};
+	for (size_t i = 0; i < key.size(); ++i)
+		key[i] = uint8_t(i * 7 + 1);
+	static const char* hex = "0123456789abcdef";
+	std::string raw;
+	for (uint8_t byte : key)
+	{
+		raw += hex[byte >> 4];
+		raw += hex[byte & 15];
+	}
+	std::string digest;
+	REQUIRE(coop::key_digest_hex(key, digest));
+	CHECK_EQ(character_key("[coop]\nkey = " + raw + "\n"), digest);
+
+	// Character 300 was player A's when the session started; later id 300 belongs to a new character of player B.
+	HostBook book;
+	book.start_session({character_key(ini_a)});
+	const Policy p;
+	const Receiver nobody;
+	Decision d = book.on_request(1, character_key(ini_b), req(1, 1), 0, false, nobody, p, 0);
+	CHECK(d.verdict == Verdict::NoAllowance);
+	d = book.on_request(2, character_key(ini_a), req(1, 50000), 0, false, nobody, p, 0);
+	CHECK(d.verdict == Verdict::Applied);
 }
