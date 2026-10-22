@@ -4,6 +4,7 @@
 
 #include "coop_ledger.h"
 
+#include <map>
 #include <vector>
 
 using coop::Reader;
@@ -143,6 +144,7 @@ TEST(ledger_dialog_gain)
 TEST(ledger_dialog_cap_not_reset_by_lock_cycling)
 {
 	HostBook book;
+	book.start_session({300}); // a character from the save: full allowances (Ruling F2-10)
 	const Policy p;
 	const Receiver nobody;
 	uint32_t balance = 0;
@@ -182,6 +184,7 @@ TEST(ledger_dialog_cap_not_reset_by_lock_cycling)
 TEST(ledger_allowance_survives_reconnect)
 {
 	HostBook book;
+	book.start_session({300, 301}); // characters from the save
 	const Policy p;
 	const Receiver nobody;
 	Decision d = book.on_request(1, 300, req(41, 50000), 0, false, nobody, p, 0);
@@ -219,6 +222,7 @@ TEST(ledger_allowance_survives_reconnect)
 TEST(ledger_stale_seq)
 {
 	HostBook book;
+	book.start_session({300});
 	const Policy p;
 	const Receiver nobody;
 	Decision d = book.on_request(1, 300, req(5, -100), 1000, false, nobody, p, 0);
@@ -286,6 +290,116 @@ TEST(ledger_transfer_checks)
 	CHECK_EQ(bad.credit, 0u);
 	CHECK_EQ(bad.balance, 500u);
 	CHECK_EQ(bad.acked, 2u);
+}
+
+// Ruling F2-10 (review round 2, Important): the client chooses its player key, and the host makes a character for any
+// new key. A character made in this session starts with empty allowances and only gets the refills: a new key cannot
+// bring a fresh 50 000 + 100 000 to pass on to the main character.
+TEST(ledger_new_character_starts_empty)
+{
+	HostBook book;
+	book.start_session({300}); // 300 was in the save; 777 is new
+	CHECK(book.from_save(300));
+	CHECK(!book.from_save(777));
+	const Policy p;
+	const Receiver nobody;
+	const uint64_t t0 = 5000000; // well into the session
+	Decision d = book.on_request(4, 777, req(1, 1), 0, false, nobody, p, t0);
+	CHECK(d.verdict == Verdict::NoAllowance);
+	d = book.on_request(4, 777, req(2, 1, Cause::Dialog), 0, true, nobody, p, t0);
+	CHECK(d.verdict == Verdict::NoAllowance);
+	REQUIRE(book.allowances(777) != nullptr);
+	CHECK(book.allowances(777)->script.started);
+	CHECK(book.allowances(777)->dialog.started);
+	// A spend is never limited.
+	d = book.on_request(4, 777, req(3, -1), 10, false, nobody, p, t0);
+	CHECK(d.verdict == Verdict::Applied);
+	// A minute later: the refills only (10000 script, 20000 dialog), not the bursts.
+	d = book.on_request(4, 777, req(4, 10001), 0, false, nobody, p, t0 + 60000);
+	CHECK(d.verdict == Verdict::NoAllowance);
+	d = book.on_request(4, 777, req(5, 10000), 0, false, nobody, p, t0 + 60000);
+	CHECK(d.verdict == Verdict::Applied);
+	d = book.on_request(4, 777, req(6, 20001, Cause::Dialog), 0, true, nobody, p, t0 + 60000);
+	CHECK(d.verdict == Verdict::NoAllowance);
+	d = book.on_request(4, 777, req(7, 20000, Cause::Dialog), 0, true, nobody, p, t0 + 60000);
+	CHECK(d.verdict == Verdict::Applied);
+	CHECK_EQ(d.gain_dialog, 20000u);
+	// Leaving and joining again with the same key changes nothing.
+	book.peer_left(4);
+	d = book.on_request(5, 777, req(1, 1), 0, false, nobody, p, t0 + 60000);
+	CHECK(d.verdict == Verdict::NoAllowance);
+	// A new session: what the save holds then is "from the save".
+	book.start_session({300, 777});
+	d = book.on_request(5, 777, req(2, 50000), 0, false, nobody, p, t0 + 60000);
+	CHECK(d.verdict == Verdict::Applied);
+	// Without a list (reset) every character counts as new.
+	book.reset();
+	CHECK(!book.from_save(300));
+}
+
+// Ruling F2-10: a returning player's character, in the save when the session started, has its full allowances.
+TEST(ledger_saved_character_keeps_burst)
+{
+	HostBook book;
+	book.start_session({300, 301});
+	const Policy p;
+	const Receiver nobody;
+	Decision d = book.on_request(1, 300, req(1, 50000), 0, false, nobody, p, 5000000);
+	CHECK(d.verdict == Verdict::Applied);
+	d = book.on_request(1, 300, req(2, 100000, Cause::Dialog), 50000, true, nobody, p, 5000000);
+	CHECK(d.verdict == Verdict::Applied);
+	CHECK_EQ(d.gain_dialog, 100000u);
+	d = book.on_request(1, 300, req(3, 1), 150000, false, nobody, p, 5000000);
+	CHECK(d.verdict == Verdict::NoAllowance);
+	// The other saved character has his own burst.
+	d = book.on_request(2, 301, req(1, 50000), 0, false, nobody, p, 5000000);
+	CHECK(d.verdict == Verdict::Applied);
+}
+
+namespace
+{
+// Balances by character, written through peers the way coop_money writes them (peer -> its character).
+struct Balances
+{
+	std::map<uint32_t, uint32_t> character_of; // peer -> character
+	std::map<uint32_t, uint32_t> money; // character -> RU
+
+	uint32_t get(uint32_t peer) { return money[character_of[peer]]; }
+	void set(uint32_t peer, uint32_t value) { money[character_of[peer]] = value; }
+	void add(uint32_t peer, uint32_t credit) { money[character_of[peer]] += credit; }
+};
+} // namespace
+
+// Review round 2: a transfer is settled giver first, then the receiver gets the credit on top of what he holds at that
+// moment. Two connections on one character (a fair game never has them) keep their money exactly: crediting first and
+// then writing the giver's figure, taken before, would lose the credit; nothing may ever print money.
+TEST(ledger_transfer_order_keeps_money)
+{
+	using coop::ledger::settle_transfer;
+	const Policy p;
+	HostBook book;
+	book.start_session({300, 301});
+
+	// Two players, two characters: the money moves.
+	Balances two;
+	two.character_of = {{1, 300}, {2, 301}};
+	two.money = {{300, 1000}, {301, 500}};
+	Receiver to{2, true, two.get(2)};
+	Decision d = book.on_request(1, 300, req(1, -400, Cause::Transfer, 2), two.get(1), false, to, p, 0);
+	REQUIRE(d.verdict == Verdict::Applied);
+	settle_transfer(two, 1, d.balance, 2, d.credit);
+	CHECK_EQ(two.money[300], 600u);
+	CHECK_EQ(two.money[301], 900u);
+
+	// Two connections on one character: neither printed (1400) nor lost (600).
+	Balances one;
+	one.character_of = {{1, 300}, {2, 300}};
+	one.money = {{300, 1000}};
+	Receiver self{2, true, one.get(2)};
+	d = book.on_request(1, 300, req(2, -400, Cause::Transfer, 2), one.get(1), false, self, p, 0);
+	REQUIRE(d.verdict == Verdict::Applied);
+	settle_transfer(one, 1, d.balance, 2, d.credit);
+	CHECK_EQ(one.money[300], 1000u);
 }
 
 TEST(ledger_over_max)
