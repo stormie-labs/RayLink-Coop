@@ -1,0 +1,350 @@
+--[[
+	Anomaly Coop - object binders on a co-op CLIENT (W10), gamedata\scripts\coop_client_binders.script
+
+	Why. The engine suspends only the binders of remote CREATURES (C++ coop_remote::suspend_binder, update only).
+	Every other object binder (a Lua class derived from object_binder) runs on a client exactly as in single
+	player, and the domain filter of coop_main covers callbacks (RegisterScriptCallback / AddUniqueCall /
+	CreateTimeEvent), not binder methods. A binder that does world work then runs on the client against a frozen
+	ALife mirror: alife():create / alife_create_item / SIMBOARD:create_squad answer nil there (the host creates
+	world objects) and the stock code indexes the answer -> a Lua error inside a binder method is FATAL
+	(live case 2026-10-20: smart_terrain_binder:update -> create_squad, patched in coop_main).
+
+	What this script does (client only; nothing on the host, in single player or on an exe without co-op - the
+	patches are installed from coop_main.install_client_patches and every wrapper asks coop.is_client() again):
+	  host-only update   faction_binder, camp_binder, heli_binder: the client keeps object_binder.update only.
+	  skipped methods    anomaly_zone_binder:spawn_artefact_randomly / turn_off (artefact spawn and release),
+	                     xr_box ph_item_box:spawn_items (box loot, called from generic_physics_binder death).
+	  small fixes        crow_binder:update does not try to release a dead crow (the host does).
+	  safety net         update of the binders that keep running on a client (and death/hit/use callbacks of the
+	                     creature binders, which the engine does not suspend) is called in pcall: a Lua error is
+	                     logged and counted (coop_status) instead of FATAL, like owner/view callbacks (R-11.4).
+	Left alone (verdicts in the vault note W10 client binders): smart_terrain_binder (coop_main), restrictor_binder
+	logic (coop_npc_logic), campfires and anomaly fields (coop_objects ZoneState + coop_npc_world), creature
+	binders (C++ suspend), visual/local ones (lights, doors, bridge, flare, dynamo, level changer, smart cover).
+
+	luabind facts the patches rely on (engine/src/3rd party/luabind, read, not run in game):
+	  - `cls.update = f` writes the class table (lua_settable_dispatcher); the engine calls update by name in the
+	    class table at call time (do_call_member_selection) -> existing instances use the new function.
+	  - `class "d" (base)` COPIES the base class table when d is declared (create_class::stage2): a subclass declared
+	    before a patch keeps the old methods. No stock class derives from a binder class; for a mod that does, list
+	    the subclass itself in configs\coop_domains_binders.ltx.
+
+	Extension point: configs\coop_domains_binders.ltx ([host_update], [skip_methods], [guard_update]) for binder
+	classes of mods. Absent scripts/classes are skipped silently (listed in coop_status).
+
+	API: install() -> number of patches, idempotent, client only; print_status() (hooked into coop_main's
+	coop_status by install(); STATUS_MODULES would also do, the lines are printed once).
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local tostring, type, pairs, ipairs, pcall = tostring, type, pairs, ipairs, pcall
+
+local function log(fmt, ...)
+	local ok, line = pcall(string.format, fmt, ...)
+	printf("[coop-binders] %s", ok and line or tostring(fmt))
+end
+
+local function on_client()
+	return api ~= nil and api.is_client()
+end
+
+-------------------------------------------------------------------------------
+-- Policy of the stock binders (Anomaly 1.5.3 + modded exes)
+-------------------------------------------------------------------------------
+-- { script, class, method, kind, note [, pre] }
+--   host    the whole method is the host's: on a client only object_binder.update runs
+--   noop    the method returns at once on a client
+--   pre     pre(self) runs first on a client, then the stock method
+--   guard   the stock method runs in pcall on a client
+local POLICY = {
+	{ "bind_faction", "faction_binder", "update", "host", "se_faction:update (server object)" },
+	{ "bind_camp", "camp_binder", "update", "host",
+		"sr_camp CCampManager:update: camp states, stories, NPC voices; the NPCs are puppets" },
+	{ "bind_heli", "heli_binder", "update", "host",
+		"helicopter scheme logic, heli_alife, health/die on server objects; the pose comes from the host" },
+	{ "bind_anomaly_zone", "anomaly_zone_binder", "spawn_artefact_randomly", "noop",
+		"alife_create_item answers nil on a client and the stock code indexes it (10% of fresh zones at net_spawn)" },
+	{ "bind_anomaly_zone", "anomaly_zone_binder", "turn_off", "noop", "releases the zone's artefacts" },
+	{ "xr_box", "ph_item_box", "spawn_items", "noop", "box loot (called from generic_physics_binder:death_callback)" },
+	{ "bind_crow", "crow_binder", "update", "pre", "a dead crow is released by the host, not retried every update",
+		function(self) self.body_timer = 0 end },
+}
+
+-- The binders that keep running on a client: the method (update by default) runs in pcall. The creature binders'
+-- update is suspended by the engine; their callbacks (a puppet dies when the host says so, the player uses a
+-- corpse) are not, and nobody asked the player's game for them.
+local GUARD = {
+	{ "bind_stalker", "actor_binder" },
+	{ "bind_restrictor", "restrictor_binder" },
+	{ "bind_physic_object", "generic_physics_binder" },
+	{ "bind_car", "car_binder" },
+	{ "bind_container", "container_binder" },
+	{ "bind_crow", "crow_binder" },
+	{ "bind_door_labx8", "door_binder_labx8" },
+	{ "bind_red_forest_bridge", "bridge_binder" },
+	{ "bind_signal_light", "signal_light_binder" },
+	{ "bind_dynamic_light", "generic_light_binder" },
+	{ "bind_dynamo_hand", "dynamo_hand_binder" },
+	{ "gwr_worldweapon_binder", "gwr_wpn_m98_binder" },
+	{ "bind_item", "item_binder" },
+	{ "item_artefact", "artefact_binder" },
+	{ "item_device", "device_binder" },
+	{ "xr_motivator", "motivator_binder", "death_callback" },
+	{ "xr_motivator", "motivator_binder", "hit_callback" },
+	{ "xr_motivator", "motivator_binder", "use_callback" },
+	{ "bind_monster", "generic_object_binder", "death_callback" },
+	{ "bind_monster", "generic_object_binder", "hit_callback" },
+	{ "bind_monster", "generic_object_binder", "use_callback" },
+}
+
+-------------------------------------------------------------------------------
+-- State
+-------------------------------------------------------------------------------
+local installed = false
+local status_hooked = false
+local applied = {} -- { label, kind, note }
+local absent = {} -- "script.class" of classes that are not there (mods) or have no such method
+local absent_seen = {}
+local skipped = {} -- label -> client calls that did not reach the stock method
+local errors = {} -- label -> Lua errors caught by a guard
+local total_errors = 0
+local in_status_hook, printed_in_hook = false, false
+
+local function note_error(label, err)
+	local n = (errors[label] or 0) + 1
+	errors[label] = n
+	total_errors = total_errors + 1
+	if n <= 3 or n % 100 == 0 then
+		local text = tostring(err)
+		if #text > 400 then text = text:sub(1, 400) .. "..." end
+		log("! lua error in %s (#%d), the session continues: %s", label, n, text)
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Wrappers (each asks coop.is_client() at call time: a session that ended leaves the stock behaviour)
+-------------------------------------------------------------------------------
+local function make_host(label)
+	return function(orig)
+		return function(self, delta)
+			if on_client() then
+				skipped[label] = (skipped[label] or 0) + 1
+				return object_binder.update(self, delta)
+			end
+			return orig(self, delta)
+		end
+	end
+end
+
+local function make_noop(label)
+	return function(orig)
+		return function(self, ...)
+			if on_client() then
+				skipped[label] = (skipped[label] or 0) + 1
+				return
+			end
+			return orig(self, ...)
+		end
+	end
+end
+
+local function make_pre(_, entry)
+	local pre = entry.pre
+	return function(orig)
+		return function(self, ...)
+			if on_client() then pre(self) end
+			return orig(self, ...)
+		end
+	end
+end
+
+local function make_guard(label)
+	return function(orig)
+		return function(self, ...)
+			if not on_client() then return orig(self, ...) end
+			local ok, err = pcall(orig, self, ...)
+			if not ok then note_error(label, err) end
+		end
+	end
+end
+
+local MAKERS = {
+	host = make_host,
+	noop = make_noop,
+	pre = make_pre,
+	guard = make_guard,
+}
+
+-------------------------------------------------------------------------------
+-- Lookup (a missing script answers nil silently: the engine's auto-load is process_file_if_exists)
+-------------------------------------------------------------------------------
+local function module_of(name)
+	local m = rawget(_G, name)
+	if m == nil then
+		local ok, r = pcall(function() return _G[name] end)
+		m = ok and r or nil
+	end
+	local t = type(m)
+	if t == "table" or t == "userdata" then return m end
+	return nil
+end
+
+-- A luabind class is userdata, a stub class is a table.
+local function class_of(script, class)
+	local m = module_of(script)
+	if not m then return nil end
+	local ok, c = pcall(function() return m[class] end)
+	if not ok then return nil end
+	local t = type(c)
+	if t == "table" or t == "userdata" then return c end
+	return nil
+end
+
+local function method_of(cls, name)
+	local ok, f = pcall(function() return cls[name] end)
+	if ok and type(f) == "function" then return f end
+	return nil
+end
+
+local function note_absent(what)
+	if not absent_seen[what] then
+		absent_seen[what] = true
+		absent[#absent + 1] = what
+	end
+end
+
+local function apply(entry)
+	local label = entry.script .. "." .. entry.class .. ":" .. entry.method
+	local ref = entry.script .. "." .. entry.class
+	local cls = class_of(entry.script, entry.class)
+	if not cls then
+		note_absent(ref)
+		return false
+	end
+	local orig = method_of(cls, entry.method)
+	if not orig then
+		note_absent(ref .. ":" .. entry.method)
+		return false
+	end
+	local make = MAKERS[entry.kind]
+	local wrapper = make and make(label, entry)(orig)
+	if type(wrapper) ~= "function" then return false end
+	local ok, err = pcall(function() cls[entry.method] = wrapper end)
+	if not ok then
+		log("! %s: cannot replace the method: %s", label, tostring(err))
+		return false
+	end
+	if method_of(cls, entry.method) ~= wrapper then
+		log("! %s: the replaced method did not stick (the class answers another function)", label)
+	end
+	applied[#applied + 1] = { label = label, kind = entry.kind, note = entry.note }
+	return true
+end
+
+-------------------------------------------------------------------------------
+-- configs\coop_domains_binders.ltx: binder classes of mods
+-------------------------------------------------------------------------------
+local function trim(s) return (tostring(s):gsub("^%s+", ""):gsub("%s+$", "")) end
+
+local function each_line(ini, section, visit)
+	if not ini:section_exist(section) then return end
+	for i = 0, ini:line_count(section) - 1 do
+		local _, key, value = ini:r_line(section, i, "", "")
+		if type(key) == "string" then
+			local script, class = trim(key):match("^([%w_]+)%.([%w_]+)$")
+			if script then visit(script, class, type(value) == "string" and trim(value) or "") end
+		end
+	end
+end
+
+local function extra_entries(entries)
+	local ok, ini = pcall(ini_file, "coop_domains_binders.ltx")
+	if not (ok and ini) then return end
+	local ok2, err = pcall(function()
+		each_line(ini, "host_update", function(s, c)
+			entries[#entries + 1] = { script = s, class = c, method = "update", kind = "host", note = "coop_domains_binders.ltx" }
+		end)
+		each_line(ini, "skip_methods", function(s, c, methods)
+			for m in methods:gmatch("[%w_]+") do
+				entries[#entries + 1] = { script = s, class = c, method = m, kind = "noop", note = "coop_domains_binders.ltx" }
+			end
+		end)
+		each_line(ini, "guard_update", function(s, c)
+			entries[#entries + 1] = { script = s, class = c, method = "update", kind = "guard", note = "coop_domains_binders.ltx" }
+		end)
+	end)
+	if not ok2 then log("! configs\\coop_domains_binders.ltx not read: %s", tostring(err)) end
+end
+
+-------------------------------------------------------------------------------
+-- Status (coop_status)
+-------------------------------------------------------------------------------
+function print_status()
+	if in_status_hook then printed_in_hook = true end
+	local role = not api and "no engine API" or api.is_host() and "host" or api.is_client() and "client" or "off"
+	local counts = {}
+	for _, a in ipairs(applied) do counts[a.kind] = (counts[a.kind] or 0) + 1 end
+	local total_skipped = 0
+	for _, n in pairs(skipped) do total_skipped = total_skipped + n end
+	log("role %s, installed %s | patches %d (host-only update %d, skipped methods %d, pre %d, guarded update %d) | client calls skipped %d, Lua errors caught %d",
+		role, tostring(installed), #applied, counts.host or 0, counts.noop or 0, counts.pre or 0, counts.guard or 0,
+		total_skipped, total_errors)
+	for _, a in ipairs(applied) do
+		if a.kind ~= "guard" or errors[a.label] then
+			log("  %-6s %-52s skipped %6d errors %4d", a.kind, a.label, skipped[a.label] or 0, errors[a.label] or 0)
+		end
+	end
+	if #absent > 0 then log("  not present (mods absent or no such method): %s", table.concat(absent, ", ")) end
+end
+
+-- coop_main.print_status lists fixed modules: add this one without touching that file (printed once).
+local function hook_status()
+	if status_hooked then return end
+	local cm = module_of("coop_main")
+	local prev = cm and cm.print_status
+	if type(prev) ~= "function" then return end
+	status_hooked = true
+	cm.print_status = function(...)
+		in_status_hook, printed_in_hook = true, false
+		local ok, err = pcall(prev, ...)
+		in_status_hook = false
+		if not printed_in_hook then pcall(print_status) end
+		if not ok then error(err, 0) end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Install
+-------------------------------------------------------------------------------
+function install()
+	if installed then return #applied end
+	if not on_client() then return 0 end -- host, single player, exe without co-op: stock behaviour
+	installed = true
+
+	local entries, seen = {}, {}
+	for _, p in ipairs(POLICY) do
+		entries[#entries + 1] = { script = p[1], class = p[2], method = p[3], kind = p[4], note = p[5], pre = p[6] }
+	end
+	for _, g in ipairs(GUARD) do
+		entries[#entries + 1] = { script = g[1], class = g[2], method = g[3] or "update", kind = "guard", note = "Lua error -> log, not FATAL" }
+	end
+	extra_entries(entries)
+
+	for _, e in ipairs(entries) do
+		local key = e.script .. "." .. e.class .. ":" .. e.method .. "|" .. e.kind
+		if not seen[key] then
+			seen[key] = true
+			local ok, err = pcall(apply, e)
+			if not ok then log("! %s.%s:%s: %s", e.script, e.class, e.method, tostring(err)) end
+		end
+	end
+	hook_status()
+	log("client: %d binder patch(es) installed, %d class(es)/method(s) not present", #applied, #absent)
+	return #applied
+end
+
+-- Tests and diagnostics.
+function _state()
+	return { applied = applied, absent = absent, skipped = skipped, errors = errors, installed = installed }
+end

@@ -992,6 +992,7 @@ local function install_client_patches()
 	client_patched = true
 	local ok_st, err_st = pcall(patch_smart_terrain_binder)
 	if not ok_st then report_error("coop_main", "smart terrain patch", err_st) end
+	local ok_cb, err_cb = pcall(function() return coop_client_binders.install() end) if not ok_cb then report_error("coop_main", "client binders patch", err_cb) end -- W10: the other object binders
 	local ok, err = pcall(patch_env_classes_for_client)
 	if not ok then report_error("coop_main", "emission patch", err) end
 	ok, err = pcall(patch_main_menu)

@@ -1,0 +1,26 @@
+; Anomaly Coop - object binders on a co-op client (W10), read by scripts\coop_client_binders.script.
+;
+; NOT a domain list: coop_main reads every coop_domains_*.ltx for [view] / [owner] / [host] / [blocked] / [callbacks_*]
+; / [blocked_functions] and ignores the sections below. Domains classify CALLBACKS; a binder (a Lua class derived from
+; object_binder) is called by the engine by name, so it is handled here instead.
+;
+; The stock binders (Anomaly 1.5.3) are built into coop_client_binders.script. This file is the place for binder
+; classes of mods. An entry is "script.class": the script name without .script, the class name as in
+; `class "name" (object_binder)`. Entries of mods that are not installed are skipped (coop_status lists them).
+;
+; Everything here applies on a co-op CLIENT only. The host and single player run the stock code.
+; A subclass declared before this patch copies the base class (luabind): list the subclass itself.
+
+[host_update]
+; update() of the class does not run on a client (world simulation, server object updates, spawns); the client keeps
+; only object_binder.update. Use it when the update calls alife():create / alife_create_item / SIMBOARD / se_*:update.
+;bind_example.example_binder
+
+[skip_methods]
+; script.class = method, method
+; These methods return at once on a client (spawn, release, switch online/offline done from a binder).
+;bind_example.example_binder = spawn_loot, release_all
+
+[guard_update]
+; update() of the class runs in pcall on a client: a Lua error is logged and counted instead of FATAL.
+;bind_example.example_binder

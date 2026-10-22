@@ -1,11 +1,19 @@
 --[[
 	Anomaly Coop - core group: shared world pieces the engine does not carry (gamedata\scripts\coop_core_world.script)
 
-	1. News. Dynamic news (deaths, gossip, warfare), faction radio messages and tips from logic that only the host
-	   runs (dynamic_news_manager, sim_offline_combat, tasks_defense, warfare, NPC remarks ...) are shown on the
-	   host only, because clients skip that logic (coop_main domains). The host sends them on ("core.news") and
-	   every client shows them with its own stock functions (own language, own PDA sounds). Task news are
-	   coop_tasks' business; the emission's own news come from the client's emission mirror (coop_main).
+	1. News. The world's PDA news (random chatter, deaths, SOS calls, gossip, weather/time talk, "communication
+	   lost/restored", the barrier-defense announcements, faction radio) are made by logic that only the host
+	   runs (dynamic_news_manager, tasks_defense, sound_theme ...) and would be shown on the host only, because
+	   clients skip that logic (coop_main domains). They are caught where they are GENERATED, not by looking at
+	   the call stack: the senders of the stock DynamicNewsManager (TickNews, TickQuick, NewsToggle,
+	   GossipEmissionEnd) open a "world" scope, the generators of personal talk (tasks, companions, the
+	   player's trades, welcome) open a "personal" one, and the wrapped dynamic_news_helper.send_tip /
+	   news_manager.send_tip pass a message on only inside a world scope. The host sends it ("core.news") and
+	   every client shows it with the same stock functions (same caption, icon and PDA sound, own language,
+	   own PDA charge). Everything called outside any scope (the host player's dialogs, rewards, ranks, arena,
+	   money and item news, tasks) stays personal. Faction radio (news_manager.send_sound) is always world.
+	   Task news are coop_tasks' business, effects of logic scenes (xr_effects.send_tip) are coop_npc_effects'
+	   (npc.cfx), the emission's own news come from the client's emission mirror (coop_main).
 	2. Mutant loot. Only one player at a time may cut up a mutant, and a looted mutant stays looted for everybody.
 	   A client asks the host ("core.mloot_open"); the host locks the corpse for it and answers with what is left
 	   (or "roll it yourself", "nothing to loot", "decayed", "busy"); the client's window then works as usual, and
@@ -47,13 +55,11 @@ local MLOOT_LOCK_MS = 300000 -- host: a lock nobody gave back
 local BOX_GAP_MS = 10000 -- a "found" report per box at most this often
 local TRADER_GAP_MS = 15000
 
--- Scripts whose news only the host makes (callers of dynamic_news_helper.send_tip / news_manager.send_tip).
--- Calls from anywhere else (the host player's own dialogs, other co-op scripts, addons) stay on the host.
-local SHARED_ORIGINS = {
-	dynamic_news_manager = true, sim_offline_combat = true, tasks_defense = true,
-	warfare = true, warfare_faction_control = true, sim_squad_warfare = true, smart_terrain_warfare = true,
-	xr_remark = true, mob_remark = true, sound_theme = true, z_barrier_defense_emission_fix = true,
-}
+-- News relay limits: messages passed on per NEWS_SPAN_MS by kind (host), and accepted from the host (client).
+-- The stock generator spaces its news by 5-20 s itself; this only stops a flood (radio chatter in a firefight).
+local NEWS_SPAN_MS = 10000
+local NEWS_LIMIT_OUT = { dyn = 8, snd = 12, tip = 8 }
+local NEWS_LIMIT_IN = { dyn = 12, snd = 16, tip = 12 }
 
 local function log(fmt, ...)
 	local ok, line = pcall(string_format, fmt, ...)
@@ -95,105 +101,395 @@ local function local_id(id)
 	return api.to_local_id(id) or id
 end
 
-local stats = { news_out = 0, news_in = 0, mloot_req = 0, mloot_granted = 0, mloot_denied = 0, mloot_closed = 0,
+local stats = { news_out = 0, news_in = 0, news_kept = 0, news_local = 0, news_limited = 0, news_bad = 0,
+	out_dyn = 0, out_snd = 0, out_tip = 0, in_dyn = 0, in_snd = 0, in_tip = 0,
+	mloot_req = 0, mloot_granted = 0, mloot_denied = 0, mloot_closed = 0,
 	mloot_edges = 0, stashes_found = 0, trader_req = 0, trader_applied = 0 }
 
 -------------------------------------------------------------------------------
 -- 1. News
 -------------------------------------------------------------------------------
 local news_applying = false -- client: showing a host news now
+local scope = nil -- "world" | "personal" | nil: what the generator that is running now makes (see the header)
+local personal_msgs = {} -- text -> true: queued by a personal generator, the stock queue sends it a bit later
+local personal_n = 0
+
+-- Generators of the stock DynamicNewsManager (dynamic_news_manager.DynamicNewsManager) by what they say.
+-- Senders: the methods that call dynamic_news_helper.send_tip themselves (everything else only queues the
+-- message with PushToChannel and TickNews / TickQuick send it). They open the world scope.
+local DYN_WORLD_SENDERS = { "TickNews", "TickQuick", "NewsToggle", "GossipEmissionEnd" }
+-- Personal: about the host player (its tasks and bounty, its companions, its trades) or a one-time welcome by name.
+local DYN_PERSONAL = {
+	"WelcomeToNetwork", "GossipBounty", "GossipAlphaSquad", "GossipTaskRepeatTimeout", "GossipTaskLL", "GossipTaskMS",
+	"GossipTaskOA", "GossipTaskDRX", "CompanionAboutLife", "CompanionAboutLevel", "CompanionAboutActor",
+	"BoughtItems", "UpgradedItems",
+}
+-- Queued messages of these types (field Ty) are personal whoever pushed them; so is the reply to them.
+local PERSONAL_TYPES = { trade = true, upgrade = true }
+-- Scripts that copy dynamic_news_helper.send_tip into a local when they load (the copy ignores any later
+-- wrapper): world events whose announcements every player gets. script -> name of that local.
+local WORLD_ALIASES = { tasks_defense = "send_tip" }
+
+local news_report = { senders = "not wrapped", class = "not patched", methods = 0, wanted = 0, aliases = 0 }
 
 local function plain(v)
 	local t = type(v)
 	return (t == "string" or t == "number" or t == "boolean") and v or nil
 end
 
-local function share(t)
-	if news_applying or not is_host() then return end
-	local ok = api.send_event(EV_NEWS, codec().encode(t), -1)
-	if ok then stats.news_out = stats.news_out + 1 end
+-- The first news of a session are written to the log (what went to the clients, what stayed here): lets a
+-- live test show which generator is world and which is not.
+local news_notes = 0
+local function note(what, text)
+	if news_notes >= 80 then return end
+	news_notes = news_notes + 1
+	local line = tostring(text or ""):gsub("%%c%[[^%]]*%]", ""):gsub("[%c]+", " ")
+	log("news %s: %s", what, line:sub(1, 80))
 end
 
--- Script names on the call stack above the news function. A caller that tail-calls the news function
--- (`return news_manager.send_tip(...)`) leaves no frame and is not recognised.
-local function from_shared_origin()
-	for lvl = 3, 14 do
-		local ok, info = pcall(debug.getinfo, lvl, "S")
-		if not (ok and info) then break end
-		local name = (info.source or ""):match("([^\\/]+)%.[sS][cC][rR][iI][pP][tT]$")
-		if name and SHARED_ORIGINS[name:lower()] then return true end
+-- A script module table; the global lookup loads gamedata\scripts\<name>.script if it was not loaded yet.
+local function module_of(name)
+	local m = rawget(_G, name)
+	if m ~= nil then return m end
+	local ok, r = pcall(function() return _G[name] end)
+	return ok and r or nil
+end
+
+local function others_online()
+	local ok, ps = pcall(api.players)
+	if not (ok and type(ps) == "table") then return true end -- cannot tell: send
+	for _, p in ipairs(ps) do
+		if not p.is_self then return true end
 	end
 	return false
 end
 
-local function wrap_news()
-	local dnh = rawget(_G, "dynamic_news_helper") or dynamic_news_helper
-	if dnh and type(dnh.send_tip) == "function" and not dnh.__coop_core_shared then
-		dnh.__coop_core_shared = true
+local news_times = { out = { dyn = {}, snd = {}, tip = {} }, ["in"] = { dyn = {}, snd = {}, tip = {} } }
+
+-- At most `limit` messages of a kind per NEWS_SPAN_MS (sliding window); counts the one asked about.
+local function within_limit(dir, kind, limit)
+	local q = news_times[dir][kind]
+	local now = time_global()
+	local n = 0
+	for i = 1, #q do
+		if now - q[i] < NEWS_SPAN_MS then
+			n = n + 1
+			q[n] = q[i]
+		end
+	end
+	for i = #q, n + 1, -1 do q[i] = nil end
+	if n >= limit then return false end
+	q[n + 1] = now
+	return true
+end
+
+-- Host: pass a news on to every client.
+local function share(kind, t)
+	if news_applying or not is_host() or not others_online() then return false end
+	if not within_limit("out", kind, NEWS_LIMIT_OUT[kind]) then
+		stats.news_limited = stats.news_limited + 1
+		return false
+	end
+	local ok = api.send_event(EV_NEWS, codec().encode(t), -1)
+	if ok then
+		stats.news_out = stats.news_out + 1
+		stats["out_" .. kind] = stats["out_" .. kind] + 1
+		note("sent (" .. kind .. ")", t.m or t.s or t.id)
+	end
+	return ok
+end
+
+-- Portrait of a stalker the stock news show instead of a faction icon (only the icon crosses the network).
+local function stalker_icon(o)
+	local tt = type(o)
+	if tt ~= "userdata" and tt ~= "table" then return nil end
+	local ok, ic = pcall(function()
+		local nm = rawget(_G, "news_manager")
+		if nm and nm.is_npc_stalker and nm.is_npc_stalker(o:clsid()) then return o:character_icon() end
+	end)
+	if ok and type(ic) == "string" and ic ~= "" and #ic <= 128 then return ic end
+	return nil
+end
+
+-- Client: what news_manager.send_sound / send_tip need from a "sender" object (clsid and character_icon only).
+local function stalker_stand_in(ic)
+	return {
+		clsid = function()
+			local c = clsid
+			return c and (c.script_stalker or c.stalker) or 0
+		end,
+		character_icon = function() return ic end,
+	}
+end
+
+local function mark_personal(text)
+	if type(text) ~= "string" then return end
+	if not personal_msgs[text] then
+		personal_n = personal_n + 1
+		if personal_n > 64 then -- stale ones (a surge clears the stock queue); only a few are ever pending
+			personal_msgs = {}
+			personal_n = 1
+		end
+	end
+	personal_msgs[text] = true
+end
+
+-- Host: dynamic_news_helper.send_tip showed `m` inside a world scope.
+local function relay_dyn(m, h, to, st, s, snd, ib)
+	if type(m) == "string" and personal_msgs[m] then -- a personal generator queued this text
+		personal_msgs[m] = nil
+		stats.news_kept = stats.news_kept + 1
+		note("kept, personal talk", m)
+		return
+	end
+	share("dyn", { k = "dyn", m = plain(m), h = plain(h), to = plain(to), st = plain(st), s = plain(s),
+		snd = plain(snd), ib = plain(ib) })
+end
+
+local helper_wrapped, radio_wrapped = false, false
+
+-- The send functions themselves. Installed as early as possible (at script load, before the scripts that
+-- copy send_tip into a local are loaded) and again at on_game_start; each is wrapped once.
+local function install_senders()
+	local dnh = module_of("dynamic_news_helper")
+	if not helper_wrapped and dnh and type(dnh.send_tip) == "function" then
+		helper_wrapped = true
 		local orig = dnh.send_tip
 		dnh.send_tip = function(m, h, to, st, s, snd, ib)
 			local r = orig(m, h, to, st, s, snd, ib)
-			if r and is_host() and from_shared_origin() then
-				share({ k = "dyn", m = plain(m), h = plain(h), to = plain(to), st = plain(st), s = plain(s),
-					snd = plain(snd), ib = plain(ib) })
+			if r and is_host() then
+				if scope == "world" then
+					relay_dyn(m, h, to, st, s, snd, ib)
+				else
+					stats.news_local = stats.news_local + 1 -- personal: the host player's own news
+					note("kept, outside a world generator", m)
+				end
 			end
 			return r
 		end
 	end
-	local nm = rawget(_G, "news_manager") or news_manager
-	if nm and type(nm.send_sound) == "function" and not nm.__coop_core_shared then
-		nm.__coop_core_shared = true
+	local nm = module_of("news_manager")
+	if not radio_wrapped and nm and type(nm.send_sound) == "function" then
+		radio_wrapped = true
 		local orig_sound = nm.send_sound
+		-- Faction radio and NPC chatter shown as PDA news: always world.
 		nm.send_sound = function(npc, faction, point, str, str2, delay_sound)
 			local r = orig_sound(npc, faction, point, str, str2, delay_sound)
-			if r and is_host() then
-				share({ k = "snd", f = plain(faction), p = plain(point), s = plain(str), s2 = plain(str2),
-					d = plain(delay_sound) })
+			if r and is_host() and scope ~= "personal" then
+				share("snd", { k = "snd", f = plain(faction), p = plain(point), s = plain(str), s2 = plain(str2),
+					d = plain(delay_sound), ic = stalker_icon(npc) })
 			end
 			return r
 		end
 		local orig_tip = nm.send_tip
-		nm.send_tip = function(actor, news_id, timeout, sender, showtime, sender_id)
-			local r = orig_tip(actor, news_id, timeout, sender, showtime, sender_id)
-			if r and is_host() and from_shared_origin() then
-				share({ k = "tip", id = plain(news_id), to = plain(timeout), s = type(sender) == "string" and sender or nil,
-					st = plain(showtime), sid = plain(sender_id) })
+		if type(orig_tip) == "function" then
+			nm.send_tip = function(actor, news_id, timeout, sender, showtime, sender_id)
+				local r = orig_tip(actor, news_id, timeout, sender, showtime, sender_id)
+				if r and is_host() and scope == "world" then
+					share("tip", { k = "tip", id = plain(news_id), to = plain(timeout),
+						s = type(sender) == "string" and sender or nil, ic = stalker_icon(sender),
+						st = plain(showtime), sid = plain(sender_id) })
+				end
+				return r
 			end
-			return r
 		end
 	end
+	if helper_wrapped and radio_wrapped then news_report.senders = "wrapped" end
+end
+
+-- Runs f in a scope and puts the previous one back, also when f fails (the error goes on unchanged).
+local function scope_done(prev, ok, ...)
+	scope = prev
+	if not ok then error((...), 0) end
+	return ...
+end
+
+local function in_scope(sc, f, ...)
+	local prev = scope
+	scope = sc
+	return scope_done(prev, pcall(f, ...))
+end
+
+local function around_world(orig, ...) return in_scope("world", orig, ...) end
+local function around_personal(orig, ...) return in_scope("personal", orig, ...) end
+
+-- TickQuick sends the reply to the last queued message; a reply to a trade is personal like the trade.
+local function around_quick(orig, self, ...)
+	local ok, resp = pcall(function() return self.response end)
+	local personal = ok and type(resp) == "table" and PERSONAL_TYPES[resp.type] == true
+	return in_scope(personal and "personal" or "world", orig, self, ...)
+end
+
+-- PushToChannel(name, t, fifo) queues t; the text of a personal one is remembered until TickNews sends it.
+local function around_push(orig, ...)
+	local _, _, t = ...
+	local personal = scope == "personal" or (type(t) == "table" and PERSONAL_TYPES[t.Ty] == true)
+	local r = orig(...)
+	if personal and type(t) == "table" then mark_personal(t.Mg) end -- Mg is final only after orig translated it
+	return r
+end
+
+-- The source name of a function (for tracebacks and for the co-op client filter).
+local function origin_chunk(f, modname)
+	local dbg = debug
+	local ok, info = false, nil
+	if dbg and dbg.getinfo then ok, info = pcall(dbg.getinfo, f, "S") end
+	local src = ok and info and info.source
+	if type(src) == "string" and src:sub(1, 1) == "@" and src:lower():find("%.script$") then return src end
+	return "@" .. modname .. ".script"
+end
+
+-- A wrapper that calls around(orig, ...). It is made by a chunk named like the original's script: coop_main
+-- classifies a time event or callback by the script that defines it, and TickNews / TickQuick are time events
+-- of a host-domain script - a wrapper defined here (a "view" script) would make clients run them.
+local function wrap_like(orig, modname, around)
+	local factory = loadstring("local around, orig = ... return function(...) return around(orig, ...) end",
+		origin_chunk(orig, modname))
+	return factory and factory(around, orig) or nil
+end
+
+local function patch_method(cls, name, around, modname)
+	local ok, f = pcall(function() return cls[name] end)
+	if not (ok and type(f) == "function") then return false end
+	local w = wrap_like(f, modname, around)
+	if not w then return false end
+	return pcall(function() cls[name] = w end)
+end
+
+local class_patched = false
+
+-- The stock manager class: luabind keeps the methods of a Lua class in the class table, instances (the one made
+-- later by get_dynamic_news) look them up there at call time, and CreateTimeEvent gets self.TickNews then.
+local function install_manager_class()
+	if class_patched then return end
+	local mod = module_of("dynamic_news_manager")
+	local ok, cls = pcall(function() return mod and mod.DynamicNewsManager end)
+	if not (ok and cls) then
+		news_report.class = "DynamicNewsManager not found"
+		log("! news: dynamic_news_manager.DynamicNewsManager not found: random PDA news stay on the host")
+		return
+	end
+	local done, wanted = 0, 0
+	local function patch(name, around)
+		wanted = wanted + 1
+		if patch_method(cls, name, around, "dynamic_news_manager") then
+			done = done + 1
+		else
+			log("! news: DynamicNewsManager.%s not patched", name)
+		end
+	end
+	for _, name in ipairs(DYN_WORLD_SENDERS) do
+		patch(name, name == "TickQuick" and around_quick or around_world)
+	end
+	for _, name in ipairs(DYN_PERSONAL) do patch(name, around_personal) end
+	patch("PushToChannel", around_push)
+	class_patched = done > 0
+	news_report.class = done == wanted and "patched" or "partly patched"
+	news_report.methods, news_report.wanted = done, wanted
+end
+
+-- tasks_defense and the like keep the unwrapped send_tip in a local: hand their local a world sender.
+local function world_send_tip(...)
+	local dnh = module_of("dynamic_news_helper")
+	local f = dnh and dnh.send_tip
+	if type(f) ~= "function" then return false end
+	return in_scope("world", f, ...)
+end
+
+local function repoint_aliases()
+	local n = 0
+	local dbg = debug
+	if not (dbg and dbg.getupvalue and dbg.setupvalue) then
+		log("! news: no debug library, barrier-defense news stay on the host")
+		return
+	end
+	for modname, lname in pairs(WORLD_ALIASES) do
+		local mod = module_of(modname)
+		if type(mod) == "table" then
+			local found = false
+			for _, f in pairs(mod) do
+				if type(f) == "function" then
+					local i = 1
+					while true do
+						local ok, name, val = pcall(dbg.getupvalue, f, i)
+						if not ok or name == nil then break end
+						if name == lname and type(val) == "function" then
+							-- one upvalue, shared by every function of that script
+							if val == world_send_tip or pcall(dbg.setupvalue, f, i, world_send_tip) then
+								found = true
+								n = n + 1
+							end
+							break
+						end
+						i = i + 1
+					end
+				end
+				if found then break end
+			end
+			if not found then log("news: %s keeps no '%s' local to hand a world sender (nothing to do)", modname, lname) end
+		end
+	end
+	news_report.aliases = n
+end
+
+local function install_news()
+	local ok, err = pcall(install_senders)
+	if not ok then log("! news senders not wrapped: %s", tostring(err)) end
+	ok, err = pcall(install_manager_class)
+	if not ok then log("! news: dynamic news manager not patched: %s", tostring(err)) end
+	ok, err = pcall(repoint_aliases)
+	if not ok then log("! news: aliases not handed over: %s", tostring(err)) end
+	log("news relay: senders %s, DynamicNewsManager %s (%d/%d methods), world aliases handed over %d",
+		news_report.senders, news_report.class, news_report.methods, news_report.wanted, news_report.aliases)
 end
 
 local function str_arg(v, max)
 	return type(v) == "string" and #v <= (max or 512) and v or nil
 end
 
+-- Client: show one host news with the stock functions (same caption, icon and sound; own language and PDA).
+local function show_news(t)
+	if t.k == "dyn" then
+		local m = str_arg(t.m, 4000)
+		local dev = rawget(_G, "item_device")
+		local pda_ok = not (dev and dev.is_pda_charged) or dev.is_pda_charged(true) -- the stock gate, own PDA
+		if m and pda_ok then
+			dynamic_news_helper.send_tip(m, str_arg(t.h, 1000), tonumber(t.to), tonumber(t.st), str_arg(t.s, 128),
+				str_arg(t.snd, 64), str_arg(t.ib, 16))
+		end
+	elseif t.k == "snd" then
+		local f, s = str_arg(t.f, 64), str_arg(t.s, 512)
+		if f and s then
+			local ic = str_arg(t.ic, 128)
+			news_manager.send_sound(ic and stalker_stand_in(ic) or nil, f, str_arg(t.p, 128), s, str_arg(t.s2, 512),
+				tonumber(t.d) or 0)
+		end
+	elseif t.k == "tip" then
+		local id = str_arg(t.id, 512)
+		if id then
+			local ic = str_arg(t.ic, 128)
+			news_manager.send_tip(db.actor, id, tonumber(t.to), ic and stalker_stand_in(ic) or str_arg(t.s, 128),
+				tonumber(t.st), str_arg(t.sid, 128))
+		end
+	end
+end
+
 local function on_news(payload, from)
 	if from ~= 0 or not live_client() or not db.actor then return end
 	local t = codec().decode(payload)
+	local kind = t.k
+	if kind ~= "dyn" and kind ~= "snd" and kind ~= "tip" then
+		stats.news_bad = stats.news_bad + 1
+		return
+	end
 	stats.news_in = stats.news_in + 1
+	stats["in_" .. kind] = stats["in_" .. kind] + 1
+	if not within_limit("in", kind, NEWS_LIMIT_IN[kind]) then
+		stats.news_limited = stats.news_limited + 1
+		return
+	end
 	news_applying = true
-	local ok, err = pcall(function()
-		if t.k == "dyn" then
-			local m = str_arg(t.m, 4000)
-			local dev = rawget(_G, "item_device")
-			local pda_ok = not (dev and dev.is_pda_charged) or dev.is_pda_charged(true) -- the stock gate, own PDA
-			if m and pda_ok then
-				dynamic_news_helper.send_tip(m, str_arg(t.h, 1000), tonumber(t.to), tonumber(t.st), str_arg(t.s, 128),
-					str_arg(t.snd, 64), str_arg(t.ib, 16))
-			end
-		elseif t.k == "snd" then
-			local f, s = str_arg(t.f, 64), str_arg(t.s, 512)
-			if f and s then
-				news_manager.send_sound(nil, f, str_arg(t.p, 128), s, str_arg(t.s2, 512), tonumber(t.d) or 0)
-			end
-		elseif t.k == "tip" then
-			local id = str_arg(t.id, 512)
-			if id then
-				news_manager.send_tip(db.actor, id, tonumber(t.to), str_arg(t.s, 128), tonumber(t.st), str_arg(t.sid, 128))
-			end
-		end
-	end)
+	local ok, err = pcall(show_news, t)
 	news_applying = false
 	if not ok then log("! host news not shown: %s", tostring(err)) end
 end
@@ -602,16 +898,19 @@ function print_status()
 	for _ in pairs(locks) do n = n + 1 end
 	local g = 0
 	for _ in pairs(granted) do g = g + 1 end
-	log("world: news out %d, in %d | mutant loot: requests %d, granted %d, denied %d, closed %d, edges %d, locks %d, open here %d | stashes found %d | traders: asked %d, applied %d",
-		stats.news_out, stats.news_in, stats.mloot_req, stats.mloot_granted, stats.mloot_denied, stats.mloot_closed,
+	log("world: news out %d (dyn %d, radio %d, tip %d), in %d (dyn %d, radio %d, tip %d) | host's own kept %d, personal text kept %d, limited %d, bad %d | relay: senders %s, manager %s %d/%d, aliases %d",
+		stats.news_out, stats.out_dyn, stats.out_snd, stats.out_tip, stats.news_in, stats.in_dyn, stats.in_snd,
+		stats.in_tip, stats.news_local, stats.news_kept, stats.news_limited, stats.news_bad, news_report.senders,
+		news_report.class, news_report.methods, news_report.wanted, news_report.aliases)
+	log("world: mutant loot: requests %d, granted %d, denied %d, closed %d, edges %d, locks %d, open here %d | stashes found %d | traders: asked %d, applied %d",
+		stats.mloot_req, stats.mloot_granted, stats.mloot_denied, stats.mloot_closed,
 		stats.mloot_edges, n, g, stats.stashes_found, stats.trader_req, stats.trader_applied)
 end
 
 function on_game_start()
 	if not api then return end -- an exe without co-op: nothing of this runs
-	local ok, err = pcall(wrap_news)
-	if not ok then log("! news sharing not installed: %s", tostring(err)) end
-	ok, err = pcall(install_mutant_loot)
+	install_news()
+	local ok, err = pcall(install_mutant_loot)
 	if not ok then log("! mutant loot sharing not installed: %s", tostring(err)) end
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("actor_on_item_take_from_box", on_box_take)
@@ -632,5 +931,10 @@ function on_game_start()
 	cm.add_event_handler(EV_TRADER_CFG, on_trader_cfg)
 end
 
--- Load time (before any on_game_start): the FDDA prefetch must be off before axr_main starts it.
+-- Load time (before any on_game_start): the FDDA prefetch must be off before axr_main starts it, and the send
+-- functions must be wrapped before tasks_defense & co. (loaded later, alphabetically) copy them into locals.
 guard_fdda_prefetch()
+if api then
+	local ok_s, err_s = pcall(install_senders)
+	if not ok_s then log("! news senders not wrapped at load: %s", tostring(err_s)) end
+end
