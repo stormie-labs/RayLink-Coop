@@ -1,0 +1,50 @@
+; Anomaly Coop - what a player's death costs (F3, docs/CHECKPOINTS_DEATH.md par. 3.3). Merged into system.ltx (DLTX);
+; read by the engine on the host (coop_death.cpp) when a session starts. The host's death_drop mode (console
+; coop_death_drop) picks what happens to the lost things:
+;   drop   - a share of the backpack per category falls at the body (anyone in the group can pick it up);
+;   corpse - the whole backpack goes into a stash at the body (coop_death_stash below), with a PDA mark;
+;   lose   - a share of the backpack per category is gone.
+; Never lost: what the player has on (slots, belt), quest items (kind i_quest / i_letter), the PDA. Which items of
+; a category go is a seeded draw on the host: floor(n x share), and one more with the probability of the fraction.
+; Mod packs change the shares or map their own kinds with DLTX (![coop_death_drop], ![coop_death_kinds]).
+; Console of the host: coop_death_preview [character id] logs what a death would take now.
+
+[coop_death_drop]          ; share of the backpack lost per category (drop: falls out, lose: gone)
+materials   = 0.5
+ammo        = 0.5
+consumables = 0.5
+gear        = 0.25
+artefacts   = 0.1
+tools       = 0.1
+other       = 0.25
+
+[coop_death_kinds]         ; item ltx `kind` -> category
+i_part = materials
+i_mutant_raw = materials
+i_mutant_part = materials
+i_mutant_cooked = materials
+i_arty_junk = materials
+i_misc = materials
+w_ammo = ammo
+i_food = consumables
+i_drink = consumables
+i_medical = consumables
+i_arty = artefacts
+i_arty_cont = artefacts
+i_mutant_belt = artefacts
+i_tool = tools
+i_kit = tools
+i_repair = tools
+i_upgrade = tools
+i_device = tools
+i_attach = tools
+w_pistol = gear
+w_rifle = gear
+w_smg = gear
+w_shotgun = gear
+w_sniper = gear
+w_misc = gear
+
+; The stash of the corpse mode (and of a hardcore character that retires): the stock backpack stash container
+; (items_anim.ltx, made by item_backpack.script), spawned by the host at the body.
+[coop_death_stash]:inv_backpack
