@@ -318,3 +318,15 @@
   `-NoStart` (всё готовит, печатает команду, игру не запускает); `axr_options.ltx` пишется только новым файлом (через
   жёсткую ссылку правка ушла бы в мод GAMMA); `-NewGame` берёт `new_game_loadouts.ltx` стенда, если он есть (GAMMA:
   `G.A.M.M.A. Starting Loadouts`, DLTX-добавки `mod_new_game_loadouts_*` не применяются). Игра не запускалась.
+- 2026-10-22 20:36 — **Ф1, задача 3: пакет из трёх модов MO2** (`d34b8c4`, тесты `tests/tools/test_packaging.py` 8/8, структурный
+  чекер FOMOD — OK). Архив: `Anomaly Coop - Engine` (`bin` + `gamedata` движка), `Anomaly Coop - Core`,
+  `Anomaly Coop - GAMMA` (пустая `gamedata` + `readme_gamma.txt`), `fomod`. FOMOD за установку делает один мод
+  MO2, поэтому архив ставится по разу на часть (шаг «Часть», имя — в поле Name установщика): Engine → Lowest
+  priority, Core → Highest, GAMMA → Highest последним. Другой путь — распаковать три папки в `mods`. На G.A.M.M.A.
+  страница «выключите эти моды» из `docs/MOD_REPLACEMENTS.md`. В реестре теперь точные имена папок MO2 и состояние
+  в профиле: YACS 203 и Soulslike 338 включены, Ironman 208 и YACS no quit выключены. `releases/anomaly-coop-0.2.0.zip`
+  — 245 записей. В MO2 вживую не проверено. Упаковку делал субагент Sonnet; ведущая проверила и поправила имена.
+- 2026-10-22 20:36 — строки из финального ревью Ф0: `st_coop_talk_busy/refused/revoked` (`coop_dialog.cpp`) и
+  `st_coop_vehicle_host` (`coop_events.cpp`) добавлены в `st_coop_core.xml` eng/rus (cp1251, CRLF), `ef844a2`.
+  Новый тест `tests/tools/test_strings.py` сверяет все `"st_coop_*"` из `engine/src` с таблицами обоих языков.
+  Тесты: `pytest tests/tools` 37/37, Lua 2096/0.
