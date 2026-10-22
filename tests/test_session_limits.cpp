@@ -663,6 +663,10 @@ TEST(limits_message_rate)
 	CHECK_EQ(others.size(), size_t(10)); // other types are not limited
 	CHECK(host.logged("rate limit"));
 	CHECK(host.left.empty()); // dropped, not punished
+	// T12 review (Ruling 18): every drop is counted by type (the log line comes once per client and type).
+	CHECK_EQ(host.s.stats(uint16_t(Msg::StateDumpRequest)).rate_dropped, uint64_t(6)); // Alice's 10 - 4
+	CHECK_EQ(host.s.stats(uint16_t(Msg::StateDumpRequest)).recv_count, uint64_t(11));
+	CHECK_EQ(host.s.stats(uint16_t(Msg::ScriptEvent)).rate_dropped, uint64_t(0));
 
 	// Tokens come back with time: two after 2.1 s.
 	t::pump_for({&host.s, &a.s, &b.s}, 2100);
@@ -671,6 +675,7 @@ TEST(limits_message_rate)
 	REQUIRE(t::pump_until({&host.s, &a.s, &b.s}, 5000, [&] { return dumps.size() >= 7; }));
 	t::pump_for({&host.s, &a.s, &b.s}, 50);
 	CHECK_EQ(dumps.size(), size_t(7));
+	CHECK_EQ(host.s.stats(uint16_t(Msg::StateDumpRequest)).rate_dropped, uint64_t(9)); // + 3 of the 5
 }
 
 TEST(world_epoch)

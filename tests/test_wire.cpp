@@ -319,7 +319,7 @@ TEST(msg_name_known_and_unknown)
 		Msg::ReqContainer, Msg::TimeSync, Msg::WeatherSync, Msg::Emission, Msg::ZoneState, Msg::InfoPortion,
 		Msg::TaskList, Msg::TaskUpdate, Msg::MapSpot, Msg::Relation, Msg::Progress, Msg::DialogLock,
 		Msg::DialogLockResult, Msg::DialogUnlock, Msg::DialogPhrases, Msg::DialogSelect, Msg::TradeOp,
-		Msg::ScriptEvent, Msg::StateDumpRequest, Msg::StateDump, Msg::EntitySound};
+		Msg::ScriptEvent, Msg::StateDumpRequest, Msg::StateDump, Msg::EntitySound, Msg::AvatarList};
 	for (Msg m : all)
 		CHECK(std::strncmp(msg_name(m), "Msg_0x", 6) != 0);
 }
@@ -662,4 +662,116 @@ TEST(protocol_version_bumped_for_world_epoch)
 	Reader cut(w.ptr(), w.size() - 1); // a Welcome of protocol 4 has no epoch
 	WelcomeMsg we3;
 	CHECK(!we3.read(cut));
+}
+
+// ---------------------------------------------------------------- R3 В3: who plays each player character
+
+// Review R3 В3: the host tells every client the owner of each player character (Msg::AvatarList).
+TEST(protocol_version_bumped_for_avatar_owners)
+{
+	static_assert(kProtocolVersion >= 6u, "protocol 6");
+	static_assert(static_cast<uint16_t>(Msg::AvatarList) == 0x0107, "append only");
+	static_assert(static_cast<uint16_t>(Msg::AvatarList) >= static_cast<uint16_t>(Msg::GameBase), "a game message");
+	CHECK_EQ(std::string(msg_name(Msg::AvatarList)), std::string("AvatarList"));
+}
+
+namespace
+{
+struct Row
+{
+	uint16_t avatar;
+	uint32_t peer;
+};
+
+// An AvatarList as raw bytes: u8 count, then (u16 avatar, u32 peer) rows.
+std::vector<uint8_t> avatar_table(uint8_t count, std::initializer_list<Row> rows)
+{
+	Writer w;
+	w.u8(count);
+	for (const auto& row : rows)
+	{
+		w.u16(row.avatar);
+		w.u32(row.peer);
+	}
+	return std::vector<uint8_t>(w.ptr(), w.ptr() + w.size());
+}
+
+bool read_table(const std::vector<uint8_t>& bytes, AvatarListMsg& out)
+{
+	Reader r(bytes.data(), bytes.size());
+	return out.read(r);
+}
+} // namespace
+
+TEST(avatar_list_roundtrip)
+{
+	AvatarListMsg m;
+	m.owners = {{0, kHostPeer}, {1205, 1}, {7, 3}};
+	Writer w;
+	m.write(w);
+	CHECK_EQ(w.size(), size_t(1 + 3 * (2 + 4)));
+	AvatarListMsg back;
+	Reader r(w.ptr(), w.size());
+	CHECK(back.read(r));
+	CHECK_EQ(r.remaining(), size_t(0));
+	REQUIRE(back.owners.size() == 3);
+	CHECK(back.owners[0].avatar == 0 && back.owners[0].peer == kHostPeer);
+	CHECK(back.owners[1].avatar == 1205 && back.owners[1].peer == PeerId(1));
+	CHECK(back.owners[2].avatar == 7 && back.owners[2].peer == PeerId(3));
+
+	// A full session: the host and kMaxPlayers - 1 clients.
+	AvatarListMsg full;
+	for (PeerId p = 0; p < kMaxPlayers; ++p)
+		full.owners.push_back({uint16_t(p == kHostPeer ? 0 : 60000 + p), p});
+	Writer wf;
+	full.write(wf);
+	AvatarListMsg full2;
+	Reader rf(wf.ptr(), wf.size());
+	CHECK(full2.read(rf));
+	CHECK_EQ(full2.owners.size(), size_t(kMaxPlayers));
+	CHECK(uint32_t(full2.owners.back().avatar) == 60000u + kMaxPlayers - 1 && full2.owners.back().peer == kMaxPlayers - 1);
+
+	// The host alone: a table of one; an empty one says nobody plays any character.
+	AvatarListMsg alone;
+	CHECK(read_table(avatar_table(1, {{0, kHostPeer}}), alone));
+	CHECK_EQ(alone.owners.size(), size_t(1));
+	AvatarListMsg none;
+	none.owners = {{5, 2}};
+	CHECK(read_table(avatar_table(0, {}), none));
+	CHECK(none.owners.empty());
+}
+
+TEST(avatar_list_rejects_bad_tables)
+{
+	// Truncated anywhere: never ok, nothing kept.
+	const std::vector<uint8_t> good = avatar_table(3, {{0, 0}, {300, 1}, {301, 2}});
+	for (size_t cut = 0; cut < good.size(); ++cut)
+	{
+		AvatarListMsg t;
+		t.owners = {{9, 4}};
+		Reader r(good.data(), cut);
+		CHECK(!t.read(r));
+		CHECK(t.owners.empty());
+	}
+	AvatarListMsg t;
+	// More rows than a session has players, even when the bytes are there.
+	std::initializer_list<Row> nine = {{0, 0}, {301, 1}, {302, 2}, {303, 3}, {304, 4},
+		{305, 5}, {306, 6}, {307, 7}, {308, 7}};
+	CHECK(!read_table(avatar_table(uint8_t(kMaxPlayers + 1), nine), t));
+	CHECK(!read_table(avatar_table(255, {{0, 0}}), t));
+	// No such object id.
+	CHECK(!read_table(avatar_table(2, {{0, 0}, {0xFFFF, 1}}), t));
+	// No such player slot.
+	CHECK(!read_table(avatar_table(1, {{300, kInvalidPeer}}), t));
+	CHECK(!read_table(avatar_table(1, {{300, kMaxPlayers}}), t));
+	// One character, two players; one player, two characters.
+	CHECK(!read_table(avatar_table(3, {{0, 0}, {300, 1}, {300, 2}}), t));
+	CHECK(!read_table(avatar_table(3, {{0, 0}, {300, 1}, {301, 1}}), t));
+	// Id 0 is the host's own actor: the host's and nobody else's, and the host plays no other character.
+	CHECK(!read_table(avatar_table(1, {{0, 1}}), t));
+	CHECK(!read_table(avatar_table(1, {{300, kHostPeer}}), t));
+	CHECK(t.owners.empty());
+	// The same rows in order are fine.
+	CHECK(read_table(avatar_table(3, {{0, 0}, {300, 1}, {301, 2}}), t));
+	CHECK_EQ(t.owners.size(), size_t(3));
 }
