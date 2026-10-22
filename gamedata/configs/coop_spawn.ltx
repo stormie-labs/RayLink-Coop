@@ -9,7 +9,8 @@
 ;   2. the section has every line its server entity and game object read unchecked (a missing one would be FATAL on
 ;      the host);
 ;   3. into one of the player's items only what that item takes: a launcher its rocket, a grenade or bolt its fake
-;      missile (anything else into an item crashed the host);
+;      missile (anything else into an item crashed the host). Such a child is a shot: it costs no budget and never
+;      waits (step 7);
 ;   4. it is not in [deny_sections];
 ;   5. it is in [allow_sections]: created, the budget below is not charged;
 ;   6. it is not a quest item (quest_item = true), unless an NPC gives it in a talk: into the player's own character,

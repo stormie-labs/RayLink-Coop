@@ -839,3 +839,56 @@ TEST(spawn_queue_refund)
 	CHECK((created == std::vector<int>{1, 3}));
 	CHECK(book.of(key).tokens == 5000.0); // 10 000 - 5 000 (#3); #2's charge came back
 }
+
+// ---------------------------------------------------------------- fix round 3 (Ruling F2-22)
+
+// A child the parent item takes (child_allowed: a rocket in its launcher, a fake missile in its grenade or bolt) is a
+// shot: the charge already left the client's inventory. It costs no budget and never waits in the queue; the parent
+// check (WrongParent) and the deny list still apply.
+TEST(spawn_launch_child_is_free)
+{
+	const spawn::SpawnPolicy policy;
+	const spawn::ClassRule* rocket = spawn::class_rule("G_FAKE");
+	const spawn::ClassRule* launcher = spawn::class_rule("WP_AK74");
+	REQUIRE(rocket && launcher);
+	spawn::SpawnQueue<Wanted> queue;
+	spawn::BudgetBook book;
+	const std::string key(64, 'k');
+	std::vector<int> created;
+
+	// The budget is used up and requests of the character wait.
+	CHECK_EQ(ask(queue, book, key, {1, policy.cost_burst}, created, 0), 1);
+	CHECK_EQ(ask(queue, book, key, {2, 1000}, created, 0), 0);
+	const spawn::CostBudget before = book.of(key);
+
+	// A rocket into his own grenade launcher: created at once, behind nothing, the budget as it was.
+	spawn::SectionFacts shot = facts(150); // wpn_fake_missile costs 150
+	shot.parent_ok = spawn::child_allowed(launcher->game, "wpn_ak74", rocket->game, "wpn_fake_missile");
+	shot.launch_child = shot.parent_ok;
+	shot.queue_waiting = queue.waiting(key);
+	REQUIRE(shot.parent_ok && shot.queue_waiting);
+	CHECK(spawn::budget_free(shot));
+	CHECK(spawn::judge(rocket, nullptr, shot, book.of(key), policy, 0) == SpawnVerdict::Allow);
+	CHECK(book.of(key).tokens == before.tokens);
+	CHECK(book.of(key).at == before.at);
+	CHECK_EQ(queue.size(key), size_t(1)); // the queue is as it was
+	// Later too, while the queue waits: again and again, nothing taken.
+	for (int i = 0; i < 20; ++i)
+		CHECK(spawn::judge(rocket, nullptr, shot, book.of(key), policy, 10) == SpawnVerdict::Allow);
+	CHECK(book.of(key).tokens == before.tokens);
+
+	// Still refused: the same rocket into an item that does not take it, a deny-listed one.
+	spawn::SectionFacts wrong = facts(150);
+	wrong.parent_ok = spawn::child_allowed(spawn::GameClass::WeaponMagazined, "wpn_lr300", rocket->game,
+	    "wpn_fake_missile");
+	wrong.launch_child = wrong.parent_ok;
+	CHECK(!wrong.parent_ok && !spawn::budget_free(wrong));
+	CHECK(spawn::judge(rocket, nullptr, wrong, book.of(key), policy, 0) == SpawnVerdict::WrongParent);
+	spawn::SectionFacts denied = shot;
+	denied.deny_listed = true;
+	CHECK(spawn::judge(rocket, nullptr, denied, book.of(key), policy, 0) == SpawnVerdict::Denied);
+
+	// An ordinary item into his character still pays and queues.
+	CHECK(!spawn::budget_free(facts(150)));
+	CHECK_EQ(ask(queue, book, key, {3, 150}, created, 10), 0);
+}
