@@ -14,7 +14,11 @@ function TM:set_task_failed(id)
 	FAILED[#FAILED + 1] = id
 	if self.task_info[id] then self.task_info[id].forced_status = "fail" end
 end
-task_manager = { get_task_manager = function() return TM end }
+STAGE_COMPLETE = {} -- id -> stage_complete of the task ini stub (stock: task_manager.task_ini, misc\task\task_manager.ltx)
+task_manager = {
+	get_task_manager = function() return TM end,
+	task_ini = { r_float_ex = function(_, id, key) if key == "stage_complete" then return STAGE_COMPLETE[id] end end },
+}
 db.actor = { get_task = function(_, id, only_active) return (only_active and ENGINE[id]) and {} or nil end }
 
 local function task(id, functor, extra)
@@ -54,7 +58,7 @@ end
 
 local function reset()
 	TM.task_info = {}
-	FAILED, ON_FAIL, ENGINE = {}, {}, {}
+	FAILED, ON_FAIL, ENGINE, STAGE_COMPLETE = {}, {}, {}, {}
 	MODE = "host"
 	coop_wipe.reload()
 end
@@ -112,6 +116,34 @@ check(failed_ids() == table.concat(escorts, ","), "the six escort tasks are fail
 engine_poll()
 update()
 check(TM.task_info.sim_default_bandit_trader_task_4 == nil and TM.task_info.barrier_defense_zombie ~= nil, "escorts are retaken at once, the barrier is untouched")
+
+print("== ready_to_turn_in_keep")
+reset()
+STAGE_COMPLETE.order_done = 1
+STAGE_COMPLETE.order_hunting = 1
+STAGE_COMPLETE.sweep_done = 3
+STAGE_COMPLETE.sweep_midway = 3
+task("order_done", "bounty_task", { stage = 1 })           -- target killed, waits for the turn-in dialog
+task("order_hunting", "bounty_task", { stage = 0 })        -- still hunting
+task("sweep_done", "assault_task_status_functor", { stage = 3 })
+task("sweep_midway", "assault_task_status_functor", { stage = 2 })
+task("plain_ready", "assault_task_status_functor", { stage = 254 }) -- no stage_complete key: 254
+task("plain_hunting", "assault_task_status_functor", { stage = 1 })
+local function log_line(id, pat)
+	for i = #LOG, 1, -1 do
+		if LOG[i]:find(id, 1, true) and LOG[i]:find(pat, 1, true) then return LOG[i] end
+	end
+end
+LOG = {}
+wipe()
+check(failed_ids() == "order_hunting,plain_hunting,sweep_midway", "only the tasks short of stage_complete are failed (got " .. failed_ids() .. ")")
+check(TM.task_info.order_done.forced_status == nil and TM.task_info.sweep_done.forced_status == nil
+	and TM.task_info.plain_ready.forced_status == nil, "the tasks ready to turn in get no forced status")
+check(coop_wipe.pending_count() == 3, "and are not remembered for the retake")
+check(log_line("order_done", "ready to turn in") ~= nil, "a ready task is logged as 'ready to turn in'")
+check(log_line("plain_ready", "ready to turn in") ~= nil, "stage 254 without a stage_complete key is ready too")
+check(log_line("order_hunting", "ready to turn in") == nil and log_line("order_hunting", "fail") ~= nil, "a task short of the stage is logged as fail")
+check(log_line("group wipe", "3 ready to turn in") ~= nil and log_line("group wipe", "3 failed") ~= nil, "the summary counts them apart")
 
 print("== fetch_keep")
 reset()

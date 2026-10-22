@@ -14,7 +14,8 @@
 	Not in the table = default = keep (an unknown task is never touched). A bad value in the table reads as keep.
 	Only tasks in progress are looked at: records waiting for their repeat timer (completed or failed earlier, stage
 	255) keep their timer, and a status somebody else already forced (cancelled by the player, being completed)
-	is not overridden.
+	is not overridden. A task ready to turn in (stage == stage_complete of its section in task_manager.ltx, 254 when the
+	key is missing; the fight is already won, only the dialog is left) is never failed, whatever the table says.
 
 	API (console / tests):
 	  coop_wipe.action_for(task_id, status_functor) -> "fail" | "keep"
@@ -30,6 +31,7 @@ local api = rawget(_G, "coop") -- engine namespace (nil on an exe without co-op)
 local RULES_FILE = "coop_wipe_tasks.ltx"
 local FAIL, KEEP = "fail", "keep"
 local STAGE_WAITING = 255 -- stock: task_callback leaves a repeat-timeout record at this stage
+local STAGE_COMPLETE_DEFAULT = 254 -- stock: a task without a stage_complete key is ready to turn in at this stage
 local PENDING_TTL_MS = 120000 -- the engine normally handles a forced failure within a frame or two
 
 local rules = nil -- { default = , by_functor = {}, by_prefix = { { prefix =, action = }, ... }, by_id = {} }
@@ -147,6 +149,15 @@ local function in_progress(tsk)
 	return tsk.forced_status == nil
 end
 
+-- Ready to turn in: the fight is won and the task waits for the dialog. Stock check of axr_task_manager's dialogs:
+-- stage == stage_complete of the task's section in task_manager.ltx (254 when the key is missing).
+local function ready_to_turn_in(id, tsk)
+	if type(tsk.stage) ~= "number" then return false end
+	local ok, stage_complete = pcall(function() return task_manager.task_ini:r_float_ex(id, "stage_complete") end)
+	if not ok then stage_complete = nil end
+	return tsk.stage == (stage_complete or STAGE_COMPLETE_DEFAULT)
+end
+
 function on_group_wipe()
 	if not is_host() then return end
 	local tm = task_manager.get_task_manager()
@@ -158,13 +169,16 @@ function on_group_wipe()
 	local ids = {}
 	for id in pairs(info) do ids[#ids + 1] = id end
 	table.sort(ids, function(a, b) return tostring(a) < tostring(b) end)
-	local failed, kept, skipped = 0, 0, 0
+	local failed, kept, ready, skipped = 0, 0, 0, 0
 	for _, id in ipairs(ids) do
 		local tsk = info[id]
 		if in_progress(tsk) then
 			local action, why = decide(id, tsk.status_functor)
-			log("%s [%s] -> %s (%s)", tostring(id), tostring(tsk.status_functor), action, why)
-			if action == FAIL then
+			if action == FAIL and ready_to_turn_in(id, tsk) then
+				log("%s [%s] -> keep (ready to turn in, stage %s)", tostring(id), tostring(tsk.status_functor), tostring(tsk.stage))
+				ready = ready + 1
+			elseif action == FAIL then
+				log("%s [%s] -> %s (%s)", tostring(id), tostring(tsk.status_functor), action, why)
 				local ok, err = pcall(tm.set_task_failed, tm, id)
 				if ok then
 					pending[id] = { tsk = tsk, since = time_global() }
@@ -173,13 +187,14 @@ function on_group_wipe()
 					log("! set_task_failed %s: %s", tostring(id), tostring(err))
 				end
 			else
+				log("%s [%s] -> %s (%s)", tostring(id), tostring(tsk.status_functor), action, why)
 				kept = kept + 1
 			end
 		else
 			skipped = skipped + 1
 		end
 	end
-	log("group wipe: %d failed, %d kept, %d not in progress", failed, kept, skipped)
+	log("group wipe: %d failed, %d kept, %d ready to turn in, %d not in progress", failed, kept, ready, skipped)
 end
 
 -- The engine's own task object (the stock CRandomTask:update does not drop a record while it exists).
