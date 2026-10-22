@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="windows-1251"?>
 <!-- Anomaly Coop: core group (W4) - chat, party panel, join/leave notices, saves, level moves, mutant loot.
-     Used by scripts\coop_core_*.script. -->
+     Used by scripts\coop_core_*.script; the talk and vehicle notices at the end are shown by the engine
+     (coop_dialog.cpp, coop_events.cpp). -->
 <string_table>
 	<string id="kb_coop_chat">
 		<text>Co-op: chat</text>
@@ -100,5 +101,17 @@
 	</string>
 	<string id="st_coop_core_mloot_busy">
 		<text>Another player is cutting up this body.</text>
+	</string>
+	<string id="st_coop_talk_busy">
+		<text>Busy: talking to another player</text>
+	</string>
+	<string id="st_coop_talk_refused">
+		<text>You cannot talk to another player this way</text>
+	</string>
+	<string id="st_coop_talk_revoked">
+		<text>The conversation was interrupted by the host</text>
+	</string>
+	<string id="st_coop_vehicle_host">
+		<text>Vehicles are driven by the host in co-op</text>
 	</string>
 </string_table>
