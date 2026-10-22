@@ -1,0 +1,34 @@
+; Anomaly Coop - what a client may ask the host to create (F2 T2), read by the engine (coop_requests.cpp) once per
+; game start. Host settings: the host's file decides, a client's copy is not read.
+;
+; A client never creates an item in the shared world by itself: it asks the host (ReqSpawn) - an item from its
+; inventory work (unloading a magazine, detaching a scope, crafting, a script's alife():create), a grenade's or a
+; launcher's rocket. The host creates it only if, in this order:
+;   1. the section's `class` is an item class of the game (the table in engine/src/xrCoop/coop_spawn.h, checked by
+;      tools/check_spawn_classes.py): stalkers, monsters, anomalies, physics objects, boxes are refused;
+;   2. the section has every line its class reads unchecked (a missing one would be FATAL on the host);
+;   3. it is not in [deny_sections];
+;   4. it is in [allow_sections]: created, the budget below is not charged;
+;   5. it is not a quest item (quest_item = true): quest items come from the host's story, not from a client;
+;   6. the character's cost budget holds the section's `cost`: up to cost_burst in a row, refilled by cost_per_sec.
+;      The budget belongs to the character for the whole session: leaving and joining again refills nothing.
+; Refusals are counted in coop_status ("spawns refused: class N, line N, denied N, quest N, budget N"); the first
+; ten are logged with the section and the player.
+
+[coop_spawn]
+cost_burst              = 200000    ; RU of items a character may have created in a row (a full loadout of gear)
+cost_per_sec            = 2000      ; RU that come back per second (120 000 a minute)
+
+; Sections a client may always ask for, without the budget and the quest check (one section name per line).
+; Sections a client may never ask for, whatever else is true (one section name per line; it beats the allow list).
+;
+; Add to them from a mod with DLTX, without editing this file: put a file named mod_coop_spawn_<your mod>.ltx next to
+; it (gamedata\configs\) with
+;     ![allow_sections]
+;     my_quest_reward_item
+;     ![deny_sections]
+;     some_section_clients_must_not_make
+; and remove a listed section with `!section_name` under the same `![...]` header.
+[allow_sections]
+
+[deny_sections]

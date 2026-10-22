@@ -140,41 +140,36 @@ TEST(spawn_request_legacy)
 
 TEST(spawn_class_lines)
 {
-	// Engine ids and Anomaly's script ids of classes whose constructors read their lines unchecked.
-	CHECK(spawn::item_kind("WP_AK74") == spawn::ItemKind::Weapon);
-	CHECK(spawn::item_kind("W_AK74") == spawn::ItemKind::Weapon);
-	CHECK(spawn::item_kind("WP_KNIFE") == spawn::ItemKind::Weapon);
-	CHECK(spawn::item_kind("WP_ASHTG") == spawn::ItemKind::Weapon);
-	CHECK(spawn::item_kind("_WP_SSRS") == spawn::ItemKind::Weapon);
-	CHECK(spawn::item_kind("AMMO") == spawn::ItemKind::Ammo);
-	CHECK(spawn::item_kind("AMMO_S") == spawn::ItemKind::Ammo);
-	CHECK(spawn::item_kind("S_OG7B") == spawn::ItemKind::Ammo);
-	CHECK(spawn::item_kind("D_SIMDET") == spawn::ItemKind::Detector);
-	CHECK(spawn::item_kind("DET_ELIT") == spawn::ItemKind::Detector);
-	CHECK(spawn::item_kind("E_STLK") == spawn::ItemKind::Outfit);
-	CHECK(spawn::item_kind("EQU_EXO") == spawn::ItemKind::Outfit);
-	CHECK(spawn::item_kind("WP_AK74 ") == spawn::ItemKind::Weapon); // trailing blanks of an ini value
-	// Addons, helmets, rockets, food...: plain items.
-	CHECK(spawn::item_kind("WP_SCOPE") == spawn::ItemKind::Other);
-	CHECK(spawn::item_kind("WP_SILEN") == spawn::ItemKind::Other);
-	CHECK(spawn::item_kind("W_STMGUN") == spawn::ItemKind::Other);
-	CHECK(spawn::item_kind("E_HLMET") == spawn::ItemKind::Other);
-	CHECK(spawn::item_kind("G_FAKE") == spawn::ItemKind::Other);
-	CHECK(spawn::item_kind("II_FOOD") == spawn::ItemKind::Other);
-	CHECK(spawn::item_kind("") == spawn::ItemKind::Other);
-	CHECK(spawn::item_kind("wp_ak74") == spawn::ItemKind::Other); // ids are case-sensitive
-
-	const std::vector<const char*> other = spawn::required_lines(spawn::ItemKind::Other);
-	CHECK_EQ(other.size(), size_t(2));
-	CHECK(has_line(other, "inv_weight") && has_line(other, "cost"));
-	const std::vector<const char*> weapon = spawn::required_lines(spawn::ItemKind::Weapon);
-	for (const char* line : {"inv_weight", "cost", "hit_power", "hit_type", "ammo_class", "scope_status",
-	         "silencer_status", "grenade_launcher_status"})
-		CHECK(has_line(weapon, line));
-	CHECK(has_line(spawn::required_lines(spawn::ItemKind::Ammo), "box_size"));
-	CHECK(has_line(spawn::required_lines(spawn::ItemKind::Detector), "ef_detector_type"));
-	CHECK(has_line(spawn::required_lines(spawn::ItemKind::Outfit), "ef_equipment_type"));
-	CHECK(has_line(spawn::required_lines(spawn::ItemKind::Outfit), "cost"));
+	// F2 T2: the lines a section must have come from the rule of its class (the full table: test_spawn_policy.cpp).
+	const auto lines_of = [](std::string_view clsid)
+	{
+		const spawn::ClassRule* rule = spawn::class_rule(clsid);
+		return rule ? spawn::required_lines(rule->cse) : std::vector<const char*>();
+	};
+	// Engine ids and Anomaly's script ids of classes whose constructors read their own lines unchecked.
+	for (const char* weapon : {"WP_AK74", "W_AK74", "WP_KNIFE", "WP_ASHTG", "_W_SSRS", "_WP_SSRS", "WP_AK74 "})
+		for (const char* line : {"inv_weight", "cost", "hit_power", "hit_type", "ammo_class", "scope_status",
+		         "silencer_status", "grenade_launcher_status"})
+			CHECK(has_line(lines_of(weapon), line));
+	for (const char* ammo : {"AMMO", "AMMO_S", "S_OG7B"})
+		CHECK(has_line(lines_of(ammo), "box_size"));
+	for (const char* detector : {"D_SIMDET", "DET_ELIT"})
+		CHECK(has_line(lines_of(detector), "ef_detector_type"));
+	for (const char* outfit : {"E_STLK", "EQU_EXO"})
+	{
+		CHECK(has_line(lines_of(outfit), "ef_equipment_type"));
+		CHECK(has_line(lines_of(outfit), "cost"));
+	}
+	// Addons, helmets, rockets, food...: the inventory item's two lines.
+	for (const char* plain : {"WP_SCOPE", "WP_SILEN", "E_HLMET", "G_FAKE", "II_FOOD"})
+	{
+		const std::vector<const char*> lines = lines_of(plain);
+		CHECK_EQ(lines.size(), size_t(2));
+		CHECK(has_line(lines, "inv_weight") && has_line(lines, "cost"));
+	}
+	// No rule at all: the host refuses before anything is constructed.
+	for (const char* none : {"W_STMGUN", "", "wp_ak74"})
+		CHECK(spawn::class_rule(none) == nullptr);
 }
 
 TEST(upgrades_plan_order)
