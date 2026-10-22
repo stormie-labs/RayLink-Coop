@@ -1,5 +1,5 @@
 --[[
-	Anomaly Coop - core group: the player's own Lua state, who comes and goes, saves and level moves
+	Anomaly Coop - core group: the player's own Lua state, who comes and goes, and level moves
 	(gamedata\scripts\coop_core_player.script)
 
 	1. Per-player Lua state. A client loads a copy of the host's save, and with it the HOST's Lua state. The engine
@@ -15,11 +15,11 @@
 	   Boosters: key "coop_core_boosters" ("type,seconds,value|..."), applied to the actor once it is live.
 	   The rank news are re-baselined after a world load, so the restored rank does not pop "rank increased".
 	2. Join/leave notices on every machine (PDA tip + chat line), the session start notice once per session.
-	3. Quicksave on a client (F5, the menu): asks the host to quicksave ("core.save_req"); the host runs its own
-	   save gates (on_before_save_input) and saves with the stock quicksave, or answers why not.
-	4. Level exits: a client at a level exit asks the host to move the group (engine TransitionVote). The host
+	3. Level exits: a client at a level exit asks the host to move the group (engine TransitionVote). The host
 	   accepts with /go in the chat (coop_accept_transition). If the engine tells Lua about the vote
 	   (coop_main.on_transition_vote, see Requests), the host gets a notice and the clients a fade before the move.
+	F3 task 17: the client's quicksave request to the host is gone. Nobody saves by hand in a session, the host included
+	(scripts\coop_saves.script); the host's engine writes the emergency autosaves.
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
@@ -27,12 +27,9 @@ local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
 local string_format = string.format
 local tostring, tonumber, type, ipairs, pairs, pcall = tostring, tonumber, type, ipairs, pairs, pcall
 
-local EV_SAVE_REQ = "core.save_req" -- client -> host: please quicksave
-local EV_SAVE_RES = "core.save_res" -- host -> client: ok, why
 local EV_MOVING = "core.moving" -- host -> clients: the group moves to another level now
 
 local ROSTER_MS = 1000
-local SAVE_REQ_GAP_MS = 10000
 local STASH_SEEN = "coop_core_session" -- coop.stash: the session-start notice was shown
 local KEY_STATS = "game_statistics"
 local KEY_BOOSTERS = "coop_core_boosters"
@@ -92,7 +89,7 @@ local function hud_msg(text)
 	log("%s", text)
 end
 
-local stats = { boosters_applied = 0, saves = 0, save_refused = 0 }
+local stats = { boosters_applied = 0 }
 
 -------------------------------------------------------------------------------
 -- 1. Per-player Lua state (through coop_mods_pdata)
@@ -239,93 +236,7 @@ local function roster_tick()
 end
 
 -------------------------------------------------------------------------------
--- 3. Quicksave asked by a client
--------------------------------------------------------------------------------
-local last_save_req = -SAVE_REQ_GAP_MS
-
--- Client: called by coop_main for a quicksave (on_before_save_input type 2). True: the host was asked.
-function request_quicksave()
-	if not (api and api.is_client() and api.is_live()) then return false end
-	local tg = time_global()
-	if tg - last_save_req < SAVE_REQ_GAP_MS then
-		hud_msg(tr("st_coop_core_save_wait", "The host is saving already, wait a moment."))
-		return true
-	end
-	last_save_req = tg
-	api.send_event(EV_SAVE_REQ, "", 0)
-	hud_msg(tr("st_coop_core_save_asked", "Asked the host to quicksave."))
-	return true
-end
-
-local function host_can_save()
-	-- host rule (Options > Co-op > session rules, coop_settings.rule, W5)
-	local cs = rawget(_G, "coop_settings")
-	if cs and cs.rule then
-		local ok, allowed = pcall(cs.rule, "core/client_quicksave")
-		if ok and allowed == false then return false, "off" end
-	end
-	local actor = db.actor
-	if not (actor and actor:alive()) then return false, "dead" end
-	local am = rawget(_G, "actor_menu")
-	if am and am.is_hud_free and not am.is_hud_free() then return false, "busy" end
-	local flags = { ret = false }
-	SendScriptCallback("on_before_save_input", flags, 2, tr("st_ui_save", "Save"))
-	if flags.ret == true then return false, "refused" end
-	return true
-end
-
-local last_save_by = {} -- host: peer -> time of its last quicksave request (W5: the client's gate is its own)
-
-local function on_save_req(payload, from)
-	if not (api and api.is_host()) or type(from) ~= "number" or from == 0 then return end
-	local cm = codec()
-	local tg = time_global()
-	if last_save_by[from] and tg - last_save_by[from] < SAVE_REQ_GAP_MS and tg >= last_save_by[from] then
-		api.send_event(EV_SAVE_RES, cm.encode({ ok = false, why = "busy" }), from)
-		return
-	end
-	last_save_by[from] = tg
-	local ok, why = host_can_save()
-	if ok then
-		local li = rawget(_G, "level_input") or level_input
-		local save = li and li.action_quick_save
-		local okc, err = false, "level_input.action_quick_save not found"
-		if type(save) == "function" then okc, err = pcall(save) end
-		if not okc then
-			ok, why = false, "error"
-			log("! quicksave for %s failed: %s", nick_of(from), tostring(err))
-		end
-	end
-	if ok then
-		stats.saves = stats.saves + 1
-		notice(string_format(tr("st_coop_core_saved_by", "Quicksave asked by %s."), nick_of(from)))
-	else
-		stats.save_refused = stats.save_refused + 1
-	end
-	api.send_event(EV_SAVE_RES, cm.encode({ ok = ok, why = why or "" }), from)
-end
-
-local SAVE_WHY = {
-	busy = { "st_coop_core_save_busy", "The host cannot save now (a menu or dialog is open)." },
-	dead = { "st_coop_core_save_dead", "The host cannot save now." },
-	refused = { "st_coop_core_save_refused", "The host's game does not allow saving now." },
-	error = { "st_coop_core_save_error", "The host's quicksave failed." },
-	off = { "st_coop_core_save_off", "The host does not allow quicksaves from players." },
-}
-
-local function on_save_res(payload, from)
-	if from ~= 0 or not (api and api.is_client()) then return end
-	local t = codec().decode(payload)
-	if t.ok == true then
-		hud_msg(tr("st_coop_core_save_done", "The host saved the game."))
-	else
-		local w = SAVE_WHY[t.why] or SAVE_WHY.refused
-		hud_msg(tr(w[1], w[2]))
-	end
-end
-
--------------------------------------------------------------------------------
--- 4. Level exits
+-- 3. Level exits
 -------------------------------------------------------------------------------
 local vote = nil -- host: { nick, at } of the last transition vote the engine reported
 
@@ -382,8 +293,8 @@ local function actor_on_update()
 end
 
 function print_status()
-	log("player: per-player keys %s, boosters applied %d | quicksaves for clients %d, refused %d",
-		pdata_ok and "registered" or "not registered", stats.boosters_applied, stats.saves, stats.save_refused)
+	log("player: per-player keys %s, boosters applied %d",
+		pdata_ok and "registered" or "not registered", stats.boosters_applied)
 end
 
 -- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
@@ -402,7 +313,5 @@ function on_game_start()
 		log("! coop_main.add_event_handler not found: player events are not handled")
 		return
 	end
-	cm.add_event_handler(EV_SAVE_REQ, on_save_req)
-	cm.add_event_handler(EV_SAVE_RES, on_save_res)
 	cm.add_event_handler(EV_MOVING, on_moving)
 end

@@ -17,6 +17,11 @@
 
 	Main menu changes (all no-ops without a session): the Co-op button, and "Quit game" / "Quit to Windows"
 	close the co-op session first (graceful goodbye instead of a timeout for the others).
+
+	F3 (saves, scripts\coop_saves.script): the host of a running session has a Restore button on the Host tab: the list
+	of the emergency autosaves coop_auto_N, a confirmation and the load. Nobody saves or loads by hand in a session; a
+	session that starts under this window (the in-game menu was opened before it) ends the old menu when the window is
+	closed, because the old list still has the Save / Load entries.
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
@@ -238,6 +243,16 @@ local function actor_alive()
 	return level_loaded() and db.actor:alive()
 end
 
+-- coop_saves owns the Restore window and its texts; nil if the script is not there (the button stays off).
+local function saves()
+	local m = rawget(_G, "coop_saves")
+	if m == nil then
+		local ok, found = pcall(function() return coop_saves end)
+		m = ok and found or nil
+	end
+	return type(m) == "table" and m or nil
+end
+
 -------------------------------------------------------------------------------
 -- Window
 -------------------------------------------------------------------------------
@@ -303,6 +318,9 @@ function UICoopMenu:InitControls()
 	self:Register(self.edit_port, "edit_port")
 	self.host_info = host(xml:InitTextWnd("coop_menu:host_info", d))
 	self.btn_host_now = host(btn("btn_host_now"))
+	self.btn_restore = host(btn("btn_restore"))
+	local sv = saves()
+	if sv and sv.text then self.btn_restore:TextControl():SetText(sv.text("btn_restore")) end
 	self.btn_host_load = host(btn("btn_host_load"))
 	self.btn_host_last = host(btn("btn_host_last"))
 	self.btn_host_new = host(btn("btn_host_new"))
@@ -347,6 +365,7 @@ function UICoopMenu:InitCallBacks()
 	self:AddCallback("tab_host", E, self.OnTabHost, self)
 	self:AddCallback("tab_join", E, self.OnTabJoin, self)
 	self:AddCallback("btn_host_now", E, self.OnHostNow, self)
+	self:AddCallback("btn_restore", E, self.OnRestore, self)
 	self:AddCallback("btn_host_load", E, self.OnHostLoad, self)
 	self:AddCallback("btn_host_last", E, self.OnHostLast, self)
 	self:AddCallback("btn_host_new", E, self.OnHostNew, self)
@@ -363,6 +382,8 @@ end
 function UICoopMenu:Reset()
 	self.local_error = nil
 	self.players_sig = nil
+	self.restore_dlg = nil
+	self.session_at_open = api.is_active() == true -- F3: see Close()
 	self.edit_nick:SetText(get_nick())
 	self.edit_port:SetText(tostring(get_port()))
 	self.recent = get_recent()
@@ -440,6 +461,7 @@ function UICoopMenu:Refresh(info)
 		self.host_info:SetText(tr("st_coop_menu_host_menu"))
 	end
 	self.btn_host_now:Enable(free and alive)
+	self.btn_restore:Enable(info.host == true and saves() ~= nil) -- only the host of a running session
 	self.btn_host_load:Enable(free)
 	self.btn_host_last:Enable(free)
 	self.btn_host_new:Enable(free)
@@ -506,6 +528,19 @@ function UICoopMenu:OnHostNow()
 	self:Refresh()
 end
 
+-- F3: the host goes back to one of the emergency autosaves (list and confirmation in coop_saves).
+function UICoopMenu:OnRestore()
+	self.local_error = nil
+	local sv = saves()
+	if not (sv and sv.open_restore and sv.text) then return self:Failed("coop_saves") end
+	if not api.is_host() then
+		self.local_error = sv.text("restore_failed_not_host")
+		return self:Refresh()
+	end
+	self.restore_dlg = sv.open_restore(self)
+	if not self.restore_dlg then self:Failed("restore") end
+end
+
 -- Pending host + one of the main menu's own ways to get a level.
 function UICoopMenu:HostAfter(start)
 	local port = self:PrepareHost()
@@ -567,6 +602,12 @@ end
 function UICoopMenu:Close()
 	if self:IsShown() then self:HideDialog() end
 	self:Show(false)
+	-- F3: a session started while the in-game menu was open: its list (Save / Load / Last save) was built before, and
+	-- nobody saves in a session. End the menu instead of going back to it; the next open builds the right list.
+	if self.session_at_open == false and api.is_active() and level_loaded() then
+		exec_console_cmd("main_menu off")
+		return
+	end
 	local owner = self.owner
 	if owner then
 		pcall(function()

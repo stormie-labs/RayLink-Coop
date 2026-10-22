@@ -8,8 +8,9 @@
 		party panel / player markers / chat feed on the HUD (W5: applied to coop_core_hud / coop_core_chat).
 	Session rules group (the host's values are used; coop_settings.ltx: coop/coop_session/* = host):
 		friendly fire, shared task rewards, death mode, bleed-out time, health after revive, respawn delay;
-		W5: clients may quicksave (coop_core_player) and the economy group's rules (coop_economy_core.RULES,
-		read through coop_settings.rule("economy/<id>"); defaults here must match RULES).
+		W5: the economy group's rules (coop_economy_core.RULES, read through coop_settings.rule("economy/<id>");
+		defaults here must match RULES). F3 task 17: the "clients may quicksave" rule is gone, nobody saves by hand
+		in a session (coop_saves).
 		On a connected client the options window refuses edits of these and shows the lock note
 		(coop_settings: option lock), the values shown there are the player's own for when he hosts.
 	Console variables are saved by the engine in user.ltx (cfg_save on Apply), not in axr_options.ltx.
@@ -65,7 +66,6 @@ function build_page()
 				{ id = "revive_health", type = "track", val = 2, cmd = "coop_revive_health", min = 0.05, max = 1,
 					step = 0.05, prec = 2 },
 				{ id = "respawn_delay", type = "track", val = 2, cmd = "coop_respawn_delay", min = 0, max = 120, step = 5 },
-				flag("client_quicksave", true),
 				-- economy group (coop_settings.rule("economy/<id>"))
 				flag("party_fast_travel", true),
 				track("gather_radius", 20, 5, 100, 5),

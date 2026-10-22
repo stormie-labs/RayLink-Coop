@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop - saves in a co-op session (F3 task 17): hints for the refused save / load keys, the Restore
+     button of the Co-op window and the "Restore an autosave" window. Used by scripts/coop_saves.script and
+     configs/ui/ui_coop_saves.xml. -->
+<string_table>
+	<string id="st_coop_saves_auto_host">
+		<text>Co-op: manual saving is off. The game saves itself; to go back to an autosave use Restore in the Co-op window.</text>
+	</string>
+	<string id="st_coop_saves_auto_client">
+		<text>Co-op: manual saving is off. The host's game saves itself automatically.</text>
+	</string>
+	<string id="st_coop_saves_load_host">
+		<text>Co-op: loading is off during a session. To go back to an autosave use Restore in the Co-op window.</text>
+	</string>
+	<string id="st_coop_saves_load_client">
+		<text>Co-op: loading is off during a session. Leave the session first (coop_disconnect).</text>
+	</string>
+	<string id="st_coop_saves_btn_restore">
+		<text>Restore an autosave</text>
+	</string>
+	<string id="st_coop_saves_restore_title">
+		<text>Restore an autosave</text>
+	</string>
+	<string id="st_coop_saves_restore_info">
+		<text>Emergency autosaves of this session, newest first. Pick the moment the whole group goes back to.</text>
+	</string>
+	<string id="st_coop_saves_restore_none">
+		<text>No autosaves yet. The game saves itself on a new level, after a shared sleep, on a timer and when the session ends.</text>
+	</string>
+	<string id="st_coop_saves_restore_confirm">
+		<text>Restore %s (%s, game time %s)? The whole group goes back to that moment: everything done since is lost and every player reloads the world. Press Restore to confirm.</text>
+	</string>
+	<string id="st_coop_saves_restore_btn_confirm">
+		<text>Restore</text>
+	</string>
+	<string id="st_coop_saves_restore_btn_back">
+		<text>Back</text>
+	</string>
+	<string id="st_coop_saves_restore_failed_not_host">
+		<text>Only the host of a running session can restore a save.</text>
+	</string>
+	<string id="st_coop_saves_restore_failed_bad_name">
+		<text>This is not an autosave of the session.</text>
+	</string>
+	<string id="st_coop_saves_restore_failed_missing">
+		<text>The save file is missing or damaged.</text>
+	</string>
+</string_table>

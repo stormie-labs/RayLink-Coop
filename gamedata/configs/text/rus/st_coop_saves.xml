@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop - сохранения в кооп-сессии (F3, задача 17): подсказки отказа сохранения / загрузки, кнопка
+     «Восстановить» окна «Кооператив» и окно «Восстановление автосохранения». Используют scripts/coop_saves.script
+     и configs/ui/ui_coop_saves.xml. -->
+<string_table>
+	<string id="st_coop_saves_auto_host">
+		<text>Кооператив: ручное сохранение отключено. Игра сохраняется сама; чтобы вернуться к автосохранению, нажмите «Восстановить» в окне «Кооператив».</text>
+	</string>
+	<string id="st_coop_saves_auto_client">
+		<text>Кооператив: ручное сохранение отключено. Игра хоста сохраняется автоматически.</text>
+	</string>
+	<string id="st_coop_saves_load_host">
+		<text>Кооператив: загрузка во время сессии отключена. Чтобы вернуться к автосохранению, нажмите «Восстановить» в окне «Кооператив».</text>
+	</string>
+	<string id="st_coop_saves_load_client">
+		<text>Кооператив: загрузка во время сессии отключена. Сначала выйдите из сессии (coop_disconnect).</text>
+	</string>
+	<string id="st_coop_saves_btn_restore">
+		<text>Восстановить автосохранение</text>
+	</string>
+	<string id="st_coop_saves_restore_title">
+		<text>Восстановление автосохранения</text>
+	</string>
+	<string id="st_coop_saves_restore_info">
+		<text>Аварийные автосохранения этой сессии, новые сверху. Выберите момент, к которому вернётся вся группа.</text>
+	</string>
+	<string id="st_coop_saves_restore_none">
+		<text>Автосохранений пока нет. Игра сохраняется сама: на новой локации, после общего сна, по таймеру и при завершении сессии.</text>
+	</string>
+	<string id="st_coop_saves_restore_confirm">
+		<text>Восстановить %s (%s, игровое время %s)? Вся группа вернётся в этот момент: всё сделанное после него пропадёт, а каждый игрок перезагрузит мир. Для подтверждения нажмите «Восстановить».</text>
+	</string>
+	<string id="st_coop_saves_restore_btn_confirm">
+		<text>Восстановить</text>
+	</string>
+	<string id="st_coop_saves_restore_btn_back">
+		<text>Назад</text>
+	</string>
+	<string id="st_coop_saves_restore_failed_not_host">
+		<text>Восстановить сохранение может только хост работающей сессии.</text>
+	</string>
+	<string id="st_coop_saves_restore_failed_bad_name">
+		<text>Это не автосохранение сессии.</text>
+	</string>
+	<string id="st_coop_saves_restore_failed_missing">
+		<text>Файл сохранения не найден или повреждён.</text>
+	</string>
+</string_table>

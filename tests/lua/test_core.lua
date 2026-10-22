@@ -824,26 +824,17 @@ do
 	look()
 	check(has(N.news, "st_coop_core_left"), "newcomer: a player who leaves 'left'")
 end
--- quicksave
+-- quicksave. F3 task 17: a client no longer asks the host to quicksave (coop_saves refuses every save in a session,
+-- tests\lua	est_saves.lua); coop_main's own gate still blocks the client locally until Task 18 removes it.
 print("== quicksave")
 local flags = { ret = false }
+local sent_before = C.sent_count or 0
 for _, f in ipairs(C.cb.on_before_save_input or {}) do f(flags, 2, "save") end
 check(flags.ret == true, "client save blocked locally")
 pump()
-check(H.saved == 1 and has(C.msgs, "st_coop_core_save_done"), "host quicksaved for the client")
-NOW = NOW + 11000
-H.busy = true
-flags = { ret = false }
-for _, f in ipairs(C.cb.on_before_save_input or {}) do f(flags, 2, "save") end
-pump()
-check(H.saved == 1 and has(C.msgs, "st_coop_core_save_busy"), "host busy: refused with the reason")
-H.busy = false
-NOW = NOW + 11000
-H.save_gate = true
-for _, f in ipairs(C.cb.on_before_save_input or {}) do f({}, 2, "save") end
-pump()
-check(H.saved == 1 and has(C.msgs, "st_coop_core_save_refused"), "host save gate refuses")
-H.save_gate = false
+check((C.sent_count or 0) == sent_before and H.saved == nil, "a client quicksave asks the host for nothing")
+check(not has(C.msgs, "st_coop_core_save_asked") and not has(C.msgs, "Asked the host to quicksave"),
+	"and says nothing about asking the host")
 flags = { ret = false }
 for _, f in ipairs(C.cb.on_before_save_input or {}) do f(flags, 1, "save") end
 check(flags.ret == true and has(C.msgs, "Co-op: only the host saves the game"), "a normal save stays host-only")

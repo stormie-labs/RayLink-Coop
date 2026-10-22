@@ -47,7 +47,7 @@ do
 	local cs = host.env.coop_settings
 	check(cs.rule("economy/gather_radius") == 20, "rule economy/gather_radius = page default 20")
 	check(cs.rule("economy/sleep_rule") == "vote", "rule economy/sleep_rule = vote")
-	check(cs.rule("core/client_quicksave") == true, "rule core/client_quicksave = true")
+	check(cs.rule("core/client_quicksave") == nil, "rule core/client_quicksave is gone (F3 task 17: nobody saves by hand in a session)")
 	check(cs.rule("economy/nope") == nil and cs.rule("other/gather_radius") == nil and cs.rule(5) == nil,
 		"unknown rules are nil")
 	check(host.env.coop_economy_core.rule("max_money_transfer") == 1000000, "economy reads its rule through coop_settings")
@@ -86,16 +86,11 @@ do
 	check(client.axr.count("on_option_change") >= 1, "options change re-applies the toggles")
 end
 
--- 4. quicksave refused when the host's rule is off
+-- 4. a client's quicksave request is not handled any more (F3 task 17)
 do
-	local cs = host.env.coop_settings
-	local saved_rule = cs.rule
-	cs.rule = function(k) if k == "core/client_quicksave" then return false end return saved_rule(k) end
 	local s0 = #host.sent
 	host.env.coop_main.on_event("core.save_req", "", 1)
-	cs.rule = saved_rule
-	local res = sent_named(host, s0, "core.save_res")[1]
-	check(res ~= nil and res.ok == false and res.why == "off", "host refuses a client's quicksave when the rule is off")
+	check(#sent_named(host, s0, "core.save_res") == 0, "host ignores core.save_req from a client (no core.save_res)")
 end
 
 -- 5. mods entry points
