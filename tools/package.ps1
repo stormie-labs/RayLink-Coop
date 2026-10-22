@@ -3,16 +3,22 @@
   Builds the Mod Organizer 2 archive of Anomaly Coop: releases\anomaly-coop-<version>.zip
 
 .DESCRIPTION
-  Archive layout (the FOMOD installer in fomod\ModuleConfig.xml installs it into one MO2 mod):
-    fomod\info.xml, fomod\ModuleConfig.xml   installer (info.xml gets the version)
-    core\gamedata\                           our mod: gamedata\ of this project
-    engine\bin\AnomalyCoopDX11AVX.exe        our engine build (engine-ci bin_dbg AnomalyDX11AVX.exe, renamed)
-    engine\gamedata\                         scripts/configs of that engine build (engine\gamedata)
-    anomaly-coop-release.txt                 version, protocol, engine and project commits, exe hash
-    readme_eng.txt, readme_rus.txt           install and play (packaging\)
+  Archive layout. Three top-level folders are three ready MO2 mods; the FOMOD installer in fomod\ModuleConfig.xml
+  creates ONE MO2 mod per run (the player runs it once per part and types the mod name in the installer):
+    fomod\info.xml, fomod\ModuleConfig.xml          installer (info.xml gets the version)
+    Anomaly Coop - Engine\bin\AnomalyCoopDX11AVX.exe  our engine build (engine-ci bin_dbg AnomalyDX11AVX.exe, renamed)
+    Anomaly Coop - Engine\gamedata\                 scripts/configs of that engine build (engine\gamedata);
+                                                    lowest priority in MO2: covers only the modded exes in the game folder
+    Anomaly Coop - Core\gamedata\                   our mod: gamedata\ of this project; highest priority
+    Anomaly Coop - GAMMA\gamedata\                  gamedata_gamma\ of this project (patches for G.A.M.M.A. mods; an empty
+                                                    folder while that directory is absent); right above Core
+    Anomaly Coop - GAMMA\readme_gamma.txt           what this part is (packaging\readme_gamma.txt)
+    anomaly-coop-release.txt                        version, protocol, engine and project commits, exe hash
+    readme_eng.txt, readme_rus.txt                  install and play (packaging\)
   Temp/runtime files are left out (*.bak, *.tmp, *.log, *.orig, axr_options.ltx, cache_dbg.ltx, temp\ ...).
   Reads only this project's folders and writes only under releases\ of this project.
-  Entries use "/" separators (written with System.IO.Compression, not Compress-Archive).
+  Entries use "/" separators (written with System.IO.Compression, not Compress-Archive); empty folders get a
+  directory entry ("Anomaly Coop - GAMMA/gamedata/").
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File tools\package.ps1 -Version 0.1.0
@@ -28,7 +34,12 @@ $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 if ($BuiltExe -eq '') { $BuiltExe = Join-Path $Root 'engine-ci\_build\_game\bin_dbg\AnomalyDX11AVX.exe' }
 $ExeName = 'AnomalyCoopDX11AVX.exe'
+# The three MO2 mods (folder names in the archive = the names the player types in the installer)
+$EngineMod = 'Anomaly Coop - Engine'
+$CoreMod = 'Anomaly Coop - Core'
+$GammaMod = 'Anomaly Coop - GAMMA'
 $ModGamedata = Join-Path $Root 'gamedata'
+$GammaGamedata = Join-Path $Root 'gamedata_gamma'   # optional: absent until there are patches for GAMMA mods
 $EngineGamedata = Join-Path $Root 'engine\gamedata'
 $FomodDir = Join-Path $Root 'fomod'
 $PackDir = Join-Path $Root 'packaging'
@@ -48,12 +59,13 @@ function Assert-Inside([string]$Path) {
 }
 
 if ($Version -notmatch '^\d+\.\d+\.\d+([-+][0-9A-Za-z.\-]+)?$') { throw "Version must look like 1.2.3 (got '$Version')" }
-foreach ($p in @($BuiltExe, $ModGamedata, $EngineGamedata, $FomodDir, $PackDir, $OutDir)) { Assert-Inside $p }
+foreach ($p in @($BuiltExe, $ModGamedata, $GammaGamedata, $EngineGamedata, $FomodDir, $PackDir, $OutDir)) { Assert-Inside $p }
 Assert-Path $BuiltExe 'Built exe'
 Assert-Path $ModGamedata 'Mod gamedata'
 Assert-Path $EngineGamedata 'Engine gamedata'
 Assert-Path (Join-Path $FomodDir 'ModuleConfig.xml') 'fomod\ModuleConfig.xml'
 Assert-Path (Join-Path $FomodDir 'info.xml') 'fomod\info.xml'
+Assert-Path (Join-Path $PackDir 'readme_gamma.txt') 'packaging\readme_gamma.txt'
 Assert-Path $ProtocolHeader 'coop_protocol.h'
 
 # --- the exe: a complete PE file, not one the linker is still writing
@@ -119,10 +131,23 @@ function Copy-Tree([string]$From, [string]$To) {
     return [pscustomobject]@{ Count = $count; Skipped = $skipped }
 }
 
-$core = Copy-Tree $ModGamedata (Join-Path $stage 'core\gamedata')
-$eng = Copy-Tree $EngineGamedata (Join-Path $stage 'engine\gamedata')
-New-Item -ItemType Directory -Force -Path (Join-Path $stage 'engine\bin') | Out-Null
-Copy-Item -LiteralPath $exe.FullName -Destination (Join-Path $stage "engine\bin\$ExeName") -Force
+# part 1: Engine (exe + gamedata of the engine build)
+$eng = Copy-Tree $EngineGamedata (Join-Path $stage "$EngineMod\gamedata")
+New-Item -ItemType Directory -Force -Path (Join-Path $stage "$EngineMod\bin") | Out-Null
+Copy-Item -LiteralPath $exe.FullName -Destination (Join-Path $stage "$EngineMod\bin\$ExeName") -Force
+
+# part 2: Core (our scripts, configs, interface)
+$core = Copy-Tree $ModGamedata (Join-Path $stage "$CoreMod\gamedata")
+
+# part 3: GAMMA (patches for G.A.M.M.A. mods; gamedata_gamma\ may be absent - then an empty gamedata\ folder)
+$gammaStage = Join-Path $stage "$GammaMod\gamedata"
+if (Test-Path -LiteralPath $GammaGamedata) {
+    $gamma = Copy-Tree $GammaGamedata $gammaStage
+} else {
+    New-Item -ItemType Directory -Force -Path $gammaStage | Out-Null
+    $gamma = [pscustomobject]@{ Count = 0; Skipped = (New-Object System.Collections.Generic.List[string]) }
+}
+Copy-Item -LiteralPath (Join-Path $PackDir 'readme_gamma.txt') -Destination (Join-Path $stage "$GammaMod\readme_gamma.txt") -Force
 
 # fomod: ModuleConfig as is, info.xml with this version
 New-Item -ItemType Directory -Force -Path (Join-Path $stage 'fomod') | Out-Null
@@ -146,8 +171,9 @@ Anomaly Coop $Version
 protocol      $protocol
 engine        $engineCommit (xray-monolith fork, built $built)
 project       $projectCommit
-exe           bin\$ExeName  $([math]::Round($exe.Length / 1MB, 1)) MB  sha256 $exeHash
-files         core\gamedata $($core.Count), engine\gamedata $($eng.Count)
+exe           $EngineMod\bin\$ExeName  $([math]::Round($exe.Length / 1MB, 1)) MB  sha256 $exeHash
+parts         3 MO2 mods, one installer run per part: $EngineMod, $CoreMod, $GammaMod (G.A.M.M.A. only)
+files         $EngineMod\gamedata $($eng.Count), $CoreMod\gamedata $($core.Count), $GammaMod\gamedata $($gamma.Count)
 packed        $((Get-Date).ToString('yyyy-MM-dd HH:mm'))
 game          S.T.A.L.K.E.R. Anomaly 1.5.3 (also G.A.M.M.A.); every player of a session needs this same version.
 not included  MCM, FDDA, xrMPE NPC animations (optional, separate mods - see readme)
@@ -171,6 +197,14 @@ try {
         try { $in.CopyTo($out) } finally { $in.Close(); $out.Close() }
         $script:entries++
     }
+    # empty folders (e.g. "Anomaly Coop - GAMMA/gamedata/") become directory entries
+    Get-ChildItem -LiteralPath $stage -Recurse -Directory | Sort-Object FullName | ForEach-Object {
+        if (-not (Get-ChildItem -LiteralPath $_.FullName -Force)) {
+            $rel = $_.FullName.Substring($stage.Length + 1).Replace('\', '/') + '/'
+            [void]$archive.CreateEntry($rel)
+            $script:entries++
+        }
+    }
 } finally {
     $archive.Dispose()
     $stream.Close()
@@ -181,8 +215,9 @@ $check = [System.IO.Compression.ZipFile]::OpenRead($zip)
 try {
     $names = @($check.Entries | ForEach-Object { $_.FullName })
 } finally { $check.Dispose() }
-foreach ($must in @('fomod/ModuleConfig.xml', 'fomod/info.xml', "engine/bin/$ExeName", 'anomaly-coop-release.txt',
-                    'core/gamedata/scripts/coop_main.script')) {
+foreach ($must in @('fomod/ModuleConfig.xml', 'fomod/info.xml', "$EngineMod/bin/$ExeName",
+                    "$CoreMod/gamedata/scripts/coop_main.script", "$GammaMod/readme_gamma.txt",
+                    'anomaly-coop-release.txt')) {
     if ($names -notcontains $must) { throw "Archive misses $must" }
 }
 if (@($names | Where-Object { $_ -match '\\' }).Count -gt 0) { throw 'Archive has backslash entry names' }
@@ -193,8 +228,8 @@ if (-not $KeepStage) {
     if ((Test-Path -LiteralPath $stageRoot) -and -not (Get-ChildItem -LiteralPath $stageRoot -Force)) { Remove-Item -LiteralPath $stageRoot -Force }
 }
 
-$skippedAll = @($core.Skipped) + @($eng.Skipped)
+$skippedAll = @($core.Skipped) + @($eng.Skipped) + @($gamma.Skipped)
 Write-Host "Packed $zip"
 Write-Host ("  {0} entries, {1:N1} MB; protocol {2}; engine {3}; project {4}" -f $names.Count, ((Get-Item -LiteralPath $zip).Length / 1MB), $protocol, $engineCommit, $projectCommit)
-Write-Host ("  core\gamedata {0} files, engine\gamedata {1} files, exe {2:N1} MB" -f $core.Count, $eng.Count, ($exe.Length / 1MB))
+Write-Host ("  Engine: gamedata {0} files, exe {1:N1} MB; Core: gamedata {2} files; GAMMA: gamedata {3} files" -f $eng.Count, ($exe.Length / 1MB), $core.Count, $gamma.Count)
 if ($skippedAll.Count -gt 0) { Write-Host ("  left out: {0}" -f ($skippedAll -join ', ')) }

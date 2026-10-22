@@ -15,12 +15,16 @@
 - **сделано** — код в репозитории;
 - **проверено** — проверено в игре (с датой).
 
+Имена модов GAMMA — точные имена папок MO2 (так их ищут в левом списке); состояние в профиле `G.A.M.M.A` проверено
+2026-10-22 20:35 по `E:\GAMMA\profiles\G.A.M.M.A\modlist.txt`. Строки «выключить» с источником GAMMA попадают в
+установщик FOMOD и в readme (проверяет `tests/tools/test_packaging.py`).
+
 | Мод / механика | Откуда | Действие | Чем заменено | Статус |
 |---|---|---|---|---|
-| 203 YACS Better Campfire Saves (Ishmaeel) | GAMMA, вкл по умолчанию | выключить | привалы и аварийные сейвы хоста (`docs/CHECKPOINTS_DEATH.md` §2, §7) | план |
-| G.A.M.M.A. YACS no quit | GAMMA, выкл в профиле `G.A.M.M.A` | выключить (не включать) | то же | план |
-| 338 Soulslike Gamemode (Jabbers) | GAMMA, режим новой игры | выключить (режим в коопе недоступен) | смерть, эвакуация, потери (`docs/CHECKPOINTS_DEATH.md` §3) | план |
-| 208 Ironman Roguelite (Jabbers) | GAMMA, выкл по умолчанию | выключить | режим `hardcore` | план |
+| `203- YACS Better Campfire Saves (forces campfire saves but they are better) - Ishmaeel` | GAMMA, вкл в профиле | выключить | привалы и аварийные сейвы хоста (`docs/CHECKPOINTS_DEATH.md` §2, §7) | план; в FOMOD и readme — сделано |
+| `G.A.M.M.A. YACS no quit` | GAMMA, выкл в профиле | выключить (не включать) | то же | план; в FOMOD и readme — сделано |
+| `338- Soulslike Gamemode - Jabbers` | GAMMA, вкл в профиле, режим новой игры | выключить (режим в коопе недоступен) | смерть, эвакуация, потери (`docs/CHECKPOINTS_DEATH.md` §3) | план; в FOMOD и readme — сделано |
+| `208- Ironman Roguelite (for easier ironman lovers) - Jabbers` | GAMMA, выкл в профиле | выключить (не включать) | режим `hardcore` | план; в FOMOD и readme — сделано |
 | Сохранение у костра (campfire mode) | сток Anomaly, режим новой игры | нейтрализовано | привалы | план |
 | «Агония», «Таймер», «Железный человек», «Азазель» | сток Anomaly, режимы новой игры | нейтрализовано | режимы смерти хоста `checkpoint` / `hardcore` | план |
 | Автосейв по таймеру (`game_autosave_new`, опция `autosave_timer_new`) | сток Anomaly | нейтрализовано | автосейвы хоста с ротацией | план |

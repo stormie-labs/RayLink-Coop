@@ -1,18 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Anomaly Coop: Mod Organizer 2 installer (FOMOD 5.0). Archive layout (tools\package.ps1):
-     core\gamedata    our scripts, configs, UI, textures
-     engine\bin       AnomalyCoopDX11AVX.exe (our engine build; own name, stock exes stay untouched)
-     engine\gamedata  scripts and configs of that engine build
-     Everything goes into the MO2 mod; MO2 serves the mod's bin\ and gamedata\ as the game's (the Anomaly game
-     plugin's data folder is the game root), so the exe can run straight from the mod. Third-party mods
-     (MCM, FDDA, xrMPE animations) are not bundled: the add-ons step only explains them. -->
+     Anomaly Coop - Engine\bin        AnomalyCoopDX11AVX.exe (our engine build; own name, stock exes stay untouched)
+     Anomaly Coop - Engine\gamedata   scripts and configs of that engine build
+     Anomaly Coop - Core\gamedata     our scripts, configs, UI, textures
+     Anomaly Coop - GAMMA\gamedata    patches for G.A.M.M.A. mods (empty for now), plus readme_gamma.txt
+     One installer run makes ONE MO2 mod, so the player runs it once per part: 2 times on Anomaly (Engine, Core),
+     3 times on G.A.M.M.A. (Engine, Core, GAMMA), and types the mod name into the Name field of the installer window.
+     The flag "part" (engine, core, gamma) picks the folder that conditionalFileInstalls copies into the mod root;
+     destination is empty on purpose, otherwise MO2 would make a nested folder.
+     MO2 serves the mod's bin\ and gamedata\ as the game's (the Anomaly game plugin's data folder is the game root),
+     so the exe can run straight from the Engine mod.
+     Priorities: Engine lowest (its gamedata covers only the modded exes in the game folder, the mods of the list keep
+     winning over it), Core highest, GAMMA right above Core. Third-party mods (MCM, FDDA, xrMPE animations) are not
+     bundled: the add-ons step only explains them. -->
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
   <moduleName>Anomaly Coop</moduleName>
-  <requiredInstallFiles>
-    <folder source="engine\bin" destination="bin" priority="0"/>
-    <folder source="engine\gamedata" destination="gamedata" priority="0"/>
-    <folder source="core\gamedata" destination="gamedata" priority="1"/>
-  </requiredInstallFiles>
   <installSteps order="Explicit">
 
     <installStep name="Your game / Ваша игра">
@@ -21,15 +23,19 @@
           <plugins order="Explicit">
             <plugin name="Anomaly 1.5.3">
               <description>Anomaly 1.5.3 with your own mods (or none).
+Anomaly Coop is three MO2 mods, and one installer run makes one mod, so run this archive 2 times, one part per run: Engine, Core.
 
-Anomaly 1.5.3 с вашими модами (или без них).</description>
+Anomaly 1.5.3 с вашими модами (или без них).
+Anomaly Coop - это три мода MO2, а один запуск установщика делает один мод, поэтому архив ставится 2 раза, по части за раз: Engine, Core.</description>
               <conditionFlags><flag name="gamma">Off</flag></conditionFlags>
               <typeDescriptor><type name="Recommended"/></typeDescriptor>
             </plugin>
             <plugin name="G.A.M.M.A.">
               <description>G.A.M.M.A. modpack. Anomaly Coop detects the GAMMA mods it supports by itself; MCM and FDDA are already in GAMMA.
+Anomaly Coop is three MO2 mods, and one installer run makes one mod, so run this archive 3 times, one part per run: Engine, Core, GAMMA.
 
-Сборка G.A.M.M.A. Поддерживаемые моды GAMMA Anomaly Coop находит сам; MCM и FDDA в GAMMA уже есть.</description>
+Сборка G.A.M.M.A. Поддерживаемые моды GAMMA Anomaly Coop находит сам; MCM и FDDA в GAMMA уже есть.
+Anomaly Coop - это три мода MO2, а один запуск установщика делает один мод, поэтому архив ставится 3 раза, по части за раз: Engine, Core, GAMMA.</description>
               <conditionFlags><flag name="gamma">On</flag></conditionFlags>
               <typeDescriptor><type name="Optional"/></typeDescriptor>
             </plugin>
@@ -38,15 +44,70 @@ Anomaly 1.5.3 с вашими модами (или без них).</description>
       </optionalFileGroups>
     </installStep>
 
+    <installStep name="Part / Часть">
+      <optionalFileGroups order="Explicit">
+        <group name="Which part are you installing now? / Какую часть вы ставите сейчас?" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="1. Anomaly Coop - Engine">
+              <description>Our engine build: bin\AnomalyCoopDX11AVX.exe and the gamedata of that build. Install this part first.
+Name (the field at the top of this window, type it exactly): Anomaly Coop - Engine
+After the installer: tick the mod in MO2's left list, then right-click it - Send to... - Lowest priority (the topmost row of the list). Its gamedata then covers only the modded exes in the game folder, and the mods of your list keep winning over it.
+Then run this installer again for the next part: Core (and GAMMA on G.A.M.M.A.).
+
+Наша сборка движка: bin\AnomalyCoopDX11AVX.exe и gamedata этой сборки. Эту часть ставьте первой.
+Имя (поле Name вверху этого окна, впишите точно): Anomaly Coop - Engine
+После установщика: отметьте мод в левом списке MO2, правый клик - Send to... - Lowest priority (самая верхняя строка списка). Тогда его gamedata перекрывает только modded exes, лежащие в папке игры, а моды вашего списка остаются поверх него.
+Затем запустите установщик ещё раз для следующей части: Core (и GAMMA для G.A.M.M.A.).</description>
+              <conditionFlags><flag name="part">engine</flag></conditionFlags>
+              <typeDescriptor><type name="Recommended"/></typeDescriptor>
+            </plugin>
+            <plugin name="2. Anomaly Coop - Core">
+              <description>Scripts, configs and interface of Anomaly Coop - the main part.
+Name (the field at the top of this window, type it exactly): Anomaly Coop - Core
+After the installer: tick the mod, then right-click it - Send to... - Highest priority (the bottom row of the left list), so its files win over other mods.
+
+Скрипты, конфиги и интерфейс Anomaly Coop - основная часть.
+Имя (поле Name вверху этого окна, впишите точно): Anomaly Coop - Core
+После установщика: отметьте мод, правый клик - Send to... - Highest priority (нижняя строка левого списка), чтобы его файлы перекрывали другие моды.</description>
+              <conditionFlags><flag name="part">core</flag></conditionFlags>
+              <typeDescriptor><type name="Optional"/></typeDescriptor>
+            </plugin>
+            <plugin name="3. Anomaly Coop - GAMMA (G.A.M.M.A. only / только G.A.M.M.A.)">
+              <description>G.A.M.M.A. only: patches for GAMMA mods and our interface extras for it. This version has no patches yet: the part holds an empty gamedata folder and readme_gamma.txt. Install it anyway, so the place is ready when patches for GAMMA mods appear.
+Name (the field at the top of this window, type it exactly): Anomaly Coop - GAMMA
+After the installer: tick the mod, then right-click it - Send to... - Highest priority. Install this part last: it then sits right after Core (the very bottom row of the left list).
+
+Только для G.A.M.M.A.: патчи под моды GAMMA и наши дополнения интерфейса для неё. В этой версии патчей ещё нет: часть содержит пустую папку gamedata и readme_gamma.txt. Поставьте её всё равно, чтобы место было готово, когда появятся патчи под моды GAMMA.
+Имя (поле Name вверху этого окна, впишите точно): Anomaly Coop - GAMMA
+После установщика: отметьте мод, правый клик - Send to... - Highest priority. Ставьте эту часть последней: тогда она окажется сразу после Core (самая нижняя строка левого списка).</description>
+              <conditionFlags><flag name="part">gamma</flag></conditionFlags>
+              <typeDescriptor>
+                <dependencyType>
+                  <defaultType name="NotUsable"/>
+                  <patterns>
+                    <pattern>
+                      <dependencies><flagDependency flag="gamma" value="On"/></dependencies>
+                      <type name="Optional"/>
+                    </pattern>
+                  </patterns>
+                </dependencyType>
+              </typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+
     <installStep name="Engine / Движок">
+      <visible><flagDependency flag="part" value="engine"/></visible>
       <optionalFileGroups order="Explicit">
         <group name="How will you start the co-op exe? / Как будете запускать exe кооператива?" type="SelectExactlyOne">
           <plugins order="Explicit">
             <plugin name="Straight from the mod through MO2 / Прямо из мода через MO2">
-              <description>bin\AnomalyCoopDX11AVX.exe stays inside this MO2 mod. MO2 shows the mod's bin\ and gamedata\ to the game as if they were in the Anomaly folder, so nothing is copied and the game folder stays clean. After the installer: add the exe to MO2's executables (the last page shows how).
+              <description>bin\AnomalyCoopDX11AVX.exe stays inside the mod Anomaly Coop - Engine. MO2 shows the mod's bin\ and gamedata\ to the game as if they were in the Anomaly folder, so nothing is copied and the game folder stays clean. After the installer: add the exe to MO2's executables (the last page shows how).
 Your other exes (AnomalyDX11AVX.exe and the rest) are not touched.
 
-bin\AnomalyCoopDX11AVX.exe остаётся внутри этого мода MO2. MO2 показывает игре bin\ и gamedata\ мода так, будто они лежат в папке Anomaly: ничего не копируется, папка игры остаётся чистой. После установщика добавьте exe в программы MO2 (как - на последней странице).
+bin\AnomalyCoopDX11AVX.exe остаётся внутри мода Anomaly Coop - Engine. MO2 показывает игре bin\ и gamedata\ мода так, будто они лежат в папке Anomaly: ничего не копируется, папка игры остаётся чистой. После установщика добавьте exe в программы MO2 (как - на последней странице).
 Остальные exe (AnomalyDX11AVX.exe и другие) не трогаются.</description>
               <conditionFlags><flag name="exe">mod</flag></conditionFlags>
               <typeDescriptor>
@@ -86,6 +147,7 @@ The file has its own name: it replaces nothing, and the GAMMA launcher does not 
     </installStep>
 
     <installStep name="Add-ons (install separately) / Дополнения (ставятся отдельно)">
+      <visible><flagDependency flag="part" value="core"/></visible>
       <optionalFileGroups order="Explicit">
         <group name="Mods Anomaly Coop works with - not included, install them separately / Моды, с которыми работает Anomaly Coop - не входят в архив, ставятся отдельно" type="SelectAny">
           <plugins order="Explicit">
@@ -129,10 +191,10 @@ Get it: ModDB, "Food, Drug and Drinks Animations" for Anomaly 1.5 (or FDDA Redon
             </plugin>
             <plugin name="xrMPE NPC animations (Chemzs)">
               <description>New stalker movement animations (walk, run, sprint, crouch) for all NPCs. Other players' characters are stalkers too, so with it they move much more like players: more animations, matching movement speeds.
-Get it: ModDB, "xrMPE NPC Animations" by Chemzs (Anomaly / GAMMA version). Install it as a separate MO2 mod, any priority below Anomaly Coop. Every player of a session needs the same mods.
+Get it: ModDB, "xrMPE NPC Animations" by Chemzs (Anomaly / GAMMA version). Install it as a separate MO2 mod, with any priority lower than Anomaly Coop - Core. Every player of a session needs the same mods.
 
 Новые анимации движения сталкеров (шаг, бег, спринт, присед) для всех NPC. Персонажи других игроков - тоже сталкеры, поэтому с ним они двигаются заметно больше похоже на игроков: больше анимаций, подходящие скорости.
-Где взять: ModDB, "xrMPE NPC Animations" от Chemzs (версия для Anomaly / GAMMA). Ставится отдельным модом MO2, с любым приоритетом ниже Anomaly Coop. У всех игроков сессии должен быть одинаковый набор модов.</description>
+Где взять: ModDB, "xrMPE NPC Animations" от Chemzs (версия для Anomaly / GAMMA). Ставится отдельным модом MO2, с любым приоритетом ниже, чем у Anomaly Coop - Core. У всех игроков сессии должен быть одинаковый набор модов.</description>
               <conditionFlags><flag name="addon_xrmpe">On</flag></conditionFlags>
               <typeDescriptor><type name="Optional"/></typeDescriptor>
             </plugin>
@@ -141,16 +203,63 @@ Get it: ModDB, "xrMPE NPC Animations" by Chemzs (Anomaly / GAMMA version). Insta
       </optionalFileGroups>
     </installStep>
 
-    <installStep name="Last step / Последний шаг">
-      <visible><flagDependency flag="exe" value="mod"/></visible>
+    <installStep name="G.A.M.M.A.: turn these mods off / G.A.M.M.A.: выключите эти моды">
+      <visible operator="And">
+        <flagDependency flag="gamma" value="On"/>
+        <dependencies operator="Or">
+          <flagDependency flag="part" value="core"/>
+          <flagDependency flag="part" value="gamma"/>
+        </dependencies>
+      </visible>
+      <optionalFileGroups order="Explicit">
+        <group name="Untick these mods in MO2's left list / Снимите галочки с этих модов в левом списке MO2" type="SelectAll">
+          <plugins order="Explicit">
+            <plugin name="203 YACS Better Campfire Saves (Ishmaeel)">
+              <description>Untick it. In the MO2 list it is named "203- YACS Better Campfire Saves (forces campfire saves but they are better) - Ishmaeel" (type YACS into the search box above the list). In co-op this mechanic is taken over by Anomaly Coop: campfire stops and emergency saves of the host.
+
+Снимите галочку. В списке MO2 он называется "203- YACS Better Campfire Saves (forces campfire saves but they are better) - Ishmaeel" (введите YACS в поле поиска над списком). В коопе эту механику берёт на себя Anomaly Coop: привалы и аварийные сейвы хоста.</description>
+              <conditionFlags><flag name="step_off_yacs_campfire">On</flag></conditionFlags>
+              <typeDescriptor><type name="Required"/></typeDescriptor>
+            </plugin>
+            <plugin name="G.A.M.M.A. YACS no quit">
+              <description>It is off in the G.A.M.M.A. profile: keep it off and do not turn it on. In co-op the same mechanic is taken over by Anomaly Coop: campfire stops and emergency saves of the host.
+
+В профиле G.A.M.M.A. он выключен: оставьте выключенным и не включайте. В коопе ту же механику берёт на себя Anomaly Coop: привалы и аварийные сейвы хоста.</description>
+              <conditionFlags><flag name="step_off_yacs_noquit">On</flag></conditionFlags>
+              <typeDescriptor><type name="Required"/></typeDescriptor>
+            </plugin>
+            <plugin name="338 Soulslike Gamemode (Jabbers)">
+              <description>Untick it. In the MO2 list it is named "338- Soulslike Gamemode - Jabbers". This game mode is not available in co-op; death, evacuation and losses are taken over by Anomaly Coop.
+
+Снимите галочку. В списке MO2 он называется "338- Soulslike Gamemode - Jabbers". Этот режим игры в коопе недоступен; смерть, эвакуацию и потери берёт на себя Anomaly Coop.</description>
+              <conditionFlags><flag name="step_off_soulslike">On</flag></conditionFlags>
+              <typeDescriptor><type name="Required"/></typeDescriptor>
+            </plugin>
+            <plugin name="208 Ironman Roguelite (Jabbers)">
+              <description>It is off by default: keep it off and do not turn it on. In the MO2 list it is named "208- Ironman Roguelite (for easier ironman lovers) - Jabbers". In co-op the hardcore death mode of Anomaly Coop (a rule the host sets) takes over this mechanic.
+
+По умолчанию он выключен: оставьте выключенным и не включайте. В списке MO2 он называется "208- Ironman Roguelite (for easier ironman lovers) - Jabbers". В коопе эту механику берёт на себя режим смерти hardcore из Anomaly Coop (правило, которое задаёт хост).</description>
+              <conditionFlags><flag name="step_off_ironman">On</flag></conditionFlags>
+              <typeDescriptor><type name="Required"/></typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+
+    <installStep name="Last step: Engine / Последний шаг: Engine">
+      <visible operator="And">
+        <flagDependency flag="part" value="engine"/>
+        <flagDependency flag="exe" value="mod"/>
+      </visible>
       <optionalFileGroups order="Explicit">
         <group name="After the installer closes / Когда установщик закроется" type="SelectAll">
           <plugins order="Explicit">
-            <plugin name="1. Enable Anomaly Coop, highest priority / Включите Anomaly Coop, наивысший приоритет">
-              <description>Tick Anomaly Coop in MO2's left list, then right-click it - Send to... - Highest priority (its files must win over other mods).
+            <plugin name="1. Enable Anomaly Coop - Engine, lowest priority / Включите Anomaly Coop - Engine, наименьший приоритет">
+              <description>Tick Anomaly Coop - Engine in MO2's left list, then right-click it - Send to... - Lowest priority (the topmost row of the list). Its gamedata covers only the modded exes in the game folder, and the mods of your list keep winning over it.
 
-Отметьте Anomaly Coop в левом списке MO2, затем правый клик по нему - Send to... - Highest priority (его файлы должны перекрывать другие моды).</description>
-              <conditionFlags><flag name="step_enable">On</flag></conditionFlags>
+Отметьте Anomaly Coop - Engine в левом списке MO2, затем правый клик по нему - Send to... - Lowest priority (самая верхняя строка списка). Его gamedata перекрывает только modded exes, лежащие в папке игры, а моды вашего списка остаются поверх него.</description>
+              <conditionFlags><flag name="step_enable_engine">On</flag></conditionFlags>
               <typeDescriptor><type name="Required"/></typeDescriptor>
             </plugin>
             <plugin name="2. Add the exe to MO2 / Добавьте exe в MO2">
@@ -168,11 +277,18 @@ OK, затем выберите "Anomaly Coop" в списке справа вв
               <conditionFlags><flag name="step_exe">On</flag></conditionFlags>
               <typeDescriptor><type name="Required"/></typeDescriptor>
             </plugin>
-            <plugin name="3. Nickname and play / Ник и игра">
-              <description>Main menu - Co-op: set your nickname, then "Host a game" or "Join a game". The host plays from a loaded game; the others join by address. Everybody needs the same version of Anomaly Coop and the same mods. If the game does not start from the mod, copy the exe as described in the readme (way 2).
+            <plugin name="3. Install the other parts / Поставьте остальные части">
+              <description>Run this same archive again: part "2. Anomaly Coop - Core" (Name: Anomaly Coop - Core). On G.A.M.M.A. also run it a third time: part "3. Anomaly Coop - GAMMA" (Name: Anomaly Coop - GAMMA). The Engine part alone is only the exe and its scripts: the co-op itself is in Core.
 
-Главное меню - Кооператив: задайте ник, затем "Создать игру" или "Подключиться". Хост играет из загруженной игры, остальные подключаются по адресу. У всех должна быть одна версия Anomaly Coop и одинаковые моды. Если игра не запускается из мода, скопируйте exe, как описано в readme (способ 2).</description>
-              <conditionFlags><flag name="step_play">On</flag></conditionFlags>
+Запустите этот же архив ещё раз: часть "2. Anomaly Coop - Core" (Name: Anomaly Coop - Core). На G.A.M.M.A. запустите и в третий раз: часть "3. Anomaly Coop - GAMMA" (Name: Anomaly Coop - GAMMA). Одна часть Engine - это только exe и его скрипты: сам кооператив - в Core.</description>
+              <conditionFlags><flag name="step_other_parts">On</flag></conditionFlags>
+              <typeDescriptor><type name="Required"/></typeDescriptor>
+            </plugin>
+            <plugin name="4. Remove xrRazom and Anomaly Together / Удалите xrRazom и Anomaly Together">
+              <description>If you had xrRazom (any version) or Anomaly Together, remove them: each brings its own engine files and Anomaly Coop replaces them. xrRazom: its own exe and the db\mods\*.db0 files. Anomaly Together: its AOEngine engine.
+
+Если у вас стоял xrRazom (любая версия) или Anomaly Together, удалите их: у каждого свои файлы движка, а их заменяет Anomaly Coop. xrRazom: его exe и файлы db\mods\*.db0. Anomaly Together: его движок AOEngine.</description>
+              <conditionFlags><flag name="step_remove_old">On</flag></conditionFlags>
               <typeDescriptor><type name="Required"/></typeDescriptor>
             </plugin>
           </plugins>
@@ -180,22 +296,25 @@ OK, затем выберите "Anomaly Coop" в списке справа вв
       </optionalFileGroups>
     </installStep>
 
-    <installStep name="Last step / Последний шаг">
-      <visible><flagDependency flag="exe" value="copy"/></visible>
+    <installStep name="Last step: Engine (exe copy) / Последний шаг: Engine (копия exe)">
+      <visible operator="And">
+        <flagDependency flag="part" value="engine"/>
+        <flagDependency flag="exe" value="copy"/>
+      </visible>
       <optionalFileGroups order="Explicit">
         <group name="After the installer closes / Когда установщик закроется" type="SelectAll">
           <plugins order="Explicit">
-            <plugin name="1. Enable Anomaly Coop, highest priority / Включите Anomaly Coop, наивысший приоритет">
-              <description>Tick Anomaly Coop in MO2's left list, then right-click it - Send to... - Highest priority (its files must win over other mods).
+            <plugin name="1. Enable Anomaly Coop - Engine, lowest priority / Включите Anomaly Coop - Engine, наименьший приоритет">
+              <description>Tick Anomaly Coop - Engine in MO2's left list, then right-click it - Send to... - Lowest priority (the topmost row of the list). Its gamedata covers only the modded exes in the game folder, and the mods of your list keep winning over it.
 
-Отметьте Anomaly Coop в левом списке MO2, затем правый клик по нему - Send to... - Highest priority (его файлы должны перекрывать другие моды).</description>
-              <conditionFlags><flag name="step_enable">On</flag></conditionFlags>
+Отметьте Anomaly Coop - Engine в левом списке MO2, затем правый клик по нему - Send to... - Lowest priority (самая верхняя строка списка). Его gamedata перекрывает только modded exes, лежащие в папке игры, а моды вашего списка остаются поверх него.</description>
+              <conditionFlags><flag name="step_enable_engine">On</flag></conditionFlags>
               <typeDescriptor><type name="Required"/></typeDescriptor>
             </plugin>
             <plugin name="2. Copy the exe into the game / Скопируйте exe в игру">
-              <description>Right-click Anomaly Coop in MO2 - Open in Explorer - bin\AnomalyCoopDX11AVX.exe: copy it into &lt;your Anomaly folder&gt;\bin (next to AnomalyDX11AVX.exe). Only this one file; nothing is replaced. Repeat after every Anomaly Coop update.
+              <description>Right-click Anomaly Coop - Engine in MO2 - Open in Explorer - bin\AnomalyCoopDX11AVX.exe: copy it into &lt;your Anomaly folder&gt;\bin (next to AnomalyDX11AVX.exe). Only this one file; nothing is replaced. Repeat after every Anomaly Coop update.
 
-Правый клик по Anomaly Coop в MO2 - Open in Explorer - bin\AnomalyCoopDX11AVX.exe: скопируйте его в &lt;папка Anomaly&gt;\bin (рядом с AnomalyDX11AVX.exe). Только этот файл, ничего не заменяется. Повторяйте после каждого обновления Anomaly Coop.</description>
+Правый клик по Anomaly Coop - Engine в MO2 - Open in Explorer - bin\AnomalyCoopDX11AVX.exe: скопируйте его в &lt;папка Anomaly&gt;\bin (рядом с AnomalyDX11AVX.exe). Только этот файл, ничего не заменяется. Повторяйте после каждого обновления Anomaly Coop.</description>
               <conditionFlags><flag name="step_copy">On</flag></conditionFlags>
               <typeDescriptor><type name="Required"/></typeDescriptor>
             </plugin>
@@ -208,10 +327,109 @@ OK, затем выберите "Anomaly Coop" в списке справа вв
               <conditionFlags><flag name="step_exe">On</flag></conditionFlags>
               <typeDescriptor><type name="Required"/></typeDescriptor>
             </plugin>
-            <plugin name="4. Nickname and play / Ник и игра">
-              <description>Main menu - Co-op: set your nickname, then "Host a game" or "Join a game". The host plays from a loaded game; the others join by address. Everybody needs the same version of Anomaly Coop and the same mods.
+            <plugin name="4. Install the other parts / Поставьте остальные части">
+              <description>Run this same archive again: part "2. Anomaly Coop - Core" (Name: Anomaly Coop - Core). On G.A.M.M.A. also run it a third time: part "3. Anomaly Coop - GAMMA" (Name: Anomaly Coop - GAMMA). The Engine part alone is only the exe and its scripts: the co-op itself is in Core.
 
-Главное меню - Кооператив: задайте ник, затем "Создать игру" или "Подключиться". Хост играет из загруженной игры, остальные подключаются по адресу. У всех должна быть одна версия Anomaly Coop и одинаковые моды.</description>
+Запустите этот же архив ещё раз: часть "2. Anomaly Coop - Core" (Name: Anomaly Coop - Core). На G.A.M.M.A. запустите и в третий раз: часть "3. Anomaly Coop - GAMMA" (Name: Anomaly Coop - GAMMA). Одна часть Engine - это только exe и его скрипты: сам кооператив - в Core.</description>
+              <conditionFlags><flag name="step_other_parts">On</flag></conditionFlags>
+              <typeDescriptor><type name="Required"/></typeDescriptor>
+            </plugin>
+            <plugin name="5. Remove xrRazom and Anomaly Together / Удалите xrRazom и Anomaly Together">
+              <description>If you had xrRazom (any version) or Anomaly Together, remove them: each brings its own engine files and Anomaly Coop replaces them. xrRazom: its own exe and the db\mods\*.db0 files. Anomaly Together: its AOEngine engine.
+
+Если у вас стоял xrRazom (любая версия) или Anomaly Together, удалите их: у каждого свои файлы движка, а их заменяет Anomaly Coop. xrRazom: его exe и файлы db\mods\*.db0. Anomaly Together: его движок AOEngine.</description>
+              <conditionFlags><flag name="step_remove_old">On</flag></conditionFlags>
+              <typeDescriptor><type name="Required"/></typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+
+    <installStep name="Last step: Core (Anomaly) / Последний шаг: Core (Anomaly)">
+      <visible operator="And">
+        <flagDependency flag="part" value="core"/>
+        <flagDependency flag="gamma" value="Off"/>
+      </visible>
+      <optionalFileGroups order="Explicit">
+        <group name="After the installer closes / Когда установщик закроется" type="SelectAll">
+          <plugins order="Explicit">
+            <plugin name="1. Enable Anomaly Coop - Core, highest priority / Включите Anomaly Coop - Core, наивысший приоритет">
+              <description>Tick Anomaly Coop - Core in MO2's left list, then right-click it - Send to... - Highest priority (the bottom row of the list; its files must win over other mods).
+
+Отметьте Anomaly Coop - Core в левом списке MO2, затем правый клик по нему - Send to... - Highest priority (нижняя строка списка; его файлы должны перекрывать другие моды).</description>
+              <conditionFlags><flag name="step_enable_core">On</flag></conditionFlags>
+              <typeDescriptor><type name="Required"/></typeDescriptor>
+            </plugin>
+            <plugin name="2. Nickname and play / Ник и игра">
+              <description>Main menu - Co-op: set your nickname, then "Host a game" or "Join a game". The host plays from a loaded game; the others join by address. Everybody needs the same version of Anomaly Coop and the same mods. If the game does not start from the mod, copy the exe as described in the readme (way 2).
+
+Главное меню - Кооператив: задайте ник, затем "Создать игру" или "Подключиться". Хост играет из загруженной игры, остальные подключаются по адресу. У всех должна быть одна версия Anomaly Coop и одинаковые моды. Если игра не запускается из мода, скопируйте exe, как описано в readme (способ 2).</description>
+              <conditionFlags><flag name="step_play">On</flag></conditionFlags>
+              <typeDescriptor><type name="Required"/></typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+
+    <installStep name="Last step: Core (G.A.M.M.A.) / Последний шаг: Core (G.A.M.M.A.)">
+      <visible operator="And">
+        <flagDependency flag="part" value="core"/>
+        <flagDependency flag="gamma" value="On"/>
+      </visible>
+      <optionalFileGroups order="Explicit">
+        <group name="After the installer closes / Когда установщик закроется" type="SelectAll">
+          <plugins order="Explicit">
+            <plugin name="1. Enable Anomaly Coop - Core, highest priority / Включите Anomaly Coop - Core, наивысший приоритет">
+              <description>Tick Anomaly Coop - Core in MO2's left list, then right-click it - Send to... - Highest priority (the bottom row of the list; its files must win over other mods).
+
+Отметьте Anomaly Coop - Core в левом списке MO2, затем правый клик по нему - Send to... - Highest priority (нижняя строка списка; его файлы должны перекрывать другие моды).</description>
+              <conditionFlags><flag name="step_enable_core">On</flag></conditionFlags>
+              <typeDescriptor><type name="Required"/></typeDescriptor>
+            </plugin>
+            <plugin name="2. Turn off the mods from the previous page / Выключите моды с предыдущей страницы">
+              <description>Untick the GAMMA mods listed on the previous page (203 YACS, G.A.M.M.A. YACS no quit, 338 Soulslike Gamemode, 208 Ironman Roguelite): in co-op their mechanics are taken over by Anomaly Coop.
+
+Снимите галочки с модов GAMMA, перечисленных на предыдущей странице (203 YACS, G.A.M.M.A. YACS no quit, 338 Soulslike Gamemode, 208 Ironman Roguelite): в коопе их механики берёт на себя Anomaly Coop.</description>
+              <conditionFlags><flag name="step_off_list">On</flag></conditionFlags>
+              <typeDescriptor><type name="Required"/></typeDescriptor>
+            </plugin>
+            <plugin name="3. Install the third part / Поставьте третью часть">
+              <description>Run this same archive once more: part "3. Anomaly Coop - GAMMA" (Name: Anomaly Coop - GAMMA). It goes last, with Send to... - Highest priority, so it sits right after Core.
+
+Запустите этот же архив ещё раз: часть "3. Anomaly Coop - GAMMA" (Name: Anomaly Coop - GAMMA). Она идёт последней, с Send to... - Highest priority, чтобы встать сразу после Core.</description>
+              <conditionFlags><flag name="step_third_part">On</flag></conditionFlags>
+              <typeDescriptor><type name="Required"/></typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+
+    <installStep name="Last step: GAMMA / Последний шаг: GAMMA">
+      <visible><flagDependency flag="part" value="gamma"/></visible>
+      <optionalFileGroups order="Explicit">
+        <group name="After the installer closes / Когда установщик закроется" type="SelectAll">
+          <plugins order="Explicit">
+            <plugin name="1. Enable Anomaly Coop - GAMMA, highest priority / Включите Anomaly Coop - GAMMA, наивысший приоритет">
+              <description>Tick Anomaly Coop - GAMMA in MO2's left list, then right-click it - Send to... - Highest priority. Do it after Core, so GAMMA is the very bottom row and Core sits right above it.
+
+Отметьте Anomaly Coop - GAMMA в левом списке MO2, затем правый клик по нему - Send to... - Highest priority. Делайте это после Core: тогда GAMMA - самая нижняя строка, а Core стоит прямо над ней.</description>
+              <conditionFlags><flag name="step_enable_gamma">On</flag></conditionFlags>
+              <typeDescriptor><type name="Required"/></typeDescriptor>
+            </plugin>
+            <plugin name="2. Check the order of the three mods / Проверьте порядок трёх модов">
+              <description>In the left list: Anomaly Coop - Engine is the topmost row (lowest priority), Anomaly Coop - Core and Anomaly Coop - GAMMA are the two bottom rows (Core above GAMMA), all three ticked. After a G.A.M.M.A. update with its launcher check this again.
+
+В левом списке: Anomaly Coop - Engine - самая верхняя строка (наименьший приоритет), Anomaly Coop - Core и Anomaly Coop - GAMMA - две нижние строки (Core над GAMMA), все три отмечены. После обновления G.A.M.M.A. лаунчером проверьте это снова.</description>
+              <conditionFlags><flag name="step_check_order">On</flag></conditionFlags>
+              <typeDescriptor><type name="Required"/></typeDescriptor>
+            </plugin>
+            <plugin name="3. Nickname and play / Ник и игра">
+              <description>Main menu - Co-op: set your nickname, then "Host a game" or "Join a game". The host plays from a loaded game; the others join by address. Everybody needs the same version of Anomaly Coop and the same mods. If the game does not start from the mod, copy the exe as described in the readme (way 2).
+
+Главное меню - Кооператив: задайте ник, затем "Создать игру" или "Подключиться". Хост играет из загруженной игры, остальные подключаются по адресу. У всех должна быть одна версия Anomaly Coop и одинаковые моды. Если игра не запускается из мода, скопируйте exe, как описано в readme (способ 2).</description>
               <conditionFlags><flag name="step_play">On</flag></conditionFlags>
               <typeDescriptor><type name="Required"/></typeDescriptor>
             </plugin>
@@ -221,4 +439,20 @@ OK, затем выберите "Anomaly Coop" в списке справа вв
     </installStep>
 
   </installSteps>
+  <conditionalFileInstalls>
+    <patterns>
+      <pattern>
+        <dependencies operator="And"><flagDependency flag="part" value="engine"/></dependencies>
+        <files><folder source="Anomaly Coop - Engine" destination="" priority="0"/></files>
+      </pattern>
+      <pattern>
+        <dependencies operator="And"><flagDependency flag="part" value="core"/></dependencies>
+        <files><folder source="Anomaly Coop - Core" destination="" priority="0"/></files>
+      </pattern>
+      <pattern>
+        <dependencies operator="And"><flagDependency flag="part" value="gamma"/></dependencies>
+        <files><folder source="Anomaly Coop - GAMMA" destination="" priority="0"/></files>
+      </pattern>
+    </patterns>
+  </conditionalFileInstalls>
 </config>
