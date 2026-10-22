@@ -11,7 +11,9 @@ set "SRC=%ROOT%\engine\src"
 set "COOP=%SRC%\xrCoop"
 set "ENET=%SRC%\3rd party\enet"
 set "OUT=%ROOT%\temp\tests"
-if defined COOP_TEST_OUT set "OUT=%COOP_TEST_OUT%"
+rem A relative COOP_TEST_OUT broke the link after the pushd below (LNK1104), a trailing space put the objects in the
+rem repo root (2026-10-23): the path is made absolute here, against the current directory, trailing spaces dropped.
+if defined COOP_TEST_OUT for %%I in ("%COOP_TEST_OUT%") do set "OUT=%%~fI"
 
 if not defined VCVARS set "VCVARS=C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
 if not exist "%VCVARS%" (
