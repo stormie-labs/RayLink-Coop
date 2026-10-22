@@ -14,7 +14,7 @@
 ; that script its own rule in a configs\coop_compat_<mod>.ltx: those are read last and win over this file, and
 ; the next run of the generator leaves the script out.
 ; Generated 2026-10-23 from E:\AnomalyCoopGamma\gamedata\scripts (keys already in coop_route_stock.ltx left out):
-;   1121 scripts, 189 call world functions, 81 of those have a rule; 108 below (77 register a handler
+;   1121 scripts, 184 call world functions, 79 of those have a rule; 105 below (75 register a handler
 ;   literally, the others are routed when somebody else registers their functions).
 ; Comment of a line: world calls in the file | literal registrations (unique_call / time_event: timers).
 
@@ -22,7 +22,7 @@
 a_idiots_mdata                           = host   ;   2 | load_state mcm_option_change npc_on_net_spawn save_state
 af_inspect                               = host   ;   2 | actor_on_first_update actor_on_update on_key_press time_event
 agroprom_drugkit_spawner_gamma           = host   ;   2 | actor_on_first_update
-agroprom_underground_transition_randomizer = host   ;   5 | actor_on_first_update load_state save_state
+agroprom_underground_transition_randomizer = host   ;   4 | actor_on_first_update load_state save_state
 ah_dialogs                               = host   ;  63 | -
 axr_companions_va_gamma_patch            = host   ;   3 | -
 axr_companions_varefined                 = host   ;  35 | actor_on_first_update on_option_change
@@ -31,7 +31,6 @@ bind_hf_base                             = host   ;   2 | time_event
 bind_workshop_furniture                  = host   ;   2 | -
 campfire_placeable                       = host   ;   7 | actor_on_first_update actor_on_item_use load_state save_state +1
 coffee_drink                             = host   ;   1 | -
-custom_functor_autoinject                = host   ;   1 | actor_on_first_update
 despawn_monolith_grenades                = host   ;   1 | -
 dialogs_hidden_threat                    = host   ;   2 | -
 exo_loot                                 = host   ;   2 | time_event trader_on_restock
@@ -60,10 +59,10 @@ keep_guns_on_bodies                      = host   ;   1 | -
 kit_binder                               = host   ;   7 | -
 lc_custom                                = host   ;   4 | actor_on_first_update
 lc_extra_transitions                     = host   ;   4 | actor_on_first_update load_state on_option_change save_state +1
-liz_fdda_redone_consumables              = host   ;   2 | actor_on_first_update actor_on_item_drop on_before_key_press on_game_load +1
+liz_fdda_redone_consumables              = host   ;   2 | actor_on_first_update on_before_key_press on_game_load on_option_change
 magnifier_switch                         = host   ;   2 | actor_item_to_slot actor_on_changed_slot actor_on_first_update actor_on_hud_animation_end +13
-meat_spoiling                            = host   ;   3 | actor_on_first_update actor_on_item_take actor_on_item_use actor_on_update +3
-mosin_carbine_reload_script              = host   ;   1 | actor_on_first_update actor_on_hud_animation_end actor_on_hud_animation_mark actor_on_hud_animation_play +1
+meat_spoiling                            = host   ;   3 | actor_on_first_update actor_on_item_take actor_on_item_use load_state +2
+mosin_carbine_reload_script              = host   ;   1 | actor_on_first_update actor_on_hud_animation_mark actor_on_hud_animation_play time_event
 new_tasks_addon_tasks_utils              = host   ;   5 | actor_on_first_update on_game_load on_option_change time_event
 night_mutants                            = host   ;   6 | actor_on_first_update actor_on_update load_state save_state +2
 nimbleclearinventory                     = host   ;   1 | GUI_on_show time_event
@@ -75,7 +74,7 @@ release_restr_in_x16                     = host   ;   2 | on_game_load
 safespawn                                = host   ;   2 | actor_on_first_update on_level_changing time_event
 scripted_canted_irons                    = host   ;   2 | ActorMenu_on_item_drag_drop ActorMenu_on_item_focus_receive actor_item_to_slot actor_on_changed_slot +10
 smr_civil_war                            = host   ;   1 | load_state save_state squad_on_npc_death
-smr_pop                                  = host   ;  26 | actor_on_first_update
+smr_pop                                  = host   ;  23 | actor_on_first_update
 soulslike                                = host   ;   8 | actor_on_before_death actor_on_before_hit actor_on_first_update actor_on_item_take_from_box +10
 soulslike_scenarios                      = host   ;  16 | time_event
 soulslike_sleep_dialog                   = host   ;   2 | -
@@ -107,7 +106,7 @@ xcv_phantoms_fix                         = host   ;   1 | time_event
 z_3dss_thermal_battery                   = host   ;  10 | ActorMenu_on_item_drag_drop actor_item_to_slot actor_on_changed_slot actor_on_first_update +3
 z_npc_footsteps                          = host   ;   2 | -
 z_npc_wounded_animation_fix_mcm          = host   ;   1 | -
-z_nta_xr_effects                         = host   ;   3 | -
+z_nta_xr_effects                         = host   ;   1 | -
 z_ph_door_bar_arena_remover              = host   ;   2 | actor_on_first_update
 z_rftip_note_spawner                     = host   ;   1 | -
 zatura_autostack                         = host   ;   1 | GUI_on_show actor_on_item_drop actor_on_item_put_in_box actor_on_item_take +3
@@ -120,10 +119,8 @@ zz_parts_in_tooltip                      = host   ;   1 | -
 zz_treasure_manager_pba_less_artys       = host   ;   1 | actor_on_first_update load_state physic_object_on_use_callback save_state +1
 zz_ui_workshop_keep_crafting_window_open = host   ;  11 | time_event
 zzz_craft_use_in_tooltip_mcm             = host   ;   1 | -
-zzz_zone_keeper_mp                       = host   ;   1 | -
 zzzz_arti_jamming_repairs_repair_notifications = host   ;   3 | time_event
 zzzz_canted_aim_trace                    = host   ;   3 | actor_on_first_update actor_on_update on_game_load
 zzzzz_ui_workshop_repair_patch           = host   ;   1 | -
 zzzzzz_craft_use_low_cond_nearby_stashes = host   ;   1 | -
-zzzzzz_grok_artefacts_melter_nearby_stashes = host   ;   1 | time_event
 zzzzzz_ui_workshop_nearby_stashes        = host   ;   1 | -

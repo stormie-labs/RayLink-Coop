@@ -154,16 +154,16 @@ TEST(routes_defaults)
 		CHECK(runs_here(t.route("monster_on_loot_init", "ui_mutant_loot"), false));
 	}
 
-	// unique_call / time_event: routed by the handler's script, host by default (Ruling F2-29: a timer of a script
-	// without a rule stays on the host, as before F2 T10; review I1).
-	CHECK_EQ(default_of(kUniqueCall), Domain::Host);
-	CHECK_EQ(default_of(kTimeEvent), Domain::Host);
+	// unique_call / time_event: routed by the handler's script, owner by default: a timer follows its script like the
+	// script's callbacks (fix round 2, review I2; world scripts are host by their generated rules).
+	CHECK_EQ(default_of(kUniqueCall), Domain::Owner);
+	CHECK_EQ(default_of(kTimeEvent), Domain::Owner);
 	{
 		Table t;
 		t.add(script_rule("treasure_manager", Domain::Host));
 		t.add(script_rule("coop_*", Domain::View));
 		CHECK_EQ(t.route(kTimeEvent, "treasure_manager"), Domain::Host);
-		CHECK_EQ(t.route(kUniqueCall, "unknown_mod"), Domain::Host);
+		CHECK_EQ(t.route(kUniqueCall, "unknown_mod"), Domain::Owner);
 		CHECK_EQ(t.route(kTimeEvent, "coop_main"), Domain::View); // a script rule still decides
 	}
 

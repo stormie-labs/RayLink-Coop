@@ -9,9 +9,9 @@
 ; Every handler registered through RegisterScriptCallback, AddUniqueCall or CreateTimeEvent gets a domain once, when it
 ; is registered (scripts\coop_route.script asks the engine): by the CALLBACK (the engine's table, xrCoop\coop_routes.h:
 ; actor_* owner, npc_* / monster_* / squad_* host, GUI_* / on_key_* view, save_state host, load_state view, a mod's own
-; callback owner; unique calls and time events host, F2-29), unless a rule below says otherwise. Scripts that call
-; world functions and have no rule are host by the generated coop_route_stock.ltx / coop_route_gamma.ltx
-; (tools\gen_route_world.lua, rulings F2-28 / F2-29).
+; callback owner; unique calls and time events owner: a timer follows its script like its callbacks), unless a rule
+; below says otherwise. Scripts that call world functions and have no rule are host, callbacks and timers alike, by the
+; generated coop_route_stock.ltx / coop_route_gamma.ltx (tools\gen_route_world.lua, rulings F2-28 / F2-29).
 ;   host  - runs only on the host                  owner - runs everywhere: the player's own (its world calls go to
 ;   view  - runs everywhere (UI, sound, data)              the host through the engine, MOD_LAYER 2.3)
 ;   none  - runs nowhere while a session is on, the host included (mechanics the engine replaced)

@@ -12,8 +12,10 @@
 --      [route_scripts] rule (the same entries now; its blocked is host), a name without a rule was host.
 -- Registrations do not matter for the choice (a function is routed by the file that defines it, whoever registers it,
 -- literally or not); the comment of a line lists the literal ones: RegisterScriptCallback("<callback>"), AddUniqueCall
--- (unique_call), CreateTimeEvent (time_event). A GAMMA key already in coop_route_stock.ltx is not repeated.
--- Rerun after a GAMMA or Anomaly update or a change of the other route files, then run tools\test_lua.cmd.
+-- (unique_call), CreateTimeEvent (time_event). A GAMMA key already in coop_route_stock.ltx is not repeated. Comments are
+-- left out of the scan (review N2).
+-- Rerun after a GAMMA or Anomaly update or a change of the other route files, then run tools\test_lua.cmd (its
+-- route_shim_generated_lists_do_not_shadow_rules check fails when a hand rule matches a generated key, review N1).
 local BS = string.char(92)
 local CFG = "gamedata" .. BS .. "configs" .. BS
 local OUT_STOCK, OUT_GAMMA = "coop_route_stock.ltx", "coop_route_gamma.ltx"
@@ -76,6 +78,13 @@ local function read(path)
 	return s
 end
 
+-- The code of a Lua file without its comments (review N2): --[[ ... ]] / --[==[ ... ]==] blocks, then -- to the end of
+-- the line. A "--" inside a string literal cuts that line short, which only makes the scan see less.
+local function code_of(src)
+	src = src:gsub("%-%-%[(=*)%[.-%]%1%]", "")
+	return (src:gsub("%-%-[^\n]*", ""))
+end
+
 local function world_calls(src)
 	local n = 0
 	for _, w in ipairs(WORLD) do
@@ -108,7 +117,7 @@ local function survey(files, skip_keys)
 	local rows, with_world, with_rule = {}, 0, 0
 	for _, key in ipairs(keys) do
 		local path = files[key]
-		local src = read(path)
+		local src = code_of(read(path))
 		local calls = world_calls(src)
 		if calls > 0 and not skip_keys[key] then
 			with_world = with_world + 1
