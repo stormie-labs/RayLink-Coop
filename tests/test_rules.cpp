@@ -102,11 +102,22 @@ TEST(rules_live_only)
 }
 
 // R4 4: while a client applies a host broadcast (the host's story or a host command), what it does is a reaction,
-// not a request: nothing of it goes to the host.
+// not a request: nothing of it about the host's world goes to the host. Ruling F2-12: the host runs the story's
+// reactions on its own actor, so our own items (held by our actor, or given away from its inventory) are ours to
+// request as before; a new object (spawn) is never one of them.
 TEST(rules_client_echo)
 {
-	CHECK_EQ(client_echo(false, false), Echo::Forward);
-	CHECK_EQ(client_echo(true, false), Echo::Drop); // an addon reacts to the host's info portion
-	CHECK_EQ(client_echo(false, true), Echo::Drop); // a host command applied here (entities::ClientApply)
-	CHECK_EQ(client_echo(true, true), Echo::Drop);
+	// Not applying anything: our own requests.
+	CHECK_EQ(client_echo(false, false, false), Echo::Forward);
+	CHECK_EQ(client_echo(false, false, true), Echo::Forward);
+
+	// An addon reacts to the host's info portion.
+	CHECK_EQ(client_echo(true, false, false), Echo::Drop); // a world object or a spawn: the host's
+	CHECK_EQ(client_echo(true, false, true), Echo::Forward); // our own item: only we touch it
+
+	// A host command applied here (entities::ClientApply): its events are the host's change itself, ours included.
+	CHECK_EQ(client_echo(false, true, false), Echo::Drop);
+	CHECK_EQ(client_echo(false, true, true), Echo::Drop);
+	CHECK_EQ(client_echo(true, true, false), Echo::Drop);
+	CHECK_EQ(client_echo(true, true, true), Echo::Drop);
 }
