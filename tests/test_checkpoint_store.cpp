@@ -338,3 +338,218 @@ TEST(cps_mirror_bounded)
 	CHECK(m.apply(uint16_t(kMaxSlots + 1), cleared));
 	CHECK_EQ(m.size(), kMaxSlots);
 }
+
+// ---------------------------------------------------------------- custom data: more corners (F3 T6 fix round 1, M-7, M-9)
+
+TEST(cps_ini_both_corrupt)
+{
+	const std::string text = "[coop_checkpoint]\ncur = v1|l01_escape|inf|0|0|1|1|1|1|1\nprev = garbage\n";
+	unsigned corrupt = 0;
+	const Slot s = slot_from_ini(text, &corrupt);
+	CHECK_EQ(corrupt, 2u);
+	CHECK(!s.cur.valid());
+	CHECK(!s.prev.valid());
+}
+
+TEST(cps_ini_vitals_tail_after_section)
+{
+	// coop_equip store_vitals appends "vitals = ..." at the end of the custom data; once [coop_checkpoint] is the last
+	// section that line lands inside it. It must neither break the slot nor be lost when the slot is written again.
+	Slot s;
+	s.cur = rec(Kind::Campfire, 12);
+	s.prev = rec(Kind::Story, kNoSource);
+	std::string text = "[coop]\nkey = abc\n";
+	slot_to_ini(text, s);
+	text += "vitals = 0.5,0.25,1,0\n";
+
+	unsigned corrupt = 9;
+	const Slot back = slot_from_ini(text, &corrupt);
+	CHECK_EQ(corrupt, 0u);
+	CHECK(same(back.cur, s.cur));
+	CHECK(same(back.prev, s.prev));
+
+	s.cur = rec(Kind::Tent, 13);
+	slot_to_ini(text, s);
+	CHECK_EQ(count_of(text, "vitals = 0.5,0.25,1,0"), size_t(1));
+	CHECK_EQ(count_of(text, "key = abc"), size_t(1));
+	CHECK(same(slot_from_ini(text).cur, s.cur));
+	s.cur = Record();
+	s.prev = Record();
+	slot_to_ini(text, s);
+	CHECK_EQ(count_of(text, "vitals = 0.5,0.25,1,0"), size_t(1));
+}
+
+// ---------------------------------------------------------------- visibility (M-7)
+
+TEST(cps_may_see_own_always_others_with_group)
+{
+	CHECK(may_see(0, 0, false));
+	CHECK(may_see(57, 57, false));
+	CHECK(!may_see(0, 57, false));
+	CHECK(!may_see(57, 0, false));
+	CHECK(may_see(0, 57, true));
+	CHECK(may_see(57, 0, true));
+}
+
+// ---------------------------------------------------------------- host store (I-1)
+
+namespace
+{
+Slot slot_of_rec(const Record& cur)
+{
+	Slot s;
+	s.cur = cur;
+	return s;
+}
+
+// What frame() does with the host's queue, delivered to one client that is to see it (group view on: everyone).
+void deliver(HostStore& host, Mirror& client)
+{
+	for (const Pending& p : host.take_pending())
+	{
+		Record cur;
+		if (const Slot* s = host.find(p.character))
+			cur = s->cur;
+		Writer w;
+		write_state(w, p.character, p.rollback, cur);
+		StateMsg m;
+		Reader rd(w.ptr(), w.size());
+		CHECK(read_state(rd, m));
+		CHECK(client.apply(m.character, m));
+	}
+}
+
+void deliver_view(const std::vector<Outgoing>& view, Mirror& client)
+{
+	for (const Outgoing& o : view)
+	{
+		Writer w;
+		write_state(w, o.character, o.rollback, o.cur);
+		StateMsg m;
+		Reader rd(w.ptr(), w.size());
+		CHECK(read_state(rd, m));
+		CHECK(client.apply(m.character, m));
+	}
+}
+} // namespace
+
+TEST(cps_reused_id_clears_client_copy)
+{
+	// Character 57 (player A) has a camp, the client knows it. 57 is released and the id goes to a new character
+	// (hardcore new character, alife():release: the id comes back at once): his custom data has no checkpoint. The host
+	// reads the slot again and the client must lose A's camp.
+	HostStore host;
+	Mirror client;
+	CHECK(host.change(57, slot_of_rec(rec(Kind::Tent, 300)), false));
+	deliver(host, client);
+	CHECK(client.get(57) != nullptr);
+
+	CHECK(host.observe(57, Slot())); // the slot read back is empty now
+	CHECK(host.find(57) == nullptr);
+	deliver(host, client);
+	CHECK(client.get(57) == nullptr);
+
+	// the custom data changed under the cache (another character's record): announced as well
+	CHECK(host.change(58, slot_of_rec(rec(Kind::Campfire, 301)), false));
+	deliver(host, client);
+	CHECK(host.observe(58, slot_of_rec(rec(Kind::Rest, kNoSource))));
+	deliver(host, client);
+	CHECK(client.get(58) && client.get(58)->kind == Kind::Rest);
+
+	// reading the same thing again announces nothing, and a slot first met in a read is only cached
+	CHECK(!host.observe(58, slot_of_rec(rec(Kind::Rest, kNoSource))));
+	CHECK(!host.observe(59, slot_of_rec(rec(Kind::Story, kNoSource))));
+	CHECK(host.find(59) != nullptr);
+	CHECK(host.take_pending().empty());
+	// nor does a character that has none and never had one
+	CHECK(!host.observe(60, Slot()));
+	CHECK(host.take_pending().empty());
+}
+
+TEST(cps_view_clears_own_missing_id)
+{
+	HostStore host;
+	CHECK(host.change(3, slot_of_rec(rec(Kind::Campfire, 30)), false));
+	CHECK(host.change(5, slot_of_rec(rec(Kind::Tent, 50)), false));
+	host.take_pending();
+
+	// The player of 7 comes into the world: his copy still holds the camp of the character that had id 7 before.
+	Mirror client;
+	StateMsg stale;
+	stale.character = 7;
+	stale.record = rec(Kind::Tent, 70);
+	CHECK(client.apply(7, stale));
+
+	const std::vector<Outgoing> own = host.view_for(7, false, false);
+	CHECK_EQ(own.size(), size_t(1));
+	if (!own.empty())
+	{
+		CHECK_EQ(own[0].character, uint16_t(7));
+		CHECK(!own[0].cur.valid());
+	}
+	deliver_view(own, client);
+	CHECK(client.get(7) == nullptr);
+	CHECK(client.get(3) == nullptr); // not shared
+
+	// group view: everyone's records and his own cleared
+	const std::vector<Outgoing> all = host.view_for(7, true, false);
+	CHECK_EQ(all.size(), size_t(3));
+	deliver_view(all, client);
+	CHECK(client.get(3) && client.get(3)->source == 30);
+	CHECK(client.get(5) && client.get(5)->source == 50);
+	CHECK(client.get(7) == nullptr);
+
+	// his own record, nothing else
+	const std::vector<Outgoing> mine = host.view_for(3, false, false);
+	CHECK_EQ(mine.size(), size_t(1));
+	if (!mine.empty())
+		CHECK(mine[0].character == 3 && mine[0].cur.valid());
+
+	// the group view was just turned off: the others go as cleared
+	const std::vector<Outgoing> off = host.view_for(3, false, true);
+	CHECK_EQ(off.size(), size_t(2));
+	Mirror c3;
+	deliver_view(all, c3);
+	deliver_view(off, c3);
+	CHECK(c3.get(3) != nullptr);
+	CHECK(c3.get(5) == nullptr);
+}
+
+TEST(cps_host_store_queue_and_bound)
+{
+	HostStore host;
+	// one entry per character, the newest flag wins
+	CHECK(host.change(1, slot_of_rec(rec(Kind::Campfire, 10)), false));
+	CHECK(host.change(1, slot_of_rec(rec(Kind::Tent, 11)), true));
+	CHECK(host.change(2, slot_of_rec(rec(Kind::Tent, 12)), false));
+	std::vector<Pending> p = host.take_pending();
+	CHECK_EQ(p.size(), size_t(2));
+	if (p.size() == 2)
+	{
+		CHECK_EQ(p[0].character, uint16_t(1));
+		CHECK(p[0].rollback);
+		CHECK_EQ(p[1].character, uint16_t(2));
+		CHECK(!p[1].rollback);
+	}
+	CHECK(host.take_pending().empty());
+
+	// a rollback to nothing leaves the cache and is announced
+	CHECK(host.change(2, Slot(), true));
+	CHECK(host.find(2) == nullptr);
+	p = host.take_pending();
+	CHECK(p.size() == 1 && p[0].character == 2 && p[0].rollback);
+
+	// bounded: a new character over kMaxSlots gets nothing, known ones still change
+	HostStore full;
+	for (uint16_t id = 0; id < kMaxSlots; ++id)
+		CHECK(full.change(id, slot_of_rec(rec(Kind::Story, kNoSource)), false));
+	CHECK(!full.change(uint16_t(kMaxSlots), slot_of_rec(rec(Kind::Story, kNoSource)), false));
+	CHECK(full.find(uint16_t(kMaxSlots)) == nullptr);
+	CHECK(full.change(4, slot_of_rec(rec(Kind::Tent, 4)), false));
+	CHECK_EQ(full.slots().size(), kMaxSlots);
+	CHECK_EQ(full.take_pending().size(), kMaxSlots);
+
+	host.clear();
+	CHECK(host.find(1) == nullptr);
+	CHECK(host.take_pending().empty());
+}
