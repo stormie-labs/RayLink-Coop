@@ -90,6 +90,79 @@ TEST(cp_record_valid)
 	CHECK(!Record().valid());
 }
 
+// F3 review round 1, finding 4: a coordinate beyond +-1e6 m is garbage. It is not a valid record, so it has no text
+// form and cannot be read back or received, and the text form stays short.
+TEST(cp_coord_bound)
+{
+	static_assert(kMaxCoord == 1.0e6f, "the coordinate bound is a million metres");
+	for (int axis = 0; axis < 3; ++axis)
+	{
+		for (const float sign : {1.0f, -1.0f})
+		{
+			Record at = make(Kind::Campfire, 1);
+			at.pos[axis] = sign * kMaxCoord;
+			if (!at.valid())
+				t::report_failure(__FILE__, __LINE__, "the bound itself must be valid, axis " + std::to_string(axis));
+			Record over = make(Kind::Campfire, 1);
+			over.pos[axis] = sign * 1000001.0f;
+			if (over.valid())
+				t::report_failure(__FILE__, __LINE__, "1000001 must not be valid, axis " + std::to_string(axis));
+			Record huge = make(Kind::Campfire, 1);
+			huge.pos[axis] = sign * 1.0e30f;
+			if (huge.valid())
+				t::report_failure(__FILE__, __LINE__, "1e30 must not be valid, axis " + std::to_string(axis));
+			if (!encode(over).empty() || !encode(huge).empty())
+				t::report_failure(__FILE__, __LINE__, "an out-of-bound record has a text form, axis " + std::to_string(axis));
+		}
+	}
+
+	// The bound survives the text form and the wire.
+	Record edge = make(Kind::Tent, 3);
+	edge.pos[0] = kMaxCoord;
+	edge.pos[1] = -kMaxCoord;
+	edge.pos[2] = 0.0f;
+	const std::string line = encode(edge);
+	CHECK_EQ(line, std::string("v1|l01_escape|1000000.000|-1000000.000|0.000|100|7|3|3|1000"));
+	Record back;
+	REQUIRE(decode(line, back));
+	CHECK(same(edge, back));
+	coop::Writer w;
+	write(w, edge);
+	coop::Reader r(w.ptr(), w.size());
+	Record wired;
+	REQUIRE(read(r, wired));
+	CHECK(same(edge, wired));
+
+	// Text and wire from outside are refused beyond it.
+	const std::string far_lines[] = {
+		"v1|l01_escape|1000001.000|2.000|3.000|1|2|1|3|4",
+		"v1|l01_escape|1.000|-1000000.100|3.000|1|2|1|3|4",
+		"v1|l01_escape|1.000|2.000|1e30|1|2|1|3|4",
+		"v1|l01_escape|1.000|2.000|99999999999999999999999|1|2|1|3|4",
+	};
+	for (const std::string& far_line : far_lines)
+	{
+		Record out = make(Kind::Tent, 9, "l05_bar", 5.0f);
+		const Record before = out;
+		if (decode(far_line, out) || !same(out, before))
+			t::report_failure(__FILE__, __LINE__, "decode took an out-of-bound line: " + far_line);
+	}
+	coop::Writer fw;
+	fw.str("l01_escape");
+	const float far_pos[3] = {1.0f, 1.0e30f, 3.0f};
+	fw.vec3(far_pos);
+	fw.u32(1);
+	fw.u16(2);
+	fw.u8(1);
+	fw.u16(3);
+	fw.u64(4);
+	coop::Reader fr(fw.ptr(), fw.size());
+	Record sentinel = make(Kind::Tent, 9, "l05_bar", 5.0f);
+	const Record before = sentinel;
+	CHECK(!read(fr, sentinel));
+	CHECK(same(sentinel, before));
+}
+
 TEST(cp_encode_roundtrip)
 {
 	Record a;

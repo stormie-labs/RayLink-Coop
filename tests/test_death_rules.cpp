@@ -391,6 +391,44 @@ TEST(death_losses_deterministic)
 				"item " + std::to_string(i + 1) + " was taken " + std::to_string(taken[i]) + " times in 1000");
 }
 
+// F3 review round 1, finding 3: fixed answers for fixed inputs. The scrambled seed, the xorshift32 steps, the order of
+// the draws and the shuffle are all part of the answer; an accidental change of any of them breaks these vectors. Change
+// them only on purpose, together with the algorithm.
+TEST(death_losses_pinned_vectors)
+{
+	// 10 materials, ids 1..10, share 0.5 (exactly five).
+	{
+		const std::vector<Candidate> in = items(10, Materials, 1);
+		const Shares s = only(Materials, 0.5f);
+		CHECK((pick_losses(in, s, 1) == std::vector<uint16_t>{2, 4, 3, 6, 1}));
+		CHECK((pick_losses(in, s, 12345) == std::vector<uint16_t>{1, 3, 6, 4, 9}));
+	}
+	// Three categories in the order of the enum: materials 10..15 at 0.5 (three), ammo 20..23 at 0.25 (one), gear 30..34
+	// at 0.1 (0.5 of an item: none or one by the draw).
+	{
+		std::vector<Candidate> in = items(6, Materials, 10);
+		const std::vector<Candidate> ammo = items(4, Ammo, 20);
+		const std::vector<Candidate> gear = items(5, Gear, 30);
+		in.insert(in.end(), ammo.begin(), ammo.end());
+		in.insert(in.end(), gear.begin(), gear.end());
+		Shares s;
+		s.fill(0.0f);
+		s[Materials] = 0.5f;
+		s[Ammo] = 0.25f;
+		s[Gear] = 0.1f;
+		CHECK((pick_losses(in, s, 7) == std::vector<uint16_t>{12, 10, 14, 23, 31}));
+		CHECK((pick_losses(in, s, 4242) == std::vector<uint16_t>{11, 12, 14, 20}));
+		CHECK((pick_losses(in, s, 0xdeadbeefu) == std::vector<uint16_t>{12, 11, 14, 21, 33}));
+	}
+	// 3 consumables at 0.5 (one, and a second by the draw): seed 5 stays at one, seed 1 takes two.
+	{
+		const std::vector<Candidate> in = items(3, Consumables, 100);
+		const Shares s = only(Consumables, 0.5f);
+		CHECK((pick_losses(in, s, 1) == std::vector<uint16_t>{100, 101}));
+		CHECK((pick_losses(in, s, 5) == std::vector<uint16_t>{102}));
+	}
+}
+
 TEST(death_losses_subset)
 {
 	std::vector<Candidate> in = items(8, Materials, 10);
@@ -550,7 +588,8 @@ TEST(death_tracker_left_while_alive)
 	on_alive(tr);
 	on_left(tr);
 	CHECK(!on_returned(tr));
-	CHECK(on_died(tr, 1, 100000, rules) == Action::None);
+	// The new actor's counter starts again: its first death carries seq 1 again and is a new death.
+	CHECK(on_died(tr, 1, 100000, rules) == Action::LossesAndEvacuate);
 }
 
 TEST(death_tracker_world_replaced)
@@ -616,10 +655,11 @@ TEST(death_tracker_alive)
 	on_alive(tr);
 	CHECK_EQ(tr.respawn_at, uint64_t(0));
 	CHECK(!tr.respawn_due);
-	CHECK_EQ(tr.decided_seq, uint16_t(5)); // the decision is remembered
+	CHECK_EQ(tr.decided_seq, uint16_t(0xffff)); // standing up clears the decision: the next death is a new one
 	CHECK(!due(tr, 1000000));
-	CHECK(on_died(tr, 5, 2000, rules) == Action::None);
-	CHECK(on_died(tr, 6, 2000, rules) == Action::LossesAndEvacuate);
+	CHECK(on_died(tr, 5, 2000, rules) == Action::LossesAndEvacuate);
+	CHECK(on_died(tr, 5, 2001, rules) == Action::None);
+	CHECK(on_died(tr, 6, 3000, rules) == Action::LossesAndEvacuate);
 
 	// Stood up after the player left and came back: nothing is pending.
 	Tracker back;
@@ -628,4 +668,34 @@ TEST(death_tracker_alive)
 	on_alive(back);
 	CHECK(!back.respawn_due);
 	CHECK(!on_returned(back));
+}
+
+TEST(death_tracker_new_actor_same_seq)
+{
+	// F3 review round 1, finding 1: the client's counter starts from 0 with every new actor, so after the player has
+	// stood up the next death can carry the same number as the last one. It is a new death and takes the items.
+	Rules rules;
+	Tracker tr;
+	REQUIRE(on_died(tr, 1, 1000, rules) == Action::LossesAndEvacuate);
+	on_alive(tr);
+	CHECK(on_died(tr, 1, 100000, rules) == Action::LossesAndEvacuate);
+	CHECK_EQ(tr.respawn_at, uint64_t(100000 + rules.delay_ms));
+	CHECK(on_died(tr, 1, 100001, rules) == Action::None); // the same death again is still one decision
+
+	// Over and over: die, stand up, die with the same number.
+	Tracker again;
+	for (int i = 0; i < 5; ++i)
+	{
+		CHECK(on_died(again, 1, 1000 + uint64_t(i) * 100000, rules) == Action::LossesAndEvacuate);
+		on_alive(again);
+	}
+
+	// A reload of the world while dead is not standing up: the same number stays the same death
+	// (death_tracker_world_replaced) until the player is alive again.
+	Tracker replaced;
+	REQUIRE(on_died(replaced, 1, 1000, rules) == Action::LossesAndEvacuate);
+	REQUIRE(on_world_replaced(replaced));
+	CHECK(on_died(replaced, 1, 2000, rules) == Action::None);
+	on_alive(replaced);
+	CHECK(on_died(replaced, 1, 3000, rules) == Action::LossesAndEvacuate);
 }
