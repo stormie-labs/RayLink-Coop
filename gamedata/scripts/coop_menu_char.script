@@ -32,7 +32,9 @@
 		                                                   after the engine made the character there (offline, the
 		                                                   profile's supplies stripped, the faction's community): kit,
 		                                                   ammo and money; the world save follows
-		client: join_offer(eco, points, level, refusal, flags) -> shown   the window, main menu or game
+		client: join_offer(eco, points, level, refusal, flags) -> shown   the window, main menu or game; refusal is
+		                                                   "" in a first offer (a string, never nil), else the host's
+		                                                   reason code for the refused choice
 		        join_choice() -> faction, buy | nil        what Done gave, taken once
 		        join_closed(why)                           the world arrives: the window closes
 	Where (host_start, as the stock new game, ui_mm_faction_select.script on_game_load): one of the faction's starts of
@@ -1074,10 +1076,20 @@ end
 
 -- Unattended test runs (`-coop_autochoose <faction>` with -coop_connect): the offer is answered at once with that
 -- faction and no purchases, as if the player pressed Done. Nil without the flag or for an unknown faction.
+local auto_retried = false -- the one retry after "busy" is spent (join_closed starts over)
 local function auto_choice()
 	local ok, cl = pcall(command_line)
-	local f = ok and type(cl) == "string" and cl:match("%-coop_autochoose%s+([%w_]+)")
-	if not f then return nil end
+	if not (ok and type(cl) == "string") then
+		note("no command line", "! command_line() failed (%s): -coop_autochoose cannot be read", tostring(cl))
+		return nil
+	end
+	local f = cl:match("%-coop_autochoose%s+([%w_]+)")
+	if not f then
+		if cl:find("-coop_autochoose", 1, true) then
+			note("empty auto", "! -coop_autochoose without a faction: the window opens")
+		end
+		return nil
+	end
 	if not FACTION_SET[f] then
 		note("bad auto " .. f, "! -coop_autochoose %s: not a faction a player can pick, the window opens", f)
 		return nil
@@ -1096,6 +1108,13 @@ function join_offer(eco, points, level, refusal, flags)
 	-- run 1 (2026-10-23): `not refusal` was false for "", -coop_autochoose never answered and the window waited.
 	refusal = type(refusal) == "string" and refusal ~= "" and refusal or nil
 	local auto = auto_choice()
+	-- "busy" is the host's fallback reason (its Lua failed for a moment): an unattended run answers once more per
+	-- window cycle instead of waiting for the host's 10-minute kick
+	if auto and refusal == "busy" and not auto_retried then
+		auto_retried = true
+		log("test: the host was busy, the automatic choice goes once more")
+		refusal = nil
+	end
 	if auto and not refusal then
 		join.choice = { faction = auto, buy = "" }
 		state.waiting = true
@@ -1142,6 +1161,7 @@ end
 -- The world arrives (or the session ended): the window closes.
 function join_closed(why)
 	noted = {} -- the next offer's branches are logged again
+	auto_retried = false
 	join.choice = nil
 	if offer and offer.join then offer = nil end
 	state.waiting = false

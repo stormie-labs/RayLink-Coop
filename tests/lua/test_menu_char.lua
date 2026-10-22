@@ -589,6 +589,11 @@ check(ma.join_choice() == nil, "autochoose: taken once")
 check(ma.join_offer(1, 1700, "l01_escape", nil, 0) == true and select(1, ma.join_choice()) == "stalker",
 	"autochoose: no refusal given at all (nil) is a first offer too")
 LOG = {}
+-- review of the fix, minor 1: "busy" is the host's fallback reason (its Lua failed for a moment); an unattended run
+-- answers once more instead of sitting in the window until the host's 10-minute kick
+check(ma.join_offer(1, 1700, "l01_escape", "busy", 0) == true and not (ma.GUI and ma.GUI.shown)
+	and select(1, ma.join_choice()) == "stalker", "autochoose, host busy: answered once more, no window")
+check(log_count("test: the host was busy, the automatic choice goes once more") == 1, "the retry is in the log")
 check(ma.join_offer(1, 1700, "l01_escape", "busy", 0) == true, "autochoose refused by the host: the window opens")
 check(ma.GUI and ma.GUI.shown and ma.join_choice() == nil, "autochoose refused: a player must choose")
 check(log_count("the host refused the automatic choice (busy)") == 1, "autochoose refused: why the window opened is in the log")
@@ -598,10 +603,31 @@ check(log_count("the host refused the automatic choice") == 1 and log_count("cho
 	and log_count("offer shown again in the open window") == 1, "the same offer again: one line, not two more")
 ma.join_closed("world")
 check(not ma.GUI.shown, "closed")
+check(ma.join_offer(1, 1700, "l01_escape", "busy", 0) == true and not ma.GUI.shown
+	and select(1, ma.join_choice()) == "stalker", "a new window cycle: one more retry for busy")
+ma.join_closed("world")
+LOG = {}
+check(ma.join_offer(1, 1700, "l01_escape", "faction", 0) == true and ma.GUI.shown and ma.join_choice() == nil,
+	"autochoose refused for a real reason: the window at once, no retry")
+check(log_count("the host refused the automatic choice (faction)") == 1, "the reason is in the log")
+ma.join_closed("world")
 CMDLINE = '"x.exe" -coop_connect 127.0.0.1:27960 -coop_autochoose zombied'
 LOG = {}
 check(ma.join_offer(1, 1700, "l01_escape", "", 0) == true and ma.GUI.shown, "autochoose with a faction nobody may pick: the window")
 check(log_count("-coop_autochoose zombied: not a faction a player can pick") == 1, "the bad faction is in the log")
+ma.join_closed("world")
+-- review of the fix, minor 2: a flag that gives no faction, or a command line the script cannot read, is not silent
+CMDLINE = '"x.exe" -coop_connect 127.0.0.1:27960 -coop_autochoose'
+LOG = {}
+check(ma.join_offer(1, 1700, "l01_escape", "", 0) == true and ma.GUI.shown, "autochoose without a value: the window")
+check(log_count("-coop_autochoose without a faction") == 1, "the empty flag is in the log")
+ma.join_closed("world")
+local saved_command_line = command_line
+command_line = function() error("no command line") end
+LOG = {}
+check(ma.join_offer(1, 1700, "l01_escape", "", 0) == true and ma.GUI.shown, "unreadable command line: the window")
+check(log_count("command_line() failed") == 1, "the unreadable command line is in the log")
+command_line = saved_command_line
 ma.join_closed("world")
 CMDLINE = '"x.exe" -coop_connect 127.0.0.1:27960'
 LOG = {}
