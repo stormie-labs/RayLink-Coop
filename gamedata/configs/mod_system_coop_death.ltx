@@ -7,7 +7,7 @@
 ; Never lost: what the player has on (slots, belt), quest items (kind i_quest / i_letter), the PDA. Which items of
 ; a category go is a seeded draw on the host: floor(n x share), and one more with the probability of the fraction.
 ; Mod packs change the shares or map their own kinds with DLTX (![coop_death_drop], ![coop_death_kinds]).
-; Console of the host: coop_death_preview [character id] logs what a death would take now.
+; Console of the host: coop_death_preview [character id [death seq]] logs what a death would take now.
 
 [coop_death_drop]          ; share of the backpack lost per category (drop: falls out, lose: gone)
 materials   = 0.5

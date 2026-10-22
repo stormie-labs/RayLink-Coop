@@ -349,6 +349,12 @@ TEST(death_items_worn_list)
 	CHECK_EQ(mark_worn(marked, nothing_on), size_t(0)); // a new list replaces the old marks
 	CHECK(!marked[1].worn && !marked[2].worn && !marked[3].worn);
 
+	// T8b review N1: only what can be worn counts as worn. A client naming his parts and ammo "on him" keeps nothing.
+	const std::vector<uint16_t> materials{1, 5};
+	CHECK((offered(in, kinds, &materials) == std::vector<uint16_t>{1, 2, 3, 4, 5, 6, 7}));
+	std::vector<ItemFacts> named = in;
+	CHECK_EQ(mark_worn(named, materials), size_t(0));
+
 	// A quest item on the list or off it is never offered; a list cannot make a never-lost item lost.
 	const std::vector<uint16_t> quest_on{8};
 	CHECK((offered(in, kinds, &quest_on) == std::vector<uint16_t>{1, 2, 3, 4, 5, 6, 7}));
