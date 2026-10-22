@@ -21,7 +21,14 @@ dialog_gain_cap         = 100000    ; RU dialogs may pay in a row (one big quest
 ; than 1.2 M RU an hour on top of the cap
 dialog_gain_per_min     = 20000
 max_money               = 100000000 ; no balance goes above this
-; Upgrades at a mechanic (F2 T5): the host accepts a client's upgrade only if it was paid at least
-; cost x upgrade_min_percent. 2.21 = 1.7 (the lowest stock mech_discount) x 1.3 (the lowest `upgrade` factor of
-; plugins\difficulty.ltx).
+; Upgrades at a mechanic (F2 T5): the host accepts a client's upgrade only if it was bought from a mechanic the player
+; talks to, within 6 m of his character on the host, paid at least floor(cost x upgrade_min_percent) (the upgrade's
+; `cost` in item_upgrades.ltx), and his balance on the host covers what he paid; then the host charges it.
+; 2.21 = 1.7 (the lowest stock mech_discount) x 1.3 (the lowest `upgrade` factor of plugins\difficulty.ltx).
+; Mod packs that discount upgrades further need a lower value: G.A.M.M.A. (upgrade_rank_pricing.script) multiplies the
+; price by wpn_upgr_mult 0.5, a tier discount 0.5 / 1.1 / 1.5 and 0.3 for novice outfits (MCM defaults; each slider
+; goes down to 0.1): its cheapest default price is about 0.17 x cost.
 upgrade_min_percent     = 2.21
+; An upgrade that names no mechanic (a script installed it on the client, e.g. the workshop's upgrade with your own
+; tools) is refused unless this is true. coop_status counts them: "upgrades without a mechanic".
+scripted_upgrades       = false

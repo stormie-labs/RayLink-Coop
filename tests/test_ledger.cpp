@@ -4,6 +4,8 @@
 
 #include "coop_ledger.h"
 
+#include <cmath>
+#include <limits>
 #include <map>
 #include <string>
 #include <vector>
@@ -19,11 +21,17 @@ using coop::ledger::client_view;
 using coop::ledger::Decision;
 using coop::ledger::forget_acked;
 using coop::ledger::HostBook;
+using coop::ledger::judge_upgrade;
 using coop::ledger::MoneyBalanceMsg;
 using coop::ledger::MoneyReq;
 using coop::ledger::Pending;
 using coop::ledger::Policy;
 using coop::ledger::Receiver;
+using coop::ledger::upgrade_price_ok;
+using coop::ledger::UpgradeFacts;
+using coop::ledger::UpgradeHolds;
+using coop::ledger::UpgradePayment;
+using coop::ledger::UpgradeVerdict;
 using coop::ledger::Verdict;
 
 namespace
@@ -794,4 +802,185 @@ TEST(ledger_from_save_by_key_not_id)
 	CHECK(d.verdict == Verdict::NoAllowance);
 	d = book.on_request(2, character_key(ini_a), req(1, 50000), 0, false, nobody, p, 0);
 	CHECK(d.verdict == Verdict::Applied);
+}
+
+// ---------------------------------------------------------------- F2 T5: upgrades at a mechanic
+
+// The least a mechanic takes: paid >= floor(cost x upgrade_min_percent).
+TEST(ledger_upgrade_price)
+{
+	// The brief's figures: 2.21 = 1.7 (the lowest stock mech_discount) x 1.3 (the lowest eco `upgrade`).
+	CHECK(upgrade_price_ok(2210, 1000, 2.21f));
+	CHECK(!upgrade_price_ok(2209, 1000, 2.21f));
+	CHECK(upgrade_price_ok(0, 0, 2.21f));
+	// What the stock Lua charges at the cheapest mechanic (floor(cost x 1.7 x 1.3) in doubles) passes and one RU less
+	// does not, also where the float 2.21f (2.2100000381) would ask for one RU more: 263219 x 2.21 = 581713.99.
+	for (uint32_t cost : {1u, 7u, 99u, 100u, 4840u, 12345u, 99999u, 263219u, 1000019u, 1000000000u})
+	{
+		const uint32_t lua_price = uint32_t(std::floor(double(cost) * (1.7 * 1.3)));
+		CHECK(upgrade_price_ok(lua_price, cost, 2.21f));
+		CHECK(!upgrade_price_ok(lua_price - 1, cost, 2.21f));
+	}
+	// A dearer mechanic (mech_discount 2.2 x eco 2.0) pays more: still fine.
+	CHECK(upgrade_price_ok(4400, 1000, 2.21f));
+	// Settings: 0 takes anything; a broken value (NaN, infinite, below 0) refuses (coop_money never passes one).
+	CHECK(upgrade_price_ok(0, 1000, 0.f));
+	CHECK(!upgrade_price_ok(1000000, 1000, std::nanf("")));
+	CHECK(!upgrade_price_ok(1000000, 1000, -1.f));
+	// No overflow at the largest cost.
+	CHECK(!upgrade_price_ok(0xFFFFFFFFu, 0xFFFFFFFFu, 100.f));
+	CHECK(upgrade_price_ok(0xFFFFFFFFu, 0xFFFFFFFFu, 1.f));
+	CHECK(!upgrade_price_ok(0, 0, std::numeric_limits<float>::infinity()));
+	CHECK(!upgrade_price_ok(0xFFFFFFFFu, 1, std::numeric_limits<float>::infinity()));
+}
+
+namespace
+{
+// An honest upgrade at the cheapest mechanic: cost 1000, paid 2210, balance 5000, 2 m away.
+UpgradeFacts honest_upgrade()
+{
+	UpgradeFacts f;
+	f.mechanic_named = true;
+	f.mechanic_ok = true;
+	f.distance = 2.f;
+	f.reach = 6.f;
+	f.paid = 2210;
+	f.cost = 1000;
+	f.min_percent = 2.21f;
+	f.balance = 5000;
+	return f;
+}
+} // namespace
+
+// The host's checks, in the brief's order: a mechanic, within reach, paid enough, has the money.
+TEST(ledger_upgrade_judge)
+{
+	CHECK(judge_upgrade(honest_upgrade()) == UpgradeVerdict::Ok);
+
+	UpgradeFacts f = honest_upgrade();
+	f.mechanic_ok = false; // not a live stalker, not the NPC whose talk lock he holds, no mechanic settings
+	f.distance = 100.f;
+	f.paid = 0;
+	CHECK(judge_upgrade(f) == UpgradeVerdict::NoMechanic);
+
+	f = honest_upgrade();
+	f.distance = 6.5f;
+	f.paid = 0;
+	CHECK(judge_upgrade(f) == UpgradeVerdict::TooFar);
+	f.distance = 6.f; // at reach exactly
+	CHECK(judge_upgrade(f) == UpgradeVerdict::Underpaid);
+	f.distance = std::nanf(""); // a broken position is never near
+	CHECK(judge_upgrade(f) == UpgradeVerdict::TooFar);
+
+	f = honest_upgrade();
+	f.paid = 2209;
+	CHECK(judge_upgrade(f) == UpgradeVerdict::Underpaid);
+
+	f = honest_upgrade();
+	f.balance = 2209; // paid on the client, the host's balance does not cover it
+	CHECK(judge_upgrade(f) == UpgradeVerdict::Insufficient);
+	f.balance = 2210;
+	CHECK(judge_upgrade(f) == UpgradeVerdict::Ok);
+
+	// No mechanic named: an upgrade a script installed. Refused unless the host allows them (scripted_upgrades).
+	f = honest_upgrade();
+	f.mechanic_named = false;
+	f.mechanic_ok = false;
+	f.distance = 1000.f;
+	f.paid = 0;
+	CHECK(judge_upgrade(f) == UpgradeVerdict::Scripted);
+	f.scripted_allowed = true;
+	CHECK(judge_upgrade(f) == UpgradeVerdict::Ok); // no price for a script's upgrade
+	f.paid = 6000; // whatever it paid must be there
+	CHECK(judge_upgrade(f) == UpgradeVerdict::Insufficient);
+}
+
+// Msg::ReqItemEvent ends with the payment (F2 T5): u16 mechanic, u32 paid.
+TEST(ledger_upgrade_payment_wire)
+{
+	Writer w;
+	write(w, UpgradePayment{1234, 0xA1B2C3D4u});
+	CHECK_EQ(w.size(), coop::ledger::kUpgradePaymentSize);
+	CHECK_EQ(w.size(), size_t(6));
+	const std::vector<uint8_t> wire = bytes_of(w);
+	Reader r(wire.data(), wire.size());
+	UpgradePayment got;
+	REQUIRE(read(r, got));
+	CHECK_EQ(got.mechanic, 1234u);
+	CHECK_EQ(got.paid, 0xA1B2C3D4u);
+	CHECK_EQ(r.remaining(), size_t(0));
+
+	const UpgradePayment none;
+	CHECK_EQ(none.mechanic, 0xFFFFu); // a script's upgrade
+	CHECK_EQ(none.paid, 0u);
+
+	Reader cut(wire.data(), 5);
+	UpgradePayment partial;
+	CHECK(!read(cut, partial));
+}
+
+// T1 concern 3: the upgrade's price is spent on the client inside a ClientSpendScope and sent with the upgrade, not as
+// a ReqMoney. The client counts it (a hold) until the host answers that request; the host answers first, then sends
+// the balance. So a MoneyBalance that left the host before it charged the upgrade never shows the money from before
+// the payment, and the view after the answer is exactly the host's.
+TEST(ledger_upgrade_hold_keeps_paid_view)
+{
+	const uint32_t max_money = Policy().max_money;
+	std::vector<Pending> pending;
+	UpgradeHolds holds;
+	uint32_t host_balance = 5000, acked = 3;
+
+	// Accepted: the player pays 2210 at the mechanic, the actor shows 2790.
+	holds.hold(1, 2210);
+	CHECK_EQ(holds.sum(), uint64_t(2210));
+	// A MoneyBalance the host sent before it got the upgrade (the answer to an older change).
+	CHECK_EQ(client_view(host_balance, acked, pending, max_money, holds.sum()), 2790u);
+	CHECK_EQ(client_view(host_balance, acked, pending), 5000u); // without the hold: the old sum for a moment
+	// A change of the client meanwhile counts on top.
+	pending.push_back({4, -100});
+	CHECK_EQ(client_view(host_balance, acked, pending, max_money, holds.sum()), 2690u);
+	// The host answers the upgrade (ReqResult): the hold goes, nothing is shown yet ...
+	CHECK(holds.release(1));
+	CHECK(!holds.release(1)); // once
+	// ... then the balance after the charge and the change.
+	host_balance = 5000 - 2210 - 100;
+	forget_acked(pending, 4);
+	acked = 4;
+	CHECK_EQ(client_view(host_balance, acked, pending, max_money, holds.sum()), 2690u);
+
+	// Refused (underpaid, too far, ...): the answer releases the hold, the unchanged balance follows it.
+	holds.hold(2, 500);
+	CHECK_EQ(client_view(host_balance, acked, pending, max_money, holds.sum()), 2190u);
+	CHECK(holds.release(2));
+	CHECK_EQ(client_view(host_balance, acked, pending, max_money, holds.sum()), 2690u);
+
+	// Never below zero.
+	holds.hold(3, 9000);
+	CHECK_EQ(client_view(host_balance, acked, pending, max_money, holds.sum()), 0u);
+	holds.clear();
+	CHECK_EQ(holds.sum(), uint64_t(0));
+	CHECK_EQ(holds.size(), size_t(0));
+}
+
+// Bounded: a client that never gets answers keeps at most kMax holds (the oldest goes first).
+TEST(ledger_upgrade_holds_bounded)
+{
+	UpgradeHolds holds;
+	for (uint32_t key = 1; key <= uint32_t(UpgradeHolds::kMax) + 6; ++key)
+		holds.hold(key, 10);
+	CHECK_EQ(holds.size(), UpgradeHolds::kMax);
+	CHECK_EQ(holds.sum(), uint64_t(UpgradeHolds::kMax) * 10u);
+	CHECK(!holds.release(1)); // dropped
+	CHECK(holds.release(uint32_t(UpgradeHolds::kMax) + 6));
+	CHECK_EQ(holds.size(), UpgradeHolds::kMax - 1);
+	// No key and no amount hold nothing.
+	holds.hold(0, 100);
+	holds.hold(1000, 0);
+	CHECK_EQ(holds.size(), UpgradeHolds::kMax - 1);
+	// The largest amounts add up without overflow.
+	UpgradeHolds big;
+	big.hold(1, 0xFFFFFFFFu);
+	big.hold(2, 0xFFFFFFFFu);
+	CHECK_EQ(big.sum(), uint64_t(0xFFFFFFFFu) * 2u);
+	CHECK_EQ(client_view(100, 0, {}, Policy().max_money, big.sum()), 0u);
 }
