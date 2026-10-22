@@ -17,8 +17,11 @@
 
 local installed = false
 
+-- Check box bound to an integer console variable (coop_friendly_fire, coop_share_rewards, coop_nametags*: all
+-- CCC_Integer 0..1). R5 I1: without bool_to_num the stock ui_options.On_Accept sends "on"/"off", which CCC_Integer
+-- reads as 0, so the box could never switch the variable on.
 local function check(id, cmd)
-	return { id = id, type = "check", val = 1, cmd = cmd }
+	return { id = id, type = "check", val = 1, cmd = cmd, bool_to_num = true }
 end
 
 -- Stored in axr_options.ltx (no console variable): coop/coop_<group>/<id>.
