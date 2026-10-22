@@ -1,0 +1,22 @@
+; Anomaly Coop - player money on the host (F2 T1, review R4 7), read by the engine (coop_money.cpp) once per game start.
+;
+; Every player's balance lives on the host: the money of his character in the host's save. A client sends changes
+; of its money with a cause, never an amount; the host checks each one and answers with the balance it holds.
+;   - spending is allowed while the balance covers it;
+;   - money a client gains in a dialog while it holds the NPC's talk lock: up to dialog_gain_cap per talk;
+;   - any other money a client gains by itself (a mod's give_money, the rest of a dialog payout) comes out of an
+;     allowance: script_gain_burst in a row, refilled with script_gain_per_min per minute;
+;   - trades, transfers between players and host scripts (coop.money_grant / money_set) change balances on the host.
+; A refused gain is taken back on the client by the host's answer; refusals are counted in coop_status.
+; These are host settings: the host's values decide. The console changes them for the running game:
+;   coop_money_gain_burst, coop_money_gain_per_min, coop_money_dialog_cap, coop_money_max.
+
+[coop_money]
+script_gain_burst       = 50000     ; RU a client may gain without the host in a row
+script_gain_per_min     = 10000     ; and then per minute
+dialog_gain_cap         = 100000    ; RU dialogs may pay per talk with one NPC
+max_money               = 100000000 ; no balance goes above this
+; Upgrades at a mechanic (F2 T5): the host accepts a client's upgrade only if it was paid at least
+; cost x upgrade_min_percent. 2.21 = 1.7 (the lowest stock mech_discount) x 1.3 (the lowest `upgrade` factor of
+; plugins\difficulty.ltx).
+upgrade_min_percent     = 2.21

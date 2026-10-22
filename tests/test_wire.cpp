@@ -319,7 +319,8 @@ TEST(msg_name_known_and_unknown)
 		Msg::ReqContainer, Msg::TimeSync, Msg::WeatherSync, Msg::Emission, Msg::ZoneState, Msg::InfoPortion,
 		Msg::TaskList, Msg::TaskUpdate, Msg::MapSpot, Msg::Relation, Msg::Progress, Msg::DialogLock,
 		Msg::DialogLockResult, Msg::DialogUnlock, Msg::DialogPhrases, Msg::DialogSelect, Msg::TradeOp,
-		Msg::ScriptEvent, Msg::StateDumpRequest, Msg::StateDump, Msg::EntitySound, Msg::AvatarList};
+		Msg::ScriptEvent, Msg::StateDumpRequest, Msg::StateDump, Msg::EntitySound, Msg::AvatarList,
+		Msg::MoneyBalance};
 	for (Msg m : all)
 		CHECK(std::strncmp(msg_name(m), "Msg_0x", 6) != 0);
 }
@@ -673,6 +674,20 @@ TEST(protocol_version_bumped_for_avatar_owners)
 	static_assert(static_cast<uint16_t>(Msg::AvatarList) == 0x0107, "append only");
 	static_assert(static_cast<uint16_t>(Msg::AvatarList) >= static_cast<uint16_t>(Msg::GameBase), "a game message");
 	CHECK_EQ(std::string(msg_name(Msg::AvatarList)), std::string("AvatarList"));
+}
+
+// F2 T1 (review R4 7): player money lives on the host. ReqMoney carries a change with a cause and goes to the host
+// only; MoneyBalance answers it, from the host only; TradeOp Deal lost the client's money. The lead sets the version
+// number at commit (the counter is shared with F3): raise the bound below to it then.
+TEST(protocol_version_bumped_for_host_money)
+{
+	static_assert(kProtocolVersion >= 7u, "F2 T1: host-owned money");
+	static_assert(static_cast<uint16_t>(Msg::MoneyBalance) == 0x0190, "F2 range 0x0190-0x019F, append only");
+	static_assert(static_cast<uint16_t>(Msg::ReqMoney) == 0x0148, "the number stays");
+	CHECK_EQ(std::string(msg_name(Msg::MoneyBalance)), std::string("MoneyBalance"));
+	CHECK(msg_sender(Msg::MoneyBalance) == MsgSender::HostOnly);
+	CHECK(msg_sender(Msg::ReqMoney) == MsgSender::ClientOnly);
+	CHECK(msg_sender(Msg::TradeOp) == MsgSender::Either); // Deal one way, Result and TraderMoney the other
 }
 
 namespace
