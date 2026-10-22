@@ -1,0 +1,394 @@
+-- Anomaly Coop W4 "npc" temp test B: coop_npc_meet, _companions, _disguise, _world, _compat on a fake host + client.
+-- Run: tools\test_lua.cmd npc_b
+dofile("tests/lua/support/harness_npc.lua")
+
+local function pair()
+	reset_world()
+	local H = machine("host", 0, { [0] = 0, [1] = 500 })
+	local C = machine("client", 1, { [0] = 500, [1] = 0 })
+	local function swap(id) if id == 0 then return 500 elseif id == 500 then return 0 end return id end
+	C.to_host, C.to_local = swap, swap
+	for _, M in ipairs({ H, C }) do
+		M.env.coop_npc_players = load_script(M, "coop_npc_players")
+	end
+	local proxy = H.add(make_obj(500, 10, 0, 0, { _name = "proxy1" }))
+	local hav = C.add(make_obj(500, 0, 0, 0, { _name = "host_avatar" }))
+	return H, C, proxy, hav
+end
+
+local function common(M)
+	local E = M.env
+	E.xr_logic = {
+		pick_section_from_condlist = function(actor, npc, condlist)
+			for _, c in ipairs(condlist or {}) do
+				if not c.cond or c.cond(actor, npc) then return c.section end
+			end
+		end,
+		parse_func_params = function(s) local t = {} for p in s:gmatch("[^:]+") do t[#t + 1] = tonumber(p) or p end return t end,
+	}
+	E.character_community = function(o) return o:character_community() end
+	E.game_relations = {
+		is_factions_enemies = function(a, b) return (M.enemies or {})[a .. "/" .. b] == true end,
+		is_faction_unaffected = function() return false end,
+		is_faction_pair_unaffected = function() return false end,
+		change_faction_relations = function(a, b, v) M.rel_hits = (M.rel_hits or 0) + 1 end,
+		change_factions_community_num = function(a, b, v) M.goodwill_hits = (M.goodwill_hits or 0) + 1 end,
+	}
+	E.game_object = { enemy = 2, friend = 0, neutral = 1 }
+	E.IsWounded = function(o) return o._wounded == true end
+	E.IsWeapon = function(o) return o and o._weapon == true end
+	E.xr_corpse_detection = { is_under_corpse_detection = function() return false end }
+	E.xr_help_wounded = { is_under_help_wounded = function() return false end }
+	E.task_manager = { get_task_manager = function() return { task_info = {} } end }
+	E.tasks_delivery = { is_delivery_task = function() return false end }
+	E.state_mgr = { is_npc_in_combat = function() return false end, set_state = function() end, get_state = function() return "idle" end }
+	E.xr_sound = { set_sound_play = function(id, snd) M.voices = (M.voices or 0) + 1 end }
+end
+
+print("== coop_npc_meet: talk flags per client, wounded state, help-wounded")
+local H, C, proxy, hav = pair()
+common(H)
+common(C)
+local function meet_stock(M)
+	local E = M.env
+	local cm = {}
+	E.xr_meet = {
+		Cmeet_manager = { update = function() end, update_state = function() end, set_start_distance = function() end },
+		evaluator_contact = { evaluate = function() return false end },
+		action_meet_wait = { execute = function() end },
+		process_npc_usability = function(npc) M.stock_usability = (M.stock_usability or 0) + 1 end,
+	}
+	E.xr_conditions = { actor_is_safemode = function() return "stock" end }
+	E.xr_wounded = { unlock_medkit = function(npc) M.unlocked = npc:id() end }
+	E.dialogs = {
+		who_is_npc = function(a, b) return a:id() == 0 and b or a end,
+		transfer_medkit = function(a, b) M.stock_medkit = true end,
+		transfer_bandage = function(a, b) M.stock_bandage = true end,
+	}
+end
+meet_stock(H)
+meet_stock(C)
+local MH = load_script(H, "coop_npc_meet")
+local MC = load_script(C, "coop_npc_meet")
+MH.on_game_start()
+MC.on_game_start()
+H.fire("actor_on_update")
+local npc = H.add(make_obj(200, 15, 0, 0, { _name = "trader" }))
+local puppet = C.add(make_obj(200, 15, 0, 0, { _name = "trader" }))
+local use_true = { { section = "true" } }
+H.env.db.storage[200] = { meet = { meet_manager = { a = { use = use_true, trade_enable = use_true, meet_section = "nil" } } } }
+NOW = NOW + 1
+QUEUE, H.sent = {}, {}
+H.env.xr_meet.process_npc_usability(npc)
+check(H.stock_usability == 1, "stock usability still runs for the host's player")
+check(#sent_named(H, "npc.talk") == 1, "talk flags sent to the client near the NPC")
+pump()
+check(puppet._talk == true and puppet._trade == true and puppet._tip == "character_use", "client puppet: talkable, trader, tip")
+NOW = NOW + 600
+H.sent = {}
+H.env.xr_meet.process_npc_usability(npc)
+check(#sent_named(H, "npc.talk") == 0, "unchanged flags are not sent again")
+H.enemies = { ["stalker/stalker"] = true }
+NOW = NOW + 600
+H.env.xr_meet.process_npc_usability(npc)
+pump()
+check(puppet._talk == false and puppet._trade == false, "enemy faction for this player -> no talk, no trade")
+H.enemies = {}
+npc._wounded = true
+H.env.db.storage[200].wounded = { enable_talk = true }
+H.env.save_var(npc, "wounded_state", "true")
+C.env.db.storage[200] = { wounded = { wound_manager = { state = "nil" } } }
+NOW = NOW + 600
+H.env.xr_meet.process_npc_usability(npc)
+pump()
+check(puppet._talk == true and puppet._trade == false, "wounded NPC with enable_talk: talk, no trade")
+check(C.env.load_var(puppet, "wounded_state") == "true" and C.env.db.storage[200].wounded.wound_manager.state == "true",
+	"wounded state mirrored to the client")
+proxy._pos = vec(500, 0, 0)
+NOW = NOW + 600
+H.sent = {}
+H.env.xr_meet.process_npc_usability(npc)
+check(#sent_named(H, "npc.talk") == 0, "client far from the NPC: nothing sent")
+proxy._pos = vec(16, 0, 0)
+check(H.env.xr_conditions.actor_is_safemode(proxy, npc) == true, "proxy without a weapon in hands: safe mode")
+proxy._active = { _weapon = true }
+check(H.env.xr_conditions.actor_is_safemode(proxy, npc) == false, "proxy with a weapon: not safe")
+check(H.env.xr_conditions.actor_is_safemode(H.env.db.actor, npc) == "stock", "host's own player: stock")
+C.env.db.actor._pos = vec(15, 0, 1)
+proxy._pos = vec(15, 0, 1)
+QUEUE = {}
+C.env.dialogs.transfer_medkit(C.env.db.actor, puppet)
+check(C.stock_medkit, "client: stock help-wounded action runs (item and relation through the engine)")
+pump()
+check(H.unlocked == 200, "host unlocked the wounded NPC's medkit")
+proxy._pos = vec(400, 0, 0)
+H.unlocked = nil
+C.env.dialogs.transfer_medkit(C.env.db.actor, puppet)
+pump()
+check(H.unlocked == nil, "help from far away refused")
+
+print("== coop_npc_companions: a client's companion follows that client")
+H, C, proxy, hav = pair()
+common(H)
+common(C)
+local squad = { id = 300, members = { 201 } }
+function squad:squad_members()
+	local i = 0
+	return function() i = i + 1; local id = self.members[i]; if id then return { id = id } end end
+end
+local function comp_stock(M)
+	local E = M.env
+	E.get_object_squad = function(o) return o:id() == 201 and squad or nil end
+	E.alife_object = function(id) return id == 300 and squad or nil end
+	E.axr_companions = { companion_squads = {} }
+	E.dialogs_axr_companion = {
+		become_actor_companion = function(actor, npc)
+			M.became = { actor_id = actor:id(), db_actor = E.db.actor:id() }
+			E.axr_companions.companion_squads[300] = squad
+			npc:give_info_portion("npcx_is_companion")
+		end,
+		remove_companions_from_squad = function(actor, npc)
+			E.axr_companions.companion_squads[300] = nil
+			npc:disable_info_portion("npcx_is_companion")
+		end,
+		set_companion_to_wait_state = function(actor, npc) npc:give_info_portion("npcx_beh_wait") end,
+	}
+	E.axr_beh = { action_beh = { execute = function(self) M.beh_actor = E.db.actor:id() end } }
+end
+comp_stock(H)
+comp_stock(C)
+local CH = load_script(H, "coop_npc_companions")
+local CC = load_script(C, "coop_npc_companions")
+CH.on_game_start()
+CC.on_game_start()
+H.fire("actor_on_update")
+local comp = H.add(make_obj(201, 12, 0, 0, { _name = "comp" }))
+local comp_c = C.add(make_obj(201, 12, 0, 0, { _name = "comp" }))
+QUEUE = {}
+C.env.dialogs_axr_companion.become_actor_companion(C.env.db.actor, comp_c)
+check(C.became == nil, "client: recruit not run locally")
+pump()
+check(H.became and H.became.actor_id == 0, "host ran the recruit for the client (stock action, NPC picked by who_is_npc)")
+check(CH._leaders()[300] == 500, "squad led by the client's proxy")
+check(comp_c:has_info("npcx_is_companion"), "companion flag mirrored to the leader's machine")
+C.env.dialogs_axr_companion.set_companion_to_wait_state(C.env.db.actor, comp_c)
+pump()
+check(comp:has_info("npcx_beh_wait") and comp_c:has_info("npcx_beh_wait"), "order applied on the host, flag mirrored")
+NOW = NOW + 1
+H.env.axr_beh.action_beh.execute({ object = comp })
+check(H.beh_actor == 500, "companion thinks with 'actor' = its leader's proxy")
+H.env.db.actor._pos = vec(12, 0, 1)
+H.env.dialogs_axr_companion.remove_companions_from_squad(H.env.db.actor, comp) -- the host dismisses it directly (stock)
+NOW = NOW + 3000
+H.fire("actor_on_update")
+check(CH._leaders()[300] == nil, "leader forgotten once the squad is no longer a companion squad")
+proxy._pos = vec(300, 0, 0)
+C.env.dialogs_axr_companion.become_actor_companion(C.env.db.actor, comp_c)
+H.became = nil
+pump()
+check(H.became == nil, "recruit from far away refused")
+
+print("== coop_npc_disguise: the host judges a disguised client")
+H, C, proxy, hav = pair()
+common(H)
+common(C)
+local function disg_stock(M)
+	local E = M.env
+	M.options = { ["gameplay/disguise/active_item"] = true, ["gameplay/disguise/active_item_factor"] = 1 }
+	E.gameplay_disguise = {
+		is_actor_disguised = function() return M.disguised == true end,
+		get_default_comm = function() return "stalker" end,
+		examinate_active_item = function() return 0 end,
+		examinate_speed = function() return 1 end,
+		get_npc_awareness = function() return 1.3 end,
+		set_msg = function(s) M.msg = s end,
+		set_comm = function(c) M.comm = c; M.disguised = false end,
+		hud_val_to_str = function() return "==" end,
+		anybody_see = function() return "stock_see" end,
+		anybody_remember = function() return "stock_rem" end,
+		hud_update = function() M.stock_hud = true end,
+	}
+	E.game_statistics = { increment_reputation = function(v) M.rep = (M.rep or 0) + v end }
+	E.game_achievements = { has_achievement = function() return false end }
+	E.ui_options = { get = function(k) return M.options[k] end }
+end
+disg_stock(H)
+disg_stock(C)
+local DH = load_script(H, "coop_npc_disguise")
+local DC = load_script(C, "coop_npc_disguise")
+DH.on_game_start()
+DC.on_game_start()
+H.fire("actor_on_update")
+C.disguised = true
+C.env.db.actor._comm = "actor_dolg"
+QUEUE = {}
+C.fire("actor_on_update")
+pump()
+local ps = DH._players_state()[1]
+check(ps and ps.d == true and ps.c == "dolg" and ps.def == "stalker" and ps.itm == 100, "client's disguise report reached the host")
+local watcher = H.add(make_obj(210, 12, 0, 0, { _name = "dolg_guard", _comm = "dolg", _section = "dolg_3" }))
+watcher._sees[500] = true
+proxy._pos = vec(13, 0, 0)
+H.game_ms = 1000000
+QUEUE = {}
+for i = 1, 3 do
+	H.game_ms = H.game_ms + 30000
+	DH._npc_on_update(watcher)
+end
+check(#sent_named(H, "npc.disg_expose") == 1, "suspicion over the break point exposes the client")
+check(H.goodwill_hits == 1, "host applied the faction goodwill hit")
+pump()
+check(C.comm == "stalker" and C.rep == -100, "client dropped the disguise and took the reputation hit")
+C.disguised = true
+NOW = NOW + 3000
+H.fire("actor_on_update")
+pump()
+check(C.env.gameplay_disguise.anybody_see() == true, "client: 'somebody sees me' comes from the host")
+check(C.env.gameplay_disguise.anybody_remember() == true, "client: 'somebody remembers me' comes from the host")
+check(H.env.gameplay_disguise.anybody_see() == "stock_see", "host's own player: stock")
+
+print("== coop_npc_world: mines, campfires, dynamic anomalies, music")
+H, C, proxy, hav = pair()
+common(H)
+common(C)
+local created = {}
+local function world_stock(M)
+	local E = M.env
+	E.txr_mines = { plant_bomb = function() M.stock_plant = true end, _mines = {}, generic_on_update = function(o) M.gen_upd = (M.gen_upd or 0) + 1 end }
+	E.actor_effects = { play_item_fx = function(f) M.item_fx = f end, play_continuous_effect = function() end }
+	E.alife_release_id = function(id) M.released = id end
+	E.alife_create = function(sec, pos, lv, gv)
+		local id = 900 + #created
+		created[#created + 1] = sec
+		M.add(make_obj(id, pos.x, pos.y, pos.z, { _section = sec }))
+		return { id = id }
+	end
+	E.alife_object = function(id) return M.objects[id] and { id = id } or nil end
+	E.game.get_game_time = function() return setmetatable({ ms = M.game_ms or 0 }, { __index = { diffSec = function(a, b) return (a.ms - b.ms) / 1000 end } }) end
+	E.level.get_start_time = function() return setmetatable({ ms = 0 }, { __index = { diffSec = function(a, b) return (a.ms - b.ms) / 1000 end } }) end
+	E.bind_campfire = { campfires_all = {}, rain_pass = function() return true end, get_nearby_campfire = function() return nil end }
+	E.bind_campfire.campfire_go_on = function(obj, cf)
+		if E.bind_campfire.rain_pass() then M.local_turn_on = true end
+	end
+	E.bind_campfire.campfire_go_off = function(cf) end
+	E.bind_anomaly_field = {
+		dyn_anomalies = { l01_escape = { [700] = true } },
+		dyn_anomalies_update = function() M.stock_dyn = true end,
+		pulse_anomaly_update = function() M.stock_pulse = true end,
+		add_marker = function() end,
+	}
+	E.itms_manager = { use_guitar = function() M.stock_guitar = true end }
+	E.sound_object = setmetatable({ s3d = 1 }, { __call = function(_, path)
+		return { length = function() return 1000 end, play_no_feedback = function() M.music_local = path end,
+			play_at_pos = function(_, who) M.music_at = { path, who:id() } end }
+	end })
+end
+world_stock(H)
+world_stock(C)
+local WH = load_script(H, "coop_npc_world")
+local WC = load_script(C, "coop_npc_world")
+WH.on_game_start()
+WC.on_game_start()
+H.fire("actor_on_update")
+local item = C.add(make_obj(777, 0, 0, 0, { _section = "mine_new" }))
+C.env.db.actor._pos = vec(10, 0, 0)
+proxy._pos = vec(10, 0, 0)
+QUEUE = {}
+C.env.txr_mines.plant_bomb(item, 1, 10)
+check(not C.stock_plant and C.item_fx == "mine" and C.released == 777, "client: plant sent to the host, item released, effect played")
+H.game_ms = 0
+pump()
+local armed
+for id, m in pairs(WH._mines()) do armed = { id = id, m = m } end
+check(armed and created[1] == "mine_new_blow" and armed.m.mode == 1 and armed.m.planter == 500, "host created and armed a timer charge for the client")
+H.game_ms = 61000 * 1 -- 10 s * time factor 6 = 60 game s
+NOW = NOW + 300
+H.fire("actor_on_update")
+check(H.objects[armed.id]._exploded, "timer charge exploded on the host")
+-- the blast hits an NPC "from" the planter
+local victim = H.add(make_obj(220, 11, 0, 0))
+local flags = { ret_value = true }
+H.env.hit = function(h) local c = {} for k, v in pairs(h or {}) do c[k] = v end return c end
+H.fire("npc_on_before_hit", victim, { draftsman = H.objects[armed.id], power = 1 }, 0, flags)
+check(flags.ret_value == false and victim._hits and victim._hits[1].draftsman == proxy, "client's charge blames the client's proxy")
+-- proximity charge triggered by the proxy
+WH._mines()[armed.id] = nil
+QUEUE = {}
+C.env.txr_mines.plant_bomb(C.add(make_obj(778, 0, 0, 0, { _section = "ied_new" })), 0)
+pump()
+local prox
+for id, m in pairs(WH._mines()) do prox = id end
+proxy._pos = vec(40, 0, 0)
+H.game_ms = H.game_ms + 31000
+NOW = NOW + 300
+H.fire("actor_on_update")
+check(not H.objects[prox]._exploded, "armed proximity charge waits")
+proxy._pos = vec(11, 0, 0)
+NOW = NOW + 300
+H.fire("actor_on_update")
+check(H.objects[prox]._exploded, "proximity charge triggered by the client's proxy")
+check((H.gen_upd or 0) == 0, "stock generic_on_update not fed while the stock list is empty")
+H.env.txr_mines._mines[5] = {}
+NOW = NOW + 300
+H.fire("actor_on_update")
+check(H.gen_upd == 1, "stock proximity charges get the proxies fed")
+-- campfire
+local cf = { on = false }
+function cf:is_on() return self.on end
+function cf:turn_on() self.on = true end
+function cf:turn_off() self.on = false end
+local cf_obj = H.add(make_obj(600, 11, 0, 0))
+H.env.bind_campfire.campfires_all[600] = { campfire = cf, object = cf_obj }
+local cf_c = {}
+C.env.bind_campfire.campfires_all[600] = { campfire = cf_c, object = C.add(make_obj(600, 11, 0, 0)) }
+QUEUE = {}
+C.env.bind_campfire.campfire_go_on(nil, cf_c)
+pump()
+check(cf.on == true, "client lighting a campfire: the host lit it")
+C.env.bind_campfire.rain_pass = function() return false end
+cf.on = false
+C.env.bind_campfire.campfire_go_on(nil, cf_c)
+pump()
+check(cf.on == false, "rain put the match out: no request")
+-- dynamic anomalies
+local ano = H.add(make_obj(700, 11, 0, 0))
+ano.enable_anomaly = function(self) self._en = true end
+ano.disable_anomaly = function(self) self._dis = true end
+proxy._pos = vec(12, 0, 0)
+H.env.db.actor._pos = vec(300, 0, 0)
+NOW = NOW + 1
+H.env.bind_anomaly_field.dyn_anomalies_update()
+check(not ano._en and not H.stock_dyn, "dynamic anomaly next to the client is not switched")
+proxy._pos = vec(200, 0, 0)
+NOW = NOW + 1
+H.env.bind_anomaly_field.dyn_anomalies_update()
+check(ano._en == true, "switched once nobody is near")
+-- zone artefact picked up by the client
+local taken = {}
+local zone = { on_artefact_take = function(self, obj) taken[#taken + 1] = obj:id(); H.env.bind_anomaly_zone.parent_zones_by_artefact_id[obj:id()] = nil end }
+H.env.bind_anomaly_zone = { parent_zones_by_artefact_id = { [800] = zone, [801] = zone } }
+H.add(make_obj(800, 0, 0, 0, { _parent = proxy }))
+H.add(make_obj(801, 0, 0, 0))
+NOW = NOW + 2500
+H.fire("actor_on_update")
+check(#taken == 1 and taken[1] == 800, "zone forgets an artefact held by a client's proxy, keeps the free one")
+-- music
+QUEUE = {}
+C.env.itms_manager.use_guitar({})
+pump()
+check(C.music_local and H.music_at and H.music_at[2] == 500 and H.music_at[1] == C.music_local, "client's guitar heard at its proxy on the host")
+
+print("== coop_npc_compat: rewrite text")
+H, C, proxy, hav = pair()
+local K = load_script(H, "coop_npc_compat")
+local out = K.rewrite_text("a\nif (killer_id ~= 0) then return end\nb", { { "if (killer_id ~= 0) then return end", "X" } })
+check(out == "a\nX\nb", "single literal rewritten")
+local none, why = K.rewrite_text("nothing here", { { "if (killer_id ~= 0) then return end", "X" } })
+check(none == nil and why:find("0 times"), "missing literal: untouched (all-or-nothing)")
+local twice = K.rewrite_text("A A", { { "A", "B" } })
+check(twice == nil, "ambiguous literal: untouched")
+local chained = K.rewrite_text("x = 1 y = 2", { { "x = 1", "x = 3" }, { "y = 2", "y = 4" } })
+check(chained == "x = 3 y = 4", "pairs applied in order")
+
+print(string.format("\nRESULT: %d passed, %d failed", PASSES, FAILS))
+if FAILS > 0 then error("tests failed") end
