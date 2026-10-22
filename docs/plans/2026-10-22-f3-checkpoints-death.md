@@ -669,6 +669,8 @@ bool timer_due(Schedule& s, uint64_t now_ms, uint32_t interval_min, bool busy, u
 
 ### Task 7: Checkpoint sources on the host (campfires, tents, mod objects, rest places, combat)
 
+> **Поправка по разведке Task 1 (2026-10-22, `docs/research/2026-10-22-f3-saves-sleep-recon.md` §B.3):** `alife_create` у клиента для объекта без родителя **не пересылается** хосту, а отбрасывается (`coop_requests.cpp:1428-1430`) — «хост найдёт ничью палатку не старше 15 с» для клиента не сработает. Палатку клиента ставит хост по просьбе игрока (форма просьбы — §B.3 отчёта; после Ф2 Task 12b — через аренду id). Хук — на `item_tent` (в GAMMA вход идёт через `use1_action_functor` → `item_tent.func_use_*`), а не на колбэк `actor_on_item_use`.
+
 **Файлы:**
 - Изменить: `engine/src/xrGame/coop/coop_checkpoint_sources.{h,cpp}`, `coop_checkpoints.cpp` (вызов `host_frame`),
   `coop_checkpoints_lua.cpp`.
@@ -1078,6 +1080,8 @@ bool timer_due(Schedule& s, uint64_t now_ms, uint32_t interval_min, bool busy, u
 - [ ] **Шаг 5:** коммит (движок): `Coop F3: host autosaves coop_auto_N (timer, after sleep, level change, session end), rotation of 10`.
 
 ### Task 13: Lua checkpoints — story checkpoints, tent claims, tips, PDA spots, party panel mark
+
+> **Поправка по разведке Task 1 (2026-10-22, `docs/research/2026-10-22-f3-saves-sleep-recon.md` §B.3):** `alife_create` у клиента для объекта без родителя **не пересылается** хосту, а отбрасывается (`coop_requests.cpp:1428-1430`) — «хост найдёт ничью палатку не старше 15 с» для клиента не сработает. Палатку клиента ставит хост по просьбе игрока (форма просьбы — §B.3 отчёта; после Ф2 Task 12b — через аренду id). Хук — на `item_tent` (в GAMMA вход идёт через `use1_action_functor` → `item_tent.func_use_*`), а не на колбэк `actor_on_item_use`.
 
 **Файлы:**
 - Создать:
