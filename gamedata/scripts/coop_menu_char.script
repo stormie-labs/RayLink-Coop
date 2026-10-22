@@ -1054,10 +1054,25 @@ local function own_nick()
 	return ok and type(info) == "table" and tostring(info.nick or "") or ""
 end
 
+-- Unattended test runs (`-coop_autochoose <faction>` with -coop_connect): the offer is answered at once with that
+-- faction and no purchases, as if the player pressed Done. Nil without the flag or for an unknown faction.
+local function auto_choice()
+	local ok, cl = pcall(command_line)
+	local f = ok and type(cl) == "string" and cl:match("%-coop_autochoose%s+([%w_]+)")
+	return f and FACTION_SET[f] and f or nil
+end
+
 -- The host's offer (again after a refused choice: `refusal` is its reason code): the window, now. flags: 1 = the
 -- host's game has the story on. True if the window is shown (else the engine tries again).
 function join_offer(eco, points, level, refusal, flags)
 	if not api then return false end
+	local auto = not refusal and auto_choice()
+	if auto then
+		join.choice = { faction = auto, buy = "" }
+		state.waiting = true
+		log("test: offer answered at once with %s (-coop_autochoose)", auto)
+		return true
+	end
 	offer = {
 		join = true,
 		eco = math.max(1, math.min(3, tonumber(eco) or 1)),
