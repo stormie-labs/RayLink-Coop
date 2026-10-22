@@ -14,25 +14,33 @@
 	file, which calls start_timer and use_compression_bag through the module table):
 	  func_use_tent, func_use_bag   use1_action_functor of the items (stock itm_tent, GAMMA itm_sleepbag too): the item is
 	                                not touched, the stock function (which would free it) is not called;
-	  start_timer                   the use callback of an item the engine has already eaten (itm_tent, itm_tent_bag
-	                                next to a tent): the item is handed back, no timer functor is queued;
-	  use_compression_bag           the same for a compression bag;
-	  itm_tent_func, itm_tent_bag_func   the timer functors themselves, in case one gets queued anyway.
-	The client sees a message (string st_coop_tent_blocked); nothing is spawned or released.
+	  start_timer                   the use callback of an item the engine may have eaten (itm_tent, itm_tent_bag next to a
+	                                tent): no timer functor is queued;
+	  use_compression_bag           the same for a compression bag; the message appears only when a placed sleeping bag
+	                                is in reach (without one the stock function does nothing);
+	  itm_tent_func, itm_tent_bag_func   the timer functors themselves, in case one gets queued anyway;
+	  on_game_start                 after the stock one has registered its local use callback, that callback is replaced
+	                                by a guard: on a client it refuses the placeable sleeping bag branch (stock itm_sleepbag,
+	                                the engine eats the item) and hands everything else to the stock callback unchanged.
+	The client sees a message (string st_coop_tent_blocked, the inventory window is closed first, as itms_manager does);
+	nothing is spawned or released.
+	An item is handed back only when the engine really took it: CInventory::Eat deletes it when remove_after_use is true
+	(default) and max_uses is 1. itm_tent and itm_sleepbag are given back; itm_tent_bag and compression_bag
+	(remove_after_use = false) stay in the inventory, a second copy would be a duplicate.
 	On the host and in single player every wrapper calls the stock function with the same arguments.
 
-	Not covered: the sleeping bag branch of the local use callback for an item the engine eats (stock Anomaly, itm_sleepbag
-	without use1_action_functor): the callback cannot be wrapped from outside, the error stays in the callback's pcall.
-	GAMMA does not take that path for itm_sleepbag (func_use_bag).
+	Accepted: the give-back is an alife_create_item whose result on a client is nil, so the client's item processor may log a
+	false "refused" error for it, and stats.returned counts the request, not the arrival.
 
 	Loaded by axr_main like any script that has on_game_start; nothing is added to coop_main or the domain tables
-	(the name falls under coop_* = view, and the wrappers are not registered callbacks).
+	(the name falls under coop_* = view; the use guard is a view callback, pcall-protected on a client like the stock one).
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace (nil on an exe without co-op)
 
 local TEXT_ID = "st_coop_tent_blocked"
 local TEXT_FALLBACK = "Tents and sleeping bags cannot be used from a co-op client yet. The item stays in your inventory."
+local USE_CALLBACK = "actor_on_item_use"
 
 stats = { blocked = 0, returned = 0, return_failed = 0 }
 
@@ -54,6 +62,8 @@ local function say()
 	local text = TEXT_FALLBACK
 	local ok, s = pcall(game.translate_string, TEXT_ID)
 	if ok and type(s) == "string" and s ~= "" and s ~= TEXT_ID then text = s end
+	-- The message is drawn behind the inventory window: close it first (itms_manager does the same before its set_msg).
+	pcall(function() utils_xml.hide_menu() end)
 	local am = rawget(_G, "actor_menu")
 	if am and am.set_msg then pcall(am.set_msg, 1, text, 4) end
 end
@@ -64,11 +74,30 @@ local function section_of(obj)
 	return ok and type(sec) == "string" and sec or nil
 end
 
--- The engine has eaten the item before the use callback ran: put one back in the inventory (the parent is the actor, so
--- the client's request is forwarded and accepted).
+local function upvalue(f, name)
+	if type(f) ~= "function" then return nil end
+	for i = 1, 255 do
+		local n, v = debug.getupvalue(f, i)
+		if n == nil then return nil end
+		if n == name then return v end
+	end
+	return nil
+end
+
+-- Did the engine take the item for this use? CInventory::Eat deletes it only when remove_after_use is true (default) and
+-- no use is left (max_uses, default 1). An unreadable section counts as "not taken": no give-back, no duplicate.
+local function eaten_for_good(section)
+	local ok, r = pcall(function()
+		-- no default argument for r_float_ex: the non-memoizing variant of _g.script ignores it and returns nil
+		return ini_sys:r_bool_ex(section, "remove_after_use", true) and (ini_sys:r_float_ex(section, "max_uses") or 1) <= 1
+	end)
+	return ok and r == true
+end
+
+-- Put one back in the inventory (the parent is the actor, so the client's request is forwarded and accepted).
 local function give_back(section)
 	local actor = db.actor
-	if not (section and actor) then return end
+	if not (section and actor and eaten_for_good(section)) then return end
 	local ok, err = pcall(alife_create_item, section, actor)
 	if ok then
 		stats.returned = stats.returned + 1
@@ -85,7 +114,55 @@ local function refuse(what, give_section)
 	give_back(give_section)
 end
 
--- ------------------------------------------------------------------ wrappers: name -> make(orig) -> wrapper
+-- A placed sleeping bag within `dist` of the actor, the way the stock use_compression_bag looks for one: only then the stock
+-- function would do something (and release the host's object).
+local function placed_sleepbag_near(mod, dist)
+	local ok, found = pcall(function()
+		local reach = tonumber(dist) or 1.5
+		local here = db.actor:position()
+		for id, v in pairs(mod.get_spawned_sleepbags()) do
+			local obj = level.object_by_id(id)
+			if obj and v == true and obj:section() == "ph_sleepbag" and obj:position():distance_to(here) < reach then
+				return true
+			end
+		end
+		return false
+	end)
+	return ok and found == true
+end
+
+-- ------------------------------------------------------------------ the use callback of the stock file
+local stock_use = nil -- the file local actor_on_item_use of item_tent (an upvalue of func_use_tent / func_use_bag)
+local use_guard = nil -- what replaces it in the callback list
+
+-- The branch of the stock callback that places a ph_sleepbag: SleepBagEnable and SleepBagSections[sec] and SleepBagPlaceable
+-- (the stock file locals, read as upvalues at call time).
+local function sleepbag_branch(sec)
+	local sections = upvalue(stock_use, "SleepBagSections")
+	return upvalue(stock_use, "SleepBagEnable") and upvalue(stock_use, "SleepBagPlaceable")
+		and type(sections) == "table" and sections[sec] ~= nil
+end
+
+local function swap_use_callback()
+	local old = stock_use
+	if type(old) ~= "function" then return end
+	local cm = rawget(_G, "coop_main")
+	local reg = cm and cm.callback_registered and cm.callback_registered(USE_CALLBACK, old)
+	if reg == false then return end -- the stock callback is not registered: nothing to guard
+	if not use_guard then
+		use_guard = function(obj, ...)
+			if is_client() then
+				local sec = section_of(obj)
+				if sec and sleepbag_branch(sec) then return refuse(USE_CALLBACK .. "(" .. sec .. ")", sec) end
+			end
+			return old(obj, ...)
+		end
+	end
+	pcall(UnregisterScriptCallback, USE_CALLBACK, old)
+	RegisterScriptCallback(USE_CALLBACK, use_guard)
+end
+
+-- ------------------------------------------------------------------ wrappers: name -> make(orig, mod) -> wrapper
 local function make_use_functor(name)
 	return function(orig)
 		return function(obj, ...)
@@ -118,18 +195,28 @@ local MAKERS = {
 			return orig(obj, ...)
 		end
 	end },
-	{ "use_compression_bag", function(orig)
-		return function(obj, ...)
+	{ "use_compression_bag", function(orig, mod)
+		return function(obj, dist, ...)
 			if is_client() then
-				local sec = section_of(obj)
-				return refuse("use_compression_bag", sec == "compression_bag" and sec or nil)
+				if placed_sleepbag_near(mod, dist) then
+					local sec = section_of(obj)
+					refuse("use_compression_bag", sec == "compression_bag" and sec or nil)
+				end
+				return
 			end
-			return orig(obj, ...)
+			return orig(obj, dist, ...)
+		end
+	end },
+	{ "on_game_start", function(orig)
+		return function(...)
+			orig(...)
+			local ok, err = pcall(swap_use_callback)
+			if not ok then log("! use callback swap failed: %s", tostring(err)) end
 		end
 	end },
 }
 
-local wrapped = {} -- entry name -> true once the wrapper is in the module table
+local wrappers = {} -- entry name -> the wrapper this script put in the module table
 
 local function install()
 	if not api then return end
@@ -137,14 +224,21 @@ local function install()
 	if not (ok and type(mod) == "table") then return end
 	for _, entry in ipairs(MAKERS) do
 		local name, make = entry[1], entry[2]
-		local orig = mod[name]
-		if not wrapped[name] and type(orig) == "function" then
-			local wrapper = make(orig)
+		local cur = mod[name]
+		-- A mod that overwrote the function after us is wrapped again (the guard must not go silent).
+		if type(cur) == "function" and cur ~= wrappers[name] then
+			if stock_use == nil and (name == "func_use_tent" or name == "func_use_bag") then
+				stock_use = upvalue(cur, "actor_on_item_use") -- the file local both functors call
+			end
+			local wrapper = make(cur, mod)
 			if type(wrapper) == "function" then
 				mod[name] = wrapper
-				wrapped[name] = true
+				wrappers[name] = wrapper
 			end
 		end
+	end
+	if stock_use == nil then
+		log("! the stock use callback of item_tent was not found: the sleeping bag branch stays unguarded")
 	end
 end
 
@@ -153,6 +247,12 @@ end
 function on_game_start()
 	local ok, err = pcall(install)
 	if not ok then log("! install failed: %s", tostring(err)) end
+	-- item_tent.on_game_start may have run already (its callback is registered): swap now, otherwise its wrapper does it.
+	local cm = rawget(_G, "coop_main")
+	if stock_use and cm and cm.callback_registered and cm.callback_registered(USE_CALLBACK, stock_use) == true then
+		local ok_swap, err_swap = pcall(swap_use_callback)
+		if not ok_swap then log("! use callback swap failed: %s", tostring(err_swap)) end
+	end
 end
 
 -- Load time (before any on_game_start): the wrappers are in place before anybody looks the functions up.

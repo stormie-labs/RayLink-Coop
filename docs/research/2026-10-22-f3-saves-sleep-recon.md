@@ -41,7 +41,7 @@
 6. Все входы сна сходятся в `UISleep:TestAndShow` / `OnButtonSleep`, `sleep_forced`, `sleep_bag` (`ui_sleep_dialog.script`).
    Обёртки Task 14 надо ставить в таблицы `ui_sleep_dialog` и `UISleep` присваиванием, не на местах вызова.
 7. **Палатка и спальник у клиента сейчас не работают, а палатка ещё и роняет клиента.** `alife_create("ph_tent", …)` без
-   родителя у клиента **не пересылается, а отбрасывается** (`coop_requests.cpp:1428-1430`): в плане и в vault стоит «пересылает
+   родителя у клиента **не пересылается, а отбрасывается** (`coop_requests.cpp:1394-1396`): в плане и в vault стоит «пересылает
    запрос», это неверно для спавна без родителя. `itm_tent_func` индексирует `nil` (`item_tent.script:38`) внутри
    `level.add_call`-функтора, а Lua-ошибка в функторе движка в релизе — FATAL (`script_engine.cpp:276-296`,
    `xrCore.h:38-44`). Не проверено в игре.
@@ -269,7 +269,7 @@
 1. Lua `alife_create(sec, pos, lid, gid)` без родителя (`_g.script:2071-2145`) → `alife():create(sec, pos, lid, gid)` без id.
    Хук `alife_simulator_script.cpp:195` → `lua_create(…, parent = 0xFFFF, register_now = true)` (`coop_requests.cpp:1628-1648`) →
    `lua_forward` (`:600-610`) → `client_forward_spawn` (`:1424-1464`).
-2. `client_forward_spawn` возвращает `false` при `parent == kNoId` (`:1428-1430`): «world-caused: loot, population, effects
+2. `client_forward_spawn` возвращает `false` при `parent == kNoId` (`:1394-1396`): «world-caused: loot, population, effects
    are the host's job». Тогда `lua_forward` пишет «refused on a client: world spawns are the host's job», считает `lua_refused`
    и возвращает `nullptr`. **Запрос хосту не уходит.** (Уходит только спавн, цепочка родителей которого кончается на актор
    клиента: `alife_create_item("itm_tent_bag", db.actor)` пройдёт.)

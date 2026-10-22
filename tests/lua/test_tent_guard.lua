@@ -17,12 +17,24 @@ actor_effects = { play_item_fx = function() end }
 function hide_hud_inventory() end
 
 -- the stock module registers its local use callback; keep our own list so that each test starts from a clean one
+-- (set semantics like axr_main.callback_set: the same function twice is one entry)
 USE_CB = {}
-local real_register = RegisterScriptCallback
+local real_register, real_unregister = RegisterScriptCallback, UnregisterScriptCallback
 function RegisterScriptCallback(name, f)
-	if name == "actor_on_item_use" then USE_CB[#USE_CB + 1] = f else real_register(name, f) end
+	if name ~= "actor_on_item_use" then return real_register(name, f) end
+	for _, g in ipairs(USE_CB) do if g == f then return end end
+	USE_CB[#USE_CB + 1] = f
 end
-local function fire_use(obj) for _, f in ipairs(USE_CB) do f(obj) end end
+function UnregisterScriptCallback(name, f)
+	if name ~= "actor_on_item_use" then return real_unregister(name, f) end
+	for i = #USE_CB, 1, -1 do if USE_CB[i] == f then table.remove(USE_CB, i) end end
+end
+local function fire_use(obj) local list = {}; for i, f in ipairs(USE_CB) do list[i] = f end; for _, f in ipairs(list) do f(obj) end end
+
+-- what the player sees: the inventory is closed first (itms_manager does utils_xml.hide_menu() before its set_msg), then the text
+EV = {}
+utils_xml = { hide_menu = function() EV[#EV + 1] = "hide" end }
+actor_menu.set_msg = function(_, t) HUD = t; EV[#EV + 1] = "msg" end
 
 -- alife_create as a client's engine answers it: a spawn without a parent is the host's job, the result is nil
 local world_create = alife_create
@@ -39,17 +51,36 @@ game.translate_string = function(id) ASKED[#ASKED + 1] = id; return TR[id] or id
 
 local function reset()
 	CREATED, RELEASED, ADD_CALLS, TIMEEV, LOG, USE_CB = {}, {}, {}, {}, {}, {}
-	ALIFE_CREATE, HUD, ASKED = 0, nil, {}
+	ALIFE_CREATE, HUD, ASKED, EV = 0, nil, {}, {}
 	SE, OBJ = {}, {}
 	make_actor(vec3(0, 0, 0))
 	TR = {}
 	MODE = "host"
 	NEAR_TENT, NEAR_BAG = nil, nil
+	SPAWNED_BAGS = {}
+	-- stock items_tools.ltx: the compression bag and the tent bag stay after use (remove_after_use = false), the tent and
+	-- the sleeping bag are eaten (default true, one use)
+	INI = { compression_bag = { remove_after_use = false }, itm_tent_bag = { remove_after_use = false } }
 end
 
 local function item(sec)
 	local se, o = spawn(sec, vec3(0, 0, 0), 0)
 	return se, o
+end
+
+-- CInventory::Eat: UseBy, then the use callback, then the item is deleted when remove_after_use is true (default) and no use
+-- is left (max_uses, default 1). Call it right before the callback / the function the callback reaches.
+local function engine_eat(o)
+	local cfg = INI[o:section()] or {}
+	if cfg.remove_after_use == false or (cfg.max_uses or 1) > 1 then return false end
+	SE[o:id()], OBJ[o:id()] = nil, nil
+	return true
+end
+
+local function count_sec(sec)
+	local n = 0
+	for _, se in pairs(SE) do if se._sec == sec then n = n + 1 end end
+	return n
 end
 
 local function created_secs()
@@ -81,7 +112,8 @@ local function recorder_module()
 	end
 	m.get_nearby_tent = function() return "nearby" end
 	m.get_spawned_tents = function() return { [7] = true } end
-	m.on_game_start = function() end
+	m.get_spawned_sleepbags = function() return SPAWNED_BAGS end
+	m.on_game_start = function() ON_START = (ON_START or 0) + 1 end
 	return m
 end
 local ORIG = recorder_module()
@@ -162,6 +194,22 @@ do
 	check(SE[se.id] ~= nil and OBJ[se.id] ~= nil and #RELEASED == 0, "func_use_tent: the tent stays in the inventory")
 	check(hud_is_fallback(), "func_use_tent: the player gets a message (fallback text: " .. tostring(HUD) .. ")")
 	check(ASKED[1] == "st_coop_tent_blocked", "the message is the string st_coop_tent_blocked")
+	check(#EV == 2 and EV[1] == "hide" and EV[2] == "msg", "func_use_tent: the inventory is closed first, then the message (" .. table.concat(EV, ",") .. ")")
+end
+do
+	-- no utils_xml (or it throws): the message still comes
+	reset()
+	MODE = "client"
+	local saved = utils_xml
+	utils_xml = { hide_menu = function() error("no hud") end }
+	item_tent.func_use_tent(arg_obj("itm_tent"))
+	check(hud_is_fallback(), "a failing hide_menu does not swallow the message")
+	utils_xml = nil
+	reset()
+	MODE = "client"
+	item_tent.func_use_tent(arg_obj("itm_tent"))
+	check(hud_is_fallback(), "no utils_xml at all: the message still comes")
+	utils_xml = saved
 end
 do
 	reset()
@@ -181,15 +229,39 @@ do
 	check(#CALLS == 1 and CALLS[1].name == "func_use_tent", "func_use_tent(nil): stock call as is (it does nothing for nil)")
 	CALLS = {}
 end
-for _, sec in ipairs({ "itm_tent", "itm_tent_bag" }) do
+-- start_timer is reached from the use callback: the engine has already used the item. A tent is eaten (remove_after_use true by
+-- default) and goes back; a tent bag stays (remove_after_use = false) and must not be given a second time.
+do
 	reset()
 	MODE = "client"
-	local se, o = item(sec)
+	local se, o = item("itm_tent")
+	check(engine_eat(o), "model: the engine eats itm_tent")
 	item_tent.start_timer(o)
-	check(#CALLS == 0 and #ADD_CALLS == 0, "start_timer(" .. sec .. "): no timer functor is queued, stock not called")
-	check(ALIFE_CREATE == 0, "start_timer(" .. sec .. "): alife_create is not called")
-	check(created_secs() == sec .. "<0", "start_timer(" .. sec .. "): the engine has eaten the item, one copy is returned (" .. created_secs() .. ")")
-	check(hud_is_fallback(), "start_timer(" .. sec .. "): message shown")
+	check(#CALLS == 0 and #ADD_CALLS == 0, "start_timer(itm_tent): no timer functor is queued, stock not called")
+	check(ALIFE_CREATE == 0, "start_timer(itm_tent): alife_create is not called")
+	check(created_secs() == "itm_tent<0" and count_sec("itm_tent") == 1, "start_timer(itm_tent): eaten, so exactly one copy is returned (" .. created_secs() .. ")")
+	check(hud_is_fallback(), "start_timer(itm_tent): message shown")
+	check(EV[1] == "hide" and EV[2] == "msg" and #EV == 2, "start_timer(itm_tent): the inventory is closed, then the message (" .. table.concat(EV, ",") .. ")")
+end
+do
+	reset()
+	MODE = "client"
+	local se, o = item("itm_tent_bag")
+	check(not engine_eat(o) and SE[se.id] ~= nil, "model: itm_tent_bag stays in the inventory after use")
+	item_tent.start_timer(o)
+	check(#CALLS == 0 and #ADD_CALLS == 0 and ALIFE_CREATE == 0, "start_timer(itm_tent_bag): stock not called, no timer, no alife_create")
+	check(#CREATED == 0 and count_sec("itm_tent_bag") == 1 and #RELEASED == 0, "start_timer(itm_tent_bag): not eaten, so nothing is given back: the original stays, no duplicate")
+	check(hud_is_fallback(), "start_timer(itm_tent_bag): message shown")
+end
+do
+	-- a multi-use item survives a use even with remove_after_use true
+	reset()
+	MODE = "client"
+	INI.itm_tent = { max_uses = 3 }
+	local se, o = item("itm_tent")
+	check(not engine_eat(o), "model: a three-use tent is not deleted by one use")
+	item_tent.start_timer(o)
+	check(#CREATED == 0 and count_sec("itm_tent") == 1, "start_timer(itm_tent, max_uses 3): not given back")
 end
 do
 	reset()
@@ -199,17 +271,34 @@ do
 	CALLS = {}
 end
 do
+	-- the compression bag: stock does something only with a placed sleeping bag in reach; a client refuses exactly then
+	reset()
+	MODE = "client"
+	local _, o = item("compression_bag")
+	local _, bag = spawn("ph_sleepbag", vec3(1, 0, 0))
+	SPAWNED_BAGS[bag:id()] = true
+	check(not engine_eat(o), "model: the compression bag stays in the inventory after use")
+	item_tent.use_compression_bag(o, 1.5)
+	check(#CALLS == 0 and ALIFE_CREATE == 0 and #RELEASED == 0, "use_compression_bag with a sleeping bag in reach: stock not called, nothing released")
+	check(#CREATED == 0 and count_sec("compression_bag") == 1, "use_compression_bag: not eaten, so nothing is given back, the original stays")
+	check(hud_is_fallback() and #EV == 2, "use_compression_bag with a sleeping bag in reach: message shown")
+end
+do
 	reset()
 	MODE = "client"
 	local _, o = item("compression_bag")
 	item_tent.use_compression_bag(o, 1.5)
-	check(#CALLS == 0 and ALIFE_CREATE == 0 and #RELEASED == 0, "use_compression_bag: stock not called, nothing released")
-	check(created_secs() == "compression_bag<0", "use_compression_bag: the compression bag is returned (" .. created_secs() .. ")")
-	check(hud_is_fallback(), "use_compression_bag: message shown")
-	reset()
-	MODE = "client"
+	check(#CALLS == 0 and HUD == nil and #EV == 0 and #CREATED == 0 and count_sec("compression_bag") == 1,
+		"use_compression_bag with nothing in reach: silent, as the stock one does nothing")
+	local _, far = spawn("ph_sleepbag", vec3(10, 0, 0))
+	SPAWNED_BAGS[far:id()] = true
+	SPAWNED_BAGS[9999] = true -- not online
+	local _, tent = spawn("ph_tent", vec3(0.5, 0, 0))
+	SPAWNED_BAGS[tent:id()] = true -- not a sleeping bag section
+	item_tent.use_compression_bag(o, 1.5)
+	check(HUD == nil and #EV == 0, "use_compression_bag: a far sleeping bag, an offline id and a tent do not count")
 	item_tent.use_compression_bag(nil, 1.5)
-	check(#CALLS == 0 and #CREATED == 0 and hud_is_fallback(), "use_compression_bag(nil): message, no item invented")
+	check(#CALLS == 0 and #CREATED == 0 and HUD == nil, "use_compression_bag(nil): nothing")
 end
 do
 	reset()
@@ -225,6 +314,7 @@ do
 	local real = alife_create_item
 	alife_create_item = function() error("no parent") end
 	local _, o = item("itm_tent")
+	engine_eat(o)
 	local ok2 = pcall(item_tent.start_timer, o)
 	alife_create_item = real
 	check(ok2, "a failed give-back does not throw")
@@ -243,6 +333,30 @@ MODE = "sp"
 item_tent.func_use_tent(arg_obj("itm_tent"))
 check(#CALLS == 2, "and in single player")
 
+print("== a mod that overwrites an entry later")
+reset()
+CALLS = {}
+OTHER = 0
+item_tent.func_use_tent = function() OTHER = OTHER + 1 end
+local mine = item_tent.func_use_tent
+coop_tent_guard.on_game_start()
+check(item_tent.func_use_tent ~= mine, "the overwritten entry point is wrapped again")
+MODE = "client"
+item_tent.func_use_tent(arg_obj("itm_tent"))
+check(OTHER == 0 and hud_is_fallback(), "client: still blocked")
+MODE = "host"
+item_tent.func_use_tent(arg_obj("itm_tent"))
+check(OTHER == 1, "host: the mod's function runs")
+local again = item_tent.func_use_tent
+coop_tent_guard.on_game_start()
+check(item_tent.func_use_tent == again, "an untouched wrapper is not wrapped a third time")
+
+print("== item_tent.on_game_start is still the stock one")
+ON_START = 0
+MODE = "client"
+local okg, errg = pcall(item_tent.on_game_start)
+check(okg and ON_START == 1, "the stock on_game_start runs once through its wrapper, nothing to swap is no error (" .. tostring(errg) .. ")")
+
 print("== exe without co-op: nothing is wrapped")
 do
 	local saved = coop
@@ -260,13 +374,14 @@ do
 end
 
 -- ------------------------------------------------------------------ part 2: the stock logic in a real module environment
--- A faithful miniature of item_tent.script (same names, same globals, same local actor_on_item_use) loaded the way the
--- engine loads a script (module table = environment, __index = _G), so that the lookup of start_timer & co. from inside
--- the local function goes through the module table the guard writes to.
+-- A faithful miniature of item_tent.script (same names, same globals, same file locals, same local actor_on_item_use that
+-- on_game_start registers) loaded the way the engine loads a script (module table = environment, __index = _G), so that the
+-- lookup of start_timer & co. from inside the local function goes through the module table the guard writes to.
 print("== stock shape: module environment")
 local MINI = [[
 local spawned_tents = {}
 local spawned_sleepbags = {}
+local SleepBagEnable, SleepBagPlaceable, SleepBagSections
 
 function start_timer(obj)
 	local iTimer = time_global()
@@ -303,18 +418,30 @@ function itm_tent_bag_func()
 end
 
 function use_compression_bag(obj_c, dist)
-	if NEAR_BAG then
-		local se_comp = obj_c and obj_c:id() and alife_object(obj_c:id())
-		local se_sleepbag = alife_object(NEAR_BAG)
-		if se_comp and se_sleepbag then
-			alife_create_item("itm_sleepbag", db.actor)
-			alife_release(se_comp)
-			alife_release(se_sleepbag)
+	for id, v in pairs(spawned_sleepbags) do
+		local obj = level.object_by_id(id)
+		if obj and (v == true) then
+			local sec = obj:section()
+			if (sec == "ph_sleepbag") then
+				local sp_distance = obj:position():distance_to(db.actor:position())
+				if (sp_distance < dist) then
+					local se_comp = obj_c and obj_c:id() and alife_object(obj_c:id())
+					local se_sleepbag = alife_object(id)
+					if se_comp and se_sleepbag then
+						alife_create_item("itm_sleepbag", db.actor)
+						alife_release(se_comp)
+						alife_release(se_sleepbag)
+						spawned_sleepbags[id] = nil
+						break
+					end
+				end
+			end
 		end
 	end
 end
 
 function get_spawned_tents() return spawned_tents end
+function get_spawned_sleepbags() return spawned_sleepbags end
 
 local function actor_on_item_use(obj)
 	local sec = obj:section()
@@ -322,11 +449,16 @@ local function actor_on_item_use(obj)
 		actor_effects.play_item_fx("itm_sleepbag")
 		start_timer(obj)
 	end
-	if (sec == "itm_sleepbag") then
-		local se_obj = alife_create("ph_sleepbag", db.actor:position(), db.actor:level_vertex_id(), db.actor:game_vertex_id())
-		level.map_add_object_spot_ser(se_obj.id, "ui_pda2_actor_sleep_location", "bag")
-		spawned_sleepbags[se_obj.id] = true
-		alife_create_item("compression_bag", db.actor)
+	if (SleepBagEnable and SleepBagSections[sec]) then
+		if (SleepBagPlaceable) then
+			local se_obj = alife_create("ph_sleepbag", db.actor:position(), db.actor:level_vertex_id(), db.actor:game_vertex_id())
+			level.map_add_object_spot_ser(se_obj.id, "ui_pda2_actor_sleep_location", "bag")
+			spawned_sleepbags[se_obj.id] = true
+			alife_create_item("compression_bag", db.actor)
+		else
+			local se_obj = alife_create_item(sec, db.actor)
+			_G.NON_PLACEABLE = (_G.NON_PLACEABLE or 0) + 1
+		end
 	end
 	if (sec == "compression_bag") then use_compression_bag(obj, 1.5) end
 end
@@ -347,6 +479,9 @@ function func_use_tent(obj)
 end
 
 function on_game_start()
+	SleepBagEnable = SLEEP_ENABLE ~= false
+	SleepBagPlaceable = SleepBagEnable and SLEEP_PLACEABLE ~= false
+	SleepBagSections = SleepBagEnable and { itm_sleepbag = true, sleep_bag = true }
 	RegisterScriptCallback("actor_on_item_use", actor_on_item_use)
 end
 ]]
@@ -365,6 +500,20 @@ local function run_add_calls()
 	for _, f in ipairs(list) do f() end
 end
 
+-- a fresh stock module + the guard script loaded (axr_main loads every script first, then runs every on_game_start)
+local function boot(mode)
+	reset()
+	SLEEP_ENABLE, SLEEP_PLACEABLE, NON_PLACEABLE = nil, nil, nil
+	load_mini()
+	coop_tent_guard = nil
+	load_script("coop_tent_guard")
+	MODE = mode or "host"
+end
+local function start_all_scripts()
+	coop_tent_guard.on_game_start()
+	item_tent.on_game_start()
+end
+
 -- before the guard: the client breaks exactly where the recon says it does
 reset()
 load_mini()
@@ -377,24 +526,31 @@ do
 	check(not ok3 and tostring(err3):find("nil", 1, true) ~= nil, "unguarded client: itm_tent_func indexes the nil from alife_create (" .. tostring(err3) .. ")")
 end
 reset()
+SLEEP_ENABLE, SLEEP_PLACEABLE = nil, nil
 load_mini()
+item_tent.on_game_start()
 MODE = "client"
 do
 	local _, o = item("itm_sleepbag")
 	local ok3 = pcall(item_tent.func_use_bag, o)
 	check(not ok3, "unguarded client: the sleeping bag branch fails on the nil")
 end
-
--- with the guard (installed over the module the way coop_tent_guard.on_game_start does it)
 reset()
+SLEEP_ENABLE, SLEEP_PLACEABLE = nil, nil
 load_mini()
-coop_tent_guard = nil
-load_script("coop_tent_guard")
-coop_tent_guard.on_game_start()
-item_tent.on_game_start() -- the stock module registers its local use callback
+item_tent.on_game_start()
+MODE = "client"
+do
+	-- the stock callback on an eaten itm_sleepbag: the error goes into the router's pcall and the item is gone
+	local _, o = item("itm_sleepbag")
+	engine_eat(o)
+	local ok3 = pcall(fire_use, o)
+	check(not ok3 and count_sec("itm_sleepbag") == 0, "unguarded client: the stock use callback fails on itm_sleepbag and the item is lost")
+end
 
 print("== stock shape: GAMMA action functors (client)")
-MODE = "client"
+boot("client")
+start_all_scripts()
 do
 	local se, o = item("itm_tent")
 	item_tent.func_use_tent(o)
@@ -405,12 +561,8 @@ do
 	check(SE[se.id] ~= nil and #RELEASED == 0, "func_use_tent: the tent is not released")
 	check(hud_is_fallback(), "func_use_tent: message shown")
 end
-reset()
-load_mini()
-coop_tent_guard = nil
-load_script("coop_tent_guard")
-item_tent.on_game_start()
-MODE = "client"
+boot("client")
+start_all_scripts()
 do
 	local se, o = item("itm_sleepbag")
 	local ok3, err3 = pcall(item_tent.func_use_bag, o)
@@ -422,47 +574,164 @@ do
 end
 
 print("== stock shape: use callback (items the engine eats) on a client")
-reset()
-load_mini()
-coop_tent_guard = nil
-load_script("coop_tent_guard")
-item_tent.on_game_start()
-MODE = "client"
+boot("client")
+start_all_scripts()
 do
-	-- itm_tent_bag next to a tent: start_timer inside the local callback reaches the wrapper through the module table
+	-- itm_tent_bag next to a tent: start_timer inside the local callback reaches the wrapper through the module table.
+	-- The tent bag stays after use (remove_after_use = false): nothing is given back.
 	local _, tent = spawn("ph_tent", vec3(1, 0, 0))
 	NEAR_TENT = tent:id()
-	local _, o = item("itm_tent_bag")
+	local se, o = item("itm_tent_bag")
+	engine_eat(o)
 	local ok3, err3 = pcall(fire_use, o)
 	check(ok3, "itm_tent_bag callback: no error (" .. tostring(err3) .. ")")
 	check(#ADD_CALLS == 0, "itm_tent_bag callback: no timer functor")
-	check(created_secs() == "itm_tent_bag<0", "itm_tent_bag callback: the bag is returned (" .. created_secs() .. ")")
+	check(#CREATED == 0 and count_sec("itm_tent_bag") == 1 and SE[se.id] ~= nil, "itm_tent_bag callback: the original stays, nothing is given back (" .. created_secs() .. ")")
 	check(#RELEASED == 0 and OBJ[tent:id()] ~= nil, "itm_tent_bag callback: the foreign tent is not released (no duplicate)")
 	check(hud_is_fallback(), "itm_tent_bag callback: message shown")
 end
-reset()
-load_mini()
-coop_tent_guard = nil
-load_script("coop_tent_guard")
-item_tent.on_game_start()
-MODE = "client"
+boot("client")
+start_all_scripts()
 do
+	-- itm_tent through the callback (no functor on this item): eaten, so it comes back once
+	local _, o = item("itm_tent")
+	engine_eat(o)
+	local ok3, err3 = pcall(fire_use, o)
+	check(ok3 and #ADD_CALLS == 0, "itm_tent callback: no error, no timer functor (" .. tostring(err3) .. ")")
+	check(created_secs() == "itm_tent<0" and count_sec("itm_tent") == 1, "itm_tent callback: exactly one tent in the inventory (" .. created_secs() .. ")")
+end
+boot("client")
+start_all_scripts()
+do
+	-- compression bag next to a placed sleeping bag: the bag stays (remove_after_use = false), the placed one is not released
 	local _, bag = spawn("ph_sleepbag", vec3(1, 0, 0))
-	NEAR_BAG = bag:id()
+	item_tent.get_spawned_sleepbags()[bag:id()] = true
 	local _, o = item("compression_bag")
+	engine_eat(o)
 	local ok3, err3 = pcall(fire_use, o)
 	check(ok3 and #RELEASED == 0, "compression_bag callback: no error, the placed sleeping bag is not released (" .. tostring(err3) .. ")")
-	check(created_secs() == "compression_bag<0", "compression_bag callback: the compression bag is returned, no itm_sleepbag (" .. created_secs() .. ")")
+	check(#CREATED == 0 and count_sec("compression_bag") == 1 and count_sec("itm_sleepbag") == 0,
+		"compression_bag callback: the original stays, no itm_sleepbag, no second compression bag (" .. created_secs() .. ")")
 	check(hud_is_fallback(), "compression_bag callback: message shown")
+end
+boot("client")
+start_all_scripts()
+do
+	local _, o = item("compression_bag")
+	engine_eat(o)
+	local ok3 = pcall(fire_use, o)
+	check(ok3 and HUD == nil and #CREATED == 0 and count_sec("compression_bag") == 1, "compression_bag callback with no sleeping bag in reach: silent, the bag stays")
+	fire_use(o)
+	fire_use(o)
+	check(HUD == nil and count_sec("compression_bag") == 1, "clicking it again and again changes nothing (no duplicates)")
+end
+
+print("== stock shape: the sleeping bag branch of the use callback (stock Anomaly, the engine eats itm_sleepbag)")
+boot("client")
+start_all_scripts()
+do
+	check(#USE_CB == 1, "exactly one use callback is registered")
+	local _, o = item("itm_sleepbag")
+	check(engine_eat(o), "model: the engine eats itm_sleepbag")
+	local ok3, err3 = pcall(fire_use, o)
+	check(ok3, "client: no error out of the callback (" .. tostring(err3) .. ")")
+	check(ALIFE_CREATE == 0, "client: alife_create is not called")
+	check(created_secs() == "itm_sleepbag<0" and count_sec("itm_sleepbag") == 1, "client: the eaten sleeping bag is given back once (" .. created_secs() .. ")")
+	check(count_sec("ph_sleepbag") == 0 and count_sec("compression_bag") == 0, "client: no ph_sleepbag and no compression_bag")
+	check(hud_is_fallback() and #EV == 2 and EV[1] == "hide", "client: the message is shown with the inventory closed")
+end
+boot("client")
+start_all_scripts()
+do
+	local _, o = item("sleep_bag")
+	engine_eat(o)
+	fire_use(o)
+	check(created_secs() == "sleep_bag<0" and hud_is_fallback(), "client: the other sleeping bag section is guarded too (" .. created_secs() .. ")")
+end
+boot("client")
+SLEEP_ENABLE = false
+start_all_scripts()
+do
+	local _, o = item("itm_sleepbag")
+	engine_eat(o)
+	local ok3 = pcall(fire_use, o)
+	check(ok3 and HUD == nil and #CREATED == 0, "client, sleeping bags disabled in the ltx: the stock callback does nothing, no message")
+end
+boot("client")
+SLEEP_PLACEABLE = false
+start_all_scripts()
+do
+	local _, o = item("itm_sleepbag")
+	engine_eat(o)
+	pcall(fire_use, o)
+	check(NON_PLACEABLE == 1 and HUD == nil, "client, use_placeable = false: not the broken branch, the stock callback handles it")
+end
+boot("client")
+start_all_scripts()
+do
+	local _, o = item("bolts_pack")
+	local ok3 = pcall(fire_use, o)
+	check(ok3 and HUD == nil and #CREATED == 0, "client: an unrelated item goes through the stock callback untouched")
+end
+for _, mode in ipairs({ "host", "sp" }) do
+	boot(mode)
+	start_all_scripts()
+	local _, o = item("itm_sleepbag")
+	engine_eat(o)
+	fire_use(o)
+	check(ALIFE_CREATE == 1 and count_sec("ph_sleepbag") == 1 and count_sec("compression_bag") == 1 and count_sec("itm_sleepbag") == 0 and HUD == nil,
+		mode .. ": the stock callback places the sleeping bag (" .. created_secs() .. ")")
+end
+
+print("== stock shape: the callback swap")
+boot("host")
+do
+	-- the stock on_game_start runs through its wrapper: the guard replaces the callback it just registered
+	item_tent.on_game_start()
+	local guard_cb = USE_CB[1]
+	coop_tent_guard.on_game_start()
+	check(#USE_CB == 1 and USE_CB[1] == guard_cb, "guard second: still one callback")
+	-- the stock on_game_start once more registers its own function again: the wrapper swaps it again
+	item_tent.on_game_start()
+	check(#USE_CB == 1 and USE_CB[1] == guard_cb, "the stock on_game_start twice: one callback, the guard's")
+end
+reset()
+SLEEP_ENABLE, SLEEP_PLACEABLE = nil, nil
+load_mini()
+item_tent.on_game_start() -- the stock callback is registered before the guard script is even loaded
+MODE = "client"
+do
+	local stock_cb = USE_CB[1]
+	coop_tent_guard = nil
+	load_script("coop_tent_guard")
+	check(USE_CB[1] == stock_cb, "guard loaded late: the stock callback is still the registered one")
+	local saved = rawget(_G, "coop_main")
+	coop_main = { callback_registered = function(_, f) for _, g in ipairs(USE_CB) do if g == f then return true end end return false end }
+	coop_tent_guard.on_game_start()
+	coop_main = saved
+	check(#USE_CB == 1 and USE_CB[1] ~= stock_cb, "guard's on_game_start swaps a stock callback that is registered already")
+	local _, o = item("itm_sleepbag")
+	engine_eat(o)
+	local ok3 = pcall(fire_use, o)
+	check(ok3 and created_secs() == "itm_sleepbag<0" and hud_is_fallback(), "and the client is refused there too")
+end
+boot("client")
+do
+	-- the client filter says the stock callback is not registered (an MCM toggle): nothing is swapped
+	local saved = rawget(_G, "coop_main")
+	coop_main = { callback_registered = function() return false end }
+	start_all_scripts()
+	coop_main = saved
+	local cb_count = #USE_CB
+	local _, o = item("itm_sleepbag")
+	engine_eat(o)
+	pcall(fire_use, o)
+	check(cb_count == 1 and ALIFE_CREATE == 1 and HUD == nil, "callback_registered == false: the stock callback is left as it is")
 end
 
 print("== stock shape: host runs the stock logic")
-reset()
-load_mini()
-coop_tent_guard = nil
-load_script("coop_tent_guard")
-item_tent.on_game_start()
-MODE = "host"
+boot("host")
+start_all_scripts()
 do
 	local _, o = item("itm_tent")
 	item_tent.func_use_tent(o)
@@ -472,20 +741,26 @@ do
 	check(ALIFE_CREATE == 1 and created_secs():find("ph_tent<nil", 1, true) and created_secs():find("itm_tent_bag<0", 1, true),
 		"host: ph_tent is created and the bag is given (" .. created_secs() .. ")")
 	check(#RELEASED == 1 and RELEASED[1].sec == "itm_tent", "host: the used tent item is released like stock")
-	check(HUD == nil, "host: no message")
+	check(HUD == nil and #EV == 0, "host: no message")
 end
-reset()
-load_mini()
-coop_tent_guard = nil
-load_script("coop_tent_guard")
-item_tent.on_game_start()
-MODE = "sp"
+boot("sp")
+start_all_scripts()
 do
 	local _, o = item("itm_sleepbag")
 	item_tent.func_use_bag(o)
 	run_time_events(300)
 	check(created_secs():find("ph_sleepbag", 1, true) and created_secs():find("compression_bag<0", 1, true), "single player: the sleeping bag is placed (" .. created_secs() .. ")")
 	check(HUD == nil, "single player: no message")
+end
+boot("host")
+start_all_scripts()
+do
+	-- the host still packs a placed sleeping bag away with the compression bag
+	local _, bag = spawn("ph_sleepbag", vec3(1, 0, 0))
+	item_tent.get_spawned_sleepbags()[bag:id()] = true
+	local _, o = item("compression_bag")
+	fire_use(o)
+	check(#RELEASED == 2 and count_sec("itm_sleepbag") == 1, "host: the compression bag still packs the placed sleeping bag up")
 end
 
 -- ------------------------------------------------------------------ the string tables
