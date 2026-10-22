@@ -230,3 +230,87 @@ TEST(autosave_timer_clock_back)
 	CHECK(!timer_due(s, 600999, 10, false, 120000));
 	CHECK(timer_due(s, 601000, 10, false, 120000));
 }
+
+namespace
+{
+std::vector<uint32_t> prune(const std::vector<SlotInfo>& v, uint32_t count, uint32_t keep)
+{
+	return slots_to_prune(v, count, keep);
+}
+} // namespace
+
+TEST(autosave_prune_oldest_beyond_count)
+{
+	// F3 T12 round 1: the host keeps `count` slot files. Five on disk, count 3, the save just went to slot 1 (newest):
+	// the three newest stay (1, 5, 4), the oldest go, oldest first.
+	const std::vector<SlotInfo> v = {{1, 1006}, {2, 1002}, {3, 1003}, {4, 1004}, {5, 1005}};
+	const std::vector<uint32_t> gone = prune(v, 3, 1);
+	REQUIRE(gone.size() == size_t(2));
+	CHECK_EQ(gone[0], uint32_t(2));
+	CHECK_EQ(gone[1], uint32_t(3));
+
+	// The count shrunk from 10 to 5 (files 1..10, slot 10 the newest, the save went to slot 1): keeps 1, 10, 9, 8, 7.
+	std::vector<SlotInfo> w = range(1, 10, 1000);
+	w[0].file_time = 2000;
+	const std::vector<uint32_t> six = prune(w, 5, 1);
+	REQUIRE(six.size() == size_t(5));
+	for (size_t i = 0; i < six.size(); ++i)
+		CHECK_EQ(six[i], uint32_t(i + 2)); // 2, 3, 4, 5, 6
+
+	// Count 1: only the file just written stays.
+	const std::vector<uint32_t> one = prune(v, 1, 4);
+	REQUIRE(one.size() == size_t(4));
+	for (const uint32_t i : one)
+		CHECK(i != 4);
+}
+
+TEST(autosave_prune_nothing_to_do)
+{
+	CHECK(prune({}, 10, 1).empty());
+	CHECK(prune(range(1, 3), 3, 1).empty()); // exactly count
+	CHECK(prune(range(1, 3), 10, 3).empty()); // fewer than count
+	CHECK(prune(range(1, 10), 10, 4).empty()); // the full ring
+}
+
+TEST(autosave_prune_keeps_the_written_slot)
+{
+	// The slot just written stays even when the clock cannot tell it from the others (file times are seconds): equal
+	// times, the lower index counts as older (the order next_slot overwrites in).
+	const std::vector<SlotInfo> tie = {{3, 1000}, {5, 1000}, {7, 1000}, {9, 1000}};
+	const std::vector<uint32_t> a = prune(tie, 2, 7);
+	REQUIRE(a.size() == size_t(2));
+	CHECK_EQ(a[0], uint32_t(3));
+	CHECK_EQ(a[1], uint32_t(5));
+
+	// ... and even when its file looks the oldest of all.
+	const std::vector<SlotInfo> odd = {{1, 10}, {2, 500}, {3, 600}};
+	const std::vector<uint32_t> b = prune(odd, 2, 1);
+	REQUIRE(b.size() == size_t(1));
+	CHECK_EQ(b[0], uint32_t(2));
+
+	// A slot that is not in the list protects nobody.
+	const std::vector<uint32_t> c = prune(range(1, 4, 100), 2, 99);
+	REQUIRE(c.size() == size_t(2));
+	CHECK_EQ(c[0], uint32_t(1));
+	CHECK_EQ(c[1], uint32_t(2));
+}
+
+TEST(autosave_prune_edges)
+{
+	// A slot listed twice counts once, with its newer time.
+	const std::vector<SlotInfo> twice = {{1, 100}, {2, 200}, {2, 50}, {3, 300}};
+	const std::vector<uint32_t> a = prune(twice, 2, 3);
+	REQUIRE(a.size() == size_t(1));
+	CHECK_EQ(a[0], uint32_t(1));
+
+	// Count 0 is taken as 1, like next_slot.
+	const std::vector<uint32_t> z = prune(range(1, 3), 0, 2);
+	REQUIRE(z.size() == size_t(2));
+	CHECK(z[0] != 2 && z[1] != 2);
+
+	// Index 0 is not a slot: never deleted, never counted.
+	const std::vector<SlotInfo> zero = {{0, 1}, {1, 5}, {2, 6}};
+	const std::vector<uint32_t> b = prune(zero, 1, 2);
+	REQUIRE(b.size() == size_t(1));
+	CHECK_EQ(b[0], uint32_t(1));
+}
