@@ -110,10 +110,12 @@ if ($NewGame) {
     Write-Host "new game: $StartFaction at $StartMap as '$charName', $($kit.Money) RU, kit: $($kit.Loadout)"
 }
 
-# Test stand: the minimap is off by default in Anomaly 1.5.3 (ui_options show_minimap def=false), and the
-# allies' radar markers need it. Both instances share this file.
+# Stock test stand: the minimap is off by default in Anomaly 1.5.3 (ui_options show_minimap def=false), and the
+# allies' radar markers need it. Both instances share this file. A GAMMA stand (built by mo2_stand.py) keeps the
+# game's own choice: GAMMA plays without the minimap, forcing it on lays our radar over its HUD (live check 2026-10-23).
 $optFile = Join-Path $GameDir 'gamedata\configs\axr_options.ltx'
-if (Test-Path -LiteralPath $optFile) {
+$gammaStand = Test-Path -LiteralPath (Join-Path $GameDir '.mo2_stand.json')
+if ((Test-Path -LiteralPath $optFile) -and -not $gammaStand) {
     $cp = [System.Text.Encoding]::GetEncoding(1251)
     $ol = [System.Collections.Generic.List[string]]::new()
     $ol.AddRange([string[]][System.IO.File]::ReadAllLines($optFile, $cp))
