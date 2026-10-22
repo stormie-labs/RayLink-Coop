@@ -100,9 +100,21 @@ if ($Profile) {
     Get-ChildItem -LiteralPath $binA -Recurse -File -Force | ForEach-Object {
         $dst = Join-Path $binB $_.FullName.Substring($binA.Length + 1)
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null
-        New-Item -ItemType HardLink -Path $dst -Target $_.FullName | Out-Null
+        if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Force -ErrorAction SilentlyContinue }
+        New-Item -ItemType HardLink -Path $dst -Target $_.FullName -ErrorAction SilentlyContinue | Out-Null
     }
-    Write-Host "exe: $binA\$ExeName, $binB\$ExeName"
+    # A file in bin_b that could not be removed (held by a scanner, a stale game) kept the OLD exe and the client
+    # came up with the previous protocol (night run 2026-10-23): the two exes must be the same build, or no deploy.
+    $exeA = Join-Path $binA $ExeName
+    $exeB = Join-Path $binB $ExeName
+    if ((Get-FileHash -LiteralPath $exeA).Hash -ne (Get-FileHash -LiteralPath $exeB -ErrorAction SilentlyContinue).Hash) {
+        Copy-Item -LiteralPath $exeA -Destination $exeB -Force
+        if ((Get-FileHash -LiteralPath $exeA).Hash -ne (Get-FileHash -LiteralPath $exeB).Hash) {
+            throw "bin_b keeps another exe than bin: $exeB (is a game still running from it?)"
+        }
+        Write-Host "bin_b: the exe was copied (the hard link could not replace the old one)"
+    }
+    Write-Host "exe: $binA\$ExeName, $binB\$ExeName (same build)"
     $fsgame = Join-Path $TestRoot 'fsgame.ltx'  # the stand's copy: a mod may replace it
 } else {
     # 1. db: junction to the real archives
