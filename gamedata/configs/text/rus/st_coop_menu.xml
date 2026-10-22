@@ -143,7 +143,7 @@
 		<text>другая версия кооператива</text>
 	</string>
 	<string id="st_coop_menu_reason_DuplicateKey">
-		<text>ваш ключ игрока уже используется в сессии</text>
+		<text>ваш ключ игрока совпадает с ключом хоста или игрока в сессии</text>
 	</string>
 	<string id="st_coop_menu_reason_SessionFull">
 		<text>сессия заполнена</text>
@@ -466,32 +466,29 @@
 	<string id="st_coop_ui_mods_title">
 		<text>Ваш список модов отличается от хоста</text>
 	</string>
-	<string id="st_coop_ui_key_how">
-		<text>Как исправить на этом ПК:</text>
-	</string>
-	<string id="st_coop_ui_key_step1">
-		<text>1. Закройте игру.</text>
-	</string>
-	<string id="st_coop_ui_key_step2">
-		<text>2. Удалите этот файл:</text>
-	</string>
-	<string id="st_coop_ui_key_step3">
-		<text>3. Запустите игру и подключитесь снова. Новый ключ создастся сам.</text>
-	</string>
 	<string id="st_coop_ui_key_what">
-		<text>Что это меняет:</text>
+		<text>Что это значит:</text>
 	</string>
 	<string id="st_coop_ui_key_what_text">
-		<text>Хост узнаёт игроков по этому ключу, а не по нику. С новым ключом хост создаст вам нового персонажа; игрок, чью папку вы скопировали, сохранит своего. Не делайте этого на ПК, чей персонаж должен остаться.</text>
+		<text>Хост узнаёт игроков по этому ключу, а не по нику: персонаж привязан к ключу.</text>
+	</string>
+	<string id="st_coop_ui_key_who">
+		<text>Ключ меняет тот, чья папка игры - копия, и никогда на ПК, чей персонаж должен остаться. С новым ключом хост создаст нового персонажа.</text>
+	</string>
+	<string id="st_coop_ui_key_same_pc">
+		<text>Если другая игра с этим ключом - ваша же вторая копия, закройте её и подключитесь снова.</text>
+	</string>
+	<string id="st_coop_ui_key_file">
+		<text>Файл ключа этой игры:</text>
 	</string>
 	<string id="st_coop_ui_host_message">
 		<text>Сообщение хоста:</text>
 	</string>
 	<string id="st_coop_ui_key_summary">
-		<text>Ваш ключ игрока уже использует другой игрок в этой сессии. Так бывает, если папку игры скопировали у другого игрока: файл ключа копируется вместе с ней, а один ключ на двоих нельзя.</text>
+		<text>Ваш ключ игрока совпадает с ключом хоста или игрока, который сейчас в сессии. Так бывает, если папку игры скопировали: файл ключа копируется вместе с ней, а один ключ на двоих нельзя.</text>
 	</string>
 	<string id="st_coop_ui_key_title">
-		<text>Ваш ключ игрока уже используется</text>
+		<text>Ваш ключ игрока совпадает с чужим</text>
 	</string>
 	<string id="st_coop_ui_key_footer">
 		<text>Ключ - случайный файл, созданный при первом запуске кооператива. В нём нет паролей и данных аккаунтов.</text>

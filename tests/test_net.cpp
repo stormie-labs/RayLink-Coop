@@ -501,8 +501,10 @@ TEST(reject_check_order_protocol_build_content_key_full)
 	CHECK(c2.reject.reason == RejectReason::ContentMismatch);
 
 	// duplicate key + full -> DuplicateKey
+	// (R1 I2: the host's key; Alice's key would depend on how long Alice, not pumped here, has been silent —
+	// a silent player's key reconnects, see test_session_limits)
 	Node c3("C3", 37010);
-	c3.cfg.key = a.cfg.key;
+	c3.cfg.key = host.cfg.key;
 	REQUIRE(c3.connect(37010, &err));
 	REQUIRE(t::pump_until({&host.s, &c3.s}, 5000, [&] { return c3.rejected; }));
 	CHECK(c3.reject.reason == RejectReason::DuplicateKey);

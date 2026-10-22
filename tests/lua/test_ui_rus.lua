@@ -21,5 +21,15 @@ ui.on_rejected({ reason = "SessionFull", text = "full", missing = {}, extra = {}
 check(g.cap.text == T.st_coop_ui_title_SessionFull and g.footer.text:find("SessionFull", 1, true), "generic refusal translated")
 ui.on_rejected({ reason = "DuplicateKey", text = "dup", missing = {}, extra = {}, differ = {}, key_path = "C:/k.key" })
 check(g.cap.text == T.st_coop_ui_key_title, "duplicate key translated")
+-- R1 I2: what the key means, no advice to delete it ("удал"/"Удал" in cp1251, as the string table is read raw)
+local means, delete = false, false
+for _, r in ipairs(g.scroll.children) do
+	if r.text:find(T.st_coop_ui_key_what_text, 1, true) then means = true end
+	if r.text:find("\243\228\224\235", 1, true) or r.text:find("\211\228\224\235", 1, true) or r.text:find("Delete", 1, true) then
+		delete = true
+	end
+end
+check(T.st_coop_ui_key_what_text and means, "what the key means translated")
+check(not delete, "no advice to delete the key")
 check(#MISSING_PATHS == 0, "layout paths exist")
 print(string.format("%d passed, %d failed", PASSES, FAILS))

@@ -268,30 +268,32 @@ local function content_mismatch(info)
 	return T("st_coop_ui_mods_title", "Your mod list differs from the host's"), summary, lines, footer
 end
 
+-- R1 I2: the key equals the host's or that of a player in the session right now. No advice to delete the key: a
+-- character belongs to its key, and a deleted key on the wrong PC is a lost character.
 local function duplicate_key(info)
 	local c = colors()
 	local key_path = tostring(info.key_path or "appdata\\coop_player.key")
 	local lines = {
-		{ text = T("st_coop_ui_key_how", "How to fix it on this PC:"), color = c.head },
-		"      " .. T("st_coop_ui_key_step1", "1. Close the game."),
-		"      " .. T("st_coop_ui_key_step2", "2. Delete this file:"),
-		{ text = "            " .. key_path, color = c.good },
-		"      " .. T("st_coop_ui_key_step3", "3. Start the game and connect again. A new key is created automatically."),
+		{ text = T("st_coop_ui_key_what", "What it means:"), color = c.head },
+		"      " .. T("st_coop_ui_key_what_text", "The host recognizes players by this key, not by the nickname: a "
+			.. "character belongs to its key."),
+		"      " .. T("st_coop_ui_key_who", "The key is changed by the player whose game folder is the copy, never on "
+			.. "the PC whose character must stay. With a new key the host creates a new character."),
+		"      " .. T("st_coop_ui_key_same_pc", "If the other game with this key is your own second game, close it and "
+			.. "connect again."),
 		" ",
-		{ text = T("st_coop_ui_key_what", "What it changes:"), color = c.head },
-		"      " .. T("st_coop_ui_key_what_text", "The host recognizes players by this key, not by the nickname. With a "
-			.. "new key the host creates a new character for you; the player whose folder you copied keeps theirs. "
-			.. "Do not do this on the PC whose character you want to keep."),
+		{ text = T("st_coop_ui_key_file", "Key file of this game:"), color = c.head },
+		{ text = "      " .. key_path, color = c.dim },
 	}
 	if info.text and info.text ~= "" then
 		lines[#lines + 1] = " "
 		lines[#lines + 1] = { text = T("st_coop_ui_host_message", "Host message:"), color = c.head }
 		lines[#lines + 1] = { text = "      " .. tostring(info.text), color = c.dim }
 	end
-	local summary = T("st_coop_ui_key_summary", "Another player in this session already uses your player key. This "
-		.. "happens when a game folder is copied from another player: the key file is copied with it, and two players "
-		.. "cannot share one key.")
-	return T("st_coop_ui_key_title", "Your player key is already in use"), summary, lines,
+	local summary = T("st_coop_ui_key_summary", "Your player key is the same as the host's or as the key of a player "
+		.. "who is in this session right now. This happens when a game folder is copied: the key file is copied with "
+		.. "it, and two players cannot share one key.")
+	return T("st_coop_ui_key_title", "Your player key matches another player's"), summary, lines,
 		T("st_coop_ui_key_footer", "The key is a random file made on the first co-op start. It holds no password or account data.")
 end
 

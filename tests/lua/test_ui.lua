@@ -164,7 +164,9 @@ check(gui.cap.text:find("player key"), "duplicate key title")
 check(find(r, "D:\\Anomaly\\appdata\\coop_player.key", 1, true) ~= nil or (function()
 	for _, s in ipairs(r) do if tostring(s):find("D:\\Anomaly\\appdata\\coop_player.key", 1, true) then return true end end
 end)(), "exact key path shown")
-check(find(r, "Delete this file"), "fix steps shown")
+-- R1 I2: what the key means instead of steps to delete it (a character belongs to its key)
+check(find(r, "belongs to its key"), "what the key means shown")
+check(not find(r, "Delete"), "no advice to delete the key")
 check(find(r, "Host message"), "host text shown")
 check(SHOWN == 1, "already shown window is refilled, not stacked")
 
