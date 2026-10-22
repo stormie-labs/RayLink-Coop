@@ -134,10 +134,27 @@ TEST(validate_name)
 	CHECK(!validate::resource_name_ok("\xD0\xBF", kMax)); // UTF-8 Cyrillic
 }
 
+TEST(validate_vector_types)
+{
+	struct V
+	{
+		float x, y, z;
+	};
+	CHECK(validate::vec_finite(V{1.f, -2.f, 3.f}));
+	CHECK(!validate::vec_finite(V{1.f, kNaN, 3.f}));
+	CHECK(!validate::vec_finite(V{1.f, 2.f, -kInf}));
+	CHECK(validate::vec_speed_ok(V{0.f, 60.f, 80.f}, 100.f));
+	CHECK(!validate::vec_speed_ok(V{0.f, 60.f, 80.01f}, 100.f));
+	CHECK(!validate::vec_speed_ok(V{3e38f, 3e38f, 3e38f}, 100.f));
+	// A direction from a peer is a unit vector: a huge finite one would normalize to zero and a matrix to NaN.
+	CHECK(validate::vec_speed_ok(V{0.f, 0.f, 1.f}, validate::kMaxDirLength));
+	CHECK(!validate::vec_speed_ok(V{0.f, 1e20f, 0.f}, validate::kMaxDirLength));
+}
+
 TEST(validate_bone)
 {
 	// R3 В5: the bone of a hit indexes the target's skeleton; 0xffff (BI_NONE) is the engine's own "no bone".
-	CHECK(validate::kNoBone == 0xffffu);
+	static_assert(validate::kNoBone == 0xffffu, "BI_NONE is u16(-1)");
 	CHECK(validate::bone_ok(0, 1));
 	CHECK(validate::bone_ok(46, 47));
 	CHECK(!validate::bone_ok(47, 47));
