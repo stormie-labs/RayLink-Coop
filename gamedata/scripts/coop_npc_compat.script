@@ -112,6 +112,35 @@ local function read_script(name)
 	return src, path
 end
 
+-- A rewrite runs the script a second time inside its own module. A script that wraps another module at load
+-- (`TraderUpdate = trade_manager.update`, then `function trade_manager.update`) would capture its own wrapper the
+-- second time, and that wrapper calls itself: stack overflow in TraderUpdate (live check 2026-10-23). The original
+-- goes back before the second run.
+local BEFORE_RERUN = {
+	trader_autoinject = function(m)
+		local tm = mod("trade_manager")
+		local original = rawget(m, "TraderUpdate")
+		if tm and type(original) == "function" then
+			tm.update = original
+		end
+	end,
+}
+
+-- Runs rewritten source in the module's own environment, as the engine runs a script: the module table, `this`,
+-- script_name(). Returns ok, error.
+local function rerun(name, m, src, path)
+	local header = "local this = ... local function script_name() return \"" .. name .. "\" end "
+	local chunk, err = loadstring(header .. src, "@" .. path)
+	if not chunk then
+		return false, err
+	end
+	setfenv(chunk, m)
+	if BEFORE_RERUN[name] then
+		BEFORE_RERUN[name](m)
+	end
+	return pcall(chunk, m)
+end
+
 local function apply_rewrite(name, list)
 	local m = mod(name)
 	if not m then return end -- mod absent
@@ -125,15 +154,7 @@ local function apply_rewrite(name, list)
 		log("rewrite %s skipped (another version of the script): %s", name, why)
 		return
 	end
-	-- Same environment the engine gives a script: the module table, `this`, script_name().
-	local header = "local this = ... local function script_name() return \"" .. name .. "\" end "
-	local chunk, err = loadstring(header .. out, "@" .. path)
-	if not chunk then
-		report("rewrite " .. name, err)
-		return
-	end
-	setfenv(chunk, m)
-	local ok, rerr = pcall(chunk, m)
+	local ok, rerr = rerun(name, m, out, path)
 	if not ok then
 		report("rewrite " .. name, rerr)
 		return
@@ -141,6 +162,8 @@ local function apply_rewrite(name, list)
 	applied[#applied + 1] = "rewrite:" .. name
 	log("rewrite %s applied (%d change(s))", name, #list)
 end
+
+function _rerun(name, m, src, path) return rerun(name, m, src, path) end
 
 -------------------------------------------------------------------------------
 -- Wrappers

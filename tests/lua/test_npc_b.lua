@@ -436,5 +436,34 @@ check(twice == nil, "ambiguous literal: untouched")
 local chained = K.rewrite_text("x = 1 y = 2", { { "x = 1", "x = 3" }, { "y = 2", "y = 4" } })
 check(chained == "x = 3 y = 4", "pairs applied in order")
 
+print("== coop_npc_compat: a rewritten script that wraps another module at load runs twice without wrapping itself")
+-- trader_autoinject's shape: it captures trade_manager.update into a global of its own, then wraps it
+local wrap_src = "TraderUpdate = trade_manager.update\n" ..
+	"function trade_manager.update(npc, force) TraderUpdate(npc, force) return 'wrapped' end\n"
+local function first_load(m)
+	local chunk = assert(loadstring(wrap_src))
+	setfenv(chunk, m)
+	chunk()
+end
+local function fresh(name)
+	local calls = { n = 0 }
+	H.env.trade_manager = { update = function() calls.n = calls.n + 1 end }
+	local m = setmetatable({}, { __index = H.env })
+	H.env[name] = m
+	first_load(m) -- what the engine did when it loaded the script
+	return m, calls
+end
+-- control: a second run with nothing put back wraps the wrapper, which then calls itself
+local m0, calls0 = fresh("some_other_mod")
+local ok0 = K._rerun("some_other_mod", m0, wrap_src, "some_other_mod.script")
+local ok0_call, err0 = pcall(H.env.trade_manager.update, {}, false)
+check(ok0 and not ok0_call and tostring(err0):find("stack overflow"), "control: a plain second run overflows the stack")
+-- trader_autoinject: the original goes back first, so the second run wraps the original once
+local m1, calls1 = fresh("trader_autoinject")
+local ok1 = K._rerun("trader_autoinject", m1, wrap_src, "trader_autoinject.script")
+local ok1_call, res1 = pcall(H.env.trade_manager.update, {}, false)
+check(ok1 and ok1_call and res1 == "wrapped" and calls1.n == 1, "trader_autoinject rerun: the original is called exactly once")
+H.env.trade_manager, H.env.some_other_mod, H.env.trader_autoinject = nil, nil, nil
+
 print(string.format("\nRESULT: %d passed, %d failed", PASSES, FAILS))
 if FAILS > 0 then error("tests failed") end
