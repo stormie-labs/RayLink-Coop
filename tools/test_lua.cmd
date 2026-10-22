@@ -3,7 +3,8 @@ rem Anomaly Coop: runs the Lua stub-test suites (tests\lua\test_*.lua) on the en
 rem   tools\test_lua.cmd [name-substring ...]     e.g.  tools\test_lua.cmd w5   |   tools\test_lua.cmd menu_options
 rem Every test file runs in its own Lua state with the repository root as the working directory (the tests read the
 rem real scripts from gamedata\scripts by relative path). One row per file: "<n> passed, <m> failed".
-rem Builds temp\lua\runlua.exe from tests\lua\runlua.c when it is missing (set LUA_REBUILD=1 to force a rebuild).
+rem Builds temp\lua\runlua.exe from tests\lua\runlua.c and tests\lua\native_coop.cpp (the coop_native module over
+rem engine\src\xrCoop headers) when it is missing; set LUA_REBUILD=1 to force a rebuild after changing any of them.
 rem   LUA51_LIB   path to the engine's static lua51.lib (default: engine\_build, then engine-ci\_build, Release-AVX)
 rem   VCVARS      path to vcvars64.bat
 rem Per-file output: temp\lua\out\<name>.txt. Exit code: number of failed files; 255 = could not build/start the runner.
@@ -36,7 +37,8 @@ if errorlevel 1 (
 	exit /b 255
 )
 pushd "%OUT%"
-cl /nologo /MD /O1 /I"%LUAJIT%" "%ROOT%\tests\lua\runlua.c" "%LUA51_LIB%" /Fe"%OUT%\runlua.exe"
+cl /nologo /MD /O1 /EHsc /std:c++17 /utf-8 /I"%LUAJIT%" /I"%ROOT%\engine\src\xrCoop" ^
+	"%ROOT%\tests\lua\runlua.c" "%ROOT%\tests\lua\native_coop.cpp" "%LUA51_LIB%" /Fe"%OUT%\runlua.exe"
 set "RC=%ERRORLEVEL%"
 popd
 if not "%RC%"=="0" (
