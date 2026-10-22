@@ -7,6 +7,11 @@
 	Host (stock xr_meet only ever looks at db.actor):
 	  - Greetings, hello/bye lines, "stop/hide your weapon" warnings and the close/far animations of the meet
 	    scheme react to the clients' proxies as well; the NPC faces the nearest player it is meeting.
+	    (W11) Meet condlists per player: init_meet chose the defaults by the HOST's relation; a client whose
+	    relation case differs gets the stock defaults of his own case (explicit section lines stay). Needs the
+	    NPC to see the proxy: the engine gives proxies their light (coop_ai.cpp), it was ~0 off the host's screen.
+	  - (W11) A client talking to the NPC on his machine (host talk lock, coop.talk_holder) is met "close" like
+	    the talking actor: the NPC stands still and faces him for the whole talk.
 	  - "Get out of my way" (a player standing on an NPC for 4 s) and the squad's commander threat count
 	    every player.
 	  - xr_conditions.actor_is_safemode answers for a proxy (weapon not in hands = safe).
@@ -51,7 +56,8 @@ local DEF_TRADE = "true"
 local installed = false
 local host_on = false
 local orig = {}
-local stats = { talk_out = 0, talk_in = 0, wnd_out = 0, wnd_in = 0, heal_out = 0, heal_in = 0, greet = 0 }
+local stats = { talk_out = 0, talk_in = 0, wnd_out = 0, wnd_in = 0, heal_out = 0, heal_in = 0, greet = 0,
+	seen = 0, met = 0, talks = 0, own_cfg = 0 }
 
 local function pick(who, npc, condlist)
 	if not condlist then return nil end
@@ -60,6 +66,95 @@ end
 
 local function pick_num(who, npc, condlist, def)
 	return tonumber(pick(who, npc, condlist)) or def
+end
+
+local function player_comm(who)
+	local c = who:character_community() or ""
+	if c:sub(1, 6) == "actor_" then c = c:sub(7) end
+	return c ~= "" and c or "stalker"
+end
+
+local function enemy_for(npc, who)
+	local ok, r = pcall(function()
+		return game_relations.is_factions_enemies(player_comm(who), character_community(npc))
+			or npc:relation(who) == game_object.enemy
+	end)
+	return ok and r or false
+end
+
+-------------------------------------------------------------------------------
+-- Host: meet settings per player (W11)
+-------------------------------------------------------------------------------
+-- Stock xr_meet.init_meet picks its default condlists by "is the ACTOR an enemy of this NPC" once per section.
+-- A client whose answer differs (host bandit, client loner at a loner camp) gets the defaults of his own case;
+-- lines the meet section sets explicitly stay as they are.
+local MEET_DEFAULTS = {
+	[true] = {
+		close_distance = "0", close_anim = "nil", close_snd_distance = "0", close_snd_hello = "nil",
+		close_snd_bye = "nil", close_victim = "nil", far_distance = "0", far_anim = "nil", far_snd_distance = "0",
+		far_snd = "nil", far_victim = "nil",
+	},
+	[false] = {
+		close_distance = "{=is_wounded} 0, {!is_squad_commander} 0, {!after_first_meet !actor_friend !actor_is_safemode =actor_has_weapon} 3, 2",
+		close_anim = "{=is_wounded} nil, {!is_squad_commander} nil, {!actor_is_safemode =actor_has_weapon} nil, talk_default",
+		close_snd_distance = "{=is_wounded} 0, {!is_squad_commander} 0, 3",
+		close_snd_hello = "{=is_wounded} nil, {!is_squad_commander} nil, {=actor_enemy} nil, {!after_first_meet !actor_friend !actor_is_safemode =actor_has_weapon} meet_stop, meet_hello",
+		close_snd_bye = "nil",
+		close_victim = "{=is_wounded} nil, {!is_squad_commander} nil, actor",
+		far_distance = "{=is_wounded} 0, {!is_squad_commander} 0, {!after_first_meet !actor_friend !actor_is_safemode =actor_has_weapon} 5, 3",
+		far_anim = "{=is_wounded} nil, {!is_squad_commander} nil, {!after_first_meet !actor_friend !actor_is_safemode =actor_has_weapon} threat_na, nil",
+		far_snd_distance = "{=is_wounded} 0, {!is_squad_commander} 0, 5",
+		far_snd = "{=is_wounded} nil, {!is_squad_commander} nil, {=actor_enemy} nil, {=is_story} nil, {!after_first_meet !actor_friend !actor_is_safemode =actor_has_weapon} meet_hide_weapon, meet_wait",
+		far_victim = "{=is_wounded} nil, {!is_squad_commander} nil, actor",
+	},
+}
+local meet_cfg_cache = {} -- npc id -> { ini, section, [true] = cfg, [false] = cfg }
+
+-- As init_meet decides it for the host's actor.
+local function host_meet_enemy(npc)
+	local comm_actor = (character_community(db.actor) or ""):sub(7)
+	return game_relations.is_factions_enemies(comm_actor, character_community(npc))
+		or game_relations.get_npcs_relation(npc, db.actor) == game_object.enemy
+end
+
+-- The meet condlists for player `who` (a client's character): the NPC's own (self.a) unless the defaults differ.
+local function meet_cfg(self, npc, who)
+	local a = self.a
+	local section = a.meet_section
+	if section == nil or section == "no_meet" then return a end
+	local st = db.storage[npc:id()]
+	local ini = st and st.ini
+	if not (ini and ini.r_string_to_condlist) then return a end
+	local ok, host_enemy = pcall(host_meet_enemy, npc)
+	local mine = enemy_for(npc, who) and true or false
+	if not ok or (host_enemy and true or false) == mine then return a end
+	local id = npc:id()
+	local c = meet_cfg_cache[id]
+	if not (c and rawequal(c.ini, ini) and c.section == section) then
+		c = { ini = ini, section = section }
+		meet_cfg_cache[id] = c
+	end
+	local cfg = c[mine]
+	if not cfg then
+		cfg = setmetatable({}, { __index = a })
+		for k, def in pairs(MEET_DEFAULTS[mine]) do
+			cfg[k] = ini:r_string_to_condlist(section, k, def)
+		end
+		c[mine] = cfg
+		stats.own_cfg = stats.own_cfg + 1
+	end
+	return cfg
+end
+
+-- The client who talks to this NPC on his machine right now (host talk lock, coop_dialog), or nil.
+local function talking_player(npc)
+	local api = rawget(_G, "coop")
+	if not (api and api.talk_holder) then return nil end
+	local ok, peer = pcall(api.talk_holder, npc:id())
+	if not ok or type(peer) ~= "number" or peer == P.self_peer() then return nil end
+	local p = P.object_of_peer(peer)
+	if p and p:id() ~= 0 and p:alive() then return p end
+	return nil
 end
 
 -------------------------------------------------------------------------------
@@ -75,7 +170,7 @@ end
 
 local function mm_update(self)
 	if not host_on then
-		self.coop_focus = nil
+		self.coop_focus, self.coop_talk = nil, nil
 		return orig.mm_update(self)
 	end
 	local tg = time_global()
@@ -89,6 +184,7 @@ local function mm_update(self)
 		focus_id = 0
 		focus_dist = db.actor:position():distance_to(npc:position())
 	end
+	self.coop_talk = nil
 	if #proxies == 0 then
 		self.coop_focus = focus_id
 		return
@@ -103,23 +199,25 @@ local function mm_update(self)
 			fl = {}
 			self.coop_flags[pid] = fl
 		end
+		local cfg = meet_cfg(self, npc, p)
 		local dist = npc_pos:distance_to(p:position())
 		local visible = npc:see(p)
 		if visible then
-			if dist <= pick_num(p, npc, self.a.close_snd_distance, 0) then
+			stats.seen = stats.seen + 1
+			if dist <= pick_num(p, npc, cfg.close_snd_distance, 0) then
 				if not fl.hello then
 					fl.hello = true
-					if not in_combat then play(npc, p, self.a.close_snd_hello) end
+					if not in_combat then play(npc, p, cfg.close_snd_hello) end
 				end
-			elseif dist <= pick_num(p, npc, self.a.far_snd_distance, 0) then
+			elseif dist <= pick_num(p, npc, cfg.far_snd_distance, 0) then
 				if fl.hello and not fl.bye then
 					fl.bye = true
-					if not in_combat then play(npc, p, self.a.close_snd_bye) end
+					if not in_combat then play(npc, p, cfg.close_snd_bye) end
 				end
 			end
 		end
-		local is_close = visible and dist <= pick_num(p, npc, self.a.close_distance, 3)
-		local is_far = visible and dist <= pick_num(p, npc, self.a.far_distance, 5)
+		local is_close = visible and dist <= pick_num(p, npc, cfg.close_distance, 3)
+		local is_far = visible and dist <= pick_num(p, npc, cfg.far_distance, 5)
 		if is_close then
 			if focus_state ~= "close" or dist < focus_dist then
 				focus_id, focus_state, focus_dist = pid, "close", dist
@@ -132,6 +230,15 @@ local function mm_update(self)
 			fl.hello, fl.bye = false, false
 		end
 	end
+	-- W11: a client talking to this NPC on his machine holds its talk lock here. Stock meets the actor it talks
+	-- to as "close" (meet_on_talking): the NPC stands still and faces him for the whole talk.
+	local talker = talking_player(npc)
+	if talker then
+		focus_id, focus_state = talker:id(), "close"
+		self.coop_talk = true
+		stats.talks = stats.talks + 1
+	end
+	if focus_id and focus_id ~= 0 and focus_id ~= self.coop_focus then stats.met = stats.met + 1 end
 	self.current_distance = focus_state
 	self.coop_focus = focus_id
 end
@@ -145,15 +252,16 @@ local function mm_update_state(self)
 		return orig.mm_update_state(self)
 	end
 	local npc = self.npc
+	local cfg = meet_cfg(self, npc, focus)
 	local close = self.current_distance == "close"
-	local state = pick(focus, npc, close and self.a.close_anim or self.a.far_anim)
+	local state = pick(focus, npc, close and cfg.close_anim or cfg.far_anim)
 	if state and state ~= "nil" and state ~= "" then
-		local victim_str = pick(focus, npc, close and self.a.close_victim or self.a.far_victim)
+		local victim_str = pick(focus, npc, close and cfg.close_victim or cfg.far_victim)
 		-- "actor" in a meet profile is the player being met: here the proxy.
 		local victim = victim_str == "actor" and focus or get_story_object(victim_str)
 		state_mgr.set_state(npc, state, nil, nil, { look_object = victim })
 	end
-	play(npc, focus, self.a.far_snd)
+	play(npc, focus, cfg.far_snd)
 end
 
 -- Stock "already in range when the scheme starts: no greeting", per proxy.
@@ -167,11 +275,12 @@ local function mm_set_start_distance(self)
 		local pid = p:id()
 		local fl = self.coop_flags[pid] or {}
 		self.coop_flags[pid] = fl
+		local cfg = meet_cfg(self, npc, p)
 		local dist = npc_pos:distance_to(p:position())
 		local visible = npc:see(p)
-		if visible and dist <= pick_num(p, npc, self.a.close_distance, 3) then
+		if visible and dist <= pick_num(p, npc, cfg.close_distance, 3) then
 			fl.hello = true
-		elseif visible and dist <= pick_num(p, npc, self.a.far_distance, 5) then
+		elseif visible and dist <= pick_num(p, npc, cfg.far_distance, 5) then
 			fl.bye = true
 		elseif dist > (self.a.reset_distance or 30) then
 			fl.hello, fl.bye = false, false
@@ -200,7 +309,8 @@ local function eva_evaluate(self)
 	if obj:best_enemy() ~= nil then return false end
 	local state = state_mgr.get_state(obj)
 	if state == "search_corpse" or state == "pickup_crouch" then return false end
-	if (obj:has_info("npcx_is_companion") or not get_object_story_id(obj:id())) and not obj:is_talking() then
+	local talking = obj:is_talking() or self.a.meet_manager.coop_talk == true -- W11: a client talks to it
+	if (obj:has_info("npcx_is_companion") or not get_object_story_id(obj:id())) and not talking then
 		if self.a.gtfo == true then return true end
 		local animpoint = utils_obj.get_current_action_id(obj) == xr_actions_id.animpoint_action + 1
 		if P.nearest_dist_sqr(obj:position()) < 1.5 and not animpoint then
@@ -232,7 +342,8 @@ local function act_execute(self)
 	local npc = self.object
 	if self.a.gtfo and self.a.can_gtfo == "true" then
 		action_base.execute(self)
-		if npc:is_talking() or P.nearest_dist_sqr(npc:position()) > 4 then
+		local talking = npc:is_talking() or self.a.meet_manager.coop_talk == true -- W11: a client talks to it
+		if talking or P.nearest_dist_sqr(npc:position()) > 4 then
 			utils_obj.send_to_nearest_accessible_vertex(npc, npc:level_vertex_id())
 			self.a.gtfo, self.a.vertex_id, self.a.stage = nil, nil, 0
 			return
@@ -288,20 +399,6 @@ local function meet_condlists(npc, st, a)
 		cond_cache[id] = c
 	end
 	return c
-end
-
-local function player_comm(who)
-	local c = who:character_community() or ""
-	if c:sub(1, 6) == "actor_" then c = c:sub(7) end
-	return c ~= "" and c or "stalker"
-end
-
-local function enemy_for(npc, who)
-	local ok, r = pcall(function()
-		return game_relations.is_factions_enemies(player_comm(who), character_community(npc))
-			or npc:relation(who) == game_object.enemy
-	end)
-	return ok and r or false
 end
 
 local function task_target(npc)
@@ -552,6 +649,9 @@ local function actor_on_update()
 				next_npc[id], sent_talk[id], sent_wnd[id], cond_cache[id] = nil, nil, nil, nil
 			end
 		end
+		for id in pairs(meet_cfg_cache) do
+			if not level.object_by_id(id) then meet_cfg_cache[id] = nil end
+		end
 	end
 end
 
@@ -559,6 +659,14 @@ function print_status()
 	log("installed %s | greetings for proxies %d | talk flags out %d in %d, wounded out %d in %d, help-wounded out %d in %d | errors %d",
 		tostring(installed), stats.greet, stats.talk_out, stats.talk_in, stats.wnd_out, stats.wnd_in, stats.heal_out,
 		stats.heal_in, P.error_count(TAG))
+	log("W11: proxies seen by meeting NPCs %d, meetings with a client %d, held for a client's talk %d, own meet defaults %d",
+		stats.seen, stats.met, stats.talks, stats.own_cfg)
+	-- coop_main lists the npc modules by name: the W11 combat module reports from here.
+	local combat = rawget(_G, "coop_npc_combat")
+	if combat and combat.print_status then
+		local ok, err = pcall(combat.print_status)
+		if not ok then report("combat status", err) end
+	end
 end
 
 function on_game_start()

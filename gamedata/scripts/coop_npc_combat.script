@@ -1,0 +1,421 @@
+--[[
+	Anomaly Coop - NPC group (W11): every player is an enemy, a target and a witness for the NPCs.
+
+	The engine part (xrGame\coop\coop_ai.cpp) makes NPCs see a client's character (proxy) like the actor and
+	judge whether he sees them. What stays here is the stock Lua that decides about combat, danger and wounded
+	calls: it recognises "the player" only as db.actor / AC_ID / an object named "actor".
+	Host only (the AI runs there); without clients everything is stock.
+
+	Combat (xr_combat_ignore + condlists):
+	  - Most base/story NPCs have combat_ignore_cond = {=actor_enemy =check_enemy_name(actor)} false, true
+	    (fight only the actor). check_enemy_name(actor), is_enemy_actor, is_enemy_actor_or_companion and
+	    is_enemy_fighting_actor count a player's character as "the actor".
+	  - xr_combat_ignore.is_enemy judges a player's character with the actor's rules (memory 120 s, no
+	    safe-zone / hostage / stalker-vs-stalker range limits, 100 m at night or in heavy rain).
+	  - Hit by a player: the NPC's squad fights THAT player whatever combat_ignore says (stock: actor only,
+	    xr_combat_ignore_enabled), unless combat_ignore_keep_when_attacked.
+	  - Asked about the host's actor (story logic), fighting_actor, hit_by_actor, killed_by_actor and
+	    has_actor_enemy are true for any player.
+	Danger: a player's hit near a friendly/neutral NPC alarms it like the actor's (xr_danger hear callback).
+	Witnesses: an NPC's squad mates who see the player who killed it turn hostile to him (stock: the actor,
+	  when they inspect the corpse and see the killer).
+	Wounded: an NPC that sees no host actor but sees a client asks that client for help (hp_state_see);
+	  a wounded monolith's last grenade goes off at any player standing next to it.
+
+	Stock functions wrapped: xr_conditions.check_enemy_name, is_enemy_actor, is_enemy_actor_or_companion,
+	is_enemy_fighting_actor, fighting_actor, hit_by_actor, killed_by_actor, has_actor_enemy;
+	xr_combat_ignore.is_enemy, xr_combat_ignore.action_process_enemy.hit_callback;
+	xr_wounded.Cwound_manager.process_hp_wound, xr_wounded.action_wounded.execute.
+	Callbacks: actor_on_update, npc_on_hear_callback, npc_on_death_callback.
+--]]
+
+local tostring, type, pairs, ipairs, pcall, next = tostring, type, pairs, ipairs, pcall, next
+
+local TAG = "combat"
+local P -- coop_npc_players
+
+local function log(fmt, ...) P.log(TAG, fmt, ...) end
+local function report(what, err) P.report(TAG, what, err) end
+
+local ENEMY = 2 -- game_object.enemy
+local MEMORY_MS = 120000 -- stock: the actor stays a candidate this long after he was last seen/heard
+local NIGHT_RANGE_SQR = 10000 -- stock: 100 m at night or in heavy rain for the actor
+local SURGE_JOB_RANGE_SQR = 10000 -- stock: 100 m from an NPC's surge job for the actor
+local HELP_RANGE_SQR = 30 * 30 -- a wounded NPC calls a player it sees within 30 m
+local SUICIDE_RANGE_SQR = 1.5 * 1.5 -- stock monolith suicide distance
+
+local installed, host_on = false, false
+local orig = {}
+local attacked = {} -- npc id -> { [player id] = true }: this player hit the NPC's squad, fight him
+local fighting = {} -- npc id -> { [player id] = true }: the NPC fights this player (stock fighting_with_actor_npcs)
+local stats = { names = 0, judged = 0, hostile = 0, attacked = 0, alarms = 0, witnesses = 0, help = 0, team = 0 }
+
+-- Ids of the living clients' characters, rebuilt once per frame: the checks below run for every enemy
+-- candidate of every NPC, so a non-player must cost one table lookup.
+local live_ids, live_at = {}, -1
+local function live_players()
+	local now = time_global()
+	if now ~= live_at then
+		live_at = now
+		live_ids = {}
+		for _, o in ipairs(P.others()) do live_ids[o:id()] = true end
+	end
+	return live_ids
+end
+
+-- A client's character here (host, session with clients). The host's own actor is stock.
+-- `any`: also a dead or offline one (story checks about who hit / killed an NPC).
+local function player_char(obj, any)
+	if not (host_on and obj) then return false end
+	local id = type(obj) == "number" and obj or obj:id()
+	if id == 0 then return false end
+	if live_players()[id] then return true end
+	return any == true and P.is_proxy(id) or false
+end
+
+-- Story conditions asked about the host's own actor answer for every player.
+local function team(actor)
+	return host_on and actor ~= nil and actor:id() == 0
+end
+
+local function any_key(t) return t ~= nil and next(t) ~= nil end
+
+local function set_fighting(npc_id, player_id, on)
+	local t = fighting[npc_id]
+	if on then
+		if not t then
+			t = {}
+			fighting[npc_id] = t
+		end
+		t[player_id] = true
+	elseif t then
+		t[player_id] = nil
+		if next(t) == nil then fighting[npc_id] = nil end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Combat: is this player's character an enemy to fight?
+-------------------------------------------------------------------------------
+local function ci() return xr_combat_ignore end
+
+-- Stock xr_combat_ignore.is_enemy along its actor branches, for a client's character.
+local function player_is_enemy(obj, enemy, no_memory)
+	if device().precache_frame > 1 then return false end
+	if not (obj:alive() and enemy:alive()) then return false end
+	if obj:critically_wounded() then return true end
+	local flags = { override = false, result = false }
+	SendScriptCallback("on_enemy_eval", obj, enemy, flags)
+	if flags.override then return flags.result end
+	local id, ene_id = obj:id(), enemy:id()
+	local st = db.storage[id]
+	if not st then return false end
+	if IsStalker(obj) and no_memory ~= true then
+		local t = time_global() - obj:memory_time(enemy)
+		if t < -MEMORY_MS or t > MEMORY_MS then return false end
+	end
+	-- hit by this player: fight him (stock keep-when-attacked for the actor)
+	local hit = attacked[id]
+	if hit and hit[ene_id] then
+		st.enemy_id = ene_id
+		return true
+	end
+	local pos1, pos2 = obj:position(), enemy:position()
+	if obj:has_info("npcx_is_companion") then
+		-- stealth companion: no fights close by unless somebody here already fights a player
+		if obj:has_info("npcx_beh_substate_stealth") then
+			local busy = ci().fighting_with_actor_npcs[id] or any_key(fighting[id]) or any_key(fighting[ene_id])
+			if not busy and pos2:distance_to_sqr(pos1) < 900 then return false end
+		end
+	else
+		-- stock tests the function value xr_conditions.surge_started (always true): the surge job range applies
+		local smart = xr_gulag.get_npc_smart(obj)
+		local info = smart and smart.npc_info and smart.npc_info[id]
+		local job = info and info.job
+		local task = job and job.job_type_id == 2 and job.alife_task
+		if task and pos2:distance_to_sqr(task:position()) > SURGE_JOB_RANGE_SQR then return false end
+		local h = level.get_time_hours()
+		if (h < 4 or h > 19 or level.rain_factor() >= 0.4) and pos1:distance_to_sqr(pos2) > NIGHT_RANGE_SQR then
+			return false
+		end
+	end
+	if obj:relation(enemy) >= ENEMY then st.enemy_id = ene_id end
+	if ci().ignore_enemy_by_overrides(obj, enemy) then return false end
+	return true
+end
+
+local function is_enemy(obj, enemy, no_memory)
+	if not (obj and enemy and obj:id() ~= 0 and player_char(enemy)) then
+		return orig.is_enemy(obj, enemy, no_memory)
+	end
+	stats.judged = stats.judged + 1
+	local ok, r = pcall(player_is_enemy, obj, enemy, no_memory)
+	if not ok then
+		report("is_enemy " .. tostring(obj:name()), r)
+		r = orig.is_enemy(obj, enemy, no_memory)
+	end
+	r = r and true or false
+	if r then
+		stats.hostile = stats.hostile + 1
+	elseif attacked[obj:id()] then
+		attacked[obj:id()][enemy:id()] = nil -- stock: the grudge ends once the actor is no enemy candidate any more
+	end
+	set_fighting(obj:id(), enemy:id(), r)
+	return r
+end
+
+-- Stock action_process_enemy:hit_callback for the actor, for a player's hit: the squad stops ignoring him.
+local function on_player_attack(obj, who)
+	local pid = who:id()
+	local function mark(npc_id)
+		local s = db.storage[npc_id]
+		local keep = s and s.overrides and s.overrides.combat_ignore_keep_when_attacked == true
+		if s and not keep then
+			attacked[npc_id] = attacked[npc_id] or {}
+			attacked[npc_id][pid] = true
+		end
+	end
+	local squad = get_object_squad(obj)
+	if squad and squad.squad_members then
+		for k in squad:squad_members() do mark(k.id) end
+	else
+		mark(obj:id())
+	end
+	stats.attacked = stats.attacked + 1
+end
+
+local function hit_callback(self, obj, amount, local_direction, who, bone_index)
+	orig.hit_callback(self, obj, amount, local_direction, who, bone_index)
+	if amount and amount > 0 and who and obj and player_char(who) then
+		local ok, err = pcall(on_player_attack, obj, who)
+		if not ok then report("hit by a player", err) end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Conditions
+-------------------------------------------------------------------------------
+local function patch_conditions()
+	local xc = xr_conditions
+	local function wrap(name, make)
+		local f = xc and xc[name]
+		if type(f) ~= "function" or orig["c_" .. name] then return end
+		orig["c_" .. name] = f
+		xc[name] = make(f)
+	end
+	-- a player's character is named "actor" for these checks (it is coop_player_avatarNNN)
+	wrap("check_enemy_name", function(f) return function(enemy, npc, p)
+		if not player_char(enemy) then return f(enemy, npc, p) end
+		stats.names = stats.names + 1
+		if not enemy:alive() then return false end
+		for _, v in pairs(p or {}) do
+			if type(v) == "string" and string.find("actor", v) ~= nil then return true end
+		end
+		return false
+	end end)
+	wrap("is_enemy_actor", function(f) return function(enemy, npc, p)
+		return player_char(enemy) or f(enemy, npc, p)
+	end end)
+	wrap("is_enemy_actor_or_companion", function(f) return function(enemy, npc, p)
+		if player_char(enemy) and npc then return npc:relation(enemy) >= ENEMY end
+		return f(enemy, npc, p)
+	end end)
+	wrap("is_enemy_fighting_actor", function(f) return function(enemy, npc, p)
+		local r = f(enemy, npc, p)
+		if r or not (host_on and enemy ~= nil) then return r end
+		return enemy:alive() and any_key(fighting[enemy:id()]) or r
+	end end)
+	wrap("fighting_actor", function(f) return function(actor, npc, p)
+		local r = f(actor, npc, p)
+		if r or not (team(actor) and npc) then return r end
+		local st = db.storage[npc:id()]
+		local eid = st and st.enemy_id
+		local hit = eid ~= nil and player_char(eid)
+		if hit then stats.team = stats.team + 1 end
+		return hit
+	end end)
+	wrap("hit_by_actor", function(f) return function(actor, npc, p)
+		local r = f(actor, npc, p)
+		if r or not (team(actor) and npc) then return r end
+		local t = db.storage[npc:id()] and db.storage[npc:id()].hit
+		return t ~= nil and t.who ~= nil and player_char(t.who, true)
+	end end)
+	wrap("killed_by_actor", function(f) return function(actor, npc, p)
+		local r = f(actor, npc, p)
+		if r or not (team(actor) and npc) then return r end
+		local t = db.storage[npc:id()] and db.storage[npc:id()].death
+		return t ~= nil and t.killer ~= nil and player_char(t.killer, true)
+	end end)
+	wrap("has_actor_enemy", function(f) return function(actor, npc, p)
+		local r = f(actor, npc, p)
+		if r or not (team(actor) and npc) then return r end
+		local be = npc:best_enemy()
+		return be ~= nil and player_char(be)
+	end end)
+end
+
+-------------------------------------------------------------------------------
+-- Danger, witnesses
+-------------------------------------------------------------------------------
+-- Stock xr_danger hear callback reacts to any hit/attack sound of the actor, but to other stalkers' only if
+-- they are enemies: the friendly/neutral player case is added here.
+local function on_hear(npc, who_id, s_type, dist, sound_power, sound_position)
+	if not (host_on and who_id and player_char(who_id)) then return end
+	if not (s_type == "WPN_hit" or s_type == "MST_attack" or s_type == "MST_damage") or not (dist and dist < 900) then return end
+	if not (npc and IsStalker(npc) and npc:alive()) or npc:best_enemy() then return end
+	if IsWounded(npc) or character_community(npc) == "zombied" or ci().npc_in_safe_zone(npc) then return end
+	local who = db.storage[who_id] and db.storage[who_id].object or level.object_by_id(who_id)
+	if not who or npc:relation(who) >= ENEMY then return end -- an enemy: stock already reacts
+	if ci().ignore_enemy_by_overrides(npc, who) then return end
+	local xd = xr_danger
+	if not (xd and xd.set_script_danger) then return end
+	xd.set_script_danger(npc, 7000, who_id, sound_position and vector():set(sound_position) or who:position())
+	stats.alarms = stats.alarms + 1
+end
+
+local function on_npc_death(victim, who)
+	if not victim then return end
+	local vid = victim:id()
+	attacked[vid], fighting[vid] = nil, nil
+	for _, t in pairs(fighting) do t[vid] = nil end
+	if not (who and player_char(who) and who:alive()) then return end
+	if not IsStalker(victim) or character_community(victim) == "zombied" then return end
+	local squad = get_object_squad(victim)
+	if not (squad and squad.squad_members) then return end
+	for k in squad:squad_members() do
+		local s = db.storage[k.id]
+		local npc = s and s.object or level.object_by_id(k.id)
+		if npc and k.id ~= vid and npc:alive() and npc:relation(who) < ENEMY and npc:see(who) then
+			npc:force_set_goodwill(-1000, who)
+			stats.witnesses = stats.witnesses + 1
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Wounded NPCs
+-------------------------------------------------------------------------------
+-- Nearest client's character the NPC sees within r2 (squared metres).
+local function seen_player(npc, r2)
+	local best, best_d = nil, r2
+	local pos = npc:position()
+	for _, o in ipairs(P.others()) do
+		local d = o:position():distance_to_sqr(pos)
+		if d <= best_d and npc:see(o) then best, best_d = o, d end
+	end
+	return best
+end
+
+local function process_hp_wound(self, hp)
+	local npc = self and self.npc
+	if host_on and npc and db.actor and not P.in_identity() and not npc:see(db.actor) then
+		local p = seen_player(npc, HELP_RANGE_SQR)
+		if p then
+			stats.help = stats.help + 1
+			return P.with_identity(p, orig.hp_wound, self, hp)
+		end
+	end
+	return orig.hp_wound(self, hp)
+end
+
+local function wounded_execute(self)
+	local npc = self and self.object
+	if host_on and npc and self.suicide == nil and db.actor and not P.in_identity()
+		and npc:character_community() == "monolith"
+		and db.actor:position():distance_to_sqr(npc:position()) >= SUICIDE_RANGE_SQR then
+		local p = seen_player(npc, SUICIDE_RANGE_SQR)
+		if p then return P.with_identity(p, orig.wnd_execute, self) end
+	end
+	return orig.wnd_execute(self)
+end
+
+-- Separate so tests can install it after their own stub of xr_wounded.
+function _install_wounded()
+	local w = xr_wounded
+	local wm = w and w.Cwound_manager
+	if wm and type(wm.process_hp_wound) == "function" and not orig.hp_wound then
+		orig.hp_wound = wm.process_hp_wound
+		wm.process_hp_wound = process_hp_wound
+	end
+	local wa = w and w.action_wounded
+	if wa and type(wa.execute) == "function" and not orig.wnd_execute then
+		orig.wnd_execute = wa.execute
+		wa.execute = wounded_execute
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Install, update
+-------------------------------------------------------------------------------
+local function install()
+	local c = ci()
+	if c and type(c.is_enemy) == "function" then
+		orig.is_enemy = c.is_enemy
+		c.is_enemy = is_enemy
+		local a = c.action_process_enemy
+		if a and type(a.hit_callback) == "function" then
+			orig.hit_callback = a.hit_callback
+			a.hit_callback = hit_callback
+		end
+	else
+		log("! xr_combat_ignore not found: clients are judged as plain stalkers")
+	end
+	local steps = { { "conditions", patch_conditions }, { "wounded", _install_wounded } }
+	for _, s in ipairs(steps) do
+		local ok, err = pcall(s[2])
+		if not ok then report("install " .. s[1], err) end
+	end
+	installed = true
+end
+
+local next_tick, next_clean = 0, 0
+
+local function actor_on_update()
+	local now = time_global()
+	if now < next_tick then return end
+	next_tick = now + 250
+	local was = host_on
+	host_on = installed and P.host_with_clients()
+	if was and not host_on then attacked, fighting = {}, {} end
+	if now >= next_clean then
+		next_clean = now + 60000
+		for id in pairs(attacked) do
+			if not level.object_by_id(id) then attacked[id] = nil end
+		end
+		for id in pairs(fighting) do
+			if not level.object_by_id(id) then fighting[id] = nil end
+		end
+	end
+end
+
+local function guarded(name, f)
+	return function(...)
+		local ok, err = pcall(f, ...)
+		if not ok then report(name, err) end
+	end
+end
+
+function print_status()
+	local na, nf = 0, 0
+	for _ in pairs(attacked) do na = na + 1 end
+	for _ in pairs(fighting) do nf = nf + 1 end
+	log("installed %s | clients judged %d (hostile %d), named actor %d | squads hit by clients %d, NPCs holding a grudge %d, fighting %d | alarms %d, witnesses %d, wounded calls %d, story checks %d | errors %d",
+		tostring(installed), stats.judged, stats.hostile, stats.names, stats.attacked, na, nf, stats.alarms,
+		stats.witnesses, stats.help, stats.team, P.error_count(TAG))
+end
+
+function on_game_start()
+	P = coop_npc_players
+	if not rawget(_G, "coop") then return end -- exe without co-op: nothing to do
+	if not installed then
+		local ok, err = pcall(install)
+		if not ok then report("install", err) end
+	end
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("npc_on_hear_callback", guarded("hear", on_hear))
+	RegisterScriptCallback("npc_on_death_callback", guarded("death", on_npc_death))
+end
+
+-- Tests and diagnostics.
+function _state() return { host_on = host_on, attacked = attacked, fighting = fighting, stats = stats } end
+function _set_host_on(v) host_on = v end
