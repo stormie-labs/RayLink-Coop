@@ -614,8 +614,122 @@ TEST(ledger_no_refill_while_offline)
 	CHECK(d.verdict == Verdict::NoAllowance);
 }
 
+// Ruling F2-20: the refill clock of a character runs from the moment it is in the game (its join is complete,
+// HostBook::peer_online), not from its first income. Before: the buckets of a new character were made at its first
+// income with 0 tokens, so that first income was always refused in full, however long the player had been playing.
+TEST(ledger_new_character_refills_from_join)
+{
+	HostBook book;
+	book.start_session({"k300"}); // "k777" is made in this session
+	const Policy p;
+	const Receiver nobody;
+	const uint64_t joined = 5000000; // well into the session
+	book.peer_online(4, "k777", joined);
+	REQUIRE(book.allowances("k777") != nullptr); // the buckets exist from the join: empty, clock running
+	CHECK(book.allowances("k777")->script.started);
+	CHECK(book.allowances("k777")->dialog.started);
+	CHECK(near(book.allowances("k777")->script.tokens, 0));
+	CHECK_EQ(book.allowances("k777")->script.at, joined);
+	// At the join itself there is nothing yet (not the burst of a character from the save).
+	Decision d = book.on_request(4, "k777", req(1, 1), 0, false, nobody, p, joined);
+	CHECK(d.verdict == Verdict::NoAllowance);
+	// A minute in the game, first income (corpse money): the refill of that minute, 10 000 and not a RU more.
+	d = book.on_request(4, "k777", req(2, 10001), 0, false, nobody, p, joined + 60000);
+	CHECK(d.verdict == Verdict::NoAllowance);
+	d = book.on_request(4, "k777", req(3, 10000), 0, false, nobody, p, joined + 60000);
+	CHECK(d.verdict == Verdict::Applied);
+	CHECK_EQ(d.gain_script, 10000u);
+	d = book.on_request(4, "k777", req(4, 1), 10000, false, nobody, p, joined + 60000);
+	CHECK(d.verdict == Verdict::NoAllowance);
+	// The dialog bucket ran from the same moment: 20 000 after one minute, and the script bucket pays the rest of a
+	// payout (10 000 more): 30 000 in all (a fresh character, another join).
+	book.peer_online(5, "k778", joined);
+	d = book.on_request(5, "k778", req(1, 30001, Cause::Dialog), 0, true, nobody, p, joined + 60000);
+	CHECK(d.verdict == Verdict::NoAllowance);
+	d = book.on_request(5, "k778", req(2, 30000, Cause::Dialog), 0, true, nobody, p, joined + 60000);
+	CHECK(d.verdict == Verdict::Applied);
+	CHECK_EQ(d.gain_dialog, 20000u);
+	CHECK_EQ(d.gain_script, 10000u);
+	// The refill is capped by the bucket: a long time in the game gives the burst, no more.
+	book.peer_online(6, "k779", joined);
+	d = book.on_request(6, "k779", req(1, 50001), 0, false, nobody, p, joined + 3600000);
+	CHECK(d.verdict == Verdict::NoAllowance);
+	d = book.on_request(6, "k779", req(2, 50000), 0, false, nobody, p, joined + 3600000);
+	CHECK(d.verdict == Verdict::Applied);
+	// A character from the save keeps its full burst when it first appears: the join does not empty it.
+	book.peer_online(1, "k300", joined);
+	d = book.on_request(1, "k300", req(1, 50001), 0, false, nobody, p, joined);
+	CHECK(d.verdict == Verdict::NoAllowance);
+	d = book.on_request(1, "k300", req(2, 50000), 0, false, nobody, p, joined);
+	CHECK(d.verdict == Verdict::Applied);
+	d = book.on_request(1, "k300", req(3, 100000, Cause::Dialog), 50000, true, nobody, p, joined);
+	CHECK(d.verdict == Verdict::Applied);
+	CHECK_EQ(d.gain_dialog, 100000u);
+	// Online again (a repeat, the character was not away) neither refills nor empties anything: a second of the game
+	// is a sixtieth of a minute's refill (166.67 RU), the clock was not restarted.
+	book.peer_online(1, "k300", joined + 1000);
+	d = book.on_request(1, "k300", req(4, 166), 150000, false, nobody, p, joined + 1000);
+	CHECK(d.verdict == Verdict::Applied);
+	d = book.on_request(1, "k300", req(5, 1), 150166, false, nobody, p, joined + 1000);
+	CHECK(d.verdict == Verdict::NoAllowance);
+}
+
+// Ruling F2-20: the same for a return. Away, the buckets are frozen; the clock restarts at the join, so the time in the
+// game before the first income is credited and the time away is not.
+TEST(ledger_return_refills_from_join_not_first_income)
+{
+	HostBook book;
+	book.start_session({"k300"}); // from the save
+	const Policy p;
+	const Receiver nobody;
+	book.peer_online(1, "k300", 0);
+	Decision d = book.on_request(1, "k300", req(1, 50000), 0, false, nobody, p, 0);
+	CHECK(d.verdict == Verdict::Applied); // the script burst used up
+	d = book.on_request(1, "k300", req(2, 30000, Cause::Dialog), 50000, true, nobody, p, 0);
+	CHECK(d.verdict == Verdict::Applied); // 70000 left in the dialog bucket
+	book.peer_left(1);
+	// Ten minutes away; back as another connection; one minute in the game before the first income.
+	const uint64_t back = 600000;
+	book.peer_online(2, "k300", back);
+	REQUIRE(book.allowances("k300") != nullptr);
+	CHECK_EQ(book.allowances("k300")->script.at, back);
+	CHECK(near(book.allowances("k300")->script.tokens, 0)); // the frozen tokens, nothing for the 10 minutes away
+	CHECK(near(book.allowances("k300")->dialog.tokens, 70000));
+	d = book.on_request(2, "k300", req(1, 10001), 80000, false, nobody, p, back + 60000);
+	CHECK(d.verdict == Verdict::NoAllowance); // +1 minute of refill (10 000), not +10 minutes (capped at 50 000)
+	d = book.on_request(2, "k300", req(2, 10000), 80000, false, nobody, p, back + 60000);
+	CHECK(d.verdict == Verdict::Applied);
+	d = book.on_request(2, "k300", req(3, 90001, Cause::Dialog), 90000, true, nobody, p, back + 60000);
+	CHECK(d.verdict == Verdict::NoAllowance); // 70 000 frozen + 20 000 of the minute = 90 000
+	d = book.on_request(2, "k300", req(4, 90000, Cause::Dialog), 90000, true, nobody, p, back + 60000);
+	CHECK(d.verdict == Verdict::Applied);
+	CHECK_EQ(d.gain_dialog, 90000u);
+
+	// A new character that joined and left without a single request is frozen too (the mapping comes from the join):
+	// its time away is not credited when it is back.
+	book.peer_online(7, "k777", 1000000);
+	book.peer_left(7);
+	book.peer_online(8, "k777", 1000000 + 600000);
+	d = book.on_request(8, "k777", req(1, 1), 0, false, nobody, p, 1000000 + 600000);
+	CHECK(d.verdict == Verdict::NoAllowance);
+	d = book.on_request(8, "k777", req(2, 10000), 0, false, nobody, p, 1000000 + 660000);
+	CHECK(d.verdict == Verdict::Applied); // one minute in the game, not eleven
+	d = book.on_request(8, "k777", req(3, 1), 10000, false, nobody, p, 1000000 + 660000);
+	CHECK(d.verdict == Verdict::NoAllowance);
+
+	// A saved character that never had an income comes back with its full burst (still unspent).
+	book.start_session({"k301-saved"});
+	book.peer_online(10, "k301-saved", 2600000);
+	book.peer_left(10);
+	book.peer_online(11, "k301-saved", 3200000);
+	d = book.on_request(11, "k301-saved", req(1, 50000), 0, false, nobody, p, 3200000);
+	CHECK(d.verdict == Verdict::Applied);
+}
+
 // Ruling F2-13: a request refused by its form (a change of nothing, an unknown cause) and a spend touch no allowance
 // and start no clock: an alt cannot start its refill with a cheap request and come back later to a full bucket.
+// (A connection that was never marked online, HostBook::peer_online: the fallback of F2-20. A marked one has its
+// buckets from the join, see ledger_new_character_refills_from_join.)
 TEST(ledger_malformed_does_not_start_clock)
 {
 	HostBook book;
