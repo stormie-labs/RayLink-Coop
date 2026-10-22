@@ -692,7 +692,9 @@ TEST(limits_client_rate_rules)
 	};
 	const Expected expected[] = {{Msg::StateDumpRequest, 64, 50}, {Msg::TransitionVote, 4, 2000}, {Msg::PlayerEquip, 8, 400},
 		{Msg::PlayerVitals, 4, 1000}, {Msg::MapSpot, 32, 250}, {Msg::InfoPortion, 64, 50}, {Msg::StoryResync, 4, 5000},
-		{Msg::ScriptEvent, 64, 20}, {Msg::ReqMoney, 32, 100}, {Msg::DialogLock, 10, 1000}, {Msg::CharChoice, 4, 2000}};
+		{Msg::ScriptEvent, 64, 20}, {Msg::ReqMoney, 32, 100}, {Msg::DialogLock, 10, 1000}, {Msg::CharChoice, 4, 2000},
+		// F3: a tent placed, lying down / getting up, a hardcore restart
+		{Msg::CheckpointClaim, 4, 2000}, {Msg::RestRequest, 4, 1000}, {Msg::NewCharacter, 2, 5000}};
 	for (const Expected& e : expected)
 	{
 		const limits::RateRule* rule = nullptr;
@@ -1185,6 +1187,14 @@ constexpr Direction kDirections[] = {
 	{Msg::TradeOp, kBoth},
 	// F2 mod layer
 	{Msg::MoneyBalance, kHost},
+	// F3 checkpoints, shared sleep, death: the host decides, a player only reports (test_protocol_f3.cpp)
+	{Msg::CheckpointState, kHost},
+	{Msg::CheckpointClaim, kClient},
+	{Msg::RestRequest, kClient},
+	{Msg::RestState, kHost},
+	{Msg::RestSleep, kHost},
+	{Msg::DeathMarker, kHost},
+	{Msg::NewCharacter, kClient},
 	// scripting and diagnostics
 	{Msg::ScriptEvent, kBoth},
 	{Msg::StateDumpRequest, kClient},
