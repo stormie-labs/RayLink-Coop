@@ -25,9 +25,28 @@
 | `coop.talk_holder(npc)` | хост: кто сейчас говорит с NPC |
 | `coop.session_info()`, `coop.host(port)`, `coop.connect(addr)`, `coop.disconnect()`, `coop.host_when_ready(port)` | меню коопа |
 
-### 1.2 Деньги (F2 T1)
+### 1.2 Деньги (F2 T1, T6b)
 Баланс игрока хранит хост. `coop.money_give(peer, n)` — свои деньги другому игроку (хост проверяет). У хоста:
 `money_grant(peer, ±n)`, `money_set(peer, n)`, `money_of(peer)`, `talk_lock_of(peer)`. Ответ — `ok, why`.
+- `coop.money_set_rules(enabled, max)` → `ok, why`. **Только хост**: правила переводов между игроками (опции
+  `money_transfer` и `max_money_transfer`).
+  - `enabled` — строго `true` / `false`; `max` — число от 0 до 4294967295, лимит одного перевода в RU, дробь режется к
+    нулю (0 — переводов нет). Не хост — `false, "host only"`, неверный аргумент — `false, "bad arguments"`.
+  - Журнал хоста отказывает в переводе против этих правил, что бы ни проверил Lua клиента.
+  - Зовёт наш `coop_economy_money.script` у хоста: каждые 2 с и сразу при смене опции. Правила живут весь процесс, новая
+    сессия их не сбрасывает; пока вызова не было — переводы включены, лимита нет. Моду звать не нужно: его вызов
+    перезапишется следующим толчком.
+- Колбэк `coop_money_note(kind, peer, amount, why, cause)` — что хост сделал с деньгами игрока. Движок зовёт его на машине
+  того, кого это касается (подарок хосту — на хосте). Колбэк объявляет `coop_economy_money.script`
+  (`AddScriptCallback`); мод подписывается обычным `RegisterScriptCallback("coop_money_note", fn)` в `on_game_start`.
+  - `"received"` — другой игрок дал вам денег. `peer` — дарящий, `amount` — зачисленные RU, `why` и `cause` — `nil`.
+  - `"refused"` — хост не принял изменение вашего баланса. `peer` — получатель, если это перевод (`cause == "transfer"`),
+    иначе `-1`. `amount` — запрошенное изменение: минус — трата или перевод, плюс — доход.
+    `why` — причина по-английски: `"not enough money"`, `"over the allowance"`, `"over the maximum"`,
+    `"transfers are off"`, `"over the transfer limit"`, `"malformed"` (у перевода — получателя нет в игре).
+    `cause` — `"script"`, `"dialog"` или `"transfer"`.
+  - Отказы приходят только клиенту и не чаще одного за 3 с, подарки не режутся. Заметка, пришедшая до входа клиента в
+    мир хоста, отбрасывается.
 
 ### 1.3 Прочее
 - `coop.send_event(name, payload, target)` → `coop_main.on_event(name, payload, from)` на получателе. **Устарело**:

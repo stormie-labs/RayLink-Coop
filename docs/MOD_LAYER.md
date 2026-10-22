@@ -91,8 +91,20 @@
   - клиент создаёт объект сразу с id из резерва, Lua получает его синхронно, как в одиночке;
   - запрос уходит хосту: тот подтверждает тот же id или откатывает (удаление у клиента, запись в журнал).
   - Требует разведки: какие поля CSE заполняет клиент и как откат действует на мод.
-- **Сейчас.** Часть пути уже есть: маршрутизатор `CLevel::Send`, ReqSpawn, ReqHit, торговля, контейнеры. Нет единой
-  таблицы и покрытия всех экспортов.
+- **Сейчас** (Ф2 задача 12). Часть пути уже есть: маршрутизатор `CLevel::Send`, ReqSpawn, ReqHit, торговля, контейнеры.
+  Единая таблица классов и гейт клиента — в движке, но гейт стоит не на всех экспортах.
+  - Таблица — `xrCoop/coop_calls.h` (`kCalls`: класс каждого экспорта `alife` / `game_object` / модулей
+    `level_script.cpp`; незнакомое — `read`). Гейт клиента — `xrGame/coop/coop_callgate.cpp`, функция
+    `callgate::client_gate` (и `client_gate_id` / `client_gate_own`): отвечает «исполнить / запрос хосту / отказ».
+  - Переопределения — `[call_classes] namespace:function = world|owner|view|read` в `coop_route*.ltx` /
+    `coop_compat_*.ltx`.
+  - Гейт стоит в `create` / `create_ammo` / `clone_weapon` / `register` / `release` / `kill_entity` /
+    `teleport_object` / `set_switch_*`, погоде и `change_game_time`, `transfer_item` / `give_money` / `kill` /
+    `set_npc_position` / инфопорциях / отношениях / `attach_vehicle`; остальные экспорты пока исполняются как в
+    одиночке. `tools/list_exports.py --check` сверяет таблицу с экспортами.
+  - `kill` и `set_npc_position` — класс `owner`: на своём акторе исполняются, на чужом считаются как `world`, а пути
+    запроса у них нет — отказ.
+  - `coop_status`: `calls: refused N, requested N`, топ-10 отказов; первые 10 отказов сессии — в лог.
 
 ### 2.4 Зеркало состояния модов (C++)
 Моды хранят состояние в `m_data` через колбэки `save_state` / `load_state`. Пример — Hideout Furniture:
