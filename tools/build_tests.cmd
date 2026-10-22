@@ -45,7 +45,7 @@ pushd "%OUT%\obj"
 cl /nologo /std:c++17 /EHsc /MD /O2 /W4 /utf-8 /DNDEBUG /DWIN32 /D_WINDOWS /D_CRT_SECURE_NO_WARNINGS /D_WINSOCK_DEPRECATED_NO_WARNINGS ^
 	/I"%COOP%" /I"%ENET%\include" /I"%ROOT%\tests" ^
 	"%COOP%\coop_wire.cpp" "%COOP%\coop_protocol.cpp" "%COOP%\coop_transport.cpp" "%COOP%\coop_session.cpp" ^
-	"%ROOT%\tests\test_main.cpp" "%ROOT%\tests\test_wire.cpp" "%ROOT%\tests\test_net.cpp" ^
+	"%ROOT%\tests\test_*.cpp" ^
 	"%OUT%\obj_enet\callbacks.obj" "%OUT%\obj_enet\compress.obj" "%OUT%\obj_enet\host.obj" "%OUT%\obj_enet\list.obj" ^
 	"%OUT%\obj_enet\packet.obj" "%OUT%\obj_enet\peer.obj" "%OUT%\obj_enet\protocol.obj" "%OUT%\obj_enet\win32.obj" ^
 	/Fe"%OUT%\coop_tests.exe" ^
