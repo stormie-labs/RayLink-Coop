@@ -2,6 +2,14 @@
 ; coop_domains.ltx (same sections and rules, see that file). The coop_npc_* scripts are view-domain through
 ; the coop_* prefix of the main file and decide host/client themselves.
 
+; Init callbacks of NPC mods that run on clients too (merged with [callbacks_always] of coop_domains.ltx).
+[callbacks_always]
+idiots_on_start            ; Useful Idiots (illish\patches\*.lua): z_idiots_patches.on_game_start sends it on every
+                           ; machine; the listeners read their config and register their handlers, which keep their
+                           ; own file's domain. The files are named like stock scripts (xr_combat_ignore, xr_danger,
+                           ; surge_manager ...), host-only, so without this line a client never filled
+                           ; xr_combat_ignore's config and the engine's is_enemy call was FATAL there (2026-10-23)
+
 [owner]
 gameplay_disguise          ; the player's half of the disguise (outfit -> community, HUD bar, sudden actions)
                            ; runs on the player's machine; the NPC half is judged by the host
