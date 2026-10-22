@@ -561,7 +561,32 @@ do
 	local before = A.MONEY
 	check(not A.coop_economy_money.give_money(2, 10) and A.MONEY == before and has(A.TIPS, "refused"),
 		"engine refusal: false and a message")
+	-- every reason the engine names has its own line; "no character" is the GIVER's (not the receiver's)
+	local asked = {}
+	local translate = A.game.translate_string
+	A.game.translate_string = function(id) asked[#asked + 1] = id return translate(id) end
+	for why, id in pairs({ ["no character"] = "nochar", ["no such player"] = "gone", ["not in the world"] = "world",
+		["not enough money"] = "poor", ["over the maximum"] = "full", ["yourself"] = "bad", ["something new"] = "bad" }) do
+		asked = {}
+		A.MONEY_REFUSE = why
+		A.coop_economy_money.give_money(2, 10)
+		local used = table.concat(asked, " ")
+		check(used:find("st_coop_eco_money_why_" .. id, 1, true) and used:find("st_coop_eco_money_refused", 1, true),
+			"refusal '" .. why .. "' is told with st_coop_eco_money_why_" .. id)
+	end
+	A.game.translate_string = translate
 	A.MONEY_REFUSE = nil
+	-- those lines exist in both languages (windows-1251 files, ids are ASCII)
+	for _, lang in ipairs({ "eng", "rus" }) do
+		local fh = assert(io.open(ROOT .. "configs/text/" .. lang .. "/st_coop_economy.xml", "rb"))
+		local xml = fh:read("*a")
+		fh:close()
+		local missing = {}
+		for _, id in ipairs({ "refused", "why_nochar", "why_world", "why_gone", "why_bad", "why_poor", "why_full" }) do
+			if not xml:find('<string id="st_coop_eco_money_' .. id .. '">', 1, true) then missing[#missing + 1] = id end
+		end
+		check(#missing == 0, lang .. " text has every refusal line (" .. table.concat(missing, ",") .. ")")
+	end
 	-- the host gives as well (its Lua is the ledger's own caller)
 	check(H.coop_economy_money.give_money(1, 300) and H.MONEY_CALLS[1].fn == "money_give" and H.MONEY_CALLS[1].peer == 1
 		and H.MONEY_CALLS[1].n == 300 and sent(H, "economy.money_in") == 0, "host -> anna: one engine call")
@@ -596,6 +621,30 @@ do
 	inv:coop_eco_GiveAmount(2, 500)
 	check(A.MONEY == 1500 and B.MONEY == b_money + 500 and A.MONEY_CALLS[#A.MONEY_CALLS].peer == 2
 		and A.MONEY_CALLS[#A.MONEY_CALLS].n == 500, "amount entry gives the money through the engine")
+end
+
+-------------------------------------------------------------------------------
+section("money stub refuses like the engine")
+do
+	local H, A, B = setup(2)
+	local function why(W, peer, n) return select(2, W.coop.money_give(peer, n)) end
+	check(why(A, 1, 5) == "yourself" and why(H, 0, 5) == "yourself", "giving to yourself, client and host")
+	check(why(A, 9, 5) == "no such player" and why(H, 9, 5) == "no such player", "a player who is not there")
+	A.MONEY = 3
+	check(why(A, 2, 5) == "not enough money", "more than the giver has")
+	check(why(A, 2, 0) == "bad arguments" and why(A, 2, 0 / 0) == "bad arguments" and why(A, 2, -1) == "bad arguments",
+		"zero, NaN, negative")
+	local live = A.coop.is_live
+	A.coop.is_live = function() return false end
+	check(why(A, 2, 1) == "not in the world", "a client that is not in the host's world yet")
+	A.coop.is_live = live
+	A.ACTIVE = false
+	check(why(A, 2, 1) == "no session", "no session")
+	A.ACTIVE = true
+	check(select(2, A.coop.money_grant(2, 5)) == "host only" and select(2, A.coop.money_set(2, 5)) == "host only"
+		and A.coop.money_of(2) == nil, "grant / set / of are the host's")
+	local ok = A.coop.money_give(2, 3)
+	check(ok == true and A.MONEY == 0 and B.MONEY == 10003, "an accepted give moves the stand-in balances")
 end
 
 -------------------------------------------------------------------------------

@@ -16,8 +16,11 @@
 	Encyclopedia: an article or note one player unlocks is unlocked for everybody (articles silently,
 	notes with the PDA note signal). Encyclopedia Messages Restored is kept quiet for those.
 	Achievements: an achievement one player earns is earned by everybody, with its rewards on each
-	player's own machine (money, faction unlocks of the local config, rank / reputation); the stashes
-	of "Tourist" are created by the host only.
+	player's own machine (faction unlocks of the local config, rank / reputation); the stashes
+	of "Tourist" are created by the host only. Money is the host's (F2 T6, the host ledger): the stock reward
+	(iron_curtain: db.actor:give_money(40000)) is dropped on a client, which still gets the earned callback and its
+	news, and the host grants it with coop.money_grant to every player who earned the achievement (event achv_got,
+	and achv from the earner), once per character.
 --]]
 
 local qc = coop_quests_core
@@ -28,7 +31,7 @@ local RANK_COOLDOWN = 5000
 local RANK_CHUNK = 25
 local BOX_GAP = 2000
 
-local stats = { rank_req = 0, rank_in = 0, pda_out = 0, pda_in = 0, pda_req = 0, stash = 0, box = 0, ency_out = 0, ency_in = 0, achv_out = 0, achv_in = 0 }
+local stats = { rank_req = 0, rank_in = 0, pda_out = 0, pda_in = 0, pda_req = 0, stash = 0, box = 0, ency_out = 0, ency_in = 0, achv_out = 0, achv_in = 0, achv_paid = 0 }
 
 -------------------------------------------------------------------------------
 -- Rankings
@@ -472,6 +475,56 @@ end
 -------------------------------------------------------------------------------
 local achv_applying = false
 
+-- Achievements of the stock game_achievements.script (Anomaly 1.5.3) that pay money with db.actor:give_money; no other
+-- *_rewards function pays money. amount: what the stock function gives, news: its string for the earned callback.
+local ACHV_MONEY = {
+	iron_curtain = { amount = 40000, news = "st_achievement_22_unlock" },
+}
+local achv_paid = {} -- host: "<avatar id>:<achievement>" -> true; one money reward per character (a client can repeat a claim)
+
+-- Client in the host's world: the stock <name>_rewards without its money (the rest of the function is the callback
+-- that carries the news and sets the achievement); the host pays. Host and single player: the stock function.
+local function patch_achv_money()
+	local ga = qc.mod("game_achievements")
+	if type(ga) ~= "table" then return end
+	for name, money in pairs(ACHV_MONEY) do
+		local key = name .. "_rewards"
+		local orig = ga[key]
+		if type(orig) == "function" then
+			ga[key] = function(...)
+				if not qc.client_live() then return orig(...) end
+				SendScriptCallback("actor_on_achievement_earned", name, money.news)
+			end
+		end
+	end
+end
+
+-- Host: the money of an achievement for a client who earned it. The ledger (coop.money_grant) does the rest.
+local function grant_achv_money(peer, name)
+	local money = ACHV_MONEY[name]
+	if not (money and qc.is_host() and type(peer) == "number" and peer ~= 0) then return end
+	local avatar = nil
+	for _, p in ipairs(qc.players()) do
+		if p.id == peer and not p.is_self then avatar = p.avatar_id end
+	end
+	if not avatar then return end
+	local key = tostring(avatar) .. ":" .. name
+	if achv_paid[key] then return end
+	local api = qc.engine()
+	local grant = api and api.money_grant
+	if type(grant) ~= "function" then
+		qc.report(TAG, "achievement money", "coop.money_grant is missing")
+		return
+	end
+	local called, ok, why = pcall(grant, peer, money.amount)
+	if called and ok then
+		achv_paid[key] = true
+		stats.achv_paid = stats.achv_paid + 1
+	else
+		qc.log(TAG, "! %s money for #%d refused: %s", name, peer, tostring(called and why or ok))
+	end
+end
+
 local function has_achv(name)
 	local gs = qc.mod("game_statistics")
 	local ok, v = pcall(gs.has_actor_achievement, name)
@@ -502,6 +555,8 @@ local function apply_achv(name)
 	achv_applying = false
 	if not ok then qc.report(TAG, "achievement " .. name, err) end
 	stats.achv_in = stats.achv_in + 1
+	-- the money of it is the host's: tell it this player has earned the achievement
+	if ok and ACHV_MONEY[name] and qc.client_live() then qc.send("achv_got", { a = name }, 0) end
 end
 
 local function on_earned(name)
@@ -522,18 +577,25 @@ local function on_achv(t, from)
 		for _, p in ipairs(qc.players()) do
 			if not p.is_self and p.id ~= from then qc.send("achv", { a = t.a }, p.id) end
 		end
+		grant_achv_money(from, t.a) -- the earner's own stock reward lost its money on his machine
 	elseif from == 0 then
 		apply_achv(t.a)
 	end
+end
+
+-- Host: a client says it has earned an achievement that pays money (the receiver of the shared achievement).
+local function on_achv_got(t, from)
+	if type(t.a) ~= "string" or not t.a:match("^[%w_]+$") then return end
+	if qc.is_host() and type(from) == "number" and from ~= 0 then grant_achv_money(from, t.a) end
 end
 
 -------------------------------------------------------------------------------
 -- Status, start
 -------------------------------------------------------------------------------
 function print_status()
-	qc.log(TAG, "rankings: asked %d, answers %d, cached %s | NPC PDAs sent %d received %d asked %d | stash reveals %d, boxes %d | encyclopedia out %d in %d | achievements out %d in %d",
+	qc.log(TAG, "rankings: asked %d, answers %d, cached %s | NPC PDAs sent %d received %d asked %d | stash reveals %d, boxes %d | encyclopedia out %d in %d | achievements out %d in %d paid %d",
 		stats.rank_req, stats.rank_in, tostring(rank.cache and #rank.cache or "no"), stats.pda_out, stats.pda_in, stats.pda_req,
-		stats.stash, stats.box, stats.ency_out, stats.ency_in, stats.achv_out, stats.achv_in)
+		stats.stash, stats.box, stats.ency_out, stats.ency_in, stats.achv_out, stats.achv_in, stats.achv_paid)
 end
 
 local installed = false
@@ -542,6 +604,7 @@ local function install()
 	installed = true
 	for _, s in ipairs({
 		{ "rankings", patch_rankings }, { "npc pda", patch_npc_pda }, { "encyclopedia", patch_encyclopedia },
+		{ "achievement money", patch_achv_money },
 	}) do
 		local ok, err = pcall(s[2])
 		if not ok then qc.report(TAG, "install " .. s[1], err) end
@@ -556,6 +619,7 @@ function on_game_start()
 	qc.on("pda_req", host_on_pda_req, TAG)
 	qc.on("ency", on_ency, TAG)
 	qc.on("achv", on_achv, TAG)
+	qc.on("achv_got", on_achv_got, TAG)
 	qc.register_host_action("stash", host_stash)
 	qc.register_host_action("box", host_box)
 	RegisterScriptCallback("actor_on_achievement_earned", on_earned)

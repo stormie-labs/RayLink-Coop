@@ -343,7 +343,7 @@ end
 
 -------------------------------------------------------------------------------
 -- Inventory (W8): an envelope button right of the player's money gives money to another player.
--- The transfer itself is coop_economy_money.give_money (rules, host check, refunds); this is only the way in,
+-- The transfer itself is coop_economy_money.give_money (session rules, then the host ledger, coop.money_give); this is only the way in,
 -- besides the item context menu "Give money to ...". Shown in the plain inventory mode of a live session with
 -- somebody else in it and money transfers allowed by the host (economy/money_transfer).
 -------------------------------------------------------------------------------

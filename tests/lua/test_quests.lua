@@ -437,10 +437,69 @@ Hm.env.ui_pda_encyclopedia_tab.unlock_note("encyclopedia__notes_x")
 pump()
 check(Cm.ency_unl["encyclopedia__notes_x"] == true and (Cm.notif or 0) >= 1, "host's note unlocked on the client with the note signal")
 local hmoney = Hm.actor._money
+local g_ach = #grants(Hm)
 Cm.env.SendScriptCallback("actor_on_achievement_earned", "iron_curtain", "msg")
 pump()
 check(Hm.achv.iron_curtain == true and Hm.actor._money == hmoney + 40000, "client's achievement earned by the host with its reward")
 check(count_sent(Hm, "quests.achv") == 0, "no echo loop")
+local ga = grants(Hm)
+check(#ga == g_ach + 1 and ga[#ga][1] == 1 and ga[#ga][2] == 40000, "the earner gets its 40000 from the host: exactly one coop.money_grant(1, 40000)")
+
+-- Money of achievements is the host's (F2 T6): the client's stock iron_curtain_rewards would give_money(40000) locally
+-- (a Script-bucket income); on a client that part is dropped, the earned callback (news) stays, the host grants.
+local function reboot_pda()
+	ency(Hm)
+	ency(Cm)
+	for _, M in ipairs({ Hm, Cm }) do
+		local s = load_script(M, "coop_quests_pda")
+		s.on_game_start()
+		fire(M, "actor_on_first_update")
+	end
+end
+print("== achievement money is the host's")
+reboot_pda()
+do
+	-- the client earns it through its own stock function
+	local hm0, cm0, gb = Hm.actor._money, Cm.actor._money, #grants(Hm)
+	Cm.env.game_achievements.iron_curtain_rewards()
+	check(Cm.achv.iron_curtain == true and Cm.actor._money == cm0, "client: the earned callback fires, no local give_money")
+	pump()
+	local g = grants(Hm)
+	check(Hm.achv.iron_curtain == true and Hm.actor._money == hm0 + 40000, "host: earned too, with its own money")
+	check(#g == gb + 1 and g[#g][1] == 1 and g[#g][2] == 40000, "earner: exactly one coop.money_grant(1, 40000)")
+	check(Cm.actor._money == cm0 and #Cm.money_calls == 0, "the client's Lua never adds the money or calls the ledger")
+	-- the same claim again (a client that repeats it): no second grant for that character
+	Cm.env.coop_quests_core.send("achv_got", { a = "iron_curtain" }, 0)
+	Cm.env.coop_quests_core.send("achv", { a = "iron_curtain" }, 0)
+	pump()
+	check(#grants(Hm) == gb + 1, "one money reward per character and achievement")
+end
+reboot_pda()
+do
+	-- the host earns it: every client applies it without the money and the host grants after the client says it has it
+	local hm0, cm0, gb = Hm.actor._money, Cm.actor._money, #grants(Hm)
+	Hm.env.game_achievements.iron_curtain_rewards()
+	pump()
+	local g = grants(Hm)
+	check(Hm.actor._money == hm0 + 40000, "host earner: its own stock reward")
+	check(Cm.achv.iron_curtain == true and Cm.actor._money == cm0, "client: earned with the news, no local money")
+	check(#g == gb + 1 and g[#g][1] == 1 and g[#g][2] == 40000, "host earner: exactly one coop.money_grant(1, 40000) for the client")
+end
+reboot_pda()
+do
+	-- a client that has the achievement already is not paid again
+	Cm.achv.iron_curtain = true
+	local gb = #grants(Hm)
+	Hm.env.game_achievements.iron_curtain_rewards()
+	pump()
+	check(#grants(Hm) == gb, "client with the achievement already: no money")
+	-- only the achievements with a money reward, only from a client
+	Cm.env.coop_quests_core.send("achv_got", { a = "bookworm_food" }, 0)
+	Cm.env.coop_quests_core.send("achv_got", { a = "../x" }, 0)
+	pump()
+	check(#grants(Hm) == gb, "an achievement without a money reward, a bad name: nothing")
+	check(#grants(Cm) == 0, "a client never grants")
+end
 
 print("== NPC PDA messages, stash reveal, box")
 Hm.env.ui_pda_npc_tab = { register_pda = function(npc, sec, id)

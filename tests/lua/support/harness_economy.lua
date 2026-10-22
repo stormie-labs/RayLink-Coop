@@ -186,6 +186,7 @@ function make_world(peer)
 		calls = W.MONEY_CALLS,
 		is_host = function() return W.ACTIVE and W.PEER == 0 end,
 		refuse = function() return W.MONEY_REFUSE end,
+		money = function() return W.MONEY end,
 		on_call = function(fn, peer, n)
 			if fn ~= "money_give" then return end
 			W.MONEY = W.MONEY - n

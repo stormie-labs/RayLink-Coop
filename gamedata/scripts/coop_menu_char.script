@@ -257,13 +257,18 @@ local function on_new_character(payload, from)
 		log("! kit for player #%d failed: %s", from, tostring(removed))
 		return reply(from, { ok = false, reason = "busy" })
 	end
-	se_save_var(proxy, nil, NEW_VAR, nil)
-	offered[from] = nil
 	local money = faction_money(faction)
-	-- F2 T6: the character's money is the host ledger's; the client's balance follows with the engine's reply
+	-- F2 T6: the character's money is the host ledger's; the client's balance follows with the engine's reply.
+	-- The "new" mark is cleared only when the money is set: a refusal leaves the player his choice window to try again
+	-- (the kit above is simply made again).
 	local set_ok, set_why = false, "coop.money_set is missing"
 	if type(api.money_set) == "function" then set_ok, set_why = api.money_set(from, money) end
-	if not set_ok then log("! money of player #%d not set: %s", from, tostring(set_why)) end
+	if not set_ok then
+		log("! money of player #%d not set, the choice stays open: %s", from, tostring(set_why))
+		return reply(from, { ok = false, reason = "busy" })
+	end
+	se_save_var(proxy, nil, NEW_VAR, nil)
+	offered[from] = nil
 	log("player #%d: faction %s, %d NPC item(s) removed, %d item(s) given, money %d", from, faction, removed, given, money)
 	reply(from, { ok = true, faction = faction, money = money, items = given })
 	-- other groups' start kit of a new character (W5: Mags Redux magazines, coop_mods_core listeners)

@@ -9,10 +9,10 @@
 
 	Money: "Give money to <player>" opens a choice of amounts. The transfer itself is the engine's (F2 T1, the host
 	ledger): coop.money_give(peer, amount) takes the money from the giver at once, on a client as a pending change,
-	and the host checks it and credits the receiver, or gives it back with its next balance when it refuses. It
-	works for a receiver who is not connected as well (his character gets it in the host's world). This script
-	only keeps the session rules (money_transfer, max_money_transfer) and tells the player what happened.
-	Nothing of money goes over our own events any more.
+	and the host checks it and credits the receiver, or gives it back with its next balance when it refuses. The
+	receiver must be a player who has joined (and the host itself): the engine refuses one who is still loading or has
+	left ("no such player"). This script only keeps the session rules (money_transfer, max_money_transfer) on the
+	giver's machine and tells the player what happened. Nothing of money goes over our own events any more.
 
 	For other scripts:
 		coop_economy_money.give_money(peer, amount) -> true when the engine accepted the transfer
@@ -35,9 +35,10 @@ end
 -- coop.money_give names a refusal in English; the player gets it in his language.
 local WHY_ID = {
 	["not enough money"] = "poor",
-	["over the maximum"] = "full",
-	["no such player"] = "gone",
-	["no character"] = "gone",
+	["over the maximum"] = "full", -- the receiver would go over the maximum
+	["no such player"] = "gone", -- the receiver has not joined or has left
+	["no character"] = "nochar", -- the GIVER has no character (the engine says nothing else about the receiver)
+	["not in the world"] = "world", -- the giver is a client that has not entered the host's world yet
 }
 
 local function refusal_text(why)

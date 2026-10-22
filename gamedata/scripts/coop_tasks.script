@@ -742,6 +742,57 @@ local function online_peers()
 	return list
 end
 
+-- Host, in a reward scope: pays n to the player who turned the task in, or splits it over the online players
+-- (coop_share_rewards 1; the remainder goes to the finisher). give(peer, amount) pays one share, peer 0 = the host.
+local function split_money(n, give)
+	local list = ctx.share and online_peers() or { ctx.rcpt }
+	local part = math_floor(n / #list)
+	local rest = n - part * #list
+	local rest_to = 0
+	for _, peer in ipairs(list) do
+		if peer == ctx.rcpt then rest_to = peer end
+	end
+	for _, peer in ipairs(list) do
+		local amount = part + (peer == rest_to and rest or 0)
+		if amount > 0 then give(peer, amount) end
+	end
+end
+
+-- Stock payouts that do not go through dialogs.relocate_money but call db.actor:give_money themselves
+-- (tasks_multifetch.remove_items_and_pay from multifetch_remove, tasks_defense.barrier_defense_*_complete) would put the
+-- money on the HOST's actor whoever turned the task in (F2 T6 review). Their file cannot change, so the wrapper
+-- (redirect_payout) measures what the call adds to the host's money, takes it back and pays it as every other task
+-- money: to the player who turned the task in through the host ledger, or split with coop_share_rewards 1. The host
+-- keeps it only when it turned the task in itself. While the call runs, the stock "money received" line for the host's
+-- actor is swallowed (payout_scope): the player who gets the money sees his own line.
+local payout_scope = false
+local news_money = nil -- news_manager.relocate_money as it was before patch_rewards
+
+local function redirect_payout(orig)
+	return function(...)
+		if not (ctx and (ctx.rcpt ~= 0 or ctx.share) and is_host() and db.actor) then return orig(...) end
+		local before = db.actor:money()
+		local prev = payout_scope
+		payout_scope = true
+		local res = { pcall(orig, ...) }
+		payout_scope = prev
+		local gained = db.actor:money() - before
+		if gained > 0 and ctx then
+			db.actor:give_money(-gained)
+			split_money(gained, function(peer, amount)
+				if peer == 0 then
+					db.actor:give_money(amount)
+					if news_money then news_money(db.actor, "in", amount) end
+				else
+					grant_money(peer, amount)
+				end
+			end)
+		end
+		if not res[1] then error(res[2], 0) end
+		return unpack(res, 2)
+	end
+end
+
 local function host_task_callback(orig, tsk, state)
 	local okid, id = pcall(function() return tsk:get_id() end)
 	if not (is_host() and okid and type(id) == "string") or not (state == task.completed or state == task.fail) then
@@ -806,23 +857,13 @@ local function patch_rewards()
 		dlg.relocate_money = function(victim, num, typ)
 			local n = tonumber(num)
 			if not (ctx and typ == "in" and n and n > 0) then return orig(victim, num, typ) end
-			local list = ctx.share and online_peers() or { ctx.rcpt }
-			local part = math_floor(n / #list)
-			local rest = n - part * #list
-			local rest_to = 0
-			for _, peer in ipairs(list) do
-				if peer == ctx.rcpt then rest_to = peer end
-			end
-			for _, peer in ipairs(list) do
-				local amount = part + (peer == rest_to and rest or 0)
-				if amount > 0 then
-					if peer == 0 then
-						orig(victim, amount, "in")
-					else
-						grant_money(peer, amount)
-					end
+			split_money(n, function(peer, amount)
+				if peer == 0 then
+					orig(victim, amount, "in")
+				else
+					grant_money(peer, amount)
 				end
-			end
+			end)
 		end
 	else
 		log("! dialogs.relocate_money not found: task money is not routed")
@@ -855,6 +896,14 @@ local function patch_rewards()
 				return true
 			end
 			return orig(actor, typ, item, amount)
+		end
+	end
+
+	if nm and type(nm.relocate_money) == "function" then
+		news_money = nm.relocate_money
+		nm.relocate_money = function(actor, typ, amount)
+			if payout_scope and is_my_actor(actor) then return true end -- the player who gets the money sees the line
+			return news_money(actor, typ, amount)
 		end
 	end
 
@@ -894,6 +943,8 @@ local function patch_rewards()
 				return pay(actor, npc, p)
 			end
 		end
+		-- tasks_multifetch pays on_complete with db.actor:give_money (the host's actor): to the one who turned it in
+		if type(xe.multifetch_remove) == "function" then xe.multifetch_remove = redirect_payout(xe.multifetch_remove) end
 		-- effects on the player's own character run on that player's machine
 		for fname in pairs(FORWARD_EFFECTS) do
 			local orig = xe[fname]
@@ -911,6 +962,16 @@ local function patch_rewards()
 					return orig(actor, npc, p)
 				end
 			end
+		end
+	end
+
+	-- Freedom barrier defense pays 40 000 / 25 000 with db.actor:give_money from a dialog action (the speaker's
+	-- machine). A client's own run is not touched (the engine ledger takes its change); when the host runs it for a
+	-- player (with_recipient) the money goes to that player. The host's own talk pays the host.
+	local td = rawget(_G, "tasks_defense") or tasks_defense
+	if type(td) == "table" then
+		for _, fname in ipairs({ "barrier_defense_monolith_complete", "barrier_defense_zombie_complete" }) do
+			if type(td[fname]) == "function" then td[fname] = redirect_payout(td[fname]) end
 		end
 	end
 

@@ -64,6 +64,7 @@ local function machine(role, self_peer)
 		end
 	end
 	function ObjMT:give_money(n) self._money = (self._money or 0) + n end
+	function ObjMT:money() return self._money or 0 end
 	function ObjMT:is_talking() return M.talking == true end
 	function ObjMT:get_task(id, active_only)
 		local t = M.engine_tasks[id]
@@ -181,6 +182,19 @@ local function machine(role, self_peer)
 			env.news_manager.relocate_money(actor, typ, n)
 		end,
 	}
+	-- stock payouts that do not use dialogs.relocate_money: db.actor:give_money + the news line (tasks_multifetch.script
+	-- remove_items_and_pay, tasks_defense.script barrier_defense_*_complete)
+	env.xr_effects_multifetch_pay = 900
+	env.tasks_defense = {
+		barrier_defense_monolith_complete = function(a, b)
+			env.news_manager.relocate_money(actor, "in", 40000)
+			actor:give_money(40000)
+		end,
+		barrier_defense_zombie_complete = function(a, b)
+			env.news_manager.relocate_money(actor, "in", 25000)
+			actor:give_money(25000)
+		end,
+	}
 	env.dialogs_mlr = { show_goodwill_change_message = function(c) M.gw_msg = c end }
 	env.axr_task_manager = { bounties_by_id = {} }
 	M.goodwill = {}
@@ -199,6 +213,10 @@ local function machine(role, self_peer)
 			actor:give_money(-(tonumber(env.load_var(actor, p[1], 0)) or 0))
 		end,
 		drx_sl_change_factions = function(a, npc, p) M.faction = p[1] end,
+		multifetch_remove = function(a, npc, p)
+			actor:give_money(env.xr_effects_multifetch_pay)
+			env.news_manager.relocate_money(actor, "in", env.xr_effects_multifetch_pay)
+		end,
 		remove_item = function(a, npc, p)
 			local left = tonumber(p[2]) or 1
 			actor:iterate_inventory(function(_, it)
@@ -566,12 +584,13 @@ H.on_complete.story_1 = function()
 	H.tm:give_task("stage_t", 1)
 end
 hm, cm = H.actor._money, C.actor._money
+local g200_before = #money_calls(H, "money_grant")
 H.tm:set_task_completed("story_1") -- not talking: a scheme / info reaction
 H.engine_check()
 pump()
 local g200 = money_calls(H, "money_grant")
-check(H.actor._money == hm and C.actor._money == cm and g200[#g200][1] == 1 and g200[#g200][2] == 200,
-	"reward to the player who took it: coop.money_grant(1, 200)")
+check(H.actor._money == hm and C.actor._money == cm and #g200 == g200_before + 1 and g200[#g200][1] == 1
+	and g200[#g200][2] == 200, "reward to the player who took it: exactly one coop.money_grant(1, 200)")
 check(H.mod.recipient("stage_t") == 1, "follow-up task belongs to that player")
 H.tm.task_info.stage_t = nil
 H.engine_tasks.stage_t = nil
@@ -591,13 +610,76 @@ H.mod.host_note("cf_1", "finisher", 1) -- what coop_story.cpp does for TaskReqSt
 H.tm:set_task_completed("cf_1")
 check(H.mod.recipient("cf_1") == 1, "engine note keeps the client as finisher")
 hm, cm = H.actor._money, C.actor._money
+local gp_before = #money_calls(H, "money_grant")
 H.engine_check()
 pump()
 local gp = money_calls(H, "money_grant")
-check(H.actor._money == hm and C.actor._money == cm and gp[#gp][1] == 1 and gp[#gp][2] == -700 and money_events(H) == 0,
-	"payment taken from the finisher on the host ledger: coop.money_grant(1, -700)")
+check(H.actor._money == hm and C.actor._money == cm and #gp == gp_before + 1 and gp[#gp][1] == 1 and gp[#gp][2] == -700
+	and money_events(H) == 0, "payment taken from the finisher on the host ledger: exactly one coop.money_grant(1, -700)")
 check(C.money_news[#C.money_news] == "out:700", "the payment news line is shown to the payer")
 check(C.faction == "army" and H.faction == nil, "faction change runs on the finisher's machine")
+
+-- ---------------------------------------------------------------- stock payouts through db.actor:give_money
+print("== stock task payouts (multifetch_remove, barrier defense) go to the one who turned the task in")
+do
+	local function one_grant(since, peer, n, what)
+		local g = money_calls(H, "money_grant")
+		check(#g == since + 1 and g[#g][1] == peer and g[#g][2] == n, what)
+	end
+	-- a client turns in a task whose on_complete is multifetch_remove: the 900 are the client's, not the host actor's
+	C.tm:give_task("story_1", 9)
+	pump()
+	H.on_complete.story_1 = function() H.env.xr_effects.multifetch_remove(H.actor, nil, { "story_1", "true" }) end
+	local hm1, cm1 = H.actor._money, C.actor._money
+	local gb, hn, cn = #money_calls(H, "money_grant"), #H.money_news, #C.money_news
+	C.tm:set_task_completed("story_1")
+	pump()
+	H.engine_check()
+	pump()
+	one_grant(gb, 1, 900, "multifetch_remove for a client's turn-in: exactly one coop.money_grant(1, 900)")
+	check(H.actor._money == hm1 and C.actor._money == cm1, "the host's actor got no money, the client's Lua added none")
+	check(#H.money_news == hn, "no 'money received' line on the host")
+	check(#C.money_news == cn + 1 and C.money_news[#C.money_news] == "in:900", "the finisher sees the line instead")
+	-- the host turns in its own task: the money is the host's
+	H.tm:give_task("story_1", 1)
+	H.on_complete.story_1 = function() H.env.xr_effects.multifetch_remove(H.actor, nil, { "story_1", "true" }) end
+	hm1, gb, hn = H.actor._money, #money_calls(H, "money_grant"), #H.money_news
+	H.tm:set_task_completed("story_1")
+	H.engine_check()
+	pump()
+	check(H.actor._money == hm1 + 900 and #money_calls(H, "money_grant") == gb and #H.money_news == hn + 1,
+		"the host's own turn-in: the host gets the money and the line, no grant")
+	-- coop_share_rewards 1: split like every other task money (the host keeps 450)
+	H.share = 1
+	C.tm:give_task("story_1", 9)
+	pump()
+	H.on_complete.story_1 = function() H.env.xr_effects.multifetch_remove(H.actor, nil, { "story_1", "true" }) end
+	hm1, gb = H.actor._money, #money_calls(H, "money_grant")
+	C.tm:set_task_completed("story_1")
+	pump()
+	H.engine_check()
+	pump()
+	one_grant(gb, 1, 450, "shared payout: coop.money_grant(1, 450)")
+	check(H.actor._money == hm1 + 450, "shared payout: the host keeps 450")
+	H.share = 0
+	-- barrier defense (a dialog action, run here in the reward scope of a client): 40 000 and 25 000
+	hm1, gb = H.actor._money, #money_calls(H, "money_grant")
+	H.mod.with_recipient(1, H.env.tasks_defense.barrier_defense_monolith_complete, H.actor, nil)
+	one_grant(gb, 1, 40000, "barrier_defense_monolith_complete for a client: coop.money_grant(1, 40000)")
+	gb = #money_calls(H, "money_grant")
+	H.mod.with_recipient(1, H.env.tasks_defense.barrier_defense_zombie_complete, H.actor, nil)
+	one_grant(gb, 1, 25000, "barrier_defense_zombie_complete for a client: coop.money_grant(1, 25000)")
+	check(H.actor._money == hm1, "the host's actor got nothing from either")
+	-- outside a reward scope (the host talks to the NPC itself) it is the host's money, as before
+	gb, hn = #money_calls(H, "money_grant"), #H.money_news
+	H.env.tasks_defense.barrier_defense_monolith_complete(H.actor, nil)
+	check(H.actor._money == hm1 + 40000 and #money_calls(H, "money_grant") == gb and #H.money_news == hn + 1,
+		"the host's own dialog action pays the host")
+	-- on a client the dialog action runs on its machine: untouched (the engine ledger takes the change)
+	local cm2, cg = C.actor._money, #C.money_calls
+	C.env.tasks_defense.barrier_defense_zombie_complete(C.actor, nil)
+	check(C.actor._money == cm2 + 25000 and #C.money_calls == cg, "a client's own dialog action is not redirected")
+end
 
 -- ---------------------------------------------------------------- stage writes, cancel, bad requests
 print("== stage write, cancel, refused requests")

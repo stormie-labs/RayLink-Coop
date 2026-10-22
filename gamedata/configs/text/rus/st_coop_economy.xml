@@ -79,6 +79,12 @@
 	<string id="st_coop_eco_money_why_full">
 		<text>у получателя не поместится столько</text>
 	</string>
+	<string id="st_coop_eco_money_why_nochar">
+		<text>у вас ещё нет персонажа</text>
+	</string>
+	<string id="st_coop_eco_money_why_world">
+		<text>вы ещё не в мире хоста</text>
+	</string>
 	<string id="st_coop_eco_money_off">
 		<text>В этой сессии передача денег выключена.</text>
 	</string>

@@ -54,7 +54,8 @@ coop = {
 	send_event = function(name, payload, target) SENT[#SENT + 1] = { name = name, t = PAYLOADS[payload], to = target }
 		return true end,
 }
-install_money_stubs(coop, { is_host = function() return MODE == "host" end }) -- calls go to MONEY_CALLS
+MONEY_REFUSE = nil -- a reason makes the ledger stand-in refuse
+install_money_stubs(coop, { is_host = function() return MODE == "host" end, refuse = function() return MONEY_REFUSE end }) -- calls go to MONEY_CALLS
 PAYLOADS = {}
 local pn = 0
 coop_main = { handlers = {} }
@@ -184,6 +185,15 @@ check(#MONEY_CALLS == 0, "refused choices set no money")
 
 print("== host: apply")
 NPCS[500] = make_npc(500, { 701, 702, 703 })
+-- the ledger refuses the money: the mark stays, so the player can try again (nothing is lost, the kit is redone)
+MONEY_REFUSE = "no character"
+deliver("menu.new_character", { faction = "bandit", buy = "wpn_ak74_old" }, 1)
+check(last().t.ok == false and last().t.reason == "busy" and last().to == 1, "money refused: the player is told to try again")
+check(#MONEY_CALLS == 1 and MONEY_CALLS[1].fn == "money_set" and MONEY_CALLS[1].ok == false, "the refused call was money_set")
+check(mc.is_new(500), "money refused: the new-character mark stays, so the retry is possible")
+MONEY_REFUSE = nil
+RELEASED, CREATED = {}, {}
+for i = #MONEY_CALLS, 1, -1 do MONEY_CALLS[i] = nil end
 deliver("menu.new_character", { faction = "bandit", buy = "wpn_ak74_old" }, 1)
 local res = last().t
 check(res.ok == true and res.faction == "bandit" and res.money == 1000 and last().to == 1, "accepted: faction and money")
