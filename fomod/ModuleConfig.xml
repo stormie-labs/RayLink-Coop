@@ -124,9 +124,11 @@ bin\AnomalyCoopDX11AVX.exe остаётся внутри мода Anomaly Coop -
             </plugin>
             <plugin name="A copy in the game's bin folder / Копия в папке bin игры">
               <description>Also copy AnomalyCoopDX11AVX.exe into &lt;Anomaly&gt;\bin by hand (the last page shows where it is). Recommended for G.A.M.M.A.: GAMMA's ReShade (bin\dxgi.dll) and other files next to the exe load only for an exe that really lies in &lt;Anomaly&gt;\bin. Also use it if the first way does not start.
+With this way the installer puts the exe into the mod's exe_copy\ folder, not into bin\: an exe in the mod's bin\ would win over your copy in MO2 and run from the mod again.
 The file has its own name: it replaces nothing, and the GAMMA launcher does not remove it when it restores its exes.
 
 Дополнительно скопируйте AnomalyCoopDX11AVX.exe в &lt;Anomaly&gt;\bin вручную (где он лежит - на последней странице). Рекомендуется для G.A.M.M.A.: ReShade из GAMMA (bin\dxgi.dll) и другие файлы рядом с exe подхватываются только exe, который реально лежит в &lt;Anomaly&gt;\bin. Подходит и если первый способ не запускается.
+При этом способе установщик кладёт exe в папку exe_copy\ мода, а не в bin\: exe в bin\ мода перекрыл бы в MO2 вашу копию и снова запускался бы из мода.
 У файла своё имя: он ничего не заменяет, и лаунчер GAMMA не удаляет его, когда восстанавливает свои exe.</description>
               <conditionFlags><flag name="exe">copy</flag></conditionFlags>
               <typeDescriptor>
@@ -215,30 +217,30 @@ Get it: ModDB, "xrMPE NPC Animations" by Chemzs (Anomaly / GAMMA version). Insta
         <group name="Untick these mods in MO2's left list / Снимите галочки с этих модов в левом списке MO2" type="SelectAll">
           <plugins order="Explicit">
             <plugin name="203 YACS Better Campfire Saves (Ishmaeel)">
-              <description>Untick it. In the MO2 list it is named "203- YACS Better Campfire Saves (forces campfire saves but they are better) - Ishmaeel" (type YACS into the search box above the list). In co-op this mechanic is taken over by Anomaly Coop: campfire stops and emergency saves of the host.
+              <description>Untick it. In the MO2 list it is named "203- YACS Better Campfire Saves (forces campfire saves but they are better) - Ishmaeel" (type YACS into the search box above the list). In co-op Anomaly Coop will replace this mechanic with its own: campfire stops and emergency saves of the host (in development).
 
-Снимите галочку. В списке MO2 он называется "203- YACS Better Campfire Saves (forces campfire saves but they are better) - Ishmaeel" (введите YACS в поле поиска над списком). В коопе эту механику берёт на себя Anomaly Coop: привалы и аварийные сейвы хоста.</description>
+Снимите галочку. В списке MO2 он называется "203- YACS Better Campfire Saves (forces campfire saves but they are better) - Ishmaeel" (введите YACS в поле поиска над списком). В коопе Anomaly Coop заменит эту механику своей: привалы и аварийные сейвы хоста (в разработке).</description>
               <conditionFlags><flag name="step_off_yacs_campfire">On</flag></conditionFlags>
               <typeDescriptor><type name="Required"/></typeDescriptor>
             </plugin>
             <plugin name="G.A.M.M.A. YACS no quit">
-              <description>It is off in the G.A.M.M.A. profile: keep it off and do not turn it on. In co-op the same mechanic is taken over by Anomaly Coop: campfire stops and emergency saves of the host.
+              <description>It is off in the G.A.M.M.A. profile: keep it off and do not turn it on. In co-op Anomaly Coop will replace the same mechanic: campfire stops and emergency saves of the host (in development).
 
-В профиле G.A.M.M.A. он выключен: оставьте выключенным и не включайте. В коопе ту же механику берёт на себя Anomaly Coop: привалы и аварийные сейвы хоста.</description>
+В профиле G.A.M.M.A. он выключен: оставьте выключенным и не включайте. В коопе ту же механику заменит Anomaly Coop: привалы и аварийные сейвы хоста (в разработке).</description>
               <conditionFlags><flag name="step_off_yacs_noquit">On</flag></conditionFlags>
               <typeDescriptor><type name="Required"/></typeDescriptor>
             </plugin>
             <plugin name="338 Soulslike Gamemode (Jabbers)">
-              <description>Untick it. In the MO2 list it is named "338- Soulslike Gamemode - Jabbers". This game mode is not available in co-op; death, evacuation and losses are taken over by Anomaly Coop.
+              <description>Untick it. In the MO2 list it is named "338- Soulslike Gamemode - Jabbers". This game mode is not available in co-op; death, evacuation and losses will be handled by Anomaly Coop itself (in development).
 
-Снимите галочку. В списке MO2 он называется "338- Soulslike Gamemode - Jabbers". Этот режим игры в коопе недоступен; смерть, эвакуацию и потери берёт на себя Anomaly Coop.</description>
+Снимите галочку. В списке MO2 он называется "338- Soulslike Gamemode - Jabbers". Этот режим игры в коопе недоступен; смерть, эвакуацию и потери Anomaly Coop будет обрабатывать сам (в разработке).</description>
               <conditionFlags><flag name="step_off_soulslike">On</flag></conditionFlags>
               <typeDescriptor><type name="Required"/></typeDescriptor>
             </plugin>
             <plugin name="208 Ironman Roguelite (Jabbers)">
-              <description>It is off by default: keep it off and do not turn it on. In the MO2 list it is named "208- Ironman Roguelite (for easier ironman lovers) - Jabbers". In co-op the hardcore death mode of Anomaly Coop (a rule the host sets) takes over this mechanic.
+              <description>It is off by default: keep it off and do not turn it on. In the MO2 list it is named "208- Ironman Roguelite (for easier ironman lovers) - Jabbers". In co-op Anomaly Coop will replace this mechanic with its hardcore death mode, a rule the host sets (in development).
 
-По умолчанию он выключен: оставьте выключенным и не включайте. В списке MO2 он называется "208- Ironman Roguelite (for easier ironman lovers) - Jabbers". В коопе эту механику берёт на себя режим смерти hardcore из Anomaly Coop (правило, которое задаёт хост).</description>
+По умолчанию он выключен: оставьте выключенным и не включайте. В списке MO2 он называется "208- Ironman Roguelite (for easier ironman lovers) - Jabbers". В коопе эту механику заменит режим смерти hardcore из Anomaly Coop - правило, которое задаёт хост (в разработке).</description>
               <conditionFlags><flag name="step_off_ironman">On</flag></conditionFlags>
               <typeDescriptor><type name="Required"/></typeDescriptor>
             </plugin>
@@ -312,9 +314,9 @@ OK, затем выберите "Anomaly Coop" в списке справа вв
               <typeDescriptor><type name="Required"/></typeDescriptor>
             </plugin>
             <plugin name="2. Copy the exe into the game / Скопируйте exe в игру">
-              <description>Right-click Anomaly Coop - Engine in MO2 - Open in Explorer - bin\AnomalyCoopDX11AVX.exe: copy it into &lt;your Anomaly folder&gt;\bin (next to AnomalyDX11AVX.exe). Only this one file; nothing is replaced. Repeat after every Anomaly Coop update.
+              <description>Right-click Anomaly Coop - Engine in MO2 - Open in Explorer - exe_copy\AnomalyCoopDX11AVX.exe: copy it into &lt;your Anomaly folder&gt;\bin (next to AnomalyDX11AVX.exe). Only this one file; nothing is replaced. Repeat after every Anomaly Coop update.
 
-Правый клик по Anomaly Coop - Engine в MO2 - Open in Explorer - bin\AnomalyCoopDX11AVX.exe: скопируйте его в &lt;папка Anomaly&gt;\bin (рядом с AnomalyDX11AVX.exe). Только этот файл, ничего не заменяется. Повторяйте после каждого обновления Anomaly Coop.</description>
+Правый клик по Anomaly Coop - Engine в MO2 - Open in Explorer - exe_copy\AnomalyCoopDX11AVX.exe: скопируйте его в &lt;папка Anomaly&gt;\bin (рядом с AnomalyDX11AVX.exe). Только этот файл, ничего не заменяется. Повторяйте после каждого обновления Anomaly Coop.</description>
               <conditionFlags><flag name="step_copy">On</flag></conditionFlags>
               <typeDescriptor><type name="Required"/></typeDescriptor>
             </plugin>
@@ -362,9 +364,9 @@ OK, затем выберите "Anomaly Coop" в списке справа вв
               <typeDescriptor><type name="Required"/></typeDescriptor>
             </plugin>
             <plugin name="2. Nickname and play / Ник и игра">
-              <description>Main menu - Co-op: set your nickname, then "Host a game" or "Join a game". The host plays from a loaded game; the others join by address. Everybody needs the same version of Anomaly Coop and the same mods. If the game does not start from the mod, copy the exe as described in the readme (way 2).
+              <description>Main menu - Co-op: set your nickname, then "Host a game" or "Join a game". The host plays from a loaded game; the others join by address. Everybody needs the same version of Anomaly Coop and the same mods. If the game does not start from the mod, install the Engine part again with way 2 (a copy of the exe), see the readme.
 
-Главное меню - Кооператив: задайте ник, затем "Создать игру" или "Подключиться". Хост играет из загруженной игры, остальные подключаются по адресу. У всех должна быть одна версия Anomaly Coop и одинаковые моды. Если игра не запускается из мода, скопируйте exe, как описано в readme (способ 2).</description>
+Главное меню - Кооператив: задайте ник, затем "Создать игру" или "Подключиться". Хост играет из загруженной игры, остальные подключаются по адресу. У всех должна быть одна версия Anomaly Coop и одинаковые моды. Если игра не запускается из мода, поставьте часть Engine заново со способом 2 (копия exe), см. readme.</description>
               <conditionFlags><flag name="step_play">On</flag></conditionFlags>
               <typeDescriptor><type name="Required"/></typeDescriptor>
             </plugin>
@@ -389,9 +391,9 @@ OK, затем выберите "Anomaly Coop" в списке справа вв
               <typeDescriptor><type name="Required"/></typeDescriptor>
             </plugin>
             <plugin name="2. Turn off the mods from the previous page / Выключите моды с предыдущей страницы">
-              <description>Untick the GAMMA mods listed on the previous page (203 YACS, G.A.M.M.A. YACS no quit, 338 Soulslike Gamemode, 208 Ironman Roguelite): in co-op their mechanics are taken over by Anomaly Coop.
+              <description>Untick the GAMMA mods listed on the previous page (203 YACS, G.A.M.M.A. YACS no quit, 338 Soulslike Gamemode, 208 Ironman Roguelite): in co-op Anomaly Coop will replace their mechanics with its own (in development).
 
-Снимите галочки с модов GAMMA, перечисленных на предыдущей странице (203 YACS, G.A.M.M.A. YACS no quit, 338 Soulslike Gamemode, 208 Ironman Roguelite): в коопе их механики берёт на себя Anomaly Coop.</description>
+Снимите галочки с модов GAMMA, перечисленных на предыдущей странице (203 YACS, G.A.M.M.A. YACS no quit, 338 Soulslike Gamemode, 208 Ironman Roguelite): в коопе их механики заменит Anomaly Coop (в разработке).</description>
               <conditionFlags><flag name="step_off_list">On</flag></conditionFlags>
               <typeDescriptor><type name="Required"/></typeDescriptor>
             </plugin>
@@ -427,9 +429,9 @@ OK, затем выберите "Anomaly Coop" в списке справа вв
               <typeDescriptor><type name="Required"/></typeDescriptor>
             </plugin>
             <plugin name="3. Nickname and play / Ник и игра">
-              <description>Main menu - Co-op: set your nickname, then "Host a game" or "Join a game". The host plays from a loaded game; the others join by address. Everybody needs the same version of Anomaly Coop and the same mods. If the game does not start from the mod, copy the exe as described in the readme (way 2).
+              <description>Main menu - Co-op: set your nickname, then "Host a game" or "Join a game". The host plays from a loaded game; the others join by address. Everybody needs the same version of Anomaly Coop and the same mods. If the game does not start from the mod, install the Engine part again with way 2 (a copy of the exe), see the readme.
 
-Главное меню - Кооператив: задайте ник, затем "Создать игру" или "Подключиться". Хост играет из загруженной игры, остальные подключаются по адресу. У всех должна быть одна версия Anomaly Coop и одинаковые моды. Если игра не запускается из мода, скопируйте exe, как описано в readme (способ 2).</description>
+Главное меню - Кооператив: задайте ник, затем "Создать игру" или "Подключиться". Хост играет из загруженной игры, остальные подключаются по адресу. У всех должна быть одна версия Anomaly Coop и одинаковые моды. Если игра не запускается из мода, поставьте часть Engine заново со способом 2 (копия exe), см. readme.</description>
               <conditionFlags><flag name="step_play">On</flag></conditionFlags>
               <typeDescriptor><type name="Required"/></typeDescriptor>
             </plugin>
@@ -442,8 +444,17 @@ OK, затем выберите "Anomaly Coop" в списке справа вв
   <conditionalFileInstalls>
     <patterns>
       <pattern>
-        <dependencies operator="And"><flagDependency flag="part" value="engine"/></dependencies>
+        <dependencies operator="And"><flagDependency flag="part" value="engine"/><flagDependency flag="exe" value="mod"/></dependencies>
         <files><folder source="Anomaly Coop - Engine" destination="" priority="0"/></files>
+      </pattern>
+      <pattern>
+        <!-- way 2: the exe must not stay in the mod's bin\ - in MO2's VFS it would win over the player's copy in
+             <Anomaly>\bin and run from mods\...\bin; it waits in exe_copy\ for the player to copy it -->
+        <dependencies operator="And"><flagDependency flag="part" value="engine"/><flagDependency flag="exe" value="copy"/></dependencies>
+        <files>
+          <folder source="Anomaly Coop - Engine\gamedata" destination="gamedata" priority="0"/>
+          <file source="Anomaly Coop - Engine\bin\AnomalyCoopDX11AVX.exe" destination="exe_copy\AnomalyCoopDX11AVX.exe" priority="0"/>
+        </files>
       </pattern>
       <pattern>
         <dependencies operator="And"><flagDependency flag="part" value="core"/></dependencies>

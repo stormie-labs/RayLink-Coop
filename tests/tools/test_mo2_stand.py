@@ -1,4 +1,5 @@
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -246,9 +247,107 @@ def test_junction_inside_out_refused(fake):
     elsewhere.mkdir()
     fake.out.mkdir()
     _winapi.CreateJunction(str(elsewhere), str(fake.out / "db"))
-    with pytest.raises(SystemExit, match="link"):
+    with pytest.raises(SystemExit, match="link|not a stand"):
         fake.run([])
     assert list(elsewhere.iterdir()) == []
+
+
+def test_refuses_a_non_empty_out_without_manifest(fake):
+    write(fake.game / "gamedata" / "scripts" / "x.script", "game")
+    stock = write(fake.out / "gamedata" / "scripts" / "y.script", "a stock stand's own file")
+    with pytest.raises(SystemExit, match="not a stand"):
+        fake.run([])
+    assert not (fake.out / "gamedata" / "scripts" / "x.script").exists()
+    assert stock.read_text(encoding="utf-8") == "a stock stand's own file"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="junctions are a Windows thing")
+def test_junction_checked_before_any_write(fake):
+    import _winapi
+
+    write(fake.game / "db" / "a.db0", "archive")
+    write(fake.game / "gamedata" / "scripts" / "x.script", "x")
+    fake.run([])
+    (fake.out / "db" / "a.db0").unlink()
+    (fake.out / "db").rmdir()
+    elsewhere = fake.root / "real_db"
+    elsewhere.mkdir()
+    _winapi.CreateJunction(str(elsewhere), str(fake.out / "db"))
+    write(fake.game / "gamedata" / "scripts" / "new.script", "new")
+    with pytest.raises(SystemExit, match="link"):
+        fake.run([])
+    assert not (fake.out / "gamedata" / "scripts" / "new.script").exists()
+    assert list(elsewhere.iterdir()) == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="junctions are a Windows thing")
+def test_stale_removal_never_follows_a_junction(fake):
+    import _winapi
+
+    fake.mod("Archives", {"db/mods/a.db0": "mod archive"})
+    fake.run(["Archives"])
+    shutil_db = fake.out / "db"
+    (shutil_db / "mods" / "a.db0").unlink()
+    (shutil_db / "mods").rmdir()
+    shutil_db.rmdir()
+    game_db = write(fake.root / "real_db" / "mods" / "a.db0", "the game's own archive").parents[1]
+    _winapi.CreateJunction(str(game_db), str(fake.out / "db"))
+    with pytest.raises(SystemExit, match="link"):
+        fake.run([])
+    assert (game_db / "mods" / "a.db0").read_text(encoding="utf-8") == "the game's own archive"
+
+
+def test_interrupted_run_recovers(fake, monkeypatch):
+    a = fake.mod("A", {"gamedata/scripts/x.script": "a"})
+    fake.mod("B", {"gamedata/scripts/x.script": "b", "gamedata/scripts/b_only.script": "b"})
+    fake.mod("C", {"gamedata/scripts/c.script": "c"})
+    fake.run(["A"])
+    real_link, calls = os.link, []
+
+    def flaky_link(src, dst):
+        calls.append(dst)
+        if len(calls) == 3:
+            raise OSError(5, "Access is denied")  # e.g. the game holds a file open
+        real_link(src, dst)
+
+    monkeypatch.setattr(ms.os, "link", flaky_link)
+    with pytest.raises(SystemExit):
+        fake.run(["A", "B", "C"])
+    monkeypatch.setattr(ms.os, "link", real_link)
+    fake.run(["A"])
+    scripts = fake.out / "gamedata" / "scripts"
+    assert os.path.samefile(scripts / "x.script", a / "gamedata" / "scripts" / "x.script")
+    assert sorted(p.name for p in scripts.iterdir()) == ["x.script"]
+
+
+def test_read_only_files(fake):
+    mod = fake.mod("A", {"gamedata/scripts/r.script": "r", "gamedata/configs/axr_options.ltx": "o"})
+    for rel in ("gamedata/scripts/r.script", "gamedata/configs/axr_options.ltx"):
+        os.chmod(mod / rel, stat.S_IREAD)
+    fake.run(["A"])
+    copy = fake.out / "gamedata" / "configs" / "axr_options.ltx"
+    copy.write_text("the game can write its copy", encoding="utf-8")
+    report = fake.run([])
+    assert report.removed == 2
+    src = mod / "gamedata" / "scripts" / "r.script"
+    assert src.read_text(encoding="utf-8") == "r"
+    assert not os.access(src, os.W_OK), "the original must stay read-only"
+
+
+def test_git_folders_skipped(fake):
+    fake.mod("A", {".git/HEAD": "ref", "gamedata/scripts/.git/x": "x", "gamedata/scripts/a.script": "a"})
+    fake.run(["A"])
+    assert not (fake.out / ".git").exists()
+    assert sorted(p.name for p in (fake.out / "gamedata" / "scripts").iterdir()) == ["a.script"]
+
+
+def test_write_through_a_link_is_reported(fake):
+    fake.mod("A", {"gamedata/scripts/a.script": "old"})
+    fake.run(["A"])
+    with open(fake.out / "gamedata" / "scripts" / "a.script", "w", encoding="utf-8") as f:
+        f.write("written by the game through the hard link")  # what runtime_written exists to prevent
+    report = fake.run(["A"])
+    assert report.changed == ["gamedata/scripts/a.script"]
 
 
 # --- CLI

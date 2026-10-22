@@ -25,7 +25,8 @@
      - как запускать exe кооператива:
          способ 1 (рекомендуется для Anomaly) - прямо из мода: в папку игры ничего не копируется;
          способ 2 (рекомендуется для G.A.M.M.A.) - копия exe в <Anomaly>\bin, тогда ReShade из GAMMA
-         (bin\dxgi.dll) и другие файлы рядом с exe подхватываются.
+         (bin\dxgi.dll) и другие файлы рядом с exe подхватываются. Установщик кладёт exe в папку exe_copy\
+         мода, а не в bin\ (exe в bin\ мода перекрыл бы в MO2 вашу копию).
   2. Запустите установку из того же zip ещё раз: часть 2. Core, в поле Name впишите: Anomaly Coop - Core.
      Страница дополнений: их нет в архиве, она только объясняет, что они дают и где их взять.
      Только G.A.M.M.A.: в третий раз - часть 3. GAMMA, Name: Anomaly Coop - GAMMA. На G.A.M.M.A. установщик в частях
@@ -38,18 +39,20 @@
                  GAMMA окажется сразу после Core и станет самой нижней строкой.
      Итог: Engine - самая верхняя строка, ваши моды посередине, Core и GAMMA - две нижние строки.
   4. Только для способа 2: правый клик по Anomaly Coop - Engine - Open in Explorer - скопируйте
-     bin\AnomalyCoopDX11AVX.exe в <Anomaly>\bin. Повторяйте после каждого обновления Anomaly Coop.
+     exe_copy\AnomalyCoopDX11AVX.exe в <Anomaly>\bin. Повторяйте после каждого обновления Anomaly Coop.
   5. Tools - Executables... (Ctrl+E) - "+":
        способ 1: Add empty. Title: Anomaly Coop. Binary: впишите <Anomaly>\bin\AnomalyCoopDX11AVX.exe (файл внутри
                  мода, обзор "..." его не покажет). Start in: оставьте пустым.
        способ 2: Add from file... - <Anomaly>\bin\AnomalyCoopDX11AVX.exe. Title: Anomaly Coop.
      Выберите "Anomaly Coop" в списке справа вверху - Run.
-  Если способ 1 не запускает игру, перейдите на способ 2: та же запись в MO2 продолжит работать.
+  Если способ 1 не запускает игру, поставьте часть Engine заново со способом 2 (то же имя, в MO2 - Replace), затем
+  пункты 4 и 5 для способа 2.
 
 УСТАНОВКА РАСПАКОВКОЙ, БЕЗ УСТАНОВЩИКА (тоже для MO2)
   Распакуйте zip. Три верхние папки (Anomaly Coop - Engine, Anomaly Coop - Core и, для G.A.M.M.A., Anomaly Coop -
   GAMMA) - готовые моды MO2. Скопируйте их в <папка MO2>\mods (папка fomod не нужна), в MO2 нажмите F5 (Refresh),
-  отметьте моды галочками и расставьте, как в пункте 3. Дальше - пункты 4 и 5.
+  отметьте моды галочками и расставьте, как в пункте 3. Для способа 1 дальше - пункт 5. Для способа 2 перенесите exe
+  из мода: "Anomaly Coop - Engine\bin\AnomalyCoopDX11AVX.exe" в <Anomaly>\bin (в моде не оставляйте), затем пункт 5.
 
 УСТАНОВКА БЕЗ MOD ORGANIZER
   Скопируйте "Anomaly Coop - Engine\bin\AnomalyCoopDX11AVX.exe" в <Anomaly>\bin, затем содержимое
@@ -58,8 +61,8 @@
   exe). Часть GAMMA без MO2 не нужна: она для модов G.A.M.M.A.
 
 G.A.M.M.A.: ЧТО ВЫКЛЮЧИТЬ
-  Снимите галочки в левом списке MO2 (поле поиска над списком находит эти моды по номеру или слову YACS). В коопе эту
-  механику берёт на себя Anomaly Coop:
+  Снимите галочки в левом списке MO2 (поле поиска над списком находит эти моды по номеру или слову YACS). В коопе их
+  механики Anomaly Coop заменит своими (в разработке):
     203- YACS Better Campfire Saves (forces campfire saves but they are better) - Ishmaeel
         привалы и аварийные сейвы хоста;
     G.A.M.M.A. YACS no quit

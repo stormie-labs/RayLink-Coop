@@ -57,6 +57,17 @@ $fsgame = Join-Path $GameDir 'fsgame.ltx'
 Assert-Path $gameBin 'bin'
 Assert-Path $fsgame 'fsgame.ltx'
 
+# The two kinds of root never take each other's place: the GAMMA stand is hard links to the mods' own files (robocopy
+# below would write straight into them), the stock root's db is a junction to the real game's archives.
+$standDb = Join-Path $TestRoot 'db'
+if ($Profile) {
+    if ((Test-Path -LiteralPath $standDb) -and ((Get-Item -LiteralPath $standDb -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        throw "$standDb is a junction (a stock deploy root?): the GAMMA stand needs a root of its own (default E:\AnomalyCoopGamma)"
+    }
+} elseif (Test-Path -LiteralPath (Join-Path $TestRoot '.mo2_stand.json')) {
+    throw "$TestRoot is a GAMMA stand built by mo2_stand.py (its files are hard links to the mods): use -Profile, or another -TestRoot for the stock stand"
+}
+
 New-Item -ItemType Directory -Force -Path $TestRoot | Out-Null
 
 if (-not $SkipGameBin) {

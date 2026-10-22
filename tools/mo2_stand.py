@@ -25,6 +25,7 @@ import argparse
 import json
 import os
 import shutil
+import stat
 import sys
 import time
 from dataclasses import dataclass, field
@@ -116,6 +117,8 @@ def layer_files(layer: Layer):
                 if e.is_dir(follow_symlinks=False):
                     if layer.kind == "game" and not rel_dir and e.name.lower() == "appdata":
                         continue  # the owner's own appdata; the instances get appdata_a/_b
+                    if e.name.lower() == ".git":
+                        continue  # a mod's git checkout (350- Ledge Grabbing): never game data, read-only objects
                     stack.append((e.path, rel))
                     continue
                 if not e.is_file(follow_symlinks=False):
@@ -123,13 +126,19 @@ def layer_files(layer: Layer):
                 low = e.name.lower()
                 if low.endswith(".mohidden") or (not rel_dir and low == "meta.ini" and layer.kind == "mod"):
                     continue
-                st = e.stat(follow_symlinks=False)
+                # os.stat, not the directory entry: NTFS updates the entry only for the name that was written, so a
+                # game write through the stand's link would stay invisible here
+                st = os.stat(e.path)
                 yield (f"{layer.prefix}/{rel}" if layer.prefix else rel), e.path, st.st_size, st.st_mtime_ns
 
 
+def _inside(path: str, folder: str) -> bool:
+    path, folder = os.path.normcase(path).rstrip("\\/"), os.path.normcase(folder).rstrip("\\/")
+    return path == folder or path.startswith(folder + os.sep)
+
+
 def _overlaps(a: str, b: str) -> bool:
-    a, b = os.path.normcase(a).rstrip("\\/"), os.path.normcase(b).rstrip("\\/")
-    return a == b or a.startswith(b + os.sep) or b.startswith(a + os.sep)
+    return _inside(a, b) or _inside(b, a)
 
 
 class _Dirs:
@@ -156,13 +165,50 @@ class _Dirs:
             self.ok.add(key)
 
 
+def _delete_ignoring_readonly(path: str) -> None:
+    """Delete one name of a read-only file without touching the attribute, which a hard link shares with the mod's
+    original (FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, Windows 10 1809+, NTFS)."""
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD,
+                                wintypes.DWORD, wintypes.HANDLE]
+    k32.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    delete_access, share_all, open_existing, open_reparse_point = 0x00010000, 0x7, 3, 0x00200000
+    file_disposition_info_ex = 21
+    flags = ctypes.c_ulong(0x1 | 0x2 | 0x10)  # DELETE | POSIX_SEMANTICS | IGNORE_READONLY_ATTRIBUTE
+    handle = k32.CreateFileW(path, delete_access, share_all, None, open_existing, open_reparse_point, None)
+    if handle in (None, ctypes.c_void_p(-1).value):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        if not k32.SetFileInformationByHandle(handle, file_disposition_info_ex, ctypes.byref(flags),
+                                              ctypes.sizeof(flags)):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        k32.CloseHandle(handle)
+
+
+def _unlink(path: Path) -> None:
+    try:
+        os.unlink(path)
+    except PermissionError:
+        if sys.platform != "win32" or os.access(path, os.W_OK):
+            raise
+        _delete_ignoring_readonly(str(path))
+
+
 def _place(src: str, dst: Path, copy: bool) -> None:
     if os.path.lexists(dst):
         if dst.is_dir() and not os.path.islink(dst):
             raise SystemExit(f"a folder stands where the stand needs a file: {dst}")
-        os.unlink(dst)  # never write into an existing file: it may be a hard link to a mod's original
+        _unlink(dst)  # never write into an existing file: it may be a hard link to a mod's original
     if copy:
         shutil.copy2(src, dst)
+        if not os.access(dst, os.W_OK):
+            os.chmod(dst, stat.S_IWRITE | stat.S_IREAD)  # our own copy: the game must be able to write it
         return
     try:
         os.link(src, dst)
@@ -207,44 +253,56 @@ def materialize(layers: list[Layer], out) -> Report:
             want[key] = (rel, src, size, mtime, layer.copy or runtime_written(rel))
             providers.setdefault(key, []).append(layer.name)
 
-    out.mkdir(parents=True, exist_ok=True)
     manifest_path = out / MANIFEST
     old: dict[str, list] = {}
     if manifest_path.is_file():
         old = json.loads(manifest_path.read_text(encoding="utf-8"))
+    elif out.is_dir() and any(out.iterdir()):
+        raise SystemExit(f"{out} is not a stand built by mo2_stand: not empty and no {MANIFEST} (a stock deploy "
+                         f"root?); use an empty folder")
+    out.mkdir(parents=True, exist_ok=True)
 
+    # 1. every folder first: a junction or a symlink anywhere stops the run before a single file is written
     dirs = _Dirs(out)
-    new: dict[str, list] = {}
-    for key, (rel, src, size, mtime, copy) in want.items():
-        entry = [rel, src, size, mtime, "copy" if copy else "link"]
-        dst = out / rel
-        prev = old.get(key)
-        if prev is not None and prev[1:] == entry[1:] and os.path.lexists(dst):
-            report.unchanged += 1
-            new[key] = entry
-            continue
-        if prev is not None and prev[1] == src and prev[2:4] != entry[2:4]:
-            report.changed.append(rel)
-        dirs.ensure(rel.rpartition("/")[0])
-        _place(src, dst, copy)
-        new[key] = entry
-        if copy:
-            report.copied += 1
-        else:
-            report.linked += 1
+    for parent in {rel.rpartition("/")[0] for rel, *_ in want.values()}:
+        dirs.ensure(parent)
 
-    for key, prev in old.items():
-        if key in want:
-            continue
-        dst = out / prev[0]
-        if os.path.lexists(dst) and not dst.is_dir():
-            os.unlink(dst)
-            _prune_empty(dst, out)
-        report.removed += 1
+    state = dict(old)  # what really lies in the stand; saved even when a step below fails
+    try:
+        # 2. remove what is no longer wanted (before placing: a file may have turned into a folder)
+        real_out = os.path.realpath(out)
+        for key, prev in old.items():
+            if key in want:
+                continue
+            dst = out / prev[0]
+            if not _inside(os.path.realpath(dst.parent), real_out):
+                raise SystemExit(f"refusing to delete through a link: {dst} resolves outside {out}")
+            if os.path.lexists(dst) and not dst.is_dir():
+                _unlink(dst)
+                _prune_empty(dst, out)
+            del state[key]
+            report.removed += 1
 
-    tmp = manifest_path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(new, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, manifest_path)
+        # 3. place what changed
+        for key, (rel, src, size, mtime, copy) in want.items():
+            entry = [rel, src, size, mtime, "copy" if copy else "link"]
+            dst = out / rel
+            prev = old.get(key)
+            if prev is not None and prev[1:] == entry[1:] and os.path.lexists(dst):
+                report.unchanged += 1
+                continue
+            if prev is not None and prev[1] == src and prev[2:4] != entry[2:4]:
+                report.changed.append(rel)
+            _place(src, dst, copy)
+            state[key] = entry
+            if copy:
+                report.copied += 1
+            else:
+                report.linked += 1
+    finally:
+        tmp = manifest_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, manifest_path)
 
     report.files = len(want)
     report.conflicts = {want[k][0]: names for k, names in providers.items() if len(names) > 1}

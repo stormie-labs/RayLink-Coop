@@ -62,3 +62,14 @@ def test_options_never_written_through_a_hard_link(work):
     assert original.read_text(encoding=CP1251) == "[options]\n        video/hud/show_minimap           = false\n"
     opt = (root / "gamedata" / "configs" / "axr_options.ltx").read_text(encoding=CP1251)
     assert "show_minimap           = true" in opt and "[character_creation]" in opt
+
+
+def test_minimap_option_never_written_through_a_hard_link(work):
+    root = make_root(work)
+    original = work / "gamma_mod_axr_options.ltx"
+    original.write_text("[options]\n        video/hud/show_minimap           = false\n", encoding=CP1251)
+    os.link(original, root / "gamedata" / "configs" / "axr_options.ltx")
+    launch(root, "b", "-Connect", "127.0.0.1")
+    assert original.read_text(encoding=CP1251) == "[options]\n        video/hud/show_minimap           = false\n"
+    opt = (root / "gamedata" / "configs" / "axr_options.ltx").read_text(encoding=CP1251)
+    assert "show_minimap           = true" in opt

@@ -63,25 +63,31 @@ def test_fomod_xml_parses() -> None:
     assert [c.tag for c in root] == ["moduleName", "installSteps", "conditionalFileInstalls"]
 
 
+def _installs() -> dict[frozenset, list[tuple[str, str, str]]]:
+    """conditionalFileInstalls: {frozenset of (flag, value)}: [(tag, source, destination)]."""
+    result = {}
+    for pattern in fomod_root().findall("./conditionalFileInstalls/patterns/pattern"):
+        flags = frozenset((d.get("flag"), d.get("value")) for d in pattern.iter("flagDependency"))
+        result[flags] = [(f.tag, f.get("source"), f.get("destination")) for f in pattern.find("files")]
+    return result
+
+
 def test_fomod_installs_three_mod_folders() -> None:
-    root = fomod_root()
-    patterns = root.findall("./conditionalFileInstalls/patterns/pattern")
-    assert len(patterns) == 3
-    installed: dict[str, tuple[str, str]] = {}
-    folders = 0
-    for pattern in patterns:
-        flags = pattern.findall("./dependencies/flagDependency")
-        assert len(flags) == 1 and flags[0].get("flag") == "part"
-        found = pattern.findall("./files/folder")
-        assert len(found) == 1
-        folders += 1
-        installed[flags[0].get("value")] = (found[0].get("source"), found[0].get("destination"))
-    assert folders == 3
-    assert installed == {
-        "engine": (ENGINE, ""),
-        "core": (CORE, ""),
-        "gamma": (GAMMA, ""),
-    }
+    installs = _installs()
+    assert installs[frozenset({("part", "core")})] == [("folder", CORE, "")]
+    assert installs[frozenset({("part", "gamma")})] == [("folder", GAMMA, "")]
+    assert installs[frozenset({("part", "engine"), ("exe", "mod")})] == [("folder", ENGINE, "")]
+    assert len(installs) == 4
+
+
+def test_copy_way_keeps_the_exe_out_of_the_mods_bin() -> None:
+    """Way 2 copies the exe into <Anomaly>/bin; an exe left in the mod's bin/ would win in MO2's VFS and run from
+    mods/.../bin instead (no ReShade, the copy pointless). So that pattern installs the exe elsewhere."""
+    files = _installs()[frozenset({("part", "engine"), ("exe", "copy")})]
+    exe = [f for f in files if f[1].replace("/", "\\").lower().endswith("anomalycoopdx11avx.exe")]
+    assert len(exe) == 1 and exe[0][0] == "file"
+    assert not exe[0][2].replace("/", "\\").lower().startswith("bin\\")
+    assert ("folder", ENGINE + "\\gamedata", "gamedata") in files
 
 
 def test_fomod_flags_are_set_somewhere() -> None:
@@ -175,9 +181,12 @@ def test_package_archive_layout() -> None:
             assert must in names, f"archive misses {must}"
         for folder in (f"{ENGINE}/gamedata/", f"{CORE}/gamedata/", f"{GAMMA}/gamedata/"):
             assert any(n.startswith(folder) for n in names), f"archive misses {folder}"
-        # every folder the installer copies must exist in the archive
+        # every folder and file the installer copies must exist in the archive
         for folder in fomod_root().iter("folder"):
-            assert folder.get("source") in top, f"installer source not in archive: {folder.get('source')}"
+            prefix = folder.get("source").replace("\\", "/") + "/"
+            assert any(n.startswith(prefix) for n in names), f"installer source not in archive: {prefix}"
+        for file in fomod_root().iter("file"):
+            assert file.get("source").replace("\\", "/") in names, f"installer source not in archive: {file.get('source')}"
         assert f"<Version>{version}</Version>" in info_xml
         for part in (ENGINE, CORE, GAMMA):
             assert part in release_txt
