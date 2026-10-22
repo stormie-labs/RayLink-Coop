@@ -636,3 +636,30 @@ TEST(protocol_version_bumped_for_host_priced_trade)
 {
 	CHECK(kProtocolVersion >= 4u);
 }
+
+// Review R1 I3-I4, R2 I1, I3: the world epoch in Welcome, BlobBegin and SessionReset, the core WorldEpoch, a level
+// changer id in TransitionVote instead of a raw packet.
+TEST(protocol_version_bumped_for_world_epoch)
+{
+	static_assert(kProtocolVersion >= 5u, "protocol 5");
+	static_assert(static_cast<uint16_t>(Msg::WorldEpoch) == 0x000A, "core message, append only");
+	static_assert(static_cast<uint16_t>(Msg::WorldEpoch) < static_cast<uint16_t>(Msg::GameBase), "handled by the session");
+	CHECK_EQ(std::string(msg_name(Msg::WorldEpoch)), std::string("WorldEpoch"));
+
+	WelcomeMsg we;
+	we.slot = 2;
+	we.session_token = 99;
+	we.host_nick = "Host";
+	we.max_players = 4;
+	we.world_epoch = 0xA1B2C3D4u;
+	Writer w;
+	we.write(w);
+	WelcomeMsg we2;
+	Reader r(w.ptr(), w.size());
+	CHECK(we2.read(r));
+	CHECK_EQ(we2.world_epoch, uint32_t(0xA1B2C3D4u));
+	CHECK_EQ(r.remaining(), size_t(0));
+	Reader cut(w.ptr(), w.size() - 1); // a Welcome of protocol 4 has no epoch
+	WelcomeMsg we3;
+	CHECK(!we3.read(cut));
+}

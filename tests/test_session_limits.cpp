@@ -1,7 +1,11 @@
-// Anomaly Coop unit tests: who may hold a player slot (player key, reconnect) and what the host keeps of a key.
+// Anomaly Coop unit tests: who may hold a player slot (player key, reconnect) and what the host keeps of a key;
+// what a host takes from a client (blobs, joins, request rates) and the world epoch.
 // Real Sessions over 127.0.0.1 in one process. Ports 37100+n (test_net.cpp uses 37000+n).
 #include "test_util.h"
 
+#include <enet/enet.h>
+
+#include <algorithm>
 #include <cstring>
 
 using namespace coop;
@@ -293,4 +297,508 @@ TEST(key_hex_round_trip)
 	CHECK(!key_from_hex(kKey32 + "0", back));
 	CHECK(!key_from_hex("0011223344556677889AABBCCDDEEFF0", back));
 	CHECK(!key_from_hex("00112233445566778899aabbccddeeg0", back));
+}
+
+// ============================================================================ R1 I3, I4, R2 I1, I4: limits, world epoch
+
+namespace
+{
+// A bare ENet client that speaks the wire protocol by hand: it sends what a Session never would (several blobs
+// announced at once, an epoch from the future).
+struct RawClient
+{
+	struct Message
+	{
+		uint16_t type = 0;
+		std::vector<uint8_t> payload;
+	};
+
+	ENetHost* host = nullptr;
+	ENetPeer* peer = nullptr;
+	bool connected = false;
+	bool disconnected = false;
+	std::vector<Message> inbox;
+
+	RawClient() { enet_initialize(); }
+	~RawClient()
+	{
+		if (host)
+			enet_host_destroy(host);
+		enet_deinitialize();
+	}
+	RawClient(const RawClient&) = delete;
+	RawClient& operator=(const RawClient&) = delete;
+
+	bool connect(uint16_t port)
+	{
+		host = enet_host_create(nullptr, 1, 3, 0, 0);
+		if (!host)
+			return false;
+		ENetAddress addr;
+		enet_address_set_host(&addr, "127.0.0.1");
+		addr.port = port;
+		peer = enet_host_connect(host, &addr, 3, 0);
+		return peer != nullptr;
+	}
+
+	void service()
+	{
+		ENetEvent ev;
+		while (host && enet_host_service(host, &ev, 0) > 0)
+		{
+			if (ev.type == ENET_EVENT_TYPE_CONNECT)
+				connected = true;
+			else if (ev.type == ENET_EVENT_TYPE_DISCONNECT)
+				disconnected = true;
+			else if (ev.type == ENET_EVENT_TYPE_RECEIVE)
+			{
+				if (ev.packet->dataLength >= 2)
+				{
+					Message m;
+					m.type = uint16_t(ev.packet->data[0] | (ev.packet->data[1] << 8));
+					m.payload.assign(ev.packet->data + 2, ev.packet->data + ev.packet->dataLength);
+					inbox.push_back(std::move(m));
+				}
+				enet_packet_destroy(ev.packet);
+			}
+		}
+	}
+
+	void send(Msg type, const Writer& w, uint8_t channel)
+	{
+		std::vector<uint8_t> buf;
+		buf.push_back(uint8_t(uint16_t(type)));
+		buf.push_back(uint8_t(uint16_t(type) >> 8));
+		buf.insert(buf.end(), w.data().begin(), w.data().end());
+		enet_peer_send(peer, channel, enet_packet_create(buf.data(), buf.size(), ENET_PACKET_FLAG_RELIABLE));
+		enet_host_flush(host);
+	}
+
+	// BlobBegin as protocol 5 lays it out: id, kind, total, crc, world epoch. No chunk follows.
+	void blob_begin(uint32_t id, uint32_t kind, uint64_t total, uint32_t epoch)
+	{
+		Writer w;
+		w.u32(id);
+		w.u32(kind);
+		w.u64(total);
+		w.u32(0);
+		w.u32(epoch);
+		send(Msg::BlobBegin, w, uint8_t(Lane::Bulk));
+	}
+
+	const Message* find(Msg type) const
+	{
+		for (const Message& m : inbox)
+			if (m.type == uint16_t(type))
+				return &m;
+		return nullptr;
+	}
+
+	// Text of the host's Reject, "" if none came.
+	std::string reject_text() const
+	{
+		const Message* m = find(Msg::Reject);
+		if (!m)
+			return std::string();
+		RejectMsg rm;
+		Reader r(m->payload.data(), m->payload.size());
+		return rm.read(r) ? std::string(reject_reason_name(rm.reason)) + ": " + rm.text : std::string("<bad Reject>");
+	}
+};
+
+bool raw_join(RawClient& raw, Node& host, uint16_t port)
+{
+	if (!raw.connect(port))
+		return false;
+	if (!t::pump_until({&host.s}, 3000, [&] {
+			raw.service();
+			return raw.connected;
+		}))
+		return false;
+	HelloMsg h;
+	h.build_id = host.cfg.build_id;
+	h.content_fp = manifest_fingerprint(host.cfg.manifest);
+	h.key = generate_player_key();
+	h.nick = "Raw";
+	Writer w;
+	h.write(w);
+	raw.send(Msg::Hello, w, 0);
+	return t::pump_until({&host.s}, 3000, [&] {
+		raw.service();
+		return raw.find(Msg::Welcome) != nullptr || raw.find(Msg::Reject) != nullptr;
+	});
+}
+
+void pump_with(Node& host, RawClient& raw, uint32_t ms)
+{
+	const uint64_t start = t::now_ms();
+	t::pump_until({&host.s}, ms, [&] {
+		raw.service();
+		return t::now_ms() - start >= ms;
+	});
+}
+
+// Starts a host in world epoch `epoch` (the game sets it after host(): a new session starts at 0) and joins `cl`.
+void host_at_epoch_and_join(Node& host, Node& cl, uint16_t port, uint32_t epoch)
+{
+	std::string err;
+	REQUIRE(host.host(&err));
+	host.s.set_world_epoch(epoch);
+	REQUIRE(cl.connect(port, &err));
+	REQUIRE(t::pump_until({&host.s, &cl.s}, 5000, [&] { return cl.s.is_active() && host.s.peers().size() == 1; }));
+}
+
+bool kicked(const Node& n, const std::string& why)
+{
+	return n.disconnected && n.disc_reason.find(reject_reason_name(RejectReason::Malformed)) != std::string::npos &&
+		n.disc_reason.find(why) != std::string::npos;
+}
+
+constexpr uint32_t kBlobOk = 7; // a kind the host's game accepts from clients in these tests
+} // namespace
+
+TEST(limits_blob_kind)
+{
+	// R1 I3: a client could announce 4 x 256 MB and the host would buffer it. The host takes only the blob kinds its
+	// game accepts from clients, each at most 1 MiB; the boundary is exact.
+	static_assert(kMaxClientBlobBytes == 1024u * 1024u, "brief: 1 MiB per blob from a client");
+	Node host("Boss", 37110), a("Alice", 37110), b("Bob", 37110), c("Carl", 37110);
+	host.s.accept_client_blob(kBlobOk);
+	host_and_join(host, {&a, &b, &c}, 37110);
+
+	// Exactly 1 MiB of an accepted kind: taken.
+	const std::vector<uint8_t> limit = t::random_bytes(size_t(kMaxClientBlobBytes), 11);
+	REQUIRE(a.s.send_blob(kHostPeer, kBlobOk, limit) != 0);
+	REQUIRE(t::pump_until({&host.s, &a.s, &b.s, &c.s}, 20000, [&] { return !host.blobs.empty() || a.disconnected; }));
+	REQUIRE(host.blobs.size() == 1);
+	CHECK_EQ(host.blobs[0].kind, kBlobOk);
+	CHECK_EQ(host.blobs[0].from, PeerId(1));
+	CHECK(host.blobs[0].data == limit);
+	CHECK(a.s.is_active());
+
+	// 1 MiB + 1: the sender is kicked as malformed when it announces it; nothing reaches the game.
+	REQUIRE(b.s.send_blob(kHostPeer, kBlobOk, t::random_bytes(size_t(kMaxClientBlobBytes) + 1, 12)) != 0);
+	REQUIRE(t::pump_until({&host.s, &a.s, &b.s, &c.s}, 10000, [&] { return b.disconnected; }));
+	CHECK(kicked(b, "over the client limit"));
+
+	// A kind the game does not take from clients (the world save is host -> client only), however small.
+	REQUIRE(c.s.send_blob(kHostPeer, kBlobOk + 1, std::vector<uint8_t>(10, 1)) != 0);
+	REQUIRE(t::pump_until({&host.s, &a.s, &c.s}, 10000, [&] { return c.disconnected; }));
+	CHECK(kicked(c, "not accepted from clients"));
+
+	t::pump_for({&host.s, &a.s}, 100);
+	CHECK_EQ(host.blobs.size(), size_t(1));
+	CHECK(a.s.is_active());
+	CHECK_EQ(host.s.peers().size(), size_t(1));
+	CHECK_EQ(host.progress.size(), size_t(16)); // Alice's 1 MiB in 64 KiB chunks, not a byte of the others
+
+	// A host whose game takes nothing from clients (the default) refuses every kind.
+	Node bare("Boss", 37111), d("Dan", 37111);
+	host_and_join(bare, {&d}, 37111);
+	REQUIRE(d.s.send_blob(kHostPeer, kBlobOk, std::vector<uint8_t>(10, 1)) != 0);
+	REQUIRE(t::pump_until({&bare.s, &d.s}, 10000, [&] { return d.disconnected; }));
+	CHECK(kicked(d, "not accepted from clients"));
+	CHECK(bare.blobs.empty());
+}
+
+TEST(limits_blob_kind_bytes_in_flight)
+{
+	// R1 I3: announced but unfinished blobs of one client may hold at most 4 MiB on the host (a Session sends its
+	// blobs one after another; a modified client announces several and never finishes them).
+	static_assert(kMaxClientBlobBytesInFlight == 4u * 1024u * 1024u, "brief: 4 MiB in flight per client");
+	Node host("Boss", 37112);
+	host.s.accept_client_blob(kBlobOk);
+	std::string err;
+	REQUIRE(host.host(&err));
+
+	// Four blobs of exactly 1 MiB in flight = 4 MiB: still fine.
+	RawClient full;
+	REQUIRE(raw_join(full, host, 37112));
+	REQUIRE(full.find(Msg::Welcome) != nullptr);
+	for (uint32_t id = 1; id <= 4; ++id)
+		full.blob_begin(id, kBlobOk, kMaxClientBlobBytes, 0);
+	pump_with(host, full, 300);
+	CHECK(full.find(Msg::Reject) == nullptr);
+	CHECK_EQ(host.s.peers().size(), size_t(1));
+	// One more byte in flight: kicked.
+	full.blob_begin(5, kBlobOk, 1, 0);
+	REQUIRE(t::pump_until({&host.s}, 3000, [&] {
+		full.service();
+		return full.find(Msg::Reject) != nullptr;
+	}));
+	CHECK(full.reject_text().find("Malformed") != std::string::npos);
+	CHECK(full.reject_text().find("unfinished blob bytes") != std::string::npos);
+
+	// The count of unfinished blobs stays limited too (a fifth empty one adds no bytes).
+	RawClient many;
+	REQUIRE(raw_join(many, host, 37112));
+	REQUIRE(many.find(Msg::Welcome) != nullptr);
+	for (uint32_t id = 1; id <= 4; ++id)
+		many.blob_begin(id, kBlobOk, kMaxClientBlobBytes, 0);
+	many.blob_begin(5, kBlobOk, 0, 0);
+	REQUIRE(t::pump_until({&host.s}, 3000, [&] {
+		many.service();
+		return many.find(Msg::Reject) != nullptr;
+	}));
+	CHECK(many.reject_text().find("too many unfinished blobs") != std::string::npos);
+
+	// A kind the game does not take, announced raw.
+	RawClient other;
+	REQUIRE(raw_join(other, host, 37112));
+	other.blob_begin(1, kBlobOk + 1, 10, 0);
+	REQUIRE(t::pump_until({&host.s}, 3000, [&] {
+		other.service();
+		return other.find(Msg::Reject) != nullptr;
+	}));
+	CHECK(other.reject_text().find("not accepted from clients") != std::string::npos);
+	t::pump_for({&host.s}, 100);
+	CHECK(host.s.peers().empty());
+	CHECK(host.blobs.empty());
+}
+
+TEST(limits_blob_replaced_by_newer_of_the_same_kind)
+{
+	// R1 I4: a newer blob of the same kind to the same peer replaces the one still queued or streaming (the host
+	// never holds two world saves for one player); other kinds are not touched.
+	Node host("Boss", 37113), a("Alice", 37113);
+	host_and_join(host, {&a}, 37113);
+	const std::vector<uint8_t> old_world = t::random_bytes(6u * 1024 * 1024, 21);
+	const uint32_t old_id = host.s.send_blob(1, 1, old_world);
+	REQUIRE(old_id != 0);
+	REQUIRE(t::pump_until({&host.s, &a.s}, 10000, [&] { return !a.progress.empty(); }));
+	REQUIRE(a.blobs.empty());
+	const std::vector<uint8_t> other_kind = t::random_bytes(1000, 22);
+	const std::vector<uint8_t> new_world = t::random_bytes(200000, 23);
+	const uint32_t other_id = host.s.send_blob(1, 2, other_kind);
+	const uint32_t new_id = host.s.send_blob(1, 1, new_world);
+	REQUIRE(t::pump_until({&host.s, &a.s}, 20000, [&] { return a.blobs.size() == 2; }));
+	t::pump_for({&host.s, &a.s}, 200);
+	REQUIRE(a.blobs.size() == 2);
+	CHECK_EQ(a.blobs[0].id, other_id);
+	CHECK(a.blobs[0].data == other_kind);
+	CHECK_EQ(a.blobs[1].id, new_id);
+	CHECK(a.blobs[1].data == new_world);
+	CHECK(a.logged("dropped: got")); // the old one ended early on Alice's side
+	CHECK(host.s.stats(uint16_t(Msg::BlobChunk)).sent_bytes < old_world.size()); // and was not sent in full
+	CHECK(a.s.is_active());
+}
+
+TEST(limits_join_rate)
+{
+	// R1 I4, R2 I4: every JoinRequest costs the host a full world save. One join in flight per peer (until its
+	// WorldLoaded), at most one join per peer every 5 s; a request that comes too soon waits instead of being lost.
+	static_assert(JoinGate::kIntervalMs == 5000, "brief: one join per 5 s");
+	using V = JoinGate::Verdict;
+	JoinGate g;
+	CHECK(g.request(1, 1000) == V::Admit);
+	CHECK(g.in_flight(1));
+	// One in flight: a second request is refused, however late.
+	CHECK(g.request(1, 1001) == V::Refused);
+	CHECK(g.request(1, 60000) == V::Refused);
+	// Peers are independent.
+	CHECK(g.request(2, 1000) == V::Admit);
+	// WorldLoaded ends the join once; a repeated or unasked-for WorldLoaded is nothing.
+	CHECK(g.loaded(1));
+	CHECK(!g.in_flight(1));
+	CHECK(!g.loaded(1));
+	CHECK(!g.loaded(3));
+	// The next join of peer 1: not before 5 s after the last one; it waits and comes due exactly then.
+	CHECK(g.request(1, 5999) == V::Later);
+	CHECK(g.waiting(1));
+	CHECK(!g.in_flight(1));
+	CHECK(g.request(1, 5999) == V::Refused); // one waiting request is enough
+	CHECK(g.due(5999).empty());
+	const std::vector<PeerId> due = g.due(6000);
+	REQUIRE(due.size() == 1);
+	CHECK_EQ(due[0], PeerId(1));
+	CHECK(g.in_flight(1));
+	CHECK(!g.waiting(1));
+	CHECK(g.due(7000).empty());
+	CHECK(g.loaded(1));
+	CHECK(g.request(1, 11000) == V::Admit); // 6000 + 5000
+	CHECK(g.loaded(1));
+
+	// A world change voids joins in flight and waiting ones (everybody rejoins); the interval holds across it.
+	CHECK(g.request(1, 13000) == V::Later);
+	CHECK(g.loaded(2));
+	CHECK(g.request(2, 7000) == V::Admit); // 1000 + 5000 <= 7000
+	g.world_replaced();
+	CHECK(!g.in_flight(2));
+	CHECK(!g.waiting(1));
+	CHECK(!g.loaded(2)); // the old world's WorldLoaded
+	CHECK(g.due(20000).empty());
+	CHECK(g.request(2, 11999) == V::Later);
+	CHECK(g.request(1, 16000) == V::Admit);
+
+	// A peer that left: its join and its waiting request are gone; its slot keeps the interval.
+	g.forget(1);
+	CHECK(!g.in_flight(1));
+	CHECK(!g.loaded(1));
+	CHECK(g.request(1, 20999) == V::Later);
+	g.forget(1);
+	CHECK(g.due(30000).size() == 1); // peer 2 only
+	CHECK(g.request(1, 30000) == V::Admit);
+}
+
+TEST(limits_message_rate)
+{
+	// R2 I4: heavy requests of a client (StateDumpRequest) are rate limited per client before their handler.
+	Node host("Boss", 37114), a("Alice", 37114), b("Bob", 37114);
+	host.s.limit_rate(Msg::StateDumpRequest, 4, 1000); // 4 at once, one more every second
+	std::vector<PeerId> dumps, others;
+	host.s.on(Msg::StateDumpRequest, [&](PeerId from, Reader&) { dumps.push_back(from); });
+	host.s.on(Msg::ScriptEvent, [&](PeerId from, Reader&) { others.push_back(from); });
+	host_and_join(host, {&a, &b}, 37114);
+
+	for (int i = 0; i < 10; ++i)
+	{
+		a.s.send(kHostPeer, Lane::Reliable, Msg::StateDumpRequest, Writer());
+		a.s.send(kHostPeer, Lane::Reliable, Msg::ScriptEvent, Writer());
+	}
+	b.s.send(kHostPeer, Lane::Reliable, Msg::StateDumpRequest, Writer());
+	REQUIRE(t::pump_until({&host.s, &a.s, &b.s}, 5000, [&] { return others.size() == 10 && dumps.size() >= 5; }));
+	t::pump_for({&host.s, &a.s, &b.s}, 50);
+	CHECK_EQ(dumps.size(), size_t(5)); // Alice's 4, Bob's own bucket
+	CHECK_EQ(std::count(dumps.begin(), dumps.end(), PeerId(2)), std::ptrdiff_t(1));
+	CHECK_EQ(others.size(), size_t(10)); // other types are not limited
+	CHECK(host.logged("rate limit"));
+	CHECK(host.left.empty()); // dropped, not punished
+
+	// Tokens come back with time: two after 2.1 s.
+	t::pump_for({&host.s, &a.s, &b.s}, 2100);
+	for (int i = 0; i < 5; ++i)
+		a.s.send(kHostPeer, Lane::Reliable, Msg::StateDumpRequest, Writer());
+	REQUIRE(t::pump_until({&host.s, &a.s, &b.s}, 5000, [&] { return dumps.size() >= 7; }));
+	t::pump_for({&host.s, &a.s, &b.s}, 50);
+	CHECK_EQ(dumps.size(), size_t(7));
+}
+
+TEST(world_epoch)
+{
+	// R2 I1: a load or a level change on the host replaces the world. What a client made in the old world
+	// (WorldLoaded, JoinRequest, any request) is dropped after the change, the new world's messages do not reach
+	// a client still in the old one, and a blob of an old world is not taken by a client already in the new one.
+	Node host("Boss", 37115), a("Alice", 37115);
+	std::vector<uint16_t> at_host, at_client;
+	std::vector<uint32_t> resets;
+	auto record = [](std::vector<uint16_t>& into, Msg type) {
+		return [&into, type](PeerId, Reader&) { into.push_back(uint16_t(type)); };
+	};
+	host.s.on(Msg::WorldLoaded, record(at_host, Msg::WorldLoaded));
+	host.s.on(Msg::JoinRequest, record(at_host, Msg::JoinRequest));
+	a.s.on(Msg::EntityState, record(at_client, Msg::EntityState));
+	// As the game does on SessionReset: the new epoch, then the JoinRequest.
+	a.s.on(Msg::SessionReset, [&](PeerId, Reader& r) {
+		r.str();
+		const uint32_t epoch = r.u32();
+		if (!r.ok())
+			return;
+		resets.push_back(epoch);
+		a.s.set_world_epoch(epoch);
+		a.s.send(kHostPeer, Lane::Reliable, Msg::JoinRequest, Writer());
+	});
+	host_at_epoch_and_join(host, a, 37115, 1);
+	CHECK_EQ(host.s.world_epoch(), uint32_t(1));
+	CHECK_EQ(a.welcome.world_epoch, uint32_t(1));
+	CHECK_EQ(a.s.world_epoch(), uint32_t(1));
+
+	// One world: everything goes through.
+	a.s.send(kHostPeer, Lane::Reliable, Msg::WorldLoaded, Writer());
+	host.s.send(1, Lane::Reliable, Msg::EntityState, Writer());
+	REQUIRE(t::pump_until({&host.s, &a.s}, 3000, [&] { return at_host.size() == 1 && at_client.size() == 1; }));
+
+	// The host loads a save: epoch 2. Alice does not know yet.
+	host.s.set_world_epoch(2);
+	a.s.send(kHostPeer, Lane::Reliable, Msg::WorldLoaded, Writer()); // she finished loading the old world
+	a.s.send(kHostPeer, Lane::Reliable, Msg::JoinRequest, Writer());
+	host.s.send(1, Lane::Reliable, Msg::EntityState, Writer()); // a change of the new world
+	host.s.broadcast(Lane::Reliable, Msg::EntityState, Writer());
+	t::pump_for({&host.s, &a.s}, 300);
+	CHECK_EQ(at_host.size(), size_t(1));
+	CHECK_EQ(at_client.size(), size_t(1));
+	CHECK(host.logged("made in world epoch 1"));
+	CHECK(host.left.empty()); // a stale message is dropped, not punished
+	CHECK(a.s.is_active());
+
+	// SessionReset still reaches her; she rejoins and her messages count again.
+	Writer reset;
+	reset.str("the host loaded a save");
+	reset.u32(host.s.world_epoch());
+	host.s.send(1, Lane::Reliable, Msg::SessionReset, reset);
+	REQUIRE(t::pump_until({&host.s, &a.s}, 3000, [&] { return at_host.size() == 2; }));
+	CHECK(resets == std::vector<uint32_t>{2});
+	CHECK_EQ(a.s.world_epoch(), uint32_t(2));
+	CHECK_EQ(at_host[1], uint16_t(Msg::JoinRequest));
+	host.s.send(1, Lane::Reliable, Msg::EntityState, Writer());
+	a.s.send(kHostPeer, Lane::Reliable, Msg::WorldLoaded, Writer());
+	REQUIRE(t::pump_until({&host.s, &a.s}, 3000, [&] { return at_host.size() == 3 && at_client.size() == 2; }));
+
+	// A blob of world 2 is on its way when the host moves to world 3 and Alice rejoins it: she drops it on arrival.
+	const std::vector<uint8_t> world2 = t::random_bytes(100000, 31);
+	REQUIRE(host.s.send_blob(1, 1, world2) != 0);
+	host.s.update(t::now_ms()); // handed to the transport; Alice is not pumped yet
+	host.s.set_world_epoch(3);
+	a.s.set_world_epoch(3); // what her SessionReset handler does
+	REQUIRE(t::pump_until({&host.s, &a.s}, 5000, [&] { return a.logged("made in world epoch 2"); }));
+	t::pump_for({&host.s, &a.s}, 100);
+	CHECK(a.blobs.empty());
+	// The new world's blob is taken.
+	const std::vector<uint8_t> world3 = t::random_bytes(100000, 32);
+	REQUIRE(host.s.send_blob(1, 1, world3) != 0);
+	REQUIRE(t::pump_until({&host.s, &a.s}, 5000, [&] { return !a.blobs.empty(); }));
+	CHECK(a.blobs[0].data == world3);
+	// And her messages count (the host has her declaration of world 3).
+	a.s.send(kHostPeer, Lane::Reliable, Msg::WorldLoaded, Writer());
+	REQUIRE(t::pump_until({&host.s, &a.s}, 3000, [&] { return at_host.size() == 4; }));
+	CHECK(host.left.empty());
+}
+
+TEST(world_epoch_cancels_the_old_worlds_blob)
+{
+	// R2 I1, R1 I4: the world save of a world that is gone is not streamed any further.
+	Node host("Boss", 37116), a("Alice", 37116);
+	host_at_epoch_and_join(host, a, 37116, 1);
+	CHECK_EQ(a.s.world_epoch(), uint32_t(1));
+	const std::vector<uint8_t> old_world = t::random_bytes(6u * 1024 * 1024, 41);
+	REQUIRE(host.s.send_blob(1, 1, old_world) != 0);
+	REQUIRE(t::pump_until({&host.s, &a.s}, 10000, [&] { return !a.progress.empty(); }));
+	host.s.set_world_epoch(2);
+	REQUIRE(t::pump_until({&host.s, &a.s}, 10000, [&] { return a.logged("dropped: got"); }));
+	t::pump_for({&host.s, &a.s}, 100);
+	CHECK(a.blobs.empty());
+	CHECK(host.s.stats(uint16_t(Msg::BlobChunk)).sent_bytes < old_world.size());
+	CHECK(a.s.is_active());
+}
+
+TEST(world_epoch_from_the_future_is_malformed)
+{
+	// A client tells the host which world it is in; it cannot be in one the host has not made yet.
+	Node host("Boss", 37117);
+	host.s.set_world_epoch(3);
+	std::string err;
+	REQUIRE(host.host(&err));
+	CHECK_EQ(host.s.world_epoch(), uint32_t(0)); // a new session starts over; the game sets it after host()
+	host.s.set_world_epoch(3);
+	RawClient raw;
+	REQUIRE(raw_join(raw, host, 37117));
+	const RawClient::Message* wm = raw.find(Msg::Welcome);
+	REQUIRE(wm != nullptr);
+	WelcomeMsg welcome;
+	Reader wr(wm->payload.data(), wm->payload.size());
+	REQUIRE(welcome.read(wr));
+	CHECK_EQ(welcome.world_epoch, uint32_t(3));
+
+	Writer same;
+	same.u32(3);
+	raw.send(Msg::WorldEpoch, same, 0); // the one it is in: fine
+	pump_with(host, raw, 200);
+	CHECK(raw.find(Msg::Reject) == nullptr);
+	Writer future;
+	future.u32(4);
+	raw.send(Msg::WorldEpoch, future, 0);
+	REQUIRE(t::pump_until({&host.s}, 3000, [&] {
+		raw.service();
+		return raw.find(Msg::Reject) != nullptr;
+	}));
+	CHECK(raw.reject_text().find("WorldEpoch") != std::string::npos);
 }

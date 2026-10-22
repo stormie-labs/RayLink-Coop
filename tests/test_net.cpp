@@ -921,6 +921,7 @@ TEST(malformed_truncated_hello_and_short_packet_and_early_game_message)
 TEST(blob_crc_mismatch_dropped_then_good_blob_from_client_arrives)
 {
 	Node host("Boss", 37022);
+	host.s.accept_client_blob(77); // R1 I3: the host takes only kinds its game accepts from clients
 	std::string err;
 	REQUIRE(host.host(&err));
 	RawPeer raw;
@@ -937,6 +938,7 @@ TEST(blob_crc_mismatch_dropped_then_good_blob_from_client_arrives)
 		b.u32(77);
 		b.u64(sizeof(data));
 		b.u32(crc);
+		b.u32(0); // world epoch (protocol 5)
 		raw.send(Msg::BlobBegin, b, 2);
 		Writer c;
 		c.u32(id);
@@ -1073,7 +1075,8 @@ TEST(blob_edge_sizes_queued_together_arrive_in_order)
 		CHECK(cl.blobs[i].data == sent[i]);
 	}
 
-	// And in the other direction, client -> host.
+	// And in the other direction, client -> host (a kind the host's game accepts from clients, R1 I3).
+	host.s.accept_client_blob(9);
 	const std::vector<uint8_t> up = t::random_bytes(150000, 5);
 	const uint32_t uid = cl.s.send_blob(kHostPeer, 9, up);
 	CHECK(uid != 0);
