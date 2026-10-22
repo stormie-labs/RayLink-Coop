@@ -129,6 +129,30 @@ TEST(routes_defaults)
 	CHECK_EQ(default_of("on_xml_read"), Domain::View); // modxml_core's callback, named by the brief
 	CHECK_EQ(default_of("game_object_on_net_spawn"), Domain::Owner);
 	CHECK_EQ(default_of(""), Domain::Owner);
+	// Fix round 1: monolith's callbacks_gameobject.script:801-809 sends these from ALife register/unregister.
+	CHECK_EQ(default_of("server_object_on_register"), Domain::Host);
+	CHECK_EQ(default_of("server_object_on_unregister"), Domain::Host);
+	CHECK_EQ(default_of("Server_Object_on_custom"), Domain::Host);
+
+	// Fix round 1: callbacks of the player's own use action are owner although their groups are host. They fire on the
+	// machine whose actor pressed "use" (bind_monster.script:291 use_callback; GAMMA ui_mutant_loot.script:172 sends
+	// monster_on_loot_init when that player's loot window opens); client_intercept_use (coop_objects.cpp:2131) moves
+	// only a CPhysicObject use (not held in an inventory) to the host, where owner runs it too. Host would drop the
+	// NPC and mutant ones for a client's action: the host never sees that use.
+	// World logic stays on the host through script rules (treasure_manager, grok_stashes_on_corpses = host).
+	CHECK_EQ(default_of("npc_on_use"), Domain::Owner);
+	CHECK_EQ(default_of("monster_on_actor_use_callback"), Domain::Owner);
+	CHECK_EQ(default_of("monster_on_loot_init"), Domain::Owner);
+	CHECK_EQ(default_of("physic_object_on_use_callback"), Domain::Owner);
+	CHECK_EQ(default_of("physic_object_on_hit_callback"), Domain::Host); // the rest of the group stays host
+	CHECK_EQ(default_of("monster_on_death_callback"), Domain::Host);
+	{
+		Table t;
+		t.add(script_rule("treasure_manager", Domain::Host));
+		CHECK_EQ(t.route("npc_on_use", "treasure_manager"), Domain::Host);
+		CHECK_EQ(t.route("npc_on_use", "ui_mod_menu"), Domain::Owner);
+		CHECK(runs_here(t.route("monster_on_loot_init", "ui_mutant_loot"), false));
+	}
 
 	// unique_call / time_event: routed by the handler's script, owner by default.
 	CHECK_EQ(default_of(kUniqueCall), Domain::Owner);
@@ -168,7 +192,7 @@ TEST(routes_stock_matches_axr_main)
 {
 	const std::vector<StockEntry> stock = read_intercepts(axr_main_path());
 	REQUIRE(stock.size() == 147);
-	size_t commented = 0;
+	size_t commented = 0, own_use_seen = 0;
 	for (const StockEntry& e : stock)
 	{
 		if (e.commented)
@@ -181,7 +205,18 @@ TEST(routes_stock_matches_axr_main)
 		}
 		CHECK_EQ(d, default_of(e.name));
 		Domain want = d;
-		if (e.group == "Player")
+		// Exceptions from the groups (fix round 1): the player's own use action fires on that player's machine
+		// (bind_monster.script:291, GAMMA ui_mutant_loot.script:172; only CPhysicObject use goes to the host through
+		// client_intercept_use, coop_objects.cpp:2131), so host would drop it for a client. Owner; world logic stays
+		// on the host through script rules (treasure_manager, grok_stashes_on_corpses).
+		const bool own_use = e.name == "npc_on_use" || e.name == "monster_on_actor_use_callback" ||
+			e.name == "monster_on_loot_init" || e.name == "physic_object_on_use_callback";
+		if (own_use)
+		{
+			++own_use_seen;
+			want = Domain::Owner;
+		}
+		else if (e.group == "Player")
 			want = Domain::Owner;
 		else if (e.group == "NPCs" || e.group == "Mutants" || e.group == "Physical objects" || e.group == "Vehicles" ||
 			e.group == "Squads" || e.group == "smart_terrain.script" || e.group == "Server objects")
@@ -199,6 +234,7 @@ TEST(routes_stock_matches_axr_main)
 				domain_name(want));
 	}
 	CHECK_EQ(commented, size_t(7));
+	CHECK_EQ(own_use_seen, size_t(4)); // every exception is still a stock row
 	// The table holds the 147 stock names plus on_xml_read, unique_call and time_event; nothing else.
 	CHECK_EQ(stock_count(), size_t(150));
 }

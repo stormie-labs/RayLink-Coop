@@ -33,6 +33,10 @@ check("on_key_press", coop_native.route("on_key_press", "some_mod"), "view")
 check("save_state", coop_native.route("save_state", "some_mod"), "host")
 check("load_state", coop_native.route("load_state", "some_mod"), "view")
 check("script argument is optional", coop_native.route("actor_on_item_use"), "owner")
+-- Fix round 1: the player's own use action is owner; monolith's server_object_* callbacks are host.
+check("npc_on_use", coop_native.route("npc_on_use", "some_mod"), "owner")
+check("monster_on_loot_init", coop_native.route("monster_on_loot_init", "ui_mutant_loot"), "owner")
+check("server_object_on_register", coop_native.route("server_object_on_register", "some_mod"), "host")
 -- A mod's own callback: GAMMA Useful Idiots' idiots_on_start must run on a client too.
 check("idiots_on_start", coop_native.route("idiots_on_start", "some_mod"), "owner")
 check("idiots_on_start runs on a client", coop_native.runs_here(coop_native.route("idiots_on_start", "x"), false), true)
