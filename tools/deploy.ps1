@@ -16,7 +16,7 @@
   Safe to re-run: links and the gamedata mirror are rebuilt, existing user.ltx files are kept.
 
   With -Profile (GAMMA, default root E:\AnomalyCoopGamma) the root is built from that MO2 profile instead
-  (tools\mo2_stand.py, docs\MO2_GAMMA.md §3): the game, the profile's enabled mods and MO2's overwrite are
+  (tools\mo2_stand.py, docs\MO2_GAMMA.md, section 3): the game, the profile's enabled mods and MO2's overwrite are
   materialized as hard links in MO2's priority order, our layers go in as copies - Engine (our exe in bin\ +
   engine\gamedata) under the mods, Core (gamedata\) and GAMMA (gamedata_gamma\, if present) on top. db\ is then a
   real folder of links, bin_b\ mirrors bin\ with links, the mods' appdata\ files go into appdata_a\ and appdata_b\.

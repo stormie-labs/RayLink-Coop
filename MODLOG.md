@@ -306,7 +306,7 @@
   опечатка `DarkasleQif's and iTheon's …`; строка `425- Dynamic News…` с хвостовым TAB находит папку), 62 030 файлов
   (61 373 ссылки, 657 копий), 12 240 путей из нескольких слоёв (топ: `animation_common.script` — 31 мод), 31,5 с;
   повторный прогон без изменений — 7,8 с. Отчёт: `temp\mo2_stand_report.txt`.
-- 2026-10-22 20:50 — **Ф1, задача 2: стенд GAMMA в `deploy.ps1` / `launch.ps1`** (тесты `tests/tools/test_launch.py` 3/3).
+- 2026-10-22 20:30 — **Ф1, задача 2: стенд GAMMA в `deploy.ps1` / `launch.ps1`** (тесты `tests/tools/test_launch.py` 3/3).
   `deploy.ps1 -Profile G.A.M.M.A` (корень по умолчанию `E:\AnomalyCoopGamma`, `-Mo2Dir E:\GAMMA`) вызывает
   `mo2_stand.py` со слоями: снизу Engine (наш exe через `temp\stand_engine\bin` + `engine\gamedata`), сверху Core
   (`gamedata`) и GAMMA (`gamedata_gamma`, если есть); `bin_b` — ссылки на всё из `bin` стенда; `fsgame_a/_b` из
