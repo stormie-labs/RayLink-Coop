@@ -320,7 +320,8 @@ TEST(msg_name_known_and_unknown)
 		Msg::TaskList, Msg::TaskUpdate, Msg::MapSpot, Msg::Relation, Msg::Progress, Msg::DialogLock,
 		Msg::DialogLockResult, Msg::DialogUnlock, Msg::DialogPhrases, Msg::DialogSelect, Msg::TradeOp,
 		Msg::ScriptEvent, Msg::StateDumpRequest, Msg::StateDump, Msg::EntitySound, Msg::AvatarList,
-		Msg::MoneyBalance, Msg::CharOffer, Msg::CharChoice};
+		Msg::MoneyBalance, Msg::CharOffer, Msg::CharChoice,
+		Msg::SyncSet, Msg::SyncFull, Msg::SyncRequest, Msg::SyncResult, Msg::SyncCast}; // F2 T14
 	for (Msg m : all)
 		CHECK(std::strncmp(msg_name(m), "Msg_0x", 6) != 0);
 }
@@ -806,6 +807,33 @@ TEST(protocol_version_bumped_for_character_before_world)
 	CHECK_EQ(std::string(msg_name(Msg::CharChoice)), std::string("CharChoice"));
 	CHECK(msg_sender(Msg::CharOffer) == MsgSender::HostOnly);
 	CHECK(msg_sender(Msg::CharChoice) == MsgSender::ClientOnly);
+}
+
+// F2 T14: coop.sync on the network (SYNC_SPEC §6.1-6.3; layouts in xrCoop/coop_syncnet.h). Protocol 8 has not shipped:
+// the messages join it (the lead's ruling), the history line says so.
+TEST(protocol_version_bumped_for_sync_api)
+{
+	static_assert(kProtocolVersion >= 8u, "F2 T14: coop.sync messages are part of protocol 8");
+	struct Row
+	{
+		Msg type;
+		uint16_t wire;
+		const char* name;
+		MsgSender sender;
+	};
+	const Row rows[] = {
+		{Msg::SyncSet, 0x0191, "SyncSet", MsgSender::Either}, // a client's change to the host, the host's to clients
+		{Msg::SyncFull, 0x0192, "SyncFull", MsgSender::HostOnly}, // the full copy at join
+		{Msg::SyncRequest, 0x0193, "SyncRequest", MsgSender::ClientOnly}, // coop.sync.request to the host's handler
+		{Msg::SyncResult, 0x0194, "SyncResult", MsgSender::HostOnly}, // its answer
+		{Msg::SyncCast, 0x0195, "SyncCast", MsgSender::HostOnly}, // coop.sync.broadcast
+	};
+	for (const Row& r : rows)
+	{
+		CHECK_EQ(static_cast<uint16_t>(r.type), r.wire);
+		CHECK_EQ(std::string(msg_name(r.type)), std::string(r.name));
+		CHECK(msg_sender(r.type) == r.sender);
+	}
 }
 
 TEST(char_name_validation)

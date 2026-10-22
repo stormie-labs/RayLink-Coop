@@ -694,7 +694,9 @@ TEST(limits_client_rate_rules)
 		{Msg::PlayerVitals, 4, 1000}, {Msg::MapSpot, 32, 250}, {Msg::InfoPortion, 64, 50}, {Msg::StoryResync, 4, 5000},
 		{Msg::ScriptEvent, 64, 20}, {Msg::ReqMoney, 32, 100}, {Msg::DialogLock, 10, 1000}, {Msg::CharChoice, 4, 2000},
 		// F3: a tent placed, lying down / getting up, a hardcore restart
-		{Msg::CheckpointClaim, 4, 2000}, {Msg::RestRequest, 4, 1000}, {Msg::NewCharacter, 2, 5000}};
+		{Msg::CheckpointClaim, 4, 2000}, {Msg::RestRequest, 4, 1000}, {Msg::NewCharacter, 2, 5000},
+		// F2 T14: coop.sync changes of a player's own data and items, requests to the host's handlers
+		{Msg::SyncSet, 64, 20}, {Msg::SyncRequest, 32, 50}};
 	for (const Expected& e : expected)
 	{
 		const limits::RateRule* rule = nullptr;
@@ -1187,6 +1189,11 @@ constexpr Direction kDirections[] = {
 	{Msg::TradeOp, kBoth},
 	// F2 mod layer
 	{Msg::MoneyBalance, kHost},
+	{Msg::SyncSet, kBoth}, // F2 T14: a client's own data to the host, every change to the clients; handlers check it
+	{Msg::SyncFull, kHost},
+	{Msg::SyncRequest, kClient},
+	{Msg::SyncResult, kHost},
+	{Msg::SyncCast, kHost},
 	// F3 checkpoints, shared sleep, death: the host decides, a player only reports (test_protocol_f3.cpp)
 	{Msg::CheckpointState, kHost},
 	{Msg::CheckpointClaim, kClient},

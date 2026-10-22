@@ -1,0 +1,51 @@
+--[[
+	Anomaly Coop - coop.sync in the host's save (F2 T14), gamedata\scripts\coop_sync.script
+
+	coop.sync (the engine: coop_sync_api.cpp; for modders docs\COOP_API.md) keeps the scopes world, player and object
+	in memory. The host keeps them in its save: save_state puts coop.sync.export() into m_data.coop_sync (the .scoc of
+	the save), load_state gives it back with coop.sync.import(). A world without that key (a new game, a save from
+	before) starts empty: on_game_start clears what the previous world left, since a new game has no load_state.
+	The session scope is not saved; it lives while the session does.
+	The same goes for a single player game (no session): a mod that uses coop.sync keeps its data in the save there.
+	A client keeps only what the host sends him: he neither saves nor loads coop.sync (the world save he gets carries
+	the host's m_data.coop_sync, which he leaves alone).
+--]]
+
+local function api()
+	return coop and coop.sync
+end
+
+local function is_client()
+	return coop and coop.is_client and coop.is_client() or false
+end
+
+function save_state(m_data)
+	local sync = api()
+	if not sync or is_client() then
+		return
+	end
+	m_data.coop_sync = sync.export()
+end
+
+function load_state(m_data)
+	local sync = api()
+	if not sync or is_client() then
+		return
+	end
+	local ok, why = sync.import(m_data.coop_sync)
+	if not ok then
+		printf("! coop_sync: the saved coop.sync data was not taken (%s): the world starts without it", tostring(why))
+	end
+end
+
+function on_game_start()
+	local sync = api()
+	if not sync then
+		return
+	end
+	if not is_client() then
+		sync.import(nil) -- a new world: nothing of the previous one; load_state brings the save's
+	end
+	RegisterScriptCallback("save_state", save_state)
+	RegisterScriptCallback("load_state", load_state)
+end
