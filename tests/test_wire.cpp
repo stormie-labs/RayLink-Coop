@@ -630,3 +630,9 @@ TEST(protocol_version_bumped_for_c2)
 	CHECK(static_cast<uint16_t>(Msg::EntitySound) == 0x012C);
 	CHECK(static_cast<uint16_t>(Msg::EntitySound) > static_cast<uint16_t>(Msg::ItemState));
 }
+
+// Review R4 2: TradeOp Deal lost its client prices (item ids only, the host prices the deal).
+TEST(protocol_version_bumped_for_host_priced_trade)
+{
+	CHECK(kProtocolVersion >= 4u);
+}
