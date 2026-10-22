@@ -331,6 +331,7 @@ TEST(sync_store_versions)
 	CHECK(s.set(w, "k", ss::make_nil(), 9) == SetResult::Ok);
 	CHECK(s.get(w, "k") == nullptr);
 	CHECK_EQ(s.bytes(w), size_t(0));
+	CHECK(s.scopes().empty()); // its last key went: the scope is freed, the removal version kept
 	CHECK(s.set(w, "k", ss::make_number(8), 8) == SetResult::Stale);
 	CHECK(s.set(w, "k", ss::make_nil(), 10) == SetResult::Same); // removing a missing key changes nothing
 	CHECK(s.set(w, "k", ss::make_number(11), 11) == SetResult::Ok);
@@ -717,4 +718,340 @@ TEST(sync_store_decode_refuses_bad_copies)
 		CHECK(refused(w));
 	CHECK_EQ(s.stats().decode_bad, uint64_t(bad.size()));
 	CHECK_EQ(s.stats().decoded, uint64_t(0));
+}
+
+// F2 T13 fix 1: a version above kMaxVersion would leave no room for the next change (top_version() + 1 wraps to 0 at
+// u64 max and then every change is Stale for good): refused by set, on the wire and in a copy.
+TEST(sync_store_version_ceiling)
+{
+	const uint64_t u64_max = std::numeric_limits<uint64_t>::max();
+	Store s;
+	const ScopeId w = ScopeId::world();
+	CHECK(s.set(w, "k", ss::make_number(1), ss::kMaxVersion + 1) == SetResult::BadValue);
+	CHECK(s.set(w, "k", ss::make_number(1), u64_max) == SetResult::BadValue);
+	CHECK(s.set(w, "k", ss::make_nil(), u64_max) == SetResult::BadValue); // a removal too
+	CHECK(s.get(w, "k") == nullptr);
+	CHECK_EQ(s.top_version(), uint64_t(0));
+	CHECK(s.set(w, "k", ss::make_number(1), ss::kMaxVersion) == SetResult::Ok);
+	CHECK_EQ(s.top_version(), ss::kMaxVersion);
+
+	CHECK(wire_set(w, "k", ss::make_number(1), ss::kMaxVersion));
+	CHECK(!wire_set(w, "k", ss::make_number(1), ss::kMaxVersion + 1));
+	CHECK(!wire_set(w, "k", ss::make_number(1), u64_max));
+	CHECK(!wire_set(w, "k", ss::make_number(1), 0)); // versions start at 1
+
+	// a copy: the removal version and an entry's version
+	auto copy = [](uint64_t removed, uint64_t version, bool with_entry) {
+		Writer c;
+		ss::write_scope(c, ScopeId::object(3));
+		c.u64(removed);
+		c.varu(with_entry ? 1 : 0);
+		if (with_entry)
+		{
+			write_key(c, "k");
+			c.u64(version);
+			ss::write_value(c, ss::make_number(1));
+		}
+		return bytes_of(c);
+	};
+	Store client;
+	const std::vector<std::vector<uint8_t>> bad = {
+		copy(ss::kMaxVersion + 1, 1, true),
+		copy(u64_max, 1, true),
+		copy(u64_max, 0, false),
+		copy(0, ss::kMaxVersion + 1, true),
+		copy(0, u64_max, true),
+	};
+	for (const std::vector<uint8_t>& b : bad)
+	{
+		Reader r(b.data(), b.size());
+		ScopeId got;
+		CHECK(!client.decode_scope(r, got));
+	}
+	CHECK_EQ(client.stats().decode_bad, uint64_t(bad.size()));
+	CHECK_EQ(client.top_version(), uint64_t(0));
+	const std::vector<uint8_t> top = copy(ss::kMaxVersion, ss::kMaxVersion, true);
+	Reader r(top.data(), top.size());
+	ScopeId got;
+	CHECK(client.decode_scope(r, got));
+	CHECK_EQ(client.top_version(), ss::kMaxVersion);
+}
+
+// F2 T13 fix 1: the members a value's type does not use are cleared before it is stored (they would sit outside every
+// limit: encoded_size counts only the members of the type).
+TEST(sync_store_foreign_fields_cleared)
+{
+	Store s;
+	const ScopeId obj = ScopeId::object(8);
+	Value n = ss::make_number(2);
+	n.str.assign(size_t(8) << 20, 'x');
+	n.table.push_back({"t", ss::make_bool(true)});
+	n.b = true;
+	n.v[0] = 1.f;
+	CHECK(s.set(obj, "n", n, 1) == SetResult::Ok);
+	const Value* got = s.get(obj, "n");
+	REQUIRE(got != nullptr);
+	CHECK(got->type == ValueType::Number && got->num == 2);
+	CHECK(got->str.empty());
+	CHECK(got->str.capacity() < 64);
+	CHECK(got->table.empty());
+	CHECK(!got->b);
+	CHECK_EQ(got->v[0], 0.f);
+	CHECK_EQ(s.bytes(obj), ss::entry_bytes("n", ss::make_number(2)));
+
+	// a table and its fields too
+	Value field = ss::make_string("s");
+	field.num = 7;
+	Value t = ss::make_table({{"a", field}});
+	t.num = 9;
+	t.str.assign(1000, 'y');
+	CHECK(s.set(obj, "t", t, 2) == SetResult::Ok);
+	got = s.get(obj, "t");
+	REQUIRE(got != nullptr && got->table.size() == 1);
+	CHECK_EQ(got->num, 0.0);
+	CHECK(got->str.empty());
+	CHECK_EQ(got->table[0].second.num, 0.0);
+	CHECK_EQ(got->table[0].second.str, std::string("s"));
+}
+
+// F2 T13 fix 1: a scope whose last key is removed is freed, its slot too (65536 emptied objects must not hold the
+// limit); the removal version stays in a bounded table, so an older change does not bring the key back.
+TEST(sync_store_empty_scope_freed)
+{
+	Store s;
+	uint64_t version = 0;
+	for (uint32_t id = 0; id < ss::kMaxObjectScopes; ++id)
+		REQUIRE(s.set(ScopeId::object(id), "k", ss::make_bool(true), ++version) == SetResult::Ok);
+	const ScopeId next = ScopeId::object(uint32_t(ss::kMaxObjectScopes));
+	CHECK(s.set(next, "k", ss::make_bool(true), ++version) == SetResult::ScopeFull);
+	CHECK_EQ(s.stats().full_count, uint64_t(1));
+	for (uint32_t id = 0; id < ss::kMaxObjectScopes; ++id)
+		REQUIRE(s.set(ScopeId::object(id), "k", ss::make_nil(), ++version) == SetResult::Ok);
+	const uint64_t last_removal = version;
+	CHECK(s.scopes().empty());
+	CHECK_EQ(s.pool_bytes(), size_t(0));
+	CHECK(s.set(next, "k", ss::make_bool(true), ++version) == SetResult::Ok);
+	// the records are bounded: the oldest went first, counted
+	CHECK_EQ(s.stats().freed_evicted, uint64_t(ss::kMaxObjectScopes - ss::kMaxFreedScopes));
+
+	// a freed scope keeps its removal version
+	const ScopeId last = ScopeId::object(uint32_t(ss::kMaxObjectScopes - 1));
+	CHECK(s.set(last, "k", ss::make_bool(false), last_removal) == SetResult::Stale);
+	CHECK(s.set(last, "other", ss::make_bool(false), last_removal - 1) == SetResult::Stale);
+	// and its copy carries it to a client
+	const ScopeId before_last = ScopeId::object(uint32_t(ss::kMaxObjectScopes - 2));
+	Writer c;
+	s.encode_scope(c, before_last);
+	const std::vector<uint8_t> b = bytes_of(c);
+	Store client;
+	Reader r(b.data(), b.size());
+	ScopeId got;
+	REQUIRE(client.decode_scope(r, got));
+	CHECK(client.scopes().empty());
+	CHECK(client.set(before_last, "k", ss::make_bool(true), last_removal - 1) == SetResult::Stale);
+	CHECK(client.set(before_last, "k", ss::make_bool(true), last_removal) == SetResult::Ok);
+	// made again, the scope goes on from its removal version
+	CHECK(s.set(last, "k", ss::make_bool(false), ++version) == SetResult::Ok);
+	CHECK(s.set(last, "other", ss::make_bool(false), last_removal) == SetResult::Stale);
+	// drop (the object is destroyed) forgets the record: an object that gets the id later starts afresh
+	s.drop(before_last);
+	CHECK(s.set(before_last, "k", ss::make_bool(true), 1) == SetResult::Ok);
+
+	// a copy is exact: its removal version replaces the record the store had (lower or higher)
+	{
+		const ScopeId o = ScopeId::object(500);
+		auto copy = [&](uint64_t removed, bool with_entry) {
+			Writer cw;
+			ss::write_scope(cw, o);
+			cw.u64(removed);
+			cw.varu(with_entry ? 1 : 0);
+			if (with_entry)
+			{
+				write_key(cw, "k");
+				cw.u64(removed + 1);
+				ss::write_value(cw, ss::make_bool(true));
+			}
+			return bytes_of(cw);
+		};
+		Store x;
+		CHECK(x.set(o, "k", ss::make_nil(), 10) == SetResult::Same); // record 10
+		const std::vector<uint8_t> empty5 = copy(5, false);
+		Reader re(empty5.data(), empty5.size());
+		ScopeId g;
+		REQUIRE(x.decode_scope(re, g));
+		CHECK(x.set(o, "k", ss::make_bool(true), 7) == SetResult::Ok); // record 5 now, not 10
+		CHECK(x.set(o, "k", ss::make_nil(), 8) == SetResult::Ok); // freed again: record 8
+		CHECK(x.set(o, "k", ss::make_nil(), 20) == SetResult::Same); // record 20
+		const std::vector<uint8_t> full2 = copy(2, true); // k@3, removal 2
+		Reader rf(full2.data(), full2.size());
+		REQUIRE(x.decode_scope(rf, g));
+		CHECK(x.set(o, "k", ss::make_nil(), 4) == SetResult::Ok); // freed: record 4, not 20
+		CHECK(x.set(o, "k", ss::make_bool(true), 6) == SetResult::Ok);
+	}
+
+	// F2 T13 fix 1: nil on a scope that is not there keeps its version too
+	Store p;
+	const ScopeId player = ScopeId::player(digest(5));
+	CHECK(p.set(player, "k", ss::make_nil(), 10) == SetResult::Same);
+	CHECK(p.scopes().empty());
+	CHECK(p.set(player, "k", ss::make_number(1), 9) == SetResult::Stale);
+	CHECK(p.set(player, "other", ss::make_number(1), 10) == SetResult::Stale);
+	CHECK(p.set(player, "k", ss::make_number(1), 11) == SetResult::Ok);
+}
+
+// The copy path has the set path's bounds: a copy that would make the 257th player or overflow the pool is refused,
+// counted, and changes nothing.
+TEST(sync_store_decode_pool_and_count_limits)
+{
+	auto copy_of = [](const Store& from, const ScopeId& id) {
+		Writer w;
+		from.encode_scope(w, id);
+		return bytes_of(w);
+	};
+	{
+		Store s;
+		for (uint32_t i = 0; i < ss::kMaxPlayerScopes; ++i)
+			REQUIRE(s.set(ScopeId::player(digest(i)), "k", ss::make_bool(true), 1) == SetResult::Ok);
+		Store host;
+		const ScopeId next = ScopeId::player(digest(uint32_t(ss::kMaxPlayerScopes)));
+		REQUIRE(host.set(next, "k", ss::make_bool(true), 1) == SetResult::Ok);
+		const std::vector<uint8_t> before = dump(s);
+		const std::vector<uint8_t> b = copy_of(host, next);
+		Reader r(b.data(), b.size());
+		ScopeId got = ScopeId::world();
+		CHECK(!s.decode_scope(r, got));
+		CHECK(got == ScopeId::world());
+		CHECK(dump(s) == before);
+		CHECK_EQ(s.stats().decode_full, uint64_t(1));
+		CHECK_EQ(s.stats().decode_bad, uint64_t(0));
+		// a copy of a player already there replaces him: no new slot needed
+		REQUIRE(host.set(ScopeId::player(digest(0)), "k2", ss::make_bool(true), 2) == SetResult::Ok);
+		const std::vector<uint8_t> b2 = copy_of(host, ScopeId::player(digest(0)));
+		Reader r2(b2.data(), b2.size());
+		CHECK(s.decode_scope(r2, got));
+		CHECK(s.get(ScopeId::player(digest(0)), "k2") != nullptr);
+		CHECK(s.get(ScopeId::player(digest(0)), "k") == nullptr);
+	}
+	{
+		Store s;
+		const Value big = sized_string(ss::kMaxValueBytes);
+		const size_t cost = ss::entry_bytes("k1000", big);
+		const size_t per_player = ss::kMaxPlayerBytes / cost;
+		SetResult last = SetResult::Ok;
+		uint64_t version = 0;
+		for (uint32_t p = 0; p < 64 && last == SetResult::Ok; ++p)
+			for (size_t i = 0; i < per_player && last == SetResult::Ok; ++i)
+				last = s.set(ScopeId::player(digest(p)), "k" + std::to_string(1000 + i), big, ++version);
+		REQUIRE(last == SetResult::ScopeFull);
+		REQUIRE(s.pool_bytes() + cost > ss::kMaxPoolBytes);
+		Store host;
+		const ScopeId newcomer = ScopeId::player(digest(200));
+		REQUIRE(host.set(newcomer, "k1000", big, 1) == SetResult::Ok);
+		const std::vector<uint8_t> before = dump(s);
+		const std::vector<uint8_t> b = copy_of(host, newcomer);
+		Reader r(b.data(), b.size());
+		ScopeId got = ScopeId::world();
+		CHECK(!s.decode_scope(r, got));
+		CHECK(got == ScopeId::world());
+		CHECK(dump(s) == before);
+		CHECK_EQ(s.stats().decode_full, uint64_t(1));
+		CHECK_EQ(s.stats().decode_bad, uint64_t(0));
+		// an object copy shares the pool as well
+		REQUIRE(host.set(ScopeId::object(1), "k1000", big, 2) == SetResult::Ok);
+		const std::vector<uint8_t> o = copy_of(host, ScopeId::object(1));
+		Reader ro(o.data(), o.size());
+		CHECK(!s.decode_scope(ro, got));
+		CHECK_EQ(s.stats().decode_full, uint64_t(2));
+		CHECK(dump(s) == before);
+	}
+}
+
+// Each kind's own limit: World 4 MiB, Session 1 MiB, Player 1 MiB (Object: sync_store_scope_full).
+TEST(sync_store_scope_full_every_kind)
+{
+	static_assert(ss::kMaxWorldBytes == size_t(4) << 20, "World 4 MiB");
+	static_assert(ss::kMaxSessionBytes == size_t(1) << 20, "Session 1 MiB");
+	static_assert(ss::kMaxPlayerBytes == size_t(1) << 20, "Player 1 MiB");
+	static_assert(ss::kMaxObjectBytes == size_t(64) << 10, "Object 64 KiB");
+	const Value big = sized_string(ss::kMaxValueBytes);
+	const std::pair<ScopeId, size_t> kinds[] = {
+		{ScopeId::world(), ss::kMaxWorldBytes},
+		{ScopeId::session(), ss::kMaxSessionBytes},
+		{ScopeId::player(digest(1)), ss::kMaxPlayerBytes},
+	};
+	for (const auto& kind : kinds)
+	{
+		const ScopeId& id = kind.first;
+		const size_t limit = kind.second;
+		CHECK_EQ(ss::scope_limit(id.kind), limit);
+		Store s;
+		size_t accepted = 0;
+		SetResult last = SetResult::Ok;
+		std::string rejected;
+		for (uint32_t i = 0; i < 1000 && last == SetResult::Ok; ++i)
+		{
+			const std::string key = "k" + std::to_string(1000 + i);
+			last = s.set(id, key, big, i + 1);
+			if (last == SetResult::Ok)
+				++accepted;
+			else
+				rejected = key;
+		}
+		CHECK(last == SetResult::ScopeFull);
+		CHECK_EQ(s.stats().full_scope, uint64_t(1));
+		CHECK(s.bytes(id) <= limit);
+		CHECK(s.bytes(id) + ss::entry_bytes(rejected, big) > limit);
+		CHECK_EQ(accepted, limit / ss::entry_bytes(rejected, big));
+	}
+}
+
+// F2 T13 fix 1: 300 000 levels of tables in raw bytes are refused at the second level, without recursion (a recursive
+// reader would overflow the stack and crash the exe).
+TEST(sync_store_deep_nesting_refused)
+{
+	constexpr size_t kLevels = 300000;
+	std::vector<uint8_t> deep;
+	deep.reserve(kLevels * 3 + 2);
+	for (size_t i = 0; i < kLevels; ++i)
+	{
+		deep.push_back(uint8_t(ValueType::Table));
+		deep.push_back(1); // one field
+		deep.push_back(0); // with an empty key
+	}
+	deep.push_back(uint8_t(ValueType::Bool));
+	deep.push_back(1);
+	{
+		Reader r(deep.data(), deep.size());
+		Value v;
+		CHECK(!ss::read_value(r, v));
+	}
+	{
+		Writer w;
+		ss::write_scope(w, ScopeId::world());
+		write_key(w, "k");
+		w.u64(1);
+		w.bytes(deep.data(), deep.size());
+		const std::vector<uint8_t> b = bytes_of(w);
+		Reader r(b.data(), b.size());
+		ScopeId scope;
+		std::string key;
+		Value value;
+		uint64_t version = 0;
+		CHECK(!ss::read_set(r, scope, key, value, version));
+	}
+	{
+		Writer w;
+		ss::write_scope(w, ScopeId::world());
+		w.u64(0);
+		w.varu(1);
+		write_key(w, "k");
+		w.u64(1);
+		w.bytes(deep.data(), deep.size());
+		const std::vector<uint8_t> b = bytes_of(w);
+		Reader r(b.data(), b.size());
+		Store s;
+		ScopeId got;
+		CHECK(!s.decode_scope(r, got));
+		CHECK_EQ(s.stats().decode_bad, uint64_t(1));
+	}
 }
