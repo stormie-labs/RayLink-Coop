@@ -232,3 +232,37 @@ TEST(upgrades_plan_installed_and_many_parents)
 	CHECK(v2[1] == Verdict::Install);
 	CHECK(upgrades::plan({}, {}).empty());
 }
+
+TEST(upgrades_plan_section_defaults)
+{
+	using upgrades::Verdict;
+	// A new entity: init_install puts the section's installed_upgrades on before the list (stock wpn_beretta_camo:
+	// up_fiftha, up_thirda, up_thirdd; up_thirdc shares group thirdcd with up_thirdd).
+	const std::vector<upgrades::Upgrade> defaults = {
+	    up("up_fiftha", "fifthab"), up("up_thirda", "thirdab"), up("up_thirdd", "thirdcd")};
+	const std::vector<upgrades::Upgrade> wanted = {
+	    up("up_thirda", "thirdab"), // a default the client names: kept, nothing to install
+	    up("up_thirdc", "thirdcd"), // its group is taken by the default up_thirdd: the engine would FATAL
+	    up("up_fourta", "fourtab", {"thirdab"}), // needs the default's group: fine
+	    up("up_thirda", "thirdab"), // a repeat in the list
+	};
+	const std::vector<Verdict> v = upgrades::plan({}, wanted, defaults);
+	REQUIRE(v.size() == wanted.size());
+	CHECK(v[0] == Verdict::Default);
+	CHECK(v[1] == Verdict::GroupTaken);
+	CHECK(v[2] == Verdict::Install);
+	CHECK(v[3] == Verdict::Installed);
+
+	// A list taken from a server entity has no defaults (loading installs send no GE_INSTALL_UPGRADE): stock
+	// wpn_m4a1_camo has up_fourta by default, the player added up_fourtc (group fourtcd under up_fourta's group).
+	const std::vector<Verdict> clone =
+	    upgrades::plan({}, {up("up_fourtc", "fourtcd", {"fourtab"})}, {up("up_fourta", "fourtab")});
+	CHECK(clone[0] == Verdict::Install);
+	// Without the defaults the same list would lose the upgrade.
+	CHECK(upgrades::plan({}, {up("up_fourtc", "fourtcd", {"fourtab"})})[0] == Verdict::NoParent);
+
+	// Defaults not in the tree are skipped like the engine would; defaults never show up unasked.
+	const std::vector<Verdict> odd = upgrades::plan({}, {up("a1", "A")}, {up("zz", "A", {}, false)});
+	CHECK(odd[0] == Verdict::Install);
+	CHECK(upgrades::plan({}, {}, defaults).empty());
+}
