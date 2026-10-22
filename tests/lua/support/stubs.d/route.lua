@@ -4,7 +4,7 @@
 --   coop.route.of(callback, func) -> domain, script   script key of debug.getinfo(func, "S").source; "[C]" for a C
 --                                                     function, "?" for a non-function
 --   coop.route.runs(domain) -> bool                   outside a session (is_active() false) every domain runs
---   coop.route.note(domain, outcome[, script])        outcome "ran" | "skipped" | "error" (coop_native.note)
+--   coop.route.note(domain, outcome[, script[, callback]])   outcome "ran" | "skipped" | "error" (coop_native.note)
 --   coop.route.none_functions() -> {"module.function", ...}
 -- The overrides are the real gamedata\configs\coop_route.ltx, then every coop_route_*.ltx and coop_compat_*.ltx by
 -- name, read on the first of() / none_functions() like the engine's load_overrides. route_stub_load() forces that read
@@ -142,9 +142,9 @@ function install_route_stubs(c, opts)
 			if not is_active() then return true end
 			return coop_native.runs_here(domain, is_host() == true)
 		end,
-		note = function(domain, outcome, script)
+		note = function(domain, outcome, script, callback)
 			ROUTE_CALLS.note = ROUTE_CALLS.note + 1
-			coop_native.note(domain, outcome, script)
+			coop_native.note(domain, outcome, script, callback)
 		end,
 		none_functions = function()
 			if not loaded then route_stub_load() end

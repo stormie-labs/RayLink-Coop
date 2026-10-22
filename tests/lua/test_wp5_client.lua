@@ -15,9 +15,12 @@ RegisterScriptCallback("actor_on_update", pre_view)
 load_coop_main()
 check(DEV_DEBUG == false, "DEV_DEBUG forced off on the client")
 
--- sim_board has no rule: since F2 T10 it follows the callback (actor_on_update = owner) and runs on a client, its
--- world calls go to the host through the engine (review R5 I4; before, an unlisted script was host by default).
+-- Review I1 / Ruling F2-29: sim_board is the simulation board (squads, smart terrains: create_squad, SIMBOARD) - world
+-- logic, host by the generated configs\coop_route_stock.ltx, as before F2 T10. The F2 T10 round expected it to run on a
+-- client (an unlisted script following its callback); that was wrong for a world script. A script without a rule that
+-- calls no world function does follow its callback (actor_on_update = owner) and runs on a client (review R5 I4).
 local host_fn = from_script("sim_board", "return function() bump('host') end")
+local unlisted_fn = from_script("some_addon_hud", "return function() bump('unlisted') end")
 local host_listed = from_script("death_manager", "return function() bump('host_listed') end") -- [route_scripts] host
 local owner_fn = from_script("actor_effects", "return function() bump('owner') end")
 local err_fn = from_script("ui_inventory", "return function() bump('err'); error('boom') end")
@@ -27,6 +30,7 @@ local squad_view = from_script("ui_pda_npc_tab", "return function() bump('squad_
 local obj = from_script("ui_obj", "return { actor_on_update = function(self) bump(self.tag) end, tag = 'obj' }")
 
 RegisterScriptCallback("actor_on_update", host_fn)
+RegisterScriptCallback("actor_on_update", unlisted_fn)
 RegisterScriptCallback("actor_on_update", host_listed)
 RegisterScriptCallback("actor_on_update", owner_fn)
 RegisterScriptCallback("actor_on_update", err_fn)
@@ -39,7 +43,8 @@ coop_main.on_game_start()
 SendScriptCallback("actor_on_update")
 check(C.pre_host == nil, "pre-registered host callback skipped")
 check(C.pre_view == 1, "pre-registered view callback runs")
-check(C.host == 1, "an unlisted script's actor_on_update runs on a client (owner by the callback)")
+check(C.host == nil, "a stock world script (sim_board, coop_route_stock.ltx) is skipped on a client")
+check(C.unlisted == 1, "an unlisted script's actor_on_update runs on a client (owner by the callback)")
 check(C.host_listed == nil, "host-domain callback skipped")
 check(C.owner == 1, "owner callback runs")
 check(C.err == 1, "erroring view callback ran and its error was caught")

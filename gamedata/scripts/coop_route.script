@@ -56,7 +56,14 @@ local installed = false
 local client = false -- this Lua state is a co-op client's (a client's state never becomes the host's)
 local cb_table -- axr_main's local `intercepts`
 
-local wrappers = setmetatable({}, { __mode = "k" }) -- our wrapper objects -> true
+-- Our wrapper objects -> true. Shared through _G by every load of this script (review M6): a second load in the same
+-- Lua state wraps the first one's wrappers of callback_set and the globals, and sees the first one's handler wrappers
+-- as done, so a handler is still guarded once.
+local wrappers = rawget(_G, "_coop_route_wrappers")
+if type(wrappers) ~= "table" then
+	wrappers = setmetatable({}, { __mode = "k" })
+	rawset(_G, "_coop_route_wrappers", wrappers)
+end
 local origin = setmetatable({}, { __mode = "k" }) -- wrapper -> { fn = handler, script, domain, callback }
 local wrapped = {} -- callback -> { [handler] = wrapper }
 local uc_wrap = setmetatable({}, { __mode = "kv" }) -- AddUniqueCall: function -> wrapper
@@ -91,7 +98,7 @@ end
 local function guard(f, d, script, what, skip_ret, err_ret)
 	local w = function(...)
 		if not runs(d) then
-			note(d, "skipped", script)
+			note(d, "skipped", script, what) -- per (callback, script): review M2
 			return skip_ret
 		end
 		note(d, "ran")

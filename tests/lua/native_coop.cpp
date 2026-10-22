@@ -6,10 +6,12 @@
 //   coop_native.runs_here(domain, is_host)     -> boolean; an unknown domain name is an error
 // F2 T10 (the router's pure half, for tests\lua\support\stubs.d\route.lua):
 //   coop_native.script_key(source)             -> the script key of a lua_Debug source (routes::script_key)
-//   coop_native.note(domain, outcome[, script]) counts a call: outcome "ran" | "skipped" | "error"; an unknown domain or
-//                                              outcome is an error (the engine ignores them; a test wants to see them)
+//   coop_native.note(domain, outcome[, script[, callback]])  counts a call: outcome "ran" | "skipped" | "error"; an
+//                                              unknown domain or outcome is an error (the engine ignores them; a test
+//                                              wants to see them)
 //   coop_native.counts(domain)                 -> ran, skipped, errors
-//   coop_native.top_skipped(n)                 -> { {script, skips}, ... } most skipped first
+//   coop_native.top_skipped(n)                 -> { {"callback@script", skips}, ... } most skipped first
+//   coop_native.latest_new_skips(n)            -> { "callback@script", ... } the latest first-time skips first
 //   coop_native.reset_counts()                 -> zeroes the counters
 // Each Lua state gets its own route table and counters (a userdata upvalue freed by __gc).
 #include "lua.hpp"
@@ -132,13 +134,14 @@ int l_script_key(lua_State* L)
 int l_note(lua_State* L)
 {
 	const Domain d = check_domain(L, 1, "note");
-	size_t olen = 0, slen = 0;
+	size_t olen = 0, slen = 0, clen = 0;
 	const char* outcome = luaL_checklstring(L, 2, &olen);
 	const char* script = luaL_optlstring(L, 3, "", &slen);
+	const char* callback = luaL_optlstring(L, 4, "", &clen);
 	Outcome o = Outcome::Ran;
 	if (!coop::routes::parse_outcome(std::string_view(outcome, olen), o))
 		return luaL_error(L, "coop_native.note: unknown outcome '%s'", outcome);
-	state_of(L)->counters.note(d, o, std::string_view(script, slen));
+	state_of(L)->counters.note(d, o, std::string_view(script, slen), std::string_view(callback, clen));
 	return 0;
 }
 
@@ -170,6 +173,19 @@ int l_top_skipped(lua_State* L)
 	return 1;
 }
 
+int l_latest_new_skips(lua_State* L)
+{
+	const lua_Integer n = luaL_optinteger(L, 1, 10);
+	const std::vector<std::string> latest = state_of(L)->counters.latest_new_skips(n > 0 ? static_cast<size_t>(n) : 0);
+	lua_createtable(L, static_cast<int>(latest.size()), 0);
+	for (size_t i = 0; i < latest.size(); ++i)
+	{
+		lua_pushlstring(L, latest[i].data(), latest[i].size());
+		lua_rawseti(L, -2, static_cast<int>(i + 1));
+	}
+	return 1;
+}
+
 int l_reset_counts(lua_State* L)
 {
 	state_of(L)->counters.clear();
@@ -188,6 +204,7 @@ extern "C" int luaopen_coop_native(lua_State* L)
 		{"note", l_note},
 		{"counts", l_counts},
 		{"top_skipped", l_top_skipped},
+		{"latest_new_skips", l_latest_new_skips},
 		{"reset_counts", l_reset_counts},
 	};
 

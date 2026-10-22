@@ -43,6 +43,12 @@
     колбэку: `actor_on_item_use` у клиента исполняется, `npc_on_death_callback` — нет (R5 I4).
   - Скрипт определяется по файлу, где лежит функция: `.script` — по имени, `.lua` — по пути под `scripts` через точки
     (`illish.patches.xr_combat_ignore`). Патч мода не получает правил стокового скрипта с тем же именем.
+  - Исключение до маршрутизатора вызовов (§2.3, задача 12), решения F2-28 и F2-29:
+    - скрипт, который зовёт функции мира и не имеет своего правила, у клиента не выполняется, как до задачи 10;
+    - списки генерирует `tools/gen_route_world.lua` в `coop_route_stock.ltx` (сток Anomaly) и
+      `coop_route_gamma.ltx` (рыхлые скрипты GAMMA); пересобирать после обновления GAMMA или Anomaly;
+    - таймеры (`AddUniqueCall`, `CreateTimeEvent`) скрипта без правила — `host`;
+    - точечная правка — в своём `coop_compat_<мод>.ltx`: эти файлы читаются последними и перекрывают сгенерированные.
   - В Lua осталась прокладка `scripts/coop_route.script` (у хоста и у клиента). Она один раз, при регистрации,
     оборачивает обработчик доменом из `coop.route.of` и на каждый вызов спрашивает `coop.route.runs`. Оборачивает
     `callback_set/unset`, `AddUniqueCall/RemoveUniqueCall` и `CreateTimeEvent`; `make_callback` не трогает.

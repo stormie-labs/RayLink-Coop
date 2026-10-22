@@ -1,12 +1,17 @@
 ; Anomaly Coop - callback routes (docs\MOD_LAYER.md 2.2), read by the engine (coop_router.cpp) on the first handler a
 ; script registers: configs\coop_route.ltx, then every configs\coop_route_*.ltx and configs\coop_compat_*.ltx by name
-; (the root of configs only). A later file wins for the same key. A mod adds its own coop_compat_<mod>.ltx or a DLTX
-; mod_coop_route_*.ltx; a rule for a script that is not installed changes nothing.
+; (the root of configs only). A later file wins for the same key. A mod or a local fix goes into its own
+; configs\coop_compat_<mod>.ltx: those are read last, so they win over every coop_route*.ltx, the generated
+; coop_route_stock.ltx and coop_route_gamma.ltx included. Not a DLTX mod_coop_route_*.ltx: DLTX merges into this file,
+; which is read first, so any key of a later coop_route_*.ltx overrides it (review M1). A rule for a script that is
+; not installed changes nothing.
 ;
 ; Every handler registered through RegisterScriptCallback, AddUniqueCall or CreateTimeEvent gets a domain once, when it
 ; is registered (scripts\coop_route.script asks the engine): by the CALLBACK (the engine's table, xrCoop\coop_routes.h:
 ; actor_* owner, npc_* / monster_* / squad_* host, GUI_* / on_key_* view, save_state host, load_state view, a mod's own
-; callback owner; unique calls and time events owner), unless a rule below says otherwise.
+; callback owner; unique calls and time events host, F2-29), unless a rule below says otherwise. Scripts that call
+; world functions and have no rule are host by the generated coop_route_stock.ltx / coop_route_gamma.ltx
+; (tools\gen_route_world.lua, rulings F2-28 / F2-29).
 ;   host  - runs only on the host                  owner - runs everywhere: the player's own (its world calls go to
 ;   view  - runs everywhere (UI, sound, data)              the host through the engine, MOD_LAYER 2.3)
 ;   none  - runs nowhere while a session is on, the host included (mechanics the engine replaced)

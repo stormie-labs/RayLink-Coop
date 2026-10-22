@@ -115,16 +115,50 @@ TEST(router_counters)
 	CHECK_EQ(c.top_skipped(10).size(), size_t(0));
 }
 
-// The per-script table is bounded: names past the limit only count in the domain totals.
+// The per-pair table is bounded: pairs past the limit only count in the domain totals.
 TEST(router_counters_bounded)
 {
 	Counters c;
-	for (size_t i = 0; i < Counters::kMaxScripts + 50; ++i)
+	for (size_t i = 0; i < Counters::kMaxPairs + 50; ++i)
 		c.note(Domain::Host, Outcome::Skipped, "script_" + std::to_string(i));
-	CHECK_EQ(c.totals(Domain::Host).skipped, uint64_t(Counters::kMaxScripts + 50));
-	CHECK_EQ(c.scripts_tracked(), Counters::kMaxScripts);
-	CHECK_EQ(c.scripts_dropped(), uint64_t(50));
+	CHECK_EQ(c.totals(Domain::Host).skipped, uint64_t(Counters::kMaxPairs + 50));
+	CHECK_EQ(c.pairs_tracked(), Counters::kMaxPairs);
+	CHECK_EQ(c.pairs_dropped(), uint64_t(50));
 	c.note(Domain::Host, Outcome::Skipped, "script_0"); // a known name still counts
 	const std::vector<std::pair<std::string, uint64_t>> top = c.top_skipped(1);
 	CHECK(top.size() == 1 && top[0].first == "script_0" && top[0].second == 2);
+	c.note(Domain::Host, Outcome::Skipped, "script_0", "actor_on_update"); // a new pair of a known script: no room
+	CHECK_EQ(c.pairs_dropped(), uint64_t(51));
+}
+
+// Review M2: skips are kept per (callback, script) pair, named like a [route_pairs] key. A handler skipped every frame
+// tops "most skipped"; a rare one (a use, a key) shows in "latest new skips", the pairs skipped for the first time last.
+TEST(router_counters_pairs)
+{
+	Counters c;
+	for (int i = 0; i < 100; ++i)
+		c.note(Domain::Host, Outcome::Skipped, "guards_spawner", "actor_on_update");
+	c.note(Domain::Host, Outcome::Skipped, "campfire_placeable", "actor_on_item_use");
+	for (int i = 0; i < 50; ++i)
+		c.note(Domain::Host, Outcome::Skipped, "guards_spawner", "actor_on_update");
+	c.note(Domain::Host, Outcome::Skipped, "guards_spawner", "on_key_press");
+	const std::vector<std::pair<std::string, uint64_t>> top = c.top_skipped(10);
+	CHECK_EQ(top.size(), size_t(3));
+	if (top.size() == 3)
+	{
+		CHECK_EQ(top[0].first, std::string("actor_on_update@guards_spawner"));
+		CHECK_EQ(top[0].second, uint64_t(150));
+		CHECK_EQ(top[1].first, std::string("actor_on_item_use@campfire_placeable")); // a tie of 1: by name
+		CHECK_EQ(top[2].first, std::string("on_key_press@guards_spawner"));
+	}
+	const std::vector<std::string> latest = c.latest_new_skips(2);
+	CHECK_EQ(latest.size(), size_t(2));
+	if (latest.size() == 2)
+	{
+		CHECK_EQ(latest[0], std::string("on_key_press@guards_spawner"));
+		CHECK_EQ(latest[1], std::string("actor_on_item_use@campfire_placeable"));
+	}
+	CHECK_EQ(c.pairs_tracked(), size_t(3));
+	c.clear();
+	CHECK_EQ(c.latest_new_skips(5).size(), size_t(0));
 }
