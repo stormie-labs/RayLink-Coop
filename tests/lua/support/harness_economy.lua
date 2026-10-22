@@ -4,6 +4,7 @@
 -- (client -> host relay rules, `from` = original sender).
 ROOT = os.getenv("ECO_ROOT") or "gamedata/"
 VERBOSE = os.getenv("VERBOSE") ~= nil
+dofile("tests/lua/support/stubs.d/money.lua") -- install_money_stubs: coop.money_* of the host ledger (F2 T1)
 
 -- real coop_main encode/decode (loaded once, outside the worlds)
 do
@@ -178,6 +179,19 @@ function make_world(peer)
 		stash_set = function(k, v) W.STASH[k] = v return true end,
 		stash_get = function(k) return W.STASH[k] end,
 	}
+	-- The host ledger (F2 T1): coop.money_give lowers the giver at once and the host credits the receiver.
+	-- W.MONEY_REFUSE = "reason" makes the next calls fail.
+	W.MONEY_CALLS = {}
+	install_money_stubs(W.coop, {
+		calls = W.MONEY_CALLS,
+		is_host = function() return W.ACTIVE and W.PEER == 0 end,
+		refuse = function() return W.MONEY_REFUSE end,
+		on_call = function(fn, peer, n)
+			if fn ~= "money_give" then return end
+			W.MONEY = W.MONEY - n
+			if WORLDS[peer] then WORLDS[peer].MONEY = WORLDS[peer].MONEY + n end
+		end,
+	})
 
 	-- coop_main stand-in: handler registry + real encode/decode
 	local handlers = {}

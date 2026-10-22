@@ -1,6 +1,7 @@
 -- Anomaly Coop temp test (W4 menu): coop_menu_char.script - new character offer, choice window, host check and
 -- kit. Real configs\items\settings\new_game_loadouts.ltx from anomaly-ref, engine/UI stand-ins. Not shipped.
 dofile("tests/lua/support/menu_stubs.lua")
+dofile("tests/lua/support/stubs.d/money.lua") -- install_money_stubs: coop.money_* of the host ledger (F2 T1)
 
 XML_FILES["ui_mm_faction_select.xml"] = xml_paths(REF .. "configs/ui/ui_mm_faction_select_16.xml")
 XML_FILES["ui_coop_menu_char.xml"] = xml_paths(ROOT .. "configs/ui/ui_coop_menu_char_16.xml") -- 16:9 pair of the stock _16
@@ -53,6 +54,7 @@ coop = {
 	send_event = function(name, payload, target) SENT[#SENT + 1] = { name = name, t = PAYLOADS[payload], to = target }
 		return true end,
 }
+install_money_stubs(coop, { is_host = function() return MODE == "host" end }) -- calls go to MONEY_CALLS
 PAYLOADS = {}
 local pn = 0
 coop_main = { handlers = {} }
@@ -178,11 +180,15 @@ local n_sent = #SENT
 deliver("menu.new_character", { faction = "bandit" }, 0)
 check(#SENT == n_sent, "from the host itself: ignored")
 
+check(#MONEY_CALLS == 0, "refused choices set no money")
+
 print("== host: apply")
 NPCS[500] = make_npc(500, { 701, 702, 703 })
 deliver("menu.new_character", { faction = "bandit", buy = "wpn_ak74_old" }, 1)
 local res = last().t
 check(res.ok == true and res.faction == "bandit" and res.money == 1000 and last().to == 1, "accepted: faction and money")
+check(#MONEY_CALLS == 1 and MONEY_CALLS[1].fn == "money_set" and MONEY_CALLS[1].peer == 1 and MONEY_CALLS[1].n == mc.faction_money("bandit")
+	and MONEY_CALLS[1].ok, "new_character_money_on_host: coop.money_set(peer, faction money) on the host")
 check(#RELEASED == 3 and RELEASED[1] == 701, "NPC supplies removed")
 check(NPCS[500].community == "bandit", "proxy community = faction community")
 local secs = {}
@@ -199,17 +205,20 @@ CALLBACKS.actor_on_update()
 check(#SENT == before, "no more offers")
 deliver("menu.new_character", { faction = "bandit" }, 1)
 check(last().t.reason == "not_new", "second choice refused")
+check(#MONEY_CALLS == 1, "no second money set")
 
 print("== client: window")
 MODE = "client"
 SENT = {}
 local CLIENT_MONEY = 4321
+local CLIENT_GIVES = 0
 db.actor = {
 	give_game_news = function(self, cap, text) NEWS[#NEWS + 1] = text end,
 	set_character_community = function(self, c) self.comm = c end,
 	money = function() return CLIENT_MONEY end,
-	give_money = function(self, d) CLIENT_MONEY = CLIENT_MONEY + d end,
+	give_money = function(self, d) CLIENT_GIVES = CLIENT_GIVES + 1; CLIENT_MONEY = CLIENT_MONEY + d end,
 }
+for i = #MONEY_CALLS, 1, -1 do MONEY_CALLS[i] = nil end -- the host's calls are behind us
 deliver("menu.char_offer", { eco = 1, points = 1000, nick = "Guest" }, 0)
 local gui = mc.GUI
 check(gui and gui.shown, "offer opens the window")
@@ -257,7 +266,9 @@ check(gui.shown, "repeated offer while waiting changes nothing")
 deliver("menu.char_result", { ok = false, reason = "points" }, 0)
 check(gui.btn_start.enabled and gui.status.text:find("The host refused the choice: not enough points", 1, true), "refusal shown")
 deliver("menu.char_result", { ok = true, faction = "bandit", money = 1000, items = 12 }, 0)
-check(db.actor.comm == "actor_bandit" and CLIENT_MONEY == 1000, "client: actor_<faction> and the faction money")
+check(db.actor.comm == "actor_bandit", "client: actor_<faction>")
+check(CLIENT_MONEY == 4321 and CLIENT_GIVES == 0 and #MONEY_CALLS == 0,
+	"new_character_money_on_host: the client sets no money (no give_money, no ledger call): the host did")
 check(not gui.shown and NEWS[#NEWS]:find("Your character", 1, true), "window closed, news")
 deliver("menu.char_offer", { eco = 1, points = 1000, nick = "Guest" }, 0)
 check(not gui.shown, "no window after the character is set up")

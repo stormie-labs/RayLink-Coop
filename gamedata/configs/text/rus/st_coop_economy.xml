@@ -64,20 +64,20 @@
 	<string id="st_coop_eco_money_out">
 		<text>Вы передали %s игроку %s.</text>
 	</string>
-	<string id="st_coop_eco_money_in">
-		<text>%s передал вам %s.</text>
-	</string>
-	<string id="st_coop_eco_money_back">
-		<text>Деньги возвращены: %s (%s).</text>
-	</string>
-	<string id="st_coop_eco_money_why_off">
-		<text>передача денег выключена</text>
+	<string id="st_coop_eco_money_refused">
+		<text>Перевод отклонён: %s.</text>
 	</string>
 	<string id="st_coop_eco_money_why_gone">
 		<text>получателя нет в игре</text>
 	</string>
 	<string id="st_coop_eco_money_why_bad">
-		<text>перевод отклонён</text>
+		<text>перевод невозможен</text>
+	</string>
+	<string id="st_coop_eco_money_why_poor">
+		<text>не хватает денег</text>
+	</string>
+	<string id="st_coop_eco_money_why_full">
+		<text>у получателя не поместится столько</text>
 	</string>
 	<string id="st_coop_eco_money_off">
 		<text>В этой сессии передача денег выключена.</text>

@@ -18,10 +18,11 @@
 	    A dialog script that writes stub.stage or stub.forced_status sends that to the host as well.
 	Host:
 	  - Runs the requests with Anomaly's own task_manager and remembers who took and who turned in a task.
-	    In the task callback the rewards go to the player who turned it in (R-7.6): money through the
-	    client's own money (event coop_trw, the client's money is reported back by the engine), items spawned
-	    by the host into that player's character, goodwill/faction effects keyed to that character. Console
-	    coop_share_rewards 1 splits money equally among the online players; items still go to the finisher.
+	    In the task callback the rewards go to the player who turned it in (R-7.6): money through the host
+	    ledger (coop.money_grant onto the player's character, F2 T6; the client only gets the news line in
+	    event coop_trw), items spawned by the host into that player's character, goodwill/faction effects
+	    keyed to that character. Console coop_share_rewards 1 splits money equally among the online players;
+	    items still go to the finisher.
 	  - Quest items count from any group member's inventory (R-7.5): fetch / stash status functors also count
 	    the other players' characters, and removing the items takes them from whoever holds them (the player
 	    who turned the task in first).
@@ -712,6 +713,27 @@ local function send_reward(peer, t)
 	if send(EV_REWARD, pack(t), peer) then stats.rewards_routed = stats.rewards_routed + 1 end
 end
 
+-- Host: money for (or from, n < 0) a client's character. The money is the host ledger's (F2 T6): coop.money_grant
+-- changes the character's money (never below 0) and the engine sends the client its new balance. A client's own
+-- Lua never adds it: the engine would count that as the client's income, limited by the Script allowance, and a
+-- reward above it would be lost. The client only gets the news line (event coop_trw, k = mn).
+local function grant_money(peer, n)
+	local whole = n >= 0 and math_floor(n) or -math_floor(-n)
+	if whole ~= whole or whole == 0 or whole == math.huge or whole == -math.huge then return false end
+	local grant = api and api.money_grant
+	if type(grant) ~= "function" then
+		report("grant_money", "coop.money_grant is missing")
+		return false
+	end
+	local called, ok, why = pcall(grant, peer, whole)
+	if not (called and ok) then
+		log("money %d for #%s refused: %s", whole, tostring(peer), tostring(called and why or ok))
+		return false
+	end
+	send_reward(peer, { k = "mn", n = whole })
+	return true
+end
+
 local function online_peers()
 	local list = { 0 }
 	for _, p in ipairs(players()) do
@@ -797,7 +819,7 @@ local function patch_rewards()
 					if peer == 0 then
 						orig(victim, amount, "in")
 					else
-						send_reward(peer, { k = "money", n = amount })
+						grant_money(peer, amount)
 					end
 				end
 			end
@@ -866,7 +888,7 @@ local function patch_rewards()
 				local peer = rcpt_client()
 				if peer and type(p) == "table" and p[1] ~= nil then
 					local money = tonumber(load_var(db.actor, p[1], 0)) or 0
-					if money > 0 then send_reward(peer, { k = "money", n = -money }) end
+					if money > 0 then grant_money(peer, -money) end
 					return
 				end
 				return pay(actor, npc, p)
@@ -1031,7 +1053,7 @@ function give_to_peer(peer, money, sections)
 		if mine then
 			if money > 0 then dialogs.relocate_money(db.actor, money, "in") else db.actor:give_money(money) end
 		else
-			send_reward(peer, { k = "money", n = money })
+			grant_money(peer, money)
 		end
 	end
 	if type(sections) == "table" then
@@ -1480,14 +1502,10 @@ local function client_on_reward(payload, from)
 	if from ~= 0 or not is_client() or not db.actor then return end
 	local t = unpack_payload(payload)
 	stats.rewards_in = stats.rewards_in + 1
-	if t.k == "money" and type(t.n) == "number" and t.n ~= 0 then
-		local n = math_floor(t.n)
-		if n > 0 then
-			dialogs.relocate_money(db.actor, n, "in")
-		else
-			db.actor:give_money(n)
-			news_manager.relocate_money(db.actor, "out", -n)
-		end
+	if t.k == "mn" and type(t.n) == "number" then
+		-- the money itself is the host's (coop.money_grant, shown with the engine's balance): only the news line here
+		local n = t.n >= 0 and math_floor(t.n) or -math_floor(-t.n)
+		if n ~= 0 then news_manager.relocate_money(db.actor, n > 0 and "in" or "out", n > 0 and n or -n) end
 	elseif t.k == "news" and type(t.s) == "string" then
 		news_manager.relocate_item(db.actor, t.ty == "out" and "out" or "in", t.s, tonumber(t.n) or 1)
 	elseif t.k == "gw" and type(t.c) == "string" then

@@ -64,20 +64,20 @@
 	<string id="st_coop_eco_money_out">
 		<text>You gave %s to %s.</text>
 	</string>
-	<string id="st_coop_eco_money_in">
-		<text>%s gave you %s.</text>
-	</string>
-	<string id="st_coop_eco_money_back">
-		<text>Money returned: %s (%s).</text>
-	</string>
-	<string id="st_coop_eco_money_why_off">
-		<text>money transfers are off</text>
+	<string id="st_coop_eco_money_refused">
+		<text>Transfer refused: %s.</text>
 	</string>
 	<string id="st_coop_eco_money_why_gone">
 		<text>the receiver is not in the game</text>
 	</string>
 	<string id="st_coop_eco_money_why_bad">
-		<text>transfer refused</text>
+		<text>the transfer cannot be made</text>
+	</string>
+	<string id="st_coop_eco_money_why_poor">
+		<text>not enough money</text>
+	</string>
+	<string id="st_coop_eco_money_why_full">
+		<text>the receiver cannot carry that much</text>
 	</string>
 	<string id="st_coop_eco_money_off">
 		<text>Money transfers are off in this session.</text>

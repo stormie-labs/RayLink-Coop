@@ -300,6 +300,14 @@ for _, M in ipairs({ Hm, Cm }) do
 	s.on_game_start()
 	fire(M, "actor_on_first_update")
 end
+-- Money of a client's character is the host's: the host grants it (coop.money_grant), the client's Lua adds none.
+local function grants(M)
+	local out = {}
+	for _, c in ipairs(M.money_calls) do
+		if c.fn == "money_grant" and c.ok then out[#out + 1] = { c.peer, c.n } end
+	end
+	return out
+end
 local cm0 = Cm.actor._money
 Cm.env.xr_logic.pick_section_from_condlist(nil, nil, { src = "%=reward_money(300)%" })
 check(Cm.actor._money == cm0, "client: condlist reward skipped (the host's run counts)")
@@ -309,7 +317,9 @@ cm0 = Cm.actor._money
 local hm0 = Hm.actor._money
 Hm.env.xr_logic.pick_section_from_condlist(nil, nil, { src = "%=reward_money(300)%" })
 pump()
-check(Hm.actor._money == hm0 + 300 and Cm.actor._money == cm0 + 300, "host: story condlist reward for every player")
+local gr = grants(Hm)
+check(Hm.actor._money == hm0 + 300 and Cm.actor._money == cm0 and #gr == 1 and gr[1][1] == 1 and gr[1][2] == 300,
+	"host: story condlist reward for every player (the client's share is coop.money_grant(1, 300))")
 -- inside a task's rewards: not shared
 Hm.on_complete = { story_t = function() Hm.env.xr_logic.pick_section_from_condlist(nil, nil, { src = "%=reward_money(100)%" }) end }
 Hm.env.task_manager.get_task_manager():give_task("story_t", 700)
@@ -319,7 +329,9 @@ pump()
 local t = Hm.engine_tasks.story_t
 Hm.env.task_manager.task_callback(t, Hm.env.task.completed)
 pump()
-check(Hm.actor._money == hm0 and Cm.actor._money == cm0 + 100, "task reward only to the player who turned it in")
+gr = grants(Hm)
+check(Hm.actor._money == hm0 and Cm.actor._money == cm0 and #gr == 2 and gr[2][1] == 1 and gr[2][2] == 100,
+	"task reward only to the player who turned it in (coop.money_grant(1, 100))")
 -- world spawns
 print("== story world spawns")
 local spawned = {}

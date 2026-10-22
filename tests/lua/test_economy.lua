@@ -514,39 +514,66 @@ end
 section("money")
 do
 	local H, A, B = setup(2)
-	check(A.coop_economy_money.give_money(0, 500), "anna gives 500 to the host")
-	check(A.MONEY == 9500, "taken from anna first")
-	deliver_all()
-	check(H.MONEY == 10500, "host received 500")
-	-- repeat of the same event changes nothing
-	local ev = nil
-	for _, s in ipairs(A.SENT) do if s.name == "economy.money" then ev = s end end
-	A.coop.send_event(ev.name, ev.payload, 0)
-	deliver_all()
-	check(H.MONEY == 10500, "a repeated transfer is applied once")
-	-- client -> client through the host
-	A.coop_economy_money.give_money(2, 1000)
-	deliver_all() deliver_all()
-	check(A.MONEY == 8500 and B.MONEY == 11000, "anna -> boris through the host")
-	-- more than she has: clamped
+	local function sent(W, name)
+		local n = 0
+		for _, e in ipairs(W.SENT) do if e.name == name then n = n + 1 end end
+		return n
+	end
+	-- money_give_goes_through_engine: the transfer is the engine's (F2 T1 host ledger), Lua only calls it
+	check(A.coop_economy_money.give_money(0, 500), "money_give_goes_through_engine: anna gives 500 to the host")
+	check(#A.MONEY_CALLS == 1 and A.MONEY_CALLS[1].fn == "money_give" and A.MONEY_CALLS[1].peer == 0
+		and A.MONEY_CALLS[1].n == 500, "coop.money_give(0, 500) is the only call")
+	check(sent(A, "economy.money") == 0 and #A.SENT == 0, "no economy.money event, nothing of ours on the wire")
+	check(A.MONEY == 9500 and H.MONEY == 10500, "the engine moved the money; Lua did not take it a second time")
+	check(has(A.TIPS, "gave"), "giver gets the 'you gave' message")
+	check(A.STASH.coop_eco_money_seen == nil, "no transfer ids kept any more")
+	-- client -> client: the same single call, the host ledger credits boris
+	check(A.coop_economy_money.give_money(2, 1000) and A.MONEY_CALLS[2].peer == 2 and A.MONEY_CALLS[2].n == 1000
+		and sent(A, "economy.money") == 0, "anna -> boris is one engine call, no event")
+	check(A.MONEY == 8500 and B.MONEY == 11000, "anna -> boris balances")
+	-- more than she has: clamped to her money
 	A.coop_economy_money.give_money(2, 999999)
-	deliver_all() deliver_all()
-	check(A.MONEY == 0 and B.MONEY == 19500, "clamped to the giver's money")
-	check(not A.coop_economy_money.give_money(2, 10), "no money: nothing happens")
-	-- receiver gone: money comes back
-	B.coop_economy_money.give_money(1, 300)
-	PLAYERS[1] = nil
-	deliver_all() deliver_all()
-	check(B.MONEY == 19500 and has(B.TIPS, "returned"), "receiver gone: refunded")
-	PLAYERS[1] = { nick = "anna", proxy = 501 }
-	-- forged transfer id (another giver's) is refused
-	A.coop_economy_core.send("money", { a = 100, to = 0, x = "2.1.1" }, 0)
-	deliver_all()
-	check(H.MONEY == 10500, "a transfer naming another giver is refused")
-	-- forged money_in from a client is ignored
+	check(A.MONEY_CALLS[3].n == 8500 and A.MONEY == 0 and B.MONEY == 19500, "clamped to the giver's money")
+	local n_calls = #A.MONEY_CALLS
+	check(not A.coop_economy_money.give_money(2, 10) and #A.MONEY_CALLS == n_calls, "no money: no engine call")
+	-- the session cap per transfer (max_money_transfer, 1 000 000 by default)
+	A.MONEY = 5000000
+	A.coop_economy_money.give_money(2, 5000000)
+	check(A.MONEY_CALLS[n_calls + 1].n == 1000000, "capped by max_money_transfer")
+	A.MONEY = 10000
+	n_calls = #A.MONEY_CALLS
+	-- bad input never reaches the engine
+	for _, bad in ipairs({ 0, -5, 0 / 0, math.huge, "abc" }) do
+		A.coop_economy_money.give_money(2, bad)
+	end
+	check(#A.MONEY_CALLS == n_calls, "zero, negative, NaN, infinity, text: refused before the engine")
+	check(A.coop_economy_money.give_money(2, 99.9) and A.MONEY_CALLS[n_calls + 1].n == 99, "a fraction is cut to whole RU")
+	check(not A.coop_economy_money.give_money(1, 10) and not A.coop_economy_money.give_money(9, 10)
+		and #A.MONEY_CALLS == n_calls + 1, "yourself or a player who is not here: no engine call")
+	-- the session rule
+	A.coop_settings = { rule = function(key) if key == "economy/money_transfer" then return false end end }
+	n_calls = #A.MONEY_CALLS
+	check(not A.coop_economy_money.give_money(2, 10) and #A.MONEY_CALLS == n_calls and has(A.TIPS, "off"),
+		"money_transfer off: no engine call, the player is told")
+	A.coop_settings = nil
+	-- the engine refuses (receiver at the maximum, ...): false, the player is told, nothing else changes
+	A.MONEY_REFUSE = "over the maximum"
+	local before = A.MONEY
+	check(not A.coop_economy_money.give_money(2, 10) and A.MONEY == before and has(A.TIPS, "refused"),
+		"engine refusal: false and a message")
+	A.MONEY_REFUSE = nil
+	-- the host gives as well (its Lua is the ledger's own caller)
+	check(H.coop_economy_money.give_money(1, 300) and H.MONEY_CALLS[1].fn == "money_give" and H.MONEY_CALLS[1].peer == 1
+		and H.MONEY_CALLS[1].n == 300 and sent(H, "economy.money_in") == 0, "host -> anna: one engine call")
+	-- the old wire is gone: events of the previous design change nothing
+	local h_calls, h_money, a_money = #H.MONEY_CALLS, H.MONEY, A.MONEY
+	A.coop_economy_core.send("money", { a = 100, to = 0, x = "1.1.1" }, 0)
 	B.coop.send_event("economy.money_in", CM_ENCODE({ a = 100, x = "9.9.9", n = "x" }), 1)
+	H.coop_economy_core.send("money_in", { a = 100, x = "8.8.8", n = "host" }, 1)
+	H.coop_economy_core.send("money_back", { a = 100, x = "1.8.8", r = "gone" }, 1)
 	deliver_all()
-	check(A.MONEY == 0, "money_in from a client is ignored")
+	check(H.MONEY == h_money and A.MONEY == a_money and #H.MONEY_CALLS == h_calls and H.HANDLER_ERRORS == nil
+		and A.HANDLER_ERRORS == nil, "economy.money / money_in / money_back are ignored, from clients and from the host")
 	-- inventory menu
 	local inv = setmetatable({ properties = {}, item_props = { Reset = function(_, pos, a, n, p) A.MENU = { a = a, n = n, p = p } end } },
 		{ __index = A.ui_inventory.UIInventory })
@@ -565,9 +592,10 @@ do
 	inv:coop_eco_ActionMoney(860, "actor_bag", "", 2)
 	run_time_events(A)
 	check(A.MENU and #A.MENU.a >= 3 and A.MENU.p[1][1] == 2, "amount list opens on the next update")
+	local b_money = B.MONEY
 	inv:coop_eco_GiveAmount(2, 500)
-	deliver_all() deliver_all()
-	check(A.MONEY == 1500 and B.MONEY == 20000, "amount entry gives the money")
+	check(A.MONEY == 1500 and B.MONEY == b_money + 500 and A.MONEY_CALLS[#A.MONEY_CALLS].peer == 2
+		and A.MONEY_CALLS[#A.MONEY_CALLS].n == 500, "amount entry gives the money through the engine")
 end
 
 -------------------------------------------------------------------------------
@@ -611,7 +639,7 @@ do
 	H.txr_routes.open_route("a", "b")
 	tick(H, 1000)
 	check(#H.SENT == 0, "no network traffic outside a session")
-	check(not H.coop_economy_money.give_money(1, 10), "no money transfer outside a session")
+	check(not H.coop_economy_money.give_money(1, 10) and #H.MONEY_CALLS == 0, "no money transfer outside a session")
 end
 
 print(string.format("%d passed, %d failed", CHECKS - FAILS, FAILS))

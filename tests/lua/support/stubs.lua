@@ -228,3 +228,15 @@ function check(cond, what)
 		FAILS = FAILS + 1
 	end
 end
+
+-- Optional stand-ins live in stubs.d/*.lua, one topic per file, loaded in alphabetical order (the working directory
+-- is the repository root, as for every test).
+do
+	local BS = string.char(92)
+	local pipe = assert(io.popen("dir /b /on tests" .. BS .. "lua" .. BS .. "support" .. BS .. "stubs.d" .. BS .. "*.lua 2>nul"))
+	for line in pipe:lines() do
+		line = line:gsub("\r", "")
+		if line:match("%.lua$") then dofile("tests/lua/support/stubs.d/" .. line) end
+	end
+	pipe:close()
+end

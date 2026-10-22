@@ -1,6 +1,7 @@
 -- Anomaly Coop W4 "quests" temp test harness: host + client machines with stubbed Anomaly/engine APIs,
 -- coop_tasks.script and coop_quests_*.script loaded like CScriptStorage modules. Not shipped.
 local SCRIPTS = "gamedata/scripts/"
+dofile("tests/lua/support/stubs.d/money.lua") -- install_money_stubs: coop.money_* of the host ledger (F2 T1)
 
 H = {}
 FAILS, PASSES = 0, 0
@@ -262,6 +263,8 @@ function machine(role, self_peer)
 			return true
 		end,
 	}
+	M.money_calls = {} -- the host ledger: every coop.money_* call of this machine
+	install_money_stubs(env.coop, { calls = M.money_calls, is_host = function() return role == "host" end })
 	env.coop_main = {
 		add_event_handler = function(name, f) M.handlers[name] = f return true end,
 		encode = encode, decode = decode,

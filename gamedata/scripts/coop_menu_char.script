@@ -10,8 +10,9 @@
 	new_game_loadouts.ltx: value_1 = false -> free kit, true -> bought with value_3 points, value_4 = highest
 	economy tier). The host checks everything again with its own config, then on the proxy: removes the NPC
 	supplies, sets the faction community, spawns the kit (+ ammo for weapons, like the stock new game) and clears
-	the mark. Items reach the player through the normal item sync. The client sets its own actor_<faction>
-	community and money (money is the player's, R-6.7). Returning players (proxy not new) are never asked.
+	the mark. Items reach the player through the normal item sync. The host sets the character's money on the
+	host ledger (coop.money_set, F2 T6: money is the player's, R-6.7, and the host keeps the books); the client
+	sets its own actor_<faction> community only. Returning players (proxy not new) are never asked.
 
 	Events (coop_main.encode payloads, ids in host numbering):
 		menu.char_offer      host -> player   { eco, points, nick }            repeated every 60 s while new
@@ -259,6 +260,10 @@ local function on_new_character(payload, from)
 	se_save_var(proxy, nil, NEW_VAR, nil)
 	offered[from] = nil
 	local money = faction_money(faction)
+	-- F2 T6: the character's money is the host ledger's; the client's balance follows with the engine's reply
+	local set_ok, set_why = false, "coop.money_set is missing"
+	if type(api.money_set) == "function" then set_ok, set_why = api.money_set(from, money) end
+	if not set_ok then log("! money of player #%d not set: %s", from, tostring(set_why)) end
 	log("player #%d: faction %s, %d NPC item(s) removed, %d item(s) given, money %d", from, faction, removed, given, money)
 	reply(from, { ok = true, faction = faction, money = money, items = given })
 	-- other groups' start kit of a new character (W5: Mags Redux magazines, coop_mods_core listeners)
@@ -724,8 +729,7 @@ local function on_result(payload, from)
 	if t.ok and type(t.faction) == "string" and FACTION_SET[t.faction] then
 		state.done = true
 		pcall(function() db.actor:set_character_community("actor_" .. t.faction, 0, 0) end)
-		local money = math.floor(tonumber(t.money) or 0)
-		if money >= 0 then pcall(function() db.actor:give_money(money - db.actor:money()) end) end
+		local money = math.floor(tonumber(t.money) or 0) -- for the log only: the host set it (coop.money_set)
 		if GUI then GUI:Close() end
 		local name = game.translate_string("st_faction_" .. t.faction)
 		pcall(function() db.actor:give_game_news("Co-op", tr("st_coop_char_done", name), "ui_iconsTotal_grouping", 0, 7000) end)

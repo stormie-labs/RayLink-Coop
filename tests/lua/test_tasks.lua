@@ -1,6 +1,7 @@
 -- Anomaly Coop W3c temp test: coop_tasks.script on a simulated host + client (two Lua environments).
 -- Not shipped. Run: tools\test_lua.cmd tasks
 local SCRIPT = "gamedata/scripts/coop_tasks.script"
+dofile("tests/lua/support/stubs.d/money.lua") -- install_money_stubs: coop.money_* of the host ledger (F2 T1)
 
 FAILS, PASSES = 0, 0
 local function check(cond, what)
@@ -154,6 +155,8 @@ local function machine(role, self_peer)
 			return true
 		end,
 	}
+	M.money_calls = {} -- the host ledger: every coop.money_* call of this machine
+	install_money_stubs(env.coop, { calls = M.money_calls, is_host = function() return role == "host" end })
 	env.coop_main = {
 		add_event_handler = function(name, f) M.handlers[name] = f end,
 	}
@@ -342,6 +345,24 @@ local function tick(m)
 	if m.callbacks.actor_on_update then m.callbacks.actor_on_update() end
 end
 
+-- Calls of one coop.money_* function on a machine: { { peer, n }, ... }
+local function money_calls(m, fn)
+	local out = {}
+	for _, c in ipairs(m.money_calls) do
+		if c.fn == fn and c.ok then out[#out + 1] = { c.peer, c.n } end
+	end
+	return out
+end
+
+-- coop_trw events that still carry money (k=money): none since F2 T6
+local function money_events(m)
+	local n = 0
+	for _, e in ipairs(m.sent) do
+		if e.name == "coop_trw" and e.payload:find("k=smoney", 1, true) then n = n + 1 end
+	end
+	return n
+end
+
 local function count_sent(m, name)
 	local n = 0
 	for _, s in ipairs(m.sent) do if s.name == name then n = n + 1 end end
@@ -440,7 +461,11 @@ check(H.actor._money == H.money_before, "host got no money")
 check(proxy_on_host:object("af_reward") ~= nil and H.actor:object("af_reward") == nil, "reward item spawned into the finisher's character")
 check((H.goodwill[500] or 0) == 50 and (H.goodwill[0] or 0) == 0, "goodwill keyed to the finisher's character")
 pump()
-check(C.actor._money == 1000, "client got the money through its own actor")
+local g1 = money_calls(H, "money_grant")
+check(#g1 == 1 and g1[1][1] == 1 and g1[1][2] == 1000, "the host granted the stock fetch money to the finisher: coop.money_grant(1, 1000)")
+check(C.actor._money == 0 and #C.money_calls == 0, "the client did not touch its money or the ledger")
+check(money_events(H) == 0, "no coop_trw event carries money")
+check(C.money_news[1] == "in:1000", "the finisher still sees the money news")
 check(C.gw_msg == "stalker", "client shows the goodwill message")
 local got_in, got_out = false, false
 for _, n in ipairs(C.news) do
@@ -461,6 +486,36 @@ tick(H)
 pump()
 check(C.tm.task_info.old_task == nil, "stale join-time task dropped by the host's list")
 
+-- ---------------------------------------------------------------- reward_money_is_a_host_grant
+print("== reward_money_is_a_host_grant")
+do
+	C.tm:give_task("story_1", 9)
+	pump()
+	H.on_complete.story_1 = function() H.env.dialogs.relocate_money(H.actor, 1200, "in") end
+	local hm0, cm0 = H.actor._money, C.actor._money
+	local g0, ev0, news0 = #H.money_calls, money_events(H), #C.money_news
+	C.tm:set_task_completed("story_1")
+	pump()
+	H.engine_check()
+	pump()
+	local g = money_calls(H, "money_grant")
+	check(#H.money_calls == g0 + 1 and g[#g][1] == 1 and g[#g][2] == 1200, "1200 for the one who turned it in: coop.money_grant(1, 1200)")
+	check(money_events(H) == ev0, "no coop_trw event with k=money")
+	check(H.actor._money == hm0 and C.actor._money == cm0 and #C.money_calls == 0, "neither actor's money was changed by Lua")
+	check(#C.money_news == news0 + 1 and C.money_news[#C.money_news] == "in:1200", "the news line still comes from the finisher's machine")
+	-- a grant the host ledger refuses is not announced
+	H.env.coop.money_grant = function(peer, n) H.money_calls[#H.money_calls + 1] = { fn = "money_grant", peer = peer, n = n, ok = false, why = "no character" } return false, "no character" end
+	C.tm:give_task("story_1", 9)
+	pump()
+	news0 = #C.money_news
+	C.tm:set_task_completed("story_1")
+	pump()
+	H.engine_check()
+	pump()
+	check(#C.money_news == news0, "refused grant: no news line")
+	install_money_stubs(H.env.coop, { calls = H.money_calls, is_host = function() return true end })
+end
+
 -- ---------------------------------------------------------------- share setting
 print("== coop_share_rewards 1")
 H.share = 1
@@ -474,11 +529,14 @@ H.on_complete.fetch_2 = function()
 	H.env.alife_create_item("knife", H.actor)
 end
 local hm, cm = H.actor._money, C.actor._money
+local g_before = #money_calls(H, "money_grant")
 C.tm:set_task_completed("fetch_2")
 pump()
 H.engine_check()
 pump()
-check(H.actor._money - hm == 500 and C.actor._money - cm == 501, "money split, remainder to the finisher")
+local gs = money_calls(H, "money_grant")
+check(H.actor._money - hm == 500 and #gs == g_before + 1 and gs[#gs][1] == 1 and gs[#gs][2] == 501 and C.actor._money == cm,
+	"money split: the host keeps 500, coop.money_grant(1, 501) for the finisher (remainder)")
 check(proxy_on_host:object("knife") ~= nil, "item still to the finisher")
 H.share = 0
 
@@ -511,7 +569,9 @@ hm, cm = H.actor._money, C.actor._money
 H.tm:set_task_completed("story_1") -- not talking: a scheme / info reaction
 H.engine_check()
 pump()
-check(H.actor._money == hm and C.actor._money - cm == 200, "reward to the player who took it")
+local g200 = money_calls(H, "money_grant")
+check(H.actor._money == hm and C.actor._money == cm and g200[#g200][1] == 1 and g200[#g200][2] == 200,
+	"reward to the player who took it: coop.money_grant(1, 200)")
 check(H.mod.recipient("stage_t") == 1, "follow-up task belongs to that player")
 H.tm.task_info.stage_t = nil
 H.engine_tasks.stage_t = nil
@@ -533,7 +593,10 @@ check(H.mod.recipient("cf_1") == 1, "engine note keeps the client as finisher")
 hm, cm = H.actor._money, C.actor._money
 H.engine_check()
 pump()
-check(H.actor._money == hm and C.actor._money == cm - 700, "payment taken from the finisher")
+local gp = money_calls(H, "money_grant")
+check(H.actor._money == hm and C.actor._money == cm and gp[#gp][1] == 1 and gp[#gp][2] == -700 and money_events(H) == 0,
+	"payment taken from the finisher on the host ledger: coop.money_grant(1, -700)")
+check(C.money_news[#C.money_news] == "out:700", "the payment news line is shown to the payer")
 check(C.faction == "army" and H.faction == nil, "faction change runs on the finisher's machine")
 
 -- ---------------------------------------------------------------- stage writes, cancel, bad requests
