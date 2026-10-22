@@ -292,6 +292,96 @@ TEST(death_items_proxy_keeps_wearable)
 	CHECK((stash_ids(in, kinds, false, true) == std::vector<uint16_t>{1, 2, 3, 4, 5}));
 }
 
+namespace
+{
+// What the engine does for a client's proxy (coop_death.cpp carried_of): with the owner's list of what he has on,
+// every item of the proxy is offered except those on the list (`worn`, layout known); without it (an old client, a
+// dropped packet) only the backpack is seen and nothing he may wear is offered (the pre-T8b rule).
+std::vector<uint16_t> offered(std::vector<ItemFacts> in, const KindTable& kinds, const std::vector<uint16_t>* worn)
+{
+	if (!worn)
+		return ids_of(loss_candidates(in, kinds, false));
+	mark_worn(in, *worn);
+	return ids_of(loss_candidates(in, kinds, true));
+}
+
+// A client's proxy as the host sees it (m_all): the NPC put the player's things into its own slots in its own order.
+std::vector<ItemFacts> proxy_items()
+{
+	std::vector<ItemFacts> in;
+	in.push_back(item(1, "i_part"));
+	in.push_back(with(with(item(2, "o_heavy"), &ItemFacts::outfit), &ItemFacts::wearable)); // the outfit he wears
+	in.push_back(with(item(3, "w_rifle"), &ItemFacts::wearable)); // the gun in his hands
+	in.push_back(with(item(4, "i_arty"), &ItemFacts::wearable)); // on his belt
+	in.push_back(item(5, "w_ammo"));
+	in.push_back(with(item(6, "w_rifle"), &ItemFacts::wearable)); // a spare gun: in the NPC's slot, in his backpack
+	in.push_back(with(item(7, "i_arty"), &ItemFacts::wearable)); // a spare artefact in his backpack
+	in.push_back(with(item(8, "i_part"), &ItemFacts::quest)); // never
+	return in;
+}
+} // namespace
+
+// F3 T8b (Ruling F3-4): the same items of a client's proxy, different lists of what he has on, different losses. What
+// is on the list stays; the spare gun and the spare artefact (not on it) can go as the host's own would. No list: the
+// old rule, nothing he may wear is offered.
+TEST(death_items_worn_list)
+{
+	const KindTable kinds = stock_kinds();
+	const std::vector<ItemFacts> in = proxy_items();
+
+	const std::vector<uint16_t> on_him{2, 3, 4};
+	CHECK((offered(in, kinds, &on_him) == std::vector<uint16_t>{1, 5, 6, 7}));
+	const std::vector<uint16_t> nothing_on;
+	CHECK((offered(in, kinds, &nothing_on) == std::vector<uint16_t>{1, 2, 3, 4, 5, 6, 7})); // an empty list is a list
+	const std::vector<uint16_t> spares{6, 7};
+	CHECK((offered(in, kinds, &spares) == std::vector<uint16_t>{1, 2, 3, 4, 5}));
+	CHECK((offered(in, kinds, nullptr) == std::vector<uint16_t>{1, 5})); // as before T8b
+
+	// The list as it comes from a client: unsorted, repeated ids, ids he does not carry. Only what is in the items
+	// counts.
+	const std::vector<uint16_t> messy{4, 3, 2, 3, 999, 2, 0xffff};
+	CHECK((offered(in, kinds, &messy) == std::vector<uint16_t>{1, 5, 6, 7}));
+	std::vector<ItemFacts> marked = in;
+	CHECK_EQ(mark_worn(marked, messy), size_t(3));
+	CHECK_EQ(mark_worn(marked, messy), size_t(3)); // again: the same
+	CHECK(marked[1].worn && marked[2].worn && marked[3].worn);
+	CHECK(!marked[0].worn && !marked[4].worn && !marked[5].worn && !marked[6].worn && !marked[7].worn);
+	CHECK_EQ(mark_worn(marked, nothing_on), size_t(0)); // a new list replaces the old marks
+	CHECK(!marked[1].worn && !marked[2].worn && !marked[3].worn);
+
+	// A quest item on the list or off it is never offered; a list cannot make a never-lost item lost.
+	const std::vector<uint16_t> quest_on{8};
+	CHECK((offered(in, kinds, &quest_on) == std::vector<uint16_t>{1, 2, 3, 4, 5, 6, 7}));
+
+	// Whatever the seed, with every share at 1 a pick never takes what the list names, and takes every other candidate.
+	for (uint32_t seed = 1; seed < 100; ++seed)
+	{
+		std::vector<ItemFacts> m = in;
+		mark_worn(m, on_him);
+		std::vector<uint16_t> picked = pick_losses(loss_candidates(m, kinds, true), all_shares(1.0f), seed);
+		std::sort(picked.begin(), picked.end());
+		CHECK((picked == std::vector<uint16_t>{1, 5, 6, 7}));
+	}
+
+	// The corpse stash takes the same set; a hardcore retirement (everything) takes all, list or not.
+	std::vector<ItemFacts> m = in;
+	mark_worn(m, on_him);
+	CHECK((stash_ids(m, kinds, false, true) == std::vector<uint16_t>{1, 5, 6, 7}));
+	CHECK((stash_ids(m, kinds, true, true) == std::vector<uint16_t>{1, 2, 3, 4, 5, 6, 7, 8}));
+	CHECK((stash_ids(in, kinds, false, false) == std::vector<uint16_t>{1, 5}));
+}
+
+// The host's own actor: its backpack is exact. No list ever marks anything there, and what it has in its backpack is
+// offered whether or not its ltx lets it wear it.
+TEST(death_items_worn_host_exact)
+{
+	const KindTable kinds = stock_kinds();
+	const std::vector<ItemFacts> in = proxy_items();
+	CHECK((ids_of(loss_candidates(in, kinds, true)) == std::vector<uint16_t>{1, 2, 3, 4, 5, 6, 7}));
+	for (const ItemFacts& f : in)
+		CHECK(!f.worn);
+}
+
 // Corpse: the backpack (as the candidates). Hardcore retirement (everything): all of it, worn and quest items too;
 // never helper items or host-only objects.
 TEST(death_items_stash_ids)
@@ -481,8 +571,6 @@ TEST(death_stash_same_owner)
 
 	now.key = ""; // Task 10 removed the key line ("retired = 1"): the same player still plays it
 	CHECK(same_owner(then, now));
-	now.key = "#57";
-	CHECK(same_owner(then, now));
 
 	now = then;
 	now.peer = 0xffffffffu; // the player left: the parked character keeps its key
@@ -490,6 +578,15 @@ TEST(death_stash_same_owner)
 	now.peer = 5; // he came back under another peer id
 	CHECK(same_owner(then, now));
 
+	// T8b, review R1: when both sides have a key, the keys decide alone. The same peer number with another key is
+	// another character (the id was released and given to a new proxy of a player who took the same number).
+	now = then;
+	now.key = "ffff";
+	CHECK(!same_owner(then, now));
+	now.peer = 0xffffffffu;
+	CHECK(!same_owner(then, now));
+
+	now = then;
 	now.peer = 5; // another player and another key: the id belongs to another character
 	now.key = "ffff";
 	CHECK(!same_owner(then, now));
@@ -506,6 +603,15 @@ TEST(death_stash_same_owner)
 	other_keyless.peer = 6;
 	CHECK(!same_owner(keyless, other_keyless));
 	CHECK(same_owner(keyless, keyless));
+
+	// Only one side has a key: the peer is all there is to compare (the key did not exist when the stash was made, or
+	// Task 10 took it away).
+	StashOwner late_key;
+	late_key.peer = 4;
+	late_key.key = "c0de";
+	CHECK(same_owner(keyless, late_key));
+	late_key.peer = 6;
+	CHECK(!same_owner(keyless, late_key));
 
 	// The host's own character: peer 0 for good.
 	StashOwner host;
