@@ -1,7 +1,8 @@
 @echo off
 rem Anomaly Coop: builds and runs the xrCoop unit tests (no framework, MSVC command line).
 rem   tools\build_tests.cmd [test-name-substring ...]     extra arguments are passed to coop_tests.exe
-rem Output: anomaly-coop\temp\tests\coop_tests.exe. Exit code: build error code, else the test exe exit code.
+rem Output: anomaly-coop\temp\tests\coop_tests.exe; COOP_TEST_OUT=<dir> moves it (parallel agents must not share one).
+rem Exit code: build error code, else the test exe exit code.
 setlocal
 
 set "ROOT=%~dp0.."
@@ -10,6 +11,7 @@ set "SRC=%ROOT%\engine\src"
 set "COOP=%SRC%\xrCoop"
 set "ENET=%SRC%\3rd party\enet"
 set "OUT=%ROOT%\temp\tests"
+if defined COOP_TEST_OUT set "OUT=%COOP_TEST_OUT%"
 
 if not defined VCVARS set "VCVARS=C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
 if not exist "%VCVARS%" (
