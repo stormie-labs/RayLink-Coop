@@ -133,3 +133,19 @@ TEST(validate_name)
 	CHECK(!validate::resource_name_ok("actors\x80", kMax));
 	CHECK(!validate::resource_name_ok("\xD0\xBF", kMax)); // UTF-8 Cyrillic
 }
+
+TEST(validate_bone)
+{
+	// R3 В5: the bone of a hit indexes the target's skeleton; 0xffff (BI_NONE) is the engine's own "no bone".
+	CHECK(validate::kNoBone == 0xffffu);
+	CHECK(validate::bone_ok(0, 1));
+	CHECK(validate::bone_ok(46, 47));
+	CHECK(!validate::bone_ok(47, 47));
+	CHECK(!validate::bone_ok(48, 47));
+	CHECK(!validate::bone_ok(1000, 47));
+	CHECK(!validate::bone_ok(0, 0)); // no skeleton bones: only "no bone" passes
+	CHECK(validate::bone_ok(validate::kNoBone, 47));
+	CHECK(validate::bone_ok(validate::kNoBone, 0));
+	CHECK(validate::bone_ok(0xfffe, 0xffff)); // the last bone of the largest skeleton a u16 can count
+	CHECK(!validate::bone_ok(0xfffe, 0xfffe));
+}
