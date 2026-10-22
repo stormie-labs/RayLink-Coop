@@ -2,11 +2,14 @@
 // what a host takes from a client (blobs, joins, request rates), the world epoch and which way the join lifecycle goes.
 // Real Sessions over 127.0.0.1 in one process. Ports 37100+n (test_net.cpp uses 37000+n).
 #include "test_util.h"
+#include "coop_limits.h"
 
 #include <enet/enet.h>
 
 #include <algorithm>
 #include <cstring>
+#include <iterator>
+#include <set>
 
 using namespace coop;
 
@@ -678,6 +681,179 @@ TEST(limits_message_rate)
 	CHECK_EQ(host.s.stats(uint16_t(Msg::StateDumpRequest)).rate_dropped, uint64_t(9)); // + 3 of the 5
 }
 
+TEST(limits_client_rate_rules)
+{
+	// F2 T3: one table of what a host takes from each client (coop_join installs it). Equip, spots, infos, script
+	// events, story resyncs, vitals, money and talk locks joined the F0 two (heavy requests, level exit votes).
+	struct Expected
+	{
+		Msg type;
+		uint32_t burst, refill_ms;
+	};
+	const Expected expected[] = {{Msg::StateDumpRequest, 64, 50}, {Msg::TransitionVote, 4, 2000}, {Msg::PlayerEquip, 8, 400},
+		{Msg::PlayerVitals, 4, 1000}, {Msg::MapSpot, 32, 250}, {Msg::InfoPortion, 64, 50}, {Msg::StoryResync, 4, 5000},
+		{Msg::ScriptEvent, 64, 20}, {Msg::ReqMoney, 32, 100}, {Msg::DialogLock, 10, 1000}};
+	for (const Expected& e : expected)
+	{
+		const limits::RateRule* rule = nullptr;
+		for (const limits::RateRule& r : limits::kClientRateRules)
+			if (r.type == e.type)
+				rule = &r;
+		CHECK_EQ(std::string(msg_name(e.type)) + (rule ? " has a rule" : " has no rule"), std::string(msg_name(e.type)) + " has a rule");
+		if (!rule)
+			continue;
+		CHECK_EQ(rule->burst, e.burst);
+		CHECK_EQ(rule->refill_ms, e.refill_ms);
+	}
+	for (const limits::RateRule& r : limits::kClientRateRules)
+	{
+		CHECK_EQ(std::string(msg_name(r.type)) +
+		        (std::any_of(std::begin(expected), std::end(expected), [&](const Expected& e) { return e.type == r.type; })
+		                ? " is expected"
+		                : " is not expected"),
+		    std::string(msg_name(r.type)) + " is expected");
+		// a rule for a message clients do not send would be dead (the session kicks the sender before it)
+		CHECK(msg_sender(r.type) != MsgSender::HostOnly);
+		// 0 removes a limit (Session::limit_rate); one rule per type, the session keeps the last
+		CHECK(r.burst > 0 && r.refill_ms > 0);
+		CHECK_EQ(std::count_if(std::begin(limits::kClientRateRules), std::end(limits::kClientRateRules),
+		             [&](const limits::RateRule& o) { return o.type == r.type; }),
+		    std::ptrdiff_t(1));
+	}
+}
+
+TEST(limits_rate_drops_equip_burst)
+{
+	// F2 T3: with the game's table a client's PlayerEquip passes 8 in a row, then one per 400 ms. An honest client sends
+	// one per 500 ms at most (coop_equip.cpp kEquipCheckMs: a change, or the refresh every 5 s).
+	Node host("Boss", 37119), a("Alice", 37119);
+	for (const limits::RateRule& rule : limits::kClientRateRules)
+		host.s.limit_rate(rule.type, rule.burst, rule.refill_ms);
+	size_t equips = 0;
+	host.s.on(Msg::PlayerEquip, [&](PeerId, Reader&) { ++equips; });
+	host_and_join(host, {&a}, 37119);
+	const auto stats = [&] { return host.s.stats(uint16_t(Msg::PlayerEquip)); };
+
+	for (int i = 0; i < 9; ++i)
+		a.s.send(kHostPeer, Lane::Reliable, Msg::PlayerEquip, Writer());
+	REQUIRE(t::pump_until({&host.s, &a.s}, 5000, [&] { return stats().recv_count == 9; }));
+	t::pump_for({&host.s, &a.s}, 50);
+	CHECK_EQ(equips, size_t(8));
+	CHECK_EQ(stats().rate_dropped, uint64_t(1));
+	CHECK(host.logged("rate limit: PlayerEquip"));
+	CHECK(host.left.empty()); // dropped, not kicked
+
+	// A token comes back in 400 ms: one more passes, the next right after it does not.
+	t::pump_for({&host.s, &a.s}, 400);
+	a.s.send(kHostPeer, Lane::Reliable, Msg::PlayerEquip, Writer());
+	a.s.send(kHostPeer, Lane::Reliable, Msg::PlayerEquip, Writer());
+	REQUIRE(t::pump_until({&host.s, &a.s}, 5000, [&] { return stats().recv_count == 11; }));
+	t::pump_for({&host.s, &a.s}, 50);
+	CHECK_EQ(equips, size_t(9));
+	CHECK_EQ(stats().rate_dropped, uint64_t(2));
+}
+
+namespace
+{
+template <class Pred>
+bool pump_nodes(const std::vector<Node*>& nodes, uint32_t timeout_ms, Pred pred)
+{
+	const uint64_t start = t::now_ms();
+	for (;;)
+	{
+		const uint64_t now = t::now_ms();
+		for (Node* n : nodes)
+			n->s.update(now);
+		if (pred())
+			return true;
+		if (now - start > timeout_ms)
+			return false;
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+}
+} // namespace
+
+TEST(limits_new_characters_per_session)
+{
+	// Ruling F2-10 b: a client picks its own player key, and the host made a character for every key its world had none
+	// for: new keys farmed the starting kit and money, and each character stays in the save for good. A session makes
+	// at most limits::kMaxNewCharacters; the next new key is refused, a player who has a character comes in.
+	// The host here does on JoinRequest what coop_join::host_send_world does (its world: the keys with a character).
+	static_assert(limits::kMaxNewCharacters == 8, "8 new keys come in, the 9th does not");
+	constexpr uint16_t kPort = 37121;
+	Node host("Boss", kPort), p1("P1", kPort), p2("P2", kPort), p3("P3", kPort), p4("P4", kPort), p5("P5", kPort),
+	    p6("P6", kPort), p7("P7", kPort), p8("P8", kPort), p9("P9", kPort), back("P1", kPort);
+	back.cfg.key = p1.cfg.key;
+	const std::vector<Node*> all = {&host, &p1, &p2, &p3, &p4, &p5, &p6, &p7, &p8, &p9, &back};
+	std::set<std::string> world; // key digests with a character
+	limits::NewCharacters made;
+	size_t in_world = 0;
+	host.s.on(Msg::JoinRequest, [&](PeerId from, Reader&) {
+		const PeerInfo* p = host.s.peer(from);
+		std::string digest;
+		if (!p || !key_digest_hex(p->key, digest))
+			return;
+		if (world.count(digest) == 0)
+		{
+			if (!made.admits(digest))
+			{
+				host.s.kick(from, limits::kNoNewCharacterReason, limits::no_new_character_text());
+				return;
+			}
+			made.add(digest);
+			world.insert(digest);
+		}
+		++in_world;
+	});
+	auto join = [&](Node& n) {
+		std::string err;
+		REQUIRE(n.connect(kPort, &err));
+		REQUIRE(pump_nodes(all, 5000, [&] { return n.s.is_active() || n.rejected || n.disconnected; }));
+		REQUIRE(n.s.is_active());
+		n.s.send(kHostPeer, Lane::Reliable, Msg::JoinRequest, Writer());
+	};
+	auto leave = [&](Node& n) {
+		const size_t left = host.left.size();
+		n.s.shutdown("bye");
+		REQUIRE(pump_nodes(all, 5000, [&] { return host.left.size() == left + 1; }));
+	};
+
+	host_and_join(host, {&p1, &p2, &p3, &p4, &p5, &p6, &p7}, kPort); // the session holds 7 clients
+	for (Node* n : {&p1, &p2, &p3, &p4, &p5, &p6, &p7})
+		n->s.send(kHostPeer, Lane::Reliable, Msg::JoinRequest, Writer());
+	REQUIRE(pump_nodes(all, 5000, [&] { return in_world == 7; }));
+	CHECK_EQ(made.count(), size_t(7));
+
+	leave(p1); // his character stays in the world
+	join(p8);
+	REQUIRE(pump_nodes(all, 5000, [&] { return in_world == 8; }));
+	CHECK_EQ(made.count(), size_t(8));
+
+	// The 9th new key: refused with the reason, nothing made.
+	leave(p2);
+	join(p9);
+	REQUIRE(pump_nodes(all, 5000, [&] { return p9.disconnected; }));
+	CHECK(p9.disc_reason.find(reject_reason_name(limits::kNoNewCharacterReason)) != std::string::npos);
+	CHECK(p9.disc_reason.find(limits::no_new_character_text()) != std::string::npos);
+	CHECK_EQ(in_world, size_t(8));
+	CHECK_EQ(made.count(), size_t(8));
+
+	// P1 comes back with his key: his character is in the world, it costs nothing.
+	join(back);
+	REQUIRE(pump_nodes(all, 5000, [&] { return in_world == 9; }));
+	CHECK(back.s.is_active() && !back.disconnected);
+	CHECK_EQ(made.count(), size_t(8));
+
+	// The host loads a save from before P8 came: his character is gone, his key is not new to this session.
+	std::string p8_digest;
+	REQUIRE(key_digest_hex(p8.cfg.key, p8_digest));
+	world.erase(p8_digest);
+	p8.s.send(kHostPeer, Lane::Reliable, Msg::JoinRequest, Writer()); // as after SessionReset
+	REQUIRE(pump_nodes(all, 5000, [&] { return in_world == 10 || p8.disconnected; }));
+	CHECK(!p8.disconnected);
+	CHECK_EQ(made.count(), size_t(8));
+}
+
 TEST(world_epoch)
 {
 	// R2 I1: a load or a level change on the host replaces the world. What a client made in the old world
@@ -823,8 +999,10 @@ TEST(lifecycle_messages_go_one_way)
 		CHECK(msg_sender(m) == MsgSender::HostOnly);
 	for (Msg m : client_only)
 		CHECK(msg_sender(m) == MsgSender::ClientOnly);
-	for (Msg m : {Msg::ScriptEvent, Msg::PlayerState, Msg::TradeOp, Msg::EntityEvent, Msg::StateDumpRequest})
-		CHECK(msg_sender(m) == MsgSender::Either); // both ways (relays, requests): their handlers check the sender
+	// F2 T3: every other game message has a direction too (game_messages_have_direction); these go both ways (an
+	// owner's change the host relays): their handlers check the sender.
+	for (Msg m : {Msg::ScriptEvent, Msg::PlayerState, Msg::TradeOp, Msg::MapSpot, Msg::InfoPortion})
+		CHECK(msg_sender(m) == MsgSender::Either);
 	Node host("Boss", 37118), a("Al", 37118), b("Bo", 37118), c("Cy", 37118), d("Di", 37118), e("Ed", 37118),
 	    f("Fay", 37118);
 	Node* senders[] = {&a, &b, &c, &d, &e};
@@ -873,4 +1051,166 @@ TEST(lifecycle_messages_go_one_way)
 	CHECK(f.logged("unexpected TransitionVote"));
 	CHECK(f.s.is_active() && !f.disconnected);
 	CHECK_EQ(host.s.peers().size(), size_t(1));
+}
+
+namespace
+{
+const char* sender_name(MsgSender s)
+{
+	switch (s)
+	{
+	case MsgSender::Either: return "Either";
+	case MsgSender::HostOnly: return "HostOnly";
+	case MsgSender::ClientOnly: return "ClientOnly";
+	}
+	return "?";
+}
+
+struct Direction
+{
+	Msg type;
+	MsgSender sender;
+};
+
+// F2 T3: who sends each game message, from the senders in the game layer (net::host_send / host_broadcast against
+// net::client_send, engine/src/xrGame/coop/*.cpp; task-3-report.md lists them). A message without a sender takes
+// the direction its comment in coop_protocol.h gives.
+constexpr MsgSender kHost = MsgSender::HostOnly;
+constexpr MsgSender kClient = MsgSender::ClientOnly;
+constexpr MsgSender kBoth = MsgSender::Either;
+constexpr Direction kDirections[] = {
+	// session / join / world lifecycle
+	{Msg::JoinRequest, kClient},
+	{Msg::WorldBlob, kHost},
+	{Msg::WorldLoaded, kClient},
+	{Msg::JoinComplete, kHost},
+	{Msg::SessionReset, kHost},
+	{Msg::LevelChange, kHost},
+	{Msg::TransitionVote, kClient},
+	{Msg::AvatarList, kHost},
+	// players: the owner sends, the host relays
+	{Msg::PlayerState, kBoth},
+	{Msg::PlayerVitals, kClient},
+	{Msg::PlayerEquip, kBoth},
+	{Msg::PlayerAnim, kBoth},
+	{Msg::PlayerShot, kBoth},
+	{Msg::PlayerGrenade, kBoth},
+	{Msg::PlayerHit, kHost},
+	{Msg::PlayerWounded, kBoth},
+	{Msg::PlayerRevive, kBoth},
+	{Msg::PlayerDied, kBoth},
+	{Msg::PlayerRules, kHost},
+	// entities: the host's world
+	{Msg::EntitySpawn, kHost},
+	{Msg::EntityDestroy, kHost},
+	{Msg::EntitySwitch, kHost},
+	{Msg::EntitySnapshot, kHost},
+	{Msg::EntityAnim, kHost},
+	{Msg::EntityEvent, kClient}, // a client's use / push / throw / activate (coop_objects.h)
+	{Msg::EntityHealth, kHost},
+	{Msg::EntityDied, kHost},
+	{Msg::EntityParent, kHost},
+	{Msg::EntityState, kHost},
+	{Msg::EntityLocal, kHost},
+	{Msg::ItemState, kBoth}, // the owner's item, relayed; the host's authority
+	{Msg::EntitySound, kHost},
+	// requests and their results
+	{Msg::ReqSpawn, kClient},
+	{Msg::ReqDestroy, kClient},
+	{Msg::ReqTake, kClient},
+	{Msg::ReqDrop, kClient},
+	{Msg::ReqTransfer, kClient},
+	{Msg::ReqUse, kClient},
+	{Msg::ReqHit, kClient},
+	{Msg::ReqResult, kHost},
+	{Msg::ReqMoney, kClient},
+	{Msg::ReqContainer, kClient},
+	{Msg::ReqItemEvent, kClient},
+	{Msg::ReqLaunch, kClient},
+	// world state
+	{Msg::TimeSync, kHost},
+	{Msg::WeatherSync, kHost},
+	{Msg::Emission, kHost},
+	{Msg::ZoneState, kHost},
+	{Msg::TimeRequest, kClient},
+	// quests, story, PDA: a client asks, the host applies and tells everybody
+	{Msg::InfoPortion, kBoth},
+	{Msg::TaskList, kHost},
+	{Msg::TaskUpdate, kBoth},
+	{Msg::MapSpot, kBoth},
+	{Msg::Relation, kBoth},
+	{Msg::Progress, kBoth},
+	{Msg::StoryHash, kHost},
+	{Msg::StoryResync, kClient},
+	// dialogs and trade
+	{Msg::DialogLock, kClient},
+	{Msg::DialogLockResult, kHost},
+	{Msg::DialogUnlock, kBoth}, // a client lets go, the host revokes
+	{Msg::DialogPhrases, kHost},
+	{Msg::DialogSelect, kClient},
+	{Msg::TradeOp, kBoth},
+	// F2 mod layer
+	{Msg::MoneyBalance, kHost},
+	// scripting and diagnostics
+	{Msg::ScriptEvent, kBoth},
+	{Msg::StateDumpRequest, kClient},
+	{Msg::StateDump, kHost},
+};
+} // namespace
+
+TEST(game_messages_have_direction)
+{
+	// F2 T3: the session checks the direction of every game message on receipt (msg_sender): what only the host sends
+	// kicks a client that sends it, what only clients send is ignored by a client. In F0 only the join lifecycle had one.
+	for (const Direction& d : kDirections)
+		CHECK_EQ(std::string(msg_name(d.type)) + ": " + sender_name(msg_sender(d.type)),
+		    std::string(msg_name(d.type)) + ": " + sender_name(d.sender));
+
+	// Each message once, and every game message of coop_protocol.h is here: a new one needs its direction decided.
+	for (const Direction& d : kDirections)
+		CHECK_EQ(std::count_if(std::begin(kDirections), std::end(kDirections), [&](const Direction& o) { return o.type == d.type; }),
+		    std::ptrdiff_t(1));
+	for (uint32_t v = uint32_t(Msg::GameBase); v <= 0xFFFFu; ++v)
+	{
+		const Msg m = static_cast<Msg>(v);
+		if (std::strncmp(msg_name(m), "Msg_0x", 6) == 0)
+			continue; // not a message of the protocol
+		const bool listed =
+			std::any_of(std::begin(kDirections), std::end(kDirections), [&](const Direction& d) { return d.type == m; });
+		CHECK_EQ(std::string(msg_name(m)) + (listed ? " has a direction" : " has no direction in kDirections"),
+		    std::string(msg_name(m)) + " has a direction");
+	}
+}
+
+TEST(game_messages_the_wrong_way_are_refused)
+{
+	// F2 T3: the directions beyond the join lifecycle hold on receipt. A client that sends a message of the host's
+	// world (a forged EntitySpawn) is kicked before any handler sees it; a client ignores what only clients send.
+	Node host("Boss", 37120), a("Al", 37120), b("Bo", 37120);
+	std::vector<uint16_t> at_host, at_b;
+	auto record = [](std::vector<uint16_t>& into, Msg type) {
+		return [&into, type](PeerId, Reader&) { into.push_back(uint16_t(type)); };
+	};
+	for (Msg m : {Msg::EntitySpawn, Msg::DialogLock})
+	{
+		host.s.on(m, record(at_host, m));
+		b.s.on(m, record(at_b, m));
+	}
+	host_and_join(host, {&a, &b}, 37120);
+	REQUIRE(b.s.self() == PeerId(2));
+
+	a.s.send(kHostPeer, Lane::Reliable, Msg::EntitySpawn, Writer());
+	REQUIRE(t::pump_until({&host.s, &a.s, &b.s}, 5000, [&] { return a.disconnected; }));
+	CHECK(at_host.empty());
+	CHECK(kicked(a, "unexpected EntitySpawn"));
+
+	host.s.send(2, Lane::Reliable, Msg::DialogLock, Writer()); // only clients ask for a talk lock
+	host.s.send(2, Lane::Reliable, Msg::EntitySpawn, Writer()); // the right way, after it (reliable lane: in order)
+	b.s.send(kHostPeer, Lane::Reliable, Msg::DialogLock, Writer());
+	REQUIRE(t::pump_until({&host.s, &b.s}, 3000, [&] { return at_b.size() == 1 && at_host.size() == 1; }));
+	t::pump_for({&host.s, &b.s}, 100);
+	CHECK(at_b == std::vector<uint16_t>{uint16_t(Msg::EntitySpawn)});
+	CHECK(at_host == std::vector<uint16_t>{uint16_t(Msg::DialogLock)});
+	CHECK(b.logged("unexpected DialogLock"));
+	CHECK(b.s.is_active() && !b.disconnected);
 }

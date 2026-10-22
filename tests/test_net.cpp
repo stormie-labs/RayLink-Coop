@@ -519,6 +519,8 @@ TEST(reject_check_order_protocol_build_content_key_full)
 }
 
 // ============================================================================ routing
+// F2 T3: these tests carry their payloads in messages both sides send (ScriptEvent, Relation, Progress: msg_sender
+// Either). A message of one direction is dropped (or its sender kicked) before routing, stats and NetSim apply.
 
 TEST(game_message_routing_client_host_broadcast)
 {
@@ -528,17 +530,17 @@ TEST(game_message_routing_client_host_broadcast)
 	CHECK_EQ(b.s.self(), PeerId(2));
 
 	std::vector<Received> host_got, a_got, b_got, a_other;
-	host.s.on(Msg::PlayerVitals, collect(host_got));
-	a.s.on(Msg::PlayerVitals, collect(a_got));
-	b.s.on(Msg::PlayerVitals, collect(b_got));
+	host.s.on(Msg::ScriptEvent, collect(host_got));
+	a.s.on(Msg::ScriptEvent, collect(a_got));
+	b.s.on(Msg::ScriptEvent, collect(b_got));
 	a.s.on(Msg::PlayerShot, collect(a_other));
 
 	const Writer payload = sample_payload();
 
 	// client -> host on every lane
 	for (Lane lane : {Lane::Reliable, Lane::Unreliable, Lane::Bulk})
-		a.s.send(kHostPeer, lane, Msg::PlayerVitals, payload);
-	b.s.send(kHostPeer, Lane::Reliable, Msg::PlayerVitals, payload);
+		a.s.send(kHostPeer, lane, Msg::ScriptEvent, payload);
+	b.s.send(kHostPeer, Lane::Reliable, Msg::ScriptEvent, payload);
 	REQUIRE(t::pump_until({&host.s, &a.s, &b.s}, 5000, [&] { return host_got.size() == 4; }));
 	size_t from_a = 0, from_b = 0;
 	for (const Received& r : host_got)
@@ -551,7 +553,7 @@ TEST(game_message_routing_client_host_broadcast)
 	CHECK_EQ(from_b, size_t(1));
 
 	// host -> one client
-	host.s.send(2, Lane::Reliable, Msg::PlayerVitals, payload);
+	host.s.send(2, Lane::Reliable, Msg::ScriptEvent, payload);
 	REQUIRE(t::pump_until({&host.s, &a.s, &b.s}, 5000, [&] { return b_got.size() == 1; }));
 	CHECK(b_got[0].bytes == payload.data());
 	CHECK_EQ(b_got[0].from, kHostPeer);
@@ -559,7 +561,7 @@ TEST(game_message_routing_client_host_broadcast)
 
 	// host broadcast with except
 	b_got.clear();
-	host.s.broadcast(Lane::Reliable, Msg::PlayerVitals, payload, 1);
+	host.s.broadcast(Lane::Reliable, Msg::ScriptEvent, payload, 1);
 	REQUIRE(t::pump_until({&host.s, &a.s, &b.s}, 5000, [&] { return b_got.size() == 1; }));
 	t::pump_for({&host.s, &a.s, &b.s}, 100);
 	CHECK_EQ(b_got.size(), size_t(1));
@@ -568,7 +570,7 @@ TEST(game_message_routing_client_host_broadcast)
 
 	// host broadcast to everybody
 	b_got.clear();
-	host.s.broadcast(Lane::Reliable, Msg::PlayerVitals, payload);
+	host.s.broadcast(Lane::Reliable, Msg::ScriptEvent, payload);
 	REQUIRE(t::pump_until({&host.s, &a.s, &b.s}, 5000, [&] { return a_got.size() == 1 && b_got.size() == 1; }));
 	CHECK(a_got[0].bytes == payload.data());
 
@@ -576,7 +578,7 @@ TEST(game_message_routing_client_host_broadcast)
 	host_got.clear();
 	b_got.clear();
 	a_got.clear();
-	a.s.broadcast(Lane::Reliable, Msg::PlayerVitals, payload);
+	a.s.broadcast(Lane::Reliable, Msg::ScriptEvent, payload);
 	REQUIRE(t::pump_until({&host.s, &a.s, &b.s}, 5000, [&] { return host_got.size() == 1; }));
 	t::pump_for({&host.s, &a.s, &b.s}, 100);
 	CHECK_EQ(host_got.size(), size_t(1));
@@ -584,11 +586,11 @@ TEST(game_message_routing_client_host_broadcast)
 
 	// empty payload and a larger one that needs fragmentation
 	host_got.clear();
-	a.s.send(kHostPeer, Lane::Reliable, Msg::PlayerVitals, Writer());
+	a.s.send(kHostPeer, Lane::Reliable, Msg::ScriptEvent, Writer());
 	Writer big;
 	const std::vector<uint8_t> bigdata = t::random_bytes(300000, 99);
 	big.bytes(bigdata.data(), bigdata.size());
-	a.s.send(kHostPeer, Lane::Reliable, Msg::PlayerVitals, big);
+	a.s.send(kHostPeer, Lane::Reliable, Msg::ScriptEvent, big);
 	REQUIRE(t::pump_until({&host.s, &a.s, &b.s}, 5000, [&] { return host_got.size() == 2; }));
 	CHECK(host_got[0].bytes.empty());
 	CHECK(host_got[1].bytes == bigdata);
@@ -602,18 +604,18 @@ TEST(unregistered_game_type_counted_logged_once_and_dropped)
 	Writer w;
 	w.u32(1);
 	for (int i = 0; i < 3; ++i)
-		a.s.send(kHostPeer, Lane::Reliable, Msg::EntityState, w);
-	a.s.send(kHostPeer, Lane::Reliable, Msg::TimeSync, w);
+		a.s.send(kHostPeer, Lane::Reliable, Msg::Relation, w);
+	a.s.send(kHostPeer, Lane::Reliable, Msg::Progress, w);
 	REQUIRE(t::pump_until({&host.s, &a.s}, 5000, [&] {
-		return host.s.stats(uint16_t(Msg::EntityState)).recv_count == 3 && host.s.stats(uint16_t(Msg::TimeSync)).recv_count == 1;
+		return host.s.stats(uint16_t(Msg::Relation)).recv_count == 3 && host.s.stats(uint16_t(Msg::Progress)).recv_count == 1;
 	}));
-	CHECK_EQ(host.s.stats(uint16_t(Msg::EntityState)).recv_bytes, uint64_t(3 * (2 + 4)));
+	CHECK_EQ(host.s.stats(uint16_t(Msg::Relation)).recv_bytes, uint64_t(3 * (2 + 4)));
 	size_t es = 0, ts = 0;
 	for (const std::string& l : host.log)
 	{
-		if (l.find("EntityState") != std::string::npos)
+		if (l.find("Relation") != std::string::npos)
 			++es;
-		if (l.find("TimeSync") != std::string::npos)
+		if (l.find("Progress") != std::string::npos)
 			++ts;
 	}
 	CHECK_EQ(es, size_t(1)); // logged once per type
@@ -627,14 +629,14 @@ TEST(client_send_to_non_host_is_logged_noop)
 	Node host("Boss", 37013), a("Alice", 37013), b("Bob", 37013);
 	start_and_join(host, {&a, &b}, 37013);
 	std::vector<Received> b_got;
-	b.s.on(Msg::PlayerVitals, collect(b_got));
+	b.s.on(Msg::ScriptEvent, collect(b_got));
 	a.log.clear();
 	Writer w;
 	w.u8(1);
-	a.s.send(2, Lane::Reliable, Msg::PlayerVitals, w);
+	a.s.send(2, Lane::Reliable, Msg::ScriptEvent, w);
 	t::pump_for({&host.s, &a.s, &b.s}, 300);
 	CHECK(b_got.empty());
-	CHECK_EQ(a.s.stats(uint16_t(Msg::PlayerVitals)).sent_count, uint64_t(0));
+	CHECK_EQ(a.s.stats(uint16_t(Msg::ScriptEvent)).sent_count, uint64_t(0));
 	CHECK(a.logged("[coop] "));
 	CHECK(a.logged("only send to the host"));
 }
@@ -647,21 +649,21 @@ TEST(stats_count_sent_and_received_exactly)
 	host.s.reset_stats();
 	a.s.reset_stats();
 	CHECK(host.s.stats_types().empty());
-	CHECK_EQ(host.s.stats(uint16_t(Msg::PlayerVitals)).sent_count, uint64_t(0));
+	CHECK_EQ(host.s.stats(uint16_t(Msg::ScriptEvent)).sent_count, uint64_t(0));
 
 	std::vector<Received> got;
-	a.s.on(Msg::PlayerVitals, collect(got));
+	a.s.on(Msg::ScriptEvent, collect(got));
 	Writer w;
 	w.u32(1);
 	w.u32(2);
 	w.u16(3); // 10 payload bytes
 	const int N = 37;
 	for (int i = 0; i < N; ++i)
-		host.s.send(1, Lane::Reliable, Msg::PlayerVitals, w);
+		host.s.send(1, Lane::Reliable, Msg::ScriptEvent, w);
 	REQUIRE(t::pump_until({&host.s, &a.s}, 5000, [&] { return got.size() == size_t(N); }));
 
-	const MsgStats& hs = host.s.stats(uint16_t(Msg::PlayerVitals));
-	const MsgStats& as = a.s.stats(uint16_t(Msg::PlayerVitals));
+	const MsgStats& hs = host.s.stats(uint16_t(Msg::ScriptEvent));
+	const MsgStats& as = a.s.stats(uint16_t(Msg::ScriptEvent));
 	CHECK_EQ(hs.sent_count, uint64_t(N));
 	CHECK_EQ(hs.sent_bytes, uint64_t(N * 12));
 	CHECK_EQ(hs.recv_count, uint64_t(0));
@@ -669,13 +671,13 @@ TEST(stats_count_sent_and_received_exactly)
 	CHECK_EQ(as.recv_bytes, uint64_t(N * 12));
 	CHECK_EQ(as.sent_count, uint64_t(0));
 	const auto types = host.s.stats_types();
-	CHECK(std::find(types.begin(), types.end(), uint16_t(Msg::PlayerVitals)) != types.end());
+	CHECK(std::find(types.begin(), types.end(), uint16_t(Msg::ScriptEvent)) != types.end());
 	CHECK(std::find(types.begin(), types.end(), uint16_t(Msg::PlayerState)) == types.end());
 
 	// Broadcast counts one send per recipient.
 	host.s.reset_stats();
-	host.s.broadcast(Lane::Reliable, Msg::PlayerVitals, w);
-	CHECK_EQ(host.s.stats(uint16_t(Msg::PlayerVitals)).sent_count, uint64_t(1));
+	host.s.broadcast(Lane::Reliable, Msg::ScriptEvent, w);
+	CHECK_EQ(host.s.stats(uint16_t(Msg::ScriptEvent)).sent_count, uint64_t(1));
 }
 
 // ============================================================================ membership
@@ -1094,13 +1096,13 @@ TEST(blob_does_not_starve_reliable_lane)
 	Node host("Boss", 37027), cl("Alice", 37027);
 	start_and_join(host, {&cl}, 37027);
 	std::vector<Received> got;
-	cl.s.on(Msg::PlayerVitals, collect(got));
+	cl.s.on(Msg::ScriptEvent, collect(got));
 	host.s.send_blob(1, 1, t::random_bytes(30u * 1024 * 1024, 3));
 	t::pump_for({&host.s, &cl.s}, 20); // the transfer is under way
 	Writer w;
 	w.u32(1);
 	const uint64_t t0 = t::now_ms();
-	host.s.send(1, Lane::Reliable, Msg::PlayerVitals, w);
+	host.s.send(1, Lane::Reliable, Msg::ScriptEvent, w);
 	REQUIRE(t::pump_until({&host.s, &cl.s}, 10000, [&] { return !got.empty(); }, false));
 	const uint64_t took = t::now_ms() - t0;
 	CHECK(cl.blobs.empty()); // the small message overtook the 30 MB transfer
@@ -1122,7 +1124,7 @@ size_t run_loss_round(uint16_t port, float loss, size_t* reliable_out, bool on_r
 	start_and_join(host, {&cl}, port);
 	std::vector<Received> unrel, rel;
 	cl.s.on(Msg::PlayerState, collect(unrel));
-	cl.s.on(Msg::PlayerVitals, collect(rel));
+	cl.s.on(Msg::ScriptEvent, collect(rel));
 
 	NetSim ns;
 	ns.loss = loss;
@@ -1134,14 +1136,14 @@ size_t run_loss_round(uint16_t port, float loss, size_t* reliable_out, bool on_r
 		for (int i = 0; i < 20; ++i)
 		{
 			host.s.send(1, Lane::Unreliable, Msg::PlayerState, w);
-			host.s.send(1, Lane::Reliable, Msg::PlayerVitals, w);
+			host.s.send(1, Lane::Reliable, Msg::ScriptEvent, w);
 		}
 		t::pump_for({&host.s, &cl.s}, 3);
 	}
 	REQUIRE(t::pump_until({&host.s, &cl.s}, 10000, [&] { return rel.size() == 1000; }));
 	t::pump_for({&host.s, &cl.s}, 200);
 	CHECK_EQ(host.s.stats(uint16_t(Msg::PlayerState)).sent_count, uint64_t(1000));
-	CHECK_EQ(host.s.stats(uint16_t(Msg::PlayerVitals)).sent_count, uint64_t(1000));
+	CHECK_EQ(host.s.stats(uint16_t(Msg::ScriptEvent)).sent_count, uint64_t(1000));
 	CHECK_EQ(cl.s.stats(uint16_t(Msg::PlayerState)).recv_count, uint64_t(unrel.size()));
 	for (const Received& r : unrel)
 		CHECK(r.bytes == w.data());
@@ -1178,7 +1180,7 @@ TEST(netsim_delay_applied_and_order_kept_under_jitter)
 	Node host("Boss", 37032), cl("Alice", 37032);
 	start_and_join(host, {&cl}, 37032);
 	std::vector<Received> got;
-	cl.s.on(Msg::PlayerVitals, collect(got));
+	cl.s.on(Msg::ScriptEvent, collect(got));
 
 	// Pure lag: the first message must take at least ~lag.
 	NetSim ns;
@@ -1187,7 +1189,7 @@ TEST(netsim_delay_applied_and_order_kept_under_jitter)
 	Writer w;
 	w.u32(0);
 	const uint64_t t0 = t::now_ms();
-	host.s.send(1, Lane::Reliable, Msg::PlayerVitals, w);
+	host.s.send(1, Lane::Reliable, Msg::ScriptEvent, w);
 	REQUIRE(t::pump_until({&host.s, &cl.s}, 5000, [&] { return !got.empty(); }));
 	const uint64_t took = t::now_ms() - t0;
 	CHECK(took >= 110);
@@ -1202,7 +1204,7 @@ TEST(netsim_delay_applied_and_order_kept_under_jitter)
 	{
 		Writer m;
 		m.u32(i);
-		host.s.send(1, Lane::Reliable, Msg::PlayerVitals, m);
+		host.s.send(1, Lane::Reliable, Msg::ScriptEvent, m);
 		if (i % 10 == 0)
 			t::pump_for({&host.s, &cl.s}, 2);
 	}
@@ -1217,11 +1219,11 @@ TEST(netsim_delay_applied_and_order_kept_under_jitter)
 
 	// Switching the simulation off drains what is queued and keeps order.
 	got.clear();
-	host.s.send(1, Lane::Reliable, Msg::PlayerVitals, w);
+	host.s.send(1, Lane::Reliable, Msg::ScriptEvent, w);
 	host.s.set_netsim(NetSim());
 	Writer last;
 	last.u32(0xFFFFFFFFu);
-	host.s.send(1, Lane::Reliable, Msg::PlayerVitals, last);
+	host.s.send(1, Lane::Reliable, Msg::ScriptEvent, last);
 	REQUIRE(t::pump_until({&host.s, &cl.s}, 5000, [&] { return got.size() == 2; }));
 	Reader r0(got[1].bytes.data(), got[1].bytes.size());
 	CHECK_EQ(r0.u32(), 0xFFFFFFFFu);
