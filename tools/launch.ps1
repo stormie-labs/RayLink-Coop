@@ -6,6 +6,8 @@
   .\launch.ps1 a -NewGame -HostSession -StatusEvery 10     # host: new game, hosts by itself
   .\launch.ps1 b -Connect 127.0.0.1 -StatusEvery 10        # client: joins by itself
   .\launch.ps1 a -Load mysave                              # host: load a save from appdata_a\savedgames
+  .\launch.ps1 a -NewGame -GameDir E:\AnomalyCoopGamma     # the GAMMA stand (deploy.ps1 -Profile G.A.M.M.A)
+  .\launch.ps1 b -Connect 127.0.0.1 -NoStart               # prepare and print the command, start nothing
 #>
 param(
     [Parameter(Mandatory = $true)][ValidateSet('a', 'b')][string]$Instance,
@@ -22,7 +24,8 @@ param(
     [string]$RefConfigs = 'D:\Projects\ForEverything\anomaly-ref\unpacked\configs',
     [string]$GameDir = 'E:\AnomalyCoop',
     [string]$ExeName = 'AnomalyCoopDX11AVX.exe',
-    [string[]]$Extra = @()
+    [string[]]$Extra = @(),
+    [switch]$NoStart                # prepare everything and print the command line, but do not start the game
 )
 
 $ErrorActionPreference = 'Stop'
@@ -31,6 +34,13 @@ $exe = Join-Path $binDir $ExeName
 if (-not (Test-Path -LiteralPath $exe)) { throw "not deployed: $exe (run deploy.ps1)" }
 
 $cp1251 = [System.Text.Encoding]::GetEncoding(1251)
+
+# The GAMMA stand is made of hard links to the mods' files (tools\mo2_stand.py): writing into an existing file could
+# change a mod's original, so the old file is removed and a new one is written.
+function Write-NewLines([string]$Path, [System.Collections.Generic.List[string]]$Lines) {
+    if (Test-Path -LiteralPath $Path) { Remove-Item -LiteralPath $Path -Force }
+    [System.IO.File]::WriteAllLines($Path, $Lines, $cp1251)
+}
 
 # What the faction-select screen puts into new_game_loadout / new_game_money with nothing bought:
 # the free kit (value_1 = false: PDA, flashlight, backpack, faction weapon...) and [<faction>_money].
@@ -69,7 +79,10 @@ if ($NewGame) {
     # screen, consumed on start). Without it the game stays on the stub level fake_start; without the kit
     # the character starts with no PDA, no money and story mode off (no tasks).
     $opt = Join-Path $GameDir 'gamedata\configs\axr_options.ltx'
-    $kitLtx = Join-Path $RefConfigs 'items\settings\new_game_loadouts.ltx'
+    # a stand with its own loadouts (GAMMA: "G.A.M.M.A. Starting Loadouts") uses them; DLTX mod_new_game_loadouts_*
+    # additions are not applied here
+    $kitLtx = Join-Path $GameDir 'gamedata\configs\items\settings\new_game_loadouts.ltx'
+    if (-not (Test-Path -LiteralPath $kitLtx)) { $kitLtx = Join-Path $RefConfigs 'items\settings\new_game_loadouts.ltx' }
     if (-not (Test-Path -LiteralPath $kitLtx)) { throw "stock loadouts not found: $kitLtx (-RefConfigs)" }
     $kit = Get-StartKit $kitLtx $StartFaction
     if (-not $kit.Loadout) { throw "no free kit for faction '$StartFaction' in $kitLtx" }
@@ -93,7 +106,7 @@ if ($NewGame) {
     $lines.Add("new_game_loadout = $($kit.Loadout)")
     $lines.Add("new_game_map = $StartMap")
     if ($kit.Money) { $lines.Add("new_game_money = $($kit.Money)") }
-    [System.IO.File]::WriteAllLines($opt, $lines, $cp1251)
+    Write-NewLines $opt $lines
     Write-Host "new game: $StartFaction at $StartMap as '$charName', $($kit.Money) RU, kit: $($kit.Loadout)"
 }
 
@@ -111,7 +124,7 @@ if (Test-Path -LiteralPath $optFile) {
         if ($s -ge 0) { $ol.Insert($s + 1, '        video/hud/show_minimap           = true') }
         else { $ol.Add('[options]'); $ol.Add('        video/hud/show_minimap           = true') } # fresh file
     }
-    [System.IO.File]::WriteAllLines($optFile, $ol, $cp)
+    Write-NewLines $optFile $ol
 }
 
 $argv = @('-fsltx', "fsgame_$Instance.ltx", '-smap2048')
@@ -125,5 +138,9 @@ $argv += $Extra
 if ($NewGame) { $argv += @('-start', 'server(all/single/alife/new)', 'client(localhost)') }
 elseif ($Load) { $argv += @('-start', "server($Load/single/alife/load)", 'client(localhost)') }
 
+if ($NoStart) {
+    Write-Host "not started: $exe $($argv -join ' ') (in $GameDir)"
+    return
+}
 $p = Start-Process -FilePath $exe -ArgumentList $argv -WorkingDirectory $GameDir -PassThru
 Write-Host "instance $Instance started: pid $($p.Id), log $GameDir\appdata_$Instance\logs"

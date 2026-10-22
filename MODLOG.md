@@ -294,7 +294,7 @@
   UI-инфопорции. Перенесено в Ф1/Ф2 (ТЗ): деньги под хостом, белый список спавна, лимиты, фильтр репликации и др.
   Журнал исполнения с решениями — `.superpowers/sdd/2026-10-22-f0-stabilization/progress.md`. В игре не проверено:
   следующий шаг — живая приёмка (задача 15, сценарии 1–15) с владельцем; там же причина спама «destroyed object».
-- 2026-10-22 20:30 — **Ф1, задача 1: `tools/mo2_stand.py`** (тесты `tests/tools/test_mo2_stand.py` 22/22). Стенд из профиля
+- 2026-10-22 20:24 — **Ф1, задача 1: `tools/mo2_stand.py`** (тесты `tests/tools/test_mo2_stand.py` 22/22). Стенд из профиля
   MO2 жёсткими ссылками: игра (без её `appdata`) → наш Engine → моды профиля → `overwrite` → наши Core и GAMMA; пути без
   учёта регистра, `meta.ini` в корне мода и `*.mohidden` не берутся. Файлы, которые игра и скрипты GAMMA пишут на ходу,
   копируются, а не связываются: иначе запись ушла бы в оригинал мода. Это корень стенда (MCM дописывает `fsgame.ltx`),
@@ -306,3 +306,15 @@
   опечатка `DarkasleQif's and iTheon's …`; строка `425- Dynamic News…` с хвостовым TAB находит папку), 62 030 файлов
   (61 373 ссылки, 657 копий), 12 240 путей из нескольких слоёв (топ: `animation_common.script` — 31 мод), 31,5 с;
   повторный прогон без изменений — 7,8 с. Отчёт: `temp\mo2_stand_report.txt`.
+- 2026-10-22 20:50 — **Ф1, задача 2: стенд GAMMA в `deploy.ps1` / `launch.ps1`** (тесты `tests/tools/test_launch.py` 3/3).
+  `deploy.ps1 -Profile G.A.M.M.A` (корень по умолчанию `E:\AnomalyCoopGamma`, `-Mo2Dir E:\GAMMA`) вызывает
+  `mo2_stand.py` со слоями: снизу Engine (наш exe через `temp\stand_engine\bin` + `engine\gamedata`), сверху Core
+  (`gamedata`) и GAMMA (`gamedata_gamma`, если есть); `bin_b` — ссылки на всё из `bin` стенда; `fsgame_a/_b` из
+  `fsgame.ltx` стенда; файлы `appdata\` из модов (пресеты шейдеров) — в `appdata_a/_b`. Прогон: exit 0, 10 с,
+  62 120 файлов; sha256 exe в `bin`/`bin_b` = сборке 20. Из 156 файлов `engine\gamedata` 132 перекрывают modded exes,
+  15 перекрыты модами GAMMA (шейдеры SSS/KennShade, `item_weapon`, `sim_squad_scripted` из ZCP …) — наших правок в них
+  нет; Core не перекрывает ни одного чужого файла. Без `-Profile` — как раньше: старый и новый скрипт в две временные
+  папки → 303 записи, 0 отличий (хеши, junction `db`). `launch.ps1`: `-GameDir E:\AnomalyCoopGamma` работает; новый
+  `-NoStart` (всё готовит, печатает команду, игру не запускает); `axr_options.ltx` пишется только новым файлом (через
+  жёсткую ссылку правка ушла бы в мод GAMMA); `-NewGame` берёт `new_game_loadouts.ltx` стенда, если он есть (GAMMA:
+  `G.A.M.M.A. Starting Loadouts`, DLTX-добавки `mod_new_game_loadouts_*` не применяются). Игра не запускалась.

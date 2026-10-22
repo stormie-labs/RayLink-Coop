@@ -14,6 +14,16 @@
   - fsgame_a.ltx/_b.ltx the game's fsgame.ltx with an own appdata per instance;
   - appdata_a\, _b\     log, user.ltx (windowed, g_always_active, nick), saves, shader cache, player key.
   Safe to re-run: links and the gamedata mirror are rebuilt, existing user.ltx files are kept.
+
+  With -Profile (GAMMA, default root E:\AnomalyCoopGamma) the root is built from that MO2 profile instead
+  (tools\mo2_stand.py, docs\MO2_GAMMA.md §3): the game, the profile's enabled mods and MO2's overwrite are
+  materialized as hard links in MO2's priority order, our layers go in as copies - Engine (our exe in bin\ +
+  engine\gamedata) under the mods, Core (gamedata\) and GAMMA (gamedata_gamma\, if present) on top. db\ is then a
+  real folder of links, bin_b\ mirrors bin\ with links, the mods' appdata\ files go into appdata_a\ and appdata_b\.
+
+.EXAMPLE
+  .\deploy.ps1                       # stock Anomaly stand: E:\AnomalyCoop
+  .\deploy.ps1 -Profile G.A.M.M.A    # GAMMA stand from E:\GAMMA's profile: E:\AnomalyCoopGamma
 #>
 param(
     [string]$GameDir  = 'E:\Anomaly',
@@ -24,7 +34,10 @@ param(
     [string]$ModGamedata = (Join-Path $PSScriptRoot '..\gamedata'),
     [string]$ExeName  = 'AnomalyCoopDX11AVX.exe',
     [string]$VidMode  = '1280x720',
-    [switch]$SkipGameBin
+    [switch]$SkipGameBin,
+    [string]$Profile  = '',          # MO2 profile to build the stand from (G.A.M.M.A); empty = stock Anomaly
+    [string]$Mo2Dir   = 'E:\GAMMA',  # MO2 instance (portable) that owns the profile
+    [string]$GammaGamedata = (Join-Path $PSScriptRoot '..\gamedata_gamma')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -33,6 +46,8 @@ $cp1251 = [System.Text.Encoding]::GetEncoding(1251)
 function Assert-Path([string]$Path, [string]$What) {
     if (-not (Test-Path -LiteralPath $Path)) { throw "$What not found: $Path" }
 }
+
+if ($Profile -and -not $PSBoundParameters.ContainsKey('TestRoot')) { $TestRoot = 'E:\AnomalyCoopGamma' }
 
 Assert-Path $GameDir 'Game folder'
 Assert-Path $BuiltExe 'Built exe'
@@ -44,42 +59,74 @@ Assert-Path $fsgame 'fsgame.ltx'
 
 New-Item -ItemType Directory -Force -Path $TestRoot | Out-Null
 
-# 1. db: junction to the real archives
-$db = Join-Path $TestRoot 'db'
-if (-not (Test-Path -LiteralPath $db)) {
-    New-Item -ItemType Junction -Path $db -Target (Join-Path $GameDir 'db') | Out-Null
-}
-Write-Host "db: $db -> $(Join-Path $GameDir 'db')"
-
-# 2. exe folders: hard links to the game's DLLs/configs + our exe
-$tmpExe = Join-Path $TestRoot $ExeName
-Copy-Item -LiteralPath $BuiltExe -Destination $tmpExe -Force
-foreach ($name in 'bin', 'bin_b') {
-    $dir = Join-Path $TestRoot $name
-    New-Item -ItemType Directory -Force -Path $dir | Out-Null
-    Get-ChildItem -LiteralPath $dir -File | Remove-Item -Force
-    Get-ChildItem -LiteralPath $gameBin -File | Where-Object { $_.Extension -ne '.exe' } | ForEach-Object {
-        New-Item -ItemType HardLink -Path (Join-Path $dir $_.Name) -Target $_.FullName | Out-Null
-    }
-    New-Item -ItemType HardLink -Path (Join-Path $dir $ExeName) -Target $tmpExe | Out-Null
-}
-Write-Host "exe: $TestRoot\bin\$ExeName, $TestRoot\bin_b\$ExeName"
 if (-not $SkipGameBin) {
     Copy-Item -LiteralPath $BuiltExe -Destination (Join-Path $gameBin $ExeName) -Force
     Write-Host "also: $gameBin\$ExeName"
 }
 
-# 3. gamedata: engine revision first, our mod on top
-$gd = Join-Path $TestRoot 'gamedata'
-# axr_options.ltx is written by the game itself (player settings): excluded files are neither copied nor purged
-& robocopy $EngineGamedata $gd /MIR /XF axr_options.ltx /NFL /NDL /NJH /NJS /NP | Out-Null
-if ($LASTEXITCODE -ge 8) { throw "robocopy engine gamedata failed: $LASTEXITCODE" }
-if (Test-Path -LiteralPath $ModGamedata) {
-    & robocopy $ModGamedata $gd /E /NFL /NDL /NJH /NJS /NP | Out-Null
-    if ($LASTEXITCODE -ge 8) { throw "robocopy mod gamedata failed: $LASTEXITCODE" }
+if ($Profile) {
+    # 1-3. the stand from the MO2 profile; Engine = our exe under bin\ (staged in the repo's temp\) + engine gamedata
+    $engineStage = Join-Path $PSScriptRoot '..\temp\stand_engine'
+    New-Item -ItemType Directory -Force -Path (Join-Path $engineStage 'bin') | Out-Null
+    Copy-Item -LiteralPath $BuiltExe -Destination (Join-Path $engineStage "bin\$ExeName") -Force
+    $standArgs = @((Join-Path $PSScriptRoot 'mo2_stand.py'), '--mo2', $Mo2Dir, '--profile', $Profile, '--game', $GameDir,
+                   '--out', $TestRoot, '--layer-bottom', $engineStage, '--layer-bottom', "gamedata=$EngineGamedata",
+                   '--layer-top', "gamedata=$ModGamedata",
+                   '--report', (Join-Path $PSScriptRoot '..\temp\mo2_stand_report.txt'))
+    if (Test-Path -LiteralPath $GammaGamedata) { $standArgs += @('--layer-top', "gamedata=$GammaGamedata") }
+    & python @standArgs
+    if ($LASTEXITCODE -ne 0) { throw "mo2_stand.py failed: $LASTEXITCODE" }
+
+    # bin_b: the engine refuses a second instance from the same exe folder; it holds only our hard links
+    $binA = Join-Path $TestRoot 'bin'
+    $binB = Join-Path $TestRoot 'bin_b'
+    if (Test-Path -LiteralPath $binB) {
+        if ((Get-Item -LiteralPath $binB -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+            throw "bin_b is a link, not a folder: $binB"
+        }
+        Get-ChildItem -LiteralPath $binB -Recurse -File -Force | Remove-Item -Force
+    }
+    Get-ChildItem -LiteralPath $binA -Recurse -File -Force | ForEach-Object {
+        $dst = Join-Path $binB $_.FullName.Substring($binA.Length + 1)
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null
+        New-Item -ItemType HardLink -Path $dst -Target $_.FullName | Out-Null
+    }
+    Write-Host "exe: $binA\$ExeName, $binB\$ExeName"
+    $fsgame = Join-Path $TestRoot 'fsgame.ltx'  # the stand's copy: a mod may replace it
+} else {
+    # 1. db: junction to the real archives
+    $db = Join-Path $TestRoot 'db'
+    if (-not (Test-Path -LiteralPath $db)) {
+        New-Item -ItemType Junction -Path $db -Target (Join-Path $GameDir 'db') | Out-Null
+    }
+    Write-Host "db: $db -> $(Join-Path $GameDir 'db')"
+
+    # 2. exe folders: hard links to the game's DLLs/configs + our exe
+    $tmpExe = Join-Path $TestRoot $ExeName
+    Copy-Item -LiteralPath $BuiltExe -Destination $tmpExe -Force
+    foreach ($name in 'bin', 'bin_b') {
+        $dir = Join-Path $TestRoot $name
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        Get-ChildItem -LiteralPath $dir -File | Remove-Item -Force
+        Get-ChildItem -LiteralPath $gameBin -File | Where-Object { $_.Extension -ne '.exe' } | ForEach-Object {
+            New-Item -ItemType HardLink -Path (Join-Path $dir $_.Name) -Target $_.FullName | Out-Null
+        }
+        New-Item -ItemType HardLink -Path (Join-Path $dir $ExeName) -Target $tmpExe | Out-Null
+    }
+    Write-Host "exe: $TestRoot\bin\$ExeName, $TestRoot\bin_b\$ExeName"
+
+    # 3. gamedata: engine revision first, our mod on top
+    $gd = Join-Path $TestRoot 'gamedata'
+    # axr_options.ltx is written by the game itself (player settings): excluded files are neither copied nor purged
+    & robocopy $EngineGamedata $gd /MIR /XF axr_options.ltx /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -ge 8) { throw "robocopy engine gamedata failed: $LASTEXITCODE" }
+    if (Test-Path -LiteralPath $ModGamedata) {
+        & robocopy $ModGamedata $gd /E /NFL /NDL /NJH /NJS /NP | Out-Null
+        if ($LASTEXITCODE -ge 8) { throw "robocopy mod gamedata failed: $LASTEXITCODE" }
+    }
+    $global:LASTEXITCODE = 0
+    Write-Host "gamedata: $gd"
 }
-$global:LASTEXITCODE = 0
-Write-Host "gamedata: $gd"
 
 # 4. fsgame + appdata per instance
 $fsText = [System.IO.File]::ReadAllText($fsgame, $cp1251)
@@ -108,6 +155,13 @@ foreach ($inst in 'a', 'b') {
         }
         $lines.Add("coop_nick player_$inst")
         [System.IO.File]::WriteAllLines($userOut, $lines, $cp1251)
+    }
+    $modsAppdata = Join-Path $TestRoot 'appdata'
+    if ($Profile -and (Test-Path -LiteralPath $modsAppdata)) {
+        # files the mods put into appdata\ (shader presets): in MO2 the game sees them in its own appdata
+        & robocopy $modsAppdata $appdata /E /XF user.ltx /NFL /NDL /NJH /NJS /NP | Out-Null
+        if ($LASTEXITCODE -ge 8) { throw "robocopy mods' appdata failed: $LASTEXITCODE" }
+        $global:LASTEXITCODE = 0
     }
     Write-Host "instance ${inst}: $TestRoot\fsgame_$inst.ltx, $appdata"
 }
