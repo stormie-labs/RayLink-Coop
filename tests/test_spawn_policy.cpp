@@ -629,10 +629,10 @@ TEST(spawn_child_in_item)
 	CHECK(ok("WP_RPG7", "wpn_rpg7", "G_RPG7", "wpn_rpg7_missile"));
 	CHECK(ok("WP_RG6", "wpn_rg6", "G_FAKE", "wpn_fake_missile2"));
 	CHECK(ok("_WP_SSRS", "wpn_ssrs", "G_RPG7", "wpn_ssrs_missile"));
-	// A grenade's or bolt's fake missile: the same section.
-	CHECK(ok("G_F1_S", "grenade_f1", "G_F1_S", "grenade_f1"));
-	CHECK(ok("G_RGD5", "grenade_rgd5", "G_RGD5", "grenade_rgd5"));
-	CHECK(ok("II_BOLT", "bolt", "II_BOLT", "bolt"));
+	// A grenade's or bolt's fake missile: never from a client (Ruling F2-23: a fair client does not ask for one).
+	CHECK(!ok("G_F1_S", "grenade_f1", "G_F1_S", "grenade_f1"));
+	CHECK(!ok("G_RGD5", "grenade_rgd5", "G_RGD5", "grenade_rgd5"));
+	CHECK(!ok("II_BOLT", "bolt", "II_BOLT", "bolt"));
 
 	// Everything else into an item.
 	CHECK(!ok("II_BOLT", "bolt", "II_FOOD", "bread")); // the review's crash: bread into his bolt
@@ -923,27 +923,21 @@ TEST(spawn_child_room)
 	                      size_t children, long long mag_size)
 	{ return spawn::child_allowed(parent, parent_section, child, child_section, children, mag_size); };
 
-	// Two fake missiles in a row into one grenade: the second is refused.
-	CHECK(fits(GameClass::Grenade, "grenade_f1", GameClass::Grenade, "grenade_f1", 0, 0));
+	// Ruling F2-23 (round 5): a fake missile into a grenade or bolt is never a client's - not even the first one.
+	CHECK(!fits(GameClass::Grenade, "grenade_f1", GameClass::Grenade, "grenade_f1", 0, 0));
 	CHECK(!fits(GameClass::Grenade, "grenade_f1", GameClass::Grenade, "grenade_f1", 1, 0));
-	CHECK(!fits(GameClass::Grenade, "grenade_f1", GameClass::Grenade, "grenade_f1", 1, 30)); // no magazine counts
-	CHECK(fits(GameClass::Missile, "bolt", GameClass::Missile, "bolt", 0, 0));
-	CHECK(!fits(GameClass::Missile, "bolt", GameClass::Missile, "bolt", 1, 0));
-	// A grenade launcher, an RPG-7: one rocket, whatever ammo_mag_size says.
+	CHECK(!fits(GameClass::Missile, "bolt", GameClass::Missile, "bolt", 0, 0));
+	// A launcher takes its rocket even when it already holds one: the host loads its own rocket into its copy of a
+	// loaded launcher (CWeaponRPG7::net_Spawn, CWeaponRG6::net_Spawn, the grenade launcher), so the room check of
+	// round 4 refused every honest shot after a join.
 	CHECK(fits(GameClass::WeaponMagazinedWGrenade, "wpn_ak74", GameClass::ExplosiveRocket, "wpn_fake_missile", 0, 30));
-	CHECK(!fits(GameClass::WeaponMagazinedWGrenade, "wpn_ak74", GameClass::ExplosiveRocket, "wpn_fake_missile", 1, 30));
-	CHECK(fits(GameClass::WeaponRPG7, "wpn_rpg7", GameClass::ExplosiveRocket, "wpn_rpg7_missile", 0, 1));
-	CHECK(!fits(GameClass::WeaponRPG7, "wpn_rpg7", GameClass::ExplosiveRocket, "wpn_rpg7_missile", 1, 1));
-	// RG-6 / SSRS: up to the magazine of its section; 1 when the section shows none.
-	for (size_t n = 0; n < 6; ++n)
+	CHECK(fits(GameClass::WeaponMagazinedWGrenade, "wpn_ak74", GameClass::ExplosiveRocket, "wpn_fake_missile", 1, 30));
+	CHECK(fits(GameClass::WeaponRPG7, "wpn_rpg7", GameClass::ExplosiveRocket, "wpn_rpg7_missile", 1, 1));
+	for (size_t n = 0; n <= 6; ++n)
 		CHECK(fits(GameClass::WeaponRocket, "wpn_rg6", GameClass::ExplosiveRocket, "wpn_fake_missile2", n, 6));
-	CHECK(!fits(GameClass::WeaponRocket, "wpn_rg6", GameClass::ExplosiveRocket, "wpn_fake_missile2", 6, 6));
-	CHECK(fits(GameClass::WeaponRocket, "wpn_ssrs", GameClass::ExplosiveRocket, "wpn_ssrs_missile", 0, 0));
-	CHECK(!fits(GameClass::WeaponRocket, "wpn_ssrs", GameClass::ExplosiveRocket, "wpn_ssrs_missile", 1, 0));
-	CHECK(!fits(GameClass::WeaponRocket, "wpn_ssrs", GameClass::ExplosiveRocket, "wpn_ssrs_missile", 1, -5));
-	CHECK_EQ(spawn::child_room(GameClass::WeaponRocket, 6), size_t(6));
-	CHECK_EQ(spawn::child_room(GameClass::WeaponRocket, 0), size_t(1));
-	CHECK_EQ(spawn::child_room(GameClass::Grenade, 6), size_t(1));
+	CHECK(fits(GameClass::WeaponRocket, "wpn_ssrs", GameClass::ExplosiveRocket, "wpn_ssrs_missile", 1, 0));
+	// Still only a rocket: a grenade into a launcher stays refused.
+	CHECK(!fits(GameClass::WeaponRPG7, "wpn_rpg7", GameClass::Grenade, "grenade_f1", 0, 1));
 
 	// The verdict on the second: WrongParent, no budget asked.
 	const spawn::SpawnPolicy policy;
