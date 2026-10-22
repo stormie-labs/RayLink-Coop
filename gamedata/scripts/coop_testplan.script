@@ -1,0 +1,175 @@
+--[[
+	Anomaly Coop - unattended test plans (gamedata\scripts\coop_testplan.script)
+
+	Off unless the game is started with `-coop_testplan <name>` (tools\launch.ps1 -Extra '-coop_testplan','<name>').
+	A plan is a list of steps run one after another once the session is live; every step logs one line
+	`[coop-test] <plan> <n> <step>: PASS|FAIL|SKIP <detail>`, and the plan ends with `[coop-test] <plan> done: ...`.
+	The lead reads both instances' logs; cross-machine results (the host seeing the client's transfer) are
+	checked from the host's own plan and its coop_status lines.
+
+	Plans:
+	  f2w1_client  F2 wave 1 on the client: an honest spawn arrives, a quest item outside a talk does not,
+	               a transfer to the host arrives, an over-balance transfer is refused locally.
+	  f2w1_host    F2 wave 1 on the host: logs the players' ledger balances and its own money every 15 s.
+--]]
+
+local TAG = "[coop-test]"
+local plan_name = nil
+local steps = nil
+local idx, wait_until, live_since, started = 1, 0, nil, false
+local results = { pass = 0, fail = 0, skip = 0 }
+local ctx = {}
+
+local function say(fmt, ...)
+	printf("%s " .. fmt, TAG, ...)
+end
+
+local function now() return time_global() end
+
+local function api() return rawget(_G, "coop") end
+
+local function count_section(sec)
+	local n = 0
+	if db.actor then
+		db.actor:iterate_inventory(function(_, item)
+			if item and item:section() == sec then n = n + 1 end
+		end)
+	end
+	return n
+end
+
+local function host_peer()
+	local a = api()
+	local ok, list = pcall(function() return a and a.players and a.players() end)
+	if not (ok and type(list) == "table") then return nil end
+	for _, p in ipairs(list) do
+		if p.id == 0 then return p end
+	end
+	return nil
+end
+
+-- A step: { name, run = function() -> status, detail [, wait_ms] }; status "pass" | "fail" | "skip" | "wait".
+-- "wait" re-runs the step after wait_ms (default 1 s) until it returns something else.
+local PLANS = {}
+
+PLANS.f2w1_client = {
+	{ name = "state", run = function()
+		local a = api()
+		ctx.money0 = db.actor:money()
+		return "pass", string.format("client live, self %s, money %d", tostring(a.self_id and a.self_id()), ctx.money0)
+	end },
+	{ name = "honest spawn arrives", run = function()
+		if not ctx.spawn_asked then
+			ctx.bandages0 = count_section("bandage")
+			ctx.spawn_asked = now()
+			alife_create_item("bandage", db.actor)
+			return "wait", "asked", 1000
+		end
+		if count_section("bandage") > ctx.bandages0 then return "pass", "bandage in the inventory" end
+		if now() - ctx.spawn_asked > 10000 then return "fail", "no bandage after 10 s" end
+		return "wait", "", 1000
+	end },
+	{ name = "quest item outside a talk refused", run = function()
+		if not ctx.quest_asked then
+			ctx.quest0 = count_section("quest_package_1")
+			ctx.quest_asked = now()
+			alife_create_item("quest_package_1", db.actor)
+			return "wait", "asked", 1000
+		end
+		if count_section("quest_package_1") > ctx.quest0 then return "fail", "quest item arrived outside a talk" end
+		if now() - ctx.quest_asked > 8000 then return "pass", "no quest item after 8 s" end
+		return "wait", "", 1000
+	end },
+	{ name = "transfer to the host", run = function()
+		local a = api()
+		if not (a and a.money_give) then return "skip", "coop.money_give missing" end
+		if not ctx.give_asked then
+			ctx.money1 = db.actor:money()
+			if ctx.money1 < 1 then return "skip", "no money to give" end
+			local ok, why = a.money_give(0, 1)
+			if not ok then return "fail", "refused: " .. tostring(why) end
+			ctx.give_asked = now()
+			return "wait", "gave 1 RU to #0", 1000
+		end
+		if db.actor:money() == ctx.money1 - 1 and now() - ctx.give_asked > 5000 then
+			return "pass", string.format("money %d -> %d, kept after 5 s", ctx.money1, db.actor:money())
+		end
+		if now() - ctx.give_asked > 15000 then
+			return "fail", string.format("money %d, expected %d", db.actor:money(), ctx.money1 - 1)
+		end
+		return "wait", "", 1000
+	end },
+	{ name = "over-balance transfer refused", run = function()
+		local a = api()
+		if not (a and a.money_give) then return "skip", "coop.money_give missing" end
+		local m = db.actor:money()
+		local ok, why = a.money_give(0, m + 1000)
+		if ok then return "fail", "an over-balance transfer was accepted" end
+		return "pass", "refused: " .. tostring(why)
+	end },
+}
+
+PLANS.f2w1_host = {
+	{ name = "ledger watch", run = function()
+		local a = api()
+		ctx.ticks = (ctx.ticks or 0) + 1
+		local parts = { string.format("own money %d", db.actor:money()) }
+		local ok, list = pcall(function() return a.players() end)
+		if ok and type(list) == "table" then
+			for _, p in ipairs(list) do
+				if not p.is_self then
+					local okm, m = pcall(a.money_of, p.id)
+					parts[#parts + 1] = string.format("#%d %s ledger %s", p.id, tostring(p.nick), okm and tostring(m) or "?")
+				end
+			end
+		end
+		say("%s watch %d: %s", plan_name, ctx.ticks, table.concat(parts, ", "))
+		if ctx.ticks >= 40 then return "pass", "watched 10 min" end
+		return "wait", "", 15000
+	end },
+}
+
+local function finish()
+	say("%s done: %d pass, %d fail, %d skip", plan_name, results.pass, results.fail, results.skip)
+	steps = nil
+end
+
+local function actor_on_update()
+	if not steps then return end
+	local a = api()
+	if not (a and db.actor) then return end
+	local t = now()
+	local ready = a.is_active() and ((a.is_client() and a.is_live()) or a.is_host())
+	if not ready then live_since = nil return end
+	live_since = live_since or t
+	if not started then
+		if t - live_since < 20000 then return end -- let the world settle
+		started = true
+		say("%s start: %d step(s)", plan_name, #steps)
+	end
+	if t < wait_until then return end
+	local step = steps[idx]
+	if not step then return finish() end
+	local ok, status, detail, wait_ms = pcall(step.run)
+	if not ok then status, detail = "fail", "error: " .. tostring(status) end
+	if status == "wait" then
+		wait_until = t + (wait_ms or 1000)
+		return
+	end
+	results[status] = (results[status] or 0) + 1
+	say("%s %d %s: %s %s", plan_name, idx, step.name, string.upper(status), tostring(detail or ""))
+	idx = idx + 1
+end
+
+function on_game_start()
+	local okc, cl = pcall(command_line)
+	local name = okc and type(cl) == "string" and cl:match("%-coop_testplan%s+([%w_]+)")
+	if not name then return end
+	if not PLANS[name] then
+		say("unknown plan '%s'", name)
+		return
+	end
+	plan_name, steps = name, PLANS[name]
+	say("plan '%s' armed", name)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+end
