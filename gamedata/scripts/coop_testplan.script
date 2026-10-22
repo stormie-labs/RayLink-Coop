@@ -72,13 +72,15 @@ PLANS.f2w1_client = {
 		return "wait", "", 1000
 	end },
 	{ name = "quest item outside a talk refused", run = function()
+		-- jup_b10_ufo_memory has quest_item = true in stock items_quest.ltx; quest_package_1 does not (commented out
+		-- there, night run 3 got it as a plain item and the step failed)
 		if not ctx.quest_asked then
-			ctx.quest0 = count_section("quest_package_1")
+			ctx.quest0 = count_section("jup_b10_ufo_memory")
 			ctx.quest_asked = now()
-			alife_create_item("quest_package_1", db.actor)
+			alife_create_item("jup_b10_ufo_memory", db.actor)
 			return "wait", "asked", 1000
 		end
-		if count_section("quest_package_1") > ctx.quest0 then return "fail", "quest item arrived outside a talk" end
+		if count_section("jup_b10_ufo_memory") > ctx.quest0 then return "fail", "quest item arrived outside a talk" end
 		if now() - ctx.quest_asked > 8000 then return "pass", "no quest item after 8 s" end
 		return "wait", "", 1000
 	end },
