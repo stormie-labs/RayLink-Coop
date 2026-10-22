@@ -12,6 +12,9 @@
 	    returns no object) and leave the charge unarmed on the host.
 	  - Proximity charges trigger on the clients' proxies too (the stock check only sees db.actor, NPCs and
 	    monsters). A client's charge blames that client: its blast hits NPCs "from" the client's proxy.
+	  - On the host every charge goes off as its planter (coop.explode_as; the host's own stock charges as the
+	    host's character), so the engine applies friendly fire to its blast (R3 В2 review). Without that engine
+	    function the stock explode runs (the charge is its own initiator) and mine_blame re-blames NPC hits.
 	Anomalies (bind_anomaly_field):
 	  - Dynamic anomalies are not switched on next to ANY player (stock: next to the host only).
 	  - Pulse anomalies (thunderbolts in bad weather) strike around every player, rolled by the host, and are
@@ -32,7 +35,7 @@
 	  npc.pulse  host -> client  { x, y, z }
 	  npc.fire   client -> host  { i = campfire object, on = bool }
 	  npc.isnd   any -> all      { p = sound path, a = player's character }
-	Stock functions wrapped: txr_mines.plant_bomb; bind_anomaly_field.dyn_anomalies_update,
+	Stock functions wrapped: txr_mines.plant_bomb, trigger_mine; bind_anomaly_field.dyn_anomalies_update,
 	pulse_anomaly_update; bind_campfire.campfire_go_on, campfire_go_off; itms_manager.use_guitar,
 	use_harmonica. Callbacks: npc_on_before_hit, npc_on_update, monster_on_update, save_state, load_state.
 --]]
@@ -51,7 +54,7 @@ local installed = false
 local host_on = false
 local orig = {}
 local stats = { mines_out = 0, mines_in = 0, blasts = 0, blame = 0, pulses = 0, pulses_in = 0, fire_out = 0, fire_in = 0,
-	music = 0, silent = 0, alerts = 0, artefacts = 0 }
+	music = 0, silent = 0, alerts = 0, artefacts = 0, as_planter = 0 }
 
 local function vec(x, y, z) return vector():set(tonumber(x) or 0, tonumber(y) or 0, tonumber(z) or 0) end
 
@@ -67,6 +70,17 @@ local FUSE = 5
 local mines = {} -- host: planted id -> { exp, mode, planter = proxy id, active }
 
 local function tss() return game.get_game_time():diffSec(level.get_start_time()) end
+
+-- Host: sets off charge `id` as player character `by` (R3 В2 review). False when the engine has no coop.explode_as
+-- yet or refuses (planter offline): the caller then runs the stock explode.
+local function explode_as(id, by)
+	local api = rawget(_G, "coop")
+	local f = api and api.explode_as
+	if type(f) ~= "function" or type(by) ~= "number" or not P.is_host() then return false end
+	if f(id, by) ~= true then return false end
+	stats.as_planter = stats.as_planter + 1
+	return true
+end
 
 local function client_plant(obj, mode, delay)
 	local sec = obj:section()
@@ -106,7 +120,7 @@ local function blast(id)
 	if obj then
 		m.active = false
 		stats.blasts = stats.blasts + 1
-		obj:explode(0)
+		if not explode_as(id, m.planter) then obj:explode(0) end
 	end
 end
 
@@ -143,7 +157,8 @@ local function host_mines_tick()
 	end
 end
 
--- A client's charge hits as its planter (stock does the same for the host's charges with db.actor).
+-- A client's charge hits as its planter (stock does the same for the host's charges with db.actor). Only for a charge
+-- that went off by the stock explode: one set off by explode_as already names the planter.
 local function mine_blame(npc, shit, bone_id, flags)
 	local d = shit and shit.draftsman
 	local m = d and mines[d:id()]
@@ -480,6 +495,15 @@ local function install()
 			return orig.plant(obj, mode, delay)
 		end
 	end
+	if tm and type(tm.trigger_mine) == "function" then
+		-- the host's own charge goes off as the host's character (friendly fire covers it, R3 В2 review)
+		orig.trigger = tm.trigger_mine
+		tm.trigger_mine = function(id)
+			if not explode_as(id, db.actor and db.actor:id()) then return orig.trigger(id) end
+			local d = type(tm._mines) == "table" and tm._mines[id]
+			if d then d.active = false end
+		end
+	end
 	local baf = _G["bind_anomaly_field"]
 	if baf and type(baf.dyn_anomalies_update) == "function" then
 		orig.dyn = baf.dyn_anomalies_update
@@ -558,8 +582,8 @@ end
 function print_status()
 	local n = 0
 	for _ in pairs(mines) do n = n + 1 end
-	log("installed %s | mines out %d in %d armed %d blasts %d blamed %d | pulses %d in %d | campfire out %d in %d | music %d | silent kills %d alerts %d | zone artefacts released to players %d | errors %d",
-		tostring(installed), stats.mines_out, stats.mines_in, n, stats.blasts, stats.blame, stats.pulses, stats.pulses_in,
+	log("installed %s | mines out %d in %d armed %d blasts %d (as the planter %d) blamed %d | pulses %d in %d | campfire out %d in %d | music %d | silent kills %d alerts %d | zone artefacts released to players %d | errors %d",
+		tostring(installed), stats.mines_out, stats.mines_in, n, stats.blasts, stats.as_planter, stats.blame, stats.pulses, stats.pulses_in,
 		stats.fire_out, stats.fire_in, stats.music, stats.silent, stats.alerts, stats.artefacts, P.error_count(TAG))
 end
 

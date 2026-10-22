@@ -254,7 +254,8 @@ common(C)
 local created = {}
 local function world_stock(M)
 	local E = M.env
-	E.txr_mines = { plant_bomb = function() M.stock_plant = true end, _mines = {}, generic_on_update = function(o) M.gen_upd = (M.gen_upd or 0) + 1 end }
+	E.txr_mines = { plant_bomb = function() M.stock_plant = true end, _mines = {}, generic_on_update = function(o) M.gen_upd = (M.gen_upd or 0) + 1 end,
+		trigger_mine = function(id) M.stock_trigger = id end }
 	E.actor_effects = { play_item_fx = function(f) M.item_fx = f end, play_continuous_effect = function() end }
 	E.alife_release_id = function(id) M.released = id end
 	E.alife_create = function(sec, pos, lv, gv)
@@ -332,6 +333,51 @@ H.env.txr_mines._mines[5] = {}
 NOW = NOW + 300
 H.fire("actor_on_update")
 check(H.gen_upd == 1, "stock proximity charges get the proxies fed")
+H.env.txr_mines._mines[5] = nil
+-- R3 В2 review: with the engine's coop.explode_as every charge goes off as its planter (friendly fire in the engine)
+local as_calls = {}
+local as_result = true
+H.env.coop.explode_as = function(id, by) as_calls[#as_calls + 1] = { id = id, by = by } return as_result end
+WH._mines()[prox] = nil
+QUEUE = {}
+C.env.txr_mines.plant_bomb(C.add(make_obj(779, 0, 0, 0, { _section = "mine_new" })), 1, 10)
+pump()
+local timer
+for id, m in pairs(WH._mines()) do timer = id end
+H.game_ms = H.game_ms + 61000
+NOW = NOW + 300
+H.fire("actor_on_update")
+check(#as_calls == 1 and as_calls[1].id == timer and as_calls[1].by == 500, "client's charge set off as the client's proxy")
+check(not H.objects[timer]._exploded, "no stock explode when the engine set it off")
+check(WH._stats().as_planter == 1, "counted as set off by its planter")
+-- the engine refuses (planter offline): the stock explode, the charge is its own initiator
+as_result = false
+WH._mines()[timer] = nil
+QUEUE = {}
+C.env.txr_mines.plant_bomb(C.add(make_obj(780, 0, 0, 0, { _section = "mine_new" })), 1, 10)
+pump()
+for id, m in pairs(WH._mines()) do timer = id end
+H.game_ms = H.game_ms + 61000
+NOW = NOW + 300
+H.fire("actor_on_update")
+check(#as_calls == 2 and H.objects[timer]._exploded, "engine refused: stock explode")
+-- the host's own stock charge goes off as the host's character
+as_result = true
+H.env.txr_mines._mines[901] = { active = true }
+H.stock_trigger = nil
+H.env.txr_mines.trigger_mine(901)
+check(as_calls[3] and as_calls[3].id == 901 and as_calls[3].by == 0, "host's stock charge set off as the host's character")
+check(H.stock_trigger == nil and H.env.txr_mines._mines[901].active == false, "stock trigger skipped, charge disarmed")
+H.env.txr_mines._mines[901] = nil
+-- without the engine function: stock trigger and stock explode
+H.env.coop.explode_as = nil
+H.env.txr_mines.trigger_mine(902)
+check(H.stock_trigger == 902 and #as_calls == 3, "no coop.explode_as: stock trigger_mine")
+-- a client never sets charges off itself
+C.env.coop.explode_as = function() as_calls[#as_calls + 1] = { client = true } return true end
+C.env.txr_mines.trigger_mine(903)
+check(C.stock_trigger == 903 and #as_calls == 3, "client: stock trigger_mine (the host detonates)")
+C.env.coop.explode_as = nil
 -- campfire
 local cf = { on = false }
 function cf:is_on() return self.on end
