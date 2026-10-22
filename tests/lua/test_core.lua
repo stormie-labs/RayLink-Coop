@@ -783,6 +783,47 @@ check(has(H.news, "st_coop_core_joined"), "joined notice")
 table.remove(H.players, 3)
 tick(1000)
 check(has(H.news, "st_coop_core_left"), "left notice")
+-- F0 final review (task 8): a newcomer is in the world before the host's owners table (AvatarList) comes; the
+-- players already there get their avatar_id with that table and are no news. Played alone (not in MACHINES).
+do
+	local N = machine("client", 2, "zed")
+	N.players = {
+		{ id = 0, nick = "hosty", avatar_id = 500, rtt = 35, is_self = false }, -- the host's avatar: from the role swap
+		{ id = 1, nick = "bob", rtt = 40, is_self = false }, -- in the world already, owner not known yet
+		{ id = 2, nick = "zed", avatar_id = 0, rtt = 0, is_self = true },
+	}
+	N.owners = false
+	N.env.coop.owners_known = function() return N.owners end
+	N.env.coop.send_event = function() return true end
+	N.env.coop.send_chat = function() return true end
+	for _, name in ipairs(SCRIPTS) do if N.env[name].on_game_start then N.env[name].on_game_start() end end
+	local function look()
+		NOW = NOW + 1000
+		fire(N, "actor_on_update")
+	end
+	local function joined()
+		local n = 0
+		for _, s in ipairs(N.news) do
+			if tostring(s):find("st_coop_core_joined", 1, true) then n = n + 1 end
+		end
+		return n
+	end
+	look() -- first look, the owners not known yet
+	look()
+	N.players[2].avatar_id = 510 -- the host's first owners table
+	N.owners = true
+	look()
+	check(joined() == 0, "newcomer: the first owners table is no news (nobody 'joined')")
+	N.players[#N.players + 1] = { id = 3, nick = "amy", rtt = 50, is_self = false }
+	look()
+	check(has(N.news, "st_coop_core_connecting"), "newcomer: a player connecting after it is news")
+	N.players[4].avatar_id = 520
+	look()
+	check(joined() == 1, "newcomer: a player who loads the world after it 'joined'")
+	table.remove(N.players, 2)
+	look()
+	check(has(N.news, "st_coop_core_left"), "newcomer: a player who leaves 'left'")
+end
 -- quicksave
 print("== quicksave")
 local flags = { ret = false }

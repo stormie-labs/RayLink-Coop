@@ -180,7 +180,17 @@ end
 -- 2. Who comes and goes
 -------------------------------------------------------------------------------
 local roster = nil -- peer id -> { nick, joined }; nil until the first look in this Lua state
+local roster_owners = false -- the last look knew who plays each character (coop.owners_known)
 local next_roster = 0
+
+-- F0 final review (task 8): a client knows who plays each character (avatar_id) from the host's first owners table,
+-- a moment after it is in the world: the players already there must not show up as "joined" then. An engine
+-- without coop.owners_known: known.
+local function owners_known()
+	if not api.owners_known then return true end
+	local ok, known = pcall(api.owners_known)
+	return not ok or known ~= false
+end
 
 local function roster_tick()
 	local now = {}
@@ -189,6 +199,10 @@ local function roster_tick()
 			now[p.id] = { nick = tostring(p.nick), joined = p.avatar_id ~= nil }
 		end
 	end
+	local known = owners_known()
+	-- the first table of owners is the baseline: who is in the world when it comes is no news
+	local news = roster_owners
+	roster_owners = known
 	if roster == nil then -- first look: who is here already is no news
 		roster = now
 		if api.stash_get and api.stash_get(STASH_SEEN) ~= "1" then
@@ -205,12 +219,12 @@ local function roster_tick()
 	for id, p in pairs(now) do
 		local old = roster[id]
 		if not old then
-			if p.joined then
-				notice(string_format(tr("st_coop_core_joined", "%s joined the game."), p.nick))
-			else
+			if not p.joined then
 				notice(string_format(tr("st_coop_core_connecting", "%s is connecting..."), p.nick))
+			elseif news then
+				notice(string_format(tr("st_coop_core_joined", "%s joined the game."), p.nick))
 			end
-		elseif p.joined and not old.joined then
+		elseif p.joined and not old.joined and news then
 			notice(string_format(tr("st_coop_core_joined", "%s joined the game."), p.nick))
 		end
 	end
@@ -351,6 +365,7 @@ local function actor_on_update()
 	if not api then return end
 	if not api.is_active() then
 		roster = nil
+		roster_owners = false
 		return
 	end
 	if not live() then return end

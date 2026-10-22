@@ -1,5 +1,5 @@
 // Anomaly Coop unit tests: who may hold a player slot (player key, reconnect) and what the host keeps of a key;
-// what a host takes from a client (blobs, joins, request rates) and the world epoch.
+// what a host takes from a client (blobs, joins, request rates), the world epoch and which way the join lifecycle goes.
 // Real Sessions over 127.0.0.1 in one process. Ports 37100+n (test_net.cpp uses 37000+n).
 #include "test_util.h"
 
@@ -806,4 +806,71 @@ TEST(world_epoch_from_the_future_is_malformed)
 		return raw.find(Msg::Reject) != nullptr;
 	}));
 	CHECK(raw.reject_text().find("WorldEpoch") != std::string::npos);
+}
+
+// ============================================================================ F0 final review: who sends what
+
+TEST(lifecycle_messages_go_one_way)
+{
+	// F0 final review (Critical): the join lifecycle has a direction. SessionReset, JoinComplete, WorldBlob,
+	// LevelChange and AvatarList come from the host only: a client that sends one is kicked as malformed before any
+	// handler sees it, as for a core message the wrong way (Welcome from a client). A SessionReset handled at the host
+	// wiped its sync state and turned it into a client. JoinRequest, WorldLoaded and TransitionVote come from clients
+	// only: a client ignores one from the host.
+	const Msg host_only[] = {Msg::SessionReset, Msg::JoinComplete, Msg::WorldBlob, Msg::LevelChange, Msg::AvatarList};
+	const Msg client_only[] = {Msg::JoinRequest, Msg::WorldLoaded, Msg::TransitionVote};
+	for (Msg m : host_only)
+		CHECK(msg_sender(m) == MsgSender::HostOnly);
+	for (Msg m : client_only)
+		CHECK(msg_sender(m) == MsgSender::ClientOnly);
+	for (Msg m : {Msg::ScriptEvent, Msg::PlayerState, Msg::TradeOp, Msg::EntityEvent, Msg::StateDumpRequest})
+		CHECK(msg_sender(m) == MsgSender::Either); // both ways (relays, requests): their handlers check the sender
+	Node host("Boss", 37118), a("Al", 37118), b("Bo", 37118), c("Cy", 37118), d("Di", 37118), e("Ed", 37118),
+	    f("Fay", 37118);
+	Node* senders[] = {&a, &b, &c, &d, &e};
+	std::vector<uint16_t> at_host, at_fay;
+	auto record = [](std::vector<uint16_t>& into, Msg type) {
+		return [&into, type](PeerId, Reader&) { into.push_back(uint16_t(type)); };
+	};
+	for (Msg m : host_only)
+	{
+		host.s.on(m, record(at_host, m));
+		f.s.on(m, record(at_fay, m));
+	}
+	for (Msg m : client_only)
+	{
+		host.s.on(m, record(at_host, m));
+		f.s.on(m, record(at_fay, m));
+	}
+	host_and_join(host, {&a, &b, &c, &d, &e, &f}, 37118);
+	REQUIRE(f.s.self() == PeerId(6));
+
+	// Five clients, each sends one message only the host sends: each is kicked, no handler at the host runs.
+	Writer reset;
+	reset.str("forged by a client");
+	reset.u32(7);
+	for (size_t i = 0; i < 5; ++i)
+		senders[i]->s.send(kHostPeer, Lane::Reliable, host_only[i], i == 0 ? reset : Writer());
+	REQUIRE(t::pump_until({&host.s, &a.s, &b.s, &c.s, &d.s, &e.s, &f.s}, 5000,
+	    [&] { return a.disconnected && b.disconnected && c.disconnected && d.disconnected && e.disconnected; }));
+	CHECK(at_host.empty());
+	for (size_t i = 0; i < 5; ++i)
+		CHECK(kicked(*senders[i], std::string("unexpected ") + msg_name(host_only[i])));
+	CHECK_EQ(host.left.size(), size_t(5));
+	CHECK(f.s.is_active());
+
+	// The host sends a client what only clients send: ignored there, the client stays (it has nobody to punish).
+	for (Msg m : client_only)
+		host.s.send(6, Lane::Reliable, m, Writer());
+	// The right way still works, both ways (reliable lane: in order, after the three above).
+	host.s.send(6, Lane::Reliable, Msg::SessionReset, reset);
+	f.s.send(kHostPeer, Lane::Reliable, Msg::JoinRequest, Writer());
+	REQUIRE(t::pump_until({&host.s, &f.s}, 3000, [&] { return at_fay.size() == 1 && at_host.size() == 1; }));
+	t::pump_for({&host.s, &f.s}, 100);
+	CHECK(at_fay == std::vector<uint16_t>{uint16_t(Msg::SessionReset)});
+	CHECK(at_host == std::vector<uint16_t>{uint16_t(Msg::JoinRequest)});
+	CHECK(f.logged("unexpected JoinRequest"));
+	CHECK(f.logged("unexpected TransitionVote"));
+	CHECK(f.s.is_active() && !f.disconnected);
+	CHECK_EQ(host.s.peers().size(), size_t(1));
 }

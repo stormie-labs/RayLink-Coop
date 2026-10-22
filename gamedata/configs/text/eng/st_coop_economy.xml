@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="windows-1251"?>
-<!-- Anomaly Coop - economy group (W4): group travel, time skips, giving money and items. -->
+<!-- Anomaly Coop - economy group (W4): group travel, time skips, giving money and items; trade refusals the engine shows (coop_trade.cpp). -->
 <string_table>
 	<string id="st_coop_eco_travel_far">
 		<text>All players must be within %d m to travel (far: %s).</text>
@@ -87,5 +87,23 @@
 	</string>
 	<string id="st_coop_eco_money_no_target">
 		<text>That player is not here.</text>
+	</string>
+	<string id="st_coop_trade_no_money">
+		<text>Trade failed: not enough money</text>
+	</string>
+	<string id="st_coop_trade_trader_no_money">
+		<text>Trade failed: the trader has not enough money</text>
+	</string>
+	<string id="st_coop_trade_too_far">
+		<text>Trade failed: you are too far from the trader</text>
+	</string>
+	<string id="st_coop_trade_no_trader">
+		<text>Trade failed: the trader does not trade now</text>
+	</string>
+	<string id="st_coop_trade_not_traded">
+		<text>Trade failed: the trader does not trade this item</text>
+	</string>
+	<string id="st_coop_trade_failed">
+		<text>Trade failed: the goods are no longer available</text>
 	</string>
 </string_table>

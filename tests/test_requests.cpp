@@ -291,6 +291,12 @@ TEST(upgrades_added_by_a_client)
 	CHECK(upgrades::verdict_of_added({up("up_thirdd", "thirdcd")}, up("up_thirdd", "thirdcd"), beretta_defaults) ==
 	    Verdict::Installed);
 	CHECK(upgrades::verdict_of_added({}, up("zz", "Z", {}, false), beretta_defaults) == Verdict::Unknown);
+	// F0 final review (task 10b): an upgrade the entity's list names is there, whatever the replay made of that
+	// mention (CSE add_upgrade is FATAL on a duplicate id). Here b1 stands before its parent group's a1 in the list:
+	// the replay refuses that mention, and on its own it would install the same b1 again.
+	CHECK(upgrades::verdict_of_added({up("b1", "B", {"A"}), up("a1", "A")}, up("b1", "B", {"A"}), {}) ==
+	    Verdict::Installed);
+	CHECK(upgrades::verdict_of_added({up("zz", "Z", {}, false)}, up("zz", "Z", {}, false), {}) == Verdict::Installed);
 }
 
 TEST(upgrades_broken_section_defaults)

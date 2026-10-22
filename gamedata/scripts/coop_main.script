@@ -6,6 +6,8 @@
 		coop.players()            -> { {id, nick, avatar_id (local id or nil), rtt, is_self}, ... }
 		coop.avatar_of(peer)      -> local object id of that player's character, or nil
 		coop.peer_of_avatar(id)   -> peer id, or nil
+		coop.owners_known()       -> true once avatar_id is known for every player in the world (a client: after
+		                             the host's first owners table since it joined)
 		coop.to_host_id(id) coop.to_local_id(id)
 		coop.send_event(name, payload, target) -> true | false, reason   (target: -1/nil all, 0 host, N peer)
 		coop.send_chat(text)
