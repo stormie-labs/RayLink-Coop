@@ -71,9 +71,10 @@ cl /nologo /MD /O1 /EHsc /std:c++17 /utf-8 /DRUNLUA_STAMP=\"%STAMP%\" /I"%LUAJIT
 set "RC=%ERRORLEVEL%"
 popd
 if not "%RC%"=="0" (
-	echo [test_lua] runlua build failed ^(%RC%^)
 	rd /s /q "%BDIR%" 2>nul
-	exit /b 255
+	set "BDIR="
+	set "WHY=runlua build failed (%RC%): a half-edited engine\src\xrCoop header of another task?"
+	goto cannot_build
 )
 move /y "%BDIR%\runlua.exe" "%OUT%\runlua.exe" >nul 2>&1
 if errorlevel 1 goto swap_failed
