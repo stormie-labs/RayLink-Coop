@@ -3,7 +3,11 @@
 
 #include "coop_rules.h"
 
+using coop::Msg;
+using coop::rules::client_echo;
+using coop::rules::Echo;
 using coop::rules::is_machine_info;
+using coop::rules::live_only;
 
 // R4 1: info portions that describe what ONE machine's UI / body is doing stay on that machine.
 TEST(rules_machine_info)
@@ -63,4 +67,46 @@ TEST(rules_machine_info_boundaries)
 	// No id at all is not a machine info.
 	CHECK(!is_machine_info(nullptr));
 	CHECK(!is_machine_info(""));
+}
+
+// R2 I2: a world message reaches a client before it is live only from the window between Welcome and JoinRequest
+// (or from a world it has left). It is dropped: what the host did before host_begin_join is in the save the client
+// loads, what it does after is queued for it until WorldLoaded (P6).
+TEST(rules_live_only)
+{
+	// World objects: applied only in Live.
+	CHECK(live_only(Msg::EntityParent));
+	CHECK(live_only(Msg::EntityDied));
+	CHECK(live_only(Msg::EntityLocal));
+	CHECK(live_only(Msg::EntityState));
+	CHECK(live_only(Msg::ZoneState));
+	CHECK(live_only(Msg::ItemState));
+	CHECK(live_only(Msg::EntityEvent));
+	// Live-only by their registration already (coop_entities.cpp): the rule says so too.
+	CHECK(live_only(Msg::EntitySpawn));
+	CHECK(live_only(Msg::EntityDestroy));
+	CHECK(live_only(Msg::EntitySwitch));
+	CHECK(live_only(Msg::EntitySnapshot));
+
+	// The join lifecycle runs before Live by design.
+	CHECK(!live_only(Msg::Welcome));
+	CHECK(!live_only(Msg::WorldBlob));
+	CHECK(!live_only(Msg::SessionReset));
+	CHECK(!live_only(Msg::JoinComplete));
+	CHECK(!live_only(Msg::LevelChange));
+	// Not a world object: it may come before the proxies exist (F0 Task 8); its own handler decides.
+	CHECK(!live_only(Msg::AvatarList));
+	CHECK(!live_only(Msg::TimeSync));
+	// Not a known message: not a world message either.
+	CHECK(!live_only(static_cast<Msg>(0x7FFF)));
+}
+
+// R4 4: while a client applies a host broadcast (the host's story or a host command), what it does is a reaction,
+// not a request: nothing of it goes to the host.
+TEST(rules_client_echo)
+{
+	CHECK_EQ(client_echo(false, false), Echo::Forward);
+	CHECK_EQ(client_echo(true, false), Echo::Drop); // an addon reacts to the host's info portion
+	CHECK_EQ(client_echo(false, true), Echo::Drop); // a host command applied here (entities::ClientApply)
+	CHECK_EQ(client_echo(true, true), Echo::Drop);
 }
