@@ -22,6 +22,8 @@
 		("refused", receiver_peer | -1, change, why, cause)      the host did not take your change (a transfer to
 		                                                         receiver_peer, an income > 0 or a payment < 0 of your own)
 	why is the engine's English name of the verdict, cause is "script" | "dialog" | "transfer".
+	Gifts are told in one line per 3 s ("X gave you N (x37)"), so that nobody can fill another player's news with them;
+	the host also holds each character to a rate of transfers (coop_money.ltx transfer_burst, transfer_per_min).
 
 	For other scripts:
 		coop_economy_money.give_money(peer, amount) -> true when the engine accepted the transfer
@@ -51,6 +53,7 @@ local WHY_ID = {
 	["over the allowance"] = "allowance", -- F2 T6b: an income above what the host lets a player make by himself
 	["transfers are off"] = "off", -- F2 T6b: money_transfer is off on the host
 	["over the transfer limit"] = "limit", -- F2 T6b: above max_money_transfer of the host
+	["too many transfers"] = "rate", -- T6b review I1: the host's rate bucket of transfers is empty
 }
 
 local function refusal_text(why)
@@ -144,8 +147,11 @@ local function push_rules()
 	if not (called and ok) then core.log("! money rules not pushed: %s", tostring(called and why or ok)) end
 end
 
+local flush_gifts -- below
+
 local function actor_on_update()
 	local t = core.now()
+	flush_gifts(t)
 	if t < rules.next_at then return end
 	rules.next_at = t + RULES_EVERY_MS
 	push_rules()
@@ -163,22 +169,66 @@ local function who_text(peer)
 	return p and p.nick or core.tr("st_coop_eco_money_somebody", "another player")
 end
 
+-- Gifts (T6b review I1): a modified client can give 1 RU again and again, and every gift would be a news item, a log line
+-- and a lookup of the players. The first gift after a quiet time is told at once; the ones that follow within GIFT_GAP_MS
+-- are collected (by giver) and told as one line: the giver, the sum and the number of gifts.
+local GIFT_GAP_MS = 3000
+local gifts = { next_at = 0, by_peer = {}, count = 0, sum = 0, givers = 0 }
+
+local function show_gifts()
+	local g = gifts
+	local count, sum, givers, only = g.count, g.sum, g.givers, nil
+	if givers == 1 then only = next(g.by_peer) end
+	gifts.by_peer, gifts.count, gifts.sum, gifts.givers = {}, 0, 0, 0
+	if count < 1 then return end
+	core.log("money: %d RU in %d gift(s) from %s", sum, count, only and who_text(only) or "several players")
+	if givers > 1 then
+		core.tip(core.fmt("st_coop_eco_money_in_many", "Players gave you %s (x%d).", money_text(sum), count))
+	elseif count > 1 then
+		core.tip(core.fmt("st_coop_eco_money_in_n", "%s gave you %s (x%d).", who_text(only), money_text(sum), count))
+	else
+		core.tip(core.fmt("st_coop_eco_money_in", "%s gave you %s.", who_text(only), money_text(sum)))
+	end
+end
+
+-- Tells what has been collected once the gap since the last line is over.
+function flush_gifts(t)
+	if gifts.count > 0 and t >= gifts.next_at then
+		gifts.next_at = t + GIFT_GAP_MS
+		show_gifts()
+	end
+end
+
+local function add_gift(peer, n)
+	local key = (type(peer) == "number" and peer >= 0) and peer or -1
+	if not gifts.by_peer[key] then
+		gifts.by_peer[key] = true
+		gifts.givers = gifts.givers + 1
+	end
+	gifts.count, gifts.sum = gifts.count + 1, gifts.sum + n
+	flush_gifts(core.now())
+end
+
 local function on_money_note_body(kind, peer, amount, why, cause)
 	local n = core.num(amount)
 	if n == nil then return end
 	n = math_floor(n)
 	if kind == "received" then
 		if n < 1 then return end
-		core.log("money: %d from %s", n, who_text(peer))
-		core.tip(core.fmt("st_coop_eco_money_in", "%s gave you %s.", who_text(peer), money_text(n)))
+		add_gift(peer, n)
 	elseif kind == "refused" then
 		if n == 0 then return end
 		stats.host_refused = stats.host_refused + 1
 		local reason = note_reason(why, cause)
 		core.log("money: the host refused %d (%s, %s)", n, tostring(cause), tostring(why))
 		if cause == "transfer" then
-			core.tip(core.fmt("st_coop_eco_money_refused_to", "Transfer of %s to %s refused: %s.", money_text(math_abs(n)),
-				who_text(peer), reason))
+			if type(peer) == "number" and peer >= 0 and core.player(peer) then
+				core.tip(core.fmt("st_coop_eco_money_refused_to", "Transfer of %s to %s refused: %s.", money_text(math_abs(n)),
+					who_text(peer), reason))
+			else
+				-- the receiver is gone: no name to put in (T6b review M7)
+				core.tip(core.fmt("st_coop_eco_money_refused_amount", "Transfer of %s refused: %s.", money_text(math_abs(n)), reason))
+			end
 		elseif n > 0 then
 			core.tip(core.fmt("st_coop_eco_money_host_gain", "The host did not credit %s: %s.", money_text(n), reason))
 		else

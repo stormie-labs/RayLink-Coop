@@ -686,6 +686,7 @@ do
 	check(has(A.TIPS, "boris gave you 750 "), "a gift: 'boris gave you 750 RU'")
 	fire(H, "coop_money_note", "received", 1, 100)
 	check(has(H.TIPS, "anna gave you 100 "), "the host is told of a gift to him as well")
+	tick(A, 3100) -- gifts are collected into one line per 3 s (below): this one comes after a quiet time
 	fire(A, "coop_money_note", "received", 9, 5)
 	check(has(A.TIPS, "another player gave you 5 "), "a giver who is not here any more: no nick, no error")
 	-- what the host refused
@@ -707,12 +708,18 @@ do
 	text, ids = told(A, "refused", -1, -500, "not enough money", "dialog")
 	check(text and text:find("500", 1, true) and ids:find("st_coop_eco_money_host_spend", 1, true)
 		and ids:find("st_coop_eco_money_why_poor", 1, true), "a payment the host did not accept")
+	-- a receiver who is not here any more: the line without his name ("to another player" would not decline in Russian)
+	text, ids = told(A, "refused", 9, -3000, "over the transfer limit", "transfer")
+	check(text and text:find("3000", 1, true) and ids:find("st_coop_eco_money_refused", 1, true)
+		and not ids:find("refused_to", 1, true) and not text:find("another player", 1, true),
+		"a refused transfer to a player who is gone names nobody")
 	-- the reason line depends on whose money it is: 'over the maximum' is the receiver's for a transfer, the player's own else
 	for _, c in ipairs({
 		{ "not enough money", "transfer", "poor" }, { "over the maximum", "transfer", "full" },
 		{ "over the maximum", "script", "cap" }, { "over the maximum", "dialog", "cap" },
 		{ "over the allowance", "script", "allowance" }, { "transfers are off", "transfer", "off" },
 		{ "over the transfer limit", "transfer", "limit" }, { "malformed", "transfer", "gone" },
+		{ "too many transfers", "transfer", "rate" },
 		{ "malformed", "script", "bad" }, { "something new", "script", "bad" },
 	}) do
 		local _, used = told(A, "refused", 2, -10, c[1], c[2])
@@ -731,12 +738,59 @@ do
 		local xml = fh:read("*a")
 		fh:close()
 		local missing = {}
-		for _, id in ipairs({ "in", "refused_to", "host_gain", "host_spend", "somebody", "why_cap", "why_allowance", "why_off",
-			"why_limit" }) do
+		for _, id in ipairs({ "in", "in_n", "in_many", "refused_to", "host_gain", "host_spend", "somebody", "why_cap",
+			"why_allowance", "why_off", "why_limit", "why_rate", "refused_amount" }) do
 			if not xml:find('<string id="st_coop_eco_money_' .. id .. '">', 1, true) then missing[#missing + 1] = id end
 		end
 		check(#missing == 0, lang .. " text has every line of the notes (" .. table.concat(missing, ",") .. ")")
 	end
+end
+
+-------------------------------------------------------------------------------
+-- T6b review I1: a modified client can send transfers of 1 RU without end (the host's rate bucket holds it to a few a
+-- minute); the receiver gets one line per 3 s with the sum and the number, not a news item per gift.
+section("money notes: gifts are collected into one line")
+do
+	local H, A = setup(2)
+	local function lines_of_log(W)
+		local n = 0
+		for _, l in ipairs(W.LOG) do if l:find("money: ", 1, true) and l:find(" from ", 1, true) then n = n + 1 end end
+		return n
+	end
+	local n0 = #A.TIPS
+	for _ = 1, 100 do fire(A, "coop_money_note", "received", 2, 1) end
+	check(#A.TIPS == n0 + 1 and A.TIPS[#A.TIPS]:find("boris gave you 1 RU.", 1, true),
+		"100 gifts in a moment: the first at once, as one line")
+	tick(A, 1000)
+	check(#A.TIPS == n0 + 1, "nothing more within 3 s")
+	tick(A, 2100)
+	check(#A.TIPS == n0 + 2 and A.TIPS[#A.TIPS]:find("boris gave you 99 RU (x99).", 1, true),
+		"then the rest in one line: the sum and the number")
+	tick(A, 10000)
+	check(#A.TIPS == n0 + 2, "and nothing after that")
+	check(lines_of_log(A) <= 2, "the log has a line per news item, not per gift (" .. lines_of_log(A) .. ")")
+	-- a quiet time: a single gift is told at once again, without a count
+	fire(A, "coop_money_note", "received", 2, 40)
+	check(#A.TIPS == n0 + 3 and A.TIPS[#A.TIPS]:find("boris gave you 40 RU.", 1, true), "a lone gift after a quiet time: at once")
+	-- more from one giver within 3 s, and from two of them
+	fire(A, "coop_money_note", "received", 2, 10)
+	fire(A, "coop_money_note", "received", 2, 5)
+	tick(A, 3100)
+	check(#A.TIPS == n0 + 4 and A.TIPS[#A.TIPS]:find("boris gave you 15 RU (x2).", 1, true), "two gifts of one giver: sum and (x2)")
+	tick(A, 3100)
+	fire(A, "coop_money_note", "received", 0, 1) -- at once
+	fire(A, "coop_money_note", "received", 2, 20)
+	fire(A, "coop_money_note", "received", 0, 30)
+	fire(A, "coop_money_note", "received", 2, 4)
+	check(#A.TIPS == n0 + 5, "gifts within 3 s are held")
+	tick(A, 3100)
+	check(#A.TIPS == n0 + 6 and A.TIPS[#A.TIPS]:find("Players gave you 54 RU (x3).", 1, true),
+		"gifts of two givers: one line without names, the whole sum and number")
+	-- garbage and the first gift of a line do not break the count: a bad amount is not a gift
+	fire(A, "coop_money_note", "received", 2, 0 / 0)
+	fire(A, "coop_money_note", "received", 2, 0)
+	tick(A, 5000)
+	check(#A.TIPS == n0 + 6, "bad amounts are no gifts")
 end
 
 -------------------------------------------------------------------------------

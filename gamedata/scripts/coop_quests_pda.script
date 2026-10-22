@@ -552,9 +552,18 @@ local function send_claim(name, c)
 	qc.send("achv_got", { a = name }, 0)
 end
 
+-- Who the claims are for (T6b review M3): the host (its nick) and our own peer id. A claim made in one session is not sent to
+-- the host of another one, which would pay it for an achievement this client never earned in its world.
+local function session_key()
+	for _, p in ipairs(qc.players()) do
+		if p.id == 0 then return tostring(p.nick) .. "|" .. tostring(qc.self_peer()) end
+	end
+	return nil
+end
+
 local function claim_achv(name)
 	if claims[name] then return end
-	local c = { tries = 0, at = 0 }
+	local c = { tries = 0, at = 0, key = session_key() }
 	claims[name] = c
 	send_claim(name, c)
 end
@@ -562,8 +571,12 @@ end
 local function retry_claims()
 	if next(claims) == nil or not qc.client_live() then return end
 	local t = time_global()
+	local key = session_key()
 	for name, c in pairs(claims) do
-		if t - c.at >= CLAIM_GAP_MS or t < c.at then
+		if key ~= c.key then
+			claims[name] = nil
+			qc.log(TAG, "! %s: the claim was made in another session, dropped", name)
+		elseif t - c.at >= CLAIM_GAP_MS or t < c.at then
 			if c.tries >= CLAIM_TRIES then
 				claims[name] = nil
 				qc.log(TAG, "! %s: the host did not answer the claim in %d attempts, gave up", name, c.tries)

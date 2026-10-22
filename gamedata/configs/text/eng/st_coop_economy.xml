@@ -88,8 +88,17 @@
 	<string id="st_coop_eco_money_in">
 		<text>%s gave you %s.</text>
 	</string>
+	<string id="st_coop_eco_money_in_n">
+		<text>%s gave you %s (x%d).</text>
+	</string>
+	<string id="st_coop_eco_money_in_many">
+		<text>Players gave you %s (x%d).</text>
+	</string>
 	<string id="st_coop_eco_money_refused_to">
 		<text>Transfer of %s to %s refused: %s.</text>
+	</string>
+	<string id="st_coop_eco_money_refused_amount">
+		<text>Transfer of %s refused: %s.</text>
 	</string>
 	<string id="st_coop_eco_money_host_gain">
 		<text>The host did not credit %s: %s.</text>
@@ -111,6 +120,9 @@
 	</string>
 	<string id="st_coop_eco_money_why_limit">
 		<text>above the host's limit for one transfer</text>
+	</string>
+	<string id="st_coop_eco_money_why_rate">
+		<text>too many transfers in a row, wait a moment</text>
 	</string>
 	<string id="st_coop_eco_money_off">
 		<text>Money transfers are off in this session.</text>

@@ -11,7 +11,8 @@
 ;   - trades, transfers between players and host scripts (coop.money_grant / money_set) change balances on the host.
 ; A refused gain is taken back on the client by the host's answer; refusals are counted in coop_status.
 ; These are host settings: the host's values decide. The console changes them for the running game:
-;   coop_money_gain_burst, coop_money_gain_per_min, coop_money_dialog_cap, coop_money_dialog_per_min, coop_money_max.
+;   coop_money_gain_burst, coop_money_gain_per_min, coop_money_dialog_cap, coop_money_dialog_per_min, coop_money_max,
+;   coop_money_transfer_burst, coop_money_transfer_per_min.
 
 [coop_money]
 script_gain_burst       = 50000     ; RU a client may gain without the host in a row
@@ -21,6 +22,11 @@ dialog_gain_cap         = 100000    ; RU dialogs may pay in a row (one big quest
 ; than 1.2 M RU an hour on top of the cap
 dialog_gain_per_min     = 20000
 max_money               = 100000000 ; no balance goes above this
+; How fast one character may give money to other players (F2 T6b review): every transfer the host applies is a news line
+; for its receiver. transfer_burst in a row, then transfer_per_min a minute. 0 allows no transfer. (Whether transfers
+; are allowed and how much one may give are the options money_transfer and max_money_transfer, set in the menu.)
+transfer_burst          = 10
+transfer_per_min        = 30
 ; Upgrades at a mechanic (F2 T5): the host accepts a client's upgrade only if it was bought from a mechanic the player
 ; talks to (a stalker or a trader such as the Forester, named in misc\stalkers_upgrade_info.ltx), within 6 m of his
 ; character on the host, paid at least floor(cost x upgrade_min_percent) (the upgrade's `cost` in item_upgrades.ltx;

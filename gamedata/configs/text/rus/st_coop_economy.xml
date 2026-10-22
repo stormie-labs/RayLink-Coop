@@ -88,8 +88,17 @@
 	<string id="st_coop_eco_money_in">
 		<text>%s передал вам %s.</text>
 	</string>
+	<string id="st_coop_eco_money_in_n">
+		<text>%s передал вам %s (x%d).</text>
+	</string>
+	<string id="st_coop_eco_money_in_many">
+		<text>Игроки передали вам %s (x%d).</text>
+	</string>
 	<string id="st_coop_eco_money_refused_to">
 		<text>Перевод %s игроку %s отклонён: %s.</text>
+	</string>
+	<string id="st_coop_eco_money_refused_amount">
+		<text>Перевод %s отклонён: %s.</text>
 	</string>
 	<string id="st_coop_eco_money_host_gain">
 		<text>Хост не зачислил %s: %s.</text>
@@ -111,6 +120,9 @@
 	</string>
 	<string id="st_coop_eco_money_why_limit">
 		<text>больше, чем хост разрешает за один раз</text>
+	</string>
+	<string id="st_coop_eco_money_why_rate">
+		<text>слишком много переводов подряд, подождите</text>
 	</string>
 	<string id="st_coop_eco_money_off">
 		<text>В этой сессии передача денег выключена.</text>

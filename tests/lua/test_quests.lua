@@ -547,6 +547,26 @@ do
 end
 reboot_pda()
 do
+	-- T6b review M3: a claim belongs to the host it was made to; another host (a new session) never gets it
+	Hm.handlers["quests.achv_got"] = function() end
+	local c0 = claims_sent(Cm)
+	Hm.env.game_achievements.iron_curtain_rewards()
+	pump()
+	check(claims_sent(Cm) == c0 + 1, "claimed to this host")
+	Cm.players[2].nick = "another host"
+	NOW = NOW + 6000
+	fire(Cm, "actor_on_update")
+	pump()
+	check(claims_sent(Cm) == c0 + 1, "the host is another one now: no claim to it")
+	check(has_log(Cm, "another session"), "the dropped claim is in the log")
+	Cm.players[2].nick = nil
+	NOW = NOW + 60000
+	fire(Cm, "actor_on_update")
+	pump()
+	check(claims_sent(Cm) == c0 + 1, "and it stays dropped")
+end
+reboot_pda()
+do
 	-- the host never answers: ten attempts, five seconds apart, then the client gives up
 	Hm.handlers["quests.achv_got"] = function() end
 	local c0 = claims_sent(Cm)

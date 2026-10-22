@@ -281,7 +281,11 @@ TEST(ledger_transfer_checks)
 	CHECK(check_transfer(1, to, 0, balance, credit, p) == Verdict::Malformed);
 	CHECK(check_transfer(1, to, 100, balance, credit, p) == Verdict::Malformed);
 	CHECK(check_transfer(1, to, -1001, balance, credit, p) == Verdict::Insufficient);
-	CHECK(check_transfer(1, to, INT64_MIN, balance, credit, p) == Verdict::Insufficient);
+	// No overflow on the most negative change a caller can pass (with no limit set; the default one comes first).
+	Policy unlimited;
+	unlimited.transfer_max = UINT64_MAX;
+	CHECK(check_transfer(1, to, INT64_MIN, balance, credit, unlimited) == Verdict::Insufficient);
+	CHECK(check_transfer(1, to, INT64_MIN, balance, credit, p) == Verdict::OverTransferLimit);
 	Receiver rich = to;
 	rich.balance = p.max_money - 50;
 	CHECK(check_transfer(1, rich, -51, balance, credit, p) == Verdict::OverMax);
@@ -316,13 +320,18 @@ TEST(ledger_transfer_rules)
 	to.balance = 100;
 	uint32_t balance = 5000, credit = 99;
 
-	// Without a rule from the host's Lua: transfers on, no limit but the balance.
+	// Without a rule from the host's Lua (T6b review M1): the options' defaults, transfers on and 1 000 000 at a time.
 	const Policy none;
 	CHECK(none.transfer_on);
-	CHECK(none.transfer_max == UINT64_MAX);
+	CHECK(none.transfer_max == 1000000u);
+	CHECK(coop::ledger::kDefaultTransferMax == 1000000u);
 	CHECK(check_transfer(1, to, -5000, balance, credit, none) == Verdict::Applied);
 	CHECK_EQ(balance, 0u);
 	CHECK_EQ(credit, 5000u);
+	balance = 5000000;
+	CHECK(check_transfer(1, to, -1000001, balance, credit, none) == Verdict::OverTransferLimit);
+	CHECK(check_transfer(1, to, -1000000, balance, credit, none) == Verdict::Applied);
+	balance = 5000;
 
 	// money_transfer off: nothing moves, whatever the amount.
 	Policy off;
@@ -697,6 +706,116 @@ TEST(ledger_client_view_after_reset)
 	std::vector<Pending> old = {{3, -10}, {4, -20}};
 	forget_acked(old, 9);
 	CHECK(old.empty());
+}
+
+// T6b review I1: a modified client could send transfers of 1 RU without end, and each one is a news line for the receiver.
+// The host holds a transfer rate per character (a bucket: transfer_burst in a row, then transfer_per_min a minute); the
+// refusal carries a verdict and changes nothing. Only a transfer that would be applied costs a token.
+TEST(ledger_transfer_rate)
+{
+	const Policy p;
+	CHECK_EQ(p.transfer_burst, 10u);
+	CHECK_EQ(p.transfer_per_min, 30u);
+	Receiver to;
+	to.peer = 2;
+	to.present = true;
+	to.balance = 100;
+	HostBook book;
+	book.start_session({"k330"}); // k331 is a new character of this session: its transfer bucket is full as well
+	uint32_t seq = 0;
+	uint32_t balance = 100000;
+	// Ten transfers in a row go through, however fast.
+	for (int i = 0; i < 10; ++i)
+	{
+		const Decision d = book.on_request(1, "k330", req(++seq, -1, Cause::Transfer, 2), balance, false, to, p, 5000);
+		CHECK(d.verdict == Verdict::Applied);
+		CHECK_EQ(d.credit, 1u);
+		balance = d.balance;
+	}
+	CHECK_EQ(balance, 99990u);
+	// The eleventh is refused: nothing moves, the number is spent, the player hears why.
+	const Decision over = book.on_request(1, "k330", req(++seq, -1, Cause::Transfer, 2), balance, false, to, p, 5000);
+	CHECK(over.verdict == Verdict::TransferRate);
+	CHECK(!over.stale);
+	CHECK_EQ(over.acked, seq);
+	CHECK_EQ(over.balance, balance);
+	CHECK_EQ(over.credit, 0u);
+	CHECK(over.note.kind == coop::ledger::NoteKind::Refused);
+	CHECK(over.note.verdict == Verdict::TransferRate);
+	CHECK(over.note.cause == Cause::Transfer);
+	CHECK_EQ(over.note.peer, 2u);
+	// A refused one does not push the next one further away: 30 a minute is one in 2 s, to the millisecond.
+	for (int i = 0; i < 5; ++i)
+		CHECK(book.on_request(1, "k330", req(++seq, -1, Cause::Transfer, 2), balance, false, to, p, 5000 + 1999).verdict ==
+		      Verdict::TransferRate);
+	const Decision later = book.on_request(1, "k330", req(++seq, -1, Cause::Transfer, 2), balance, false, to, p, 5000 + 2000);
+	CHECK(later.verdict == Verdict::Applied);
+	CHECK(book.on_request(1, "k330", req(++seq, -1, Cause::Transfer, 2), balance, false, to, p, 5000 + 2000).verdict ==
+	      Verdict::TransferRate);
+	// Its own spending and income are not transfers: no token, no refusal.
+	CHECK(book.on_request(1, "k330", req(++seq, -5, Cause::Script), balance, false, to, p, 5000 + 2000).verdict ==
+	      Verdict::Applied);
+	// Another character has its own bucket, a new one included; a connection that comes back as the same character
+	// finds it as it left it (the peer id is not the key).
+	CHECK(book.on_request(3, "k331", req(1, -1, Cause::Transfer, 2), balance, false, to, p, 5000).verdict == Verdict::Applied);
+	book.peer_left(1);
+	CHECK(book.on_request(7, "k330", req(1, -1, Cause::Transfer, 2), balance, false, to, p, 5000 + 2500).verdict ==
+	      Verdict::TransferRate);
+	// A minute later it is full again, and holds no more than the burst.
+	for (int i = 0; i < 10; ++i)
+		CHECK(book.on_request(7, "k330", req(2 + i, -1, Cause::Transfer, 2), balance, false, to, p, 7500 + 3600000).verdict ==
+		      Verdict::Applied);
+	CHECK(book.on_request(7, "k330", req(20, -1, Cause::Transfer, 2), balance, false, to, p, 7500 + 3600000).verdict ==
+	      Verdict::TransferRate);
+
+	// A transfer that would not be applied costs nothing: twenty refused by the rules, then the ten are all there.
+	HostBook fresh;
+	Policy off = p;
+	off.transfer_on = false;
+	for (uint32_t i = 1; i <= 20; ++i)
+		CHECK(fresh.on_request(1, "k340", req(i, -1, Cause::Transfer, 2), balance, false, to, off, 0).verdict ==
+		      Verdict::TransfersOff);
+	for (uint32_t i = 21; i <= 30; ++i)
+		CHECK(fresh.on_request(1, "k340", req(i, -1, Cause::Transfer, 2), balance, false, to, p, 0).verdict ==
+		      Verdict::Applied);
+	CHECK(fresh.on_request(1, "k340", req(31, -1, Cause::Transfer, 2), balance, false, to, p, 0).verdict ==
+	      Verdict::TransferRate);
+	// reset: nothing is kept.
+	fresh.start_session({});
+	CHECK(fresh.on_request(1, "k340", req(1, -1, Cause::Transfer, 2), balance, false, to, p, 0).verdict == Verdict::Applied);
+
+	// A burst of 0 allows no transfer.
+	Policy none = p;
+	none.transfer_burst = 0;
+	HostBook zero;
+	CHECK(zero.on_request(1, "k350", req(1, -1, Cause::Transfer, 2), balance, false, to, none, 0).verdict ==
+	      Verdict::TransferRate);
+}
+
+// T6b review M7: a transfer to oneself is the sender's own mistake, no note names him as the receiver. M2: a refusal of a
+// transfer is not muted by a refusal of a mod's income, and the other way round.
+TEST(ledger_refusal_notes_review)
+{
+	const Policy p;
+	Receiver self;
+	self.peer = 1;
+	self.present = true;
+	HostBook book;
+	const Decision d = book.on_request(1, "k360", req(1, -5, Cause::Transfer, 1), 100, false, self, p, 0);
+	CHECK(d.verdict == Verdict::Malformed);
+	CHECK(d.note.kind == coop::ledger::NoteKind::None);
+
+	coop::ledger::RefusalGate g;
+	CHECK(g.allow(Cause::Script, 1000));
+	CHECK(!g.allow(Cause::Script, 1001));
+	CHECK(g.allow(Cause::Transfer, 1002));
+	CHECK(g.allow(Cause::Dialog, 1003));
+	CHECK(!g.allow(Cause::Transfer, 1500));
+	CHECK_EQ(g.dropped(), uint64_t(2));
+	CHECK(g.allow(Cause::Script, 4000));
+	g.reset();
+	CHECK_EQ(g.dropped(), uint64_t(0));
+	CHECK(g.allow(Cause::Script, 4001));
 }
 
 TEST(ledger_wire_roundtrip)
