@@ -467,3 +467,135 @@ TEST(death_items_ltx)
 	if (ltx.parents.count("coop_death_stash"))
 		CHECK_EQ(ltx.parents.at("coop_death_stash"), std::string("inv_backpack"));
 }
+
+// T9 fix round 1, review I1 and minor 1: a pending stash checks that it is still for the same character. Task 10
+// rewrites the key of a retiring character while its player is still there; a player who leaves keeps the key on his
+// parked character but loses his peer. Only both changed means another character got the id.
+TEST(death_stash_same_owner)
+{
+	StashOwner then;
+	then.peer = 3;
+	then.key = "a1b2";
+	StashOwner now = then;
+	CHECK(same_owner(then, now));
+
+	now.key = ""; // Task 10 removed the key line ("retired = 1"): the same player still plays it
+	CHECK(same_owner(then, now));
+	now.key = "#57";
+	CHECK(same_owner(then, now));
+
+	now = then;
+	now.peer = 0xffffffffu; // the player left: the parked character keeps its key
+	CHECK(same_owner(then, now));
+	now.peer = 5; // he came back under another peer id
+	CHECK(same_owner(then, now));
+
+	now.peer = 5; // another player and another key: the id belongs to another character
+	now.key = "ffff";
+	CHECK(!same_owner(then, now));
+	now.peer = 0xffffffffu;
+	now.key = "";
+	CHECK(!same_owner(then, now));
+
+	// No identity at all is no match: an empty key never equals an empty key, nobody never equals nobody.
+	StashOwner none;
+	CHECK(!same_owner(none, none));
+	StashOwner keyless;
+	keyless.peer = 4;
+	StashOwner other_keyless;
+	other_keyless.peer = 6;
+	CHECK(!same_owner(keyless, other_keyless));
+	CHECK(same_owner(keyless, keyless));
+
+	// The host's own character: peer 0 for good.
+	StashOwner host;
+	host.peer = 0;
+	CHECK(same_owner(host, host));
+}
+
+TEST(death_stash_step)
+{
+	using P = Presence;
+	using S = StashStep;
+	const uint64_t deadline = 5000, give_up = 600000;
+	// The character is here.
+	CHECK(stash_step(true, P::Online, P::Online, 100, deadline, give_up) == S::Fill);
+	CHECK(stash_step(true, P::Online, P::Between, 100, deadline, give_up) == S::Wait); // being spawned
+	CHECK(stash_step(true, P::Online, P::Offline, 100, deadline, give_up) == S::Wait);
+	CHECK(stash_step(true, P::Online, P::Between, 5000, deadline, give_up) == S::DropAtBody); // 5 s are over
+	CHECK(stash_step(true, P::Online, P::Offline, 9000, deadline, give_up) == S::DropAtBody);
+	CHECK(stash_step(true, P::Online, P::Gone, 100, deadline, give_up) == S::DropAtBody); // someone removed the stash
+	CHECK(stash_step(true, P::Online, P::Online, 9000, deadline, give_up) == S::Fill); // online in the end: fill
+	// The player left (his character is parked offline).
+	CHECK(stash_step(true, P::Offline, P::Offline, 100, deadline, give_up) == S::MoveOffline);
+	CHECK(stash_step(true, P::Offline, P::Offline, 700000, deadline, give_up) == S::MoveOffline);
+	CHECK(stash_step(true, P::Offline, P::Online, 9000, deadline, give_up) == S::Wait); // someone is by the stash
+	CHECK(stash_step(true, P::Offline, P::Between, 9000, deadline, give_up) == S::Wait);
+	CHECK(stash_step(true, P::Offline, P::Online, 600000, deadline, give_up) == S::GiveUp); // stayed away too long
+	CHECK(stash_step(true, P::Offline, P::Gone, 100, deadline, give_up) == S::GiveUp);
+	// The character is switching.
+	CHECK(stash_step(true, P::Between, P::Online, 9000, deadline, give_up) == S::Wait);
+	CHECK(stash_step(true, P::Between, P::Offline, 9000, deadline, give_up) == S::Wait);
+	CHECK(stash_step(true, P::Between, P::Online, 600000, deadline, give_up) == S::GiveUp);
+	// Not his character any more, or no character.
+	CHECK(stash_step(false, P::Online, P::Online, 100, deadline, give_up) == S::GiveUp);
+	CHECK(stash_step(false, P::Offline, P::Offline, 100, deadline, give_up) == S::GiveUp);
+	CHECK(stash_step(true, P::Gone, P::Online, 100, deadline, give_up) == S::GiveUp);
+}
+
+TEST(death_stash_presence)
+{
+	uint64_t deadline = 5000;
+	bool away = false;
+	stash_presence(deadline, away, Presence::Online, 1000); // here from the start: the first 5 s stand
+	CHECK_EQ(deadline, uint64_t(5000));
+	CHECK(!away);
+	stash_presence(deadline, away, Presence::Offline, 2000); // he left
+	CHECK(away);
+	CHECK_EQ(deadline, uint64_t(5000));
+	stash_presence(deadline, away, Presence::Between, 90000); // coming back online
+	CHECK(away);
+	stash_presence(deadline, away, Presence::Online, 120000); // back: 5 s from now
+	CHECK(!away);
+	CHECK_EQ(deadline, uint64_t(125000));
+	stash_presence(deadline, away, Presence::Online, 121000);
+	CHECK_EQ(deadline, uint64_t(125000));
+	stash_presence(deadline, away, Presence::Gone, 122000);
+	CHECK(away);
+}
+
+// T9 fix round 1: a stash that never came online drops its items where he died, not where the body is now (he left and
+// came back, or was respawned at his camp meanwhile). Review Focus 4: within 3 m of the death spot.
+TEST(death_stash_fallback_place)
+{
+	DropPlace died;
+	died.at = Point{100.0f, 10.0f, 200.0f};
+	DropPlace now;
+	now.at = Point{101.0f, 10.0f, 201.5f};
+
+	// The body is still there: the items fall from it as usual.
+	DropPlace d = fallback_place(died, now, Point{101.0f, 10.0f, 201.5f});
+	CHECK(!d.moved);
+	CHECK(near(d.at.x, 101.0f) && near(d.at.z, 201.5f));
+	// Exactly at the reach: still the body.
+	CHECK(!fallback_place(died, now, Point{103.0f, 10.0f, 200.0f}).moved);
+	// The body is at his camp: the items go to the death spot, 0.3 m up.
+	now.at = Point{900.0f, 30.0f, -50.0f};
+	d = fallback_place(died, now, Point{900.0f, 30.0f, -50.0f});
+	CHECK(d.moved);
+	CHECK(near(d.at.x, 100.0f) && near(d.at.y, 10.0f + kAboveVertexM) && near(d.at.z, 200.0f));
+	// The death spot was already moved above a level vertex: kept as it is.
+	died.moved = true;
+	died.at = Point{100.0f, 10.3f, 200.0f};
+	d = fallback_place(died, now, Point{900.0f, 30.0f, -50.0f});
+	CHECK(d.moved);
+	CHECK(near(d.at.y, 10.3f));
+	// Height counts too: a body 5 m above the spot (on a roof) is not there.
+	died.moved = false;
+	died.at = Point{100.0f, 10.0f, 200.0f};
+	now.at = Point{100.0f, 15.0f, 200.0f};
+	CHECK(fallback_place(died, now, Point{100.0f, 15.0f, 200.0f}).moved);
+	// A body position that is not a number is not within reach.
+	const float nan = std::numeric_limits<float>::quiet_NaN();
+	CHECK(fallback_place(died, now, Point{nan, nan, nan}).moved);
+}
