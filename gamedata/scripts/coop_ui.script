@@ -316,7 +316,8 @@ local function generic(info)
 		lines[#lines + 1] = T("st_coop_ui_hint_not_ready",
 			"The host has to be in a loaded game (not in the main menu) to accept players.")
 	elseif info.reason == "SessionFull" then
-		lines[#lines + 1] = T("st_coop_ui_hint_full", "Ask the host to raise the player limit or wait until somebody leaves.")
+		lines[#lines + 1] = T("st_coop_ui_hint_full",
+			"Ask the host to raise the player limit or wait until somebody leaves. Or the host has used up this session's limit of new characters (coop_max_new_characters).")
 	elseif info.reason == "ProtocolMismatch" or info.reason == "BuildMismatch" then
 		lines[#lines + 1] = T("st_coop_ui_hint_build",
 			"Install the same Anomaly Coop build as the host (both bin\\ and gamedata\\).")

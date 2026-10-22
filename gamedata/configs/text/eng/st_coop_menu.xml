@@ -521,7 +521,7 @@
 		<text>The host has to be in a loaded game (not in the main menu) to accept players.</text>
 	</string>
 	<string id="st_coop_ui_hint_full">
-		<text>Ask the host to raise the player limit or wait until somebody leaves.</text>
+		<text>Ask the host to raise the player limit or wait until somebody leaves. Or the host has used up this session's limit of new characters (coop_max_new_characters).</text>
 	</string>
 	<string id="st_coop_ui_hint_build">
 		<text>Install the same Anomaly Coop build as the host (both bin\ and gamedata\).</text>

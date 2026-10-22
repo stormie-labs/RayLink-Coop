@@ -734,23 +734,46 @@ TEST(limits_rate_drops_equip_burst)
 	host_and_join(host, {&a}, 37119);
 	const auto stats = [&] { return host.s.stats(uint16_t(Msg::PlayerEquip)); };
 
-	for (int i = 0; i < 9; ++i)
-		a.s.send(kHostPeer, Lane::Reliable, Msg::PlayerEquip, Writer());
-	REQUIRE(t::pump_until({&host.s, &a.s}, 5000, [&] { return stats().recv_count == 9; }));
-	t::pump_for({&host.s, &a.s}, 50);
+	// F2 T3 fix round 1: the host's clock is the test's (Session::update takes the time from its caller), so its token
+	// bucket sees exactly the time set here however slow this machine is; Alice and the transport run in real time.
+	uint64_t host_ms = t::now_ms();
+	const auto pump_until_handled = [&](uint64_t count) {
+		const uint64_t start = t::now_ms();
+		while (equips + stats().rate_dropped < count)
+		{
+			if (t::now_ms() - start > 5000)
+				return false;
+			host.s.update(host_ms);
+			a.s.update(t::now_ms());
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		return true;
+	};
+	const auto send_equips = [&](int n) {
+		for (int i = 0; i < n; ++i)
+			a.s.send(kHostPeer, Lane::Reliable, Msg::PlayerEquip, Writer());
+	};
+
+	send_equips(9);
+	REQUIRE(pump_until_handled(9));
 	CHECK_EQ(equips, size_t(8));
 	CHECK_EQ(stats().rate_dropped, uint64_t(1));
 	CHECK(host.logged("rate limit: PlayerEquip"));
 	CHECK(host.left.empty()); // dropped, not kicked
 
-	// A token comes back in 400 ms: one more passes, the next right after it does not.
-	t::pump_for({&host.s, &a.s}, 400);
-	a.s.send(kHostPeer, Lane::Reliable, Msg::PlayerEquip, Writer());
-	a.s.send(kHostPeer, Lane::Reliable, Msg::PlayerEquip, Writer());
-	REQUIRE(t::pump_until({&host.s, &a.s}, 5000, [&] { return stats().recv_count == 11; }));
-	t::pump_for({&host.s, &a.s}, 50);
-	CHECK_EQ(equips, size_t(9));
+	// Half a token after 200 ms: not enough.
+	host_ms += 200;
+	send_equips(1);
+	REQUIRE(pump_until_handled(10));
+	CHECK_EQ(equips, size_t(8));
 	CHECK_EQ(stats().rate_dropped, uint64_t(2));
+
+	// A whole token 400 ms after the burst: one more passes, the next right after it does not.
+	host_ms += 200;
+	send_equips(2);
+	REQUIRE(pump_until_handled(12));
+	CHECK_EQ(equips, size_t(9));
+	CHECK_EQ(stats().rate_dropped, uint64_t(3));
 }
 
 namespace
@@ -777,16 +800,21 @@ TEST(limits_new_characters_per_session)
 {
 	// Ruling F2-10 b: a client picks its own player key, and the host made a character for every key its world had none
 	// for: new keys farmed the starting kit and money, and each character stays in the save for good. A session makes
-	// at most limits::kMaxNewCharacters; the next new key is refused, a player who has a character comes in.
-	// The host here does on JoinRequest what coop_join::host_send_world does (its world: the keys with a character).
-	static_assert(limits::kMaxNewCharacters == 8, "8 new keys come in, the 9th does not");
+	// at most coop_max_new_characters (F2 T3 fix round 1: a host setting, default 8, 1..64, read at each join): the
+	// next new key is refused, a player who has a character comes in, and a host who raises the setting lets the
+	// refused player in without a new session.
+	// The host here does on JoinRequest what coop_join::host_send_world does (its world: the keys with a character;
+	// `setting`: the console value).
+	static_assert(limits::kNewCharactersDefault == 8 && limits::kNewCharactersMin == 1 && limits::kNewCharactersMax == 64,
+	    "coop_max_new_characters: default 8, 1..64");
 	constexpr uint16_t kPort = 37121;
-	Node host("Boss", kPort), p1("P1", kPort), p2("P2", kPort), p3("P3", kPort), p4("P4", kPort), p5("P5", kPort),
-	    p6("P6", kPort), p7("P7", kPort), p8("P8", kPort), p9("P9", kPort), back("P1", kPort);
+	Node host("Boss", kPort), p1("P1", kPort), p2("P2", kPort), p3("P3", kPort), p3_again("P3", kPort), back("P1", kPort);
 	back.cfg.key = p1.cfg.key;
-	const std::vector<Node*> all = {&host, &p1, &p2, &p3, &p4, &p5, &p6, &p7, &p8, &p9, &back};
+	p3_again.cfg.key = p3.cfg.key;
+	const std::vector<Node*> all = {&host, &p1, &p2, &p3, &p3_again, &back};
 	std::set<std::string> world; // key digests with a character
 	limits::NewCharacters made;
+	uint32_t setting = 2;
 	size_t in_world = 0;
 	host.s.on(Msg::JoinRequest, [&](PeerId from, Reader&) {
 		const PeerInfo* p = host.s.peer(from);
@@ -795,9 +823,9 @@ TEST(limits_new_characters_per_session)
 			return;
 		if (world.count(digest) == 0)
 		{
-			if (!made.admits(digest))
+			if (!made.admits(digest, setting))
 			{
-				host.s.kick(from, limits::kNoNewCharacterReason, limits::no_new_character_text());
+				host.s.kick(from, limits::kNoNewCharacterReason, limits::no_new_character_text(setting));
 				return;
 			}
 			made.add(digest);
@@ -818,40 +846,44 @@ TEST(limits_new_characters_per_session)
 		REQUIRE(pump_nodes(all, 5000, [&] { return host.left.size() == left + 1; }));
 	};
 
-	host_and_join(host, {&p1, &p2, &p3, &p4, &p5, &p6, &p7}, kPort); // the session holds 7 clients
-	for (Node* n : {&p1, &p2, &p3, &p4, &p5, &p6, &p7})
+	// Setting 2: two new keys come in.
+	host_and_join(host, {&p1, &p2}, kPort);
+	for (Node* n : {&p1, &p2})
 		n->s.send(kHostPeer, Lane::Reliable, Msg::JoinRequest, Writer());
-	REQUIRE(pump_nodes(all, 5000, [&] { return in_world == 7; }));
-	CHECK_EQ(made.count(), size_t(7));
+	REQUIRE(pump_nodes(all, 5000, [&] { return in_world == 2; }));
+	CHECK_EQ(made.count(), size_t(2));
 
-	leave(p1); // his character stays in the world
-	join(p8);
-	REQUIRE(pump_nodes(all, 5000, [&] { return in_world == 8; }));
-	CHECK_EQ(made.count(), size_t(8));
-
-	// The 9th new key: refused with the reason, nothing made.
-	leave(p2);
-	join(p9);
-	REQUIRE(pump_nodes(all, 5000, [&] { return p9.disconnected; }));
-	CHECK(p9.disc_reason.find(reject_reason_name(limits::kNoNewCharacterReason)) != std::string::npos);
-	CHECK(p9.disc_reason.find(limits::no_new_character_text()) != std::string::npos);
-	CHECK_EQ(in_world, size_t(8));
-	CHECK_EQ(made.count(), size_t(8));
+	// The third new key: refused with the reason and the setting's value, nothing made.
+	join(p3);
+	REQUIRE(pump_nodes(all, 5000, [&] { return p3.disconnected; }));
+	CHECK(p3.disc_reason.find(reject_reason_name(limits::kNoNewCharacterReason)) != std::string::npos);
+	CHECK(p3.disc_reason.find(limits::no_new_character_text(2)) != std::string::npos);
+	CHECK(p3.disc_reason.find("all 2 new characters") != std::string::npos);
+	CHECK_EQ(in_world, size_t(2));
+	CHECK_EQ(made.count(), size_t(2));
 
 	// P1 comes back with his key: his character is in the world, it costs nothing.
+	leave(p1); // his character stays in the world
 	join(back);
-	REQUIRE(pump_nodes(all, 5000, [&] { return in_world == 9; }));
+	REQUIRE(pump_nodes(all, 5000, [&] { return in_world == 3; }));
 	CHECK(back.s.is_active() && !back.disconnected);
-	CHECK_EQ(made.count(), size_t(8));
+	CHECK_EQ(made.count(), size_t(2));
 
-	// The host loads a save from before P8 came: his character is gone, his key is not new to this session.
-	std::string p8_digest;
-	REQUIRE(key_digest_hex(p8.cfg.key, p8_digest));
-	world.erase(p8_digest);
-	p8.s.send(kHostPeer, Lane::Reliable, Msg::JoinRequest, Writer()); // as after SessionReset
-	REQUIRE(pump_nodes(all, 5000, [&] { return in_world == 10 || p8.disconnected; }));
-	CHECK(!p8.disconnected);
-	CHECK_EQ(made.count(), size_t(8));
+	// The host loads a save from before P2 came: his character is gone, his key is not new to this session.
+	std::string p2_digest;
+	REQUIRE(key_digest_hex(p2.cfg.key, p2_digest));
+	world.erase(p2_digest);
+	p2.s.send(kHostPeer, Lane::Reliable, Msg::JoinRequest, Writer()); // as after SessionReset
+	REQUIRE(pump_nodes(all, 5000, [&] { return in_world == 4 || p2.disconnected; }));
+	CHECK(!p2.disconnected);
+	CHECK_EQ(made.count(), size_t(2));
+
+	// The host raises the setting to 3: P3 comes in now, in the same session.
+	setting = 3;
+	join(p3_again);
+	REQUIRE(pump_nodes(all, 5000, [&] { return in_world == 5 || p3_again.disconnected; }));
+	CHECK(p3_again.s.is_active() && !p3_again.disconnected);
+	CHECK_EQ(made.count(), size_t(3));
 }
 
 TEST(world_epoch)
