@@ -11,8 +11,17 @@
 	ledger): coop.money_give(peer, amount) takes the money from the giver at once, on a client as a pending change,
 	and the host checks it and credits the receiver, or gives it back with its next balance when it refuses. The
 	receiver must be a player who has joined (and the host itself): the engine refuses one who is still loading or has
-	left ("no such player"). This script only keeps the session rules (money_transfer, max_money_transfer) on the
+	left ("no such player"). This script checks the session rules (money_transfer, max_money_transfer) on the
 	giver's machine and tells the player what happened. Nothing of money goes over our own events any more.
+
+	F2 T6b (Ruling F2-19): the host enforces the rules itself. Its Lua pushes them into the ledger with
+	coop.money_set_rules(enabled, max) (every 2 s and at once when an option changes), and the ledger refuses a transfer
+	against them whatever the client's Lua did. The host's answer comes back to the player as a note, which the engine
+	hands to the callback coop_money_note on the machine of that player:
+		("received", giver_peer, amount)                         somebody gave you money ("X gave you N")
+		("refused", receiver_peer | -1, change, why, cause)      the host did not take your change (a transfer to
+		                                                         receiver_peer, an income > 0 or a payment < 0 of your own)
+	why is the engine's English name of the verdict, cause is "script" | "dialog" | "transfer".
 
 	For other scripts:
 		coop_economy_money.give_money(peer, amount) -> true when the engine accepted the transfer
@@ -21,12 +30,12 @@
 local core = coop_economy_core
 
 local tostring, type, ipairs, pcall = tostring, type, ipairs, pcall
-local math_floor = math.floor
+local math_floor, math_huge, math_abs = math.floor, math.huge, math.abs
 
 local MAX_SLOTS = 8
 local AMOUNTS = { 100, 500, 1000, 5000, 10000, 50000 }
 
-local stats = { sent = 0, refused = 0, items_given = 0 }
+local stats = { sent = 0, refused = 0, items_given = 0, host_refused = 0 }
 
 local function money_text(amount)
 	return tostring(amount) .. " " .. core.tr("st_coop_eco_currency", "RU")
@@ -39,11 +48,26 @@ local WHY_ID = {
 	["no such player"] = "gone", -- the receiver has not joined or has left
 	["no character"] = "nochar", -- the GIVER has no character (the engine says nothing else about the receiver)
 	["not in the world"] = "world", -- the giver is a client that has not entered the host's world yet
+	["over the allowance"] = "allowance", -- F2 T6b: an income above what the host lets a player make by himself
+	["transfers are off"] = "off", -- F2 T6b: money_transfer is off on the host
+	["over the transfer limit"] = "limit", -- F2 T6b: above max_money_transfer of the host
 }
 
 local function refusal_text(why)
 	local id = WHY_ID[why] or "bad"
 	return core.tr("st_coop_eco_money_why_" .. id, tostring(why))
+end
+
+-- The reason of a refusal the HOST told (F2 T6b). A verdict means something else by cause: "over the maximum" is the
+-- receiver's purse for a transfer and the player's own for an income; "malformed" for a transfer is a receiver who left.
+local function note_reason(why, cause)
+	if why == "over the maximum" and cause ~= "transfer" then
+		return core.tr("st_coop_eco_money_why_cap", "the host's money limit was reached")
+	end
+	if why == "malformed" and cause == "transfer" then
+		return core.tr("st_coop_eco_money_why_gone", "the receiver is not in the game")
+	end
+	return refusal_text(why)
 end
 
 -------------------------------------------------------------------------------
@@ -86,6 +110,88 @@ function give_money(peer, amount)
 	core.log("money: gave %d to %s", amount, p.nick)
 	core.tip(core.fmt("st_coop_eco_money_out", "You gave %s to %s.", money_text(amount), p.nick))
 	return true
+end
+
+-------------------------------------------------------------------------------
+-- The host's rules into the ledger (F2 T6b)
+-------------------------------------------------------------------------------
+local RULES_EVERY_MS = 2000
+local MAX_TRANSFER = 4294967295 -- the most coop.money_set_rules takes
+local rules = { next_at = 0, missing_logged = false }
+
+-- Host: money_transfer and max_money_transfer as this host's options have them, pushed into the ledger. The ledger keeps
+-- them for the process, but a new session or a new world may be a stranger to them: they are said again every 2 s.
+local function push_rules()
+	if not core.is_host() then return end
+	local api = core.engine()
+	if not (api and type(api.money_set_rules) == "function") then
+		if not rules.missing_logged then
+			rules.missing_logged = true
+			core.log("! coop.money_set_rules is missing: the host cannot hold transfers to the session rules")
+		end
+		return
+	end
+	local on = core.rule("money_transfer") ~= false
+	local max = core.rule("max_money_transfer")
+	if max == math_huge then
+		max = MAX_TRANSFER
+	else
+		max = core.num(max) or 1000000 -- NaN, text: the default
+	end
+	if max > MAX_TRANSFER then max = MAX_TRANSFER end
+	if max < 0 then max = 0 end
+	local called, ok, why = pcall(api.money_set_rules, on, math_floor(max))
+	if not (called and ok) then core.log("! money rules not pushed: %s", tostring(called and why or ok)) end
+end
+
+local function actor_on_update()
+	local t = core.now()
+	if t < rules.next_at then return end
+	rules.next_at = t + RULES_EVERY_MS
+	push_rules()
+end
+
+local function on_option_change()
+	rules.next_at = 0 -- the next update says it
+end
+
+-------------------------------------------------------------------------------
+-- What the host did with the player's money (coop_money_note, from the engine)
+-------------------------------------------------------------------------------
+local function who_text(peer)
+	local p = type(peer) == "number" and peer >= 0 and core.player(peer) or nil
+	return p and p.nick or core.tr("st_coop_eco_money_somebody", "another player")
+end
+
+local function on_money_note_body(kind, peer, amount, why, cause)
+	local n = core.num(amount)
+	if n == nil then return end
+	n = math_floor(n)
+	if kind == "received" then
+		if n < 1 then return end
+		core.log("money: %d from %s", n, who_text(peer))
+		core.tip(core.fmt("st_coop_eco_money_in", "%s gave you %s.", who_text(peer), money_text(n)))
+	elseif kind == "refused" then
+		if n == 0 then return end
+		stats.host_refused = stats.host_refused + 1
+		local reason = note_reason(why, cause)
+		core.log("money: the host refused %d (%s, %s)", n, tostring(cause), tostring(why))
+		if cause == "transfer" then
+			core.tip(core.fmt("st_coop_eco_money_refused_to", "Transfer of %s to %s refused: %s.", money_text(math_abs(n)),
+				who_text(peer), reason))
+		elseif n > 0 then
+			core.tip(core.fmt("st_coop_eco_money_host_gain", "The host did not credit %s: %s.", money_text(n), reason))
+		else
+			core.tip(core.fmt("st_coop_eco_money_host_spend", "The host did not accept the payment of %s: %s.",
+				money_text(math_abs(n)), reason))
+		end
+	end
+end
+
+-- The engine calls this through SendScriptCallback: whatever it passes, nothing may throw.
+local function on_money_note(kind, peer, amount, why, cause)
+	local ok, err = pcall(on_money_note_body, kind, peer, amount, why, cause)
+	if not ok then core.log("! coop_money_note: %s", tostring(err)) end
 end
 
 -------------------------------------------------------------------------------
@@ -207,7 +313,8 @@ end
 -- Status, start
 -------------------------------------------------------------------------------
 function print_status()
-	core.log("money: transfers %d, refused %d | items given %d", stats.sent, stats.refused, stats.items_given)
+	core.log("money: transfers %d, refused %d (by the host %d) | items given %d", stats.sent, stats.refused,
+		stats.host_refused, stats.items_given)
 end
 
 -- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
@@ -217,7 +324,18 @@ local function start_step(what, f)
 	if not ok then printf("! [coop_economy_money] %s failed: %s", what, tostring(err)) end
 end
 
+local hooked = false
+local function hook_engine()
+	if hooked then return end
+	hooked = true
+	AddScriptCallback("coop_money_note") -- fired by the engine on the machine of the player it is about (coop_money.cpp)
+	RegisterScriptCallback("coop_money_note", on_money_note)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("on_option_change", on_option_change)
+end
+
 function on_game_start()
 	if not core.engine() then return end
 	start_step("patch_inventory", patch_inventory)
+	start_step("hook_engine", hook_engine)
 end

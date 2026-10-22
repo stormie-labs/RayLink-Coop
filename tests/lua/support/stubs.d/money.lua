@@ -2,6 +2,8 @@
 --   coop.money_give(peer, n) -> ok, why                         any machine: our money to another player
 --   coop.money_grant(peer, +-n) -> ok, why                      host only
 --   coop.money_set(peer, n) -> ok, why                          host only
+--   coop.money_set_rules(enabled, max) -> ok, why               host only (F2 T6b): transfers between players on/off, at most
+--                                                               `max` RU (0..4294967295) at a time; the host's Lua pushes the rules
 --   coop.money_of(peer) -> RU | nil                             host only
 --   coop.talk_lock_of(peer) -> npc id | nil                     host only
 -- Arguments are checked like the engine does: NaN and infinity are refused, fractions truncate toward zero,
@@ -11,11 +13,14 @@
 --   host:   "yourself" (peer is the host), "no such player" (not in coop.players()), "not enough money" (opts.money)
 --   client: "not in the world" (coop.is_live() is false), "yourself", "no such player", "not enough money" (opts.money)
 -- Every call is appended to a call list as { fn, peer, n, ok, why } (n after truncation).
+-- money_set_rules is listed apart, as { on, max, ok, why } (max after truncation): the pushes are periodic, the money calls are not.
 MONEY_CALLS = MONEY_CALLS or {}
+RULE_CALLS = RULE_CALLS or {}
 MONEY_MAX = 100000000
 
 -- install_money_stubs(coop_table [, opts])
 --   opts.calls     list that records the calls (default MONEY_CALLS; a harness with several machines gives each its own)
+--   opts.rule_calls  the same for money_set_rules (default RULE_CALLS)
 --   opts.is_host   function() -> bool (default coop.is_host); the host-only calls fail with "host only" when false
 --   opts.refuse    function(fn, peer, n) -> why | nil; a string makes that call fail with that reason
 --   opts.on_call   function(fn, peer, n) run for an accepted call (a test moves its stand-in balances here)
@@ -80,6 +85,17 @@ function install_money_stubs(c, opts)
 	end
 	c.money_grant = function(peer, n) return call("money_grant", peer, n, -MONEY_MAX, MONEY_MAX) end
 	c.money_set = function(peer, n) return call("money_set", peer, n, 0, MONEY_MAX) end
+	c.money_set_rules = function(on, max)
+		local list = opts.rule_calls or RULE_CALLS
+		local function rec(ok, why, n)
+			list[#list + 1] = { on = on, max = n, ok = ok, why = why }
+			return ok, why
+		end
+		if not is_host() then return rec(false, "host only") end
+		local v = whole(max)
+		if type(on) ~= "boolean" or v == nil or v < 0 or v > 4294967295 then return rec(false, "bad arguments", v) end
+		return rec(true, nil, v)
+	end
 	c.money_of = function(peer)
 		if not is_host() then return nil end
 		return opts.balance and opts.balance(peer) or nil

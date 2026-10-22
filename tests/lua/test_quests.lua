@@ -501,6 +501,89 @@ do
 	check(#grants(Cm) == 0, "a client never grants")
 end
 
+-- F2 T6b: the client's claim (achv_got) is repeated until the host answers it (achv_ack), at most once in 5 s and 10
+-- times; the host pays and answers only if it has the achievement itself.
+print("== achievement claim is retried until the host answers")
+local function claims_sent(M) return count_sent(M, "quests.achv_got") end
+reboot_pda()
+do
+	local gb, acks = #grants(Hm), count_sent(Hm, "quests.achv_ack")
+	local real = Hm.handlers["quests.achv_got"]
+	Hm.handlers["quests.achv_got"] = function() end -- the host is not ready: the claim is lost
+	local c0 = claims_sent(Cm)
+	Hm.env.game_achievements.iron_curtain_rewards() -- the host earns it, the client applies it and claims
+	pump()
+	check(Cm.achv.iron_curtain == true and claims_sent(Cm) == c0 + 1, "the client claims once at once")
+	check(#grants(Hm) == gb, "the lost claim paid nothing")
+	NOW = NOW + 4900
+	fire(Cm, "actor_on_update")
+	pump()
+	check(claims_sent(Cm) == c0 + 1, "not again before 5 s")
+	NOW = NOW + 200
+	fire(Cm, "actor_on_update")
+	fire(Cm, "actor_on_update")
+	pump()
+	check(claims_sent(Cm) == c0 + 2, "after 5 s once, not twice for two updates")
+	-- the client is not in the host's world (a world load): the claim waits
+	Cm.env.coop.is_live = function() return false end
+	NOW = NOW + 60000
+	fire(Cm, "actor_on_update")
+	pump()
+	check(claims_sent(Cm) == c0 + 2, "a client that is not live sends nothing")
+	Cm.env.coop.is_live = function() return true end
+	-- the host is ready: the next claim is paid once and answered, and the client stops
+	Hm.handlers["quests.achv_got"] = real
+	fire(Cm, "actor_on_update")
+	pump()
+	local g = grants(Hm)
+	check(claims_sent(Cm) == c0 + 3 and #g == gb + 1 and g[#g][1] == 1 and g[#g][2] == 40000,
+		"the claim that got through is paid: exactly one coop.money_grant(1, 40000)")
+	check(count_sent(Hm, "quests.achv_ack") == acks + 1 and last_sent(Hm, "quests.achv_ack").a == "iron_curtain",
+		"the host answers the claim it paid")
+	NOW = NOW + 60000
+	fire(Cm, "actor_on_update")
+	pump()
+	check(claims_sent(Cm) == c0 + 3 and #grants(Hm) == gb + 1, "answered: no more claims, no more money")
+end
+reboot_pda()
+do
+	-- the host never answers: ten attempts, five seconds apart, then the client gives up
+	Hm.handlers["quests.achv_got"] = function() end
+	local c0 = claims_sent(Cm)
+	Hm.env.game_achievements.iron_curtain_rewards()
+	pump()
+	for _ = 1, 30 do
+		NOW = NOW + 5000
+		fire(Cm, "actor_on_update")
+		pump()
+	end
+	check(claims_sent(Cm) == c0 + 10, "ten attempts and no more (" .. tostring(claims_sent(Cm) - c0) .. ")")
+	check(has_log(Cm, "gave up"), "the client says it gave up")
+end
+reboot_pda()
+do
+	-- the host pays only what it has itself
+	local gb, acks = #grants(Hm), count_sent(Hm, "quests.achv_ack")
+	Hm.achv.iron_curtain = nil
+	Cm.env.coop_quests_core.send("achv_got", { a = "iron_curtain" }, 0)
+	pump()
+	check(#grants(Hm) == gb and count_sent(Hm, "quests.achv_ack") == acks, "the host has no such achievement: no payment, no answer")
+	Hm.achv.iron_curtain = true
+	Cm.env.coop_quests_core.send("achv_got", { a = "iron_curtain" }, 0)
+	pump()
+	check(#grants(Hm) == gb + 1 and count_sent(Hm, "quests.achv_ack") == acks + 1, "it has it now: paid and answered")
+	Cm.env.coop_quests_core.send("achv_got", { a = "iron_curtain" }, 0)
+	pump()
+	check(#grants(Hm) == gb + 1 and count_sent(Hm, "quests.achv_ack") == acks + 2,
+		"a repeated claim is answered again and not paid again")
+	-- the earner is paid the same way: after the host applied the achievement, and only if the host has it
+	local ge = #grants(Hm)
+	Hm.env.game_statistics.has_actor_achievement = function() return false end
+	Cm.env.coop_quests_core.send("achv", { a = "iron_curtain" }, 0)
+	pump()
+	check(#grants(Hm) == ge, "an earner is not paid for an achievement the host could not set")
+end
+
 print("== NPC PDA messages, stash reveal, box")
 Hm.env.ui_pda_npc_tab = { register_pda = function(npc, sec, id)
 	Hm.env.se_save_var(id, nil, "info", { state = "default", contact = { name = "Petro" }, msg = { { topic_title = "t", stash = 950 } } })

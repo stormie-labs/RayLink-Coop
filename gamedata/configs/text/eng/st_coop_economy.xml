@@ -85,6 +85,33 @@
 	<string id="st_coop_eco_money_why_world">
 		<text>you are not in the host's world yet</text>
 	</string>
+	<string id="st_coop_eco_money_in">
+		<text>%s gave you %s.</text>
+	</string>
+	<string id="st_coop_eco_money_refused_to">
+		<text>Transfer of %s to %s refused: %s.</text>
+	</string>
+	<string id="st_coop_eco_money_host_gain">
+		<text>The host did not credit %s: %s.</text>
+	</string>
+	<string id="st_coop_eco_money_host_spend">
+		<text>The host did not accept the payment of %s: %s.</text>
+	</string>
+	<string id="st_coop_eco_money_somebody">
+		<text>another player</text>
+	</string>
+	<string id="st_coop_eco_money_why_cap">
+		<text>the host's money limit was reached</text>
+	</string>
+	<string id="st_coop_eco_money_why_allowance">
+		<text>the host's limit on income was reached</text>
+	</string>
+	<string id="st_coop_eco_money_why_off">
+		<text>transfers are off in this session</text>
+	</string>
+	<string id="st_coop_eco_money_why_limit">
+		<text>above the host's limit for one transfer</text>
+	</string>
 	<string id="st_coop_eco_money_off">
 		<text>Money transfers are off in this session.</text>
 	</string>

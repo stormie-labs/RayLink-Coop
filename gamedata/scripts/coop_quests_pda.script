@@ -20,7 +20,8 @@
 	of "Tourist" are created by the host only. Money is the host's (F2 T6, the host ledger): the stock reward
 	(iron_curtain: db.actor:give_money(40000)) is dropped on a client, which still gets the earned callback and its
 	news, and the host grants it with coop.money_grant to every player who earned the achievement (event achv_got,
-	and achv from the earner), once per character.
+	and achv from the earner), once per character. F2 T6b: the host pays only if it has the achievement itself and
+	answers a claim it paid (achv_ack); a client repeats its claim until the answer, once in 5 s, at most 10 times.
 --]]
 
 local qc = coop_quests_core
@@ -499,36 +500,78 @@ local function patch_achv_money()
 	end
 end
 
--- Host: the money of an achievement for a client who earned it. The ledger (coop.money_grant) does the rest.
+local function has_achv(name)
+	local gs = qc.mod("game_statistics")
+	if not (gs and type(gs.has_actor_achievement) == "function") then return false end
+	local ok, v = pcall(gs.has_actor_achievement, name)
+	return ok and v == true
+end
+
+-- Host: the money of an achievement for a client who earned it. The ledger (coop.money_grant) does the rest. Only if the
+-- host has the achievement itself (F2 T6b: a claim is not proof). True when the character has been paid for it, now or
+-- before: that is what the host answers (achv_ack); false (no answer) leaves the claim to be repeated.
 local function grant_achv_money(peer, name)
 	local money = ACHV_MONEY[name]
-	if not (money and qc.is_host() and type(peer) == "number" and peer ~= 0) then return end
+	if not (money and qc.is_host() and type(peer) == "number" and peer ~= 0) then return false end
 	local avatar = nil
 	for _, p in ipairs(qc.players()) do
 		if p.id == peer and not p.is_self then avatar = p.avatar_id end
 	end
-	if not avatar then return end
+	if not avatar then return false end
 	local key = tostring(avatar) .. ":" .. name
-	if achv_paid[key] then return end
+	if achv_paid[key] then return true end
+	if not has_achv(name) then
+		qc.log(TAG, "%s money for #%d not paid: the host does not have the achievement", name, peer)
+		return false
+	end
 	local api = qc.engine()
 	local grant = api and api.money_grant
 	if type(grant) ~= "function" then
 		qc.report(TAG, "achievement money", "coop.money_grant is missing")
-		return
+		return false
 	end
 	local called, ok, why = pcall(grant, peer, money.amount)
 	if called and ok then
 		achv_paid[key] = true
 		stats.achv_paid = stats.achv_paid + 1
-	else
-		qc.log(TAG, "! %s money for #%d refused: %s", name, peer, tostring(called and why or ok))
+		return true
 	end
+	qc.log(TAG, "! %s money for #%d refused: %s", name, peer, tostring(called and why or ok))
+	return false
 end
 
-local function has_achv(name)
-	local gs = qc.mod("game_statistics")
-	local ok, v = pcall(gs.has_actor_achievement, name)
-	return ok and v == true
+-- Client: claims the host has not answered yet, name -> { tries, at }. A claim is sent at once and repeated until the
+-- host answers it (achv_ack): at most once in CLAIM_GAP_MS and CLAIM_TRIES times in all, only while this machine is in
+-- the host's world. The host may be late (its character for us, its own achievement), and a lost claim is lost money.
+local CLAIM_GAP_MS, CLAIM_TRIES = 5000, 10
+local claims = {}
+
+local function send_claim(name, c)
+	c.tries = c.tries + 1
+	c.at = time_global()
+	qc.send("achv_got", { a = name }, 0)
+end
+
+local function claim_achv(name)
+	if claims[name] then return end
+	local c = { tries = 0, at = 0 }
+	claims[name] = c
+	send_claim(name, c)
+end
+
+local function retry_claims()
+	if next(claims) == nil or not qc.client_live() then return end
+	local t = time_global()
+	for name, c in pairs(claims) do
+		if t - c.at >= CLAIM_GAP_MS or t < c.at then
+			if c.tries >= CLAIM_TRIES then
+				claims[name] = nil
+				qc.log(TAG, "! %s: the host did not answer the claim in %d attempts, gave up", name, c.tries)
+			else
+				send_claim(name, c)
+			end
+		end
+	end
 end
 
 -- The achievement for this machine's actor, rewards included (its own *_rewards function).
@@ -555,8 +598,8 @@ local function apply_achv(name)
 	achv_applying = false
 	if not ok then qc.report(TAG, "achievement " .. name, err) end
 	stats.achv_in = stats.achv_in + 1
-	-- the money of it is the host's: tell it this player has earned the achievement
-	if ok and ACHV_MONEY[name] and qc.client_live() then qc.send("achv_got", { a = name }, 0) end
+	-- the money of it is the host's: tell it this player has earned the achievement (repeated until it answers)
+	if ok and ACHV_MONEY[name] and qc.client_live() then claim_achv(name) end
 end
 
 local function on_earned(name)
@@ -583,10 +626,20 @@ local function on_achv(t, from)
 	end
 end
 
--- Host: a client says it has earned an achievement that pays money (the receiver of the shared achievement).
+-- Host: a client says it has earned an achievement that pays money (the receiver of the shared achievement). Paid, or
+-- paid before: answered, so that the client stops claiming. Not paid (the host has no such achievement yet, no character
+-- for him yet, the ledger refused): no answer, the client claims again.
 local function on_achv_got(t, from)
 	if type(t.a) ~= "string" or not t.a:match("^[%w_]+$") then return end
-	if qc.is_host() and type(from) == "number" and from ~= 0 then grant_achv_money(from, t.a) end
+	if qc.is_host() and type(from) == "number" and from ~= 0 and grant_achv_money(from, t.a) then
+		qc.send("achv_ack", { a = t.a }, from)
+	end
+end
+
+-- Client: the host answered our claim.
+local function on_achv_ack(t, from)
+	if from ~= 0 or type(t.a) ~= "string" then return end
+	claims[t.a] = nil
 end
 
 -------------------------------------------------------------------------------
@@ -620,8 +673,10 @@ function on_game_start()
 	qc.on("ency", on_ency, TAG)
 	qc.on("achv", on_achv, TAG)
 	qc.on("achv_got", on_achv_got, TAG)
+	qc.on("achv_ack", on_achv_ack, TAG)
 	qc.register_host_action("stash", host_stash)
 	qc.register_host_action("box", host_box)
+	RegisterScriptCallback("actor_on_update", retry_claims)
 	RegisterScriptCallback("actor_on_achievement_earned", on_earned)
 	RegisterScriptCallback("physic_object_on_use_callback", client_box_use)
 	RegisterScriptCallback("actor_on_item_take", client_item_take)

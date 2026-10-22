@@ -66,7 +66,9 @@ SESSION = { active = true, phase = "hosting" }
 DISCONNECTS = 0
 STASH = {}
 MONEY_REFUSE = nil -- a reason makes the ledger stand-in refuse
-install_money_stubs(coop, { is_host = function() return MODE == "host" end, refuse = function() return MONEY_REFUSE end }) -- calls go to MONEY_CALLS
+ORDER = {} -- F2 T6b: what the host did to a new character, in order (money_set must come before the inventory is touched)
+install_money_stubs(coop, { is_host = function() return MODE == "host" end, refuse = function() return MONEY_REFUSE end,
+	on_call = function(fn) ORDER[#ORDER + 1] = fn end }) -- calls go to MONEY_CALLS
 PAYLOADS = {}
 local pn = 0
 coop_main = { handlers = {} }
@@ -79,8 +81,9 @@ SE = {}
 function se_save_var(id, name, var, val) SE[id] = SE[id] or {}; SE[id][var] = val end
 function se_load_var(id, name, var) return SE[id] and SE[id][var] end
 RELEASED, CREATED = {}, {}
-function alife_release_id(id) RELEASED[#RELEASED + 1] = id end
+function alife_release_id(id) RELEASED[#RELEASED + 1] = id; ORDER[#ORDER + 1] = "release" end
 function alife_create_item(sec, npc, t) -- a game object (in the world) or a server object (before the world)
+	ORDER[#ORDER + 1] = "create"
 	local parent = type(npc.id) == "function" and npc:id() or npc.id
 	CREATED[#CREATED + 1] = { sec = sec, parent = parent, ammo = t and t.ammo }
 	return { id = 9000 + #CREATED } end
@@ -198,16 +201,33 @@ check(#MONEY_CALLS == 0, "refused choices set no money")
 
 print("== host: apply")
 NPCS[500] = make_npc(500, { 701, 702, 703 })
--- the ledger refuses the money: the mark stays, so the player can try again (nothing is lost, the kit is redone)
+-- the ledger refuses the money: the mark stays, so the player can try again; F2 T6b: the money is set BEFORE the
+-- inventory is touched, so a refusal (and its retry) never wipes or doubles what the character carries
 MONEY_REFUSE = "no character"
+RELEASED, CREATED, ORDER = {}, {}, {}
 deliver("menu.new_character", { faction = "bandit", buy = "wpn_ak74_old" }, 1)
 check(last().t.ok == false and last().t.reason == "busy" and last().to == 1, "money refused: the player is told to try again")
 check(#MONEY_CALLS == 1 and MONEY_CALLS[1].fn == "money_set" and MONEY_CALLS[1].ok == false, "the refused call was money_set")
 check(mc.is_new(500), "money refused: the new-character mark stays, so the retry is possible")
+check(#RELEASED == 0 and #CREATED == 0 and NPCS[500].community == "stalker",
+	"money refused: the inventory was not touched (nothing released, nothing created, same community)")
+deliver("menu.new_character", { faction = "bandit", buy = "wpn_ak74_old" }, 1)
+check(#MONEY_CALLS == 2 and #RELEASED == 0 and #CREATED == 0 and mc.is_new(500), "the retry is refused the same way and still touches nothing")
 MONEY_REFUSE = nil
-RELEASED, CREATED = {}, {}
+-- the kit fails after the money was set (the NPC cannot list its items): the player is told to try again, the mark
+-- stays, and the retry sets the same money again (a set, not an add)
+local iterate = NPCS[500].iterate_inventory
+NPCS[500].iterate_inventory = function() error("boom") end
 for i = #MONEY_CALLS, 1, -1 do MONEY_CALLS[i] = nil end
 deliver("menu.new_character", { faction = "bandit", buy = "wpn_ak74_old" }, 1)
+check(last().t.ok == false and last().t.reason == "busy" and mc.is_new(500), "kit failed: busy, the mark stays")
+check(#MONEY_CALLS == 1 and MONEY_CALLS[1].ok and #CREATED == 0, "kit failed: the money was set first, nothing was created")
+NPCS[500].iterate_inventory = iterate
+RELEASED, CREATED, ORDER = {}, {}, {}
+for i = #MONEY_CALLS, 1, -1 do MONEY_CALLS[i] = nil end
+deliver("menu.new_character", { faction = "bandit", buy = "wpn_ak74_old" }, 1)
+check(ORDER[1] == "money_set" and ORDER[2] == "release" and ORDER[#ORDER] == "create",
+	"money_set comes before the inventory is touched (" .. table.concat(ORDER, ",", 1, math.min(#ORDER, 3)) .. "...)")
 local res = last().t
 check(res.ok == true and res.faction == "bandit" and res.money == 1000 and last().to == 1, "accepted: faction and money")
 check(#MONEY_CALLS == 1 and MONEY_CALLS[1].fn == "money_set" and MONEY_CALLS[1].peer == 1 and MONEY_CALLS[1].n == mc.faction_money("bandit")

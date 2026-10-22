@@ -181,9 +181,10 @@ function make_world(peer)
 	}
 	-- The host ledger (F2 T1): coop.money_give lowers the giver at once and the host credits the receiver.
 	-- W.MONEY_REFUSE = "reason" makes the next calls fail.
-	W.MONEY_CALLS = {}
+	W.MONEY_CALLS, W.RULE_CALLS = {}, {}
 	install_money_stubs(W.coop, {
 		calls = W.MONEY_CALLS,
+		rule_calls = W.RULE_CALLS,
 		is_host = function() return W.ACTIVE and W.PEER == 0 end,
 		refuse = function() return W.MONEY_REFUSE end,
 		money = function() return W.MONEY end,
@@ -211,6 +212,7 @@ function make_world(peer)
 	}
 
 	-- callbacks, time events
+	W.AddScriptCallback = function(name) W.CB_ADDED = W.CB_ADDED or {} W.CB_ADDED[name] = true end
 	W.RegisterScriptCallback = function(name, f) W.CB[name] = W.CB[name] or {} table.insert(W.CB[name], f) end
 	W.UnregisterScriptCallback = function() end
 	W.CreateTimeEvent = function(ev, act, delay, f, ...) W.TE[tostring(ev) .. "/" .. tostring(act)] = { f = f, args = { ... } } end

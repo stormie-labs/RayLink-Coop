@@ -306,6 +306,183 @@ TEST(ledger_transfer_checks)
 	CHECK_EQ(bad.acked, 2u);
 }
 
+// F2 T6b (Ruling F2-19): the host enforces the session's transfer rules, money_transfer and max_money_transfer. Its Lua
+// pushes them into the Policy (coop.money_set_rules); a client's own Lua checks them too, but only the host's answer counts.
+TEST(ledger_transfer_rules)
+{
+	Receiver to;
+	to.peer = 2;
+	to.present = true;
+	to.balance = 100;
+	uint32_t balance = 5000, credit = 99;
+
+	// Without a rule from the host's Lua: transfers on, no limit but the balance.
+	const Policy none;
+	CHECK(none.transfer_on);
+	CHECK(none.transfer_max == UINT64_MAX);
+	CHECK(check_transfer(1, to, -5000, balance, credit, none) == Verdict::Applied);
+	CHECK_EQ(balance, 0u);
+	CHECK_EQ(credit, 5000u);
+
+	// money_transfer off: nothing moves, whatever the amount.
+	Policy off;
+	off.transfer_on = false;
+	balance = 5000;
+	CHECK(check_transfer(1, to, -1, balance, credit, off) == Verdict::TransfersOff);
+	CHECK_EQ(balance, 5000u);
+	CHECK_EQ(credit, 0u);
+	// The form comes first: nobody there is Malformed, a rule cannot say "the receiver is gone".
+	Receiver gone = to;
+	gone.present = false;
+	CHECK(check_transfer(1, gone, -1, balance, credit, off) == Verdict::Malformed);
+	CHECK(check_transfer(2, to, -1, balance, credit, off) == Verdict::Malformed);
+	CHECK(check_transfer(1, to, 5, balance, credit, off) == Verdict::Malformed);
+	// The rule comes before the state: a giver without money is told about the rule.
+	balance = 3;
+	CHECK(check_transfer(1, to, -50, balance, credit, off) == Verdict::TransfersOff);
+	CHECK_EQ(balance, 3u);
+
+	// max_money_transfer: up to the limit, not one RU over.
+	Policy lim;
+	lim.transfer_max = 1000;
+	balance = 5000;
+	CHECK(check_transfer(1, to, -1001, balance, credit, lim) == Verdict::OverTransferLimit);
+	CHECK_EQ(balance, 5000u);
+	CHECK_EQ(credit, 0u);
+	CHECK(check_transfer(1, to, INT64_MIN, balance, credit, lim) == Verdict::OverTransferLimit);
+	CHECK(check_transfer(1, to, -1000, balance, credit, lim) == Verdict::Applied);
+	CHECK_EQ(balance, 4000u);
+	CHECK_EQ(credit, 1000u);
+	// The limit comes before the balance: 1001 from a giver with 500 is over the limit, not "not enough".
+	balance = 500;
+	CHECK(check_transfer(1, to, -1001, balance, credit, lim) == Verdict::OverTransferLimit);
+	CHECK(check_transfer(1, to, -600, balance, credit, lim) == Verdict::Insufficient);
+	// A limit of 0 allows no transfer (the options page lets the host set it).
+	Policy zero;
+	zero.transfer_max = 0;
+	balance = 500;
+	CHECK(check_transfer(1, to, -1, balance, credit, zero) == Verdict::OverTransferLimit);
+	CHECK_EQ(balance, 500u);
+
+	// Through the book: the change is answered (its number is spent), the allowances are not touched, nothing is credited.
+	HostBook book;
+	book.start_session({"k310"}); // a character from the save: its first income is paid from full buckets
+	const Decision d = book.on_request(1, "k310", req(1, -2000, Cause::Transfer, 2), 5000, false, to, lim, 0);
+	CHECK(d.verdict == Verdict::OverTransferLimit);
+	CHECK(!d.stale);
+	CHECK_EQ(d.acked, 1u);
+	CHECK_EQ(d.balance, 5000u);
+	CHECK_EQ(d.credit, 0u);
+	CHECK(book.allowances("k310") == nullptr);
+	const Decision again = book.on_request(1, "k310", req(1, -2000, Cause::Transfer, 2), 5000, false, to, lim, 0);
+	CHECK(again.stale);
+	const Decision off_d = book.on_request(1, "k310", req(2, -10, Cause::Transfer, 2), 5000, false, to, off, 0);
+	CHECK(off_d.verdict == Verdict::TransfersOff);
+	CHECK_EQ(off_d.acked, 2u);
+	CHECK_EQ(off_d.credit, 0u);
+	// The rules are about transfers between players only: the same player spends and gains by himself as before.
+	const Decision spend = book.on_request(1, "k310", req(3, -4000, Cause::Script), 5000, false, to, off, 0);
+	CHECK(spend.verdict == Verdict::Applied);
+	CHECK_EQ(spend.balance, 1000u);
+	const Decision gain = book.on_request(1, "k310", req(4, 100, Cause::Script), 1000, false, to, off, 0);
+	CHECK(gain.verdict == Verdict::Applied);
+}
+
+// F2 T6b: the host's answer says what happened to a change it refused (the client tells its player), and a player who
+// was given money gets the giver's name.
+TEST(ledger_money_notes)
+{
+	const Policy p;
+	Receiver to;
+	to.peer = 2;
+	to.present = true;
+	to.balance = 100;
+	Receiver gone = to;
+	gone.present = false;
+	HostBook book;
+	book.start_session({"k320"});
+
+	// An applied change carries no note.
+	const Decision ok = book.on_request(1, "k320", req(1, -100, Cause::Script), 1000, false, to, p, 0);
+	CHECK(ok.verdict == Verdict::Applied);
+	CHECK(ok.note.kind == coop::ledger::NoteKind::None);
+	const Decision gave = book.on_request(1, "k320", req(2, -100, Cause::Transfer, 2), 900, false, to, p, 0);
+	CHECK(gave.verdict == Verdict::Applied);
+	CHECK(gave.note.kind == coop::ledger::NoteKind::None);
+
+	// A spend the host cannot cover.
+	const Decision poor = book.on_request(1, "k320", req(3, -5000, Cause::Script), 800, false, to, p, 0);
+	CHECK(poor.verdict == Verdict::Insufficient);
+	CHECK(poor.note.kind == coop::ledger::NoteKind::Refused);
+	CHECK(poor.note.cause == Cause::Script);
+	CHECK(poor.note.verdict == Verdict::Insufficient);
+	CHECK_EQ(poor.note.amount, -5000);
+	CHECK_EQ(poor.note.peer, 0u);
+
+	// An income over the allowance: the change asked for is told with its sign.
+	const Decision rich = book.on_request(1, "k320", req(4, 60000, Cause::Dialog), 800, true, to, p, 0);
+	CHECK(rich.verdict == Verdict::Applied); // the first 60000 of a saved character comes out of its dialog bucket
+	const Decision over = book.on_request(1, "k320", req(5, 99999, Cause::Script), 800, false, to, p, 0);
+	CHECK(over.verdict == Verdict::NoAllowance);
+	CHECK(over.note.kind == coop::ledger::NoteKind::Refused);
+	CHECK(over.note.verdict == Verdict::NoAllowance);
+	CHECK(over.note.cause == Cause::Script);
+	CHECK_EQ(over.note.amount, 99999);
+
+	// A refused transfer names the receiver, whatever the reason.
+	Policy lim;
+	lim.transfer_max = 10;
+	const Decision limit = book.on_request(1, "k320", req(6, -11, Cause::Transfer, 2), 800, false, to, lim, 0);
+	CHECK(limit.verdict == Verdict::OverTransferLimit);
+	CHECK(limit.note.kind == coop::ledger::NoteKind::Refused);
+	CHECK(limit.note.cause == Cause::Transfer);
+	CHECK(limit.note.verdict == Verdict::OverTransferLimit);
+	CHECK_EQ(limit.note.peer, 2u);
+	CHECK_EQ(limit.note.amount, -11);
+	const Decision nobody = book.on_request(1, "k320", req(7, -5, Cause::Transfer, 9), 800, false, gone, p, 0);
+	CHECK(nobody.verdict == Verdict::Malformed);
+	CHECK(nobody.note.kind == coop::ledger::NoteKind::Refused); // the player gave to someone who left: he is told
+	CHECK_EQ(nobody.note.peer, 9u);
+
+	// A change no honest client sends (zero) is refused without a word; so is a repeat.
+	const Decision zero = book.on_request(1, "k320", req(8, 0, Cause::Script), 800, false, to, p, 0);
+	CHECK(zero.verdict == Verdict::Malformed);
+	CHECK(zero.note.kind == coop::ledger::NoteKind::None);
+	const Decision stale = book.on_request(1, "k320", req(3, -5000, Cause::Script), 800, false, to, p, 0);
+	CHECK(stale.stale);
+	CHECK(stale.note.kind == coop::ledger::NoteKind::None);
+
+	// The receiver of a transfer.
+	const coop::ledger::MoneyNote got = coop::ledger::note_received(5, 1234);
+	CHECK(got.kind == coop::ledger::NoteKind::Received);
+	CHECK_EQ(got.peer, 5u);
+	CHECK_EQ(got.amount, 1234);
+	// The amount fits the wire: a credit is at most max_money; an absurd one is cut, never wrapped to a negative.
+	CHECK_EQ(coop::ledger::note_received(0, 0xFFFFFFFFu).amount, 2147483647);
+}
+
+// F2 T6b: a mod that changes the money in a loop must not fill the screen with refusals.
+TEST(ledger_notice_gate)
+{
+	coop::ledger::NoticeGate g; // default: one in three seconds
+	CHECK(g.allow(10000));
+	CHECK(!g.allow(10001));
+	CHECK(!g.allow(12999));
+	CHECK(g.allow(13000));
+	CHECK(!g.allow(13500));
+	CHECK_EQ(g.dropped(), uint64_t(3));
+	// A clock that goes back lets the next one through and starts over.
+	CHECK(g.allow(5));
+	CHECK(!g.allow(6));
+	g.reset();
+	CHECK_EQ(g.dropped(), uint64_t(0));
+	CHECK(g.allow(7));
+	coop::ledger::NoticeGate fast(100);
+	CHECK(fast.allow(0));
+	CHECK(!fast.allow(99));
+	CHECK(fast.allow(100));
+}
+
 // Ruling F2-10 (review round 2, Important): the client chooses its player key, and the host makes a character for any
 // new key. A character made in this session starts with empty allowances and only gets the refills: a new key cannot
 // bring a fresh 50 000 + 100 000 to pass on to the main character.
@@ -553,13 +730,87 @@ TEST(ledger_wire_roundtrip)
 	const MoneyBalanceMsg bal{100000000u, 77};
 	Writer wb;
 	write(wb, bal);
-	CHECK_EQ(wb.size(), size_t(8));
+	CHECK_EQ(wb.size(), size_t(19)); // F2 T6b: the 8 bytes of before and a note (kind, cause, verdict, peer, amount)
+	CHECK_EQ(wb.size(), coop::ledger::kMoneyBalanceSize);
 	const std::vector<uint8_t> wire_b = bytes_of(wb);
 	Reader rb(wire_b.data(), wire_b.size());
 	MoneyBalanceMsg got_b;
 	REQUIRE(read(rb, got_b));
 	CHECK_EQ(got_b.balance, 100000000u);
 	CHECK_EQ(got_b.acked_seq, 77u);
+	CHECK(got_b.note.kind == coop::ledger::NoteKind::None);
+}
+
+// F2 T6b: the note of a balance, both kinds, and what a reader refuses.
+TEST(ledger_wire_note)
+{
+	using coop::ledger::MoneyNote;
+	using coop::ledger::NoteKind;
+	MoneyBalanceMsg given{1500u, 12};
+	given.note.kind = NoteKind::Received;
+	given.note.peer = 3;
+	given.note.amount = 750;
+	Writer w;
+	write(w, given);
+	CHECK_EQ(w.size(), coop::ledger::kMoneyBalanceSize);
+	std::vector<uint8_t> wire = bytes_of(w);
+	Reader r(wire.data(), wire.size());
+	MoneyBalanceMsg got;
+	REQUIRE(read(r, got));
+	CHECK_EQ(r.remaining(), size_t(0));
+	CHECK_EQ(got.balance, 1500u);
+	CHECK_EQ(got.acked_seq, 12u);
+	CHECK(got.note.kind == NoteKind::Received);
+	CHECK_EQ(got.note.peer, 3u);
+	CHECK_EQ(got.note.amount, 750);
+
+	MoneyBalanceMsg refused{20u, 13};
+	refused.note.kind = NoteKind::Refused;
+	refused.note.cause = Cause::Transfer;
+	refused.note.verdict = Verdict::OverTransferLimit;
+	refused.note.peer = 4;
+	refused.note.amount = -2147483647 - 1;
+	Writer wr;
+	write(wr, refused);
+	wire = bytes_of(wr);
+	Reader rr(wire.data(), wire.size());
+	REQUIRE(read(rr, got));
+	CHECK(got.note.kind == NoteKind::Refused);
+	CHECK(got.note.cause == Cause::Transfer);
+	CHECK(got.note.verdict == Verdict::OverTransferLimit);
+	CHECK_EQ(got.note.peer, 4u);
+	CHECK_EQ(got.note.amount, -2147483647 - 1);
+
+	// Every verdict the host can name travels.
+	for (uint8_t v = 0; v < coop::ledger::kVerdictCount; ++v)
+	{
+		MoneyBalanceMsg m{1u, 1};
+		m.note.kind = NoteKind::Refused;
+		m.note.verdict = Verdict(v);
+		Writer wv;
+		write(wv, m);
+		const std::vector<uint8_t> bv = bytes_of(wv);
+		Reader rv(bv.data(), bv.size());
+		REQUIRE(read(rv, got));
+		CHECK(got.note.verdict == Verdict(v));
+	}
+
+	// Truncated, or a byte that names nothing: refused. The first 8 bytes alone are not a balance any more.
+	const std::vector<uint8_t> full = bytes_of(wr);
+	for (size_t cut : {size_t(0), size_t(8), size_t(10), size_t(18)})
+	{
+		Reader rc(full.data(), cut);
+		CHECK(!read(rc, got));
+	}
+	const uint8_t no_kind = 3, no_cause = 3, no_verdict = coop::ledger::kVerdictCount;
+	for (const auto& bad : {std::make_pair(size_t(8), no_kind), std::make_pair(size_t(9), no_cause),
+	         std::make_pair(size_t(10), no_verdict)})
+	{
+		std::vector<uint8_t> broken = full;
+		broken[bad.first] = bad.second;
+		Reader rb(broken.data(), broken.size());
+		CHECK(!read(rb, got));
+	}
 }
 
 TEST(ledger_wire_truncated)
@@ -587,6 +838,8 @@ TEST(ledger_wire_truncated)
 	Reader cut_b(wire_b.data(), 7);
 	MoneyBalanceMsg got_b;
 	CHECK(!read(cut_b, got_b));
+	Reader cut_c(wire_b.data(), wire_b.size() - 1);
+	CHECK(!read(cut_c, got_b));
 }
 
 // Ruling F2-13 (review round 3, Important): the allowances refill only while the character is in the game. Leaving

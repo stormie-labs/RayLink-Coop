@@ -85,6 +85,33 @@
 	<string id="st_coop_eco_money_why_world">
 		<text>вы ещё не в мире хоста</text>
 	</string>
+	<string id="st_coop_eco_money_in">
+		<text>%s передал вам %s.</text>
+	</string>
+	<string id="st_coop_eco_money_refused_to">
+		<text>Перевод %s игроку %s отклонён: %s.</text>
+	</string>
+	<string id="st_coop_eco_money_host_gain">
+		<text>Хост не зачислил %s: %s.</text>
+	</string>
+	<string id="st_coop_eco_money_host_spend">
+		<text>Хост не принял платёж %s: %s.</text>
+	</string>
+	<string id="st_coop_eco_money_somebody">
+		<text>другой игрок</text>
+	</string>
+	<string id="st_coop_eco_money_why_cap">
+		<text>достигнут предел денег, заданный хостом</text>
+	</string>
+	<string id="st_coop_eco_money_why_allowance">
+		<text>достигнут лимит дохода, заданный хостом</text>
+	</string>
+	<string id="st_coop_eco_money_why_off">
+		<text>передача денег в этой сессии выключена</text>
+	</string>
+	<string id="st_coop_eco_money_why_limit">
+		<text>больше, чем хост разрешает за один раз</text>
+	</string>
 	<string id="st_coop_eco_money_off">
 		<text>В этой сессии передача денег выключена.</text>
 	</string>

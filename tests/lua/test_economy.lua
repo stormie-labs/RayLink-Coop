@@ -624,6 +624,122 @@ do
 end
 
 -------------------------------------------------------------------------------
+-- F2 T6b (Ruling F2-19): money_transfer / max_money_transfer are the host's to enforce. Its Lua pushes the rules into
+-- the ledger (coop.money_set_rules), and the engine tells a player what the host did with his money through the
+-- callback coop_money_note: a gift ("received", giver, amount) or a refusal ("refused", receiver | -1, change, why, cause).
+section("money rules: the host's Lua pushes them to the ledger")
+do
+	local H, A = setup(1)
+	check(#H.RULE_CALLS == 0 and #A.RULE_CALLS == 0, "nothing is pushed before the first update")
+	tick(H, 600)
+	local r = H.RULE_CALLS[1]
+	check(#H.RULE_CALLS == 1 and r.ok and r.on == true and r.max == 1000000,
+		"the first update pushes the defaults: transfers on, 1 000 000 at a time")
+	tick(H, 600)
+	check(#H.RULE_CALLS == 1, "not again within 2 s")
+	tick(H, 1500)
+	check(#H.RULE_CALLS == 2, "pushed again after 2 s (a new session or a world load may have reset the ledger's copy)")
+	-- the host changes the options: pushed at the next update, not after 2 s
+	H.coop_settings = { rule = function(key)
+		if key == "economy/money_transfer" then return false end
+		if key == "economy/max_money_transfer" then return 2500 end
+	end }
+	fire(H, "on_option_change")
+	tick(H, 100)
+	r = last(H.RULE_CALLS)
+	check(#H.RULE_CALLS == 3 and r.ok and r.on == false and r.max == 2500, "an option change is pushed at the next update")
+	-- the limit is a whole number of RU the engine takes; what it cannot take falls back to the default
+	for _, c in ipairs({ { 1e12, 4294967295 }, { math.huge, 4294967295 }, { -5, 0 }, { 2500.9, 2500 }, { 0 / 0, 1000000 },
+		{ "abc", 1000000 } }) do
+		H.coop_settings = { rule = function(key) if key == "economy/max_money_transfer" then return c[1] end end }
+		fire(H, "on_option_change")
+		tick(H, 100)
+		r = last(H.RULE_CALLS)
+		check(r.ok and r.on == true and r.max == c[2], "limit " .. tostring(c[1]) .. " is pushed as " .. tostring(c[2]))
+	end
+	-- a client never pushes; neither does a machine outside a session; a refusal does not stop the next try
+	fire(A, "on_option_change")
+	tick(A, 5000)
+	check(#A.RULE_CALLS == 0, "a client pushes nothing")
+	local n = #H.RULE_CALLS
+	H.ACTIVE = false
+	tick(H, 5000)
+	check(#H.RULE_CALLS == n, "no session: no push")
+	H.ACTIVE = true
+	local engine_fn = H.coop.money_set_rules
+	H.coop.money_set_rules = nil -- an exe without the call
+	tick(H, 5000)
+	check(H.HANDLER_ERRORS == nil, "an engine without coop.money_set_rules is not an error")
+	H.coop.money_set_rules = engine_fn
+	tick(H, 5000)
+	check(#H.RULE_CALLS == n + 1, "pushing goes on once the engine has the call")
+end
+
+-------------------------------------------------------------------------------
+section("money notes: the engine's callback coop_money_note tells the player")
+do
+	local H, A, B = setup(2)
+	check(H.CB_ADDED.coop_money_note and A.CB_ADDED.coop_money_note and #A.CB.coop_money_note == 1,
+		"the callback exists on every machine and the script listens")
+	-- a gift
+	fire(A, "coop_money_note", "received", 2, 750)
+	check(has(A.TIPS, "boris gave you 750 "), "a gift: 'boris gave you 750 RU'")
+	fire(H, "coop_money_note", "received", 1, 100)
+	check(has(H.TIPS, "anna gave you 100 "), "the host is told of a gift to him as well")
+	fire(A, "coop_money_note", "received", 9, 5)
+	check(has(A.TIPS, "another player gave you 5 "), "a giver who is not here any more: no nick, no error")
+	-- what the host refused
+	local function told(W, ...)
+		local before = #W.TIPS
+		local asked = {}
+		local translate = W.game.translate_string
+		W.game.translate_string = function(id) asked[#asked + 1] = id return translate(id) end
+		fire(W, "coop_money_note", ...)
+		W.game.translate_string = translate
+		return #W.TIPS == before + 1 and W.TIPS[#W.TIPS] or nil, table.concat(asked, " ")
+	end
+	local text, ids = told(A, "refused", 2, -3000, "over the transfer limit", "transfer")
+	check(text and text:find("boris", 1, true) and text:find("3000", 1, true) and ids:find("st_coop_eco_money_refused_to", 1, true)
+		and ids:find("st_coop_eco_money_why_limit", 1, true), "a refused transfer names the receiver, the sum and the limit")
+	text, ids = told(A, "refused", -1, 60000, "over the allowance", "script")
+	check(text and text:find("60000", 1, true) and ids:find("st_coop_eco_money_host_gain", 1, true)
+		and ids:find("st_coop_eco_money_why_allowance", 1, true), "an income the host did not credit")
+	text, ids = told(A, "refused", -1, -500, "not enough money", "dialog")
+	check(text and text:find("500", 1, true) and ids:find("st_coop_eco_money_host_spend", 1, true)
+		and ids:find("st_coop_eco_money_why_poor", 1, true), "a payment the host did not accept")
+	-- the reason line depends on whose money it is: 'over the maximum' is the receiver's for a transfer, the player's own else
+	for _, c in ipairs({
+		{ "not enough money", "transfer", "poor" }, { "over the maximum", "transfer", "full" },
+		{ "over the maximum", "script", "cap" }, { "over the maximum", "dialog", "cap" },
+		{ "over the allowance", "script", "allowance" }, { "transfers are off", "transfer", "off" },
+		{ "over the transfer limit", "transfer", "limit" }, { "malformed", "transfer", "gone" },
+		{ "malformed", "script", "bad" }, { "something new", "script", "bad" },
+	}) do
+		local _, used = told(A, "refused", 2, -10, c[1], c[2])
+		check(used:find("st_coop_eco_money_why_" .. c[3], 1, true), "'" .. c[1] .. "' (" .. c[2] .. ") is told with why_" .. c[3])
+	end
+	-- never an error into the engine, whatever it passes
+	local n = #A.TIPS
+	for _, bad in ipairs({ {}, { "refused" }, { "received" }, { "received", "x", "y" }, { "refused", {}, 0 / 0, 5, 5 },
+		{ "received", 2, math.huge }, { "received", 2, -5 }, { "unknown", 1, 2 }, { 7 } }) do
+		check(pcall(fire, A, "coop_money_note", unpack(bad)), "garbage arguments are not an error")
+	end
+	check(#A.TIPS == n, "and tell nothing")
+	-- those lines exist in both languages (windows-1251 files, ids are ASCII)
+	for _, lang in ipairs({ "eng", "rus" }) do
+		local fh = assert(io.open(ROOT .. "configs/text/" .. lang .. "/st_coop_economy.xml", "rb"))
+		local xml = fh:read("*a")
+		fh:close()
+		local missing = {}
+		for _, id in ipairs({ "in", "refused_to", "host_gain", "host_spend", "somebody", "why_cap", "why_allowance", "why_off",
+			"why_limit" }) do
+			if not xml:find('<string id="st_coop_eco_money_' .. id .. '">', 1, true) then missing[#missing + 1] = id end
+		end
+		check(#missing == 0, lang .. " text has every line of the notes (" .. table.concat(missing, ",") .. ")")
+	end
+end
+
+-------------------------------------------------------------------------------
 section("money stub refuses like the engine")
 do
 	local H, A, B = setup(2)
