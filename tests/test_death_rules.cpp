@@ -699,3 +699,225 @@ TEST(death_tracker_new_actor_same_seq)
 	on_alive(replaced);
 	CHECK(on_died(replaced, 1, 3000, rules) == Action::LossesAndEvacuate);
 }
+
+// ---------------------------------------------------------------- the host's death flow (F3 Task 8, fix round 1 I-2)
+
+namespace
+{
+Rules hardcore_rules()
+{
+	Rules r;
+	r.mode = Mode::Hardcore;
+	return r;
+}
+} // namespace
+
+TEST(death_alive_report_respawn_owed)
+{
+	Rules rules;
+
+	// Nothing owed: a living player's report changes nothing.
+	Tracker fresh;
+	CHECK(on_alive_report(fresh, false, false) == AliveStep::None);
+
+	// Review Focus 1: left while evacuated, back alive -> respawn, once (the tracker forgets the wait).
+	Tracker left;
+	REQUIRE(on_died(left, 3, 1000, rules) == Action::LossesAndEvacuate);
+	on_left(left);
+	CHECK(on_alive_report(left, false, false) == AliveStep::Respawn);
+	CHECK(!left.respawn_due);
+	CHECK_EQ(left.decided_seq, uint16_t(0xffff)); // on_alive ran: the next death of the new actor is a new one
+	CHECK(on_alive_report(left, false, false) == AliveStep::None);
+
+	// Review Focus 2: the world was replaced (a fresh tracker), the world still owes him the respawn -> respawn.
+	Tracker replaced;
+	CHECK(on_alive_report(replaced, true, false) == AliveStep::Respawn);
+
+	// An Alive that crossed the order on the wire: no second order for the same seq.
+	Tracker crossed;
+	CHECK(on_alive_report(crossed, true, true) == AliveStep::None);
+	Tracker crossed_left;
+	REQUIRE(on_died(crossed_left, 4, 1000, rules) == Action::LossesAndEvacuate);
+	on_left(crossed_left);
+	CHECK(on_alive_report(crossed_left, false, true) == AliveStep::None);
+
+	// Alive while the countdown runs is not a return: the death is forgotten, no respawn order (as WP8 did).
+	Tracker standing;
+	REQUIRE(on_died(standing, 5, 1000, rules) == Action::LossesAndEvacuate);
+	CHECK(on_alive_report(standing, false, false) == AliveStep::None);
+	CHECK_EQ(standing.respawn_at, uint64_t(0));
+}
+
+TEST(death_alive_report_hardcore_out)
+{
+	// Ruling F3-7 (fix round 1, I-1): out of a hardcore run stays out until F3 Task 10, whatever the mode is now.
+	Tracker tr;
+	REQUIRE(on_died(tr, 2, 1000, hardcore_rules()) == Action::Spectate);
+	REQUIRE(tr.hardcore_out);
+
+	// The host switched to checkpoint (the mode is not an input any more): an Alive report is answered by Spectate.
+	CHECK(on_alive_report(tr, false, false) == AliveStep::Spectate);
+	CHECK(tr.hardcore_out);
+
+	// He leaves and rejoins as often as he likes: still out, never a respawn, even with a debt in the world.
+	for (int i = 0; i < 3; ++i)
+	{
+		on_left(tr);
+		CHECK(on_alive_report(tr, false, false) == AliveStep::Spectate);
+		CHECK(tr.hardcore_out);
+	}
+	CHECK(on_alive_report(tr, true, false) == AliveStep::Spectate);
+	CHECK(on_alive_report(tr, true, true) == AliveStep::Spectate);
+	CHECK(tr.hardcore_out);
+}
+
+TEST(death_debt_lifecycle)
+{
+	// Set by a checkpoint death, not by a hardcore one, not by a repeated report of the same death.
+	CHECK(debt_after_report(false, kLifeDead, Action::LossesAndEvacuate));
+	CHECK(!debt_after_report(false, kLifeDead, Action::Spectate));
+	CHECK(!debt_after_report(false, kLifeDead, Action::None));
+	CHECK(debt_after_report(true, kLifeDead, Action::None));
+
+	// Kept by every report until the owner applies the respawn.
+	CHECK(debt_after_report(true, kLifeAlive, Action::None));
+	CHECK(debt_after_report(true, kLifeWounded, Action::None));
+	CHECK(debt_after_report(true, kLifeSpectating, Action::None));
+	CHECK(!debt_after_report(false, kLifeAlive, Action::None));
+
+	// Paid by Respawning: the order reached him and he applied it.
+	CHECK(!debt_after_report(true, kLifeRespawning, Action::None));
+	CHECK(!debt_after_report(false, kLifeRespawning, Action::None));
+
+	// M-1: the respawn order went out, he applied it (Respawning reached the host), then left or the world changed
+	// before the host saw him alive: no second respawn, no second wear.
+	{
+		Rules rules;
+		Tracker tr;
+		bool debt = debt_after_report(false, kLifeDead, on_died(tr, 7, 1000, rules));
+		REQUIRE(debt);
+		REQUIRE(due(tr, 1000 + rules.delay_ms));
+		debt = debt_after_report(debt, kLifeRespawning, Action::None);
+		on_left(tr);
+		CHECK(on_alive_report(tr, debt, false) == AliveStep::None);
+		Tracker new_world;
+		CHECK(on_alive_report(new_world, debt, false) == AliveStep::None);
+	}
+
+	// The order went out but he left before applying it: the world still owes the respawn.
+	{
+		Rules rules;
+		Tracker tr;
+		const bool debt = debt_after_report(false, kLifeDead, on_died(tr, 8, 1000, rules));
+		REQUIRE(due(tr, 1000 + rules.delay_ms));
+		on_left(tr); // the tracker no longer waits (the window after due)
+		CHECK(!tr.respawn_due);
+		CHECK(on_alive_report(tr, debt, false) == AliveStep::Respawn);
+		// ... and after a world change (a fresh tracker, the debt saved with the character) the same.
+		Tracker new_world;
+		CHECK(on_alive_report(new_world, debt, false) == AliveStep::Respawn);
+	}
+
+	// M-3: a new game or another save has fresh characters without the debt: nothing for whoever has that id now.
+	{
+		Tracker new_game;
+		CHECK(on_alive_report(new_game, false, false) == AliveStep::None);
+	}
+}
+
+TEST(death_worn_tail)
+{
+	const auto tail = [](const std::vector<uint16_t>& ids) {
+		coop::Writer w;
+		write_worn(w, ids);
+		return w.data();
+	};
+	const auto parse = [](const std::vector<uint8_t>& bytes, std::vector<uint16_t>& out) {
+		coop::Reader r(bytes.data(), bytes.size());
+		return read_worn(r, out);
+	};
+
+	std::vector<uint16_t> out = {1, 2, 3};
+
+	// No tail: the layout stays unknown.
+	CHECK(parse({}, out) == WornTail::Absent);
+	CHECK(out.empty());
+
+	// Round trip: sorted, each once; an empty list is a list ("he wears nothing").
+	CHECK(parse(tail({900, 12, 900, 7}), out) == WornTail::Ok);
+	CHECK(out == std::vector<uint16_t>({7, 12, 900}));
+	out = {1};
+	CHECK(parse(tail({}), out) == WornTail::Ok);
+	CHECK(out.empty());
+
+	// The writer caps at kMaxWornIds; exactly kMaxWornIds is read back.
+	std::vector<uint16_t> many;
+	for (uint16_t i = 0; i < 60; ++i)
+		many.push_back(uint16_t(100 + i));
+	const std::vector<uint8_t> capped = tail(many);
+	CHECK_EQ(capped.size(), size_t(1 + 2 * kMaxWornIds));
+	CHECK(parse(capped, out) == WornTail::Ok);
+	CHECK_EQ(out.size(), size_t(kMaxWornIds));
+	REQUIRE(!out.empty());
+	CHECK_EQ(out.front(), uint16_t(100));
+	CHECK_EQ(out.back(), uint16_t(100 + kMaxWornIds - 1));
+
+	// n over the bound: dropped whole, whatever follows.
+	{
+		coop::Writer w;
+		w.u8(uint8_t(kMaxWornIds + 1));
+		for (uint16_t i = 0; i <= kMaxWornIds; ++i)
+			w.u16(i);
+		out = {1};
+		CHECK(parse(w.data(), out) == WornTail::Bad);
+		CHECK(out.empty());
+	}
+	{
+		coop::Writer w;
+		w.u8(255);
+		out = {1};
+		CHECK(parse(w.data(), out) == WornTail::Bad);
+		CHECK(out.empty());
+	}
+
+	// A short packet: fewer bytes than n ids, also half an id.
+	{
+		coop::Writer w;
+		w.u8(3);
+		w.u16(5);
+		w.u16(6);
+		out = {1};
+		CHECK(parse(w.data(), out) == WornTail::Bad);
+		CHECK(out.empty());
+		std::vector<uint8_t> half = tail({5, 6});
+		half.pop_back();
+		out = {1};
+		CHECK(parse(half, out) == WornTail::Bad);
+		CHECK(out.empty());
+	}
+
+	// Bytes after the list are left to a newer writer.
+	{
+		std::vector<uint8_t> longer = tail({4, 2});
+		longer.push_back(0xAB);
+		coop::Reader r(longer.data(), longer.size());
+		CHECK(read_worn(r, out) == WornTail::Ok);
+		CHECK(out == std::vector<uint16_t>({2, 4}));
+		CHECK_EQ(r.remaining(), size_t(1));
+	}
+}
+
+TEST(death_hud_format_one_conversion)
+{
+	CHECK(one_conversion("Back at your camp in %d s", 'd'));
+	CHECK(one_conversion("%d", 'd'));
+	CHECK(one_conversion("Watching: %s", 's'));
+	CHECK(!one_conversion("Watching: %s", 'd'));
+	CHECK(!one_conversion("Back in %d s", 's'));
+	CHECK(!one_conversion("no conversion", 'd'));
+	CHECK(!one_conversion("%d of %d", 'd'));
+	CHECK(!one_conversion("100%% in %d s", 'd'));
+	CHECK(!one_conversion("trailing %", 'd'));
+	CHECK(!one_conversion("", 'd'));
+	CHECK(!one_conversion(nullptr, 'd'));
+}
