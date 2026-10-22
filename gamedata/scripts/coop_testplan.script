@@ -20,8 +20,10 @@ local idx, wait_until, live_since, started = 1, 0, nil, false
 local results = { pass = 0, fail = 0, skip = 0 }
 local ctx = {}
 
+-- Anomaly's printf substitutes %s only (night run 2: "start: %d step(s)"), so the line is formatted here.
 local function say(fmt, ...)
-	printf("%s " .. fmt, TAG, ...)
+	local ok, line = pcall(string.format, "%s " .. fmt, TAG, ...)
+	printf("%s", ok and line or (TAG .. " " .. fmt))
 end
 
 local function now() return time_global() end
