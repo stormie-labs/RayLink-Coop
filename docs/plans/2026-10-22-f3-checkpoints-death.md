@@ -483,7 +483,7 @@ bool due(Tracker& t, uint64_t now_ms);   // respawn_at reached -> true once
 void on_left(Tracker& t);                // left while dead: respawn_due = true, respawn_at = 0
 bool on_returned(Tracker& t);            // true once if respawn_due (not hardcore_out)
 bool on_world_replaced(Tracker& t);      // true if dead/evacuating (not hardcore_out); keeps decided_seq
-void on_alive(Tracker& t);               // stood up: respawn_at = 0, respawn_due = false (decided_seq stays)
+void on_alive(Tracker& t);               // stood up: respawn_at = 0, respawn_due = false, decided_seq = 0xffff (Ruling F3-1: the client restarts seq per actor)
 ```
 
 - [ ] **Шаг 1: тесты** `tests/test_death_rules.cpp`:

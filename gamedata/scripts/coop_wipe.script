@@ -1,0 +1,218 @@
+--[[
+	Anomaly Coop - tasks when the whole group is dead (gamedata\scripts\coop_wipe.script), F3 task 16.
+	Spec: docs\CHECKPOINTS_DEATH.md section 6. Table: configs\coop_wipe_tasks.ltx.
+
+	The engine fires the callback coop_group_wipe() on the host, once per wipe. The group has one task journal
+	(the host's Anomaly task_manager), so the host decides for every task in progress:
+	  fail - task_manager:set_task_failed(id): the stock path follows (status functor / condlist sees the forced
+	         status, task_callback runs on_fail with its goodwill penalty and news). A task with repeat_timeout then
+	         stays in task_info at stage 255 until the timer runs out; here that record is removed on the next
+	         update, so the task can be taken again at once (the timer is "reset" for a failure caused by a wipe).
+	  keep - nothing happens.
+	Which one is decided by the table, first match wins:
+	  [by_id] exact task id > [by_prefix] longest id prefix > [by_functor] the task's status_functor > [settings] default.
+	Not in the table = default = keep (an unknown task is never touched). A bad value in the table reads as keep.
+	Only tasks in progress are looked at: records waiting for their repeat timer (completed or failed earlier, stage
+	255) keep their timer, and a status somebody else already forced (cancelled by the player, being completed)
+	is not overridden.
+
+	API (console / tests):
+	  coop_wipe.action_for(task_id, status_functor) -> "fail" | "keep"
+	  coop_wipe.pending_count() -> number of failed tasks still waiting for the retake
+	  coop_wipe.reload([ini])   -> read the table again (the given ini object, or configs\coop_wipe_tasks.ltx);
+	                               also forgets the remembered ids
+	Host only: on a client, or outside a session, both callbacks do nothing (coop_wipe is a "host" script in
+	configs\coop_domains_checkpoints.ltx as well).
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace (nil on an exe without co-op)
+
+local RULES_FILE = "coop_wipe_tasks.ltx"
+local FAIL, KEEP = "fail", "keep"
+local STAGE_WAITING = 255 -- stock: task_callback leaves a repeat-timeout record at this stage
+local PENDING_TTL_MS = 120000 -- the engine normally handles a forced failure within a frame or two
+
+local rules = nil -- { default = , by_functor = {}, by_prefix = { { prefix =, action = }, ... }, by_id = {} }
+local pending = {} -- task id -> { tsk = the CGeneralTask failed by a wipe, since = time_global() }
+
+local function log(fmt, ...)
+	local ok, line = pcall(string.format, fmt, ...)
+	printf("[coop-wipe] %s", ok and line or tostring(fmt))
+end
+
+local function trim(s)
+	return (s:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function is_host()
+	if not api then return false end
+	local ok, active = pcall(api.is_active)
+	if not (ok and active == true) then return false end
+	local ok_host, host = pcall(api.is_host)
+	return ok_host and host == true
+end
+
+-- ------------------------------------------------------------------ the table
+local function action_of(value, where)
+	local v = trim(tostring(value or "")):lower()
+	if v == FAIL or v == KEEP then return v end
+	log("! %s: bad action '%s' in %s, read as keep", RULES_FILE, tostring(value), where)
+	return KEEP
+end
+
+local function read_section(ini, sec, put)
+	if not ini:section_exist(sec) then return end
+	for i = 0, ini:line_count(sec) - 1 do
+		local _, key, value = ini:r_line(sec, i, "", "")
+		if type(key) == "string" then
+			key = trim(key):lower()
+			if key ~= "" then put(key, action_of(value, "[" .. sec .. "] " .. key)) end
+		end
+	end
+end
+
+local function parse_rules(ini)
+	local r = { default = KEEP, by_functor = {}, by_prefix = {}, by_id = {} }
+	if ini:section_exist("settings") and ini:line_exist("settings", "default") then
+		r.default = action_of(ini:r_string("settings", "default"), "[settings] default")
+	end
+	read_section(ini, "by_functor", function(k, a) r.by_functor[k] = a end)
+	read_section(ini, "by_id", function(k, a) r.by_id[k] = a end)
+	read_section(ini, "by_prefix", function(k, a) r.by_prefix[#r.by_prefix + 1] = { prefix = k, action = a } end)
+	table.sort(r.by_prefix, function(a, b) -- longest prefix first, a stable order for equal lengths
+		if #a.prefix ~= #b.prefix then return #a.prefix > #b.prefix end
+		return a.prefix < b.prefix
+	end)
+	return r
+end
+
+local function get_rules()
+	if rules then return rules end
+	local ok, ini = pcall(ini_file, RULES_FILE)
+	if ok and ini and ini:section_exist("settings") then
+		rules = parse_rules(ini)
+	else
+		log("! configs\\%s not found, no task is touched on a wipe", RULES_FILE)
+		rules = parse_rules({ section_exist = function() return false end })
+	end
+	return rules
+end
+
+-- Returns the action and which rule gave it (for the log).
+local function decide(id, functor)
+	local r = get_rules()
+	if type(id) == "string" and id ~= "" then
+		local key = id:lower()
+		if r.by_id[key] then return r.by_id[key], "id" end
+		for _, p in ipairs(r.by_prefix) do
+			if key:sub(1, #p.prefix) == p.prefix then return p.action, "prefix " .. p.prefix end
+		end
+	end
+	if type(functor) == "string" and functor ~= "" then
+		local a = r.by_functor[functor:lower()]
+		if a then return a, "functor" end
+	end
+	return r.default, "default"
+end
+
+function action_for(id, functor)
+	local action = decide(id, functor)
+	return action
+end
+
+function reload(ini)
+	rules = ini and parse_rules(ini) or nil
+	if not rules then get_rules() end
+	pending = {}
+end
+
+function pending_count()
+	local n = 0
+	for _ in pairs(pending) do n = n + 1 end
+	return n
+end
+
+-- ------------------------------------------------------------------ the wipe
+local function task_info_of(tm)
+	local info = tm and tm.task_info
+	return type(info) == "table" and info or nil
+end
+
+-- A task in progress: not finished (stage 255 / completed / failed = waiting for its repeat timer) and with no status
+-- forced by somebody else (cancelled by the player, being completed).
+local function in_progress(tsk)
+	if type(tsk) ~= "table" then return false end
+	if tsk.status == "completed" or tsk.status == "fail" then return false end
+	if tsk.stage == STAGE_WAITING then return false end
+	return tsk.forced_status == nil
+end
+
+function on_group_wipe()
+	if not is_host() then return end
+	local tm = task_manager.get_task_manager()
+	local info = task_info_of(tm)
+	if not info then
+		log("! group wipe: no task_info")
+		return
+	end
+	local ids = {}
+	for id in pairs(info) do ids[#ids + 1] = id end
+	table.sort(ids, function(a, b) return tostring(a) < tostring(b) end)
+	local failed, kept, skipped = 0, 0, 0
+	for _, id in ipairs(ids) do
+		local tsk = info[id]
+		if in_progress(tsk) then
+			local action, why = decide(id, tsk.status_functor)
+			log("%s [%s] -> %s (%s)", tostring(id), tostring(tsk.status_functor), action, why)
+			if action == FAIL then
+				local ok, err = pcall(tm.set_task_failed, tm, id)
+				if ok then
+					pending[id] = { tsk = tsk, since = time_global() }
+					failed = failed + 1
+				else
+					log("! set_task_failed %s: %s", tostring(id), tostring(err))
+				end
+			else
+				kept = kept + 1
+			end
+		else
+			skipped = skipped + 1
+		end
+	end
+	log("group wipe: %d failed, %d kept, %d not in progress", failed, kept, skipped)
+end
+
+-- The engine's own task object (the stock CRandomTask:update does not drop a record while it exists).
+local function engine_task_running(id)
+	local ok, t = pcall(function() return db.actor:get_task(id, true) end)
+	return ok and t ~= nil
+end
+
+-- Every update: a task failed by a wipe whose stock fail callback has run (stage 255) loses its repeat-timeout record.
+local function on_update()
+	if next(pending) == nil or not is_host() then return end
+	local info = task_info_of(task_manager.get_task_manager())
+	if not info then return end
+	local now = time_global()
+	for id, rec in pairs(pending) do
+		local cur = info[id]
+		if cur ~= rec.tsk then
+			pending[id] = nil
+			log("%s: %s", tostring(id), cur == nil and "stock already dropped the record (no repeat timer)" or "given again meanwhile, left alone")
+		elseif cur.stage == STAGE_WAITING and not engine_task_running(id) then
+			info[id] = nil
+			pending[id] = nil
+			log("%s: repeat timer reset, can be taken again", tostring(id))
+		elseif now - rec.since > PENDING_TTL_MS then -- the failure never went through (or the engine task never ended)
+			pending[id] = nil
+			log("%s: the failure was not finished in %d s, left to stock", tostring(id), PENDING_TTL_MS / 1000)
+		end
+	end
+end
+
+function on_game_start()
+	if not api then return end
+	AddScriptCallback("coop_group_wipe") -- fired by the engine (Task 8); this script is its only subscriber
+	RegisterScriptCallback("coop_group_wipe", on_group_wipe)
+	RegisterScriptCallback("actor_on_update", on_update)
+end

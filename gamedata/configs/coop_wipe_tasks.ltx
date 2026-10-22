@@ -1,0 +1,39 @@
+; Tasks when the whole group is dead (docs/CHECKPOINTS_DEATH.md section 6). fail = stock on_fail, then retake at once; keep = untouched.
+; Precedence: [by_id] > [by_prefix] (longest) > [by_functor] > [settings] default. GAMMA mods add lines here.
+;
+; Read by scripts\coop_wipe.script (host only) when the engine reports a group wipe. The key of [by_functor] is the
+; task's status_functor from configs\misc\task\*.ltx (task_status_functor.<name> in the stock tasks_*.script).
+; Stock choice (Anomaly 1.5.3, checked against tasks_*.script and the task ltx files):
+;   assault_task_status_functor   tasks_assault          clear a smart of enemy squads (80 tasks)
+;   bounty_task                   tasks_bounty           kill the ordered target (42)
+;   hostage_task                  tasks_faction_control  free and escort a hostage (9)
+;   gd_task_status_functor        tasks_pump_station_defense  defend the pump station (1)
+;   spy_task_status_functor       tasks_agent_rescue     pull an undercover agent out and bring him back (5)
+;   actor_has_fetch_item (206), delivery_task, measure_task: the player brings or measures something - a wipe
+;   changes nothing about the job, so they stay. Every other functor (DRX story chain, Lost to the Zone, dominance,
+;   vehicle hunts, ...) is not listed, so it stays too (default = keep).
+[settings]
+default = keep
+[by_functor]
+assault_task_status_functor = fail
+bounty_task                 = fail
+hostage_task                = fail
+gd_task_status_functor      = fail   ; defence (pump station)
+spy_task_status_functor     = fail   ; rescue/escort of an agent
+actor_has_fetch_item        = keep
+delivery_task               = keep
+measure_task                = keep
+[by_prefix]
+lttz_ = keep                         ; Lost to the Zone: never (a failure there can be final)
+[by_id]
+; Stock escort tasks that have no status_functor (they end by their condlist), so only an id can name them.
+; Each has an on_fail that removes the escorted squad, and a repeat_timeout. Failed on a wipe (spec section 6, escort).
+val_smart_terrain_7_4_bandit_trader_stalker_task_3 = fail
+jup_b6_scientist_tech_task_1                       = fail
+mar_base_owl_stalker_trader_task_3                 = fail
+sim_default_bandit_trader_task_4                   = fail
+sim_default_csky_trader_task_3                     = fail
+sim_default_ecolog_trader_task_1                   = fail
+; Deliberately NOT listed (kept by the default): the barrier defence barrier_defense_monolith / barrier_defense_zombie
+; (task_manager.ltx). They have no on_fail and no repeat_timeout; the attackers and the *_first_spawn flags are cleaned
+; only inside their condlist, so a forced failure would leave live attackers in the world and no respawn on a retake.

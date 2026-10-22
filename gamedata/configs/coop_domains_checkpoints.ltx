@@ -1,0 +1,14 @@
+; Anomaly Coop - Lua execution domains of the F3 group (checkpoints, death, rest, wipe, saves), loaded by
+; scripts\coop_main.script after configs\coop_domains.ltx (same sections and rules, see there). All five scripts are
+; also "view" through the coop_* prefix of the main file; the exact names below win over it.
+
+[view]
+coop_checkpoints             ; checkpoint tips and PDA spots: every machine shows its own and the group's
+coop_saves                   ; hides the save/load UI and quick-save keys on every machine
+
+[owner]
+coop_rest                    ; the local player's sleep / rest dialog
+coop_death                   ; contusion, money penalty and death marker spots of the local actor
+
+[host]
+coop_wipe                    ; fails the group's tasks on a wipe, only the host owns the task journal
