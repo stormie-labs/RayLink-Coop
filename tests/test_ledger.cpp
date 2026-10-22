@@ -11,29 +11,40 @@ using coop::Writer;
 using coop::ledger::Allowance;
 using coop::ledger::apply_client_delta;
 using coop::ledger::Cause;
+using coop::ledger::check_transfer;
 using coop::ledger::client_view;
+using coop::ledger::Decision;
 using coop::ledger::forget_acked;
+using coop::ledger::HostBook;
 using coop::ledger::MoneyBalanceMsg;
 using coop::ledger::MoneyReq;
 using coop::ledger::Pending;
 using coop::ledger::Policy;
+using coop::ledger::Receiver;
 using coop::ledger::Verdict;
 
 namespace
 {
-// One player's state on the host, as coop_money keeps it.
+// One character's balance and allowances on the host.
 struct HostSide
 {
 	uint32_t balance = 0;
-	uint32_t dialog_gained = 0;
+	Allowance dialog;
 	Allowance script;
 	Policy policy;
 
 	Verdict change(int64_t delta, Cause cause, uint64_t now, bool dialog_lock = false)
 	{
-		return apply_client_delta(balance, delta, cause, dialog_lock, dialog_gained, script, policy, now);
+		return apply_client_delta(balance, delta, cause, dialog_lock, dialog, script, policy, now);
 	}
 };
+
+bool near(double a, double b) { return a > b - 0.5 && a < b + 0.5; }
+
+MoneyReq req(uint32_t seq, int32_t delta, Cause cause = Cause::Script, uint32_t ref = 0)
+{
+	return MoneyReq{seq, delta, cause, ref};
+}
 
 std::vector<uint8_t> bytes_of(const Writer& w) { return std::vector<uint8_t>(w.ptr(), w.ptr() + w.size()); }
 } // namespace
@@ -50,7 +61,7 @@ TEST(ledger_spend)
 	CHECK(h.change(-600, Cause::Dialog, 0, true) == Verdict::Applied);
 	CHECK_EQ(h.balance, 0u);
 	CHECK(!h.script.started);
-	CHECK_EQ(h.dialog_gained, 0u);
+	CHECK(!h.dialog.started);
 	// No overflow on the most negative change a caller can pass.
 	h.balance = 5;
 	CHECK(h.change(INT64_MIN, Cause::Script, 0) == Verdict::Insufficient);
@@ -83,37 +94,198 @@ TEST(ledger_script_gain_allowance)
 
 TEST(ledger_dialog_gain)
 {
-	// The talk lock is held: a dialog pays up to the cap per lock without touching the allowance.
+	// The talk lock is held: a dialog pays out of the dialog allowance first, the script one is not touched.
 	HostSide h;
 	CHECK_EQ(h.policy.dialog_gain_cap, 100000u);
+	CHECK_EQ(h.policy.dialog_gain_per_min, 20000u);
 	CHECK(h.change(100000, Cause::Dialog, 0, true) == Verdict::Applied);
-	CHECK_EQ(h.dialog_gained, 100000u);
 	CHECK_EQ(h.balance, 100000u);
+	CHECK(near(h.dialog.tokens, 0));
 	CHECK(!h.script.started);
 	// The next RU comes out of the script allowance.
 	CHECK(h.change(1, Cause::Dialog, 0, true) == Verdict::Applied);
-	CHECK_EQ(h.dialog_gained, 100000u);
-	CHECK(h.script.started);
-	CHECK(h.script.tokens > 49998.5 && h.script.tokens < 49999.5);
+	CHECK(near(h.script.tokens, 49999));
 	CHECK_EQ(h.balance, 100001u);
+	// A minute later the dialog allowance holds 20000 again, the script one is not touched by that payout.
+	CHECK(h.change(20000, Cause::Dialog, 60000, true) == Verdict::Applied);
+	CHECK(near(h.dialog.tokens, 0));
+	CHECK(near(h.script.tokens, 49999));
+	// The script one refills when it is drawn on: back at its burst.
+	CHECK(h.change(50000, Cause::Dialog, 60000, true) == Verdict::Applied);
+	CHECK(h.change(1, Cause::Dialog, 60000, true) == Verdict::NoAllowance);
+	CHECK_EQ(h.balance, 170001u);
 
-	// Part of a gain fits under the cap: the rest comes out of the allowance, or nothing happens.
+	// Part of a gain fits in the dialog allowance: the rest comes out of the script one, or nothing happens.
 	HostSide part;
 	CHECK(part.change(90000, Cause::Dialog, 0, true) == Verdict::Applied);
 	CHECK(part.change(60001, Cause::Dialog, 0, true) == Verdict::NoAllowance); // 10000 + 50001 > 10000 + 50000
-	CHECK_EQ(part.dialog_gained, 90000u);
+	CHECK(near(part.dialog.tokens, 10000));
 	CHECK_EQ(part.balance, 90000u);
-	CHECK(part.change(60000, Cause::Dialog, 0, true) == Verdict::Applied);
-	CHECK_EQ(part.dialog_gained, 100000u);
+	uint32_t from_dialog = 7;
+	CHECK(apply_client_delta(part.balance, 60000, Cause::Dialog, true, part.dialog, part.script, part.policy, 0,
+	          &from_dialog) == Verdict::Applied);
+	CHECK_EQ(from_dialog, 10000u);
 	CHECK_EQ(part.balance, 150000u);
+	CHECK(near(part.dialog.tokens, 0));
 	CHECK(part.change(1, Cause::Script, 0) == Verdict::NoAllowance);
 
 	// Dialog without a lock counts as Script.
 	HostSide nolock;
 	CHECK(nolock.change(50000, Cause::Dialog, 0, false) == Verdict::Applied);
-	CHECK_EQ(nolock.dialog_gained, 0u);
+	CHECK(!nolock.dialog.started);
 	CHECK(nolock.change(1, Cause::Dialog, 0, false) == Verdict::NoAllowance);
 	CHECK_EQ(nolock.balance, 50000u);
+}
+
+// Ruling F2-1 (review, Critical): the dialog allowance belongs to the player, not to a talk lock. Taking another lock
+// (another NPC, the same one again) or a change without a lock between them refills nothing: lock cycling cannot
+// print money.
+TEST(ledger_dialog_cap_not_reset_by_lock_cycling)
+{
+	HostBook book;
+	const Policy p;
+	const Receiver nobody;
+	uint32_t balance = 0;
+	uint32_t seq = 0;
+	auto send = [&](int32_t delta, Cause cause, bool lock, uint64_t now)
+	{
+		const Decision d = book.on_request(1, 300, req(++seq, delta, cause), balance, lock, nobody, p, now);
+		if (d.verdict == Verdict::Applied)
+			balance = d.balance;
+		return d;
+	};
+	CHECK(send(100000, Cause::Dialog, true, 0).verdict == Verdict::Applied); // talk to NPC A
+	CHECK(send(1, Cause::Script, false, 0).verdict == Verdict::Applied); // between the talks: no lock
+	const Decision zero = send(0, Cause::Script, false, 0); // or a change of nothing
+	CHECK(zero.verdict == Verdict::Malformed);
+	CHECK_EQ(zero.balance, 100001u);
+	CHECK(send(100000, Cause::Dialog, true, 0).verdict == Verdict::NoAllowance); // talk to NPC B
+	CHECK(send(100000, Cause::Dialog, true, 0).verdict == Verdict::NoAllowance); // A again
+	CHECK_EQ(balance, 100001u);
+	// What is left is the script allowance.
+	CHECK(send(49999, Cause::Dialog, true, 0).verdict == Verdict::Applied);
+	CHECK(send(1, Cause::Dialog, true, 0).verdict == Verdict::NoAllowance);
+	CHECK_EQ(balance, 150000u);
+	// An hour of lock farming, a new lock and a 100000 payout every minute: both allowances refill 20000 + 10000 a
+	// minute, so 18 payouts go through (1 800 000 RU an hour), not 60 (6 000 000 RU with a cap per lock).
+	uint32_t applied = 0;
+	for (int i = 0; i < 60; ++i)
+		if (send(100000, Cause::Dialog, true, 60000ull * uint64_t(i + 1)).verdict == Verdict::Applied)
+			++applied;
+	CHECK_EQ(applied, 18u);
+	CHECK_EQ(balance, 150000u + 60u * (20000u + 10000u));
+}
+
+// Review fix round 1: the allowances belong to the character for the whole session; leaving and joining again (a new
+// connection, maybe another peer id, a client numbering from 1) refills nothing. The numbering of a connection goes
+// with it.
+TEST(ledger_allowance_survives_reconnect)
+{
+	HostBook book;
+	const Policy p;
+	const Receiver nobody;
+	Decision d = book.on_request(1, 300, req(41, 50000), 0, false, nobody, p, 0);
+	CHECK(d.verdict == Verdict::Applied);
+	CHECK_EQ(d.acked, 41u);
+	CHECK_EQ(d.gain_script, 50000u);
+	CHECK_EQ(d.gain_dialog, 0u);
+	book.peer_left(1);
+	CHECK_EQ(book.acked(1), 0u);
+	// The same character back as peer 2, a new game process numbering from 1.
+	d = book.on_request(2, 300, req(1, 1), 50000, false, nobody, p, 0); // the same moment: no refill either
+	CHECK(!d.stale);
+	CHECK(d.verdict == Verdict::NoAllowance);
+	CHECK_EQ(d.balance, 50000u);
+	CHECK_EQ(book.acked(2), 1u);
+	// As peer 1 again, the old numbering going on.
+	d = book.on_request(1, 300, req(42, 1), 50000, false, nobody, p, 0);
+	CHECK(d.verdict == Verdict::NoAllowance);
+	// Another character has his own.
+	d = book.on_request(3, 301, req(1, 50000), 0, false, nobody, p, 0);
+	CHECK(d.verdict == Verdict::Applied);
+	REQUIRE(book.allowances(300) != nullptr);
+	CHECK(near(book.allowances(300)->script.tokens, 0));
+	// A dialog split is reported by allowance.
+	d = book.on_request(3, 301, req(2, 1000, Cause::Dialog), 50000, true, nobody, p, 0);
+	CHECK(d.verdict == Verdict::Applied);
+	CHECK_EQ(d.gain_dialog, 1000u);
+	CHECK_EQ(d.gain_script, 0u);
+	// A new session keeps nothing.
+	book.reset();
+	CHECK(book.allowances(300) == nullptr);
+	CHECK_EQ(book.acked(2), 0u);
+}
+
+TEST(ledger_stale_seq)
+{
+	HostBook book;
+	const Policy p;
+	const Receiver nobody;
+	Decision d = book.on_request(1, 300, req(5, -100), 1000, false, nobody, p, 0);
+	CHECK(d.verdict == Verdict::Applied);
+	CHECK_EQ(d.balance, 900u);
+	// The same change again, an older one: nothing done, the answer says where we are.
+	d = book.on_request(1, 300, req(5, -100), 900, false, nobody, p, 0);
+	CHECK(d.stale);
+	CHECK_EQ(d.balance, 900u);
+	CHECK_EQ(d.acked, 5u);
+	d = book.on_request(1, 300, req(4, 50000), 900, false, nobody, p, 0);
+	CHECK(d.stale);
+	CHECK_EQ(d.balance, 900u);
+	CHECK_EQ(book.acked(1), 5u);
+	REQUIRE(book.allowances(300) != nullptr); // made by the spend above
+	CHECK(!book.allowances(300)->script.started); // the stale gain touched nothing
+	d = book.on_request(1, 300, req(6, -100), 900, false, nobody, p, 0);
+	CHECK(!d.stale);
+	CHECK_EQ(d.balance, 800u);
+	CHECK_EQ(d.acked, 6u);
+	// Refused changes are answered too, and count as answered.
+	d = book.on_request(1, 300, req(7, -5000), 800, false, nobody, p, 0);
+	CHECK(d.verdict == Verdict::Insufficient);
+	CHECK_EQ(d.acked, 7u);
+	CHECK_EQ(d.balance, 800u);
+}
+
+TEST(ledger_transfer_checks)
+{
+	const Policy p;
+	uint32_t balance = 1000, credit = 99;
+	Receiver to;
+	to.peer = 2;
+	to.present = true;
+	to.balance = 500;
+	// Nobody there, himself, nothing given.
+	Receiver gone = to;
+	gone.present = false;
+	CHECK(check_transfer(1, gone, -100, balance, credit, p) == Verdict::Malformed);
+	CHECK_EQ(credit, 0u);
+	CHECK(check_transfer(2, to, -100, balance, credit, p) == Verdict::Malformed);
+	CHECK(check_transfer(1, to, 0, balance, credit, p) == Verdict::Malformed);
+	CHECK(check_transfer(1, to, 100, balance, credit, p) == Verdict::Malformed);
+	CHECK(check_transfer(1, to, -1001, balance, credit, p) == Verdict::Insufficient);
+	CHECK(check_transfer(1, to, INT64_MIN, balance, credit, p) == Verdict::Insufficient);
+	Receiver rich = to;
+	rich.balance = p.max_money - 50;
+	CHECK(check_transfer(1, rich, -51, balance, credit, p) == Verdict::OverMax);
+	CHECK_EQ(balance, 1000u);
+	CHECK(check_transfer(1, to, -300, balance, credit, p) == Verdict::Applied);
+	CHECK_EQ(balance, 700u);
+	CHECK_EQ(credit, 300u);
+	// To the host (peer 0) is fine; a transfer never touches the allowances.
+	HostBook book;
+	Receiver host;
+	host.peer = 0;
+	host.present = true;
+	const Decision d = book.on_request(1, 300, req(1, -200, Cause::Transfer, 0), 700, false, host, p, 0);
+	CHECK(d.verdict == Verdict::Applied);
+	CHECK_EQ(d.balance, 500u);
+	CHECK_EQ(d.credit, 200u);
+	CHECK(book.allowances(300) == nullptr);
+	const Decision bad = book.on_request(1, 300, req(2, -200, Cause::Transfer, 9), 500, false, gone, p, 0);
+	CHECK(bad.verdict == Verdict::Malformed);
+	CHECK_EQ(bad.credit, 0u);
+	CHECK_EQ(bad.balance, 500u);
+	CHECK_EQ(bad.acked, 2u);
 }
 
 TEST(ledger_over_max)
@@ -127,7 +299,7 @@ TEST(ledger_over_max)
 	CHECK(h.change(1, Cause::Script, 0) == Verdict::Applied);
 	CHECK_EQ(h.balance, 100000000u);
 	CHECK(h.change(1, Cause::Dialog, 0, true) == Verdict::OverMax);
-	CHECK_EQ(h.dialog_gained, 0u);
+	CHECK(!h.dialog.started);
 }
 
 TEST(ledger_bad_causes)
@@ -143,9 +315,12 @@ TEST(ledger_bad_causes)
 	CHECK(h.change(5, static_cast<Cause>(3), 0) == Verdict::Malformed);
 	CHECK(h.change(-5, static_cast<Cause>(200), 0) == Verdict::Malformed);
 	CHECK_EQ(h.balance, 700u);
-	// No change: nothing to do.
-	CHECK(h.change(0, Cause::Script, 0) == Verdict::Applied);
+	// A change of nothing: a client never sends one (Ruling F2-1).
+	CHECK(h.change(0, Cause::Script, 0) == Verdict::Malformed);
+	CHECK(h.change(0, Cause::Dialog, 0, true) == Verdict::Malformed);
 	CHECK_EQ(h.balance, 700u);
+	CHECK(!h.script.started);
+	CHECK(!h.dialog.started);
 }
 
 TEST(ledger_client_view)
