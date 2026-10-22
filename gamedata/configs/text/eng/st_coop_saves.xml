@@ -22,13 +22,13 @@
 		<text>Restore an autosave</text>
 	</string>
 	<string id="st_coop_saves_restore_info">
-		<text>Emergency autosaves of this session, newest first. Pick the moment the whole group goes back to.</text>
+		<text>Autosaves (coop_auto_N) found in the saves folder, newest first. They may come from earlier sessions or other campaigns, so check the level and the time. Pick the moment the whole group goes back to.</text>
 	</string>
 	<string id="st_coop_saves_restore_none">
 		<text>No autosaves yet. The game saves itself on a new level, after a shared sleep, on a timer and when the session ends.</text>
 	</string>
 	<string id="st_coop_saves_restore_confirm">
-		<text>Restore %s (%s, game time %s)? The whole group goes back to that moment: everything done since is lost and every player reloads the world. Press Restore to confirm.</text>
+		<text>Restore %s (%s, game time %s, saved %s)? The whole group goes back to that moment: everything done since is lost and every player reloads the world. Press Restore to confirm.</text>
 	</string>
 	<string id="st_coop_saves_restore_btn_confirm">
 		<text>Restore</text>
@@ -41,6 +41,12 @@
 	</string>
 	<string id="st_coop_saves_restore_failed_bad_name">
 		<text>This is not an autosave of the session.</text>
+	</string>
+	<string id="st_coop_saves_restore_row_damaged">
+		<text>damaged</text>
+	</string>
+	<string id="st_coop_saves_restore_failed_damaged">
+		<text>This save file looks damaged (too small, or not a saved game) and is not loaded.</text>
 	</string>
 	<string id="st_coop_saves_restore_failed_missing">
 		<text>The save file is missing or damaged.</text>

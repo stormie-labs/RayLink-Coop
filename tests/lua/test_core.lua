@@ -825,7 +825,7 @@ do
 	check(has(N.news, "st_coop_core_left"), "newcomer: a player who leaves 'left'")
 end
 -- quicksave. F3 task 17: a client no longer asks the host to quicksave (coop_saves refuses every save in a session,
--- tests\lua	est_saves.lua); coop_main's own gate still blocks the client locally until Task 18 removes it.
+-- tests/lua/test_saves.lua); coop_main's own gate still blocks the client locally until Task 18 removes it.
 print("== quicksave")
 local flags = { ret = false }
 local sent_before = C.sent_count or 0

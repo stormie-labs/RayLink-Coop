@@ -15,21 +15,31 @@
 	    CUIMMShniaga::CreateList); here the Lua side covers an old menu that was opened before the session started:
 	      * on_before_save_input (types 1 menu Save, 2 F5, 3 F6): S1-S4;
 	      * on_before_load_input (F7): L1, L2;
-	      * main_menu:OnButton_load_clicked / OnButton_last_save of ui_main_menu: L3, L4;
-	  - the stock timer autosave game_autosave_new.autosave (S7) does not save in a session;
+	      * main_menu:OnButton_load_clicked / OnButton_last_save / OnButton_save_clicked of ui_main_menu: L3, L4, S3
+	        (a mouse click has no key before it, so the hint goes to the menu's own message line);
+	  - the stock timer autosave game_autosave_new.autosave (S7) does not save in a session, and its timer restarts when
+	    the session ends (no tempsave at once);
 	  - the other stock save modes (campfire saves, Agony, Timer, Ironman, Azazel) need a death or a save key of the player:
 	    in a session the actor does not die (coop_survival::intercept_actor_kill) and saves are closed above;
 	  - left open on purpose: the console commands save / load / load_last_save (the host's autosave engine, Restore and
 	    debugging use them), the new-world save of itms_manager (S6, once, before the game), the packet M_SAVE_GAME that
 	    the join flow sends itself (S11).
 
+	No save is opened to build the list (like the stock Load dialog): a CSavedGameWrapper reads and unpacks the whole file and
+	asserts (FATAL) on a cut one, and ten of them would stall the host's live session. The list holds what the folder says
+	(name, slot, when the file was written, its size); the level and the game time are read by details(entry) for the row the
+	host picked, and never for a file below MIN_SAVE_BYTES (a write cut short) or with a header that is not a saved game.
+	The autosave engine should write to a temporary name and rename it (Task 12), then a cut file never has the final name.
+
 	API:
-	  coop_saves.list_autosaves() -> { { name, slot, level, level_text, game_time_str, file_time }, ... } newest first.
-	      name "coop_auto_2", level = the engine's level name, level_text = its translation, game_time_str "hh:mm mm/dd/yyyy"
-	      (the Load dialog's format), file_time "dd/mm/yyyy hh:mm" (when the file was written). Only what the autosave
-	      engine writes counts (coop_autosave_rules.h parse_slot); quicksaves and other names are not listed.
-	      Works when no coop_auto_N exists yet (empty list).
-	  coop_saves.restore(name) -> true | false, why   host only, in a session: "load <name>"; why = not_host | bad_name | missing
+	  coop_saves.list_autosaves() -> { { name, slot, file_time, size, damaged }, ... } newest first.
+	      name "coop_auto_2", file_time "dd/mm/yyyy hh:mm" (when the file was written), size in bytes, damaged = the file is
+	      below MIN_SAVE_BYTES. Only what the autosave engine writes counts (coop_autosave_rules.h parse_slot); quicksaves
+	      and other names are not listed. Works when no coop_auto_N exists yet (empty list). Nothing is opened.
+	  coop_saves.details(entry) -> entry   fills level (the engine's level name), level_text (its translation), game_time_str
+	      "dd/mm/yyyy hh:mm" once, under pcall; a file with a bad header or one the wrapper cannot read gets damaged = true.
+	  coop_saves.restore(name) -> true | false, why   host only, in a session: "load <name>";
+	      why = not_host | bad_name | missing | damaged
 	  coop_saves.open_restore(owner) -> window       opens the list over the Co-op window `owner`
 	  coop_saves.text(key, ...)                      the string st_coop_saves_<key> with %s filled in order
 --]]
@@ -43,6 +53,9 @@ local EXT = ".scop"
 local MAX_ROWS = 10 -- the host keeps 10 autosaves
 local ROW_STEP = 32 -- px between the rows of ui_coop_saves.xml
 local MAX_SLOT_DIGITS = 9
+-- Below this a file is no saved game: the smallest real one (a fresh new game) is megabytes, a save cut short by a crash
+-- or a power loss is often less. The header check of valid_saved_game only looks at the first 8 bytes.
+local MIN_SAVE_BYTES = 65536
 
 local function log(fmt, ...)
 	local ok, line = pcall(string_format, fmt, ...)
@@ -92,22 +105,39 @@ local function now_ms()
 	return time_global()
 end
 
--- The last key the open in-game menu got (main_menu_on_keyboard comes first in main_menu:OnKeyboard, then the F5 / F6 / F7
--- branches send the save and load callbacks): the hint of such a key belongs to the menu's own message line, the HUD
--- is not drawn under the menu.
-local MENU_KEY_MS = 100
-local menu_key = nil -- { menu =, at = }
-
-local function on_main_menu_keyboard(dik, action, menu, in_level)
-	menu_key = { menu = menu, at = now_ms() }
+-- The frame counter of the engine (render_device.frame), or the real time when the exe has none.
+local function input_stamp()
+	local d = rawget(_G, "device")
+	if d then
+		local ok, frame = pcall(function() return d().frame end)
+		if ok and type(frame) == "number" then return frame, true end
+	end
+	return now_ms(), false
 end
 
--- One key, one callback: the instance is dropped as soon as it is looked at (the engine deletes the menu object when it
--- builds the next one, a reference kept longer could point at a dead menu).
+-- The last key the open in-game menu got (main_menu_on_keyboard comes first in main_menu:OnKeyboard, then the F5 / F6 / F7
+-- branches send the save and load callbacks, all in one frame): the hint of such a key belongs to the menu's own message
+-- line, the HUD is not drawn under the menu.
+local MENU_KEY_MS = 100 -- only without a frame counter
+local menu_key = nil -- { menu =, stamp =, by_frame = }
+
+local function on_main_menu_keyboard(dik, action, menu, in_level)
+	local stamp, by_frame = input_stamp()
+	menu_key = { menu = menu, stamp = stamp, by_frame = by_frame }
+end
+
+-- One key, one callback, the same frame: the instance is dropped as soon as it is looked at (the engine deletes the menu
+-- object when it builds the next one, a reference kept longer could point at a dead menu).
 local function menu_of_key()
 	local mk = menu_key
 	menu_key = nil
-	if mk and now_ms() - mk.at <= MENU_KEY_MS then return mk.menu end
+	if not mk then return nil end
+	local stamp = input_stamp()
+	if mk.by_frame then
+		if stamp == mk.stamp then return mk.menu end
+	elseif stamp - mk.stamp <= MENU_KEY_MS then
+		return mk.menu
+	end
 	return nil
 end
 
@@ -125,19 +155,24 @@ end
 -------------------------------------------------------------------------------
 -- Refusing save and load input
 -------------------------------------------------------------------------------
+-- The hint of a refusal: st_coop_saves_auto_host|client for a save, load_host|client for a load.
+local function refusal_key(kind)
+	return (kind == "load" and "load_" or "auto_") .. (is_host() and "host" or "client")
+end
+
 -- Stock: level_input.action_quick_save (F5, type 2) and the menu's F5 / F6 / Save (types 2, 3, 1) send this before they
 -- save; flags.ret = true stops them.
 local function on_before_save_input(flags, typ, label)
 	if type(flags) ~= "table" or not in_session() then return end
 	flags.ret = true
-	hint(is_host() and "auto_host" or "auto_client")
+	hint(refusal_key("save"))
 end
 
 -- Stock: level_input.action_quick_load (F7). Note the argument order.
 local function on_before_load_input(dik, bind, flags)
 	if type(flags) ~= "table" or not in_session() then return end
 	flags.ret = true
-	hint(is_host() and "load_host" or "load_client")
+	hint(refusal_key("load"))
 end
 
 -------------------------------------------------------------------------------
@@ -145,17 +180,26 @@ end
 -------------------------------------------------------------------------------
 local menu_wrappers = {} -- method name -> our wrapper (to wrap once)
 
+-- method of ui_main_menu.main_menu, and what it would do. The stock Save checks the save gate itself, but a click has no key
+-- before it, and a stale menu is shown without the HUD: its refusal goes to the menu's own message line too.
+local MENU_ENTRIES = {
+	{ "OnButton_load_clicked", "load" },
+	{ "OnButton_last_save", "load" },
+	{ "OnButton_save_clicked", "save" },
+}
+
 local function wrap_main_menu()
 	local mod = rawget(_G, "ui_main_menu") or ui_main_menu
 	local cls = mod and mod.main_menu
 	if not cls then return 0 end
 	local wrapped = 0
-	for _, fname in ipairs({ "OnButton_load_clicked", "OnButton_last_save" }) do
+	for _, entry in ipairs(MENU_ENTRIES) do
+		local fname, kind = entry[1], entry[2]
 		local ok, orig = pcall(function() return cls[fname] end)
 		if ok and type(orig) == "function" and menu_wrappers[fname] ~= orig then
 			local function wrapper(self, ...)
 				if in_session() then
-					hint(is_host() and "load_host" or "load_client", self)
+					hint(refusal_key(kind), self)
 					return
 				end
 				return orig(self, ...)
@@ -176,9 +220,18 @@ end
 -- so the wrapper must be in place before the first update of a level: on_game_start is early enough.
 local autosave_wrapper = nil
 
+local function stock_autosave_module()
+	local ok, mod = pcall(function() return rawget(_G, "game_autosave_new") or game_autosave_new end)
+	if ok and type(mod) == "table" then return mod end
+	return nil
+end
+
 local function wrap_autosave()
-	local mod = rawget(_G, "game_autosave_new") or game_autosave_new
-	if type(mod) ~= "table" or type(mod.autosave) ~= "function" then return false end
+	local mod = stock_autosave_module()
+	if not (mod and type(mod.autosave) == "function") then
+		log("! game_autosave_new.autosave not found: the stock timer autosave is not wrapped")
+		return false
+	end
 	if mod.autosave == autosave_wrapper then return true end
 	local orig = mod.autosave
 	local function wrapper(...)
@@ -192,6 +245,20 @@ local function wrap_autosave()
 	mod.autosave = wrapper
 	autosave_wrapper = wrapper
 	return true
+end
+
+-- In a session the stock tick does not reach its save, so its own last_save stays where it was: the first tick after the
+-- session would write a tempsave at once. When the session ends, the stock timer starts again from now
+-- (game_autosave_new.option_updated sets its last_save to the present time).
+local was_in_session = false
+
+local function actor_on_update()
+	local now = in_session()
+	if was_in_session and not now then
+		local mod = stock_autosave_module()
+		if mod and type(mod.option_updated) == "function" then pcall(mod.option_updated) end
+	end
+	was_in_session = now
 end
 
 -------------------------------------------------------------------------------
@@ -209,33 +276,10 @@ end
 local function game_time_text(sg)
 	local y, m, d, h, mi, s, ms = 0, 0, 0, 0, 0, 0, 0
 	y, m, d, h, mi, s, ms = sg:game_time():get(y, m, d, h, mi, s, ms)
-	return string_format("%02d:%02d %02d/%02d/%d", h, mi, m, d, y)
+	return string_format("%02d/%02d/%d %02d:%02d", d, m, y, h, mi) -- the same order as file_time
 end
 
--- The Load dialog's way of reading a save. valid_saved_game() first: the CSavedGameWrapper constructor asserts when the
--- file is missing, and a file with a bad header is no use to restore anyway.
-local function describe(name)
-	local okv, valid = pcall(valid_saved_game, name)
-	if not (okv and valid == true) then
-		log("%s is not a valid saved game, left out of the list", name)
-		return nil
-	end
-	local ok, sg = pcall(CSavedGameWrapper, name)
-	if not ok then
-		log("! cannot read %s: %s", name, tostring(sg))
-		return nil
-	end
-	local okl, level = pcall(function() return sg:level_name() end)
-	local okt, when = pcall(game_time_text, sg)
-	level = okl and tostring(level) or ""
-	local level_text = level
-	if level ~= "" then
-		local okr, translated = pcall(game.translate_string, level)
-		if okr and type(translated) == "string" and translated ~= "" then level_text = translated end
-	end
-	return { level = level, level_text = level_text, game_time_str = okt and when or "?" }
-end
-
+-- What the folder says about every coop_auto_N, newest first. No save is opened here.
 function list_autosaves()
 	local out = {}
 	local fs = getFS()
@@ -248,24 +292,68 @@ function list_autosaves()
 		local stem = file:NameFull():match("^(.*)%.scop$")
 		local slot = parse_slot(stem)
 		if slot then
-			local info = describe(stem)
-			if info then
-				info.name = stem
-				info.slot = slot
-				info.file_time = file:ModifDigitOnly()
-				out[#out + 1] = info
-			end
+			local oks, size = pcall(function() return tonumber(file:Size()) end)
+			size = oks and size or nil
+			out[#out + 1] = {
+				name = stem,
+				slot = slot,
+				file_time = file:ModifDigitOnly(),
+				size = size,
+				damaged = size ~= nil and size < MIN_SAVE_BYTES,
+			}
 		end
 	end
 	return out
 end
 
--- Host in a session, a real autosave: the same command the stock Load dialog gives in a running game.
+local function find_autosave(name)
+	for _, e in ipairs(list_autosaves()) do
+		if e.name == name then return e end
+	end
+	return nil
+end
+
+-- The Load dialog's way of reading a save, for ONE entry, once: level, level_text, game_time_str. A file known to be
+-- damaged is never opened. valid_saved_game() first: the CSavedGameWrapper constructor asserts when the file is missing
+-- (and, in the engine, when the body is cut: that one nothing here can catch, hence the size check above).
+function details(e)
+	if type(e) ~= "table" or e.details_done then return e end
+	e.details_done = true
+	if e.damaged then return e end
+	local okv, valid = pcall(valid_saved_game, e.name)
+	if not (okv and valid == true) then
+		e.damaged = true
+		log("%s: the header is not a saved game", e.name)
+		return e
+	end
+	local ok, sg = pcall(CSavedGameWrapper, e.name)
+	if not ok then
+		e.damaged = true
+		log("! cannot read %s: %s", e.name, tostring(sg))
+		return e
+	end
+	local okl, level = pcall(function() return sg:level_name() end)
+	local okt, when = pcall(game_time_text, sg)
+	e.level = okl and tostring(level) or ""
+	e.level_text = e.level
+	if e.level ~= "" then
+		local okr, translated = pcall(game.translate_string, e.level)
+		if okr and type(translated) == "string" and translated ~= "" then e.level_text = translated end
+	end
+	e.game_time_str = okt and when or "?"
+	return e
+end
+
+-- Host in a session, a real autosave that is in the folder and not damaged: the same command the stock Load dialog gives
+-- in a running game.
 function restore(name)
 	if not (in_session() and is_host()) then return false, "not_host" end
 	if not parse_slot(name) then return false, "bad_name" end
+	local e = find_autosave(name)
+	if not e then return false, "missing" end
+	if e.damaged then return false, "damaged" end
 	local ok, valid = pcall(valid_saved_game, name)
-	if not (ok and valid == true) then return false, "missing" end
+	if not (ok and valid == true) then return false, "damaged" end
 	log("the host restores %s", name)
 	exec_console_cmd("load " .. name)
 	return true
@@ -286,10 +374,14 @@ local FAIL_KEY = {
 	not_host = "restore_failed_not_host",
 	bad_name = "restore_failed_bad_name",
 	missing = "restore_failed_missing",
+	damaged = "restore_failed_damaged",
 }
 
+-- A row says what the folder says; the level and the game time come with the selection.
 local function row_text(e)
-	return e.name .. "   -   " .. e.level_text .. "   -   " .. e.game_time_str .. "   -   " .. tostring(e.file_time)
+	local s = e.name .. "   -   " .. tostring(e.file_time)
+	if e.damaged then s = s .. "   -   " .. text("restore_row_damaged") end
+	return s
 end
 
 class "UICoopRestore" (CUIScriptWnd)
@@ -375,13 +467,25 @@ function UICoopRestore:OnRow(i)
 	self.selected = i
 	local c = colors()
 	for j, b in ipairs(self.rows) do b:TextControl():SetTextColor(j == i and c.on or c.off) end
-	self.confirm:SetText(text("restore_confirm", e.name, e.level_text, e.game_time_str))
+	-- the only place a save is opened: the one that was picked, once, under pcall
+	local okd, err = pcall(details, e)
+	if not okd then
+		e.damaged = true
+		log("! details of %s: %s", e.name, tostring(err))
+	end
+	self.rows[i]:TextControl():SetText(row_text(e)) -- it may have turned out damaged
+	if e.damaged then
+		self.confirm:SetText(text("restore_failed_damaged"))
+		self.btn_confirm:Enable(false)
+		return
+	end
+	self.confirm:SetText(text("restore_confirm", e.name, e.level_text, e.game_time_str, e.file_time))
 	self.btn_confirm:Enable(true)
 end
 
 function UICoopRestore:OnConfirm()
 	local e = self.selected and self.entries[self.selected]
-	if not e then return end
+	if not e or e.damaged then return end
 	local ok, why = restore(e.name)
 	if not ok then
 		self.confirm:SetText(text(FAIL_KEY[why] or FAIL_KEY.missing))
@@ -433,9 +537,10 @@ end
 -- Start
 -------------------------------------------------------------------------------
 function print_status()
+	local wrapped = 0
+	for _ in pairs(menu_wrappers) do wrapped = wrapped + 1 end
 	log("saves: session %s, host %s | autosave wrapper %s, menu entries wrapped %d",
-		in_session() and "yes" or "no", is_host() and "yes" or "no", autosave_wrapper and "on" or "off",
-		(menu_wrappers.OnButton_load_clicked and 1 or 0) + (menu_wrappers.OnButton_last_save and 1 or 0))
+		in_session() and "yes" or "no", is_host() and "yes" or "no", autosave_wrapper and "on" or "off", wrapped)
 end
 
 -- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an error here
@@ -450,6 +555,7 @@ function on_game_start()
 	RegisterScriptCallback("on_before_save_input", on_before_save_input)
 	RegisterScriptCallback("on_before_load_input", on_before_load_input)
 	RegisterScriptCallback("main_menu_on_keyboard", on_main_menu_keyboard)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
 	start_step("wrap_main_menu", wrap_main_menu)
 	start_step("wrap_autosave", wrap_autosave)
 end

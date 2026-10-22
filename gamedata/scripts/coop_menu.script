@@ -20,8 +20,8 @@
 
 	F3 (saves, scripts\coop_saves.script): the host of a running session has a Restore button on the Host tab: the list
 	of the emergency autosaves coop_auto_N, a confirmation and the load. Nobody saves or loads by hand in a session; a
-	session that starts under this window (the in-game menu was opened before it) ends the old menu when the window is
-	closed, because the old list still has the Save / Load entries.
+	session that the host starts under this window (the in-game menu was opened before it) ends the old menu when the window
+	is closed, because the old list still has the Save / Load entries.
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
@@ -604,7 +604,8 @@ function UICoopMenu:Close()
 	self:Show(false)
 	-- F3: a session started while the in-game menu was open: its list (Save / Load / Last save) was built before, and
 	-- nobody saves in a session. End the menu instead of going back to it; the next open builds the right list.
-	if self.session_at_open == false and api.is_active() and level_loaded() then
+	-- Host only: a client who connected from the in-game menu is on its way out of this game anyway.
+	if self.session_at_open == false and api.is_host() and level_loaded() then
 		exec_console_cmd("main_menu off")
 		return
 	end

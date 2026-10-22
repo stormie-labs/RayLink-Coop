@@ -79,15 +79,18 @@ db = { actor = { alive = function() return true end } }
 axr_main = { config = config_stub() }
 CONSOLE = {}
 function get_console_cmd(typ, name) return CONSOLE[name] end
+FRAME = 1
+function device() return { time_continual = function() return NOW end, frame = FRAME } end
 
 -- ------------------------------------------------------------------ the saves folder
 FS = { FS_ListFiles = 1, FS_RootOnly = 2, FS_sort_by_modif_down = 5 }
 function bit_or(a, b) return a + b end
--- file name (with .scop) -> { modif = sort key, stamp = "dd/mm/yyyy hh:mm", level =, h, mi, d, m, y, bad = true if the header is bad }
+-- file name (with .scop) -> { modif = sort key, stamp = "dd/mm/yyyy hh:mm", size = bytes, level =, h, mi, d, m, y,
+-- bad = the header is bad, truncated = the body is cut: CSavedGameWrapper asserts (FATAL in the engine) }
 SAVES = {}
 local function add_save(file, modif, extra)
 	local s = { file = file, modif = modif, stamp = string.format("23/10/2026 01:%02d", modif % 60), level = "l01_escape",
-		y = 2012, m = 3, d = 15, h = 7, mi = 5 }
+		y = 2012, m = 3, d = 15, h = 7, mi = 5, size = 4000000 }
 	for k, v in pairs(extra or {}) do s[k] = v end
 	SAVES[#SAVES + 1] = s
 	return s
@@ -111,7 +114,8 @@ function getFS()
 			end
 			function list:GetAt(i)
 				local s = items[i + 1]
-				return { NameFull = function() return s.file end, ModifDigitOnly = function() return s.stamp end }
+				return { NameFull = function() return s.file end, ModifDigitOnly = function() return s.stamp end,
+						Size = function() return s.size end }
 			end
 			return list
 		end,
@@ -125,6 +129,7 @@ WRAPPED = {}
 function CSavedGameWrapper(name)
 	WRAPPED[#WRAPPED + 1] = name
 	local s = assert(save_named(name .. ".scop"), "R_ASSERT: no saved game " .. name)
+	if s.truncated then error("R_ASSERT: Can't find chunk OBJECT_CHUNK_DATA in " .. name) end
 	local o = {}
 	function o:level_name() return s.level end
 	function o:game_time()
@@ -237,23 +242,32 @@ for _, who in ipairs({ "host", "client" }) do
 	ui_main_menu.main_menu:OnButton_load_clicked()
 	ui_main_menu.main_menu:OnButton_last_save()
 	ui_main_menu.main_menu:OnButton_save_clicked()
-	check(#MM == 1 and MM[1] == "save", who .. ": Load and Last save of an old menu do nothing (the stock Save checks the gate itself)")
-	check(#MENU_MSG == 2 and MENU_MSG[1] == STRINGS["st_coop_saves_load_" .. who] and #HUD == 0,
-		who .. ": and say why, on the menu's own message line (the HUD is not drawn under the menu)")
+	check(#MM == 0, who .. ": Load, Last save and Save of an old menu do nothing")
+	check(#MENU_MSG == 3 and MENU_MSG[1] == STRINGS["st_coop_saves_load_" .. who] and MENU_MSG[2] == MENU_MSG[1]
+		and MENU_MSG[3] == STRINGS["st_coop_saves_auto_" .. who] and #HUD == 0,
+		who .. ": and say why, on the menu's own message line (the HUD is not drawn under the menu), also for a mouse click")
 end
 
 print("== hint goes where the player looks")
 set_mode("host")
 HUD, MENU_MSG = {}, {}
--- F5 pressed in the open in-game menu: main_menu:OnKeyboard sends main_menu_on_keyboard first
+-- F5 pressed in the open in-game menu: main_menu:OnKeyboard sends main_menu_on_keyboard first, in the same frame
+FRAME = FRAME + 1
 SendScriptCallback("main_menu_on_keyboard", 63, 1, ui_main_menu.main_menu, true)
 SendScriptCallback("on_before_save_input", { ret = false }, 2, "Save")
 check(#MENU_MSG == 1 and MENU_MSG[1] == STRINGS.st_coop_saves_auto_host and #HUD == 0, "F5 in the menu: the hint is on the menu's line")
-NOW = NOW + 1000
+-- one key, one hint: the menu object is dropped after it was used
 SendScriptCallback("on_before_save_input", { ret = false }, 2, "Save")
-check(#MENU_MSG == 1 and #HUD == 1 and HUD[1] == STRINGS.st_coop_saves_auto_host, "F5 in the game, a second later: the hint is over the game")
+check(#MENU_MSG == 1 and #HUD == 1, "the menu is not used a second time for the same key")
+-- the menu was closed (Esc), F5 is pressed in the game in a later frame: over the game, the old menu object is not touched
+HUD = {}
+SendScriptCallback("main_menu_on_keyboard", 1, 1, ui_main_menu.main_menu, true)
+FRAME = FRAME + 1
+SendScriptCallback("on_before_save_input", { ret = false }, 2, "Save")
+check(#MENU_MSG == 1 and #HUD == 1 and HUD[1] == STRINGS.st_coop_saves_auto_host, "F5 in the game, a frame later: the hint is over the game")
 -- a menu without SetMsg falls back to the HUD
 HUD = {}
+FRAME = FRAME + 1
 SendScriptCallback("main_menu_on_keyboard", 63, 1, {}, true)
 SendScriptCallback("on_before_save_input", { ret = false }, 3, "Save")
 check(#HUD == 1, "a menu without SetMsg: the HUD hint")
@@ -267,7 +281,8 @@ SendScriptCallback("on_before_load_input", 65, 33, f2)
 check(f1.ret == false and f2.ret == false and #HUD == 0, "no session: flags untouched, no hint")
 ui_main_menu.main_menu:OnButton_load_clicked()
 ui_main_menu.main_menu:OnButton_last_save()
-check(#MM == 2 and MM[1] == "load" and MM[2] == "last", "no session: the stock Load / Last save run")
+ui_main_menu.main_menu:OnButton_save_clicked()
+check(#MM == 3 and MM[1] == "load" and MM[2] == "last" and MM[3] == "save", "no session: the stock Load / Last save / Save run")
 -- a flags table that already says ret = true is not touched either
 local f3 = { ret = true }
 SendScriptCallback("on_before_save_input", f3, 2, "Save")
@@ -312,10 +327,31 @@ OPT["other/autosave_timer_new"] = 1
 do
 	local keep = _G.game_autosave_new
 	_G.game_autosave_new = nil
+	LOG = {}
 	local ok = pcall(saves.on_game_start)
 	check(ok, "no game_autosave_new: on_game_start survives")
+	check(log_has("game_autosave_new"), "and says so in the log")
 	_G.game_autosave_new = keep
 end
+
+print("== stock timer restarts when the session ends")
+-- in the session the stock tick does not run its save, so its last_save stays old: right after the session it would write a
+-- tempsave at once. The end of the session restarts the stock timer (game_autosave_new.option_updated).
+set_mode("host")
+TE, RESETS, EXEC = {}, {}, {}
+NOW = 100000
+game_autosave_new.actor_on_first_update()
+SendScriptCallback("actor_on_update")
+NOW = NOW + 61000 * 3
+TE["actor:autosave_new"].f()
+check(not exec_has("save"), "in the session: three minutes, no save")
+set_mode("off")
+SendScriptCallback("actor_on_update")
+TE["actor:autosave_new"].f()
+check(not exec_has("save"), "the session just ended: the stock timer counts from now, no tempsave at once")
+NOW = NOW + 61000
+TE["actor:autosave_new"].f()
+check(exec_has("save Strelok - tempsave"), "a minute later the stock timer works again")
 
 print("== client_quicksave_request_gone")
 local cp = load_module("coop_core_player")
@@ -345,28 +381,61 @@ add_save("coop_auto_x.scop", 500)
 add_save("coop_auto_03.scop", 510)
 add_save("Coop_Auto_4.scop", 520)
 add_save("coop_auto_5.scop.bak", 530)
-add_save("coop_auto_6.scop", 540, { bad = true })
 set_mode("host")
 WRAPPED, SORTED = {}, 0
 local list = saves.list_autosaves()
 check(SORTED >= 1, "the folder is asked newest first")
 local names = {}
 for i, e in ipairs(list) do names[i] = e.name end
-check(table.concat(names, ",") == "coop_auto_2,coop_auto_1", "coop_auto_2 (newer), coop_auto_1; quicksave, other names and bad headers left out (" .. table.concat(names, ",") .. ")")
-check(list[1].level == "l02_garbage" and list[1].level_text == "Garbage" and list[1].game_time_str == "21:40 03/15/2012"
-	and list[1].file_time == "23/10/2026 01:00" and list[1].slot == 2, "entry fields: level, level_text, game_time_str, file_time, slot")
-check(list[2].level == "l01_escape" and list[2].level_text == "Cordon" and list[2].game_time_str == "07:05 03/15/2012", "second entry")
-check(#WRAPPED == 2, "the save is opened only for what is listed (" .. #WRAPPED .. ")")
+check(table.concat(names, ",") == "coop_auto_2,coop_auto_1", "coop_auto_2 (newer), coop_auto_1; quicksave and other names left out (" .. table.concat(names, ",") .. ")")
+check(list[1].slot == 2 and list[1].file_time == "23/10/2026 01:00" and list[1].size == 4000000 and list[1].damaged == false
+	and list[2].slot == 1, "listed: name, slot, file_time, size")
+check(list[1].level == nil and list[1].game_time_str == nil and #WRAPPED == 0,
+	"the list opens no save: no level, no game time, no CSavedGameWrapper")
+local d = saves.details(list[1])
+check(d == list[1] and d.level == "l02_garbage" and d.level_text == "Garbage" and d.game_time_str == "15/03/2012 21:40"
+	and #WRAPPED == 1 and WRAPPED[1] == "coop_auto_2", "details(entry): level, level_text, game_time_str, only for that entry")
+saves.details(list[1])
+check(#WRAPPED == 1, "details are read once")
+saves.details(list[2])
+check(list[2].level == "l01_escape" and list[2].level_text == "Cordon" and list[2].game_time_str == "15/03/2012 07:05" and #WRAPPED == 2,
+	"second entry on its own request")
 SAVES = {}
 check(#saves.list_autosaves() == 0, "no autosave at all (the engine module is not there yet): an empty list, no error")
 add_save("quicksave.scop", 1)
 check(#saves.list_autosaves() == 0, "only a quicksave: still empty")
+
+print("== restore_list: a truncated or damaged file")
+SAVES = {}
+add_save("coop_auto_1.scop", 100)
+add_save("coop_auto_2.scop", 300, { size = 40, truncated = true }) -- cut right after the header: far below any real save
+add_save("coop_auto_3.scop", 200, { bad = true, truncated = true }) -- big enough, but the header is not a saved game
+add_save("coop_auto_4.scop", 150, { truncated = true }) -- header and size look fine, the body is cut (the stock assert)
+WRAPPED = {}
+list = saves.list_autosaves()
+names = {}
+for i, e in ipairs(list) do names[i] = e.name end
+check(table.concat(names, ",") == "coop_auto_2,coop_auto_3,coop_auto_4,coop_auto_1", "all four are listed, newest first (" .. table.concat(names, ",") .. ")")
+check(list[1].damaged == true and list[2].damaged == false and list[3].damaged == false and list[4].damaged == false,
+	"too small: damaged at once; the others only show when they are looked at")
+check(#WRAPPED == 0, "opening the list builds no CSavedGameWrapper, whatever the files look like")
+saves.details(list[1])
+check(#WRAPPED == 0 and list[1].level == nil, "a file below the smallest plausible size is never opened")
+saves.details(list[2])
+check(#WRAPPED == 0 and list[2].damaged == true, "a header that is not a saved game: damaged, never opened")
+local okd = pcall(saves.details, list[3])
+check(okd and list[3].damaged == true and #WRAPPED == 1 and WRAPPED[1] == "coop_auto_4",
+	"a wrapper that fails (a Lua error here): no error out, the entry is damaged")
+saves.details(list[4])
+check(list[4].damaged == false and list[4].level == "l01_escape" and #WRAPPED == 2, "the good one next to them is read normally")
 
 print("== restore")
 SAVES = {}
 add_save("coop_auto_1.scop", 100)
 add_save("coop_auto_2.scop", 300)
 add_save("quicksave.scop", 400)
+add_save("coop_auto_3.scop", 200, { size = 12 })
+add_save("coop_auto_4.scop", 250, { bad = true })
 set_mode("host")
 EXEC = {}
 local ok, why = saves.restore("coop_auto_2")
@@ -376,6 +445,12 @@ for _, bad in ipairs({ "quicksave", "coop_auto_9", "coop_auto_2 ; quit", "coop_a
 	ok, why = saves.restore(bad)
 	check(ok == false and #EXEC == 0, "restore refuses '" .. tostring(bad) .. "' (" .. tostring(why) .. ")")
 end
+ok, why = saves.restore("coop_auto_3")
+check(ok == false and why == "damaged" and #EXEC == 0, "restore refuses a file that is too small (" .. tostring(why) .. ")")
+ok, why = saves.restore("coop_auto_4")
+check(ok == false and why == "damaged" and #EXEC == 0, "restore refuses a file with a bad header (" .. tostring(why) .. ")")
+ok, why = saves.restore("coop_auto_9")
+check(ok == false and why == "missing", "restore refuses a file that is not in the folder")
 set_mode("client")
 ok, why = saves.restore("coop_auto_2")
 check(ok == false and why == "not_host" and #EXEC == 0, "client: restore refused")
@@ -432,18 +507,24 @@ check(rd ~= nil and rd.shown, "the restore window opens")
 check(not dlg.shown, "over the Co-op window")
 check(#MISSING_PATHS == 0, "every xml path exists (" .. table.concat(MISSING_PATHS, ", ") .. ")")
 check(rd.rows[1].shown and rd.rows[2].shown and not rd.rows[3].shown, "two rows, newest first")
-check(rd.rows[1].text:find("coop_auto_2", 1, true) and rd.rows[1].text:find("Garbage", 1, true)
-	and rd.rows[2].text:find("coop_auto_1", 1, true) and rd.rows[2].text:find("Cordon", 1, true), "row text: name, level")
+check(rd.rows[1].text:find("coop_auto_2", 1, true) and rd.rows[1].text:find("23/10/2026 01:00", 1, true)
+	and rd.rows[2].text:find("coop_auto_1", 1, true) and rd.rows[2].text:find("23/10/2026 01:40", 1, true),
+	"row text: name and the time the file was written")
+check(not rd.rows[1].text:find("Garbage", 1, true) and #WRAPPED == 0, "opening the window reads no save (no level in the rows)")
 check(rd.empty.shown == false, "the empty note is hidden")
 check(rd.btn_confirm.enabled == false and rd.confirm.text == "", "nothing selected: no confirm")
 click(rd, "btn_confirm")
 check(#EXEC == 0, "confirm without a selection loads nothing")
 click(rd, "btn_row_2")
 check(rd.btn_confirm.enabled == true and rd.confirm.text:find("coop_auto_1", 1, true) ~= nil, "a selected row asks for confirmation")
+check(#WRAPPED == 1 and WRAPPED[1] == "coop_auto_1", "the details of the selected row are read, only that one")
 check(#EXEC == 0, "selecting alone loads nothing")
 click(rd, "btn_row_1")
 check(rd.confirm.text:find("coop_auto_2", 1, true) ~= nil and rd.confirm.text:find("Garbage", 1, true) ~= nil
-	and rd.confirm.text:find("07:05 03/15/2012", 1, true) ~= nil, "the confirmation names the chosen save, its level and time")
+	and rd.confirm.text:find("15/03/2012 07:05", 1, true) ~= nil and rd.confirm.text:find("23/10/2026 01:00", 1, true) ~= nil,
+	"the confirmation names the chosen save, its level, its game time and when the file was written")
+click(rd, "btn_row_2")
+check(#WRAPPED == 2, "a row looked at again is not read again")
 -- back
 click(rd, "btn_back")
 check(not rd.shown and dlg.shown and dlg.visible ~= false, "Back returns to the Co-op window")
@@ -454,6 +535,34 @@ click(rd, "btn_row_1")
 click(rd, "btn_confirm")
 check(#EXEC == 1 and EXEC[1] == "load coop_auto_2", "confirm: load coop_auto_2")
 check(not rd.shown, "the restore window is closed after the load")
+
+-- a damaged file in the list: shown as damaged, never opened, cannot be confirmed
+SAVES = {}
+add_save("coop_auto_1.scop", 100)
+add_save("coop_auto_2.scop", 300, { size = 40, truncated = true })
+add_save("coop_auto_3.scop", 200, { bad = true, truncated = true })
+EXEC, WRAPPED = {}, {}
+set_mode("host")
+click(dlg, "btn_restore")
+rd = dlg.restore_dlg
+check(rd.rows[1].text:find(STRINGS.st_coop_saves_restore_row_damaged, 1, true) ~= nil
+	and not rd.rows[3].text:find(STRINGS.st_coop_saves_restore_row_damaged, 1, true), "a file that is too small is marked in its row")
+check(#WRAPPED == 0, "the window with a damaged newest file builds no wrapper")
+click(rd, "btn_row_1")
+check(rd.confirm.text == STRINGS.st_coop_saves_restore_failed_damaged and rd.btn_confirm.enabled == false and #WRAPPED == 0,
+	"selecting it: the reason, no confirm, still no wrapper")
+click(rd, "btn_confirm")
+check(#EXEC == 0, "nothing to confirm")
+click(rd, "btn_row_2")
+check(rd.confirm.text == STRINGS.st_coop_saves_restore_failed_damaged and rd.btn_confirm.enabled == false and #WRAPPED == 0
+	and rd.rows[2].text:find(STRINGS.st_coop_saves_restore_row_damaged, 1, true) ~= nil,
+	"a bad header shows up on selection: damaged, no wrapper, the row is marked")
+click(rd, "btn_row_3")
+check(rd.btn_confirm.enabled == true and #WRAPPED == 1, "the good one is still restorable after the bad ones")
+click(rd, "btn_back")
+SAVES = {}
+add_save("coop_auto_1.scop", 100)
+add_save("coop_auto_2.scop", 300)
 
 -- the file is gone / the session ended between the list and the confirm
 set_mode("host")
@@ -503,6 +612,14 @@ EXEC = {}
 MENU.shown = false
 dlg:Close()
 check(not exec_has("main_menu off") and MENU.shown == true, "no session: Close goes back as before")
+-- a client who connected from the in-game menu: the world changes under it anyway, the old menu is left as it was
+set_mode("off")
+dlg = open_window()
+set_mode("client")
+EXEC = {}
+MENU.shown = false
+dlg:Close()
+check(not exec_has("main_menu off") and MENU.shown == true, "a client connecting from the in-game menu: Close goes back as before")
 
 -------------------------------------------------------------------------------
 print("== strings and layout")
@@ -516,7 +633,7 @@ for _, lang in ipairs({ "eng", "rus" }) do
 		check(raw:sub(1, #HEADER) == HEADER, lang .. ": windows-1251 header")
 		check(not raw:gsub("\r\n", ""):find("\n", 1, true), lang .. ": CRLF line ends only")
 		local t, n = strings_of(path)
-		check(n == 14, lang .. ": " .. n .. " strings")
+		check(n == 16, lang .. ": " .. n .. " strings")
 		for id, text in pairs(t) do
 			(lang == "eng" and eng_ids or rus_ids)[id] = true
 			if text:find("^%s*$") then check(false, lang .. ": " .. id .. " is empty") end
@@ -556,7 +673,7 @@ for id, where in pairs(used) do
 end
 check(n_used >= 6 and #absent == 0, n_used .. " ids used by the scripts and layouts exist (" .. table.concat(absent, ", ") .. ")")
 -- the failure reasons restore() can give all have a string
-for _, why in ipairs({ "not_host", "bad_name", "missing" }) do
+for _, why in ipairs({ "not_host", "bad_name", "missing", "damaged" }) do
 	check(eng_ids["st_coop_saves_restore_failed_" .. why], "string for the restore failure '" .. why .. "'")
 end
 
