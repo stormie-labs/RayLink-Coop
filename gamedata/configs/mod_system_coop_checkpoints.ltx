@@ -1,0 +1,48 @@
+; Anomaly Coop - where a player's checkpoint (camp) may come from (F3, docs/CHECKPOINTS_DEATH.md par. 2.2). Merged into
+; system.ltx (DLTX); read by the engine on the host (coop_checkpoint_sources.cpp) when a session starts.
+;   campfire  - a lit campfire within campfire_radius, stood next to it campfire_dwell_ms and not in a fight
+;               (an enemy within combat_radius picked him); a fight restarts the count;
+;   tent      - the player's own tent: he says "I put up a tent here" (coop.checkpoint.claim_tent), the host gives him
+;               the nearest new tent of tent_sections within tent_claim_radius (a client's tent the host puts up
+;               itself, the first section); his tent within tent_rest_radius is also a rest place;
+;   rest      - inside a stock sleep zone ([coop_rest_zones]) or a surge cover ([list] of cover_list), when he lies down;
+;   mod       - an object a mod declares with coop.checkpoint.register_source(id, radius), as a campfire.
+; A radius is in metres, 0 < r <= 500; a time is in ms, 0..600000. A value outside falls back to the one below.
+; Mod packs change them or add rest zones with DLTX (![coop_checkpoints], ![coop_rest_zones]).
+
+[coop_checkpoints]
+campfire_radius   = 3
+campfire_dwell_ms = 5000
+combat_radius     = 50
+tent_sections     = ph_tent, ph_sleepbag
+tent_rest_radius  = 2
+tent_claim_radius = 4
+tent_claim_ms     = 15000
+cover_list        = misc\surge_manager.ltx   ; section [list]: stock surge covers (294)
+
+[coop_rest_zones]   ; stock sleep restrictors, ui_sleep_dialog.script:292-318
+actor_surge_hide_2
+agr_army_sleep
+agr_sr_sleep_tunnel
+agr_sr_sleep_wagon
+bar_actor_sleep_zone
+cit_merc_sleep
+ds_farmhouse_sleep
+esc_basement_sleep_area
+esc_secret_sleep
+gar_angar_sleep
+gar_dolg_sleep
+jup_a6_sr_sleep
+mar_a3_sr_sleep
+mil_freedom_sleep
+mil_smart_terran_2_4_sleep
+pri_a16_sr_sleep
+pri_monolith_sleep
+pri_room27_sleep
+rad_sleep_room
+ros_vagon_sleep
+val_abandoned_house_sleep
+val_vagon_sleep
+yan_bunker_sleep_restrictor
+zat_a2_sr_sleep
+pol_secret_sleep
