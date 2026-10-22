@@ -978,9 +978,25 @@ function UICoopNewChar:OnKeyboard(dik, keyboard_action)
 	return res
 end
 
+-- The branch join_offer / show_window took, logged the first time it is taken: the engine calls join_offer again every
+-- 500 ms while it returns false, the client tick calls show_window every 2 s. Night run 1 (2026-10-23): the offer sat
+-- in the window for 15 min and the log said nothing of it. join_closed starts over (the next offer is logged again).
+local noted = {}
+local function note(key, fmt, ...)
+	if noted[key] then return end
+	noted[key] = true
+	log(fmt, ...)
+end
+
 local function show_window()
-	if not offer or state.done then return false end
-	if not offer.join and not (db and db.actor) then return false end -- in the world: once the actor exists
+	if not offer or state.done then
+		note("no offer", "window not opened: %s", state.done and "the character is set up already" or "no offer")
+		return false
+	end
+	if not offer.join and not (db and db.actor) then -- in the world: once the actor exists
+		note("no actor", "window waits for the actor (offer in the world)")
+		return false
+	end
 	local ok, err = pcall(function()
 		if not GUI then GUI = UICoopNewChar() end
 		if not GUI:IsShown() then
@@ -989,8 +1005,10 @@ local function show_window()
 		end
 	end)
 	if not ok then
-		log("! new character window failed: %s", tostring(err))
+		note("failed " .. tostring(err), "! new character window failed: %s", tostring(err))
 		GUI = nil
+	else
+		note("shown", "choice window open (%s)", offer.join and "before the world" or "in the world")
 	end
 	return ok
 end
@@ -1059,19 +1077,33 @@ end
 local function auto_choice()
 	local ok, cl = pcall(command_line)
 	local f = ok and type(cl) == "string" and cl:match("%-coop_autochoose%s+([%w_]+)")
-	return f and FACTION_SET[f] and f or nil
+	if not f then return nil end
+	if not FACTION_SET[f] then
+		note("bad auto " .. f, "! -coop_autochoose %s: not a faction a player can pick, the window opens", f)
+		return nil
+	end
+	return f
 end
 
 -- The host's offer (again after a refused choice: `refusal` is its reason code): the window, now. flags: 1 = the
 -- host's game has the story on. True if the window is shown (else the engine tries again).
 function join_offer(eco, points, level, refusal, flags)
-	if not api then return false end
-	local auto = not refusal and auto_choice()
-	if auto then
+	if not api then
+		note("no api", "! join_offer: no coop namespace in this Lua state, the window cannot open")
+		return false
+	end
+	-- The engine passes the offer as it is on the wire: a first offer has refusal "" (CharOfferMsg), not nil. Night
+	-- run 1 (2026-10-23): `not refusal` was false for "", -coop_autochoose never answered and the window waited.
+	refusal = type(refusal) == "string" and refusal ~= "" and refusal or nil
+	local auto = auto_choice()
+	if auto and not refusal then
 		join.choice = { faction = auto, buy = "" }
 		state.waiting = true
 		log("test: offer answered at once with %s (-coop_autochoose)", auto)
 		return true
+	end
+	if auto then -- answered once already: a choice the host refused is not sent again blindly
+		note("auto refused " .. refusal, "test: the host refused the automatic choice (%s), the window opens", refusal)
 	end
 	offer = {
 		join = true,
@@ -1079,14 +1111,19 @@ function join_offer(eco, points, level, refusal, flags)
 		points = tonumber(points),
 		nick = own_nick(),
 		level = type(level) == "string" and level ~= "" and level or nil,
-		refusal = type(refusal) == "string" and refusal ~= "" and refusal or nil,
+		refusal = refusal,
 		story = (math.floor(tonumber(flags) or 0) % 2) == 1,
 	}
 	join.choice = nil
 	state.waiting, state.done, state.show = false, false, false
 	if GUI and GUI:IsShown() then
 		local ok, err = pcall(GUI.Fill, GUI, offer)
-		if not ok then log("! new character window failed: %s", tostring(err)) end
+		if ok then
+			note("refilled " .. tostring(refusal), "offer shown again in the open window%s",
+				refusal and (", last choice refused: " .. refusal) or "")
+		else
+			note("failed " .. tostring(err), "! new character window failed: %s", tostring(err))
+		end
 		return ok
 	end
 	return show_window()
@@ -1104,6 +1141,7 @@ end
 
 -- The world arrives (or the session ended): the window closes.
 function join_closed(why)
+	noted = {} -- the next offer's branches are logged again
 	join.choice = nil
 	if offer and offer.join then offer = nil end
 	state.waiting = false

@@ -563,6 +563,79 @@ NOW = NOW + 5000
 CALLBACKS.actor_on_update()
 check(#NEWS == n_news, "told once")
 
+print("== client: -coop_autochoose and the log of every branch (night run 1, 2026-10-23)")
+-- The engine (coop_join.cpp client_char_frame) passes the offer as it is on the wire: a first offer has refusal ""
+-- (CharOfferMsg), never nil. Night run 1: `not refusal` was false for "", the automatic answer never came, the window
+-- waited 10 min for nobody and the log said nothing.
+STASH = {}
+MODE = "client"
+db.actor = nil -- the main menu
+SESSION = { active = true, phase = "receiving-world", nick = "Guest" }
+local function log_count(pat)
+	local n = 0
+	for _, l in ipairs(LOG) do if l:find(pat, 1, true) then n = n + 1 end end
+	return n
+end
+CMDLINE = '"e:\\a\\bin_b\\anomalycoopdx11avx.exe" -fsltx fsgame_b.ltx -coop_connect 127.0.0.1:27960 -coop_autochoose stalker -coop_testplan f2w1_client'
+function command_line() return CMDLINE end
+local ma = load_module("coop_menu_char")
+LOG = {}
+check(ma.join_offer(1, 1700, "l01_escape", "", 0) == true, "autochoose: a first offer as the engine passes it (refusal \"\") is taken")
+check(ma.GUI == nil, "autochoose: no window")
+check(log_count("[coop-char] test: offer answered at once with stalker") == 1, "autochoose: the answer is in the log")
+local af, ab = ma.join_choice()
+check(af == "stalker" and ab == "", "autochoose: the engine gets stalker, nothing bought")
+check(ma.join_choice() == nil, "autochoose: taken once")
+check(ma.join_offer(1, 1700, "l01_escape", nil, 0) == true and select(1, ma.join_choice()) == "stalker",
+	"autochoose: no refusal given at all (nil) is a first offer too")
+LOG = {}
+check(ma.join_offer(1, 1700, "l01_escape", "busy", 0) == true, "autochoose refused by the host: the window opens")
+check(ma.GUI and ma.GUI.shown and ma.join_choice() == nil, "autochoose refused: a player must choose")
+check(log_count("the host refused the automatic choice (busy)") == 1, "autochoose refused: why the window opened is in the log")
+check(log_count("choice window open") == 1, "the window that opened is in the log")
+ma.join_offer(1, 1700, "l01_escape", "busy", 0)
+check(log_count("the host refused the automatic choice") == 1 and log_count("choice window open") == 1
+	and log_count("offer shown again in the open window") == 1, "the same offer again: one line, not two more")
+ma.join_closed("world")
+check(not ma.GUI.shown, "closed")
+CMDLINE = '"x.exe" -coop_connect 127.0.0.1:27960 -coop_autochoose zombied'
+LOG = {}
+check(ma.join_offer(1, 1700, "l01_escape", "", 0) == true and ma.GUI.shown, "autochoose with a faction nobody may pick: the window")
+check(log_count("-coop_autochoose zombied: not a faction a player can pick") == 1, "the bad faction is in the log")
+ma.join_closed("world")
+CMDLINE = '"x.exe" -coop_connect 127.0.0.1:27960'
+LOG = {}
+check(ma.join_offer(1, 1700, "l01_escape", "", 0) == true and ma.GUI.shown and ma.join_choice() == nil,
+	"no -coop_autochoose: the window opens and waits for the player")
+check(log_count("choice window open") == 1, "a closed window starts the log over: open again is in the log")
+ma.join_closed("world")
+
+-- join_offer returns false: the engine calls it again every 500 ms; the reason is logged once, not every time
+local real_window = ma.UICoopNewChar
+ma.GUI = nil
+ma.UICoopNewChar = function() error("no dialog holder") end
+LOG = {}
+local falses = 0
+for _ = 1, 5 do if ma.join_offer(1, 1700, "l01_escape", "", 0) == false then falses = falses + 1 end end
+check(falses == 5, "a window that cannot open: false every time (the engine tries again)")
+check(log_count("new character window failed") == 1 and log_count("no dialog holder") == 1, "its error logged once")
+ma.UICoopNewChar = real_window
+check(ma.join_offer(1, 1700, "l01_escape", "", 0) == true and ma.GUI.shown, "the window opens once it can")
+check(log_count("choice window open") == 1, "and that is in the log")
+ma.join_closed("world")
+
+-- a Lua state without the engine's coop namespace: false, and the log says why (once)
+local saved_coop = coop
+coop = nil
+local mn = load_module("coop_menu_char")
+coop = saved_coop
+LOG = {}
+check(mn.join_offer(1, 1700, "l01_escape", "", 0) == false and mn.join_offer(1, 1700, "l01_escape", "", 0) == false,
+	"no coop namespace: false")
+check(log_count("no coop namespace") == 1, "no coop namespace: logged once")
+command_line = nil
+STASH = {}
+
 -- string ids used by the script exist
 local fh = assert(io.open(ROOT .. "scripts/coop_menu_char.script", "r"))
 local src = fh:read("*a")
