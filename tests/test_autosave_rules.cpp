@@ -54,8 +54,8 @@ TEST(autosave_names)
 		"coop_auto_0", "coop_auto_", "coop_auto_3a", "quicksave", "", "x", "coop_auto_x", "coop_auto", "coop_auto_-1",
 		"coop_auto_07", "coop_auto_3.sav", " coop_auto_3", "coop_auto_3 ", "Coop_Auto_3", "coop_autosave_3",
 		"xcoop_auto_3", "coop_auto_3_4", "coop_auto_1234567890", "coop_auto_99999999999999999999",
-		// F3 T12: the name a save is written under before it is moved to its slot (coop_autosave.cpp kTempStem): never a slot
-		"coop_auto_tmp", "coop_auto_tmp.scop",
+		// F3 T12: the names a save is written under (kTempStem) and the old pair of a slot is put aside under (kBackupStem): never slots
+		"coop_auto_tmp", "coop_auto_tmp.scop", "coop_auto_bak", "coop_auto_bak.scop",
 	};
 	for (const char* name : bad)
 	{
@@ -313,4 +313,68 @@ TEST(autosave_prune_edges)
 	const std::vector<uint32_t> b = prune(zero, 1, 2);
 	REQUIRE(b.size() == size_t(1));
 	CHECK_EQ(b[0], uint32_t(1));
+}
+
+// ---------------------------------------------------------------- F3 T12 fix round 1
+
+TEST(autosave_next_slot_skips_failed)
+{
+	// M2: a slot whose old files cannot be replaced (read-only, locked) must not stop the rotation: the next one.
+	std::vector<SlotInfo> v = range(1, 5, 1000);
+	v[2].file_time = 10; // slot 3: the oldest
+	v[3].file_time = 20; // slot 4: the next oldest
+	CHECK_EQ(next_slot_skipping(v, 5, {}), uint32_t(3)); // nothing skipped: next_slot
+	CHECK_EQ(next_slot_skipping(v, 5, {3}), uint32_t(4));
+	CHECK_EQ(next_slot_skipping(v, 5, {3, 4}), uint32_t(1));
+
+	// A free slot that fails is skipped too, the next free one is taken.
+	CHECK_EQ(next_slot_skipping(slots({1, 2}), 5, {3}), uint32_t(4));
+
+	// Nothing left: 0, never a slot that failed.
+	CHECK_EQ(next_slot_skipping(range(1, 3), 3, {1, 2, 3}), uint32_t(0));
+	CHECK_EQ(next_slot_skipping({}, 2, {2, 1}), uint32_t(0));
+
+	// Numbers outside 1..count skip nothing.
+	CHECK_EQ(next_slot_skipping(range(1, 3), 3, {7, 0}), next_slot(range(1, 3), 3));
+}
+
+TEST(autosave_pause_lease)
+{
+	// I1: the Restore window pauses the autosaves with a lease it has to renew; a window closed in any way stops renewing.
+	Pause p;
+	CHECK(!pause_holds(p, 1000));
+	CHECK(!pause_lapsed(p, 1000));
+
+	pause_hold(p, 1000, 3000);
+	CHECK(pause_holds(p, 1000));
+	CHECK(pause_holds(p, 3999));
+	CHECK(!pause_lapsed(p, 3999));
+	CHECK(!pause_holds(p, 4000));
+	CHECK(pause_lapsed(p, 4000)); // the lease ran out: reported once
+	CHECK(!pause_lapsed(p, 4001));
+	CHECK(!pause_holds(p, 4001));
+}
+
+TEST(autosave_pause_renew_and_release)
+{
+	Pause p;
+	pause_hold(p, 0, 3000);
+	pause_hold(p, 2500, 3000); // renewed
+	CHECK(pause_holds(p, 5499));
+	CHECK(!pause_holds(p, 5500));
+
+	pause_hold(p, 6000, 3000);
+	CHECK(pause_release(p)); // let go on purpose
+	CHECK(!pause_holds(p, 6001));
+	CHECK(!pause_release(p)); // nothing to let go
+	CHECK(!pause_lapsed(p, 99999)); // and not "lapsed" later: released is not expired
+}
+
+TEST(autosave_pause_clock_back)
+{
+	// A clock that went back does not hold a pause for ever.
+	Pause p;
+	pause_hold(p, 5000, 3000);
+	CHECK(!pause_holds(p, 1000));
+	CHECK(pause_lapsed(p, 1000));
 }

@@ -42,6 +42,10 @@
 	      why = not_host | bad_name | missing | damaged
 	  coop_saves.open_restore(owner) -> window       opens the list over the Co-op window `owner`
 	  coop_saves.text(key, ...)                      the string st_coop_saves_<key> with %s filled in order
+
+	While the restore window is open the host's autosave timer is paused (coop.autosave.suspend, F3 T12 review I1): the
+	window renews the pause every frame (UICoopRestore:Update) and lets it go on Back and after the load command; a window
+	closed any other way stops renewing it and the engine ends it by itself after 3 seconds.
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
@@ -344,6 +348,18 @@ function details(e)
 	return e
 end
 
+-- The host's autosave timer must not write while the Restore window is open: it writes into the oldest slot, which is
+-- often the one the host is about to pick (F3 T12 review I1). coop.autosave.suspend(true) is a pause with a short lease
+-- that the open window renews every frame (UICoopRestore:Update), so a window closed in any way, a button, Escape or the
+-- main menu switched off, ends it by itself a moment later; suspend(false) lets it go on purpose, and the engine then
+-- starts the interval afresh (the first frame after a load must not write over a slot). An exe without the call: nothing.
+local function hold_autosaves(on)
+	local a = api and api.autosave
+	if type(a) ~= "table" or type(a.suspend) ~= "function" then return end
+	local ok, err = pcall(a.suspend, on)
+	if not ok then log("! cannot %s the autosaves: %s", on and "pause" or "resume", tostring(err)) end
+end
+
 -- Host in a session, a real autosave that is in the folder and not damaged: the same command the stock Load dialog gives
 -- in a running game.
 function restore(name)
@@ -356,6 +372,7 @@ function restore(name)
 	if not (ok and valid == true) then return false, "damaged" end
 	log("the host restores %s", name)
 	exec_console_cmd("load " .. name)
+	hold_autosaves(false)
 	return true
 end
 
@@ -437,8 +454,16 @@ function UICoopRestore:InitCallBacks()
 	self:AddCallback("btn_back", E, self.GoBack, self)
 end
 
+-- Every frame while the window is shown: the pause of the autosaves is renewed. A window hidden by anything other than
+-- GoBack / the load stops renewing it, and the engine lets the pause lapse by itself.
+function UICoopRestore:Update()
+	CUIScriptWnd.Update(self)
+	if self:IsShown() then hold_autosaves(true) end
+end
+
 -- Reads the folder; called every time the window opens.
 function UICoopRestore:Reset()
+	hold_autosaves(true)
 	self.selected = nil
 	self.entries = {}
 	local ok, list = pcall(list_autosaves)
@@ -498,6 +523,7 @@ end
 function UICoopRestore:GoBack()
 	if self:IsShown() then self:HideDialog() end
 	self:Show(false)
+	hold_autosaves(false)
 	local owner = self.owner
 	if owner then
 		pcall(function()

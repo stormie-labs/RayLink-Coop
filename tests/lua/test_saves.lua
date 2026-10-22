@@ -39,6 +39,7 @@ game = { translate_string = function(id) return STRINGS[id] or id end }
 -- ------------------------------------------------------------------ session stand-in
 MODE = "off"
 INFO = {}
+SUSPEND = {} -- every coop.autosave.suspend(on) call, in order
 local function set_mode(m)
 	MODE = m
 	INFO = { phase = m == "off" and "off" or (m == "host" and "hosting" or "live"), active = m ~= "off", host = m == "host",
@@ -51,6 +52,8 @@ coop = {
 	is_client = function() return MODE == "client" end,
 	is_live = function() return MODE ~= "off" end,
 	session_info = function() return INFO end,
+	-- the engine's pause of the host's autosaves (coop_autosave.cpp): the window holds it, a lease the engine ends itself
+	autosave = { suspend = function(on) SUSPEND[#SUSPEND + 1] = on; return true end },
 }
 
 -- ------------------------------------------------------------------ callbacks, time events, console
@@ -620,6 +623,58 @@ EXEC = {}
 MENU.shown = false
 dlg:Close()
 check(not exec_has("main_menu off") and MENU.shown == true, "a client connecting from the in-game menu: Close goes back as before")
+
+print("== the autosaves pause while the restore window is open (F3 T12 fix round 1, review I1)")
+SAVES = {}
+add_save("coop_auto_1.scop", 100)
+add_save("coop_auto_2.scop", 300)
+set_mode("host")
+SUSPEND, EXEC = {}, {}
+click(dlg, "btn_restore")
+rd = dlg.restore_dlg
+check(SUSPEND[#SUSPEND] == true, "opening the window pauses the autosaves")
+local n_susp = #SUSPEND
+rd:Update()
+check(#SUSPEND == n_susp + 1 and SUSPEND[#SUSPEND] == true, "the window renews the pause every frame")
+click(rd, "btn_row_1")
+check(SUSPEND[#SUSPEND] == true and #EXEC == 0, "selecting a row keeps the pause")
+click(rd, "btn_back")
+check(SUSPEND[#SUSPEND] == false, "Back lets the pause go")
+
+-- closed some other way (the main menu switched off, a hide from outside): nothing renews the pause, the engine's lease ends it
+click(dlg, "btn_restore")
+rd = dlg.restore_dlg
+rd:HideDialog()
+n_susp = #SUSPEND
+rd:Update()
+check(#SUSPEND == n_susp, "a window that is not shown renews nothing")
+
+-- the load: the pause is let go after the command is given (the engine starts the interval afresh)
+click(dlg, "btn_restore")
+rd = dlg.restore_dlg
+click(rd, "btn_row_1")
+EXEC = {}
+click(rd, "btn_confirm")
+check(EXEC[1] == "load coop_auto_2" and SUSPEND[#SUSPEND] == false, "after the load command the pause is let go")
+
+-- restore() alone, without the window
+SUSPEND, EXEC = {}, {}
+local okr = saves.restore("coop_auto_2")
+check(okr == true and SUSPEND[#SUSPEND] == false, "restore() lets the pause go")
+SUSPEND, EXEC = {}, {}
+okr = saves.restore("coop_auto_9")
+check(okr == false and #SUSPEND == 0, "a refused restore touches nothing")
+
+-- an exe whose coop table has no autosave: the window works as before
+local autosave_api = coop.autosave
+coop.autosave = nil
+click(dlg, "btn_restore")
+rd = dlg.restore_dlg
+check(rd ~= nil and rd.shown, "no coop.autosave: the window still opens")
+rd:Update()
+click(rd, "btn_back")
+check(not rd.shown, "and closes")
+coop.autosave = autosave_api
 
 -------------------------------------------------------------------------------
 print("== strings and layout")
