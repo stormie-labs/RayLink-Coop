@@ -54,6 +54,8 @@ TEST(autosave_names)
 		"coop_auto_0", "coop_auto_", "coop_auto_3a", "quicksave", "", "x", "coop_auto_x", "coop_auto", "coop_auto_-1",
 		"coop_auto_07", "coop_auto_3.sav", " coop_auto_3", "coop_auto_3 ", "Coop_Auto_3", "coop_autosave_3",
 		"xcoop_auto_3", "coop_auto_3_4", "coop_auto_1234567890", "coop_auto_99999999999999999999",
+		// F3 T12: the name a save is written under before it is moved to its slot (coop_autosave.cpp kTempStem): never a slot
+		"coop_auto_tmp", "coop_auto_tmp.scop",
 	};
 	for (const char* name : bad)
 	{
