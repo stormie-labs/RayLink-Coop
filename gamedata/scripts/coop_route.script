@@ -1,0 +1,353 @@
+--[[
+	Anomaly Coop - callback router, Lua half (gamedata\scripts\coop_route.script; F2 T10, docs\MOD_LAYER.md 2.2)
+
+	Anomaly's callback dispatcher is Lua (axr_main.callback_set / make_callback), so a thin shim stays here. It wraps
+	every handler once, when it is registered, with the domain the engine gives it (coop.route.of, coop_router.cpp),
+	and asks the engine on every call whether that domain runs on this machine (coop.route.runs). The rules are the
+	engine's (xrCoop\coop_routes.h, configs\coop_route*.ltx): nothing here decides a domain.
+		host  - only on the host        owner, view - everywhere        none - nowhere in a session (the host too)
+	Outside a session every handler runs (single player is the stock game).
+
+	Installed on every machine with the engine API, the host and single player included (a session can start in this
+	Lua state): coop_main calls install() when it loads, which axr_main.on_game_start does before any script's
+	on_game_start runs. Wrapped:
+		axr_main.callback_set / callback_unset   (RegisterScriptCallback / UnregisterScriptCallback)
+		_G.AddUniqueCall / RemoveUniqueCall      a skipped call returns false: it stays registered
+		_G.CreateTimeEvent                       a skipped event returns true: it is removed
+	Kept as the stock dispatcher has it:
+	- one wrapper per (callback, function), reused when the pair is registered again and found when it is unregistered
+	  (by the function or by the wrapper itself);
+	- axr_main's priority value of each handler (its registration order): a handler registered before install is
+	  replaced by its wrapper in place, with the same value;
+	- a table or userdata handler is called obj[name](obj, ...), the method looked up on every call;
+	- make_callback is not replaced: coop_sound.cpp reads its upvalue `intercepts`.
+	On a co-op client a handler that runs is called under pcall: a Lua error is logged (the first three per script,
+	then every 100th) and counted, the session goes on (R-11.4); a failed unique call or time event returns true, so
+	it is not called again. The host and single player keep the stock behaviour (no pcall).
+	Every call is counted by the engine (coop.route.note: ran, skipped, error per domain; skips per script), shown by
+	coop_status.
+
+	API:
+		coop_route.install() -> bool                   idempotent; false on an exe without coop.route
+		coop_route.on_game_start()                     wraps AddUniqueCall / RemoveUniqueCall / CreateTimeEvent again
+		                                               when a script replaced them after install (_g_patches.script
+		                                               sets its own _G.CreateTimeEvent)
+		coop_route.handlers_of(callback, script) -> { fn, ... }   the script's own handlers of a callback, in priority
+		                                               order (script key as coop.route.of gives it, e.g. "treasure_manager")
+		coop_route.wrapper_of(callback, fn) -> wrapper | nil
+		coop_route.intercepts() -> axr_main's callback table | nil
+		coop_route.script_of(fn) -> script key ("?" without the router)
+		coop_route.print_status()
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace
+
+local string_format = string.format
+local tostring, tonumber, type, pairs, ipairs, pcall, select = tostring, tonumber, type, pairs, ipairs, pcall, select
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-route] %s", ok and line or tostring(fmt))
+end
+
+local route -- coop.route once installed
+local runs, note -- coop.route.runs / coop.route.note
+local installed = false
+local client = false -- this Lua state is a co-op client's (a client's state never becomes the host's)
+local cb_table -- axr_main's local `intercepts`
+
+local wrappers = setmetatable({}, { __mode = "k" }) -- our wrapper objects -> true
+local origin = setmetatable({}, { __mode = "k" }) -- wrapper -> { fn = handler, script, domain, callback }
+local wrapped = {} -- callback -> { [handler] = wrapper }
+local uc_wrap = setmetatable({}, { __mode = "kv" }) -- AddUniqueCall: function -> wrapper
+local te_wrap = setmetatable({}, { __mode = "kv" }) -- CreateTimeEvent: function -> wrapper
+local uc_add_w, uc_rem_w, te_w -- our current replacements of the three globals
+
+local counts = { host = 0, owner = 0, view = 0, none = 0, level = 0 } -- wrappers made, by domain
+local stats = { rewrapped = 0, unrouted = 0, errors = 0 }
+local err_seen = {} -- script -> Lua errors caught on this machine
+
+-------------------------------------------------------------------------------
+-- Wrappers
+-------------------------------------------------------------------------------
+local function report(script, what, err)
+	local n = (err_seen[script] or 0) + 1
+	err_seen[script] = n
+	stats.errors = stats.errors + 1
+	if n <= 3 or n % 100 == 0 then
+		log("! lua error in %s (%s), #%d, the session continues: %s", tostring(script), tostring(what), n, tostring(err))
+	end
+end
+
+local function finish(d, script, what, err_ret, ok, ...)
+	if ok then return ... end
+	note(d, "error", script)
+	report(script, what, (...))
+	return err_ret
+end
+
+-- f runs where domain d runs. skip_ret: returned when it does not run here; err_ret: returned when its protected call
+-- failed on a client.
+local function guard(f, d, script, what, skip_ret, err_ret)
+	local w = function(...)
+		if not runs(d) then
+			note(d, "skipped", script)
+			return skip_ret
+		end
+		note(d, "ran")
+		if client then
+			return finish(d, script, what, err_ret, pcall(f, ...))
+		end
+		return f(...)
+	end
+	wrappers[w] = true
+	return w
+end
+
+-- domain, script of f for a callback; nil when the engine does not answer (the handler then stays as it is)
+local function route_of(callback, f)
+	local ok, d, script = pcall(route.of, callback, f)
+	if ok and type(d) == "string" and counts[d] then return d, script or "?" end
+	stats.unrouted = stats.unrouted + 1
+	return nil
+end
+
+local function remember(w, fu, d, script, callback)
+	origin[w] = { fn = fu, script = script, domain = d, callback = callback }
+	counts[d] = counts[d] + 1
+end
+
+-- The object to register instead of the handler fu of callback `name` (fu itself if it cannot be routed).
+local function wrap_entry(name, fu)
+	if wrappers[fu] then return fu end
+	local m = wrapped[name]
+	local w = m and m[fu]
+	if w then return w end
+	local tf = type(fu)
+	local f = fu
+	if tf == "table" or tf == "userdata" then
+		-- axr_main convention: an object with a method named like the callback, called as obj[name](obj, ...)
+		local ok, method = pcall(function() return fu[name] end)
+		if not (ok and type(method) == "function") then return fu end
+		f = method
+	elseif tf ~= "function" then
+		return fu
+	end
+	local d, script = route_of(name, f)
+	if not d then return fu end
+	if tf == "function" then
+		w = guard(fu, d, script, name, nil, nil)
+	else
+		local g = guard(function(...)
+			local mm = fu[name]
+			if mm then return mm(fu, ...) end
+		end, d, script, name, nil, nil)
+		w = {}
+		w[name] = function(_, ...) return g(...) end
+		wrappers[w] = true
+	end
+	remember(w, fu, d, script, name)
+	if not m then
+		m = {}
+		wrapped[name] = m
+	end
+	m[fu] = w
+	return w
+end
+
+-------------------------------------------------------------------------------
+-- axr_main
+-------------------------------------------------------------------------------
+local function find_upvalue(fn, wanted)
+	if type(fn) ~= "function" then return nil end
+	for i = 1, 255 do
+		local n, v = debug.getupvalue(fn, i)
+		if n == nil then return nil end
+		if n == wanted then return v end
+	end
+	return nil
+end
+
+-- axr_main's local callback table: an upvalue of callback_set (before it is wrapped) or of make_callback.
+function intercepts()
+	if cb_table then return cb_table end
+	local am = rawget(_G, "axr_main") or axr_main
+	if type(am) ~= "table" then return nil end
+	local t = find_upvalue(am.callback_set, "intercepts") or find_upvalue(am.make_callback, "intercepts")
+	if type(t) == "table" then cb_table = t end
+	return cb_table
+end
+
+-- Handlers registered before install: each is replaced in place by its wrapper, with the same priority value.
+local function rewrap_registered(t)
+	for name, list in pairs(t) do
+		if type(list) == "table" then
+			local found = {}
+			for fu, v in pairs(list) do
+				if not wrappers[fu] then
+					found[#found + 1] = fu
+					found[#found + 1] = v
+				end
+			end
+			for i = 1, #found, 2 do
+				local fu, v = found[i], found[i + 1]
+				local w = wrap_entry(name, fu)
+				if w ~= fu then
+					list[fu] = nil
+					list[w] = v
+					stats.rewrapped = stats.rewrapped + 1
+				end
+			end
+		end
+	end
+end
+
+local function wrap_axr()
+	local am = rawget(_G, "axr_main") or axr_main
+	if not (type(am) == "table" and type(am.callback_set) == "function" and type(am.callback_unset) == "function") then
+		log("! axr_main.callback_set not found: script callbacks are not routed on this machine")
+		return
+	end
+	local t = intercepts() -- before callback_set is replaced (its upvalues lead to the table)
+	if t then
+		rewrap_registered(t)
+	else
+		log("! axr_main's callback table not reachable: handlers registered before the shim are not routed")
+	end
+	local orig_set, orig_unset = am.callback_set, am.callback_unset
+	am.callback_set = function(name, fu)
+		if fu == nil or (t and t[name] == nil) then return orig_set(name, fu) end -- axr_main reports those
+		return orig_set(name, wrap_entry(name, fu))
+	end
+	am.callback_unset = function(name, fu)
+		local m = wrapped[name]
+		if fu ~= nil and m then
+			local w = m[fu]
+			if w then
+				m[fu] = nil
+				return orig_unset(name, w)
+			end
+			local o = origin[fu] -- the wrapper itself (an addon that read the table)
+			if o and o.callback == name then m[o.fn] = nil end
+		end
+		return orig_unset(name, fu)
+	end
+end
+
+-------------------------------------------------------------------------------
+-- AddUniqueCall / RemoveUniqueCall / CreateTimeEvent
+-------------------------------------------------------------------------------
+local function wrap_once(cache, f, what, skip_ret)
+	local w = cache[f]
+	if w then return w end
+	local d, script = route_of(what, f)
+	if not d then return nil end
+	w = guard(f, d, script, what, skip_ret, true) -- a broken one returns true: not called again
+	cache[f] = w
+	remember(w, f, d, script, what)
+	return w
+end
+
+-- Wraps each of the three globals unless it is our wrapper already (a later script may have replaced it: wrapping its
+-- version is safe, a handler is never wrapped twice).
+local function wrap_globals()
+	local add = rawget(_G, "AddUniqueCall")
+	if type(add) == "function" and add ~= uc_add_w then
+		uc_add_w = function(f)
+			if type(f) ~= "function" or wrappers[f] then return add(f) end
+			return add(wrap_once(uc_wrap, f, "unique_call", false) or f)
+		end
+		_G.AddUniqueCall = uc_add_w
+	end
+	local rem = rawget(_G, "RemoveUniqueCall")
+	if type(rem) == "function" and rem ~= uc_rem_w then
+		uc_rem_w = function(f)
+			return rem((f ~= nil and uc_wrap[f]) or f)
+		end
+		_G.RemoveUniqueCall = uc_rem_w
+	end
+	local cte = rawget(_G, "CreateTimeEvent")
+	if type(cte) == "function" and cte ~= te_w then
+		te_w = function(ev_id, act_id, timer, f, ...)
+			if type(f) == "function" and not wrappers[f] then
+				f = wrap_once(te_wrap, f, "time_event", true) or f
+			end
+			return cte(ev_id, act_id, timer, f, ...)
+		end
+		_G.CreateTimeEvent = te_w
+	end
+end
+
+-------------------------------------------------------------------------------
+-- API
+-------------------------------------------------------------------------------
+function install()
+	if installed then return true end
+	local r = api and api.route
+	if not (type(r) == "table" and type(r.of) == "function" and type(r.runs) == "function"
+		and type(r.note) == "function") then
+		log("! coop.route missing (an exe without the callback router): callbacks are not routed")
+		return false
+	end
+	route, runs, note = r, r.runs, r.note
+	local ok, is_client = pcall(api.is_client)
+	client = ok and is_client == true
+	installed = true
+	wrap_axr()
+	wrap_globals()
+	log("installed on a %s: %d handler(s) registered earlier routed in place", client and "client" or "host or single player",
+		stats.rewrapped)
+	return true
+end
+
+-- axr_main calls every script's on_game_start after all scripts are loaded: a CreateTimeEvent replaced since install
+-- (_g_patches.script) is wrapped again.
+function on_game_start()
+	if installed then wrap_globals() end
+end
+
+function handlers_of(callback, script)
+	local out = {}
+	local t = intercepts()
+	local list = t and t[callback]
+	if type(list) ~= "table" or type(script) ~= "string" then return out end
+	script = script:lower()
+	local found = {}
+	for k, v in pairs(list) do
+		local o = origin[k]
+		local fn, sc = k, nil
+		if o then
+			fn, sc = o.fn, o.script
+		elseif route then -- registered while it could not be routed: ask now
+			local f = k
+			if type(k) ~= "function" then
+				local okm, mm = pcall(function() return k[callback] end)
+				f = okm and mm or nil
+			end
+			if type(f) == "function" then sc = select(2, route_of(callback, f)) end
+		end
+		if sc == script then found[#found + 1] = { fn = fn, v = tonumber(v) or 0 } end
+	end
+	table.sort(found, function(a, b) return a.v < b.v end)
+	for i, e in ipairs(found) do out[i] = e.fn end
+	return out
+end
+
+function wrapper_of(callback, fn)
+	local m = wrapped[callback]
+	return m and fn ~= nil and m[fn] or nil
+end
+
+function script_of(fn)
+	if not route then return "?" end
+	local ok, _, script = pcall(route.of, "", fn)
+	return ok and script or "?"
+end
+
+function print_status()
+	local caught = 0
+	for _, n in pairs(err_seen) do caught = caught + n end
+	log("shim %s on this %s | wrappers host %d, owner %d, view %d, none %d, level %d | routed in place %d, not routed %d, "
+		.. "lua errors caught %d", installed and "on" or "off", client and "client" or "host or single player",
+		counts.host, counts.owner, counts.view, counts.none, counts.level, stats.rewrapped, stats.unrouted, caught)
+end

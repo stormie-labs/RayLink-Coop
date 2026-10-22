@@ -15,6 +15,7 @@ SCRIPTS = ROOT .. "scripts/"
 dofile(HERE .. "stock_shapes.lua")
 dofile(HERE .. "go_methods.lua")
 dofile(HERE .. "coop_files.lua")
+dofile("tests/lua/support/stubs.d/route.lua") -- F2 T10: install_route_stubs (coop.route over coop_native)
 
 local IS_COOP = {}
 for _, n in ipairs(COOP_FILES) do IS_COOP[n] = true end
@@ -58,7 +59,7 @@ local function coop_caller()
 		local info = debug.getinfo(lvl, "Sl")
 		if not info then break end
 		local n = (info.source or ""):match("([^\\/]+)%.script$")
-		if n then return n .. ":" .. tostring(info.currentline) end
+		if n and n ~= "coop_route" then return n .. ":" .. tostring(info.currentline) end -- the router shim sits between
 	end
 	return "?"
 end
@@ -748,6 +749,7 @@ function machine(role, peer, opts)
 			api.story_local_task = function(id, on) return true end
 			api.player_safemode = function(p) return false end
 		end
+		install_route_stubs(api) -- F2 T10: coop.route answers by is_active / is_host above
 		E.coop = api
 	end
 

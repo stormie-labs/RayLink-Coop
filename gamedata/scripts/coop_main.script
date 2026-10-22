@@ -26,12 +26,14 @@
 		RegisterScriptCallback("coop_on_event", func(name, payload, from))
 		RegisterScriptCallback("coop_on_chat", func(nick, text))
 
+	Callback routes (F2 T10, docs\MOD_LAYER.md 2.2), on every machine with the engine API: this script installs
+	the router shim (scripts\coop_route.script) when it loads. Every function registered through
+	RegisterScriptCallback, AddUniqueCall or CreateTimeEvent gets its domain from the engine (coop.route,
+	configs\coop_route*.ltx), by its callback and its script; host handlers are skipped on a client, none
+	handlers everywhere in a session, and a client runs the others inside pcall (R-11.4).
+
 	What this script does on a co-op CLIENT (nothing of it runs on the host or in single player):
-	1. Domain filter (DESIGN D6, R-11.1, R-11.4). Every function registered through RegisterScriptCallback
-	   (axr_main.callback_set), AddUniqueCall or CreateTimeEvent is classified by the script file that
-	   defines it, using configs\coop_domains.ltx. Host-domain functions are skipped while this machine is
-	   a client; owner/view functions run inside pcall, so a Lua error is logged and counted instead of
-	   ending the session. Callbacks registered before this script loaded are reclassified once.
+	1. (moved: the client domain filter is the engine's callback router now, see above)
 	2. Restrictions: save/load UI paths answer "host only" (R-9.2; the engine gates the console
 	   commands too), a quicksave is asked from the host instead (coop_core_player); debug spawner /
 	   debug menu are disabled (R-6.6).
@@ -60,31 +62,21 @@ local function log(fmt, ...)
 end
 
 local stats = {
-	skipped = 0, -- host-domain calls skipped on this client
-	errors = 0, -- Lua errors caught on this client (R-11.4)
+	errors = 0, -- Lua errors caught by this script: event handlers, chat, patches (R-11.4)
 	events_in = 0,
 	event_errors = 0,
 	chat = 0,
 }
 
--- script name -> { domain, regs = {what = count}, skipped, errors }
+-- script name -> Lua errors caught (the log says the first three, then every 100th)
 local seen = {}
 
-local function seen_entry(script, domain)
-	local s = seen[script]
-	if not s then
-		s = { domain = domain or "?", regs = {}, skipped = 0, errors = 0 }
-		seen[script] = s
-	end
-	return s
-end
-
 local function report_error(script, what, err)
-	local s = seen_entry(script)
-	s.errors = s.errors + 1
+	local n = (seen[script] or 0) + 1
+	seen[script] = n
 	stats.errors = stats.errors + 1
-	if s.errors <= 3 or s.errors % 100 == 0 then
-		log("! lua error in %s (%s), #%d, the session continues: %s", tostring(script), tostring(what), s.errors, tostring(err))
+	if n <= 3 or n % 100 == 0 then
+		log("! lua error in %s (%s), #%d, the session continues: %s", tostring(script), tostring(what), n, tostring(err))
 	end
 end
 
@@ -147,362 +139,31 @@ function decode(str)
 end
 
 -------------------------------------------------------------------------------
--- Domain manifest (configs\coop_domains.ltx)
--------------------------------------------------------------------------------
-local DOMAIN_ORDER = { "view", "owner", "host", "blocked" } -- later wins for duplicates
-local exact = {} -- script -> domain
-local prefixes = {} -- { {prefix, domain}, ... } longest first
-local callbacks_always = {}
-local callbacks_host = {}
-local blocked_functions = {}
-local settings = {
-	default = "host",
-	c_functions = "view",
-	protect = true,
-	disable_dev_debug = true,
-}
-local manifest_loaded = false
-
-local function trim(s)
-	return (s:gsub("^%s+", ""):gsub("%s+$", ""))
-end
-
-local function section_keys(ini, sec)
-	local out = {}
-	if not ini:section_exist(sec) then return out end
-	for i = 0, ini:line_count(sec) - 1 do
-		local _, key = ini:r_line(sec, i, "", "")
-		if type(key) == "string" then
-			key = trim(key)
-			if key ~= "" then out[#out + 1] = key end
-		end
-	end
-	return out
-end
-
-local function setting(ini, key, def)
-	if not ini:line_exist("settings", key) then return def end
-	local v = trim(tostring(ini:r_string("settings", key) or ""))
-	if v == "" then return def end
-	if type(def) == "boolean" then
-		v = v:lower()
-		return v == "true" or v == "1" or v == "on" or v == "yes"
-	end
-	return v:lower()
-end
-
-local function load_manifest()
-	if manifest_loaded then return end
-	manifest_loaded = true
-	local ok, ini = pcall(ini_file, "coop_domains.ltx")
-	if not (ok and ini and ini:section_exist("view")) then
-		log("! configs\\coop_domains.ltx not found, every script is host-domain on clients")
-		return
-	end
-	settings.default = setting(ini, "default", settings.default)
-	settings.c_functions = setting(ini, "c_functions", settings.c_functions)
-	settings.protect = setting(ini, "protect_client_callbacks", settings.protect)
-	settings.disable_dev_debug = setting(ini, "disable_dev_debug", settings.disable_dev_debug)
-	-- Domain lists: coop_domains.ltx, then every configs\coop_domains_*.ltx (one per feature group, same
-	-- sections; a later file wins for an exact name). Settings come from the main file only.
-	local inis = { ini }
-	local extra = {}
-	local ok_list, list_err = pcall(function() -- a failure here must not cost the main file's domains
-		-- NOT file_list_open_ex: it rescans $game_config$ with flNeedCheck, under which the engine drops every
-		-- subfolder (CreateFile on a directory fails), so configs\ui\*, text\* ... vanish from the file system
-		-- and the next ui xml load is FATAL. file_list_open reads the existing file set without a rescan.
-		local flist = getFS():file_list_open("$game_config$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly))
-		for i = 0, (flist and flist:Size() or 0) - 1 do
-			local name = flist:GetAt(i)
-			if type(name) == "string" and name:lower():match("^coop_domains_.+%.ltx$") then
-				extra[#extra + 1] = name
-			end
-		end
-		if flist then flist:Free() end
-	end)
-	if not ok_list then log("! configs\\coop_domains_*.ltx not listed: %s", tostring(list_err)) end
-	table.sort(extra)
-	for _, name in ipairs(extra) do
-		local ok_x, x = pcall(ini_file, name)
-		if ok_x and x then inis[#inis + 1] = x else log("! cannot read configs\\%s", name) end
-	end
-	for _, src in ipairs(inis) do
-		for _, d in ipairs(DOMAIN_ORDER) do
-			for _, key in ipairs(section_keys(src, d)) do
-				key = key:lower()
-				if key:sub(-1) == "*" then
-					prefixes[#prefixes + 1] = { key:sub(1, -2), d }
-				else
-					exact[key] = d
-				end
-			end
-		end
-	end
-	-- Longest prefix first; for equal prefixes the later section (DOMAIN_ORDER) wins.
-	local rank = {}
-	for i, d in ipairs(DOMAIN_ORDER) do rank[d] = i end
-	table.sort(prefixes, function(a, b)
-		if #a[1] ~= #b[1] then return #a[1] > #b[1] end
-		return rank[a[2]] > rank[b[2]]
-	end)
-	blocked_functions = {}
-	for _, src in ipairs(inis) do
-		for _, k in ipairs(section_keys(src, "callbacks_always")) do callbacks_always[k] = true end
-		for _, k in ipairs(section_keys(src, "callbacks_host")) do callbacks_host[k] = true end
-		for _, k in ipairs(section_keys(src, "blocked_functions")) do blocked_functions[#blocked_functions + 1] = k end
-	end
-end
-
-local domain_cache = {}
-local function domain_of_script(script)
-	local d = domain_cache[script]
-	if d then return d end
-	if script == "[C]" then
-		d = settings.c_functions
-	elseif script == "?" then
-		d = settings.default
-	else
-		d = exact[script]
-		if not d then
-			for i = 1, #prefixes do
-				local p = prefixes[i]
-				if script:sub(1, #p[1]) == p[1] then
-					d = p[2]
-					break
-				end
-			end
-		end
-		d = d or settings.default
-	end
-	domain_cache[script] = d
-	return d
-end
-
--- Script file (lowercase, no extension) that defines function f: "[C]" for engine functions, "?" if unknown.
-local function script_of(f)
-	if type(f) ~= "function" then return "?" end
-	local ok, info = pcall(debug.getinfo, f, "S")
-	if not (ok and info) then return "?" end
-	if info.what == "C" then return "[C]" end
-	local src = info.source or ""
-	local name = src:match("([^\\/]+)%.[sS][cC][rR][iI][pP][tT]$") or src:match("([^\\/]+)%.[lL][uU][aA]$")
-	return name and name:lower() or "?"
-end
-
-local function classify(f, what)
-	local script = script_of(f)
-	local d = domain_of_script(script)
-	if what then
-		if callbacks_host[what] then
-			d = "host"
-		elseif callbacks_always[what] and d ~= "blocked" then
-			d = "view"
-		end
-	end
-	local s = seen_entry(script, domain_of_script(script))
-	local key = what or "?"
-	s.regs[key] = (s.regs[key] or 0) + 1
-	return script, d
-end
-
--------------------------------------------------------------------------------
--- Client filter: guards
+-- Callback routes (F2 T10, docs\MOD_LAYER.md 2.2). The domain filter that lived here is the engine's router now
+-- (coop_router.cpp, configs\coop_route*.ltx); scripts\coop_route.script wraps the handlers on every machine.
 -------------------------------------------------------------------------------
 local client_mode = false -- true while this machine is a co-op client; refreshed every frame
-local filter_installed = false
-local wrappers = setmetatable({}, { __mode = "k" }) -- functions/tables created by us
 
-local function pc_ret(script, what, err_ret, ok, ...)
-	if ok then return ... end
-	report_error(script, what, (...))
-	return err_ret
+-- The router shim (coop_route.script), nil where it cannot load (a test harness without it).
+local function shim()
+	local ok, m = pcall(function() return coop_route end)
+	return ok and type(m) == "table" and m or nil
 end
 
--- skip_ret: returned when a host-domain call is skipped on a client.
--- err_ret:  returned when a protected call failed. For unique calls and time events `true` unregisters
---           the broken function instead of calling it again every frame.
-local function guard(f, script, d, what, skip_ret, err_ret)
-	local w
-	if d == "host" or d == "blocked" then
-		local s = seen_entry(script)
-		w = function(...)
-			if client_mode then
-				s.skipped = s.skipped + 1
-				stats.skipped = stats.skipped + 1
-				return skip_ret
-			end
-			return f(...)
-		end
-	else
-		w = function(...)
-			if client_mode and settings.protect then
-				return pc_ret(script, what, err_ret, pcall(f, ...))
-			end
-			return f(...)
-		end
-	end
-	wrappers[w] = true
-	return w
+-- Script key of the file that defines f (coop.route.of), "?" if unknown. For error lines.
+local function script_of(f)
+	local r = shim()
+	if not (r and r.script_of) then return "?" end
+	local ok, s = pcall(r.script_of, f)
+	return ok and s or "?"
 end
 
--- axr_main callbacks: name -> { [original] = wrapper }
-local wrapped = {}
-local axr_intercepts -- axr_main's local `intercepts` table, if reachable
-
-local function find_upvalue(fn, wanted)
-	if type(fn) ~= "function" then return nil end
-	for i = 1, 255 do
-		local n, v = debug.getupvalue(fn, i)
-		if n == nil then return nil end
-		if n == wanted then return v end
-	end
-	return nil
-end
-
+-- axr_main's local callback table (found by the shim), nil if not reachable.
 local function get_intercepts()
-	if axr_intercepts then return axr_intercepts end
-	local am = axr_main
-	if not am then return nil end
-	local t = find_upvalue(am.callback_set, "intercepts") or find_upvalue(am.make_callback, "intercepts")
-	if type(t) == "table" then axr_intercepts = t end
-	return axr_intercepts
-end
-
--- Returns the object to register instead of fu (fu itself if it cannot be classified).
-local function wrap_entry(name, fu)
-	if wrappers[fu] then return fu end
-	local m = wrapped[name]
-	if not m then
-		m = {}
-		wrapped[name] = m
-	end
-	local w = m[fu]
-	if w then return w end
-	local tf = type(fu)
-	if tf == "function" then
-		local script, d = classify(fu, name)
-		w = guard(fu, script, d, name, nil, nil)
-	elseif tf == "table" or tf == "userdata" then
-		-- axr_main convention: object with a method named like the callback, called as obj[name](obj, ...)
-		local ok, method = pcall(function() return fu[name] end)
-		if not (ok and type(method) == "function") then return fu end
-		local script, d = classify(method, name)
-		local g = guard(function(...)
-			local mm = fu[name]
-			if mm then return mm(fu, ...) end
-		end, script, d, name, nil, nil)
-		w = {}
-		w[name] = function(_, ...) return g(...) end
-		wrappers[w] = true
-	else
-		return fu
-	end
-	m[fu] = w
-	return w
-end
-
--- Callbacks registered before this script loaded: reclassify them in place (keeps their priority).
-local function rewrap_registered()
-	local intercepts = get_intercepts()
-	if type(intercepts) ~= "table" then
-		log("! axr_main callback table not reachable: callbacks registered before coop_main are not filtered")
-		return
-	end
-	local n = 0
-	for name, t in pairs(intercepts) do
-		if type(t) == "table" then
-			local list = {}
-			for fu, v in pairs(t) do
-				if not wrappers[fu] then
-					list[#list + 1] = fu
-					list[#list + 1] = v
-				end
-			end
-			for i = 1, #list, 2 do
-				local fu, v = list[i], list[i + 1]
-				local w = wrap_entry(name, fu)
-				if w ~= fu then
-					t[fu] = nil
-					t[w] = v
-					n = n + 1
-				end
-			end
-		end
-	end
-	if n > 0 then log("%d callback(s) registered before coop_main were classified", n) end
-end
-
-local function install_client_filter()
-	if filter_installed then return end
-	filter_installed = true
-	client_mode = true
-	load_manifest()
-
-	-- 1. axr_main callbacks (RegisterScriptCallback -> axr_main.callback_set)
-	local am = axr_main
-	if am and type(am.callback_set) == "function" and type(am.callback_unset) == "function" then
-		get_intercepts() -- before callback_set is replaced (its upvalues lead to the table)
-		rewrap_registered()
-		local orig_set, orig_unset = am.callback_set, am.callback_unset
-		am.callback_set = function(name, fu)
-			if fu == nil then return orig_set(name, fu) end
-			return orig_set(name, wrap_entry(name, fu))
-		end
-		am.callback_unset = function(name, fu)
-			local m = wrapped[name]
-			local w = m and fu ~= nil and m[fu]
-			if w then
-				m[fu] = nil
-				return orig_unset(name, w)
-			end
-			return orig_unset(name, fu)
-		end
-	else
-		log("! axr_main.callback_set not found: script callbacks are not filtered on this client")
-	end
-
-	-- 2. Per-frame functors (AddUniqueCall -> level.add_call)
-	local orig_add, orig_rem = _G.AddUniqueCall, _G.RemoveUniqueCall
-	if type(orig_add) == "function" then
-		local uc = setmetatable({}, { __mode = "kv" })
-		_G.AddUniqueCall = function(f)
-			if type(f) ~= "function" or wrappers[f] then return orig_add(f) end
-			local w = uc[f]
-			if not w then
-				local script, d = classify(f, "unique_call")
-				w = guard(f, script, d, "unique_call", false, true)
-				uc[f] = w
-			end
-			return orig_add(w)
-		end
-		if type(orig_rem) == "function" then
-			_G.RemoveUniqueCall = function(f)
-				return orig_rem((f ~= nil and uc[f]) or f)
-			end
-		end
-	end
-
-	-- 3. Time events (CreateTimeEvent). A skipped host event returns true, which removes it.
-	local orig_cte = _G.CreateTimeEvent
-	if type(orig_cte) == "function" then
-		_G.CreateTimeEvent = function(ev_id, act_id, timer, f, ...)
-			if type(f) == "function" and not wrappers[f] then
-				local script, d = classify(f, "time_event")
-				f = guard(f, script, d, "time_event", true, true)
-			end
-			return orig_cte(ev_id, act_id, timer, f, ...)
-		end
-	end
-
-	-- 4. Debug mode is a cheat menu in Anomaly (spawner, teleports): off on clients (R-6.6).
-	if settings.disable_dev_debug and (rawget(_G, "DEV_DEBUG") or rawget(_G, "DEV_DEBUG_DEV")) then
-		_G.DEV_DEBUG = false
-		_G.DEV_DEBUG_DEV = false
-		log("debug mode (-dbg) is disabled while connected as a co-op client")
-	end
-
-	log("client filter installed: default domain '%s', %s", settings.default,
-		settings.protect and "owner/view callbacks protected" or "owner/view callbacks unprotected")
+	local r = shim()
+	if not (r and r.intercepts) then return nil end
+	local ok, t = pcall(r.intercepts)
+	return ok and type(t) == "table" and t or nil
 end
 
 -------------------------------------------------------------------------------
@@ -534,13 +195,13 @@ function remove_event_handler(name, func)
 	if handlers[name] then handlers[name][func] = nil end
 end
 
--- Is f registered for the callback `name` (itself, or the client filter's wrapper of it)? nil = unknown.
+-- Is f registered for the callback `name` (itself, or the router shim's wrapper of it)? nil = unknown.
 function callback_registered(name, f)
 	local t = get_intercepts()
 	if type(t) ~= "table" or type(t[name]) ~= "table" or f == nil then return nil end
 	if t[name][f] then return true end
-	local m = wrapped[name]
-	local w = m and m[f]
+	local r = shim()
+	local w = r and r.wrapper_of and r.wrapper_of(name, f)
 	return w ~= nil and t[name][w] ~= nil
 end
 
@@ -961,9 +622,17 @@ local function patch_main_menu()
 	end
 end
 
+-- [route_none_functions] of configs\coop_route*.ltx (was [blocked_functions]), read by the engine.
+local function none_functions()
+	local r = api and api.route
+	if not (r and type(r.none_functions) == "function") then return {} end
+	local ok, list = pcall(r.none_functions)
+	return ok and type(list) == "table" and list or {}
+end
+
 local function stub_blocked_functions()
 	local n = 0
-	for _, full in ipairs(blocked_functions) do
+	for _, full in ipairs(none_functions()) do
 		local modname, fname = full:match("^([%w_]+)%.([%w_]+)$")
 		if modname then
 			local ok, mod = pcall(function() return _G[modname] end)
@@ -1023,7 +692,7 @@ local next_tick = 0
 
 local function actor_on_update()
 	if not api then return end
-	client_mode = filter_installed and api.is_client()
+	client_mode = api.is_client()
 	local tg = time_global()
 	if tg < next_tick then return end
 	next_tick = tg + 250
@@ -1044,6 +713,7 @@ end
 -- Diagnostics (coop_status)
 -------------------------------------------------------------------------------
 STATUS_MODULES = {
+	"coop_route",
 	"coop_core_chat", "coop_core_hud", "coop_core_player", "coop_core_world",
 	"coop_economy_core",
 	"coop_npc_logic", "coop_npc_effects", "coop_npc_meet", "coop_npc_companions", "coop_npc_disguise",
@@ -1054,25 +724,9 @@ STATUS_MODULES = {
 
 function print_status()
 	local role = not api and "no engine API" or api.is_host() and "host" or api.is_client() and "client" or "off"
-	log("role %s, filter %s, client mode %s | skipped host calls %d, caught lua errors %d, events in %d (%d handler errors), chat %d",
-		role, filter_installed and "on" or "off", tostring(client_mode), stats.skipped, stats.errors,
-		stats.events_in, stats.event_errors, stats.chat)
-	if filter_installed then
-		local names = {}
-		for script in pairs(seen) do names[#names + 1] = script end
-		table.sort(names, function(a, b)
-			local da, db_ = seen[a].domain, seen[b].domain
-			if da ~= db_ then return da < db_ end
-			return a < b
-		end)
-		for _, script in ipairs(names) do
-			local s = seen[script]
-			local regs = {}
-			for what, c in pairs(s.regs) do regs[#regs + 1] = c > 1 and (what .. "x" .. c) or what end
-			table.sort(regs)
-			log("  %-8s %-34s skipped %6d errors %4d | %s", s.domain, script, s.skipped, s.errors, table.concat(regs, " "))
-		end
-	end
+	-- the callback router's counters are the engine's ([coop] routes lines), the shim's own line is coop_route's
+	log("role %s, client mode %s | caught lua errors %d, events in %d (%d handler errors), chat %d",
+		role, tostring(client_mode), stats.errors, stats.events_in, stats.event_errors, stats.chat)
 	if api and api.is_host() then
 		log("emission sync: phase '%s', emission #%d", tostring(env_host.sig), env_host.serial)
 	elseif env_cl.have then
@@ -1099,12 +753,12 @@ function on_game_start()
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("on_before_save_input", on_before_save_input)
 	RegisterScriptCallback("on_before_load_input", on_before_load_input)
-	if filter_installed then install_client_patches() end
+	if client_mode then install_client_patches() end
 end
 
--- Loaded by axr_main.on_game_start() before any script's on_game_start runs, so the filter sees
--- (almost) every registration. The Lua state is recreated for every loaded world, and on a client
--- that happens while the engine is in the "loading the host's world" phase.
+-- Loaded by axr_main.on_game_start() before any script's on_game_start runs, so the router shim sees
+-- (almost) every registration; earlier ones it routes in place. The Lua state is recreated for every
+-- loaded world, and on a client that happens while the engine is in the "loading the host's world" phase.
 
 -- Created at load time (like dxml_core does) so addons can register in their own on_game_start.
 ensure_callback("coop_on_event")
@@ -1117,7 +771,19 @@ ensure_callback("coop_actor_revived")
 ensure_callback("coop_on_container_opened")
 ensure_callback("coop_avatar_step")
 
+-- The callback router's Lua half on every machine with the engine API, the host and single player too: a session
+-- can start in this Lua state, and none holds on the host as well (F2 T10).
+if api then
+	local ok, err = pcall(function() return coop_route.install() end)
+	if not ok then log("! callback router shim failed to install: %s", tostring(err)) end
+end
+
 if api and api.is_client() then
-	local ok, err = pcall(install_client_filter)
-	if not ok then log("! client filter failed to install: %s", tostring(err)) end
+	client_mode = true
+	-- Debug mode is a cheat menu in Anomaly (spawner, teleports): off on clients (R-6.6).
+	if rawget(_G, "DEV_DEBUG") or rawget(_G, "DEV_DEBUG_DEV") then
+		_G.DEV_DEBUG = false
+		_G.DEV_DEBUG_DEV = false
+		log("debug mode (-dbg) is disabled while connected as a co-op client")
+	end
 end

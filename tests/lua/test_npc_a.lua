@@ -148,7 +148,7 @@ check(near_inside and near_inside:id() == 0, "nearest inside an identity scope u
 check(H.env.db.actor:id() == 0 and H.env.story_objects.object_id_by_story_id.actor == 0, "identity restored after")
 local ok = pcall(P.with_identity, proxy, function() error("boom") end)
 check(not ok and H.env.db.actor:id() == 0 and not P.in_identity(), "identity restored after an error (rethrown)")
-check(P.setting("scene_radius", 1) == 30 and P.setting("sound_radius", 1) == 80, "settings from coop_domains_npc.ltx")
+check(P.setting("scene_radius", 1) == 30 and P.setting("sound_radius", 1) == 80, "settings from coop_npc.ltx")
 check(P.setting("missing_key", 5) == 5, "setting default")
 proxy._alive = false
 NOW = NOW + 1

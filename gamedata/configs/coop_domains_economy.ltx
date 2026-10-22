@@ -1,9 +1,0 @@
-; Anomaly Coop - Lua execution domains of the economy group (W4), loaded by scripts\coop_main.script after
-; configs\coop_domains.ltx (same sections and rules, see there). coop_economy_*.script are "view" through the
-; coop_* prefix of the main file: they run on every machine and check the role themselves.
-
-[owner]
-game_fast_travel        ; PDA fast travel of the local player; coop_economy_travel makes it a group travel and
-                        ; sends its time cost to the host (a client's own clock never moves)
-game_backpack_travel    ; PDA travel to the player's backpack stash, same rules
-wait                    ; GAMMA "Books Pass Time" (absent in stock): coop_economy_group asks the group first

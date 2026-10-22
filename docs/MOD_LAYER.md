@@ -36,11 +36,20 @@
 | `view` | у всех | HUD, звуки, частицы, интерфейс |
 | `none` | нигде в коопе | механики, заменённые движком (`docs/MOD_REPLACEMENTS.md`) |
 
-- **Как сейчас.** Диспетчер колбэков Anomaly — Lua (`_g.script`: `RegisterScriptCallback` →
-  `axr_main.callback_set`, `SendScriptCallback` → `axr_main.make_callback`). Наш фильтр
-  (`coop_main.script`, `configs/coop_domains*.ltx`) оборачивает его и классифицирует обработчик **по файлу
-  скрипта**. Незнакомый скрипт считается `host` — у клиента молча отключаются мины, верстак, бесшумные убийства,
-  команды компаньонов (ревью R5 I4).
+- **Как сейчас** (Ф2 задача 10). Диспетчер колбэков Anomaly — Lua (`_g.script`: `RegisterScriptCallback` →
+  `axr_main.callback_set`, `SendScriptCallback` → `axr_main.make_callback`).
+  - Решает движок: `coop_router.cpp` над таблицей `xrCoop/coop_routes.h`, переопределения — `configs/coop_route*.ltx`
+    и `coop_compat_*.ltx`. Домен берётся **по колбэку**, правило скрипта его уточняет. Незнакомый скрипт идёт по
+    колбэку: `actor_on_item_use` у клиента исполняется, `npc_on_death_callback` — нет (R5 I4).
+  - Скрипт определяется по файлу, где лежит функция: `.script` — по имени, `.lua` — по пути под `scripts` через точки
+    (`illish.patches.xr_combat_ignore`). Патч мода не получает правил стокового скрипта с тем же именем.
+  - В Lua осталась прокладка `scripts/coop_route.script` (у хоста и у клиента). Она один раз, при регистрации,
+    оборачивает обработчик доменом из `coop.route.of` и на каждый вызов спрашивает `coop.route.runs`. Оборачивает
+    `callback_set/unset`, `AddUniqueCall/RemoveUniqueCall` и `CreateTimeEvent`; `make_callback` не трогает.
+  - Вне сессии исполняется всё. `none` пропускается и у хоста. У клиента обработчик идёт под `pcall`: ошибка
+    считается, сессия живёт.
+  - Счётчики в `coop_status`: строки `[coop] routes`.
+  - Ещё не в движке: колбэки, которые движок шлёт сам (биндеры), — задача 11.
 - **Как надо.**
   - Таблица маршрутов в C++: ключ — пара (имя колбэка, скрипт обработчика), значения по умолчанию заданы для
     каждого стокового колбэка. Домен определяется **по колбэку**, а не по файлу: `actor_on_item_use` своего

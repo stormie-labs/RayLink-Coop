@@ -15,7 +15,10 @@ RegisterScriptCallback("actor_on_update", pre_view)
 load_coop_main()
 check(DEV_DEBUG == false, "DEV_DEBUG forced off on the client")
 
-local host_fn = from_script("sim_board", "return function() bump('host') end") -- unlisted -> default host
+-- sim_board has no rule: since F2 T10 it follows the callback (actor_on_update = owner) and runs on a client, its
+-- world calls go to the host through the engine (review R5 I4; before, an unlisted script was host by default).
+local host_fn = from_script("sim_board", "return function() bump('host') end")
+local host_listed = from_script("death_manager", "return function() bump('host_listed') end") -- [route_scripts] host
 local owner_fn = from_script("actor_effects", "return function() bump('owner') end")
 local err_fn = from_script("ui_inventory", "return function() bump('err'); error('boom') end")
 local blocked_fn = from_script("ui_debug_launcher", "return function() bump('blocked') end")
@@ -24,6 +27,7 @@ local squad_view = from_script("ui_pda_npc_tab", "return function() bump('squad_
 local obj = from_script("ui_obj", "return { actor_on_update = function(self) bump(self.tag) end, tag = 'obj' }")
 
 RegisterScriptCallback("actor_on_update", host_fn)
+RegisterScriptCallback("actor_on_update", host_listed)
 RegisterScriptCallback("actor_on_update", owner_fn)
 RegisterScriptCallback("actor_on_update", err_fn)
 RegisterScriptCallback("on_key_press", blocked_fn)
@@ -35,7 +39,8 @@ coop_main.on_game_start()
 SendScriptCallback("actor_on_update")
 check(C.pre_host == nil, "pre-registered host callback skipped")
 check(C.pre_view == 1, "pre-registered view callback runs")
-check(C.host == nil, "host-domain callback skipped")
+check(C.host == 1, "an unlisted script's actor_on_update runs on a client (owner by the callback)")
+check(C.host_listed == nil, "host-domain callback skipped")
 check(C.owner == 1, "owner callback runs")
 check(C.err == 1, "erroring view callback ran and its error was caught")
 check(C.obj == 1, "object callback runs with self")

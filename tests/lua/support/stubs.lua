@@ -208,14 +208,23 @@ function from_script(script, body)
 	return f()
 end
 
--- loads coop_main the way CScriptStorage does (file_header_old)
-function load_coop_main()
-	local fh = assert(io.open(ROOT .. "scripts/coop_main.script", "r"))
+-- loads gamedata\scripts\<name>.script the way CScriptStorage does (file_header_old); returns the module
+function load_script_file(name)
+	local fh = assert(io.open(ROOT .. "scripts/" .. name .. ".script", "r"))
 	local src = fh:read("*a")
 	fh:close()
-	local header = 'local function script_name() return "coop_main" end local this = {} coop_main = this setmetatable(this, {__index = _G}) setfenv(1, this) '
-	local f = assert(loadstring(header .. src, "@D:\\Games\\Anomaly\\gamedata\\scripts\\coop_main.script"))
+	local header = 'local function script_name() return "' .. name .. '" end local this = {} ' .. name ..
+		' = this setmetatable(this, {__index = _G}) setfenv(1, this) '
+	local f = assert(loadstring(header .. src, "@D:\\Games\\Anomaly\\gamedata\\scripts\\" .. name .. ".script"))
 	f()
+	return rawget(_G, name)
+end
+
+-- loads coop_main; first the router shim it installs (coop_route: the engine loads a script on its first use, this
+-- harness has no such lookup)
+function load_coop_main()
+	load_script_file("coop_route")
+	load_script_file("coop_main")
 end
 
 FAILS, PASSES = 0, 0

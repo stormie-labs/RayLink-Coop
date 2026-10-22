@@ -1,0 +1,16 @@
+; Anomaly Coop - callback routes of the core group (W4), read by the engine after configs\coop_route.ltx (same
+; sections and rules, see there). Migrated from coop_domains_core.ltx (F2 T10).
+;
+; The core group's own scripts (coop_core_*) are view through coop_* in coop_route.ltx: they run on every machine and
+; decide by role themselves.
+; Stock scripts the core scripts depend on keep their main-file rule: ui_mutant_loot (view, ui_*: the client asks the
+; host before its loot window opens), game_statistics / actor_status_thirst / actor_status_sleep (owner: the client's
+; own values, kept by the host through coop_core_player), treasure_manager and dynamic_news_manager (host: clients get
+; stash content and news from the host through coop_core_world). trade_manager has no rule: its handlers follow their
+; callbacks (clients only apply trade profiles through coop_core_world).
+
+; FDDA (Food, Drug and Drink Animations, third party, only if installed): item-use animations of the local actor.
+; Its HUD animation prefetch is switched off on clients by coop_core_world.
+[route_scripts]
+enhanced_animations          = owner
+ea_*                         = owner

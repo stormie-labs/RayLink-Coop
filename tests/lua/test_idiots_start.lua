@@ -5,20 +5,11 @@
 -- names a function by its file's base name: illish\patches\xr_combat_ignore.lua -> "xr_combat_ignore", the stock AI
 -- script, host by default (axr_companions and surge_manager are host explicitly). So all six listeners were skipped
 -- on the client, the engine still called xr_combat_ignore.is_enemy there and it read the empty config.
--- Fix: idiots_on_start is in [callbacks_always] (configs\coop_domains_npc.ltx). What the listeners register in turn
--- keeps its own file's domain. Run: tools\test_lua.cmd idiots_start
-local CFG = "gamedata/configs/"
-FS = { FS_ListFiles = 1, FS_RootOnly = 2 }
-function bit_or(a, b) return a + b end
-function getFS()
-	return { file_list_open = function()
-		local files = {}
-		local p = io.popen('dir /b "' .. CFG:gsub("/", "\\") .. 'coop_domains_*.ltx" 2>nul')
-		for line in p:lines() do files[#files + 1] = line end
-		p:close()
-		return { Size = function() return #files end, GetAt = function(_, i) return files[i + 1] end, Free = function() end }
-	end }
-end
+-- Fix: idiots_on_start was put in [callbacks_always] (coop_domains_npc.ltx); since F2 T10 it is
+-- [route_callbacks_forced] idiots_on_start = view (configs\coop_route_npc.ltx), and the engine's router keys a .lua by
+-- its path (illish.patches.xr_combat_ignore), so the stock script's rules do not reach it at all. What the listeners
+-- register in turn follows its own file and callback (test_route_shim.lua: route_shim_idiots_nested_stay_host).
+-- Run: tools\test_lua.cmd idiots_start
 
 -- a chunk defined in a Useful Idiots package file (debug.getinfo source = the .lua path inside the scripts folder)
 local function from_lua(rel, body, ...)

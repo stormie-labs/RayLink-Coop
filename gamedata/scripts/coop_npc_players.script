@@ -23,7 +23,7 @@
 	  send(name, t, target)   -> coop.send_event with a flat table payload (coop_main.encode)
 	  on(name, f, who)        -> event handler; who = "host" (runs on the host, from a client) or "client"
 	                             (runs on a client, from the host); f(t, from) gets the decoded table
-	  setting(key, def)       -> [coop_npc] value from configs\coop_domains_npc.ltx (number/bool/string)
+	  setting(key, def)       -> [coop_npc] value from configs\coop_npc.ltx (number/bool/string)
 	  log(tag, fmt, ...) report(tag, what, err)
 	Globals for rewritten mod code (coop_npc_compat): coop_npc_is_player_id(id), coop_npc_multi(),
 	coop_npc_any_player_within(obj, r).
@@ -308,13 +308,13 @@ function on(name, f, who, tag)
 end
 
 -------------------------------------------------------------------------------
--- Settings ([coop_npc] in configs\coop_domains_npc.ltx; every value has a default in code)
+-- Settings ([coop_npc] in configs\coop_npc.ltx; every value has a default in code)
 -------------------------------------------------------------------------------
 local settings_ini = false
 
 function setting(key, def)
 	if settings_ini == false then
-		local ok, ini = pcall(ini_file, "coop_domains_npc.ltx")
+		local ok, ini = pcall(ini_file, "coop_npc.ltx")
 		settings_ini = ok and ini or nil
 	end
 	local ini = settings_ini

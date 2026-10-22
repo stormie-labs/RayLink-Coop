@@ -1,0 +1,26 @@
+; Anomaly Coop - callback routes of the NPC group (W4 "npc"), read by the engine after configs\coop_route.ltx (same
+; sections and rules, see there). Migrated from coop_domains_npc.ltx (F2 T10); its [coop_npc] settings moved to
+; configs\coop_npc.ltx. The coop_npc_* scripts are view through coop_* of the main file and decide host/client
+; themselves.
+
+; Init callbacks of NPC mods that run on clients too (was [callbacks_always] of coop_domains_npc.ltx).
+[route_callbacks_forced]
+idiots_on_start                  = view   ; Useful Idiots: z_idiots_patches.on_game_start sends it on every machine;
+                                          ; the listeners read their config and register their handlers, which keep
+                                          ; their own file's route. Without it a client never filled xr_combat_ignore's
+                                          ; config and the engine's is_enemy call was FATAL there (2026-10-23)
+
+[route_scripts]
+gameplay_disguise                = owner  ; the player's half of the disguise (outfit -> community, HUD bar, sudden
+                                          ; actions) runs on the player's machine; the NPC half is judged by the host
+                                          ; (coop_npc_disguise). Its npc_on_update never fires for client puppets.
+bind_campfire                    = owner  ; matches on a campfire and the campfire hints are the player's; lighting
+                                          ; goes to the host (coop_npc_world), the flame comes back through coop_objects
+; Useful Idiots' patches of stock host scripts (illish\patches\*.lua, keyed by path since F2 T10, so the stock
+; surge_manager / axr_companions rules no longer reach them). What their idiots_on_start listeners register stays on
+; the host like the stock scripts': surge_manager.lua:146 actor_on_first_update (surge cover cache) and
+; mcm_option_change; axr_companions.lua:223 actor_on_first_update (splits companion squads), npc_on_hit_callback,
+; idiots_on_state_change. The other illish files need no line: their handlers follow the callback (npc_* host,
+; GUI_* view; illish.patches.itms_manager's actor_on_item_take stays owner like the stock itms_manager).
+illish.patches.surge_manager     = host
+illish.patches.axr_companions    = host

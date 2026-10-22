@@ -1,0 +1,9 @@
+; Anomaly Coop - callback routes of the economy group (W4), read by the engine after configs\coop_route.ltx (same
+; sections and rules, see there). Migrated from coop_domains_economy.ltx (F2 T10). coop_economy_*.script are view
+; through coop_* of the main file: they run on every machine and check the role themselves.
+
+[route_scripts]
+game_fast_travel             = owner  ; PDA fast travel of the local player; coop_economy_travel makes it a group
+                                      ; travel and sends its time cost to the host (a client's own clock never moves)
+game_backpack_travel         = owner  ; PDA travel to the player's backpack stash, same rules
+wait                         = owner  ; GAMMA "Books Pass Time" (absent in stock): coop_economy_group asks the group first

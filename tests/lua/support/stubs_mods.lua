@@ -353,6 +353,8 @@ coop = {
 	stash_set = function(k, v) STASH[k] = v; return true end,
 	stash_get = function(k) return STASH[k] end,
 }
+-- F2 T10: coop.route (the engine's callback router) over coop_native, rules from configs\coop_route*.ltx
+dofile("tests/lua/support/stubs.d/route.lua")
 
 -- last sent event of a name (decoded)
 function sent(name)

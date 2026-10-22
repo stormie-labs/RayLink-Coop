@@ -39,6 +39,7 @@ COOP_FILES = {
 	"coop_quests_party",
 	"coop_quests_pda",
 	"coop_quests_story",
+	"coop_route", -- F2 T10: the callback router shim
 	"coop_settings",
 	"coop_tasks",
 	"coop_ui",

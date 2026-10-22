@@ -1,0 +1,11 @@
+; Anomaly Coop - callback routes of the F3 group (checkpoints, death, rest, wipe, saves), read by the engine after
+; configs\coop_route.ltx (same sections and rules, see there). The rules of coop_domains_checkpoints.ltx in the F2 T10
+; format (the F3 plan's Task 18 rename). That file is no longer read by any loader; it stays until Task 18 because the
+; F3 tests read it. All five scripts are also view through coop_* of the main file; the exact names below win over it.
+
+[route_scripts]
+coop_checkpoints             = view   ; checkpoint tips and PDA spots: every machine shows its own and the group's
+coop_saves                   = view   ; hides the save/load UI and quick-save keys on every machine
+coop_rest                    = owner  ; the local player's sleep / rest dialog
+coop_death                   = owner  ; contusion, money penalty and death marker spots of the local actor
+coop_wipe                    = host   ; fails the group's tasks on a wipe, only the host owns the task journal

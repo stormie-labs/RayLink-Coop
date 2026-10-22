@@ -1,0 +1,71 @@
+; Anomaly Coop - callback routes of third-party mods (W4 "mods"), read by the engine after configs\coop_route.ltx (same
+; sections and rules, see there). Migrated from coop_domains_mods.ltx (F2 T10). Entries of mods that are not installed
+; do nothing. The coop_mods_*.script patches (view by coop_*) route the world half of these mods to the host; the view
+; and owner lines are the player's half that has to run on a client too, the host lines keep a mod's world logic on the
+; host whatever callback it uses.
+
+[route_scripts]
+; --- view
+; Oleh's Extended MovementSFX / Dark Signal footsteps: sounds of the local player
+footstep_sounds                  = view
+eft_jump_sounds                  = view
+oleh_sound_utils                 = view
+oleh_sounds_mcm                  = view
+extended_movement_sounds         = view
+extended_movement_sounds_mcm     = view
+; Hideout Furniture: placement box drawing / ray helpers, placed radio sound and dialog
+aol_bbox                         = view
+thial_ray                        = view
+placeable_radio                  = view
+hf_mcm                           = view
+; --- owner
+; Perk-Based Artefacts: the belt of the local player (host skips a client's hits, coop_mods_perks)
+perk_based_artefacts             = owner
+momopate_pba_tweaks              = owner
+; Haru's skills, Experience Framework, Wearable Devices: the local player's progress (coop_mods_pdata)
+haru_skills                      = owner
+experience_*                     = owner
+wd_*                             = owner
+; Quick Action Wheel: actions on the local inventory
+haru_quick_action_wheel          = owner
+haru_quick_action_wheel_mcm      = owner
+; Body Health System: limbs of the local player
+zzz_player_injuries              = owner
+; Magazines Redux: reloading the local player's weapons (container verbs go to the host, coop_mods_mags)
+magazines                        = owner
+magazine_binder                  = owner
+mags_patches                     = owner
+mag_support                      = owner
+; Weapon Parts Overhaul: jamming and repairs of the local player's weapons
+arti_jamming                     = owner
+zzzz_arti_jamming_repairs        = owner
+; Glowsticks, model drops, autolooter: the local player's item use (world half on the host, coop_mods_items)
+zz_glowstick_mcm                 = owner
+model_dropper_mcm                = owner
+z_auto_looter                    = owner
+; Hideout Furniture: placing furniture from the local inventory (the object is created by the host, coop_mods_hf)
+placeable_furniture              = owner
+; Gadgets: refusing to pick up a display copy from a showcase (displays are the host's, coop_mods_hf)
+weapon_showcase                  = owner
+; GAMMA artefact melter dialog (workshop: items into / out of the own inventory are forwarded by the engine)
+grok_artefacts_melter            = owner
+; RF Receiver Hidden Packages: the hunting half (scanner, pickup); spawning is off on clients (coop_mods_radio)
+tb_rf_receiver_packages          = owner
+; Guitar / harmonica: the local player plays (others hear it, coop_mods_misc)
+guitar_anim                      = owner
+harmonica_anim                   = owner
+; Kill Tracker: the local player's kills
+ish_kill_tracker                 = owner
+; Personal Adjustable Waypoint: the waypoint of the local player
+tasks_placeable_waypoints        = owner
+; --- host: world logic of these mods
+nta_utils                        = host   ; New Tasks Addon: triggers, spawns (coop_mods_nta)
+house_of_horrors_configs         = host
+big_game_configs                 = host
+baba_yaga_configs                = host
+mirage_configs                   = host
+hf_obj_manager                   = host   ; Hideout Furniture data (clients get it from mods.hf_data; load_state still runs)
+hf_map_objects                   = host   ; furniture spawned from the mod's own lists
+smr_loot                         = host   ; Zone Customization Project bonus loot (coop_mods_misc)
+smr_amain_mcm                    = host
+grok_stashes_on_corpses          = host   ; Stash Overhaul corpse stash rolls (coop_mods_items routes a client's search)

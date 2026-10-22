@@ -1,18 +1,6 @@
--- Anomaly Coop W4 core temp: coop_domains_core.ltx is read and classifies FDDA scripts as owner on a client.
+-- Anomaly Coop W4 core: configs\coop_route_core.ltx is read (by the engine's router, here stubs.d\route.lua; F2 T10)
+-- and routes the FDDA scripts as owner on a client.
 MODE = "client"
-local CFG = "gamedata/configs/"
-FS = { FS_ListFiles = 1, FS_RootOnly = 2 }
-function bit_or(a, b) return a + b end
-function getFS()
-	-- coop_main lists the files with file_list_open (no rescan); file_list_open_ex is deliberately absent here
-	return { file_list_open = function()
-		local files = {}
-		local p = io.popen('dir /b "' .. CFG:gsub("/", "\\") .. 'coop_domains_*.ltx" 2>nul')
-		for line in p:lines() do files[#files + 1] = line end
-		p:close()
-		return { Size = function() return #files end, GetAt = function(_, i) return files[i + 1] end, Free = function() end }
-	end }
-end
 dofile("tests/lua/support/stubs.lua")
 load_coop_main()
 local ea = from_script("enhanced_animations", "return function() EA_RAN = (EA_RAN or 0) + 1 end")
@@ -29,4 +17,10 @@ SendScriptCallback("actor_on_update")
 check(EA_RAN == 1 and EAP_RAN == 1, "FDDA scripts run on a client (owner)")
 check(CHAT_RAN == 1, "coop_core_* run on a client (view)")
 check(TM_RAN == nil, "treasure_manager stays host-only")
+-- The FDDA rules matter on a host callback: without ea_* = owner the callback's host default would skip them.
+AddScriptCallback("npc_on_update")
+RegisterScriptCallback("npc_on_update", from_script("ea_callbacks", "return function() EAP_NPC = true end"))
+RegisterScriptCallback("npc_on_update", from_script("ea_other_mod", "return function() EA_OTHER = true end"))
+SendScriptCallback("npc_on_update")
+check(EAP_NPC == true and EA_OTHER == true, "ea_* = owner (coop_route_core.ltx) runs FDDA's npc_on_update on a client")
 print(string.format("DOMAINS: %d passed, %d failed", PASSES, FAILS))

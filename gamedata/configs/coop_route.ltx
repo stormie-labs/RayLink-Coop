@@ -1,0 +1,153 @@
+; Anomaly Coop - callback routes (docs\MOD_LAYER.md 2.2), read by the engine (coop_router.cpp) on the first handler a
+; script registers: configs\coop_route.ltx, then every configs\coop_route_*.ltx and configs\coop_compat_*.ltx by name
+; (the root of configs only). A later file wins for the same key. A mod adds its own coop_compat_<mod>.ltx or a DLTX
+; mod_coop_route_*.ltx; a rule for a script that is not installed changes nothing.
+;
+; Every handler registered through RegisterScriptCallback, AddUniqueCall or CreateTimeEvent gets a domain once, when it
+; is registered (scripts\coop_route.script asks the engine): by the CALLBACK (the engine's table, xrCoop\coop_routes.h:
+; actor_* owner, npc_* / monster_* / squad_* host, GUI_* / on_key_* view, save_state host, load_state view, a mod's own
+; callback owner; unique calls and time events owner), unless a rule below says otherwise.
+;   host  - runs only on the host                  owner - runs everywhere: the player's own (its world calls go to
+;   view  - runs everywhere (UI, sound, data)              the host through the engine, MOD_LAYER 2.3)
+;   none  - runs nowhere while a session is on, the host included (mechanics the engine replaced)
+;   level - as host until split levels (F3a)
+; Outside a session (single player) every handler runs. On a client a handler runs under pcall: a Lua error is logged
+; and counted (coop_status), the session goes on (R-11.4). A skipped unique call stays registered, a skipped time event
+; is removed.
+;
+; Sections, strongest first:
+;   [route_pairs]            callback@script = domain   one script on one callback
+;   [route_callbacks_forced] callback = domain          beats the script rules, except a script routed to none
+;   [route_scripts]          script = domain            the exact name, else the longest prefix (a trailing *)
+;   [route_callbacks]        callback = domain          a callback's default, weaker than any script rule
+;   [route_none_functions]   module.function            replaced by a "disabled" message on a co-op client
+; Script names: a .script by its name without .script; a .lua by its path under gamedata\scripts, folders joined by
+; dots (illish\patches\xr_combat_ignore.lua = illish.patches.xr_combat_ignore), so a mod's patch file never takes the
+; rules of the stock script it patches. Names compare without letter case.
+;
+; Migrated from coop_domains.ltx (F2 T10): [view] / [owner] / [host] -> [route_scripts] with that domain; [blocked]
+; (debug tools: host but never a client) -> host; [callbacks_always] -> forced view; [callbacks_host] -> forced host;
+; [blocked_functions] -> [route_none_functions]. Gone: [settings] default = host (unknown scripts follow the callback,
+; review R5 I4), c_functions (an engine function follows the callback too), protect_client_callbacks (always on),
+; disable_dev_debug (always on, coop_main.script).
+
+[route_callbacks_forced]
+; Run on clients whatever the script's rule: they only read data or adapt the UI (was [callbacks_always]).
+load_state                        = view
+on_pstor_load_all                 = view
+on_xml_read                       = view   ; dxml_core keeps these handlers itself, they never reach axr_main
+on_localization_change            = view
+on_screen_resolution_changed      = view
+; Never run on clients, even for view/owner scripts: ALife / simulation driven, saving (was [callbacks_host]). With
+; script rules winning, coop_* = view would otherwise run them on clients.
+squad_on_npc_creation             = host
+squad_on_enter_smart              = host
+squad_on_leave_smart              = host
+squad_on_npc_death                = host
+squad_on_update                   = host
+squad_on_first_update             = host
+squad_on_add_npc                  = host
+squad_on_after_game_vertex_change = host
+squad_on_after_level_change       = host
+smart_terrain_on_update           = host
+on_try_respawn                    = host
+fill_start_position               = host
+se_stalker_on_spawn               = host
+save_state                        = host
+on_pstor_save_all                 = host
+
+[route_scripts]
+; --- view: UI, HUD, sound, visuals, data helpers (was [view])
+coop_*                       = view   ; our scripts decide by role themselves
+_g                           = view
+_g_patches                   = view
+global                       = view
+axr_main                     = view
+axr_keybind                  = view
+alife_storage_manager        = view
+callbacks_gameobject         = view
+dxml_core                    = view
+modxml_*                     = view
+options_*                    = view
+ui_*                         = view
+utils_*                      = view
+lua_extensions               = view
+ltx_help_ex                  = view
+lua_help_ex                  = view
+imgui_helper                 = view
+_imgui_groups                = view
+fakelens                     = view
+true_first_person_death      = view
+aaa_sound_object_patch       = view
+sound_ambient                = view
+xrs_dyn_music                = view
+closecaption                 = view
+actor_menu                   = view
+pda                          = view
+pda_actor                    = view
+pda_flagger                  = view
+txr_routes                   = view
+bind_dynamic_light           = view
+mob_trade                    = view
+; --- owner: the local actor, its needs, item use, own effects (was [owner])
+actor_effects                = owner
+actor_status                 = owner
+actor_status_sleep           = owner
+actor_status_thirst          = owner
+arszi_psy                    = owner
+bind_item                    = owner
+game_statistics              = owner
+gameplay_radioactive_water   = owner
+item_artefact                = owner
+item_backpack                = owner
+item_cooking                 = owner
+item_device                  = owner
+item_map_kit                 = owner
+item_money                   = owner
+item_parts                   = owner
+item_radio                   = owner
+item_repair                  = owner
+item_tent                    = owner
+item_weapon                  = owner
+itms_manager                 = owner
+level_environment            = owner
+xr_weapon_jam                = owner
+game_difficulties            = owner  ; applies the save's (= host's) difficulty to the local actor on load; values and
+                                      ; changes come from the host through coop_settings (R-11.3)
+; --- host: world logic (was [host]); these also hold for the actor_* callbacks they register
+surge_manager                = host   ; clients mirror the host's phases (coop_main), see MODLOG
+psi_storm_manager            = host
+ui_mm_faction_select         = host   ; new-game setup
+pda_smart_terrain_warfare    = host   ; PDA orders to warfare squads
+warfare_faction_control      = host
+game_autosave                = host   ; clients never save (R-9.2)
+game_autosave_new            = host
+game_setup                   = host
+dynamic_news_manager         = host
+treasure_manager             = host
+death_manager                = host
+axr_task_manager             = host
+axr_companions               = host
+; --- debug and cheat tools: never on a client, the host keeps them (was [blocked]; "none" would take them from the
+; host too)
+ui_debug_*                   = host
+ui_map_debug_ex              = host
+xrs_debug_tools              = host
+debug_cmd_list               = host
+imgui_lua_debug              = host
+lua_help_imgui               = host
+zz_ui_debug_inputs           = host
+
+; Module functions replaced by a "disabled on a co-op client" message on clients (debug spawner etc., R-6.6;
+; coop_main.script). The host keeps them.
+[route_none_functions]
+ui_debug_launcher.start_debug_main
+ui_debug_launcher.start_item_spawner
+ui_debug_launcher.start_obj_spawner
+ui_debug_launcher.start_executer
+ui_debug_launcher.start_faction_changer
+ui_debug_launcher.start_workshop
+ui_debug_item.start
+ui_debug_item.start_weapon
+ui_debug_item.start_outfit
+ui_debug_item.start_artfact
