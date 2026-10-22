@@ -621,7 +621,7 @@ TEST(spawn_child_in_item)
 		const spawn::ClassRule* parent = spawn::class_rule(parent_clsid);
 		const spawn::ClassRule* child = spawn::class_rule(child_clsid);
 		REQUIRE(parent && child);
-		return spawn::child_allowed(parent->game, parent_section, child->game, child_section);
+		return spawn::child_allowed(parent->game, parent_section, child->game, child_section, 0, 0);
 	};
 	// A launcher's rocket: the grenade launcher's fake missile, an RPG-7 rocket, RG-6 and SSRS shells.
 	CHECK(ok("WP_AK74", "wpn_ak74", "G_FAKE", "wpn_fake_missile"));
@@ -686,10 +686,16 @@ TEST(spawn_expensive_item)
 
 namespace
 {
+// A request in the tests: what the host's queue keeps of it (spawn::QueuedRequest, data only) and test switches
+// for what the host would find when its turn comes.
 struct Wanted
 {
 	int id = 0;
 	uint32_t cost = 0;
+	bool engine_refuses = false; // the holder is gone, or the engine refuses the entity
+	bool quest = false; // a quest item
+	bool deny_now = false; // the host's deny list has it when its turn comes
+	spawn::QueuedRequest req;
 };
 
 // The host's flow for a request (coop_requests host_on_spawn): judge, then queue an OverBudget one behind the others.
@@ -698,7 +704,8 @@ int ask(spawn::SpawnQueue<Wanted>& queue, spawn::BudgetBook& book, const std::st
     std::vector<int>& created, uint64_t now)
 {
 	const spawn::SpawnPolicy policy;
-	spawn::SectionFacts f = facts(w.cost);
+	spawn::SectionFacts f = facts(w.cost, w.quest);
+	f.in_dialog_to_own_actor = w.req.quest_gift;
 	f.queue_waiting = queue.waiting(key);
 	const SpawnVerdict v = spawn::judge(item_rule(), nullptr, f, book.of(key), policy, now);
 	if (v == SpawnVerdict::Allow)
@@ -709,6 +716,34 @@ int ask(spawn::SpawnQueue<Wanted>& queue, spawn::BudgetBook& book, const std::st
 	if (v == SpawnVerdict::OverBudget && queue.push(key, w))
 		return 0;
 	return -1;
+}
+
+// The host's turn for the front request (coop_requests create_queued): judged again from what the host knows now, with
+// the quest gift decided when it was asked; Wait while the budget does not hold it; what the engine refuses after the
+// charge is refunded.
+spawn::Turn turn(spawn::BudgetBook& book, const std::string& key, Wanted& w, std::vector<int>& created, uint64_t now)
+{
+	const spawn::SpawnPolicy policy;
+	const spawn::SectionFacts f = facts(w.cost, w.quest, false, w.deny_now);
+	const SpawnVerdict v = spawn::judge_queued(item_rule(), nullptr, f, w.req, book.of(key), policy, now);
+	if (v == SpawnVerdict::OverBudget)
+		return spawn::Turn::Wait;
+	if (v != SpawnVerdict::Allow)
+		return spawn::Turn::Refused;
+	if (w.engine_refuses)
+	{
+		if (!spawn::budget_free(f))
+			spawn::refund(book.of(key), w.cost, policy);
+		return spawn::Turn::Refused;
+	}
+	created.push_back(w.id);
+	return spawn::Turn::Created;
+}
+
+// The turns at `now`, for SpawnQueue::pump.
+auto at(spawn::BudgetBook& book, const std::string& key, std::vector<int>& created, uint64_t now)
+{
+	return [&book, &key, &created, now](Wanted& w) { return turn(book, key, w, created, now); };
 }
 } // namespace
 
@@ -721,12 +756,6 @@ TEST(spawn_queue_order)
 	spawn::BudgetBook book;
 	const std::string key(64, 'q');
 	std::vector<int> created;
-	const auto create = [&](Wanted& w)
-	{
-		created.push_back(w.id);
-		return true;
-	};
-
 	CHECK_EQ(ask(queue, book, key, {1, policy.cost_burst}, created, 0), 1); // the whole burst at once
 	CHECK_EQ(ask(queue, book, key, {2, 2000}, created, 0), 0);
 	CHECK_EQ(ask(queue, book, key, {3, 2000}, created, 0), 0);
@@ -735,15 +764,15 @@ TEST(spawn_queue_order)
 	CHECK(queue.waiting(key));
 	CHECK_EQ(queue.total(), size_t(3));
 
-	CHECK_EQ(queue.pump(key, book.of(key), policy, 999, create), size_t(0)); // 1 998 back: not enough yet
-	CHECK_EQ(queue.pump(key, book.of(key), policy, 1000, create), size_t(1)); // 2 000: the first one
+	CHECK_EQ(queue.pump(key, at(book, key, created, 999)), size_t(0)); // 1 998 back: not enough yet
+	CHECK_EQ(queue.pump(key, at(book, key, created, 1000)), size_t(1)); // 2 000: the first one
 	// A cheap request of the same character while two wait: behind them, though 0 would fit.
 	CHECK_EQ(ask(queue, book, key, {5, 0}, created, 1000), 0);
-	CHECK_EQ(queue.pump(key, book.of(key), policy, 3000, create), size_t(3)); // 4 000: two more, then the free one
+	CHECK_EQ(queue.pump(key, at(book, key, created, 3000)), size_t(3)); // 4 000: two more, then the free one
 	CHECK(!queue.waiting(key));
 	CHECK((created == std::vector<int>{1, 2, 3, 4, 5}));
 	CHECK_EQ(ask(queue, book, key, {6, 1}, created, 3000), 0); // the budget is empty again: it waits
-	CHECK_EQ(queue.pump(key, book.of(key), policy, 3001, create), size_t(1));
+	CHECK_EQ(queue.pump(key, at(book, key, created, 3001)), size_t(1));
 	CHECK((created == std::vector<int>{1, 2, 3, 4, 5, 6}));
 
 	// Another character is not behind this one's queue.
@@ -791,13 +820,8 @@ TEST(spawn_queue_drop)
 	CHECK((dropped == std::vector<int>{2, 3}));
 	CHECK(!queue.waiting(key));
 	CHECK_EQ(queue.total(), size_t(1));
-	const auto create = [&](Wanted& w)
-	{
-		created.push_back(w.id);
-		return true;
-	};
-	CHECK_EQ(queue.pump(key, book.of(key), policy, 100000, create), size_t(0)); // nothing left of his
-	CHECK_EQ(queue.pump(other, book.of(other), policy, 100000, create), size_t(1));
+	CHECK_EQ(queue.pump(key, at(book, key, created, 100000)), size_t(0)); // nothing left of his
+	CHECK_EQ(queue.pump(other, at(book, other, created, 100000)), size_t(1));
 	CHECK((created == std::vector<int>{1, 4, 5}));
 
 	// Only some of a queue: the ones of an older world, by a predicate.
@@ -825,17 +849,10 @@ TEST(spawn_queue_refund)
 	const std::string key(64, 'r');
 	std::vector<int> created;
 	CHECK_EQ(ask(queue, book, key, {1, policy.cost_burst}, created, 0), 1);
-	CHECK_EQ(ask(queue, book, key, {2, 5000}, created, 0), 0);
+	CHECK_EQ(ask(queue, book, key, {2, 5000, true}, created, 0), 0); // the engine will refuse it
 	CHECK_EQ(ask(queue, book, key, {3, 5000}, created, 0), 0);
 	// 10 000 came back; the engine refuses #2 (its holder is gone): its 5 000 come back, #3 is created.
-	const auto create = [&](Wanted& w)
-	{
-		if (w.id == 2)
-			return false;
-		created.push_back(w.id);
-		return true;
-	};
-	CHECK_EQ(queue.pump(key, book.of(key), policy, 5000, create), size_t(1));
+	CHECK_EQ(queue.pump(key, at(book, key, created, 5000)), size_t(1));
 	CHECK((created == std::vector<int>{1, 3}));
 	CHECK(book.of(key).tokens == 5000.0); // 10 000 - 5 000 (#3); #2's charge came back
 }
@@ -863,7 +880,7 @@ TEST(spawn_launch_child_is_free)
 
 	// A rocket into his own grenade launcher: created at once, behind nothing, the budget as it was.
 	spawn::SectionFacts shot = facts(150); // wpn_fake_missile costs 150
-	shot.parent_ok = spawn::child_allowed(launcher->game, "wpn_ak74", rocket->game, "wpn_fake_missile");
+	shot.parent_ok = spawn::child_allowed(launcher->game, "wpn_ak74", rocket->game, "wpn_fake_missile", 0, 1);
 	shot.launch_child = shot.parent_ok;
 	shot.queue_waiting = queue.waiting(key);
 	REQUIRE(shot.parent_ok && shot.queue_waiting);
@@ -880,7 +897,7 @@ TEST(spawn_launch_child_is_free)
 	// Still refused: the same rocket into an item that does not take it, a deny-listed one.
 	spawn::SectionFacts wrong = facts(150);
 	wrong.parent_ok = spawn::child_allowed(spawn::GameClass::WeaponMagazined, "wpn_lr300", rocket->game,
-	    "wpn_fake_missile");
+	    "wpn_fake_missile", 0, 30);
 	wrong.launch_child = wrong.parent_ok;
 	CHECK(!wrong.parent_ok && !spawn::budget_free(wrong));
 	CHECK(spawn::judge(rocket, nullptr, wrong, book.of(key), policy, 0) == SpawnVerdict::WrongParent);
@@ -891,4 +908,133 @@ TEST(spawn_launch_child_is_free)
 	// An ordinary item into his character still pays and queues.
 	CHECK(!spawn::budget_free(facts(150)));
 	CHECK_EQ(ask(queue, book, key, {3, 150}, created, 10), 0);
+}
+
+// ---------------------------------------------------------------- fix round 4 (review: Important 1 and 2, minors)
+
+// Important 1 (F2-22): a free child only while its parent has room: a grenade or bolt holds one fake missile, a
+// launcher one rocket, a revolver grenade launcher (CWeaponRG6, CWeaponSSRS: a rocket per loaded round) its magazine.
+// A second "fake missile" into one grenade overwrote m_fake_missile, the first one came out by ReqDrop as a whole
+// grenade that CMissile::OnEvent's reject never destroys: about 20 real grenades a second, free.
+TEST(spawn_child_room)
+{
+	using spawn::GameClass;
+	const auto fits = [](GameClass parent, const char* parent_section, GameClass child, const char* child_section,
+	                      size_t children, long long mag_size)
+	{ return spawn::child_allowed(parent, parent_section, child, child_section, children, mag_size); };
+
+	// Two fake missiles in a row into one grenade: the second is refused.
+	CHECK(fits(GameClass::Grenade, "grenade_f1", GameClass::Grenade, "grenade_f1", 0, 0));
+	CHECK(!fits(GameClass::Grenade, "grenade_f1", GameClass::Grenade, "grenade_f1", 1, 0));
+	CHECK(!fits(GameClass::Grenade, "grenade_f1", GameClass::Grenade, "grenade_f1", 1, 30)); // no magazine counts
+	CHECK(fits(GameClass::Missile, "bolt", GameClass::Missile, "bolt", 0, 0));
+	CHECK(!fits(GameClass::Missile, "bolt", GameClass::Missile, "bolt", 1, 0));
+	// A grenade launcher, an RPG-7: one rocket, whatever ammo_mag_size says.
+	CHECK(fits(GameClass::WeaponMagazinedWGrenade, "wpn_ak74", GameClass::ExplosiveRocket, "wpn_fake_missile", 0, 30));
+	CHECK(!fits(GameClass::WeaponMagazinedWGrenade, "wpn_ak74", GameClass::ExplosiveRocket, "wpn_fake_missile", 1, 30));
+	CHECK(fits(GameClass::WeaponRPG7, "wpn_rpg7", GameClass::ExplosiveRocket, "wpn_rpg7_missile", 0, 1));
+	CHECK(!fits(GameClass::WeaponRPG7, "wpn_rpg7", GameClass::ExplosiveRocket, "wpn_rpg7_missile", 1, 1));
+	// RG-6 / SSRS: up to the magazine of its section; 1 when the section shows none.
+	for (size_t n = 0; n < 6; ++n)
+		CHECK(fits(GameClass::WeaponRocket, "wpn_rg6", GameClass::ExplosiveRocket, "wpn_fake_missile2", n, 6));
+	CHECK(!fits(GameClass::WeaponRocket, "wpn_rg6", GameClass::ExplosiveRocket, "wpn_fake_missile2", 6, 6));
+	CHECK(fits(GameClass::WeaponRocket, "wpn_ssrs", GameClass::ExplosiveRocket, "wpn_ssrs_missile", 0, 0));
+	CHECK(!fits(GameClass::WeaponRocket, "wpn_ssrs", GameClass::ExplosiveRocket, "wpn_ssrs_missile", 1, 0));
+	CHECK(!fits(GameClass::WeaponRocket, "wpn_ssrs", GameClass::ExplosiveRocket, "wpn_ssrs_missile", 1, -5));
+	CHECK_EQ(spawn::child_room(GameClass::WeaponRocket, 6), size_t(6));
+	CHECK_EQ(spawn::child_room(GameClass::WeaponRocket, 0), size_t(1));
+	CHECK_EQ(spawn::child_room(GameClass::Grenade, 6), size_t(1));
+
+	// The verdict on the second: WrongParent, no budget asked.
+	const spawn::SpawnPolicy policy;
+	spawn::CostBudget b;
+	spawn::SectionFacts second = facts(300);
+	second.parent_ok = fits(GameClass::Grenade, "grenade_f1", GameClass::Grenade, "grenade_f1", 1, 0);
+	second.launch_child = second.parent_ok;
+	CHECK(spawn::judge(spawn::class_rule("G_F1_S"), nullptr, second, b, policy, 0) == SpawnVerdict::WrongParent);
+	CHECK(!b.started);
+}
+
+// Minor: a launcher's rocket (CSE_Temporary) goes only into its launcher; straight into the character it is refused.
+TEST(spawn_rocket_not_into_character)
+{
+	using spawn::GameClass;
+	CHECK(!spawn::character_takes(GameClass::ExplosiveRocket));
+	for (uint8_t g = 0; g < spawn::kGameClassCount; ++g)
+		if (GameClass(g) != GameClass::ExplosiveRocket)
+			CHECK(spawn::character_takes(GameClass(g)));
+	const spawn::ClassRule* rocket = spawn::class_rule("G_RPG7");
+	REQUIRE(rocket);
+	const spawn::SpawnPolicy policy;
+	spawn::CostBudget b;
+	spawn::SectionFacts into_character = facts(200, false, true); // even allow-listed
+	into_character.parent_ok = spawn::character_takes(rocket->game);
+	CHECK(spawn::judge(rocket, nullptr, into_character, b, policy, 0) == SpawnVerdict::WrongParent);
+}
+
+// Important 2 (F2-21): the queue keeps data only - the section, the parent, its own copy of the item state, the world
+// epoch, the quest gift decided when asked - never a built entity (a script class's server entity holds Lua references
+// that a save load closes under it). The host builds and checks the entity again when the request's turn comes.
+TEST(spawn_queue_keeps_data)
+{
+	static_assert(std::is_copy_constructible_v<spawn::QueuedRequest>, "plain data");
+	static_assert(std::is_copy_assignable_v<spawn::QueuedRequest>, "plain data");
+	std::vector<uint8_t> message = {1, 2, 3, 4, 5};
+	std::string section = "wpn_ak74";
+	const float pos[3] = {1.f, 2.f, 3.f};
+	const spawn::QueuedRequest r =
+	    spawn::queued_request(77, 3, 0x1234, 0x1234, pos, section, message.data(), message.size(), 9, true);
+	// The message and the section text go away; the request keeps its own copies.
+	message.assign(5, 0xEE);
+	message.clear();
+	section = "something_else";
+	CHECK_EQ(r.seq, uint32_t(77));
+	CHECK_EQ(r.peer, uint32_t(3));
+	CHECK_EQ(r.character, uint16_t(0x1234));
+	CHECK_EQ(r.parent, uint16_t(0x1234));
+	CHECK(r.pos[0] == 1.f && r.pos[1] == 2.f && r.pos[2] == 3.f);
+	CHECK_EQ(r.section, std::string("wpn_ak74"));
+	CHECK((r.state == std::vector<uint8_t>{1, 2, 3, 4, 5}));
+	CHECK_EQ(r.epoch, uint32_t(9));
+	CHECK(r.quest_gift);
+	const spawn::QueuedRequest empty = spawn::queued_request(1, 1, 2, 2, pos, "bread", nullptr, 0, 0, false);
+	CHECK(empty.state.empty());
+}
+
+// ... and judges it again at its turn: what the host's configs say now decides; only the quest gift is the one decided
+// when it was asked (the talk may be over by then).
+TEST(spawn_queue_rechecked)
+{
+	const spawn::SpawnPolicy policy;
+	spawn::SpawnQueue<Wanted> queue;
+	spawn::BudgetBook book;
+	const std::string key(64, 'c');
+	std::vector<int> created;
+	CHECK_EQ(ask(queue, book, key, {1, policy.cost_burst}, created, 0), 1);
+	Wanted denied{2, 1000};
+	denied.deny_now = true; // the host's deny list has it by its turn
+	CHECK_EQ(ask(queue, book, key, denied, created, 0), 0);
+	Wanted gift{3, 1000};
+	gift.quest = true;
+	gift.req.quest_gift = true; // asked during the talk
+	CHECK_EQ(ask(queue, book, key, gift, created, 0), 0);
+	Wanted quest{4, 1000};
+	quest.quest = true; // a quest item: refused when asked already
+	CHECK_EQ(ask(queue, book, key, quest, created, 0), -1);
+	CHECK_EQ(ask(queue, book, key, {5, 1000}, created, 0), 0);
+
+	// 10 000 back: #2 is refused at its turn (no charge), #3 the quest gift and #5 are created.
+	CHECK_EQ(queue.pump(key, at(book, key, created, 5000)), size_t(2));
+	CHECK((created == std::vector<int>{1, 3, 5}));
+	CHECK(book.of(key).tokens == 8000.0);
+
+	// The turn's verdict on its own: a quest item without the gift recorded is refused, whatever the facts say now.
+	spawn::QueuedRequest none;
+	spawn::SectionFacts f = facts(1, true);
+	f.in_dialog_to_own_actor = true; // ignored: the request's own decision counts
+	spawn::CostBudget b;
+	CHECK(spawn::judge_queued(item_rule(), nullptr, f, none, b, policy, 0) == SpawnVerdict::QuestItem);
+	f.queue_waiting = true; // ignored: it is the front of its queue
+	none.quest_gift = true;
+	CHECK(spawn::judge_queued(item_rule(), nullptr, f, none, b, policy, 0) == SpawnVerdict::Allow);
 }
