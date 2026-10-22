@@ -4,6 +4,7 @@
 
 #include "coop_ledger.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -16,12 +17,16 @@ using coop::ledger::Allowance;
 using coop::ledger::apply_client_delta;
 using coop::ledger::Cause;
 using coop::ledger::character_key;
+using coop::ledger::check_mechanic;
 using coop::ledger::check_transfer;
 using coop::ledger::client_view;
 using coop::ledger::Decision;
 using coop::ledger::forget_acked;
+using coop::ledger::host_keeps_own_upgrades;
 using coop::ledger::HostBook;
 using coop::ledger::judge_upgrade;
+using coop::ledger::MechanicCheck;
+using coop::ledger::MechanicFacts;
 using coop::ledger::MoneyBalanceMsg;
 using coop::ledger::MoneyReq;
 using coop::ledger::Pending;
@@ -846,6 +851,7 @@ UpgradeFacts honest_upgrade()
 	f.reach = 6.f;
 	f.paid = 2210;
 	f.cost = 1000;
+	f.cost_known = true;
 	f.min_percent = 2.21f;
 	f.balance = 5000;
 	return f;
@@ -983,4 +989,156 @@ TEST(ledger_upgrade_holds_bounded)
 	big.hold(2, 0xFFFFFFFFu);
 	CHECK_EQ(big.sum(), uint64_t(0xFFFFFFFFu) * 2u);
 	CHECK_EQ(client_view(100, 0, {}, Policy().max_money, big.sum()), 0u);
+}
+
+// ---------------------------------------------------------------- F2 T5 fix round 1 (review)
+
+// Review 2: the economy slider `upgrade` (ui_options.script) starts at 1.0, so the cheapest honest stock price is the
+// lowest mech_discount 1.7 x 1.0; the host's floor is 1.70 x cost.
+TEST(ledger_upgrade_floor_stock)
+{
+	CHECK(upgrade_price_ok(1700, 1000, 1.7f));
+	CHECK(!upgrade_price_ok(1699, 1000, 1.7f));
+	for (uint32_t cost : {1u, 99u, 4840u, 263219u, 1000019u})
+	{
+		const uint32_t lua_price = uint32_t(std::floor(double(cost) * (1.7 * 1.0)));
+		CHECK(upgrade_price_ok(lua_price, cost, 1.7f));
+		CHECK(!upgrade_price_ok(lua_price - 1, cost, 1.7f));
+	}
+}
+
+// Review 4: a named mechanic and an upgrade whose cost the host cannot read is refused, not priced at 0.
+TEST(ledger_upgrade_unknown_cost)
+{
+	UpgradeFacts f = honest_upgrade();
+	f.cost_known = false;
+	f.cost = 0;
+	f.paid = 0;
+	CHECK(judge_upgrade(f) == UpgradeVerdict::UnknownCost);
+	f.paid = 1000000; // paying more changes nothing
+	CHECK(judge_upgrade(f) == UpgradeVerdict::UnknownCost);
+	// After the mechanic and the reach, before the price.
+	f.distance = 100.f;
+	CHECK(judge_upgrade(f) == UpgradeVerdict::TooFar);
+	f = honest_upgrade();
+	f.cost_known = false;
+	f.mechanic_ok = false;
+	CHECK(judge_upgrade(f) == UpgradeVerdict::NoMechanic);
+	// A script's upgrade has no price: its cost is not needed.
+	f = honest_upgrade();
+	f.mechanic_named = false;
+	f.mechanic_ok = false;
+	f.scripted_allowed = true;
+	f.cost_known = false;
+	CHECK(judge_upgrade(f) == UpgradeVerdict::Ok);
+	// A cost of 0 that is known is a free upgrade.
+	f = honest_upgrade();
+	f.cost = 0;
+	f.paid = 0;
+	CHECK(judge_upgrade(f) == UpgradeVerdict::Ok);
+}
+
+namespace
+{
+// The Forester (m_lesnik): a real mechanic (dm_init_mechanic) of class m_trader (AI_TRD_S, CAI_Trader), not a stalker.
+MechanicFacts forester()
+{
+	MechanicFacts m;
+	m.talk_lock = true;
+	m.inventory_owner = true; // CAI_Trader is a CInventoryOwner
+	m.alive = true;
+	m.player = false;
+	m.listed = true; // [m_lesnik] and [m_lesnik_upgr] in misc\stalkers_upgrade_info.ltx
+	return m;
+}
+} // namespace
+
+// Review 3: a mechanic is any live NPC with an inventory the player talks to and the mechanics' settings name, a trader
+// class as well as a stalker.
+TEST(ledger_upgrade_trader_mechanic)
+{
+	CHECK(check_mechanic(forester()) == MechanicCheck::Ok);
+	MechanicFacts m = forester();
+	m.talk_lock = false;
+	CHECK(check_mechanic(m) == MechanicCheck::NotHisTalk);
+	m = forester();
+	m.alive = false;
+	CHECK(check_mechanic(m) == MechanicCheck::NotAlive);
+	m = forester();
+	m.inventory_owner = false; // a monster, a physics object
+	CHECK(check_mechanic(m) == MechanicCheck::NotAlive);
+	m = forester();
+	m.listed = false; // an ordinary trader
+	CHECK(check_mechanic(m) == MechanicCheck::NotMechanic);
+	m = forester();
+	m.player = true; // another player's character never sells upgrades
+	CHECK(check_mechanic(m) == MechanicCheck::NotMechanic);
+	// The talk comes first: nothing else about an NPC he does not talk to is looked at.
+	m = MechanicFacts();
+	CHECK(check_mechanic(m) == MechanicCheck::NotHisTalk);
+}
+
+namespace
+{
+// The item layer's state of an item (ItemData): the fields the rule reads.
+struct OwnerState
+{
+	bool has_upgrades = false;
+	std::vector<std::string> upgrades;
+};
+
+// The host's copy of a player's item as the engine keeps it: an apply installs what a state lists and it lacks (it
+// never removes one), and its price is the section's cost plus each installed upgrade's (CInventoryItem::Cost after
+// install_upgrade_impl), which a trade on the host pays.
+struct HostCopy
+{
+	uint32_t base = 1000;
+	std::map<std::string, uint32_t> costs = {{"up_a", 500}, {"up_b", 4840}};
+	std::vector<std::string> installed = {"up_a"};
+
+	void apply(const OwnerState& s)
+	{
+		if (!s.has_upgrades)
+			return;
+		for (const std::string& u : s.upgrades)
+			if (std::find(installed.begin(), installed.end(), u) == installed.end())
+				installed.push_back(u);
+	}
+	uint32_t price() const
+	{
+		uint32_t p = base;
+		for (const std::string& u : installed)
+			p += costs.at(u);
+		return p;
+	}
+};
+} // namespace
+
+// Review 1: an ItemState with an upgrade the host did not sell (up_b) changes neither the host's copy nor its price.
+TEST(ledger_owner_state_brings_no_upgrade)
+{
+	HostCopy host;
+	const uint32_t before = host.price();
+	OwnerState state;
+	state.has_upgrades = true;
+	state.upgrades = {"up_a", "up_b"};
+
+	HostCopy taken = host; // what the host did before: the owner's list onto its copy
+	taken.apply(state);
+	CHECK_EQ(taken.price(), before + 4840u);
+
+	host_keeps_own_upgrades(state);
+	CHECK(!state.has_upgrades);
+	CHECK(state.upgrades.empty());
+	host.apply(state);
+	CHECK_EQ(host.installed.size(), size_t(1));
+	CHECK_EQ(host.price(), before);
+
+	// A purchase the host accepted (judge_upgrade Ok) is installed by the host itself: then the price has it.
+	CHECK(judge_upgrade(honest_upgrade()) == UpgradeVerdict::Ok);
+	OwnerState sold;
+	sold.has_upgrades = true;
+	sold.upgrades = {"up_b"};
+	host.apply(sold);
+	CHECK_EQ(host.price(), before + 4840u);
 }
