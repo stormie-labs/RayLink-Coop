@@ -5,10 +5,12 @@
 #include "test_util.h"
 #include "coop_levels_wire.h"
 #include "coop_protocol.h"
+#include "coop_xfer.h" // the core's ops: every one has its wire value (levels_wire_xfer_ops_*)
 
 #include <cmath>
 #include <limits>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 using namespace coop;
@@ -16,11 +18,24 @@ using namespace coop::levels::wire;
 
 namespace
 {
+// write() as the message has it: a bool for the formats that have a limit and can refuse, nothing for the fixed layouts
+template <class M>
+bool wrote(const M& m, Writer& w)
+{
+	if constexpr (std::is_void_v<decltype(m.write(w))>)
+	{
+		m.write(w);
+		return true;
+	}
+	else
+		return m.write(w);
+}
+
 template <class M>
 std::vector<uint8_t> bytes_of(const M& m)
 {
 	Writer w;
-	m.write(w);
+	CHECK(wrote(m, w)); // a message of the tests is within its limits
 	return w.data();
 }
 
@@ -55,6 +70,26 @@ void check_roundtrip(const std::string& what, const M& m, size_t expected_size, 
 		CHECK_EQ(verdict(what + " cut at " + std::to_string(cut), part.read(r)),
 		    verdict(what + " cut at " + std::to_string(cut), false));
 	}
+}
+
+// A message over a limit is not written at all: write() says no and the Writer is as it was (never a shortened message that
+// a reader would take for a whole one)
+template <class M>
+void check_write_refused(const std::string& what, const M& m)
+{
+	Writer w;
+	w.u8(0xAA); // what was in the writer before stays, and nothing follows it
+	const bool ok = wrote(m, w);
+	CHECK_EQ(what + (ok ? " is written" : " is not written"), what + " is not written");
+	CHECK_EQ(what + " leaves " + std::to_string(w.size()) + " bytes", what + " leaves 1 bytes");
+}
+
+// ... and a message at the limit is written and read back whole
+template <class M>
+void check_write_at_limit(const std::string& what, const M& m)
+{
+	M back;
+	CHECK_EQ(verdict(what + " at its limit", read_all(back, bytes_of(m))), verdict(what + " at its limit", true));
 }
 
 // A packet of the format, built by hand, for what the writer never produces.
@@ -169,13 +204,30 @@ TEST(levels_wire_map_limits)
 	CHECK_EQ(refused<LevelMapMsg>(map_bytes(0, {}, {}, gates128)), std::string("read"));
 	CHECK_EQ(refused<LevelMapMsg>(map_bytes(0, {}, {}, gates129)), std::string("refused"));
 
-	// the writer keeps to the limits too: 12 players of a bad caller go out as 8
-	LevelMapMsg big;
+	// The writer keeps to the same limits by refusing: a map over one is not written, not cut down to a shorter one that
+	// reads as a whole map (a player missing from it would be taken for gone).
+	LevelMapMsg at_limit;
+	for (uint32_t p = 0; p < 8; ++p)
+		at_limit.players.push_back({p, 1, kHelloRolePlayer});
+	for (uint16_t l = 0; l < 8; ++l)
+		at_limit.servers.push_back({l, l == 0 ? uint8_t(LevelMapMsg::HostProcess) : uint8_t(LevelMapMsg::MapServerProcess), 1});
+	for (uint16_t l = 0; l < 128; ++l)
+		at_limit.gates.push_back({l, 1, ""});
+	check_write_at_limit("LevelMap with 8 players, 8 servers, 128 gates", at_limit);
+
+	LevelMapMsg nine_players = at_limit;
+	nine_players.players.push_back({0, 1, kHelloRolePlayer});
+	check_write_refused("LevelMap with 9 players", nine_players);
+	LevelMapMsg nine_servers = at_limit;
+	nine_servers.servers.push_back({8, LevelMapMsg::MapServerProcess, 1});
+	check_write_refused("LevelMap with 9 servers", nine_servers);
+	LevelMapMsg many_gates = at_limit;
+	many_gates.gates.push_back({128, 1, ""});
+	check_write_refused("LevelMap with 129 gates", many_gates);
+	LevelMapMsg twelve;
 	for (uint32_t p = 0; p < 12; ++p)
-		big.players.push_back({p % 8, 1, kHelloRolePlayer});
-	LevelMapMsg back;
-	CHECK(read_all(back, bytes_of(big)));
-	CHECK_EQ(back.players.size(), size_t(8));
+		twelve.players.push_back({p % 8, 1, kHelloRolePlayer});
+	check_write_refused("LevelMap with 12 players", twelve);
 }
 
 TEST(levels_wire_map_bad_rows)
@@ -204,7 +256,14 @@ TEST(levels_wire_map_bad_rows)
 	CHECK_EQ(refused<LevelMapMsg>(map_bytes(0, {}, {server_row(4, 0, 1), server_row(5, 1, 1)})), std::string("read"));
 
 	// gates: a real level, listed once; the reason is empty or a name (it picks a string id)
-	CHECK_EQ(refused<LevelMapMsg>(map_bytes(0, {}, {}, {gate_row(4, 9, "st_gate-1.x")})), std::string("read"));
+	CHECK_EQ(refused<LevelMapMsg>(map_bytes(0, {}, {}, {gate_row(4, 2, "st_gate-1.x")})), std::string("read"));
+	// the gate is one of T3's three (coop_levels_rules.h Gate: Free 0, BetterTogether 1, Together 2)
+	for (uint8_t gate = 0; gate < 6; ++gate)
+	{
+		const bool want = gate <= uint8_t(coop::levels::Gate::Together);
+		CHECK_EQ("gate " + std::to_string(gate) + " " + refused<LevelMapMsg>(map_bytes(0, {}, {}, {gate_row(4, gate, "")})),
+		    "gate " + std::to_string(gate) + (want ? " read" : " refused"));
+	}
 	CHECK_EQ(refused<LevelMapMsg>(map_bytes(0, {}, {}, {gate_row(kNoLevel, 1, "")})), std::string("refused"));
 	CHECK_EQ(refused<LevelMapMsg>(map_bytes(0, {}, {}, {gate_row(4, 1, ""), gate_row(4, 2, "")})), std::string("refused"));
 	CHECK_EQ(refused<LevelMapMsg>(map_bytes(0, {}, {}, {gate_row(4, 1, "has space")})), std::string("refused"));
@@ -307,6 +366,20 @@ TEST(levels_wire_move_result_roundtrip)
 	no.level = 13;
 	check_roundtrip("LevelMoveResult Refused", no, 8);
 
+	// a verdict and its reason are one story: Go and Together have none, Refused always has one
+	LevelMoveResultMsg together;
+	together.verdict = LevelMoveResultMsg::Together;
+	together.level = 4;
+	check_roundtrip("LevelMoveResult Together", together, 8);
+	for (uint8_t reason : {LevelMoveResultMsg::Cap, LevelMoveResultMsg::Gate, LevelMoveResultMsg::Invalid})
+	{
+		LevelMoveResultMsg refused_with;
+		refused_with.verdict = LevelMoveResultMsg::Refused;
+		refused_with.reason = reason;
+		refused_with.level = 4;
+		check_roundtrip("LevelMoveResult Refused " + std::to_string(reason), refused_with, 8);
+	}
+
 	for (uint8_t verdict_byte = 0; verdict_byte < 6; ++verdict_byte)
 		for (uint8_t reason = 0; reason < 6; ++reason)
 		{
@@ -315,7 +388,8 @@ TEST(levels_wire_move_result_roundtrip)
 			w.u8(verdict_byte);
 			w.u8(reason);
 			w.u16(3);
-			const bool want = verdict_byte <= LevelMoveResultMsg::Refused && reason <= LevelMoveResultMsg::Invalid;
+			const bool want = verdict_byte <= LevelMoveResultMsg::Refused && reason <= LevelMoveResultMsg::Invalid &&
+			    ((verdict_byte == LevelMoveResultMsg::Refused) == (reason != LevelMoveResultMsg::None));
 			CHECK_EQ("verdict " + std::to_string(verdict_byte) + " reason " + std::to_string(reason) + " " +
 			        refused<LevelMoveResultMsg>(w),
 			    "verdict " + std::to_string(verdict_byte) + " reason " + std::to_string(reason) + (want ? " read" : " refused"));
@@ -424,6 +498,8 @@ TEST(levels_wire_xfer_up_roundtrip_and_cargo_limit)
 	w.u32(over.gen);
 	w.bytes(over.cargo.data(), over.cargo.size());
 	CHECK_EQ(refused<LevelXferUpMsg>(w), std::string("refused"));
+	// ... and the writer does not cut such a cargo to 32 KiB: a partial Release or Spawn would be applied as the whole one
+	check_write_refused("LevelXferUp with 32 KiB + 1 of cargo", over);
 
 	// every op of the table reads, the next does not; no id is no object
 	for (uint8_t op = 0; op < 12; ++op)
@@ -472,16 +548,103 @@ TEST(levels_wire_xfer_down_roundtrip_and_cargo_limit)
 	std::vector<uint8_t> over(kMaxXferCargo + 1, 1);
 	w.bytes(over.data(), over.size());
 	CHECK_EQ(refused<LevelXferDownMsg>(w), std::string("refused"));
+	// a Grant cut to 32 KiB would be applied as the whole object
+	LevelXferDownMsg too_much = max;
+	too_much.cargo.push_back(1);
+	check_write_refused("LevelXferDown with 32 KiB + 1 of cargo", too_much);
 
+	// the ack of a snapshot stream (and the resync request of the auditor): Snapshot, a small cargo of the sequence number
+	LevelXferDownMsg snap;
+	snap.op = LevelXferDownMsg::Snapshot;
+	snap.id = 9;
+	snap.gen = 3;
+	snap.cargo = {1, 0, 0, 0};
+	check_roundtrip("LevelXferDown Snapshot", snap, 1 + 2 + 4 + 4, false);
+	LevelXferDownMsg snap_back;
+	REQUIRE(read_all(snap_back, bytes_of(snap)));
+	CHECK(snap_back.op == LevelXferDownMsg::Snapshot && snap_back.cargo == snap.cargo);
+
+	// every op of the table reads (0..5), the next does not
 	for (uint8_t op = 0; op < 9; ++op)
 	{
 		Writer wo;
 		wo.u8(op);
 		wo.u16(5);
 		wo.u32(1);
-		const bool want = op <= LevelXferDownMsg::Drop;
+		const bool want = op <= LevelXferDownMsg::Snapshot;
 		CHECK_EQ(std::string("down op ") + std::to_string(op) + " " + refused<LevelXferDownMsg>(wo),
 		    std::string("down op ") + std::to_string(op) + (want ? " read" : " refused"));
+	}
+}
+
+// The ops of the transfer core (coop_xfer.h, T2) and their values on the wire. The core's Ledger (the world server) sends the
+// ops of LevelXferDown, the Holder (the map server) the ops of LevelXferUp; Snapshot goes both ways (the map server's stream,
+// the world server's ack and the resync request of the auditor). Every op of the core must have a value in the message of its
+// direction: one that has none cannot be sent, and the transfer it belongs to hangs.
+TEST(levels_wire_xfer_ops_cover_the_core)
+{
+	struct Row
+	{
+		xfer::Op core;
+		bool up, down; // the directions the core sends it
+		int up_wire, down_wire; // its value in LevelXferUp / LevelXferDown, -1 where it is not sent
+	};
+	const Row rows[] = {
+		{xfer::Op::TakeReq, true, false, LevelXferUpMsg::TakeReq, -1},
+		{xfer::Op::Grant, false, true, -1, LevelXferDownMsg::Grant},
+		{xfer::Op::TakeCommit, true, false, LevelXferUpMsg::TakeCommit, -1},
+		{xfer::Op::Done, false, true, -1, LevelXferDownMsg::Done},
+		{xfer::Op::ReleasePrepare, true, false, LevelXferUpMsg::ReleasePrepare, -1},
+		{xfer::Op::Ack, false, true, -1, LevelXferDownMsg::Ack},
+		{xfer::Op::ReleaseCommit, true, false, LevelXferUpMsg::ReleaseCommit, -1},
+		{xfer::Op::SpawnPrepare, true, false, LevelXferUpMsg::SpawnPrepare, -1},
+		{xfer::Op::Destroy, true, false, LevelXferUpMsg::Destroy, -1},
+		{xfer::Op::Abort, false, true, -1, LevelXferDownMsg::Abort},
+		{xfer::Op::AbortAck, true, false, LevelXferUpMsg::AbortAck, -1},
+		{xfer::Op::Drop, false, true, -1, LevelXferDownMsg::Drop},
+		{xfer::Op::Snapshot, true, true, LevelXferUpMsg::Snapshot, LevelXferDownMsg::Snapshot},
+	};
+	// every op the core names is in the table (an op added to the core after Snapshot is found by its name)
+	size_t named = 0;
+	for (unsigned v = 0; v < 256; ++v)
+	{
+		const xfer::Op op = static_cast<xfer::Op>(v);
+		if (std::string(xfer::op_name(op)) == "?")
+			continue;
+		++named;
+		size_t listed = 0;
+		for (const Row& r : rows)
+			listed += r.core == op ? 1 : 0;
+		CHECK_EQ(std::string(xfer::op_name(op)) + " is in the table " + std::to_string(listed) + " time(s)",
+		    std::string(xfer::op_name(op)) + " is in the table 1 time(s)");
+	}
+	CHECK_EQ(named, sizeof(rows) / sizeof(rows[0]));
+
+	// each value is read by its message and no value is used twice in a direction
+	for (const Row& r : rows)
+	{
+		for (int dir = 0; dir < 2; ++dir)
+		{
+			const bool sent = dir == 0 ? r.up : r.down;
+			const int wire_value = dir == 0 ? r.up_wire : r.down_wire;
+			if (!sent)
+				continue;
+			REQUIRE(wire_value >= 0);
+			Writer w;
+			w.u8(uint8_t(wire_value));
+			w.u16(5);
+			w.u32(1);
+			const std::string what = std::string(xfer::op_name(r.core)) + (dir == 0 ? " up" : " down") + " (" +
+			    std::to_string(wire_value) + ")";
+			CHECK_EQ(what + " " + (dir == 0 ? refused<LevelXferUpMsg>(w) : refused<LevelXferDownMsg>(w)), what + " read");
+		}
+		for (const Row& other : rows)
+		{
+			if (&other == &r)
+				continue;
+			CHECK(!(r.up && other.up && r.up_wire == other.up_wire));
+			CHECK(!(r.down && other.down && r.down_wire == other.down_wire));
+		}
 	}
 }
 
@@ -534,6 +697,14 @@ TEST(levels_wire_brain_roundtrip_and_limits)
 	CHECK(read_all(full_back, bytes_of(full)));
 	CHECK_EQ(full_back.squads.size(), size_t(255));
 	CHECK_EQ(full_back.assigns.size(), size_t(255));
+
+	// 256 of either do not fit in one packet: the sender splits them, the writer does not drop the 256th
+	LevelBrainMsg many_squads = full;
+	many_squads.squads.push_back(LevelBrainMsg::Squad{1, 2, 3, 0, 0, "x"});
+	check_write_refused("LevelBrain with 256 squads", many_squads);
+	LevelBrainMsg many_assigns = full;
+	many_assigns.assigns.push_back(LevelBrainMsg::Assign{1, 2, 3});
+	check_write_refused("LevelBrain with 256 assignments", many_assigns);
 }
 
 // ---------------------------------------------------------------------------------------------- LevelHash, LevelResync
@@ -655,13 +826,15 @@ TEST(levels_wire_tunnel_roundtrip_and_refusals)
 
 	// the biggest packet a u16 length holds
 	CHECK_EQ(refused<TunnelMsg>(tunnel_bytes(0, uint16_t(Msg::EntitySnapshot), 0xFFFF - 2)), std::string("read"));
-	TunnelMsg too_big;
-	too_big.packet.assign(0x10000, 0);
-	too_big.packet[0] = uint8_t(uint16_t(Msg::PlayerState) & 0xFF);
-	too_big.packet[1] = uint8_t(uint16_t(Msg::PlayerState) >> 8);
-	TunnelMsg too_big_back;
-	CHECK(read_all(too_big_back, bytes_of(too_big))); // the writer keeps to what a u16 length holds, length and bytes alike
-	CHECK_EQ(too_big_back.packet.size(), size_t(0xFFFF));
+	TunnelMsg biggest;
+	biggest.packet.assign(0xFFFF, 0);
+	biggest.packet[0] = uint8_t(uint16_t(Msg::PlayerState) & 0xFF);
+	biggest.packet[1] = uint8_t(uint16_t(Msg::PlayerState) >> 8);
+	check_write_at_limit("Tunnel with a packet of 65535 bytes", biggest);
+	// one byte more is not a packet a u16 length can name: not written, not cut to a packet that reads as whole
+	TunnelMsg too_big = biggest;
+	too_big.packet.push_back(0);
+	check_write_refused("Tunnel with a packet of 65536 bytes", too_big);
 }
 
 // ---------------------------------------------------------------------------------------------- MapServer*
@@ -751,6 +924,16 @@ TEST(levels_wire_load_wait_roundtrip_and_limits)
 	nine.insert(nine.begin(), eight.begin(), eight.end());
 	CHECK_EQ(refused<LoadWaitMsg>(wait_bytes(1, 8, eight)), std::string("read")); // everybody in the session
 	CHECK_EQ(refused<LoadWaitMsg>(wait_bytes(1, 9, nine)), std::string("refused"));
+	// the writer: a row of every player is the most there is; a ninth is not cut away (a player missing from the list would
+	// be taken for not waited for)
+	LoadWaitMsg every_player;
+	every_player.level = 8;
+	for (uint32_t p = 0; p < 8; ++p)
+		every_player.rows.push_back({p, 1});
+	check_write_at_limit("LoadWait with a row for each of 8 players", every_player);
+	LoadWaitMsg nine_rows = every_player;
+	nine_rows.rows.push_back({0, 1});
+	check_write_refused("LoadWait with 9 rows", nine_rows);
 	CHECK_EQ(refused<LoadWaitMsg>(wait_bytes(1, 3, {{1, 1}})), std::string("refused")); // count over the bytes
 
 	for (uint8_t state = 0; state < 7; ++state)

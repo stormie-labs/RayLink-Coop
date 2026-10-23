@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstring>
 #include <iterator>
+#include <memory>
 #include <set>
 
 using namespace coop;
@@ -1308,6 +1309,78 @@ TEST(game_messages_the_wrong_way_are_refused)
 	CHECK(b.s.is_active() && !b.disconnected);
 }
 
+TEST(trunk_only_messages_are_refused_from_everybody_until_the_bridge_exists)
+{
+	// Protocol 11 (F3a): MsgSender::TrunkOnly is what the bridge of a map server sends to the host's process. No bridge peer
+	// exists yet (T9 lets it through): a client that sends one is kicked before any handler, as for HostOnly, and the host
+	// that sends one to a client is ignored (logged), as for ClientOnly. It must not pass like Either.
+	const Msg trunk[] = {Msg::LevelSnapshot, Msg::LevelEntity, Msg::LevelXferUp, Msg::LevelHash, Msg::MapServerState};
+	constexpr size_t kSenders = sizeof(trunk) / sizeof(trunk[0]);
+	Node host("Boss", 37137), b("Bo", 37137);
+	std::vector<std::unique_ptr<Node>> senders; // one client per message: the host kicks the first one that sends
+	for (size_t i = 0; i < kSenders; ++i)
+		senders.push_back(std::make_unique<Node>("Al" + std::to_string(i), uint16_t(37137)));
+	std::vector<uint16_t> at_host, at_b;
+	for (const Msg m : trunk)
+	{
+		host.s.on(m, [&at_host, m](PeerId, Reader&) { at_host.push_back(uint16_t(m)); });
+		b.s.on(m, [&at_b, m](PeerId, Reader&) { at_b.push_back(uint16_t(m)); });
+	}
+	std::string err;
+	REQUIRE(host.host(&err));
+	auto pump_all = [&](uint32_t timeout_ms, const std::function<bool()>& done) {
+		const uint64_t start = t::now_ms();
+		for (;;)
+		{
+			const uint64_t now = t::now_ms();
+			host.s.update(now);
+			b.s.update(now);
+			for (auto& n : senders)
+				n->s.update(now);
+			if (done())
+				return true;
+			if (now - start > timeout_ms)
+				return false;
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+	};
+	size_t expected = 0;
+	std::vector<Node*> everybody = {&b};
+	for (auto& n : senders)
+		everybody.push_back(n.get());
+	for (Node* n : everybody)
+	{
+		REQUIRE(n->connect(37137, &err));
+		++expected;
+		REQUIRE(pump_all(5000, [&] { return n->s.is_active() && host.s.peers().size() == expected; }));
+	}
+	REQUIRE(b.s.self() == PeerId(1));
+
+	for (size_t i = 0; i < kSenders; ++i)
+	{
+		senders[i]->s.send(kHostPeer, Lane::Reliable, trunk[i], Writer()); // a client's "trunk" message
+		host.s.send(b.s.self(), Lane::Reliable, trunk[i], Writer()); // the host's, to a client
+	}
+	const bool all_kicked = pump_all(5000, [&] {
+		for (auto& n : senders)
+			if (!n->disconnected)
+				return false;
+		return true;
+	});
+	CHECK(all_kicked);
+	t::pump_for({&host.s, &b.s}, 100);
+	CHECK(at_host.empty());
+	CHECK(at_b.empty());
+	for (size_t i = 0; i < kSenders; ++i)
+	{
+		CHECK_EQ(std::string(msg_name(trunk[i])) + (kicked(*senders[i], std::string("unexpected ") + msg_name(trunk[i])) ? " kicks its sender" : " passes"),
+		    std::string(msg_name(trunk[i])) + " kicks its sender");
+		CHECK_EQ(std::string(msg_name(trunk[i])) + (b.logged(std::string("unexpected ") + msg_name(trunk[i])) ? " is ignored by a client" : " reaches a client"),
+		    std::string(msg_name(trunk[i])) + " is ignored by a client");
+	}
+	CHECK(b.s.is_active() && !b.disconnected);
+}
+
 TEST(character_choice_messages_go_one_way)
 {
 	// Protocol 8: the offer of a new character comes from the host only (a client that sends one is kicked before any
@@ -1564,6 +1637,9 @@ BURST_TEST(PlayerState, 37340)
 BURST_TEST(PlayerWounded, 37341)
 BURST_TEST(PlayerRevive, 37342)
 BURST_TEST(PlayerDied, 37343)
+// F3a: the two requests a player sends (test_protocol_f3a.cpp protocol_f3a_client_rate_rows)
+BURST_TEST(LevelMove, 37352)
+BURST_TEST(LoadReady, 37353)
 
 // ---- honest streams: one per sender
 
