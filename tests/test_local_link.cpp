@@ -54,11 +54,11 @@ TEST(link_order_per_lane)
 	CHECK_EQ(link.queued_to_client(), size_t(0));
 	std::vector<uint32_t> per_lane[size_t(Lane::Count)];
 	std::vector<uint32_t> all;
-	const size_t drained = link.drain_server([&](Msg type, Lane lane, std::vector<uint8_t>& payload) {
-		CHECK(type == Msg::ReqSpawn);
-		Reader r(payload.data(), payload.size());
+	const size_t drained = link.drain_server(link.epoch(), [&](LocalLink::Packet& p) {
+		CHECK(p.type == Msg::ReqSpawn);
+		Reader r(p.payload.data(), p.payload.size());
 		const uint32_t seq = read_seq(r);
-		per_lane[size_t(lane)].push_back(seq);
+		per_lane[size_t(p.lane)].push_back(seq);
 		all.push_back(seq);
 	});
 	CHECK_EQ(drained, size_t(6));
@@ -181,7 +181,7 @@ TEST(link_no_reentrancy)
 		LocalLink link;
 		REQUIRE(link.push_to_server(Msg::ReqSpawn, Lane::Reliable, seq_payload(0)));
 		size_t calls = 0;
-		const size_t drained = link.drain_server([&](Msg, Lane, std::vector<uint8_t>&) {
+		const size_t drained = link.drain_server(link.epoch(), [&](LocalLink::Packet&) {
 			++calls;
 			link.push_to_server(Msg::ReqSpawn, Lane::Reliable, seq_payload(1));
 		});
@@ -278,4 +278,150 @@ TEST(players_includes_local_peers_not)
 	host.s.attach_local(nullptr);
 	CHECK_EQ(host.s.players().size(), size_t(1));
 	CHECK(find_peer(host.s.players(), kHostPeer) == nullptr);
+}
+
+// ============================================================================ fix round 1
+
+// R1 1: a link packet belongs to the world it was made in. One pushed before the world epoch moves on is not delivered
+// after it, either way (as a remote client's game message of another epoch is dropped at receipt, game_message); one
+// pushed after it is.
+TEST(link_world_epoch_old_packets_dropped)
+{
+	LocalLink link;
+	Node host("Boss", 37505);
+	REQUIRE(host.host());
+	host.s.attach_local(&link);
+	std::vector<uint32_t> at_server, at_player;
+	host.s.on(Msg::ReqSpawn, [&](PeerId, Reader& r) { at_server.push_back(read_seq(r)); });
+	link.on(Msg::ReqResult, [&](PeerId, Reader& r) { at_player.push_back(read_seq(r)); });
+
+	REQUIRE(link.push_to_server(Msg::ReqSpawn, Lane::Reliable, seq_payload(1))); // made in world epoch 0
+	host.s.send(kHostPeer, Lane::Reliable, Msg::ReqResult, seq_payload(1));
+	host.s.set_world_epoch(1); // a load: the old world is gone
+	REQUIRE(link.push_to_server(Msg::ReqSpawn, Lane::Reliable, seq_payload(2))); // made in world epoch 1
+	host.s.send(kHostPeer, Lane::Reliable, Msg::ReqResult, seq_payload(2));
+	host.s.update(t::now_ms());
+	CHECK(at_server == (std::vector<uint32_t>{2}));
+	CHECK(at_player == (std::vector<uint32_t>{2}));
+	CHECK_EQ(link.queued_to_server(), size_t(0));
+	CHECK_EQ(link.queued_to_client(), size_t(0));
+	CHECK(host.logged("made in world epoch 0"));
+
+	// the same when the epoch moves on between two pumps, packets already queued
+	REQUIRE(link.push_to_server(Msg::ReqSpawn, Lane::Reliable, seq_payload(3)));
+	host.s.send(kHostPeer, Lane::Reliable, Msg::ReqResult, seq_payload(3));
+	host.s.set_world_epoch(2);
+	host.s.update(t::now_ms());
+	CHECK(at_server == (std::vector<uint32_t>{2}));
+	CHECK(at_player == (std::vector<uint32_t>{2}));
+	host.s.attach_local(nullptr);
+}
+
+// R1 3: what only the bridge of a map server sends never passes the link, either way.
+TEST(link_trunk_only_refused)
+{
+	LocalLink link;
+	Node host("Boss", 37506);
+	REQUIRE(host.host());
+	host.s.attach_local(&link);
+	int at_server = 0, at_player = 0;
+	host.s.on(Msg::LevelSnapshot, [&](PeerId, Reader&) { ++at_server; });
+	link.on(Msg::LevelSnapshot, [&](PeerId, Reader&) { ++at_player; });
+	link.push_to_server(Msg::LevelSnapshot, Lane::Reliable, seq_payload(1));
+	host.s.send(kHostPeer, Lane::Reliable, Msg::LevelSnapshot, seq_payload(2));
+	host.s.update(t::now_ms());
+	CHECK_EQ(at_server, 0);
+	CHECK_EQ(at_player, 0);
+	CHECK(host.logged("LevelSnapshot from the host player"));
+	CHECK(host.logged("LevelSnapshot to the host player"));
+	host.s.attach_local(nullptr);
+}
+
+// R1 3: toward the host player the world gate decides as for the server's own handlers: in a hole a Hold message waits
+// and runs his handler when the world is back (from 0), a Drop message is dropped; a held one whose link is gone by then
+// counts as a player who left.
+TEST(link_world_gate_toward_player)
+{
+	LocalLink link;
+	Node host("Boss", 37507);
+	REQUIRE(host.host());
+	host.s.attach_local(&link);
+	wgate::World world = wgate::World::Hole;
+	host.s.set_world_gate([&] { return world; });
+	std::vector<PeerId> results;
+	int hits = 0;
+	link.on(Msg::ReqResult, [&](PeerId from, Reader&) { results.push_back(from); }); // Hold
+	link.on(Msg::PlayerHit, [&](PeerId, Reader&) { ++hits; }); // Drop
+	host.s.send(kHostPeer, Lane::Reliable, Msg::ReqResult, seq_payload(1));
+	host.s.send(kHostPeer, Lane::Reliable, Msg::PlayerHit, seq_payload(2));
+	host.s.update(t::now_ms());
+	CHECK(results.empty());
+	CHECK_EQ(hits, 0);
+	CHECK_EQ(host.s.world_gate_stats().queued, size_t(1));
+	CHECK_EQ(host.s.stats(uint16_t(Msg::PlayerHit)).world_dropped, uint64_t(1));
+	world = wgate::World::Up;
+	host.s.update(t::now_ms()); // replay_held runs the host player's handler (kToLocalPlayer)
+	CHECK(results == (std::vector<PeerId>{kHostPeer}));
+	CHECK_EQ(hits, 0);
+	CHECK_EQ(host.s.world_gate_stats().queued, size_t(0));
+
+	// held, then the link goes: the message is of a player who left
+	world = wgate::World::Hole;
+	host.s.send(kHostPeer, Lane::Reliable, Msg::ReqResult, seq_payload(3));
+	host.s.update(t::now_ms());
+	CHECK_EQ(host.s.world_gate_stats().queued, size_t(1));
+	const uint64_t gone = host.s.world_gate_stats().hold.gone;
+	host.s.attach_local(nullptr);
+	world = wgate::World::Up;
+	host.s.update(t::now_ms());
+	CHECK_EQ(results.size(), size_t(1));
+	CHECK_EQ(host.s.world_gate_stats().hold.gone, gone + 1);
+}
+
+// R1 4: the link takes game messages only, within the session's packet size, and a handler only for a game message.
+TEST(link_limits)
+{
+	LocalLink link;
+	// a core message has no handler on the link, as on a Session
+	link.on(Msg::Hello, [](PeerId, Reader&) {});
+	CHECK(!link.handler(Msg::Hello));
+	link.on(Msg::ReqResult, [](PeerId, Reader&) {});
+	CHECK(bool(link.handler(Msg::ReqResult)));
+
+	// a payload over the session's limit is not taken, either way; one at the limit is
+	std::vector<uint8_t> big(16 * 1024 * 1024 + 1, 0x5A);
+	CHECK(!link.push_to_server(Msg::ReqSpawn, Lane::Reliable, big.data(), big.size()));
+	CHECK(!link.push_to_client(Msg::ReqResult, Lane::Reliable, big.data(), big.size()));
+	CHECK(link.push_to_server(Msg::ReqSpawn, Lane::Reliable, big.data(), big.size() - 1));
+	CHECK_EQ(link.queued_to_server(), size_t(1));
+	CHECK_EQ(link.queued_to_client(), size_t(0));
+	CHECK_EQ(link.stats().oversize, uint64_t(2));
+	link.clear_queues();
+
+	// a direction holds at most kMaxQueued waiting messages (nobody pumps); the next push is refused and counted, the
+	// other direction is not affected
+	const uint8_t one = 1;
+	for (size_t i = 0; i < LocalLink::kMaxQueued; ++i)
+		REQUIRE(link.push_to_server(Msg::ReqSpawn, Lane::Reliable, &one, 1));
+	CHECK(!link.push_to_server(Msg::ReqSpawn, Lane::Reliable, &one, 1));
+	CHECK_EQ(link.stats().overflow, uint64_t(1));
+	CHECK_EQ(link.queued_to_server(), LocalLink::kMaxQueued);
+	CHECK(link.push_to_client(Msg::ReqResult, Lane::Reliable, &one, 1));
+	// a pump makes room again
+	const size_t pumped = link.drain_server(link.epoch(), [](LocalLink::Packet&) {});
+	CHECK_EQ(pumped, LocalLink::kMaxQueued);
+	CHECK(link.push_to_server(Msg::ReqSpawn, Lane::Reliable, &one, 1));
+
+	// the drain takes only what was made in the epoch it is given (the session's); the rest is counted stale
+	link.clear_queues();
+	link.set_epoch(4);
+	REQUIRE(link.push_to_server(Msg::ReqSpawn, Lane::Reliable, &one, 1));
+	link.set_epoch(5);
+	REQUIRE(link.push_to_server(Msg::ReqSpawn, Lane::Reliable, &one, 1));
+	std::vector<uint32_t> fresh;
+	const size_t taken = link.drain_server(5, [&](LocalLink::Packet& p) { fresh.push_back(p.epoch); });
+	CHECK_EQ(taken, size_t(2));
+	CHECK(fresh == (std::vector<uint32_t>{5}));
+	CHECK_EQ(link.stats().stale, uint64_t(1));
+	CHECK_EQ(link.stats().stale_epoch, uint32_t(4));
 }
