@@ -392,9 +392,19 @@ mod = load_levels()
 SET_FAILS = true
 check(mod.evaluate() == 0, "set_gate raises: nothing counts as handed over, no error")
 check(logged("set_gate") ~= nil, "the failure is logged")
+check(count_logged("set_gate") == 11, "...once for each level (" .. count_logged("set_gate") .. " lines)")
+SET = {}
+check(mod.evaluate() == 0 and mod.evaluate() == 0, "a hand-over that keeps failing is tried again every time")
+check(#SET == 22, "...for each of the eleven levels (" .. #SET .. " calls)")
+check(count_logged("set_gate") == 11, "...and does not fill the log every second")
 SET_FAILS = false
 SET = {}
 check(mod.evaluate() == 11, "the next evaluation hands everything over")
+SET_FAILS = true
+mod.reset()
+mod.evaluate()
+check(count_logged("set_gate") == 22, "a failure after a success is reported again (" .. count_logged("set_gate") .. " lines)")
+SET_FAILS = false
 
 print("== who evaluates")
 reset_world()

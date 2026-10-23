@@ -57,6 +57,7 @@ local EVAL_EVERY_MS = 1000
 local rules = nil -- { list = { { level =, src =, reason = }, ... } in the order of the file, by_level = { level -> rule } }
 local pushed = {} -- level -> the word last handed to the engine
 local warned = {} -- level -> true: a crooked line is reported once
+local set_warned = {} -- level -> true: a failing set_gate is reported once (it is still tried again every time)
 local last_eval = 0 -- time_global() of the last evaluation by the update callback
 local dirty = false -- an infoportion came: evaluate at the next update
 
@@ -169,6 +170,7 @@ function reload(ini)
 	rules = nil
 	pushed = {}
 	warned = {}
+	set_warned = {}
 	dirty = false
 	if ini then
 		local ok, parsed = pcall(parse_rules, ini)
@@ -220,9 +222,11 @@ function evaluate(force)
 			local ok, err = pcall(lv.set_gate, rule.level, word, rule.reason or "")
 			if ok then
 				pushed[rule.level] = word
+				set_warned[rule.level] = nil
 				changed = changed + 1
-			else
-				log("! set_gate(%s, %s): %s", rule.level, word, tostring(err))
+			elseif not set_warned[rule.level] then
+				set_warned[rule.level] = true
+				log("! set_gate(%s, %s): %s (tried again every second, reported once)", rule.level, word, tostring(err))
 			end
 		end
 	end

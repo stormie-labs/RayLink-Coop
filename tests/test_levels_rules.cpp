@@ -259,12 +259,17 @@ TEST(server_life_defaults)
 	CHECK_EQ(kStopTimeoutMs, uint32_t(15000));
 	CHECK_EQ(kDefaultLingerMs, uint32_t(60000)); // coop_mapserver_linger, 60 s
 	CHECK_EQ(kFlushTimeoutMs, uint32_t(3000));
+	CHECK_EQ(kMaxStartFailures, uint32_t(3));
+	CHECK_EQ(kHealthyRunMs, uint32_t(30000));
 
 	ServerLife life;
 	CHECK(life.state() == ServerState::Off);
 	CHECK_EQ(life.linger_ms, kDefaultLingerMs);
 	CHECK(!life.want_start());
 	CHECK(!life.want_stop(kT0));
+	CHECK(!life.running());
+	CHECK(!life.gave_up());
+	CHECK_EQ(life.failures(), uint32_t(0));
 }
 
 // A player heads to a level nobody leads: the process is wanted; it loads; it serves.
@@ -431,38 +436,49 @@ TEST(server_life_forced_stop_with_players)
 	CHECK(life.want_start()); // the players are still on that level (their map is led by a new server)
 }
 
-// A server that dies: at once a new one is wanted while there are players; with nobody, nothing is started.
+// A server that dies: at once a new one is wanted while there are players; with nobody, nothing is started. (Each of the
+// servers here lives kHealthyRunMs after it is ready, so none of the deaths counts as a failed start.)
 TEST(server_life_crash)
 {
+	uint64_t t = kT0;
 	ServerLife life;
-	life.players(2, kT0);
-	life.started(kT0);
+	life.players(2, t);
+	life.started(t);
 	life.ready();
+	t += kHealthyRunMs;
+	life.players(2, t);
 
 	life.lost();
 	CHECK(life.state() == ServerState::Lost);
 	CHECK(life.want_start());
-	CHECK(!life.want_stop(kT0 + 99999999));
+	CHECK(!life.want_stop(t + 99999999));
 
-	life.started(kT0 + 1000);
+	t += 1000;
+	life.started(t);
 	life.ready();
+	t += kHealthyRunMs;
+	life.players(2, t);
 	CHECK(life.state() == ServerState::Serving);
 
 	// The same when the process dies while it is loading, or while the pause runs.
 	life.lost();
-	life.started(kT0 + 2000);
+	t += 1000;
+	life.started(t);
 	life.lost();
 	CHECK(life.state() == ServerState::Lost);
 	CHECK(life.want_start());
-	life.started(kT0 + 3000);
+	t += 1000;
+	life.started(t);
 	life.ready();
-	life.players(0, kT0 + 4000);
+	t += kHealthyRunMs;
+	life.players(2, t);
+	life.players(0, t + 1000);
 	CHECK(life.state() == ServerState::Draining);
 	life.lost();
 	CHECK(life.state() == ServerState::Lost);
 	CHECK(!life.want_start()); // the pause was running: nobody is left to want it
-	CHECK(!life.want_stop(kT0 + 99999999));
-	life.players(1, kT0 + 5000);
+	CHECK(!life.want_stop(t + 99999999));
+	life.players(1, t + 5000);
 	CHECK(life.want_start());
 
 	// A process that exits by itself (the game closed, the window killed) is a loss too.
@@ -503,6 +519,192 @@ TEST(server_life_stale_signals_ignored)
 	life.players(0, kT0 + 1000);
 	CHECK(life.want_stop(kT0 + 10000 + life.linger_ms));
 	CHECK(!life.want_stop(kT0 + 10000 + life.linger_ms - 1));
+}
+
+// A process that dies again and again before it serves anybody is not started for ever: after kMaxStartFailures in a row
+// the world server gives up, want_start() stays false and the caller returns the movers to where they were.
+TEST(server_life_crash_loop_gives_up)
+{
+	uint64_t t = kT0;
+	ServerLife life;
+	life.players(1, t);
+
+	// 1: dies while it loads.
+	CHECK(life.want_start());
+	life.started(t);
+	life.lost();
+	CHECK_EQ(life.failures(), uint32_t(1));
+	CHECK(!life.gave_up());
+
+	// 2: loads, takes the player, dies at once.
+	CHECK(life.want_start());
+	t += 1000;
+	life.started(t);
+	life.ready();
+	life.players(1, t + 2000);
+	life.lost();
+	CHECK_EQ(life.failures(), uint32_t(2));
+	CHECK(!life.gave_up());
+	CHECK(life.want_start());
+
+	// 3: loads with nobody on the map (the player gave up waiting), dies in the pause: nobody was served on it.
+	t += 5000;
+	life.started(t);
+	life.players(0, t + 100);
+	life.ready();
+	CHECK(life.state() == ServerState::Ready);
+	life.lost();
+	CHECK_EQ(life.failures(), uint32_t(3));
+	CHECK(life.gave_up());
+
+	// Given up: no more launches, whatever the players want.
+	life.players(2, t + 6000);
+	CHECK(life.state() == ServerState::Lost);
+	CHECK(!life.want_start());
+	CHECK(!life.running());
+
+	// A stale report of the dead process counts for nothing.
+	life.lost();
+	life.stopped();
+	CHECK_EQ(life.failures(), uint32_t(3));
+
+	// The hung start is a failure as well (the caller kills it and reports it lost).
+	ServerLife h;
+	h.players(1, kT0);
+	for (uint32_t i = 0; i < kMaxStartFailures; ++i)
+	{
+		CHECK(!h.gave_up());
+		CHECK(h.want_start());
+		h.started(kT0 + i * kStartTimeoutMs);
+		CHECK(h.want_stop(kT0 + (i + 1) * kStartTimeoutMs));
+		h.lost();
+	}
+	CHECK(h.gave_up() && !h.want_start());
+
+	// The way back: the players are gone (the movers went back), then somebody tries again - a fresh series.
+	h.players(0, kT0 + 9 * kStartTimeoutMs);
+	CHECK(!h.gave_up());
+	CHECK_EQ(h.failures(), uint32_t(0));
+	h.players(1, kT0 + 9 * kStartTimeoutMs + 5000);
+	CHECK(h.want_start());
+
+	// ... or the caller allows it at once, with players still waiting.
+	ServerLife r;
+	r.players(1, kT0);
+	for (uint32_t i = 0; i < kMaxStartFailures; ++i)
+	{
+		r.started(kT0 + i);
+		r.lost();
+	}
+	CHECK(r.gave_up() && !r.want_start());
+	r.retry_allowed();
+	CHECK(!r.gave_up() && r.want_start());
+	CHECK_EQ(r.failures(), uint32_t(0));
+}
+
+// A server that has lived kHealthyRunMs after Ready has proved itself: a death after that is a crash, not a failed start,
+// and the failures before it are forgotten. Ready alone proves nothing (a map that loads and dies at the first player).
+TEST(server_life_ready_resets_failures)
+{
+	uint64_t t = kT0;
+	ServerLife life;
+	life.players(1, t);
+
+	// Two failed starts, then a server that comes up and lives.
+	life.started(t);
+	life.lost();
+	life.started(t + 1000);
+	life.lost();
+	CHECK_EQ(life.failures(), uint32_t(2));
+	t += 2000;
+	life.started(t);
+	life.ready();
+	CHECK(life.state() == ServerState::Serving);
+	CHECK_EQ(life.failures(), uint32_t(2)); // Ready alone does not clear them
+	life.players(1, t + kHealthyRunMs - 1);
+	CHECK_EQ(life.failures(), uint32_t(2));
+	life.players(1, t + kHealthyRunMs);
+	CHECK_EQ(life.failures(), uint32_t(0)); // it lived
+
+	// A later crash starts a fresh series: it takes kMaxStartFailures new failures to give up.
+	t += kHealthyRunMs + 1000;
+	life.lost();
+	CHECK_EQ(life.failures(), uint32_t(0));
+	CHECK(life.want_start());
+	for (uint32_t i = 0; i < kMaxStartFailures - 1; ++i)
+	{
+		life.started(t + i);
+		life.lost();
+	}
+	CHECK(!life.gave_up());
+	life.started(t + 10);
+	life.lost();
+	CHECK(life.gave_up());
+
+	// A server that loads and dies at once does not reset anything: the loop is still counted.
+	ServerLife loop;
+	loop.players(1, kT0);
+	for (uint32_t i = 0; i < kMaxStartFailures; ++i)
+	{
+		CHECK(loop.want_start());
+		loop.started(kT0 + i * 1000);
+		loop.ready();
+		loop.players(1, kT0 + i * 1000 + 5000); // 5 s of life, not 30
+		loop.lost();
+	}
+	CHECK(loop.gave_up());
+
+	// A server that dies after living long, but the clock was not told (players() not called since): it is judged by the
+	// last time the clock was told - a failure, the careful way.
+	ServerLife blind;
+	blind.players(1, kT0);
+	blind.started(kT0);
+	blind.ready();
+	blind.lost();
+	CHECK_EQ(blind.failures(), uint32_t(1));
+
+	// A clean stop clears the series too.
+	ServerLife clean;
+	clean.players(1, kT0);
+	clean.started(kT0);
+	clean.lost();
+	clean.started(kT0 + 10);
+	clean.ready();
+	clean.stopping(kT0 + 20);
+	clean.stopped();
+	CHECK(clean.state() == ServerState::Off);
+	CHECK_EQ(clean.failures(), uint32_t(0));
+}
+
+// Which states count as "a map server is running" for the cap (decide_move's `running`).
+TEST(server_life_running_counts)
+{
+	ServerLife life;
+	CHECK(!life.running()); // Off
+	life.players(1, kT0);
+	CHECK(!life.running()); // wanted, not launched
+	life.started(kT0);
+	CHECK(life.state() == ServerState::Starting && life.running()); // a process is loading: it takes a place
+	life.ready();
+	CHECK(life.state() == ServerState::Serving && life.running());
+	life.players(0, kT0 + 1000);
+	CHECK(life.state() == ServerState::Draining && life.running()); // the pause: still there
+	life.players(1, kT0 + 2000);
+	life.stopping(kT0 + 3000);
+	CHECK(life.state() == ServerState::Stopping && !life.running()); // it is on its way out: its place is free
+	life.stopped();
+	CHECK(life.state() == ServerState::Off && !life.running());
+
+	life.started(kT0 + 4000);
+	life.lost();
+	CHECK(life.state() == ServerState::Lost && !life.running()); // dead
+
+	ServerLife idle; // loaded with nobody on it
+	idle.players(1, kT0);
+	idle.started(kT0);
+	idle.players(0, kT0 + 1);
+	idle.ready();
+	CHECK(idle.state() == ServerState::Ready && idle.running());
 }
 
 // ---------------------------------------------------------------- the flush round before a save

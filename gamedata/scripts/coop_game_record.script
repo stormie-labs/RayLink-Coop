@@ -163,7 +163,7 @@ end
 --   console = fn(name) -> string | nil    value of an engine console variable
 --   factors = fn() -> { g = {id = v}, e = {id = v}, s = {id = v} }    the save's difficulty factors and other values
 -- }
--- Returns values = { key = raw } with the host-owned keys only (never coop/coop_player/*), the 17 console variables that
+-- Returns values = { key = raw } with the host-owned keys only (never coop/coop_player/*), the 19 console variables that
 -- exist (canonical string), the factors as they are; and the list of problems (a reader function that failed).
 function from_machine(reader)
 	local values, problems = {}, {}

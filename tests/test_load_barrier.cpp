@@ -54,14 +54,14 @@ TEST(barrier_server_needed)
 	CHECK(!b.enter(kT0 + kLoadWaitMs + 1000));
 	CHECK(!b.enter(kT0 + 10 * kLoadWaitMs));
 
-	b.server_ready();
+	b.server_ready(6);
 	CHECK(!b.waiting_server());
 	CHECK(b.enter(kT0 + 10 * kLoadWaitMs));
 
 	// The server first, the player after.
 	LoadBarrier c;
 	c.start(7, {1, 2}, true, kT0);
-	c.server_ready();
+	c.server_ready(7);
 	CHECK(!c.enter(kT0 + 100)); // the players are still loading
 	c.ready(1, 7);
 	c.ready(2, 7);
@@ -71,7 +71,7 @@ TEST(barrier_server_needed)
 	LoadBarrier d;
 	d.start(8, {1}, false, kT0);
 	CHECK(!d.waiting_server());
-	d.server_ready();
+	d.server_ready(8);
 	CHECK(!d.enter(kT0));
 	d.ready(1, 8);
 	CHECK(d.enter(kT0));
@@ -168,7 +168,7 @@ TEST(barrier_host_player_ready_by_world_up)
 	CHECK(!c.is_ready(0));
 	CHECK(!c.enter(kT0));
 	c.ready(1, 12);
-	c.server_ready();
+	c.server_ready(12);
 	CHECK(c.enter(kT0));
 
 	// The host that is not peer 0 (a barrier of another numbering) is named when the barrier is made.
@@ -207,7 +207,7 @@ TEST(barrier_leaver_does_not_hold)
 	d.start(16, {1}, true, kT0);
 	d.drop(1);
 	CHECK(!d.enter(kT0));
-	d.server_ready();
+	d.server_ready(16);
 	CHECK(d.enter(kT0));
 }
 
@@ -220,7 +220,9 @@ TEST(barrier_edge_cases)
 	CHECK(b.waiting().empty());
 	b.ready(1, 0);
 	b.world_up(0);
-	b.server_ready();
+	b.server_ready(0);
+	b.server_lost(0);
+	CHECK(!b.server_wait_exceeded(kT0 + 10 * kLoadWaitMs));
 	CHECK(!b.enter(kT0));
 
 	// Nobody leaves and no server is needed: open at once (a transition of no one is no wait).
@@ -246,4 +248,99 @@ TEST(barrier_edge_cases)
 	b.start(0, {1}, false, kT0);
 	b.ready(1, 0);
 	CHECK(b.enter(kT0));
+}
+
+// A map server that never comes up: the barrier does not open, and after kLoadWaitMs the caller is told to give the move up
+// (the movers go back where they were) instead of leaving them on the loading screen for good.
+TEST(barrier_server_never_ready_aborts)
+{
+	LoadBarrier b;
+	b.start(20, {1}, /*wait_server*/ true, kT0);
+	b.ready(1, 20); // the player is loaded, the server is not
+	CHECK(!b.server_wait_exceeded(kT0));
+	CHECK(!b.server_wait_exceeded(kT0 + kLoadWaitMs - 1));
+	CHECK(b.server_wait_exceeded(kT0 + kLoadWaitMs));
+	CHECK(b.server_wait_exceeded(kT0 + 10 * kLoadWaitMs)); // and it stays so
+	CHECK(!b.enter(kT0 + 10 * kLoadWaitMs)); // the barrier itself does not open onto a map nobody leads
+	CHECK(b.waiting_server());
+
+	// The server comes up late, before the caller has given up: the way out is closed again.
+	b.server_ready(20);
+	CHECK(!b.server_wait_exceeded(kT0 + 10 * kLoadWaitMs));
+	CHECK(b.enter(kT0 + 10 * kLoadWaitMs));
+
+	// No server asked for, none to wait for; not started, or finished: nothing.
+	LoadBarrier c;
+	CHECK(!c.server_wait_exceeded(kT0 + 10 * kLoadWaitMs));
+	c.start(21, {1}, false, kT0);
+	CHECK(!c.server_wait_exceeded(kT0 + 10 * kLoadWaitMs));
+	LoadBarrier d;
+	d.start(22, {1}, true, kT0);
+	d.clear();
+	CHECK(!d.server_wait_exceeded(kT0 + 10 * kLoadWaitMs));
+
+	// The clock is the barrier's own: a new one restarts the wait.
+	LoadBarrier e;
+	e.start(23, {1}, true, kT0);
+	e.start(24, {1}, true, kT0 + 50000);
+	CHECK(!e.server_wait_exceeded(kT0 + kLoadWaitMs));
+	CHECK(e.server_wait_exceeded(kT0 + 50000 + kLoadWaitMs));
+}
+
+// A map server can die after it said Ready and before the screens came off: the barrier closes again.
+TEST(barrier_server_lost_after_ready_closes)
+{
+	LoadBarrier b;
+	b.start(30, {1}, true, kT0);
+	b.ready(1, 30);
+	b.server_ready(30);
+	CHECK(b.enter(kT0 + 100));
+	CHECK(!b.waiting_server());
+
+	b.server_lost(30);
+	CHECK(!b.enter(kT0 + 200));
+	CHECK(b.waiting_server());
+	CHECK(!b.server_wait_exceeded(kT0 + 200));
+	CHECK(b.server_wait_exceeded(kT0 + kLoadWaitMs)); // the way out works for a lost server as well
+
+	// A new server of the same level comes up: open again.
+	b.server_ready(30);
+	CHECK(b.enter(kT0 + 300));
+	CHECK(!b.server_wait_exceeded(kT0 + 10 * kLoadWaitMs));
+
+	// The report of another transition's server, or one for a barrier that waits for none, changes nothing.
+	b.server_lost(29);
+	b.server_lost(31);
+	CHECK(b.enter(kT0 + 400));
+	LoadBarrier c;
+	c.start(32, {1}, false, kT0);
+	c.ready(1, 32);
+	c.server_lost(32);
+	CHECK(c.enter(kT0));
+	LoadBarrier d; // not started
+	d.server_lost(0);
+	CHECK(!d.enter(kT0));
+}
+
+// A barrier belongs to one transition and is fed only by its own server: a Ready of another epoch is not its server's.
+TEST(barrier_stale_server_ready_ignored)
+{
+	LoadBarrier b;
+	b.start(40, {1}, true, kT0);
+	b.ready(1, 40);
+	b.server_ready(39); // the server of the transition before
+	b.server_ready(41); // one that does not exist yet
+	b.server_ready(0);
+	CHECK(!b.enter(kT0 + 100));
+	CHECK(b.waiting_server());
+	b.server_ready(40);
+	CHECK(b.enter(kT0 + 100));
+
+	// A new transition: the old server's Ready does not open it.
+	b.start(41, {1}, true, kT0 + 1000);
+	b.ready(1, 41);
+	b.server_ready(40);
+	CHECK(!b.enter(kT0 + 1100));
+	b.server_ready(41);
+	CHECK(b.enter(kT0 + 1100));
 }
