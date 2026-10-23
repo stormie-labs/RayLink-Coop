@@ -110,4 +110,50 @@ for _, group in ipairs(page.gr) do
 	end
 end
 
+-------------------------------------------------------------------------------
+print("== build 10: nothing is lost (keep) and the share multiplier (coop_death_share)")
+local session
+for _, group in ipairs(page.gr) do
+	if group.id == "coop_session" then session = group end
+end
+local by_id = {}
+for _, opt in ipairs(session and session.gr or {}) do by_id[opt.id] = opt end
+local drop, share = by_id.death_drop, by_id.death_share
+
+local has_keep = false
+for _, c in ipairs(drop and drop.content or {}) do has_keep = has_keep or (c[1] == "keep" and c[2] == "st_coop_opt_drop_keep") end
+check(has_keep, "what falls offers keep (st_coop_opt_drop_keep)")
+check(drop ~= nil and stock_console_line(drop, "keep") == "coop_death_drop keep", "picking it sends 'coop_death_drop keep'")
+
+check(share ~= nil and share.type == "list" and share.val == 2 and share.cmd == "coop_death_share" and share.no_str == true,
+	"the share is a number list on coop_death_share")
+-- UIOptions:GetContent: a table, or { f } -> f(); the window matches the console's number against the values
+local function content(o)
+	if type(o.content[1]) == "function" then return o.content[1]() end
+	return o.content
+end
+local function values_of(list)
+	local t = {}
+	for _, c in ipairs(list) do t[#t + 1] = tostring(c[1]) .. "=" .. tostring(c[2]) end
+	return table.concat(t, ",")
+end
+local saved_cmd = rawget(_G, "get_console_cmd")
+local console = "100.00000" -- a CCC_Float reads back as "%3.5f"
+get_console_cmd = function(_, name) return name == "coop_death_share" and console or nil end
+if share then
+	local base = "50=st_coop_opt_share_50,100=st_coop_opt_share_100,150=st_coop_opt_share_150,200=st_coop_opt_share_200"
+	check(values_of(content(share)) == base, "50 / 100 / 150 / 200 % (" .. values_of(content(share)) .. ")")
+	local list = content(share)
+	check(stock_console_line(share, list[3][1]) == "coop_death_share 150", "picking 150 % sends 'coop_death_share 150'")
+	console = "75.00000"
+	list = content(share)
+	check(#list == 5 and list[2][1] == 75 and list[2][2] == "75 %",
+		"a share set elsewhere (75) is an entry of its own, the page shows what is in force (" .. values_of(list) .. ")")
+	console = "300.00000"
+	check(values_of(content(share)) == base, "a number outside 0..200 adds nothing")
+	console = nil
+	check(values_of(content(share)) == base, "no console variable (an exe without co-op): the four")
+end
+get_console_cmd = saved_cmd
+
 print(string.format("%d passed, %d failed", PASSES, FAILS))

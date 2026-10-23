@@ -2,18 +2,19 @@
 <!-- Anomaly Coop: the co-op block of the new game screen of a host (scripts\coop_newgame_modes.script). Added to the stock
      ui_mm_faction_select.xml layout (same main_dialog:options frame, 880 x 160, parsed by a second CScriptXmlInit like GAMMA's
      soulslike_ui_mm_gamemode.xml) in the place of the second column of the stock modes, which a co-op host does not see.
-     Rows of the stock layout are 30 apart; this block is 3 rows (list 27 high) with a header above and the hint under it. -->
+     Rows of the stock layout are 30 apart; this block is 4 rows 28 apart (list 27 high; build 10 added the share row) with
+     a header above and a one-line hint under it, all inside the visible 160 of the frame's scroll view. -->
 <w>
 	<main_dialog>
 		<options>
-			<cap_coop_header x="331" y="10" width="355" height="22" stretch="1">
+			<cap_coop_header x="331" y="8" width="355" height="22" stretch="1">
 				<text r="250" g="250" b="250" font="letterica18" align="l" vert_align="c">st_coop_newgame_header</text>
 			</cap_coop_header>
 
-			<cap_list_coop_death_mode x="331" y="37" width="165" height="20" stretch="1">
+			<cap_list_coop_death_mode x="331" y="35" width="165" height="20" stretch="1">
 				<text r="170" g="170" b="170" font="letterica16" align="l" vert_align="c">st_coop_newgame_death</text>
 			</cap_list_coop_death_mode>
-			<list_coop_death_mode x="500" y="34" width="190" height="27">
+			<list_coop_death_mode x="500" y="32" width="190" height="27">
 				<list_font r="190" g="190" b="190" font="letterica16"/>
 				<text_color>
 					<e r="170" g="170" b="170"/>
@@ -21,10 +22,10 @@
 				</text_color>
 			</list_coop_death_mode>
 
-			<cap_list_coop_death_drop x="331" y="66" width="165" height="20" stretch="1">
+			<cap_list_coop_death_drop x="331" y="63" width="165" height="20" stretch="1">
 				<text r="170" g="170" b="170" font="letterica16" align="l" vert_align="c">st_coop_newgame_drop</text>
 			</cap_list_coop_death_drop>
-			<list_coop_death_drop x="500" y="63" width="190" height="27">
+			<list_coop_death_drop x="500" y="60" width="190" height="27">
 				<list_font r="190" g="190" b="190" font="letterica16"/>
 				<text_color>
 					<e r="170" g="170" b="170"/>
@@ -32,10 +33,21 @@
 				</text_color>
 			</list_coop_death_drop>
 
-			<cap_list_coop_autosave x="331" y="95" width="165" height="20" stretch="1">
+			<cap_list_coop_death_share x="331" y="91" width="165" height="20" stretch="1">
+				<text r="170" g="170" b="170" font="letterica16" align="l" vert_align="c">st_coop_newgame_share</text>
+			</cap_list_coop_death_share>
+			<list_coop_death_share x="500" y="88" width="190" height="27">
+				<list_font r="190" g="190" b="190" font="letterica16"/>
+				<text_color>
+					<e r="170" g="170" b="170"/>
+					<d r="70" g="70" b="70"/>
+				</text_color>
+			</list_coop_death_share>
+
+			<cap_list_coop_autosave x="331" y="119" width="165" height="20" stretch="1">
 				<text r="170" g="170" b="170" font="letterica16" align="l" vert_align="c">st_coop_newgame_autosave</text>
 			</cap_list_coop_autosave>
-			<list_coop_autosave x="500" y="92" width="190" height="27">
+			<list_coop_autosave x="500" y="116" width="190" height="27">
 				<list_font r="190" g="190" b="190" font="letterica16"/>
 				<text_color>
 					<e r="170" g="170" b="170"/>
@@ -43,7 +55,7 @@
 				</text_color>
 			</list_coop_autosave>
 
-			<text_coop_hint x="331" y="122" width="520" height="34">
+			<text_coop_hint x="331" y="143" width="540" height="17">
 				<text complex_mode="1" r="150" g="150" b="150" align="l" vert_align="c" font="letterica16"/>
 			</text_coop_hint>
 		</options>

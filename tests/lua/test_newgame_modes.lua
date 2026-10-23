@@ -28,7 +28,8 @@ coop = {
 }
 CMD = "AnomalyCoopDX11AVX.exe -fsltx fsgame_a.ltx -smap2048"
 function command_line() return CMD end
-CONSOLE = { coop_death_mode = "checkpoint", coop_death_drop = "drop", coop_autosave_interval = "10" }
+CONSOLE = { coop_death_mode = "checkpoint", coop_death_drop = "drop", coop_autosave_interval = "10",
+	coop_death_share = "100.00000" } -- a CCC_Float reads back as "%3.5f"
 function get_console_cmd(typ, name) return CONSOLE[name] end
 EXEC = {}
 function exec_console_cmd(cmd)
@@ -287,6 +288,7 @@ local function coop_info() INFO.pending_host = 27960; INFO.host = false; INFO.cl
 local function single_info() INFO.pending_host = nil; INFO.host = false; INFO.client = false; INFO.active = false end
 local function reset_console()
 	CONSOLE.coop_death_mode, CONSOLE.coop_death_drop, CONSOLE.coop_autosave_interval = "checkpoint", "drop", "10"
+	CONSOLE.coop_death_share = "100.00000"
 	EXEC = {}
 end
 local function click_start(dlg)
@@ -424,16 +426,20 @@ mn:ShowFactionUI()
 local d = mn.new_game_dlg
 check(d.coop_header and d.coop_header.shown ~= false, "the block has its header")
 check(d.coop_header.parent == nil or d.coop_header.parent == d.templ_options, "inside the options frame")
-for _, f in ipairs({ "list_coop_death_mode", "list_coop_death_drop", "list_coop_autosave" }) do
+for _, f in ipairs({ "list_coop_death_mode", "list_coop_death_drop", "list_coop_death_share", "list_coop_autosave" }) do
 	check(d[f] and d[f].shown and d[f].enabled and d[f .. "_cap"] and d[f .. "_cap"].shown, f .. " and its caption are shown")
 	check(d.registered[f] == d[f], f .. " is registered under its name")
 end
 check(d.list_coop_death_mode_cap.path == "main_dialog:options:cap_list_coop_death_mode", "the captions come from the layout")
 check(texts(d.list_coop_death_mode) == "Camps|Hardcore", "death: " .. texts(d.list_coop_death_mode))
-check(texts(d.list_coop_death_drop) == "Bag at the body|All in a stash|Lost", "loss: " .. texts(d.list_coop_death_drop))
+check(texts(d.list_coop_death_drop) == "Bag at the body|All in a stash|Lost|Nothing is lost",
+	"loss, build 10 keep the fourth: " .. texts(d.list_coop_death_drop))
+check(texts(d.list_coop_death_share) == "50 %|100 % (normal)|150 %|200 %", "share (build 10): " .. texts(d.list_coop_death_share))
 check(texts(d.list_coop_autosave) == "5 min|10 min|20 min|off", "autosave: " .. texts(d.list_coop_autosave))
 check(d.list_coop_death_mode.text == "Camps" and d.list_coop_death_drop.text == "Bag at the body"
-	and d.list_coop_autosave.text == "10 min", "the lists show the console's values")
+	and d.list_coop_death_share.text == "100 % (normal)" and d.list_coop_autosave.text == "10 min",
+	"the lists show the console's values")
+check(d.list_coop_death_share_cap.path == "main_dialog:options:cap_list_coop_death_share", "the share caption comes from the layout")
 check(d.coop_hint and d.coop_hint.text == STRINGS.st_coop_newgame_hint and d.coop_hint.shown ~= false, "the hint is under the block")
 check(STRINGS.st_coop_newgame_hint:find("Options > Co%-op") ~= nil, "and points to Options > Co-op")
 check(#EXEC == 0, "opening the screen writes nothing to the console")
@@ -472,6 +478,30 @@ click_start(d)
 check(#EXEC == 0, "the rules stay as they were: no console writes, no cfg_save (" .. table.concat(EXEC, "; ") .. ")")
 check(cfg("new_game_character_name") == "Stalker", "the stock start still ran")
 
+print("== co-op host: keep and the share (build 10)")
+reset_console(); clear_cfg(); coop_info()
+mn = new_menu(); mn:ShowFactionUI(); d = mn.new_game_dlg
+pick(d, "list_coop_death_drop", 4)
+pick(d, "list_coop_death_share", 3)
+click_start(d)
+check(EXEC[1] == "coop_death_drop keep" and EXEC[2] == "coop_death_share 150" and EXEC[3] == "cfg_save" and #EXEC == 3,
+	"nothing is lost and 150 %: both written, then cfg_save (" .. table.concat(EXEC, "; ") .. ")")
+check(CONSOLE.coop_death_drop == "keep" and CONSOLE.coop_death_share == "150", "the console holds keep and 150")
+reset_console(); clear_cfg()
+mn = new_menu(); mn:ShowFactionUI(); d = mn.new_game_dlg
+pick(d, "list_coop_death_share", 1)
+click_start(d)
+check(EXEC[1] == "coop_death_share 50" and EXEC[2] == "cfg_save" and #EXEC == 2,
+	"50 % alone: only the share is written (" .. table.concat(EXEC, "; ") .. ")")
+reset_console(); clear_cfg()
+mn = new_menu(); mn:ShowFactionUI(); d = mn.new_game_dlg
+pick(d, "list_coop_death_share", 4)
+pick(d, "list_coop_death_share", 2)
+pick(d, "list_coop_death_drop", 4)
+pick(d, "list_coop_death_drop", 1)
+click_start(d)
+check(#EXEC == 0, "picked and picked back to the console's values: nothing written (" .. table.concat(EXEC, "; ") .. ")")
+
 print("== co-op host: the console's values, odd ones too")
 reset_console(); clear_cfg(); coop_info()
 CONSOLE.coop_death_mode, CONSOLE.coop_death_drop, CONSOLE.coop_autosave_interval = "hardcore", "corpse", "15"
@@ -483,6 +513,21 @@ check(texts(d.list_coop_autosave) == "5 min|10 min|15 min|20 min|off" and d.list
 click_start(d)
 check(#EXEC == 0, "and written back unchanged: nothing")
 reset_console(); clear_cfg()
+CONSOLE.coop_death_drop, CONSOLE.coop_death_share = "keep", "75.00000"
+mn = new_menu(); mn:ShowFactionUI(); d = mn.new_game_dlg
+check(d.list_coop_death_drop.text == "Nothing is lost", "keep is shown")
+check(texts(d.list_coop_death_share) == "50 %|75 %|100 % (normal)|150 %|200 %" and d.list_coop_death_share.text == "75 %",
+	"a share from the options page or the console (75) is kept as an entry: " .. texts(d.list_coop_death_share))
+click_start(d)
+check(#EXEC == 0, "and written back unchanged: nothing (" .. table.concat(EXEC, "; ") .. ")")
+for _, odd in ipairs({ "300.00000", "-5.00000", "abc" }) do
+	reset_console(); clear_cfg()
+	CONSOLE.coop_death_share = odd
+	mn = new_menu(); mn:ShowFactionUI(); d = mn.new_game_dlg
+	check(d.list_coop_death_share.text == "100 % (normal)" and texts(d.list_coop_death_share) == "50 %|100 % (normal)|150 %|200 %",
+		"a share outside 0..200 (" .. odd .. ") shows the default, no entry of its own")
+end
+reset_console(); clear_cfg()
 CONSOLE.coop_death_mode, CONSOLE.coop_autosave_interval = "respawn_keep", "0"
 mn = new_menu(); mn:ShowFactionUI(); d = mn.new_game_dlg
 check(d.list_coop_death_mode.text == "Camps" and d.list_coop_autosave.text == "off", "an old synonym is camps, 0 is off")
@@ -491,7 +536,8 @@ CONSOLE.coop_death_mode, CONSOLE.coop_death_drop, CONSOLE.coop_autosave_interval
 get_console_cmd = function() return nil end
 mn = new_menu(); mn:ShowFactionUI(); d = mn.new_game_dlg
 check(d.list_coop_death_mode.text == "Camps" and d.list_coop_death_drop.text == "Bag at the body"
-	and d.list_coop_autosave.text == "10 min", "no console variable: the engine defaults")
+	and d.list_coop_death_share.text == "100 % (normal)" and d.list_coop_autosave.text == "10 min",
+	"no console variable: the engine defaults")
 click_start(d)
 check(#EXEC == 0, "and nothing to write")
 function get_console_cmd(typ, name) return CONSOLE[name] end
@@ -586,7 +632,9 @@ local function elements(file)
 	return out
 end
 local NAMES = { "cap_coop_header", "cap_list_coop_death_mode", "list_coop_death_mode", "cap_list_coop_death_drop",
-	"list_coop_death_drop", "cap_list_coop_autosave", "list_coop_autosave", "text_coop_hint" }
+	"list_coop_death_drop", "cap_list_coop_death_share", "list_coop_death_share", "cap_list_coop_autosave",
+	"list_coop_autosave", "text_coop_hint" }
+local ROWS = { "list_coop_death_mode", "list_coop_death_drop", "list_coop_death_share", "list_coop_autosave" }
 for _, lay in ipairs({ { "ui_coop_newgame.xml", 880, 331 }, { "ui_coop_newgame_16.xml", 704, 264 } }) do
 	local els = elements(ROOT .. "configs/ui/" .. lay[1])
 	local miss, bad = {}, {}
@@ -601,17 +649,20 @@ for _, lay in ipairs({ { "ui_coop_newgame.xml", 880, 331 }, { "ui_coop_newgame_1
 	check(#bad == 0, lay[1] .. ": inside the options frame (" .. lay[2] .. " x 160) and right of the first column (x from "
 		.. lay[3] .. "): " .. table.concat(bad, ", "))
 	local rows = {}
-	for _, n in ipairs({ "list_coop_death_mode", "list_coop_death_drop", "list_coop_autosave" }) do
+	for _, n in ipairs(ROWS) do
 		local e, cap = els[n], els["cap_" .. n]
 		if e and cap then
 			check(cap.x + cap.w <= e.x, lay[1] .. ": " .. n .. " caption ends before the list")
+			check(cap.y >= e.y and cap.y + cap.h <= e.y + e.h, lay[1] .. ": " .. n .. " caption is on the row of its list")
 			rows[#rows + 1] = e
 		end
 	end
-	if #rows == 3 then
-		check(rows[1].y + rows[1].h <= rows[2].y and rows[2].y + rows[2].h <= rows[3].y, lay[1] .. ": the rows do not overlap")
-		check(els.text_coop_hint and els.text_coop_hint.y >= rows[3].y + rows[3].h, lay[1] .. ": the hint is under the block")
-	end
+	check(#rows == #ROWS, lay[1] .. ": four rows (death, loss, share, autosave)")
+	local apart = true
+	for i = 2, #rows do apart = apart and rows[i - 1].y + rows[i - 1].h <= rows[i].y end
+	check(apart, lay[1] .. ": the rows do not overlap, in this order")
+	check(els.cap_coop_header and els.cap_coop_header.y + els.cap_coop_header.h <= rows[1].y, lay[1] .. ": the header is above them")
+	check(els.text_coop_hint and els.text_coop_hint.y >= rows[#rows].y + rows[#rows].h, lay[1] .. ": the hint is under the block")
 end
 -- ids used by the script exist in eng and rus
 do

@@ -4,13 +4,17 @@
 ;   drop   - a share of the backpack per category goes into a bag at the body (coop_death_stash below, Ruling L-1),
 ;            with a PDA mark; anyone in the group can take it. Loose at the body only when no bag can be made;
 ;   corpse - the whole backpack goes into a stash at the body (coop_death_stash below), with a PDA mark;
-;   lose   - a share of the backpack per category is gone.
+;   lose   - a share of the backpack per category is gone;
+;   keep   - nothing is lost: no bag, no PDA mark (build 10). Money, wear and rank go by their own console rules.
+; The host's coop_death_share (0..200 %, default 100) scales the shares below for drop and lose (build 10):
+; share = clamp(share x coop_death_share / 100, 0, 1), so 200 takes a 0.5 category whole and 0 takes nothing.
+; corpse and keep do not use it.
 ; Never lost: what the player has on (slots, belt), quest items (kind i_quest / i_letter), the PDA. Which items of
 ; a category go is a seeded draw on the host: floor(n x share), and one more with the probability of the fraction.
 ; Mod packs change the shares or map their own kinds with DLTX (![coop_death_drop], ![coop_death_kinds]).
 ; Console of the host: coop_death_preview [character id [death seq]] logs what a death would take now.
 
-[coop_death_drop]          ; share of the backpack lost per category (drop: into a bag at the body, lose: gone)
+[coop_death_drop]          ; share lost per category (drop: into a bag at the body, lose: gone), x coop_death_share
 materials   = 0.5
 ammo        = 0.5
 consumables = 0.5

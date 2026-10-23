@@ -632,7 +632,11 @@ for _, g in ipairs(page.gr) do
 		elseif o.text then
 			keys[#keys + 1] = o.text
 		end
-		if o.type == "list" then for _, c in ipairs(o.content) do keys[#keys + 1] = c[2] end end
+		if o.type == "list" then
+			-- the stock UIOptions:GetContent: a table, or { f } -> f() (build 10: coop_death_share)
+			local content = type(o.content[1]) == "function" and o.content[1]() or o.content
+			for _, c in ipairs(content) do keys[#keys + 1] = c[2] end
+		end
 	end
 end
 local missing = {}

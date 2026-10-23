@@ -1008,6 +1008,20 @@ local function engine_console_vars()
 	return vars, files
 end
 
+-- The entries of a list option as the stock window gets them (UIOptions:GetContent): a table, or { f } -> f().
+local function list_content(o)
+	if type(o.content) == "table" and type(o.content[1]) == "function" then return o.content[1]() end
+	return o.content or {}
+end
+
+-- the place of option `id` in its group (-1: not there)
+local function option_index(group, id)
+	for i, o in ipairs(group.gr) do
+		if o.id == id then return i end
+	end
+	return -1
+end
+
 local function build_options_page()
 	ui_options = { options = {} }
 	function ui_options.init_opt_base() ui_options.options = { { id = "video" }, { id = "sound" } } end
@@ -1036,6 +1050,7 @@ case("options_page_has_rules", function()
 		death_rank = "coop_death_rank", checkpoints_group = "coop_checkpoints_group",
 		autosave_interval = "coop_autosave_interval", autosave_count = "coop_autosave_count",
 		hardcore_new_kit = "coop_hardcore_new_kit", bleedout = "coop_bleedout", revive_health = "coop_revive_health",
+		death_share = "coop_death_share", -- build 10
 	}
 	local vars, files = engine_console_vars()
 	for id, cmd in pairs(wanted) do
@@ -1048,6 +1063,15 @@ case("options_page_has_rules", function()
 				check(v ~= nil, "the engine registers " .. cmd)
 				if v and o.type == "check" then
 					check(v.kind == "Integer", cmd .. " is CCC_Integer (a check box sends 1 / 0), is " .. tostring(v.kind))
+				elseif v and o.type == "list" and o.val == 2 then
+					-- a list of numbers (build 10: coop_death_share): the stock window reads it as a number
+					check(v.kind == "Float" or v.kind == "Integer", cmd .. " is a number, is " .. tostring(v.kind))
+					for _, c in ipairs(list_content(o)) do
+						if v.lo and v.hi then
+							check(type(c[1]) == "number" and c[1] >= v.lo and c[1] <= v.hi,
+								cmd .. " entry " .. tostring(c[1]) .. " is inside the engine's " .. v.lo .. ".." .. v.hi)
+						end
+					end
 				elseif v and o.type == "list" then
 					check(v.kind == "Token", cmd .. " is CCC_Token, is " .. tostring(v.kind))
 				elseif v and o.type == "track" then
@@ -1068,12 +1092,22 @@ case("options_page_has_rules", function()
 	check(table.concat(tokens, ",") == "checkpoint,hardcore", "death_mode offers checkpoint and hardcore (" .. table.concat(tokens, ",") .. ")")
 	tokens = {}
 	for _, c in ipairs(by_id.death_drop and by_id.death_drop.content or {}) do tokens[#tokens + 1] = c[1] end
-	check(table.concat(tokens, ",") == "drop,corpse,lose", "death_drop offers drop, corpse, lose (" .. table.concat(tokens, ",") .. ")")
+	check(table.concat(tokens, ",") == "drop,corpse,lose,keep",
+		"death_drop offers drop, corpse, lose and (build 10) keep (" .. table.concat(tokens, ",") .. ")")
+
+	-- build 10: the share multiplier, 50 / 100 / 150 / 200 % of the ltx shares, a number list on the console variable
+	local share = by_id.death_share
+	check(share and share.type == "list" and share.val == 2 and share.cmd == "coop_death_share", "death_share is a number list")
+	local values = {}
+	for _, c in ipairs(share and list_content(share) or {}) do values[#values + 1] = tostring(c[1]) end
+	check(table.concat(values, ",") == "50,100,150,200", "death_share offers 50, 100, 150, 200 (" .. table.concat(values, ",") .. ")")
+	check(by_id.death_drop and share and option_index(group, "death_share") == option_index(group, "death_drop") + 1,
+		"the share is right under what falls")
 
 	-- the tokens are the engine's
 	local surv = read("engine/src/xrGame/coop/coop_survival.cpp")
 	if surv then
-		for _, t in ipairs({ "checkpoint", "hardcore", "drop", "corpse", "lose" }) do
+		for _, t in ipairs({ "checkpoint", "hardcore", "drop", "corpse", "lose", "keep" }) do
 			check(surv:find('{"' .. t .. '",', 1, true) ~= nil, "the engine has the token '" .. t .. "'")
 		end
 	end
@@ -1105,7 +1139,7 @@ case("options_page_has_rules", function()
 		elseif o.text then
 			keys[#keys + 1] = o.text
 		end
-		if o.type == "list" then for _, c in ipairs(o.content) do keys[#keys + 1] = c[2] end end
+		if o.type == "list" then for _, c in ipairs(list_content(o)) do keys[#keys + 1] = c[2] end end
 		for _, k in ipairs(keys) do
 			if not eng[k] then missing[#missing + 1] = "eng:" .. k end
 			if not rus[k] then missing[#missing + 1] = "rus:" .. k end

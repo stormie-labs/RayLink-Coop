@@ -780,6 +780,82 @@ TEST(death_plan_losses_by_mode)
 	CHECK(odd.move == LossMove::Stash && odd.items == share && odd.marker == Drop::Drop);
 }
 
+// Build 10 (the owner's request of 2026-10-23): keep takes nothing - no bag, no destroyed share, no marker - whatever
+// the backpack, the shares and the multiplier are; the money, the wear and the rank are not plan_losses' business.
+TEST(death_plan_losses_keep)
+{
+	const KindTable kinds = stock_kinds();
+	std::vector<ItemFacts> full;
+	for (uint16_t id = 100; id < 160; ++id)
+		full.push_back(item(id, id % 2 ? "i_part" : "i_food"));
+	full.push_back(with(item(201, "w_rifle"), &ItemFacts::wearable));
+	const std::vector<std::vector<ItemFacts>> packs = {{}, full, {item(7, "i_arty")}};
+	for (const std::vector<ItemFacts>& in : packs)
+		for (const bool known : {true, false})
+			for (const float pct : {0.0f, 100.0f, 200.0f})
+			{
+				const LossPlan p = plan_losses(Drop::Keep, in, kinds, known, all_shares(1.0f), 42, pct);
+				if (p.move != LossMove::None || !p.items.empty() || p.offered != 0)
+					t::report_failure(__FILE__, __LINE__, "keep must plan nothing");
+				if (p.marker != Drop::Keep)
+					t::report_failure(__FILE__, __LINE__, "the plan of keep names its own mode (no marker)");
+			}
+	// No marker of keep can be read either (a DeathMarker carries drop or corpse only).
+	coop::Writer w;
+	w.u16(1);
+	w.u16(2);
+	w.u8(static_cast<uint8_t>(Drop::Keep));
+	coop::Reader r(w.ptr(), w.size());
+	Marker m;
+	CHECK(!read(r, m));
+}
+
+// Build 10, coop_death_share: drop and lose pick with the ltx shares x k / 100 (scale_shares); corpse moves the whole
+// backpack whatever k is.
+TEST(death_plan_losses_share)
+{
+	const KindTable kinds = stock_kinds();
+	std::vector<ItemFacts> in;
+	for (uint16_t id = 100; id < 140; ++id)
+		in.push_back(item(id, id % 2 ? "i_part" : "i_tool")); // 20 materials, 20 tools
+	const Shares ltx = {0.5f, 0.5f, 0.5f, 0.25f, 0.1f, 0.25f, 0.25f};
+	const uint32_t seed = loss_seed(3, 1, 777);
+	const std::vector<Candidate> candidates = loss_candidates(in, kinds, true);
+
+	// 100 %: as before (the default argument and the explicit value agree).
+	const LossPlan plain = plan_losses(Drop::Drop, in, kinds, true, ltx, seed);
+	CHECK(plan_losses(Drop::Drop, in, kinds, true, ltx, seed, 100.0f).items == plain.items);
+	CHECK(plain.items == pick_losses(candidates, ltx, seed));
+
+	// 200 %: materials 0.5 -> 1 (all 20), tools 0.25 -> 0.5 (10): the pick of the scaled shares.
+	const LossPlan twice = plan_losses(Drop::Drop, in, kinds, true, ltx, seed, 200.0f);
+	CHECK(twice.move == LossMove::Stash);
+	CHECK(twice.items == pick_losses(candidates, scale_shares(ltx, 200.0f), seed));
+	CHECK_EQ(twice.items.size(), size_t(30));
+	const LossPlan lose_twice = plan_losses(Drop::Lose, in, kinds, true, ltx, seed, 200.0f);
+	CHECK(lose_twice.move == LossMove::Destroy && lose_twice.items == twice.items);
+
+	// 50 %: a quarter of the materials, an eighth of the tools (2.5 -> 2 or 3).
+	const LossPlan half = plan_losses(Drop::Lose, in, kinds, true, ltx, seed, 50.0f);
+	CHECK(half.items == pick_losses(candidates, scale_shares(ltx, 50.0f), seed));
+	CHECK(half.items.size() >= 7 && half.items.size() <= 8);
+
+	// 0 % (and a multiplier that is not a number): nothing, no bag.
+	for (const float zero : {0.0f, std::numeric_limits<float>::quiet_NaN(), -50.0f})
+	{
+		CHECK(plan_losses(Drop::Drop, in, kinds, true, ltx, seed, zero).move == LossMove::None);
+		CHECK(plan_losses(Drop::Lose, in, kinds, true, ltx, seed, zero).move == LossMove::None);
+	}
+
+	// Corpse: the whole backpack at 0 %, 100 % and 200 % alike.
+	const std::vector<uint16_t> backpack = stash_ids(in, kinds, false, true);
+	for (const float pct : {0.0f, 100.0f, 200.0f})
+	{
+		const LossPlan c = plan_losses(Drop::Corpse, in, kinds, true, ltx, seed, pct);
+		CHECK(c.move == LossMove::Stash && c.items == backpack && c.marker == Drop::Corpse);
+	}
+}
+
 // L-1, carried from F3 T15 (concern 3): a death bag whose last item was taken stayed in the world for ever (the stock
 // item_backpack releases only inv_backpack). The host releases one that is empty and online; never one that still waits
 // for its items, has something in it, is not a death bag or is open in a window - the host's or a client's (round 1, I1).

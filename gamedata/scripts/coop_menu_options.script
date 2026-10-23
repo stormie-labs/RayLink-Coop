@@ -15,7 +15,8 @@
 		in a session (coop_saves).
 		F3 task 15: the host's death rules (docs\CHECKPOINTS_DEATH.md section 9), each one is the console variable of the
 		engine of the same name (coop_<id>; coop_survival.cpp, coop_death.cpp, coop_checkpoints.cpp, coop_autosave.cpp):
-		death mode (checkpoint | hardcore), what falls (drop | corpse | lose), respawn delay 0..300 s, contusion 0..60 min,
+		death mode (checkpoint | hardcore), what falls (drop | corpse | lose | keep, build 10: nothing), how much of it
+		(coop_death_share 50 | 100 | 150 | 200 %, build 10), respawn delay 0..300 s, contusion 0..60 min,
 		money / gear wear / rank cut in %, the starting kit of a new hardcore character (Ruling F3-10, off), camps shown to
 		the group, the emergency saves of the host (interval in min, how many are kept). Their strings: st_coop_death.xml.
 		On a connected client the options window refuses edits of these and shows the lock note
@@ -50,6 +51,32 @@ end
 -- List bound to a token console variable: val 0 reads the token name, `content` = { token, string id } in display order.
 local function cvar_list(id, cmd, content)
 	return { id = id, type = "list", val = 0, cmd = cmd, no_str = true, content = content }
+end
+
+-- coop_death_share (build 10): the multiplier of the loss shares of drop and lose, 50 / 100 / 150 / 200 % (the engine's
+-- CCC_Float 0..200). A list of numbers (val 2: the window reads the console as a number and matches it against the
+-- values); a value set elsewhere (the console, a game's settings) that is none of the four is an entry of its own, so the
+-- page shows what is in force. The stock window calls { share_entries } as the content (UIOptions:GetContent).
+local SHARE_BASE = { 50, 100, 150, 200 }
+local SHARE_MAX = 200
+
+function share_entries()
+	local out = {}
+	for _, n in ipairs(SHARE_BASE) do out[#out + 1] = { n, "st_coop_opt_share_" .. n } end
+	local f = rawget(_G, "get_console_cmd")
+	local ok, v = false, nil
+	if type(f) == "function" then ok, v = pcall(f, 0, "coop_death_share") end
+	local n = ok and tonumber(v) or nil
+	if n == nil or n ~= n or n < 0 or n > SHARE_MAX then return out end
+	for _, e in ipairs(out) do
+		if e[1] == n then return out end
+	end
+	local pos = #out + 1
+	for i, e in ipairs(out) do
+		if n < e[1] then pos = i; break end
+	end
+	table.insert(out, pos, { n, string.format("%g %%", n) })
+	return out
 end
 
 local function slide(id, link)
@@ -93,7 +120,10 @@ function build_page()
 					{ "drop", "st_coop_opt_drop_drop" },
 					{ "corpse", "st_coop_opt_drop_corpse" },
 					{ "lose", "st_coop_opt_drop_lose" },
+					{ "keep", "st_coop_opt_drop_keep" }, -- build 10: nothing is lost
 				}),
+				{ id = "death_share", type = "list", val = 2, cmd = "coop_death_share", min = 0, max = SHARE_MAX,
+					no_str = true, content = { share_entries } },
 				{ id = "bleedout", type = "track", val = 2, cmd = "coop_bleedout", min = 10, max = 600, step = 10 },
 				{ id = "revive_health", type = "track", val = 2, cmd = "coop_revive_health", min = 0.05, max = 1,
 					step = 0.05, prec = 2 },

@@ -12,9 +12,12 @@
 	  shown      a block "Co-op mode" in the place of the hidden second column: the host's rules of death, of what is lost and
 	             of the emergency autosave, the same console variables as the Options > Co-op page (coop_menu_options):
 	               coop_death_mode        Camps (checkpoint) | Hardcore (hardcore)
-	               coop_death_drop        Bag at the body (drop) | All in a stash (corpse) | Lost (lose)
+	               coop_death_drop        Bag at the body (drop) | All in a stash (corpse) | Lost (lose) |
+	                                      Nothing is lost (keep, build 10)
+	               coop_death_share       50 | 100 (normal) | 150 | 200 %   (build 10: how much of the ltx shares drop and
+	                                      lose take; a value set elsewhere is kept as an entry)
 	               coop_autosave_interval 5 | 10 | 20 min | off (0)   (an interval set on the options page is kept as an entry)
-	             The lists start on the console's values; Start writes the three variables (and cfg_save, like the options
+	             The lists start on the console's values; Start writes the variables (and cfg_save, like the options
 	             page) before the world is started. Untouched lists write nothing. A hint under the block says they can be
 	             changed later in Options > Co-op.
 	A single player game (no session, nothing pending, no -coop_host) keeps the whole stock screen.
@@ -207,6 +210,8 @@ end
 
 local AUTOSAVE_BASE = { 5, 10, 20 }
 local AUTOSAVE_DEFAULT, AUTOSAVE_MAX = 10, 120
+local SHARE_BASE = { 50, 100, 150, 200 } -- coop_death_share, % of the ltx loss shares (build 10)
+local SHARE_DEFAULT, SHARE_MAX = 100, 200 -- the engine's CCC_Float 0..200, default 100
 
 -- Each rule: name (the list is list_coop_<name>), console variable, the value of the console now (normalized to one of
 -- the entries' values), the entries { value, text }.
@@ -227,14 +232,38 @@ local RULES = {
 		name = "death_drop", console = "coop_death_drop",
 		current = function()
 			local v = console_value("coop_death_drop")
-			return (v == "corpse" or v == "lose") and v or "drop"
+			return (v == "corpse" or v == "lose" or v == "keep") and v or "drop"
 		end,
 		entries = function()
 			return {
 				{ value = "drop", text = tr("st_coop_newgame_drop_drop") },
 				{ value = "corpse", text = tr("st_coop_newgame_drop_corpse") },
 				{ value = "lose", text = tr("st_coop_newgame_drop_lose") },
+				{ value = "keep", text = tr("st_coop_newgame_drop_keep") }, -- build 10: nothing is lost
 			}
+		end,
+	},
+	{
+		name = "death_share", console = "coop_death_share",
+		current = function()
+			local n = tonumber(console_value("coop_death_share"))
+			if n == nil or n ~= n or n < 0 or n > SHARE_MAX then return SHARE_DEFAULT end
+			return n
+		end,
+		entries = function(current)
+			local values, seen = {}, {}
+			for _, n in ipairs(SHARE_BASE) do values[#values + 1] = n; seen[n] = true end
+			if not seen[current] then
+				values[#values + 1] = current -- set on the options page or the console: kept, as the autosave interval
+				table.sort(values)
+			end
+			local out = {}
+			for _, n in ipairs(values) do
+				local text = string_format("%g %%", n)
+				if n == SHARE_DEFAULT then text = text .. " " .. tr("st_coop_newgame_share_normal") end
+				out[#out + 1] = { value = n, text = text }
+			end
+			return out
 		end,
 	},
 	{
@@ -270,8 +299,10 @@ local function on_select(dlg, name)
 end
 function on_select_death_mode(dlg) on_select(dlg, "death_mode") end
 function on_select_death_drop(dlg) on_select(dlg, "death_drop") end
+function on_select_death_share(dlg) on_select(dlg, "death_share") end
 function on_select_autosave(dlg) on_select(dlg, "autosave") end
-local SELECT_CALLBACK = { death_mode = on_select_death_mode, death_drop = on_select_death_drop, autosave = on_select_autosave }
+local SELECT_CALLBACK = { death_mode = on_select_death_mode, death_drop = on_select_death_drop,
+	death_share = on_select_death_share, autosave = on_select_autosave }
 
 local function build_block(dlg)
 	local xml = CScriptXmlInit()

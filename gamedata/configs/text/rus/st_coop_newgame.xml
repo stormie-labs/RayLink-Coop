@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="windows-1251"?>
-<!-- Anomaly Coop - the co-op block of the new game screen (scripts/coop_newgame_modes.script, layout configs/ui/ui_coop_newgame.xml): the host's death and autosave rules, shown instead of the stock modes that do not work in co-op. Ids st_coop_newgame_<name>. -->
+<!-- Anomaly Coop - the co-op block of the new game screen (scripts/coop_newgame_modes.script, layout configs/ui/ui_coop_newgame.xml): the host's death, loss and autosave rules, shown instead of the stock modes that do not work in co-op. Ids st_coop_newgame_<name>. -->
 <string_table>
 	<string id="st_coop_newgame_header">
 		<text>Режим кооператива</text>
@@ -28,6 +28,15 @@
 	<string id="st_coop_newgame_drop_lose">
 		<text>Пропадает</text>
 	</string>
+	<string id="st_coop_newgame_drop_keep">
+		<text>Ничего не выпадает</text>
+	</string>
+	<string id="st_coop_newgame_share">
+		<text>Сколько выпадает</text>
+	</string>
+	<string id="st_coop_newgame_share_normal">
+		<text>(обычно)</text>
+	</string>
 	<string id="st_coop_newgame_min">
 		<text>мин</text>
 	</string>
@@ -35,6 +44,6 @@
 		<text>выкл</text>
 	</string>
 	<string id="st_coop_newgame_hint">
-		<text>Это правила хоста для всех. Поменять потом: Опции > Кооператив</text>
+		<text>Правила хоста для всех. Поменять потом: Опции > Кооператив</text>
 	</string>
 </string_table>

@@ -55,11 +55,32 @@
 	<string id="st_coop_opt_drop_lose">
 		<text>Пропадают навсегда</text>
 	</string>
+	<string id="st_coop_opt_drop_keep">
+		<text>Ничего не выпадает</text>
+	</string>
 	<string id="ui_mm_coop_coop_session_death_drop">
 		<text>Вещи после смерти</text>
 	</string>
 	<string id="ui_mm_coop_coop_session_death_drop_desc">
-		<text>Режим «Возврат на привал»: часть рюкзака кладётся в рюкзак-тайник у тела, туда же уходит весь рюкзак или часть пропадает. Рюкзак отмечен в КПК, надетое остаётся при игроке.</text>
+		<text>Режим «Возврат на привал»: часть рюкзака кладётся в рюкзак-тайник у тела, туда же уходит весь рюкзак или часть пропадает, или не выпадает ничего. Рюкзак отмечен в КПК, надетое остаётся при игроке. Деньги, износ и ранг - по своим настройкам.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_death_share">
+		<text>Сколько выпадает, %</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_death_share_desc">
+		<text>Множитель доли каждой категории вещей, которую смерть кладёт в рюкзак или уничтожает: 100 - как в настройках игры, 200 - вдвое больше (но не больше всей категории), 0 - ничего. На «Весь рюкзак у тела» и «Ничего не выпадает» не влияет.</text>
+	</string>
+	<string id="st_coop_opt_share_50">
+		<text>50 %</text>
+	</string>
+	<string id="st_coop_opt_share_100">
+		<text>100 % (обычно)</text>
+	</string>
+	<string id="st_coop_opt_share_150">
+		<text>150 %</text>
+	</string>
+	<string id="st_coop_opt_share_200">
+		<text>200 %</text>
 	</string>
 	<string id="ui_mm_coop_coop_session_contusion">
 		<text>Контузия после смерти, мин</text>

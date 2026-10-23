@@ -19,8 +19,9 @@ using namespace coop::death;
 namespace
 {
 // The wire order of Rules, written out by hand so that a test can send values the host would never send itself.
+// Build 10: the share multiplier (coop_death_share) closes the packet.
 std::vector<uint8_t> pack(uint8_t mode, uint8_t drop, uint32_t bleedout, float revive, uint32_t delay,
-	uint32_t contusion, uint8_t money, uint8_t wear, uint8_t rank)
+	uint32_t contusion, uint8_t money, uint8_t wear, uint8_t rank, uint8_t share = 100)
 {
 	coop::Writer w;
 	w.u8(mode);
@@ -32,6 +33,7 @@ std::vector<uint8_t> pack(uint8_t mode, uint8_t drop, uint32_t bleedout, float r
 	w.u8(money);
 	w.u8(wear);
 	w.u8(rank);
+	w.u8(share);
 	return w.data();
 }
 
@@ -92,6 +94,7 @@ TEST(death_rules_defaults)
 	CHECK_EQ(int(r.money_pct), 10);
 	CHECK_EQ(int(r.wear_pct), 10);
 	CHECK_EQ(int(r.rank_pct), 0);
+	CHECK_EQ(int(r.share_pct), 100); // build 10: the ltx shares as they are
 }
 
 TEST(death_rules_wire_roundtrip)
@@ -121,6 +124,7 @@ TEST(death_rules_wire_roundtrip)
 		a.money_pct = 25;
 		a.wear_pct = 40;
 		a.rank_pct = 5;
+		a.share_pct = 150;
 		coop::Writer w;
 		a.write(w);
 		Rules b;
@@ -136,6 +140,8 @@ TEST(death_rules_wire_roundtrip)
 		CHECK_EQ(int(b.money_pct), 25);
 		CHECK_EQ(int(b.wear_pct), 40);
 		CHECK_EQ(int(b.rank_pct), 5);
+		CHECK_EQ(int(b.share_pct), 150); // build 10: the client sees the host's multiplier
+		CHECK_EQ(rd.remaining(), size_t(0));
 	}
 	// Corpse mode, too.
 	{
@@ -147,6 +153,21 @@ TEST(death_rules_wire_roundtrip)
 		coop::Reader rd(w.ptr(), w.size());
 		REQUIRE(b.read(rd));
 		CHECK(b.drop == Drop::Corpse);
+	}
+	// Build 10: keep (nothing is lost) and the share at its ends.
+	for (const uint8_t share : {uint8_t(0), uint8_t(200)})
+	{
+		Rules a;
+		a.drop = Drop::Keep;
+		a.share_pct = share;
+		coop::Writer w;
+		a.write(w);
+		Rules b;
+		coop::Reader rd(w.ptr(), w.size());
+		REQUIRE(b.read(rd));
+		CHECK(b.drop == Drop::Keep);
+		CHECK_EQ(int(b.share_pct), int(share));
+		CHECK(a == b);
 	}
 }
 
@@ -180,6 +201,12 @@ TEST(death_rules_equality)
 	CHECK(!(r == base));
 	r = base;
 	r.rank_pct += 1;
+	CHECK(!(r == base));
+	r = base;
+	r.drop = Drop::Keep;
+	CHECK(!(r == base));
+	r = base;
+	r.share_pct = 150; // build 10: a changed multiplier is sent again (host_frame compares)
 	CHECK(!(r == base));
 }
 
@@ -224,6 +251,17 @@ TEST(death_rules_clamp)
 	REQUIRE(read_rules(pack(0, 0, 600000, 1.0f, 0, 0, 0, 0, 0), r));
 	CHECK_EQ(r.bleedout_ms, uint32_t(600000));
 	CHECK_EQ(r.revive_health, 1.0f);
+
+	// Build 10: the share multiplier is 0..200 %.
+	REQUIRE(read_rules(pack(0, 3, 60000, 0.3f, 30000, 600, 10, 10, 0, 0), r));
+	CHECK(r.drop == Drop::Keep);
+	CHECK_EQ(int(r.share_pct), 0);
+	REQUIRE(read_rules(pack(0, 0, 60000, 0.3f, 30000, 600, 10, 10, 0, 200), r));
+	CHECK_EQ(int(r.share_pct), 200);
+	REQUIRE(read_rules(pack(0, 0, 60000, 0.3f, 30000, 600, 10, 10, 0, 201), r));
+	CHECK_EQ(int(r.share_pct), 200);
+	REQUIRE(read_rules(pack(0, 0, 60000, 0.3f, 30000, 600, 10, 10, 0, 255), r));
+	CHECK_EQ(int(r.share_pct), 200);
 }
 
 TEST(death_rules_reject)
@@ -242,7 +280,8 @@ TEST(death_rules_reject)
 	const std::vector<uint8_t> bad[] = {
 		pack(2, 0, 60000, 0.3f, 30000, 600, 10, 10, 0),    // mode 2
 		pack(255, 0, 60000, 0.3f, 30000, 600, 10, 10, 0),  // mode 255
-		pack(0, 3, 60000, 0.3f, 30000, 600, 10, 10, 0),    // drop 3
+		pack(0, 4, 60000, 0.3f, 30000, 600, 10, 10, 0),    // drop 4 (3 is keep since build 10)
+		pack(0, 255, 60000, 0.3f, 30000, 600, 10, 10, 0),  // drop 255
 		pack(0, 0, 60000, nan, 30000, 600, 10, 10, 0),     // revive NaN
 		pack(0, 0, 60000, inf, 30000, 600, 10, 10, 0),     // revive +inf
 		pack(0, 0, 60000, -inf, 30000, 600, 10, 10, 0),    // revive -inf
@@ -267,6 +306,89 @@ TEST(death_rules_reject)
 		if (!(r == sentinel))
 			t::report_failure(__FILE__, __LINE__, "Rules::read changed the rules on a cut packet");
 	}
+}
+
+// Build 10: the console names of the drop modes (logs, coop_status), keep among them.
+TEST(death_drop_names)
+{
+	CHECK(std::string(drop_name(Drop::Drop)) == "drop");
+	CHECK(std::string(drop_name(Drop::Corpse)) == "corpse");
+	CHECK(std::string(drop_name(Drop::Lose)) == "lose");
+	CHECK(std::string(drop_name(Drop::Keep)) == "keep");
+	CHECK(std::string(drop_name(static_cast<Drop>(9))) == "drop"); // a byte Rules::read never gives
+}
+
+// Build 10, coop_death_share: the ltx share of a category x k / 100, cut to 0..1; k is cut to 0..200 (NaN and a negative
+// are 0: nothing is lost).
+TEST(death_share_scale)
+{
+	const float nan = std::numeric_limits<float>::quiet_NaN();
+	const float inf = std::numeric_limits<float>::infinity();
+	const Shares ltx = {0.5f, 0.5f, 0.5f, 0.25f, 0.1f, 0.1f, 0.25f};
+
+	const Shares same = scale_shares(ltx, 100.0f);
+	for (uint8_t c = 0; c < kCategories; ++c)
+		CHECK_EQ(same[c], ltx[c]);
+
+	const Shares none = scale_shares(ltx, 0.0f);
+	for (uint8_t c = 0; c < kCategories; ++c)
+		CHECK_EQ(none[c], 0.0f);
+
+	const Shares twice = scale_shares(ltx, 200.0f);
+	CHECK_EQ(twice[Materials], 1.0f); // 0.5 -> 1.0
+	CHECK_EQ(twice[Gear], 0.5f); // 0.25 -> 0.5
+	CHECK(std::fabs(twice[Artefacts] - 0.2f) < 1e-6f); // 0.1 -> 0.2
+
+	const Shares half = scale_shares(ltx, 50.0f);
+	CHECK_EQ(half[Materials], 0.25f);
+	CHECK_EQ(half[Gear], 0.125f);
+
+	const Shares more = scale_shares(ltx, 150.0f);
+	CHECK_EQ(more[Materials], 0.75f);
+	CHECK_EQ(more[Gear], 0.375f);
+
+	// A share over 1 never comes out over 1, however big the multiplier.
+	CHECK_EQ(scale_shares(only(Tools, 0.8f), 200.0f)[Tools], 1.0f);
+	CHECK_EQ(scale_shares(only(Tools, 3.0f), 100.0f)[Tools], 1.0f);
+	// The multiplier itself is cut to 0..200.
+	CHECK_EQ(scale_shares(only(Gear, 0.25f), 1000.0f)[Gear], 0.5f);
+	CHECK_EQ(scale_shares(only(Gear, 0.25f), inf)[Gear], 0.5f);
+	for (const float bad : {nan, -1.0f, -inf, -1e-6f})
+	{
+		const Shares s = scale_shares(ltx, bad);
+		for (uint8_t c = 0; c < kCategories; ++c)
+			if (s[c] != 0.0f)
+				t::report_failure(__FILE__, __LINE__, "a multiplier that is not a number or negative must take nothing");
+	}
+	// A share that is not a number, or negative, is 0 whatever the multiplier.
+	CHECK_EQ(scale_shares(only(Ammo, nan), 150.0f)[Ammo], 0.0f);
+	CHECK_EQ(scale_shares(only(Ammo, -0.5f), 150.0f)[Ammo], 0.0f);
+
+	// The pick follows: 200 % of a 0.5 share takes the whole category, 0 % nothing.
+	CHECK_EQ(pick_losses(items(10, Materials, 1), scale_shares(only(Materials, 0.5f), 200.0f), 7).size(), size_t(10));
+	CHECK_EQ(pick_losses(items(10, Materials, 1), scale_shares(only(Materials, 0.5f), 0.0f), 7).size(), size_t(0));
+	CHECK_EQ(pick_losses(items(8, Gear, 1), scale_shares(only(Gear, 0.25f), 200.0f), 7).size(), size_t(4));
+}
+
+// Build 10 (the owner's live test of build 9: "I do not lie, and the mouse turns me"): which pose a player's character
+// shows by his life, and when his own camera does not turn with the mouse. Life numbers are survival::Life.
+TEST(death_body_pose_and_look)
+{
+	CHECK(body_pose(kLifeAlive) == BodyPose::Standing);
+	CHECK(body_pose(kLifeWounded) == BodyPose::Wounded);
+	CHECK(body_pose(kLifeDead) == BodyPose::Dead);
+	CHECK(body_pose(kLifeSpectating) == BodyPose::Dead);
+	CHECK(body_pose(kLifeRespawning) == BodyPose::Dead); // until the teleport stands him up
+	CHECK(body_pose(5) == BodyPose::Standing);
+	CHECK(body_pose(255) == BodyPose::Standing);
+
+	CHECK(!look_locked(kLifeAlive));
+	CHECK(!look_locked(kLifeWounded)); // a wounded player looks around
+	CHECK(look_locked(kLifeDead));
+	CHECK(look_locked(kLifeSpectating));
+	CHECK(look_locked(kLifeRespawning));
+	CHECK(!look_locked(5));
+	CHECK(!look_locked(255));
 }
 
 TEST(death_category_names)

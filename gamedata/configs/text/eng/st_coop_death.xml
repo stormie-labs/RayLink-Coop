@@ -55,11 +55,32 @@
 	<string id="st_coop_opt_drop_lose">
 		<text>Lost for good</text>
 	</string>
+	<string id="st_coop_opt_drop_keep">
+		<text>Nothing is lost</text>
+	</string>
 	<string id="ui_mm_coop_coop_session_death_drop">
 		<text>Things after a death</text>
 	</string>
 	<string id="ui_mm_coop_coop_session_death_drop_desc">
-		<text>Back-at-camp mode: a share of the backpack goes into a bag at the body, the whole backpack goes there, or a share is gone. The bag is marked on the PDA; what the player has on stays with him.</text>
+		<text>Back-at-camp mode: a share of the backpack goes into a bag at the body, the whole backpack goes there, or a share is gone, or nothing is lost. The bag is marked on the PDA; what the player has on stays with him. Money, wear and rank go by their own settings.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_death_share">
+		<text>How much falls, %</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_death_share_desc">
+		<text>Multiplies the share of every item category a death puts into the bag or destroys: 100 is the game's setting, 200 twice as much (never more than the whole category), 0 nothing. 'All in a bag' and 'Nothing is lost' do not use it.</text>
+	</string>
+	<string id="st_coop_opt_share_50">
+		<text>50 %</text>
+	</string>
+	<string id="st_coop_opt_share_100">
+		<text>100 % (normal)</text>
+	</string>
+	<string id="st_coop_opt_share_150">
+		<text>150 %</text>
+	</string>
+	<string id="st_coop_opt_share_200">
+		<text>200 %</text>
 	</string>
 	<string id="ui_mm_coop_coop_session_contusion">
 		<text>Contusion after a death, min</text>
