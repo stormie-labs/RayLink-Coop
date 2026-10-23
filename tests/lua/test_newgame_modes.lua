@@ -384,6 +384,19 @@ local wrapped = MM.ShowFactionUI
 mx.main_menu_init({})
 check(MM.ShowFactionUI == wrapped, "a second menu init does not wrap again")
 do
+	-- Live 2026-10-24 (build 10, GAMMA): a luabind class (class "main_menu") is a USERDATA, not a table. install() checked
+	-- type(cls) == "table", logged «ui_main_menu.main_menu is missing» and the stock screen stayed (all the modes shown).
+	local methods = { ShowFactionUI = STOCK_SHOW }
+	local cls = newproxy(true)
+	getmetatable(cls).__index = methods
+	getmetatable(cls).__newindex = function(_, k, v) methods[k] = v end
+	local saved = ui_main_menu.main_menu
+	ui_main_menu.main_menu = cls
+	mx.main_menu_init({})
+	check(methods.ShowFactionUI ~= STOCK_SHOW, "a luabind class (userdata) gets the wrapper too")
+	ui_main_menu.main_menu = saved
+end
+do
 	local saved = coop
 	coop = nil
 	callbacks = {}

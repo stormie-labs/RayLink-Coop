@@ -485,7 +485,8 @@ end
 function install()
 	local m = mod("ui_main_menu")
 	local cls = m and m.main_menu
-	if type(cls) ~= "table" then
+	-- a luabind class (class "main_menu") is a userdata: the table-only check left the stock screen (live 2026-10-24)
+	if type(cls) ~= "table" and type(cls) ~= "userdata" then
 		log("! ui_main_menu.main_menu is missing: the new game screen stays the stock one")
 		return false
 	end
