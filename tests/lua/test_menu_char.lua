@@ -19,9 +19,11 @@ game = { translate_string = function(id) return STRINGS[id] or id end }
 coop_menu = load_module("coop_menu") -- for tr()
 
 -- configs
+STOCK_STARTS = REF .. "configs/plugins/new_game_start_locations.ltx"
+STARTS_FILE = STOCK_STARTS -- a test may point the start list at another file before it loads a fresh module
 function ini_file(name)
 	if name == "plugins\\new_game_start_locations.ltx" then -- protocol 8: the faction starts of the stock new game
-		return ini_over(REF .. "configs/plugins/new_game_start_locations.ltx")
+		return ini_over(STARTS_FILE)
 	end
 	assert(name == "items\\settings\\new_game_loadouts.ltx", name)
 	return ini_over(REF .. "configs/items/settings/new_game_loadouts.ltx")
@@ -283,6 +285,7 @@ check(gui.facts.text:find("Points for gear: %c[255,225,225,225]1000", 1, true) a
 check(gui.status.text:find("Press Done", 1, true), "ready hint in the status line")
 check(gui.start.text == "Start: next to the group" and gui.box_map.shown == false and gui.map_dim.shown == false,
 	"no level picture without a known level")
+check(gui.where.text == "", "in the world (not a join offer) the 'where you appear' line stays empty")
 check(gui.color_icon.tcolor ~= nil, "colour square tinted with the player's colour")
 local diff_nodes = {}
 for p in pairs(XML_FILES["ui_coop_menu_char.xml"]) do if not own43[p] then diff_nodes[#diff_nodes + 1] = p end end
@@ -518,6 +521,9 @@ SESSION = { active = true, phase = "receiving-world", nick = "Guest" }
 PLAYERS = { { id = 1, nick = "Guest", is_self = true }, { id = 0, nick = "Boss" } }
 db.actor = nil -- the main menu: no level
 local mj = load_module("coop_menu_char")
+-- the stock names of the start points (configs\text\<lang>\ui_st_faction_starts.xml)
+STRINGS.ui_st_rookie_village = "Rookie Village (Cordon)"
+STRINGS.ui_st_pole_stalker_village = "Khutorok (Meadow)"
 check(mj.join_choice() == nil, "no choice before an offer")
 check(mj.join_offer(2, 700, "l01_escape", "", 0) == true, "the offer opens the window in the main menu (no actor)")
 local gj = mj.GUI
@@ -527,10 +533,24 @@ check(gj.name.text == "Guest" and gj.info.text == coop_menu.tr("st_coop_char_inf
 check(gj.status.text:find(STRINGS.st_coop_char_ready_join, 1, true) ~= nil, "join hint in the status line")
 check(gj.registered.btn_back.text == STRINGS.st_coop_char_btn_leave, "the second button leaves the session")
 check(gj.box_map.texture == "ui_new_game_map_l01_escape" and gj.box_map.shown, "the host's level picture")
-check(gj.start.text == coop_menu.tr("st_coop_char_start_faction", "Cordon"), "stalker: at the faction's start on Cordon")
+check(gj.where.text:find("You will appear at: ", 1, true) and gj.where.text:find("Rookie Village (Cordon)", 1, true),
+	"stalker: the line says where, by the stock name of the start on Cordon")
+check(gj.start.text == "", "the short start line is left to the 'where' line in a join offer")
 click(gj, "btn_faction")
 click(gj, "btn_dolg")
-check(gj.start.text == coop_menu.tr("st_coop_char_start_camp", "Cordon"), "Duty: no Duty start on Cordon: a camp or the group")
+check(gj.where.text:find(STRINGS.st_coop_char_where_camp_or_near, 1, true),
+	"Duty: no Duty start on Cordon and the client does not know the camps: a camp there, or next to the host")
+local camp_known0 = mj.camp_known
+mj.camp_known = function(f, lvl) return f == "dolg" and lvl == "l01_escape" end
+click(gj, "btn_faction")
+click(gj, "btn_dolg")
+check(gj.where.text:find(coop_menu.tr("st_coop_char_where_camp", "st_faction_dolg"), 1, true),
+	"Duty with a camp known on Cordon: the base is on another map, the camp of the faction")
+mj.camp_known = function() return false end
+click(gj, "btn_faction")
+click(gj, "btn_dolg")
+check(gj.where.text:find(STRINGS.st_coop_char_where_near, 1, true), "Duty with no camp on Cordon: next to the host")
+mj.camp_known = camp_known0
 click(gj, "btn_start")
 check(#SENT == 0, "no script event: the engine takes the choice")
 local jf, jb = mj.join_choice()
@@ -550,7 +570,8 @@ check(gj.shown and gj.access, "Escape closes the faction popup")
 mj.join_offer(2, 700, "l01_escape", "", 1) -- the host's game is in story mode
 click(gj, "btn_faction")
 click(gj, "btn_bandit")
-check(gj.start.text == coop_menu.tr("st_coop_char_start_camp", "Cordon"), "story mode: the bandit start of story mode is elsewhere")
+check(gj.where.text:find(STRINGS.st_coop_char_where_camp_or_near, 1, true) and not gj.where.text:find("car_park", 1, true),
+	"story mode: the bandit start of story mode is elsewhere")
 mj.join_closed("world")
 check(not gj.shown, "the world arrives: the window closes")
 check(mj.join_choice() == nil, "nothing left to send")
@@ -562,6 +583,7 @@ check(not gj.shown, "the window follows the session (loading the world)")
 SESSION = { active = true, phase = "receiving-world", nick = "Guest" }
 mj.join_offer(2, 700, "", "", 0)
 check(gj.shown and gj.start.text == STRINGS.st_coop_char_start_near and gj.box_map.shown == false, "no level: next to the group")
+check(gj.where.text == "", "no level: nothing to say about the host's map")
 click(gj, "btn_back")
 check(not gj.shown and DISCONNECTS == 1, "Leave closes the window and the session")
 SESSION = { active = true, phase = "receiving-world", nick = "Guest" }
@@ -570,6 +592,126 @@ SESSION = { active = false, phase = "off" }
 NOW = NOW + 1000
 gj:Update()
 check(not gj.shown, "the session ended (kicked, host gone): the window closes")
+
+print("== client: where the character appears (owner, live test 2026-10-23: Clear Sky came up in the rookie village)")
+-- Until split levels (F3a) every player is on the host's map. GAMMA gives Clear Sky two starts: hidden_base on the Great
+-- Swamps and rookie_village on Cordon; the host was on Cordon, so the village was used, and the window did not say so.
+do
+	local fh = assert(io.open(STOCK_STARTS, "r"))
+	local stock_src = fh:read("*a")
+	fh:close()
+	local gamma_src, n_csky = stock_src:gsub("(%[csky_start_locations%][^\n]*\n)", "%1rookie_village = l01_escape\n")
+	check(n_csky == 1, "GAMMA start list for the test: Clear Sky also starts in the rookie village")
+	local out = assert(io.open("temp/menu_char_gamma_starts.ltx", "w"))
+	out:write(gamma_src)
+	out:close()
+end
+STARTS_FILE = "temp/menu_char_gamma_starts.ltx"
+SESSION = { active = true, phase = "receiving-world", nick = "Guest" }
+db.actor = nil
+do
+local mg = load_module("coop_menu_char")
+mg.faction_starts("csky", false) -- the module reads the list on first use and keeps it
+STARTS_FILE = STOCK_STARTS
+STRINGS.ui_st_hidden_base = "Hidden Base (Great Swamps)"
+STRINGS.ui_st_southern_checkpoint = "Southern Checkpoint (Cordon)"
+STRINGS.k00_marsh = "Great Swamps"
+STRINGS.l01_escape = "Cordon"
+check(STRINGS.st_coop_char_where_start == "You will appear at: %s"
+	and STRINGS.st_coop_char_where_near == "You will appear next to the host"
+	and STRINGS.st_coop_char_where_camp:find("another map", 1, true) and STRINGS.st_coop_char_where_split,
+	"the strings of the 'where' line are in the English table")
+
+local starts_g = mg.faction_starts("csky", false)
+check(#starts_g == 2 and starts_g[1].id == "rookie_village" and starts_g[2].id == "hidden_base",
+	"the test list: Clear Sky has a start on Cordon and one on the Great Swamps")
+
+-- the pure part: kind of the line, the starts it names
+local kind, info = mg.start_preview("csky", "l01_escape", false)
+check(kind == "start" and #info.here == 1 and info.here[1].id == "rookie_village"
+	and #info.away == 1 and info.away[1].id == "hidden_base",
+	"Clear Sky, host on Cordon: the rookie village here, the hidden base on another map")
+kind, info = mg.start_preview("csky", "k00_marsh", false)
+check(kind == "start" and #info.here == 1 and info.here[1].id == "hidden_base" and #info.away == 1,
+	"Clear Sky, host on the Great Swamps: the hidden base")
+check(mg.start_preview("dolg", "l01_escape", false, function() return nil end) == "camp_or_near",
+	"no start here and the camps unknown: a camp or next to the host")
+check(mg.start_preview("dolg", "l01_escape", false, function(f, l) return f == "dolg" and l == "l01_escape" end) == "camp",
+	"no start here, a camp of the faction on the host's map")
+check(mg.start_preview("dolg", "l01_escape", false, function() return false end) == "near",
+	"no start here, no camp: next to the host")
+check(mg.start_preview("nope", "l01_escape", false, function() return false end) == "near",
+	"a faction with no start list at all: next to the host")
+local asked
+mg.start_preview("dolg", "l01_escape", false, function(f, l) asked = f .. "@" .. l end)
+check(asked == "dolg@l01_escape", "the camp question names the faction and the host's map")
+
+local main, note = mg.where_text("csky", "l01_escape", false)
+check(main == "You will appear at: Rookie Village (Cordon)"
+	and note == "For now all players are on the host's map. Your own map comes with the \"split maps\" update.",
+	"Clear Sky on Cordon: the village by its stock name, and why not the faction's base")
+main, note = mg.where_text("csky", "k00_marsh", false)
+check(main == "You will appear at: Hidden Base (Great Swamps)" and note ~= nil,
+	"Clear Sky on the Great Swamps: the base; the village of Cordon is the other map")
+main, note = mg.where_text("stalker", "l01_escape", true)
+check(main == "You will appear at: Rookie Village (Cordon)" and note == nil,
+	"story mode lists one stalker start, all on the host's map: no note about other maps")
+main, note = mg.where_text("army", "l01_escape", false)
+check(main == "You will appear at: Southern Checkpoint (Cordon)" and note ~= nil,
+	"Army on Cordon: the checkpoint; Agroprom is another map")
+STRINGS.ui_st_hidden_base = nil
+main = mg.where_text("csky", "k00_marsh", false)
+check(main == "You will appear at: Great Swamps", "no stock name for the point: the name of its map")
+STRINGS.k00_marsh = nil
+main = mg.where_text("csky", "k00_marsh", false)
+check(main == "You will appear at: k00_marsh", "no name for the map either: its code")
+STRINGS.ui_st_hidden_base = "Hidden Base (Great Swamps)"
+STRINGS.k00_marsh = "Great Swamps"
+main, note = mg.where_text("dolg", "l01_escape", false, function() return true end)
+check(main == "Your faction's base is on another map; you will appear at a st_faction_dolg camp on the host's map"
+	and note == nil, "the camp text names the faction")
+main = mg.where_text("dolg", "l01_escape", false, function() return false end)
+check(main == "You will appear next to the host", "no start, no camp")
+check(mg.where_text("csky", nil, false) == nil, "the host's map unknown: nothing to say")
+
+-- the string tables: every id in both languages, CRLF kept, the Russian one in cp1251
+for _, lang in ipairs({ "eng", "rus" }) do
+	local fh = assert(io.open(ROOT .. "configs/text/" .. lang .. "/st_coop_menu.xml", "rb"))
+	local src = fh:read("*a")
+	fh:close()
+	for _, id in ipairs({ "start", "camp", "near", "camp_or_near", "split" }) do
+		check(src:find('<string id="st_coop_char_where_' .. id .. '">', 1, true) ~= nil, lang .. " has st_coop_char_where_" .. id)
+	end
+	check(src:find("\r\n", 1, true) ~= nil and not src:find("[^\r]\n"), lang .. " string table keeps CRLF line ends")
+	check(not src:find("st_coop_char_start_faction", 1, true) and not src:find("st_coop_char_start_camp", 1, true),
+		lang .. ": the strings of the old start line are gone")
+	if lang == "rus" then
+		check(src:find("\207\238\255\226\232\248\252\241\255: %s", 1, true) ~= nil, "rus: cp1251 bytes, not UTF-8 (Poyavish'sya: %s)")
+	end
+end
+
+-- the window
+check(mg.join_offer(2, 700, "l01_escape", "", 0) == true, "the offer opens the window")
+local gw = mg.GUI
+click(gw, "btn_faction")
+click(gw, "btn_csky")
+check(gw.where.text:find("You will appear at: Rookie Village (Cordon)", 1, true)
+	and gw.where.text:find("split maps", 1, true) and gw.where.text:find("host's map", 1, true),
+	"window, Clear Sky on Cordon: the village and the split-maps note")
+click(gw, "btn_faction")
+click(gw, "btn_army")
+check(gw.where.text:find("Southern Checkpoint (Cordon)", 1, true), "window, a faction with a start on the host's map")
+mg.camp_known = function() return false end
+click(gw, "btn_faction")
+click(gw, "btn_dolg")
+check(gw.where.text:find("You will appear next to the host", 1, true) and not gw.where.text:find("split maps", 1, true),
+	"window, a faction with no start and no camp: next to the host")
+mg.join_offer(2, 700, "k00_marsh", "", 0)
+click(gw, "btn_faction")
+click(gw, "btn_csky")
+check(gw.where.text:find("Hidden Base (Great Swamps)", 1, true), "window, the offer names another host map: the base")
+mg.join_closed("world")
+end
 
 -- in the world after the load: a fresh Lua state; the choice made before the world is told once
 local mw = load_module("coop_menu_char")

@@ -244,11 +244,20 @@
 	<string id="st_coop_char_btn_leave">
 		<text>Leave</text>
 	</string>
-	<string id="st_coop_char_start_faction">
-		<text>Start: %s, at the faction's start</text>
+	<string id="st_coop_char_where_start">
+		<text>You will appear at: %s</text>
 	</string>
-	<string id="st_coop_char_start_camp">
-		<text>Start: %s, at a camp of the faction or next to the group</text>
+	<string id="st_coop_char_where_camp">
+		<text>Your faction's base is on another map; you will appear at a %s camp on the host's map</text>
+	</string>
+	<string id="st_coop_char_where_near">
+		<text>You will appear next to the host</text>
+	</string>
+	<string id="st_coop_char_where_camp_or_near">
+		<text>Your faction has no start on the host's map: you will appear at a camp of it there, if the map has one, otherwise next to the host</text>
+	</string>
+	<string id="st_coop_char_where_split">
+		<text>For now all players are on the host's map. Your own map comes with the "split maps" update.</text>
 	</string>
 	<string id="st_coop_char_info_bare">
 		<text>Hardcore: your character is gone, and the new one starts with nothing - no starting kit and no money (the host has coop_hardcore_new_kit off). Pick the faction you start in.</text>

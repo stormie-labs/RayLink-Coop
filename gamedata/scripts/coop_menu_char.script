@@ -43,6 +43,10 @@
 	every player is on the host's level: a start on another level does not count; then a camp of the faction on the
 	host's level (a smart with base and the faction in misc\simulation_objects_props.ltx), nearest to the host; else
 	next to the host. F3a: SPLIT_LEVELS = true (and newchar::kOwnLevels in the engine) keeps the faction's own level.
+	The window says it before Done (UICoopNewChar:UpdateStart, where_text / start_preview; strings st_coop_char_where_*):
+	the stock name of the faction's start on the host's map, else - the client knows no camps, camp_known() is nil -
+	"a camp of it there, or next to the host"; a faction with a start on another map as well gets the note that until
+	split maps everyone is on the host's map (owner, live test 2026-10-23: Clear Sky came up in the rookie village).
 
 	Hardcore's new character (F3 Task 10, coop_survival.cpp). A client out of the run who holds USE gets his old character
 	retired by the host (his things in a stash at the body, his key gone) and joins the world again: with no character for
@@ -677,6 +681,7 @@ function UICoopNewChar:InitControls()
 	self.info = own:InitTextWnd("coop_char:info", self.dialog)
 	own:InitStatic("coop_char:sep", self.dialog)
 	self.facts = own:InitTextWnd("coop_char:facts", self.dialog)
+	self.where = own:InitTextWnd("coop_char:where", self.dialog) -- where the character appears (a join offer)
 	own:InitStatic("coop_char:status_bg", self.dialog)
 	self.status = own:InitTextWnd("coop_char:status", self.dialog)
 
@@ -761,15 +766,19 @@ function UICoopNewChar:Fill(o)
 end
 
 -- Start line. In the world: next to the group on this level. Before the world (protocol 8): what the host will do with
--- the chosen faction (host_start): its start on the host's level, else a camp of it there or next to the group.
+-- the chosen faction (host_start): its start on the host's level, else a camp of it there or next to the host - said in
+-- full in the `where` text (where_text), the short line is left empty. Owner, live test 2026-10-23: Clear Sky was
+-- chosen for its base and came up in the rookie village, because the host stood on Cordon and the window kept quiet.
 function UICoopNewChar:UpdateStart()
 	local o = self.offer or {}
 	local lvl = self:Level()
 	local lvl_name = lvl and game.translate_string(lvl)
 	if not (lvl_name and lvl_name ~= "" and lvl_name ~= lvl) then lvl_name = nil end
+	self.where:SetText("")
 	if o.join and lvl then
-		local here = start_preview(self.faction, lvl, o.story) == "start"
-		self.start:SetText(tr(here and "st_coop_char_start_faction" or "st_coop_char_start_camp", lvl_name or lvl))
+		local main, note = where_text(self.faction, lvl, o.story)
+		self.start:SetText("")
+		self.where:SetText(C_VALUE .. tostring(main) .. (note and ("\\n" .. C_WAIT .. note) or ""))
 	elseif lvl_name and not o.join then
 		self.start:SetText(tr("st_coop_char_start", lvl_name))
 	else
@@ -1119,15 +1128,73 @@ end
 -------------------------------------------------------------------------------
 -- Client: the choice before the world (protocol 8; the engine's calls, see the header)
 -------------------------------------------------------------------------------
--- Where the host will put a character of `faction` (host_start), as far as the client knows: "start" if the faction
--- has a start on the host's level (by the start's picture: no game graph in the main menu), else "camp" (a camp of
--- the faction there, or next to the group).
-function start_preview(faction, level, story)
-	if SPLIT_LEVELS then return "start" end
-	for _, s in ipairs(faction_starts(faction, story)) do
-		if s.image == level then return "start" end
+-- Do the camps of `faction` on the host's map exist? true / false, or nil: the client cannot tell. The main menu has no
+-- game graph and no simulation board, and the offer (CharOfferMsg) carries the host's level but not its camps. A camp
+-- mask from the host in the offer would turn the two camp lines of the window from "maybe" into the host's answer.
+function camp_known(faction, level)
+	return nil
+end
+
+-- A map's name for the window: the stock level string (st_levels.xml: id = the level's code), else the code itself.
+local function level_title(code)
+	code = tostring(code or "?")
+	for _, id in ipairs({ code, "st_" .. code }) do
+		local s = game.translate_string(id)
+		if type(s) == "string" and s ~= "" and s ~= id then return s end
 	end
-	return "camp"
+	return code
+end
+
+-- A start point's name: the stock list's string (ui_st_faction_starts.xml: ui_st_<start>), else the name of its map.
+local function start_title(s)
+	local id = "ui_st_" .. tostring(s.id)
+	local t = game.translate_string(id)
+	if type(t) == "string" and t ~= "" and t ~= id then return t end
+	return level_title(s.image or s.id)
+end
+
+-- Where the host will put a character of `faction` (host_start), as far as the client knows. The kind and what it is
+-- made of, { here = starts of the faction on the host's level, away = its starts on other maps } (by the start's
+-- picture: no game graph in the main menu):
+--   "start"        the faction has a start on the host's map (one of `here`, the host picks at random)
+--   "camp"         none, but a camp of the faction on it (camp_on(faction, level) == true)
+--   "near"         none and no camp (== false): next to the host
+--   "camp_or_near" none, and the client does not know the camps (nil): a camp there if there is one, else next to the host
+function start_preview(faction, level, story, camp_on)
+	local here, away = {}, {}
+	for _, s in ipairs(faction_starts(faction, story)) do
+		if SPLIT_LEVELS or s.image == level then here[#here + 1] = s else away[#away + 1] = s end
+	end
+	local info = { here = here, away = away }
+	if #here > 0 then return "start", info end
+	local camp = (camp_on or camp_known)(faction, level)
+	if camp == true then return "camp", info end
+	if camp == false then return "near", info end
+	return "camp_or_near", info
+end
+
+-- The text of the window's "where you appear" line for `faction` on the host's map `level`: main line, and a note (nil
+-- if none) when the faction also has starts on other maps and one on the host's is used. Nil without a level.
+function where_text(faction, level, story, camp_on)
+	if level == nil and not SPLIT_LEVELS then return nil end
+	local kind, info = start_preview(faction, level, story, camp_on)
+	if kind == "start" then
+		local names, seen = {}, {}
+		for _, s in ipairs(info.here) do
+			local n = start_title(s)
+			if not seen[n] then
+				seen[n] = true
+				names[#names + 1] = n
+			end
+		end
+		return tr("st_coop_char_where_start", table.concat(names, " / ")),
+			#info.away > 0 and tr("st_coop_char_where_split") or nil
+	elseif kind == "camp" then
+		return tr("st_coop_char_where_camp", game.translate_string("st_faction_" .. tostring(faction)))
+	elseif kind == "near" then
+		return tr("st_coop_char_where_near")
+	end
+	return tr("st_coop_char_where_camp_or_near")
 end
 
 local function own_nick()

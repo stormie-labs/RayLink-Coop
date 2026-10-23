@@ -244,11 +244,20 @@
 	<string id="st_coop_char_btn_leave">
 		<text>Отключиться</text>
 	</string>
-	<string id="st_coop_char_start_faction">
-		<text>Старт: %s, на старте группировки</text>
+	<string id="st_coop_char_where_start">
+		<text>Появишься: %s</text>
 	</string>
-	<string id="st_coop_char_start_camp">
-		<text>Старт: %s, в лагере группировки или рядом с группой</text>
+	<string id="st_coop_char_where_camp">
+		<text>База вашей группировки на другой карте - появишься в её лагере на карте хоста</text>
+	</string>
+	<string id="st_coop_char_where_near">
+		<text>Появишься рядом с хостом</text>
+	</string>
+	<string id="st_coop_char_where_camp_or_near">
+		<text>На карте хоста нет старта вашей группировки: появишься в её лагере, если он на карте есть, иначе рядом с хостом</text>
+	</string>
+	<string id="st_coop_char_where_split">
+		<text>Пока все игроки на карте хоста. Своя карта - после обновления «раздельные карты»</text>
 	</string>
 	<string id="st_coop_char_info_bare">
 		<text>Хардкор: ваш персонаж погиб, а новый начинает ни с чем - без стартового снаряжения и без денег (у хоста выключено coop_hardcore_new_kit). Выберите группировку, в которой начнёте.</text>
