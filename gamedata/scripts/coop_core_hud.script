@@ -455,10 +455,15 @@ function UICoopParty:TextWidth(r, text)
 	return w
 end
 
--- Row i of n: the block hangs from team_bottom upwards, the host on top.
+-- Top of row i of n, the host on top: down from team_top, or (team_top < 0) hanging from team_bottom upwards.
+local function row_top(L, i, n)
+	if L.team_top >= 0 then return L.team_top + (i - 1) * L.team_row end
+	return L.team_bottom - L.team_strip_h - (n - i) * L.team_row
+end
+
 function UICoopParty:Place(r, i, n)
 	local L = self.L
-	local top = L.team_bottom - L.team_strip_h - (n - i) * L.team_row
+	local top = row_top(L, i, n)
 	put(r.base, L.team_x * self.m.kx, top)
 	r.top = top
 end
@@ -467,7 +472,7 @@ function UICoopParty:Bounds(n)
 	if n == 0 then return nil end
 	local L, m = self.L, self.m
 	local l = L.team_x * m.kx
-	return { l = l, r = l + 200 * m.kx, t = L.team_bottom - L.team_strip_h - (n - 1) * L.team_row, b = L.team_bottom }
+	return { l = l, r = l + 200 * m.kx, t = row_top(L, 1, n), b = row_top(L, n, n) + L.team_strip_h }
 end
 
 local function set_text(t, text, field_owner, field)

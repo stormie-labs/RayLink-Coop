@@ -48,9 +48,11 @@ DEFAULTS = {
 	label_h = 12,
 	world_ring = 16, -- a ping over its point in the world
 	world_dot = 6,
-	-- team panel (variant B, owner 2026-10-23): rows bottom left, above the own HUD; the block grows upwards
+	-- team panel (variant B, owner 2026-10-23): rows top left, the block grows downwards (bottom left covered the PDA
+	-- news, messages_window.xml sp_log_list 15..815 x 365..635, and the chat feed)
 	team_x = 18, -- from the left edge of the screen
-	team_bottom = 590, -- the bottom of the lowest row (the own HUD of GAMMA / stock starts lower, ~626 / 726)
+	team_top = 20, -- the top of the highest row; below 0: the rows hang from team_bottom upwards instead
+	team_bottom = 590, -- (team_top < 0) the bottom of the lowest row (the own HUD of GAMMA / stock starts lower, ~626 / 726)
 	team_row = 36, -- from one row to the next
 	team_strip_w = 2, -- the player's colour bar at the left of a row
 	team_strip_h = 22,

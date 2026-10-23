@@ -953,8 +953,8 @@ if P then
 	local r1, r2, r3 = P.rows[1], P.rows[2], P.rows[3]
 	check(r1.base.e.visible and r2.base.e.visible and r3.base.e.visible and not P.rows[4].base.e.visible, "one row per other player")
 	check(r1.name.e.text == "player_a" and r2.name.e.text == "Guest" and r3.name.e.text == "p3", "sorted by peer: host on top")
-	check(near(r1.base.e.x, 18 * KX) and near(r3.base.e.y + 22, 590) and near(r2.base.e.y, 590 - 22 - 36) and near(r1.base.e.y, 590 - 22 - 72),
-		"bottom left above the own HUD: the block hangs from 590 upwards, 36 apart")
+	check(near(r1.base.e.x, 18 * KX) and near(r1.base.e.y, 20) and near(r2.base.e.y, 20 + 36) and near(r3.base.e.y, 20 + 72),
+		"top left (owner 2026-10-23: bottom left covered the PDA news): the block goes down from 20, 36 apart")
 	check(r1.strip.e.tcolor % 16777216 == M.allies.argb(0) % 16777216 and near(r1.strip.e.w, 2 * KX) and near(r1.strip.e.h, 22),
 		"2 px bar in his colour")
 	local nr, ng, nb = rgb_of(r1.name.e.color)
@@ -1097,7 +1097,7 @@ if P then
 		DEV.width, DEV.height = res[1], res[2]
 		run(600, M)
 		local kx = 1024 * res[2] / (768 * res[1])
-		check(near(r1.base.e.x, 18 * kx) and near(r3.base.e.y + 22, 590) and near(r1.segs[1].bg.e.w, 30 * kx),
+		check(near(r1.base.e.x, 18 * kx) and near(r1.base.e.y, 20) and near(r1.segs[1].bg.e.w, 30 * kx),
 			("%dx%d: rows at x %.1f units, segments %.1f wide"):format(res[1], res[2], r1.base.e.x, r1.segs[1].bg.e.w))
 	end
 	DEV.width, DEV.height = 1920, 1080
@@ -1111,6 +1111,13 @@ if P then
 	run(600, M)
 	local Wc = M.compass.get_window()
 	check(near(r1.base.e.x, 40 * KX, 0.01), "team_x = 40 in the ltx: the rows move right")
+	INI.data.coop_hud_layout.team_top = "-1"
+	M.env.coop_hud_layout.reload()
+	run(600, M)
+	check(near(r3.base.e.y + 22, 590) and near(r1.base.e.y, 590 - 22 - 72),
+		"team_top = -1: the old place, hanging from team_bottom (590) upwards")
+	check(INI.data.coop_hud_layout.team_bottom == "590", "team_bottom stays in the ltx for that mode")
+	INI.data.coop_hud_layout.team_top = "20"
 	check(Wc and alpha_of(Wc.bg.tcolor) == 128 and near(Wc.bar_y, 20), "bar_bg_alpha = 0.5 applied; a broken line keeps the default")
 	INI.data.coop_hud_layout.team_x = "18"
 	INI.data.coop_hud_layout.bar_bg_alpha = "0.33"

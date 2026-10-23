@@ -619,8 +619,9 @@ for _, res in ipairs({ { 1920, 1080 }, { 2560, 1440 }, { 3840, 2160 }, { 1280, 7
 	local PL = party_of(M)
 	local top, bottom = PL.rows[1].base.e.y, PL.rows[7].base.e.y + 22
 	local kx = 1024 * res[2] / (768 * res[1])
-	check(math.abs(PL.rows[1].base.e.x - 18 * kx) < 0.01 and math.abs(bottom - 590) < 0.01 and top > 340,
-		("%dx%d, 7 players: rows y %.0f..%.0f units, above the own HUD"):format(res[1], res[2], top, bottom))
+	-- top left (owner 2026-10-23): clear of the compass (centred, from x ~317), the chat feed (y 330) and the PDA news (y 365)
+	check(math.abs(PL.rows[1].base.e.x - 18 * kx) < 0.01 and math.abs(top - 20) < 0.01 and bottom < 330,
+		("%dx%d, 7 players: rows y %.0f..%.0f units, top left above the chat and the PDA news"):format(res[1], res[2], top, bottom))
 	report[#report + 1] = ("| %dx%d | 7 | x %.1f units | y %.0f..%.0f units |"):format(res[1], res[2], PL.rows[1].base.e.x, top, bottom)
 end
 DEV.width, DEV.height = 1920, 1080
