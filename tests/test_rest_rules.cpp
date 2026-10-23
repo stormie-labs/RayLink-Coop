@@ -346,7 +346,7 @@ TEST(rest_state_message_malformed)
 	const Entry ok = entry(3, State::Resting, 8);
 	CHECK(parse_state(state_bytes(1, {ok}, 0), out));
 	CHECK(!parse_state(state_bytes(5, {ok}, 0), out)); // no such block
-	CHECK(!parse_state(state_bytes(1, {ok}, 5), out)); // no such refusal
+	CHECK(!parse_state(state_bytes(1, {ok}, 6), out)); // no such refusal (5 is Camp since round 1)
 	CHECK(!parse_state(state_bytes(1, {entry(3, State(3), 8)}, 0), out)); // no such state
 	CHECK(!parse_state(state_bytes(1, {entry(3, State::Awake, 8)}, 0), out)); // awake has no hours
 	CHECK(!parse_state(state_bytes(1, {entry(3, State::Resting, 0)}, 0), out)); // resting has 1..24
@@ -673,4 +673,199 @@ TEST(rest_waiting)
 	CHECK_EQ(int(w[0]), 3);
 	CHECK_EQ(int(w[1]), 7);
 	CHECK(waiting({}).empty());
+}
+
+// ---------------------------------------------------------------- F3 Task 11, review round 1 (task-11-review.md)
+
+TEST(rest_refusal_camp)
+{
+	// M2: the camp could not be set where he lies down: a refusal of its own, on the wire as 5.
+	CHECK_EQ(std::string(refusal_name(Refusal::Camp)), std::string("camp"));
+	CHECK(refusal_from_name("camp") == Refusal::Camp);
+	StateMsg out;
+	REQUIRE(parse_state(state_bytes(1, {entry(3, State::Awake, 0)}, 5), out));
+	CHECK(out.refused == Refusal::Camp);
+	CHECK(!parse_state(state_bytes(1, {entry(3, State::Awake, 0)}, 6), out));
+}
+
+TEST(rest_group_refused_lie_down_ends_a_waiting_rest)
+{
+	// M1: he rested at a camp, walked away and asked again: refused, and no old consent stays in the book.
+	Group g;
+	g.lie_down(1, 8, false, false);
+	CHECK(g.on_refused(1));
+	CHECK(g.state_of(1) == State::Awake);
+	CHECK(!g.on_refused(1)); // awake already
+	// A running sleep is kept: the time is skipped already.
+	g.lie_down(2, 8, false, false);
+	g.lie_down(3, 8, false, false);
+	REQUIRE(g.tick({seen(2), seen(3)}, false, 0).started);
+	CHECK(!g.on_refused(2));
+	CHECK(g.state_of(2) == State::Sleeping);
+}
+
+TEST(rest_group_may_lie_down)
+{
+	// M2: asked before the camp is set, so a camp never comes without a rest.
+	Group g;
+	CHECK(g.may_lie_down(1));
+	for (uint16_t i = 0; i < coop::kMaxPlayers; ++i)
+		g.lie_down(i, 8, false, false);
+	CHECK(!g.may_lie_down(100)); // a ninth rest
+	CHECK(g.may_lie_down(0)); // he rests already: he may change his wish
+	Group s;
+	s.lie_down(0, 8, false, false);
+	REQUIRE(s.tick({seen(0)}, false, 0).started);
+	CHECK(!s.may_lie_down(0)); // the sleep runs
+	CHECK(!s.may_lie_down(5));
+}
+
+TEST(rest_group_start_checks_the_places)
+{
+	// M1: when everybody rests, each one's rest place is looked at once more (not on every tick); one who walked away
+	// from his camp loses his rest ("place") and nobody sleeps.
+	Group g;
+	g.lie_down(1, 8, false, false);
+	g.lie_down(2, 6, false, false);
+	g.lie_down(3, 4, true, false); // passed out: no place to look at
+	std::vector<uint16_t> asked;
+	bool two_at_camp = false;
+	const Group::PlaceCheck at_place = [&](uint16_t id) {
+		asked.push_back(id);
+		return id != 2 || two_at_camp;
+	};
+	Tick t = g.tick({seen(1), seen(2), seen(3), seen(4)}, false, 0, at_place); // 4 is awake
+	CHECK(!t.started);
+	CHECK(asked.empty());
+
+	t = g.tick({seen(1), seen(2), seen(3)}, false, 500, at_place);
+	CHECK(!t.started);
+	CHECK(cancelled_with(t, 2, Refusal::Place));
+	CHECK_EQ(t.cancelled.size(), size_t(1));
+	CHECK(g.state_of(2) == State::Awake);
+	CHECK(g.state_of(1) == State::Resting);
+	CHECK(g.state_of(3) == State::Resting);
+	CHECK(t.block == Block::NotAll);
+	REQUIRE(asked.size() == 2); // 1 and 2; 3 passed out
+	CHECK_EQ(int(asked[0]), 1);
+	CHECK_EQ(int(asked[1]), 2);
+
+	two_at_camp = true;
+	asked.clear();
+	g.lie_down(2, 6, false, false);
+	t = g.tick({seen(1), seen(2), seen(3)}, false, 1000, at_place);
+	CHECK(t.started);
+	CHECK_EQ(int(t.hours), 4);
+	CHECK(t.cancelled.empty());
+	CHECK_EQ(asked.size(), size_t(2));
+
+	asked.clear();
+	g.tick({seen(1), seen(2), seen(3)}, false, 1500, at_place); // the sleep runs: nobody is looked at again
+	CHECK(asked.empty());
+}
+
+TEST(rest_news_order)
+{
+	// M4: one order on the host and on a client: the changes first, then why (coop_rest_refused).
+	const std::vector<Entry> before = {entry(0, State::Resting, 8), entry(4, State::Resting, 6)};
+	const std::vector<Entry> after = {entry(0, State::Awake, 0), entry(4, State::Resting, 2)};
+	const std::vector<Note> n = news(before, after, Refusal::Place);
+	REQUIRE(n.size() == 3);
+	CHECK(!n[0].refusal);
+	CHECK_EQ(int(n[0].change.id), 0);
+	CHECK(n[0].change.state == State::Awake);
+	CHECK(!n[1].refusal);
+	CHECK_EQ(int(n[1].change.id), 4);
+	CHECK_EQ(int(n[1].change.hours), 2);
+	CHECK(n[2].refusal);
+	CHECK(n[2].refused == Refusal::Place);
+	CHECK_EQ(news(before, after, Refusal::None).size(), size_t(2));
+	// A first lie-down refused changes nothing: the refusal alone.
+	const std::vector<Note> alone = news(before, before, Refusal::Combat);
+	REQUIRE(alone.size() == 1);
+	CHECK(alone[0].refusal);
+	CHECK(alone[0].refused == Refusal::Combat);
+	CHECK(news(before, before, Refusal::None).empty());
+}
+
+TEST(rest_group_sleeper_leaves)
+{
+	// M6 a: a sleeper leaves: the others sleep on; every sleeper gone: the sleep is over in that tick.
+	Group g;
+	g.lie_down(0, 8, false, false);
+	g.lie_down(1, 8, false, false);
+	g.lie_down(2, 8, false, false);
+	REQUIRE(g.tick({seen(0), seen(1), seen(2)}, false, 0).started);
+	Tick t = g.tick({seen(0), seen(1)}, false, 500);
+	CHECK(cancelled_with(t, 2, Refusal::None));
+	CHECK(!t.woke);
+	CHECK(g.sleeping());
+	CHECK(g.state_of(0) == State::Sleeping);
+	CHECK(g.state_of(1) == State::Sleeping);
+	for (const Entry& e : g.entries())
+		CHECK(e.character != 2);
+	t = g.tick({seen(7)}, false, 1000);
+	CHECK(cancelled_with(t, 0, Refusal::None));
+	CHECK(cancelled_with(t, 1, Refusal::None));
+	CHECK(t.woke);
+	CHECK(!t.started);
+	CHECK(!g.sleeping());
+}
+
+TEST(rest_group_sleeper_dies)
+{
+	// M6 b: a sleeper is down: his rest ends (dead), the others sleep on until kSleepMs.
+	Group g;
+	g.lie_down(0, 8, false, false);
+	g.lie_down(1, 8, false, false);
+	REQUIRE(g.tick({seen(0), seen(1)}, false, 0).started);
+	const Tick t = g.tick({seen(0), seen(1, false)}, false, 500);
+	CHECK(cancelled_with(t, 1, Refusal::Dead));
+	CHECK(g.state_of(1) == State::Awake);
+	CHECK(g.state_of(0) == State::Sleeping);
+	CHECK(g.sleeping());
+	CHECK(!t.woke);
+	CHECK(t.block == Block::None); // nothing holds a sleep that runs
+	const Tick end = g.tick({seen(0), seen(1, false)}, false, kSleepMs);
+	CHECK(end.woke);
+	CHECK(g.state_of(0) == State::Awake);
+}
+
+TEST(rest_group_present_duplicates_and_bound)
+{
+	// M6 c: an id twice counts once, the first word about him wins.
+	Group g;
+	g.lie_down(1, 8, false, false);
+	Tick t = g.tick({seen(1), seen(1, false)}, false, 0);
+	CHECK(t.cancelled.empty());
+	CHECK(t.started);
+	REQUIRE(g.entries().size() == 1);
+	Group d;
+	d.lie_down(1, 8, false, false);
+	t = d.tick({seen(1, false), seen(1)}, false, 0);
+	CHECK(cancelled_with(t, 1, Refusal::Dead));
+	CHECK(!t.started);
+	REQUIRE(d.entries().size() == 1);
+	// More players than a session has: kMaxPlayers of them by id.
+	Group b;
+	std::vector<Seen> many;
+	for (int i = 0; i < int(coop::kMaxPlayers) + 3; ++i)
+		many.push_back(seen(uint16_t(20 - i))); // 20 down to 10
+	b.tick(many, false, 0);
+	const std::vector<Entry> e = b.entries();
+	REQUIRE(e.size() == size_t(coop::kMaxPlayers));
+	CHECK_EQ(int(e.front().character), 10);
+	CHECK_EQ(int(e.back().character), 17);
+}
+
+TEST(rest_group_lie_down_again_takes_the_fight_now)
+{
+	// M6 d: lying down again (a second faint) takes the fight he is in now: that fight does not wake him.
+	Group g;
+	g.lie_down(2, 4, true, false);
+	g.lie_down(2, 4, true, true);
+	const Tick t = g.tick({seen(2, true, true)}, false, 0);
+	CHECK(t.cancelled.empty());
+	CHECK(g.state_of(2) == State::Resting);
+	CHECK(t.block == Block::Combat);
 }
