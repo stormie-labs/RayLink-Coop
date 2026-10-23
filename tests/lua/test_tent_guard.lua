@@ -145,8 +145,13 @@ coop_tent_guard.on_game_start()
 for _, name in ipairs(ENTRY) do
 	check(item_tent[name] ~= before[name] and type(item_tent[name]) == "function", name .. " is wrapped")
 end
-check(item_tent.get_nearby_tent == gnt and item_tent.get_spawned_tents == gst,
-	"get_nearby_tent / get_spawned_tents stay (the sleep dialogs read them)")
+check(item_tent.get_spawned_tents == gst, "get_spawned_tents stays (the sleep dialogs read it)")
+check(item_tent.get_nearby_tent ~= gnt and type(item_tent.get_nearby_tent) == "function", "get_nearby_tent is wrapped (review I-2)")
+for _, mode in ipairs({ "sp", "host", "client" }) do
+	MODE = mode
+	check(item_tent.get_nearby_tent(1.5) == "nearby", mode .. ": with no tent online the answer is the module's own")
+end
+MODE = "host"
 local first = {}
 for _, name in ipairs(ENTRY) do first[name] = item_tent[name] end
 coop_tent_guard.on_game_start()
@@ -439,6 +444,7 @@ end
 -- before the guard: the client breaks exactly where the recon says it does
 reset()
 load_mini()
+item_tent.on_game_start()
 MODE = "client"
 do
 	local _, o = item("itm_tent")

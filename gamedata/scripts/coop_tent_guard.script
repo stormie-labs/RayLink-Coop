@@ -19,15 +19,24 @@
 	                         option, as stock; a sleeping bag at once) coop.checkpoint.claim_tent(x, y, z, what) with the spot
 	                         3 m ahead (a bag: under the player). The item stays; the host's answer is a camp on the tent, a
 	                         refusal, or nothing (the wait ends by itself);
-	  itm_tent_bag, compression_bag, using my own tent (the object that is my camp)
-	                         "pack": the host gives back the item it took. No bag is handed out to a client.
+	  itm_tent_bag, compression_bag, using any tent of mine (Ruling F3-11)
+	                         "pack": the host gives back the item it took, for the tent at the spot of the claim. No bag is
+	                         handed out to a client. A tent is mine when it is or was my camp (the client remembers them) or
+	                         carries my owner key on its custom data. A sleeping bag is used to sleep (stock): it is packed up by a
+	                         compression bag or by coop_checkpoints.pack_nearby() (a button of the sleep window, F3 T14).
 	Entry points (assigned into the item_tent module table at load time, so everything that looks them up later by name finds
 	the wrapper, including the local actor_on_item_use of the stock file, which calls start_timer and use_compression_bag
 	through the module table):
 	  func_use_tent, func_use_bag   use1_action_functor of the items (stock itm_tent, GAMMA itm_sleepbag too): not eaten by
 	                                the engine, the stock function would free the item - it is not called on a client;
 	  start_timer, use_compression_bag, itm_tent_func, itm_tent_bag_func   the stock timer and pack-up functions: nothing on
-	                                a client (a mod may call them);
+	                                a client (a mod may call them); with use_placeable = false the stock runs as it is;
+	  get_nearby_tent               in a session: looks at every online tent of the list, not at the first one (review I-2). The
+	                                clients' tents are in the list on the host, and the stock answers by the first online
+	                                tent whichever it is, so the host would not find his own. The host's own first (his claimed
+	                                tents, then unclaimed ones, then the clients'), a client's own (the camps he remembers,
+	                                even when the host's snapshot of the list lacks them) first; nil for no tent online, false
+	                                for none in reach, as stock;
 	  on_game_start                 after the stock one has registered its local use callback, that callback is replaced:
 	                                on a client it turns the four sections of the stock into claims, and everything else goes
 	                                on to the stock callback unchanged.
@@ -270,7 +279,8 @@ function on_item_use(obj)
 	end)
 end
 
--- Client: using my own tent (the object that is my camp) packs it up. A sleeping bag is used to sleep.
+-- Client: using a tent of mine packs it up, the one I used (its position goes with the claim; the engine packs the tent of mine
+-- at that spot). A sleeping bag is used to sleep.
 local function on_physic_use(obj, who)
 	if not is_client() or obj == nil then return end
 	local c = checkpoints()
@@ -282,7 +292,10 @@ local function on_physic_use(obj, who)
 	end
 	local ok, sec, id = pcall(function() return obj:section(), obj:id() end)
 	if not ok or c.object_kind(sec) ~= "tent" then return end
-	if id ~= nil and id == c.own_tent_source() then c.request("pack", 0) end
+	if id ~= nil and c.is_mine_tent(id, obj) then
+		local pos = obj:position()
+		c.request("pack", 0, { x = pos.x, y = pos.y, z = pos.z })
+	end
 end
 
 -------------------------------------------------------------------------------
@@ -336,11 +349,76 @@ local function reconcile()
 	if found > 0 then log("%d tent(s) / sleeping bag(s) of players added to the stock lists", found) end
 end
 
+local install -- below
+
 local function on_first_update()
-	local ok, err = pcall(seed)
+	-- an entry point that a mod replaced after our on_game_start is wrapped again (review M-3)
+	local ok, err = pcall(install)
+	if not ok then log("! install failed: %s", tostring(err)) end
+	ok, err = pcall(seed)
 	if not ok then log("! seed failed: %s", tostring(err)) end
 	ok, err = pcall(reconcile)
 	if not ok then log("! reconcile failed: %s", tostring(err)) end
+end
+
+-------------------------------------------------------------------------------
+-- item_tent.get_nearby_tent over the whole list (review I-2)
+-------------------------------------------------------------------------------
+-- handled, value. Not handled (false): no tent of the list is online, or the arguments are not the stock ones - the stock
+-- function (or the mod's) answers.
+local function pick_tent(dist, result)
+	if type(dist) ~= "number" then return false end
+	local c = checkpoints()
+	local actor = db.actor
+	local tents = spawned("get_spawned_tents")
+	if not (c and actor and tents) then return false end
+	local ids = {}
+	for id, v in pairs(tents) do
+		if v == true then ids[id] = true end
+	end
+	local client = is_client()
+	if client then
+		for id in pairs(c.my_objects()) do ids[id] = true end -- his own tents, though the host's snapshot has not got them
+	end
+	local cp = api and api.checkpoint
+	local here = actor:position()
+	local seen = false
+	local best_id, best_rank, best_dist = nil, nil, nil
+	for id in pairs(ids) do
+		local obj = level.object_by_id(id)
+		if obj and c.object_kind(obj:section()) == "tent" then
+			seen = true
+			local d = obj:position():distance_to(here)
+			if d < dist then
+				local rank
+				if client then
+					rank = c.is_mine_tent(id, obj) and 1 or 3
+				else
+					local owner = cp and cp.tent_owner and cp.tent_owner(id)
+					rank = owner == 0 and 1 or (owner == nil and 2 or 3) -- the host's claimed tent, an unclaimed one, a client's
+				end
+				if best_id == nil or rank < best_rank or (rank == best_rank and d < best_dist) then
+					best_id, best_rank, best_dist = id, rank, d
+				end
+			end
+		end
+	end
+	if not seen then return false end
+	if best_id == nil then return true, false end
+	if result == true then return true, best_id end
+	return true, true
+end
+
+local function nearby_tent_maker()
+	return function(orig)
+		return function(dist, result, ...)
+			if in_session() then
+				local ok, handled, value = pcall(pick_tent, dist, result)
+				if ok and handled then return value end
+			end
+			return orig(dist, result, ...)
+		end
+	end
 end
 
 -------------------------------------------------------------------------------
@@ -358,10 +436,15 @@ local function use_functor_maker()
 	end
 end
 
-local function timer_functor_maker(reports)
+local function timer_functor_maker(reports, tent_func)
 	return function(orig)
 		return function(...)
-			if is_client() then return end -- queued by a mod: it would index the nil of alife_create
+			if is_client() then
+				-- use_placeable = false: the stock gives the item back to the actor (a parent the host accepts), nothing is put up
+				local c = checkpoints()
+				if tent_func and c and not c.placeable("tent") then return orig(...) end
+				return -- queued by a mod: it would index the nil of alife_create
+			end
 			local host = reports and is_host()
 			if host then ensure_seeded() end
 			return after_stock(host, orig(...))
@@ -372,14 +455,15 @@ end
 local MAKERS = {
 	{ "func_use_tent", use_functor_maker() },
 	{ "func_use_bag", use_functor_maker() },
-	{ "itm_tent_func", timer_functor_maker(true) },
-	{ "itm_tent_bag_func", timer_functor_maker(false) },
+	{ "itm_tent_func", timer_functor_maker(true, true) },
+	{ "itm_tent_bag_func", timer_functor_maker(false, false) },
+	{ "get_nearby_tent", nearby_tent_maker() },
 	{ "start_timer", function(orig)
 		return function(obj, ...)
 			if is_client() then
 				local c = checkpoints()
 				local sec = section_of(obj)
-				if c and sec == "itm_tent" then
+				if c and sec == "itm_tent" and c.placeable("tent") then
 					-- reached from the use callback: the engine ate the tent. It comes back, then the host takes it
 					give_back(sec)
 					c.request("tent", math.max(animation_ms(), GIVE_BACK_MS))
@@ -413,7 +497,7 @@ local MAKERS = {
 
 local wrappers = {} -- entry name -> the wrapper this script put in the module table
 
-local function install()
+install = function()
 	if not api then return end
 	local ok, mod = pcall(function() return rawget(_G, "item_tent") or _G.item_tent end) -- loads the stock script if needed
 	if not (ok and type(mod) == "table") then return end

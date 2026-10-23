@@ -66,15 +66,43 @@ function exec_console_cmd(c) EXEC[#EXEC + 1] = c end
 ADD_CALLS = {}
 level.add_call = function(cond, f) ADD_CALLS[#ADD_CALLS + 1] = f end
 
--- level.map_*: one spot per (object, type) is wanted; the engine adds a second one if asked twice (CMapManager::AddMapLocation)
+-- level.map_*: one spot per (object, type) is wanted; the engine adds a second one if asked twice (CMapManager::AddMapLocation).
+-- A serializable spot (map_add_object_spot_ser) is in the save and comes back after a load, any other is gone (reload_world).
 SPOTS, SPOT_ADDS, SPOT_REMOVES, SPOT_HINTS = {}, {}, {}, {}
-level.map_add_object_spot_ser = function(id, typ, hint)
-	SPOT_ADDS[id] = (SPOT_ADDS[id] or 0) + 1
-	SPOTS[id] = { typ = typ, hint = hint, n = (SPOTS[id] and SPOTS[id].n or 0) + 1 }
+local function add_spot(ser)
+	return function(id, typ, hint)
+		SPOT_ADDS[id] = (SPOT_ADDS[id] or 0) + 1
+		SPOTS[id] = { typ = typ, hint = hint, n = (SPOTS[id] and SPOTS[id].n or 0) + 1, ser = ser }
+	end
 end
+level.map_add_object_spot_ser = add_spot(true)
+level.map_add_object_spot = add_spot(false)
 level.map_remove_object_spot = function(id, typ) SPOT_REMOVES[id] = (SPOT_REMOVES[id] or 0) + 1; SPOTS[id] = nil end
 level.map_has_object_spot = function(id, typ) return SPOTS[id] and 1 or 0 end -- the engine returns a u16, not a bool
 level.map_change_spot_hint = function(id, typ, hint) SPOT_HINTS[id] = hint; if SPOTS[id] then SPOTS[id].hint = hint end end
+-- a save and a load: what is in the save (CMapManager::save writes the serializable spots only) is what is there afterwards
+local function reload_world()
+	for id, spot in pairs(SPOTS) do
+		if not spot.ser then SPOTS[id] = nil end
+	end
+end
+
+-- the custom data of an object (obj:spawn_ini()), by object id: { section = { key = value } }
+CUSTOM = {}
+local function custom_ini(data)
+	local ini = {}
+	function ini:section_exist(sec) return data[sec] ~= nil end
+	function ini:line_exist(sec, key) return data[sec] ~= nil and data[sec][key] ~= nil end
+	function ini:r_string(sec, key) return data[sec][key] end
+	return ini
+end
+do
+	local GOmt = getmetatable(make_actor(vec3(0, 0, 0)))
+	function GOmt.spawn_ini(self)
+		local data = CUSTOM[self:id()]
+		return data and custom_ini(data) or nil
+	end
+end
 
 -- coop.checkpoint as the engine registers it (coop_checkpoints_lua.cpp); every call is recorded
 CP_RECORD, OWNERS, STORIES, CLAIMS, CLAIM_OK = {}, {}, {}, {}, true
@@ -136,10 +164,10 @@ local function fresh(mode, opts)
 	SE, OBJ, CREATED, RELEASED, TIMEEV, ADD_CALLS = {}, {}, {}, {}, {}, {}
 	MSG, MSGS, EV, EXEC, FX, STORIES, CLAIMS = nil, {}, {}, {}, {}, {}, {}
 	SPOTS, SPOT_ADDS, SPOT_REMOVES, SPOT_HINTS = {}, {}, {}, {}
-	CP_RECORD, OWNERS, CLAIM_OK = {}, {}, true
+	CP_RECORD, OWNERS, CLAIM_OK, CUSTOM, SLEPT = {}, {}, true, {}, {}
 	HANDLERS = {}
 	ORIG_STORY = 0
-	SLEEP_ENABLE, SLEEP_PLACEABLE, NON_PLACEABLE, NEAR_TENT = nil, nil, nil, nil
+	SLEEP_ENABLE, SLEEP_PLACEABLE, TENT_PLACEABLE, NON_PLACEABLE = nil, nil, nil, nil
 	ANIMATIONS = opts.animations ~= false
 	INI = { compression_bag = { remove_after_use = false }, itm_tent_bag = { remove_after_use = false } }
 	NOW = NOW + 100000
@@ -150,6 +178,18 @@ local function fresh(mode, opts)
 	end }
 	itms_manager = nil
 	coop_checkpoints, coop_tent_guard, coop_allies = nil, nil, nil
+	load_mini()
+	load_script("coop_checkpoints")
+	load_script("coop_tent_guard")
+	coop_checkpoints.on_game_start()
+	coop_tent_guard.on_game_start()
+	item_tent.on_game_start()
+end
+
+-- the scripts are loaded again, the world (spots, objects) stays: the Lua state of a new level or a new session
+local function reload_scripts()
+	HANDLERS = {}
+	coop_checkpoints, coop_tent_guard = nil, nil
 	load_mini()
 	load_script("coop_checkpoints")
 	load_script("coop_tent_guard")
@@ -195,6 +235,7 @@ local function make_ini(data)
 		if v == nil then return def end
 		return v == "true"
 	end
+	function ini:r_string_ex() return nil end
 	return ini
 end
 
@@ -638,7 +679,7 @@ case("client_item_cases", function()
 	-- the stock callback on a tent bag next to a tent
 	fresh("client")
 	local _, tent = spawn("ph_tent", vec3(1, 0, 0))
-	NEAR_TENT = tent:id()
+	item_tent.get_spawned_tents()[tent:id()] = true
 	local _, bag = item("itm_tent_bag")
 	fire("actor_on_item_use", bag)
 	run_time_events(200)
@@ -709,7 +750,6 @@ case("host_own_tent_and_bag", function()
 	fresh("host")
 	local _, tent = spawn("ph_tent", vec3(1, 0, 0))
 	item_tent.get_spawned_tents()[tent:id()] = true
-	NEAR_TENT = tent:id()
 	local _, bag = item("itm_tent_bag")
 	item_tent.itm_tent_bag_func()
 	check(#CLAIMS == 0 and #RELEASED >= 1, "the host's stock pack-up runs as it is")
@@ -761,6 +801,295 @@ case("tent_placed_for_a_client", function()
 	local okr = pcall(fire, "actor_on_first_update")
 	coop.checkpoint = co
 	check(okr, "no tent_owner in the engine: harmless")
+end)
+
+
+-- ------------------------------------------------------------------ review round 1
+-- I-1: the spots of a camp are not in the save, so a loaded world does not carry the spots of the old camps
+case("spots_after_a_load", function()
+	for _, variant in ipairs({ "same Lua state", "new Lua state" }) do
+		fresh("host")
+		fire("coop_checkpoint_changed", 0, "campfire", 123, false, "l01_escape")
+		check(SPOTS[123] ~= nil and SPOTS[123].ser == false, variant .. ": the camp's spot is not serializable (it is not saved)")
+		reload_world()
+		if variant == "new Lua state" then reload_scripts() end
+		CP_RECORD[0] = { kind = "campfire", level = "l01_escape", x = 1, y = 2, z = 3, source = 123 }
+		fire("actor_on_first_update")
+		check(SPOTS[123] ~= nil, variant .. ": after the load the world is read again: the spot is back")
+		fire("coop_checkpoint_changed", 0, "campfire", 124, false, "l01_escape")
+		check(SPOTS[123] == nil and SPOTS[124] ~= nil, variant .. ": the camp moves on: no spot is left on the old campfire")
+	end
+	-- a level change: the allies' spots too
+	fresh("client")
+	fire("coop_checkpoint_changed", 500, "campfire", 300, false, "l01_escape")
+	reload_world()
+	CP_RECORD[500] = { kind = "campfire", level = "l01_escape", x = 1, y = 2, z = 3, source = 300 }
+	fire("actor_on_first_update")
+	fire("coop_checkpoint_changed", 500, "tent", 301, false, "l01_escape")
+	check(SPOTS[300] == nil and SPOTS[301] ~= nil, "an ally's old campfire spot is not left behind either")
+	-- the stock puts the same spot on every sleep zone (pda.script) and on tents: those stay, saved or not
+	fresh("host")
+	SPOTS[900] = { typ = SPOT, hint = "st_ui_pda_sleep_place", n = 1, ser = true }
+	fire("coop_checkpoint_changed", 0, "rest", 900, false, "l01_escape")
+	reload_world()
+	reload_scripts()
+	CP_RECORD[0] = { kind = "rest", level = "l01_escape", x = 1, y = 2, z = 3, source = 900 }
+	fire("actor_on_first_update")
+	fire("coop_checkpoint_changed", 0, "campfire", 124, false, "l01_escape")
+	check(SPOTS[900] ~= nil and SPOT_REMOVES[900] == nil and SPOT_ADDS[900] == nil, "a sleep zone keeps its stock spot")
+	-- an exe that has no non-serializable spot call falls back to the serializable one
+	fresh("host")
+	local plain = level.map_add_object_spot
+	level.map_add_object_spot = nil
+	fire("coop_checkpoint_changed", 0, "campfire", 125, false, "l01_escape")
+	level.map_add_object_spot = plain
+	check(SPOTS[125] ~= nil, "no map_add_object_spot: map_add_object_spot_ser is used")
+	-- M-4: resting at the same place again leaves the spot alone
+	fresh("host")
+	fire("coop_checkpoint_changed", 0, "campfire", 123, false, "l01_escape")
+	fire("coop_checkpoint_changed", 0, "campfire", 123, false, "l01_escape")
+	check(SPOT_ADDS[123] == 1 and SPOT_REMOVES[123] == nil and SPOTS[123] ~= nil, "the same camp again: the spot is not taken off and put on again")
+	fire("coop_checkpoint_changed", 0, "rest", 123, false, "l01_escape")
+	check(SPOT_ADDS[123] == 1 and SPOTS[123] ~= nil, "the same source with another kind: still the same spot")
+end)
+
+-- I-2: the clients' tents are in the stock list now; the stock get_nearby_tent looks at the first online tent only
+case("get_nearby_tent_two_tents", function()
+	local IDS = {}
+	for id = 3000, 3011 do IDS[#IDS + 1] = id end
+	local function put_tents(host_id, other_id, other_z)
+		SE, OBJ = {}, {}
+		make_actor(vec3(0, 0, 0))
+		spawn("ph_tent", vec3(0, 0, 1), nil, { id = host_id })
+		spawn("ph_tent", vec3(0, 0, other_z), nil, { id = other_id })
+		local tents = item_tent.get_spawned_tents()
+		for k in pairs(tents) do tents[k] = nil end
+		tents[host_id], tents[other_id] = true, true
+		OWNERS[host_id], OWNERS[other_id] = 0, 500
+	end
+	-- the control: the stock alone, in the same world, loses the host's tent in some orders (so the stand-in is the stock)
+	fresh("host")
+	local stock_fails = 0
+	load_mini()
+	item_tent.on_game_start()
+	for _, a in ipairs(IDS) do
+		for _, b in ipairs(IDS) do
+			if a ~= b then
+				put_tents(a, b, 5)
+				if item_tent.get_nearby_tent(3.5, true) ~= a then stock_fails = stock_fails + 1 end
+			end
+		end
+	end
+	check(stock_fails > 0, "control: the stock get_nearby_tent loses the host's tent in " .. stock_fails .. " of 132 orders")
+	-- the adapter
+	fresh("host")
+	local bad, total = 0, 0
+	for _, a in ipairs(IDS) do
+		for _, b in ipairs(IDS) do
+			if a ~= b then
+				total = total + 1
+				put_tents(a, b, 5)
+				if item_tent.get_nearby_tent(3.5, true) ~= a or item_tent.get_nearby_tent(3.5) ~= true or item_tent.get_nearby_tent(0.5) ~= false then
+					bad = bad + 1
+				end
+			end
+		end
+	end
+	check(bad == 0 and total == 132, "host: his own tent is found whatever the order (" .. bad .. " of " .. total .. " wrong)")
+	-- the host's bag packs his own tent, not the client's
+	local released_ok = true
+	for _, pair in ipairs({ { 3000, 3001 }, { 3001, 3000 }, { 3005, 3002 }, { 3002, 3005 } }) do
+		put_tents(pair[1], pair[2], 5)
+		RELEASED = {}
+		item("itm_tent_bag")
+		item_tent.itm_tent_bag_func()
+		local ids = {}
+		for _, r in ipairs(RELEASED) do ids[r.id] = true end
+		if not ids[pair[1]] or ids[pair[2]] then released_ok = false end
+	end
+	check(released_ok, "the host's tent bag releases his tent, not the one of the client next to it")
+	-- a client's tent alone near the host: the host may pack it (CHECKPOINTS_DEATH 10.2)
+	put_tents(3000, 3001, 2)
+	SE[3000], OBJ[3000] = nil, nil
+	check(item_tent.get_nearby_tent(3.5, true) == 3001, "only the client's tent in reach: it is found (the host's bag can pack it)")
+	-- no tent online: nil, as stock; one online and far: false, as stock
+	SE, OBJ = {}, {}
+	make_actor(vec3(0, 0, 0))
+	check(item_tent.get_nearby_tent(3.5, true) == nil, "no tent online: nil as stock")
+	spawn("ph_tent", vec3(0, 0, 50), nil, { id = 3003 })
+	item_tent.get_spawned_tents()[3003] = true
+	check(item_tent.get_nearby_tent(3.5, true) == false, "an online tent out of reach: false as stock")
+	-- a client: my tent first, and mine even when the snapshot of the host's list has not got it
+	fresh("client")
+	SE, OBJ = {}, {}
+	make_actor(vec3(0, 0, 0))
+	spawn("ph_tent", vec3(0, 0, 0.5), nil, { id = 3100 }) -- the host's, nearer
+	spawn("ph_tent", vec3(0, 0, 1.5), nil, { id = 3101 }) -- mine, not in the snapshot
+	item_tent.get_spawned_tents()[3100] = true
+	check(item_tent.get_nearby_tent(1.0, true) == 3100, "client, my tent unknown: any tent in reach is a shelter")
+	fire("coop_checkpoint_changed", 0, "tent", 3101, false, "l01_escape")
+	check(item_tent.get_nearby_tent(2.0, true) == 3101, "client: my own tent first, though it is farther")
+	SE[3100], OBJ[3100] = nil, nil
+	check(item_tent.get_nearby_tent(2.0) == true and item_tent.get_nearby_tent(1.0) == false, "client: my tent counts although the snapshot has not got it")
+	-- single player: the stock function, untouched
+	fresh("sp")
+	SE, OBJ = {}, {}
+	make_actor(vec3(0, 0, 0))
+	spawn("ph_tent", vec3(0, 0, 1), nil, { id = 3200 })
+	item_tent.get_spawned_tents()[3200] = true
+	check(item_tent.get_nearby_tent(3.5, true) == 3200 and item_tent.get_nearby_tent(0.5) == false, "single player: the stock result")
+	local ok = pcall(item_tent.get_nearby_tent, nil, nil)
+	check(not ok, "single player: the stock function is called as it is (it fails for no distance, like stock)")
+end)
+
+-- I-3, Ruling F3-11: a client packs up any tent of his by using it (the host knows whose it is and gives the item back)
+case("pack_any_own_tent", function()
+	fresh("client")
+	db.actor._pos = vec3(2, 0, 2)
+	local _, t1 = spawn("ph_tent", vec3(3, 0, 2))
+	local _, t2 = spawn("ph_tent", vec3(3.5, 0, 6))
+	fire("coop_checkpoint_changed", 0, "tent", t1:id(), false, "l01_escape")
+	fire("coop_checkpoint_changed", 0, "tent", t2:id(), false, "l01_escape")
+	check(ck().own_tent_source() == t2:id(), "model: the second tent is the camp now")
+	fire("physic_object_on_use_callback", t1, db.actor)
+	run_time_events(200)
+	check(#CLAIMS == 1 and CLAIMS[1].what == "pack", "the first tent, which is no longer the camp: a pack-up claim")
+	check(CLAIMS[1] and CLAIMS[1].x == 3 and CLAIMS[1].z == 2, "at that tent's position (the engine packs the one at that spot)")
+	fire("coop_checkpoint_refused", "failed", "pack")
+	fire("physic_object_on_use_callback", t2, db.actor)
+	run_time_events(200)
+	check(#CLAIMS == 2 and CLAIMS[2].x == 3.5 and CLAIMS[2].z == 6, "and the second one at its own position")
+	-- somebody else's tent: nothing
+	fire("coop_checkpoint_refused", "failed", "pack")
+	local _, foreign = spawn("ph_tent", vec3(2, 0, 3))
+	CUSTOM[foreign:id()] = { coop_tent = { owner = "f00dfeed" } }
+	CUSTOM[0] = { coop = { key = "c0ffee11" } }
+	fire("physic_object_on_use_callback", foreign, db.actor)
+	run_time_events(200)
+	check(#CLAIMS == 2, "a tent whose owner key is another player's: nothing")
+	-- after a load only the camp is known: the older tent is told apart by its owner key on its custom data
+	CP_RECORD[0] = { kind = "tent", level = "l01_escape", x = 1, y = 2, z = 3, source = t2:id() }
+	fire("actor_on_first_update")
+	CUSTOM[t1:id()] = { coop_tent = { owner = "c0ffee11" } }
+	fire("physic_object_on_use_callback", t1, db.actor)
+	run_time_events(200)
+	check(#CLAIMS == 3 and CLAIMS[3].x == 3 and CLAIMS[3].z == 2, "after a load: the tent with my key on it is mine")
+	fire("coop_checkpoint_refused", "failed", "pack")
+	fire("physic_object_on_use_callback", foreign, db.actor)
+	run_time_events(200)
+	check(#CLAIMS == 3, "and the other player's is not")
+	local _, nokey = spawn("ph_tent", vec3(2, 0, 4))
+	fire("physic_object_on_use_callback", nokey, db.actor)
+	run_time_events(200)
+	check(#CLAIMS == 3, "a tent with no key at all (the host's stock tent): not mine")
+	-- no key of my own readable: the camp is still known, the rest is not guessed
+	fresh("client")
+	local _, t3 = spawn("ph_tent", vec3(3, 0, 2))
+	CUSTOM[t3:id()] = { coop_tent = { owner = "c0ffee11" } }
+	fire("physic_object_on_use_callback", t3, db.actor)
+	run_time_events(200)
+	check(#CLAIMS == 0, "no key of my own to compare with: nothing is guessed")
+	-- a sleeping bag is used to sleep (stock); it is packed by the compression bag, or by pack_nearby() from the sleep window
+	fresh("client")
+	db.actor._pos = vec3(2, 0, 2)
+	local _, bag = spawn("ph_sleepbag", vec3(2, 0, 2.5))
+	fire("coop_checkpoint_changed", 0, "tent", bag:id(), false, "l01_escape")
+	fire("physic_object_on_use_callback", bag, db.actor)
+	run_time_events(200)
+	check(#CLAIMS == 0 and #SLEPT == 1, "using my sleeping bag: the stock sleep, no pack-up")
+	check(type(ck().pack_nearby) == "function", "coop_checkpoints.pack_nearby exists (a button of the sleep window can call it)")
+	check(ck().pack_nearby() == true, "pack_nearby() asks")
+	run_time_events(200)
+	check(#CLAIMS == 1 and CLAIMS[1].what == "pack" and CLAIMS[1].x == 2 and CLAIMS[1].z == 2, "a pack-up claim at the player's position (the bag is within reach)")
+	fire("coop_checkpoint_refused", "failed", "pack")
+	local _, comp = item("compression_bag")
+	item_tent.use_compression_bag(comp, 1.5)
+	run_time_events(200)
+	check(#CLAIMS == 2 and CLAIMS[2].what == "pack", "the compression bag does it as before")
+	-- the host: nothing
+	fresh("host")
+	check(ck().pack_nearby() == false, "pack_nearby() on the host: nothing (he has the stock bag)")
+end)
+
+-- M-1: a mod that wrapped scenario_autosave after us must not turn the wrappers into a loop
+case("story_wrapper_chain", function()
+	for _, mode in ipairs({ "sp", "host" }) do
+		fresh(mode)
+		local before = xr_effects.scenario_autosave
+		local MOD = 0
+		local prev = xr_effects.scenario_autosave
+		xr_effects.scenario_autosave = function(a, n, p) MOD = MOD + 1; if MOD > 100 then error("loop") end; return prev(a, n, p) end
+		local mod_fn = xr_effects.scenario_autosave
+		fire("actor_on_first_update")
+		check(xr_effects.scenario_autosave ~= mod_fn and xr_effects.scenario_autosave ~= before, mode .. ": the mod's wrapper is wrapped, not a loop")
+		local ok, err = pcall(xr_effects.scenario_autosave, nil, nil, { "st_save_x" })
+		check(ok, mode .. ": calling it does not overflow the stack or hang (" .. tostring(err) .. ")")
+		if mode == "sp" then
+			check(MOD == 1 and ORIG_STORY == 1, "outside a session: the mod's function and the original run once each (" .. MOD .. "," .. ORIG_STORY .. ")")
+		else
+			check(#STORIES == 1 and ORIG_STORY == 0 and #EXEC == 0, "in a session: one story checkpoint, nothing saved")
+		end
+		local once = xr_effects.scenario_autosave
+		fire("actor_on_first_update")
+		ck().on_game_start()
+		check(xr_effects.scenario_autosave == once, mode .. ": our own wrapper is never wrapped again")
+	end
+	-- a chain that comes back to us: the call ends, the second visit does nothing
+	fresh("sp")
+	local top
+	local CALLS_ = 0
+	local inner = xr_effects.scenario_autosave
+	xr_effects.scenario_autosave = function(a, n, p)
+		CALLS_ = CALLS_ + 1
+		if CALLS_ > 200 then error("loop") end -- would loop for ever
+		if CALLS_ < 50 then return top(a, n, p) end
+		return inner(a, n, p)
+	end
+	fire("actor_on_first_update")
+	top = xr_effects.scenario_autosave
+	local ok = pcall(top, nil, nil, { "st_save_x" })
+	check(ok and CALLS_ < 50, "a mod that calls back into the top function: the loop ends at once (" .. CALLS_ .. " calls)")
+	CALLS_ = 100
+	local ok2 = pcall(top, nil, nil, { "st_save_x" })
+	check(ok2 and CALLS_ >= 100 and ORIG_STORY >= 1, "and the wrappers work again afterwards")
+	-- an error in the original: the flag is let go
+	fresh("sp")
+	local boom = true
+	xr_effects.scenario_autosave = function() if boom then error("boom") end end
+	fire("actor_on_first_update")
+	check(not pcall(xr_effects.scenario_autosave, nil, nil, {}), "an error of the original comes through")
+	boom = false
+	check(pcall(xr_effects.scenario_autosave, nil, nil, {}), "and the next call works (the guard flag was let go)")
+end)
+
+-- M-2: use_placeable = false for the tent: the client does not lose the item, nothing is claimed
+case("tent_not_placeable_on_a_client", function()
+	fresh("client")
+	TENT_PLACEABLE = false
+	itms_manager = { ini_manager = make_ini({ tent_i_bag = { use_placeable = "false" } }) }
+	reload_checkpoints()
+	item_tent.on_game_start()
+	local _, o = item("itm_tent")
+	item_tent.func_use_tent(o)
+	local okc, errc = pcall(function() run_add_calls(); run_time_events(5000) end)
+	itms_manager = nil
+	check(okc, "the stock functor runs without an error (" .. tostring(errc) .. ")")
+	check(#CLAIMS == 0, "no claim")
+	check(count_sec("itm_tent") == 1 and count_sec("ph_tent") == 0, "the player still has exactly one tent item, nothing is put up (" .. created_secs() .. ")")
+end)
+
+-- M-3: a mod that replaces an entry point after our on_game_start is wrapped at the first update
+case("adapter_installed_again", function()
+	fresh("client")
+	local mod_calls = 0
+	item_tent.func_use_tent = function() mod_calls = mod_calls + 1 end
+	local mine_ = item_tent.func_use_tent
+	fire("actor_on_first_update")
+	check(item_tent.func_use_tent ~= mine_, "the replaced func_use_tent is wrapped again at the first update")
+	local _, o = item("itm_tent")
+	item_tent.func_use_tent(o)
+	run_time_events(5000)
+	check(mod_calls == 0 and #CLAIMS == 1, "and a client's use asks the host, the mod's function does not run")
 end)
 
 -- ------------------------------------------------------------------ refusals

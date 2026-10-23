@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="windows-1251"?>
-<!-- Anomaly Coop - tent guard (F3 hotfix): scripts\coop_tent_guard.script. -->
-<string_table>
-	<string id="st_coop_tent_blocked">
-		<text>Tents and sleeping bags are not available to a co-op client yet. Your item is kept.</text>
-	</string>
-</string_table>

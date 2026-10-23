@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="windows-1251"?>
-<!-- Anomaly Coop - tent guard (F3 hotfix): scripts\coop_tent_guard.script. -->
-<string_table>
-	<string id="st_coop_tent_blocked">
-		<text>Палатки и спальники пока недоступны клиенту кооператива. Предмет остался у вас.</text>
-	</string>
-</string_table>
