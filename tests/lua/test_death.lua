@@ -574,7 +574,7 @@ case("marker_corpse_stash_emptied", function()
 end)
 
 -- Ruling L-1: the share of a drop death goes into a bag at the body; its marker keeps the kind "drop" and names the bag.
--- The host releases an emptied bag (coop_death.cpp), but while it is still there (open in the host's window) its mark goes
+-- The host releases an emptied bag (coop_death.cpp), but while it is still there (open in somebody's window) its mark goes
 -- as a corpse stash's does; a loose item (no bag could be made) keeps the item rules.
 case("marker_drop_bag", function()
 	fresh("host")

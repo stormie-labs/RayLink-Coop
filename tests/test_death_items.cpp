@@ -782,7 +782,7 @@ TEST(death_plan_losses_by_mode)
 
 // L-1, carried from F3 T15 (concern 3): a death bag whose last item was taken stayed in the world for ever (the stock
 // item_backpack releases only inv_backpack). The host releases one that is empty and online; never one that still waits
-// for its items, has something in it, is not a death bag or is open in the host's own window.
+// for its items, has something in it, is not a death bag or is open in a window - the host's or a client's (round 1, I1).
 TEST(death_bag_release)
 {
 	BagState s;
@@ -806,9 +806,14 @@ TEST(death_bag_release)
 	t = s;
 	t.in_use = true; // the host has it open: it goes when he closes it
 	CHECK(!release_empty_bag(t));
+	// L-1 round 1, I1: the main case - a teammate took the last item and his window is still open; his window reads the
+	// box every frame through a raw pointer, so the bag stays until he closes it.
+	t = s;
+	t.open_by_player = true;
+	CHECK(!release_empty_bag(t));
 
 	// Every combination: only the one above.
-	for (unsigned m = 0; m < 32; ++m)
+	for (unsigned m = 0; m < 64; ++m)
 	{
 		BagState x;
 		x.death_stash = (m & 1) != 0;
@@ -816,6 +821,7 @@ TEST(death_bag_release)
 		x.empty = (m & 4) != 0;
 		x.pending = (m & 8) != 0;
 		x.in_use = (m & 16) != 0;
+		x.open_by_player = (m & 32) != 0;
 		CHECK_EQ(release_empty_bag(x), m == 7u);
 	}
 }
