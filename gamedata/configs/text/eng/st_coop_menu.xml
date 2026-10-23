@@ -332,16 +332,10 @@
 		<text>When a player dies</text>
 	</string>
 	<string id="ui_mm_coop_coop_session_death_mode_desc">
-		<text>Hardcore: the player only watches until the next load. Respawn: back to life without the gear. Respawn with gear: back to life with everything.</text>
+		<text>Back at camp: a dead player watches his allies for the respawn delay, then stands up at his own camp, with a contusion. Hardcore: the death is final, the player starts again with a new character.</text>
 	</string>
 	<string id="st_coop_opt_death_hardcore">
 		<text>Hardcore</text>
-	</string>
-	<string id="st_coop_opt_death_respawn">
-		<text>Respawn</text>
-	</string>
-	<string id="st_coop_opt_death_respawn_keep">
-		<text>Respawn with gear</text>
 	</string>
 	<string id="ui_mm_coop_coop_session_bleedout">
 		<text>Time to revive a downed player, s</text>
@@ -359,7 +353,7 @@
 		<text>Respawn delay, s</text>
 	</string>
 	<string id="ui_mm_coop_coop_session_respawn_delay_desc">
-		<text>Seconds before a dead player comes back (respawn modes).</text>
+		<text>Seconds a dead player watches his allies before he stands up at his camp (back-at-camp mode).</text>
 	</string>
 	<string id="ui_mm_coop_coop_session_client_quicksave">
 		<text>Players may ask for a quicksave</text>

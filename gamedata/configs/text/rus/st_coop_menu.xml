@@ -332,16 +332,10 @@
 		<text>Когда игрок погибает</text>
 	</string>
 	<string id="ui_mm_coop_coop_session_death_mode_desc">
-		<text>Хардкор: игрок только наблюдает до следующей загрузки. Возрождение: снова в игре, но без снаряжения. Возрождение со снаряжением: снова в игре со всем добром.</text>
+		<text>Возврат на привал: погибший игрок смотрит за союзниками, пока идёт задержка, и встаёт на своём привале с контузией. Хардкор: смерть окончательна, игрок начинает заново новым персонажем.</text>
 	</string>
 	<string id="st_coop_opt_death_hardcore">
 		<text>Хардкор</text>
-	</string>
-	<string id="st_coop_opt_death_respawn">
-		<text>Возрождение</text>
-	</string>
-	<string id="st_coop_opt_death_respawn_keep">
-		<text>Возрождение со снаряжением</text>
 	</string>
 	<string id="ui_mm_coop_coop_session_bleedout">
 		<text>Время на помощь раненому, с</text>
@@ -359,7 +353,7 @@
 		<text>Задержка возрождения, с</text>
 	</string>
 	<string id="ui_mm_coop_coop_session_respawn_delay_desc">
-		<text>Через сколько секунд погибший игрок возвращается (режимы с возрождением).</text>
+		<text>Сколько секунд погибший игрок смотрит за союзниками, прежде чем встанет на своём привале (режим «Возврат на привал»).</text>
 	</string>
 	<string id="ui_mm_coop_coop_session_client_quicksave">
 		<text>Игроки могут просить быстрое сохранение</text>

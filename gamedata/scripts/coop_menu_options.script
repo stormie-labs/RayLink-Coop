@@ -7,10 +7,15 @@
 		names above players and their distance (coop_nametags, coop_nametags_dist),
 		party panel / player markers / chat feed on the HUD (W5: applied to coop_core_hud / coop_core_chat).
 	Session rules group (the host's values are used; coop_settings.ltx: coop/coop_session/* = host):
-		friendly fire, shared task rewards, death mode, bleed-out time, health after revive, respawn delay;
+		friendly fire, shared task rewards, bleed-out time, health after revive;
 		W5: the economy group's rules (coop_economy_core.RULES, read through coop_settings.rule("economy/<id>");
 		defaults here must match RULES). F3 task 17: the "clients may quicksave" rule is gone, nobody saves by hand
 		in a session (coop_saves).
+		F3 task 15: the host's death rules (docs\CHECKPOINTS_DEATH.md section 9), each one is the console variable of the
+		engine of the same name (coop_<id>; coop_survival.cpp, coop_death.cpp, coop_checkpoints.cpp, coop_autosave.cpp):
+		death mode (checkpoint | hardcore), what falls (drop | corpse | lose), respawn delay 0..300 s, contusion 0..60 min,
+		money / gear wear / rank cut in %, the starting kit of a new hardcore character (Ruling F3-10, off), camps shown to
+		the group, the emergency saves of the host (interval in min, how many are kept). Their strings: st_coop_death.xml.
 		On a connected client the options window refuses edits of these and shows the lock note
 		(coop_settings: option lock), the values shown there are the player's own for when he hosts.
 	Console variables are saved by the engine in user.ltx (cfg_save on Apply), not in axr_options.ltx.
@@ -32,6 +37,17 @@ end
 
 local function track(id, def, min, max, step)
 	return { id = id, type = "track", val = 2, def = def, min = min, max = max, step = step }
+end
+
+-- Track bound to a numeric console variable of the host (CCC_Float or CCC_Integer): the stock window reads it as a string
+-- (get_console_cmd(0)) and sends "<cmd> <value>", so both kinds work. The bounds are the engine's (the test checks them).
+local function cvar_track(id, cmd, min, max, step)
+	return { id = id, type = "track", val = 2, cmd = cmd, min = min, max = max, step = step }
+end
+
+-- List bound to a token console variable: val 0 reads the token name, `content` = { token, string id } in display order.
+local function cvar_list(id, cmd, content)
+	return { id = id, type = "list", val = 0, cmd = cmd, no_str = true, content = content }
 end
 
 local function slide(id, link)
@@ -56,16 +72,29 @@ function build_page()
 				{ id = "note", type = "desc", text = "st_coop_opt_session_note", clr = { 255, 200, 200, 200 } },
 				check("friendly_fire", "coop_friendly_fire"),
 				check("share_rewards", "coop_share_rewards"),
-				{ id = "death_mode", type = "list", val = 0, cmd = "coop_death_mode", no_str = true,
-					content = {
-						{ "hardcore", "st_coop_opt_death_hardcore" },
-						{ "respawn", "st_coop_opt_death_respawn" },
-						{ "respawn_keep", "st_coop_opt_death_respawn_keep" },
-					} },
+				-- F3 task 15: the host's death rules. The old respawn / respawn_keep are synonyms of checkpoint in the
+				-- engine (an old user.ltx still loads), they are not offered any more.
+				cvar_list("death_mode", "coop_death_mode", {
+					{ "checkpoint", "st_coop_opt_death_checkpoint" },
+					{ "hardcore", "st_coop_opt_death_hardcore" },
+				}),
+				cvar_list("death_drop", "coop_death_drop", {
+					{ "drop", "st_coop_opt_drop_drop" },
+					{ "corpse", "st_coop_opt_drop_corpse" },
+					{ "lose", "st_coop_opt_drop_lose" },
+				}),
 				{ id = "bleedout", type = "track", val = 2, cmd = "coop_bleedout", min = 10, max = 600, step = 10 },
 				{ id = "revive_health", type = "track", val = 2, cmd = "coop_revive_health", min = 0.05, max = 1,
 					step = 0.05, prec = 2 },
-				{ id = "respawn_delay", type = "track", val = 2, cmd = "coop_respawn_delay", min = 0, max = 120, step = 5 },
+				cvar_track("respawn_delay", "coop_respawn_delay", 0, 300, 5),
+				cvar_track("contusion", "coop_contusion", 0, 60, 1),
+				cvar_track("death_money", "coop_death_money", 0, 100, 5),
+				cvar_track("death_wear", "coop_death_wear", 0, 100, 5),
+				cvar_track("death_rank", "coop_death_rank", 0, 100, 5),
+				check("hardcore_new_kit", "coop_hardcore_new_kit"),
+				check("checkpoints_group", "coop_checkpoints_group"),
+				cvar_track("autosave_interval", "coop_autosave_interval", 0, 120, 5),
+				cvar_track("autosave_count", "coop_autosave_count", 1, 50, 1),
 				-- economy group (coop_settings.rule("economy/<id>"))
 				flag("party_fast_travel", true),
 				track("gather_radius", 20, 5, 100, 5),

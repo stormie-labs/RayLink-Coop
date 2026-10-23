@@ -7,10 +7,13 @@ XML_FILES["ui_coop_menu.xml"] = xml_paths(ROOT .. "configs/ui/ui_coop_menu.xml")
 -- strings: real ids from the eng table, "%s" kept
 STRINGS = {}
 do
-	local fh = assert(io.open(ROOT .. "configs/text/eng/st_coop_menu.xml", "r"))
-	local src = fh:read("*a")
-	fh:close()
-	for id, text in src:gmatch('<string id="([^"]+)">%s*<text>(.-)</text>') do STRINGS[id] = text end
+	-- the option captions of the host's death rules (F3 task 15) are in st_coop_death.xml, next to the texts of coop_death
+	for _, file in ipairs({ "st_coop_menu.xml", "st_coop_death.xml" }) do
+		local fh = assert(io.open(ROOT .. "configs/text/eng/" .. file, "r"))
+		local src = fh:read("*a")
+		fh:close()
+		for id, text in src:gmatch('<string id="([^"]+)">%s*<text>(.-)</text>') do STRINGS[id] = text end
+	end
 end
 game = { translate_string = function(id) return STRINGS[id] or id end }
 
@@ -397,10 +400,12 @@ for id in xsrc:gmatch(">(st_coop_[%w_]+)<") do if not STRINGS[id] then absent[#a
 check(#absent == 0, "ids in ui_coop_menu.xml exist (" .. table.concat(absent, ",") .. ")")
 -- rus has the same ids
 local rus = {}
-local fr = assert(io.open(ROOT .. "configs/text/rus/st_coop_menu.xml", "rb"))
-local rsrc = fr:read("*a")
-fr:close()
-for id in rsrc:gmatch('<string id="([^"]+)">') do rus[id] = true end
+for _, file in ipairs({ "st_coop_menu.xml", "st_coop_death.xml" }) do
+	local fr = assert(io.open(ROOT .. "configs/text/rus/" .. file, "rb"))
+	local rsrc = fr:read("*a")
+	fr:close()
+	for id in rsrc:gmatch('<string id="([^"]+)">') do rus[id] = true end
+end
 local diff = {}
 for id in pairs(STRINGS) do if not rus[id] then diff[#diff + 1] = id end end
 for id in pairs(rus) do if not STRINGS[id] then diff[#diff + 1] = id end end

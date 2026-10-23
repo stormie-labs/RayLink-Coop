@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop - смерть (F3, задача 15): подсказки, тексты контузии и штрафов, метки КПК (scripts\coop_death.script) и правила хоста на странице опций Кооператива (scripts\coop_menu_options.script). -->
+<string_table>
+	<string id="st_coop_respawned_campfire">
+		<text>Ты вернулся к своему костру.</text>
+	</string>
+	<string id="st_coop_respawned_rest">
+		<text>Ты вернулся на своё место отдыха.</text>
+	</string>
+	<string id="st_coop_respawned_tent">
+		<text>Ты вернулся в свою палатку.</text>
+	</string>
+	<string id="st_coop_respawned_arrival">
+		<text>Ты вернулся в точку прибытия.</text>
+	</string>
+	<string id="st_coop_respawned_story">
+		<text>Ты вернулся на сюжетный привал.</text>
+	</string>
+	<string id="st_coop_respawned_mod">
+		<text>Ты вернулся в место, отмеченное модом.</text>
+	</string>
+	<string id="st_coop_respawned_none">
+		<text>Ты снова на ногах. На этой карте у тебя нет привала.</text>
+	</string>
+	<string id="st_coop_death_caption">
+		<text>Смерть</text>
+	</string>
+	<string id="st_coop_death_marker">
+		<text>%s: место гибели</text>
+	</string>
+	<string id="st_coop_death_stash">
+		<text>Тайник павшего игрока</text>
+	</string>
+	<string id="st_coop_contusion_on">
+		<text>Контузия на %s мин: размытое зрение, меньше выносливости.</text>
+	</string>
+	<string id="st_coop_contusion_off">
+		<text>Контузия прошла.</text>
+	</string>
+	<string id="st_coop_death_money">
+		<text>Смерть отняла у тебя %s денег.</text>
+	</string>
+	<string id="st_coop_death_rank">
+		<text>Смерть отняла у тебя %s ранга и репутации.</text>
+	</string>
+	<string id="st_coop_opt_death_checkpoint">
+		<text>Возврат на привал</text>
+	</string>
+	<string id="st_coop_opt_drop_drop">
+		<text>Падают у тела</text>
+	</string>
+	<string id="st_coop_opt_drop_corpse">
+		<text>Тайник у тела</text>
+	</string>
+	<string id="st_coop_opt_drop_lose">
+		<text>Пропадают навсегда</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_death_drop">
+		<text>Вещи после смерти</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_death_drop_desc">
+		<text>Режим «Возврат на привал»: часть рюкзака выпадает у тела, уходит в тайник у тела (метка в КПК) или пропадает. Надетое остаётся при игроке.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_contusion">
+		<text>Контузия после смерти, мин</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_contusion_desc">
+		<text>Сколько минут вернувшийся игрок слабее: размытое зрение, меньше выносливости. 0 - выключено.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_death_money">
+		<text>Потеря денег при смерти, %</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_death_money_desc">
+		<text>Какую долю наличных забирает смерть. 0 - выключено.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_death_wear">
+		<text>Износ снаряжения при смерти, %</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_death_wear_desc">
+		<text>На сколько процентов теряют состояние оружие в слотах, броня и шлем, когда игрок возвращается.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_death_rank">
+		<text>Потеря ранга при смерти, %</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_death_rank_desc">
+		<text>Какую долю ранга (и хорошей репутации) отнимает смерть. 0 - выключено.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_hardcore_new_kit">
+		<text>Набор для нового персонажа в хардкоре</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_hardcore_new_kit_desc">
+		<text>В хардкоре игрок, потерявший персонажа, начинает заново. Выключено: ни с чем. Включено: с набором и деньгами своей фракции.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_checkpoints_group">
+		<text>Показывать привалы группе</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_checkpoints_group_desc">
+		<text>Остальные игроки видят ваш привал на карте КПК.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_autosave_interval">
+		<text>Аварийный сейв каждые, мин</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_autosave_interval_desc">
+		<text>Хост сам сохраняет мир раз в столько минут, на случай аварийного восстановления. 0 - выключено.</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_autosave_count">
+		<text>Аварийных сейвов хранить</text>
+	</string>
+	<string id="ui_mm_coop_coop_session_autosave_count_desc">
+		<text>Сколько аварийных сейвов хоста хранится; самый старый перезаписывается.</text>
+	</string>
+</string_table>

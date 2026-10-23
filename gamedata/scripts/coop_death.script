@@ -1,0 +1,509 @@
+--[[
+	Anomaly Coop - death on the Lua side (gamedata\scripts\coop_death.script), F3 task 15.
+	Spec: docs\CHECKPOINTS_DEATH.md section 3. The host decides everything that matters (coop_survival.cpp, coop_death.cpp: who
+	falls, what is lost, the money, the respawn point); this script is what the dead player's own screen shows afterwards, and the
+	PDA marks of the group. It runs on every machine (an "owner" script in configs\coop_route_f3.ltx): the contusion and the
+	penalty texts only on the machine of the player who stood up, the marks everywhere.
+
+	1. Respawn, coop_respawned(kind, contusion_s, money_pct, rank_pct) - fired by the engine on the owner only, when the player
+	   stands up at his camp (kind: campfire | rest | tent | arrival | story | mod | none).
+	   - A tip st_coop_respawned_<kind>.
+	   - Contusion, for contusion_s seconds (host rule coop_contusion): the post-process effector blur.ppe (id 39570) with a
+	     factor that fades out, and a stamina ceiling of 0.6 (conditions():SetMaxPower). Other scripts raise the ceiling (sleep,
+	     boosters, the stock regeneration): it is put back every 5 s, never raised if fatigue already holds it lower. It ends
+	     at contusion_s by itself: the effector is removed and the ceiling goes back to 1. A new death starts it again from
+	     the full length (it does not add up). It is NOT kept for a reconnect (plan decision 8): a new Lua state knows
+	     nothing of it. A level change within the same Lua state puts it on again for the time that is left.
+	   - Money: the HOST takes it (death::host_take_money, through its ledger); this script never touches the balance, a
+	     second cut here would make the penalty double. money_pct is only for the text.
+	   - Rank (rank_pct, host rule coop_death_rank, 0 = off): the rank is cut to floor(rank * (100 - rank_pct) / 100), a
+	     positive reputation the same way (a bad reputation is not made better by dying). Off by default.
+	   - Once per death: the order of the host can reach the owner twice in the RTT window (T8 review M-1, the engine cuts
+	     most of it by the death number); a coop_respawned within 20 s of the one that was acted on changes nothing but the
+	     tip, so the rank is never cut twice for one death.
+
+	2. Death marks, coop_death_marker(player_local_id, marker_local_id, "drop" | "corpse") - fired by the engine on every
+	   machine, the host's too (T9): the marker is the first item that fell (drop) or the stash at the body (corpse). A PDA spot
+	   of the stock type secondary_task_location (the one the Soulslike mode uses; deadbody_location of map_spots_relations.xml
+	   has a minimap entry only) with the nick of the player who died, set with level.map_add_object_spot - NOT the _ser
+	   variant: that one is written to the save and would outlive the thing it marks. The spot goes when the object has a
+	   parent (somebody picked it up), is gone from the world, or - a stash - has been emptied; it is looked at once a second.
+	   The callback queue of the engine is shared and bounded (64), a lost callback is not sent again, and a player who joins
+	   later never gets it: when a world is entered (actor_on_first_update) the marks are set again, and the world is searched
+	   for stashes of the section coop_death_stash. A corpse stash found that way is marked without a nick (the stash does not
+	   say whose it is). A "drop" leaves no trace in the world, so a drop mark lives as long as this Lua state does (it
+	   survives a level change, not a reconnect): known limit.
+	   A spot of that type that is already on the object (a quest mark of a mod) is left as it is and not removed by us.
+]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local tostring, tonumber, type, pairs, ipairs, pcall, next = tostring, tonumber, type, pairs, ipairs, pcall, next
+local math_floor, math_max, math_min = math.floor, math.max, math.min
+local string_format = string.format
+
+-- contusion
+local CONTUSION_PPE = "blur.ppe"
+local CONTUSION_ID = 39570 -- free in the stock (actor_effects 2010-2020, sleep 39568)
+local CONTUSION_POWER = 0.6 -- stamina ceiling
+local POWER_TICK_MS = 5000 -- other scripts raise the ceiling: put it back
+local FACTOR_TICK_MS = 1000
+local FACTOR_MIN = 0.2 -- the blur never fades below this before it ends
+local MAX_CONTUSION_S = 86400
+local DEDUP_MS = 20000 -- the same death reaching the owner twice (T8 review M-1)
+local TIP_SECONDS = 6
+local NEWS_MS = 15000
+
+-- marks
+local MARKER_SPOT = "secondary_task_location" -- stock, has a level_map and a mini_map entry
+local STASH_SECTION = "coop_death_stash"
+local NO_PARENT = 65535
+local MARKER_POLL_MS = 1000
+local MAX_MARKERS = 64
+local PARENT_GRACE_MS = 2000 -- the item may still be shown held on this machine when the mark arrives
+local EMPTY_GRACE_MS = 15000 -- the items of a new stash are still arriving
+local UNSEEN_MS = 10000 -- an object this machine never had: the mirror may be repaired meanwhile
+
+local KINDS = { campfire = true, rest = true, tent = true, arrival = true, story = true, mod = true, none = true }
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-death] %s", ok and line or tostring(fmt))
+end
+
+local function in_session()
+	if not api then return false end
+	local ok, active = pcall(api.is_active)
+	return ok and active == true
+end
+
+-------------------------------------------------------------------------------
+-- Texts
+-------------------------------------------------------------------------------
+-- The string with %s filled in order (no string.format: translations may contain other %).
+local function text(id, ...)
+	local s = id
+	if game and game.translate_string then
+		local ok, r = pcall(game.translate_string, id)
+		if ok and type(r) == "string" then s = r end
+	end
+	local n = select("#", ...)
+	if n > 0 then
+		local args, i = { ... }, 0
+		local filled = s:gsub("%%s", function()
+			i = i + 1
+			return tostring(args[i] == nil and "" or args[i])
+		end)
+		s = filled
+	end
+	return s
+end
+
+local function tip(msg)
+	local am = rawget(_G, "actor_menu")
+	if am and am.set_msg then pcall(am.set_msg, 1, msg, TIP_SECONDS) end
+end
+
+-- One PDA news item with what the death cost (lines are joined, the tip above is one line).
+local function news(lines)
+	local actor = db.actor
+	if not actor or #lines == 0 then return end
+	local nm = rawget(_G, "news_manager")
+	local icon = nm and nm.tips_icons and nm.tips_icons.default or "ui_iconsTotal_grouping"
+	pcall(function()
+		actor:give_game_news(text("st_coop_death_caption"), table.concat(lines, " "), icon, 0, NEWS_MS)
+	end)
+end
+
+-- A percentage for the text: 10 -> "10%", 12.5 -> "12.5%".
+local function pct_text(v)
+	if v == math_floor(v) then return string_format("%d%%", v) end
+	return string_format("%.1f%%", v)
+end
+
+-------------------------------------------------------------------------------
+-- Arguments of the engine callback: anything else than a number reads as 0
+-------------------------------------------------------------------------------
+local function as_pct(v)
+	v = tonumber(v)
+	if not v or v ~= v or v <= 0 then return 0 end
+	return math_min(v, 100)
+end
+
+local function as_seconds(v)
+	v = tonumber(v)
+	if not v or v ~= v or v <= 0 then return 0 end
+	return math_min(v, MAX_CONTUSION_S)
+end
+
+-------------------------------------------------------------------------------
+-- Contusion
+-------------------------------------------------------------------------------
+local contusion = nil -- { ends, total (ms), next_power, next_factor } | nil
+local last_respawn = nil -- time_global() of the respawn that was acted on
+
+local function actor_conditions()
+	local actor = db.actor
+	if not actor then return nil end
+	local ok, c = pcall(function() return actor:cast_Actor():conditions() end)
+	return ok and c or nil
+end
+
+-- The ceiling is lowered to 0.6, never raised: fatigue (weight, a long run) may hold it lower already.
+local function limit_power()
+	local c = actor_conditions()
+	if not c then return end
+	local ok, cur = pcall(function() return c:GetMaxPower() end)
+	if not (ok and type(cur) == "number") then cur = 1 end
+	if cur > CONTUSION_POWER then pcall(function() c:SetMaxPower(CONTUSION_POWER) end) end
+end
+
+local function release_power()
+	local c = actor_conditions()
+	if c then pcall(function() c:SetMaxPower(1) end) end
+end
+
+-- 1 at the start, down to FACTOR_MIN at the end.
+local function factor_at(now)
+	local left = contusion.ends - now
+	if left <= 0 then return FACTOR_MIN end
+	return math_min(1, FACTOR_MIN + (1 - FACTOR_MIN) * left / contusion.total)
+end
+
+-- The effector, its factor and the ceiling. Also after a new level was entered: the effectors are gone with the old one.
+local function put_contusion(now)
+	pcall(level.add_pp_effector, CONTUSION_PPE, CONTUSION_ID, true)
+	pcall(level.set_pp_effector_factor, CONTUSION_ID, factor_at(now))
+	limit_power()
+end
+
+local function start_contusion(seconds, now)
+	contusion = {
+		ends = now + seconds * 1000, total = seconds * 1000,
+		next_power = now + POWER_TICK_MS, next_factor = now + FACTOR_TICK_MS,
+	}
+	put_contusion(now)
+end
+
+local function stop_contusion(announce)
+	if not contusion then return end
+	contusion = nil
+	pcall(level.remove_pp_effector, CONTUSION_ID)
+	release_power()
+	if announce then tip(text("st_coop_contusion_off")) end
+end
+
+local function update_contusion(now)
+	local c = contusion
+	if not c then return end
+	if now >= c.ends then
+		stop_contusion(true)
+		return
+	end
+	if now >= c.next_power then
+		c.next_power = now + POWER_TICK_MS
+		limit_power()
+	end
+	if now >= c.next_factor then
+		c.next_factor = now + FACTOR_TICK_MS
+		pcall(level.set_pp_effector_factor, CONTUSION_ID, factor_at(now))
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Rank and reputation (host rule coop_death_rank, off by default)
+-------------------------------------------------------------------------------
+local function cut(value, pct)
+	return math_floor(value * (100 - pct) / 100)
+end
+
+local function apply_rank_penalty(pct)
+	local actor = db.actor
+	if not actor then return end
+	local ok, rank = pcall(function() return actor:character_rank() end)
+	if ok and type(rank) == "number" and rank > 0 then
+		pcall(function() actor:set_character_rank(cut(rank, pct)) end)
+	end
+	local ok_rep, rep = pcall(function() return actor:character_reputation() end)
+	if ok_rep and type(rep) == "number" and rep > 0 then -- a bad reputation is not made better by dying
+		pcall(function() actor:set_character_reputation(cut(rep, pct)) end)
+	end
+end
+
+-------------------------------------------------------------------------------
+-- coop_respawned
+-------------------------------------------------------------------------------
+local function on_respawned(kind, contusion_s, money_pct, rank_pct)
+	if not in_session() or not db.actor then return end
+	if type(kind) ~= "string" or not KINDS[kind] then kind = "none" end
+	local seconds, money, rank = as_seconds(contusion_s), as_pct(money_pct), as_pct(rank_pct)
+	tip(text("st_coop_respawned_" .. kind))
+	local now = time_global()
+	if last_respawn and now >= last_respawn and now - last_respawn < DEDUP_MS then
+		log("a second respawn order %d ms after the first: the penalties were applied already", now - last_respawn)
+		return
+	end
+	last_respawn = now
+	local lines = {}
+	if seconds > 0 then
+		start_contusion(seconds, now)
+		lines[#lines + 1] = text("st_coop_contusion_on", math_max(1, math_floor(seconds / 60 + 0.5)))
+	end
+	-- the HOST took the money (death::host_take_money): the text only
+	if money > 0 then lines[#lines + 1] = text("st_coop_death_money", pct_text(money)) end
+	if rank > 0 then
+		apply_rank_penalty(rank)
+		lines[#lines + 1] = text("st_coop_death_rank", pct_text(rank))
+	end
+	news(lines)
+end
+
+-------------------------------------------------------------------------------
+-- Death marks
+-------------------------------------------------------------------------------
+local markers = {} -- object id -> { id, kind, nick, anon, since, seq, added, seen }
+local marker_count = 0
+local marker_seq = 0
+local next_poll = 0
+
+local function nick_of(lid)
+	if not api then return nil end
+	local ok, list = pcall(api.players)
+	if not (ok and type(list) == "table") then return nil end
+	for _, p in ipairs(list) do
+		if p.avatar_id == lid then return tostring(p.nick or "?") end
+	end
+	return nil
+end
+
+-- The server entity of object `id` (offline ones too) and whether this machine has an ALife to ask at all.
+local function server_entity(id)
+	local ok, sim = pcall(alife)
+	if not (ok and sim) then return nil, false end
+	local ok_obj, se = pcall(sim.object, sim, id)
+	if not ok_obj then return nil, false end
+	return se, true
+end
+
+local function online_object(id)
+	local ok, o = pcall(function() return level.object_by_id(id) end)
+	return ok and o or nil
+end
+
+-- true / false, nil when the engine cannot tell (map_has_object_spot returns a u16: 0 is a number, not false)
+local function spot_exists(id)
+	local f = level and level.map_has_object_spot
+	if type(f) ~= "function" then return nil end
+	local ok, r = pcall(f, id, MARKER_SPOT)
+	if not ok then return nil end
+	return r == true or (type(r) == "number" and r ~= 0)
+end
+
+local function add_spot(id, hint)
+	-- not map_add_object_spot_ser: that spot is saved and would outlive what it marks. An exe without the plain call: no spot.
+	local f = level and level.map_add_object_spot
+	if type(f) ~= "function" then return false end
+	local ok, err = pcall(f, id, MARKER_SPOT, hint)
+	if not ok then log("! map spot on %s failed: %s", tostring(id), tostring(err)) end
+	return ok
+end
+
+local function drop_spot(id)
+	local f = level and level.map_remove_object_spot
+	if type(f) == "function" then pcall(f, id, MARKER_SPOT) end
+end
+
+local function change_hint(id, hint)
+	local f = level and level.map_change_spot_hint
+	if type(f) == "function" then pcall(f, id, MARKER_SPOT, hint) end
+end
+
+local function hint_of(m)
+	if m.anon then return text("st_coop_death_stash") end
+	return text("st_coop_death_marker", m.nick or "?")
+end
+
+local function remove_marker(id)
+	local m = markers[id]
+	if not m then return end
+	if m.added then drop_spot(id) end
+	markers[id] = nil
+	marker_count = marker_count - 1
+end
+
+local function forget_markers()
+	local ids = {}
+	for id in pairs(markers) do ids[#ids + 1] = id end
+	for _, id in ipairs(ids) do remove_marker(id) end
+end
+
+local function drop_oldest()
+	local oldest = nil
+	for id, m in pairs(markers) do
+		if not oldest or m.seq < markers[oldest].seq then oldest = id end
+	end
+	if oldest then remove_marker(oldest) end
+end
+
+-- Is stash `id` empty? Online: the box itself; else the server entity's children. Unknown counts as not empty.
+local function box_empty(se, obj)
+	if obj then
+		local ok, empty = pcall(function() return obj:is_inv_box_empty() end)
+		if ok and type(empty) == "boolean" then return empty end
+	end
+	if se then
+		local ok, sim = pcall(alife)
+		if ok and sim then
+			local ok_n, n = pcall(function()
+				local count = 0
+				for _ in sim:get_children(se) do
+					count = count + 1
+					break
+				end
+				return count
+			end)
+			if ok_n then return n == 0 end
+		end
+	end
+	return false
+end
+
+local function add_marker(lid, id, kind, anon, now)
+	local m = markers[id]
+	if m then
+		-- the same marker again (a repeated callback): the nick may be better known now
+		local nick = lid ~= nil and nick_of(lid) or nil
+		if nick and not anon and (m.anon or m.nick ~= nick) then
+			m.nick, m.anon = nick, false
+			if m.added then change_hint(id, hint_of(m)) end
+		end
+		return
+	end
+	if marker_count >= MAX_MARKERS then drop_oldest() end
+	marker_seq = marker_seq + 1
+	local nick = nil
+	if not anon then nick = (lid ~= nil and nick_of(lid)) or "?" end
+	m = { id = id, kind = kind, anon = anon, nick = nick, since = now, seq = marker_seq, added = false, seen = false }
+	markers[id] = m
+	marker_count = marker_count + 1
+	if spot_exists(id) == true then
+		m.added = false -- a spot of that type is there already (a quest mark of a mod): left as it is, never removed by us
+	else
+		m.added = add_spot(id, hint_of(m))
+	end
+	local se, obj = server_entity(id), online_object(id)
+	if se or obj then m.seen = true end
+end
+
+-- Should the mark go? The object has a parent, is gone from the world, or (a stash) has nothing in it.
+local function marker_done(m, now)
+	local se, known = server_entity(m.id)
+	local obj = online_object(m.id)
+	if se or obj then m.seen = true end
+	if not se and not obj then
+		if not known then return false end -- no ALife to ask: an object that is not online may only be far away
+		return m.seen or (now - m.since > UNSEEN_MS)
+	end
+	if m.kind == "corpse" and se then
+		-- another save was loaded and the id belongs to something else now (T8b checks the same on the host)
+		local ok, sec = pcall(se.section_name, se)
+		if ok and sec ~= STASH_SECTION then return true end
+	end
+	if now - m.since >= PARENT_GRACE_MS then
+		local pid = se and se.parent_id
+		if type(pid) == "number" then
+			if pid ~= NO_PARENT then return true end
+		elseif obj then
+			local ok, parent = pcall(function() return obj:parent() end)
+			if ok and parent ~= nil then return true end
+		end
+	end
+	if m.kind == "corpse" and now - m.since >= EMPTY_GRACE_MS and box_empty(se, obj) then return true end
+	return false
+end
+
+local function poll_markers(now)
+	if next(markers) == nil then return end
+	if now < next_poll and now >= next_poll - MARKER_POLL_MS then return end
+	next_poll = now + MARKER_POLL_MS
+	local gone = {}
+	for id, m in pairs(markers) do
+		if marker_done(m, now) then gone[#gone + 1] = id end
+	end
+	for _, id in ipairs(gone) do remove_marker(id) end
+end
+
+-- coop_death_marker(player_local_id, marker_local_id, "drop" | "corpse")
+local function on_death_marker(lid, id, kind)
+	if not in_session() then return end
+	if type(lid) ~= "number" or type(id) ~= "number" or id ~= math_floor(id) or id < 0 or id >= NO_PARENT then return end
+	if kind ~= "drop" and kind ~= "corpse" then return end
+	add_marker(lid, id, kind, false, time_global())
+end
+
+-- The stashes of fallen players in the world, whose callback was lost or never sent to this machine.
+local function restore_stash_markers(now)
+	local ok, sim = pcall(alife)
+	if not (ok and sim and sim.iterate_objects) then return end
+	local found = {}
+	local ok_it, err = pcall(sim.iterate_objects, sim, function(se)
+		if se:section_name() == STASH_SECTION then found[#found + 1] = se end
+		return false
+	end)
+	if not ok_it then
+		log("! looking through the world for death stashes failed: %s", tostring(err))
+		return
+	end
+	table.sort(found, function(a, b) return a.id < b.id end)
+	local added = 0
+	for _, se in ipairs(found) do
+		local id = se.id
+		if type(id) == "number" and not markers[id] and not box_empty(se, online_object(id)) then
+			add_marker(nil, id, "corpse", true, now)
+			added = added + 1
+		end
+	end
+	if added > 0 then log("%d death stash(es) of the world marked on the PDA", added) end
+end
+
+-------------------------------------------------------------------------------
+-- Engine callbacks
+-------------------------------------------------------------------------------
+local function on_update()
+	if contusion == nil and next(markers) == nil then return end
+	local now = time_global()
+	if not in_session() then -- the session is over: the contusion and the marks were of the session
+		stop_contusion(false)
+		forget_markers()
+		return
+	end
+	update_contusion(now)
+	poll_markers(now)
+end
+
+-- A world is entered (a load, a level change): the effectors and the non-serializable spots of the old world are gone.
+local function on_first_update()
+	local now = time_global()
+	if not in_session() then
+		stop_contusion(false)
+		forget_markers()
+		return
+	end
+	update_contusion(now)
+	if contusion then put_contusion(now) end
+	for _, m in pairs(markers) do
+		m.since = now
+		if spot_exists(m.id) ~= true then m.added = add_spot(m.id, hint_of(m)) end
+	end
+	restore_stash_markers(now)
+end
+
+function on_game_start()
+	if not api then return end
+	AddScriptCallback("coop_respawned") -- fired by the engine (coop_survival.cpp), on the owner only
+	AddScriptCallback("coop_death_marker") -- fired by the engine (coop_death.cpp), on every machine
+	RegisterScriptCallback("coop_respawned", on_respawned)
+	RegisterScriptCallback("coop_death_marker", on_death_marker)
+	RegisterScriptCallback("actor_on_update", on_update)
+	RegisterScriptCallback("actor_on_first_update", on_first_update)
+end
