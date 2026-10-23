@@ -1,0 +1,406 @@
+--[[
+	Anomaly Coop - the new game screen of a co-op host (gamedata\scripts\coop_newgame_modes.script), owner's ruling of
+	2026-10-23. The stock screen (ui_mm_faction_select.UINewGame, tab "Modes") offers things that do not work in co-op or are
+	not part of the design. When the new game is started for the host of a co-op session, the screen changes:
+
+	  stays      Story mode (check_story), Open Zone (check_routes), Game difficulty, Economy difficulty
+	  hidden and forced off (checks unchecked, lists on "off", nothing of them reaches the game):
+	             Life after life (check_azazel_mode), One life (check_hardcore) with its Lives and Days for an extra life
+	             (list_hardcore_lives, list_hardcore_regen), Soulslike mode (check_soulslike_mode, GAMMA), Campfire saves
+	             (check_campfire), Agony (check_conditions), Timer (list_timer), Survival mode (check_survival), Faction war
+	             (check_warfare)
+	  shown      a block "Co-op mode" in the place of the hidden second column: the host's rules of death, of what is lost and
+	             of the emergency autosave, the same console variables as the Options > Co-op page (coop_menu_options):
+	               coop_death_mode        Camps (checkpoint) | Hardcore (hardcore)
+	               coop_death_drop        Bag at the body (drop) | All in a stash (corpse) | Lost (lose)
+	               coop_autosave_interval 5 | 10 | 20 min | off (0)   (an interval set on the options page is kept as an entry)
+	             The lists start on the console's values; Start writes the three variables (and cfg_save, like the options
+	             page) before the world is started. Untouched lists write nothing. A hint under the block says they can be
+	             changed later in Options > Co-op.
+	A single player game (no session, nothing pending, no -coop_host) keeps the whole stock screen.
+
+	Which new game is a co-op host's (is_coop_new_game): coop.session_info().pending_host - the Co-op window (coop_menu
+	UICoopMenu:HostAfter) asks coop.host_when_ready(port) before it opens this screen, and the engine keeps the request
+	until the new world is up (coop_script.cpp menu_pending_frame); .host - a session that is already running; or
+	-coop_host on the command line (tools\launch.ps1 -HostSession: the engine hosts as soon as a level is ready,
+	Manager::autostart). A connected client never is: it does not set up the group's game. tools\launch.ps1 -NewGame does not
+	open this screen at all (it writes [character_creation] itself, without any of the modes), see on_game_start below.
+
+	How it is wired (nothing of the stock files is edited):
+	  - modxml_coop_newgame.script (dxml start-up, also in the cold-start main menu) registers main_menu_on_init, which calls
+	    install(): a wrapper of ui_main_menu.main_menu:ShowFactionUI by assignment into the class table. After the stock
+	    method has built and shown the dialog, apply() changes it. This is independent of the order in which GAMMA's own
+	    wrappers of UINewGame (souslike_gamemode_injector_mcm: Main_Controls adds check_soulslike_mode) were installed, because
+	    nothing is wrapped inside the dialog's construction.
+	  - the dialog is cached by the stock menu (new_game_dlg). A cached dialog built for the other kind of game is dropped
+	    before the stock method runs, and a co-op dialog is always built again (the console may have changed): the player
+	    sees the right screen however he walked in and out.
+	  - the start button's callback of THIS dialog is replaced (AddCallback replaces a control + event pair in this engine,
+	    UIWndCallback.cpp): it forces the modes off again (a mod may have ticked them), clears their keys from
+	    [character_creation], writes the rules, then calls dlg:OnStartGame() - the stock method with whatever wrappers
+	    GAMMA put around it. The stock reads the unchecked boxes and writes no mode.
+	  - on_game_start (every game start, before the stock on_game_load reads [character_creation]): for a co-op host the
+	    mode keys are cleared from the config. This is for a start that did not come through the screen (a hand-edited
+	    axr_options.ltx). The order of callbacks of one name is not defined, so it cannot be done in on_game_load.
+	A failing step (an unknown layout, a missing control) is logged and skipped; it never stops the screen or the start.
+--]]
+
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+local string_format, math_floor = string.format, math.floor
+
+local SECTION = "character_creation"
+local REPOSITION_ROWS = { 30, 60 } -- y of the caption of the first and second row of the left column (stock layout)
+
+local function coop_api()
+	return rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+end
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-newgame] %s", ok and line or tostring(fmt))
+end
+
+-- a step that may fail must not stop the ones after it
+local function try(what, f, ...)
+	local ok, err = pcall(f, ...)
+	if not ok then log("! %s failed: %s", what, tostring(err)) end
+	return ok
+end
+
+local function call(obj, method, ...)
+	if obj == nil then return end
+	local ok, err = pcall(obj[method], obj, ...)
+	if not ok then log("! %s failed: %s", tostring(method), tostring(err)) end
+end
+
+local function tr(id)
+	local ok, s = pcall(function() return game.translate_string(id) end)
+	if ok and s ~= nil then return tostring(s) end
+	return id
+end
+
+-- the module of a stock script (_G.__index loads gamedata\scripts\<name>.script on the first access)
+local function mod(name)
+	local m = rawget(_G, name)
+	if m == nil then
+		local ok, r = pcall(function() return _G[name] end)
+		m = ok and r or nil
+	end
+	return type(m) == "table" and m or nil
+end
+
+-------------------------------------------------------------------------------
+-- Which new game is a co-op host's
+-------------------------------------------------------------------------------
+local function command_line_hosts()
+	local f = rawget(_G, "command_line")
+	if type(f) ~= "function" then return false end
+	local ok, line = pcall(f)
+	return ok and type(line) == "string" and line:find("%-coop_host") ~= nil
+end
+
+function is_coop_new_game()
+	local api = coop_api()
+	if not api then return false end
+	local ok, info = pcall(api.session_info)
+	if ok and type(info) == "table" then
+		if info.client == true then return false end
+		if tonumber(info.pending_host) ~= nil then return true end
+		if info.host == true then return true end
+	end
+	return command_line_hosts()
+end
+
+-------------------------------------------------------------------------------
+-- The ten modes of the stock screen: fields of UINewGame, the caption of a field is <field>_cap
+-------------------------------------------------------------------------------
+local MODES = {
+	{ field = "ck_azazel_mode", check = true },
+	{ field = "ck_hardcore", check = true },
+	{ field = "list_hardcore_lives" },
+	{ field = "list_hardcore_regen" },
+	{ field = "ck_soulslike_mode", check = true }, -- GAMMA only (Soulslike Gamemode adds it to the screen)
+	{ field = "ck_campfire", check = true },
+	{ field = "ck_conditions", check = true },
+	{ field = "list_timer" },
+	{ field = "ck_survival", check = true },
+	{ field = "ck_warfare", check = true },
+}
+
+-- [character_creation] keys the stock OnStartGame writes for them (soulslike: the GAMMA injector)
+local MODE_KEYS = {
+	"new_game_hardcore_mode", "new_game_hardcore_mode_lives", "new_game_hardcore_mode_regenerate", "new_game_azazel_mode",
+	"new_game_survival_mode", "new_game_campfire_mode", "new_game_conditions_mode", "new_game_warfare",
+	"new_game_timer_mode", "new_game_soulslike_mode",
+}
+
+-- Clears the mode keys from axr_options.ltx [character_creation]; returns how many were set. Read without the cache of
+-- ini_file_ex.r_value (it would keep a string under a key the stock reads as a bool); a cleared line is "".
+local function clear_config_modes()
+	local am = rawget(_G, "axr_main")
+	local cfg = am and am.config
+	if not cfg then return 0 end
+	local n = 0
+	for _, key in ipairs(MODE_KEYS) do
+		local v
+		if cfg.r_string_ex then v = cfg:r_string_ex(SECTION, key) else v = cfg:r_value(SECTION, key, 3) end
+		if v ~= nil and v ~= "" and v ~= "false" then
+			cfg:w_value(SECTION, key)
+			n = n + 1
+		end
+	end
+	if n > 0 then cfg:save() end
+	return n
+end
+
+-------------------------------------------------------------------------------
+-- The dialog
+-------------------------------------------------------------------------------
+local function hide_modes(dlg)
+	for _, mode in ipairs(MODES) do
+		local ctl, cap = dlg[mode.field], dlg[mode.field .. "_cap"]
+		if ctl ~= nil then
+			call(ctl, "Show", false)
+			call(ctl, "Enable", false)
+			if mode.check then call(ctl, "SetCheck", false) end
+		end
+		call(cap, "Show", false)
+		if type(dlg.ck_states) == "table" then dlg.ck_states[mode.field] = nil end -- no hover hint of a hidden box
+	end
+end
+
+-- everything the stock start reads is on "off" (a mod may have ticked a box; the lists keep their first entry)
+local function force_off(dlg)
+	for _, mode in ipairs(MODES) do
+		if mode.check then call(dlg[mode.field], "SetCheck", false) end
+	end
+	if type(dlg.table_hardcore_lives) == "table" then dlg.selected_hardcore_lives = dlg.table_hardcore_lives[1] end
+	if type(dlg.table_hardcore_regen) == "table" then dlg.selected_hardcore_regen = dlg.table_hardcore_regen[1] end
+	if type(dlg.table_timer) == "table" then dlg.selected_timer = dlg.table_timer[1] end
+	clear_config_modes()
+end
+
+-- one row of the left column: the caption at y, the check box one pixel above (stock layout)
+local function move_row(dlg, field, y)
+	local cap, ctl = dlg[field .. "_cap"], dlg[field]
+	if cap == nil or ctl == nil then return end
+	local pc, pk = cap:GetWndPos(), ctl:GetWndPos()
+	cap:SetWndPos(vector2():set(pc.x, y))
+	ctl:SetWndPos(vector2():set(pk.x, y - 1))
+end
+
+local function reflow(dlg)
+	move_row(dlg, "ck_story", REPOSITION_ROWS[1])
+	move_row(dlg, "ck_routes", REPOSITION_ROWS[2])
+end
+
+-------------------------------------------------------------------------------
+-- The rules block
+-------------------------------------------------------------------------------
+local function console_value(name)
+	local f = rawget(_G, "get_console_cmd")
+	if type(f) ~= "function" then return nil end
+	local ok, v = pcall(f, 0, name)
+	if not ok or v == nil then return nil end
+	return (tostring(v):gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local AUTOSAVE_BASE = { 5, 10, 20 }
+local AUTOSAVE_DEFAULT, AUTOSAVE_MAX = 10, 120
+
+-- Each rule: name (the list is list_coop_<name>), console variable, the value of the console now (normalized to one of
+-- the entries' values), the entries { value, text }.
+local RULES = {
+	{
+		name = "death_mode", console = "coop_death_mode",
+		current = function()
+			return console_value("coop_death_mode") == "hardcore" and "hardcore" or "checkpoint" -- respawn / respawn_keep: camps
+		end,
+		entries = function()
+			return {
+				{ value = "checkpoint", text = tr("st_coop_newgame_mode_checkpoint") },
+				{ value = "hardcore", text = tr("st_coop_newgame_mode_hardcore") },
+			}
+		end,
+	},
+	{
+		name = "death_drop", console = "coop_death_drop",
+		current = function()
+			local v = console_value("coop_death_drop")
+			return (v == "corpse" or v == "lose") and v or "drop"
+		end,
+		entries = function()
+			return {
+				{ value = "drop", text = tr("st_coop_newgame_drop_drop") },
+				{ value = "corpse", text = tr("st_coop_newgame_drop_corpse") },
+				{ value = "lose", text = tr("st_coop_newgame_drop_lose") },
+			}
+		end,
+	},
+	{
+		name = "autosave", console = "coop_autosave_interval",
+		current = function()
+			local n = tonumber(console_value("coop_autosave_interval"))
+			if n == nil or n ~= math_floor(n) or n < 0 or n > AUTOSAVE_MAX then return AUTOSAVE_DEFAULT end
+			return n
+		end,
+		entries = function(current)
+			local minutes, seen = {}, {}
+			for _, n in ipairs(AUTOSAVE_BASE) do minutes[#minutes + 1] = n; seen[n] = true end
+			if current > 0 and not seen[current] then
+				minutes[#minutes + 1] = current -- set on the options page: kept, so that nothing is changed silently
+				table.sort(minutes)
+			end
+			local out = {}
+			for _, n in ipairs(minutes) do out[#out + 1] = { value = n, text = tostring(n) .. " " .. tr("st_coop_newgame_min") } end
+			out[#out + 1] = { value = 0, text = tr("st_coop_newgame_off") }
+			return out
+		end,
+	},
+}
+
+-- the select callbacks: module functions (the callback is stored per dialog by AddCallback)
+local function on_select(dlg, name)
+	local st = dlg.coop_modes
+	local rule = type(st) == "table" and st[name] or nil
+	local ctl = dlg["list_coop_" .. name]
+	if not (rule and ctl) then return end
+	local entry = rule.entries[ctl:CurrentID()]
+	if entry then rule.value = entry.value end
+end
+function on_select_death_mode(dlg) on_select(dlg, "death_mode") end
+function on_select_death_drop(dlg) on_select(dlg, "death_drop") end
+function on_select_autosave(dlg) on_select(dlg, "autosave") end
+local SELECT_CALLBACK = { death_mode = on_select_death_mode, death_drop = on_select_death_drop, autosave = on_select_autosave }
+
+local function build_block(dlg)
+	local xml = CScriptXmlInit()
+	xml:ParseFile("ui_coop_newgame.xml") -- ui_coop_newgame_16.xml on wide screens
+	local parent = dlg.templ_options
+	local state = {}
+	dlg.coop_header = xml:InitStatic("main_dialog:options:cap_coop_header", parent)
+	for _, rule in ipairs(RULES) do
+		local field = "list_coop_" .. rule.name
+		dlg[field .. "_cap"] = xml:InitStatic("main_dialog:options:cap_" .. field, parent)
+		local list = xml:InitComboBox("main_dialog:options:" .. field, parent)
+		list:SetAutoDelete(true)
+		dlg[field] = list
+		dlg:Register(list, field)
+		local current = rule.current()
+		local entries = rule.entries(current)
+		list:ClearList()
+		local shown = entries[1].text
+		for i, e in ipairs(entries) do
+			list:AddItem(e.text, i)
+			if e.value == current then shown = e.text end
+		end
+		list:SetText(shown)
+		dlg:AddCallback(field, ui_events.LIST_ITEM_SELECT, SELECT_CALLBACK[rule.name], dlg)
+		state[rule.name] = { value = current, entries = entries }
+	end
+	dlg.coop_hint = xml:InitTextWnd("main_dialog:options:text_coop_hint", parent)
+	dlg.coop_hint:SetText(tr("st_coop_newgame_hint"))
+	dlg.coop_modes = state
+end
+
+-- writes the lists' values the console does not have yet; cfg_save when something was written (the options page does
+-- the same on Apply: console variables live in user.ltx)
+local function write_rules(dlg)
+	local st = dlg.coop_modes
+	if type(st) ~= "table" then return end
+	local exec = rawget(_G, "exec_console_cmd")
+	if type(exec) ~= "function" then return end
+	local changed = false
+	for _, rule in ipairs(RULES) do
+		local chosen = st[rule.name]
+		if chosen and chosen.value ~= nil and tostring(chosen.value) ~= tostring(rule.current()) then
+			exec(rule.console .. " " .. tostring(chosen.value))
+			changed = true
+		end
+	end
+	if changed then exec("cfg_save") end
+end
+
+-------------------------------------------------------------------------------
+-- Start
+-------------------------------------------------------------------------------
+-- the stock OnStartGame returns without starting when a pop-up is open or the name is empty
+local function will_start(dlg)
+	if dlg.access == false then return false end
+	local ok, name = pcall(function() return dlg.character_name:GetText() end)
+	if ok and name == "" then return false end
+	return true
+end
+
+-- Module function: the callback of btn_start of a co-op dialog (stored by AddCallback).
+function on_start_clicked(dlg)
+	try("modes off", force_off, dlg)
+	if will_start(dlg) then try("rules", write_rules, dlg) end
+	return dlg:OnStartGame()
+end
+
+local function hook_start(dlg)
+	dlg:AddCallback("btn_start", ui_events.BUTTON_CLICKED, on_start_clicked, dlg)
+end
+
+-- Sets up a freshly built stock dialog for a co-op host.
+function apply(dlg)
+	if dlg == nil then return end
+	dlg.coop_modes_applied = true
+	try("hide the modes", hide_modes, dlg)
+	try("start button", hook_start, dlg)
+	try("left column", reflow, dlg)
+	try("rules block", build_block, dlg)
+end
+
+local function wrap_show_faction_ui(orig)
+	return function(self, ...)
+		local coop_game = is_coop_new_game()
+		local ok, dlg = pcall(function() return self.new_game_dlg end)
+		if ok and dlg ~= nil then
+			local was = false
+			pcall(function() was = dlg.coop_modes_applied == true end)
+			if coop_game or was then self.new_game_dlg = nil end -- built for the other kind of game, or the console may have changed
+		end
+		local result = orig(self, ...)
+		if coop_game then
+			local okd, built = pcall(function() return self.new_game_dlg end)
+			if okd and built ~= nil then
+				try("new game screen", apply, built)
+			else
+				log("! no new game dialog after ShowFactionUI: the stock screen stays")
+			end
+		end
+		return result
+	end
+end
+
+local ours = {} -- the wrappers this script made: never wrapped again
+
+local function wrap(tbl, key, make)
+	local orig = tbl[key]
+	if type(orig) ~= "function" or ours[orig] then return false end
+	local w = make(orig)
+	ours[w] = true
+	tbl[key] = w
+	return true
+end
+
+-- Called from the main menu's init (modxml_coop_newgame). Idempotent.
+function install()
+	local m = mod("ui_main_menu")
+	local cls = m and m.main_menu
+	if type(cls) ~= "table" then
+		log("! ui_main_menu.main_menu is missing: the new game screen stays the stock one")
+		return false
+	end
+	return wrap(cls, "ShowFactionUI", wrap_show_faction_ui)
+end
+
+-- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop.
+function on_game_start()
+	if not coop_api() then return end
+	try("clear the modes", function()
+		if is_coop_new_game() and clear_config_modes() > 0 then log("modes of a co-op host cleared from [character_creation]") end
+	end)
+end

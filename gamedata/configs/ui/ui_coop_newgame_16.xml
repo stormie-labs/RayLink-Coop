@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop: the co-op block of the new game screen of a host, 16:9 layout (frame 704 x 160). Same elements as
+     ui_coop_newgame.xml; x and widths follow the stock ui_mm_faction_select_16.xml (about 0.8 of 4:3). -->
+<w>
+	<main_dialog>
+		<options>
+			<cap_coop_header x="264" y="10" width="284" height="22" stretch="1">
+				<text r="250" g="250" b="250" font="letterica18" align="l" vert_align="c">st_coop_newgame_header</text>
+			</cap_coop_header>
+
+			<cap_list_coop_death_mode x="264" y="37" width="132" height="20" stretch="1">
+				<text r="170" g="170" b="170" font="letterica16" align="l" vert_align="c">st_coop_newgame_death</text>
+			</cap_list_coop_death_mode>
+			<list_coop_death_mode x="400" y="34" width="152" height="27">
+				<list_font r="190" g="190" b="190" font="letterica16"/>
+				<text_color>
+					<e r="170" g="170" b="170"/>
+					<d r="70" g="70" b="70"/>
+				</text_color>
+			</list_coop_death_mode>
+
+			<cap_list_coop_death_drop x="264" y="66" width="132" height="20" stretch="1">
+				<text r="170" g="170" b="170" font="letterica16" align="l" vert_align="c">st_coop_newgame_drop</text>
+			</cap_list_coop_death_drop>
+			<list_coop_death_drop x="400" y="63" width="152" height="27">
+				<list_font r="190" g="190" b="190" font="letterica16"/>
+				<text_color>
+					<e r="170" g="170" b="170"/>
+					<d r="70" g="70" b="70"/>
+				</text_color>
+			</list_coop_death_drop>
+
+			<cap_list_coop_autosave x="264" y="95" width="132" height="20" stretch="1">
+				<text r="170" g="170" b="170" font="letterica16" align="l" vert_align="c">st_coop_newgame_autosave</text>
+			</cap_list_coop_autosave>
+			<list_coop_autosave x="400" y="92" width="152" height="27">
+				<list_font r="190" g="190" b="190" font="letterica16"/>
+				<text_color>
+					<e r="170" g="170" b="170"/>
+					<d r="70" g="70" b="70"/>
+				</text_color>
+			</list_coop_autosave>
+
+			<text_coop_hint x="264" y="122" width="416" height="34">
+				<text complex_mode="1" r="150" g="150" b="150" align="l" vert_align="c" font="letterica16"/>
+			</text_coop_hint>
+		</options>
+	</main_dialog>
+</w>

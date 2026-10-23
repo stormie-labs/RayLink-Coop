@@ -1,0 +1,19 @@
+--[[
+	Anomaly Coop - main menu seam of the new game screen of a co-op host (gamedata\scripts\modxml_coop_newgame.script).
+	The modxml_ prefix makes dxml_core load this script and call on_xml_read() at script start-up, also in the cold-start
+	main menu: that is the moment early enough to be present when the player opens the screen for the first time (the
+	other seams of ours do the same, modxml_coop_menu). main_menu_on_init is the last statement of main_menu:__init, so
+	ui_main_menu.main_menu exists; coop_newgame_modes.install() puts its wrapper on main_menu:ShowFactionUI there.
+	Does nothing on an exe without the co-op engine (namespace `coop` missing).
+--]]
+
+-- Module function, not a closure: dxml / axr_main keep one entry per function value.
+function main_menu_init(menu)
+	local ok, err = pcall(function() coop_newgame_modes.install() end)
+	if not ok then printf("! [coop-newgame] menu seam failed: %s", tostring(err)) end
+end
+
+function on_xml_read()
+	if not rawget(_G, "coop") then return end
+	RegisterScriptCallback("main_menu_on_init", main_menu_init)
+end

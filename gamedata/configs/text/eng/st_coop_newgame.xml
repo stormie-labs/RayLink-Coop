@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop - the co-op block of the new game screen (scripts/coop_newgame_modes.script, layout configs/ui/ui_coop_newgame.xml): the host's death and autosave rules, shown instead of the stock modes that do not work in co-op. Ids st_coop_newgame_<name>. -->
+<string_table>
+	<string id="st_coop_newgame_header">
+		<text>Co-op mode</text>
+	</string>
+	<string id="st_coop_newgame_death">
+		<text>Death</text>
+	</string>
+	<string id="st_coop_newgame_drop">
+		<text>Loss on death</text>
+	</string>
+	<string id="st_coop_newgame_autosave">
+		<text>Host autosave</text>
+	</string>
+	<string id="st_coop_newgame_mode_checkpoint">
+		<text>Camps</text>
+	</string>
+	<string id="st_coop_newgame_mode_hardcore">
+		<text>Hardcore</text>
+	</string>
+	<string id="st_coop_newgame_drop_drop">
+		<text>Bag at the body</text>
+	</string>
+	<string id="st_coop_newgame_drop_corpse">
+		<text>All in a stash</text>
+	</string>
+	<string id="st_coop_newgame_drop_lose">
+		<text>Lost</text>
+	</string>
+	<string id="st_coop_newgame_min">
+		<text>min</text>
+	</string>
+	<string id="st_coop_newgame_off">
+		<text>off</text>
+	</string>
+	<string id="st_coop_newgame_hint">
+		<text>These are the host's rules for everyone. Change them later in Options > Co-op</text>
+	</string>
+</string_table>
