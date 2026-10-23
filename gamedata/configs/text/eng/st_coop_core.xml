@@ -117,4 +117,7 @@
 	<string id="st_coop_vehicle_host">
 		<text>Vehicles are driven by the host in co-op</text>
 	</string>
+	<string id="st_coop_lease_lost">
+		<text>Co-op: the host did not answer, a new item was taken back</text>
+	</string>
 </string_table>

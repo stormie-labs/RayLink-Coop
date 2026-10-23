@@ -8,6 +8,7 @@
 #include "coop_spawn.h"
 
 #include <algorithm>
+#include <deque>
 #include <set>
 #include <string>
 #include <vector>
@@ -270,8 +271,8 @@ TEST(lease_spec_confirm_and_rollback)
 	CHECK(book.pending(300) && book.pending(301));
 	CHECK(book.is_source(900));
 	CHECK(!book.is_source(300));
-	book.sent(300, 11);
-	book.sent(301, 12);
+	book.sent(300, 11, 0);
+	book.sent(301, 12, 0);
 	uint16_t id = 0;
 	CHECK(book.answer(11, true, false, 0, id) == lease::Outcome::Confirmed);
 	CHECK_EQ(id, uint16_t(300));
@@ -291,16 +292,19 @@ TEST(lease_spec_rate_limited_is_retried)
 	// before; after kMaxRetries the create is taken back.
 	lease::SpecBook book;
 	book.add(400);
-	book.sent(400, 1);
+	book.sent(400, 1, 0);
 	uint16_t id = 0;
 	CHECK(book.answer(1, false, true, 1000, id) == lease::Outcome::Retry);
 	CHECK_EQ(id, uint16_t(400));
 	CHECK(book.pending(400));
-	CHECK(book.due(1000 + lease::kRetryFirstMs - 1).empty());
-	CHECK((book.due(1000 + lease::kRetryFirstMs) == std::vector<uint16_t>{400}));
-	book.sent(400, 2); // asked again: not due any more, the old seq is forgotten
-	CHECK(book.due(1000000).empty());
-	CHECK(book.answer(1, true, false, 2000, id) == lease::Outcome::Unknown);
+	const lease::SpecBook::Due early = book.due(1000 + lease::kRetryFirstMs - 1);
+	CHECK(early.resend.empty() && early.rollback.empty());
+	CHECK((book.due(1000 + lease::kRetryFirstMs).resend == std::vector<uint16_t>{400}));
+	book.sent(400, 2, 1100); // asked again: in flight, not due before its answer is late
+	CHECK(book.due(1100 + lease::kAnswerTimeoutMs - 1).resend.empty());
+	// round 2: a refusal of an older request of it is stale (the newer one decides)
+	CHECK(book.answer(1, false, false, 2000, id) == lease::Outcome::Unknown);
+	CHECK(book.pending(400));
 	uint64_t prev = 0;
 	uint32_t seq = 2;
 	for (uint32_t i = 2; i < lease::kMaxRetries; ++i) // tries 2 .. kMaxRetries - 1
@@ -310,7 +314,7 @@ TEST(lease_spec_rate_limited_is_retried)
 		CHECK(delay >= lease::kRetryFirstMs && delay <= lease::kRetryMaxMs);
 		CHECK(delay >= prev);
 		prev = delay;
-		book.sent(400, ++seq);
+		book.sent(400, ++seq, 10000);
 	}
 	CHECK(book.answer(seq, false, true, 10000, id) == lease::Outcome::RolledBack);
 	CHECK(!book.pending(400));
@@ -535,4 +539,253 @@ TEST(lease_clone_state_from_source)
 	CHECK_EQ(s.size, size_t(0));
 	s = spawn::spawn_state(lease::kNoId, client.data(), client.size(), source); // a create: the client's blob
 	CHECK(s.data == client.data() && s.size == 4);
+}
+
+// ============================================================================ round 2 (task-12b-review.md, N1 N3)
+
+TEST(lease_spec_watchdog)
+{
+	// N1: a request the host never answers (the session's rate row drops it silently, or it never got there) is asked
+	// again with the same id after kAnswerTimeoutMs; after kMaxResends the create is taken back - nothing waits for ever.
+	lease::SpecBook book;
+	book.add(500);
+	book.sent(500, 1, 0);
+	uint64_t now = 0;
+	CHECK(book.due(lease::kAnswerTimeoutMs - 1).resend.empty());
+	for (uint32_t i = 0; i < lease::kMaxResends; ++i)
+	{
+		now += lease::kAnswerTimeoutMs;
+		const lease::SpecBook::Due d = book.due(now);
+		REQUIRE((d.resend == std::vector<uint16_t>{500}) && d.rollback.empty());
+		book.sent(500, 0, now); // in our own outbox (paced): no watchdog meanwhile
+		CHECK(book.due(now + 10 * lease::kAnswerTimeoutMs).resend.empty());
+		book.sent(500, 2 + i, now);
+	}
+	now += lease::kAnswerTimeoutMs;
+	const lease::SpecBook::Due last = book.due(now);
+	CHECK(last.resend.empty() && (last.rollback == std::vector<uint16_t>{500}));
+	CHECK(!book.pending(500) && book.size() == 0);
+}
+
+TEST(lease_spec_queued_waits)
+{
+	// N1: the host says the request waits in its budget queue (ReqResult Queued, not final): no watchdog for it - a
+	// second request with its id would queue twice; the host answers when it creates or refuses it.
+	lease::SpecBook book;
+	book.add(600);
+	book.sent(600, 7, 0);
+	CHECK(book.queued(7));
+	CHECK(!book.queued(8)); // no request of ours
+	const lease::SpecBook::Due d = book.due(100 * lease::kAnswerTimeoutMs);
+	CHECK(d.resend.empty() && d.rollback.empty());
+	uint16_t id = 0;
+	CHECK(book.answer(7, true, false, 0, id) == lease::Outcome::Confirmed);
+}
+
+TEST(lease_spec_any_request_confirms)
+{
+	// N1: asked twice (the watchdog), the host makes it under the first request and refuses the second (not his any
+	// more): the Ok of either confirms, what comes after is no news.
+	lease::SpecBook book;
+	book.add(700);
+	book.sent(700, 1, 0);
+	REQUIRE(book.due(lease::kAnswerTimeoutMs).resend.size() == 1);
+	book.sent(700, 2, lease::kAnswerTimeoutMs);
+	uint16_t id = 0;
+	CHECK(book.answer(1, true, false, 0, id) == lease::Outcome::Confirmed);
+	CHECK_EQ(id, uint16_t(700));
+	CHECK(book.answer(2, false, false, 0, id) == lease::Outcome::Unknown);
+	CHECK(book.size() == 0);
+}
+
+TEST(lease_spawn_pacer)
+{
+	// N1: a client's ReqSpawn goes no faster than the host takes it (CatSpawn: 20 a second after 40 in a row; the
+	// session's row drops more without an answer): kSpawnPaceBurst in a row, then one per kSpawnPaceMs.
+	lease::SpawnPacer pacer;
+	size_t n = 0;
+	while (pacer.take(1000))
+		++n;
+	CHECK_EQ(n, size_t(lease::kSpawnPaceBurst));
+	CHECK(!pacer.take(1000 + lease::kSpawnPaceMs - 1));
+	CHECK(pacer.take(1000 + lease::kSpawnPaceMs));
+	CHECK(!pacer.take(1000 + lease::kSpawnPaceMs));
+	static_assert(lease::kSpawnPaceMs > 50 && lease::kSpawnPaceBurst <= 40, "slower than the host's 20 a second, 40");
+}
+
+namespace
+{
+// A burst of creates against a model of the host: the session's rate row for ReqSpawn (80 in a row, one per 25 ms,
+// dropped without an answer), the host's CatSpawn bucket (40 in a row, 20 a second: RateLimited), every third item over
+// the cost budget (Queued at once, made 2 s later), 50 ms each way. `paced`: the client's pacer on.
+struct BurstResult
+{
+	size_t confirmed = 0, rolled_back = 0, pending = 0, dropped = 0, rate_limited = 0;
+};
+
+struct ModelBucket
+{
+	double tokens;
+	double burst;
+	double per_ms;
+	uint64_t at = 0;
+	bool take(uint64_t now)
+	{
+		tokens = std::min(burst, tokens + double(now - at) * per_ms);
+		at = now;
+		if (tokens < 1.)
+			return false;
+		tokens -= 1.;
+		return true;
+	}
+};
+
+struct ModelMsg
+{
+	uint64_t at;
+	uint32_t seq;
+	uint16_t id;
+	int kind; // to the host: 0; to the client: 1 Ok, 2 RateLimited, 3 refused, 4 Queued
+};
+
+BurstResult run_burst(size_t creates, bool paced)
+{
+	const uint64_t kWire = 50;
+	lease::SpecBook book;
+	lease::SpawnPacer pacer;
+	std::deque<uint16_t> out;
+	std::vector<ModelMsg> to_host, to_client;
+	std::set<uint16_t> made, queued_ids;
+	std::vector<std::pair<uint64_t, ModelMsg>> host_queue; // (when made, the request)
+	ModelBucket row{80., 80., 1. / 25.};
+	ModelBucket cat{40., 40., 20. / 1000.};
+	BurstResult res;
+	uint32_t seq = 0;
+	for (size_t i = 0; i < creates; ++i)
+	{
+		const uint16_t id = uint16_t(1000 + i);
+		book.add(id);
+		out.push_back(id);
+	}
+	for (uint64_t now = 0; now <= 300000; now += 10)
+	{
+		// client: retries and the watchdog, then what the pacer lets out
+		const lease::SpecBook::Due due = book.due(now);
+		for (uint16_t id : due.resend)
+		{
+			book.sent(id, 0, now);
+			out.push_back(id);
+		}
+		res.rolled_back += due.rollback.size();
+		while (!out.empty() && (!paced || pacer.take(now)))
+		{
+			const uint16_t id = out.front();
+			out.pop_front();
+			if (!book.pending(id))
+				continue;
+			book.sent(id, ++seq, now);
+			to_host.push_back({now + kWire, seq, id, 0});
+		}
+		// host: arrivals in order
+		for (auto it = to_host.begin(); it != to_host.end();)
+		{
+			if (it->at > now)
+			{
+				++it;
+				continue;
+			}
+			const ModelMsg m = *it;
+			it = to_host.erase(it);
+			if (!row.take(now))
+			{
+				++res.dropped; // the session's row: no answer at all
+				continue;
+			}
+			if (!cat.take(now))
+			{
+				++res.rate_limited;
+				to_client.push_back({now + kWire, m.seq, m.id, 2});
+			}
+			else if (made.count(m.id) || queued_ids.count(m.id))
+				to_client.push_back({now + kWire, m.seq, m.id, 3}); // its id is spent, or taken by the queued one
+			else if (m.id % 3 == 0)
+			{
+				queued_ids.insert(m.id);
+				to_client.push_back({now + kWire, m.seq, m.id, 4});
+				host_queue.push_back({now + 2000, m});
+			}
+			else
+			{
+				made.insert(m.id);
+				to_client.push_back({now + kWire, m.seq, m.id, 1});
+			}
+		}
+		for (auto it = host_queue.begin(); it != host_queue.end();)
+		{
+			if (it->first > now)
+			{
+				++it;
+				continue;
+			}
+			made.insert(it->second.id);
+			to_client.push_back({now + kWire, it->second.seq, it->second.id, 1});
+			it = host_queue.erase(it);
+		}
+		// client: answers
+		for (auto it = to_client.begin(); it != to_client.end();)
+		{
+			if (it->at > now)
+			{
+				++it;
+				continue;
+			}
+			const ModelMsg m = *it;
+			it = to_client.erase(it);
+			if (m.kind == 4)
+			{
+				book.queued(m.seq);
+				continue;
+			}
+			uint16_t id = 0;
+			const lease::Outcome o = book.answer(m.seq, m.kind == 1, m.kind == 2, now, id);
+			res.confirmed += o == lease::Outcome::Confirmed ? 1 : 0;
+			res.rolled_back += o == lease::Outcome::RolledBack ? 1 : 0;
+		}
+		if (book.size() == 0 && to_client.empty() && to_host.empty() && host_queue.empty())
+			break;
+	}
+	res.pending = book.size();
+	return res;
+}
+} // namespace
+
+TEST(lease_burst_of_creates_all_settle)
+{
+	// N1: 100 creates at once (a mass disassembly, unpacking). Paced, nothing is dropped by the session's row and every
+	// create is made (a third of them after the budget queue). Unpaced (the bug: every retry at once), the row drops some
+	// and the host rate-limits many - still nothing waits for ever: the watchdog asks again or takes the item back.
+	const BurstResult paced = run_burst(100, true);
+	CHECK_EQ(paced.pending, size_t(0));
+	CHECK_EQ(paced.dropped, size_t(0));
+	CHECK_EQ(paced.confirmed, size_t(100));
+	CHECK_EQ(paced.rolled_back, size_t(0));
+	const BurstResult unpaced = run_burst(100, false);
+	CHECK_EQ(unpaced.pending, size_t(0));
+	CHECK_EQ(unpaced.confirmed + unpaced.rolled_back, size_t(100));
+	CHECK(unpaced.dropped > 0); // the model shows the loss the pacer avoids
+}
+
+TEST(lease_clone_family)
+{
+	// N3: a clone keeps to its weapon's variants - the same section, or one base (parent_section; a section without one
+	// is its own base): a scope or magnifier variant. Another weapon would convert the source's rounds into its ammo.
+	CHECK(lease::clone_family("wpn_ak74", "", "wpn_ak74_pso", "wpn_ak74")); // attach: base -> variant
+	CHECK(lease::clone_family("wpn_ak74_pso", "wpn_ak74", "wpn_ak74", "wpn_ak74")); // detach (the base names itself)
+	CHECK(lease::clone_family("wpn_ak74_pso", "wpn_ak74", "wpn_ak74", "")); // a base without the line
+	CHECK(lease::clone_family("wpn_ak74_pso", "wpn_ak74", "wpn_ak74_kobra", "wpn_ak74")); // variant -> variant
+	CHECK(lease::clone_family("wpn_aug_kit_off", "wpn_aug_kit", "wpn_aug_kit", "wpn_aug_kit")); // a magnifier pair
+	CHECK(lease::clone_family("wpn_pm", "", "wpn_pm", "")); // the same section (a jam cleared)
+	CHECK(!lease::clone_family("wpn_pm", "", "wpn_svd", ""));
+	CHECK(!lease::clone_family("wpn_ak74_pso", "wpn_ak74", "wpn_svd_pso", "wpn_svd"));
+	CHECK(!lease::clone_family("wpn_ak74", "wpn_ak74", "wpn_vintorez", "wpn_vintorez"));
 }

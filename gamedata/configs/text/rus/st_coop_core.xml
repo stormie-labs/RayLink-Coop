@@ -117,4 +117,7 @@
 	<string id="st_coop_vehicle_host">
 		<text>В коопе транспортом управляет хост</text>
 	</string>
+	<string id="st_coop_lease_lost">
+		<text>Кооп: хост не ответил, новый предмет убран</text>
+	</string>
 </string_table>
