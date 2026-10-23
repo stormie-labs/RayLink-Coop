@@ -1,0 +1,26 @@
+; Anomaly Coop - food and drug use of the local player: Meat Spoiling Timer (meat_spoiling), the DLTX Minimodpack's
+; "more drops from drugs" (zz_itms_manager_more_drops_from_drugs) and the Starting Loadouts' knife ammo cleanup
+; (grok_remove_knife_ammo_on_start). Read after every coop_route*.ltx (coop_route.ltx explains the order), so it wins
+; over the generated coop_route_gamma.ltx.
+;
+; The generator made all three host (Ruling F2-29) because they create or release items of the player's inventory.
+;   zz_itms_manager_more_drops_from_drugs replaces itms_manager.actor_on_item_use with its own function, which gives
+;   back the jar / syringe / plastic of a used drug and then calls the stock handler. itms_manager registers the
+;   callback on_game_start, after every file is loaded, so the registered handler IS the wrapper, and a router key is
+;   the file of the function: host-only, the whole stock itms_manager.actor_on_item_use (chocolate, bolts pack, empty
+;   syringes, watch, deployable mgun ...) vanished on a client.
+;   meat_spoiling keeps an expiry clock for the meat in the player's bag (the clock of each item travels owner to host,
+;   coop_economy_mdata item key expiration_table: it assumes the owner's machine runs the script) and shows it in the
+;   item tooltip (ui_item.build_desc_footer patch, every machine).
+;   grok_remove_knife_ammo_on_start removes stray knife ammo from the own inventory after a start.
+; Owner: every machine handles its own items.
+;
+; World calls on a client (call router, F2 T12): alife_create_item(.., db.actor) and alife_release of an own item are
+; requests to the host (nil result, unused here). meat_spoiling.expire_food also releases meat that lies in a box
+; and creates rotten meat there: that parent is not the player's, so the router refuses it (logged) and that meat is
+; left to the host's copy of the clock (the item keys travel owner to host).
+
+[route_scripts]
+meat_spoiling = owner
+zz_itms_manager_more_drops_from_drugs = owner
+grok_remove_knife_ammo_on_start = owner

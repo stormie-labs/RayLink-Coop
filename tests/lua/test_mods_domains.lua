@@ -46,4 +46,74 @@ SendScriptCallback("on_game_load")
 SendScriptCallback("on_option_change")
 check(RAN.fdda_load == true and RAN.fdda_opt == true,
 	"liz_fdda_redone_consumables gets on_game_load / on_option_change on a client (coop_compat_fdda.ltx: owner)")
+
+-- B3 audit of the generated host lines (2026-10-23): the generator wrote every script that calls a world function as
+-- host, a measure until the call router (F2 T12) existed. Since T12 a client's world call is refused (logged, nil)
+-- or sent to the host, so a script of the player's own experience belongs on the player's machine. Host-only, the part
+-- of such a mod that still runs on a client (its file-level patches of owner modules, the functions other client
+-- scripts call, the time events of a patched stock function) lost the state or the timer only its host callbacks
+-- made: item loss on a disassembly (the patched item_parts function discarded the item, its timer was removed), a
+-- crafting window that never refreshed, itms_manager.actor_on_item_use / actor_on_item_before_use replaced by a
+-- host-keyed wrapper (the whole stock handler was gone on a client). Every rule is in its own configs\coop_compat_*.ltx.
+local function domain_of(callback, script)
+	return (coop.route.of(callback, from_script(script, "return function() end")))
+end
+local B3_OWNER = {
+	-- 3DSS / Toggle Scope (coop_compat_3dss.ltx): the weapon in the player's hands, its scope, magnifier, canted irons
+	"magnifier_switch", "scripted_canted_irons", "z_3dss_thermal_battery", "zzzz_canted_aim_trace",
+	"mosin_carbine_reload_script", "ish_toggle_scope",
+	-- FDDA Redone (coop_compat_fdda.ltx), Quick Melee (coop_compat_melee.ltx)
+	"af_inspect", "quickdraw",
+	-- Artefacts Reinvention / Perk-Based Artefacts (coop_compat_artefacts.ltx)
+	"zz_item_artefact", "grok_artefacts_melter_charge",
+	-- Powered Exos, Milspec PDA (coop_compat_devices.ltx)
+	"item_exo_device", "item_milpda",
+	-- Meat Spoiling, DLTX drug drops, Starting Loadouts (coop_compat_consumables.ltx)
+	"meat_spoiling", "zz_itms_manager_more_drops_from_drugs", "grok_remove_knife_ammo_on_start",
+	-- crafting, disassembly and inventory helpers (coop_compat_crafting.ltx)
+	"zz_item_cooking_keep_crafting_window_open", "zz_ui_workshop_keep_crafting_window_open",
+	"item_parts_repair_notifications", "zzzz_arti_jamming_repairs_repair_notifications",
+	"unusable_parts_handler", "zatura_autostack", "zone_keeper",
+	-- GAMMA's monkey patches of stock scripts (coop_compat_script_fixes.ltx)
+	"aaaa_script_fixes_mp",
+}
+-- aaaa_script_fixes_mp: its only actor_on_update handler is the anomaly pathfinding (host, pinned below), so its client
+-- half is checked on actor_on_first_update.
+local B3_CALLBACK = { aaaa_script_fixes_mp = "actor_on_first_update" }
+for _, n in ipairs(B3_OWNER) do
+	RegisterScriptCallback(B3_CALLBACK[n] or "actor_on_update",
+		from_script(n, "return function() RAN['b3_" .. n .. "'] = true end"))
+end
+SendScriptCallback("actor_on_update")
+SendScriptCallback("actor_on_first_update")
+for _, n in ipairs(B3_OWNER) do
+	check(RAN["b3_" .. n] == true, n .. " runs on a client (owner: the player's own experience)")
+	check(domain_of("time_event", n) == "owner", n .. ": its time events run on a client too (a timer follows its script)")
+end
+check(domain_of("actor_on_item_use", "zz_itms_manager_more_drops_from_drugs") == "owner",
+	"zz_itms_manager_more_drops_from_drugs: the wrapper that replaced itms_manager.actor_on_item_use is registered as that "
+	.. "callback and must not take the stock handler away from a client")
+check(domain_of("actor_on_item_before_use", "aaaa_script_fixes_mp") == "owner",
+	"aaaa_script_fixes_mp: its wrapper of itms_manager.actor_on_item_before_use runs on a client")
+check(domain_of("on_key_press", "ish_toggle_scope") == "owner" and domain_of("load_state", "magnifier_switch") == "view",
+	"the owner rule leaves forced load_state as it is (view everywhere)")
+-- aaaa_script_fixes_mp also holds world handlers (trader refresh, anomaly pathfinding, monster tracking, server
+-- object register): the script rule beats a callback's own default, so each stays on the host by a pair.
+for _, cb in ipairs({ "npc_on_update", "npc_on_hit_callback", "anomaly_on_before_activate", "server_object_on_register",
+		"game_object_on_net_spawn", "game_object_on_net_destroy", "actor_on_update" }) do
+	check(domain_of(cb, "aaaa_script_fixes_mp") == "host", "aaaa_script_fixes_mp: " .. cb .. " stays host-only")
+end
+for _, cb in ipairs({ "actor_on_first_update", "on_loading_screen_dismissed", "ActorMenu_on_item_focus_receive" }) do
+	check(domain_of(cb, "aaaa_script_fixes_mp") ~= "host", "aaaa_script_fixes_mp: " .. cb .. " runs on a client")
+end
+-- World mechanics stay host: their handlers create or release objects of the world (spawners, mines, campfires, quest
+-- scripts, NPC loot and trade, warfare), which the host does once for everybody.
+local B3_HOST = { "campfire_placeable", "item_mine", "txr_mines", "bind_anomaly_field", "bind_anomaly_zone",
+	"bind_container", "tb_coordinate_based_safe_zones", "xcv_phantoms", "safespawn", "nimbleclearinventory",
+	"trader_autoinject", "exo_loot", "night_mutants", "guards_spawner", "release_item_manager", "info_portions",
+	"game_relations", "tasks_fetch", "warfare", "xr_effects", "bind_artifact_harvester", "bind_hf_base",
+	"axr_companions_varefined", "soulslike", "gamemode_ironman" }
+for _, n in ipairs(B3_HOST) do
+	check(domain_of("actor_on_update", n) == "host", n .. " stays host-only (world mechanic)")
+end
 done("DOMAINS")

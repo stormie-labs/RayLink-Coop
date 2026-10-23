@@ -1,0 +1,40 @@
+; Anomaly Coop - GAMMA's monkey patches of stock scripts (aaaa_script_fixes_mp.script, "Fixes to scripts via monkey
+; patches"). Read after every coop_route*.ltx (coop_route.ltx explains the order), so it wins over the generated
+; coop_route_stock.ltx.
+;
+; The generator made it host (Ruling F2-29) because its patches of axr_trade_manager and the NPC trade code create and
+; release items of NPCs. But the file is mostly fixes of the player's side, and a router key is the file of the function,
+; not of the script that registers it: the file REPLACES functions of owner modules and the stock code registers the
+; replacements. Host-only, on a client:
+;   - itms_manager.actor_on_item_before_use was the wrapper of this file (it only calls the stock function when the
+;     flag is still true): the stock handler, which refuses a booster over its limit, did not run;
+;   - ui_pda_npc_tab.use_view (the NPC PDA of the player's bag) is replaced here and starts the timer delay_2d_pda_draw
+;     with a function of this file: the router removed the timer, the 2D PDA never drew;
+;   - actor_on_first_update (PDA rankings, scheduler flush), on_loading_screen_dismissed (scheduler flush stop),
+;     ActorMenu_on_item_focus_receive (highlight of the scopes an upgrade takes) and on_loading_screen_key_prompt (Lua
+;     GC) did not run.
+; Owner for the script, because the player-side functions are the larger part. A script rule beats a callback's own
+; default, so the world handlers of the file are pinned to the host by pairs below (they would run on a client
+; otherwise): the trader refresh near the actor (npc_on_update), the NPC hit bookkeeping (npc_on_hit_callback, also
+; xrs_facer.hit_callback, which this file replaced), the anomaly pathfinding and monster tracking (anomaly_on_before_
+; activate, game_object_on_net_spawn / game_object_on_net_destroy, actor_on_update: anomaly_restrictor_update, which
+; on_loading_screen_dismissed registers) and the stale-data cleanup of a registered server object.
+;
+; World calls on a client (call router, F2 T12): the axr_trade_manager patches and the NPC trade fixes work on NPC
+; inventories only and are reached from the host's NPC logic and dialogs. The axr_trade_manager transfers and
+; alife_create_item(.., npc) are not a client's own items, so the router refuses them there (logged) if a client's
+; dialog ever gets that far. pda.calculate_rankings (actor_on_first_update) reads the host's ALife; coop_quests_pda
+; replaces it with a host request on a client but still falls back to this version until the host answers, so one
+; Lua error of it is possible; the router's pcall on a client catches it and counts it (coop_status).
+
+[route_scripts]
+aaaa_script_fixes_mp = owner
+
+[route_pairs]
+npc_on_update@aaaa_script_fixes_mp = host
+npc_on_hit_callback@aaaa_script_fixes_mp = host
+anomaly_on_before_activate@aaaa_script_fixes_mp = host
+game_object_on_net_spawn@aaaa_script_fixes_mp = host
+game_object_on_net_destroy@aaaa_script_fixes_mp = host
+server_object_on_register@aaaa_script_fixes_mp = host
+actor_on_update@aaaa_script_fixes_mp = host

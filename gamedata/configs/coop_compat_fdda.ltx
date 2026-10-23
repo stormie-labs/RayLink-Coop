@@ -9,6 +9,15 @@
 ; worked (live on the GAMMA stand, 2026-10-23). Owner: every machine animates its own actor. Since F2 T12 the call
 ; router refuses the dummy's alife_create on a client (logged), and FDDA's eat of a missing dummy is a logged no-op
 ; (CScriptGameObject::eat checks for nil), so nothing is duplicated.
+;
+; af_inspect (the artefact inspection animation of the same mod, also generated as host) is the same case (B3 audit,
+; 2026-10-23): the player's own HUD animation. It puts a temporary item into the own inventory (give_object_to_actor:
+; alife_create_item(.., db.actor), a request to the host that answers nil), waits for it with level.add_call and
+; releases it after the animation (alife():release of an own item, a request). Host-only, ui_hud_dotmarks and
+; dotmarks_main (owner) called into it and the key / update / first-update callbacks never ran on a client. The
+; script locks the input (level.disable_input) until the temporary item arrives: if the host ever refuses the spawn
+; the client stays locked, live check pending (see the B3 report).
 
 [route_scripts]
 liz_fdda_redone_consumables = owner
+af_inspect = owner

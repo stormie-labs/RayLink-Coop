@@ -14,12 +14,11 @@
 ; that script its own rule in a configs\coop_compat_<mod>.ltx: those are read last and win over this file, and
 ; the next run of the generator leaves the script out.
 ; Generated 2026-10-23 from ..\anomaly-ref\unpacked\scripts + engine\gamedata\scripts + gamedata\scripts:
-;   530 scripts, 184 call world functions, 72 of those have a rule; 112 below (54 register a handler
+;   530 scripts, 184 call world functions, 73 of those have a rule; 111 below (53 register a handler
 ;   literally, the others are routed when somebody else registers their functions).
 ; Comment of a line: world calls in the file | literal registrations (unique_call / time_event: timers).
 
 [route_scripts]
-aaaa_script_fixes_mp                     = host   ;   7 | ActorMenu_on_item_focus_receive actor_on_first_update actor_on_update anomaly_on_before_activate +8
 axr_beh                                  = host   ;   2 | -
 axr_npc_vs_box                           = host   ;   1 | -
 axr_trade_manager                        = host   ;  10 | npc_on_item_take

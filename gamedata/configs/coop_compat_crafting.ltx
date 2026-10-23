@@ -1,0 +1,34 @@
+; Anomaly Coop - crafting, cooking, disassembly and inventory helpers of the local player: Keep Crafting Window Opened
+; (zz_item_cooking_ / zz_ui_workshop_keep_crafting_window_open), Repair Notifications (item_parts_repair_notifications,
+; zzzz_arti_jamming_repairs_repair_notifications), Unusable Parts Handler, Auto-Stacking Items (zatura_autostack),
+; Workshop Parts Inventory (zone_keeper). Read after every coop_route*.ltx (coop_route.ltx explains the order), so it
+; wins over the generated coop_route_gamma.ltx.
+;
+; The generator made all of them host (Ruling F2-29) because they create or release items. They are UI of the
+; player's own inventory, and every one of them patches an owner or view module at file level (item_cooking.UICook,
+; ui_workshop.UIWorkshop*, item_parts.disassembly_*, zzzz_arti_jamming_repairs, ui_inventory.UIInventory, ui_item), so
+; the patched methods run on a client whatever the domain says. What the domain decides is their callbacks and their
+; time events, and a time event follows the script of its function:
+;   - the patched stock method creates a timer with a function of the patch file (the crafting windows refresh through
+;     CreateTimeEvent(..., self.UpdateUi) / self.CollectValidItems; disassembly through timer_disassembly_item /
+;     timer_disassembly_weapon / timer_disassembly_outfit). Host-only, the router removes the timer on a client:
+;     the crafting window never refreshed, and a disassembly discarded the item (utils_item.discharge, a request) and
+;     never gave the parts back: the item was lost.
+;   - GUI_on_show / actor_on_item_take / on_option_change (unusable_parts_handler, zatura_autostack, zone_keeper) did
+;     not run, so the window helpers worked on the host only.
+; Owner: every machine runs the crafting of its own player.
+;
+; World calls on a client (call router, F2 T12): creating a result in the own inventory (alife_create_item(.., db.actor),
+; alife_create(.., npc:id(), false) + alife():register for the parts of a disassembly) is a request to the host;
+; alife_release of an own item is a request too (nil results, none is used). A result that belongs into a workshop
+; stash (zz_ui_workshop_keep_crafting_window_open: stash_obj as the parent) is the stash's, not the player's, so the
+; router refuses it (logged): a client's complex crafting at a workshop with a stash loses its product until F2 T12b.
+
+[route_scripts]
+zz_item_cooking_keep_crafting_window_open = owner
+zz_ui_workshop_keep_crafting_window_open = owner
+item_parts_repair_notifications = owner
+zzzz_arti_jamming_repairs_repair_notifications = owner
+unusable_parts_handler = owner
+zatura_autostack = owner
+zone_keeper = owner

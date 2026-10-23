@@ -1,0 +1,16 @@
+; Anomaly Coop - Quick Melee strike (quickdraw.script of G.A.M.M.A. Close Quarter Combat / Gunslinger Knives Quick
+; Melee): the local player's key press plays a knife animation. Read after every coop_route*.ltx (coop_route.ltx
+; explains the order), so it wins over the generated coop_route_gamma.ltx.
+;
+; quickdraw creates a temporary animation item in the player's own hands (alife():create with the player's actor as
+; the parent, slot 14) and releases it 350 ms later, so the generator made it host (Ruling F2-29). It is nothing but
+; the player's own HUD animation: actor_on_update drives the state machine, on_key_press starts it, and
+; perk_based_artefacts (owner) calls into it. Host-only, a client never saw the strike. Owner.
+;
+; World calls on a client (call router, F2 T12): the create has the own actor as the parent, so it is a request to
+; the host (the item arrives when the answer does; the script ignores the return value and waits for slot 14 to fill);
+; the release is the own item, a request too. An answer that never comes leaves anm_state at 1 until the next slot
+; check resets it, no error.
+
+[route_scripts]
+quickdraw = owner

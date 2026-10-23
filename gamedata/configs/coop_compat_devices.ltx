@@ -1,0 +1,21 @@
+; Anomaly Coop - Powered Exos (item_exo_device, arti) and Milspec PDA (item_milpda, Catspaw): devices the local player
+; wears or carries. Read after every coop_route*.ltx (coop_route.ltx explains the order), so it wins over the generated
+; coop_route_gamma.ltx.
+;
+; The generator made both host (Ruling F2-29) because they create or release an item. item_exo_device drains the
+; power of a worn exo and slows the player when it is flat (actor_on_update), takes the PSU / battery by drag and drop
+; and patches inventory_upgrades.can_repair_item, ui_item.build_desc_header and the inventory context menu at file
+; level; exo_powers,
+; grok_bo_enhanced_recoil and ver_ads_eft_bs (owner) call its functions, and its per-item state travels owner to host
+; (coop_economy_mdata item key exo_devices). item_milpda is the PDA item: tick (progressive squad visibility),
+; options, actor_on_item_take, file-level patches of pda.* and zzz_sim_squad_scripted_milpda, called by ish_kill_tracker
+; (owner), ui_paw_reticle and the PDA tab scripts. Host-only, a client ran their patches without the state their
+; callbacks fill. Owner: every machine runs its own devices.
+;
+; World calls on a client (call router, F2 T12): alife_create_item(supply, db.actor) is a request to the host and
+; answers nil; alife_release of the own PSU / battery / PDA is a request; item_milpda releases only on its uninstall
+; option. Nothing here creates in the world.
+
+[route_scripts]
+item_exo_device = owner
+item_milpda = owner

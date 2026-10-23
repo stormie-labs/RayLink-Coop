@@ -1,0 +1,32 @@
+; Anomaly Coop - 3DSS for GAMMA (Redotix99 & party) and Toggle Scope (Ishmaeel): the weapon in the local player's hands,
+; its scope, the magnifier, canted irons and thermal battery, the Mosin / Arisaka reload. Read after every
+; coop_route*.ltx (coop_route.ltx explains the order), so it wins over the generated coop_route_gamma.ltx.
+;
+; The generator made these scripts host (Ruling F2-29) because they create and release items (alife_create_item,
+; alife_release, alife_clone_weapon). All of them are the player's own: the item is in the player's inventory or on
+; the player's weapon, and the mod is driven by the player's keys, drag and drop, zoom and HUD animation callbacks.
+; Host-only, the half that still runs on a client had no state: the file-level patches (item_weapon.attach_scope /
+; detach_scope, utils_item.attach_addon, itms_manager.play_item_sound, _G.alife_create_item / _G.alife_clone_weapon)
+; and the functions z_3d_scopes, z_mark_switch, scope_fov_mcm, z_3dss_lens_hider, scripted_canted_irons_*_ui call are
+; installed on every machine, but the options, the per-weapon tables and the callbacks (zoom, slot change, HUD
+; animation, drag and drop, key release) ran on the host only. The per-weapon state of magnifier_switch and
+; scripted_canted_irons travels from the owner to the host (coop_economy_mdata item keys), which assumes they run on
+; the owner's machine. Owner: every machine drives its own weapon.
+;
+; World calls on a client (call router, F2 T12): a create with the own actor as the parent (alife_create_item,
+; alife():create) is a request to the host and answers nil, all these scripts take that (the created item shows up
+; when the host's answer arrives); alife_release of an own item is a request too. alife_clone_weapon (the weapon
+; variant with a scope, ish_toggle_scope, magnifier_switch, scripted_canted_irons, z_3dss_thermal_battery) goes by a
+; request too, but its result is a temporary object with id 65535 until the id lease of F2 T12b: the swap happens,
+; the weapon's per-item data (m_data.se_object, parts) is written under that id and the new weapon does not get it.
+; zzzz_canted_aim_trace only logs (it wraps _G.alife_create and the HUD adjust writes and passes everything through).
+; Their server_entity_on_unregister handlers have no server entity to fire from on a client; only _g.alife_release
+; sends the callback there (for some classes), which cleans that machine's per-weapon tables.
+
+[route_scripts]
+magnifier_switch = owner
+scripted_canted_irons = owner
+z_3dss_thermal_battery = owner
+zzzz_canted_aim_trace = owner
+mosin_carbine_reload_script = owner
+ish_toggle_scope = owner

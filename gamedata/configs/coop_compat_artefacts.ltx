@@ -1,0 +1,21 @@
+; Anomaly Coop - G.A.M.M.A. Artefacts Reinvention / Perk-Based Artefacts (zz_item_artefact) and the artefact melter
+; charge (grok_artefacts_melter_charge): artefacts and containers in the local player's inventory. Read after every
+; coop_route*.ltx (coop_route.ltx explains the order), so it wins over the generated coop_route_gamma.ltx.
+;
+; The generator made both host (Ruling F2-29) because they create and release items. zz_item_artefact replaces the
+; stock item_artefact binder methods (net_spawn / update / net_destroy / save), itms_manager.dropdrop_ArtyContainer /
+; use_arty_container and several utils_item / utils_ui functions at file level, so those run on every machine, and
+; their per-artefact condition table, MCM options and the callbacks that fill them (actor_on_first_update,
+; on_option_change, actor_item_to_ruck / actor_item_to_belt: the condition randomizer) ran on the host only: a client's
+; artefacts never got a randomized condition and used default options. grok_artefacts_melter_charge is the drag and
+; drop on the melter kit in the player's own bag (beside grok_artefacts_melter, owner in coop_route_mods.ltx).
+; Owner: every machine looks after its own artefacts.
+;
+; World calls on a client (call router, F2 T12): alife_create_item(..., db.actor) (a container for an artefact, the
+; parts a container breaks into) is a request to the host and answers nil; alife_release of an own artefact is a
+; request. The results are only used as a truthy value or not at all. The condition is applied after the item
+; arrives (cond option of alife_create_item is lost on a client until F2 T12b).
+
+[route_scripts]
+zz_item_artefact = owner
+grok_artefacts_melter_charge = owner
