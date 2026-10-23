@@ -1,0 +1,353 @@
+--[[
+	Anomaly Coop - record of a game's settings (gamedata\scripts\coop_game_record.script)
+
+	The record is the host's settings of one game (docs\GAME_SETTINGS.md section 3.3): it lives in the save
+	(m_data.coop_game) and in the card file <id>.cgame. This script builds, merges, compares and (de)serializes it; it
+	knows the keys through coop_game_schema and nothing else. Pure logic: the clock, the random numbers, the codec and
+	every machine value are parameters, nothing here calls the engine.
+
+	record = {
+		v = 1                      format version
+		id = "65190f3a-9c41"       "%08x-%04x" of the time and a random number
+		name, created, faction     name of the host's character, "2026-10-23 19:40", the world's faction
+		world = { story, routes, difficulty, economy }    creation flags, read only
+		rev = 0                    number of the edits made outside the world (menu); the higher one is right
+		migrated = true | nil      taken from the machine's values at the first load (an old save)
+		values = { ["<source>|<path>"] = raw }    the keys of coop_game_schema; a string for c / o / m, a number or a
+		                           boolean for g / e / s
+		last_save, last_played, machine_snapshot_at     strings, kept in the card
+	}
+
+	new(values, meta, env) -> record
+	from_machine(reader) -> values, problems
+	merge(block, card) -> record, "card" | "save"
+	take_machine(record, values) -> record, n
+	diff(a, b) -> { key = new_value }
+	apply(record, changes) -> record, refused, n
+	clone(record) -> record
+	encode(record, codec) -> string | nil ; decode(string, codec) -> record | nil
+--]]
+
+local floor, abs, huge = math.floor, math.abs, math.huge
+local tonumber, tostring, type, pairs, ipairs, pcall = tonumber, tostring, type, pairs, ipairs, pcall
+local string_format = string.format
+local tsort = table.sort
+
+VERSION = 1
+
+local PLAYER_GROUP = "coop/coop_player/" -- the player's own options: never the game's, whatever the classifier says
+
+local function schema()
+	return coop_game_schema
+end
+
+-------------------------------------------------------------------------------
+-- Plain values
+-------------------------------------------------------------------------------
+local function scalar(v)
+	local t = type(v)
+	if t == "number" then return v == v and v ~= huge and v ~= -huge end
+	return t == "string" or t == "boolean"
+end
+
+local function copy_values(t)
+	local out = {}
+	if type(t) == "table" then
+		for k, v in pairs(t) do
+			if type(k) == "string" and scalar(v) then out[k] = v end
+		end
+	end
+	return out
+end
+
+local function string_or(v, default)
+	if type(v) == "string" then return v end
+	return default
+end
+
+local function whole(v)
+	if type(v) == "number" and v == v and v ~= huge and v ~= -huge then return floor(v + 0.5) end
+	return nil
+end
+
+local function clean_world(w)
+	local out = {}
+	if type(w) == "table" then
+		if type(w.story) == "boolean" then out.story = w.story end
+		if type(w.routes) == "boolean" then out.routes = w.routes end
+		if whole(w.difficulty) then out.difficulty = whole(w.difficulty) end
+		if whole(w.economy) then out.economy = whole(w.economy) end
+	end
+	return out
+end
+
+-- A record with the known fields only and plain values; nil when it is not a record of this or an older format.
+local function clean(t)
+	if type(t) ~= "table" then return nil, "not a table" end
+	local v = whole(t.v)
+	if v == nil then return nil, "no version" end
+	if v > VERSION then return nil, "newer format" end
+	if type(t.id) ~= "string" or t.id == "" then return nil, "no id" end
+	if type(t.values) ~= "table" then return nil, "no values" end
+	local rev = whole(t.rev)
+	local out = {
+		v = v, id = t.id, name = string_or(t.name, ""), created = string_or(t.created, ""),
+		faction = string_or(t.faction, nil), world = clean_world(t.world), rev = (rev and rev > 0) and rev or 0,
+		migrated = t.migrated == true and true or nil, values = copy_values(t.values),
+		last_save = string_or(t.last_save, nil), last_played = string_or(t.last_played, nil),
+		machine_snapshot_at = string_or(t.machine_snapshot_at, nil),
+	}
+	return out
+end
+
+-- Deep copy of a record (the values and the world are tables of their own).
+function clone(record)
+	if type(record) ~= "table" then return nil end
+	local out = {}
+	for k, v in pairs(record) do
+		if k == "values" or k == "world" then
+			local c = {}
+			if type(v) == "table" then
+				for k2, v2 in pairs(v) do c[k2] = v2 end
+			end
+			out[k] = c
+		else
+			out[k] = v
+		end
+	end
+	return out
+end
+
+-------------------------------------------------------------------------------
+-- New record
+-------------------------------------------------------------------------------
+-- values = { key = raw }, meta = { name, faction, world = { story, routes, difficulty, economy } },
+-- env = { now = fn -> seconds, rand = fn(lo, hi) -> integer, date = fn(format, seconds) -> string } (system ones when absent).
+-- rev is 0. Two records made in the same second differ by the random number.
+function new(values, meta, env)
+	meta = type(meta) == "table" and meta or {}
+	env = type(env) == "table" and env or {}
+	local now = (env.now or os.time)()
+	local rnd = (env.rand or math.random)(0, 0xffff)
+	local sc = schema()
+	local w = type(meta.world) == "table" and meta.world or {}
+	local function flag(v, key)
+		if type(v) == "boolean" then return v end
+		return sc.default(key)
+	end
+	local function preset(v, key)
+		return whole(v) or sc.default(key)
+	end
+	local ok, created = pcall(env.date or os.date, "%Y-%m-%d %H:%M", now)
+	return {
+		v = VERSION,
+		id = string_format("%08x-%04x", floor(now) % 2147483648, floor(rnd) % 65536),
+		name = string_or(meta.name, ""),
+		created = ok and created or "",
+		faction = string_or(meta.faction, nil),
+		world = {
+			story = flag(w.story, "w|story"), routes = flag(w.routes, "w|routes"),
+			difficulty = preset(w.difficulty, "w|difficulty"), economy = preset(w.economy, "w|economy"),
+		},
+		rev = 0,
+		values = copy_values(values),
+	}
+end
+
+-------------------------------------------------------------------------------
+-- The machine's values
+-------------------------------------------------------------------------------
+-- reader = {
+--   section = fn(src) -> { path = raw }    src "o" (stock options) or "m" (MCM): every key of that axr section
+--   owner = fn(src, path) -> "host" | "player"    the classifier of coop_settings
+--   console = fn(name) -> string | nil    value of an engine console variable
+--   factors = fn() -> { g = {id = v}, e = {id = v}, s = {id = v} }    the save's difficulty factors and other values
+-- }
+-- Returns values = { key = raw } with the host-owned keys only (never coop/coop_player/*), the 17 console variables that
+-- exist (canonical string), the factors as they are; and the list of problems (a reader function that failed).
+function from_machine(reader)
+	local values, problems = {}, {}
+	if type(reader) ~= "table" then
+		problems[1] = "no reader"
+		return values, problems
+	end
+	local sc = schema()
+	if type(reader.section) == "function" then
+		if type(reader.owner) ~= "function" then
+			problems[#problems + 1] = "no owner function: the options are not taken"
+		else
+			for _, src in ipairs({ "o", "m" }) do
+				local ok, all = pcall(reader.section, src)
+				if not ok then
+					problems[#problems + 1] = "section " .. src .. ": " .. tostring(all)
+				elseif type(all) == "table" then
+					for path, raw in pairs(all) do
+						if type(path) == "string" and scalar(raw) and path:sub(1, #PLAYER_GROUP) ~= PLAYER_GROUP then
+							local ok2, owner = pcall(reader.owner, src, path)
+							if ok2 and owner == "host" then
+								local key = src .. "|" .. path
+								values[key] = sc.canon(key, raw)
+							elseif not ok2 then
+								problems[#problems + 1] = "owner " .. src .. "|" .. path .. ": " .. tostring(owner)
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	if type(reader.console) == "function" then
+		for _, name in ipairs(sc.CVARS) do
+			local ok, raw = pcall(reader.console, name)
+			if not ok then
+				problems[#problems + 1] = "console " .. name .. ": " .. tostring(raw)
+			elseif raw ~= nil and scalar(raw) then
+				local key = "c|" .. name
+				values[key] = sc.canon(key, raw)
+			end
+		end
+	end
+	if type(reader.factors) == "function" then
+		local ok, f = pcall(reader.factors)
+		if not ok then
+			problems[#problems + 1] = "factors: " .. tostring(f)
+		elseif type(f) == "table" then
+			for _, src in ipairs({ "g", "e", "s" }) do
+				if type(f[src]) == "table" then
+					for id, v in pairs(f[src]) do
+						if type(id) == "string" and scalar(v) then values[src .. "|" .. id] = v end
+					end
+				end
+			end
+		end
+	end
+	return values, problems
+end
+
+-- Re-snapshot of the options that are not in the catalog ("Take the current ones from this machine"): the o| and m|
+-- keys outside the catalog become the machine's values (the ones the machine no longer has are dropped), everything
+-- else, the catalog keys and the factors included, stays. Returns a new record and the number of options taken.
+-- The revision is not changed: the caller raises it when it saves.
+function take_machine(record, values)
+	local out = clone(record)
+	if not out then return nil, 0 end
+	local sc = schema()
+	local function other_option(key)
+		local src = sc.parse_key(key)
+		return (src == "o" or src == "m") and sc.item(key) == nil
+	end
+	for key in pairs(out.values) do
+		if other_option(key) then out.values[key] = nil end
+	end
+	local n = 0
+	if type(values) == "table" then
+		for key, raw in pairs(values) do
+			if type(key) == "string" and scalar(raw) and other_option(key) then
+				out.values[key] = raw
+				n = n + 1
+			end
+		end
+	end
+	return out, n
+end
+
+-------------------------------------------------------------------------------
+-- Merge, compare, edit
+-------------------------------------------------------------------------------
+-- The record to use at a load: the save's block or the card, the one with the higher rev; equal revisions and a missing
+-- card take the save, a missing block takes the card. Whether the card is the block's game (the same id) is the
+-- caller's business, it looks the card up by the block's id. Returns the record itself (not a copy) and where it is from.
+function merge(block, card)
+	local b = type(block) == "table" and block or nil
+	local c = type(card) == "table" and card or nil
+	if b and c then
+		if (tonumber(c.rev) or 0) > (tonumber(b.rev) or 0) then return c, "card" end
+		return b, "save"
+	end
+	if b then return b, "save" end
+	if c then return c, "card" end
+	return nil, nil
+end
+
+local function values_of(x)
+	if type(x) ~= "table" then return {} end
+	if type(x.values) == "table" then return x.values end
+	return x
+end
+
+local function same_value(key, a, b)
+	if a == nil or b == nil then return a == b end
+	local sc = schema()
+	if sc.item(key) then return sc.canon(key, a) == sc.canon(key, b) end
+	if type(a) == "number" and type(b) == "number" then return abs(a - b) < 1e-9 end
+	return tostring(a) == tostring(b)
+end
+
+-- What differs in b from a: { key = the value in b }, the keys that are new or changed. A key that b no longer has is
+-- not reported. a and b are records or their value tables. A value in another form (0.300000 and 0.3, 1 and ON for a
+-- flag) is the same value.
+function diff(a, b)
+	local va, vb = values_of(a), values_of(b)
+	local out = {}
+	for key, v in pairs(vb) do
+		if not same_value(key, va[key], v) then out[key] = v end
+	end
+	return out
+end
+
+-- The menu's edit: changes = { key = value } (a typed value of a catalog key, or a raw one) written into a copy of the
+-- record, rev + 1 when something changed. A change is refused (listed in the second result) when the key cannot be
+-- edited on an existing game (coop_game_schema.editable: a type of the world, an option outside the catalog, an unknown
+-- source) or the value is not valid for the key. Returns the record, the refused keys (sorted) and the number of values changed.
+function apply(record, changes)
+	local out = clone(record)
+	if not out then return nil, {}, 0 end
+	local sc = schema()
+	local refused, n = {}, 0
+	local list = {}
+	if type(changes) == "table" then
+		for key in pairs(changes) do list[#list + 1] = key end
+	end
+	tsort(list, function(x, y) return tostring(x) < tostring(y) end)
+	for _, key in ipairs(list) do
+		local value = changes[key]
+		local raw
+		if type(key) == "string" and sc.editable(key, true) then
+			if sc.item(key) then
+				raw = sc.to_raw(key, value)
+			elseif scalar(value) then
+				raw = value -- a factor or a value of the save: as it is
+			end
+		end
+		if raw == nil then
+			refused[#refused + 1] = tostring(key)
+		elseif not same_value(key, out.values[key], raw) then
+			out.values[key] = raw
+			n = n + 1
+		end
+	end
+	if n > 0 then out.rev = (out.rev or 0) + 1 end
+	return out, refused, n
+end
+
+-------------------------------------------------------------------------------
+-- Serialization (codec = { encode = fn(table) -> string, decode = fn(string) -> table }: marshal in the game)
+-------------------------------------------------------------------------------
+-- The record as the codec's string; the known fields and plain values only. nil, why when it cannot be done.
+function encode(record, codec)
+	if type(codec) ~= "table" or type(codec.encode) ~= "function" then return nil, "no codec" end
+	local t, why = clean(record)
+	if not t then return nil, why end
+	local ok, s = pcall(codec.encode, t)
+	if not ok or type(s) ~= "string" then return nil, "codec failed" end
+	return s
+end
+
+-- The record from a string, nil (and why) when the string is no record of this or an older format.
+function decode(s, codec)
+	if type(s) ~= "string" then return nil, "no string" end
+	if type(codec) ~= "table" or type(codec.decode) ~= "function" then return nil, "no codec" end
+	local ok, t = pcall(codec.decode, s)
+	if not ok then return nil, "codec failed" end
+	return clean(t)
+end
