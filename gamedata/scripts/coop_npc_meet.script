@@ -20,6 +20,11 @@
 	    for that player: its relation and faction, its distance, the wounded rules, task givers of the group.
 	    A client's NPCs are puppets whose own meet logic never runs, so without this a client could only talk
 	    to NPCs that were talkable at the moment it joined.
+	  - (B8) The same answer is asked by the engine when a client requests the talk lock (talk_verdict: true, or
+	    false + "hostile" | "combat" | "wounded" | "unwilling"): the host decides for the client's character, the client
+	    forces talk on for an NPC the host allowed and shows the reason of a refusal. The stock "use" rules (squad
+	    members that are not the commander, enemy factions ...) count only where the running game applies them: G.A.M.M.A.
+	    replaces process_npc_usability by "enable_talk", which the module learns from the host's own NPCs (soft.mode).
 	  - Wounded state of the NPCs near a client (npc.wnd): the help-wounded dialogs and IsWounded() read it.
 	Client:
 	  - Applies npc.talk / npc.wnd to the puppets.
@@ -415,17 +420,81 @@ local function task_target(npc)
 	return false
 end
 
+-- B8 (build 10): which xr_meet rules does the running game apply?
+-- A client's puppets never run xr_meet, so the host decides for the client's character. The first W4 port copied the
+-- STOCK process_npc_usability: "use = false" switches talk off (squad members that are not the commander, enemies,
+-- NPCs with a fight or a distance over 3 m ...). G.A.M.M.A. replaced that function (its own xr_meet.script, last line
+-- "Override": npc:enable_talk()): every living, unhurt NPC talks to the host's player. So the host talked to NPCs
+-- that the client was told were mute, and F did nothing (renegade "Dimuha Knyaz", build 10).
+-- Which of the two applies is learned from the host's own NPCs: the stock function leaves talk off on an NPC whose
+-- cached `meet_manager.use` is "false"; one that is still talkable after the real function ran (it ran just before the
+-- sample) shows the use rules are not applied. soft.mode: nil = not known (the stock rules, as before), "stock" =
+-- the running game applies them, "ignored" = it does not (sticky). Samples go in windows of SOFT_WINDOW; a window
+-- with SOFT_VOTES contradictions (checked at once) switches the mode to "ignored".
+local SOFT_WINDOW, SOFT_VOTES = 12, 3
+local soft = { mode = nil, n = 0, votes = 0 }
+
+local function fighting(npc)
+	local ok, e = pcall(npc.best_enemy, npc)
+	return ok and e ~= nil
+end
+
+local function hostile_to(npc, who)
+	return npc:relation(who) == game_object.enemy
+end
+
+-- Sample for the learning above (host, right after the real process_npc_usability ran for `npc`).
+local function learn(npc)
+	if soft.mode == "ignored" then return end
+	local st = db.storage[npc:id()]
+	local mm = st and st.meet and st.meet.meet_manager
+	if not (mm and mm.use == "false") then return end -- "use" not cached yet, or a value the stock function does not act on
+	if IsWounded(npc) or character_community(npc) == "zombied" or npc:section() == "mar_smart_terrain_doc_doctor" then return end
+	if task_target(npc) then return end -- the stock function force-enables task givers
+	soft.n = soft.n + 1
+	if npc:is_talk_enabled() then soft.votes = soft.votes + 1 end
+	local decided
+	if soft.votes >= SOFT_VOTES then
+		decided = "ignored"
+	elseif soft.n >= SOFT_WINDOW then
+		decided = "stock"
+	end
+	if decided then
+		log("talk rules: the running xr_meet %s the stock use rules (%d samples, %d of them talkable against use = false)",
+			decided == "ignored" and "IGNORES" or "applies", soft.n, soft.votes)
+		soft.mode, soft.n, soft.votes = decided, 0, 0
+	end
+end
+
+-- May the NPC talk to `who`, and if not, why: false + "hostile" | "combat" | "wounded" | "unwilling".
+-- `stock_talk` is the answer of the stock rules (use line, corpse detection, task givers), `enemy` the faction/relation check.
+local function judge(npc, who, stock_talk, enemy)
+	if soft.mode == "ignored" then
+		-- the running game talks to any living, unhurt NPC: only a fight against an enemy of the player stops it
+		if fighting(npc) and hostile_to(npc, who) then return false, "combat" end
+		return true
+	end
+	if stock_talk then return true end
+	if enemy then return false, "hostile" end
+	if fighting(npc) then return false, "combat" end
+	return false, "unwilling"
+end
+
 -- Stock process_npc_usability + trade/tip of the meet manager, for player `who`. nil = leave as is.
+-- `why` (only with t = false): the reason, as judge() gives it.
 local function talk_state(npc, who)
 	local st = db.storage[npc:id()]
 	if not st then return nil end
-	if character_community(npc) == "zombied" then return { t = false, r = false, x = "" } end
+	if character_community(npc) == "zombied" then return { t = false, r = false, x = "", why = "unwilling" } end
 	if IsWounded(npc) then
-		local talk = false
-		if not (npc:relation(who) >= game_object.enemy and st.victim_surrender ~= who:id()) then
+		local talk, why = false, "wounded"
+		if npc:relation(who) >= game_object.enemy and st.victim_surrender ~= who:id() then
+			why = "hostile"
+		else
 			talk = st.wounded and st.wounded.enable_talk and true or false
+			if talk then why = nil end
 		end
-		return { t = talk, r = false, x = talk and "character_use" or "" }
+		return { t = talk, r = false, x = talk and "character_use" or "", why = why }
 	end
 	if npc:section() == "mar_smart_terrain_doc_doctor" then return { t = true, r = true, x = "character_use" } end
 	local mm = st.meet and st.meet.meet_manager
@@ -443,18 +512,19 @@ local function talk_state(npc, who)
 	end
 	if mm.npc_is_camp_director == true then use = "false" end
 	if load_var(db.actor, "force_all_talk", false) then use = "true" end
-	local talk
+	local stock_talk
 	if use == "true" then
-		talk = not (xr_corpse_detection.is_under_corpse_detection(npc) or xr_help_wounded.is_under_help_wounded(npc))
+		stock_talk = not (xr_corpse_detection.is_under_corpse_detection(npc) or xr_help_wounded.is_under_help_wounded(npc))
 	elseif use == "self" then
-		talk = true
+		stock_talk = true
 	elseif task_target(npc) then
-		talk = true
+		stock_talk = true
 	elseif use == "false" then
-		talk = false
+		stock_talk = false
 	else
-		talk = npc:is_talk_enabled()
+		stock_talk = npc:is_talk_enabled()
 	end
+	local talk, why = judge(npc, who, stock_talk, enemy)
 	local trade
 	if c and c.explicit_trade then
 		trade = pick(who, npc, c.trade) == "true"
@@ -464,7 +534,22 @@ local function talk_state(npc, who)
 	local text = pick(who, npc, a.use_text)
 	if not (text and text ~= "" and text ~= "nil") then text = talk and "character_use" or "" end
 	local d = mm.startdialog
-	return { t = talk, r = trade, x = text, d = (type(d) == "string" and d ~= "nil") and d or "" }
+	return { t = talk, r = trade, x = text, d = (type(d) == "string" and d ~= "nil") and d or "", why = why }
+end
+
+-- Host, called by the engine when a client asks for the talk lock (coop_dialog.cpp host_try_lock): may the character
+-- `who` (the client's proxy) talk to `npc`? true, or false + the reason ("hostile" | "combat" | "wounded" |
+-- "unwilling"). An NPC the meet logic knows nothing about, or a rule that cannot be evaluated, lets the talk through:
+-- the engine's own checks (alive, the distance, one talker) still apply, and a modded condlist must not mute an NPC.
+function talk_verdict(npc, who)
+	if not (npc and who) then return true end
+	local ok, s = pcall(talk_state, npc, who)
+	if not ok then
+		if P then report("talk verdict", s) end
+		return true
+	end
+	if s and s.t == false then return false, s.why or "unwilling" end
+	return true
 end
 
 local sent_talk = {} -- npc id -> peer -> { sig, at }
@@ -476,6 +561,8 @@ local function push_npc(npc)
 	local tg = time_global()
 	if next_npc[id] and tg < next_npc[id] then return end
 	next_npc[id] = tg + 500
+	local lok, lerr = pcall(learn, npc) -- B8: which xr_meet rules does the running game apply
+	if not lok then report("talk rules", lerr) end
 	local pos = npc:position()
 	local r2 = TALK_RADIUS * TALK_RADIUS
 	for _, p in ipairs(P.others()) do
@@ -661,6 +748,9 @@ function print_status()
 		stats.heal_in, P.error_count(TAG))
 	log("W11: proxies seen by meeting NPCs %d, meetings with a client %d, held for a client's talk %d, own meet defaults %d",
 		stats.seen, stats.met, stats.talks, stats.own_cfg)
+	log("B8: stock use rules for clients: %s (window %d samples, %d against use = false)",
+		soft.mode == "ignored" and "ignored (the running xr_meet does not apply them)"
+		or soft.mode == "stock" and "applied (the running xr_meet applies them)" or "not known yet, applied", soft.n, soft.votes)
 	-- coop_main lists the npc modules by name: the W11 combat module reports from here.
 	local combat = rawget(_G, "coop_npc_combat")
 	if combat and combat.print_status then
@@ -684,4 +774,5 @@ end
 
 function _set_host_on(v) host_on = v end
 function _stats() return stats end
+function _soft() return soft end
 function _talk_state(npc, who) return talk_state(npc, who) end

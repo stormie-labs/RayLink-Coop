@@ -111,6 +111,18 @@
 	<string id="st_coop_talk_too_far">
 		<text>You are too far away to talk</text>
 	</string>
+	<string id="st_coop_talk_unwilling">
+		<text>He does not want to talk to you</text>
+	</string>
+	<string id="st_coop_talk_hostile">
+		<text>He is hostile to you and will not talk</text>
+	</string>
+	<string id="st_coop_talk_combat">
+		<text>No time for talking: he is in a fight</text>
+	</string>
+	<string id="st_coop_talk_wounded">
+		<text>He is wounded and cannot talk</text>
+	</string>
 	<string id="st_coop_talk_revoked">
 		<text>The conversation was interrupted by the host</text>
 	</string>
