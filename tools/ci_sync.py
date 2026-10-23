@@ -31,9 +31,23 @@ def same_text(a: Path, b: Path) -> bool:
     return b.is_file() and a.read_bytes().replace(b"\r\n", b"\n") == b.read_bytes().replace(b"\r\n", b"\n")
 
 
+_TRACKED = None
+
+
+def tracked_path(rel: str) -> str:
+    """The path as git tracks it. The disk may spell it in another case (src/xrEngine/igame_persistent.h on disk,
+    IGame_Persistent.h in git): git show is case-sensitive, so the committed header was skipped and the build failed
+    (2026-10-23, build 10a)."""
+    global _TRACKED
+    if _TRACKED is None:
+        out = subprocess.run(["git", "-C", str(MAIN), "ls-files"], capture_output=True, text=True, check=True).stdout
+        _TRACKED = {line.lower(): line for line in out.splitlines()}
+    return _TRACKED.get(rel.lower(), rel)
+
+
 def head_bytes(rel: str):
     """The committed (HEAD) content of a main-tree file, or None when HEAD has no such file."""
-    r = subprocess.run(["git", "-C", str(MAIN), "show", f"HEAD:{rel}"], capture_output=True)
+    r = subprocess.run(["git", "-C", str(MAIN), "show", f"HEAD:{tracked_path(rel)}"], capture_output=True)
     return r.stdout if r.returncode == 0 else None
 
 
