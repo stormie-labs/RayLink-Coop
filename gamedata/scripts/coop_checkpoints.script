@@ -42,7 +42,7 @@
 		coop_checkpoints.own_tent_source() -> id | nil          the tent or sleeping bag that is my camp
 		coop_checkpoints.is_mine_tent(id [, obj]) -> bool       client: a tent / bag I put up (see below)
 		coop_checkpoints.my_objects() -> { [id] = true }        client: the tents and bags that were my camp (do not change it)
-		coop_checkpoints.pack_nearby() -> bool                  client: ask the host to pack up my tent / bag within reach
+		coop_checkpoints.pack_nearby([at]) -> bool              client: ask the host to pack up my tent / bag within reach
 		coop_checkpoints.tell(key [, close_menu]) -> text       a tip st_coop_cp_<key>
 		coop_checkpoints.text(key, ...) -> text                 st_coop_cp_<key> with %s filled in order
 --]]
@@ -465,8 +465,8 @@ end
 
 -- Client: pack up the tent or sleeping bag of mine within reach of the player (the host finds it at the player's spot). For a
 -- button of the sleep window: using a placed sleeping bag is the stock sleep.
-function pack_nearby()
-	return request("pack", 0)
+function pack_nearby(at) -- at: the bag the player sleeps in (the sleep window's Fold), else the player's position
+	return request("pack", 0, at)
 end
 
 -- Host: the stock item_tent put object `id` up for the host: tell the engine it is the host's camp. The engine takes the
