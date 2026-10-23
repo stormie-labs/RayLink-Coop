@@ -1,49 +1,46 @@
 <?xml version="1.0" encoding="windows-1251"?>
-<!-- Anomaly Coop - the co-op block of the new game screen (scripts/coop_newgame_modes.script, layout configs/ui/ui_coop_newgame.xml): the host's death, loss and autosave rules, shown instead of the stock modes that do not work in co-op. Ids st_coop_newgame_<name>. -->
+<!-- Anomaly Coop - the "Game settings" block of the new game screen (scripts/coop_newgame_modes.script, scripts/coop_game_settings_view.script, layout configs/ui/ui_coop_newgame.xml): the header, the hint, the short labels of the tabs, the text of the "Other" tab, the note of the "Saves" tab, the units of a value added from the machine. The names of the settings and their values are st_coop_game_* (st_coop_game.xml). Ids st_coop_newgame_<name>. -->
 <string_table>
 	<string id="st_coop_newgame_header">
-		<text>Режим кооператива</text>
+		<text>Настройки игры</text>
 	</string>
-	<string id="st_coop_newgame_death">
+	<string id="st_coop_newgame_hint">
+		<text>Настройки этой игры. Поменять потом: Кооператив > Настройки игры</text>
+	</string>
+	<string id="st_coop_newgame_tab_death">
 		<text>Смерть</text>
 	</string>
-	<string id="st_coop_newgame_drop">
-		<text>Потери при смерти</text>
+	<string id="st_coop_newgame_tab_party">
+		<text>Группа</text>
 	</string>
-	<string id="st_coop_newgame_autosave">
-		<text>Автосохранение хоста</text>
+	<string id="st_coop_newgame_tab_world">
+		<text>Мир</text>
 	</string>
-	<string id="st_coop_newgame_mode_checkpoint">
-		<text>Привалы</text>
+	<string id="st_coop_newgame_tab_difficulty">
+		<text>Сложность</text>
 	</string>
-	<string id="st_coop_newgame_mode_hardcore">
-		<text>Хардкор</text>
+	<string id="st_coop_newgame_tab_saves">
+		<text>Сохранения</text>
 	</string>
-	<string id="st_coop_newgame_drop_drop">
-		<text>Мешочек у тела</text>
+	<string id="st_coop_newgame_tab_other">
+		<text>Прочее</text>
 	</string>
-	<string id="st_coop_newgame_drop_corpse">
-		<text>Весь рюкзак в тайник</text>
+	<string id="st_coop_newgame_other">
+		<text>Прочие опции игры: %s, настройки модов (MCM): %s. Сняты с этой машины %s и хранятся вместе с игрой. Менять их нужно в главном меню («Опции», «Настройки модов») до старта.</text>
 	</string>
-	<string id="st_coop_newgame_drop_lose">
-		<text>Пропадает</text>
-	</string>
-	<string id="st_coop_newgame_drop_keep">
-		<text>Ничего не выпадает</text>
-	</string>
-	<string id="st_coop_newgame_share">
-		<text>Сколько выпадает</text>
-	</string>
-	<string id="st_coop_newgame_share_normal">
-		<text>(обычно)</text>
+	<string id="st_coop_newgame_saves_note">
+		<text>Вручную в сессии не сохраняются. Откат: Кооператив > Восстановить автосохранение.</text>
 	</string>
 	<string id="st_coop_newgame_min">
 		<text>мин</text>
 	</string>
-	<string id="st_coop_newgame_off">
-		<text>выкл</text>
+	<string id="st_coop_newgame_unit_s">
+		<text>с</text>
 	</string>
-	<string id="st_coop_newgame_hint">
-		<text>Правила хоста для всех. Поменять потом: Опции > Кооператив</text>
+	<string id="st_coop_newgame_unit_m">
+		<text>м</text>
+	</string>
+	<string id="st_coop_newgame_unit_h">
+		<text>ч</text>
 	</string>
 </string_table>

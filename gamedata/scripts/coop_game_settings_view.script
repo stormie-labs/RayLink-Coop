@@ -1,0 +1,455 @@
+--[[
+	Anomaly Coop - game settings by tabs (gamedata\scripts\coop_game_settings_view.script)
+
+	The tabs of docs\GAME_SETTINGS.md 3.6 / 4.1 as a component over the catalog (coop_game_schema): a strip of tab buttons
+	and, for every tab, a scroll view with one row "caption - combo box" per catalog item (items(tab), in the catalog's
+	order). It is built into a window the caller owns: the new game screen of a co-op host (coop_newgame_modes) and the
+	window of an existing game (coop_game_settings_ui). The caller owns the header, the hint under the block and the
+	buttons; the view owns the strip and what is under it.
+
+	local v = coop_game_settings_view.new(dlg, {
+		xml = CScriptXmlInit parsed with the layout,    parent = the window the strip and the scroll views go into,
+		path = "main_dialog:options:",                  prefix of the node names below
+		values = { ["<source>|<path>"] = raw },         the table the view reads and writes (the caller's; a copy of
+		                                                coop_game_settings.defaults() on the new game screen)
+		tabs = { "death", ... }                         which tabs, in order (default DEFAULT_TABS; one button node each)
+		labels = { death = "<string id>" }              tab labels (default st_coop_newgame_tab_<tab>)
+		existing = false,                               an existing game: the items that are fixed at creation are disabled
+		external = { [key] = true },                    keys shown elsewhere (the stock controls of the new game screen)
+		has_mcm = function(item) -> bool,               is the MCM option of an item there (default: ui_mcm)
+		pages = { other = function() -> text },         a tab that is a text instead of rows (a string or a function)
+		notes = { saves = "<string id>" },              a text line after the rows of a tab
+		on_change = function(key, typed),               after a pick
+	})
+
+	Layout nodes (the layout file of the caller, relative to path): btn_gs_tab_1 .. btn_gs_tab_N (3t buttons, one per
+	tab), gs_tab_mark (a flat static, the bar that is moved under the open tab), scroll_gs (scroll view, one instance per
+	tab), gs_row (a row: a static of the row's size), cap_gs_row (static, the caption) and list_gs_row (combo box) inside
+	it, gs_line (a static of a row's size) and text_gs_line (text window) inside it for pages and notes. The nodes of a
+	row are placed relative to the row. The height of a combo box is fixed by the engine (CB_HEIGHT, 20), whatever the
+	layout says; list_length of its node is the number of entries the drop-down shows.
+
+	The open tab is marked by the bar, not by a colour: a 3t button sets its text colour from its state every frame
+	(CUI3tButton::Update), a colour set by a script does not stay.
+
+	Rows. A row is shown for every item of the tab that has a list of values (the faction has none: the stock screen owns
+	it), is not in `external` and, when it belongs to an MCM addon, only if the addon's option is there. A "check" is a
+	combo of on / off. A value outside the list (a machine value such as an autosave interval of 25) is a list entry of
+	its own, so that nothing changes silently (coop_game_schema.normalize adds it); an invalid value shows the default. A
+	row is disabled (the combo and a dimmed caption) when its item cannot be changed on an existing game
+	(coop_game_schema.editable) or when its shown_if condition is not met (the share of what falls while nothing falls,
+	the new kit outside hardcore); it stays in the list all the time, so that nothing is built or destroyed while the user
+	picks.
+
+	Tabs. All scroll views are built at once and shown one at a time: a tab switch changes only Show().
+
+	Values. values[key] is the raw form the record keeps ("0.3", "1", "true", a token); a pick writes
+	coop_game_schema.to_raw(key, entry). collect() gives the complete table for a record: everything in values plus,
+	for every c / o / m item of the catalog, its canonical raw value (the default where there is none or the value is
+	invalid).
+
+	Fields of the view: tab, tabs, values, existing, rows[tab] = { rec, ... }, scrolls[tab], buttons[tab], mark, page_text[tab],
+	note_text[tab]; rec = { item, key, row, cap, list, name, entries }. Methods: select(tab), row(key), get(key), set(key,
+	value), enabled(key), set_existing(b), set_page(tab, text), refresh(), collect(), show(b).
+--]]
+
+local tostring, tonumber, type, pairs, ipairs, pcall, setmetatable = tostring, tonumber, type, pairs, ipairs, pcall, setmetatable
+local string_format, math_floor, math_max, math_abs = string.format, math.floor, math.max, math.abs
+
+DEFAULT_TABS = { "death", "party", "world", "saves", "other" }
+
+local N_TAB, N_MARK, N_SCROLL, N_ROW, N_CAP, N_COMBO, N_LINE, N_LINE_TEXT =
+	"btn_gs_tab_", "gs_tab_mark", "scroll_gs", "gs_row", "cap_gs_row", "list_gs_row", "gs_line", "text_gs_line"
+
+-- the text of a value outside the list: its unit
+local UNIT_TEXT = {
+	s = "st_coop_newgame_unit_s", min = "st_coop_newgame_min", m = "st_coop_newgame_unit_m", h = "st_coop_newgame_unit_h",
+}
+
+local serial = 0 -- names of the registered controls are unique for the whole run
+
+local function schema()
+	return coop_game_schema
+end
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-gs-view] %s", ok and line or tostring(fmt))
+end
+
+local function tr(id)
+	if type(id) ~= "string" then return "" end
+	local ok, s = pcall(function() return game.translate_string(id) end)
+	if ok and s ~= nil then return tostring(s) end
+	return id
+end
+
+-- the module of a stock or addon script (_G.__index loads gamedata\scripts\<name>.script on the first access)
+local function mod(name)
+	local m = rawget(_G, name)
+	if m == nil then
+		local ok, r = pcall(function() return _G[name] end)
+		m = ok and r or nil
+	end
+	return type(m) == "table" and m or nil
+end
+
+local COLOR = {}
+local function colors()
+	if COLOR.cap_on == nil then
+		COLOR.cap_on = GetARGB(255, 170, 170, 170)
+		COLOR.cap_off = GetARGB(255, 70, 70, 70)
+	end
+	return COLOR
+end
+
+local function set_text(wnd, text)
+	local ok, err = pcall(function() wnd:TextControl():SetText(text) end)
+	if not ok then log("! SetText failed: %s", tostring(err)) end
+end
+
+local function set_color(wnd, color)
+	local ok, err = pcall(function() wnd:TextControl():SetTextColor(color) end)
+	if not ok then log("! SetTextColor failed: %s", tostring(err)) end
+end
+
+-- "15", "0.25", "1000000" (whole numbers without an exponent)
+local function number_text(n)
+	if n == math_floor(n) and math_abs(n) < 1e15 then return string_format("%.0f", n) end
+	return string_format("%g", n)
+end
+
+-- Text of an entry of an item's list: its string, or for a value added from the machine (no string) the number with its unit.
+function entry_text(item, e)
+	if e[2] then return tr(e[2]) end
+	local v = e[1]
+	if type(v) ~= "number" then return tostring(v) end
+	local unit = item.unit
+	if unit == "frac" then return number_text(math_floor(v * 10000 + 0.5) / 100) .. " %" end
+	if unit == "pct" then return number_text(v) .. " %" end
+	if UNIT_TEXT[unit] then return number_text(v) .. " " .. tr(UNIT_TEXT[unit]) end
+	return number_text(v)
+end
+
+-- Is the MCM option of an item there? ui_mcm knows its options by path; its get() builds the tree when needed (and writes
+-- the option's default for an option the machine has not stored yet, as every page of MCM does).
+local function default_has_mcm(item)
+	local m = mod("ui_mcm")
+	if not m then return false end
+	local _, path = schema().parse_key(item.key)
+	if type(path) ~= "string" then return false end
+	if type(m.check_opt_table) == "function" then
+		local ok, has = pcall(m.check_opt_table, path)
+		if ok and has then return true end
+	end
+	if type(m.get) == "function" then
+		local ok, v = pcall(m.get, path)
+		return ok and v ~= nil
+	end
+	return false
+end
+
+-------------------------------------------------------------------------------
+-- The view
+-------------------------------------------------------------------------------
+local View = {}
+View.__index = View
+
+function new(dlg, opts)
+	if not (dlg and type(opts) == "table" and opts.xml and opts.parent) then
+		error("coop_game_settings_view.new: a window and opts.xml, opts.parent are required", 2)
+	end
+	schema().reset_extras() -- a new screen starts from the catalog again
+	local self = setmetatable({
+		dlg = dlg, xml = opts.xml, parent = opts.parent, path = opts.path or "",
+		values = type(opts.values) == "table" and opts.values or {},
+		tabs = opts.tabs or DEFAULT_TABS, labels = opts.labels or {}, existing = opts.existing == true,
+		external = opts.external or {}, has_mcm = opts.has_mcm, pages = opts.pages or {}, notes = opts.notes or {},
+		on_change = opts.on_change,
+		tab = nil, mark = nil, rows = {}, rows_by_key = {}, scrolls = {}, buttons = {}, button_names = {}, page_text = {},
+		page_row = {}, note_text = {}, mcm_cache = {},
+	}, View)
+	self:build_strip()
+	for _, tab in ipairs(self.tabs) do self:build_tab(tab) end
+	self:update_states()
+	self:select(self.tabs[1])
+	return self
+end
+
+function View:build_strip()
+	for i, tab in ipairs(self.tabs) do
+		local btn = self.xml:Init3tButton(self.path .. N_TAB .. i, self.parent)
+		serial = serial + 1
+		local name = "gs_tab_" .. serial
+		self.dlg:Register(btn, name)
+		set_text(btn, tr(self.labels[tab] or ("st_coop_newgame_tab_" .. tab)))
+		local t = tab
+		self.dlg:AddCallback(name, ui_events.BUTTON_CLICKED, function() self:select(t) end, self.dlg)
+		self.buttons[tab] = btn
+		self.button_names[tab] = name
+	end
+	self.mark = self.xml:InitStatic(self.path .. N_MARK, self.parent) -- after the buttons: drawn over them
+end
+
+-- Is the MCM option of an item there (asked once per item).
+function View:mcm_ok(item)
+	local c = self.mcm_cache[item.key]
+	if c == nil then
+		local ok, r = pcall(self.has_mcm or default_has_mcm, item)
+		c = ok and r == true
+		self.mcm_cache[item.key] = c
+	end
+	return c
+end
+
+-- Does the item get a row?
+function View:wanted(item)
+	if self.external[item.key] then return false end
+	if #item.values == 0 then return false end
+	if item.needs_mcm and not self:mcm_ok(item) then return false end
+	return true
+end
+
+-- A line of text in a scroll view (a page, a note): a row-sized container with a text window that is as high as its text.
+function View:add_line(scroll, text)
+	local row = self.xml:InitStatic(self.path .. N_LINE, nil)
+	local wnd = self.xml:InitTextWnd(self.path .. N_LINE_TEXT, row)
+	self:fit_line(row, wnd, text)
+	scroll:AddWindow(row, true)
+	row:SetAutoDelete(true)
+	return row, wnd
+end
+
+function View:fit_line(row, wnd, text)
+	wnd:SetText(text)
+	local ok = pcall(function() wnd:AdjustHeightToText() end)
+	if ok then
+		row:SetWndSize(vector2():set(row:GetWidth(), math_max(wnd:GetHeight(), 20) + 4))
+	end
+end
+
+function View:page_value(tab)
+	local page = self.pages[tab]
+	if type(page) == "function" then
+		local ok, text = pcall(page)
+		if not ok then
+			log("! page %s failed: %s", tab, tostring(text))
+			return ""
+		end
+		return tostring(text or "")
+	end
+	return tostring(page or "")
+end
+
+function View:build_tab(tab)
+	local scroll = self.xml:InitScrollView(self.path .. N_SCROLL, self.parent)
+	self.scrolls[tab] = scroll
+	self.rows[tab] = {}
+	if self.pages[tab] ~= nil then
+		self.page_row[tab], self.page_text[tab] = self:add_line(scroll, self:page_value(tab))
+	else
+		for _, item in ipairs(schema().items(tab)) do
+			if self:wanted(item) then
+				local rec = self:add_row(scroll, item)
+				self.rows[tab][#self.rows[tab] + 1] = rec
+				self.rows_by_key[item.key] = rec
+			end
+		end
+		if self.notes[tab] then
+			local _, wnd = self:add_line(scroll, tr(self.notes[tab]))
+			self.note_text[tab] = wnd
+		end
+	end
+	scroll:Show(false)
+end
+
+function View:add_row(scroll, item)
+	local row = self.xml:InitStatic(self.path .. N_ROW, nil)
+	local cap = self.xml:InitStatic(self.path .. N_CAP, row)
+	set_text(cap, tr(item.text))
+	local list = self.xml:InitComboBox(self.path .. N_COMBO, row)
+	list:SetAutoDelete(true)
+	serial = serial + 1
+	local name = "gs_" .. serial
+	self.dlg:Register(list, name)
+	local rec = { item = item, key = item.key, row = row, cap = cap, list = list, name = name, entries = {} }
+	self:fill(rec)
+	-- the callback after the list is filled: filling a list must not look like a pick
+	self.dlg:AddCallback(name, ui_events.LIST_ITEM_SELECT, function() self:on_pick(rec) end, self.dlg)
+	scroll:AddWindow(row, true)
+	row:SetAutoDelete(true)
+	return rec
+end
+
+-- (Re)writes the combo of a row: the entries of the item now (a value added from the machine included) and the shown one.
+function View:fill(rec)
+	local item = rec.item
+	local typed = self:get(item.key) -- normalizes: may add an entry to the item
+	rec.entries = {}
+	rec.list:ClearList()
+	local shown
+	for i, e in ipairs(item.values) do
+		rec.entries[i] = e
+		local text = entry_text(item, e)
+		rec.list:AddItem(text, i)
+		if shown == nil and typed ~= nil and e[1] == typed then shown = text end
+	end
+	if shown == nil and rec.entries[1] then shown = entry_text(item, rec.entries[1]) end
+	rec.list:SetText(shown or "")
+end
+
+function View:on_pick(rec)
+	local e = rec.entries[rec.list:CurrentID()]
+	if not e then return end
+	local raw = schema().to_raw(rec.key, e[1])
+	if raw == nil then return end
+	self.values[rec.key] = raw
+	self:update_states()
+	self:changed(rec.key, e[1])
+end
+
+function View:changed(key, typed)
+	if self.on_change then
+		local ok, err = pcall(self.on_change, key, typed)
+		if not ok then log("! on_change(%s) failed: %s", tostring(key), tostring(err)) end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Values and states
+-------------------------------------------------------------------------------
+-- Typed value of a catalog key: the value of the table, the catalog's default when there is none or it is invalid.
+function View:get(key)
+	local sc = schema()
+	if sc.item(key) == nil then return nil end
+	local v
+	if self.values[key] ~= nil then v = sc.normalize(key, self.values[key]) end
+	if v == nil then v = sc.default(key) end
+	return v
+end
+
+-- shown_if of the item: { key = <key>, any = { values } }; true when there is none
+function View:condition_met(item)
+	local c = item.shown_if
+	if type(c) ~= "table" then return true end
+	local v = self:get(c.key)
+	for _, a in ipairs(c.any or {}) do
+		if a == v then return true end
+	end
+	return false
+end
+
+function View:enabled(key)
+	local sc = schema()
+	local item = sc.item(key)
+	if not item then return false end
+	if not sc.editable(key, self.existing) then return false end
+	return self:condition_met(item)
+end
+
+function View:update_states()
+	local c = colors()
+	for _, tab in ipairs(self.tabs) do
+		for _, rec in ipairs(self.rows[tab] or {}) do
+			local on = self:enabled(rec.key)
+			rec.list:Enable(on)
+			set_color(rec.cap, on and c.cap_on or c.cap_off)
+		end
+	end
+end
+
+function View:row(key)
+	return self.rows_by_key[key]
+end
+
+-- Sets a value from outside (typed or raw); false when the key is not in the catalog or the value is not valid for it.
+function View:set(key, value)
+	local sc = schema()
+	if sc.item(key) == nil then return false end
+	local v = sc.normalize(key, value)
+	if v == nil then return false end
+	local raw = sc.to_raw(key, v)
+	if raw == nil then return false end
+	self.values[key] = raw
+	local rec = self.rows_by_key[key]
+	if rec then self:fill(rec) end
+	self:update_states()
+	self:changed(key, v)
+	return true
+end
+
+function View:set_existing(existing)
+	self.existing = existing == true
+	self:update_states()
+end
+
+function View:set_page(tab, text)
+	local wnd, row = self.page_text[tab], self.page_row[tab]
+	if wnd and row then self:fit_line(row, wnd, tostring(text or "")) end
+end
+
+-- Reads the table again: every combo, the states, the pages.
+function View:refresh()
+	for _, tab in ipairs(self.tabs) do
+		for _, rec in ipairs(self.rows[tab] or {}) do self:fill(rec) end
+		if self.pages[tab] ~= nil then self:set_page(tab, self:page_value(tab)) end
+	end
+	self:update_states()
+end
+
+-------------------------------------------------------------------------------
+-- Tabs
+-------------------------------------------------------------------------------
+function View:select(tab)
+	if tab == nil or self.scrolls[tab] == nil then
+		if tab ~= nil then log("! no tab %s", tostring(tab)) end
+		return
+	end
+	self.tab = tab
+	for _, t in ipairs(self.tabs) do self.scrolls[t]:Show(t == tab) end
+	self:place_mark(tab)
+end
+
+-- The bar goes along the lower edge of the button of the open tab.
+function View:place_mark(tab)
+	local btn, mark = self.buttons[tab], self.mark
+	if not (btn and mark) then return end
+	local p = btn:GetWndPos()
+	local h = mark:GetHeight()
+	mark:SetWndPos(vector2():set(p.x, p.y + btn:GetHeight() - h))
+	mark:SetWndSize(vector2():set(btn:GetWidth(), h))
+end
+
+-- Shows or hides the whole component (the strip and the open tab).
+function View:show(on)
+	on = on and true or false
+	for _, t in ipairs(self.tabs) do
+		self.buttons[t]:Show(on)
+		self.scrolls[t]:Show(on and t == self.tab)
+	end
+	if self.mark then self.mark:Show(on) end
+end
+
+-------------------------------------------------------------------------------
+-- The values of a record
+-------------------------------------------------------------------------------
+-- Everything in the table plus, for every console / options / MCM item of the catalog, its canonical raw value (the
+-- default where there is none or the value is invalid). A key of an MCM addon that is not here is left out unless the
+-- table has it. The table of the view is not changed.
+function View:collect()
+	local sc = schema()
+	local out = {}
+	for k, v in pairs(self.values) do out[k] = v end
+	for _, tab in ipairs(sc.TABS) do
+		for _, item in ipairs(sc.items(tab)) do
+			local src = item.src
+			local mine = (src == "c" or src == "o" or src == "m") and not self.external[item.key] and #item.values > 0
+			if mine and not (item.needs_mcm and self.values[item.key] == nil and not self:mcm_ok(item)) then
+				local v = self:get(item.key)
+				local raw = v ~= nil and sc.to_raw(item.key, v) or nil
+				if raw ~= nil then out[item.key] = raw end
+			end
+		end
+	end
+	return out
+end

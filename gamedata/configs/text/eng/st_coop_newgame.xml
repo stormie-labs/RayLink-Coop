@@ -1,49 +1,46 @@
 <?xml version="1.0" encoding="windows-1251"?>
-<!-- Anomaly Coop - the co-op block of the new game screen (scripts/coop_newgame_modes.script, layout configs/ui/ui_coop_newgame.xml): the host's death, loss and autosave rules, shown instead of the stock modes that do not work in co-op. Ids st_coop_newgame_<name>. -->
+<!-- Anomaly Coop - the "Game settings" block of the new game screen (scripts/coop_newgame_modes.script, scripts/coop_game_settings_view.script, layout configs/ui/ui_coop_newgame.xml): the header, the hint, the short labels of the tabs, the text of the "Other" tab, the note of the "Saves" tab, the units of a value added from the machine. The names of the settings and their values are st_coop_game_* (st_coop_game.xml). Ids st_coop_newgame_<name>. -->
 <string_table>
 	<string id="st_coop_newgame_header">
-		<text>Co-op mode</text>
+		<text>Game settings</text>
 	</string>
-	<string id="st_coop_newgame_death">
+	<string id="st_coop_newgame_hint">
+		<text>Settings of this game. Change later: Co-op > Game settings</text>
+	</string>
+	<string id="st_coop_newgame_tab_death">
 		<text>Death</text>
 	</string>
-	<string id="st_coop_newgame_drop">
-		<text>Loss on death</text>
+	<string id="st_coop_newgame_tab_party">
+		<text>Party</text>
 	</string>
-	<string id="st_coop_newgame_autosave">
-		<text>Host autosave</text>
+	<string id="st_coop_newgame_tab_world">
+		<text>World</text>
 	</string>
-	<string id="st_coop_newgame_mode_checkpoint">
-		<text>Camps</text>
+	<string id="st_coop_newgame_tab_difficulty">
+		<text>Difficulty</text>
 	</string>
-	<string id="st_coop_newgame_mode_hardcore">
-		<text>Hardcore</text>
+	<string id="st_coop_newgame_tab_saves">
+		<text>Saves</text>
 	</string>
-	<string id="st_coop_newgame_drop_drop">
-		<text>Bag at the body</text>
+	<string id="st_coop_newgame_tab_other">
+		<text>Other</text>
 	</string>
-	<string id="st_coop_newgame_drop_corpse">
-		<text>All in a stash</text>
+	<string id="st_coop_newgame_other">
+		<text>Other game options: %s, mod settings (MCM): %s. Taken from this machine on %s and kept with the game. Change them in the main menu (Options, Mod settings) before the start.</text>
 	</string>
-	<string id="st_coop_newgame_drop_lose">
-		<text>Lost</text>
-	</string>
-	<string id="st_coop_newgame_drop_keep">
-		<text>Nothing is lost</text>
-	</string>
-	<string id="st_coop_newgame_share">
-		<text>How much falls</text>
-	</string>
-	<string id="st_coop_newgame_share_normal">
-		<text>(normal)</text>
+	<string id="st_coop_newgame_saves_note">
+		<text>Nothing is saved by hand in a session. Roll back: Co-op > Restore an autosave.</text>
 	</string>
 	<string id="st_coop_newgame_min">
 		<text>min</text>
 	</string>
-	<string id="st_coop_newgame_off">
-		<text>off</text>
+	<string id="st_coop_newgame_unit_s">
+		<text>s</text>
 	</string>
-	<string id="st_coop_newgame_hint">
-		<text>The host's rules for everyone. Change them later: Options > Co-op</text>
+	<string id="st_coop_newgame_unit_m">
+		<text>m</text>
+	</string>
+	<string id="st_coop_newgame_unit_h">
+		<text>h</text>
 	</string>
 </string_table>

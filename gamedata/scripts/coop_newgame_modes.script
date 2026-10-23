@@ -1,25 +1,28 @@
 --[[
-	Anomaly Coop - the new game screen of a co-op host (gamedata\scripts\coop_newgame_modes.script), owner's ruling of
+	Anomaly Coop - the new game screen of a co-op host (gamedata\scripts\coop_newgame_modes.script), owner's rulings of
 	2026-10-23. The stock screen (ui_mm_faction_select.UINewGame, tab "Modes") offers things that do not work in co-op or are
 	not part of the design. When the new game is started for the host of a co-op session, the screen changes:
 
-	  stays      Story mode (check_story), Open Zone (check_routes), Game difficulty, Economy difficulty
+	  stays      Story mode (check_story), Open Zone (check_routes), Game difficulty, Economy difficulty, the faction, the name
 	  hidden and forced off (checks unchecked, lists on "off", nothing of them reaches the game):
 	             Life after life (check_azazel_mode), One life (check_hardcore) with its Lives and Days for an extra life
 	             (list_hardcore_lives, list_hardcore_regen), Soulslike mode (check_soulslike_mode, GAMMA), Campfire saves
 	             (check_campfire), Agony (check_conditions), Timer (list_timer), Survival mode (check_survival), Faction war
 	             (check_warfare)
-	  shown      a block "Co-op mode" in the place of the hidden second column: the host's rules of death, of what is lost and
-	             of the emergency autosave, the same console variables as the Options > Co-op page (coop_menu_options):
-	               coop_death_mode        Camps (checkpoint) | Hardcore (hardcore)
-	               coop_death_drop        Bag at the body (drop) | All in a stash (corpse) | Lost (lose) |
-	                                      Nothing is lost (keep, build 10)
-	               coop_death_share       50 | 100 (normal) | 150 | 200 %   (build 10: how much of the ltx shares drop and
-	                                      lose take; a value set elsewhere is kept as an entry)
-	               coop_autosave_interval 5 | 10 | 20 min | off (0)   (an interval set on the options page is kept as an entry)
-	             The lists start on the console's values; Start writes the variables (and cfg_save, like the options
-	             page) before the world is started. Untouched lists write nothing. A hint under the block says they can be
-	             changed later in Options > Co-op.
+	  shown      a block "Game settings" in the place of the hidden second column (docs\GAME_SETTINGS.md 4.1): a strip of tabs
+	             (Death, Party, World, Saves, Other) over the catalog of the host's settings (coop_game_schema), a row "caption -
+	             combo box" per setting (coop_game_settings_view), a hint under the block. The lists start on the machine's
+	             values (coop_game_settings.defaults(); without that module: the console's and axr's values over the catalog's
+	             defaults). Start does three things, all before the world is made:
+	               1. stage_new: the record of the new game (coop_game_record.new over the chosen values; the name, the faction
+	                  dlg.selected_faction and the creation flags of the stock controls) goes to coop_game_settings.stage_new,
+	                  which hands it to the engine; the first save of the world carries it
+	               2. the group's rules (console variables c|*, session rules coop/coop_session/* of axr [options]) are written to
+	                  the machine where they differ - "remember my choice" for the next new game; cfg_save after the console.
+	                  The stock options and MCM keys of the machine are not touched, they act in a single player game
+	               3. the stock OnStartGame (with whatever wrappers GAMMA put around it)
+	             Untouched settings write nothing to the machine. The settings of a game are changed later in the Co-op window
+	             (Game settings).
 	A single player game (no session, nothing pending, no -coop_host) keeps the whole stock screen.
 
 	Which new game is a co-op host's (is_coop_new_game): coop.session_info().pending_host - the Co-op window (coop_menu
@@ -40,16 +43,19 @@
 	    sees the right screen however he walked in and out.
 	  - the start button's callback of THIS dialog is replaced (AddCallback replaces a control + event pair in this engine,
 	    UIWndCallback.cpp): it forces the modes off again (a mod may have ticked them), clears their keys from
-	    [character_creation], writes the rules, then calls dlg:OnStartGame() - the stock method with whatever wrappers
-	    GAMMA put around it. The stock reads the unchecked boxes and writes no mode.
+	    [character_creation], stages the game and writes the rules (when the stock would start: a name, no pop-up), then calls
+	    dlg:OnStartGame() - the stock method with whatever wrappers GAMMA put around it. The stock reads the unchecked boxes
+	    and writes no mode.
 	  - on_game_start (every game start, before the stock on_game_load reads [character_creation]): for a co-op host the
 	    mode keys are cleared from the config. This is for a start that did not come through the screen (a hand-edited
 	    axr_options.ltx). The order of callbacks of one name is not defined, so it cannot be done in on_game_load.
-	A failing step (an unknown layout, a missing control) is logged and skipped; it never stops the screen or the start.
+	A failing step (an unknown layout, a missing control, a missing or failing coop_game_settings) is logged and skipped; it
+	never stops the screen or the start. A game that could not be staged is made from the machine's values and takes its
+	record from them at the first load.
 --]]
 
 local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
-local string_format, math_floor = string.format, math.floor
+local string_format = string.format
 
 local SECTION = "character_creation"
 local REPOSITION_ROWS = { 30, 60 } -- y of the caption of the first and second row of the left column (stock layout)
@@ -198,8 +204,18 @@ local function reflow(dlg)
 end
 
 -------------------------------------------------------------------------------
--- The rules block
+-- The game settings block
 -------------------------------------------------------------------------------
+-- The tabs of the screen. "Difficulty" is the stock pair of lists on the left, so the block has no tab for it.
+local TABS = { "death", "party", "world", "saves", "other" }
+-- Catalog items that the controls of the stock screen carry (faction button, Story, Open Zone, the two lists): no row.
+local EXTERNAL = { ["faction"] = true, ["w|story"] = true, ["w|routes"] = true, ["w|difficulty"] = true, ["w|economy"] = true }
+
+local function schema()
+	return mod("coop_game_schema")
+end
+
+-- Value of a console variable of the engine as a trimmed string, nil = there is no such variable
 local function console_value(name)
 	local f = rawget(_G, "get_console_cmd")
 	if type(f) ~= "function" then return nil end
@@ -208,148 +224,196 @@ local function console_value(name)
 	return (tostring(v):gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
-local AUTOSAVE_BASE = { 5, 10, 20 }
-local AUTOSAVE_DEFAULT, AUTOSAVE_MAX = 10, 120
-local SHARE_BASE = { 50, 100, 150, 200 } -- coop_death_share, % of the ltx loss shares (build 10)
-local SHARE_DEFAULT, SHARE_MAX = 100, 200 -- the engine's CCC_Float 0..200, default 100
-
--- Each rule: name (the list is list_coop_<name>), console variable, the value of the console now (normalized to one of
--- the entries' values), the entries { value, text }.
-local RULES = {
-	{
-		name = "death_mode", console = "coop_death_mode",
-		current = function()
-			return console_value("coop_death_mode") == "hardcore" and "hardcore" or "checkpoint" -- respawn / respawn_keep: camps
-		end,
-		entries = function()
-			return {
-				{ value = "checkpoint", text = tr("st_coop_newgame_mode_checkpoint") },
-				{ value = "hardcore", text = tr("st_coop_newgame_mode_hardcore") },
-			}
-		end,
-	},
-	{
-		name = "death_drop", console = "coop_death_drop",
-		current = function()
-			local v = console_value("coop_death_drop")
-			return (v == "corpse" or v == "lose" or v == "keep") and v or "drop"
-		end,
-		entries = function()
-			return {
-				{ value = "drop", text = tr("st_coop_newgame_drop_drop") },
-				{ value = "corpse", text = tr("st_coop_newgame_drop_corpse") },
-				{ value = "lose", text = tr("st_coop_newgame_drop_lose") },
-				{ value = "keep", text = tr("st_coop_newgame_drop_keep") }, -- build 10: nothing is lost
-			}
-		end,
-	},
-	{
-		name = "death_share", console = "coop_death_share",
-		current = function()
-			local n = tonumber(console_value("coop_death_share"))
-			if n == nil or n ~= n or n < 0 or n > SHARE_MAX then return SHARE_DEFAULT end
-			return n
-		end,
-		entries = function(current)
-			local values, seen = {}, {}
-			for _, n in ipairs(SHARE_BASE) do values[#values + 1] = n; seen[n] = true end
-			if not seen[current] then
-				values[#values + 1] = current -- set on the options page or the console: kept, as the autosave interval
-				table.sort(values)
-			end
-			local out = {}
-			for _, n in ipairs(values) do
-				local text = string_format("%g %%", n)
-				if n == SHARE_DEFAULT then text = text .. " " .. tr("st_coop_newgame_share_normal") end
-				out[#out + 1] = { value = n, text = text }
-			end
-			return out
-		end,
-	},
-	{
-		name = "autosave", console = "coop_autosave_interval",
-		current = function()
-			local n = tonumber(console_value("coop_autosave_interval"))
-			if n == nil or n ~= math_floor(n) or n < 0 or n > AUTOSAVE_MAX then return AUTOSAVE_DEFAULT end
-			return n
-		end,
-		entries = function(current)
-			local minutes, seen = {}, {}
-			for _, n in ipairs(AUTOSAVE_BASE) do minutes[#minutes + 1] = n; seen[n] = true end
-			if current > 0 and not seen[current] then
-				minutes[#minutes + 1] = current -- set on the options page: kept, so that nothing is changed silently
-				table.sort(minutes)
-			end
-			local out = {}
-			for _, n in ipairs(minutes) do out[#out + 1] = { value = n, text = tostring(n) .. " " .. tr("st_coop_newgame_min") } end
-			out[#out + 1] = { value = 0, text = tr("st_coop_newgame_off") }
-			return out
-		end,
-	},
-}
-
--- the select callbacks: module functions (the callback is stored per dialog by AddCallback)
-local function on_select(dlg, name)
-	local st = dlg.coop_modes
-	local rule = type(st) == "table" and st[name] or nil
-	local ctl = dlg["list_coop_" .. name]
-	if not (rule and ctl) then return end
-	local entry = rule.entries[ctl:CurrentID()]
-	if entry then rule.value = entry.value end
+-- Raw string of an option of axr_options.ltx on this machine, nil = not stored. Read without the cache of ini_file_ex.
+local function machine_option(src, path)
+	local am = rawget(_G, "axr_main")
+	local cfg = am and am.config
+	if not cfg then return nil end
+	local section = src == "m" and "mcm" or "options"
+	local ok, v
+	if cfg.r_string_ex then
+		ok, v = pcall(cfg.r_string_ex, cfg, section, path)
+	else
+		ok, v = pcall(cfg.r_value, cfg, section, path, 3)
+	end
+	if not ok or v == nil or v == "" then return nil end
+	return tostring(v)
 end
-function on_select_death_mode(dlg) on_select(dlg, "death_mode") end
-function on_select_death_drop(dlg) on_select(dlg, "death_drop") end
-function on_select_death_share(dlg) on_select(dlg, "death_share") end
-function on_select_autosave(dlg) on_select(dlg, "autosave") end
-local SELECT_CALLBACK = { death_mode = on_select_death_mode, death_drop = on_select_death_drop,
-	death_share = on_select_death_share, autosave = on_select_autosave }
+
+-- The machine's raw value of a catalog key, nil = the machine has none.
+local function machine_raw(sc, key)
+	local src, path = sc.parse_key(key)
+	if src == "c" then return console_value(path) end
+	if src == "o" or src == "m" then return machine_option(src, path) end
+	return nil
+end
+
+-- The values the screen starts from when the host runtime (coop_game_settings.defaults) is not there: the machine's console
+-- and options for the catalog's keys; the catalog's own defaults fill in the rest (the view).
+local function fallback_values()
+	local out = {}
+	local sc = schema()
+	if not sc then return out end
+	for _, key in ipairs(sc.keys()) do
+		local raw = machine_raw(sc, key)
+		if raw ~= nil then out[key] = raw end
+	end
+	return out
+end
+
+-- coop_game_settings.defaults(): the machine's values and the catalog's defaults, as the record keeps them. A copy: the view
+-- writes into it.
+local function start_values()
+	local gs = mod("coop_game_settings")
+	if gs and type(gs.defaults) == "function" then
+		local ok, v = pcall(gs.defaults)
+		if ok and type(v) == "table" then
+			local out = {}
+			for k, x in pairs(v) do out[k] = x end
+			return out
+		end
+		log("! coop_game_settings.defaults failed (%s): the values of the machine are read here", tostring(v))
+	end
+	return fallback_values()
+end
+
+-- How many options of the machine the record takes as they are: [options] / [mcm] keys outside the catalog.
+local function count_other(values)
+	local sc = schema()
+	local n_o, n_m = 0, 0
+	if not sc then return n_o, n_m end
+	for key in pairs(values) do
+		local src = sc.parse_key(key)
+		if (src == "o" or src == "m") and sc.item(key) == nil then
+			if src == "o" then n_o = n_o + 1 else n_m = n_m + 1 end
+		end
+	end
+	return n_o, n_m
+end
 
 local function build_block(dlg)
 	local xml = CScriptXmlInit()
 	xml:ParseFile("ui_coop_newgame.xml") -- ui_coop_newgame_16.xml on wide screens
 	local parent = dlg.templ_options
-	local state = {}
-	dlg.coop_header = xml:InitStatic("main_dialog:options:cap_coop_header", parent)
-	for _, rule in ipairs(RULES) do
-		local field = "list_coop_" .. rule.name
-		dlg[field .. "_cap"] = xml:InitStatic("main_dialog:options:cap_" .. field, parent)
-		local list = xml:InitComboBox("main_dialog:options:" .. field, parent)
-		list:SetAutoDelete(true)
-		dlg[field] = list
-		dlg:Register(list, field)
-		local current = rule.current()
-		local entries = rule.entries(current)
-		list:ClearList()
-		local shown = entries[1].text
-		for i, e in ipairs(entries) do
-			list:AddItem(e.text, i)
-			if e.value == current then shown = e.text end
-		end
-		list:SetText(shown)
-		dlg:AddCallback(field, ui_events.LIST_ITEM_SELECT, SELECT_CALLBACK[rule.name], dlg)
-		state[rule.name] = { value = current, entries = entries }
-	end
-	dlg.coop_hint = xml:InitTextWnd("main_dialog:options:text_coop_hint", parent)
+	local path = "main_dialog:options:"
+	local values = start_values()
+	local ok_date, stamp = pcall(function() return os.date("%Y-%m-%d %H:%M") end)
+	dlg.coop_snapshot_at = ok_date and stamp or ""
+	dlg.coop_header = xml:InitStatic(path .. "cap_gs_header", parent)
+	local view_module = mod("coop_game_settings_view")
+	dlg.coop_view = view_module.new(dlg, {
+		xml = xml, parent = parent, path = path, values = values, tabs = TABS, external = EXTERNAL,
+		pages = {
+			other = function()
+				local n_o, n_m = count_other(values)
+				return string_format(tr("st_coop_newgame_other"), tostring(n_o), tostring(n_m), dlg.coop_snapshot_at)
+			end,
+		},
+		notes = { saves = "st_coop_newgame_saves_note" },
+	})
+	dlg.coop_hint = xml:InitTextWnd(path .. "text_gs_hint", parent)
 	dlg.coop_hint:SetText(tr("st_coop_newgame_hint"))
-	dlg.coop_modes = state
 end
 
--- writes the lists' values the console does not have yet; cfg_save when something was written (the options page does
--- the same on Apply: console variables live in user.ltx)
-local function write_rules(dlg)
-	local st = dlg.coop_modes
-	if type(st) ~= "table" then return end
+-- "st_diff_2" -> 2 (the stock keeps the preset as the id of its string)
+local function preset_number(id, prefix)
+	return tonumber((tostring(id or ""):gsub("^" .. prefix, ""))) or 1
+end
+
+local function flag(ctl)
+	if ctl == nil then return nil end
+	local ok, v = pcall(function() return ctl:GetCheck() end)
+	if ok and type(v) == "boolean" then return v end
+	return nil
+end
+
+-- What the record takes from the stock controls: the name, the group's faction and the creation flags of the world
+local function record_meta(dlg)
+	local name = ""
+	local ok, text = pcall(function() return dlg.character_name:GetText() end)
+	if ok and type(text) == "string" then name = text end
+	return {
+		name = name,
+		faction = type(dlg.selected_faction) == "string" and dlg.selected_faction or nil,
+		world = {
+			story = flag(dlg.ck_story), routes = flag(dlg.ck_routes),
+			difficulty = preset_number(dlg.selected_difficulty, "st_diff_"),
+			economy = preset_number(dlg.selected_economy, "st_econ_"),
+		},
+	}
+end
+
+-- Hands the new game to the host runtime: the engine keeps it until the new world is made (coop.game.stage_new), the
+-- world's first save carries it. False (and a log line) when it could not be done: the world is then made from the
+-- machine's values and the record is taken from them at the first load (docs\GAME_SETTINGS.md 5).
+local function stage(dlg, values)
+	local gs = mod("coop_game_settings")
+	if not (gs and type(gs.stage_new) == "function") then
+		log("! coop_game_settings.stage_new is missing: the new game is not staged, the machine's values stay")
+		return false
+	end
+	local rec = mod("coop_game_record")
+	if not rec then
+		log("! coop_game_record is missing: the new game is not staged")
+		return false
+	end
+	local record = rec.new(values, record_meta(dlg))
+	record.machine_snapshot_at = dlg.coop_snapshot_at
+	local ok, res, why = pcall(gs.stage_new, record) -- true, or false and the reason
+	if not ok then
+		log("! stage_new failed: %s", tostring(res))
+		return false
+	end
+	if res ~= true then
+		log("! stage_new did not take the record: %s", tostring(why))
+		return false
+	end
+	return true
+end
+
+-- Remembers the group's rules for the next new game: the console variables (c|*) and the session rules (coop/coop_session/*
+-- of axr [options]) become the machine's values, written only where they differ. The stock options and the MCM keys of the
+-- machine are not touched: they act in a single player game. cfg_save, as the options page does on Apply.
+local function remember_rules(values)
+	local sc = schema()
+	if not sc then return end
 	local exec = rawget(_G, "exec_console_cmd")
-	if type(exec) ~= "function" then return end
-	local changed = false
-	for _, rule in ipairs(RULES) do
-		local chosen = st[rule.name]
-		if chosen and chosen.value ~= nil and tostring(chosen.value) ~= tostring(rule.current()) then
-			exec(rule.console .. " " .. tostring(chosen.value))
-			changed = true
+	local am = rawget(_G, "axr_main")
+	local cfg = am and am.config
+	local console_changed, axr_changed = false, false
+	for _, key in ipairs(sc.keys()) do
+		local src, path = sc.parse_key(key)
+		local rule = src == "o" and path:find("^coop/coop_session/") ~= nil
+		if (src == "c" or rule) and values[key] ~= nil then
+			local chosen = sc.canon(key, values[key])
+			local typed = nil
+			local mraw = machine_raw(sc, key)
+			if mraw ~= nil then typed = sc.normalize(key, mraw) end -- an invalid value counts as the default, as the view shows it
+			if typed == nil then typed = sc.default(key) end
+			if typed == nil or sc.to_raw(key, typed) ~= chosen then
+				if src == "c" then
+					if type(exec) == "function" then
+						exec(path .. " " .. chosen)
+						console_changed = true
+					end
+				elseif cfg then
+					cfg:w_value("options", path, sc.normalize(key, chosen)) -- typed: ini_file_ex caches what it is given
+					axr_changed = true
+				end
+			end
 		end
 	end
-	if changed then exec("cfg_save") end
+	if console_changed then exec("cfg_save") end
+	if axr_changed then cfg:save() end
+end
+
+-- The new game: the record is staged (the world's faction and the settings of this game), the rules are remembered.
+local function write_rules(dlg)
+	local view = dlg.coop_view
+	if type(view) ~= "table" then return end
+	local values = view:collect()
+	try("stage the new game", stage, dlg, values)
+	try("remember the rules", remember_rules, values)
 end
 
 -------------------------------------------------------------------------------
@@ -366,7 +430,7 @@ end
 -- Module function: the callback of btn_start of a co-op dialog (stored by AddCallback).
 function on_start_clicked(dlg)
 	try("modes off", force_off, dlg)
-	if will_start(dlg) then try("rules", write_rules, dlg) end
+	if will_start(dlg) then try("game settings", write_rules, dlg) end
 	return dlg:OnStartGame()
 end
 
@@ -381,7 +445,7 @@ function apply(dlg)
 	try("hide the modes", hide_modes, dlg)
 	try("start button", hook_start, dlg)
 	try("left column", reflow, dlg)
-	try("rules block", build_block, dlg)
+	try("game settings block", build_block, dlg)
 end
 
 local function wrap_show_faction_ui(orig)

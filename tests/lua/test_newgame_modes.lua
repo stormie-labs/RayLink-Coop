@@ -1,7 +1,10 @@
 -- Anomaly Coop test: the new game screen of a co-op host (gamedata\scripts\coop_newgame_modes.script, its main menu seam
 -- modxml_coop_newgame.script, the layout configs\ui\ui_coop_newgame.xml and its _16 twin, the strings
--- configs\text\*\st_coop_newgame.xml). The stock screen (ui_mm_faction_select.UINewGame), the main menu and the engine
--- are stand-ins shaped like the real ones; the field names are checked against the real stock script below.
+-- configs\text\*\st_coop_newgame.xml): the stock modes are hidden, a block "Game settings" (tabs over the catalog,
+-- coop_game_settings_view) takes their place, Start stages the new game (coop_game_settings.stage_new) and remembers the
+-- rules. The stock screen (ui_mm_faction_select.UINewGame), the main menu, the engine and the host runtime
+-- (coop_game_settings, another task) are stand-ins shaped like the real ones; the catalog (coop_game_schema), the record
+-- (coop_game_record) and the view are the real scripts; the field names are checked against the real stock script below.
 -- Not shipped. Run: tools\test_lua.cmd newgame_modes
 dofile("tests/lua/support/menu_stubs.lua")
 
@@ -16,6 +19,14 @@ local function read_strings(lang, into)
 end
 read_strings("eng", STRINGS)
 read_strings("rus", RUS)
+do -- the catalog's strings (the host runtime task writes the file): used when it is there, else the id is the text
+	local fh = io.open(ROOT .. "configs/text/eng/st_coop_game.xml", "r")
+	if fh then
+		local src = fh:read("*a")
+		fh:close()
+		for id, text in src:gmatch('<string id="([^"]+)">%s*<text>(.-)</text>') do STRINGS[id] = STRINGS[id] or text end
+	end
+end
 game = { translate_string = function(id) return STRINGS[id] or id end }
 
 -- ------------------------------------------------------------------------------------------------ engine
@@ -42,6 +53,42 @@ CFG = axr_main.config.data
 -- ini_file_ex:r_string_ex: no cache, a cleared line (w_value without a value) reads as ""
 function axr_main.config:r_string_ex(s, k) return CFG[s .. "&" .. k] end
 local function cfg(key) return CFG["character_creation&" .. key] end
+local function cfg_options(path) return CFG["options&" .. path] end
+local function has_rule_keys()
+	for k in pairs(CFG) do if k:find("^options&coop/coop_session/") then return true end end
+	return false
+end
+local function has_other_keys() -- a stock option or an MCM key of the machine
+	for k in pairs(CFG) do
+		if k:find("^mcm&") or (k:find("^options&") and not k:find("^options&coop/coop_session/")) then return true end
+	end
+	return false
+end
+local function copy(t)
+	local o = {}
+	for k, v in pairs(t) do o[k] = v end
+	return o
+end
+local function T(id) return STRINGS[id] or id end
+
+-- the game settings: the catalog, the record and the view are the real scripts; the host runtime is a stand-in
+load_module("coop_game_schema")
+load_module("coop_game_record")
+load_module("coop_game_settings_view")
+local DEFAULTS_BASE = {
+	["c|coop_death_mode"] = "checkpoint", ["c|coop_death_drop"] = "drop", ["c|coop_autosave_interval"] = "10",
+	["c|coop_death_share"] = "100",
+	["o|video/x"] = "1", ["o|gameplay/diff/b"] = "2", ["m|zzz/other"] = "5", -- 2 other options, 1 of an addon
+}
+DEFAULTS, STAGED, STAGE_OK = copy(DEFAULTS_BASE), {}, true
+local function reset_defaults() DEFAULTS = copy(DEFAULTS_BASE) end
+coop_game_settings = {
+	defaults = function() return DEFAULTS end, -- the table itself: the screen must copy it
+	stage_new = function(record)
+		STAGED[#STAGED + 1] = record
+		return STAGE_OK
+	end,
+}
 
 -- ------------------------------------------------------------------------------------------------ xml / windows
 local function rich_window(path)
@@ -123,6 +170,8 @@ class "UINewGame" (CUIScriptWnd)
 function UINewGame:__init(owner)
 	self.owner = owner
 	self.access = true
+	self.selected_faction = "stalker"
+	self.selected_difficulty, self.selected_economy = "st_diff_1", "st_econ_1"
 	self.table_hardcore_lives = { { 1, "st_lives" }, { 2, "st_lives" }, { 3, "st_lives" } }
 	self.table_hardcore_regen = { { nil, "st_off" }, { 72, "st_days" } }
 	self.table_timer = { { nil, "st_off" }, { 10, "st_min" } }
@@ -253,7 +302,7 @@ function MM:ShowDialog() end
 function MM:HideDialog() end
 function MM:Show() end
 function MM:StartGame()
-	STARTS[#STARTS + 1] = { exec = #EXEC, keys = {} }
+	STARTS[#STARTS + 1] = { exec = #EXEC, staged = #STAGED, keys = {} }
 	for _, k in ipairs({ "new_game_hardcore_mode", "new_game_timer_mode", "new_game_soulslike_mode" }) do
 		STARTS[#STARTS].keys[k] = cfg(k)
 	end
@@ -290,23 +339,32 @@ local function reset_console()
 	CONSOLE.coop_death_mode, CONSOLE.coop_death_drop, CONSOLE.coop_autosave_interval = "checkpoint", "drop", "10"
 	CONSOLE.coop_death_share = "100.00000"
 	EXEC = {}
+	STAGED, STAGE_OK = {}, true
+	reset_defaults()
+	for k in pairs(CFG) do
+		if k:find("^options&") or k:find("^mcm&") then CFG[k] = nil end
+	end
 end
 local function click_start(dlg)
 	local cb = dlg.callbacks["btn_start#" .. ui_events.BUTTON_CLICKED]
 	assert(cb, "btn_start has no callback")
 	return cb.f(cb.obj)
 end
-local function pick(dlg, field, index)
-	dlg[field].cur = index
-	local cb = dlg.callbacks[field .. "#" .. ui_events.LIST_ITEM_SELECT]
-	assert(cb, field .. " has no select callback")
+-- picks entry `index` in the combo of the catalog item `key`, as a click in the list does
+local function pick_key(dlg, key, index)
+	local r = assert(dlg.coop_view:row(key), "no row for " .. key)
+	r.list.cur = index
+	local cb = dlg.callbacks[r.name .. "#" .. ui_events.LIST_ITEM_SELECT]
+	assert(cb, key .. " has no select callback")
 	cb.f(cb.obj)
 end
-local function texts(list)
-	local t = {}
-	for _, it in ipairs(list.items) do t[#t + 1] = it.text end
-	return table.concat(t, "|")
+local function item_index(key, value) -- position of a value in the catalog item's list
+	for i, e in ipairs(coop_game_schema.item(key).values) do
+		if e[1] == value then return i end
+	end
+	error("no value " .. tostring(value) .. " in " .. key)
 end
+local function shown(dlg, key) return dlg.coop_view:row(key).list.text end
 local function clear_cfg()
 	for k in pairs(CFG) do if k:find("^character_creation&") then CFG[k] = nil end end
 end
@@ -418,144 +476,239 @@ for _, gamma in ipairs({ true, false }) do
 	check(d.callbacks["btn_start#" .. ui_events.BUTTON_CLICKED].f ~= STOCK_ON_START, label .. ": the start button is ours")
 end
 
-print("== co-op host: the rules block")
+print("== co-op host: the game settings block")
 GAMMA = true
 reset_console(); clear_cfg(); coop_info()
+MISSING_PATHS = {}
 local mn = new_menu()
 mn:ShowFactionUI()
 local d = mn.new_game_dlg
-check(d.coop_header and d.coop_header.shown ~= false, "the block has its header")
+check(d.coop_header and d.coop_header.path == "main_dialog:options:cap_gs_header" and d.coop_header.shown ~= false, "the block has its header")
 check(d.coop_header.parent == nil or d.coop_header.parent == d.templ_options, "inside the options frame")
-for _, f in ipairs({ "list_coop_death_mode", "list_coop_death_drop", "list_coop_death_share", "list_coop_autosave" }) do
-	check(d[f] and d[f].shown and d[f].enabled and d[f .. "_cap"] and d[f .. "_cap"].shown, f .. " and its caption are shown")
-	check(d.registered[f] == d[f], f .. " is registered under its name")
-end
-check(d.list_coop_death_mode_cap.path == "main_dialog:options:cap_list_coop_death_mode", "the captions come from the layout")
-check(texts(d.list_coop_death_mode) == "Camps|Hardcore", "death: " .. texts(d.list_coop_death_mode))
-check(texts(d.list_coop_death_drop) == "Bag at the body|All in a stash|Lost|Nothing is lost",
-	"loss, build 10 keep the fourth: " .. texts(d.list_coop_death_drop))
-check(texts(d.list_coop_death_share) == "50 %|100 % (normal)|150 %|200 %", "share (build 10): " .. texts(d.list_coop_death_share))
-check(texts(d.list_coop_autosave) == "5 min|10 min|20 min|off", "autosave: " .. texts(d.list_coop_autosave))
-check(d.list_coop_death_mode.text == "Camps" and d.list_coop_death_drop.text == "Bag at the body"
-	and d.list_coop_death_share.text == "100 % (normal)" and d.list_coop_autosave.text == "10 min",
-	"the lists show the console's values")
-check(d.list_coop_death_share_cap.path == "main_dialog:options:cap_list_coop_death_share", "the share caption comes from the layout")
+check(STRINGS.st_coop_newgame_header == "Game settings" and RUS.st_coop_newgame_header ~= nil, "it is 'Game settings' (the old 'Co-op mode' block is gone)")
+check(d.list_coop_death_mode == nil and d.list_coop_death_drop == nil and d.list_coop_death_share == nil and d.list_coop_autosave == nil
+	and d.coop_modes == nil, "none of the four lists of the old block is left")
+local view = d.coop_view
+check(view ~= nil and #view.tabs == 5 and view.tabs[1] == "death" and view.tabs[2] == "party" and view.tabs[3] == "world"
+	and view.tabs[4] == "saves" and view.tabs[5] == "other", "tabs: death, party, world, saves, other (difficulty is the stock lists)")
+local tab_texts = {}
+for _, tab in ipairs(view.tabs) do tab_texts[#tab_texts + 1] = view.buttons[tab].text end
+check(table.concat(tab_texts, "|") == "Death|Party|World|Saves|Other", "the strip: " .. table.concat(tab_texts, "|"))
+check(view.tab == "death" and view.scrolls.death.shown and not view.scrolls.world.shown, "the first tab is open")
+check(#view.rows.death == 12 and #view.rows.party == 15 and #view.rows.world == 15 and #view.rows.saves == 2,
+	"rows: 12 / 15 / 15 (no addon) / 2")
+check(view.rows.death[1].list.parent == view.rows.death[1].row and d.registered[view.rows.death[1].name] == view.rows.death[1].list,
+	"a combo sits in its row and is registered in the dialog")
 check(d.coop_hint and d.coop_hint.text == STRINGS.st_coop_newgame_hint and d.coop_hint.shown ~= false, "the hint is under the block")
-check(STRINGS.st_coop_newgame_hint:find("Options > Co%-op") ~= nil, "and points to Options > Co-op")
-check(#EXEC == 0, "opening the screen writes nothing to the console")
+check(STRINGS.st_coop_newgame_hint:find("Co%-op > Game settings") ~= nil, "and points to Co-op > Game settings")
+check(view.values["c|coop_death_mode"] == "checkpoint" and view.values["m|zzz/other"] == "5",
+	"the values of the view are those of coop_game_settings.defaults() (a copy of them)")
+view.values["c|coop_death_mode"] = "hardcore"
+check(DEFAULTS["c|coop_death_mode"] == "checkpoint", "changing the view does not change defaults()'s table")
+view.values["c|coop_death_mode"] = "checkpoint"
+check(d.coop_snapshot_at ~= nil and d.coop_snapshot_at:find("^%d%d%d%d%-%d%d%-%d%d %d%d:%d%d$") ~= nil, "the time of the snapshot is taken: " .. tostring(d.coop_snapshot_at))
+view:select("other")
+check(view.page_text.other.text == string.format(STRINGS.st_coop_newgame_other, "2", "1", d.coop_snapshot_at),
+	"'other': the number of other options (2), of the addons' (1) and the time: " .. tostring(view.page_text.other.text))
+view:select("saves")
+check(view.note_text.saves.text == STRINGS.st_coop_newgame_saves_note, "'saves' ends with its note")
+view:select("death")
+check(#EXEC == 0 and #STAGED == 0, "opening the screen writes nothing and stages nothing")
+check(#MISSING_PATHS == 0, "every xml path of the block exists in the layout (" .. table.concat(MISSING_PATHS, ", ") .. ")")
 
-print("== co-op host: the values for the console")
--- the user (or a mod) switched the hidden modes on; he picks hardcore, lose and autosave off
+print("== co-op host: the dynamic anomalies addon, if there is one")
+ui_mcm = { check_opt_table = function(path) return path:find("^drx_da/") ~= nil end }
+reset_console(); clear_cfg(); coop_info()
+mn = new_menu(); mn:ShowFactionUI(); d = mn.new_game_dlg; view = d.coop_view
+check(#view.rows.world == 18 and view:row("m|drx_da/anomaly_amount_modifier") ~= nil, "ui_mcm has its options: the 3 items are rows (18 in 'world')")
+ui_mcm = nil
+mn = new_menu(); mn:ShowFactionUI(); d = mn.new_game_dlg
+check(#d.coop_view.rows.world == 15, "without it they are not")
+
+print("== co-op host: Start stages the new game")
+ui_mcm = { check_opt_table = function() return true end }
+reset_console(); clear_cfg(); coop_info()
+mn = new_menu(); mn:ShowFactionUI(); d = mn.new_game_dlg; view = d.coop_view
+d.selected_faction = "dolg"
+d.ck_story:SetCheck(false); d.ck_routes:SetCheck(true)
+d.selected_difficulty, d.selected_economy = "st_diff_2", "st_econ_3"
+d.character_name:SetText("Strelok")
+-- the user (or a mod) switched the hidden modes on, then chose
 d.ck_hardcore:SetCheck(true); d.ck_soulslike_mode:SetCheck(true); d.ck_azazel_mode:SetCheck(true)
-d.ck_campfire:SetCheck(true); d.ck_conditions:SetCheck(true); d.ck_survival:SetCheck(true); d.ck_warfare:SetCheck(true)
-d.selected_timer = d.table_timer[2]; d.selected_hardcore_regen = d.table_hardcore_regen[2]
-axr_main.config:w_value("character_creation", "new_game_campfire_mode", true)
-pick(d, "list_coop_death_mode", 2)
-pick(d, "list_coop_death_drop", 3)
-pick(d, "list_coop_autosave", 4)
-check(#EXEC == 0, "picking in the lists writes nothing yet")
+d.selected_timer = d.table_timer[2]
+pick_key(d, "c|coop_death_mode", 2)
+pick_key(d, "c|coop_death_drop", item_index("c|coop_death_drop", "keep"))
+pick_key(d, "c|coop_autosave_interval", item_index("c|coop_autosave_interval", 0))
+pick_key(d, "o|coop/coop_session/party_fast_travel", 2)
+pick_key(d, "o|coop/coop_session/gather_radius", item_index("o|coop/coop_session/gather_radius", 50))
+pick_key(d, "o|alife/event/emission_state", 2)
+pick_key(d, "o|alife/event/emission_frequency", item_index("o|alife/event/emission_frequency", 48))
+pick_key(d, "m|drx_da/anomaly_amount_modifier", item_index("m|drx_da/anomaly_amount_modifier", 2))
+check(#EXEC == 0 and #STAGED == 0 and not has_rule_keys(), "picking in the lists writes nothing and stages nothing yet")
 click_start(d)
 local s = STARTS[#STARTS]
-check(s ~= nil, "the world start was asked")
-check(EXEC[1] == "coop_death_mode hardcore" and EXEC[2] == "coop_death_drop lose"
-	and EXEC[3] == "coop_autosave_interval 0" and EXEC[4] == "cfg_save" and #EXEC == 4,
-	"the three variables, then cfg_save (" .. table.concat(EXEC, "; ") .. ")")
+check(s ~= nil and #STAGED == 1 and s.staged == 1, "the record was staged before the world start")
+local rec = STAGED[1]
+check(rec and rec.faction == "dolg", "faction = the dialog's selected faction (dolg)")
+check(rec and rec.world and rec.world.story == false and rec.world.routes == true and rec.world.difficulty == 2 and rec.world.economy == 3,
+	"world = the stock controls: story off, open Zone on, difficulty 2, economy 3")
+check(rec and rec.name == "Strelok" and rec.rev == 0 and rec.v == 1 and type(rec.id) == "string" and rec.id:find("^%x%x%x%x%x%x%x%x%-%x%x%x%x$") ~= nil,
+	"name, rev 0, version 1 and an id of the form %08x-%04x: " .. tostring(rec and rec.id))
+check(rec.machine_snapshot_at == d.coop_snapshot_at, "the record carries the time of the machine snapshot")
+local rv = rec.values
+check(rv["c|coop_death_mode"] == "hardcore" and rv["c|coop_death_drop"] == "keep" and rv["c|coop_autosave_interval"] == "0",
+	"the console rules of the record are the chosen ones")
+check(rv["o|coop/coop_session/party_fast_travel"] == "false" and rv["o|coop/coop_session/gather_radius"] == "50",
+	"the session rules too")
+check(rv["o|alife/event/emission_state"] == "false" and rv["o|alife/event/emission_frequency"] == "48"
+	and rv["m|drx_da/anomaly_amount_modifier"] == "2", "and the world rules, the addon's key too (they live in the record)")
+check(rv["c|coop_death_share"] == "100" and rv["c|coop_bleedout"] == "60" and rv["o|alife/general/alife_stalker_pop"] == "0.5"
+	and rv["m|drx_da/disable_new_anomalies"] == "false", "everything not chosen holds its default, complete")
+check(rv["m|zzz/other"] == "5" and rv["o|video/x"] == "1", "the other options of the machine are in the record as they were")
+check(rv["faction"] == nil and rv["w|story"] == nil, "no faction and no world flag among the values (they are fields of the record)")
+check(EXEC[1] == "coop_death_mode hardcore" and EXEC[2] == "coop_death_drop keep" and EXEC[3] == "coop_autosave_interval 0"
+	and EXEC[4] == "cfg_save" and #EXEC == 4, "the console is written for c|* only, changed ones, then cfg_save (" .. table.concat(EXEC, "; ") .. ")")
 check(s and s.exec == 4, "all of it before the start of the world")
-check(CONSOLE.coop_death_mode == "hardcore" and CONSOLE.coop_death_drop == "lose" and CONSOLE.coop_autosave_interval == "0",
-	"the console holds the new rules")
+check(CONSOLE.coop_death_mode == "hardcore" and CONSOLE.coop_death_drop == "keep" and CONSOLE.coop_autosave_interval == "0",
+	"the machine remembers the rules for the next new game")
+check(cfg_options("coop/coop_session/party_fast_travel") == "false" and cfg_options("coop/coop_session/gather_radius") == "50",
+	"the changed session rules are written to axr [options]")
+check(cfg_options("coop/coop_session/travel_time") == nil and cfg_options("coop/coop_session/give_radius") == nil
+	and cfg_options("coop/coop_session/sleep_rule") == nil, "and the unchanged ones are not")
+check(cfg_options("alife/event/emission_state") == nil and cfg_options("alife/event/emission_frequency") == nil
+	and CFG["mcm&drx_da/anomaly_amount_modifier"] == nil and not has_other_keys(), "stock options and MCM keys of the machine are not written")
 local left = {}
 for _, k in ipairs(CFG_KEYS) do if cfg(k) ~= nil then left[#left + 1] = k end end
-check(#left == 0, "none of the 9 hidden modes reaches the config, whatever was ticked or stale (" .. table.concat(left, ",") .. ")")
-check(cfg("new_game_story_mode") == "true" and cfg("new_game_opened_routes") == "true" and cfg("new_game_difficulty") == "1",
-	"story, open Zone and difficulty are written as the stock does")
-check(s and s.keys.new_game_hardcore_mode == nil and s.keys.new_game_timer_mode == nil and s.keys.new_game_soulslike_mode == nil,
-	"already clean when the world starts")
+check(#left == 0, "none of the 9 hidden modes reaches the config, whatever was ticked (" .. table.concat(left, ",") .. ")")
+check(cfg("new_game_story_mode") == nil and cfg("new_game_opened_routes") == "true" and cfg("new_game_difficulty") == "1",
+	"the stock start still ran with the stock controls (story off, open Zone on)")
+check(cfg("new_game_character_name") == "Strelok", "the name as the stock writes it")
+ui_mcm = nil
 
-print("== co-op host: untouched lists write nothing")
+print("== co-op host: untouched settings stage the machine's values and write nothing")
 reset_console(); clear_cfg(); coop_info()
 mn = new_menu(); mn:ShowFactionUI(); d = mn.new_game_dlg
 click_start(d)
-check(#EXEC == 0, "the rules stay as they were: no console writes, no cfg_save (" .. table.concat(EXEC, "; ") .. ")")
-check(cfg("new_game_character_name") == "Stalker", "the stock start still ran")
+check(#STAGED == 1 and #EXEC == 0, "staged once; no console writes, no cfg_save (" .. table.concat(EXEC, "; ") .. ")")
+check(not has_rule_keys() and not has_other_keys(), "and nothing of axr")
+check(STAGED[1].faction == "stalker" and STAGED[1].world.story == true and STAGED[1].world.routes == true
+	and STAGED[1].world.difficulty == 1 and STAGED[1].world.economy == 1, "the stock defaults: stalker, story, open Zone, 1 / 1")
+check(STAGED[1].values["c|coop_death_mode"] == "checkpoint" and STAGED[1].values["c|coop_autosave_interval"] == "10"
+	and STAGED[1].values["m|zzz/other"] == "5", "the record holds the values of defaults()")
+check(cfg("new_game_character_name") == "Stalker", "the stock start ran")
 
-print("== co-op host: keep and the share (build 10)")
+print("== co-op host: picked and picked back")
 reset_console(); clear_cfg(); coop_info()
 mn = new_menu(); mn:ShowFactionUI(); d = mn.new_game_dlg
-pick(d, "list_coop_death_drop", 4)
-pick(d, "list_coop_death_share", 3)
+pick_key(d, "c|coop_death_share", 4)
+pick_key(d, "c|coop_death_share", item_index("c|coop_death_share", 100))
+pick_key(d, "c|coop_death_drop", 4)
+pick_key(d, "c|coop_death_drop", 1)
+pick_key(d, "o|coop/coop_session/travel_time", 2)
+pick_key(d, "o|coop/coop_session/travel_time", 1)
+click_start(d)
+check(#EXEC == 0 and not has_rule_keys(), "picked back to the machine's values: nothing written (" .. table.concat(EXEC, "; ") .. ")")
+check(STAGED[1].values["c|coop_death_share"] == "100" and STAGED[1].values["c|coop_death_drop"] == "drop", "and the record has them")
+
+print("== co-op host: keep and the share")
+reset_console(); clear_cfg(); coop_info()
+mn = new_menu(); mn:ShowFactionUI(); d = mn.new_game_dlg
+pick_key(d, "c|coop_death_share", item_index("c|coop_death_share", 150))
+pick_key(d, "c|coop_death_drop", 4)
+check(d.coop_view:row("c|coop_death_share").list.enabled == false, "'keep': the share row is greyed (nothing falls)")
 click_start(d)
 check(EXEC[1] == "coop_death_drop keep" and EXEC[2] == "coop_death_share 150" and EXEC[3] == "cfg_save" and #EXEC == 3,
 	"nothing is lost and 150 %: both written, then cfg_save (" .. table.concat(EXEC, "; ") .. ")")
 check(CONSOLE.coop_death_drop == "keep" and CONSOLE.coop_death_share == "150", "the console holds keep and 150")
 reset_console(); clear_cfg()
 mn = new_menu(); mn:ShowFactionUI(); d = mn.new_game_dlg
-pick(d, "list_coop_death_share", 1)
+pick_key(d, "c|coop_death_share", 1)
 click_start(d)
-check(EXEC[1] == "coop_death_share 50" and EXEC[2] == "cfg_save" and #EXEC == 2,
-	"50 % alone: only the share is written (" .. table.concat(EXEC, "; ") .. ")")
-reset_console(); clear_cfg()
-mn = new_menu(); mn:ShowFactionUI(); d = mn.new_game_dlg
-pick(d, "list_coop_death_share", 4)
-pick(d, "list_coop_death_share", 2)
-pick(d, "list_coop_death_drop", 4)
-pick(d, "list_coop_death_drop", 1)
-click_start(d)
-check(#EXEC == 0, "picked and picked back to the console's values: nothing written (" .. table.concat(EXEC, "; ") .. ")")
+check(EXEC[1] == "coop_death_share 50" and EXEC[2] == "cfg_save" and #EXEC == 2, "50 % alone: only the share is written (" .. table.concat(EXEC, "; ") .. ")")
 
-print("== co-op host: the console's values, odd ones too")
+print("== co-op host: the machine's values, odd ones too")
 reset_console(); clear_cfg(); coop_info()
+DEFAULTS["c|coop_death_mode"], DEFAULTS["c|coop_death_drop"], DEFAULTS["c|coop_autosave_interval"] = "hardcore", "corpse", "15"
+DEFAULTS["c|coop_death_share"] = "75.00000"
 CONSOLE.coop_death_mode, CONSOLE.coop_death_drop, CONSOLE.coop_autosave_interval = "hardcore", "corpse", "15"
+CONSOLE.coop_death_share = "75.00000"
 mn = new_menu(); mn:ShowFactionUI(); d = mn.new_game_dlg
-check(d.list_coop_death_mode.text == "Hardcore" and d.list_coop_death_drop.text == "All in a stash",
+check(shown(d, "c|coop_death_mode") == T("st_coop_game_death_mode_hardcore") and shown(d, "c|coop_death_drop") == T("st_coop_game_death_drop_corpse"),
 	"hardcore and corpse are shown")
-check(texts(d.list_coop_autosave) == "5 min|10 min|15 min|20 min|off" and d.list_coop_autosave.text == "15 min",
-	"an interval from the options page (15) is kept as an entry: " .. texts(d.list_coop_autosave))
-click_start(d)
-check(#EXEC == 0, "and written back unchanged: nothing")
-reset_console(); clear_cfg()
-CONSOLE.coop_death_drop, CONSOLE.coop_death_share = "keep", "75.00000"
-mn = new_menu(); mn:ShowFactionUI(); d = mn.new_game_dlg
-check(d.list_coop_death_drop.text == "Nothing is lost", "keep is shown")
-check(texts(d.list_coop_death_share) == "50 %|75 %|100 % (normal)|150 %|200 %" and d.list_coop_death_share.text == "75 %",
-	"a share from the options page or the console (75) is kept as an entry: " .. texts(d.list_coop_death_share))
+check(shown(d, "c|coop_autosave_interval") == T("st_coop_game_autosave_interval_15") and #d.coop_view:row("c|coop_autosave_interval").list.items == 7,
+	"15 min is a list entry")
+check(shown(d, "c|coop_death_share") == "75 %" and #d.coop_view:row("c|coop_death_share").list.items == 5,
+	"a share from the options page or the console (75) is kept as an entry: " .. shown(d, "c|coop_death_share"))
 click_start(d)
 check(#EXEC == 0, "and written back unchanged: nothing (" .. table.concat(EXEC, "; ") .. ")")
-for _, odd in ipairs({ "300.00000", "-5.00000", "abc" }) do
-	reset_console(); clear_cfg()
-	CONSOLE.coop_death_share = odd
-	mn = new_menu(); mn:ShowFactionUI(); d = mn.new_game_dlg
-	check(d.list_coop_death_share.text == "100 % (normal)" and texts(d.list_coop_death_share) == "50 %|100 % (normal)|150 %|200 %",
-		"a share outside 0..200 (" .. odd .. ") shows the default, no entry of its own")
-end
+check(STAGED[1].values["c|coop_death_share"] == "75" and STAGED[1].values["c|coop_autosave_interval"] == "15", "the record keeps them (75, 15)")
+reset_defaults()
+-- an odd console value shows the default and is not written back
 reset_console(); clear_cfg()
-CONSOLE.coop_death_mode, CONSOLE.coop_autosave_interval = "respawn_keep", "0"
+CONSOLE.coop_death_share = "300.00000"
+DEFAULTS["c|coop_death_share"] = "300.00000"
 mn = new_menu(); mn:ShowFactionUI(); d = mn.new_game_dlg
-check(d.list_coop_death_mode.text == "Camps" and d.list_coop_autosave.text == "off", "an old synonym is camps, 0 is off")
-reset_console(); clear_cfg()
-CONSOLE.coop_death_mode, CONSOLE.coop_death_drop, CONSOLE.coop_autosave_interval = nil, nil, nil
-get_console_cmd = function() return nil end
-mn = new_menu(); mn:ShowFactionUI(); d = mn.new_game_dlg
-check(d.list_coop_death_mode.text == "Camps" and d.list_coop_death_drop.text == "Bag at the body"
-	and d.list_coop_death_share.text == "100 % (normal)" and d.list_coop_autosave.text == "10 min",
-	"no console variable: the engine defaults")
+check(shown(d, "c|coop_death_share") == T("st_coop_game_death_share_100") and #d.coop_view:row("c|coop_death_share").list.items == 4,
+	"a share outside 0..200 shows the default, no entry of its own")
 click_start(d)
-check(#EXEC == 0, "and nothing to write")
-function get_console_cmd(typ, name) return CONSOLE[name] end
+check(#EXEC == 0 and STAGED[1].values["c|coop_death_share"] == "100", "not written to the console; the record has the default")
+reset_defaults()
 
 print("== co-op host: a start that does not start")
 reset_console(); clear_cfg(); coop_info()
 mn = new_menu(); mn:ShowFactionUI(); d = mn.new_game_dlg
-pick(d, "list_coop_death_mode", 2)
+pick_key(d, "c|coop_death_mode", 2)
+pick_key(d, "o|coop/coop_session/gather_radius", 4)
 d.character_name:SetText("")
 local starts_before = #STARTS
 click_start(d)
-check(#STARTS == starts_before and #EXEC == 0, "no name: the stock refuses, the rules are not written either")
+check(#STARTS == starts_before and #EXEC == 0 and #STAGED == 0 and not has_rule_keys(),
+	"no name: the stock refuses, nothing is staged, no console, no axr")
 d.character_name:SetText("Strelok"); d.access = false
 click_start(d)
-check(#STARTS == starts_before and #EXEC == 0, "a pop-up is open: same")
+check(#STARTS == starts_before and #EXEC == 0 and #STAGED == 0 and not has_rule_keys(), "a pop-up is open: same")
 d.access = true
 click_start(d)
-check(#STARTS == starts_before + 1 and EXEC[1] == "coop_death_mode hardcore", "then the start goes through")
+check(#STARTS == starts_before + 1 and #STAGED == 1 and EXEC[1] == "coop_death_mode hardcore"
+	and cfg_options("coop/coop_session/gather_radius") == "50", "then the start goes through, staged once")
+click_start(d)
+check(#STAGED == 2, "a second click is a second start (the stock decides what it does with it)")
+
+print("== co-op host: coop_game_settings is missing or fails")
+local saved_gs = coop_game_settings
+local STAGES_AFTER = { ["missing"] = 0, ["stage false"] = 1, ["stage throws"] = 0, ["defaults throws"] = 1 }
+for _, case in ipairs({ "missing", "stage false", "stage throws", "defaults throws" }) do
+	reset_console(); clear_cfg(); coop_info(); LOG = {}
+	if case == "missing" or case == "defaults throws" then CONSOLE.coop_death_drop = "corpse" end
+	if case == "missing" then
+		coop_game_settings = nil
+	else
+		coop_game_settings = {
+			defaults = function() if case == "defaults throws" then error("boom") end return copy(DEFAULTS) end,
+			stage_new = function(r)
+				if case == "stage throws" then error("boom") end
+				STAGED[#STAGED + 1] = r
+				return case ~= "stage false"
+			end,
+		}
+	end
+	mn = new_menu(); mn:ShowFactionUI(); d = mn.new_game_dlg
+	check(d.coop_view ~= nil, case .. ": the block is there")
+	if case == "missing" or case == "defaults throws" then
+		check(shown(d, "c|coop_death_drop") == T("st_coop_game_death_drop_corpse"), case .. ": it takes the machine's console (corpse)")
+		check(shown(d, "c|coop_death_mode") == T("st_coop_game_death_mode_checkpoint"), case .. ": and the catalog's default where the machine has none")
+	end
+	pick_key(d, "c|coop_death_mode", 2)
+	local n_before = #STARTS
+	local ok = pcall(click_start, d)
+	check(ok and #STARTS == n_before + 1, case .. ": the world start still goes through")
+	check(EXEC[1] == "coop_death_mode hardcore" and EXEC[2] == "cfg_save" and #EXEC == 2,
+		case .. ": the rules are remembered all the same (" .. table.concat(EXEC, "; ") .. ")")
+	check(#STAGED == STAGES_AFTER[case], case .. ": staged " .. STAGES_AFTER[case] .. " time(s)")
+	check(log_has("coop%-newgame"), case .. ": and it is logged")
+end
+coop_game_settings = saved_gs
+reset_console(); clear_cfg()
 
 print("== co-op host: the screen follows the kind of game")
 reset_console(); clear_cfg(); GAMMA = true
@@ -564,10 +717,10 @@ single_info(); mn:ShowFactionUI(); local a = mn.new_game_dlg
 coop_info(); mn:ShowFactionUI(); local b = mn.new_game_dlg
 check(b ~= a and b.coop_modes_applied == true, "single player -> co-op: a new dialog, set up")
 mn:ShowFactionUI(); local c2 = mn.new_game_dlg
-check(c2 ~= b and c2.coop_modes_applied == true and c2.list_coop_death_mode ~= nil,
+check(c2 ~= b and c2.coop_modes_applied == true and c2.coop_view ~= nil,
 	"co-op again: built again (the console may have changed meanwhile)")
 single_info(); mn:ShowFactionUI(); local e = mn.new_game_dlg
-check(e ~= c2 and e.coop_modes_applied == nil and is_visible(e, "ck_hardcore") and e.list_coop_death_mode == nil,
+check(e ~= c2 and e.coop_modes_applied == nil and is_visible(e, "ck_hardcore") and e.coop_view == nil,
 	"co-op -> single player: the stock dialog again, every mode back")
 mn:ShowFactionUI()
 check(mn.new_game_dlg == e, "single player again: the cached one")
@@ -586,7 +739,8 @@ for _, f in ipairs(HIDDEN) do still = still and is_gone(d, f) end
 check(still, "the modes are still hidden")
 d.ck_hardcore:SetCheck(true)
 click_start(d)
-check(cfg("new_game_hardcore_mode") == nil and #EXEC == 0, "the start still forces them off, no rules written")
+check(cfg("new_game_hardcore_mode") == nil and #EXEC == 0 and #STAGED == 0 and d.coop_view == nil,
+	"the start still forces them off, no block, no rules written, nothing staged")
 XML_FILES["ui_coop_newgame.xml"] = saved_xml
 
 print("== game start: stale modes of a co-op host are cleared")
@@ -618,71 +772,228 @@ for _, k in ipairs(CFG_KEYS) do if cfg(k) ~= nil then remain = remain + 1 end en
 check(remain == 0, "a host pending after the menu's new game: cleared too")
 single_info()
 
+
 print("== layouts and strings")
+-- children of <options>: name -> { x, y, w, h } (the nodes that carry a box)
 local function elements(file)
 	local fh = assert(io.open(file, "r"))
 	local src = fh:read("*a"):gsub("<!%-%-.-%-%->", "")
 	fh:close()
-	local out = {}
+	local out, order = {}, {}
 	local body = src:match("<options>(.-)</options>")
 	assert(body, file .. ": no <options>")
 	for name, x, y, w, h in body:gmatch('<([%w_]+)%s+x="(%-?%d+)"%s+y="(%-?%d+)"%s+width="(%d+)"%s+height="(%d+)"') do
 		out[name] = { x = tonumber(x), y = tonumber(y), w = tonumber(w), h = tonumber(h) }
+		order[#order + 1] = name
 	end
-	return out
+	return out, order
 end
-local NAMES = { "cap_coop_header", "cap_list_coop_death_mode", "list_coop_death_mode", "cap_list_coop_death_drop",
-	"list_coop_death_drop", "cap_list_coop_death_share", "list_coop_death_share", "cap_list_coop_autosave",
-	"list_coop_autosave", "text_coop_hint" }
-local ROWS = { "list_coop_death_mode", "list_coop_death_drop", "list_coop_death_share", "list_coop_autosave" }
+local NAMES = { "cap_gs_header", "btn_gs_tab_1", "btn_gs_tab_2", "btn_gs_tab_3", "btn_gs_tab_4", "btn_gs_tab_5", "gs_tab_mark", "scroll_gs",
+	"gs_row", "cap_gs_row", "list_gs_row", "gs_line", "text_gs_line", "text_gs_hint" }
+local TABS5 = { "death", "party", "world", "saves", "other" }
+local GEOM = {}
 for _, lay in ipairs({ { "ui_coop_newgame.xml", 880, 331 }, { "ui_coop_newgame_16.xml", 704, 264 } }) do
-	local els = elements(ROOT .. "configs/ui/" .. lay[1])
+	local name, frame_w, col_x = lay[1], lay[2], lay[3]
+	local els, order = elements(ROOT .. "configs/ui/" .. name)
+	GEOM[name] = els
 	local miss, bad = {}, {}
 	for _, n in ipairs(NAMES) do
 		local e = els[n]
-		if not e then miss[#miss + 1] = n
-		elseif e.x < lay[3] or e.x + e.w > lay[2] or e.y < 0 or e.y + e.h > 160 then
+		if not e then
+			miss[#miss + 1] = n
+		elseif n == "gs_row" or n == "gs_line" or n == "cap_gs_row" or n == "list_gs_row" or n == "text_gs_line" then
+			-- a row or a line of text and what is inside: relative to the scroll view / the row, checked below
+		elseif e.x < col_x or e.x + e.w > frame_w or e.y < 0 or e.y + e.h > 160 then
 			bad[#bad + 1] = n .. string.format(" (%d,%d %dx%d)", e.x, e.y, e.w, e.h)
 		end
 	end
-	check(#miss == 0, lay[1] .. ": every element is there (" .. table.concat(miss, ",") .. ")")
-	check(#bad == 0, lay[1] .. ": inside the options frame (" .. lay[2] .. " x 160) and right of the first column (x from "
-		.. lay[3] .. "): " .. table.concat(bad, ", "))
-	local rows = {}
-	for _, n in ipairs(ROWS) do
-		local e, cap = els[n], els["cap_" .. n]
-		if e and cap then
-			check(cap.x + cap.w <= e.x, lay[1] .. ": " .. n .. " caption ends before the list")
-			check(cap.y >= e.y and cap.y + cap.h <= e.y + e.h, lay[1] .. ": " .. n .. " caption is on the row of its list")
-			rows[#rows + 1] = e
+	check(#miss == 0, name .. ": every element is there (" .. table.concat(miss, ",") .. ")")
+	check(#bad == 0, name .. ": inside the options frame (" .. frame_w .. " x 160) and right of the first column (x from " .. col_x
+		.. "): " .. table.concat(bad, ", "))
+	local hd, t1, sc_, ht = els.cap_gs_header, els.btn_gs_tab_1, els.scroll_gs, els.text_gs_hint
+	if hd and t1 and sc_ and ht then
+		check(hd.y + hd.h <= t1.y and t1.y + t1.h <= sc_.y and sc_.y + sc_.h <= ht.y and ht.y + ht.h <= 160,
+			name .. ": header, tabs, rows, hint: one under the other, the hint ends in the frame")
+		local tabs_ok, prev = true, nil
+		for i = 1, 5 do
+			local t = els["btn_gs_tab_" .. i]
+			tabs_ok = tabs_ok and t and t.y == t1.y and t.h == t1.h and (prev == nil or prev.x + prev.w <= t.x)
+			prev = t
+		end
+		check(tabs_ok, name .. ": five tab buttons on one line, left to right, not overlapping")
+		local mk = els.gs_tab_mark
+		check(mk and mk.y + mk.h == t1.y + t1.h and mk.h >= 1 and mk.h <= 3, name .. ": the bar is a thin line along the lower edge of the tabs")
+		check(prev and prev.x + prev.w <= frame_w, name .. ": the last tab ends in the frame")
+		local row, cap, list, line, ltext = els.gs_row, els.cap_gs_row, els.list_gs_row, els.gs_line, els.text_gs_line
+		check(row.w + 16 <= sc_.w, name .. ": a row leaves room for the scroll bar (" .. row.w .. " + 16 <= " .. sc_.w .. ")")
+		check(cap.x + cap.w <= list.x and list.x + list.w <= row.w, name .. ": caption, then combo, inside the row")
+		check(cap.y >= 0 and cap.y + cap.h <= row.h and list.y >= 0 and list.y + list.h <= row.h, name .. ": and inside its height")
+		check(math.floor(sc_.h / row.h) >= 4, name .. ": at least 4 rows are visible (" .. sc_.h .. " / " .. row.h .. ")")
+		check(line.w == row.w and ltext.x >= 0 and ltext.x + ltext.w <= line.w and ltext.y + ltext.h <= line.h,
+			name .. ": a text line is as wide as a row, its text inside")
+	end
+end
+do
+	local a, oa = elements(ROOT .. "configs/ui/ui_coop_newgame.xml")
+	local b, ob = elements(ROOT .. "configs/ui/ui_coop_newgame_16.xml")
+	check(table.concat(oa, ",") == table.concat(ob, ","), "4:3 and 16:9 have the same elements in the same order")
+	local same_rows, wide_enough = {}, {}
+	for _, n in ipairs(oa) do
+		if b[n] then
+			if a[n].y ~= b[n].y or a[n].h ~= b[n].h then same_rows[#same_rows + 1] = n end
+			-- the glyphs keep their width on a wide screen, the 1024-unit space is 4/3 wider: a text that fits W units at 4:3
+			-- fits 0.75 * W at 16:9; the stock frame is 0.8 (704 of 880)
+			if b[n].w < math.floor(a[n].w * 0.75) then wide_enough[#wide_enough + 1] = n end
 		end
 	end
-	check(#rows == #ROWS, lay[1] .. ": four rows (death, loss, share, autosave)")
-	local apart = true
-	for i = 2, #rows do apart = apart and rows[i - 1].y + rows[i - 1].h <= rows[i].y end
-	check(apart, lay[1] .. ": the rows do not overlap, in this order")
-	check(els.cap_coop_header and els.cap_coop_header.y + els.cap_coop_header.h <= rows[1].y, lay[1] .. ": the header is above them")
-	check(els.text_coop_hint and els.text_coop_hint.y >= rows[#rows].y + rows[#rows].h, lay[1] .. ": the hint is under the block")
+	check(#same_rows == 0, "only x and widths differ (" .. table.concat(same_rows, ",") .. ")")
+	check(#wide_enough == 0, "no element of the wide layout is narrower than 0.75 of the 4:3 one (" .. table.concat(wide_enough, ",") .. ")")
 end
--- ids used by the script exist in eng and rus
+
+-- The texts fit. Widths are measured with the glyph table of the fonts GAMMA plays with (tests/lua/support/font_letterica.lua:
+-- Tactical Fonts for Anomaly 1k), in the units of the 4:3 layout; the wide layout is checked above to be never narrower than 0.75
+-- of it, which is what the same text takes there. The stock Anomaly font is not measured (expect it wider): what would not fit a
+-- font 20 % wider is only listed.
+local font = dofile("tests/lua/support/font_letterica.lua")
+local ARROW, STOCK = 26, 1.2 -- room the combo box keeps for its arrow; how much wider the stock font is guessed to be
+local function fits(text, tbl, box) return font.width(tbl, text) <= box end
+local function tight(text, tbl, box) return font.width(tbl, text) * STOCK > box end
+local SHOWN_BY_T4 = {} -- the DAO captions said «(Dynamic Anomalies Overhaul)»: shortened to «(DAO)», they must fit now
+local tight_list = {}
+for _, lang in ipairs({ { "eng", STRINGS }, { "rus", RUS } }) do
+	local tbl = lang[2]
+	local g = GEOM["ui_coop_newgame.xml"]
+	check(fits(tbl.st_coop_newgame_header, font.W18, g.cap_gs_header.w), lang[1] .. ": the header fits")
+	local bad = {}
+	for i, tab in ipairs(TABS5) do
+		local label = tbl["st_coop_newgame_tab_" .. tab]
+		local box = g["btn_gs_tab_" .. i].w - 12
+		if not label then
+			bad[#bad + 1] = tab .. " (no string)"
+		elseif not fits(label, font.W16, box) then
+			bad[#bad + 1] = tab .. "=" .. label
+		elseif tight(label, font.W16, box) then
+			tight_list[#tight_list + 1] = lang[1] .. " tab " .. label
+		end
+	end
+	check(#bad == 0, lang[1] .. ": the tab labels fit their buttons (" .. table.concat(bad, ", ") .. ")")
+	check(fits(tbl.st_coop_newgame_hint, font.W16, g.text_gs_hint.w), lang[1] .. ": the hint is one line ("
+		.. font.width(font.W16, tbl.st_coop_newgame_hint) .. " of " .. g.text_gs_hint.w .. " units)")
+	if tight(tbl.st_coop_newgame_hint, font.W16, g.text_gs_hint.w) then tight_list[#tight_list + 1] = lang[1] .. " hint" end
+	local other = string.format(tbl.st_coop_newgame_other, "123", "456", "2026-10-23 20:50")
+	local lines = font.lines(font.W16, other, g.text_gs_line.w)
+	local room = math.floor(g.scroll_gs.h / 20)
+	check(lines <= room, lang[1] .. ": the text of 'other' takes " .. lines .. " lines of " .. room)
+	local note_lines = font.lines(font.W16, tbl.st_coop_newgame_saves_note, g.text_gs_line.w)
+	check(note_lines <= 2, lang[1] .. ": the note of 'saves' takes " .. note_lines .. " lines (two at most, with the two rows above it)")
+end
+-- the catalog's strings (st_coop_game.xml, owner of the file: the host runtime task): checked when the file is there
 do
-	local fh = assert(io.open(ROOT .. "scripts/coop_newgame_modes.script", "r"))
-	local src = fh:read("*a")
-	fh:close()
-	local fx = assert(io.open(ROOT .. "configs/ui/ui_coop_newgame.xml", "r"))
-	src = src .. fx:read("*a")
-	fx:close()
+	local function load_game_strings(lang)
+		local fh = io.open(ROOT .. "configs/text/" .. lang .. "/st_coop_game.xml", "rb")
+		if not fh then return nil end
+		local src = fh:read("*a")
+		fh:close()
+		local t = {}
+		for id, text in src:gmatch('<string id="([^"]+)">%s*<text>(.-)</text>') do t[id] = text end
+		return t
+	end
+	local sc = coop_game_schema
+	local g = GEOM["ui_coop_newgame.xml"]
+	for _, lang in ipairs({ "eng", "rus" }) do
+		local t = load_game_strings(lang)
+		if not t then
+			print("  note: configs/text/" .. lang .. "/st_coop_game.xml is not here yet - captions and values are not measured")
+		else
+			local bad_cap, bad_val, missing, reported = {}, {}, {}, {}
+			local widest_cap, widest_val = 0, 0
+			for _, tab in ipairs({ "death", "party", "world", "saves" }) do
+				for _, it in ipairs(sc.items(tab)) do
+					if it.key ~= "faction" and it.key ~= "w|story" and it.key ~= "w|routes" then
+						local cap = t[it.text]
+						if not cap then
+							missing[#missing + 1] = it.text
+						elseif not fits(cap, font.W16, g.cap_gs_row.w) then
+							if SHOWN_BY_T4[it.text] then reported[#reported + 1] = it.text .. " = " .. cap else bad_cap[#bad_cap + 1] = cap end
+						else
+							widest_cap = math.max(widest_cap, font.width(font.W16, cap))
+							if tight(cap, font.W16, g.cap_gs_row.w) then tight_list[#tight_list + 1] = lang .. " " .. cap end
+						end
+						for _, e in ipairs(it.values) do
+							local tx = e[2] and (t[e[2]] or STRINGS[e[2]])
+							if e[2] and not tx then
+								missing[#missing + 1] = e[2]
+							elseif tx then
+								local box = g.list_gs_row.w - ARROW
+								if not fits(tx, font.W16, box) then
+									bad_val[#bad_val + 1] = tx
+								else
+									widest_val = math.max(widest_val, font.width(font.W16, tx))
+									if tight(tx, font.W16, box) then tight_list[#tight_list + 1] = lang .. " " .. tx end
+								end
+							end
+						end
+					end
+				end
+			end
+			check(#missing == 0, lang .. ": every catalog caption and value has a string (" .. table.concat(missing, ",") .. ")")
+			check(#bad_cap == 0, lang .. ": captions fit (" .. g.cap_gs_row.w .. " units): " .. table.concat(bad_cap, " | "))
+			check(#bad_val == 0, lang .. ": values fit the combo (" .. (g.list_gs_row.w - ARROW) .. " units): " .. table.concat(bad_val, " | "))
+			print(string.format("  info: %s: the widest caption is %d of %d units, the widest value %d of %d", lang, widest_cap,
+				g.cap_gs_row.w, widest_val, g.list_gs_row.w - ARROW))
+			for _, r in ipairs(reported) do
+				print("  NOTE: " .. lang .. ": too long for the caption column (" .. g.cap_gs_row.w .. " units), a string of st_coop_game.xml: " .. r)
+			end
+		end
+	end
+end
+if #tight_list > 0 then
+	table.sort(tight_list)
+	print("  note: would not fit a font " .. math.floor((STOCK - 1) * 100) .. " % wider than GAMMA's: " .. table.concat(tight_list, " | "))
+end
+
+-- ids used by the scripts and the layout exist in eng and rus
+do
+	local src = ""
+	for _, f in ipairs({ ROOT .. "scripts/coop_newgame_modes.script", ROOT .. "scripts/coop_game_settings_view.script",
+		ROOT .. "configs/ui/ui_coop_newgame.xml", ROOT .. "configs/ui/ui_coop_newgame_16.xml" }) do
+		local fh = assert(io.open(f, "r"))
+		src = src .. fh:read("*a")
+		fh:close()
+	end
 	local no_eng, no_rus = {}, {}
 	for id in src:gmatch('"?(st_coop_newgame_[%w_]+)') do
+		if not id:find("_$") then
+			if not STRINGS[id] then no_eng[#no_eng + 1] = id end
+			if not RUS[id] then no_rus[#no_rus + 1] = id end
+		end
+	end
+	for _, tab in ipairs(coop_game_schema.TABS) do -- built as "st_coop_newgame_tab_" .. tab
+		local id = "st_coop_newgame_tab_" .. tab
+		if not STRINGS[id] then no_eng[#no_eng + 1] = id end
+		if not RUS[id] then no_rus[#no_rus + 1] = id end
+	end
+	for _, unit in ipairs({ "s", "m", "h" }) do
+		local id = "st_coop_newgame_unit_" .. unit
 		if not STRINGS[id] then no_eng[#no_eng + 1] = id end
 		if not RUS[id] then no_rus[#no_rus + 1] = id end
 	end
 	check(#no_eng == 0, "every st_coop_newgame_* id is in the eng table (" .. table.concat(no_eng, ",") .. ")")
 	check(#no_rus == 0, "and in the rus table (" .. table.concat(no_rus, ",") .. ")")
 	local same = true
-	for id in pairs(STRINGS) do same = same and RUS[id] ~= nil end
-	for id in pairs(RUS) do same = same and STRINGS[id] ~= nil end
+	for id in pairs(STRINGS) do if id:find("^st_coop_newgame_") then same = same and RUS[id] ~= nil end end
+	for id in pairs(RUS) do if id:find("^st_coop_newgame_") then same = same and STRINGS[id] ~= nil end end
 	check(same, "eng and rus have the same ids")
+	local unused = {}
+	for id in pairs(STRINGS) do
+		if id:find("^st_coop_newgame_") and not src:find(id, 1, true) and not id:find("^st_coop_newgame_tab_") and not id:find("^st_coop_newgame_unit_") then
+			unused[#unused + 1] = id
+		end
+	end
+	table.sort(unused)
+	check(#unused == 0, "no string of the file is left unused (" .. table.concat(unused, ",") .. ")")
+	check(STRINGS.st_coop_newgame_other:find("%%s.*%%s.*%%s") ~= nil and RUS.st_coop_newgame_other:find("%%s.*%%s.*%%s") ~= nil,
+		"the text of 'other' has three %s (options, addons' options, time) in both languages")
 end
 
 print(string.format("%d passed, %d failed", PASSES, FAILS))

@@ -1,60 +1,59 @@
 <?xml version="1.0" encoding="windows-1251"?>
-<!-- Anomaly Coop: the co-op block of the new game screen of a host, 16:9 layout (frame 704 x 160). Same elements as
-     ui_coop_newgame.xml; x and widths follow the stock ui_mm_faction_select_16.xml (about 0.8 of 4:3). -->
+<!-- Anomaly Coop: the "Game settings" block of the new game screen of a host, 16:9 layout (frame 704 x 160). Same elements as ui_coop_newgame.xml, in the same order, at the same y and heights; x and widths are those of the 4:3 file times 0.8, the ratio of the stock ui_mm_faction_select_16.xml (704 of 880; its second column starts at x = 264). The glyphs keep their width on a wide screen, the 1024-unit space is 4/3 wider, so a text that fits W units at 4:3 fits 0.75 W here: 0.8 keeps a little room. Made from the 4:3 file; edit that one and scale again. -->
 <w>
 	<main_dialog>
 		<options>
-			<cap_coop_header x="264" y="8" width="284" height="22" stretch="1">
+			<cap_gs_header x="264" y="0" width="284" height="20" stretch="1">
 				<text r="250" g="250" b="250" font="letterica18" align="l" vert_align="c">st_coop_newgame_header</text>
-			</cap_coop_header>
+			</cap_gs_header>
 
-			<cap_list_coop_death_mode x="264" y="35" width="132" height="20" stretch="1">
-				<text r="170" g="170" b="170" font="letterica16" align="l" vert_align="c">st_coop_newgame_death</text>
-			</cap_list_coop_death_mode>
-			<list_coop_death_mode x="400" y="32" width="152" height="27">
+			<btn_gs_tab_1 x="264" y="21" width="80" height="21" stretch="1">
+				<text r="150" g="150" b="150" font="letterica16" align="c" vert_align="c"></text>
+				<texture>ui_inGame2_button</texture>
+			</btn_gs_tab_1>
+			<btn_gs_tab_2 x="347" y="21" width="80" height="21" stretch="1">
+				<text r="150" g="150" b="150" font="letterica16" align="c" vert_align="c"></text>
+				<texture>ui_inGame2_button</texture>
+			</btn_gs_tab_2>
+			<btn_gs_tab_3 x="429" y="21" width="61" height="21" stretch="1">
+				<text r="150" g="150" b="150" font="letterica16" align="c" vert_align="c"></text>
+				<texture>ui_inGame2_button</texture>
+			</btn_gs_tab_3>
+			<btn_gs_tab_4 x="492" y="21" width="99" height="21" stretch="1">
+				<text r="150" g="150" b="150" font="letterica16" align="c" vert_align="c"></text>
+				<texture>ui_inGame2_button</texture>
+			</btn_gs_tab_4>
+			<btn_gs_tab_5 x="594" y="21" width="80" height="21" stretch="1">
+				<text r="150" g="150" b="150" font="letterica16" align="c" vert_align="c"></text>
+				<texture>ui_inGame2_button</texture>
+			</btn_gs_tab_5>
+
+			<gs_tab_mark x="264" y="40" width="80" height="2" stretch="1">
+				<texture r="225" g="225" b="225" a="255">coop_menu_white</texture>
+			</gs_tab_mark>
+
+			<scroll_gs x="264" y="44" width="439" height="98" right_ident="0" left_ident="0" top_indent="0" bottom_indent="0" vert_interval="0" always_show_scroll="0"/>
+
+			<gs_row x="0" y="0" width="421" height="24"/>
+			<cap_gs_row x="1" y="2" width="230" height="20" stretch="1">
+				<text r="170" g="170" b="170" font="letterica16" align="l" vert_align="c"></text>
+			</cap_gs_row>
+			<list_gs_row x="235" y="2" width="186" height="20" list_length="6">
 				<list_font r="190" g="190" b="190" font="letterica16"/>
 				<text_color>
 					<e r="170" g="170" b="170"/>
 					<d r="70" g="70" b="70"/>
 				</text_color>
-			</list_coop_death_mode>
+			</list_gs_row>
 
-			<cap_list_coop_death_drop x="264" y="63" width="132" height="20" stretch="1">
-				<text r="170" g="170" b="170" font="letterica16" align="l" vert_align="c">st_coop_newgame_drop</text>
-			</cap_list_coop_death_drop>
-			<list_coop_death_drop x="400" y="60" width="152" height="27">
-				<list_font r="190" g="190" b="190" font="letterica16"/>
-				<text_color>
-					<e r="170" g="170" b="170"/>
-					<d r="70" g="70" b="70"/>
-				</text_color>
-			</list_coop_death_drop>
+			<gs_line x="0" y="0" width="421" height="24"/>
+			<text_gs_line x="1" y="0" width="416" height="20">
+				<text complex_mode="1" r="170" g="170" b="170" align="l" vert_align="t" font="letterica16"/>
+			</text_gs_line>
 
-			<cap_list_coop_death_share x="264" y="91" width="132" height="20" stretch="1">
-				<text r="170" g="170" b="170" font="letterica16" align="l" vert_align="c">st_coop_newgame_share</text>
-			</cap_list_coop_death_share>
-			<list_coop_death_share x="400" y="88" width="152" height="27">
-				<list_font r="190" g="190" b="190" font="letterica16"/>
-				<text_color>
-					<e r="170" g="170" b="170"/>
-					<d r="70" g="70" b="70"/>
-				</text_color>
-			</list_coop_death_share>
-
-			<cap_list_coop_autosave x="264" y="119" width="132" height="20" stretch="1">
-				<text r="170" g="170" b="170" font="letterica16" align="l" vert_align="c">st_coop_newgame_autosave</text>
-			</cap_list_coop_autosave>
-			<list_coop_autosave x="400" y="116" width="152" height="27">
-				<list_font r="190" g="190" b="190" font="letterica16"/>
-				<text_color>
-					<e r="170" g="170" b="170"/>
-					<d r="70" g="70" b="70"/>
-				</text_color>
-			</list_coop_autosave>
-
-			<text_coop_hint x="264" y="143" width="432" height="17">
+			<text_gs_hint x="264" y="143" width="432" height="17">
 				<text complex_mode="1" r="150" g="150" b="150" align="l" vert_align="c" font="letterica16"/>
-			</text_coop_hint>
+			</text_gs_hint>
 		</options>
 	</main_dialog>
 </w>
