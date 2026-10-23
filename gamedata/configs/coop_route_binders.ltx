@@ -1,0 +1,70 @@
+; Anomaly Coop - object binders on a co-op CLIENT (F2 T11, docs\MOD_LAYER.md 2.2). Replaces coop_domains_binders.ltx (W10).
+;
+; Not callbacks: a binder is a Lua class derived from object_binder, and the ENGINE calls its methods by name (update on
+; every shedule tick, net_spawn, save ...). The engine decides what a client does with such a call before Lua is entered
+; (CScriptBinder, xrGame\script_binder.cpp). Two halves read this file:
+;   engine  [binder_host] [binder_keep]                      keyed by the object's script_binding, `script.function`
+;                                                            (configs: script_binding = bind_camp.bind); read with the
+;                                                            other coop_route*.ltx and coop_compat_*.ltx files
+;   Lua     [binder_lua_skip] [binder_lua_fix] [binder_lua_guard]   keyed by `script.class` (class "camp_binder"
+;                                                            (object_binder)); methods Lua calls itself, or fixes, that
+;                                                            the engine never sees (scripts\coop_client_binders.script)
+;
+; Everything here applies on a co-op CLIENT only. The host and single player run the stock code. A binding or class of a
+; mod that is not installed matches nothing (coop_status lists the Lua ones). A mod adds its own lines to
+; configs\coop_compat_<mod>.ltx (engine sections, read last) or to a DLTX patch of this file (Lua sections).
+;
+; Engine methods (names are the Lua names of the binder's methods): reinit, reload, net_spawn, net_destroy, update, save,
+; load, net_save_relevant. A later line for the same binding and method replaces the earlier one. A method the engine
+; skips answers what the binder object does without Lua: net_spawn true, net_save_relevant false, the rest nothing.
+
+[binder_host]
+; The method is the host's: a client does not call it, the C++ default stands (for update that is object_binder.update,
+; which does nothing). Use it for world logic: alife():create, SIMBOARD, se_*:update, spawns, story state.
+bind_faction.bind                 = update   ; se_faction:update (server object)
+bind_camp.bind                    = update   ; CCampManager:update: camp states, stories, NPC voices; the NPCs are puppets
+bind_heli.bind                    = update   ; helicopter logic, heli_alife, health/die on server objects; the pose comes from the host
+
+[binder_keep]
+; The binder keeps running on a client, but a Lua error in the method is written to the log (the first one per object and
+; method, all of them counted in coop_status) and the binder stays, where the stock engine would take it off the object for
+; good and the Release engine ends the game with a fatal error. The creature binders (bind_stalker.init, bind_monster.bind,
+; their update is suspended for puppets by the engine) are not listed: their callbacks are in [binder_lua_guard].
+bind_stalker.actor_init           = update   ; actor_binder
+bind_restrictor.bind              = update   ; restrictor_binder
+bind_physic_object.init           = update   ; generic_physics_binder
+bind_car.init                     = update   ; car_binder
+bind_container.bind               = update   ; container_binder
+bind_crow.bind                    = update   ; crow_binder (the Lua fix below runs first)
+bind_door_labx8.bind              = update   ; door_binder_labx8
+bind_red_forest_bridge.bind       = update   ; bridge_binder
+bind_signal_light.init            = update   ; signal_light_binder
+bind_dynamic_light.init           = update   ; generic_light_binder
+bind_dynamo_hand.init             = update   ; dynamo_hand_binder
+gwr_worldweapon_binder.init_m98   = update   ; gwr_wpn_m98_binder (a modded exe's script; absent in stock)
+bind_item.bind                    = update   ; item_binder
+item_artefact.bind                = update   ; artefact_binder
+item_device.bind                  = update   ; device_binder
+
+[binder_lua_skip]
+; script.class = method, method
+; Methods other Lua code calls: they return at once on a client (the host spawns and releases, the client mirrors).
+; anomaly_zone_binder: alife_create_item answers nil on a client and the stock code indexes it (10% of fresh zones at
+; net_spawn); turn_off releases the zone's artefacts. ph_item_box: box loot, called from generic_physics_binder:death_callback.
+bind_anomaly_zone.anomaly_zone_binder = spawn_artefact_randomly, turn_off
+xr_box.ph_item_box                    = spawn_items
+
+[binder_lua_fix]
+; script.class = method
+; A preparation built into coop_client_binders.script runs first on a client, then the stock method. Known fixes:
+; bind_crow.crow_binder = update   a dead crow is released by the host, not retried on every update (body_timer = 0)
+bind_crow.crow_binder                 = update
+
+[binder_lua_guard]
+; script.class = method, method
+; Methods the engine reaches through set_callback (the creature binders' death, hit and use callbacks), not through the
+; binder: a Lua error there runs in pcall on a client, is logged and counted, not fatal. Still needed: the engine catches
+; script callback errors only in an exception build (script_callback_ex.h process_error is empty in Release), and a puppet
+; dies when the host says so, the player uses a corpse, nobody asked the player's game for these.
+xr_motivator.motivator_binder         = death_callback, hit_callback, use_callback
+bind_monster.generic_object_binder    = death_callback, hit_callback, use_callback

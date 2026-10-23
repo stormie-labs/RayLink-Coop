@@ -398,3 +398,238 @@ TEST(routes_runs_here)
 	CHECK(!runs_here(Domain::None, true));
 	CHECK(!runs_here(Domain::None, false));
 }
+
+// --- F2 T11: engine-invoked binder methods routed by the section's script_binding (MOD_LAYER.md 2.2) ---
+
+namespace
+{
+Table binder_table(std::initializer_list<std::pair<const char*, Lines>> sections, std::vector<std::string>* errors = nullptr)
+{
+	Table t;
+	for (const std::pair<const char*, Lines>& s : sections)
+		for (const BinderRule& r : parse_binder_section(s.first, s.second, errors))
+			t.add(r);
+	return t;
+}
+} // namespace
+
+TEST(routes_binder_action)
+{
+	// Nothing listed: everything runs, as in the stock game.
+	CHECK(Table().binder_action("bind_camp.bind", "update") == BinderAction::Run);
+
+	const Table t = binder_table({
+		{"binder_host", Lines{{"bind_camp.bind", "update"}, {"bind_heli.bind", "update"}}},
+		{"binder_keep", Lines{{"bind_item.bind", "update, net_spawn  save,load"}, {"bind_crow.bind", "update"}}},
+	});
+
+	// [binder_host]: the update of a camp binder is the host's.
+	CHECK(t.binder_action("bind_camp.bind", "update") == BinderAction::HostOnly);
+	CHECK(t.binder_action("bind_heli.bind", "update") == BinderAction::HostOnly);
+	// Only the listed method: the other methods of the same binding run.
+	CHECK(t.binder_action("bind_camp.bind", "net_spawn") == BinderAction::Run);
+	CHECK(t.binder_action("bind_camp.bind", "save") == BinderAction::Run);
+
+	// An unknown binding or method runs.
+	CHECK(t.binder_action("bind_unknown.bind", "update") == BinderAction::Run);
+	CHECK(t.binder_action("bind_camp", "update") == BinderAction::Run);
+	CHECK(t.binder_action("bind_camp.bind", "no_such_method") == BinderAction::Run);
+	CHECK(t.binder_action("", "update") == BinderAction::Run);
+	CHECK(t.binder_action("bind_camp.bind", "") == BinderAction::Run);
+
+	// [binder_keep]: a list of methods, separated by commas and blanks.
+	for (const char* m : {"update", "net_spawn", "save", "load"})
+		CHECK(t.binder_action("bind_item.bind", m) == BinderAction::KeepOnError);
+	CHECK(t.binder_action("bind_item.bind", "net_destroy") == BinderAction::Run);
+	CHECK(t.binder_action("bind_crow.bind", "update") == BinderAction::KeepOnError);
+
+	// Names compare without letter case (an ltx reader may lowercase keys).
+	CHECK(t.binder_action("BIND_CAMP.Bind", "UPDATE") == BinderAction::HostOnly);
+	CHECK(t.binder_action("Bind_Item.bind", "Net_Spawn") == BinderAction::KeepOnError);
+
+	// A binding names a function, not a script: another function of the same script is another binding.
+	CHECK(t.binder_action("bind_camp.init", "update") == BinderAction::Run);
+
+	// A later rule for the same binding and method replaces the earlier one, in either direction.
+	Table u = t;
+	for (const BinderRule& r : parse_binder_section("binder_keep", Lines{{"bind_camp.bind", "update"}}, nullptr))
+		u.add(r);
+	CHECK(u.binder_action("bind_camp.bind", "update") == BinderAction::KeepOnError);
+	CHECK(u.binder_action("bind_heli.bind", "update") == BinderAction::HostOnly);
+	for (const BinderRule& r : parse_binder_section("binder_host", Lines{{"bind_item.bind", "update"}}, nullptr))
+		u.add(r);
+	CHECK(u.binder_action("bind_item.bind", "update") == BinderAction::HostOnly);
+	CHECK(u.binder_action("bind_item.bind", "save") == BinderAction::KeepOnError); // its other methods keep their rule
+
+	// Binder rules do not touch the callback rules, and clear() drops them.
+	CHECK_EQ(t.route("actor_on_update", "bind_camp"), Domain::Owner);
+	CHECK_EQ(t.binder_size(), size_t(7)); // camp update, heli update, item x4, crow update
+	Table c = t;
+	c.clear();
+	CHECK(c.binder_action("bind_camp.bind", "update") == BinderAction::Run);
+	CHECK_EQ(c.binder_size(), size_t(0));
+
+	CHECK(std::string(binder_action_name(BinderAction::Run)) == "run");
+	CHECK(std::string(binder_action_name(BinderAction::HostOnly)) == "host");
+	CHECK(std::string(binder_action_name(BinderAction::KeepOnError)) == "keep");
+}
+
+TEST(routes_binder_parse)
+{
+	std::vector<std::string> errors;
+
+	// The method names are the ones the engine calls on a binder (script_binder.cpp), in the order of the engine enum.
+	const char* names[] = {"reinit", "reload", "net_spawn", "net_destroy", "update", "save", "load", "net_save_relevant"};
+	REQUIRE(kBinderMethodCount == sizeof(names) / sizeof(names[0]));
+	for (size_t i = 0; i < kBinderMethodCount; ++i)
+		CHECK(std::string(kBinderMethodNames[i]) == names[i]);
+
+	// Good lines: the binding is script.function, the value a list of methods.
+	const std::vector<BinderRule> ok = parse_binder_section("binder_host",
+		Lines{{" bind_camp.bind ", " update "}, {"a.b.c", "update,save"}}, &errors);
+	CHECK(errors.empty());
+	REQUIRE(ok.size() == 2);
+	CHECK(ok[0].action == BinderAction::HostOnly && ok[0].binding == "bind_camp.bind");
+	REQUIRE(ok[0].methods.size() == 1);
+	CHECK(ok[0].methods[0] == "update");
+	CHECK(ok[1].binding == "a.b.c" && ok[1].methods.size() == 2);
+	const std::vector<BinderRule> keep = parse_binder_section("Binder_Keep", Lines{{"bind_item.bind", "update"}}, &errors);
+	REQUIRE(keep.size() == 1);
+	CHECK(keep[0].action == BinderAction::KeepOnError);
+
+	// A bad line is skipped and named, the other lines still parse.
+	errors.clear();
+	const std::vector<BinderRule> mixed = parse_binder_section("binder_keep",
+		Lines{{"bind_item", "update"},           // no function
+			{"bind_item.", "update"},            // empty function
+			{".bind", "update"},                 // empty script
+			{"bind..bind", "update"},            // empty part
+			{"bind item.bind", "update"},        // blank inside
+			{"bind_item.bind", ""},              // no methods
+			{"bind_item.bind", "updat"},         // not a binder method
+			{"bind_item.bind", "update, bogus"}, // one bad method spoils the line
+			{"bind_*.bind", "update"},           // no wildcards
+			{"bind_crow.bind", "update"}},       // the good one
+		&errors);
+	REQUIRE(mixed.size() == 1);
+	CHECK(mixed[0].binding == "bind_crow.bind");
+	CHECK_EQ(errors.size(), size_t(9));
+	CHECK(mentions(errors, "binder_keep"));
+	CHECK(mentions(errors, "bind_item = update"));
+	CHECK(mentions(errors, "bogus"));
+	CHECK(mentions(errors, "updat"));
+
+	// An unknown section is one error and no rules; a null error list is allowed.
+	errors.clear();
+	CHECK(parse_binder_section("binder_typo", Lines{{"bind_camp.bind", "update"}}, &errors).empty());
+	CHECK_EQ(errors.size(), size_t(1));
+	CHECK(mentions(errors, "binder_typo"));
+	CHECK(parse_binder_section("binder_host", Lines{{"x", "y"}}, nullptr).empty());
+
+	// The section names the router reads.
+	CHECK(std::string(kBinderHostSection) == "binder_host");
+	CHECK(std::string(kBinderKeepSection) == "binder_keep");
+}
+
+namespace
+{
+// The sections of an ltx file as {section -> lines}; ';' starts a comment, a line without '=' has an empty value.
+using Ltx = std::vector<std::pair<std::string, Lines>>;
+
+Ltx read_ltx(const std::string& path)
+{
+	Ltx out;
+	std::ifstream in(path);
+	std::string line;
+	while (std::getline(in, line))
+	{
+		const size_t c = line.find(';');
+		if (c != std::string::npos)
+			line.resize(c);
+		const std::string_view l = coop::routes::detail::trimmed(line);
+		if (l.empty())
+			continue;
+		if (l.front() == '[' && l.back() == ']')
+		{
+			out.emplace_back(std::string(l.substr(1, l.size() - 2)), Lines());
+			continue;
+		}
+		if (out.empty())
+			continue;
+		const size_t eq = l.find('=');
+		if (eq == std::string_view::npos)
+			out.back().second.emplace_back(std::string(l), std::string());
+		else
+			out.back().second.emplace_back(std::string(coop::routes::detail::trimmed(l.substr(0, eq))),
+				std::string(coop::routes::detail::trimmed(l.substr(eq + 1))));
+	}
+	return out;
+}
+
+std::string binders_ltx_path()
+{
+	std::string here = __FILE__;
+	const size_t slash = here.find_last_of("\\/");
+	if (slash == std::string::npos)
+		return "gamedata/configs/coop_route_binders.ltx";
+	here.resize(slash); // ...\tests
+	return here + "/../gamedata/configs/coop_route_binders.ltx";
+}
+} // namespace
+
+// The shipped configs\coop_route_binders.ltx: every engine section parses without errors and carries the W10 policy.
+TEST(routes_binders_ltx)
+{
+	const Ltx ltx = read_ltx(binders_ltx_path());
+	REQUIRE(!ltx.empty());
+
+	Table t;
+	std::vector<std::string> errors;
+	size_t host_lines = 0, keep_lines = 0;
+	for (const auto& s : ltx)
+	{
+		if (!coop::routes::detail::istarts_with(s.first, "binder_") || coop::routes::detail::istarts_with(s.first, "binder_lua_"))
+			continue;
+		if (s.first == kBinderHostSection)
+			host_lines = s.second.size();
+		if (s.first == kBinderKeepSection)
+			keep_lines = s.second.size();
+		for (const BinderRule& r : parse_binder_section(s.first, s.second, &errors))
+			t.add(r);
+	}
+	for (const std::string& e : errors)
+		::t::report_failure(__FILE__, __LINE__, "coop_route_binders.ltx: " + e);
+	CHECK(errors.empty());
+	CHECK_EQ(host_lines, size_t(3));
+	CHECK_EQ(keep_lines, size_t(15));
+
+	// W10 POLICY "host": faction, camp and heli binders run only their base update on a client.
+	for (const char* b : {"bind_faction.bind", "bind_camp.bind", "bind_heli.bind"})
+		CHECK(t.binder_action(b, "update") == BinderAction::HostOnly);
+	// W10 GUARD of the update of the binders that keep running: the real script_binding of each class (stock configs,
+	// scripts\bind_*.script: the function that calls obj:bind_object).
+	for (const char* b : {"bind_stalker.actor_init", "bind_restrictor.bind", "bind_physic_object.init", "bind_car.init",
+			 "bind_container.bind", "bind_crow.bind", "bind_door_labx8.bind", "bind_red_forest_bridge.bind",
+			 "bind_signal_light.init", "bind_dynamic_light.init", "bind_dynamo_hand.init",
+			 "gwr_worldweapon_binder.init_m98", "bind_item.bind", "item_artefact.bind", "item_device.bind"})
+		CHECK(t.binder_action(b, "update") == BinderAction::KeepOnError);
+	// Not in W10: the creature binders (suspended by the engine for puppets) and the simulation ones stay as they were.
+	for (const char* b : {"bind_stalker.init", "bind_monster.bind", "bind_smart_terrain.bind", "bind_anomaly_zone.bind"})
+		CHECK(t.binder_action(b, "update") == BinderAction::Run);
+
+	// The Lua half (coop_client_binders.script) is script.class = methods: well formed, nothing the engine reads.
+	size_t lua_lines = 0;
+	for (const auto& s : ltx)
+	{
+		if (!coop::routes::detail::istarts_with(s.first, "binder_lua_"))
+			continue;
+		for (const auto& l : s.second)
+		{
+			++lua_lines;
+			const size_t dot = l.first.find('.');
+			CHECK(dot != std::string::npos && dot > 0 && dot + 1 < l.first.size());
+			CHECK(!l.second.empty());
+		}
+	}
+	CHECK(lua_lines >= 4);
+}

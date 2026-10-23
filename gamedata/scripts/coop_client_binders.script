@@ -1,44 +1,57 @@
 --[[
-	Anomaly Coop - object binders on a co-op CLIENT (W10), gamedata\scripts\coop_client_binders.script
+	Anomaly Coop - object binders on a co-op CLIENT, Lua half (gamedata\scripts\coop_client_binders.script; W10, F2 T11)
 
-	Why. The engine suspends only the binders of remote CREATURES (C++ coop_remote::suspend_binder, update only).
-	Every other object binder (a Lua class derived from object_binder) runs on a client exactly as in single
-	player, and the domain filter of coop_main covers callbacks (RegisterScriptCallback / AddUniqueCall /
-	CreateTimeEvent), not binder methods. A binder that does world work then runs on the client against a frozen
-	ALife mirror: alife():create / alife_create_item / SIMBOARD:create_squad answer nil there (the host creates
-	world objects) and the stock code indexes the answer -> a Lua error inside a binder method is FATAL
-	(live case 2026-10-20: smart_terrain_binder:update -> create_squad, patched in coop_main).
+	Background. The engine suspends only the binders of remote CREATURES (C++ coop_remote::suspend_binder, update only).
+	Every other object binder (a Lua class derived from object_binder) runs on a client exactly as in single player, and
+	the callback router of coop_route covers callbacks (RegisterScriptCallback / AddUniqueCall / CreateTimeEvent), not
+	binder methods. A binder that does world work then runs on the client against a frozen ALife mirror: alife():create /
+	alife_create_item / SIMBOARD:create_squad answer nil there (the host creates world objects) and the stock code
+	indexes the answer -> a Lua error inside a binder method is FATAL (live case 2026-10-20: smart_terrain_binder:update
+	-> create_squad, patched in coop_main).
 
-	What this script does (client only; nothing on the host, in single player or on an exe without co-op - the
-	patches are installed from coop_main.install_client_patches and every wrapper asks coop.is_client() again):
-	  host-only update   faction_binder, camp_binder, heli_binder: the client keeps object_binder.update only.
-	  skipped methods    anomaly_zone_binder:spawn_artefact_randomly / turn_off (artefact spawn and release),
-	                     xr_box ph_item_box:spawn_items (box loot, called from generic_physics_binder death).
-	  small fixes        crow_binder:update does not try to release a dead crow (the host does).
-	  safety net         update of the binders that keep running on a client (and death/hit/use callbacks of the
-	                     creature binders, which the engine does not suspend) is called in pcall: a Lua error is
-	                     logged and counted (coop_status) instead of FATAL, like owner/view callbacks (R-11.4).
-	Left alone (verdicts in the vault note W10 client binders): smart_terrain_binder (coop_main), restrictor_binder
-	logic (coop_npc_logic), campfires and anomaly fields (coop_objects ZoneState + coop_npc_world), creature
-	binders (C++ suspend), visual/local ones (lights, doors, bridge, flare, dynamo, level changer, smart cover).
+	F2 T11 moved the methods THE ENGINE CALLS to the engine: CScriptBinder (script_binder.cpp) asks the binder router
+	(coop_router.cpp) before every call, keyed by the object's script_binding, and the rules are
+	configs\coop_route_binders.ltx [binder_host] (a client does not call the method: faction, camp and heli update) and
+	[binder_keep] (a Lua error in the method is logged once per binder and method and the binder stays: the update of 15
+	binders). Nothing about those is here any more.
+
+	What stays here is what the engine cannot see, the same configs\coop_route_binders.ltx, Lua sections, `script.class =
+	method, method` (client only; nothing on the host, in single player or on an exe without co-op - the patches are
+	installed from coop_main.install_client_patches and every wrapper asks coop.is_client() again):
+		[binder_lua_skip]   the method returns at once on a client: methods other Lua code calls
+		                    (anomaly_zone_binder:spawn_artefact_randomly / turn_off - artefact spawn and release;
+		                    xr_box ph_item_box:spawn_items - box loot, called from generic_physics_binder death).
+		[binder_lua_fix]    a preparation built in below (FIXES) runs first, then the stock method:
+		                    crow_binder:update does not try to release a dead crow (the host does).
+		[binder_lua_guard]  the method runs in pcall: a Lua error is logged and counted (coop_status) instead of FATAL, like
+		                    owner/view callbacks (R-11.4). The death, hit and use callbacks of the creature binders: the
+		                    engine reaches them through set_callback, not through the binder, and does not catch their
+		                    errors in Release (script_callback_ex.h process_error is empty without XRAY_EXCEPTIONS).
+	Left alone (verdicts in the vault note W10 client binders): smart_terrain_binder (coop_main), restrictor_binder logic
+	(coop_npc_logic), campfires and anomaly fields (coop_objects ZoneState + coop_npc_world), creature binders (C++
+	suspend), visual/local ones (lights, doors, bridge, flare, dynamo, level changer, smart cover).
 
 	luabind facts the patches rely on (engine/src/3rd party/luabind, read, not run in game):
-	  - `cls.update = f` writes the class table (lua_settable_dispatcher); the engine calls update by name in the
+	  - `cls.update = f` writes the class table (lua_settable_dispatcher); the engine calls a method by name in the
 	    class table at call time (do_call_member_selection) -> existing instances use the new function.
 	  - `class "d" (base)` COPIES the base class table when d is declared (create_class::stage2): a subclass declared
 	    before a patch keeps the old methods. No stock class derives from a binder class; for a mod that does, list
-	    the subclass itself in configs\coop_domains_binders.ltx.
+	    the subclass itself in the ltx.
 
-	Extension point: configs\coop_domains_binders.ltx ([host_update], [skip_methods], [guard_update]) for binder
-	classes of mods. Absent scripts/classes are skipped silently (listed in coop_status).
+	Extension point: the Lua sections of configs\coop_route_binders.ltx for binder classes of mods (a mod's engine-called
+	methods go to [binder_host] / [binder_keep] of its coop_compat_<mod>.ltx instead). Absent scripts/classes are skipped
+	silently (listed in coop_status).
 
 	API: install() -> number of patches, idempotent, client only; print_status() (hooked into coop_main's
-	coop_status by install(); STATUS_MODULES would also do, the lines are printed once).
+	coop_status by install(); STATUS_MODULES would also do, the lines are printed once). The engine's half is in
+	coop_status too: the `[coop] binders` lines.
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
 
 local tostring, type, pairs, ipairs, pcall = tostring, type, pairs, ipairs, pcall
+
+local INI = "coop_route_binders.ltx"
 
 local function log(fmt, ...)
 	local ok, line = pcall(string.format, fmt, ...)
@@ -50,52 +63,22 @@ local function on_client()
 end
 
 -------------------------------------------------------------------------------
--- Policy of the stock binders (Anomaly 1.5.3 + modded exes)
+-- Policy: the Lua sections of the ltx
 -------------------------------------------------------------------------------
--- { script, class, method, kind, note [, pre] }
---   host    the whole method is the host's: on a client only object_binder.update runs
+-- section of the ltx -> kind of the patch
 --   noop    the method returns at once on a client
---   pre     pre(self) runs first on a client, then the stock method
+--   pre     FIXES[label](self) runs first on a client, then the stock method
 --   guard   the stock method runs in pcall on a client
-local POLICY = {
-	{ "bind_faction", "faction_binder", "update", "host", "se_faction:update (server object)" },
-	{ "bind_camp", "camp_binder", "update", "host",
-		"sr_camp CCampManager:update: camp states, stories, NPC voices; the NPCs are puppets" },
-	{ "bind_heli", "heli_binder", "update", "host",
-		"helicopter scheme logic, heli_alife, health/die on server objects; the pose comes from the host" },
-	{ "bind_anomaly_zone", "anomaly_zone_binder", "spawn_artefact_randomly", "noop",
-		"alife_create_item answers nil on a client and the stock code indexes it (10% of fresh zones at net_spawn)" },
-	{ "bind_anomaly_zone", "anomaly_zone_binder", "turn_off", "noop", "releases the zone's artefacts" },
-	{ "xr_box", "ph_item_box", "spawn_items", "noop", "box loot (called from generic_physics_binder:death_callback)" },
-	{ "bind_crow", "crow_binder", "update", "pre", "a dead crow is released by the host, not retried every update",
-		function(self) self.body_timer = 0 end },
+local SECTIONS = {
+	{ "binder_lua_skip", "noop" },
+	{ "binder_lua_fix", "pre" },
+	{ "binder_lua_guard", "guard" },
 }
 
--- The binders that keep running on a client: the method (update by default) runs in pcall. The creature binders'
--- update is suspended by the engine; their callbacks (a puppet dies when the host says so, the player uses a
--- corpse) are not, and nobody asked the player's game for them.
-local GUARD = {
-	{ "bind_stalker", "actor_binder" },
-	{ "bind_restrictor", "restrictor_binder" },
-	{ "bind_physic_object", "generic_physics_binder" },
-	{ "bind_car", "car_binder" },
-	{ "bind_container", "container_binder" },
-	{ "bind_crow", "crow_binder" },
-	{ "bind_door_labx8", "door_binder_labx8" },
-	{ "bind_red_forest_bridge", "bridge_binder" },
-	{ "bind_signal_light", "signal_light_binder" },
-	{ "bind_dynamic_light", "generic_light_binder" },
-	{ "bind_dynamo_hand", "dynamo_hand_binder" },
-	{ "gwr_worldweapon_binder", "gwr_wpn_m98_binder" },
-	{ "bind_item", "item_binder" },
-	{ "item_artefact", "artefact_binder" },
-	{ "item_device", "device_binder" },
-	{ "xr_motivator", "motivator_binder", "death_callback" },
-	{ "xr_motivator", "motivator_binder", "hit_callback" },
-	{ "xr_motivator", "motivator_binder", "use_callback" },
-	{ "bind_monster", "generic_object_binder", "death_callback" },
-	{ "bind_monster", "generic_object_binder", "hit_callback" },
-	{ "bind_monster", "generic_object_binder", "use_callback" },
+-- The preparations a [binder_lua_fix] line can name, by "script.class:method".
+local FIXES = {
+	-- a dead crow is released by the host, not retried on every update
+	["bind_crow.crow_binder:update"] = function(self) self.body_timer = 0 end,
 }
 
 -------------------------------------------------------------------------------
@@ -103,7 +86,7 @@ local GUARD = {
 -------------------------------------------------------------------------------
 local installed = false
 local status_hooked = false
-local applied = {} -- { label, kind, note }
+local applied = {} -- { label, kind }
 local absent = {} -- "script.class" of classes that are not there (mods) or have no such method
 local absent_seen = {}
 local skipped = {} -- label -> client calls that did not reach the stock method
@@ -125,18 +108,6 @@ end
 -------------------------------------------------------------------------------
 -- Wrappers (each asks coop.is_client() at call time: a session that ended leaves the stock behaviour)
 -------------------------------------------------------------------------------
-local function make_host(label)
-	return function(orig)
-		return function(self, delta)
-			if on_client() then
-				skipped[label] = (skipped[label] or 0) + 1
-				return object_binder.update(self, delta)
-			end
-			return orig(self, delta)
-		end
-	end
-end
-
 local function make_noop(label)
 	return function(orig)
 		return function(self, ...)
@@ -170,7 +141,6 @@ local function make_guard(label)
 end
 
 local MAKERS = {
-	host = make_host,
 	noop = make_noop,
 	pre = make_pre,
 	guard = make_guard,
@@ -238,43 +208,60 @@ local function apply(entry)
 	if method_of(cls, entry.method) ~= wrapper then
 		log("! %s: the replaced method did not stick (the class answers another function)", label)
 	end
-	applied[#applied + 1] = { label = label, kind = entry.kind, note = entry.note }
+	applied[#applied + 1] = { label = label, kind = entry.kind }
 	return true
 end
 
 -------------------------------------------------------------------------------
--- configs\coop_domains_binders.ltx: binder classes of mods
+-- configs\coop_route_binders.ltx: the Lua sections
 -------------------------------------------------------------------------------
 local function trim(s) return (tostring(s):gsub("^%s+", ""):gsub("%s+$", "")) end
 
+-- Calls visit(script, class, methods) for every `script.class = method, method` line of the section.
 local function each_line(ini, section, visit)
 	if not ini:section_exist(section) then return end
 	for i = 0, ini:line_count(section) - 1 do
 		local _, key, value = ini:r_line(section, i, "", "")
 		if type(key) == "string" then
 			local script, class = trim(key):match("^([%w_]+)%.([%w_]+)$")
-			if script then visit(script, class, type(value) == "string" and trim(value) or "") end
+			local methods = {}
+			for m in (type(value) == "string" and value or ""):gmatch("[%w_]+") do methods[#methods + 1] = m end
+			if not script then
+				log("! configs\\%s [%s]: '%s' is not script.class", INI, section, trim(key))
+			elseif #methods == 0 then
+				log("! configs\\%s [%s]: %s.%s has no methods", INI, section, script, class)
+			else
+				visit(script, class, methods)
+			end
 		end
 	end
 end
 
-local function extra_entries(entries)
-	local ok, ini = pcall(ini_file, "coop_domains_binders.ltx")
-	if not (ok and ini) then return end
+local function ltx_entries(entries)
+	local ok, ini = pcall(ini_file, INI)
+	if not (ok and ini) then
+		log("! configs\\%s not read, no Lua patch: %s", INI, tostring(ini))
+		return
+	end
 	local ok2, err = pcall(function()
-		each_line(ini, "host_update", function(s, c)
-			entries[#entries + 1] = { script = s, class = c, method = "update", kind = "host", note = "coop_domains_binders.ltx" }
-		end)
-		each_line(ini, "skip_methods", function(s, c, methods)
-			for m in methods:gmatch("[%w_]+") do
-				entries[#entries + 1] = { script = s, class = c, method = m, kind = "noop", note = "coop_domains_binders.ltx" }
-			end
-		end)
-		each_line(ini, "guard_update", function(s, c)
-			entries[#entries + 1] = { script = s, class = c, method = "update", kind = "guard", note = "coop_domains_binders.ltx" }
-		end)
+		for _, s in ipairs(SECTIONS) do
+			local section, kind = s[1], s[2]
+			each_line(ini, section, function(script, class, methods)
+				for _, m in ipairs(methods) do
+					local entry = { script = script, class = class, method = m, kind = kind }
+					if kind == "pre" then
+						entry.pre = FIXES[script .. "." .. class .. ":" .. m]
+						if not entry.pre then
+							log("! configs\\%s [%s]: no built-in fix for %s.%s:%s", INI, section, script, class, m)
+							entry = nil
+						end
+					end
+					if entry then entries[#entries + 1] = entry end
+				end
+			end)
+		end
 	end)
-	if not ok2 then log("! configs\\coop_domains_binders.ltx not read: %s", tostring(err)) end
+	if not ok2 then log("! configs\\%s not read completely: %s", INI, tostring(err)) end
 end
 
 -------------------------------------------------------------------------------
@@ -287,8 +274,8 @@ function print_status()
 	for _, a in ipairs(applied) do counts[a.kind] = (counts[a.kind] or 0) + 1 end
 	local total_skipped = 0
 	for _, n in pairs(skipped) do total_skipped = total_skipped + n end
-	log("role %s, installed %s | patches %d (host-only update %d, skipped methods %d, pre %d, guarded update %d) | client calls skipped %d, Lua errors caught %d",
-		role, tostring(installed), #applied, counts.host or 0, counts.noop or 0, counts.pre or 0, counts.guard or 0,
+	log("role %s, installed %s | Lua patches %d (skipped methods %d, pre %d, guarded %d; the engine routes the binder updates, see [coop] binders) | client calls skipped %d, Lua errors caught %d",
+		role, tostring(installed), #applied, counts.noop or 0, counts.pre or 0, counts.guard or 0,
 		total_skipped, total_errors)
 	for _, a in ipairs(applied) do
 		if a.kind ~= "guard" or errors[a.label] then
@@ -323,13 +310,7 @@ function install()
 	installed = true
 
 	local entries, seen = {}, {}
-	for _, p in ipairs(POLICY) do
-		entries[#entries + 1] = { script = p[1], class = p[2], method = p[3], kind = p[4], note = p[5], pre = p[6] }
-	end
-	for _, g in ipairs(GUARD) do
-		entries[#entries + 1] = { script = g[1], class = g[2], method = g[3] or "update", kind = "guard", note = "Lua error -> log, not FATAL" }
-	end
-	extra_entries(entries)
+	ltx_entries(entries)
 
 	for _, e in ipairs(entries) do
 		local key = e.script .. "." .. e.class .. ":" .. e.method .. "|" .. e.kind
