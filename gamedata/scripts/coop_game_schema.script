@@ -6,7 +6,7 @@
 	outside value is a parameter. The record built on this catalog is coop_game_record.script.
 
 	Keys. A key is "<source>|<path>", the source says where the value lives (the wire format of coop_settings):
-		c|<name>        console variable of the engine (CVARS below, 17 of them)
+		c|<name>        console variable of the engine (CVARS below, 19 of them)
 		o|<path>        [options] of axr_options.ltx (stock options, "coop/coop_session/<id>" rules)
 		m|<path>        [mcm] of axr_options.ltx (mod settings)
 		w|<flag>        world creation flag: story, routes, difficulty, economy (record.world)
@@ -50,7 +50,7 @@ TABS = { "death", "party", "world", "difficulty", "saves", "other" }
 -------------------------------------------------------------------------------
 -- Console variables of the engine (docs\GAME_SETTINGS.md 1.2, the engine's CMD registrations)
 -------------------------------------------------------------------------------
-CVARS = {} -- the 17 names, in the order of the table in 1.2
+CVARS = {} -- the 19 names, in the order of the table in 1.2 (18 and 19: the split-levels rules of F3a)
 CVAR = {} -- name -> { name, kind = "int" | "float" | "token", min, max, def, tokens, aliases }
 
 local function cvar(name, kind, lo, hi, def, tokens, aliases)
@@ -77,6 +77,9 @@ cvar("coop_checkpoints_group", "int", 0, 1, 1)
 cvar("coop_autosave_interval", "int", 0, 120, 10)
 cvar("coop_autosave_count", "int", 1, 50, 10)
 cvar("coop_death_share", "float", 0, 200, 100)
+-- F3a: each player may be on a different level; the story levels that are entered together (docs/plans/2026-10-24-f3a-split-levels.md 3)
+cvar("coop_split_levels", "int", 0, 1, 1)
+cvar("coop_story_together", "int", 0, 1, 1)
 
 -------------------------------------------------------------------------------
 -- Values: parsing and formatting
@@ -201,7 +204,14 @@ c_item("death", "coop_checkpoints_group", "check")
 c_item("party", "coop_friendly_fire", "check")
 c_item("party", "coop_share_rewards", "check")
 c_item("party", "coop_max_new_characters", "list", { v = { 1, 2, 4, 8, 16, 32, 64 } })
-add("party", RULE .. "join_spawn", "list", { v = { "host", "faction_start" }, def = "host" })
+-- F3a: split levels (a switch: off = everything as in F3, the group on the host's level and the waiting point at every exit)
+-- and "story levels together" (only while the levels are split; off = the story levels are better-together hints only).
+-- Both act when the game is loaded.
+c_item("party", "coop_split_levels", "check", { applies = "load" })
+c_item("party", "coop_story_together", "check", { applies = "load",
+	shown_if = { key = "c|coop_split_levels", any = { true } } })
+-- A new player appears at the base of the world's faction (F3a; it was "next to the host" before the levels were split)
+add("party", RULE .. "join_spawn", "list", { v = { "host", "faction_start" }, def = "faction_start" })
 add("party", RULE .. "party_fast_travel", "check", { def = true })
 add("party", RULE .. "gather_radius", "list", { v = { 10, 20, 30, 50, 100 }, def = 20, range = { 5, 100 }, unit = "m" })
 add("party", RULE .. "travel_time", "check", { def = true })

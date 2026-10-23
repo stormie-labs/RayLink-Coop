@@ -508,8 +508,8 @@ local tab_texts = {}
 for _, tab in ipairs(view.tabs) do tab_texts[#tab_texts + 1] = view.buttons[tab].text end
 check(table.concat(tab_texts, "|") == "Death|Party|World|Saves|Other", "the strip: " .. table.concat(tab_texts, "|"))
 check(view.tab == "death" and view.scrolls.death.shown and not view.scrolls.world.shown, "the first tab is open")
-check(#view.rows.death == 12 and #view.rows.party == 15 and #view.rows.world == 15 and #view.rows.saves == 2,
-	"rows: 12 / 15 / 15 (no addon) / 2")
+check(#view.rows.death == 12 and #view.rows.party == 17 and #view.rows.world == 15 and #view.rows.saves == 2,
+	"rows: 12 / 17 / 15 (no addon) / 2")
 check(view.rows.death[1].list.parent == view.rows.death[1].row and d.registered[view.rows.death[1].name] == view.rows.death[1].list,
 	"a combo sits in its row and is registered in the dialog")
 check(d.coop_hint and d.coop_hint.text == STRINGS.st_coop_newgame_hint and d.coop_hint.shown ~= false, "the hint is under the block")

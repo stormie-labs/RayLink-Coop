@@ -625,8 +625,14 @@
 	<string id="st_coop_game_sleep_rule_vote">
 		<text>Vote</text>
 	</string>
+	<string id="st_coop_game_split_levels">
+		<text>Separate maps</text>
+	</string>
 	<string id="st_coop_game_story">
 		<text>Story mode</text>
+	</string>
+	<string id="st_coop_game_story_together">
+		<text>Story maps together</text>
 	</string>
 	<string id="st_coop_game_tab_death">
 		<text>Death and help</text>

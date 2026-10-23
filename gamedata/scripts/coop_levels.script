@@ -1,0 +1,323 @@
+--[[
+	Anomaly Coop - gates of the levels (gamedata\scripts\coop_levels.script), F3a task 3.
+	Spec: docs\research\2026-10-24-story-levels-together.md section 5, docs\plans\2026-10-24-f3a-split-levels.md sections
+	1.10 and 3. Table: configs\coop_levels_together.ltx.
+
+	With split levels each player walks his own way; only a few story levels are entered together (a waiting point for
+	the whole group) or are "better together" (a notice, nobody waits). Which is which depends on the story: the table
+	holds a stock condlist per level, `{+story_mode_disabled} free, {+actor_made_wish} free, together`, and the first
+	entry whose infoportion checks hold gives the word: free | suggest | together.
+
+	The world server (the host's process) evaluates the table once a second and at once when an infoportion comes, with
+	the stock xr_logic on db.actor, and gives a gate to the engine when it changes (coop.levels.set_gate). The engine folds
+	it with the two game rules (coop_split_levels, coop_story_together; coop_levels_rules.h effective_gate), keeps it in
+	the level map every machine gets, and answers gate() from there. A bad line (a word that is not a gate, a condlist that
+	raises) is free, and is reported once.
+
+	API:
+		coop_levels.gate(level)           "free" | "suggest" | "together": how `level` is entered now, as the engine knows
+		                                  it (the folded gate); "free" when it says nothing. A `level` is a level name
+		                                  ("l13u_warlab") or a game graph level id (a number) wherever it is asked
+		coop_levels.reason(level)         string id of the reason the placard and the notice show, nil if none
+		coop_levels.notice(level)         "<map>: better together - <reason>" translated, "" for a free level
+		coop_levels.name(level)           the translated name of a level (its id when there is no string);
+		                                  no argument: the level the local player is on
+		coop_levels.elsewhere(who)        is player `who` (a number: a player id) or the level `who` (a string: a level
+		                                  name) another level than the local player's? false without split levels
+		coop_levels.elsewhere_text(who)   "On another map: <name>" for the HUD, "" when not elsewhere
+		coop_levels.evaluate([force])     world server: evaluate the table, hand over the gates that changed (all with
+		                                  force); returns how many; 0 where it is not the world server or there is no engine
+		coop_levels.evaluate_level(level) the word the table gives for `level` right now (a pure read); "free" without
+		                                  the engine side
+		coop_levels.levels()              listed level ids, in the order of the table
+		coop_levels.reset()               forget what was handed over (a new world: everything goes again)
+		coop_levels.reload([ini])         read the table again (the given ini object, or configs\coop_levels_together.ltx)
+
+	Engine side used (coop.levels, registered by xrGame\coop\coop_levels.cpp; the script works without all of it - a build
+	without split levels has nothing to gate):
+		coop.levels.set_gate(level, word, reason)   world server: the level NAME, "free"|"suggest"|"together", the reason's
+		                                            string id (the engine looks the name up in the game graph)
+		coop.levels.gate_of(level)                  the folded gate of a level NAME: a word, or the number of the wire enum
+		                                            (0 1 2)
+		coop.levels.my_level()                      the level the local player is on: a game graph level id, or a name
+		coop.levels.level_of_player(id)             the level player `id` is on: an id or a name, nil if unknown
+	Level ids are turned into names here with alife():level_name.
+	Who evaluates: coop.is_world_server() when the build has it, else coop.is_host(); in an active session only.
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace (nil on an exe without co-op)
+
+local RULES_FILE = "coop_levels_together.ltx"
+local SEC_RULES, SEC_REASON = "coop_levels_together", "coop_levels_together_reason"
+local FREE, SUGGEST, TOGETHER = "free", "suggest", "together"
+local WORDS = { [FREE] = true, [SUGGEST] = true, [TOGETHER] = true }
+local WIRE = { [0] = FREE, [1] = SUGGEST, [2] = TOGETHER } -- Gate of coop_levels_rules.h
+local EVAL_EVERY_MS = 1000
+
+local rules = nil -- { list = { { level =, src =, reason = }, ... } in the order of the file, by_level = { level -> rule } }
+local pushed = {} -- level -> the word last handed to the engine
+local warned = {} -- level -> true: a crooked line is reported once
+local last_eval = 0 -- time_global() of the last evaluation by the update callback
+local dirty = false -- an infoportion came: evaluate at the next update
+
+local function log(fmt, ...)
+	local ok, line = pcall(string.format, fmt, ...)
+	printf("[coop-levels] %s", ok and line or tostring(fmt))
+end
+
+local function trim(s)
+	return (s:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+-- coop.levels, nil on a build without split levels
+local function levels_api()
+	if not api then return nil end
+	local lv = api.levels
+	return type(lv) == "table" and lv or nil
+end
+
+local function is_world_server()
+	if not api then return false end
+	local ok, active = pcall(api.is_active)
+	if not (ok and active == true) then return false end
+	local f = type(api.is_world_server) == "function" and api.is_world_server or api.is_host
+	if type(f) ~= "function" then return false end
+	local ok2, yes = pcall(f)
+	return ok2 and yes == true
+end
+
+local function tr(id)
+	local ok, text = pcall(function() return game.translate_string(id) end)
+	return (ok and type(text) == "string") and text or id
+end
+
+-- A level as the engine or a caller gives it: a name (a string) or a game graph level id (a number). The name, or nil.
+local function level_name_of(v)
+	if type(v) == "string" then return v ~= "" and v or nil end
+	if type(v) ~= "number" then return nil end
+	local ok, n = pcall(function() return alife():level_name(v) end)
+	return (ok and type(n) == "string" and n ~= "") and n or nil
+end
+
+-- ------------------------------------------------------------------ the table
+local function read_section(ini, sec, put)
+	if not ini:section_exist(sec) then return end
+	for i = 0, ini:line_count(sec) - 1 do
+		local _, key, value = ini:r_line(sec, i, "", "")
+		if type(key) == "string" then
+			key = trim(key):lower()
+			value = trim(tostring(value or ""))
+			if key ~= "" then put(key, value) end
+		end
+	end
+end
+
+local function parse_rules(ini)
+	local r = { list = {}, by_level = {} }
+	local reasons = {}
+	read_section(ini, SEC_REASON, function(key, value)
+		if value ~= "" then reasons[key] = value end
+	end)
+	read_section(ini, SEC_RULES, function(key, value)
+		if not key:find("^[%w_]+$") then
+			log("! %s: '%s' is not a level id, line skipped", RULES_FILE, key)
+		elseif value == "" then
+			log("! %s: no condlist for %s, line skipped", RULES_FILE, key)
+		elseif r.by_level[key] then
+			r.by_level[key].src = value -- the same level twice: the last line wins, the place stays
+			r.by_level[key].reason = reasons[key]
+		else
+			local rule = { level = key, src = value, reason = reasons[key] }
+			r.list[#r.list + 1] = rule
+			r.by_level[key] = rule
+		end
+	end)
+	return r
+end
+
+local function get_rules()
+	if rules then return rules end
+	local ok, ini = pcall(ini_file, RULES_FILE)
+	if ok and ini then
+		local ok2, parsed = pcall(parse_rules, ini)
+		if ok2 then
+			rules = parsed
+		else
+			log("! configs\\%s: %s", RULES_FILE, tostring(parsed))
+		end
+	else
+		log("! configs\\%s not found, every level is free", RULES_FILE)
+	end
+	if not rules then rules = { list = {}, by_level = {} } end
+	return rules
+end
+
+function levels()
+	local out = {}
+	for i, rule in ipairs(get_rules().list) do out[i] = rule.level end
+	return out
+end
+
+function reason(lvl)
+	lvl = level_name_of(lvl)
+	if not lvl then return nil end
+	local rule = get_rules().by_level[lvl:lower()]
+	return rule and rule.reason or nil
+end
+
+function reload(ini)
+	rules = nil
+	pushed = {}
+	warned = {}
+	dirty = false
+	if ini then
+		local ok, parsed = pcall(parse_rules, ini)
+		rules = ok and parsed or nil
+		if not ok then log("! reload: %s", tostring(parsed)) end
+	end
+	get_rules()
+end
+
+function reset()
+	pushed = {}
+	dirty = true
+end
+
+-- ------------------------------------------------------------------ evaluation
+-- The word of one rule: the stock condlist on the actor. Anything but the three words is free.
+local function eval_rule(rule)
+	local actor = db.actor
+	if not actor then return FREE end
+	local ok, word = pcall(function()
+		local cond = xr_logic.parse_condlist(actor, "coop_levels", rule.level, rule.src)
+		return xr_logic.pick_section_from_condlist(actor, actor, cond)
+	end)
+	if ok and type(word) == "string" and WORDS[word] then return word end
+	if not warned[rule.level] then
+		warned[rule.level] = true
+		log("! %s: '%s = %s' gives '%s', read as free", RULES_FILE, rule.level, rule.src, ok and tostring(word) or ("error: " .. tostring(word)))
+	end
+	return FREE
+end
+
+function evaluate_level(lvl)
+	lvl = level_name_of(lvl)
+	if not levels_api() or not lvl then return FREE end
+	local rule = get_rules().by_level[lvl:lower()]
+	if not rule then return FREE end
+	return eval_rule(rule)
+end
+
+function evaluate(force)
+	if not is_world_server() then return 0 end
+	local lv = levels_api()
+	if not (lv and type(lv.set_gate) == "function") then return 0 end
+	if not db.actor then return 0 end
+	local changed = 0
+	for _, rule in ipairs(get_rules().list) do
+		local word = eval_rule(rule)
+		if force or pushed[rule.level] ~= word then
+			local ok, err = pcall(lv.set_gate, rule.level, word, rule.reason or "")
+			if ok then
+				pushed[rule.level] = word
+				changed = changed + 1
+			else
+				log("! set_gate(%s, %s): %s", rule.level, word, tostring(err))
+			end
+		end
+	end
+	return changed
+end
+
+-- ------------------------------------------------------------------ what the machines ask
+function gate(lvl)
+	local lv = levels_api()
+	lvl = level_name_of(lvl)
+	if not (lv and type(lv.gate_of) == "function") or not lvl then return FREE end
+	local ok, g = pcall(lv.gate_of, lvl)
+	if not ok then return FREE end
+	if type(g) == "string" and WORDS[g] then return g end
+	if type(g) == "number" and WIRE[g] then return WIRE[g] end
+	return FREE
+end
+
+-- The level the local player is on: the engine's answer, else the stock one.
+local function my_level()
+	local lv = levels_api()
+	if lv and type(lv.my_level) == "function" then
+		local ok, v = pcall(lv.my_level)
+		local n = ok and level_name_of(v) or nil
+		if n then return n end
+	end
+	local ok, n = pcall(function() return level.name() end)
+	return (ok and type(n) == "string") and n or ""
+end
+
+function name(lvl)
+	if lvl == nil then lvl = my_level() end
+	lvl = level_name_of(lvl)
+	if not lvl then return "" end
+	return tr(lvl)
+end
+
+-- The level name of `who`: a player id (a number, asked of the engine) or a level name (a string); nil if unknown.
+local function level_of(who)
+	if type(who) == "string" then return level_name_of(who) end
+	if type(who) == "number" then
+		local lv = levels_api()
+		if not (lv and type(lv.level_of_player) == "function") then return nil end
+		local ok, v = pcall(lv.level_of_player, who)
+		return ok and level_name_of(v) or nil
+	end
+	return nil
+end
+
+function elsewhere(who)
+	if not levels_api() then return false end
+	local theirs, mine = level_of(who), my_level()
+	return theirs ~= nil and mine ~= "" and theirs ~= mine
+end
+
+function elsewhere_text(who)
+	if not elsewhere(who) then return "" end
+	local ok, text = pcall(string.format, tr("st_coop_levels_elsewhere"), name(level_of(who)))
+	return ok and text or ""
+end
+
+function notice(lvl)
+	if gate(lvl) == FREE then return "" end
+	local why = reason(lvl)
+	local ok, text = pcall(string.format, tr("st_coop_levels_better_together"), name(lvl), why and tr(why) or "")
+	return ok and text or ""
+end
+
+-- ------------------------------------------------------------------ callbacks
+-- Every update: once a second, or at once when an infoportion came. A client and a build without the engine side cost
+-- one comparison.
+local function on_update()
+	local now = time_global()
+	if now < last_eval then last_eval = now end -- the clock started over (a loaded game)
+	if not dirty and now - last_eval < EVAL_EVERY_MS then return end
+	dirty = false
+	last_eval = now
+	evaluate()
+end
+
+local function on_info()
+	dirty = true
+end
+
+-- A new level (and the first one of a session): the engine's table of gates may be new, hand everything over again.
+local function on_first_update()
+	pushed = {}
+	dirty = false
+	last_eval = time_global()
+	evaluate()
+end
+
+function on_game_start()
+	if not levels_api() then return end
+	RegisterScriptCallback("actor_on_update", on_update)
+	RegisterScriptCallback("actor_on_first_update", on_first_update)
+	RegisterScriptCallback("actor_on_info_callback", on_info)
+end

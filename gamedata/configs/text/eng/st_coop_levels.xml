@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop F3a - split levels: the notices of the gates (configs\coop_levels_together.ltx), the HUD line, the refusal lines and the loading screen. Ids: st_coop_levels_*, st_coop_together_* (the reason of a gate), st_coop_load_*; the captions of the two rules are in st_coop_game.xml. -->
+<string_table>
+	<string id="st_coop_levels_elsewhere">
+		<text>On another map: %s</text>
+	</string>
+	<string id="st_coop_levels_better_together">
+		<text>%s: better together - %s</text>
+	</string>
+	<string id="st_coop_levels_refused_cap">
+		<text>There is no room for one more map on the host's PC (limit: %s). Go to a map that is already open.</text>
+	</string>
+	<string id="st_coop_levels_refused_invalid">
+		<text>This exit cannot be used right now.</text>
+	</string>
+	<string id="st_coop_load_waiting">
+		<text>Waiting for: %s</text>
+	</string>
+	<string id="st_coop_load_map">
+		<text>Preparing the map...</text>
+	</string>
+	<string id="st_coop_together_warlab">
+		<text>the end of the story: the scene in the Warlab happens once, and whoever comes late cannot join it</text>
+	</string>
+	<string id="st_coop_together_sarcofag">
+		<text>the Wish Granter grants one wish for the whole world</text>
+	</string>
+	<string id="st_coop_together_bunker">
+		<text>the switch turns the Brain Scorcher off for everyone and changes the story for the whole group</text>
+	</string>
+	<string id="st_coop_together_brainlab">
+		<text>switching the machine off starts the attack on Yantar, and the dream scene is seen only by those who are there</text>
+	</string>
+	<string id="st_coop_together_control_monolith">
+		<text>the Monolith ambush at the entrance meets only the first one in</text>
+	</string>
+	<string id="st_coop_together_labx8">
+		<text>the controller appears once, after the fifth document</text>
+	</string>
+	<string id="st_coop_together_labx18">
+		<text>the door closes behind the first one in, and the dream scene and the ambush happen once</text>
+	</string>
+	<string id="st_coop_together_jupiter_underground">
+		<text>the story fights and escorts here go to the first one in</text>
+	</string>
+	<string id="st_coop_together_pripyat">
+		<text>the finale of Operation Afterglow: the final choices and the credits</text>
+	</string>
+	<string id="st_coop_together_generators">
+		<text>the decisive blow of Mortal Sin: the fight with Sabaoth</text>
+	</string>
+	<string id="st_coop_together_hospital">
+		<text>the assault on the hospital in Mortal Sin: the garrison and Sabaoth</text>
+	</string>
+</string_table>

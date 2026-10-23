@@ -1,0 +1,36 @@
+; Anomaly Coop F3a: which levels the group enters together (docs/research/2026-10-24-story-levels-together.md section 5).
+; <level> = <condlist> -> together | suggest | free. The world server (the host's process) evaluates it every second and on
+; every info portion change (scripts\coop_levels.script: xr_logic.parse_condlist / pick_section_from_condlist on db.actor)
+; and gives the result to the engine (coop.levels.set_gate). The first entry whose infoportion checks hold gives the word.
+;   together - entering waits for every player (the waiting point, protocol 10); leaving is never held
+;   suggest  - a notice "better together: <reason>", nobody waits
+;   free     - nothing (a level that is not listed is free)
+; The game rule "story maps together" off turns together into suggest; "split levels" off puts the waiting point on every
+; exit as in F3 (coop_levels_rules.h effective_gate). story_mode_disabled (the story is off) frees every level.
+; Level names are the stock level ids. A GAMMA addon may override a line (DLTX). A bad condlist is read as free.
+[coop_levels_together]
+l13u_warlab           = {+story_mode_disabled} free, {+warlab_deactivate_generators_done} free, together
+l12u_sarcofag         = {+story_mode_disabled} free, {+actor_made_wish} free, together
+l10u_bunker           = {+story_mode_disabled} free, {+bar_deactivate_radar_done} free, together
+l08u_brainlab         = {+story_mode_disabled} free, {+yan_labx16_switcher_primary_off} free, suggest
+l12u_control_monolith = {+story_mode_disabled} free, suggest
+labx8                 = {+story_mode_disabled} free, suggest
+l04u_labx18           = {+story_mode_disabled} free, suggest
+jupiter_underground   = {+story_mode_disabled} free, suggest
+pripyat               = {+story_mode_disabled} free, {+operation_afterglow_jupiter_final -lttz_oa_loose_ends_done} suggest, free
+l13_generators        = {+story_mode_disabled} free, {+lttz_ms_heart_zone_started -mortal_sin_endgame} suggest, free
+l11_hospital          = {+story_mode_disabled} free, {+lttz_ms_hospital_assault_started -lttz_ms_heart_zone_started} suggest, free
+
+; The reason the placard of the waiting point and the notice show: a string id (text\*\st_coop_levels.xml).
+[coop_levels_together_reason]
+l13u_warlab           = st_coop_together_warlab
+l12u_sarcofag         = st_coop_together_sarcofag
+l10u_bunker           = st_coop_together_bunker
+l08u_brainlab         = st_coop_together_brainlab
+l12u_control_monolith = st_coop_together_control_monolith
+labx8                 = st_coop_together_labx8
+l04u_labx18           = st_coop_together_labx18
+jupiter_underground   = st_coop_together_jupiter_underground
+pripyat               = st_coop_together_pripyat
+l13_generators        = st_coop_together_generators
+l11_hospital          = st_coop_together_hospital

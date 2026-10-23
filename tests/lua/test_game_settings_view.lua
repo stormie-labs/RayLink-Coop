@@ -163,7 +163,7 @@ for _, with_mcm in ipairs({ false, true }) do
 	local n_world = #vw.rows.world
 	check(n_world == (with_mcm and 18 or 15), "world: " .. n_world .. " rows" .. (with_mcm and " (the 3 of the dynamic anomalies addon among them)" or ""))
 end
-check(#expected("death") == 12 and #expected("party") == 15 and #expected("saves") == 2, "12 / 15 / 2 rows in death / party / saves")
+check(#expected("death") == 12 and #expected("party") == 17 and #expected("saves") == 2, "12 / 17 / 2 rows in death / party / saves")
 
 print("== a row: caption, combo, entries")
 v, dlg = build()
@@ -345,7 +345,7 @@ check(out["c|coop_revive_health"] == "0.3" and out["c|coop_friendly_fire"] == "1
 check(out["c|coop_bleedout"] == "60", "an invalid value is replaced by the default, as the combo shows it")
 local missing = {}
 for _, name in ipairs(sc.CVARS) do if out["c|" .. name] == nil then missing[#missing + 1] = name end end
-check(#missing == 0, "all 17 console variables are in (" .. table.concat(missing, ",") .. ")")
+check(#missing == 0, "all 19 console variables are in (" .. table.concat(missing, ",") .. ")")
 local rules = 0
 for key, raw in pairs(out) do if key:find("^o|coop/coop_session/") then rules = rules + 1; check(type(raw) == "string", key .. " is a string") end end
 check(rules == 12, "all 12 session rules are in (" .. rules .. ")")

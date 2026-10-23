@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop F3a - split levels: the notices of the gates (configs\coop_levels_together.ltx), the HUD line, the refusal lines and the loading screen. Ids: st_coop_levels_*, st_coop_together_* (the reason of a gate), st_coop_load_*; the captions of the two rules are in st_coop_game.xml. -->
+<string_table>
+	<string id="st_coop_levels_elsewhere">
+		<text>На другой карте: %s</text>
+	</string>
+	<string id="st_coop_levels_better_together">
+		<text>%s: лучше вместе — %s</text>
+	</string>
+	<string id="st_coop_levels_refused_cap">
+		<text>На ПК хоста нет места ещё под одну карту (предел: %s). Идите на уже открытую карту.</text>
+	</string>
+	<string id="st_coop_levels_refused_invalid">
+		<text>Этим выходом сейчас нельзя воспользоваться.</text>
+	</string>
+	<string id="st_coop_load_waiting">
+		<text>Ждём: %s</text>
+	</string>
+	<string id="st_coop_load_map">
+		<text>Готовим карту...</text>
+	</string>
+	<string id="st_coop_together_warlab">
+		<text>финал сюжета: сцена в Варлабе происходит один раз, опоздавший в неё не попадёт</text>
+	</string>
+	<string id="st_coop_together_sarcofag">
+		<text>Исполнитель желаний исполняет одно желание на весь мир</text>
+	</string>
+	<string id="st_coop_together_bunker">
+		<text>рубильник отключает Выжигатель мозгов для всех и меняет сюжет для всей группы</text>
+	</string>
+	<string id="st_coop_together_brainlab">
+		<text>отключение машины начинает атаку на Янтаре, а сон видят только те, кто рядом</text>
+	</string>
+	<string id="st_coop_together_control_monolith">
+		<text>засада Монолита у входа встречает только первого вошедшего</text>
+	</string>
+	<string id="st_coop_together_labx8">
+		<text>контролёр появляется один раз, после пятого документа</text>
+	</string>
+	<string id="st_coop_together_labx18">
+		<text>дверь закрывается за первым вошедшим, а сон и засада случаются один раз</text>
+	</string>
+	<string id="st_coop_together_jupiter_underground">
+		<text>сюжетные бои и сопровождение здесь достаются первому вошедшему</text>
+	</string>
+	<string id="st_coop_together_pripyat">
+		<text>финал «Операции Послесвечение»: последние выборы и титры</text>
+	</string>
+	<string id="st_coop_together_generators">
+		<text>решающий удар «Смертного греха»: бой с Саваофом</text>
+	</string>
+	<string id="st_coop_together_hospital">
+		<text>штурм госпиталя в «Смертном грехе»: гарнизон и Саваоф</text>
+	</string>
+</string_table>

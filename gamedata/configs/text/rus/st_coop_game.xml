@@ -625,8 +625,14 @@
 	<string id="st_coop_game_sleep_rule_vote">
 		<text>Голосование</text>
 	</string>
+	<string id="st_coop_game_split_levels">
+		<text>Раздельные карты</text>
+	</string>
 	<string id="st_coop_game_story">
 		<text>Сюжетный режим</text>
+	</string>
+	<string id="st_coop_game_story_together">
+		<text>Сюжетные карты — вместе</text>
 	</string>
 	<string id="st_coop_game_tab_death">
 		<text>Смерть и помощь</text>

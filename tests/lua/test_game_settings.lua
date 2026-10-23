@@ -137,7 +137,7 @@ CONSOLE = {
 	coop_death_drop = "drop", coop_bleedout = "60.00000", coop_revive_health = "0.30000", coop_respawn_delay = "30.00000",
 	coop_contusion = "10.00000", coop_death_money = "10.00000", coop_death_wear = "10.00000", coop_death_rank = "0.00000",
 	coop_hardcore_new_kit = "0", coop_checkpoints_group = "1", coop_autosave_interval = "10", coop_autosave_count = "10",
-	coop_death_share = "100.00000",
+	coop_death_share = "100.00000", coop_split_levels = "1", coop_story_together = "1",
 }
 function get_console_cmd(typ, name) return CONSOLE[name] or "" end
 
@@ -373,12 +373,12 @@ check(cs.is_game_owned("o", "alife/event/emission_state") == true and cs.is_game
 section("defaults: the machine's values plus the catalog's")
 fresh_machine()
 local D = gs.defaults()
-check(count_c(D) == 17 and D["c|coop_bleedout"] == "60" and D["c|coop_revive_health"] == "0.3" and D["c|coop_death_share"] == "100",
-	"the 17 console rules, canonical (the console prints 60.00000 / 0.30000)")
+check(count_c(D) == 19 and D["c|coop_bleedout"] == "60" and D["c|coop_revive_health"] == "0.3" and D["c|coop_death_share"] == "100",
+	"the 19 console rules, canonical (the console prints 60.00000 / 0.30000)")
 check(D["o|alife/event/emission_frequency"] == "24" and D["o|coop/coop_session/gather_radius"] == "20",
 	"host options come from the machine")
-check(D["o|coop/coop_session/travel_time"] == "true" and D["o|coop/coop_session/join_spawn"] == "host",
-	"a catalog option the machine lacks gets the catalog's default")
+check(D["o|coop/coop_session/travel_time"] == "true" and D["o|coop/coop_session/join_spawn"] == "faction_start",
+	"a catalog option the machine lacks gets the catalog's default (join_spawn: at the faction's base since F3a)")
 check(D["m|drx_da/anomaly_amount_modifier"] == "1.5", "a listed MCM option of the machine")
 check(D["o|video/basic/fov"] == nil and D["o|coop/coop_player/nick"] == nil and D["m|drx_da/debug_mode"] == nil,
 	"player options are not the game's")
@@ -400,8 +400,8 @@ gs.before_world_start("new", "")
 local A = gs.active()
 check(A and A.id == REC1.id and A.faction == "dolg" and A.world.difficulty == 2 and A.rev == 0, "the staged record is active")
 check(GAME.staged == nil, "the engine's pending game was taken")
-check(GAME.cvar_calls == 1 and count(GAME.cvars) == 17 and GAME.cvars.coop_death_mode == "checkpoint"
-	and GAME.cvars.coop_bleedout == "60" and GAME.cvars.coop_friendly_fire == "1", "17 console values go to the engine (set_cvars)")
+check(GAME.cvar_calls == 1 and count(GAME.cvars) == 19 and GAME.cvars.coop_death_mode == "checkpoint"
+	and GAME.cvars.coop_bleedout == "60" and GAME.cvars.coop_friendly_fire == "1", "19 console values go to the engine (set_cvars)")
 check(GAME.faction == "dolg" and gs.world_faction() == "dolg", "the world's faction is set")
 check(gs.origin() == "new" and gs.running_id() == REC1.id and gs.locked() == true, "origin new, the running game, locked in a level")
 check(gs.value("o", "alife/event/emission_frequency") == "48" and gs.value("o", "gameplay/none") == nil
@@ -908,7 +908,7 @@ for k, v in pairs(coop_economy_core.RULES) do
 	check(cs.rule("economy/" .. k) == v, "rule economy/" .. k .. " = RULES default (" .. tostring(v) .. ")")
 end
 check(n == 11, "11 economy rules")
-check(cs.rule("core/join_spawn") == "host", "core rule join_spawn is the host's")
+check(cs.rule("core/join_spawn") == "faction_start", "core rule join_spawn is at the faction's base (the catalog's default since F3a)")
 check(cs.rule("economy/nope") == nil and cs.rule("core/client_quicksave") == nil and cs.rule("other/gather_radius") == nil and cs.rule(5) == nil,
 	"unknown rules are nil")
 gs.put("o", "coop/coop_session/gather_radius", "35")
