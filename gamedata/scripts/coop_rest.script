@@ -218,7 +218,7 @@ end
 -------------------------------------------------------------------------------
 local win = nil -- the doze window
 local win_open = false
-local dream = nil -- { hours, forced, at, mid, music, eff } while the sleep effects run
+local dream = nil -- { hours, forced, at, mid, in_bag, music, eff } while the sleep effects run
 local st = { hours = 0, forced = false, asked = 0, seen = false, last_ask = nil, bag = nil, bag_at = nil }
 local prompted = {} -- local id of an ally -> true while his rest was announced
 local next_tick = 0
@@ -440,6 +440,7 @@ local function poll(now)
 		close_doze() -- got up, woken (a fight, a wound), the group woke
 		return
 	elseif now - st.asked >= ASK_GRACE_MS then
+		rest_call("get_up") -- T14 review I-2: a lie-down that reaches the host late must not leave us resting unseen
 		close_doze() -- the engine never took the lie-down
 		tell("refused_lost")
 		return
@@ -467,13 +468,26 @@ end
 -------------------------------------------------------------------------------
 -- The sleep effects (coop_rest_sleep)
 -------------------------------------------------------------------------------
-local function apply_sleep(hours)
+-- T14 review I-1: GAMMA's Immersive Sleep (ui_sleep_dialog.get_immersive_sleep_hours) sets the rest per hour by comfort
+-- before the stock sleep. The co-op sleep does not call it (its random early wake-up would not match the time the group
+-- slept), so the same rates are set here: 980 an hour, 1120 in a sleeping bag, 1400 in a bag with a bedspread.
+local function set_rest_rate(in_bag)
+	local usd, ass = mod("ui_sleep_dialog"), mod("actor_status_sleep")
+	if not (usd and type(usd.get_immersive_sleep_hours) == "function") then return end
+	if not (ass and type(ass.set_rest_per_hour) == "function") then return end
+	local rate = 980
+	if in_bag then rate = (db.actor and db.actor:object("beadspread")) and 1400 or 1120 end
+	ass.set_rest_per_hour(rate)
+end
+
+local function apply_sleep(hours, in_bag)
+	try("rest rate", function() set_rest_rate(in_bag) end)
 	try("stamina", function() db.actor.power = 1 end)
 	try("actor_on_sleep", function() SendScriptCallback("actor_on_sleep", hours) end)
 end
 
 local function start_dream(hours, forced)
-	dream = { hours = hours, forced = forced == true, at = time_global(), mid = false }
+	dream = { hours = hours, forced = forced == true, at = time_global(), mid = false, in_bag = st.bag ~= nil }
 	close_doze() -- the window gives way; actor_is_sleeping stays (a dream is on)
 	try("heli flag", function() save_var(db.actor, "heli_enemy_flag", nil) end)
 	try("disable_ui", function() xr_effects.disable_ui(db.actor, nil) end)
@@ -500,7 +514,7 @@ function dream_mid()
 	try("waking animation", function()
 		level.add_cam_effector(d.forced and FAINT_OUT_ANM or SLEEP_ANM, CAM_ID, false, "coop_rest.dream_end")
 	end)
-	apply_sleep(d.hours)
+	apply_sleep(d.hours, d.in_bag)
 end
 
 -- The end of the second one (stock dream_callback2): the UI and the sound back, the infos off. Does what dream_mid has not
@@ -510,7 +524,7 @@ function dream_end()
 	if not d then return end
 	if not d.mid then
 		d.mid = true
-		apply_sleep(d.hours)
+		apply_sleep(d.hours, d.in_bag)
 	end
 	dream = nil
 	try("enable_ui", function() xr_effects.enable_ui(db.actor, nil) end)

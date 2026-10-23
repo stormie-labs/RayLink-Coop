@@ -239,6 +239,8 @@ local function fresh(mode, opts)
 	if opts.no_api then coop.rest = nil end
 	dress_actor(make_actor(vec3(0, 0, 0)))
 	stock_sleep()
+	RATES = {}
+	actor_status_sleep = { set_rest_per_hour = function(r) RATES[#RATES + 1] = r end }
 	coop_rest, coop_checkpoints, coop_allies = nil, nil, nil
 	load_script("coop_rest")
 	coop_rest.on_game_start()
@@ -419,6 +421,7 @@ case("sleep_event_runs_stock_effects", function()
 	coop_rest.dream_mid()
 	check(#slept == 1 and slept[1] == 5, "actor_on_sleep went out with 5 hours")
 	check(db.actor.power == 1, "the stamina is full")
+	check(#RATES == 0, "no Immersive Sleep (no get_immersive_sleep_hours): the rest per hour is left alone")
 	check(CAMS[2] and CAMS[2].cb == "coop_rest.dream_end", "the second effector ends in dream_end")
 	check(INFOS.actor_is_sleeping == true, "still dozing until the end")
 	-- the end
@@ -552,6 +555,8 @@ case("doze_closes_on_awake", function()
 	check(win() == nil, "7 s with no answer: closed")
 	check(last(MSGS) == STR.st_coop_rest_refused_lost, "with a word to the player: " .. tostring(last(MSGS)))
 	check(not INFOS.actor_is_sleeping, "and the body is awake")
+	-- T14 review I-2: a lie-down that reaches the host late must not leave the player resting unseen
+	check(REST.ups == 1, "the late lie-down is taken back: coop.rest.get_up() (" .. REST.ups .. ")")
 	-- the session ends (state_of answers 'awake' outside a session, no callback comes)
 	fresh("host")
 	stock_ui(6):OnButtonSleep()
@@ -762,6 +767,32 @@ case("world_block_reports_emission", function()
 end)
 
 -- ------------------------------------------------------------------ the fold button
+-- T14 review I-1: GAMMA's Immersive Sleep sets the rest per hour by comfort before the stock sleep
+-- (ui_sleep_dialog.get_immersive_sleep_hours); the co-op sleep does not call it, so it sets the same rates itself
+case("immersive_sleep_rest_rate", function()
+	fresh("host")
+	ui_sleep_dialog.get_immersive_sleep_hours = function(h) return h end
+	stock_ui(5):OnButtonSleep()
+	engine_says(0, "resting", 5)
+	engine_says(0, "sleeping", 5)
+	fire("coop_rest_sleep", 5)
+	coop_rest.dream_mid()
+	check(RATES[1] == 980 and #RATES == 1, "no sleeping bag: 980 per hour, set once (" .. table.concat(RATES, ",") .. ")")
+	coop_rest.dream_end()
+	fresh("client")
+	ui_sleep_dialog.get_immersive_sleep_hours = function(h) return h end
+	spawn("ph_sleepbag", vec3(2, 0, 1), nil, { id = 777 })
+	ui_sleep_dialog.sleep_bag(777, "itm_sleepbag")
+	local ui = ui_sleep_dialog.GUI
+	ui.time_track = { GetIValue = function() return 6 end }
+	ui:OnButtonSleep()
+	engine_says(SELF, "resting", 6)
+	engine_says(SELF, "sleeping", 6)
+	fire("coop_rest_sleep", 6)
+	coop_rest.dream_mid()
+	check(RATES[#RATES] == 1120, "in a sleeping bag: 1120 per hour (" .. table.concat(RATES, ",") .. ")")
+end)
+
 case("fold_button", function()
 	fresh("client")
 	spawn("ph_sleepbag", vec3(2, 0, 1), nil, { id = 777 })
