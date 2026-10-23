@@ -67,7 +67,7 @@ local function stock_logic(M)
 		return t
 	end
 	E.xr_effects = {}
-	for _, n in ipairs({ "disable_ui", "enable_ui", "kill_actor", "run_tutorial", "teleport_actor" }) do
+	for _, n in ipairs({ "disable_ui", "enable_ui", "kill_actor", "run_tutorial", "teleport_actor", "sr_teleport" }) do
 		E.xr_effects[n] = function(actor, npc, p) M.fx_runs[#M.fx_runs + 1] = n end
 	end
 	E.xr_conditions = {
@@ -269,6 +269,50 @@ check(#sent_named(C, "npc.logic_req") == 1, "client asks for every section once 
 H.env.db.storage[100].active_section = "sr_idle@a"
 pump()
 check(C.env.db.storage[100].active_section == "sr_idle@a", "npc.logic_all brought the host's current section")
+
+-- Live 2026-10-24: "I walk up to the exit mark and the other players are teleported to it". The exit / route restrictors of
+-- sr_teleport_sections.ltx run scripts\sr_teleport_logic.ltx (on_actor_inside = sr_idle@run %=sr_teleport%); the effect moves
+-- db.actor 3 s later. It ran on the host for ANY player's arrival, so the host's character was put at the exit's drop point
+-- while its player stood somewhere else, and the waiting point then counted him as ready.
+print("== coop_npc_logic: sr_teleport (route / exit restrictor) moves only the player who walked in")
+local ROUTE_INI = {
+	logic = { { "active", "sr_idle@wait" } },
+	["sr_idle@wait"] = { { "on_actor_inside", "sr_idle@run %=sr_teleport%" } },
+	["sr_idle@run"] = { { "on_actor_outside", "sr_idle@wait" } },
+}
+local ROUTE_H = restrictor(H, 103, 200, ROUTE_INI, "sr_idle@wait")
+local ROUTE_C = restrictor(C, 103, 200, ROUTE_INI, "sr_idle@wait")
+H.env.xr_logic.initialize_obj(ROUTE_H, H.env.db.storage[103], true, H.env.db.actor, 4)
+C.env.xr_logic.initialize_obj(ROUTE_C, C.env.db.storage[103], true, C.env.db.actor, 4)
+check(L.is_replicated(103), "the route restrictor is replicated (sr_teleport is no machine-only effect)")
+local s3, p3, g3 = L.scan_ini(make_ini(ROUTE_INI))
+check(s3 and p3 and not g3, "route restrictor: shared, positional, no scene (the others do not follow)")
+local st_route = {
+	ini = ROUTE_H._ini,
+	logic = { { name = "on_actor_inside", condlist = { { section = "sr_idle@run", fx = { { "sr_teleport", {} } } } } } },
+}
+-- The client walks in; the host stands 9 m from him, outside the zone (inside scene_radius, so a scene would take him along).
+H.env.db.actor._pos = vec(209, 0, 0)
+proxy._pos = vec(202, 0, 0)
+H.sent, H.fx_runs, C.fx_runs, QUEUE = {}, {}, {}, {}
+NOW = NOW + 1
+local sw = H.env.xr_logic.try_switch_to_another_section(ROUTE_H, st_route, H.env.db.actor)
+check(sw == true and H.env.db.storage[103].active_section == "sr_idle@run", "client inside -> the restrictor switched on the host")
+check(#H.fx_runs == 0, "the client walked in: the host's character is NOT teleported")
+local fx_route = sent_named(H, "npc.fx")
+check(#fx_route == 1 and fx_route[1].target == 1, "sr_teleport relayed to the client that walked in, only to him")
+pump()
+check(#C.fx_runs == 1 and C.fx_runs[1] == "sr_teleport", "the client runs sr_teleport on its own character")
+-- The host walks in alone: it runs on the host, nothing goes to the client.
+H.env.db.storage[103].active_section = "sr_idle@wait"
+H.env.db.actor._pos = vec(201, 0, 0)
+proxy._pos = vec(500, 0, 0)
+H.sent, H.fx_runs, C.fx_runs, QUEUE = {}, {}, {}, {}
+NOW = NOW + 1
+H.env.xr_logic.try_switch_to_another_section(ROUTE_H, st_route, H.env.db.actor)
+check(#H.fx_runs == 1 and H.fx_runs[1] == "sr_teleport", "the host walked in: it is his own teleport, run on the host")
+check(#sent_named(H, "npc.fx") == 0, "nobody else is sent anywhere")
+H.env.db.actor._pos = vec(0, 0, 0)
 
 print("== coop_npc_logic: logic heal")
 local packet = {}

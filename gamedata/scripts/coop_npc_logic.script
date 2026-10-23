@@ -72,9 +72,13 @@ local MACHINE_EFFECTS = {
 -- Effects that take a player out of play: an arrival that fires one is a scene.
 local GATHERS = { disable_ui = true, disable_ui_only = true, teleport_actor = true }
 -- Effects on db.actor: true = audience only, "always" = also on the host whatever the audience.
+-- sr_teleport (ui_sr_teleport: the route / level-exit restrictors of sr_teleport_sections.ltx, cfg sr_teleport_logic.ltx,
+-- on_actor_inside = %=sr_teleport%) moves db.actor 3 s later: for the player who walked in only. Left out, it ran on the
+-- host for ANY player's arrival and put the host's character at the exit's drop point (live 2026-10-24: "I walk up to the
+-- exit mark and the others are teleported to it"). It is no scene (GATHERS): the others stay where they are and walk up.
 local ACTOR_FX = {
 	disable_ui = true, disable_ui_only = true, run_tutorial = true, kill_actor = true, hit_actor = true,
-	save_actor_position = true, restore_actor_position = true, teleport_actor = true,
+	save_actor_position = true, restore_actor_position = true, teleport_actor = true, sr_teleport = true,
 	bar_arena_teleport = true, bar_arena_teleport_2 = true, bar_arena_weapon_slot = true,
 	enable_ui = "always", enable_imput = "always", stop_tutorial = "always",
 }
