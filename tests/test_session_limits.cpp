@@ -685,6 +685,7 @@ TEST(limits_client_rate_rules)
 {
 	// F2 T3: one table of what a host takes from each client (coop_join installs it). Equip, spots, infos, script
 	// events, story resyncs, vitals, money and talk locks joined the F0 two (heavy requests, level exit votes).
+	// F2 T3b: the rest of what a client sends joined them (below); the burst and honest-stream tests follow this one.
 	struct Expected
 	{
 		Msg type;
@@ -696,7 +697,17 @@ TEST(limits_client_rate_rules)
 		// F3: a tent placed, lying down / getting up, a hardcore restart
 		{Msg::CheckpointClaim, 4, 2000}, {Msg::RestRequest, 4, 1000}, {Msg::NewCharacter, 2, 5000},
 		// F2 T14: coop.sync changes of a player's own data and items, requests to the host's handlers
-		{Msg::SyncSet, 64, 20}, {Msg::SyncRequest, 32, 50}};
+		{Msg::SyncSet, 64, 20}, {Msg::SyncRequest, 32, 50},
+		// F2 T3b (Ruling F2-15), story: tasks and relations (paced by the sender's outbox), rank and reputation
+		{Msg::TaskUpdate, 32, 250}, {Msg::Relation, 64, 80}, {Msg::Progress, 4, 500},
+		// F2 T3b: a player's shots, his item states (the whole inventory at join), trade windows, pushes and uses of
+		// world objects
+		{Msg::PlayerShot, 32, 12}, {Msg::ItemState, 4096, 10}, {Msg::TradeOp, 32, 50}, {Msg::EntityEvent, 64, 8},
+		// F2 T3b: requests; an outer guard at twice the host's own buckets (coop_requests.cpp kRate / kBurst), which
+		// answer an honest burst over their limit with a ReqResult, and the container view
+		{Msg::ReqSpawn, 80, 25}, {Msg::ReqDestroy, 120, 16}, {Msg::ReqUse, 120, 16}, {Msg::ReqTake, 120, 16},
+		{Msg::ReqDrop, 120, 16}, {Msg::ReqTransfer, 120, 16}, {Msg::ReqHit, 320, 6}, {Msg::ReqItemEvent, 80, 25},
+		{Msg::ReqLaunch, 16, 50}, {Msg::ReqContainer, 32, 60}};
 	for (const Expected& e : expected)
 	{
 		const limits::RateRule* rule = nullptr;
@@ -1307,4 +1318,434 @@ TEST(character_choice_messages_go_one_way)
 	CHECK(at_host == std::vector<uint16_t>{uint16_t(Msg::CharChoice)});
 	CHECK(b.logged("unexpected CharChoice"));
 	CHECK(b.s.is_active() && !b.disconnected);
+}
+
+// ============================================================================ F2 T3b: the rest of the client messages
+// Ruling F2-15: TaskUpdate, Relation, Progress, PlayerShot, ItemState, TradeOp, EntityEvent and the requests (Req*) got
+// their rows in kClientRateRules after the sender-side pacing (Ruling F2-14). One burst test per new row, one "an honest
+// stream never drops" test per sender. Ports 37300+: the burst tests 37300..37316, the honest ones 37320..37336.
+
+namespace
+{
+void install_game_rates(Node& host)
+{
+	for (const limits::RateRule& rule : limits::kClientRateRules)
+		host.s.limit_rate(rule.type, rule.burst, rule.refill_ms);
+}
+
+// A host with the game's table, one client that joined it and a host clock the test sets: Session::update takes the time
+// from its caller, so the host's token buckets see exactly the time given here however slow this machine is. The client
+// and the transport run in real time.
+struct RateRig
+{
+	Node host, a;
+	Msg type;
+	size_t handled = 0;
+	uint64_t sent = 0;
+
+	RateRig(Msg msg, uint16_t port) : host("Boss", port), a("Alice", port), type(msg)
+	{
+		install_game_rates(host);
+		host.s.on(type, [this](PeerId, Reader&) { ++handled; });
+		host_and_join(host, {&a}, port);
+	}
+	RateRig(const RateRig&) = delete;
+	RateRig& operator=(const RateRig&) = delete;
+
+	uint64_t dropped() const { return host.s.stats(uint16_t(type)).rate_dropped; }
+
+	// The client sends `n` messages of the type; the host receives them at the host time `host_ms`.
+	void send_at(uint64_t host_ms, uint32_t n)
+	{
+		for (uint32_t i = 0; i < n; ++i)
+			a.s.send(kHostPeer, Lane::Reliable, type, Writer());
+		sent += n;
+		const uint64_t start = t::now_ms();
+		while (handled + dropped() < sent)
+		{
+			REQUIRE(t::now_ms() - start < 5000);
+			a.s.update(t::now_ms());
+			host.s.update(host_ms);
+			std::this_thread::yield();
+		}
+	}
+};
+
+// One burst test per row: `burst` messages in a row pass, what follows is dropped before the handler (counted, logged,
+// the sender is not kicked: a burst may be honest), one more passes a whole refill later, and a pause fills the bucket.
+void check_burst(Msg type, uint16_t port)
+{
+	const limits::RateRule* rule = limits::client_rule(type);
+	REQUIRE(rule != nullptr); // a message without a row is not limited at all
+	RateRig rig(type, port);
+	uint64_t host_ms = t::now_ms();
+
+	rig.send_at(host_ms, rule->burst + 3);
+	CHECK_EQ(rig.handled, size_t(rule->burst));
+	CHECK_EQ(rig.dropped(), uint64_t(3));
+	CHECK(rig.host.logged(std::string("rate limit: ") + msg_name(type)));
+	CHECK(rig.host.left.empty());
+
+	// A whole token (refill_ms) after the burst: one more passes, the next one right after it does not.
+	host_ms += rule->refill_ms;
+	rig.send_at(host_ms, 2);
+	CHECK_EQ(rig.handled, size_t(rule->burst) + 1);
+	CHECK_EQ(rig.dropped(), uint64_t(4));
+
+	// Twice burst x refill_ms of quiet fills the bucket up, not beyond it: the burst passes again, not more.
+	host_ms += 2 * uint64_t(rule->burst) * rule->refill_ms;
+	rig.send_at(host_ms, rule->burst + 1);
+	CHECK_EQ(rig.handled, size_t(rule->burst) * 2 + 1);
+	CHECK_EQ(rig.dropped(), uint64_t(5));
+	CHECK(rig.host.left.empty());
+}
+
+#define BURST_TEST(msg, port)        \
+	TEST(limits_burst_##msg)         \
+	{                                \
+		check_burst(Msg::msg, port); \
+	}
+
+// What an honest client sends, as times in ms from the start of its stream.
+struct Sends
+{
+	std::vector<uint64_t> at;
+	Sends& burst(uint64_t when, uint32_t n)
+	{
+		at.insert(at.end(), n, when);
+		return *this;
+	}
+	Sends& steady(uint64_t from, uint64_t to, uint32_t per_s)
+	{
+		for (uint64_t k = 0;; ++k)
+		{
+			const uint64_t when = from + k * 1000 / per_s;
+			if (when >= to)
+				break;
+			at.push_back(when);
+		}
+		return *this;
+	}
+};
+
+// The network between an honest client and the host, as in limits_pacer_holds_back_what_the_host_would_drop: 10..70 ms
+// of delay, in order (ENet's reliable lane), and a stall: what is sent in [stall_from, stall_to) arrives together at its
+// end (a lag spike). The result is when the host receives each message.
+std::vector<uint64_t> over_the_network(const Sends& sends, uint64_t stall_from, uint64_t stall_to)
+{
+	std::vector<uint64_t> arrivals = sends.at;
+	std::sort(arrivals.begin(), arrivals.end());
+	uint64_t seed = 12345, last = 0;
+	for (uint64_t& when : arrivals)
+	{
+		seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+		uint64_t arrival = when + 10 + (seed >> 33) % 60;
+		if (when >= stall_from && when < stall_to)
+			arrival = stall_to + 10;
+		if (arrival > last) // in order
+			last = arrival;
+		when = last;
+	}
+	return arrivals;
+}
+
+// A sender that goes by limits::Pacer (the outbox of coop_story flush_outbox, once per frame; a frame is 33 ms here):
+// `wanted` is when it has a message for the host, they leave when the pacer lets them, in order.
+Sends paced_by_the_pacer(Msg type, const Sends& wanted, uint64_t until_ms)
+{
+	std::vector<uint64_t> want = wanted.at;
+	std::sort(want.begin(), want.end());
+	limits::Pacer pacer;
+	Sends out;
+	size_t next = 0, queued = 0;
+	for (uint64_t now = 0; now < until_ms; now += 33)
+	{
+		while (next < want.size() && want[next] <= now)
+		{
+			++queued;
+			++next;
+		}
+		while (queued > 0 && pacer.take(type, now))
+		{
+			--queued;
+			out.at.push_back(now);
+		}
+	}
+	CHECK_EQ(queued, size_t(0)); // everything left in time
+	CHECK_EQ(out.at.size(), want.size());
+	return out;
+}
+
+// A client at the host's own bucket for requests (coop_requests.cpp kRate / kBurst, `allow`): its whole burst at once,
+// then its rate. The host answers what is over that with a ReqResult, so this is the most the session may see of an
+// honest client.
+Sends at_the_host_bucket(uint32_t burst, uint32_t per_s, uint64_t until_ms)
+{
+	Sends s;
+	s.burst(0, burst).steady(0, until_ms, per_s);
+	return s;
+}
+
+// One "an honest stream never drops" test per sender: the stream goes through a real session with the game's table, and
+// the host drops nothing, kicks nobody, and every message reaches its handler.
+void check_honest(Msg type, uint16_t port, const std::vector<uint64_t>& arrivals)
+{
+	REQUIRE(limits::client_rule(type) != nullptr); // an honest stream is a stream against a limit
+	RateRig rig(type, port);
+	const uint64_t base = t::now_ms();
+	for (size_t i = 0; i < arrivals.size();)
+	{
+		size_t j = i;
+		while (j < arrivals.size() && arrivals[j] == arrivals[i])
+			++j;
+		rig.send_at(base + arrivals[i], uint32_t(j - i));
+		i = j;
+	}
+	const std::string name = msg_name(type);
+	CHECK(rig.sent > 0);
+	CHECK_EQ(name + " dropped " + std::to_string(rig.dropped()), name + " dropped 0");
+	CHECK_EQ(rig.handled, size_t(rig.sent));
+	CHECK(rig.host.left.empty());
+}
+} // namespace
+
+// ---- bursts: one per new row
+
+BURST_TEST(TaskUpdate, 37300)
+BURST_TEST(Relation, 37301)
+BURST_TEST(Progress, 37302)
+BURST_TEST(PlayerShot, 37303)
+BURST_TEST(ItemState, 37304)
+BURST_TEST(TradeOp, 37305)
+BURST_TEST(EntityEvent, 37306)
+BURST_TEST(ReqSpawn, 37307)
+BURST_TEST(ReqDestroy, 37308)
+BURST_TEST(ReqUse, 37309)
+BURST_TEST(ReqTake, 37310)
+BURST_TEST(ReqDrop, 37311)
+BURST_TEST(ReqTransfer, 37312)
+BURST_TEST(ReqHit, 37313)
+BURST_TEST(ReqItemEvent, 37314)
+BURST_TEST(ReqLaunch, 37315)
+BURST_TEST(ReqContainer, 37316)
+
+// ---- honest streams: one per sender
+
+TEST(limits_honest_task_update)
+{
+	// coop_story.cpp:2552 (on_give_task) and :2588 (on_task_state) -> push_out -> flush_outbox, which goes by the client
+	// pacer. A quest step gives a few tasks at once (estimate: at most 8) and completes some, then about one a second. Here
+	// 96, three times the host's burst, are wanted at once, and the pacer must hold them back, not the host drop them.
+	Sends want;
+	want.burst(0, 96).steady(10000, 40000, 1);
+	check_honest(Msg::TaskUpdate, 37320, over_the_network(paced_by_the_pacer(Msg::TaskUpdate, want, 90000), 20000, 20400));
+}
+
+TEST(limits_honest_relation)
+{
+	// coop_story.cpp:1349 (client_relation_request) -> push_out -> flush_outbox (paced). A fight: each kill changes a few
+	// relations (estimate: 3 a second for 20 s, a grenade that kills five at once: 15). 192 wanted at once, three times
+	// the host's burst, must come out paced.
+	Sends want;
+	want.burst(0, 192).steady(5000, 25000, 3).burst(12000, 15);
+	check_honest(Msg::Relation, 37321, over_the_network(paced_by_the_pacer(Msg::Relation, want, 60000), 10000, 10400));
+}
+
+TEST(limits_honest_progress)
+{
+	// coop_story.cpp:1841 (progress_frame): at most once per kProgressIntervalMs = 1000 (:47, :1833), only on a change.
+	// One a second for a minute, and a lag spike of 3 s in which three of them arrive together.
+	Sends s;
+	s.steady(0, 60000, 1);
+	check_honest(Msg::Progress, 37322, over_the_network(s, 20000, 23000));
+}
+
+TEST(limits_honest_player_shot)
+{
+	// coop_presence.cpp:340 (send) from send_pending (:371), once per frame: shots of one weapon in a frame are one event
+	// (count, :583-588), so the stream cannot be faster than the weapon (estimate: the fastest automatic, 1200 rpm = 20 a
+	// second), plus one event for a reload (poll_reload :385). 20 s of fire, a lag spike of 0.8 s (16 arrive together).
+	Sends s;
+	s.steady(0, 20000, 20).burst(10000, 1);
+	check_honest(Msg::PlayerShot, 37323, over_the_network(s, 8000, 8800));
+}
+
+TEST(limits_honest_item_state)
+{
+	// coop_items.cpp:860 (send_state) from scan_local: on entering the world the client sends the state of EVERY item in
+	// its inventory in one frame (g_resync, :1725, :1745; :893-897), unpaced. Estimate: a hoarder's GAMMA inventory, 1000
+	// items (F2 T3b fix round 1b: 128 before). Then the changed items per scan (every 100 ms after a change, 500 ms
+	// otherwise, :49-50), estimate: a weapon and its ammo box in a reload, 20 a second. A lag spike of 0.4 s.
+	Sends s;
+	s.burst(0, 1000).steady(1000, 21000, 20);
+	check_honest(Msg::ItemState, 37324, over_the_network(s, 5000, 5400));
+}
+
+TEST(limits_honest_item_state_whole_inventory_of_4096)
+{
+	// Ruling F2-33: a drop of the join's ItemState is a silent loss of the inventory's state, worse than a generous limit,
+	// so the burst is at least 4096. An inventory of exactly that many items goes in at once and the stream goes on.
+	const limits::RateRule* rule = limits::client_rule(Msg::ItemState);
+	REQUIRE(rule != nullptr);
+	CHECK(rule->burst >= 4096);
+	Sends s;
+	s.burst(0, 4096).steady(2000, 12000, 20);
+	check_honest(Msg::ItemState, 37337, over_the_network(s, 6000, 6400));
+}
+
+TEST(limits_drops_are_logged_first_and_every_hundredth)
+{
+	// F2 T3b (Ruling F2-33): a message the rate limit drops must be seen. The host logs the first drop of a type from each
+	// client, then every 100th drop of the type (all clients together), with the message, the player and the count.
+	constexpr uint16_t kPort = 37338;
+	Node host("Boss", kPort), alice("Alice", kPort), bob("Bob", kPort);
+	install_game_rates(host);
+	const limits::RateRule* rule = limits::client_rule(Msg::Progress);
+	REQUIRE(rule != nullptr);
+	size_t handled = 0;
+	host.s.on(Msg::Progress, [&](PeerId, Reader&) { ++handled; });
+	host_and_join(host, {&alice, &bob}, kPort);
+	const uint64_t host_ms = t::now_ms(); // the host's clock stands still: nothing refills
+	uint64_t sent = 0;
+	const auto send = [&](Node& from, uint32_t n) {
+		for (uint32_t i = 0; i < n; ++i)
+			from.s.send(kHostPeer, Lane::Reliable, Msg::Progress, Writer());
+		sent += n;
+		const uint64_t start = t::now_ms();
+		while (handled + host.s.stats(uint16_t(Msg::Progress)).rate_dropped < sent)
+		{
+			REQUIRE(t::now_ms() - start < 5000);
+			alice.s.update(t::now_ms());
+			bob.s.update(t::now_ms());
+			host.s.update(host_ms);
+			std::this_thread::yield();
+		}
+	};
+	const auto lines = [&](const char* who = "") {
+		return std::count_if(host.log.begin(), host.log.end(), [&](const std::string& l) {
+			return l.find("rate limit: Progress") != std::string::npos && l.find(who) != std::string::npos;
+		});
+	};
+	const auto dropped = [&] { return host.s.stats(uint16_t(Msg::Progress)).rate_dropped; };
+
+	send(alice, rule->burst + 1); // Alice's first drop: logged, with her name and the count
+	CHECK_EQ(dropped(), uint64_t(1));
+	CHECK_EQ(lines("'Alice'"), std::ptrdiff_t(1));
+	CHECK(host.logged("1 of this type so far"));
+	send(alice, 98); // drops 2..99: no line
+	CHECK_EQ(dropped(), uint64_t(99));
+	CHECK_EQ(lines(), std::ptrdiff_t(1));
+	send(alice, 1); // the 100th
+	CHECK_EQ(lines(), std::ptrdiff_t(2));
+	CHECK(host.logged("100 of this type so far"));
+	send(alice, 100); // 101..200: the 200th
+	CHECK_EQ(dropped(), uint64_t(200));
+	CHECK_EQ(lines(), std::ptrdiff_t(3));
+	CHECK(host.logged("200 of this type so far"));
+
+	send(bob, rule->burst + 1); // Bob's first drop is the 201st of the type: logged all the same, with his name
+	CHECK_EQ(dropped(), uint64_t(201));
+	CHECK_EQ(lines("'Bob'"), std::ptrdiff_t(1));
+	CHECK_EQ(lines(), std::ptrdiff_t(4));
+	send(bob, 98); // 202..299
+	CHECK_EQ(lines(), std::ptrdiff_t(4));
+	send(bob, 1); // the 300th, Bob's
+	CHECK_EQ(lines("'Bob'"), std::ptrdiff_t(2));
+	CHECK_EQ(lines(), std::ptrdiff_t(5));
+	CHECK(host.left.empty()); // dropped and logged, never kicked
+}
+
+TEST(limits_honest_trade_op)
+{
+	// coop_trade.cpp:645 (client_send_deal): one per press of the Sell or Buy button or of the donate key
+	// (UIActorMenuTrade.cpp:681, :733). A human: eight presses in the first second (estimate), then five a second for
+	// 20 s. A lag spike of 1 s.
+	Sends s;
+	s.burst(0, 8).steady(2000, 22000, 5);
+	check_honest(Msg::TradeOp, 37325, over_the_network(s, 10000, 11000));
+}
+
+TEST(limits_honest_entity_event)
+{
+	// coop_objects.cpp:907 (client_push_check): a push of a body once per kPushIntervalMs = 100 for each body in contact
+	// (:68, :897-899), so 10 a second per body; estimate: three bodies at once = 30 a second, a pile of eight bodies in
+	// the first check. :2148 (a use of a door or lever), :2333 (an artefact), :2408 (a throw, the host refuses < 150 ms)
+	// are single presses. 20 s, a lag spike of 0.5 s.
+	Sends s;
+	s.burst(0, 8).steady(500, 20500, 30);
+	check_honest(Msg::EntityEvent, 37326, over_the_network(s, 10000, 10500));
+}
+
+TEST(limits_honest_req_spawn)
+{
+	// coop_requests.cpp:446 (send_action Spawn). The host's own bucket for spawns (:772-773) is 40 in a row, then 20 a
+	// second; what it refuses it answers (ReqResult RateLimited), so the session must never drop before it.
+	check_honest(Msg::ReqSpawn, 37327, over_the_network(at_the_host_bucket(40, 20, 12000), 6000, 6500));
+}
+
+TEST(limits_honest_req_destroy)
+{
+	// coop_requests.cpp:457 (Destroy). The host's bucket for destroys (shared with ReqUse, :772-773): 60 in a row, then 30
+	// a second.
+	check_honest(Msg::ReqDestroy, 37328, over_the_network(at_the_host_bucket(60, 30, 12000), 6000, 6500));
+}
+
+TEST(limits_honest_req_use)
+{
+	// coop_requests.cpp:457 (Use): the destroy bucket, as ReqDestroy.
+	check_honest(Msg::ReqUse, 37329, over_the_network(at_the_host_bucket(60, 30, 12000), 6000, 6500));
+}
+
+TEST(limits_honest_req_take)
+{
+	// coop_requests.cpp:480 (Move, a take from the ground): the host's bucket for moves (shared with ReqDrop and
+	// ReqTransfer): 60 in a row (a stash taken in one go), then 30 a second.
+	check_honest(Msg::ReqTake, 37330, over_the_network(at_the_host_bucket(60, 30, 12000), 6000, 6500));
+}
+
+TEST(limits_honest_req_drop)
+{
+	// coop_requests.cpp:480 (Move, a drop): the moves bucket, as ReqTake.
+	check_honest(Msg::ReqDrop, 37331, over_the_network(at_the_host_bucket(60, 30, 12000), 6000, 6500));
+}
+
+TEST(limits_honest_req_transfer)
+{
+	// coop_requests.cpp:480 (Move between holders: loot, trade moves): the moves bucket, as ReqTake.
+	check_honest(Msg::ReqTransfer, 37332, over_the_network(at_the_host_bucket(60, 30, 12000), 6000, 6500));
+}
+
+TEST(limits_honest_req_hit)
+{
+	// coop_requests.cpp:496 (Hit), one per bullet or blow of the player on a host creature or object (coop_events.cpp:295).
+	// The host's bucket for hits: 160 in a row, then 80 a second (:772-773); an automatic shotgun does 40 a second
+	// (estimate).
+	check_honest(Msg::ReqHit, 37333, over_the_network(at_the_host_bucket(160, 80, 8000), 4000, 4300));
+}
+
+TEST(limits_honest_req_item_event)
+{
+	// coop_requests.cpp:512 (ItemEvent: an upgrade installed). The host's bucket for the rest (:772-773): 40 in a row,
+	// then 20 a second.
+	check_honest(Msg::ReqItemEvent, 37334, over_the_network(at_the_host_bucket(40, 20, 12000), 6000, 6500));
+}
+
+TEST(limits_honest_req_launch)
+{
+	// coop_requests.cpp:1903 (client_flush_launches). The host takes one launch per kLaunchIntervalMs = 100 from a player
+	// (:1863, :1934) and answers the rest, so the most an honest client can send is 10 a second (a double launch at
+	// the start).
+	Sends s;
+	s.burst(0, 2).steady(0, 12000, 10);
+	check_honest(Msg::ReqLaunch, 37335, over_the_network(s, 6000, 6500));
+}
+
+TEST(limits_honest_req_container)
+{
+	// coop_trade.cpp:772 (send_container), one on showing and one on hiding a trade or loot window
+	// (on_actor_menu_shown :948-981). A human opening and closing windows: four messages a second (estimate), eight at the
+	// start. A lag spike of 1 s.
+	Sends s;
+	s.burst(0, 8).steady(2000, 22000, 4);
+	check_honest(Msg::ReqContainer, 37336, over_the_network(s, 10000, 11000));
 }
