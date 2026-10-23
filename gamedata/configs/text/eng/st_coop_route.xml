@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop - callback router (scripts\coop_route.script): the notice for a mod script that keeps failing on a client. -->
+<string_table>
+	<string id="st_coop_route_mod_failing">
+		<text>Co-op: the mod script %s keeps failing on this machine (%s errors) and does not work here. See the log (appdata\logs\xray_*.log).</text>
+	</string>
+</string_table>

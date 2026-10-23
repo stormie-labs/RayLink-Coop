@@ -23,7 +23,8 @@
 	- make_callback is not replaced: coop_sound.cpp reads its upvalue `intercepts`.
 	On a co-op client a handler that runs is called under pcall: a Lua error is logged (the first three per script,
 	then every 100th) and counted, the session goes on (R-11.4); a failed unique call or time event returns true, so
-	it is not called again. The host and single player keep the stock behaviour (no pcall).
+	it is not called again. The 30th error of a script is told to the player once, as news (st_coop_route_mod_failing).
+	The host and single player keep the stock behaviour (no pcall).
 	Every call is counted by the engine (coop.route.note: ran, skipped, error per domain; skips per script), shown by
 	coop_status.
 
@@ -77,6 +78,21 @@ local err_seen = {} -- script -> Lua errors caught on this machine
 -------------------------------------------------------------------------------
 -- Wrappers
 -------------------------------------------------------------------------------
+-- A script that keeps failing is told to the player once, as news (live 2026-10-23: FDDA failed every frame on a
+-- client and left the backpack in the hands; the owner took it for a lost session).
+local kTellAt = 30
+local function tell(script, n)
+	local tr = game and game.translate_string
+	local fmt = tr and tr("st_coop_route_mod_failing")
+	if not fmt or fmt == "st_coop_route_mod_failing" then
+		fmt = "Co-op: the mod script %s keeps failing on this machine (%s errors) and does not work here. See the log."
+	end
+	local ok, text = pcall(string_format, fmt, tostring(script), tostring(n))
+	local actor = db and db.actor
+	if actor then pcall(actor.give_game_news, actor, "Anomaly Coop", ok and text or fmt, "ui_inGame2_Radiopomehi", 0, 15000) end
+	log("! %s keeps failing on this client (%d errors), the player is told", tostring(script), n)
+end
+
 local function report(script, what, err)
 	local n = (err_seen[script] or 0) + 1
 	err_seen[script] = n
@@ -84,6 +100,7 @@ local function report(script, what, err)
 	if n <= 3 or n % 100 == 0 then
 		log("! lua error in %s (%s), #%d, the session continues: %s", tostring(script), tostring(what), n, tostring(err))
 	end
+	if n == kTellAt then tell(script, n) end
 end
 
 local function finish(d, script, what, err_ret, ok, ...)

@@ -316,6 +316,22 @@ check(pcall(SendScriptCallback, "actor_on_update"), "client: a handler's Lua err
 check(RAN.err and RAN.after, "client: the next handler still runs")
 local _, _, view_errors = coop_native.counts("view")
 check(view_errors == 1, "client: the error is counted")
+-- A script that keeps failing on a client is told to the player once, on its 30th error (live 2026-10-23: FDDA failed
+-- every frame on the client and the owner took the stuck backpack for a lost session).
+NEWS = {}
+local function told(script)
+	local k = 0
+	for _, n in ipairs(NEWS) do if n:find(script, 1, true) then k = k + 1 end end
+	return k
+end
+RegisterScriptCallback("actor_on_update", from_script("broken_mod", "return function() error('boom') end"))
+for _ = 1, 29 do SendScriptCallback("actor_on_update") end
+check(told("broken_mod") == 0, "client: no notice before the 30th error of a script")
+SendScriptCallback("actor_on_update")
+check(told("broken_mod") == 1, "client: the 30th error of broken_mod tells the player, naming the script (" ..
+	table.concat(NEWS, " | ") .. ")")
+for _ = 1, 50 do SendScriptCallback("actor_on_update") end
+check(told("broken_mod") == 1 and told("ui_inventory") == 1, "client: told once per script")
 boot("host")
 RegisterScriptCallback("actor_on_update", from_script("ui_inventory", "return function() error('boom') end"))
 check(not pcall(SendScriptCallback, "actor_on_update"), "host: a Lua error goes on as in single player (no pcall)")

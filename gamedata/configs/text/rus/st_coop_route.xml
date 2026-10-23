@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop - роутер колбэков (scripts\coop_route.script): сообщение о скрипте мода, который падает на клиенте. -->
+<string_table>
+	<string id="st_coop_route_mod_failing">
+		<text>Кооп: скрипт мода %s на этой машине падает (%s ошибок) и здесь не работает. Подробности в логе (appdata\logs\xray_*.log).</text>
+	</string>
+</string_table>
