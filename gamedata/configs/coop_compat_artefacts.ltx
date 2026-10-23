@@ -11,10 +11,16 @@
 ; drop on the melter kit in the player's own bag (beside grok_artefacts_melter, owner in coop_route_mods.ltx).
 ; Owner: every machine looks after its own artefacts.
 ;
-; World calls on a client (call router, F2 T12): alife_create_item(..., db.actor) (a container for an artefact, the
-; parts a container breaks into) is a request to the host and answers nil; alife_release of an own artefact is a
-; request. The results are only used as a truthy value or not at all. The condition is applied after the item
-; arrives (cond option of alife_create_item is lost on a client until F2 T12b).
+; World calls on a client (call router, F2 T12): alife_create_item(..., db.actor) is a request to the host and answers
+; nil; alife_release of an own artefact is a request. zz_item_artefact's container functions (itms_manager.
+; dropdrop_ArtyContainer / use_arty_container, file-level patches, so they run on every machine whatever the domain)
+; DO use the result: utils_stpk.get_item_data(se_new_cont) indexes nil before the alife_release of the artefact and the
+; container, the Lua error stops it there, and the filled container (or the artefact and the empty box) was asked for
+; while both originals stayed: endless artefacts (B3 review C2, also before B3: the domain does not matter). On a
+; client scripts\coop_mods_guard.script runs both with deferred creates: alife_create_item into the own actor answers
+; an unregistered entity the mod writes its condition into, registered (a request with that condition) only after the
+; function returned, so the releases go first and a failing function creates nothing. Other creates with a condition
+; ({cond = x}, the workshop's crafted artefact) keep it the same way (review I1).
 
 [route_scripts]
 zz_item_artefact = owner

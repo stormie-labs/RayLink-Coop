@@ -474,7 +474,7 @@ function from_script(script, body)
 end
 
 -- Loads coop_main + all coop_mods_* and runs their on_game_start in file order.
-MODS_FILES = { "coop_mods_core", "coop_mods_hf", "coop_mods_items", "coop_mods_mags", "coop_mods_misc",
+MODS_FILES = { "coop_mods_core", "coop_mods_guard", "coop_mods_hf", "coop_mods_items", "coop_mods_mags", "coop_mods_misc",
 	"coop_mods_nta", "coop_mods_pdata", "coop_mods_perks", "coop_mods_radio" }
 function start_all()
 	load_script("coop_main")

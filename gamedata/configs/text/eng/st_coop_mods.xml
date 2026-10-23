@@ -13,4 +13,13 @@
 	<string id="st_coop_mods_hf_syncing">
 		<text>The stove's storage is still syncing, try again.</text>
 	</string>
+	<string id="st_coop_guard_scope_swap">
+		<text>Co-op: changing a weapon's scope (attach, detach, toggle, magnifier) is not available to a client yet.</text>
+	</string>
+	<string id="st_coop_guard_inspect_timeout">
+		<text>Co-op: the item to inspect did not come from the host, the inspection is cancelled.</text>
+	</string>
+	<string id="st_coop_guard_failed">
+		<text>Co-op: this action could not be done on a client.</text>
+	</string>
 </string_table>

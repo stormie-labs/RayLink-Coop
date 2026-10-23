@@ -86,9 +86,22 @@ for _, n in ipairs(B3_OWNER) do
 end
 SendScriptCallback("actor_on_update")
 SendScriptCallback("actor_on_first_update")
+-- B3 review round 1 (C3): the refresh timers of the keep-crafting-window mods are host-only (pairs in
+-- coop_compat_crafting.ltx): they re-enabled the button from ingredients the host had not removed yet.
+local B3_TIMERS_HOST = { zz_item_cooking_keep_crafting_window_open = true, zz_ui_workshop_keep_crafting_window_open = true }
 for _, n in ipairs(B3_OWNER) do
 	check(RAN["b3_" .. n] == true, n .. " runs on a client (owner: the player's own experience)")
-	check(domain_of("time_event", n) == "owner", n .. ": its time events run on a client too (a timer follows its script)")
+	-- review M4: the generated files no longer list these scripts and actor_on_update / time_event default to owner,
+	-- so the checks above pass without the coop_compat rule too; the rule itself is checked here
+	check(ROUTE_SCRIPT_RULES[n:lower()] == "owner", n .. ": its owner rule is in a configs/coop_compat_*.ltx")
+	if B3_TIMERS_HOST[n] then
+		check(domain_of("time_event", n) == "host", n .. ": its refresh timers are host-only (review C3)")
+	else
+		-- grok_remove_knife_ammo_on_start's own timer is a demonized_time_events one (not routed, review M5): this is
+		-- about CreateTimeEvent
+		check(domain_of("time_event", n) == "owner", n .. ": its CreateTimeEvent timers run on a client too (a timer "
+			.. "follows its script)")
+	end
 end
 check(domain_of("actor_on_item_use", "zz_itms_manager_more_drops_from_drugs") == "owner",
 	"zz_itms_manager_more_drops_from_drugs: the wrapper that replaced itms_manager.actor_on_item_use is registered as that "

@@ -1,0 +1,454 @@
+--[[
+	Anomaly Coop - client guards for mod item paths that duplicate or lose items on a co-op client
+	(gamedata\scripts\coop_mods_guard.script). B3 review round 1, Ruling L-2: until the id lease of F2 T12b a function a
+	client cannot do safely is refused with a message rather than allowed to duplicate.
+
+	On a client a world call is a request to the host (call router, F2 T12): alife():create and alife():register answer
+	nil, alife():create(.., false) answers an unregistered entity (no id yet), alife_release only asks the host to remove
+	(the item stays here until the host's EntityDestroy). A mod written for single player that indexes such a result
+	between its create and its release stops on a Lua error (the router's pcall) with the create already sent:
+	"created, never released". Every guard checks the role at call time (inert in single player and on the host, also
+	after a disconnect) and is installed on a client only, at its first update, outermost: later wrappers (3DSS hooks at
+	actor_on_first_update, Mags Redux at load) are wrapped again on the next check (once a second).
+
+	C1  weapon variant swap (alife_clone_weapon: the scoped weapon is another section, GAMMA / 3DSS). _g_patches'
+	    version registers the clone first and indexes register's answer (nil here) before it releases the old weapon:
+	    each attach, detach, Toggle Scope key, magnifier switch or wheel scope change left the old weapon (and the scope)
+	    beside the new one. Refused on a client before any world call, the player is told:
+	      _G.alife_clone_weapon (backstop: magnifier fallback, MP-412 upgrade, any other caller)
+	      item_weapon.attach_scope / detach_scope        a weapon with scope variants (parent_section); also Toggle
+	                                                     Scope's override, canted irons' and battery hooks inside
+	      utils_item.attach_addon / detach_addon         the scope-variant branch only (an engine addon is attached
+	                                                     by the engine: silencers, launchers, engine scopes)
+	      haru_quick_action_wheel_mcm.QScopeWheelOption  Attach / Detach without an engine scope
+	    A magnifier in bone mode (3DSS, no clone) keeps working.
+	I1  alife_create_item(.., own actor, {cond = x}) of a degradable item: the stock processor keeps x in a table under
+	    the id register answers, which a client never gets, so the item came with condition 1 (a full battery, whole
+	    canted irons). Here it goes as an unregistered entity with x written into it, then alife():register: the
+	    request carries the entity's condition (coop_items.cpp capture_entity), the host applies it.
+	C2  artefact containers (itms_manager.dropdrop_ArtyContainer / use_arty_container; zz_item_artefact replaces both
+	    with versions that index the created container): run with deferred creates. alife_create_item into the own
+	    actor answers an unregistered entity the mod can write (its condition), registered only after the function
+	    returned, so its releases go first; a function that fails registers nothing.
+	C3  keep-crafting-window mods (zz_item_cooking_ / zz_ui_workshop_keep_crafting_window_open): their refresh timers
+	    are host-only (coop_compat_crafting.ltx), and on a client the window closes after a cook, craft, repair or
+	    upgrade, as the stock windows do: the ingredients just released are still in the local inventory until the
+	    host confirms, a second action from them would be free.
+	I3  af_inspect (FDDA): inspect() locks the input until its temporary item arrives and is in slot 14; on a client
+	    the lock is lifted after INSPECT_TIMEOUT_MS if it has not, the player is told, the item arriving later is
+	    released. Its two level.add_call pairs are registered through a cancel switch: level.remove_call is not
+	    reliable (stock _g.script, AddUniqueCall), and a pair left running would index the cleared item name in a
+	    luabind functor (FATAL); cancelled, the condition answers true once and the action does nothing.
+	I2 (part data and spawn budget of a swap) waits for F2 T12b; with C1 refused it does not arise.
+--]]
+
+local api = rawget(_G, "coop")
+
+local tostring, type, ipairs, pcall, select, unpack = tostring, type, ipairs, pcall, select, unpack
+
+local function C() return coop_mods_core end
+local function log(fmt, ...) C().log("guard", fmt, ...) end
+
+-- The input lock of af_inspect: in single player it lasts the slot switch (hide the weapon, draw the item: about 1-2
+-- s); a client adds the round trip of the item's request. 5 s covers a slow link and is short for a stuck player.
+local INSPECT_TIMEOUT_MS = 5000
+local INSPECT_LATE_MS = 30000 -- a temporary item arriving after the timeout is released for this long
+local CHECK_MS = 1000         -- the guards are checked to be outermost
+local TELL_GAP_MS = 2000      -- one message per id at most this often (a mouse wheel repeats the magnifier switch)
+local MAX_REWRAPS = 8         -- per entry point: something that wraps it again and again is left alone (logged)
+
+local TXT_SWAP = { "st_coop_guard_scope_swap",
+	"Co-op: changing a weapon's scope (attach, detach, toggle, magnifier) is not available to a client yet." }
+local TXT_INSPECT = { "st_coop_guard_inspect_timeout",
+	"Co-op: the item to inspect did not come from the host, the inspection is cancelled." }
+local TXT_FAILED = { "st_coop_guard_failed", "Co-op: this action could not be done on a client." }
+
+stats = { refused = 0, cond = 0, deferred = 0, failed = 0, closed = 0, inspect_timeouts = 0, late_released = 0 }
+
+local next_tell = {}
+local function tell(txt)
+	local now = time_global()
+	if (next_tell[txt[1]] or 0) > now then return end
+	next_tell[txt[1]] = now + TELL_GAP_MS
+	C().hud(txt[1], txt[2])
+end
+
+-- results of pcall(f, ...) as a table with n
+local function pack(...) return { n = select("#", ...), ... } end
+
+-------------------------------------------------------------------------------
+-- Items and sections
+-------------------------------------------------------------------------------
+local function section_of(obj)
+	if type(obj) == "string" then return obj end
+	local ok, s = pcall(function() return obj:section() end)
+	return ok and type(s) == "string" and s or nil
+end
+
+local function section_exists(sec)
+	if type(sec) ~= "string" then return false end
+	local ok, e = pcall(function() return ini_sys:section_exist(sec) end)
+	return ok and e == true
+end
+
+local function parent_section(sec)
+	if type(sec) ~= "string" then return nil end
+	local ok, p = pcall(function() return ini_sys:r_string_ex(sec, "parent_section") end)
+	return ok and type(p) == "string" and p ~= "" and p or nil
+end
+
+-- a weapon whose scopes are other weapon sections: changing its scope clones it
+local function variant_weapon(wpn) return parent_section(section_of(wpn)) ~= nil end
+
+local function scoped_variant(wpn)
+	local sec = section_of(wpn)
+	local p = parent_section(sec)
+	return p ~= nil and p ~= sec
+end
+
+local function engine_scope(wpn)
+	local ok, name = pcall(function()
+		local w = wpn:cast_Weapon()
+		return w and w:GetScopeName()
+	end)
+	return ok and type(name) == "string" and name ~= ""
+end
+
+local function id_of(obj)
+	local ok, id = pcall(function()
+		if type(obj.id) == "function" then return obj:id() end
+		return obj.id
+	end)
+	return ok and type(id) == "number" and id or nil
+end
+
+local function own_actor(owner)
+	local a = db.actor
+	if not (a and owner ~= nil) then return false end
+	local id = id_of(owner)
+	return id ~= nil and id == id_of(a)
+end
+
+local function degradable(sec)
+	local ok, d = pcall(function()
+		return utils_item.is_degradable(nil, sec) and not IsItem("multiuse", sec)
+	end)
+	return ok and d and true or false
+end
+
+-- An entity in the own actor that is not registered yet (alife():create(.., false); on a client F2 T12 keeps it until
+-- alife():register sends it as a request).
+local function unregistered(sec)
+	local a = db.actor
+	if not a then return nil end
+	local ok, se = pcall(function()
+		return alife():create(sec, a:position(), a:level_vertex_id(), a:game_vertex_id(), a:id(), false)
+	end)
+	return ok and se or nil
+end
+
+local function write_condition(se, cond)
+	local ok, e = pcall(function()
+		local data = utils_stpk.get_item_data(se)
+		data.condition = clamp(cond, 0, 1)
+		utils_stpk.set_item_data(data, se)
+	end)
+	if not ok then C().report("guard", "condition of " .. tostring(section_of(se) or "?"), e) end
+end
+
+local function register(se)
+	local ok, e = pcall(function() return alife():register(se) end)
+	if not ok then C().report("guard", "register", e) end
+end
+
+-------------------------------------------------------------------------------
+-- C1: weapon variant swap
+-------------------------------------------------------------------------------
+local function refuse_swap()
+	stats.refused = stats.refused + 1
+	tell(TXT_SWAP)
+end
+
+local function swap_guard(when)
+	return function(orig)
+		return function(...)
+			if C().is_client() and when(...) then
+				refuse_swap()
+				return nil
+			end
+			return orig(...)
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- I1 / C2: creates into the own actor
+-------------------------------------------------------------------------------
+local function cond_create(orig)
+	return function(section, owner, t, ...)
+		if C().live_client() and type(t) == "table" and type(t.cond) == "number" and t.ammo == nil and t.uses == nil
+			and section_exists(section) and own_actor(owner) and degradable(section) then
+			local se = unregistered(section)
+			if se then
+				write_condition(se, t.cond)
+				register(se)
+				stats.cond = stats.cond + 1
+				return nil -- as before on a client: the item comes with the host's answer
+			end
+		end
+		return orig(section, owner, t, ...)
+	end
+end
+
+local function with_deferred_creates(label, f, ...)
+	local real = rawget(_G, "alife_create_item")
+	if type(real) ~= "function" then return f(...) end
+	local made = {}
+	rawset(_G, "alife_create_item", function(section, owner, t, ...)
+		if section_exists(section) and own_actor(owner) then
+			local se = unregistered(section)
+			if se then
+				if type(t) == "table" and type(t.cond) == "number" then write_condition(se, t.cond) end
+				made[#made + 1] = se
+				return se
+			end
+		end
+		return real(section, owner, t, ...)
+	end)
+	local res = pack(pcall(f, ...))
+	rawset(_G, "alife_create_item", real)
+	if not res[1] then
+		-- nothing created: what it released before the error is lost, never doubled
+		stats.failed = stats.failed + 1
+		C().report("guard", label, res[2])
+		tell(TXT_FAILED)
+		return nil
+	end
+	for _, se in ipairs(made) do register(se) end
+	stats.deferred = stats.deferred + #made
+	return unpack(res, 2, res.n)
+end
+
+local function deferred(label)
+	return function(orig)
+		return function(...)
+			if not C().live_client() then return orig(...) end
+			return with_deferred_creates(label, orig, ...)
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- C3: crafting windows close after the action on a client
+-------------------------------------------------------------------------------
+local function close_after(window_of)
+	return function(orig)
+		return function(self, ...)
+			if not C().is_client() then return orig(self, ...) end
+			local res = pack(pcall(orig, self, ...))
+			local ok, shown = pcall(function() return window_of(self):IsShown() end)
+			if ok and shown then
+				stats.closed = stats.closed + 1
+				local okc, e = pcall(function() self:Close() end)
+				if not okc then C().report("guard", "close the crafting window", e) end
+			end
+			if not res[1] then error(res[2], 0) end
+			return unpack(res, 2, res.n)
+		end
+	end
+end
+
+local function the_window(self) return self end
+local function its_owner(self) return self.owner end
+
+-------------------------------------------------------------------------------
+-- I3: af_inspect input lock
+-------------------------------------------------------------------------------
+local watch -- { deadline, ticket = { cancelled, n }, item }
+local late  -- { item, deadline }
+
+local function inspect_guard(orig)
+	return function(...)
+		if not C().is_client() then return orig(...) end
+		local ticket = { cancelled = false, n = 0 }
+		local lvl = level
+		local real_add = lvl.add_call
+		-- add_call is overloaded in the engine (2 or 3 arguments): anything but (condition, action) goes as it is
+		lvl.add_call = function(...)
+			if select("#", ...) == 2 then
+				local c, a = ...
+				if type(c) == "function" and type(a) == "function" then
+					ticket.n = ticket.n + 1
+					return real_add(function()
+						if ticket.cancelled then return true end
+						return c()
+					end, function()
+						if not ticket.cancelled then return a() end
+					end)
+				end
+			end
+			return real_add(...)
+		end
+		local res = pack(pcall(orig, ...))
+		lvl.add_call = real_add
+		local m = rawget(_G, "af_inspect")
+		if res[1] and type(m) == "table" and m.af_anim_item ~= nil and ticket.n > 0 then
+			watch = { deadline = time_global() + INSPECT_TIMEOUT_MS, ticket = ticket, item = "tch_" .. tostring(m.af_anim_item) }
+		end
+		if not res[1] then error(res[2], 0) end
+		return unpack(res, 2, res.n)
+	end
+end
+
+local function active_slot()
+	local ok, s = pcall(function() return db.actor:active_slot() end)
+	return ok and s or nil
+end
+
+local function inspect_tick(now)
+	local m = rawget(_G, "af_inspect")
+	if watch then
+		if type(m) ~= "table" or m.af_anim_item == nil or active_slot() == 14 then
+			watch = nil -- the item came (the mod gave the input back) or the inspection ended
+		elseif now >= watch.deadline then
+			watch.ticket.cancelled = true
+			pcall(level.enable_input)
+			m.af_anim_item, m.active_slot = nil, nil
+			stats.inspect_timeouts = stats.inspect_timeouts + 1
+			log("af_inspect: %s did not arrive in %d ms, the input is back", watch.item, INSPECT_TIMEOUT_MS)
+			tell(TXT_INSPECT)
+			late = { item = watch.item, deadline = now + INSPECT_LATE_MS }
+			watch = nil
+		end
+	end
+	if late then
+		local ok, obj = pcall(function() return db.actor:object(late.item) end)
+		if ok and obj then
+			local okr, e = pcall(alife_release, obj)
+			if okr then stats.late_released = stats.late_released + 1 else C().report("guard", "late af_inspect item", e) end
+			late = nil
+		elseif now >= late.deadline then
+			late = nil
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Entry points, kept outermost
+-------------------------------------------------------------------------------
+local function module_of(name) return function() return C().mod(name) end end
+local function class_of(name, cls)
+	return function()
+		local m = C().mod(name)
+		local ok, c = pcall(function() return m and m[cls] end)
+		return ok and c or nil
+	end
+end
+
+local GUARDS = {
+	{ label = "_G.alife_clone_weapon", tbl = function() return _G end, key = "alife_clone_weapon",
+		make = swap_guard(function() return true end) },
+	{ label = "item_weapon.attach_scope", tbl = module_of("item_weapon"), key = "attach_scope",
+		make = swap_guard(function(item, weapon) return item ~= nil and weapon ~= nil and variant_weapon(weapon) end) },
+	{ label = "item_weapon.detach_scope", tbl = module_of("item_weapon"), key = "detach_scope",
+		make = swap_guard(function(weapon) return weapon ~= nil and scoped_variant(weapon) end) },
+	{ label = "utils_item.attach_addon", tbl = module_of("utils_item"), key = "attach_addon",
+		make = swap_guard(function(wpn, addon, typ)
+			local ws, as = section_of(wpn), section_of(addon)
+			return typ == "scope" and ws ~= nil and as ~= nil and section_exists(ws .. "_" .. as)
+		end) },
+	{ label = "utils_item.detach_addon", tbl = module_of("utils_item"), key = "detach_addon",
+		make = swap_guard(function(wpn, addon, typ) return typ == "scope" and wpn ~= nil and scoped_variant(wpn) end) },
+	{ label = "QScopeWheelOption.Attach", tbl = class_of("haru_quick_action_wheel_mcm", "QScopeWheelOption"),
+		key = "Attach",
+		make = swap_guard(function(self, obj, wpn) return wpn ~= nil and not engine_scope(wpn) and variant_weapon(wpn) end) },
+	{ label = "QScopeWheelOption.Detach", tbl = class_of("haru_quick_action_wheel_mcm", "QScopeWheelOption"),
+		key = "Detach",
+		make = swap_guard(function(self, wpn) return wpn ~= nil and not engine_scope(wpn) and scoped_variant(wpn) end) },
+	{ label = "itms_manager.create_item", tbl = module_of("itms_manager"), key = "create_item", make = cond_create },
+	{ label = "itms_manager.dropdrop_ArtyContainer", tbl = module_of("itms_manager"), key = "dropdrop_ArtyContainer",
+		make = deferred("artefact into a container") },
+	{ label = "itms_manager.use_arty_container", tbl = module_of("itms_manager"), key = "use_arty_container",
+		make = deferred("artefact out of a container") },
+	{ label = "item_cooking.UICook.OnCook", tbl = class_of("item_cooking", "UICook"), key = "OnCook",
+		make = close_after(the_window) },
+	{ label = "ui_workshop.UIWorkshopCraft.Craft", tbl = class_of("ui_workshop", "UIWorkshopCraft"), key = "Craft",
+		make = close_after(its_owner) },
+	{ label = "ui_workshop.UIWorkshopRepair.Repair", tbl = class_of("ui_workshop", "UIWorkshopRepair"), key = "Repair",
+		make = close_after(its_owner) },
+	{ label = "ui_workshop.UIWorkshopUpgrade.Upgrade", tbl = class_of("ui_workshop", "UIWorkshopUpgrade"),
+		key = "Upgrade", make = close_after(its_owner) },
+	{ label = "af_inspect.inspect", tbl = module_of("af_inspect"), key = "inspect", make = inspect_guard },
+}
+for _, g in ipairs(GUARDS) do g.n = 0 end
+
+local function current(tbl, key)
+	if tbl == _G then
+		local f = rawget(_G, key)
+		return type(f) == "function" and f or nil
+	end
+	return C().fn(tbl, key)
+end
+
+local function ensure(g)
+	local ok, tbl = pcall(g.tbl)
+	if not (ok and tbl) then return end
+	local cur = current(tbl, g.key)
+	if not cur or cur == g.fn then return end
+	if g.n >= MAX_REWRAPS then
+		if not g.gave_up then
+			g.gave_up = true
+			log("! %s keeps being replaced, left as it is after %d wraps", g.label, g.n)
+		end
+		return
+	end
+	local w = g.make(cur)
+	local okw, e = pcall(function() tbl[g.key] = w end)
+	if not okw then
+		C().report("guard", "wrap " .. g.label, e)
+		return
+	end
+	g.fn = w
+	g.n = g.n + 1
+	if g.n == 1 then
+		local list = C().wrapped
+		if type(list) == "table" then list[#list + 1] = g.label end
+	else
+		log("%s was wrapped by a later script: the guard is outermost again (#%d)", g.label, g.n)
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Start, status
+-------------------------------------------------------------------------------
+local next_check = 0
+
+local function actor_on_update()
+	if not C().is_client() then return end
+	local now = time_global()
+	inspect_tick(now)
+	if now < next_check then return end
+	next_check = now + CHECK_MS
+	for _, g in ipairs(GUARDS) do ensure(g) end
+end
+
+local function status()
+	local on = {}
+	for _, g in ipairs(GUARDS) do
+		if g.n > 0 then on[#on + 1] = g.label .. (g.n > 1 and ("x" .. g.n) or "") end
+	end
+	return string.format("scope swaps refused %d, conditions carried %d, container creates deferred %d (failed %d), "
+		.. "crafting windows closed %d, af_inspect timeouts %d (late items released %d) | guarding: %s",
+		stats.refused, stats.cond, stats.deferred, stats.failed, stats.closed, stats.inspect_timeouts,
+		stats.late_released, #on > 0 and table.concat(on, ", ") or "nothing yet (a client installs at its first update)")
+end
+
+-- on_game_start must not throw (axr_main runs every script's on_game_start in one unprotected loop, W5)
+function on_game_start()
+	if not api then return end
+	local ok, e = pcall(function()
+		RegisterScriptCallback("actor_on_update", actor_on_update)
+		C().status_line("guard", status)
+	end)
+	if not ok then printf("! [coop_mods_guard] start failed: %s", tostring(e)) end
+end

@@ -15,8 +15,11 @@
 ; alife_create_item(.., db.actor), a request to the host that answers nil), waits for it with level.add_call and
 ; releases it after the animation (alife():release of an own item, a request). Host-only, ui_hud_dotmarks and
 ; dotmarks_main (owner) called into it and the key / update / first-update callbacks never ran on a client. The
-; script locks the input (level.disable_input) until the temporary item arrives: if the host ever refuses the spawn
-; the client stays locked, live check pending (see the B3 report).
+; script locks the input (level.disable_input) until the temporary item arrives and is in slot 14 (the inspect menu
+; functor, which runs on a client whatever the domain); a spawn the host refuses, rate-limits or drops (not live yet)
+; never arrives, and with the input off on_key_press never runs. On a client scripts\coop_mods_guard.script lifts the
+; lock after 5 s without the item (its waiting level.add_call pairs end without running), tells the player and
+; releases the item if it arrives later (B3 review I3).
 
 [route_scripts]
 liz_fdda_redone_consumables = owner

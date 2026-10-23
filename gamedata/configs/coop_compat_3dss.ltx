@@ -15,10 +15,22 @@
 ;
 ; World calls on a client (call router, F2 T12): a create with the own actor as the parent (alife_create_item,
 ; alife():create) is a request to the host and answers nil, all these scripts take that (the created item shows up
-; when the host's answer arrives); alife_release of an own item is a request too. alife_clone_weapon (the weapon
-; variant with a scope, ish_toggle_scope, magnifier_switch, scripted_canted_irons, z_3dss_thermal_battery) goes by a
-; request too, but its result is a temporary object with id 65535 until the id lease of F2 T12b: the swap happens,
-; the weapon's per-item data (m_data.se_object, parts) is written under that id and the new weapon does not get it.
+; when the host's answer arrives); alife_release of an own item is a request too. A create with a condition
+; (alife_create_item(.., db.actor, {cond = x}): the battery swap of z_3dss_thermal_battery, the canted irons that
+; scripted_canted_irons gives back) keeps x: scripts\coop_mods_guard.script sends the item as an unregistered entity
+; with x written into it (B3 review I1; before, it came with condition 1).
+;
+; The weapon variant swap (alife_clone_weapon: attach / detach a scope, the Toggle Scope key, the magnifier switch
+; outside bone mode, canted irons with a scope, the battery hooks around it) is REFUSED on a client with a message
+; (coop_mods_guard, B3 review C1, Ruling L-2). The version that runs is _g_patches.script's (GAMMA and the modded exes'
+; layer, not stock _g.script): it registers the clone first and indexes register's answer before it releases the old
+; weapon; on a client that answer is nil, so every swap left the old weapon (and the scope) beside the new one. Until
+; the id lease of F2 T12b there is no safe swap here (review I2: the part data under a temporary id, the spawn budget,
+; a queued spawn dropped on a level change after the old weapon was released).
+; The scripts stay owner although the swap is refused: the magnifier in bone mode (no clone), the zoom, battery drain,
+; HUD and reload handlers are the player's own and work on a client, and a refused swap tells the player why. Host-only
+; would silently drop the keys (the B3 audit's state before) and still leave the drag and drop path (item_weapon,
+; owner) to the same clone, which the guard covers either way.
 ; zzzz_canted_aim_trace only logs (it wraps _G.alife_create and the HUD adjust writes and passes everything through).
 ; Their server_entity_on_unregister handlers have no server entity to fire from on a client; only _g.alife_release
 ; sends the callback there (for some classes), which cleans that machine's per-weapon tables.

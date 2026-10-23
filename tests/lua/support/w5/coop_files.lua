@@ -16,6 +16,7 @@ COOP_FILES = {
 	"coop_menu_char",
 	"coop_menu_options",
 	"coop_mods_core",
+	"coop_mods_guard", -- B3 review round 1: client guards of mod item paths
 	"coop_mods_hf",
 	"coop_mods_items",
 	"coop_mods_mags",
