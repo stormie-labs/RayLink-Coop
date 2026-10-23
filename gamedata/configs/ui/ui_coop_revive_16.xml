@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop HUD v2 part 2 (docs\HUD_V2.md, Поднятие союзника): the rings, the badge and the texts of the revive overlay
+     (scripts\coop_hud_revive.script). This file gives the textures and fonts; the script places and sizes everything from
+     its layout table ([coop_hud_revive] in configs\mod_system_coop_revive.ltx: px at 768 high, never stretched) and sets the
+     colours and alphas. Textures: configs\ui\textures_descr\ui_coop_revive.xml (tools\make_revive_atlas.py). The 16:9 copy of
+     ui_coop_revive.xml (the engine loads it on a wide screen): the same nodes. -->
+<w>
+	<coop_revive x="0" y="0" width="1024" height="768">
+		<!-- a transparent window that holds a group of the overlay (the script shows and hides the group) -->
+		<group x="0" y="0" width="1024" height="768"/>
+		<!-- the red vignette of a downed player: an alpha ramp, white in the texture, the script tints it -->
+		<vignette x="0" y="0" width="1024" height="768" stretch="1">
+			<texture>coop_rev_vignette</texture>
+		</vignette>
+		<!-- a piece of a ring: 6 deg of it, turned by the script (heading="1": the box stays square in units, the engine
+		     squeezes it across); the thin one is the lifter's inner ring -->
+		<arc x="0" y="0" width="58" height="58" stretch="1" heading="1">
+			<texture>coop_rev_arc</texture>
+		</arc>
+		<arc_thin x="0" y="0" width="54" height="54" stretch="1" heading="1">
+			<texture>coop_rev_arc_thin</texture>
+		</arc_thin>
+		<!-- the dim ring under the pieces (track3: three segments with gaps), and the soft dark ring under that -->
+		<track x="0" y="0" width="58" height="58" stretch="1">
+			<texture>coop_rev_track</texture>
+		</track>
+		<track3 x="0" y="0" width="58" height="58" stretch="1">
+			<texture>coop_rev_track3</texture>
+		</track3>
+		<track_thin x="0" y="0" width="54" height="54" stretch="1">
+			<texture>coop_rev_track_thin</texture>
+		</track_thin>
+		<shadow x="0" y="0" width="58" height="58" stretch="1">
+			<texture>coop_rev_shadow</texture>
+		</shadow>
+		<shadow_thin x="0" y="0" width="54" height="54" stretch="1">
+			<texture>coop_rev_shadow_thin</texture>
+		</shadow_thin>
+		<dot x="0" y="0" width="6" height="6" stretch="1">
+			<texture>coop_rev_dot</texture>
+		</dot>
+		<cross x="0" y="0" width="14" height="14" stretch="1">
+			<texture>coop_rev_cross</texture>
+		</cross>
+		<badge_medkit x="0" y="0" width="20" height="14" stretch="1">
+			<texture>coop_rev_medkit</texture>
+		</badge_medkit>
+		<badge_stimpack x="0" y="0" width="20" height="14" stretch="1">
+			<texture>coop_rev_stimpack</texture>
+		</badge_stimpack>
+		<!-- nick (coloured by the script), the lines, the timer: centred in a window the script places -->
+		<nick x="0" y="0" width="300" height="18">
+			<text complex_mode="0" r="244" g="245" b="246" align="c" vert_align="c" font="letterica18"/>
+		</nick>
+		<line x="0" y="0" width="300" height="16">
+			<text complex_mode="0" r="244" g="245" b="246" align="c" vert_align="c" font="letterica16"/>
+		</line>
+		<timer x="0" y="0" width="100" height="18">
+			<text complex_mode="0" r="226" g="58" b="48" align="c" vert_align="c" font="letterica18"/>
+		</timer>
+	</coop_revive>
+</w>

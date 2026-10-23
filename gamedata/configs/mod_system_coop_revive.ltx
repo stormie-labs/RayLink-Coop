@@ -1,0 +1,35 @@
+; Anomaly Coop - HUD v2 part 2 (docs/HUD_V2.md, "Revive an ally"): every size of the revive overlay in one place
+; (scripts\coop_hud_revive.script). One line per value: change it here, the HUD takes it at the next load (a missing or
+; broken line keeps the script's default, which is the same value). Sizes are px at 768 high (1024x768 UI units down,
+; times kx = 1024 * H / (768 * W) across: nothing stretches on a wide screen); alphas 0..1; times in ms.
+; The overlay sits on the crosshair (the middle of the screen).
+[coop_hud_revive]
+; the reviver: a ring of 3 segments (red, amber, white: a second each) round the crosshair, the badge of the item above it,
+; the nick of the downed player (his colour), "reviving . medkit" and "hold [F]" under it
+ring_r = 26              ; radius of the ring
+ring_dot = 6             ; the running dot at the end of the fill
+badge_w = 20             ; the badge of the medkit / stimpack
+badge_h = 14
+badge_gap = 8            ; between the top of the ring and the badge
+text_gap = 10            ; between the bottom of the ring and the nick
+nick_h = 18
+line_h = 16
+; the downed player: the bleed-out ring melts (red), inside it the ring of the one who revives (his colour) fills,
+; a plus in the middle, the timer above, "<nick> is reviving you" and "hang on" below, "hold [F] to give up" lower
+down_r = 30              ; the outer ring (bleed-out)
+lift_r = 24              ; the inner ring (the reviver's hold)
+cross = 14
+timer_gap = 6            ; between the top of the outer ring and the timer
+timer_h = 18
+down_gap = 12            ; between the bottom of the outer ring and "<nick> is reviving you"
+down_line_h = 18
+give_y = 150             ; the give-up hint: this far under the crosshair
+give_r = 9               ; the small ring over it that fills while the key is held
+give_gap = 8
+vignette_min = 0.55      ; the red vignette: at the start of a fall ...
+vignette_max = 0.85      ; ... and when the bleed-out is about to end
+track_alpha = 0.28       ; the dim ring under the fill
+; fades
+fade_in_ms = 120
+fade_out_ms = 200
+done_ms = 450            ; the flash when the revive went through

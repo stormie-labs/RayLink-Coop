@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop HUD v2, часть 2 (docs\HUD_V2.md): оверлей поднятия союзника scripts\coop_hud_revive.script - кольцо того, кто поднимает, и кольцо раненого. $$ACTION_USE$$ - клавиша действия use (движок подставляет её название). Идентификаторы st_coop_revive_<имя>. -->
+<string_table>
+	<string id="st_coop_revive_doing">
+		<text>поднимаю</text>
+	</string>
+	<string id="st_coop_revive_item_medkit">
+		<text>аптечка</text>
+	</string>
+	<string id="st_coop_revive_item_stimpack">
+		<text>стимпак</text>
+	</string>
+	<string id="st_coop_revive_hold">
+		<text>удерживай [$$ACTION_USE$$]</text>
+	</string>
+	<string id="st_coop_revive_you">
+		<text>поднимает тебя</text>
+	</string>
+	<string id="st_coop_revive_hang_on">
+		<text>держись</text>
+	</string>
+	<string id="st_coop_revive_give_up">
+		<text>удерживай [$$ACTION_USE$$] — сдаться</text>
+	</string>
+	<string id="st_coop_revive_giving_up">
+		<text>сдаюсь...</text>
+	</string>
+</string_table>

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop HUD v2 part 2 (docs\HUD_V2.md): the revive overlay of scripts\coop_hud_revive.script - the ring of the player who revives a teammate, and the ring of the downed player. $$ACTION_USE$$ is the key of the use action (the engine puts its name in). Ids st_coop_revive_<name>. -->
+<string_table>
+	<string id="st_coop_revive_doing">
+		<text>reviving</text>
+	</string>
+	<string id="st_coop_revive_item_medkit">
+		<text>medkit</text>
+	</string>
+	<string id="st_coop_revive_item_stimpack">
+		<text>stimpack</text>
+	</string>
+	<string id="st_coop_revive_hold">
+		<text>hold [$$ACTION_USE$$]</text>
+	</string>
+	<string id="st_coop_revive_you">
+		<text>is reviving you</text>
+	</string>
+	<string id="st_coop_revive_hang_on">
+		<text>hang on</text>
+	</string>
+	<string id="st_coop_revive_give_up">
+		<text>hold [$$ACTION_USE$$] to give up</text>
+	</string>
+	<string id="st_coop_revive_giving_up">
+		<text>giving up...</text>
+	</string>
+</string_table>

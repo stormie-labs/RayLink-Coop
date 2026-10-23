@@ -853,7 +853,7 @@ function print_status()
 	if A then pcall(A.print_status) end
 	map_call("print_status")
 	-- HUD v2: frame time and marker sources, the compass, the ping, the Tactical Compass adapter
-	for _, name in ipairs({ "coop_hud_markers", "coop_hud_compass", "coop_hud_ping", "coop_hud_tc" }) do
+	for _, name in ipairs({ "coop_hud_markers", "coop_hud_compass", "coop_hud_ping", "coop_hud_tc", "coop_hud_revive" }) do
 		local m = rawget(_G, name)
 		if m and m.print_status then
 			local ok, err = pcall(m.print_status)
