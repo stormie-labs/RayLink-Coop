@@ -9,24 +9,29 @@
 	indexes the answer -> a Lua error inside a binder method is FATAL (live case 2026-10-20: smart_terrain_binder:update
 	-> create_squad, patched in coop_main).
 
-	F2 T11 moved the methods THE ENGINE CALLS to the engine: CScriptBinder (script_binder.cpp) asks the binder router
-	(coop_router.cpp) before every call, keyed by the object's script_binding, and the rules are
-	configs\coop_route_binders.ltx [binder_host] (a client does not call the method: faction, camp and heli update) and
-	[binder_keep] (a Lua error in the method is logged once per binder and method and the binder stays: the update of 15
-	binders). Nothing about those is here any more.
+	F2 T11 moved the one thing the ENGINE can decide to the engine: CScriptBinder (script_binder.cpp) asks the binder router
+	(coop_router.cpp) before every call, keyed by the object's script_binding, and configs\coop_route_binders.ltx
+	[binder_host] lists the methods a client does not call (faction, camp and heli update). Nothing about those is here.
 
-	What stays here is what the engine cannot see, the same configs\coop_route_binders.ltx, Lua sections, `script.class =
-	method, method` (client only; nothing on the host, in single player or on an exe without co-op - the patches are
-	installed from coop_main.install_client_patches and every wrapper asks coop.is_client() again):
+	Ruling F2-35: everything that must survive a Lua error is HERE. The Release engine has no C++ exceptions, a Lua error
+	in a luabind call ends in Debug.fatal, so the only way to keep a client alive is a Lua pcall around the method (the
+	first T11 version swapped luabind's global callbacks from C++; the review found it unsafe and too wide).
+
+	What this script reads: the Lua sections of the same configs\coop_route_binders.ltx, `script.class = method, method`
+	(client only; nothing on the host, in single player or on an exe without co-op - the patches are installed from
+	coop_main.install_client_patches and every wrapper asks coop.is_client() again):
 		[binder_lua_skip]   the method returns at once on a client: methods other Lua code calls
 		                    (anomaly_zone_binder:spawn_artefact_randomly / turn_off - artefact spawn and release;
 		                    xr_box ph_item_box:spawn_items - box loot, called from generic_physics_binder death).
 		[binder_lua_fix]    a preparation built in below (FIXES) runs first, then the stock method:
 		                    crow_binder:update does not try to release a dead crow (the host does).
 		[binder_lua_guard]  the method runs in pcall: a Lua error is logged and counted (coop_status) instead of FATAL, like
-		                    owner/view callbacks (R-11.4). The death, hit and use callbacks of the creature binders: the
-		                    engine reaches them through set_callback, not through the binder, and does not catch their
-		                    errors in Release (script_callback_ex.h process_error is empty without XRAY_EXCEPTIONS).
+		                    owner/view callbacks (R-11.4). The update of the 15 binders that keep running on a client (actor,
+		                    restrictor, physic object, car, container, crow, doors, bridge, lights, dynamo, items, artefacts,
+		                    devices) and the death, hit and use callbacks of the creature binders: the engine reaches those
+		                    through set_callback, not through the binder, and does not catch their errors in Release
+		                    (script_callback_ex.h process_error is empty without XRAY_EXCEPTIONS). Applied after the fix,
+		                    so the crow's fix runs inside its guard.
 	Left alone (verdicts in the vault note W10 client binders): smart_terrain_binder (coop_main), restrictor_binder logic
 	(coop_npc_logic), campfires and anomaly fields (coop_objects ZoneState + coop_npc_world), creature binders (C++
 	suspend), visual/local ones (lights, doors, bridge, flare, dynamo, level changer, smart cover).
@@ -38,9 +43,9 @@
 	    before a patch keeps the old methods. No stock class derives from a binder class; for a mod that does, list
 	    the subclass itself in the ltx.
 
-	Extension point: the Lua sections of configs\coop_route_binders.ltx for binder classes of mods (a mod's engine-called
-	methods go to [binder_host] / [binder_keep] of its coop_compat_<mod>.ltx instead). Absent scripts/classes are skipped
-	silently (listed in coop_status).
+	Extension point: the Lua sections of configs\coop_route_binders.ltx for binder classes of mods (a mod's host-only
+	methods go to [binder_host] of its coop_compat_<mod>.ltx instead). Absent scripts/classes are skipped silently (listed
+	in coop_status).
 
 	API: install() -> number of patches, idempotent, client only; print_status() (hooked into coop_main's
 	coop_status by install(); STATUS_MODULES would also do, the lines are printed once). The engine's half is in
@@ -274,7 +279,7 @@ function print_status()
 	for _, a in ipairs(applied) do counts[a.kind] = (counts[a.kind] or 0) + 1 end
 	local total_skipped = 0
 	for _, n in pairs(skipped) do total_skipped = total_skipped + n end
-	log("role %s, installed %s | Lua patches %d (skipped methods %d, pre %d, guarded %d; the engine routes the binder updates, see [coop] binders) | client calls skipped %d, Lua errors caught %d",
+	log("role %s, installed %s | Lua patches %d (skipped methods %d, pre %d, guarded %d; the engine skips the host-only updates, see [coop] binders) | client calls skipped %d, Lua errors caught %d",
 		role, tostring(installed), #applied, counts.noop or 0, counts.pre or 0, counts.guard or 0,
 		total_skipped, total_errors)
 	for _, a in ipairs(applied) do

@@ -1,6 +1,6 @@
 -- Anomaly Coop W10 / F2 T11 (not shipped): stub run of gamedata\scripts\coop_client_binders.script with fake binder classes.
--- The engine routes the methods it calls itself (configs\coop_route_binders.ltx [binder_host] / [binder_keep], C++
--- tests routes_binder_*); this script keeps only what the engine cannot see: the Lua sections of the same ltx.
+-- The engine only skips the host-only methods (configs\coop_route_binders.ltx [binder_host], C++ tests routes_binder_*);
+-- everything that must survive a Lua error on a client is this script's pcall (Ruling F2-35): the Lua sections of the same ltx.
 -- The stubs read the SHIPPED gamedata\configs\coop_route_binders.ltx, so the lists the game uses are the ones tested.
 -- Run: tools\test_lua.cmd binders
 local SRC = "gamedata/scripts/coop_client_binders.script"
@@ -106,26 +106,32 @@ local function new_world(role, opts)
 	W.crow = class({ update = function(self, d)
 		count("crow.update")
 		if self.body_timer ~= 0 and self.body_timer <= 1000 - 120000 then count("crow.release") end
+		if self.explode then error("crow boom", 0) end
 	end })
 	MODS.bind_crow = { crow_binder = W.crow }
 
-	-- classes the ENGINE guards now (binder_keep): their update is not the script's business, one throws
-	W.keep = {}
-	local function kept(mod, cname, bad)
+	-- binders that keep running on a client: the update runs in pcall there (F2-35); one throws, one throws once
+	W.guard = {}
+	local function guarded(mod, cname, bad)
 		local c = class({ update = function(self, d)
 			count(mod .. ".update")
 			if bad then error(bad, 0) end
+			if self.fail_once then self.fail_once = nil error("once", 0) end
+			self.updates = (self.updates or 0) + 1
 			return "stock"
 		end })
 		MODS[mod] = { [cname] = c }
-		W.keep[mod] = c
+		W.guard[mod] = c
 		return c
 	end
-	kept("bind_stalker", "actor_binder", "boom in actor update")
-	kept("bind_restrictor", "restrictor_binder")
-	kept("bind_physic_object", "generic_physics_binder")
-	kept("bind_item", "item_binder")
-	kept("item_artefact", "artefact_binder")
+	guarded("bind_stalker", "actor_binder", "boom in actor update")
+	guarded("bind_restrictor", "restrictor_binder")
+	guarded("bind_physic_object", "generic_physics_binder")
+	guarded("bind_item", "item_binder")
+	guarded("item_artefact", "artefact_binder")
+	-- absent on purpose: bind_car, bind_door_labx8, bind_red_forest_bridge, bind_signal_light, bind_dynamic_light,
+	--                    bind_dynamo_hand, gwr_worldweapon_binder, item_device
+	-- a class without update (the method is simply not there)
 	MODS.bind_container = { container_binder = class({ net_spawn = function() end }) }
 
 	-- creature binders: update is the engine's business, death_callback is ours
@@ -183,9 +189,9 @@ end
 print("== 0. the shipped ltx: the Lua sections")
 do
 	local skip, fix, guard = section_of(SHIPPED, "binder_lua_skip"), section_of(SHIPPED, "binder_lua_fix"), section_of(SHIPPED, "binder_lua_guard")
-	check(skip and #skip.lines == 2 and fix and #fix.lines == 1 and guard and #guard.lines == 2, "binder_lua_skip / fix / guard are there (2 / 1 / 2 lines)")
+	check(skip and #skip.lines == 2 and fix and #fix.lines == 1 and guard and #guard.lines == 17, "binder_lua_skip / fix / guard are there (2 / 1 / 17 lines: 15 updates + 2 creature binders)")
 	check(section_of(SHIPPED, "binder_host") and #section_of(SHIPPED, "binder_host").lines == 3, "binder_host (engine) has the 3 W10 host-only updates")
-	check(section_of(SHIPPED, "binder_keep") and #section_of(SHIPPED, "binder_keep").lines == 15, "binder_keep (engine) has the 15 W10 guarded updates")
+	check(section_of(SHIPPED, "binder_keep") == nil, "no binder_keep: the engine does not guard, Lua does (F2-35)")
 end
 
 -------------------------------------------------------------------------------
@@ -194,28 +200,48 @@ do
 	local W = new_world("client")
 	local f0, c0, h0 = W.faction.update, W.camp.update, W.heli.update
 	local z0, t0, b0, cr0 = W.zone.spawn_artefact_randomly, W.zone.turn_off, W.box.spawn_items, W.crow.update
-	local keep0 = {}
-	for mod, cls in pairs(W.keep) do keep0[mod] = cls.update end
+	local actor0 = W.guard.bind_stalker.update
 	local mu0, md0, mh0, mm0 = W.motivator.update, W.motivator.death_callback, W.motivator.hit_callback, W.monster.death_callback
 	local n = W.mod.install()
-	-- 3 skipped methods + 1 fix + the death / hit / use callbacks of two creature binders (6); the engine has the other 18 of the 28
-	check(n == 10, "install returns the number of Lua patches on a client: " .. tostring(n))
+	-- 3 skipped methods + 1 fix + the update of the 6 guarded classes the stub world has (actor, restrictor, physic object,
+	-- crow, item, artefact) + the death / hit / use callbacks of two creature binders (6); the engine has the 3 host-only
+	-- updates (25 of the 28 W10 patches are Lua's, the stub world misses 9 of them)
+	check(n == 16, "install returns the number of Lua patches on a client: " .. tostring(n))
 	check(W.zone.spawn_artefact_randomly ~= z0 and W.zone.turn_off ~= t0, "anomaly zone methods replaced")
 	check(W.box.spawn_items ~= b0, "xr_box spawn_items replaced")
 	check(W.crow.update ~= cr0, "crow update replaced")
 	check(W.motivator.death_callback ~= md0 and W.motivator.hit_callback ~= mh0 and W.monster.death_callback ~= mm0, "creature callbacks replaced")
 
-	-- F2 T11: what the engine routes is not touched here
+	-- F2 T11: the host-only updates are the engine's (binder_host), not touched here
 	check(W.faction.update == f0 and W.camp.update == c0 and W.heli.update == h0, "faction / camp / heli update: left to the engine (binder_host)")
-	local untouched = true
-	for mod, cls in pairs(W.keep) do if cls.update ~= keep0[mod] then untouched = false end end
-	check(untouched, "update of the kept classes (actor, restrictor, item ...): left to the engine (binder_keep)")
-	check(W.motivator.update == mu0, "creature binder: update untouched (the engine suspends it)")
 	W.calls = {}
 	W.new(W.faction):update(100)
 	check(W.calls["faction.update"] == 1 and not W.calls.base_update, "faction update is the stock one in Lua (the engine decides whether to call it)")
-	local ai = W.new(W.keep.bind_stalker)
-	check(not pcall(function() ai:update(1) end), "a Lua error in a kept update is the engine's to keep, not caught here")
+	check(W.motivator.update == mu0, "creature binder: update untouched (the engine suspends it)")
+
+	-- F2-35: the update of the binders that keep running is guarded here
+	check(W.guard.bind_stalker.update ~= actor0, "actor_binder update replaced by the guard")
+	local ai = W.new(W.guard.bind_stalker)
+	local ok, err = pcall(function() ai:update(1) end)
+	check(ok, "guard: the Lua error does not reach the engine: " .. tostring(err))
+	check(W.mod._state().errors["bind_stalker.actor_binder:update"] == 1, "guard: counted")
+	for i = 2, 205 do ai:update(1) end
+	check(W.mod._state().errors["bind_stalker.actor_binder:update"] == 205, "guard: 205 errors counted")
+	check(logs_with(W, "lua error in bind_stalker.actor_binder:update") == 5, "guard: logged #1-3, #100, #200 only (got " .. logs_with(W, "lua error in bind_stalker") .. ")")
+	for _, mod in ipairs({ "bind_restrictor", "bind_physic_object", "bind_item", "item_artefact" }) do
+		W.calls = {}
+		local inst = W.new(W.guard[mod])
+		local rv = inst:update(1)
+		check(W.calls[mod .. ".update"] == 1 and inst.updates == 1 and rv == nil, "guard: a healthy " .. mod .. " update runs the stock code once (no return value through the guard)")
+	end
+	-- the binder stays: one failed update does not stop the next ones, the instance keeps its state
+	local it = W.new(W.guard.bind_item)
+	it.fail_once = true
+	it.object.keep = "me"
+	check(pcall(function() it:update(1) end), "guard: a failing update is caught")
+	it:update(1)
+	it:update(1)
+	check(it.updates == 2 and it.object.keep == "me", "guard: the binder keeps working after an error (2 healthy updates, state intact)")
 
 	-- partial: artefact spawn and release are no-ops, refresh (which calls spawn) is harmless
 	W.calls = {}
@@ -237,12 +263,17 @@ do
 	W.calls = {}
 	cw:update(1)
 	check(W.calls["crow.update"] == 1 and not W.calls["crow.release"] and cw.body_timer == 0, "crow: no release on a client")
+	-- the guard of [binder_lua_guard] wraps the fix: a Lua error after the fix is caught too
+	local cx = W.new(W.crow)
+	cx.body_timer = 5
+	cx.explode = true
+	check(pcall(function() cx:update(1) end) and cx.body_timer == 0 and W.mod._state().errors["bind_crow.crow_binder:update"] == 1, "crow: the fix runs, then the error of the stock update is caught")
 
 	-- guard: the callbacks the engine reaches through set_callback are called in pcall, errors are caught, counted, throttled
 	W.calls = {}
 	local mi = W.new(W.motivator)
 	mi:update(1)
-	check(W.calls["motivator.update"] == 1, "creature binder: update runs as before")
+	check(W.calls["motivator.update"] == 1, "creature binder: update runs as before (the engine suspends it for puppets)")
 	local okd, errd = pcall(function() mi:death_callback({}, {}) end)
 	check(okd and W.mod._state().errors["xr_motivator.motivator_binder:death_callback"] == 1, "creature binder: a Lua error in death_callback is caught on a client: " .. tostring(errd))
 	for i = 2, 205 do mi:death_callback({}, {}) end
@@ -255,9 +286,11 @@ do
 	W.new(W.monster):death_callback({}, {})
 	check(W.calls["monster.death"] == 1, "monster binder: death_callback runs once through the guard")
 
-	-- absent classes are tolerated and listed (all four Lua sections name classes that exist in this stub world)
+	-- absent classes are tolerated and listed
 	local st = W.mod._state()
-	check(#st.absent == 0, "no class of the shipped Lua sections is missing in the stub world: " .. table.concat(st.absent, ","))
+	local absent = table.concat(st.absent, ",")
+	check(absent:find("bind_car.car_binder", 1, true) and absent:find("gwr_worldweapon_binder.gwr_wpn_m98_binder", 1, true), "absent mods listed: " .. absent)
+	check(absent:find("bind_container.container_binder:update", 1, true), "class without update listed as such")
 
 	-- idempotent
 	local upd = W.zone.turn_off
@@ -279,6 +312,10 @@ do
 	check(W.calls["zone.spawn"] == 1, "after the session: artefact spawn is stock")
 	W.new(W.box):spawn_items({}, {})
 	check(W.calls["box.spawn_items"] == 1, "after the session: box loot is stock")
+	local ok2 = pcall(function() W.new(W.guard.bind_stalker):update(1) end)
+	check(not ok2, "after the session: no guard, the error propagates as in the stock game")
+	local it2 = W.new(W.guard.bind_item)
+	check(it2:update(1) == "stock", "after the session: the stock return value of update")
 	local ok3 = pcall(function() W.new(W.motivator):death_callback({}, {}) end)
 	check(not ok3 and W.new(W.monster):death_callback({}, {}) == "dead", "after the session: creature callbacks are stock (error propagates, value returned)")
 	local cw2 = W.new(W.crow)
@@ -339,6 +376,7 @@ do
 	check(W.calls["zone.turn_off"] == 1, "host: zone turn_off stock")
 	local ok = pcall(function() W.new(W.motivator):death_callback({}, {}) end)
 	check(not ok, "host: the guard is off, a Lua error is the stock error")
+	check(not pcall(function() W.new(W.guard.bind_stalker):update(1) end), "host: the update guard is off too")
 end
 
 -------------------------------------------------------------------------------
