@@ -256,7 +256,7 @@ guard.on_game_start()
 SendScriptCallback("actor_on_update") -- the first update of a client installs the guards (outermost)
 
 print("-- C1 with the guard: refused before any world call, the player is told")
-local SWAP_TEXT = "not available to a client yet"
+local SWAP_TEXT = "not available on a client now"
 local function refused(f, ...)
 	local okc, e = act(f, ...)
 	return okc and #REQ == 0 and HUD ~= nil and HUD:find(SWAP_TEXT, 1, true) ~= nil, e
@@ -649,6 +649,175 @@ if GAMMA then
 	check(ui_furniture_workshop.workshop_ui_ref.dlg_craft.stashId == stash:id(), "on the host the workbench keeps its stash")
 	MODE = "client"
 end
+
+-------------------------------------------------------------------------------
+-- F2 T12b: leased ids
+-------------------------------------------------------------------------------
+-- The engine of a client with ids the host leased it (coop_requests.cpp lua_create / lua_clone / lua_register_spawn /
+-- lua_release over xrCoop/coop_id_lease.h): an item into our actor is created here at once under a leased id and asked
+-- for with it (ReqSpawn 0xC7); create / clone_weapon (.., false) answer an object that holds its id already, register
+-- answers the item; a clone names the weapon it replaces, whose release then goes with the clone (the host releases
+-- it when it creates the clone). Without an id: the request path above (nil).
+print("-- F2 T12b: leased ids - own items at once, the scope swap goes through")
+local base_alife, base_release = alife, alife_release
+local LEASE = {}
+local function refill(n)
+	LEASE = {}
+	for i = 1, n do LEASE[i] = 4000 + i end
+end
+refill(48)
+local CLONE_SOURCE = {} -- weapon id -> the leased id of its clone (a temporary object or a create the host has not answered)
+coop.lease_ids = function() return MODE == "client" and #LEASE or 0 end
+local function take_lease(pid)
+	if MODE ~= "client" or pid ~= 0 or #LEASE == 0 then return nil end
+	return table.remove(LEASE, 1)
+end
+local function leased_spawn(sec, pid, id, cond, source, kind)
+	local se = spawn(sec, nil, pid, { id = id, kind = kind, cond = cond })
+	se.cond = cond
+	REQ[#REQ + 1] = { kind = "spawn", sec = sec, cond = cond, parent = pid, lease = id, source = source }
+	if source then CLONE_SOURCE[source] = id end
+	return se
+end
+function alife()
+	local a = base_alife()
+	local create, clone, reg_path = a.create, a.clone_weapon, a.register
+	a.create = function(self, sec, pos, lv, gv, pid, reg)
+		local id = take_lease(pid)
+		if not id then return create(self, sec, pos, lv, gv, pid, reg) end
+		if reg == false then
+			local t = unregistered(sec, pid)
+			t.id = id
+			return t
+		end
+		return leased_spawn(sec, pid, id, 1)
+	end
+	a.clone_weapon = function(self, se, sec, pos, lv, gv, pid, reg)
+		local t = clone(self, se, sec, pos, lv, gv, pid, reg)
+		local id = owned(se.id) and take_lease(pid) or nil
+		if id then
+			t.id, t.source = id, se.id
+			CLONE_SOURCE[se.id] = id
+		end
+		return t
+	end
+	a.register = function(self, se)
+		if MODE == "client" and type(se) == "table" and se.temp and not se.registered and se.id ~= 65535 then
+			se.registered = true
+			return leased_spawn(se._sec, se.parent_id, se.id, se.cond, se.source, "weapon")
+		end
+		return reg_path(self, se)
+	end
+	return a
+end
+function alife_release(se)
+	if se and type(se.id) == "function" then se = SE[se:id()] end
+	if MODE == "client" and se and CLONE_SOURCE[se.id] then
+		REQ[#REQ + 1] = { kind = "with_clone", id = se.id } -- no request: the host releases it with the clone
+		return
+	end
+	return base_release(se)
+end
+SEM.name = function(self) return tostring(self._sec) .. tostring(self.id) end -- se_obj:name() (_g_patches names m_data)
+PARTS = {}
+item_parts.copy_parts_con = function(from, to) PARTS[#PARTS + 1] = { from = from, to = to } end
+local function all_leased()
+	for _, rq in ipairs(REQ) do
+		if rq.kind == "spawn" and rq.lease == nil then return false end
+	end
+	return true
+end
+local function clone_of(source)
+	for _, rq in ipairs(REQ) do
+		if rq.kind == "spawn" and rq.source == source then return rq end
+	end
+end
+
+-- the backstop itself (magnifier fallback, MP-412 upgrade): _g_patches' clone with Mags Redux's wrapper over it
+local se_l = spawn("wpn_test", nil, 0, { kind = "weapon" })
+local m_data_se = alife_storage_manager.get_state().se_object
+m_data_se[se_l.id] = { parts = "barrel 80" }
+LATE.clone_after = nil
+NOW = NOW + 3000
+local okl, new_l = act(alife_clone_weapon, se_l, "wpn_test_scope_a")
+local rq = clone_of(se_l.id)
+check(okl and new_l ~= nil and new_l.id ~= 65535 and SE[new_l.id] ~= nil and rq ~= nil and rq.lease == new_l.id,
+	"alife_clone_weapon on a client with ids: the clone is here at once under its leased id, one request with that id "
+	.. "naming the weapon it replaces")
+check(#PARTS == 1 and PARTS[1].from == se_l.id and PARTS[1].to == new_l.id and m_data_se[new_l.id] ~= nil
+	and m_data_se[new_l.id].parts == "barrel 80",
+	"the parts and m_data move to the clone's real id (was 65535: lost, the barrel rolled again; review I2)")
+check(not destroyed(se_l.id) and count("with_clone") == 1 and HUD == nil and LATE.clone_after == true,
+	"the old weapon's release is the clone's part (the host releases it with the clone): no request of its own, no "
+	.. "message, the later wrapper ran")
+check(#REQ == 2 and all_leased(), "nothing else went out: one create, one release that goes with it")
+
+-- attach a scope to a weapon in our bag: the scope is used up, the variant replaces the weapon (canted irons' wrapper
+-- gives its irons back first)
+local se_a, wpn_a = spawn("wpn_test", nil, 0, { kind = "weapon" })
+local _, scope_l = spawn("scope_a", nil, 0)
+NOW = NOW + 3000
+okl = act(item_weapon.attach_scope, scope_l, wpn_a)
+rq = clone_of(se_a.id)
+check(okl and rq ~= nil and SE[rq.lease] ~= nil and not destroyed(se_a.id) and HUD == nil and all_leased(),
+	"attach a scope: the scoped variant is created at once under a leased id and replaces the weapon (its release goes "
+	.. "with the clone), every create carries an id")
+check(destroyed(scope_l:id()), "the attached scope is used up (released)")
+
+-- detach (aaaa_script_fixes_mp's detach): the scope comes back, the bare weapon replaces the scoped one
+local se_d, wpn_d = spawn("wpn_test_scope_a", nil, 0, { kind = "weapon" })
+NOW = NOW + 3000
+okl = act(item_weapon.detach_scope, wpn_d)
+rq = clone_of(se_d.id)
+check(okl and rq ~= nil and rq.sec == "wpn_test" and count("spawn", "scope_a") == 1 and spawn_of("scope_a").lease ~= nil
+	and not destroyed(se_d.id) and HUD == nil and all_leased(),
+	"detach a scope: the scope and the bare weapon are created at once under leased ids, the scoped weapon goes with "
+	.. "the clone")
+
+if GAMMA then
+	local se_w2, wpn_w2 = spawn("wpn_test_scope_a", nil, 0, { kind = "weapon" })
+	NOW = NOW + 3000
+	okl = act(wheel.Detach, wheel, wpn_w2)
+	rq = clone_of(se_w2.id)
+	check(okl and rq ~= nil and not destroyed(se_w2.id) and HUD == nil and all_leased(),
+		"Quick Action Wheel detach with ids: done as in single player")
+end
+
+-- a weapon outside our bag (a stash): the clone could not take an id (it goes where the weapon is), refused as before
+local _, stash_l = spawn("box_x", nil, nil, { kind = "box" })
+local se_s, wpn_s = spawn("wpn_test", nil, stash_l:id(), { kind = "weapon" })
+NOW = NOW + 3000
+check(refused(item_weapon.attach_scope, scope_a, wpn_s), "a weapon in a stash: refused before any world call, a message")
+NOW = NOW + 3000
+check(refused(alife_clone_weapon, se_s, "wpn_test_scope_a"), "its clone through the backstop: refused too")
+
+-- no ids (right after joining, before the host's lease): refused as before
+refill(2)
+NOW = NOW + 3000
+check(refused(item_weapon.attach_scope, scope_a, wpn_a), "fewer ids than a swap may take: refused, a message")
+refill(48)
+
+-- I1 with an id: register answers the item, with its condition
+NOW = NOW + 3000
+local okc1, made = act(alife_create_item, "batt_x", db.actor, { cond = 0.4 })
+r = spawn_of("batt_x")
+check(okc1 and made ~= nil and made.id == r.lease and SE[made.id] ~= nil and r.cond == 0.4 and #REQ == 1,
+	"alife_create_item(.., db.actor, {cond = 0.4}) with an id: the battery itself comes back (was nil), condition 0.4")
+-- a plain create into the own bag answers the item at once too
+INI.food_x = {}
+local okc2, made2 = act(alife_create_item, "food_x", db.actor)
+check(okc2 and made2 ~= nil and made2.id ~= 65535 and SE[made2.id] ~= nil and spawn_of("food_x").lease == made2.id,
+	"a plain create into the own bag answers the item at once (bind_item's func_separate, relocate_item_to_actor: "
+	.. "their next line indexes it)")
+
+MODE = "host"
+REQ = {}
+local se_h = spawn("wpn_test", nil, 0, { kind = "weapon" })
+local new_h = alife_clone_weapon(se_h, "wpn_test_scope_a")
+check(new_h ~= nil and SE[se_h.id] == nil and coop.lease_ids() == 0,
+	"on the host the guard and the lease stay out: the stock swap")
+MODE = "client"
+alife, alife_release = base_alife, base_release
 
 print("-- texts: st_coop_mods.xml (eng, rus; windows-1251) and the script's fallbacks")
 local function read_raw(p)

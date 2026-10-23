@@ -79,6 +79,8 @@ end
 
 -- Review Focus 3: an unknown script now runs on a client; what it does to the world goes through the engine, which
 -- turns a client's alife():create into one request to the host (call router, MOD_LAYER §2.3) and makes no local object.
+-- F2 T12b: still so for this create (no parent: a world spawn); an item into the own actor takes a leased id and is
+-- created at once (tests/lua/test_mods_guard.lua, "F2 T12b").
 print("== route_shim_unknown_script_world_call_is_gated")
 boot("client")
 REQUESTS, OBJECTS = {}, {}

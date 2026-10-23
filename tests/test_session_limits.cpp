@@ -710,7 +710,9 @@ TEST(limits_client_rate_rules)
 		{Msg::ReqLaunch, 16, 50}, {Msg::ReqContainer, 32, 60},
 		// F2 T3c (T3b review I-1, I-2): the player stream, the life states and the chat
 		{Msg::PlayerState, 64, 12}, {Msg::PlayerWounded, 16, 250}, {Msg::PlayerRevive, 8, 750}, {Msg::PlayerDied, 8, 500},
-		{Msg::Chat, 20, 125}};
+		{Msg::Chat, 20, 125},
+		// F2 T12b: ids a client gives back (busy there, or its create was refused), paced by the client at 4 a second
+		{Msg::IdLeaseAck, 8, 250}};
 	for (const Expected& e : expected)
 	{
 		const limits::RateRule* rule = nullptr;
@@ -1194,6 +1196,9 @@ constexpr Direction kDirections[] = {
 	{Msg::Progress, kBoth},
 	{Msg::StoryHash, kHost},
 	{Msg::StoryResync, kClient},
+	// F2 T12b: leased object ids; the host leases, a client gives back what it cannot use
+	{Msg::IdLease, kHost},
+	{Msg::IdLeaseAck, kClient},
 	// dialogs and trade
 	{Msg::DialogLock, kClient},
 	{Msg::DialogLockResult, kHost},

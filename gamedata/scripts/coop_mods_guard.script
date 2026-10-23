@@ -12,9 +12,14 @@
 	actor_on_first_update, Mags Redux at load) are wrapped again on the next check (once a second).
 
 	C1  weapon variant swap (alife_clone_weapon: the scoped weapon is another section, GAMMA / 3DSS). _g_patches'
-	    version registers the clone first and indexes register's answer (nil here) before it releases the old weapon:
-	    each attach, detach, Toggle Scope key, magnifier switch or wheel scope change left the old weapon (and the scope)
-	    beside the new one. Refused on a client before any world call, the player is told:
+	    version registers the clone first and indexes register's answer (nil without an id) before it releases the old
+	    weapon: each attach, detach, Toggle Scope key, magnifier switch or wheel scope change left the old weapon (and the
+	    scope) beside the new one.
+	    F2 T12b (leased ids): a client with ids (coop.lease_ids() >= SWAP_IDS) swaps a weapon in its own bag as in single
+	    player - the clone is created here at once under a leased id, register answers it, the parts and m_data move to
+	    its real id, and the old weapon's release goes with the clone (the host releases it when it creates the clone,
+	    keeps it when it refuses). Without ids (right after joining) or for a weapon outside the own bag the swap is
+	    refused on a client before any world call, the player is told:
 	      _G.alife_clone_weapon (backstop: magnifier fallback, MP-412 upgrade, any other caller)
 	      item_weapon.attach_scope / detach_scope        a weapon with scope variants (parent_section); also Toggle
 	                                                     Scope's override, canted irons' and battery hooks inside
@@ -44,7 +49,9 @@
 	C4  (round 2) crafting, cooking, repair and the melter from stashes (GAMMA's zzzzzz_*_nearby_stashes, the Hideout
 	    Furniture workbench): the gate refuses the release of an item in a stash, the product came anyway. On a client
 	    no stash is in range and the workshop gets no stash id: the backpack only, the player is told.
-	I2 (part data and spawn budget of a swap) waits for F2 T12b; with C1 refused it does not arise.
+	I2  (part data and spawn budget of a swap) F2 T12b: the parts and m_data go to the clone's real id; the host charges
+	    the budget only what the clone costs more than its source and creates it together with the source's release, so
+	    a queue that drops it loses nothing.
 --]]
 
 local api = rawget(_G, "coop")
@@ -63,12 +70,13 @@ local TELL_GAP_MS = 2000      -- one message per id at most this often (a mouse 
 local MAX_REWRAPS = 8         -- per entry point: something that wraps it again and again is left alone (logged)
 
 local TXT_SWAP = { "st_coop_guard_scope_swap",
-	"Co-op: changing a weapon's scope (attach, detach, toggle, magnifier) is not available to a client yet." }
+	"Co-op: this scope change is not available on a client now (only for a weapon in your own backpack)." }
 local TXT_INSPECT = { "st_coop_guard_inspect_timeout",
 	"Co-op: the item to inspect did not come from the host, the inspection is cancelled." }
 local TXT_FAILED = { "st_coop_guard_failed", "Co-op: this action could not be done on a client." }
 
-stats = { refused = 0, cond = 0, deferred = 0, failed = 0, closed = 0, inspect_timeouts = 0, late_released = 0 }
+stats = { refused = 0, swaps = 0, cond = 0, deferred = 0, failed = 0, closed = 0, inspect_timeouts = 0,
+	late_released = 0 }
 
 local next_tell = {}
 local function tell(txt)
@@ -161,9 +169,15 @@ local function write_condition(se, cond)
 	if not ok then C().report("guard", "condition of " .. tostring(section_of(se) or "?"), e) end
 end
 
+-- alife():register's answer: on a client the item itself when it holds a leased id (F2 T12b), else nil (the item
+-- comes with the host's answer).
 local function register(se)
-	local ok, e = pcall(function() return alife():register(se) end)
-	if not ok then C().report("guard", "register", e) end
+	local ok, r = pcall(function() return alife():register(se) end)
+	if not ok then
+		C().report("guard", "register", r)
+		return nil
+	end
+	return r
 end
 
 -------------------------------------------------------------------------------
@@ -174,12 +188,49 @@ local function refuse_swap()
 	tell(TXT_SWAP)
 end
 
+-- F2 T12b: the ids a swap may take - the clone, a detached scope, one more for a later wrapper (canted irons give their
+-- irons back first).
+local SWAP_IDS = 3
+
+local function lease_ids()
+	local f = api and api.lease_ids
+	if type(f) ~= "function" then return 0 end
+	local ok, n = pcall(f)
+	return ok and type(n) == "number" and n or 0
+end
+
+-- the holder's id of a server object (parent_id) or a game object (parent())
+local function holder_id(obj)
+	local ok, pid = pcall(function() return obj.parent_id end)
+	if ok and type(pid) == "number" then return pid end
+	ok, pid = pcall(function()
+		local p = obj:parent()
+		return p and p:id()
+	end)
+	return ok and type(pid) == "number" and pid or nil
+end
+
+-- A client clones its own weapon at once under a leased id: the weapon in its own bag (the clone goes where the weapon
+-- is), and ids enough for the swap.
+local function swap_ready(wpn, holder)
+	local a = db.actor
+	local pid = holder or holder_id(wpn)
+	return C().live_client() and a ~= nil and pid ~= nil and pid == id_of(a) and lease_ids() >= SWAP_IDS
+end
+
+-- when(...) -> the weapon the call would clone (nil: it clones nothing) and its holder's id when the call names it
 local function swap_guard(when)
 	return function(orig)
 		return function(...)
-			if C().is_client() and when(...) then
-				refuse_swap()
-				return nil
+			if C().is_client() then
+				local wpn, holder = when(...)
+				if wpn ~= nil then
+					if not swap_ready(wpn, holder) then
+						refuse_swap()
+						return nil
+					end
+					stats.swaps = stats.swaps + 1
+				end
 			end
 			return orig(...)
 		end
@@ -231,9 +282,9 @@ local function cond_create(orig)
 			local se = unregistered(section)
 			if se then
 				write_condition(se, cond)
-				register(se)
 				stats.cond = stats.cond + 1
-				return nil -- as before on a client: the item comes with the host's answer
+				-- F2 T12b: the item itself with a leased id; nil without one (it comes with the host's answer)
+				return register(se)
 			end
 		end
 		return orig(section, owner, t, ...)
@@ -387,24 +438,34 @@ end
 
 local GUARDS = {
 	{ label = "_G.alife_clone_weapon", tbl = function() return _G end, key = "alife_clone_weapon",
-		make = swap_guard(function() return true end) },
+		make = swap_guard(function(se, section, parent_id) return se, parent_id end) },
 	{ label = "item_weapon.attach_scope", tbl = module_of("item_weapon"), key = "attach_scope",
-		make = swap_guard(function(item, weapon) return item ~= nil and weapon ~= nil and variant_weapon(weapon) end) },
+		make = swap_guard(function(item, weapon)
+			if item ~= nil and weapon ~= nil and variant_weapon(weapon) then return weapon end
+		end) },
 	{ label = "item_weapon.detach_scope", tbl = module_of("item_weapon"), key = "detach_scope",
-		make = swap_guard(function(weapon) return weapon ~= nil and scoped_variant(weapon) end) },
+		make = swap_guard(function(weapon)
+			if weapon ~= nil and scoped_variant(weapon) then return weapon end
+		end) },
 	{ label = "utils_item.attach_addon", tbl = module_of("utils_item"), key = "attach_addon",
 		make = swap_guard(function(wpn, addon, typ)
 			local ws, as = section_of(wpn), section_of(addon)
-			return typ == "scope" and ws ~= nil and as ~= nil and section_exists(ws .. "_" .. as)
+			if typ == "scope" and ws ~= nil and as ~= nil and section_exists(ws .. "_" .. as) then return wpn end
 		end) },
 	{ label = "utils_item.detach_addon", tbl = module_of("utils_item"), key = "detach_addon",
-		make = swap_guard(function(wpn, addon, typ) return typ == "scope" and wpn ~= nil and scoped_variant(wpn) end) },
+		make = swap_guard(function(wpn, addon, typ)
+			if typ == "scope" and wpn ~= nil and scoped_variant(wpn) then return wpn end
+		end) },
 	{ label = "QScopeWheelOption.Attach", tbl = class_of("haru_quick_action_wheel_mcm", "QScopeWheelOption"),
 		key = "Attach",
-		make = swap_guard(function(self, obj, wpn) return wpn ~= nil and not engine_scope(wpn) and variant_weapon(wpn) end) },
+		make = swap_guard(function(self, obj, wpn)
+			if wpn ~= nil and not engine_scope(wpn) and variant_weapon(wpn) then return wpn end
+		end) },
 	{ label = "QScopeWheelOption.Detach", tbl = class_of("haru_quick_action_wheel_mcm", "QScopeWheelOption"),
 		key = "Detach",
-		make = swap_guard(function(self, wpn) return wpn ~= nil and not engine_scope(wpn) and scoped_variant(wpn) end) },
+		make = swap_guard(function(self, wpn)
+			if wpn ~= nil and not engine_scope(wpn) and scoped_variant(wpn) then return wpn end
+		end) },
 	{ label = "itms_manager.create_item", tbl = module_of("itms_manager"), key = "create_item", make = cond_create },
 	{ label = "itms_manager.dropdrop_ArtyContainer", tbl = module_of("itms_manager"), key = "dropdrop_ArtyContainer",
 		make = deferred("artefact into a container") },
@@ -541,9 +602,10 @@ local function status()
 	for _, g in ipairs(GUARDS) do
 		if g.n > 0 then on[#on + 1] = g.label .. (g.n > 1 and ("x" .. g.n) or "") end
 	end
-	return string.format("scope swaps refused %d, conditions carried %d, container creates deferred %d (failed %d), "
-		.. "crafting windows closed %d, af_inspect timeouts %d (late items released %d) | guarding: %s",
-		stats.refused, stats.cond, stats.deferred, stats.failed, stats.closed, stats.inspect_timeouts,
+	return string.format("scope swaps refused %d, done with leased ids %d (%d ids now), conditions carried %d, "
+		.. "container creates deferred %d (failed %d), crafting windows closed %d, af_inspect timeouts %d (late items "
+		.. "released %d) | guarding: %s",
+		stats.refused, stats.swaps, lease_ids(), stats.cond, stats.deferred, stats.failed, stats.closed, stats.inspect_timeouts,
 		stats.late_released, #on > 0 and table.concat(on, ", ") or "nothing yet (a client installs at its first update)")
 end
 

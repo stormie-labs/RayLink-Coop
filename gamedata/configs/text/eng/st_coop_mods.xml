@@ -14,7 +14,7 @@
 		<text>The stove's storage is still syncing, try again.</text>
 	</string>
 	<string id="st_coop_guard_scope_swap">
-		<text>Co-op: changing a weapon's scope (attach, detach, toggle, magnifier) is not available to a client yet.</text>
+		<text>Co-op: this scope change is not available on a client now (only for a weapon in your own backpack).</text>
 	</string>
 	<string id="st_coop_guard_inspect_timeout">
 		<text>Co-op: the item to inspect did not come from the host, the inspection is cancelled.</text>
