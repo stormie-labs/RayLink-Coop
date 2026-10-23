@@ -22,4 +22,7 @@
 	<string id="st_coop_guard_failed">
 		<text>Co-op: this action could not be done on a client.</text>
 	</string>
+	<string id="st_coop_guard_stash">
+		<text>Co-op: on a client crafting, cooking and repair take items from your backpack only (stashes are not available yet).</text>
+	</string>
 </string_table>

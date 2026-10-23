@@ -22,7 +22,21 @@ local SEM = getmetatable(SE[0])
 -------------------------------------------------------------------------------
 REQ = {}
 local function request_spawn(sec, cond, parent) REQ[#REQ + 1] = { kind = "spawn", sec = sec, cond = cond, parent = parent } end
+-- a release on a client: a request when the item's root is our actor (coop_calls.h own_release), else refused and
+-- logged by the gate (an item in a stash, a box, the world)
+local function owned(id)
+	local se, n = SE[id], 0
+	while se and se.parent_id ~= nil and se.parent_id ~= 65535 and n < 10 do
+		if se.parent_id == 0 then return true end
+		se, n = SE[se.parent_id], n + 1
+	end
+	return false
+end
 local function request_destroy(id)
+	if not owned(id) then
+		REQ[#REQ + 1] = { kind = "refused", id = id, sec = SE[id] and SE[id]._sec }
+		return
+	end
 	REQ[#REQ + 1] = { kind = "destroy", id = id, sec = SE[id] and SE[id]._sec }
 end
 -- an alife():create(.., false) / clone_weapon result: no id until the host creates it (65535, g_lua_temps)
@@ -111,6 +125,12 @@ if not string.endswith then function string.endswith(s, e) return e == "" or s:s
 utils_item.attach_addon = function(w, addon, typ) ADDON = (ADDON or 0) + 1 end
 utils_item.detach_addon = function(w, addon, typ) ADDON = (ADDON or 0) + 1 end
 function GO:get_state() return 0 end
+function GO:clsid() return self._clsid or 0 end
+function GO:iterate_inventory_box(f, o)
+	for id, se in pairs(SE) do if se.parent_id == self._id and OBJ[id] then f(o, OBJ[id]) end end
+end
+clsid = { inventory_box_s = 77 }
+function distance_between_safe(a, b) return a:position():distance_to(b:position()) end
 function GO:cast_Weapon() return { GetScopeName = function() return self._native_scope end } end
 function GO:active_slot() return self._slot or 2 end
 function GO:activate_slot(n) self._slot = n end
@@ -317,6 +337,39 @@ local se_b = alife_create_item("batt_x", db.actor, { cond = 0.3 })
 check(se_b ~= nil and COND[se_b.id] == 0.3, "on the host: the stock path (the processor applies the condition)")
 MODE = "client"
 
+print("-- I4 (round 2): a random condition range (cond_r / cond_cr: mutant parts, loot) goes with the item too")
+-- the processor of GAMMA / 1.5.3 (itms_manager.get_item_processor): Random_Condition({a, b}) = random(a, b) / 100,
+-- Random_Choice(list) = one of the list
+PROC_CALLS = {}
+itms_manager.get_item_processor = function()
+	return {
+		Random_Condition = function(_, arg) PROC_CALLS[#PROC_CALLS + 1] = "range"; return math.random(arg[1], arg[2]) / 100 end,
+		Random_Choice = function(_, arg) PROC_CALLS[#PROC_CALLS + 1] = "choice"; return arg[math.random(1, #arg)] end,
+	}
+end
+INI.part_m = { degradable = true, is_part = true }
+local loot_props = { cond_r = { 30, 70 }, cond_ct = "part", cond_cr = { 0.5, 0.75, 1 } } -- ui_mutant_loot.script:24
+local in_range = true
+for _ = 1, 20 do
+	act(alife_create_item, "part_m", db.actor, loot_props)
+	local rq = spawn_of("part_m")
+	in_range = in_range and rq ~= nil and #REQ == 1 and rq.cond >= 0.3 and rq.cond <= 0.7
+end
+check(in_range and PROC_CALLS[1] == "range",
+	"a mutant part looted on a client comes with 0.30-0.70 rolled by the processor's Random_Condition, as on the host "
+	.. "(the processor reads the global cond_ct, a typo, so its cond_cr branch never runs; was 1.0)")
+PROC_CALLS = {}
+act(alife_create_item, "part_m", db.actor, { cond_r = { 0.2, 0.4, 0.6 } })
+local rc = spawn_of("part_m")
+check(rc ~= nil and (rc.cond == 0.2 or rc.cond == 0.4 or rc.cond == 0.6) and PROC_CALLS[1] == "choice",
+	"more than two values: one of them (Random_Choice)")
+act(alife_create_item, "part_m", db.actor, { cond = 0.9, cond_r = { 30, 30 } })
+check(spawn_of("part_m") ~= nil and spawn_of("part_m").cond == 0.3, "cond_r wins over cond, as in the processor")
+MODE = "host"
+local se_m = alife_create_item("part_m", db.actor, loot_props)
+check(se_m ~= nil and COND[se_m.id] == nil, "on the host: the stock path (the processor rolls it itself)")
+MODE = "client"
+
 print("-- C3: keep-crafting-window mods: the window closes after the action on a client")
 local function domain_of(callback, script)
 	return (coop.route.of(callback, from_script(script, "return function() end")))
@@ -486,6 +539,115 @@ if GAMMA then
 	advance(8000)
 	check(INPUT_OFF and HUD == nil, "on the host the guard does not touch the mod (its own lock, its own item)")
 	MODE = "client"
+
+	print("-- C4 (round 2): crafting, cooking, repair and the melter from nearby stashes (zzzzzz_*_nearby_stashes)")
+	local NEARBY = GAMMA_DIR .. BS .. "zzzzzz_ui_workshop_nearby_stashes.script"
+	load(NEARBY, { "function _G.GetStashesInRange(range)", "function _G.IterateStashesInRange(func, range, exclude_id)",
+		"function _G.collect_amount_in_range(range, section, exclude_id)" }, "zzzzzz_ui_workshop_nearby_stashes")
+	-- a player stash 3 m away (player_created_stashes) with a degradable ingredient; the backpack has none
+	local _, stash = spawn("inv_box_x", vec3(3, 2, 3), nil, { kind = "box" })
+	stash._clsid = clsid.inventory_box_s
+	alife_storage_manager.get_state().player_created_stashes = { [stash:id()] = true }
+	INI.part_s, INI.prod_x, INI.meat_x = { degradable = true }, {}, {}
+	local _, in_stash = spawn("part_s", nil, stash:id(), { cond = 0.5 })
+	local _, meat_stash = spawn("meat_x", nil, stash:id())
+	local _, meat_own = spawn("meat_x", nil, 0)
+	-- craft_use_low_cond's Craft over the stashes (calls base_craft: the workshop's own craft, here its essentials)
+	ui_workshop.UIWorkshopCraft = {}
+	function base_craft(self)
+		if not self.craft_allow_r then return end
+		for i = 1, #self.craft_item do
+			for j = 1, #self.craft_item[i] do alife_release_id(self.craft_item[i][j]) end
+		end
+		alife_create_item(self.craft_item_r[1], db.actor)
+	end
+	load(GAMMA_DIR .. BS .. "zzzzzz_craft_use_low_cond_nearby_stashes.script",
+		{ "function on_game_start()", "function value_sort_ascending(t, a, b)", "function value_sort_descending(t, a, b)" },
+		"zzzzzz_craft_use_low_cond_nearby_stashes")
+	zzzzzz_craft_use_low_cond_nearby_stashes.on_game_start()
+	SYS_GetParam = function() return nil end
+	-- the workshop window: UpdateItem lists the ingredient from the backpack and the stashes, the button follows
+	local function craft_window(sec)
+		local ids = {}
+		db.actor:iterate_inventory(function(_, o) if o:section() == sec then ids[#ids + 1] = o:id() end end)
+		IterateStashesInRange(function(_, o) if o:section() == sec then ids[#ids + 1] = o:id() end end, 10)
+		local cwin = setmetatable({ craft_item = { ids }, craft_item_r = { "prod_x", 1 } },
+			{ __index = ui_workshop.UIWorkshopCraft })
+		cwin.craft_allow_r = next(collect_amount_in_range(10, sec)) ~= nil
+		return cwin
+	end
+	local function cook_window()
+		return setmetatable({ meals = { { { sec = "meat_x", amt = 1 } } }, fuel = {}, objs = {} },
+			{ __index = item_cooking.UICook })
+	end
+	item_cooking.UICook.Load_ActorItems = function() end
+	item_cooking.UICook.CollectValidItems = function() end
+	zzzzzz_item_cooking_nearby_stashes = { default_range = 50 } -- a file local of the mod (outside the taken function)
+	load(GAMMA_DIR .. BS .. "zzzzzz_item_cooking_nearby_stashes.script", { "function on_game_start()" },
+		"zzzzzz_item_cooking_nearby_stashes")
+	zzzzzz_item_cooking_nearby_stashes.on_game_start()
+	ui_furniture_workshop = {}
+	ui_workshop.get_workshop_ui = function(a, b, c, d, stash_id)
+		GUI_STASH = stash_id
+		return { ShowDialog = function() end, dlg_craft = {}, dlg_upgrade = {}, dlg_state = {}, dlg_repair = {} }
+	end
+	load(GAMMA_DIR .. BS .. "ui_furniture_workshop.script", { "function OpenWorkshop(stashId)" }, "ui_furniture_workshop")
+
+	-- as it is (the guard wraps them at the next client update)
+	local w = craft_window("part_s")
+	ok = act(w.Craft, w)
+	check(ok and count("refused") == 1 and count("spawn", "prod_x") == 1,
+		"bug (documented): a craft from a stash asks for the product, the gate refuses the release of the stash's "
+		.. "ingredient (not ours): a free product, endless")
+	local cw = cook_window()
+	cw:Load_ActorItems()
+	check(cw.objs.meat_x[meat_stash:id()] ~= nil and cw.objs.meat_x[meat_own:id()] ~= nil,
+		"bug (documented): cooking lists the stash's meat beside the bag's")
+	ui_furniture_workshop.OpenWorkshop(stash:id())
+	check(ui_furniture_workshop.workshop_ui_ref.dlg_craft.stashId == stash:id() and GUI_STASH == stash:id(),
+		"bug (documented): the workbench opens with its stash as the ingredient source (stashId)")
+	check(collect_amount_in_range(10, "part_s", stash:id())[in_stash:id()] == 1,
+		"bug (documented): collect_amount_in_range counts the stash")
+
+	NOW = NOW + 3000
+	SendScriptCallback("actor_on_update")
+	HUD = nil
+	check(#GetStashesInRange(10) == 0 and HUD ~= nil and HUD:find("backpack", 1, true) ~= nil,
+		"with the guard: no stash is in range on a client, the player is told the ingredients come from the backpack")
+	local seen = 0
+	IterateStashesInRange(function() seen = seen + 1 end, 10)
+	check(seen == 0, "IterateStashesInRange finds nothing (cooking, repair, melter, workshop lists all use it)")
+	check(next(collect_amount_in_range(10, "part_s", stash:id())) == nil,
+		"collect_amount_in_range counts the backpack only, the workbench stash (exclude_id) is left out too")
+	w = craft_window("part_s")
+	ok = act(w.Craft, w)
+	check(ok and #REQ == 0 and not w.craft_allow_r, "the craft from the stash is not possible: nothing asked, nothing free")
+	local _, in_bag = spawn("part_s", nil, 0, { cond = 0.4 })
+	w = craft_window("part_s")
+	ok = act(w.Craft, w)
+	check(ok and destroyed(in_bag:id()) and count("spawn", "prod_x") == 1 and count("refused") == 0,
+		"with the ingredient in the backpack the craft works: released (ours), product asked for")
+	cw = cook_window()
+	cw:Load_ActorItems()
+	check(cw.objs.meat_x[meat_stash:id()] == nil and cw.objs.meat_x[meat_own:id()] ~= nil,
+		"cooking lists the bag's meat only")
+	GUI_STASH = "unset"
+	NOW = NOW + 31000
+	HUD = nil
+	ui_furniture_workshop.OpenWorkshop(stash:id())
+	local ref = ui_furniture_workshop.workshop_ui_ref
+	check(ref.dlg_craft.stashId == nil and ref.stashId == nil and GUI_STASH == nil and HUD ~= nil,
+		"the workbench (Hideout Furniture, coop_mods_hf opens it with its box) opens without a stash on a client, "
+		.. "the player is told")
+	GUI_STASH = "unset"
+	ui_workshop.get_workshop_ui(1, 2, 3, 4, stash:id(), 6)
+	check(GUI_STASH == nil, "ui_workshop.get_workshop_ui drops its stash argument on a client")
+	MODE = "host"
+	check(#GetStashesInRange(10) == 1 and collect_amount_in_range(10, "part_s", stash:id())[in_stash:id()] == 1,
+		"on the host the stashes are used as the mod wants")
+	ui_furniture_workshop.OpenWorkshop(stash:id())
+	check(ui_furniture_workshop.workshop_ui_ref.dlg_craft.stashId == stash:id(), "on the host the workbench keeps its stash")
+	MODE = "client"
 end
 
 print("-- texts: st_coop_mods.xml (eng, rus; windows-1251) and the script's fallbacks")
@@ -499,7 +661,7 @@ end
 local src = read_raw("gamedata/scripts/coop_mods_guard.script") or ""
 local ids = {}
 for id in src:gmatch('{%s*"(st_coop_guard_[%w_]+)"') do ids[#ids + 1] = id end
-check(#ids == 3, "the guard asks for 3 texts")
+check(#ids == 4, "the guard asks for 4 texts")
 local HEADER = '<?xml version="1.0" encoding="windows-1251"?>'
 for _, lang in ipairs({ "eng", "rus" }) do
 	local raw = read_raw("gamedata/configs/text/" .. lang .. "/st_coop_mods.xml") or ""

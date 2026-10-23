@@ -28,7 +28,7 @@ placeable_furniture = {
 ui_furniture_workshop = {
 	GetStash = function() ORIG_GETSTASH = true; return 999 end,
 	UseWorkshop = function() ORIG_USE = true end,
-	OpenWorkshop = function(box) OPENED_WS = box end,
+	OpenWorkshop = function(box) OPENED_WS = box; OPENED_WS_N = (OPENED_WS_N or 0) + 1 end,
 	UIFurnitureWorkshop = { Pickup = function() end, AccessStash = function() end },
 }
 ui_furniture_light = { toggle_light = function() end, UIFurnitureLight = { Pickup = function() end, Refuel = function() end } }
@@ -122,7 +122,10 @@ check(sent("mods.hf_box").k == "workshop", "workbench: box asked from the host")
 local _, box = spawn("inv_box", vec3(22, 0, 1))
 from_host("hf_box_r", { k = "workshop", o = furn:id(), b = box:id() })
 run_time_events(200)
-check(alife_storage_manager.get_state().workshop_stashes[furn:id()] == box:id() and OPENED_WS == box:id(), "workbench: link stored, workshop opened")
+-- B3 round 2 (C4, coop_mods_guard): on a client the workshop opens without the box as its ingredient source (a release
+-- of an item in the box is refused by the call gate, the product came anyway); the box itself opens through AccessStash
+check(alife_storage_manager.get_state().workshop_stashes[furn:id()] == box:id() and OPENED_WS_N == 1 and OPENED_WS == nil,
+	"workbench: link stored, workshop opened (without its stash on a client)")
 spawn("ammo", vec3(0, 0, 0), box:id())
 SENT = {}
 bind_hf_base.hf_binder_wrapper.pickup({ object = furn })

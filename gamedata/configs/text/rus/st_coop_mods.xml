@@ -22,4 +22,7 @@
 	<string id="st_coop_guard_failed">
 		<text>Кооп: у клиента это действие выполнить не удалось.</text>
 	</string>
+	<string id="st_coop_guard_stash">
+		<text>Кооп: у клиента крафт, готовка и ремонт берут предметы только из рюкзака (тайники пока недоступны).</text>
+	</string>
 </string_table>

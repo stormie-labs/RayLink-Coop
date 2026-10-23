@@ -39,6 +39,11 @@
 	    released. Its two level.add_call pairs are registered through a cancel switch: level.remove_call is not
 	    reliable (stock _g.script, AddUniqueCall), and a pair left running would index the cleared item name in a
 	    luabind functor (FATAL); cancelled, the condition answers true once and the action does nothing.
+	I4  (round 2) the same for a random range, cond_r / cond_cr (mutant parts, loot): rolled with the processor's own
+	    Random_Condition / Random_Choice as the host would (item_condition).
+	C4  (round 2) crafting, cooking, repair and the melter from stashes (GAMMA's zzzzzz_*_nearby_stashes, the Hideout
+	    Furniture workbench): the gate refuses the release of an item in a stash, the product came anyway. On a client
+	    no stash is in range and the workshop gets no stash id: the backpack only, the player is told.
 	I2 (part data and spawn budget of a swap) waits for F2 T12b; with C1 refused it does not arise.
 --]]
 
@@ -184,13 +189,48 @@ end
 -------------------------------------------------------------------------------
 -- I1 / C2: creates into the own actor
 -------------------------------------------------------------------------------
+-- I4 (B3 round 2): the condition ItemProcessor:Create_Item gives an item: t.cond, or a roll from t.cond_r (t.cond_cr
+-- for items of type cond_ct) with the processor's own Random_Condition ({a, b}: random(a, b) / 100) or Random_Choice
+-- (more than two values). The processor tests IsItem(cond_ct, section) with a GLOBAL cond_ct (a typo for t.cond_ct in
+-- 1.5.3 and GAMMA), so its cond_cr branch never runs; the same lookup here gives what the host would give. Mutant
+-- parts (ui_mutant_loot, death_manager: cond_r = {30, 70}) came to a client with condition 1.
+local function processor_roll(list)
+	local m = rawget(_G, "itms_manager")
+	local ok, v = pcall(function()
+		local p = m and m.get_item_processor and m.get_item_processor()
+		if not p then return nil end
+		if #list > 2 then return p:Random_Choice(list) end
+		return p:Random_Condition(list)
+	end)
+	if ok and type(v) == "number" then return v end
+	if #list > 2 then return list[math.random(1, #list)] end
+	if #list == 2 and type(list[1]) == "number" and type(list[2]) == "number" then
+		return math.random(list[1], list[2]) / 100
+	end
+	return nil
+end
+
+local function item_condition(section, t)
+	local cond = t.cond
+	local m = rawget(_G, "itms_manager")
+	local ct = type(m) == "table" and rawget(m, "cond_ct") or nil
+	if ct == nil then ct = rawget(_G, "cond_ct") end
+	if type(t.cond_cr) == "table" and t.cond_ct and ct ~= nil and IsItem(ct, section) then
+		cond = processor_roll(t.cond_cr)
+	elseif type(t.cond_r) == "table" then
+		cond = processor_roll(t.cond_r)
+	end
+	return type(cond) == "number" and cond or nil
+end
+
 local function cond_create(orig)
 	return function(section, owner, t, ...)
-		if C().live_client() and type(t) == "table" and type(t.cond) == "number" and t.ammo == nil and t.uses == nil
-			and section_exists(section) and own_actor(owner) and degradable(section) then
+		local cond = C().live_client() and type(t) == "table" and t.ammo == nil and t.uses == nil
+			and section_exists(section) and own_actor(owner) and degradable(section) and item_condition(section, t)
+		if cond then
 			local se = unregistered(section)
 			if se then
-				write_condition(se, t.cond)
+				write_condition(se, cond)
 				register(se)
 				stats.cond = stats.cond + 1
 				return nil -- as before on a client: the item comes with the host's answer
@@ -381,6 +421,70 @@ local GUARDS = {
 	{ label = "af_inspect.inspect", tbl = module_of("af_inspect"), key = "inspect", make = inspect_guard },
 }
 for _, g in ipairs(GUARDS) do g.n = 0 end
+
+-------------------------------------------------------------------------------
+-- C4 (B3 round 2): crafting, cooking, repair and the melter from stashes
+-------------------------------------------------------------------------------
+-- GAMMA's "craft from nearby stashes" family takes ingredients from stashes: zzzzzz_ui_workshop_nearby_stashes defines
+-- _G.GetStashesInRange / IterateStashesInRange / collect_amount_in_range, which zzzzzz_craft_use_low_cond_,
+-- zzzzzz_item_cooking_, zzzzzz_item_repair_ and zzzzzz_grok_artefacts_melter_nearby_stashes use; the Hideout
+-- Furniture workbench opens the workshop with its stash (stashId, read by GAMMA's ui_workshop and craft_use_low_cond;
+-- coop_mods_hf opens it with the host's box on a client). On a client the release, discharge or uses change of an
+-- item in a stash is refused by the call gate (not ours: own_release) and only logged, while the product is created:
+-- free crafting, endless. Until a stash item can go into the bag first (transfer_item, F2 T12b) a client crafts,
+-- cooks and repairs from its backpack only and is told so: no stash is in range, the workshop gets no stash id.
+local STASH_TELL_GAP_MS = 30000 -- the lists ask for the stashes on every refresh
+local TXT_STASH = { "st_coop_guard_stash",
+	"Co-op: on a client crafting, cooking and repair take items from your backpack only (stashes are not available yet)." }
+stats.stashes = 0
+local next_stash_tell = 0
+
+local function tell_stash()
+	stats.stashes = stats.stashes + 1
+	local now = time_global()
+	if now < next_stash_tell then return end
+	next_stash_tell = now + STASH_TELL_GAP_MS
+	log("stash ingredients refused on a client: the backpack only (#%d)", stats.stashes)
+	C().hud(TXT_STASH[1], TXT_STASH[2])
+end
+
+local function no_stashes(orig)
+	return function(...)
+		if not C().is_client() then return orig(...) end
+		local ok, found = pcall(orig, ...)
+		if ok and type(found) == "table" and next(found) ~= nil then tell_stash() end
+		return {}
+	end
+end
+
+-- argument #index of the function is a stash id: dropped on a client
+local function no_stash_arg(index)
+	return function(orig)
+		return function(...)
+			if not C().is_client() then return orig(...) end
+			local args = pack(...)
+			if args[index] ~= nil then
+				args[index] = nil
+				tell_stash()
+			end
+			return orig(unpack(args, 1, args.n))
+		end
+	end
+end
+
+local STASH_GUARDS = {
+	{ label = "_G.GetStashesInRange", tbl = function() return _G end, key = "GetStashesInRange", make = no_stashes },
+	{ label = "_G.collect_amount_in_range", tbl = function() return _G end, key = "collect_amount_in_range",
+		make = no_stash_arg(3) },
+	{ label = "ui_furniture_workshop.OpenWorkshop", tbl = module_of("ui_furniture_workshop"), key = "OpenWorkshop",
+		make = no_stash_arg(1) },
+	{ label = "ui_workshop.get_workshop_ui", tbl = module_of("ui_workshop"), key = "get_workshop_ui",
+		make = no_stash_arg(5) },
+}
+for _, g in ipairs(STASH_GUARDS) do
+	g.n = 0
+	GUARDS[#GUARDS + 1] = g
+end
 
 local function current(tbl, key)
 	if tbl == _G then
