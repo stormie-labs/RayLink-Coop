@@ -551,6 +551,31 @@ click(gj, "btn_faction")
 click(gj, "btn_dolg")
 check(gj.where.text:find(STRINGS.st_coop_char_where_near, 1, true), "Duty with no camp on Cordon: next to the host")
 mj.camp_known = camp_known0
+-- Live 2026-10-23 (build 7, GAMMA): a mod's tooltip (zzz_craft_use_in_tooltip_mcm patches UIInfoItem:Update) needs a
+-- loaded game and fails before the world. utils_ui's UICellContainer:Update asks the tooltip BEFORE it marks the cell
+-- hovered (On_Hover), so no cell was ever hovered, no click reached On_CC_Mouse1 and the choice went out with 0 bought.
+do
+	local hovered, info_calls = 0, 0
+	local real = {}
+	for name, cc in pairs(gj.CC) do
+		real[name] = cc.Update
+		cc.Update = function(self, item_info)
+			if item_info then item_info:Update(nil, "bandage", {}) end -- utils_ui: the tooltip first ...
+			hovered = hovered + 1 -- ... then On_Hover
+			return true
+		end
+	end
+	local info0 = gj.item_info
+	gj.item_info = { Update = function() info_calls = info_calls + 1; error("attempt to index upvalue 'ini_craft' (a nil value)") end }
+	local ok_upd, err_upd = pcall(gj.Update, gj)
+	check(ok_upd, "a failing mod tooltip does not break the window's update (" .. tostring(err_upd) .. ")")
+	check(hovered >= 1, "the cells are still hovered without the tooltip: clicks reach On_CC_Mouse1 (" .. hovered .. ")")
+	local calls = info_calls
+	pcall(gj.Update, gj)
+	check(info_calls == calls, "the failing tooltip is not asked again (no error every frame)")
+	for name, cc in pairs(gj.CC) do cc.Update = real[name] end
+	gj.item_info = info0
+end
 click(gj, "btn_start")
 check(#SENT == 0, "no script event: the engine takes the choice")
 local jf, jb = mj.join_choice()

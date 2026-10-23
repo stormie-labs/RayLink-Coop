@@ -1022,15 +1022,31 @@ function UICoopNewChar:FollowSession()
 	end
 end
 
+-- Live 2026-10-23 (GAMMA): a mod's tooltip (zzz_craft_use_in_tooltip_mcm patches UIInfoItem:Update) needs a loaded game
+-- and fails in this window before the world. utils_ui's UICellContainer:Update asks the tooltip before it marks the cell
+-- hovered (On_Hover), so the failure left no cell hovered, no click reached On_CC_Mouse1 and the choice went out with
+-- nothing bought. A failing tooltip is dropped for the rest of the window: the cells work without it.
+function UICoopNewChar:UpdateCells(cc)
+	if not self.info_broken then
+		local ok, found = pcall(cc.Update, cc, self.item_info)
+		if ok then return found end
+		self.info_broken = true
+		log("the item tooltip fails here (%s): the window goes on without it", tostring(found))
+	end
+	return cc:Update(nil)
+end
+
 function UICoopNewChar:Update()
 	CUIScriptWnd.Update(self)
 	self:FollowSession()
 	if self.access then
 		local found = false
 		for _, cc in pairs(self.CC) do
-			if cc:IsShown() then found = cc:Update(self.item_info) or found end
+			if cc:IsShown() then found = self:UpdateCells(cc) or found end
 		end
-		if not found then self.item_info:Update() end
+		if not found and not self.info_broken then
+			if not pcall(self.item_info.Update, self.item_info) then self.info_broken = true end
+		end
 	end
 	self.hint_wnd:Update()
 end
