@@ -707,7 +707,10 @@ TEST(limits_client_rate_rules)
 		// answer an honest burst over their limit with a ReqResult, and the container view
 		{Msg::ReqSpawn, 80, 25}, {Msg::ReqDestroy, 120, 16}, {Msg::ReqUse, 120, 16}, {Msg::ReqTake, 120, 16},
 		{Msg::ReqDrop, 120, 16}, {Msg::ReqTransfer, 120, 16}, {Msg::ReqHit, 320, 6}, {Msg::ReqItemEvent, 80, 25},
-		{Msg::ReqLaunch, 16, 50}, {Msg::ReqContainer, 32, 60}};
+		{Msg::ReqLaunch, 16, 50}, {Msg::ReqContainer, 32, 60},
+		// F2 T3c (T3b review I-1, I-2): the player stream, the life states and the chat
+		{Msg::PlayerState, 64, 12}, {Msg::PlayerWounded, 16, 250}, {Msg::PlayerRevive, 8, 750}, {Msg::PlayerDied, 8, 500},
+		{Msg::Chat, 20, 125}};
 	for (const Expected& e : expected)
 	{
 		const limits::RateRule* rule = nullptr;
@@ -1528,6 +1531,11 @@ BURST_TEST(ReqHit, 37313)
 BURST_TEST(ReqItemEvent, 37314)
 BURST_TEST(ReqLaunch, 37315)
 BURST_TEST(ReqContainer, 37316)
+// F2 T3c: the player stream and the life states (Chat is a core message: its own tests below)
+BURST_TEST(PlayerState, 37340)
+BURST_TEST(PlayerWounded, 37341)
+BURST_TEST(PlayerRevive, 37342)
+BURST_TEST(PlayerDied, 37343)
 
 // ---- honest streams: one per sender
 
@@ -1748,4 +1756,217 @@ TEST(limits_honest_req_container)
 	Sends s;
 	s.burst(0, 8).steady(2000, 22000, 4);
 	check_honest(Msg::ReqContainer, 37336, over_the_network(s, 10000, 11000));
+}
+
+// ============================================================================ F2 T3c: the player stream, life states, chat
+// T3b review I-1, I-2. The honest streams of the four player messages (ports 37344..37347) and the chat, a core message the
+// session dispatches itself (its own tests, ports 37348..37351); the burst tests of the four are above (37340..37343).
+
+TEST(limits_honest_player_state)
+{
+	// coop_players.cpp:26 (kSendIntervalMs = 50), :283 (the check) and :294-296 (the only sender): strictly 20 a second, time
+	// based, so a hitch of the game never sends a catch-up. Only the network bunches them: a lag spike of 1.5 s delivers 30
+	// together. 20 s.
+	Sends s;
+	s.steady(0, 20000, 20);
+	check_honest(Msg::PlayerState, 37344, over_the_network(s, 10000, 11500));
+}
+
+TEST(limits_honest_player_wounded)
+{
+	// coop_survival.cpp:651 (send_my_state): on every change of the life state (:729 down, :743 dead, :765 / :851 back up or
+	// respawning, :893 spectating), when the character changes (:2236) and as a refresh every 5 s (:65, :1840). A fall and
+	// its end is four in a row (estimate), a fall takes at least the bleed-out of 5 s (coop_death_rules.h:104), so the honest
+	// rate is below one a second: here one a second for 30 s after the four. A lag spike of 3 s.
+	Sends s;
+	s.burst(0, 4).steady(2000, 32000, 1);
+	check_honest(Msg::PlayerWounded, 37345, over_the_network(s, 10000, 13000));
+}
+
+TEST(limits_honest_player_revive)
+{
+	// coop_survival.cpp:1639 (send_revive_request): after the USE hold of kReviveHoldMs = 3000 (:61, :1664) on a wounded
+	// teammate, so one in 3 s at the most (estimate: two at once at the start, then one a second, three times the real
+	// rate). A lag spike of 3 s.
+	Sends s;
+	s.burst(0, 2).steady(1000, 31000, 1);
+	check_honest(Msg::PlayerRevive, 37346, over_the_network(s, 12000, 15000));
+}
+
+TEST(limits_honest_player_died)
+{
+	// coop_events.cpp:312 (filter_event, GE_DIE of the own actor) -> coop_requests.cpp:2416 -> :518: one per death. A death
+	// is followed by a respawn or a spectator's wait (seconds); estimate: two at once at the start, then one a second, four
+	// times the likely rate. A lag spike of 3 s.
+	Sends s;
+	s.burst(0, 2).steady(1000, 31000, 1);
+	check_honest(Msg::PlayerDied, 37347, over_the_network(s, 12000, 15000));
+}
+
+namespace
+{
+// A host with the game's table, two clients and a host clock the test sets (as RateRig, for the core message Chat: the host
+// handles it in Session::handle_chat and tells the game by on_chat, the others get a copy).
+struct ChatRig
+{
+	Node host, alice, bob;
+	uint64_t said = 0; // lines the clients sent
+
+	explicit ChatRig(uint16_t port) : host("Boss", port), alice("Alice", port), bob("Bob", port)
+	{
+		install_game_rates(host);
+		host_and_join(host, {&alice, &bob}, port);
+	}
+	ChatRig(const ChatRig&) = delete;
+	ChatRig& operator=(const ChatRig&) = delete;
+
+	uint64_t dropped() const { return host.s.stats(uint16_t(Msg::Chat)).rate_dropped; }
+
+	template <class Done>
+	void pump(uint64_t host_ms, Done done)
+	{
+		const uint64_t start = t::now_ms();
+		while (!done())
+		{
+			REQUIRE(t::now_ms() - start < 5000);
+			alice.s.update(t::now_ms());
+			bob.s.update(t::now_ms());
+			host.s.update(host_ms);
+			std::this_thread::yield();
+		}
+	}
+	void pump_for(uint64_t host_ms, uint64_t real_ms)
+	{
+		const uint64_t start = t::now_ms();
+		pump(host_ms, [&] { return t::now_ms() - start >= real_ms; });
+	}
+
+	// `who` says the line `n` times; the host gets them at the host time `host_ms` and has dealt with all of them (let
+	// through or dropped) when this returns.
+	void say(Node& who, uint64_t host_ms, uint32_t n, const std::string& text = "hello zone")
+	{
+		for (uint32_t i = 0; i < n; ++i)
+			who.s.send_chat(text);
+		said += n;
+		pump(host_ms, [&] { return host.chat.size() + dropped() >= said; });
+	}
+};
+
+bool has_control_character(const std::string& s)
+{
+	return std::any_of(s.begin(), s.end(), [](char c) { return static_cast<unsigned char>(c) < 0x20 || c == 0x7F; });
+}
+} // namespace
+
+TEST(limits_chat_burst)
+{
+	// T3b review I-2: Chat is a core message, the rate table never reached it (within_rate ran for game messages only), and
+	// every line costs the host a copy to each player, a line of the log and the Lua callback. A client may say `burst` lines
+	// in a row, then one per refill; what is over is dropped before any of that: not logged as chat, not given to the game
+	// (on_chat), not sent to the others. Counted and logged as the other rows (first drop, then every hundredth).
+	const limits::RateRule* rule = limits::client_rule(Msg::Chat);
+	REQUIRE(rule != nullptr);
+	ChatRig rig(37348);
+	uint64_t host_ms = t::now_ms();
+
+	rig.say(rig.alice, host_ms, rule->burst + 3);
+	CHECK_EQ(rig.host.chat.size(), size_t(rule->burst));
+	CHECK_EQ(rig.dropped(), uint64_t(3));
+	CHECK(rig.host.logged("rate limit: Chat"));
+	CHECK(rig.host.logged("'Alice'"));
+	CHECK(rig.host.left.empty()); // dropped, not kicked: a paste may be honest
+	rig.pump(host_ms, [&] { return rig.bob.chat.size() >= rule->burst; });
+	rig.pump_for(host_ms, 40);
+	CHECK_EQ(rig.bob.chat.size(), size_t(rule->burst)); // the three over the limit were not passed on
+	CHECK(rig.alice.chat.empty());
+
+	// Bob has a bucket of his own: Alice's flood does not cost him a word.
+	rig.say(rig.bob, host_ms, 1, "bob here");
+	CHECK_EQ(rig.dropped(), uint64_t(3));
+	CHECK_EQ(rig.host.chat.size(), size_t(rule->burst) + 1);
+	rig.pump(host_ms, [&] { return rig.alice.chat.size() == 1; });
+
+	// A whole refill after the burst one more line passes, the next one right after it does not.
+	host_ms += rule->refill_ms;
+	rig.say(rig.alice, host_ms, 2);
+	CHECK_EQ(rig.host.chat.size(), size_t(rule->burst) + 2);
+	CHECK_EQ(rig.dropped(), uint64_t(4));
+
+	// Twice burst x refill of quiet fills the bucket up, not beyond it.
+	host_ms += 2 * uint64_t(rule->burst) * rule->refill_ms;
+	rig.say(rig.alice, host_ms, rule->burst + 1);
+	CHECK_EQ(rig.host.chat.size(), size_t(rule->burst) * 2 + 2);
+	CHECK_EQ(rig.dropped(), uint64_t(5));
+	CHECK(rig.host.left.empty());
+	CHECK_EQ(rig.host.s.stats(uint16_t(Msg::Chat)).recv_count, rig.said); // every line was counted as received
+}
+
+TEST(limits_honest_chat)
+{
+	// A human: a paste of five lines at once (the estimate), then two lines a second for 30 s, and a lag spike of 1 s.
+	// Nothing is dropped, every line reaches the host and the other player.
+	REQUIRE(limits::client_rule(Msg::Chat) != nullptr); // an honest stream is a stream against a limit
+	Sends s;
+	s.burst(0, 5).steady(1000, 31000, 2);
+	const std::vector<uint64_t> arrivals = over_the_network(s, 12000, 13000);
+	ChatRig rig(37349);
+	const uint64_t base = t::now_ms();
+	for (size_t i = 0; i < arrivals.size();)
+	{
+		size_t j = i;
+		while (j < arrivals.size() && arrivals[j] == arrivals[i])
+			++j;
+		rig.say(rig.alice, base + arrivals[i], uint32_t(j - i), "line " + std::to_string(i));
+		i = j;
+	}
+	CHECK(rig.said > 0);
+	CHECK_EQ("Chat dropped " + std::to_string(rig.dropped()), std::string("Chat dropped 0"));
+	CHECK_EQ(rig.host.chat.size(), size_t(rig.said));
+	rig.pump(base + arrivals.back(), [&] { return rig.bob.chat.size() == rig.said; });
+	CHECK(rig.host.left.empty());
+}
+
+TEST(limits_chat_control_characters_are_cleaned)
+{
+	// T3b review I-2: the text went to the log as it came, so "a\n[coop] <Boss> ..." forged a line of the log, and an escape
+	// or a bell reached the console and the HUD. A tab and the line breaks become a space, the other control characters
+	// (below 0x20 and DEL) go; the rest, UTF-8 included, is as sent. The host cleans what it receives and passes on, and a
+	// client cleans what the host sends it.
+	ChatRig rig(37350);
+	const uint64_t host_ms = t::now_ms();
+	const std::string forged = std::string("hi\n[coop] <Boss> forged\r\n") + "\x1b[2Jbell\x07\x7f end";
+	const std::string cleaned = "hi [coop] <Boss> forged  [2Jbell end";
+	const std::string russian = "\xD0\x9F\xD1\x80\xD0\xB8\xD0\xB2\xD0\xB5\xD1\x82, \xD0\xB7\xD0\xBE\xD0\xBD\xD0\xB0";
+	rig.say(rig.alice, host_ms, 1, forged);
+	rig.say(rig.alice, host_ms, 1, russian);
+	rig.pump(host_ms, [&] { return rig.bob.chat.size() == 2; });
+	REQUIRE(rig.host.chat.size() == 2);
+	CHECK_EQ(rig.host.chat[0].second, cleaned);
+	CHECK_EQ(rig.bob.chat[0].second, cleaned);
+	CHECK(!has_control_character(rig.host.chat[0].second) && !has_control_character(rig.bob.chat[0].second));
+	CHECK_EQ(rig.host.chat[1].second, russian);
+	CHECK_EQ(rig.bob.chat[1].second, russian);
+
+	// the other way: a host's line with a break in it reaches a client without
+	rig.host.s.send_chat("line1\nline2\x01");
+	rig.pump(host_ms, [&] { return !rig.alice.chat.empty(); });
+	CHECK_EQ(rig.alice.chat.back().second, std::string("line1 line2"));
+	CHECK_EQ(rig.alice.chat.back().first, kHostPeer);
+}
+
+TEST(limits_chat_of_control_characters_only_is_not_passed_on)
+{
+	// A line that nothing is left of after the cleaning is no line: not given to the game, not sent to the others (and it
+	// is not the end of the stream: the next one passes).
+	ChatRig rig(37351);
+	const uint64_t host_ms = t::now_ms();
+	rig.alice.s.send_chat("\x01\x02\n\r\x7f");
+	rig.alice.s.send_chat("ok");
+	rig.pump(host_ms, [&] { return !rig.host.chat.empty() && !rig.bob.chat.empty(); });
+	rig.pump_for(host_ms, 40);
+	REQUIRE(rig.host.chat.size() == 1);
+	CHECK_EQ(rig.host.chat[0].second, std::string("ok"));
+	REQUIRE(rig.bob.chat.size() == 1);
+	CHECK_EQ(rig.bob.chat[0].second, std::string("ok"));
+	CHECK(rig.host.left.empty());
 }

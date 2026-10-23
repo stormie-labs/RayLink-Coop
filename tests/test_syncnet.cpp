@@ -966,10 +966,10 @@ TEST(limits_pacer_holds_back_what_the_host_would_drop)
 		CHECK_EQ(std::string(coop::msg_name(rule.type)) + " dropped " + std::to_string(dropped),
 		    std::string(coop::msg_name(rule.type)) + " dropped 0");
 	}
-	// A message the host does not limit always goes.
+	// A message the host does not limit always goes. (F2 T3c: PlayerState got a row; PlayerAnim has none, no handler takes it.)
 	coop::limits::Pacer p;
 	for (int i = 0; i < 1000; ++i)
-		CHECK(p.take(Msg::PlayerState, 0));
-	CHECK(coop::limits::client_rule(Msg::PlayerState) == nullptr);
+		CHECK(p.take(Msg::PlayerAnim, 0));
+	CHECK(coop::limits::client_rule(Msg::PlayerAnim) == nullptr);
 	CHECK(coop::limits::client_rule(Msg::ScriptEvent) != nullptr);
 }
