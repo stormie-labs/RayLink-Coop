@@ -47,10 +47,10 @@
 		<text>Возврат на привал</text>
 	</string>
 	<string id="st_coop_opt_drop_drop">
-		<text>Падают у тела</text>
+		<text>Часть в рюкзак у тела</text>
 	</string>
 	<string id="st_coop_opt_drop_corpse">
-		<text>Тайник у тела</text>
+		<text>Весь рюкзак у тела</text>
 	</string>
 	<string id="st_coop_opt_drop_lose">
 		<text>Пропадают навсегда</text>
@@ -59,7 +59,7 @@
 		<text>Вещи после смерти</text>
 	</string>
 	<string id="ui_mm_coop_coop_session_death_drop_desc">
-		<text>Режим «Возврат на привал»: часть рюкзака выпадает у тела, уходит в тайник у тела (метка в КПК) или пропадает. Надетое остаётся при игроке.</text>
+		<text>Режим «Возврат на привал»: часть рюкзака кладётся в рюкзак-тайник у тела, туда же уходит весь рюкзак или часть пропадает. Рюкзак отмечен в КПК, надетое остаётся при игроке.</text>
 	</string>
 	<string id="ui_mm_coop_coop_session_contusion">
 		<text>Контузия после смерти, мин</text>

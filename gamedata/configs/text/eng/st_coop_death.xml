@@ -47,10 +47,10 @@
 		<text>Back at camp</text>
 	</string>
 	<string id="st_coop_opt_drop_drop">
-		<text>Falls at the body</text>
+		<text>Share in a bag</text>
 	</string>
 	<string id="st_coop_opt_drop_corpse">
-		<text>Stash at the body</text>
+		<text>All in a bag</text>
 	</string>
 	<string id="st_coop_opt_drop_lose">
 		<text>Lost for good</text>
@@ -59,7 +59,7 @@
 		<text>Things after a death</text>
 	</string>
 	<string id="ui_mm_coop_coop_session_death_drop_desc">
-		<text>Back-at-camp mode: a share of the backpack falls at the body, goes into a stash at the body (marked on the PDA) or is gone. What the player has on stays with him.</text>
+		<text>Back-at-camp mode: a share of the backpack goes into a bag at the body, the whole backpack goes there, or a share is gone. The bag is marked on the PDA; what the player has on stays with him.</text>
 	</string>
 	<string id="ui_mm_coop_coop_session_contusion">
 		<text>Contusion after a death, min</text>

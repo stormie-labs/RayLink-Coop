@@ -128,6 +128,24 @@ do
 	end
 end
 
+-- se:spawn_ini(), the custom data of a server object, by id: { section = { key = value } } as the engine's CInifile
+-- gives it (r_string keeps the quotes of a quoted value); "raise" makes the call fail
+CUSTOM = {}
+do
+	local probe = spawn("probe", vec3(0, 0, 0), nil, { id = 65000 })
+	SE[65000], OBJ[65000] = nil, nil
+	local SEmt = getmetatable(probe)
+	function SEmt.spawn_ini(self)
+		local data = CUSTOM[self.id]
+		if data == "raise" then error("broken custom data") end
+		local ini = {}
+		function ini:section_exist(sec) return data ~= nil and data[sec] ~= nil end
+		function ini:line_exist(sec, key) return data ~= nil and data[sec] ~= nil and data[sec][key] ~= nil end
+		function ini:r_string(sec, key) return data[sec][key] end
+		return ini -- the engine gives an empty ini, not nil, for an object without custom data
+	end
+end
+
 -- The player's own actor: money, rank, reputation and the stamina ceiling are recorders. Every call that would change the
 -- balance is recorded in GIVEN: the host takes the money (death::host_take_money), Lua must not.
 GIVEN, MONEY, RANK, RANK_SETS, REP, REP_SETS, REP_CHANGES, POWER_SETS, MAXPOWER = {}, 1234, 3000, {}, 500, {}, {}, {}, 1
@@ -172,6 +190,7 @@ local function fresh(mode)
 	MODE = mode
 	SELF = mode == "client" and 1 or 0
 	SE, OBJ, CREATED, RELEASED, TIMEEV = {}, {}, {}, {}, {}
+	CUSTOM = {}
 	MSGS, NEWS_ITEMS = {}, {}
 	PPE_ADDS, PPE_REMOVES, PPE_FACTORS = {}, {}, {}
 	SPOTS, SPOT_ADDS, SPOT_REMOVES, SPOT_HINTS = {}, {}, {}, {}
@@ -554,6 +573,47 @@ case("marker_corpse_stash_emptied", function()
 	check(SPOTS[561] ~= nil, "filled meanwhile: it stays")
 end)
 
+-- Ruling L-1: the share of a drop death goes into a bag at the body; its marker keeps the kind "drop" and names the bag.
+-- The host releases an emptied bag (coop_death.cpp), but while it is still there (open in the host's window) its mark goes
+-- as a corpse stash's does; a loose item (no bag could be made) keeps the item rules.
+case("marker_drop_bag", function()
+	fresh("host")
+	wolf_players()
+	stash(650, true)
+	spawn("wpn_ak74", vec3(5, 0, 5), 650)
+	fire("coop_death_marker", 7, 650, "drop")
+	check(SPOTS[650] ~= nil and SPOTS[650].hint:find("Wolf", 1, true) ~= nil, "a drop marker on the bag: a spot with the nick")
+	advance(20000)
+	check(SPOTS[650] ~= nil, "a bag with something in it keeps its mark")
+	local first = true
+	for id, se in pairs(SE) do
+		if se.parent_id == 650 and first then release_id(id); first = false end
+	end
+	advance(2000)
+	check(SPOTS[650] ~= nil, "one thing taken, one left: the mark stays")
+	for id, se in pairs(SE) do
+		if se.parent_id == 650 then release_id(id) end
+	end
+	advance(2000)
+	check(SPOTS[650] == nil, "the bag was emptied: the mark goes within 2 s, the bag itself still there")
+	-- the host released the bag: gone with it
+	fresh("host")
+	wolf_players()
+	stash(651, true)
+	fire("coop_death_marker", 7, 651, "drop")
+	advance(3000)
+	release_id(651)
+	advance(2000)
+	check(SPOTS[651] == nil, "the bag is gone: the mark goes")
+	-- a loose item of the fallback (no bag): not a stash, an empty-box check is not applied to it
+	fresh("host")
+	wolf_players()
+	spawn("af_medusa", vec3(9, 0, 9), nil, { id = 652, kind = "artefact" })
+	fire("coop_death_marker", 7, 652, "drop")
+	advance(20000)
+	check(SPOTS[652] ~= nil, "a loose item on the ground keeps its mark")
+end)
+
 case("marker_corpse_id_reused", function()
 	fresh("host")
 	wolf_players()
@@ -661,6 +721,55 @@ case("marker_restored_at_entry", function()
 	end
 	advance(20000)
 	check(SPOTS[600] == nil, "the stash was emptied later: the mark goes")
+end)
+
+-- L-1 (carried from T15, concern 4): the host writes the owner into the bag's custom data when it spawns it,
+-- [coop_death_stash] nick = "<nick>" / key = <digest>; the marks put back at entry carry that nick. The player may be away
+-- (he is not in the roster), the nick is the bag's own. A bag without it (an older one) is still marked, as a stash.
+case("marker_restored_with_owner_nick", function()
+	fresh("host")
+	wolf_players()
+	local marker_hint = function(nick) return (STR.st_coop_death_marker or ""):gsub("%%s", nick) end
+	stash(630, true)
+	CUSTOM[630] = { coop_death_stash = { nick = '"Ghost"', key = string.rep("a", 64) } } -- quoted, as the engine wrote it
+	stash(631, true) -- an older bag: no custom data
+	stash(632, true)
+	CUSTOM[632] = { coop_death_stash = { key = string.rep("b", 64) } } -- a key but no nick
+	stash(633, true)
+	CUSTOM[633] = { coop_death_stash = { nick = "Fox" } } -- written without quotes
+	stash(634, true)
+	CUSTOM[634] = "raise" -- reading it fails
+	stash(635, true)
+	CUSTOM[635] = { coop_death_stash = { nick = '""' } } -- an empty nick
+	stash(636, true)
+	CUSTOM[636] = { logic = { active = "nil" } } -- other sections only
+	local ok, err = pcall(fire, "actor_on_first_update")
+	check(ok, "entry with odd custom data does not raise (" .. tostring(err) .. ")")
+	check(STR.st_coop_death_marker ~= nil and STR.st_coop_death_stash ~= nil, "(both hints are in the string table)")
+	check(SPOTS[630] ~= nil and SPOTS[630].hint == marker_hint("Ghost"),
+		"a bag with its owner's nick: the mark names him (" .. tostring(SPOTS[630] and SPOTS[630].hint) .. ")")
+	check(SPOTS[630] and not SPOTS[630].hint:find('"', 1, true), "without the quotes of the custom data")
+	check(SPOTS[633] ~= nil and SPOTS[633].hint == marker_hint("Fox"), "a nick without quotes is read as it is")
+	for _, id in ipairs({ 631, 632, 634, 635, 636 }) do
+		check(SPOTS[id] ~= nil and SPOTS[id].hint == STR.st_coop_death_stash,
+			"bag " .. id .. " without a nick: still marked, with the hint of a stash (" .. tostring(SPOTS[id] and SPOTS[id].hint) .. ")")
+	end
+	-- a live marker of a fallen player who is in the roster keeps the roster's nick; the custom data does not change it
+	stash(637, true)
+	CUSTOM[637] = { coop_death_stash = { nick = '"Ghost"' } }
+	fire("coop_death_marker", 7, 637, "drop")
+	check(SPOTS[637] ~= nil and SPOTS[637].hint == marker_hint("Wolf"), "a drop bag marked by the callback: the nick of player 7")
+	-- the bag's mark is put back with its nick in a loaded world too
+	reload_world()
+	fire("actor_on_first_update")
+	check(SPOTS[630] ~= nil and SPOTS[630].hint == marker_hint("Ghost"), "a loaded world: the mark is back with the nick")
+	-- a client restores nothing (the marks are the host's)
+	fresh("client")
+	wolf_players()
+	stash(640, true)
+	CUSTOM[640] = { coop_death_stash = { nick = '"Ghost"' } }
+	fire("actor_on_first_update")
+	check(SPOTS[640] == nil, "a client puts no mark on a bag")
 end)
 
 case("marker_kept_with_its_nick_across_entry", function()

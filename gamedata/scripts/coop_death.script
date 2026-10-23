@@ -35,16 +35,21 @@
 	   request: when the host has the spot already it is ignored, but when the host's mark is gone by then (picked up, emptied)
 	   the host creates the client's spot as its own, with the client's name on the hint, and nothing here would ever remove
 	   it; and the host refuses a client's removal of a spot the host placed. So the client sets nothing. The hint is the
-	   host's text (its language). The marker is the first item that fell (drop) or the stash at the body (corpse). A PDA spot
+	   host's text (its language). The marker is the stash at the body (corpse; drop since L-1), or the first item that fell
+	   when no stash could be made (drop). A PDA spot
 	   of the stock type secondary_task_location (the one the Soulslike mode uses; deadbody_location of map_spots_relations.xml
 	   has a minimap entry only) with the nick of the player who died, set with level.map_add_object_spot - NOT the _ser
 	   variant: that one is written to the save and would outlive the thing it marks. The spot goes when the object has a
 	   parent (somebody picked it up), is gone from the world, or - a stash - has been emptied; it is looked at once a second.
 	   The callback queue of the engine is shared and bounded (64) and a lost callback is not sent again: when the host enters a
 	   world (actor_on_first_update) the marks are set again, and the world is searched (once, on the host only) for stashes of
-	   the section coop_death_stash. A player who joins later gets the host's spots with the list the story sync sends. A corpse stash found that way is marked without a nick (the stash does not
-	   say whose it is). A "drop" leaves no trace in the world, so a drop mark lives as long as this Lua state does (it
-	   survives a level change, not a reconnect): known limit.
+	   the section coop_death_stash. A player who joins later gets the host's spots with the list the story sync sends. A stash
+	   found that way is marked with the nick its custom data names ([coop_death_stash] nick, written by the host when it
+	   spawns the stash, Ruling L-1), an older one without it as "a stash of a fallen player". Since L-1 (2026-10-23) the share
+	   a "drop" death takes goes into such a stash too (the marker keeps the kind "drop" and names the stash), and the host
+	   releases a death stash once it is empty (coop_death.cpp). Only the fallback of a stash that could not be made leaves
+	   the items loose, with no trace in the world: that drop mark lives as long as this Lua state does (it survives a level
+	   change, not a reconnect): known limit.
 	   A spot of that type that is already on the object (a quest mark of a mod) is left as it is and not removed by us.
 ]]
 
@@ -404,7 +409,8 @@ local function box_empty(se, obj)
 	return false
 end
 
-local function add_marker(lid, id, kind, anon, now)
+-- `owner`: the nick the bag's own custom data names (restore_stash_markers), used when no player `lid` is given.
+local function add_marker(lid, id, kind, anon, now, owner)
 	local m = markers[id]
 	if m then
 		-- the same marker again (a repeated callback): the nick may be better known now
@@ -418,8 +424,10 @@ local function add_marker(lid, id, kind, anon, now)
 	if marker_count >= MAX_MARKERS then drop_oldest() end
 	marker_seq = marker_seq + 1
 	local nick = nil
-	if not anon then nick = (lid ~= nil and nick_of(lid)) or "?" end
-	m = { id = id, kind = kind, anon = anon, nick = nick, since = now, seq = marker_seq, added = false, seen = false }
+	if not anon then nick = (lid ~= nil and nick_of(lid)) or owner or "?" end
+	-- stash: true for a corpse marker; a drop marker learns it when its object is first seen (marker_done)
+	m = { id = id, kind = kind, anon = anon, nick = nick, since = now, seq = marker_seq, added = false, seen = false,
+		stash = kind == "corpse" or nil }
 	markers[id] = m
 	marker_count = marker_count + 1
 	if spot_exists(id) == true then
@@ -440,7 +448,13 @@ local function marker_done(m, now)
 		if not known then return false end -- no ALife to ask: an object that is not online may only be far away
 		return m.seen or (now - m.since > UNSEEN_MS)
 	end
-	if m.kind == "corpse" and se then
+	-- L-1: a drop marker names the bag its share went into (a loose item only when no bag could be made); a mark on a
+	-- bag goes as a corpse stash's does. Decided once, when the object is first seen, so a later load cannot turn it.
+	if se and m.stash == nil then
+		local ok, sec = pcall(se.section_name, se)
+		m.stash = ok and sec == STASH_SECTION
+	end
+	if m.stash and se then
 		-- another save was loaded and the id belongs to something else now (T8b checks the same on the host)
 		local ok, sec = pcall(se.section_name, se)
 		if ok and sec ~= STASH_SECTION then return true end
@@ -454,7 +468,7 @@ local function marker_done(m, now)
 			if ok and parent ~= nil then return true end
 		end
 	end
-	if m.kind == "corpse" and now - m.since >= EMPTY_GRACE_MS and box_empty(se, obj) then return true end
+	if m.stash and now - m.since >= EMPTY_GRACE_MS and box_empty(se, obj) then return true end
 	return false
 end
 
@@ -477,7 +491,23 @@ local function on_death_marker(lid, id, kind)
 	add_marker(lid, id, kind, false, time_global())
 end
 
--- The stashes of fallen players in the world, whose callback was lost or never sent to this machine.
+-- The nick of the owner of a death bag: [coop_death_stash] nick = "<nick>" in its custom data, written by the host when it
+-- spawned the bag (L-1; coop_death_items.h stash_owner_to_ini). The engine's ini keeps the quotes of a quoted value. nil if
+-- there is none (an older bag), it is empty, or the custom data cannot be read.
+local function owner_nick(se)
+	local ok, v = pcall(function()
+		local ini = se:spawn_ini()
+		if ini and ini:section_exist(STASH_SECTION) and ini:line_exist(STASH_SECTION, "nick") then
+			return ini:r_string(STASH_SECTION, "nick")
+		end
+	end)
+	if not (ok and type(v) == "string") then return nil end
+	v = v:match('^"(.*)"$') or v
+	return v ~= "" and v or nil
+end
+
+-- The stashes of fallen players in the world, whose callback was lost or never sent to this machine. A bag names its owner
+-- in its custom data (L-1): the mark has his nick; one without it (an older bag) is marked as a stash.
 local function restore_stash_markers(now)
 	local ok, sim = pcall(alife)
 	if not (ok and sim and sim.iterate_objects) then return end
@@ -495,7 +525,8 @@ local function restore_stash_markers(now)
 	for _, se in ipairs(found) do
 		local id = se.id
 		if type(id) == "number" and not markers[id] and not box_empty(se, online_object(id)) then
-			add_marker(nil, id, "corpse", true, now)
+			local owner = owner_nick(se)
+			add_marker(nil, id, "corpse", owner == nil, now, owner)
 			added = added + 1
 		end
 	end
