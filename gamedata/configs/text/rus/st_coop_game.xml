@@ -1,0 +1,700 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop - настройки игры (docs\GAME_SETTINGS.md, T4): каталог coop_game_schema (вкладки, пункты, значения и подсказки экрана новой игры и окна «Кооператив»), заметки страниц опций, новость о переносе старой игры. -->
+<string_table>
+	<string id="st_coop_game_alife_mutant_pop">
+		<text>Множитель популяции мутантов</text>
+	</string>
+	<string id="st_coop_game_alife_mutant_pop_0_25">
+		<text>25 %</text>
+	</string>
+	<string id="st_coop_game_alife_mutant_pop_0_5">
+		<text>50 %</text>
+	</string>
+	<string id="st_coop_game_alife_mutant_pop_0_75">
+		<text>75 %</text>
+	</string>
+	<string id="st_coop_game_alife_mutant_pop_1">
+		<text>100 %</text>
+	</string>
+	<string id="st_coop_game_alife_stalker_pop">
+		<text>Множитель популяции сталкеров</text>
+	</string>
+	<string id="st_coop_game_alife_stalker_pop_0_25">
+		<text>25 %</text>
+	</string>
+	<string id="st_coop_game_alife_stalker_pop_0_5">
+		<text>50 %</text>
+	</string>
+	<string id="st_coop_game_alife_stalker_pop_0_75">
+		<text>75 %</text>
+	</string>
+	<string id="st_coop_game_alife_stalker_pop_1">
+		<text>100 %</text>
+	</string>
+	<string id="st_coop_game_anomaly_amount_modifier">
+		<text>Количество аномалий (DAO)</text>
+	</string>
+	<string id="st_coop_game_anomaly_amount_modifier_0">
+		<text>x0</text>
+	</string>
+	<string id="st_coop_game_anomaly_amount_modifier_0_5">
+		<text>x0.5</text>
+	</string>
+	<string id="st_coop_game_anomaly_amount_modifier_1">
+		<text>x1</text>
+	</string>
+	<string id="st_coop_game_anomaly_amount_modifier_1_5">
+		<text>x1.5</text>
+	</string>
+	<string id="st_coop_game_anomaly_amount_modifier_2">
+		<text>x2</text>
+	</string>
+	<string id="st_coop_game_anomaly_amount_modifier_3">
+		<text>x3</text>
+	</string>
+	<string id="st_coop_game_applies_new_levels">
+		<text>На новых уровнях; уже стоящее остаётся</text>
+	</string>
+	<string id="st_coop_game_applies_next_emission">
+		<text>Со следующего выброса или пси-шторма</text>
+	</string>
+	<string id="st_coop_game_applies_next_weather">
+		<text>Со следующей смены погоды</text>
+	</string>
+	<string id="st_coop_game_applies_on_load">
+		<text>Применится при следующей загрузке игры</text>
+	</string>
+	<string id="st_coop_game_artefacts_spawn_chance">
+		<text>Шанс артефактов (DAO)</text>
+	</string>
+	<string id="st_coop_game_artefacts_spawn_chance_0">
+		<text>0 %</text>
+	</string>
+	<string id="st_coop_game_artefacts_spawn_chance_10">
+		<text>10 %</text>
+	</string>
+	<string id="st_coop_game_artefacts_spawn_chance_15">
+		<text>15 %</text>
+	</string>
+	<string id="st_coop_game_artefacts_spawn_chance_25">
+		<text>25 %</text>
+	</string>
+	<string id="st_coop_game_artefacts_spawn_chance_5">
+		<text>5 %</text>
+	</string>
+	<string id="st_coop_game_autosave_count">
+		<text>Автосохранений хранить</text>
+	</string>
+	<string id="st_coop_game_autosave_count_10">
+		<text>10</text>
+	</string>
+	<string id="st_coop_game_autosave_count_20">
+		<text>20</text>
+	</string>
+	<string id="st_coop_game_autosave_count_3">
+		<text>3</text>
+	</string>
+	<string id="st_coop_game_autosave_count_5">
+		<text>5</text>
+	</string>
+	<string id="st_coop_game_autosave_count_50">
+		<text>50</text>
+	</string>
+	<string id="st_coop_game_autosave_interval">
+		<text>Автосохранение раз в</text>
+	</string>
+	<string id="st_coop_game_autosave_interval_0">
+		<text>Выкл</text>
+	</string>
+	<string id="st_coop_game_autosave_interval_10">
+		<text>10 мин</text>
+	</string>
+	<string id="st_coop_game_autosave_interval_15">
+		<text>15 мин</text>
+	</string>
+	<string id="st_coop_game_autosave_interval_20">
+		<text>20 мин</text>
+	</string>
+	<string id="st_coop_game_autosave_interval_30">
+		<text>30 мин</text>
+	</string>
+	<string id="st_coop_game_autosave_interval_5">
+		<text>5 мин</text>
+	</string>
+	<string id="st_coop_game_autosave_interval_60">
+		<text>60 мин</text>
+	</string>
+	<string id="st_coop_game_bleedout">
+		<text>Время до гибели без помощи</text>
+	</string>
+	<string id="st_coop_game_bleedout_120">
+		<text>120 с</text>
+	</string>
+	<string id="st_coop_game_bleedout_180">
+		<text>180 с</text>
+	</string>
+	<string id="st_coop_game_bleedout_30">
+		<text>30 с</text>
+	</string>
+	<string id="st_coop_game_bleedout_300">
+		<text>300 с</text>
+	</string>
+	<string id="st_coop_game_bleedout_60">
+		<text>60 с</text>
+	</string>
+	<string id="st_coop_game_bleedout_90">
+		<text>90 с</text>
+	</string>
+	<string id="st_coop_game_checkpoints_group">
+		<text>Привалы для всей группы</text>
+	</string>
+	<string id="st_coop_game_contusion">
+		<text>Контузия после смерти</text>
+	</string>
+	<string id="st_coop_game_contusion_0">
+		<text>0 мин</text>
+	</string>
+	<string id="st_coop_game_contusion_10">
+		<text>10 мин</text>
+	</string>
+	<string id="st_coop_game_contusion_20">
+		<text>20 мин</text>
+	</string>
+	<string id="st_coop_game_contusion_30">
+		<text>30 мин</text>
+	</string>
+	<string id="st_coop_game_contusion_5">
+		<text>5 мин</text>
+	</string>
+	<string id="st_coop_game_contusion_60">
+		<text>60 мин</text>
+	</string>
+	<string id="st_coop_game_created_only">
+		<text>задано при создании игры</text>
+	</string>
+	<string id="st_coop_game_death_drop">
+		<text>Что теряется при смерти</text>
+	</string>
+	<string id="st_coop_game_death_drop_corpse">
+		<text>Весь рюкзак в тайник</text>
+	</string>
+	<string id="st_coop_game_death_drop_drop">
+		<text>Мешочек у тела</text>
+	</string>
+	<string id="st_coop_game_death_drop_keep">
+		<text>Ничего не выпадает</text>
+	</string>
+	<string id="st_coop_game_death_drop_lose">
+		<text>Пропадает</text>
+	</string>
+	<string id="st_coop_game_death_mode">
+		<text>Режим смерти</text>
+	</string>
+	<string id="st_coop_game_death_mode_checkpoint">
+		<text>Привалы</text>
+	</string>
+	<string id="st_coop_game_death_mode_hardcore">
+		<text>Хардкор</text>
+	</string>
+	<string id="st_coop_game_death_money">
+		<text>Потеря денег при смерти</text>
+	</string>
+	<string id="st_coop_game_death_money_0">
+		<text>0 %</text>
+	</string>
+	<string id="st_coop_game_death_money_10">
+		<text>10 %</text>
+	</string>
+	<string id="st_coop_game_death_money_20">
+		<text>20 %</text>
+	</string>
+	<string id="st_coop_game_death_money_30">
+		<text>30 %</text>
+	</string>
+	<string id="st_coop_game_death_money_5">
+		<text>5 %</text>
+	</string>
+	<string id="st_coop_game_death_money_50">
+		<text>50 %</text>
+	</string>
+	<string id="st_coop_game_death_rank">
+		<text>Потеря ранга при смерти</text>
+	</string>
+	<string id="st_coop_game_death_rank_0">
+		<text>0 %</text>
+	</string>
+	<string id="st_coop_game_death_rank_10">
+		<text>10 %</text>
+	</string>
+	<string id="st_coop_game_death_rank_20">
+		<text>20 %</text>
+	</string>
+	<string id="st_coop_game_death_rank_5">
+		<text>5 %</text>
+	</string>
+	<string id="st_coop_game_death_share">
+		<text>Сколько выпадает</text>
+	</string>
+	<string id="st_coop_game_death_share_100">
+		<text>100 %</text>
+	</string>
+	<string id="st_coop_game_death_share_150">
+		<text>150 %</text>
+	</string>
+	<string id="st_coop_game_death_share_200">
+		<text>200 %</text>
+	</string>
+	<string id="st_coop_game_death_share_50">
+		<text>50 %</text>
+	</string>
+	<string id="st_coop_game_death_wear">
+		<text>Износ снаряжения при смерти</text>
+	</string>
+	<string id="st_coop_game_death_wear_0">
+		<text>0 %</text>
+	</string>
+	<string id="st_coop_game_death_wear_10">
+		<text>10 %</text>
+	</string>
+	<string id="st_coop_game_death_wear_20">
+		<text>20 %</text>
+	</string>
+	<string id="st_coop_game_death_wear_30">
+		<text>30 %</text>
+	</string>
+	<string id="st_coop_game_death_wear_5">
+		<text>5 %</text>
+	</string>
+	<string id="st_coop_game_death_wear_50">
+		<text>50 %</text>
+	</string>
+	<string id="st_coop_game_difficulty">
+		<text>Сложность игры</text>
+	</string>
+	<string id="st_coop_game_disable_new_anomalies">
+		<text>Без новых аномалий (DAO)</text>
+	</string>
+	<string id="st_coop_game_dynamic_anomalies">
+		<text>Динамические аномалии</text>
+	</string>
+	<string id="st_coop_game_dynamic_relations">
+		<text>Динамические отношения группировок</text>
+	</string>
+	<string id="st_coop_game_economy">
+		<text>Сложность экономики</text>
+	</string>
+	<string id="st_coop_game_emission_fate">
+		<text>Выброс: кто не укрылся</text>
+	</string>
+	<string id="st_coop_game_emission_fate_explode">
+		<text>Разрывать на части</text>
+	</string>
+	<string id="st_coop_game_emission_fate_kill_at_end">
+		<text>Смерть в конце</text>
+	</string>
+	<string id="st_coop_game_emission_fate_kill_at_wave">
+		<text>Смерть по достижении волны</text>
+	</string>
+	<string id="st_coop_game_emission_fate_turn_to_zombie">
+		<text>Превращать в зомби</text>
+	</string>
+	<string id="st_coop_game_emission_frequency">
+		<text>Выброс раз в</text>
+	</string>
+	<string id="st_coop_game_emission_frequency_12">
+		<text>12 ч</text>
+	</string>
+	<string id="st_coop_game_emission_frequency_24">
+		<text>24 ч</text>
+	</string>
+	<string id="st_coop_game_emission_frequency_48">
+		<text>2 дня</text>
+	</string>
+	<string id="st_coop_game_emission_frequency_96">
+		<text>4 дня</text>
+	</string>
+	<string id="st_coop_game_emission_state">
+		<text>Выбросы</text>
+	</string>
+	<string id="st_coop_game_emission_warning">
+		<text>Выброс: предупреждение</text>
+	</string>
+	<string id="st_coop_game_emission_warning_no_warning">
+		<text>Без предупреждения</text>
+	</string>
+	<string id="st_coop_game_emission_warning_radio">
+		<text>Радио</text>
+	</string>
+	<string id="st_coop_game_emission_warning_siren">
+		<text>Сирена</text>
+	</string>
+	<string id="st_coop_game_emission_warning_siren_radio">
+		<text>Радио и сирена</text>
+	</string>
+	<string id="st_coop_game_excl_dist">
+		<text>Радиус исключения спауна</text>
+	</string>
+	<string id="st_coop_game_excl_dist_0">
+		<text>0 м</text>
+	</string>
+	<string id="st_coop_game_excl_dist_100">
+		<text>100 м</text>
+	</string>
+	<string id="st_coop_game_excl_dist_25">
+		<text>25 м</text>
+	</string>
+	<string id="st_coop_game_excl_dist_50">
+		<text>50 м</text>
+	</string>
+	<string id="st_coop_game_excl_dist_75">
+		<text>75 м</text>
+	</string>
+	<string id="st_coop_game_faction">
+		<text>Группировка мира</text>
+	</string>
+	<string id="st_coop_game_friendly_fire">
+		<text>Огонь по своим</text>
+	</string>
+	<string id="st_coop_game_gather_radius">
+		<text>Радиус сбора группы</text>
+	</string>
+	<string id="st_coop_game_gather_radius_10">
+		<text>10 м</text>
+	</string>
+	<string id="st_coop_game_gather_radius_100">
+		<text>100 м</text>
+	</string>
+	<string id="st_coop_game_gather_radius_20">
+		<text>20 м</text>
+	</string>
+	<string id="st_coop_game_gather_radius_30">
+		<text>30 м</text>
+	</string>
+	<string id="st_coop_game_gather_radius_50">
+		<text>50 м</text>
+	</string>
+	<string id="st_coop_game_give_radius">
+		<text>Передача предметов: в радиусе</text>
+	</string>
+	<string id="st_coop_game_give_radius_10">
+		<text>10 м</text>
+	</string>
+	<string id="st_coop_game_give_radius_2">
+		<text>2 м</text>
+	</string>
+	<string id="st_coop_game_give_radius_20">
+		<text>20 м</text>
+	</string>
+	<string id="st_coop_game_give_radius_5">
+		<text>5 м</text>
+	</string>
+	<string id="st_coop_game_hardcore_new_kit">
+		<text>Новый хардкор-персонаж получает набор</text>
+	</string>
+	<string id="st_coop_game_heli_spawn">
+		<text>Вертолётные патрули</text>
+	</string>
+	<string id="st_coop_game_join_spawn">
+		<text>Новые игроки появляются</text>
+	</string>
+	<string id="st_coop_game_join_spawn_faction_start">
+		<text>На базе группировки</text>
+	</string>
+	<string id="st_coop_game_join_spawn_host">
+		<text>Рядом с хостом</text>
+	</string>
+	<string id="st_coop_game_max_money_transfer">
+		<text>Самая большая передача</text>
+	</string>
+	<string id="st_coop_game_max_money_transfer_10000">
+		<text>10 тыс.</text>
+	</string>
+	<string id="st_coop_game_max_money_transfer_100000">
+		<text>100 тыс.</text>
+	</string>
+	<string id="st_coop_game_max_money_transfer_1000000">
+		<text>1 млн</text>
+	</string>
+	<string id="st_coop_game_max_money_transfer_10000000">
+		<text>10 млн</text>
+	</string>
+	<string id="st_coop_game_max_money_transfer_100000000">
+		<text>100 млн</text>
+	</string>
+	<string id="st_coop_game_max_new_characters">
+		<text>Новых персонажей не больше</text>
+	</string>
+	<string id="st_coop_game_max_new_characters_1">
+		<text>1</text>
+	</string>
+	<string id="st_coop_game_max_new_characters_16">
+		<text>16</text>
+	</string>
+	<string id="st_coop_game_max_new_characters_2">
+		<text>2</text>
+	</string>
+	<string id="st_coop_game_max_new_characters_32">
+		<text>32</text>
+	</string>
+	<string id="st_coop_game_max_new_characters_4">
+		<text>4</text>
+	</string>
+	<string id="st_coop_game_max_new_characters_64">
+		<text>64</text>
+	</string>
+	<string id="st_coop_game_max_new_characters_8">
+		<text>8</text>
+	</string>
+	<string id="st_coop_game_max_skip_hours">
+		<text>Самый долгий пропуск времени</text>
+	</string>
+	<string id="st_coop_game_max_skip_hours_12">
+		<text>12 ч</text>
+	</string>
+	<string id="st_coop_game_max_skip_hours_168">
+		<text>168 ч</text>
+	</string>
+	<string id="st_coop_game_max_skip_hours_24">
+		<text>24 ч</text>
+	</string>
+	<string id="st_coop_game_max_skip_hours_48">
+		<text>48 ч</text>
+	</string>
+	<string id="st_coop_game_max_skip_hours_72">
+		<text>72 ч</text>
+	</string>
+	<string id="st_coop_game_migrated">
+		<text>Настройки этой игры сохранены из текущих настроек машины. Поменять: «Кооператив» — «Настройки игры».</text>
+	</string>
+	<string id="st_coop_game_money_transfer">
+		<text>Передача денег между игроками</text>
+	</string>
+	<string id="st_coop_game_off">
+		<text>Выкл</text>
+	</string>
+	<string id="st_coop_game_offline_combat">
+		<text>Симуляция офлайн-боёв</text>
+	</string>
+	<string id="st_coop_game_offline_combat_full">
+		<text>Полностью</text>
+	</string>
+	<string id="st_coop_game_offline_combat_off">
+		<text>Отключено</text>
+	</string>
+	<string id="st_coop_game_offline_combat_on_smarts_only">
+		<text>Смарт-террейны</text>
+	</string>
+	<string id="st_coop_game_old_save">
+		<text>Старая игра: настройки появятся после первой загрузки в кооперативе.</text>
+	</string>
+	<string id="st_coop_game_on">
+		<text>Вкл</text>
+	</string>
+	<string id="st_coop_game_other_counts">
+		<text>Прочие опции игры: %s, настройки модов (MCM): %s, сняты с этой машины %s.</text>
+	</string>
+	<string id="st_coop_game_other_how">
+		<text>Меняются в главном меню: «Опции» и «Настройки модов», затем кнопка выше.</text>
+	</string>
+	<string id="st_coop_game_party_fast_travel">
+		<text>Перемещение всей группой</text>
+	</string>
+	<string id="st_coop_game_psi_storm_fate">
+		<text>Пси-шторм: кто не укрылся</text>
+	</string>
+	<string id="st_coop_game_psi_storm_fate_kill_at_vortex">
+		<text>Смерть на пике</text>
+	</string>
+	<string id="st_coop_game_psi_storm_fate_turn_to_zombie">
+		<text>Превращать в зомби</text>
+	</string>
+	<string id="st_coop_game_psi_storm_fate_unhurt">
+		<text>Без последствий</text>
+	</string>
+	<string id="st_coop_game_psi_storm_frequency">
+		<text>Пси-шторм раз в</text>
+	</string>
+	<string id="st_coop_game_psi_storm_frequency_12">
+		<text>12 ч</text>
+	</string>
+	<string id="st_coop_game_psi_storm_frequency_24">
+		<text>24 ч</text>
+	</string>
+	<string id="st_coop_game_psi_storm_frequency_48">
+		<text>2 дня</text>
+	</string>
+	<string id="st_coop_game_psi_storm_frequency_96">
+		<text>4 дня</text>
+	</string>
+	<string id="st_coop_game_psi_storm_state">
+		<text>Пси-штормы</text>
+	</string>
+	<string id="st_coop_game_psi_storm_warning">
+		<text>Пси-шторм: предупреждение</text>
+	</string>
+	<string id="st_coop_game_psi_storm_warning_no_warning">
+		<text>Без предупреждения</text>
+	</string>
+	<string id="st_coop_game_psi_storm_warning_siren">
+		<text>Сирена</text>
+	</string>
+	<string id="st_coop_game_respawn_delay">
+		<text>Задержка возрождения</text>
+	</string>
+	<string id="st_coop_game_respawn_delay_0">
+		<text>0 с</text>
+	</string>
+	<string id="st_coop_game_respawn_delay_120">
+		<text>120 с</text>
+	</string>
+	<string id="st_coop_game_respawn_delay_15">
+		<text>15 с</text>
+	</string>
+	<string id="st_coop_game_respawn_delay_30">
+		<text>30 с</text>
+	</string>
+	<string id="st_coop_game_respawn_delay_300">
+		<text>300 с</text>
+	</string>
+	<string id="st_coop_game_respawn_delay_60">
+		<text>60 с</text>
+	</string>
+	<string id="st_coop_game_revive_health">
+		<text>Здоровье после поднятия</text>
+	</string>
+	<string id="st_coop_game_revive_health_0_1">
+		<text>10 %</text>
+	</string>
+	<string id="st_coop_game_revive_health_0_2">
+		<text>20 %</text>
+	</string>
+	<string id="st_coop_game_revive_health_0_3">
+		<text>30 %</text>
+	</string>
+	<string id="st_coop_game_revive_health_0_5">
+		<text>50 %</text>
+	</string>
+	<string id="st_coop_game_revive_health_0_75">
+		<text>75 %</text>
+	</string>
+	<string id="st_coop_game_revive_health_1">
+		<text>100 %</text>
+	</string>
+	<string id="st_coop_game_routes">
+		<text>Открытая Зона</text>
+	</string>
+	<string id="st_coop_game_running">
+		<text>Сохранено. Применится при следующей загрузке этой игры (сейчас идёт эта игра).</text>
+	</string>
+	<string id="st_coop_game_saved">
+		<text>Сохранено. Применится при следующей загрузке этой игры.</text>
+	</string>
+	<string id="st_coop_game_share_rewards">
+		<text>Общие награды за задания</text>
+	</string>
+	<string id="st_coop_game_sleep_radius">
+		<text>Сон: все в радиусе</text>
+	</string>
+	<string id="st_coop_game_sleep_radius_10">
+		<text>10 м</text>
+	</string>
+	<string id="st_coop_game_sleep_radius_20">
+		<text>20 м</text>
+	</string>
+	<string id="st_coop_game_sleep_radius_3">
+		<text>3 м</text>
+	</string>
+	<string id="st_coop_game_sleep_radius_30">
+		<text>30 м</text>
+	</string>
+	<string id="st_coop_game_sleep_radius_6">
+		<text>6 м</text>
+	</string>
+	<string id="st_coop_game_sleep_rule">
+		<text>Сон</text>
+	</string>
+	<string id="st_coop_game_sleep_rule_gather">
+		<text>Все рядом</text>
+	</string>
+	<string id="st_coop_game_sleep_rule_host">
+		<text>Решает хост</text>
+	</string>
+	<string id="st_coop_game_sleep_rule_safe_or_vote">
+		<text>Безопасно или голосование</text>
+	</string>
+	<string id="st_coop_game_sleep_rule_vote">
+		<text>Голосование</text>
+	</string>
+	<string id="st_coop_game_story">
+		<text>Сюжетный режим</text>
+	</string>
+	<string id="st_coop_game_tab_death">
+		<text>Смерть и помощь</text>
+	</string>
+	<string id="st_coop_game_tab_difficulty">
+		<text>Сложность и экономика</text>
+	</string>
+	<string id="st_coop_game_tab_other">
+		<text>Прочее</text>
+	</string>
+	<string id="st_coop_game_tab_party">
+		<text>Группа и экономика</text>
+	</string>
+	<string id="st_coop_game_tab_saves">
+		<text>Сохранения</text>
+	</string>
+	<string id="st_coop_game_tab_world">
+		<text>Мир</text>
+	</string>
+	<string id="st_coop_game_take_machine">
+		<text>Взять текущие с этой машины</text>
+	</string>
+	<string id="st_coop_game_take_machine_confirm">
+		<text>Заменить прочие опции этой игры (не вынесенные на вкладки) текущими опциями и настройками модов этой машины?</text>
+	</string>
+	<string id="st_coop_game_teleport_radius">
+		<text>Телепорт берёт игроков в радиусе</text>
+	</string>
+	<string id="st_coop_game_teleport_radius_0">
+		<text>0 м</text>
+	</string>
+	<string id="st_coop_game_teleport_radius_100">
+		<text>100 м</text>
+	</string>
+	<string id="st_coop_game_teleport_radius_200">
+		<text>200 м</text>
+	</string>
+	<string id="st_coop_game_teleport_radius_25">
+		<text>25 м</text>
+	</string>
+	<string id="st_coop_game_teleport_radius_50">
+		<text>50 м</text>
+	</string>
+	<string id="st_coop_game_title">
+		<text>Настройки игры</text>
+	</string>
+	<string id="st_coop_game_travel_time">
+		<text>Путь занимает игровое время</text>
+	</string>
+	<string id="st_coop_game_vote_timeout">
+		<text>Время на голосование</text>
+	</string>
+	<string id="st_coop_game_vote_timeout_120">
+		<text>120 с</text>
+	</string>
+	<string id="st_coop_game_vote_timeout_15">
+		<text>15 с</text>
+	</string>
+	<string id="st_coop_game_vote_timeout_30">
+		<text>30 с</text>
+	</string>
+	<string id="st_coop_game_vote_timeout_60">
+		<text>60 с</text>
+	</string>
+	<string id="st_coop_opt_game_note">
+		<text>Задаётся в настройках игры (меню «Кооператив»). Действует при загрузке.</text>
+	</string>
+	<string id="st_coop_opt_machine_note">
+		<text>Для кооп-игр это значения по умолчанию для новых игр. У созданной игры — её настройки.</text>
+	</string>
+</string_table>

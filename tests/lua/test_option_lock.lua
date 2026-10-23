@@ -1,5 +1,7 @@
 -- Anomaly Coop temp test (W4 menu): option lock of coop_settings.script on a client (port of xrRazom's
 -- xrr_ui_option_lock) and the classification of the co-op options page / MCM seed list. Not shipped.
+-- Game settings (T4): the host's side of the same classification (is_game_owned, Ruling GS-1) and the note of the main
+-- menu; the host's lock in the game with a record is in test_game_settings.
 dofile("tests/lua/support/menu_stubs.lua")
 
 ROLE = "client"
@@ -27,6 +29,8 @@ function RegisterScriptCallback(n, f) CB[n] = f end
 function SendScriptCallback() end
 actor_menu = { set_msg = function() end }
 db = {}
+IN_LEVEL = true
+level = { present = function() return IN_LEVEL end }
 
 -- UIOptions stand-in: Reset_opt draws like the stock one (every control through self:Register, tracks in _Track)
 local UIO = {}
@@ -64,6 +68,35 @@ check(s.owner_of("mcm", "auto_looter/delete_body") == "host", "auto_looter delet
 check(s.owner_of("mcm", "auto_looter/pickup_ammo") == "player", "auto_looter pickup is the player's")
 check(s.owner_of("mcm", "body_health_system/TEXT_BASED_PATCH") == "player", "case-insensitive exact path")
 
+-- Ruling GS-1: the game owns what the explicit host lists name; "host" only by default is the client's rule, not the game's
+check(s.is_game_owned("mcm", "drx_da/anomaly_density") == true, "game-owned: a [mcm_host] prefix")
+check(s.is_game_owned("mcm", "auto_looter/delete_body") == true, "game-owned: an exact [mcm_host] path")
+check(s.is_game_owned("mcm", "some_new_addon/some_option") == false and s.owner_of("mcm", "some_new_addon/some_option") == "host",
+	"not game-owned: an unknown addon (host for a client by default)")
+check(s.is_game_owned("mcm", "my_mod/hud_damage_mult") == false and s.owner_of("mcm", "my_mod/hud_damage_mult") == "host",
+	"not game-owned: host by a word of the path only")
+check(s.is_game_owned("mcm", "drx_da/debug_mode") == false, "not game-owned: [mcm_player]")
+check(s.is_game_owned("options", "gameplay/general/max_tasks") == true and s.is_game_owned("options", "video/weather/rain_period") == true
+	and s.is_game_owned("options", "coop/coop_session/gather_radius") == true, "game-owned: the stock host groups and the co-op rules")
+check(s.is_game_owned("options", "video/basic/fov") == false and s.is_game_owned("options", "gameplay/general/player_name") == false,
+	"not game-owned: player options")
+
+-- the cosmetic addons are the player's by an explicit list (Game settings T4: a client keeps its own shaders and animations),
+-- Zone Customization Project is the host's by a list, with the exceptions that are only seen
+check(s.owner_of("mcm", "ssfx_module/ssfx_wetness/ssfx_gloss/min_gloss_mcm") == "player" and s.is_game_owned("mcm", "ssfx_module/ssfx_ao/ssfx_ao/quality") == false,
+	"cosmetic: Screen Space Shaders are the player's")
+for _, path in ipairs({ "item_icon_info/cond_text/alt_artefact_pos", "targetID/deadID", "laser_settings/dist_bright", "fddar/anim_x",
+	"liz_inex/inertia", "EFT_ADS/ads_speed", "oleh_sounds/volume_x", "varefined/varefined_main/enable_on_kill_shouts", "sidhud/radhealthshow",
+	"scop/fov_x", "3d_scopes/opt", "beef_nvg/opt" }) do
+	check(s.owner_of("mcm", path) == "player", "cosmetic: " .. path .. " is the player's")
+end
+check(s.owner_of("mcm", "SMR/smr_mutants/anything") == "host" and s.is_game_owned("mcm", "SMR/smr_mutants/anything") == true,
+	"SMR/* is the game's by the list")
+check(s.owner_of("mcm", "SMR/smr_loot/send_message") == "player" and s.owner_of("mcm", "SMR/smr_amain/smr_debug_log") == "player"
+	and s.owner_of("mcm", "SMR/smr_amain/glitched_pda") == "player", "SMR: the options that are only seen stay the player's (exact beats the prefix)")
+check(s.is_game_owned("mcm", "stealth/memory") == false and s.owner_of("mcm", "stealth/memory") == "host",
+	"an addon nobody listed (stealth) is not touched: the host's by a word, not the game's")
+
 print("== lock on a client")
 local tree = { presets = { "p1" }, gr = {
 	{ id = "slide", type = "slide" },
@@ -95,6 +128,18 @@ CB.actor_on_update()
 local dlg2 = new_dlg()
 dlg2:Reset_opt(tree, "gameplay/general")
 check(DRAWN.items[1] == "slide" and DRAWN.presets ~= nil and dlg2.reg["gameplay/general/max_tasks/1"].enabled,
-	"session over: stock page")
+	"session over, still in the world (no record of a game): stock page")
+
+print("== the main menu of a machine with the co-op exe: a note, no lock")
+IN_LEVEL = false
+local dlg3 = new_dlg()
+dlg3:Reset_opt(tree, "gameplay/general")
+check(DRAWN.items[1] == "desc:st_coop_opt_machine_note" and DRAWN.presets ~= nil and dlg3.reg["gameplay/general/max_tasks/1"].enabled,
+	"main menu: the page says these are the machine's defaults for new games, nothing is disabled")
+check(#tree.gr == 4 and tree.gr[1].id == "slide", "shared tree restored")
+local dlg4 = new_dlg()
+dlg4:Reset_opt(co, "coop/coop_player")
+check(DRAWN.items[1] == "nick", "main menu: the player's page has no note")
+IN_LEVEL = true
 
 print(string.format("%d passed, %d failed", PASSES, FAILS))

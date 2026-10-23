@@ -21,6 +21,12 @@
 ;   4. [settings] <store>_default
 ; Unknown MCM options are host-owned: an addon nobody classified cannot give players different rules.
 ; To let players set an addon themselves, add "<addon>/*" to [mcm_player].
+;
+; The host's game (docs\GAME_SETTINGS.md, Ruling GS-1): what a path is decided by steps 1 and 2 above - named by an exact path
+; or a prefix in [options_host] / [mcm_host] - the game owns: its value is kept in the record of the game, and the options
+; window and the MCM window lock it for the host in a level. What only steps 3 and 4 make the host's (a word of the path, the
+; default) stays the machine's on the host, so that the cosmetic options of the mods are not lost; a client gets them all.
+; To make an addon part of a game, list it in [mcm_host]; to keep it out of both, list it in [mcm_player].
 
 [settings]
 options_default     = host
@@ -72,6 +78,7 @@ auto_looter/delete_body       ; releasing corpses and items is world state
 auto_looter/delete_armor
 auto_looter/delete_weapon
 auto_looter/delete_misc
+SMR/*                         ; Zone Customization Project: spawns, mutants, stalkers, zombies, loot, anomalies (the world's)
 
 [mcm_player]
 ; <addon>/* or exact paths every player sets for themselves, e.g.:
@@ -99,6 +106,37 @@ skill_system/debug
 yasc/enablenotifications
 auto_looter/*                 ; what a looter picks up or strips stays each player's own
 SMR/smr_loot/send_message     ; Zone Customization Project: the bonus-loot message is each player's (W4 mods, W5)
+SMR/smr_amain/smr_debug_log   ; ... the rest of SMR/* is the host's (the longer path wins over the prefix)
+SMR/smr_amain/glitched_pda    ; ... a PDA effect, the player's own
+; Cosmetic addons (Game settings T4, Ruling GS-1; the roots found by reading the 148 *_mcm.script of the GAMMA build): shaders,
+; scopes and night vision, animations, sounds and voices, icons, HUD, UI. Without these lines they are the host's by default
+; (an unknown MCM option is the host's): a client would get the host's shaders and animations. Only what is only seen or
+; heard is here; the rest of the unclassified addons is for the owner to decide (report of T4).
+ssfx_module/*                 ; Screen Space Shaders: all modules
+3d_scopes/*
+scop/*                        ; scope field of view
+free_zoom/*
+beef_nvg/*                    ; night vision devices
+laser_settings/*
+fddar/*                       ; first-person animations (FDDA redone)
+liz_inex/*                    ; inertia
+lower_weapon_sprint/*
+weapon_cover_tilt/*
+EFT_ADS/*
+ver_pistol_swap/*             ; animations
+crpmcm/*                      ; camera reanimation
+demonized_dialog_fov/*
+fmode_sound/*
+oleh_sounds/*
+varefined/*                   ; sounds and voices
+item_icon_info/*
+sidhud/*
+targetID/*
+rad_status_icon_msv/*
+rax_mmt/*
+hideout_cat_settings/*
+uicellcontainer_optimize/*
+sorting/*                     ; icons, HUD, UI
 
 [words_always_player]
 key, keys, keybind, keybinds, bind, binding, bindings, hotkey, kb, mouse, sens, sensitivity, invert

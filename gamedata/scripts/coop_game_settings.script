@@ -1,0 +1,852 @@
+--[[
+	Anomaly Coop - the settings of the host's game, the host's side (gamedata\scripts\coop_game_settings.script)
+	docs\GAME_SETTINGS.md 3.2-3.5, 4.3, 5. The catalog is coop_game_schema, the record coop_game_record (pure logic); this
+	script is what runs in the game around them.
+
+	A co-op host's game owns its settings: the record (coop_game_record) lives in the save (m_data.coop_game, written at
+	every save_state) and in the card $game_saves$\<id>.cgame (for the menu: the list of games, edits before a load). At
+	every load the one with the higher rev is the game's. The record's values stand over the machine's (user.ltx, axr_options.ltx)
+	but are never written into them:
+		c|  console rules of the engine    coop.game.set_cvars at the world start; the engine gives the machine's back at the exit
+		o|  m|  options and MCM            the ini_file_ex overlay of coop_settings reads value() and put()s the writes
+		g|  e|  s|  difficulty factors     the save's own tables are the truth, the record mirrors them; a card edited in the
+		                                   menu sets them through the original setters at the first update
+		faction                            the world's group (record.faction, coop.game.set_world_faction)
+	Only in a level (level.present): outside it the machine's values show (locked()).
+
+	Engine hook (CALifeSimulator, before the first on_game_start): before_world_start(mode, save). "new": the record the
+	new game screen staged (coop.game.stage_new -> take_new). "load": the block of <save>.scoc and the card, read here
+	(marshal) so that the values are in force before any script reads an option. load_state(m_data) is the net: a record
+	that was not found early is switched on late, an old save of a co-op host gets a migrated record (section 5) made of the
+	machine's values. A co-op client does nothing here: the host's values reach it through coop_settings.
+
+	For other scripts (contract in docs\GAME_SETTINGS.md section 6):
+		before_world_start(mode, save)     active() -> record | nil     locked() -> bool     origin() -> string | nil
+		value(src, path) -> raw | nil      put(src, path, raw)          world_faction() -> string | nil
+		defaults() -> values               stage_new(record) -> bool
+		list_games() -> { {id, name, faction, created, last_save, last_played, rev, migrated}, ... }
+		game_of_save(stem) -> id | nil, record | nil       load_card(id) -> record | nil
+		save_edits(id, changes) -> ok, why       take_machine(id) -> ok, n       running_id() -> id | nil
+		ensure_record() -> id | nil, why   (a world opened to partners that has no record yet)
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local string_format = string.format
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+local tsort = table.sort
+
+local TAG = "[coop-game]"
+local CARD_EXT, BLOCK_EXT = ".cgame", ".scoc"
+-- the names an autosave is written under before it becomes a slot (coop_autosave.cpp): not "the last save" of a game
+local TEMP_STEMS = { coop_auto_tmp = true, coop_auto_bak = true }
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("%s %s", TAG, ok and line or tostring(fmt))
+end
+
+-- Script module by name, or nil (loaded by _G.__index on the first use).
+local function mod(name)
+	local m = rawget(_G, name)
+	if m == nil then
+		local ok, r = pcall(function() return _G[name] end)
+		m = ok and r or nil
+	end
+	return type(m) == "table" and m or nil
+end
+
+local function schema() return mod("coop_game_schema") end
+local function records() return mod("coop_game_record") end
+
+-------------------------------------------------------------------------------
+-- State of this Lua state (every world start rebuilds it: reset_state)
+-------------------------------------------------------------------------------
+local S
+local function reset_state()
+	S = {
+		rec = nil, -- the active record
+		origin = nil, -- "new" | "save" | "card" | "migrated" | "fallback"
+		fresh_new = false, -- a new world started in this state
+		first_done = false, -- the first update has run (the factors are in force and mirrored from then on)
+		fire_pending = false, -- on_option_change after the first update (the record was switched on late)
+		card_pending = false, -- write the card at the first update (migration: the actor is there then)
+		news = false, -- tell the host about the migration
+		save_stem = nil, -- the save that alife_storage_manager is writing now
+	}
+end
+reset_state()
+
+local stats = { errors = 0, saves = 0, cards = 0, card_fails = 0 }
+local wrapped = false
+local block_cache = {} -- stem (lower case) -> { sig, id, record }: game_of_save
+
+-------------------------------------------------------------------------------
+-- Who we are
+-------------------------------------------------------------------------------
+local function client_now()
+	if not api then return false end
+	if type(api.is_client) == "function" then
+		local ok, r = pcall(api.is_client)
+		if ok and r == true then return true end
+	end
+	return false
+end
+
+local function command_line_hosts()
+	local f = rawget(_G, "command_line")
+	if type(f) ~= "function" then return false end
+	local ok, line = pcall(f)
+	return ok and type(line) == "string" and line:find("%-coop_host") ~= nil
+end
+
+-- Does this world belong to a co-op host? The sign of the new game screen (coop_newgame_modes.is_coop_new_game): the
+-- Co-op window has a host pending, or it hosts, or -coop_host.
+local function host_sign()
+	if not api or client_now() then return false end
+	if type(api.session_info) == "function" then
+		local ok, info = pcall(api.session_info)
+		if ok and type(info) == "table" then
+			if info.client == true then return false end
+			if tonumber(info.pending_host) ~= nil or info.host == true then return true end
+		end
+	end
+	return command_line_hosts()
+end
+
+local function in_level()
+	local lv = rawget(_G, "level")
+	if type(lv) ~= "table" or type(lv.present) ~= "function" then return false end
+	local ok, r = pcall(lv.present)
+	return ok and r == true
+end
+
+local function actor_community()
+	local actor = db and db.actor
+	if not actor then return nil end
+	local ok, c = pcall(function() return actor:character_community() end)
+	if ok and type(c) == "string" then
+		local f = (c:gsub("^actor_", ""))
+		if f ~= "" then return f end
+	end
+	return nil
+end
+
+local function actor_name()
+	local actor = db and db.actor
+	if not actor then return nil end
+	local ok, n = pcall(function() return actor:character_name() end)
+	if ok and type(n) == "string" and n ~= "" then return n end
+	return nil
+end
+
+local function now_text()
+	local ok, t = pcall(os.date, "%Y-%m-%d %H:%M")
+	return ok and type(t) == "string" and t or ""
+end
+
+local function tr(id, fallback)
+	local g = rawget(_G, "game")
+	if type(g) == "table" and type(g.translate_string) == "function" then
+		local ok, t = pcall(g.translate_string, id)
+		if ok and type(t) == "string" and t ~= "" and t ~= id then return t end
+	end
+	return fallback or id
+end
+
+-------------------------------------------------------------------------------
+-- Files: the saves folder, the card, the block of a save
+-------------------------------------------------------------------------------
+local function saves_dir()
+	local ok, dir = pcall(function() return getFS():update_path("$game_saves$", "") end)
+	if ok and type(dir) == "string" and dir ~= "" then return dir end
+	return nil
+end
+
+-- A save's name as a file stem: no folder, no drive, no wild card, no ".."
+local function valid_stem(s)
+	if type(s) ~= "string" or s == "" or #s > 200 then return false end
+	if s:find("[\\/:%*%?\"<>|%c]") or s:find("%.%.", 1, false) then return false end
+	return true
+end
+
+-- A game's id ("%08x-%04x") is also the name of its card: nothing else gets into a path.
+local function valid_id(id)
+	return type(id) == "string" and #id >= 1 and #id <= 64 and id:find("^[%w_%-]+$") ~= nil
+end
+
+local function read_file(path)
+	local ok, data = pcall(function()
+		local f = io.open(path, "rb")
+		if not f then return nil end
+		local d = f:read("*all")
+		f:close()
+		return d
+	end)
+	if ok and type(data) == "string" and data ~= "" then return data end
+	return nil
+end
+
+-- Writes beside the target and moves it in, so that a card is whole or the old one; where the move fails (a folder that
+-- will not rename over a file), the file is written in place.
+local function write_file(path, data)
+	local tmp = path .. ".tmp"
+	local wrote = pcall(function()
+		local f = assert(io.open(tmp, "wb"))
+		local w = f:write(data)
+		f:close()
+		assert(w, "write failed")
+	end)
+	if wrote then
+		local moved = pcall(function()
+			pcall(os.remove, path)
+			assert(os.rename(tmp, path))
+		end)
+		if moved then return true end
+	end
+	pcall(os.remove, tmp)
+	return (pcall(function()
+		local f = assert(io.open(path, "wb"))
+		local w = f:write(data)
+		f:close()
+		assert(w, "write failed")
+	end))
+end
+
+-- "<name> | time | size" of one file of the saves folder, nil when it is not there. The folder listing gives it without a read.
+local function file_sig(name)
+	local ok, sig = pcall(function()
+		local flist = getFS():file_list_open_ex("$game_saves$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), name)
+		if not flist or flist:Size() == 0 then return nil end
+		local file = flist:GetAt(0)
+		return string_format("%s|%s|%s", name, tostring(file:ModifDigitOnly()), tostring(file:Size()))
+	end)
+	if ok and type(sig) == "string" then return sig end
+	return nil
+end
+
+local function codec()
+	local m = rawget(_G, "marshal")
+	if type(m) == "table" and type(m.encode) == "function" and type(m.decode) == "function" then return m end
+	return nil
+end
+
+-- A clean record (coop_game_record.clean) from any table, nil if it is none or of a newer format.
+local function sanitize(t)
+	local c, r = codec(), records()
+	if not (c and r and type(t) == "table") then return nil end
+	local s = r.encode(t, c)
+	if not s then return nil end
+	return (r.decode(s, c))
+end
+
+local function decode_record(data)
+	local c, r = codec(), records()
+	if not (c and r) then return nil end
+	return (r.decode(data, c))
+end
+
+-- The m_data of <stem>.scoc, nil when it is not there or cannot be read.
+local function read_scoc(stem)
+	local dir = saves_dir()
+	if not (dir and valid_stem(stem)) then return nil end
+	local data = read_file(dir .. stem:lower() .. BLOCK_EXT)
+	local c = codec()
+	if not (data and c) then return nil end
+	local ok, t = pcall(c.decode, data)
+	if ok and type(t) == "table" then return t end
+	return nil
+end
+
+-- The game record in the save's block, nil when there is none.
+local function block_of_save(stem)
+	local m = read_scoc(stem)
+	if m and type(m.coop_game) == "table" then return sanitize(m.coop_game) end
+	return nil
+end
+
+-- The card of a game (decoded, validated), nil when there is none.
+function load_card(id)
+	if not valid_id(id) then return nil end
+	local dir = saves_dir()
+	if not dir then return nil end
+	local data = read_file(dir .. id .. CARD_EXT)
+	if not data then return nil end
+	local rec = decode_record(data)
+	if rec and rec.id == id then return rec end
+	return nil
+end
+
+local function write_card(card)
+	local c, r, dir = codec(), records(), saves_dir()
+	if not (c and r and dir and type(card) == "table" and valid_id(card.id)) then return false end
+	local s = r.encode(card, c)
+	if not s then return false end
+	local ok = write_file(dir .. card.id .. CARD_EXT, s)
+	if ok then
+		stats.cards = stats.cards + 1
+	else
+		stats.card_fails = stats.card_fails + 1
+		log("! the card of game %s cannot be written", card.id)
+	end
+	return ok
+end
+
+local function list_card_ids()
+	local out = {}
+	pcall(function()
+		local flist = getFS():file_list_open_ex("$game_saves$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "*" .. CARD_EXT)
+		if not flist then return end
+		for i = 0, flist:Size() - 1 do
+			local full = tostring(flist:GetAt(i):NameFull())
+			local id = full:sub(1, #full - #CARD_EXT)
+			if valid_id(id) then out[#out + 1] = id end
+		end
+	end)
+	return out
+end
+
+-------------------------------------------------------------------------------
+-- The machine's values
+-------------------------------------------------------------------------------
+-- The machine's value of a console rule as the record keeps it; while a game value is set the engine remembers the machine's.
+local function console_value(name)
+	local g = api and api.game
+	if type(g) == "table" and type(g.machine_cvar) == "function" then
+		local ok, v = pcall(g.machine_cvar, name)
+		if ok and type(v) == "string" and v ~= "" then return v end
+	end
+	local f = rawget(_G, "get_console_cmd")
+	if type(f) ~= "function" then return nil end
+	local ok, v = pcall(f, 0, name)
+	if ok and type(v) == "string" then
+		v = v:gsub("^%s+", ""):gsub("%s+$", "")
+		if v ~= "" then return v end
+	end
+	return nil
+end
+
+-- reader for coop_game_record.from_machine; m_data = the save's table when the factors are to be taken from it
+-- (an old save at load_state), else the factors are not part of it.
+local function machine_reader(m_data)
+	local reader = {
+		section = function(src)
+			local am = mod("axr_main")
+			local cfg = am and am.config
+			if not cfg then return {} end
+			return cfg:collect_section(src == "o" and "options" or "mcm")
+		end,
+		owner = function(src, path)
+			local cs = mod("coop_settings")
+			if cs and cs.is_game_owned and cs.is_game_owned(src, path) then return "host" end
+			return "player"
+		end,
+		console = console_value,
+	}
+	if type(m_data) == "table" then
+		reader.factors = function()
+			local cs = mod("coop_settings")
+			if cs and cs.read_factors then return cs.read_factors(false, m_data) end
+			return {}
+		end
+	end
+	return reader
+end
+
+-- The values of the machine for a new game: the console rules, the host options and the MCM options a game owns, and
+-- the catalog's default for what the machine has none of (new game screen). The form of the record: raw strings.
+function defaults()
+	local r, s = records(), schema()
+	if not (r and s) then return {} end
+	local values, problems = r.from_machine(machine_reader(nil))
+	for _, p in ipairs(problems or {}) do log("! machine values: %s", tostring(p)) end
+	for _, key in ipairs(s.keys()) do
+		local it = s.item(key)
+		if values[key] == nil and it and it.def ~= nil and not it.needs_mcm and (it.src == "c" or it.src == "o" or it.src == "m") then
+			local raw = s.to_raw(key, it.def)
+			if raw ~= nil then values[key] = raw end
+		end
+	end
+	return values
+end
+
+-- The save's table (m_data of alife_storage_manager); an empty one when it cannot be had.
+local function save_table()
+	local asm = mod("alife_storage_manager")
+	if asm and type(asm.get_state) == "function" then
+		local ok, t = pcall(asm.get_state)
+		if ok and type(t) == "table" then return t end
+	end
+	return {}
+end
+
+local function world_of(m_data)
+	local story = true
+	local f = rawget(_G, "has_alife_info")
+	if type(f) == "function" then
+		local ok, r = pcall(f, "story_mode_disabled")
+		if ok and r then story = false end
+	end
+	local dg = type(m_data.diff_game) == "table" and m_data.diff_game.type or nil
+	local de = type(m_data.diff_eco) == "table" and m_data.diff_eco.type or nil
+	return { story = story, routes = m_data.opened_routes == true, difficulty = tonumber(dg), economy = tonumber(de) }
+end
+
+-- A record made of this machine's values and the save's world (an old save, section 5). The actor is not there yet at
+-- load_state: the name and the group are filled at the first update.
+local function build_from_machine(m_data)
+	local r = records()
+	local values, problems = r.from_machine(machine_reader(m_data))
+	for _, p in ipairs(problems or {}) do log("! machine values: %s", tostring(p)) end
+	local record = r.new(values, { name = actor_name(), faction = actor_community(), world = world_of(m_data) })
+	record.migrated = true
+	record.machine_snapshot_at = record.created
+	return record
+end
+
+-------------------------------------------------------------------------------
+-- Switching a record on
+-------------------------------------------------------------------------------
+local function apply_cvars()
+	local g = api and api.game
+	if not (S.rec and type(g) == "table" and type(g.set_cvars) == "function") then return end
+	local t, n = {}, 0
+	for key, raw in pairs(S.rec.values) do
+		local name = type(key) == "string" and key:match("^c|(.+)$")
+		if name and type(raw) == "string" then
+			t[name] = raw
+			n = n + 1
+		end
+	end
+	if n == 0 then return end
+	local ok, applied, refused = pcall(g.set_cvars, t)
+	if not ok then
+		stats.errors = stats.errors + 1
+		log("! the console rules cannot be set: %s", tostring(applied))
+		return
+	end
+	if type(refused) == "table" then
+		for name, why in pairs(refused) do log("! console rule %s refused by the engine: %s", tostring(name), tostring(why)) end
+	end
+	log("%d console rule(s) of the game set (%s)", tonumber(applied) or 0, S.rec.id)
+end
+
+local function push_faction()
+	local f = S.rec and S.rec.faction
+	local g = api and api.game
+	if type(f) ~= "string" or f == "" or type(g) ~= "table" or type(g.set_world_faction) ~= "function" then return end
+	local ok, r = pcall(g.set_world_faction, f)
+	if not ok or r ~= true then log("! the engine did not take the world's faction '%s'", f) end
+end
+
+local function activate(record, origin)
+	local r = records()
+	S.rec = r.clone(record)
+	S.origin = origin
+	-- coop_settings patches ini_file_ex when it is loaded: load it now, so that the record covers the options from the first
+	-- read of any script that comes after this one (the world start is the earliest point there is)
+	mod("coop_settings")
+	apply_cvars()
+	push_faction()
+	log("game '%s' (id %s, rev %d) is in force, from %s", tostring(S.rec.name), S.rec.id, tonumber(S.rec.rev) or 0, origin)
+end
+
+-- The name of the host's character and the world's group of a record that was made before the actor was there.
+local function fill_identity()
+	local r = S.rec
+	if not r then return end
+	if r.name == nil or r.name == "" then r.name = actor_name() or "" end
+	if r.faction == nil or r.faction == "" then r.faction = actor_community() end
+end
+
+-------------------------------------------------------------------------------
+-- The engine's hook
+-------------------------------------------------------------------------------
+local function before_world_start_impl(mode, save)
+	reset_state()
+	if not api then return end
+	if client_now() then
+		log("a client: the game's settings come from the host")
+		return
+	end
+	local r = records()
+	if not r then
+		log("! coop_game_record is not there: the game's settings are off")
+		return
+	end
+	if mode == "new" then
+		S.fresh_new = true
+		local g = api.game
+		local payload, faction
+		if type(g) == "table" and type(g.take_new) == "function" then
+			local ok, p, f = pcall(g.take_new)
+			if ok then payload, faction = p, f end
+		end
+		if type(payload) == "string" then
+			local record = decode_record(payload)
+			if record then
+				if (record.faction == nil or record.faction == "") and type(faction) == "string" then record.faction = faction end
+				activate(record, "new")
+			else
+				log("! the new game's record cannot be read: the world starts with the machine's values")
+			end
+		end
+	elseif mode == "load" then
+		local block = block_of_save(save)
+		if block then
+			local chosen, from = r.merge(block, load_card(block.id))
+			activate(chosen, from == "card" and "card" or "save")
+		else
+			log("load '%s': no record of a game in the save (yet)", tostring(save))
+		end
+	end
+end
+
+-- Called by the engine (coop_game_settings.cpp) before the first on_game_start; never raises.
+function before_world_start(mode, save)
+	local ok, err = pcall(before_world_start_impl, mode, save)
+	if not ok then
+		stats.errors = stats.errors + 1
+		log("! before_world_start(%s, %s): %s", tostring(mode), tostring(save), tostring(err))
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Callbacks
+-------------------------------------------------------------------------------
+local function load_state_impl(m_data)
+	if client_now() or type(m_data) ~= "table" then return end
+	local raw = m_data.coop_game
+	if raw ~= nil then
+		local block = sanitize(raw)
+		if not block then
+			log("! the game's record of this save is unreadable (a newer version?): left as it is")
+			return
+		end
+		if S.rec and S.rec.id == block.id then return end -- found at the world start
+		local chosen, from = records().merge(block, load_card(block.id))
+		activate(chosen, from == "card" and "card" or "save")
+		S.fire_pending = true
+		log("! the record was not read at the world start: switched on late, scripts that cached an option keep the machine's")
+		return
+	end
+	if S.rec then return end -- a new game (nothing is loaded) or a record already taken
+	if host_sign() then
+		activate(build_from_machine(m_data), "migrated")
+		S.card_pending, S.news = true, true
+		log("an old save of a co-op host: a record is made of this machine's values")
+	end
+end
+
+function load_state(m_data)
+	local ok, err = pcall(load_state_impl, m_data)
+	if not ok then
+		stats.errors = stats.errors + 1
+		log("! load_state: %s", tostring(err))
+	end
+end
+
+-- The effective factors into the record (the save's tables are the truth, the record mirrors them).
+local function mirror_factors()
+	local cs = mod("coop_settings")
+	if not (S.rec and cs and cs.read_factors) then return end
+	local f = cs.read_factors(false)
+	for _, src in ipairs({ "g", "e", "s" }) do
+		for id, v in pairs(f[src] or {}) do S.rec.values[src .. "|" .. id] = v end
+	end
+end
+
+-- The factors of the record into the game: a card edited in the menu is newer than the save.
+local function apply_record_factors()
+	local cs = mod("coop_settings")
+	if not (S.rec and cs and cs.apply_factor_table) then return end
+	local t = { g = {}, e = {}, s = {} }
+	for key, v in pairs(S.rec.values) do
+		local src, id = key:match("^([ges])|(.+)$")
+		if src and id ~= "type" then t[src][id] = v end
+	end
+	cs.apply_factor_table(t, "the game's settings")
+end
+
+local function block_of(r)
+	local b = sanitize(r)
+	if b then b.last_save, b.last_played = nil, nil end
+	return b
+end
+
+-- The card after a save: the running record, but an edit made in the menu while the game runs (a higher rev) stays.
+local function write_running_card()
+	local r = S.rec
+	local existing = load_card(r.id)
+	local card
+	if existing and (tonumber(existing.rev) or 0) > (tonumber(r.rev) or 0) then
+		card = existing
+	else
+		card = records().clone(r)
+		card.last_save = existing and existing.last_save or nil
+		card.last_played = nil
+	end
+	card.last_played = now_text()
+	local stem = S.save_stem
+	if stem and not TEMP_STEMS[stem:lower()] then card.last_save = stem end
+	return write_card(card)
+end
+
+local function save_state_impl(m_data)
+	if client_now() or type(m_data) ~= "table" or not S.rec then return end
+	if S.first_done then mirror_factors() end
+	local block = block_of(S.rec)
+	if not block then
+		stats.errors = stats.errors + 1
+		log("! the record of game %s cannot be put into the save", tostring(S.rec.id))
+		return
+	end
+	m_data.coop_game = block
+	stats.saves = stats.saves + 1
+	write_running_card()
+end
+
+function save_state(m_data)
+	local ok, err = pcall(save_state_impl, m_data)
+	if not ok then
+		stats.errors = stats.errors + 1
+		log("! save_state: %s", tostring(err))
+	end
+end
+
+local function give_news()
+	S.news = false
+	local actor = db and db.actor
+	if not actor then return end
+	local text = tr("st_coop_game_migrated",
+		"The settings of this game are saved from this machine's current settings. Change them: Co-op - Game settings.")
+	pcall(function() actor:give_game_news("Co-op", text, "ui_iconsTotal_grouping", 0, 9000) end)
+end
+
+local function fire_option_change()
+	S.fire_pending = false
+	local ok, err = pcall(SendScriptCallback, "on_option_change")
+	if not ok then log("! on_option_change after the late switch-on: %s", tostring(err)) end
+end
+
+local function first_update_impl()
+	if client_now() then return end
+	if S.first_done then return end
+	if not S.rec and S.fresh_new and host_sign() and records() then
+		-- a new world nobody staged a record for (the old screen, a refused stage): the machine's values become its record
+		activate(build_from_machine(save_table()), "fallback")
+		S.card_pending, S.news = true, true
+		log("a new world without a staged record: a record is made of this machine's values")
+	end
+	if not S.rec then return end
+	S.first_done = true
+	fill_identity()
+	push_faction()
+	if S.origin == "card" then apply_record_factors() end
+	mirror_factors()
+	if S.fire_pending then fire_option_change() end
+	if S.card_pending then
+		S.card_pending = false
+		write_card(S.rec)
+	end
+	if S.news then give_news() end
+end
+
+function actor_on_first_update()
+	local ok, err = pcall(first_update_impl)
+	if not ok then
+		stats.errors = stats.errors + 1
+		log("! actor_on_first_update: %s", tostring(err))
+	end
+end
+
+-- The save's name for the card: the engine tells alife_storage_manager the name of the save it is about to write, the
+-- save_state callback does not get it.
+local function base_stem(fname)
+	if type(fname) ~= "string" then return nil end
+	local name = fname:match("([^\\/]+)$") or fname
+	name = (name:gsub("%.scop$", ""))
+	if name == "" then return nil end
+	return name
+end
+
+local function install_save_wrapper()
+	if wrapped then return end
+	local asm = mod("alife_storage_manager")
+	local orig = asm and asm.CALifeStorageManager_before_save
+	if type(orig) ~= "function" then
+		log("! alife_storage_manager.CALifeStorageManager_before_save is not there: the card does not know the save's name")
+		return
+	end
+	wrapped = true
+	asm.CALifeStorageManager_before_save = function(fname, ...)
+		S.save_stem = base_stem(fname)
+		local res = { pcall(orig, fname, ...) }
+		S.save_stem = nil
+		if not res[1] then error(res[2], 0) end
+		return unpack(res, 2)
+	end
+end
+
+function on_game_start()
+	if not api then return end
+	local ok, err = pcall(function()
+		RegisterScriptCallback("save_state", save_state)
+		RegisterScriptCallback("load_state", load_state)
+		RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
+		install_save_wrapper()
+	end)
+	if not ok then log("! start-up failed: %s", tostring(err)) end
+end
+
+-------------------------------------------------------------------------------
+-- Interface
+-------------------------------------------------------------------------------
+-- The record in force (the table itself: read it, change it through put / the menu), nil when there is none.
+function active() return S.rec end
+
+-- A record is in force and a level is loaded: the machine's values are covered, the options are read-only.
+function locked() return S.rec ~= nil and in_level() end
+
+function origin() return S.origin end
+
+function running_id() return S.rec and S.rec.id or nil end
+
+function world_faction()
+	local f = S.rec and S.rec.faction
+	if type(f) == "string" and f ~= "" then return f end
+	return nil
+end
+
+local function norm_src(src)
+	if src == "o" or src == "options" then return "o" end
+	if src == "m" or src == "mcm" then return "m" end
+	return nil
+end
+
+-- The record's raw string for an option or MCM key, nil when the record has none.
+function value(src, path)
+	local s = norm_src(src)
+	if not (S.rec and s and type(path) == "string") then return nil end
+	return S.rec.values[s .. "|" .. path]
+end
+
+-- A write of the host to an option or MCM key the game owns: the record keeps it (nil drops the key).
+function put(src, path, raw)
+	local s = norm_src(src)
+	if not (S.rec and s and type(path) == "string" and path ~= "") then return false end
+	local key = s .. "|" .. path
+	if raw == nil then
+		S.rec.values[key] = nil
+		return true
+	end
+	local t = type(raw)
+	if t ~= "string" and t ~= "number" and t ~= "boolean" then return false end
+	local sc = schema()
+	S.rec.values[key] = sc and sc.canon(key, raw) or tostring(raw)
+	return true
+end
+
+-- The new game screen: hand the record to the engine, which keeps it until the world starts (coop.game.stage_new).
+function stage_new(record)
+	local c, r, g = codec(), records(), api and api.game
+	if not (c and r and type(g) == "table" and type(g.stage_new) == "function") then return false, "no engine" end
+	if type(record) ~= "table" then return false, "no record" end
+	local s, why = r.encode(record, c)
+	if not s then return false, why end
+	local ok, res = pcall(g.stage_new, s, record.faction)
+	if not ok or res ~= true then return false, "refused by the engine" end
+	log("a new game is staged: '%s' (id %s, group %s, %d bytes)", tostring(record.name), tostring(record.id),
+		tostring(record.faction), #s)
+	return true
+end
+
+-- The games of the menu: one per card, the latest played first.
+function list_games()
+	local out = {}
+	for _, id in ipairs(list_card_ids()) do
+		local c = load_card(id)
+		if c then
+			out[#out + 1] = {
+				id = c.id, name = c.name or "", faction = c.faction, created = c.created, last_save = c.last_save,
+				last_played = c.last_played, rev = c.rev, migrated = c.migrated,
+			}
+		end
+	end
+	tsort(out, function(a, b)
+		local pa, pb = a.last_played or a.created or "", b.last_played or b.created or ""
+		if pa ~= pb then return pa > pb end
+		return a.id < b.id
+	end)
+	return out
+end
+
+-- The game a save belongs to: the id and the record of its block. Decoded once per name | time | size.
+function game_of_save(stem)
+	if not valid_stem(stem) then return nil end
+	local key = stem:lower()
+	local sig = file_sig(key .. BLOCK_EXT)
+	local c = block_cache[key]
+	if sig and c and c.sig == sig then return c.id, c.record end
+	local block = block_of_save(stem)
+	if sig then block_cache[key] = { sig = sig, id = block and block.id or nil, record = block } end
+	return block and block.id or nil, block
+end
+
+-- The menu's edits of a game: changes = { key = value } (coop_game_record.apply), written to the card with rev + 1.
+-- Applied at the next load of any save of the game. All or nothing: a refused key stops the write.
+function save_edits(id, changes)
+	local r = records()
+	local card = load_card(id)
+	if not (r and card) then return false, "no such game" end
+	local new, refused, n = r.apply(card, changes)
+	if not new then return false, "no record" end
+	if #refused > 0 then return false, "refused: " .. table.concat(refused, ", ") end
+	if n == 0 then return true, "unchanged" end
+	if not write_card(new) then return false, "the card cannot be written" end
+	return true, nil, new.rev
+end
+
+-- "Take the current ones from this machine": the options a game owns that the catalog does not list become the machine's.
+function take_machine(id)
+	local r = records()
+	local card = load_card(id)
+	if not (r and card) then return false, 0 end
+	local values = r.from_machine(machine_reader(nil))
+	local new, n = r.take_machine(card, values)
+	if not new then return false, 0 end
+	new.rev = (tonumber(new.rev) or 0) + 1
+	new.machine_snapshot_at = now_text()
+	if not write_card(new) then return false, 0 end
+	return true, n
+end
+
+-- The running world has no record yet and is about to be opened to partners: it gets one from the machine's values now
+-- (they are the values in force), saved with the next save. -> id | nil, why
+function ensure_record()
+	if S.rec then return S.rec.id end
+	if client_now() then return nil, "client" end
+	if not records() then return nil, "no record module" end
+	if not in_level() then return nil, "no world" end
+	activate(build_from_machine(save_table()), "migrated")
+	S.first_done = true
+	fill_identity()
+	push_faction()
+	mirror_factors()
+	write_card(S.rec)
+	return S.rec.id
+end
+
+function status_line()
+	local r = S.rec
+	if not r then return "game settings: no record in force" end
+	local n = 0
+	for _ in pairs(r.values) do n = n + 1 end
+	return string_format("game settings: %s '%s' (rev %d, from %s, %d value(s), group %s, %s)", tostring(r.id), tostring(r.name),
+		tonumber(r.rev) or 0, tostring(S.origin), n, tostring(r.faction), locked() and "locked" or "not in a level")
+end
+
+function print_status()
+	log("%s", status_line())
+	log("saves %d, cards written %d (failed %d), errors %d", stats.saves, stats.cards, stats.card_fails, stats.errors)
+end

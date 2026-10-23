@@ -1008,20 +1008,6 @@ local function engine_console_vars()
 	return vars, files
 end
 
--- The entries of a list option as the stock window gets them (UIOptions:GetContent): a table, or { f } -> f().
-local function list_content(o)
-	if type(o.content) == "table" and type(o.content[1]) == "function" then return o.content[1]() end
-	return o.content or {}
-end
-
--- the place of option `id` in its group (-1: not there)
-local function option_index(group, id)
-	for i, o in ipairs(group.gr) do
-		if o.id == id then return i end
-	end
-	return -1
-end
-
 local function build_options_page()
 	ui_options = { options = {} }
 	function ui_options.init_opt_base() ui_options.options = { { id = "video" }, { id = "sound" } } end
@@ -1034,75 +1020,46 @@ local function build_options_page()
 	error("coop page was not appended")
 end
 
-case("options_page_has_rules", function()
+case("options_page_rules_moved", function()
+	-- The host's death, help and autosave rules are a game's settings now (docs/GAME_SETTINGS.md 3.6, 4.3, T4): not on the
+	-- Options page, but in the catalog coop_game_schema, once each, as the console variable of the engine of the same name.
 	local page = build_options_page()
-	local group
-	for _, g in ipairs(page.gr) do
-		if g.id == "coop_session" then group = g end
-	end
-	check(group ~= nil, "the page has the coop_session group")
-	local by_id = {}
-	for _, o in ipairs(group.gr) do by_id[o.id] = o end
+	local ids = {}
+	for _, g in ipairs(page.gr) do ids[#ids + 1] = g.id end
+	check(table.concat(ids, ",") == "coop_player", "the Options page is the player's: coop_player only (" .. table.concat(ids, ",") .. ")")
 
+	local sc = load_script("coop_game_schema")
 	local wanted = {
-		death_mode = "coop_death_mode", death_drop = "coop_death_drop", respawn_delay = "coop_respawn_delay",
-		contusion = "coop_contusion", death_money = "coop_death_money", death_wear = "coop_death_wear",
-		death_rank = "coop_death_rank", checkpoints_group = "coop_checkpoints_group",
-		autosave_interval = "coop_autosave_interval", autosave_count = "coop_autosave_count",
-		hardcore_new_kit = "coop_hardcore_new_kit", bleedout = "coop_bleedout", revive_health = "coop_revive_health",
-		death_share = "coop_death_share", -- build 10
+		"coop_death_mode", "coop_death_drop", "coop_death_share", "coop_respawn_delay", "coop_contusion", "coop_death_money",
+		"coop_death_wear", "coop_death_rank", "coop_hardcore_new_kit", "coop_bleedout", "coop_revive_health",
+		"coop_checkpoints_group", "coop_autosave_interval", "coop_autosave_count",
 	}
 	local vars, files = engine_console_vars()
-	for id, cmd in pairs(wanted) do
-		local o = by_id[id]
-		check(o ~= nil, "the group has '" .. id .. "'")
-		if o then
-			check(o.cmd == cmd, "'" .. id .. "' writes the console variable " .. cmd .. " (" .. tostring(o.cmd) .. ")")
-			if files > 0 then
-				local v = vars[cmd]
-				check(v ~= nil, "the engine registers " .. cmd)
-				if v and o.type == "check" then
-					check(v.kind == "Integer", cmd .. " is CCC_Integer (a check box sends 1 / 0), is " .. tostring(v.kind))
-				elseif v and o.type == "list" and o.val == 2 then
-					-- a list of numbers (build 10: coop_death_share): the stock window reads it as a number
-					check(v.kind == "Float" or v.kind == "Integer", cmd .. " is a number, is " .. tostring(v.kind))
-					for _, c in ipairs(list_content(o)) do
-						if v.lo and v.hi then
-							check(type(c[1]) == "number" and c[1] >= v.lo and c[1] <= v.hi,
-								cmd .. " entry " .. tostring(c[1]) .. " is inside the engine's " .. v.lo .. ".." .. v.hi)
-						end
-					end
-				elseif v and o.type == "list" then
-					check(v.kind == "Token", cmd .. " is CCC_Token, is " .. tostring(v.kind))
-				elseif v and o.type == "track" then
-					check(v.kind == "Float" or v.kind == "Integer", cmd .. " is a number, is " .. tostring(v.kind))
-					if v.lo and v.hi then
-						check(o.min >= v.lo and o.max <= v.hi, cmd .. " page range " .. o.min .. ".." .. o.max .. " is inside the engine's " .. v.lo .. ".." .. v.hi)
-					end
-					check(o.val == 2 and o.step and o.step > 0, cmd .. " is a track read as a number (val 2) with a step")
-				end
+	for _, cmd in ipairs(wanted) do
+		local it = sc.item("c|" .. cmd)
+		check(it ~= nil and it.cvar == cmd, "the catalog has the game rule " .. cmd)
+		if files > 0 and it then
+			local v = vars[cmd]
+			check(v ~= nil or cmd == "coop_death_share", "the engine registers " .. cmd)
+			if v and v.lo and v.hi and it.range then
+				check(it.range[1] >= v.lo and it.range[2] <= v.hi, cmd .. " catalog range " .. it.range[1] .. ".." .. it.range[2]
+					.. " is inside the engine's " .. v.lo .. ".." .. v.hi)
 			end
 		end
 	end
 	if files == 0 then print("  note: engine/src/xrGame/coop not found, console variables not cross-checked") end
 
-	-- death_mode: the two modes of the host, no rest of the old respawn / respawn_keep
-	local tokens = {}
-	for _, c in ipairs(by_id.death_mode and by_id.death_mode.content or {}) do tokens[#tokens + 1] = c[1] end
-	check(table.concat(tokens, ",") == "checkpoint,hardcore", "death_mode offers checkpoint and hardcore (" .. table.concat(tokens, ",") .. ")")
-	tokens = {}
-	for _, c in ipairs(by_id.death_drop and by_id.death_drop.content or {}) do tokens[#tokens + 1] = c[1] end
-	check(table.concat(tokens, ",") == "drop,corpse,lose,keep",
-		"death_drop offers drop, corpse, lose and (build 10) keep (" .. table.concat(tokens, ",") .. ")")
-
-	-- build 10: the share multiplier, 50 / 100 / 150 / 200 % of the ltx shares, a number list on the console variable
-	local share = by_id.death_share
-	check(share and share.type == "list" and share.val == 2 and share.cmd == "coop_death_share", "death_share is a number list")
-	local values = {}
-	for _, c in ipairs(share and list_content(share) or {}) do values[#values + 1] = tostring(c[1]) end
-	check(table.concat(values, ",") == "50,100,150,200", "death_share offers 50, 100, 150, 200 (" .. table.concat(values, ",") .. ")")
-	check(by_id.death_drop and share and option_index(group, "death_share") == option_index(group, "death_drop") + 1,
-		"the share is right under what falls")
+	-- death mode: the two modes of the host, no rest of the old respawn / respawn_keep; what falls: four, build 10's keep
+	local function tokens(key)
+		local t = {}
+		for _, e in ipairs(sc.item(key).values) do t[#t + 1] = tostring(e[1]) end
+		return table.concat(t, ",")
+	end
+	check(tokens("c|coop_death_mode") == "checkpoint,hardcore", "death_mode offers checkpoint and hardcore (" .. tokens("c|coop_death_mode") .. ")")
+	check(tokens("c|coop_death_drop") == "drop,corpse,lose,keep", "death_drop offers drop, corpse, lose and (build 10) keep")
+	check(tokens("c|coop_death_share") == "50,100,150,200", "death_share offers 50, 100, 150, 200")
+	check(sc.editable("c|coop_death_mode", true) == false and sc.editable("c|coop_death_drop", true) == true,
+		"only the death mode is fixed when the game is made")
 
 	-- the tokens are the engine's
 	local surv = read("engine/src/xrGame/coop/coop_survival.cpp")
@@ -1111,50 +1068,25 @@ case("options_page_has_rules", function()
 			check(surv:find('{"' .. t .. '",', 1, true) ~= nil, "the engine has the token '" .. t .. "'")
 		end
 	end
-
-	-- the check boxes of the group: bool_to_num
-	for _, id in ipairs({ "checkpoints_group", "hardcore_new_kit" }) do
-		local o = by_id[id]
-		check(o and o.type == "check" and o.bool_to_num == true and o.val == 1, "'" .. id .. "' is a check box with bool_to_num = true")
-	end
-	-- the new character kit is off until the host asks (Ruling F3-10): the engine's default is 0
+	-- the new character kit is off until the host asks (Ruling F3-10): the engine's default is 0, the catalog's too
 	local death_cpp = read("engine/src/xrGame/coop/coop_death.cpp")
 	if death_cpp then
 		check(death_cpp:find("int g_cv_new_kit = 0;", 1, true) ~= nil, "coop_hardcore_new_kit is off by default in the engine")
 	end
+	check(sc.default("c|coop_hardcore_new_kit") == false, "and in the catalog")
 
 	-- the old limit of 120 s is gone, delay 0..300 s
-	check(by_id.respawn_delay and by_id.respawn_delay.max == 300 and by_id.respawn_delay.min == 0, "respawn delay 0..300 s")
-	check(by_id.contusion and by_id.contusion.max == 60, "contusion up to 60 min")
+	check(sc.item("c|coop_respawn_delay").range[2] == 300 and sc.item("c|coop_respawn_delay").range[1] == 0, "respawn delay 0..300 s")
+	check(sc.item("c|coop_contusion").range[2] == 60, "contusion up to 60 min")
 
-	-- every caption and hint exists, in both languages (the menu test reads the same tables)
+	-- the strings of the old rules page that are named nowhere any more: not the death text of the old modes
 	local eng = merge(strings_of("gamedata/configs/text/eng/st_coop_menu.xml"), strings_of(DEATH_ENG))
 	local rus = merge(strings_of("gamedata/configs/text/rus/st_coop_menu.xml"), strings_of(DEATH_RUS))
-	local missing = {}
-	for _, o in ipairs(group.gr) do
-		local keys = {}
-		if o.type ~= "slide" and o.type ~= "desc" then
-			keys[#keys + 1] = "ui_mm_coop_coop_session_" .. o.id
-			keys[#keys + 1] = "ui_mm_coop_coop_session_" .. o.id .. "_desc"
-		elseif o.text then
-			keys[#keys + 1] = o.text
-		end
-		if o.type == "list" then for _, c in ipairs(list_content(o)) do keys[#keys + 1] = c[2] end end
-		for _, k in ipairs(keys) do
-			if not eng[k] then missing[#missing + 1] = "eng:" .. k end
-			if not rus[k] then missing[#missing + 1] = "rus:" .. k end
-		end
-	end
-	check(#missing == 0, "every caption, hint and list entry of the group has a string (" .. table.concat(missing, ",") .. ")")
-	-- the old modes are not named any more
 	local stale = {}
 	for _, id in ipairs({ "st_coop_opt_death_respawn", "st_coop_opt_death_respawn_keep" }) do
 		if eng[id] or rus[id] then stale[#stale + 1] = id end
 	end
 	check(#stale == 0, "no strings of the old respawn modes are left (" .. table.concat(stale, ",") .. ")")
-	local mode_desc = eng.ui_mm_coop_coop_session_death_mode_desc or ""
-	check(mode_desc ~= "" and not mode_desc:find("Respawn", 1, true) and not mode_desc:find("next load", 1, true),
-		"the death mode hint speaks of the new modes")
 end)
 
 done("DEATH")

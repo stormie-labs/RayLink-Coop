@@ -1,0 +1,700 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop - settings of a game (docs\GAME_SETTINGS.md, T4 of the game settings patch): the catalog coop_game_schema (tabs, items, values, hints of the new game screen and the Co-op window), the notes of the options pages, the news about a migrated game. -->
+<string_table>
+	<string id="st_coop_game_alife_mutant_pop">
+		<text>Mutants population factor</text>
+	</string>
+	<string id="st_coop_game_alife_mutant_pop_0_25">
+		<text>25 %</text>
+	</string>
+	<string id="st_coop_game_alife_mutant_pop_0_5">
+		<text>50 %</text>
+	</string>
+	<string id="st_coop_game_alife_mutant_pop_0_75">
+		<text>75 %</text>
+	</string>
+	<string id="st_coop_game_alife_mutant_pop_1">
+		<text>100 %</text>
+	</string>
+	<string id="st_coop_game_alife_stalker_pop">
+		<text>Stalkers population factor</text>
+	</string>
+	<string id="st_coop_game_alife_stalker_pop_0_25">
+		<text>25 %</text>
+	</string>
+	<string id="st_coop_game_alife_stalker_pop_0_5">
+		<text>50 %</text>
+	</string>
+	<string id="st_coop_game_alife_stalker_pop_0_75">
+		<text>75 %</text>
+	</string>
+	<string id="st_coop_game_alife_stalker_pop_1">
+		<text>100 %</text>
+	</string>
+	<string id="st_coop_game_anomaly_amount_modifier">
+		<text>Anomaly amount (DAO)</text>
+	</string>
+	<string id="st_coop_game_anomaly_amount_modifier_0">
+		<text>x0</text>
+	</string>
+	<string id="st_coop_game_anomaly_amount_modifier_0_5">
+		<text>x0.5</text>
+	</string>
+	<string id="st_coop_game_anomaly_amount_modifier_1">
+		<text>x1</text>
+	</string>
+	<string id="st_coop_game_anomaly_amount_modifier_1_5">
+		<text>x1.5</text>
+	</string>
+	<string id="st_coop_game_anomaly_amount_modifier_2">
+		<text>x2</text>
+	</string>
+	<string id="st_coop_game_anomaly_amount_modifier_3">
+		<text>x3</text>
+	</string>
+	<string id="st_coop_game_applies_new_levels">
+		<text>On levels made from now on; what is placed stays</text>
+	</string>
+	<string id="st_coop_game_applies_next_emission">
+		<text>From the next emission or psi-storm</text>
+	</string>
+	<string id="st_coop_game_applies_next_weather">
+		<text>From the next change of weather</text>
+	</string>
+	<string id="st_coop_game_applies_on_load">
+		<text>Takes effect the next time the game is loaded</text>
+	</string>
+	<string id="st_coop_game_artefacts_spawn_chance">
+		<text>Artefact chance (DAO)</text>
+	</string>
+	<string id="st_coop_game_artefacts_spawn_chance_0">
+		<text>0 %</text>
+	</string>
+	<string id="st_coop_game_artefacts_spawn_chance_10">
+		<text>10 %</text>
+	</string>
+	<string id="st_coop_game_artefacts_spawn_chance_15">
+		<text>15 %</text>
+	</string>
+	<string id="st_coop_game_artefacts_spawn_chance_25">
+		<text>25 %</text>
+	</string>
+	<string id="st_coop_game_artefacts_spawn_chance_5">
+		<text>5 %</text>
+	</string>
+	<string id="st_coop_game_autosave_count">
+		<text>Autosaves kept</text>
+	</string>
+	<string id="st_coop_game_autosave_count_10">
+		<text>10</text>
+	</string>
+	<string id="st_coop_game_autosave_count_20">
+		<text>20</text>
+	</string>
+	<string id="st_coop_game_autosave_count_3">
+		<text>3</text>
+	</string>
+	<string id="st_coop_game_autosave_count_5">
+		<text>5</text>
+	</string>
+	<string id="st_coop_game_autosave_count_50">
+		<text>50</text>
+	</string>
+	<string id="st_coop_game_autosave_interval">
+		<text>Autosave every</text>
+	</string>
+	<string id="st_coop_game_autosave_interval_0">
+		<text>Off</text>
+	</string>
+	<string id="st_coop_game_autosave_interval_10">
+		<text>10 min</text>
+	</string>
+	<string id="st_coop_game_autosave_interval_15">
+		<text>15 min</text>
+	</string>
+	<string id="st_coop_game_autosave_interval_20">
+		<text>20 min</text>
+	</string>
+	<string id="st_coop_game_autosave_interval_30">
+		<text>30 min</text>
+	</string>
+	<string id="st_coop_game_autosave_interval_5">
+		<text>5 min</text>
+	</string>
+	<string id="st_coop_game_autosave_interval_60">
+		<text>60 min</text>
+	</string>
+	<string id="st_coop_game_bleedout">
+		<text>Time to be rescued</text>
+	</string>
+	<string id="st_coop_game_bleedout_120">
+		<text>120 s</text>
+	</string>
+	<string id="st_coop_game_bleedout_180">
+		<text>180 s</text>
+	</string>
+	<string id="st_coop_game_bleedout_30">
+		<text>30 s</text>
+	</string>
+	<string id="st_coop_game_bleedout_300">
+		<text>300 s</text>
+	</string>
+	<string id="st_coop_game_bleedout_60">
+		<text>60 s</text>
+	</string>
+	<string id="st_coop_game_bleedout_90">
+		<text>90 s</text>
+	</string>
+	<string id="st_coop_game_checkpoints_group">
+		<text>Camps for the whole group</text>
+	</string>
+	<string id="st_coop_game_contusion">
+		<text>Contusion after death</text>
+	</string>
+	<string id="st_coop_game_contusion_0">
+		<text>0 min</text>
+	</string>
+	<string id="st_coop_game_contusion_10">
+		<text>10 min</text>
+	</string>
+	<string id="st_coop_game_contusion_20">
+		<text>20 min</text>
+	</string>
+	<string id="st_coop_game_contusion_30">
+		<text>30 min</text>
+	</string>
+	<string id="st_coop_game_contusion_5">
+		<text>5 min</text>
+	</string>
+	<string id="st_coop_game_contusion_60">
+		<text>60 min</text>
+	</string>
+	<string id="st_coop_game_created_only">
+		<text>set when the game was created</text>
+	</string>
+	<string id="st_coop_game_death_drop">
+		<text>What is lost on death</text>
+	</string>
+	<string id="st_coop_game_death_drop_corpse">
+		<text>The whole backpack in a stash</text>
+	</string>
+	<string id="st_coop_game_death_drop_drop">
+		<text>A bag at the body</text>
+	</string>
+	<string id="st_coop_game_death_drop_keep">
+		<text>Nothing falls</text>
+	</string>
+	<string id="st_coop_game_death_drop_lose">
+		<text>Gone for good</text>
+	</string>
+	<string id="st_coop_game_death_mode">
+		<text>Death mode</text>
+	</string>
+	<string id="st_coop_game_death_mode_checkpoint">
+		<text>Camps</text>
+	</string>
+	<string id="st_coop_game_death_mode_hardcore">
+		<text>Hardcore</text>
+	</string>
+	<string id="st_coop_game_death_money">
+		<text>Money lost on death</text>
+	</string>
+	<string id="st_coop_game_death_money_0">
+		<text>0 %</text>
+	</string>
+	<string id="st_coop_game_death_money_10">
+		<text>10 %</text>
+	</string>
+	<string id="st_coop_game_death_money_20">
+		<text>20 %</text>
+	</string>
+	<string id="st_coop_game_death_money_30">
+		<text>30 %</text>
+	</string>
+	<string id="st_coop_game_death_money_5">
+		<text>5 %</text>
+	</string>
+	<string id="st_coop_game_death_money_50">
+		<text>50 %</text>
+	</string>
+	<string id="st_coop_game_death_rank">
+		<text>Rank lost on death</text>
+	</string>
+	<string id="st_coop_game_death_rank_0">
+		<text>0 %</text>
+	</string>
+	<string id="st_coop_game_death_rank_10">
+		<text>10 %</text>
+	</string>
+	<string id="st_coop_game_death_rank_20">
+		<text>20 %</text>
+	</string>
+	<string id="st_coop_game_death_rank_5">
+		<text>5 %</text>
+	</string>
+	<string id="st_coop_game_death_share">
+		<text>How much falls</text>
+	</string>
+	<string id="st_coop_game_death_share_100">
+		<text>100 %</text>
+	</string>
+	<string id="st_coop_game_death_share_150">
+		<text>150 %</text>
+	</string>
+	<string id="st_coop_game_death_share_200">
+		<text>200 %</text>
+	</string>
+	<string id="st_coop_game_death_share_50">
+		<text>50 %</text>
+	</string>
+	<string id="st_coop_game_death_wear">
+		<text>Gear wear on death</text>
+	</string>
+	<string id="st_coop_game_death_wear_0">
+		<text>0 %</text>
+	</string>
+	<string id="st_coop_game_death_wear_10">
+		<text>10 %</text>
+	</string>
+	<string id="st_coop_game_death_wear_20">
+		<text>20 %</text>
+	</string>
+	<string id="st_coop_game_death_wear_30">
+		<text>30 %</text>
+	</string>
+	<string id="st_coop_game_death_wear_5">
+		<text>5 %</text>
+	</string>
+	<string id="st_coop_game_death_wear_50">
+		<text>50 %</text>
+	</string>
+	<string id="st_coop_game_difficulty">
+		<text>Game difficulty</text>
+	</string>
+	<string id="st_coop_game_disable_new_anomalies">
+		<text>No new anomalies (DAO)</text>
+	</string>
+	<string id="st_coop_game_dynamic_anomalies">
+		<text>Dynamic anomalies</text>
+	</string>
+	<string id="st_coop_game_dynamic_relations">
+		<text>Dynamic faction relations</text>
+	</string>
+	<string id="st_coop_game_economy">
+		<text>Economy difficulty</text>
+	</string>
+	<string id="st_coop_game_emission_fate">
+		<text>Emission: caught in the open</text>
+	</string>
+	<string id="st_coop_game_emission_fate_explode">
+		<text>Explode</text>
+	</string>
+	<string id="st_coop_game_emission_fate_kill_at_end">
+		<text>Kill at the end</text>
+	</string>
+	<string id="st_coop_game_emission_fate_kill_at_wave">
+		<text>Kill as the wave advances</text>
+	</string>
+	<string id="st_coop_game_emission_fate_turn_to_zombie">
+		<text>Turn to zombie</text>
+	</string>
+	<string id="st_coop_game_emission_frequency">
+		<text>Emission every</text>
+	</string>
+	<string id="st_coop_game_emission_frequency_12">
+		<text>12 h</text>
+	</string>
+	<string id="st_coop_game_emission_frequency_24">
+		<text>24 h</text>
+	</string>
+	<string id="st_coop_game_emission_frequency_48">
+		<text>2 days</text>
+	</string>
+	<string id="st_coop_game_emission_frequency_96">
+		<text>4 days</text>
+	</string>
+	<string id="st_coop_game_emission_state">
+		<text>Emissions</text>
+	</string>
+	<string id="st_coop_game_emission_warning">
+		<text>Emission: warning</text>
+	</string>
+	<string id="st_coop_game_emission_warning_no_warning">
+		<text>No warning</text>
+	</string>
+	<string id="st_coop_game_emission_warning_radio">
+		<text>Radio only</text>
+	</string>
+	<string id="st_coop_game_emission_warning_siren">
+		<text>Siren only</text>
+	</string>
+	<string id="st_coop_game_emission_warning_siren_radio">
+		<text>Siren and radio</text>
+	</string>
+	<string id="st_coop_game_excl_dist">
+		<text>Exclusion radius</text>
+	</string>
+	<string id="st_coop_game_excl_dist_0">
+		<text>0 m</text>
+	</string>
+	<string id="st_coop_game_excl_dist_100">
+		<text>100 m</text>
+	</string>
+	<string id="st_coop_game_excl_dist_25">
+		<text>25 m</text>
+	</string>
+	<string id="st_coop_game_excl_dist_50">
+		<text>50 m</text>
+	</string>
+	<string id="st_coop_game_excl_dist_75">
+		<text>75 m</text>
+	</string>
+	<string id="st_coop_game_faction">
+		<text>World faction</text>
+	</string>
+	<string id="st_coop_game_friendly_fire">
+		<text>Friendly fire</text>
+	</string>
+	<string id="st_coop_game_gather_radius">
+		<text>Group gathering radius</text>
+	</string>
+	<string id="st_coop_game_gather_radius_10">
+		<text>10 m</text>
+	</string>
+	<string id="st_coop_game_gather_radius_100">
+		<text>100 m</text>
+	</string>
+	<string id="st_coop_game_gather_radius_20">
+		<text>20 m</text>
+	</string>
+	<string id="st_coop_game_gather_radius_30">
+		<text>30 m</text>
+	</string>
+	<string id="st_coop_game_gather_radius_50">
+		<text>50 m</text>
+	</string>
+	<string id="st_coop_game_give_radius">
+		<text>Giving items: within</text>
+	</string>
+	<string id="st_coop_game_give_radius_10">
+		<text>10 m</text>
+	</string>
+	<string id="st_coop_game_give_radius_2">
+		<text>2 m</text>
+	</string>
+	<string id="st_coop_game_give_radius_20">
+		<text>20 m</text>
+	</string>
+	<string id="st_coop_game_give_radius_5">
+		<text>5 m</text>
+	</string>
+	<string id="st_coop_game_hardcore_new_kit">
+		<text>New hardcore character gets a kit</text>
+	</string>
+	<string id="st_coop_game_heli_spawn">
+		<text>Helicopter patrols</text>
+	</string>
+	<string id="st_coop_game_join_spawn">
+		<text>New players appear</text>
+	</string>
+	<string id="st_coop_game_join_spawn_faction_start">
+		<text>At the faction's base</text>
+	</string>
+	<string id="st_coop_game_join_spawn_host">
+		<text>Next to the host</text>
+	</string>
+	<string id="st_coop_game_max_money_transfer">
+		<text>Largest transfer</text>
+	</string>
+	<string id="st_coop_game_max_money_transfer_10000">
+		<text>10 thousand</text>
+	</string>
+	<string id="st_coop_game_max_money_transfer_100000">
+		<text>100 thousand</text>
+	</string>
+	<string id="st_coop_game_max_money_transfer_1000000">
+		<text>1 million</text>
+	</string>
+	<string id="st_coop_game_max_money_transfer_10000000">
+		<text>10 million</text>
+	</string>
+	<string id="st_coop_game_max_money_transfer_100000000">
+		<text>100 million</text>
+	</string>
+	<string id="st_coop_game_max_new_characters">
+		<text>New characters at most</text>
+	</string>
+	<string id="st_coop_game_max_new_characters_1">
+		<text>1</text>
+	</string>
+	<string id="st_coop_game_max_new_characters_16">
+		<text>16</text>
+	</string>
+	<string id="st_coop_game_max_new_characters_2">
+		<text>2</text>
+	</string>
+	<string id="st_coop_game_max_new_characters_32">
+		<text>32</text>
+	</string>
+	<string id="st_coop_game_max_new_characters_4">
+		<text>4</text>
+	</string>
+	<string id="st_coop_game_max_new_characters_64">
+		<text>64</text>
+	</string>
+	<string id="st_coop_game_max_new_characters_8">
+		<text>8</text>
+	</string>
+	<string id="st_coop_game_max_skip_hours">
+		<text>Longest time skip</text>
+	</string>
+	<string id="st_coop_game_max_skip_hours_12">
+		<text>12 h</text>
+	</string>
+	<string id="st_coop_game_max_skip_hours_168">
+		<text>168 h</text>
+	</string>
+	<string id="st_coop_game_max_skip_hours_24">
+		<text>24 h</text>
+	</string>
+	<string id="st_coop_game_max_skip_hours_48">
+		<text>48 h</text>
+	</string>
+	<string id="st_coop_game_max_skip_hours_72">
+		<text>72 h</text>
+	</string>
+	<string id="st_coop_game_migrated">
+		<text>The settings of this game are saved from this machine's current settings. Change them: Co-op - Game settings.</text>
+	</string>
+	<string id="st_coop_game_money_transfer">
+		<text>Money transfers between players</text>
+	</string>
+	<string id="st_coop_game_off">
+		<text>Off</text>
+	</string>
+	<string id="st_coop_game_offline_combat">
+		<text>Offline combat</text>
+	</string>
+	<string id="st_coop_game_offline_combat_full">
+		<text>Full</text>
+	</string>
+	<string id="st_coop_game_offline_combat_off">
+		<text>Off</text>
+	</string>
+	<string id="st_coop_game_offline_combat_on_smarts_only">
+		<text>Smart terrains only</text>
+	</string>
+	<string id="st_coop_game_old_save">
+		<text>An old game: its settings appear after the first load in co-op.</text>
+	</string>
+	<string id="st_coop_game_on">
+		<text>On</text>
+	</string>
+	<string id="st_coop_game_other_counts">
+		<text>Other options of the game: %s, mod settings (MCM): %s, taken from this machine %s.</text>
+	</string>
+	<string id="st_coop_game_other_how">
+		<text>They are changed in the main menu: Options and Mod settings, then the button above.</text>
+	</string>
+	<string id="st_coop_game_party_fast_travel">
+		<text>Fast travel by the group</text>
+	</string>
+	<string id="st_coop_game_psi_storm_fate">
+		<text>Psi-storm: caught in the open</text>
+	</string>
+	<string id="st_coop_game_psi_storm_fate_kill_at_vortex">
+		<text>Kill at the vortex</text>
+	</string>
+	<string id="st_coop_game_psi_storm_fate_turn_to_zombie">
+		<text>Turn to zombie</text>
+	</string>
+	<string id="st_coop_game_psi_storm_fate_unhurt">
+		<text>Don't kill</text>
+	</string>
+	<string id="st_coop_game_psi_storm_frequency">
+		<text>Psi-storm every</text>
+	</string>
+	<string id="st_coop_game_psi_storm_frequency_12">
+		<text>12 h</text>
+	</string>
+	<string id="st_coop_game_psi_storm_frequency_24">
+		<text>24 h</text>
+	</string>
+	<string id="st_coop_game_psi_storm_frequency_48">
+		<text>2 days</text>
+	</string>
+	<string id="st_coop_game_psi_storm_frequency_96">
+		<text>4 days</text>
+	</string>
+	<string id="st_coop_game_psi_storm_state">
+		<text>Psi-storms</text>
+	</string>
+	<string id="st_coop_game_psi_storm_warning">
+		<text>Psi-storm: warning</text>
+	</string>
+	<string id="st_coop_game_psi_storm_warning_no_warning">
+		<text>No warning</text>
+	</string>
+	<string id="st_coop_game_psi_storm_warning_siren">
+		<text>Siren</text>
+	</string>
+	<string id="st_coop_game_respawn_delay">
+		<text>Respawn delay</text>
+	</string>
+	<string id="st_coop_game_respawn_delay_0">
+		<text>0 s</text>
+	</string>
+	<string id="st_coop_game_respawn_delay_120">
+		<text>120 s</text>
+	</string>
+	<string id="st_coop_game_respawn_delay_15">
+		<text>15 s</text>
+	</string>
+	<string id="st_coop_game_respawn_delay_30">
+		<text>30 s</text>
+	</string>
+	<string id="st_coop_game_respawn_delay_300">
+		<text>300 s</text>
+	</string>
+	<string id="st_coop_game_respawn_delay_60">
+		<text>60 s</text>
+	</string>
+	<string id="st_coop_game_revive_health">
+		<text>Health after a rescue</text>
+	</string>
+	<string id="st_coop_game_revive_health_0_1">
+		<text>10 %</text>
+	</string>
+	<string id="st_coop_game_revive_health_0_2">
+		<text>20 %</text>
+	</string>
+	<string id="st_coop_game_revive_health_0_3">
+		<text>30 %</text>
+	</string>
+	<string id="st_coop_game_revive_health_0_5">
+		<text>50 %</text>
+	</string>
+	<string id="st_coop_game_revive_health_0_75">
+		<text>75 %</text>
+	</string>
+	<string id="st_coop_game_revive_health_1">
+		<text>100 %</text>
+	</string>
+	<string id="st_coop_game_routes">
+		<text>Open Zone</text>
+	</string>
+	<string id="st_coop_game_running">
+		<text>Saved. Takes effect the next time this game is loaded (this game is running now).</text>
+	</string>
+	<string id="st_coop_game_saved">
+		<text>Saved. Takes effect the next time this game is loaded.</text>
+	</string>
+	<string id="st_coop_game_share_rewards">
+		<text>Shared task rewards</text>
+	</string>
+	<string id="st_coop_game_sleep_radius">
+		<text>Sleeping: everyone within</text>
+	</string>
+	<string id="st_coop_game_sleep_radius_10">
+		<text>10 m</text>
+	</string>
+	<string id="st_coop_game_sleep_radius_20">
+		<text>20 m</text>
+	</string>
+	<string id="st_coop_game_sleep_radius_3">
+		<text>3 m</text>
+	</string>
+	<string id="st_coop_game_sleep_radius_30">
+		<text>30 m</text>
+	</string>
+	<string id="st_coop_game_sleep_radius_6">
+		<text>6 m</text>
+	</string>
+	<string id="st_coop_game_sleep_rule">
+		<text>Sleeping</text>
+	</string>
+	<string id="st_coop_game_sleep_rule_gather">
+		<text>Everyone nearby</text>
+	</string>
+	<string id="st_coop_game_sleep_rule_host">
+		<text>The host decides</text>
+	</string>
+	<string id="st_coop_game_sleep_rule_safe_or_vote">
+		<text>Safe place, else vote</text>
+	</string>
+	<string id="st_coop_game_sleep_rule_vote">
+		<text>Vote</text>
+	</string>
+	<string id="st_coop_game_story">
+		<text>Story mode</text>
+	</string>
+	<string id="st_coop_game_tab_death">
+		<text>Death and help</text>
+	</string>
+	<string id="st_coop_game_tab_difficulty">
+		<text>Difficulty and economy</text>
+	</string>
+	<string id="st_coop_game_tab_other">
+		<text>Other</text>
+	</string>
+	<string id="st_coop_game_tab_party">
+		<text>Group and economy</text>
+	</string>
+	<string id="st_coop_game_tab_saves">
+		<text>Saves</text>
+	</string>
+	<string id="st_coop_game_tab_world">
+		<text>World</text>
+	</string>
+	<string id="st_coop_game_take_machine">
+		<text>Take the current ones from this machine</text>
+	</string>
+	<string id="st_coop_game_take_machine_confirm">
+		<text>Replace the other options of this game (not in the tabs) with this machine's current options and mod settings?</text>
+	</string>
+	<string id="st_coop_game_teleport_radius">
+		<text>Teleport takes players within</text>
+	</string>
+	<string id="st_coop_game_teleport_radius_0">
+		<text>0 m</text>
+	</string>
+	<string id="st_coop_game_teleport_radius_100">
+		<text>100 m</text>
+	</string>
+	<string id="st_coop_game_teleport_radius_200">
+		<text>200 m</text>
+	</string>
+	<string id="st_coop_game_teleport_radius_25">
+		<text>25 m</text>
+	</string>
+	<string id="st_coop_game_teleport_radius_50">
+		<text>50 m</text>
+	</string>
+	<string id="st_coop_game_title">
+		<text>Game settings</text>
+	</string>
+	<string id="st_coop_game_travel_time">
+		<text>Travel takes game time</text>
+	</string>
+	<string id="st_coop_game_vote_timeout">
+		<text>Time to vote</text>
+	</string>
+	<string id="st_coop_game_vote_timeout_120">
+		<text>120 s</text>
+	</string>
+	<string id="st_coop_game_vote_timeout_15">
+		<text>15 s</text>
+	</string>
+	<string id="st_coop_game_vote_timeout_30">
+		<text>30 s</text>
+	</string>
+	<string id="st_coop_game_vote_timeout_60">
+		<text>60 s</text>
+	</string>
+	<string id="st_coop_opt_game_note">
+		<text>Set in the game's settings (Co-op menu). Takes effect on load.</text>
+	</string>
+	<string id="st_coop_opt_machine_note">
+		<text>For co-op games these are the defaults for new games. A created game has its own settings.</text>
+	</string>
+</string_table>

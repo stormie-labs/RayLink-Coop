@@ -1,6 +1,9 @@
 -- Anomaly Coop (F0, review R5 I1): the check boxes of the "Co-op" options page that write an integer console
 -- variable must carry bool_to_num = true. Without it the stock ui_options.On_Accept sends "on"/"off", the engine's
--- CCC_Integer parses that as 0 and friendly fire / shared rewards / name tags are silently always off.
+-- CCC_Integer parses that as 0 and the name tags are silently always off.
+-- Game settings (docs\GAME_SETTINGS.md 4.3): the host's rules (friendly fire, death, autosave, economy...) are a game's
+-- settings now, not an options page: the page holds the player's group only. Their console variables, ranges and values
+-- are checked against the engine in test_game_record (the catalog).
 -- Real coop_menu_options.script; the stock options window is a stand-in (menu_stubs.lua). Not shipped.
 -- Run: tools\test_lua.cmd menu_options
 dofile("tests/lua/support/menu_stubs.lua")
@@ -64,8 +67,8 @@ for _, group in ipairs(page.gr) do
 	end
 end
 
--- the four console check boxes of the page (a deleted or renamed one must not make this test vacuous)
-local expected = { coop_friendly_fire = false, coop_share_rewards = false, coop_nametags = false, coop_nametags_dist = false }
+-- the console check boxes of the page (a deleted or renamed one must not make this test vacuous)
+local expected = { coop_nametags = false, coop_nametags_dist = false }
 for _, opt in ipairs(checks_with_cmd) do
 	if expected[opt.cmd] ~= nil then expected[opt.cmd] = true end
 end
@@ -111,49 +114,32 @@ for _, group in ipairs(page.gr) do
 end
 
 -------------------------------------------------------------------------------
-print("== build 10: nothing is lost (keep) and the share multiplier (coop_death_share)")
-local session
+print("== the host's rules are not on the page any more (game settings, T4)")
+local groups = {}
+for _, group in ipairs(page.gr) do groups[#groups + 1] = group.id end
+check(table.concat(groups, ",") == "coop_player", "the page has the player group only (" .. table.concat(groups, ",") .. ")")
+local ids = {}
 for _, group in ipairs(page.gr) do
-	if group.id == "coop_session" then session = group end
+	for _, opt in ipairs(group.gr) do ids[opt.id or "?"] = opt end
 end
-local by_id = {}
-for _, opt in ipairs(session and session.gr or {}) do by_id[opt.id] = opt end
-local drop, share = by_id.death_drop, by_id.death_share
-
-local has_keep = false
-for _, c in ipairs(drop and drop.content or {}) do has_keep = has_keep or (c[1] == "keep" and c[2] == "st_coop_opt_drop_keep") end
-check(has_keep, "what falls offers keep (st_coop_opt_drop_keep)")
-check(drop ~= nil and stock_console_line(drop, "keep") == "coop_death_drop keep", "picking it sends 'coop_death_drop keep'")
-
-check(share ~= nil and share.type == "list" and share.val == 2 and share.cmd == "coop_death_share" and share.no_str == true,
-	"the share is a number list on coop_death_share")
--- UIOptions:GetContent: a table, or { f } -> f(); the window matches the console's number against the values
-local function content(o)
-	if type(o.content[1]) == "function" then return o.content[1]() end
-	return o.content
+for _, id in ipairs({ "friendly_fire", "share_rewards", "death_mode", "death_drop", "death_share", "bleedout", "revive_health",
+	"respawn_delay", "contusion", "death_money", "death_wear", "death_rank", "hardcore_new_kit", "checkpoints_group",
+	"autosave_interval", "autosave_count", "party_fast_travel", "gather_radius", "sleep_rule", "max_money_transfer", "give_radius" }) do
+	check(ids[id] == nil, "no host rule '" .. id .. "' on the page")
 end
-local function values_of(list)
-	local t = {}
-	for _, c in ipairs(list) do t[#t + 1] = tostring(c[1]) .. "=" .. tostring(c[2]) end
-	return table.concat(t, ",")
+check(ids.nick and ids.nick.cmd == "coop_nick" and ids.host_port and ids.compass_hud and ids.chat_feed, "the player's own options are all there")
+-- no console variable of the game's rules is left bound to a control (the 17 are the catalog's, coop_game_schema.CVARS)
+local sc = load_module("coop_game_schema")
+local bound = {}
+for _, group in ipairs(page.gr) do
+	for _, opt in ipairs(group.gr) do
+		if opt.cmd then bound[opt.cmd] = true end
+	end
 end
-local saved_cmd = rawget(_G, "get_console_cmd")
-local console = "100.00000" -- a CCC_Float reads back as "%3.5f"
-get_console_cmd = function(_, name) return name == "coop_death_share" and console or nil end
-if share then
-	local base = "50=st_coop_opt_share_50,100=st_coop_opt_share_100,150=st_coop_opt_share_150,200=st_coop_opt_share_200"
-	check(values_of(content(share)) == base, "50 / 100 / 150 / 200 % (" .. values_of(content(share)) .. ")")
-	local list = content(share)
-	check(stock_console_line(share, list[3][1]) == "coop_death_share 150", "picking 150 % sends 'coop_death_share 150'")
-	console = "75.00000"
-	list = content(share)
-	check(#list == 5 and list[2][1] == 75 and list[2][2] == "75 %",
-		"a share set elsewhere (75) is an entry of its own, the page shows what is in force (" .. values_of(list) .. ")")
-	console = "300.00000"
-	check(values_of(content(share)) == base, "a number outside 0..200 adds nothing")
-	console = nil
-	check(values_of(content(share)) == base, "no console variable (an exe without co-op): the four")
+local leaked = {}
+for _, name in ipairs(sc.CVARS) do
+	if bound[name] then leaked[#leaked + 1] = name end
 end
-get_console_cmd = saved_cmd
+check(#leaked == 0, "no control writes one of the game's console rules (" .. table.concat(leaked, ",") .. ")")
 
 print(string.format("%d passed, %d failed", PASSES, FAILS))

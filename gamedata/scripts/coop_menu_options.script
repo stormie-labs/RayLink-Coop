@@ -8,27 +8,19 @@
 		party panel / player markers / chat feed on the HUD (W5: applied to coop_core_hud / coop_core_chat),
 		HUD v2 (docs\HUD_V2.md): compass bar on/off and its field of view 120 / 160 / 200 (coop_hud_compass), a line
 		that says where the ping key is (the key itself: Controls > Common, "Co-op: ping", modxml_coop_hud).
-	Session rules group (the host's values are used; coop_settings.ltx: coop/coop_session/* = host):
-		friendly fire, shared task rewards, bleed-out time, health after revive;
-		W5: the economy group's rules (coop_economy_core.RULES, read through coop_settings.rule("economy/<id>");
-		defaults here must match RULES). F3 task 17: the "clients may quicksave" rule is gone, nobody saves by hand
-		in a session (coop_saves).
-		F3 task 15: the host's death rules (docs\CHECKPOINTS_DEATH.md section 9), each one is the console variable of the
-		engine of the same name (coop_<id>; coop_survival.cpp, coop_death.cpp, coop_checkpoints.cpp, coop_autosave.cpp):
-		death mode (checkpoint | hardcore), what falls (drop | corpse | lose | keep, build 10: nothing), how much of it
-		(coop_death_share 50 | 100 | 150 | 200 %, build 10), respawn delay 0..300 s, contusion 0..60 min,
-		money / gear wear / rank cut in %, the starting kit of a new hardcore character (Ruling F3-10, off), camps shown to
-		the group, the emergency saves of the host (interval in min, how many are kept). Their strings: st_coop_death.xml.
-		On a connected client the options window refuses edits of these and shows the lock note
-		(coop_settings: option lock), the values shown there are the player's own for when he hosts.
+	The host's rules are not on this page any more (game settings, docs\GAME_SETTINGS.md 3.6 and 4.3): friendly fire,
+	shared task rewards, the death rules (docs\CHECKPOINTS_DEATH.md section 9), the autosave, the economy group's rules
+	(coop_economy_core.RULES, read through coop_settings.rule("economy/<id>")) belong to one game. They are set on the new
+	game screen (coop_game_settings_view), kept in the game's record (coop_game_settings, coop_game_schema) and changed for
+	an existing game from the Co-op window; in the game they are read-only for the host too (coop_settings: option lock).
+	Their strings (ui_mm_coop_coop_session_*) stay in the string tables: the catalog's texts and old user.ltx files use them.
 	Console variables are saved by the engine in user.ltx (cfg_save on Apply), not in axr_options.ltx.
 --]]
 
 local installed = false
 
--- Check box bound to an integer console variable (coop_friendly_fire, coop_share_rewards, coop_nametags*: all
--- CCC_Integer 0..1). R5 I1: without bool_to_num the stock ui_options.On_Accept sends "on"/"off", which CCC_Integer
--- reads as 0, so the box could never switch the variable on.
+-- Check box bound to an integer console variable (coop_nametags*: CCC_Integer 0..1). R5 I1: without bool_to_num the
+-- stock ui_options.On_Accept sends "on"/"off", which CCC_Integer reads as 0, so the box could never switch it on.
 local function check(id, cmd)
 	return { id = id, type = "check", val = 1, cmd = cmd, bool_to_num = true }
 end
@@ -36,47 +28,6 @@ end
 -- Stored in axr_options.ltx (no console variable): coop/coop_<group>/<id>.
 local function flag(id, def)
 	return { id = id, type = "check", val = 1, def = def }
-end
-
-local function track(id, def, min, max, step)
-	return { id = id, type = "track", val = 2, def = def, min = min, max = max, step = step }
-end
-
--- Track bound to a numeric console variable of the host (CCC_Float or CCC_Integer): the stock window reads it as a string
--- (get_console_cmd(0)) and sends "<cmd> <value>", so both kinds work. The bounds are the engine's (the test checks them).
-local function cvar_track(id, cmd, min, max, step)
-	return { id = id, type = "track", val = 2, cmd = cmd, min = min, max = max, step = step }
-end
-
--- List bound to a token console variable: val 0 reads the token name, `content` = { token, string id } in display order.
-local function cvar_list(id, cmd, content)
-	return { id = id, type = "list", val = 0, cmd = cmd, no_str = true, content = content }
-end
-
--- coop_death_share (build 10): the multiplier of the loss shares of drop and lose, 50 / 100 / 150 / 200 % (the engine's
--- CCC_Float 0..200). A list of numbers (val 2: the window reads the console as a number and matches it against the
--- values); a value set elsewhere (the console, a game's settings) that is none of the four is an entry of its own, so the
--- page shows what is in force. The stock window calls { share_entries } as the content (UIOptions:GetContent).
-local SHARE_BASE = { 50, 100, 150, 200 }
-local SHARE_MAX = 200
-
-function share_entries()
-	local out = {}
-	for _, n in ipairs(SHARE_BASE) do out[#out + 1] = { n, "st_coop_opt_share_" .. n } end
-	local f = rawget(_G, "get_console_cmd")
-	local ok, v = false, nil
-	if type(f) == "function" then ok, v = pcall(f, 0, "coop_death_share") end
-	local n = ok and tonumber(v) or nil
-	if n == nil or n ~= n or n < 0 or n > SHARE_MAX then return out end
-	for _, e in ipairs(out) do
-		if e[1] == n then return out end
-	end
-	local pos = #out + 1
-	for i, e in ipairs(out) do
-		if n < e[1] then pos = i; break end
-	end
-	table.insert(out, pos, { n, string.format("%g %%", n) })
-	return out
 end
 
 local function slide(id, link)
@@ -105,56 +56,7 @@ function build_page()
 					} },
 				{ id = "ping_note", type = "desc", text = "st_coop_hud_ping_note", clr = { 255, 200, 200, 200 } },
 			}, },
-			{ id = "coop_session", sh = true, gr = {
-				slide("coop_session", "ui_options_slider_other"),
-				{ id = "note", type = "desc", text = "st_coop_opt_session_note", clr = { 255, 200, 200, 200 } },
-				check("friendly_fire", "coop_friendly_fire"),
-				check("share_rewards", "coop_share_rewards"),
-				-- F3 task 15: the host's death rules. The old respawn / respawn_keep are synonyms of checkpoint in the
-				-- engine (an old user.ltx still loads), they are not offered any more.
-				cvar_list("death_mode", "coop_death_mode", {
-					{ "checkpoint", "st_coop_opt_death_checkpoint" },
-					{ "hardcore", "st_coop_opt_death_hardcore" },
-				}),
-				cvar_list("death_drop", "coop_death_drop", {
-					{ "drop", "st_coop_opt_drop_drop" },
-					{ "corpse", "st_coop_opt_drop_corpse" },
-					{ "lose", "st_coop_opt_drop_lose" },
-					{ "keep", "st_coop_opt_drop_keep" }, -- build 10: nothing is lost
-				}),
-				{ id = "death_share", type = "list", val = 2, cmd = "coop_death_share", min = 0, max = SHARE_MAX,
-					no_str = true, content = { share_entries } },
-				{ id = "bleedout", type = "track", val = 2, cmd = "coop_bleedout", min = 10, max = 600, step = 10 },
-				{ id = "revive_health", type = "track", val = 2, cmd = "coop_revive_health", min = 0.05, max = 1,
-					step = 0.05, prec = 2 },
-				cvar_track("respawn_delay", "coop_respawn_delay", 0, 300, 5),
-				cvar_track("contusion", "coop_contusion", 0, 60, 1),
-				cvar_track("death_money", "coop_death_money", 0, 100, 5),
-				cvar_track("death_wear", "coop_death_wear", 0, 100, 5),
-				cvar_track("death_rank", "coop_death_rank", 0, 100, 5),
-				check("hardcore_new_kit", "coop_hardcore_new_kit"),
-				check("checkpoints_group", "coop_checkpoints_group"),
-				cvar_track("autosave_interval", "coop_autosave_interval", 0, 120, 5),
-				cvar_track("autosave_count", "coop_autosave_count", 1, 50, 1),
-				-- economy group (coop_settings.rule("economy/<id>"))
-				flag("party_fast_travel", true),
-				track("gather_radius", 20, 5, 100, 5),
-				{ id = "sleep_rule", type = "list", val = 0, def = "vote", no_str = true,
-					content = {
-						{ "vote", "st_coop_opt_sleep_vote" },
-						{ "safe_or_vote", "st_coop_opt_sleep_safe_or_vote" },
-						{ "gather", "st_coop_opt_sleep_gather" },
-						{ "host", "st_coop_opt_sleep_host" },
-					} },
-				track("sleep_radius", 6, 2, 30, 1),
-				track("vote_timeout", 30, 10, 120, 5),
-				track("teleport_radius", 50, 0, 200, 10),
-				flag("travel_time", true),
-				track("max_skip_hours", 48, 1, 168, 1),
-				flag("money_transfer", true),
-				{ id = "max_money_transfer", type = "input", val = 2, def = 1000000, min = 0, max = 100000000 },
-				track("give_radius", 5, 1, 20, 1),
-			}, },
+			-- the host's rules (the old group coop_session) are a game's settings now: see the header
 		},
 	}
 end

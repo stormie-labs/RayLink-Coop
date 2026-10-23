@@ -11,6 +11,9 @@ COOP_FILES = {
 	"coop_economy_money",
 	"coop_economy_travel",
 	"coop_economy_world",
+	"coop_game_record", -- game settings (T4): the catalog and the record are read at run time (coop_settings.rule)
+	"coop_game_schema",
+	"coop_game_settings", -- the host's game: the record, its callbacks and the save wrapper
 	"coop_main",
 	"coop_menu",
 	"coop_menu_char",

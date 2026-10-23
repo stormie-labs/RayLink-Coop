@@ -23,10 +23,23 @@
 		"<src>|<path>" = value          (src o/m: raw string as stored; g/e: number/boolean/string)
 		"x|<src>|<path>" = true         (delta: the host no longer has this key)
 
+	The host's game (game settings, docs\GAME_SETTINGS.md 3.5 and 4.3): a host with the record of its game
+	(coop_game_settings.active) in a level gets the same overlay over axr_options.ltx as a client: a game-owned key reads
+	the record's value (a key the record lacks reads the machine's value and joins the record), a write of such a key goes
+	to the record and not to the file, and the options / MCM windows, ui_mcm.set and the difficulty setters refuse the
+	edits like on a client. The game owns what the explicit host lists name ([options_host], [mcm_host], prefix or exact
+	path, the co-op rules): is_game_owned. An MCM option that is the host's only by the default rule or a word of its
+	path stays the machine's on the host (Ruling GS-1: the owner keeps the cosmetic options of the mods); a client still
+	gets every host-owned value. Outside a level the machine's values show, the note on a host page says so.
+
 	For other scripts:
 		coop_settings.owner_of(store, path) -> "host" | "player"   (store "options" / "mcm")
 		coop_settings.is_host_owned(store, path)
+		coop_settings.is_game_owned(store, path) -> bool   (store "options" / "mcm" or the source "o" / "m")
 		coop_settings.host_value(store, path) -> raw string or nil (client, host's value)
+		coop_settings.rule("economy/<id>") -> the session rule (defaults: coop_game_schema o|coop/coop_session/<id>)
+		coop_settings.read_factors(with_type) -> { g = {id = v}, e = {...}, s = {...} }   the difficulty factors in force
+		coop_settings.apply_factor_table(t, why) -> n   sets such factors through the original setters (coop_game_settings)
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
@@ -35,6 +48,7 @@ local string_format = string.format
 local tostring, tonumber, type, pairs, ipairs, pcall, next = tostring, tonumber, type, pairs, ipairs, pcall, next
 
 local STASH_KEY = "coop_settings"
+local client_mode = false -- this machine is a co-op client (refreshed every tick)
 local SRC_OF = { options = "o", mcm = "m" }
 local SECTION_OF = { o = "options", m = "mcm" }
 
@@ -60,6 +74,7 @@ local stats = {
 	full_in = 0, delta_in = 0, requests = 0, -- client
 	full_out = 0, delta_out = 0, oversize = 0, -- host
 	reads = 0, blocked_writes = 0, skipped_saves = 0, refused = 0, factor_sets = 0, errors = 0,
+	game_reads = 0, game_writes = 0, game_joined = 0, -- the host's game (coop_game_settings)
 }
 
 -- Script module by name, or nil (a missing addon such as ui_mcm is not an error).
@@ -215,22 +230,25 @@ local function has_word(path, set)
 	return false
 end
 
+-- -> owner, explicit. explicit = an exact path or a prefix of [<store>_host] / [<store>_player] decided it (steps 1 and 2),
+-- not a word of the path nor the store's default (steps 3 and 4).
 local function decide(src, path)
 	local p = path:lower()
 	local owner = rules.exact[src][p]
-	if owner then return owner end
+	if owner then return owner, true end
 	local list = rules.prefixes[src]
 	for i = 1, #list do
 		local e = list[i]
-		if p:sub(1, #e[1]) == e[1] then return e[2] end
+		if p:sub(1, #e[1]) == e[1] then return e[2], true end
 	end
-	if has_word(p, rules.always_player) then return "player" end
-	if has_word(p, rules.host_words) then return "host" end
-	if has_word(p, rules.player_words) then return "player" end
-	return rules.default[src] or "host"
+	if has_word(p, rules.always_player) then return "player", false end
+	if has_word(p, rules.host_words) then return "host", false end
+	if has_word(p, rules.player_words) then return "player", false end
+	return rules.default[src] or "host", false
 end
 
 local owner_cache = { o = {}, m = {} }
+local explicit_cache = { o = {}, m = {} } -- the same keys: was the owner named by a list (see decide)
 
 local function owner_src(src, path)
 	if src == "g" or src == "e" then return "host" end
@@ -239,9 +257,10 @@ local function owner_src(src, path)
 	local owner = cache[path]
 	if owner == nil then
 		load_rules()
-		local ok, r = pcall(decide, src, path)
+		local ok, r, explicit = pcall(decide, src, path)
 		owner = ok and r or "host"
 		cache[path] = owner
+		explicit_cache[src][path] = ok and explicit == true
 	end
 	return owner
 end
@@ -255,22 +274,84 @@ function is_host_owned(store, path)
 	return owner_of(store, path) == "host"
 end
 
+-- What a game owns (Ruling GS-1): the host's options that an explicit host list names. A client takes every host-owned
+-- value; the host's game takes, and locks in the level, only these.
+local function game_owned(src, path)
+	if owner_src(src, path) ~= "host" then return false end
+	local e = explicit_cache[src]
+	return e ~= nil and e[path] == true
+end
+
+function is_game_owned(store, path)
+	return game_owned(SRC_OF[store] or store, path)
+end
+
+-- The host's game: scripts\coop_game_settings.script, nil when it is not installed. Its calls are plain Lua functions
+-- that do not raise; the pcall is only for a script that fails to load.
+local gs_mod, gs_tries = nil, 0
+local function gs()
+	if gs_mod == nil and gs_tries < 3 then
+		gs_tries = gs_tries + 1 -- a script that is not there is looked for a few times, not at every option read
+		gs_mod = mod("coop_game_settings")
+	end
+	return gs_mod
+end
+
+-- This host has the record of its game and is in a level: the overlay and the lock are on (coop_game_settings.locked).
+local function host_game_on()
+	if client_mode then return false end
+	local g = gs()
+	if not g then return false end
+	local ok, r = pcall(g.locked)
+	return ok and r == true
+end
+
+-- A level is loaded (not the main menu): the game's values are in force only then.
+local function in_level()
+	local lv = rawget(_G, "level")
+	if type(lv) ~= "table" or type(lv.present) ~= "function" then return false end
+	local ok, r = pcall(lv.present)
+	return ok and r == true
+end
+
 -------------------------------------------------------------------------------
 -- Host: snapshot, baseline, deltas
 -------------------------------------------------------------------------------
 local host = { last = nil, serial = 0, next_poll = 0, dirty = true }
 
-local function add_factors(t, src, getter, keys, stored)
-	local gd = mod("game_difficulties")
-	if not (gd and type(gd[getter]) == "function") then return end
+-- The save's state table (m_data of alife_storage_manager), nil when there is none.
+local function save_state_table()
+	local asm = mod("alife_storage_manager")
+	if asm and asm.get_state then
+		local ok, s = pcall(asm.get_state)
+		if ok and type(s) == "table" then return s end
+	end
+	return nil
+end
+
+local function plain(v)
+	local t = type(v)
+	return t == "number" or t == "boolean" or t == "string"
+end
+
+-- { id = value } of one family of factors. From the setters' getters (game_difficulties, the values in force), or, with
+-- from_state, straight from the save's table (before game_difficulties.on_game_load has built its own: a load_state call).
+local function factor_values(getter, keys, stored, with_type, from_state)
+	local out = {}
+	local gd = (not from_state) and mod("game_difficulties") or nil
+	if not from_state and not (gd and type(gd[getter]) == "function") then return out end
 	local seen = {}
 	local function put(k)
-		if seen[k] then return end
+		if seen[k] or (k == "type" and not with_type) then return end
 		seen[k] = true
-		local ok, v = pcall(gd[getter], k)
-		if ok and v ~= nil and (type(v) == "number" or type(v) == "boolean" or type(v) == "string") then
-			t[src .. "|" .. k] = v
+		local v -- false is a value (thirst, sleep...)
+		if from_state then
+			if type(stored) == "table" then v = stored[k] end
+		else
+			local ok, r = pcall(gd[getter], k)
+			if ok then v = r end
 		end
+		if plain(v) then out[k] = v end
 	end
 	for _, k in ipairs(keys) do put(k) end
 	if type(stored) == "table" then
@@ -278,6 +359,26 @@ local function add_factors(t, src, getter, keys, stored)
 			if type(k) == "string" then put(k) end
 		end
 	end
+	return out
+end
+
+-- The difficulty and economy factors and the save's other option values in force: { g = {}, e = {}, s = {} }. The preset
+-- type is left out unless with_type (it is chosen once, with the world). state: the save's table when the getters cannot
+-- be asked yet (the migration of an old save at load_state).
+function read_factors(with_type, state)
+	local from_state = type(state) == "table"
+	local st = from_state and state or save_state_table()
+	local out = {
+		g = factor_values("get_game_factor", GAME_KEYS, st and st.diff_game, with_type, from_state),
+		e = factor_values("get_eco_factor", ECO_KEYS, st and st.diff_eco, with_type, from_state),
+		s = {},
+	}
+	if st then
+		for _, k in ipairs(STORAGE_KEYS) do
+			if plain(st[k]) then out.s[k] = st[k] end
+		end
+	end
+	return out
 end
 
 local function host_snapshot()
@@ -296,19 +397,19 @@ local function host_snapshot()
 			end
 		end
 	end
-	local st
-	local asm = mod("alife_storage_manager")
-	if asm and asm.get_state then
-		local ok, s = pcall(asm.get_state)
-		st = ok and type(s) == "table" and s or nil
-	end
-	add_factors(t, "g", "get_game_factor", GAME_KEYS, st and st.diff_game)
-	add_factors(t, "e", "get_eco_factor", ECO_KEYS, st and st.diff_eco)
-	if st then
-		for _, k in ipairs(STORAGE_KEYS) do
-			local v = st[k]
-			if type(v) == "number" or type(v) == "boolean" or type(v) == "string" then t["s|" .. k] = v end
+	-- the host's game: the record's values stand over the file's (and bring the keys the file has none of)
+	if host_game_on() then
+		local ok, rec = pcall(gs().active)
+		if ok and type(rec) == "table" and type(rec.values) == "table" then
+			for key, raw in pairs(rec.values) do
+				local head = type(key) == "string" and key:sub(1, 2) or ""
+				if (head == "o|" or head == "m|") and type(raw) == "string" then t[key] = raw end
+			end
 		end
+	end
+	local f = read_factors(true)
+	for _, src in ipairs({ "g", "e", "s" }) do
+		for k, v in pairs(f[src]) do t[src .. "|" .. k] = v end
 	end
 	return t
 end
@@ -405,7 +506,6 @@ end
 -------------------------------------------------------------------------------
 -- Client: overlay
 -------------------------------------------------------------------------------
-local client_mode = false -- this machine is a co-op client (refreshed every tick)
 local ov = nil -- { o = {path = raw}, m = {...}, g = {key = value}, e = {...} } host values, nil = none yet
 local ov_origin = nil -- "stash" | "host"
 local staging = nil -- full snapshot being assembled: { serial, data }
@@ -522,31 +622,27 @@ function host_value(store, path)
 end
 
 -------------------------------------------------------------------------------
--- Session rules of the feature groups (W5): rule("economy/gather_radius"), rule("core/client_quicksave")
--- = the option coop/coop_session/<name> of the Co-op options page (coop_menu_options). The host's value on a
--- connected client (host-owned path, the axr_options overlay below), this machine's own value elsewhere, the
--- page default when it was never set; nil for an unknown rule (the caller keeps its own default).
+-- Session rules of the feature groups (W5): rule("economy/gather_radius"), rule("core/join_spawn")
+-- = the option coop/coop_session/<name> of a game's settings (docs\GAME_SETTINGS.md 3.6, catalog coop_game_schema). The
+-- host's value on a connected client (host-owned path, the axr_options overlay below), the running game's record on the
+-- host (the same overlay), this machine's own value elsewhere, the catalog's default when it was never set; nil for an
+-- unknown rule (the caller keeps its own default). The catalog's defaults are coop_economy_core.RULES (a test compares).
 -------------------------------------------------------------------------------
 local RULE_GROUPS = { economy = true, core = true }
-local rule_defs = nil -- option id -> { val = 0|1|2, def = value }
+local rule_defs = {} -- rule name -> { val = 0|1|2 (string, boolean, number: the ini_file_ex type), def = value }
 local rule_cache, rule_cache_at = {}, -100000
 
 local function rule_def(name)
-	if rule_defs == nil then
-		rule_defs = {}
-		local mo = mod("coop_menu_options")
-		local ok, page = pcall(function() return mo and mo.build_page() end)
-		if ok and type(page) == "table" then
-			for _, g in ipairs(page.gr or {}) do
-				if g.id == "coop_session" then
-					for _, o in ipairs(g.gr or {}) do
-						if type(o.id) == "string" and o.val then rule_defs[o.id] = { val = o.val, def = o.def } end
-					end
-				end
-			end
+	local d = rule_defs[name]
+	if d == nil then
+		local sc = mod("coop_game_schema")
+		local it = sc and sc.item and sc.item("o|coop/coop_session/" .. name)
+		if it and it.def ~= nil then
+			d = { val = it.vt == "bool" and 1 or it.vt == "num" and 2 or 0, def = it.def }
+			rule_defs[name] = d
 		end
 	end
-	return rule_defs[name]
+	return d
 end
 
 function rule(key)
@@ -582,9 +678,11 @@ local axr_cfg = nil
 local function is_axr(self)
 	if axr_cfg == nil then
 		local am = mod("axr_main")
-		axr_cfg = am and am.config or false
+		local c = am and am.config
+		if not c then return false end -- axr_main is still loading: asked again (a miss is not kept)
+		axr_cfg = c
 	end
-	return axr_cfg ~= false and rawequal(self, axr_cfg)
+	return rawequal(self, axr_cfg)
 end
 
 local w_allowed, w_blocked = false, false
@@ -595,42 +693,78 @@ local function install_ini_overlay()
 	ini_patched = true
 	local cls = rawget(_G, "ini_file_ex")
 	if not cls then
-		log("! ini_file_ex not found: host settings cannot be applied on this client")
+		log("! ini_file_ex not found: host settings cannot be applied on this machine")
 		return
 	end
 	local ok_r, orig_r = pcall(function() return cls.r_value end)
 	local ok_w, orig_w = pcall(function() return cls.w_value end)
 	local ok_s, orig_s = pcall(function() return cls.save end)
 	if not (ok_r and type(orig_r) == "function" and ok_w and type(orig_w) == "function") then
-		log("! ini_file_ex methods not found: host settings cannot be applied on this client")
+		log("! ini_file_ex methods not found: host settings cannot be applied on this machine")
 		return
 	end
 
+	-- The raw string the machine's file holds for the key, nil when it has none (the file, not the cache: a read of a key
+	-- of the game must not take what an earlier read of the same key cached).
+	local function machine_raw(self, s, k)
+		local ok, r = pcall(function() return self:r_string_ex(s, k) end)
+		if ok and type(r) == "string" then return r end
+		return nil
+	end
+
 	local function r_value(self, s, k, typ, def)
-		if ov and client_mode and (s == "options" or s == "mcm") and type(k) == "string" and is_axr(self) then
+		if (s == "options" or s == "mcm") and type(k) == "string" and is_axr(self) then
 			local src = SRC_OF[s]
-			if owner_src(src, k) == "host" then
-				stats.reads = stats.reads + 1
-				local raw = ov[src][k]
-				if raw == nil and src == "o" then
-					local d = stock_default(k)
-					if d ~= nil then return d end
+			if ov and client_mode then
+				if owner_src(src, k) == "host" then
+					stats.reads = stats.reads + 1
+					local raw = ov[src][k]
+					if raw == nil and src == "o" then
+						local d = stock_default(k)
+						if d ~= nil then return d end
+					end
+					return convert(raw, typ, def)
 				end
-				return convert(raw, typ, def)
+			elseif not client_mode and game_owned(src, k) and host_game_on() then
+				-- the host's game: the record's value; a key it lacks is the machine's, and the key joins the record
+				local g = gs()
+				local raw = g.value(src, k)
+				if raw ~= nil then
+					stats.game_reads = stats.game_reads + 1
+					return convert(raw, typ, def)
+				end
+				local mine = machine_raw(self, s, k)
+				if mine ~= nil then
+					g.put(src, k, mine)
+					stats.game_joined = stats.game_joined + 1
+				end
 			end
 		end
 		return orig_r(self, s, k, typ, def)
 	end
 
 	local function w_value(self, s, k, val, comment)
-		if client_mode and (s == "options" or s == "mcm") and type(k) == "string" and is_axr(self) then
-			if owner_src(SRC_OF[s], k) == "host" then
-				stats.blocked_writes = stats.blocked_writes + 1
-				w_blocked = true
-				if stats.blocked_writes <= 5 then log("write of host-owned %s/%s skipped on this client", s, k) end
-				return
+		if (s == "options" or s == "mcm") and type(k) == "string" and is_axr(self) then
+			if client_mode then
+				if owner_src(SRC_OF[s], k) == "host" then
+					stats.blocked_writes = stats.blocked_writes + 1
+					w_blocked = true
+					if stats.blocked_writes <= 5 then log("write of host-owned %s/%s skipped on this client", s, k) end
+					return
+				end
+				w_allowed = true
+			elseif host_game_on() then
+				if game_owned(SRC_OF[s], k) then
+					-- the host's game: the write is the record's, the file is the machine's and stays as it is
+					gs().put(SRC_OF[s], k, val)
+					stats.game_writes = stats.game_writes + 1
+					w_blocked = true
+					rules_changed()
+					if stats.game_writes <= 5 then log("write of the game's %s/%s goes to the record, not to the file", s, k) end
+					return
+				end
+				w_allowed = true
 			end
-			w_allowed = true
 		end
 		return orig_w(self, s, k, val, comment)
 	end
@@ -638,7 +772,7 @@ local function install_ini_overlay()
 	-- A save after nothing but dropped writes (ui_options.get writing a default) would rewrite the file for nothing.
 	local function save(self, ...)
 		if is_axr(self) then
-			if client_mode and w_blocked and not w_allowed then
+			if w_blocked and not w_allowed and (client_mode or host_game_on()) then
 				w_blocked = false
 				stats.skipped_saves = stats.skipped_saves + 1
 				return
@@ -654,7 +788,7 @@ local function install_ini_overlay()
 		if ok_s and type(orig_s) == "function" then cls.save = save end
 	end)
 	if not ok then
-		log("! cannot hook ini_file_ex (%s): host settings cannot be applied on this client", tostring(err))
+		log("! cannot hook ini_file_ex (%s): host settings cannot be applied on this machine", tostring(err))
 	end
 end
 
@@ -663,16 +797,13 @@ end
 -------------------------------------------------------------------------------
 local gd_setters = nil -- original game_difficulties setters { g = set_game_factor, e = set_eco_factor }
 
--- Brings game_difficulties to the host's factors. The setters also run the console commands and actor
--- changes (immunities, hit power, carry weight, thirst, sleep...). give_info is muted: the "player changed the
--- difficulty" info portion is the host's business.
-local function apply_factors(reason)
-	if not ov then return 0 end
-	if not (db and db.actor) then
-		factors_pending = true
-		return 0
-	end
-	factors_pending = false
+-- Brings game_difficulties to the factors in t = { g = {id = v}, e = {...}, s = {...} }: the host's on a client, the
+-- game's on the host (coop_game_settings, at the first update of a game whose settings were edited from the menu). The
+-- setters also run the console commands and actor changes (immunities, hit power, carry weight, thirst, sleep...). The
+-- originals are used, never the refusing wrappers of install_client_hooks, and give_info is muted: the "player changed
+-- the difficulty" info portion is not a change of anybody's. Only what differs is set; returns how many.
+function apply_factor_table(t, reason)
+	if not (type(t) == "table" and db and db.actor) then return 0 end
 	local gd = mod("game_difficulties")
 	if not gd then return 0 end
 	local setters = gd_setters or { g = gd.set_game_factor, e = gd.set_eco_factor }
@@ -683,16 +814,16 @@ local function apply_factors(reason)
 	local ok, err = pcall(function()
 		for _, src in ipairs({ "g", "e" }) do
 			local set, get = setters[src], getters[src]
-			if type(set) == "function" and type(get) == "function" then
+			if type(set) == "function" and type(get) == "function" and type(t[src]) == "table" then
 				-- "type" first: it selects the difficulty preset the other factors fall back to
 				local keys = {}
-				for k in pairs(ov[src]) do keys[#keys + 1] = k end
+				for k in pairs(t[src]) do keys[#keys + 1] = k end
 				table.sort(keys, function(a, b)
 					if (a == "type") ~= (b == "type") then return a == "type" end
 					return a < b
 				end)
 				for _, k in ipairs(keys) do
-					local v = ov[src][k]
+					local v = t[src][k]
 					if get(k) ~= v then
 						set(k, v)
 						n = n + 1
@@ -700,11 +831,10 @@ local function apply_factors(reason)
 				end
 			end
 		end
-		-- script storage values (the client's copy of the host's save; clients never save it)
-		local asm = mod("alife_storage_manager")
-		local st = asm and asm.get_state and asm.get_state()
-		if type(st) == "table" then
-			for k, v in pairs(ov.s) do
+		-- script storage values (a client's copy of the host's save, which it never saves; the host's own save)
+		local st = type(t.s) == "table" and save_state_table() or nil
+		if st then
+			for k, v in pairs(t.s) do
 				if st[k] ~= v then
 					st[k] = v
 					n = n + 1
@@ -715,13 +845,24 @@ local function apply_factors(reason)
 	if saved_give then _G.give_info = saved_give end
 	if not ok then
 		stats.errors = stats.errors + 1
-		log("! applying the host's difficulty failed: %s", tostring(err))
+		log("! applying the difficulty failed: %s", tostring(err))
 	end
 	if n > 0 then
 		stats.factor_sets = stats.factor_sets + n
-		log("%d difficulty/economy factor(s) set to the host's values (%s)", n, reason or "update")
+		log("%d difficulty/economy factor(s) set (%s)", n, reason or "update")
 	end
 	return n
+end
+
+-- The client's: the host's factors.
+local function apply_factors(reason)
+	if not ov then return 0 end
+	if not (db and db.actor) then
+		factors_pending = true
+		return 0
+	end
+	factors_pending = false
+	return apply_factor_table(ov, reason)
 end
 
 local function fire_option_change()
@@ -739,9 +880,21 @@ local function fire_option_change()
 	end
 end
 
+-- Is the key locked on this machine now? A client: every host-owned key. A host with the record of its game in a level:
+-- the keys the game owns (Ruling GS-1). Else nothing.
+local function lock_applies(src, key)
+	if client_mode then return owner_src(src, key) == "host" end
+	return game_owned(src, key) and host_game_on()
+end
+
 local function menu_refused(self, id)
 	stats.refused = stats.refused + 1
-	local text = string_format("Co-op: \"%s\" is set by the host", id)
+	local text
+	if client_mode then
+		text = string_format("Co-op: \"%s\" is set by the host", id)
+	else
+		text = string_format("Co-op: \"%s\" is set in the game's settings (Co-op menu)", id)
+	end
 	pcall(function()
 		self.coop_redraw = true
 		self.coop_hint = text
@@ -749,16 +902,16 @@ local function menu_refused(self, id)
 	hint(text)
 end
 
--- Options window (ui_options.UIOptions) and MCM window: a pending edit of a host-owned option is not cached,
--- the page is redrawn with the current (host) values on the next Update, the window shows why.
+-- Options window (ui_options.UIOptions) and MCM window: a pending edit of a locked option is not cached,
+-- the page is redrawn with the current (host / game) values on the next Update, the window shows why.
 local function patch_menu_class(cls, src, what)
 	if not cls then return false end
 	local ok, orig_cache = pcall(function() return cls.CacheValue end)
 	if not (ok and type(orig_cache) == "function") then return false end
 	cls.CacheValue = function(self, path, opt, value, v, ...)
-		if client_mode and value ~= nil and type(path) == "string" and type(opt) == "string" then
+		if value ~= nil and type(path) == "string" and type(opt) == "string" then
 			local id = path .. "/" .. opt
-			if owner_src(src, id) == "host" then
+			if lock_applies(src, id) then
 				menu_refused(self, id)
 				return orig_cache(self, path, opt, nil, v, ...)
 			end
@@ -780,24 +933,45 @@ local function patch_menu_class(cls, src, what)
 			end
 		end
 	end
-	log("%s: edits of host-owned options are refused while connected", what)
+	log("%s: edits of locked options are refused (connected client, or the host's game in a level)", what)
 	return true
 end
 
--- Option lock (W4 menu, port of xrRazom's read-only panel lock): on a client, a page with host-owned options
--- gets a note on top, the controls of those options are disabled and the page's presets are hidden for this
--- render (a preset fills every option of the page at once). The refusal in CacheValue stays the safety net.
+-- Option lock (W4 menu, port of xrRazom's read-only panel lock): a page with locked options gets a note on top, the
+-- controls of those options are disabled and the page's presets are hidden for this render (a preset fills every
+-- option of the page at once). The refusal in CacheValue stays the safety net. Three cases, three notes:
+--   client   every host-owned option; "set by the host"
+--   host     the options the host's game owns, in a level with the record; "set in the game's settings"
+--   machine  the main menu of a machine with the co-op exe: nothing is locked, the page says these are the machine's
+--            defaults for new games (a created game has its own); only the pages that have options a game owns
 local LOCK_TYPES = { check = true, list = true, input = true, track = true, radio_h = true, radio_v = true }
-local LOCK_NOTE = { id = "coop_locked_note", type = "desc", text = "st_coop_opt_locked_note", clr = { 255, 230, 140, 90 } }
+local LOCK_NOTES = {
+	client = { id = "coop_locked_note", type = "desc", text = "st_coop_opt_locked_note", clr = { 255, 230, 140, 90 } },
+	host = { id = "coop_locked_note", type = "desc", text = "st_coop_opt_game_note", clr = { 255, 230, 140, 90 } },
+	machine = { id = "coop_machine_note", type = "desc", text = "st_coop_opt_machine_note", clr = { 255, 200, 200, 200 } },
+}
 local lock_stats = { pages = 0, controls = 0, errors = 0 }
 
-local function locked_keys(src, curr_tree, path)
+local function page_mode()
+	if client_mode then return "client" end
+	if host_game_on() then return "host" end
+	if api and not in_level() then return "machine" end
+	return nil
+end
+
+local function locked_keys(src, curr_tree, path, mode)
 	local out
 	for i = 1, #curr_tree.gr do
 		local v = curr_tree.gr[i]
 		if type(v) == "table" and LOCK_TYPES[v.type] and type(v.id) == "string" then
 			local key = path .. "/" .. v.id
-			if owner_src(src, key) == "host" then
+			local hit
+			if mode == "client" then
+				hit = owner_src(src, key) == "host"
+			else
+				hit = game_owned(src, key)
+			end
+			if hit then
 				out = out or {}
 				out[#out + 1] = key
 			end
@@ -822,29 +996,32 @@ local function patch_option_lock(cls, src, what)
 	local ok, orig_reset = pcall(function() return cls.Reset_opt end)
 	if not (ok and type(orig_reset) == "function") then return false end
 	cls.Reset_opt = function(self, curr_tree, path, flags, ...)
-		local keys = client_mode and type(curr_tree) == "table" and type(curr_tree.gr) == "table"
-			and type(path) == "string" and locked_keys(src, curr_tree, path)
+		local mode = page_mode()
+		local keys = mode and type(curr_tree) == "table" and type(curr_tree.gr) == "table"
+			and type(path) == "string" and locked_keys(src, curr_tree, path, mode)
 		if not keys then return orig_reset(self, curr_tree, path, flags, ...) end
+		local note, lock = LOCK_NOTES[mode], mode ~= "machine"
 		-- Register(ctrl, id) is the only place every control of the page passes through: shadow it for this render.
 		local captured = {}
 		local orig_register = self.Register
-		local shadowed = type(orig_register) == "function" and pcall(set_register, self, function(wnd, ctrl, id, ...)
+		local shadowed = lock and type(orig_register) == "function" and pcall(set_register, self, function(wnd, ctrl, id, ...)
 			if type(id) == "string" then captured[#captured + 1] = { ctrl, id } end
 			return orig_register(wnd, ctrl, id, ...)
 		end)
 		local presets = curr_tree.presets
-		curr_tree.presets = nil
-		table.insert(curr_tree.gr, 1, LOCK_NOTE)
+		if lock then curr_tree.presets = nil end
+		table.insert(curr_tree.gr, 1, note)
 		local ok2, err = pcall(orig_reset, self, curr_tree, path, flags, ...)
-		if curr_tree.gr[1] == LOCK_NOTE then table.remove(curr_tree.gr, 1) end -- the tree is shared with solo play
+		if curr_tree.gr[1] == note then table.remove(curr_tree.gr, 1) end -- the tree is shared with solo play
 		curr_tree.presets = presets
 		if shadowed then pcall(set_register, self, orig_register) end
 		if not ok2 then
 			lock_stats.errors = lock_stats.errors + 1
-			log("! %s: page %s failed to draw with the lock: %s", what, path, tostring(err))
+			log("! %s: page %s failed to draw with the %s note: %s", what, path, mode, tostring(err))
 			return
 		end
 		lock_stats.pages = lock_stats.pages + 1
+		if not lock then return end
 		for _, c in ipairs(captured) do
 			if lock_matches(c[2], keys) then
 				if pcall(function() c[1]:Enable(false) end) then lock_stats.controls = lock_stats.controls + 1 end
@@ -858,7 +1035,7 @@ local function patch_option_lock(cls, src, what)
 			end
 		end
 	end
-	log("%s: pages with host-owned options are shown locked while connected", what)
+	log("%s: pages with locked options are shown with a note (client, the host's game, the main menu)", what)
 	return true
 end
 
@@ -892,9 +1069,11 @@ local function install_client_hooks()
 		if type(mcm.set) == "function" then
 			local orig_set = mcm.set
 			mcm.set = function(id, ...)
-				if client_mode and type(id) == "string" and owner_src("m", id) == "host" then
+				if type(id) == "string" and lock_applies("m", id) then
 					stats.refused = stats.refused + 1
-					if stats.refused <= 5 then log("ui_mcm.set(%s) refused: set by the host", id) end
+					if stats.refused <= 5 then
+						log("ui_mcm.set(%s) refused: set by the %s", id, client_mode and "host" or "game's settings")
+					end
 					return
 				end
 				return orig_set(id, ...)
@@ -921,6 +1100,11 @@ local function install_client_hooks()
 					if client_mode then
 						stats.refused = stats.refused + 1
 						hint("Co-op: difficulty and economy are set by the host")
+						return
+					end
+					if host_game_on() then
+						stats.refused = stats.refused + 1
+						hint("Co-op: difficulty and economy are set in the game's settings (Co-op menu)")
 						return
 					end
 					return orig(key, val, ...)
@@ -1032,10 +1216,9 @@ function on_game_start()
 	if not api then return end
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("on_option_change", on_option_change)
-	if client_mode then
-		local ok, err = pcall(install_client_hooks)
-		if not ok then log("! client hooks failed: %s", tostring(err)) end
-	end
+	-- every role: a client's menus lock to the host's values, a host's to its game's (when it has the record of one)
+	local ok, err = pcall(install_client_hooks)
+	if not ok then log("! option hooks failed: %s", tostring(err)) end
 end
 
 -------------------------------------------------------------------------------
@@ -1057,6 +1240,16 @@ function print_status()
 		log("client: locked option pages drawn %d, controls disabled %d, lock errors %d", lock_stats.pages,
 			lock_stats.controls, lock_stats.errors)
 	end
+	local g = gs()
+	if g and not client_mode and type(g.status_line) == "function" then
+		local ok, line = pcall(g.status_line)
+		if ok and line then
+			log("%s", line)
+			log("game: overlaid reads %d (joined the record %d), writes kept off the file %d, refused edits %d, skipped saves %d, locked pages %d, controls %d",
+				stats.game_reads, stats.game_joined, stats.game_writes, stats.refused, stats.skipped_saves, lock_stats.pages,
+				lock_stats.controls)
+		end
+	end
 end
 
 -------------------------------------------------------------------------------
@@ -1077,5 +1270,7 @@ if api then
 			factors_pending = true
 			log("host settings restored for this level: %d option(s), %d MCM option(s)", count(ov.o), count(ov.m))
 		end
+	else
+		install_ini_overlay() -- the host's game overlays axr_options.ltx too (coop_game_settings, when it has a record)
 	end
 end

@@ -622,8 +622,9 @@ check(table.concat(ids, ",") == "video,sound,coop", "page appended once after th
 ui_options.init_opt_base()
 check(#ui_options.options == 3, "rebuild: still one page")
 local page = ui_options.options[3]
-local p, s = page.gr[1], page.gr[2]
-check(p.id == "coop_player" and s.id == "coop_session" and p.sh and s.sh, "two groups")
+local p = page.gr[1]
+-- game settings (T4): the host's rules are a game's settings, the page is the player's group only
+check(p.id == "coop_player" and p.sh and #page.gr == 1, "one group: the player's")
 local keys = {}
 for _, g in ipairs(page.gr) do
 	for _, o in ipairs(g.gr) do
