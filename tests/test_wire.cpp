@@ -322,7 +322,7 @@ TEST(msg_name_known_and_unknown)
 		Msg::TaskList, Msg::TaskUpdate, Msg::MapSpot, Msg::Relation, Msg::Progress, Msg::DialogLock,
 		Msg::DialogLockResult, Msg::DialogUnlock, Msg::DialogPhrases, Msg::DialogSelect, Msg::TradeOp,
 		Msg::ScriptEvent, Msg::StateDumpRequest, Msg::StateDump, Msg::EntitySound, Msg::AvatarList,
-		Msg::MoneyBalance, Msg::CharOffer, Msg::CharChoice,
+		Msg::MoneyBalance, Msg::CharOffer, Msg::CharChoice, Msg::TransitionState,
 		Msg::SyncSet, Msg::SyncFull, Msg::SyncRequest, Msg::SyncResult, Msg::SyncCast}; // F2 T14
 	for (Msg m : all)
 		CHECK(std::strncmp(msg_name(m), "Msg_0x", 6) != 0);

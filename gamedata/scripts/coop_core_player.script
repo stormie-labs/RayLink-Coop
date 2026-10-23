@@ -15,9 +15,10 @@
 	   Boosters: key "coop_core_boosters" ("type,seconds,value|..."), applied to the actor once it is live.
 	   The rank news are re-baselined after a world load, so the restored rank does not pop "rank increased".
 	2. Join/leave notices on every machine (PDA tip + chat line), the session start notice once per session.
-	3. Level exits: a client at a level exit asks the host to move the group (engine TransitionVote). The host
-	   accepts with /go in the chat (coop_accept_transition). If the engine tells Lua about the vote
-	   (coop_main.on_transition_vote, see Requests), the host gets a notice and the clients a fade before the move.
+	3. Level exits: the group waits at the exit (the waiting point of a level change: the engine's board, the placard and the
+	   feed are scripts\coop_hud_transition.script; the rule is engine\src\xrCoop\coop_transition.h). Only the fallbacks stay
+	   here: /go in the chat = coop_accept_transition = the group goes now through the exit somebody waits at; the older engine
+	   notice (coop_main.on_transition_vote, no longer sent by the engine) and the fade of the clients before a move.
 	F3 task 17: the client's quicksave request to the host is gone. Nobody saves by hand in a session, the host included
 	(scripts\coop_saves.script); the host's engine writes the emergency autosaves.
 --]]
@@ -240,14 +241,16 @@ end
 -------------------------------------------------------------------------------
 local vote = nil -- host: { nick, at } of the last transition vote the engine reported
 
--- Host, engine (through coop_main.on_transition_vote): a player stands at a level exit.
+-- Host, coop_main.on_transition_vote: a player stands at a level exit. (The engine's waiting point does not call it any more:
+-- every machine's placard and feed say it; kept for an older engine and for other scripts.)
 function on_transition_vote(nick)
 	vote = { nick = tostring(nick or "?"), at = time_global() }
 	notice(string_format(tr("st_coop_core_vote", "%s stands at a level exit. Type /go in the chat to move the group."),
 		vote.nick))
 end
 
--- Host: /go in the chat.
+-- Host: /go in the chat: the group goes now through the exit somebody waits at (the engine's coop_accept_transition says
+-- when nobody does).
 function accept_transition()
 	if not (api and api.is_host()) then return false end
 	if vote and time_global() - vote.at < 600000 then

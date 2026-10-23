@@ -1139,6 +1139,7 @@ constexpr Direction kDirections[] = {
 	{Msg::SessionReset, kHost},
 	{Msg::LevelChange, kHost},
 	{Msg::TransitionVote, kClient},
+	{Msg::TransitionState, kHost}, // protocol 10: the host's board of who waits at a level exit
 	{Msg::AvatarList, kHost},
 	{Msg::CharOffer, kHost}, // protocol 8: a new key chooses his character before the world
 	{Msg::CharChoice, kClient},

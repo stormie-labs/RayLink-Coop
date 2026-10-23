@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop, точка ожидания перехода на другую карту (scripts\coop_hud_transition.script, docs\hud\transition_wait_mockup.png): плашка, строка-напоминание, строки ленты. $$ACTION_USE$$ - клавиша действия use (движок подставляет её название). %s и %d подставляет скрипт. Идентификаторы st_coop_transition_<имя>. -->
+<string_table>
+	<string id="st_coop_transition_head">
+		<text>ПЕРЕХОД</text>
+	</string>
+	<string id="st_coop_transition_head_guide">
+		<text>ПЕРЕХОД · ПРОВОДНИК</text>
+	</string>
+	<string id="st_coop_transition_waiting">
+		<text>Ждём союзников</text>
+	</string>
+	<string id="st_coop_transition_waiting_guide">
+		<text>Ждём ответа союзников</text>
+	</string>
+	<string id="st_coop_transition_all_here">
+		<text>Все на месте — переход</text>
+	</string>
+	<string id="st_coop_transition_row_ready">
+		<text>на месте</text>
+	</string>
+	<string id="st_coop_transition_row_asked">
+		<text>предложил</text>
+	</string>
+	<string id="st_coop_transition_row_agreed">
+		<text>согласен</text>
+	</string>
+	<string id="st_coop_transition_row_dist">
+		<text>%d м</text>
+	</string>
+	<string id="st_coop_transition_row_wait">
+		<text>ждём ответа</text>
+	</string>
+	<string id="st_coop_transition_row_loading">
+		<text>загружается</text>
+	</string>
+	<string id="st_coop_transition_row_loading_left">
+		<text>загружается · %d с</text>
+	</string>
+	<string id="st_coop_transition_row_down">
+		<text>не ждём</text>
+	</string>
+	<string id="st_coop_transition_row_elsewhere">
+		<text>у другого перехода</text>
+	</string>
+	<string id="st_coop_transition_hint_cancel">
+		<text>удерживай [$$ACTION_USE$$] — отменить</text>
+	</string>
+	<string id="st_coop_transition_hint_go">
+		<text>удерживай [$$ACTION_USE$$] — перейти сейчас</text>
+	</string>
+	<string id="st_coop_transition_hint_confirm">
+		<text>удерживай [$$ACTION_USE$$] — согласиться</text>
+	</string>
+	<string id="st_coop_transition_remind">
+		<text>ждёт вас у перехода на %s · %d м</text>
+	</string>
+	<string id="st_coop_transition_remind_far">
+		<text>ждёт вас у перехода на %s</text>
+	</string>
+	<string id="st_coop_transition_remind_more">
+		<text>%s и ещё %d</text>
+	</string>
+	<string id="st_coop_transition_feed_waits">
+		<text>%s ждёт у перехода на %s</text>
+	</string>
+	<string id="st_coop_transition_feed_guide">
+		<text>%s предлагает перейти на %s (проводник)</text>
+	</string>
+	<string id="st_coop_transition_feed_all">
+		<text>Все на месте — переход через %d с</text>
+	</string>
+	<string id="st_coop_transition_feed_cancel">
+		<text>Переход отменён</text>
+	</string>
+</string_table>

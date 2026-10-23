@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop, the waiting point of a level change (scripts\coop_hud_transition.script, docs\hud\transition_wait_mockup.png): the placard, the reminder line, the feed lines. $$ACTION_USE$$ is the key of the use action (the engine puts its name in). %s and %d are filled in by the script. Ids st_coop_transition_<name>. -->
+<string_table>
+	<string id="st_coop_transition_head">
+		<text>TRANSITION</text>
+	</string>
+	<string id="st_coop_transition_head_guide">
+		<text>TRANSITION · GUIDE</text>
+	</string>
+	<string id="st_coop_transition_waiting">
+		<text>Waiting for allies</text>
+	</string>
+	<string id="st_coop_transition_waiting_guide">
+		<text>Waiting for your allies' answer</text>
+	</string>
+	<string id="st_coop_transition_all_here">
+		<text>Everyone is here — moving</text>
+	</string>
+	<string id="st_coop_transition_row_ready">
+		<text>here</text>
+	</string>
+	<string id="st_coop_transition_row_asked">
+		<text>asked</text>
+	</string>
+	<string id="st_coop_transition_row_agreed">
+		<text>agreed</text>
+	</string>
+	<string id="st_coop_transition_row_dist">
+		<text>%d m</text>
+	</string>
+	<string id="st_coop_transition_row_wait">
+		<text>no answer yet</text>
+	</string>
+	<string id="st_coop_transition_row_loading">
+		<text>loading</text>
+	</string>
+	<string id="st_coop_transition_row_loading_left">
+		<text>loading · %d s</text>
+	</string>
+	<string id="st_coop_transition_row_down">
+		<text>not waited for</text>
+	</string>
+	<string id="st_coop_transition_row_elsewhere">
+		<text>at another exit</text>
+	</string>
+	<string id="st_coop_transition_hint_cancel">
+		<text>hold [$$ACTION_USE$$] — cancel</text>
+	</string>
+	<string id="st_coop_transition_hint_go">
+		<text>hold [$$ACTION_USE$$] — go now</text>
+	</string>
+	<string id="st_coop_transition_hint_confirm">
+		<text>hold [$$ACTION_USE$$] — agree</text>
+	</string>
+	<string id="st_coop_transition_remind">
+		<text>waits for you at the exit to %s · %d m</text>
+	</string>
+	<string id="st_coop_transition_remind_far">
+		<text>waits for you at the exit to %s</text>
+	</string>
+	<string id="st_coop_transition_remind_more">
+		<text>%s and %d more</text>
+	</string>
+	<string id="st_coop_transition_feed_waits">
+		<text>%s waits at the exit to %s</text>
+	</string>
+	<string id="st_coop_transition_feed_guide">
+		<text>%s suggests moving to %s (guide)</text>
+	</string>
+	<string id="st_coop_transition_feed_all">
+		<text>Everyone is here — moving in %d s</text>
+	</string>
+	<string id="st_coop_transition_feed_cancel">
+		<text>Transition cancelled</text>
+	</string>
+</string_table>

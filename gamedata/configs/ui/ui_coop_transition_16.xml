@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop, the waiting point of a level change (docs\hud\transition_wait_mockup.png): the placard and the reminder line of
+     scripts\coop_hud_transition.script. This file gives the textures and fonts; the script places and sizes everything from its
+     layout table (DEFAULTS there, [coop_hud_transition] of any ltx wins: px at 768 high, never stretched) and sets the colours
+     and alphas. Textures: the HUD atlas (configs\ui\textures_descr\ui_coop_hud.xml, tools\make_hud_atlas.py): the soft bar
+     background, the solid cell, the gate glyph. The 16:9 copy of ui_coop_transition.xml (the engine loads it on a wide screen): the same nodes. -->
+<w>
+	<coop_transition x="0" y="0" width="1024" height="768">
+		<!-- a transparent window that holds the placard (the script shows and hides the group) -->
+		<group x="0" y="0" width="1024" height="768"/>
+		<!-- the soft dark panel behind the placard: the compass bar's background, fading out on the last 16 % at each end -->
+		<bg x="0" y="0" width="352" height="100" stretch="1">
+			<texture>coop_hud_bar_bg</texture>
+		</bg>
+		<icon x="0" y="0" width="12" height="12" stretch="1">
+			<texture>coop_hud_transition</texture>
+		</icon>
+		<!-- one cell per player (ready: white, not: dim), a row's stripe in the player's colour, the hold bar and its track -->
+		<seg x="0" y="0" width="22" height="4" stretch="1">
+			<texture>coop_hud_white</texture>
+		</seg>
+		<stripe x="0" y="0" width="2" height="12" stretch="1">
+			<texture>coop_hud_white</texture>
+		</stripe>
+		<bar x="0" y="0" width="300" height="2" stretch="1">
+			<texture>coop_hud_white</texture>
+		</bar>
+		<!-- the texts: the small caps line, the level, the count on the right, the countdown, a player's row, the hint -->
+		<head x="0" y="0" width="240" height="12">
+			<text complex_mode="0" r="175" g="177" b="175" align="l" vert_align="c" font="letterica16"/>
+		</head>
+		<level x="0" y="0" width="240" height="20">
+			<text complex_mode="0" r="244" g="245" b="246" align="l" vert_align="c" font="letterica18"/>
+		</level>
+		<slot x="0" y="0" width="60" height="20">
+			<text complex_mode="0" r="244" g="245" b="246" align="r" vert_align="c" font="letterica18"/>
+		</slot>
+		<big x="0" y="0" width="60" height="34">
+			<text complex_mode="0" r="244" g="245" b="246" align="r" vert_align="c" font="graffiti32"/>
+		</big>
+		<line x="0" y="0" width="200" height="14">
+			<text complex_mode="0" r="244" g="245" b="246" align="l" vert_align="c" font="letterica16"/>
+		</line>
+		<line_r x="0" y="0" width="200" height="14">
+			<text complex_mode="0" r="244" g="245" b="246" align="r" vert_align="c" font="letterica16"/>
+		</line_r>
+		<hint x="0" y="0" width="300" height="12">
+			<text complex_mode="0" r="175" g="177" b="175" align="l" vert_align="c" font="letterica16"/>
+		</hint>
+		<!-- the reminder of a player who is not at the exit: his nick in his colour, one line under it, centred -->
+		<remind_nick x="0" y="0" width="300" height="18">
+			<text complex_mode="0" r="244" g="245" b="246" align="c" vert_align="c" font="letterica18"/>
+		</remind_nick>
+		<remind_line x="0" y="0" width="420" height="14">
+			<text complex_mode="0" r="244" g="245" b="246" align="c" vert_align="c" font="letterica16"/>
+		</remind_line>
+	</coop_transition>
+</w>

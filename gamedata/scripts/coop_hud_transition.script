@@ -1,0 +1,818 @@
+--[[
+	Anomaly Coop - the waiting point of a level change (gamedata\scripts\coop_hud_transition.script). Picture:
+	docs\hud\transition_wait_mockup.png (HUD v2 style: white, flat, 1 px shadow, the players' palette colours). Layout:
+	configs\ui\ui_coop_transition.xml (+ _16: textures and fonts only), strings st_coop_transition_*; every size is in DEFAULTS
+	below (px at 768 high, never stretched; a [coop_hud_transition] <key> = <number> line in any ltx wins).
+
+	Until the split levels (F3a) the whole group changes level together. A player who stands in the zone of an exit is ready
+	for it; the group goes when every player who is in the world and alive is ready for the same exit (5 s countdown); a
+	player who is still loading holds it for a minute at most; the host can go at once by holding the use key. The rules and
+	the host's board are the engine's (engine\src\xrCoop\coop_transition.h, coop_join.cpp); this script only shows them:
+
+	  coop.transition() -> nil | { state "waiting" | "counting", kind "exit" | "guide", level (stock name), changer, ready,
+	    total, countdown_ms (left), load_ms (left of the loaders' minute), rows = { { peer, mark "ready" | "away" | "loading" |
+	    "down" | "elsewhere", dist (m) }, ... }, me = { peer, host, in_zone, ready, dist, confirm }, pos = { x, y, z } }
+	  polled every frame; nil when nobody waits.
+
+	1. The board (me at the exit, or a guide trip): top centre under the compass: the small caps head, the level's name, the
+	   count "2 / 3" on the right (the countdown digit instead of it in the last 5 s), the status line, a segment per player
+	   (white: ready), a row per player (a 2 px stripe and the nick in his palette colour, bright when ready, dimmer when not;
+	   on the right "here" / the metres to the exit / "loading . 42 s" / "not waited for" / "at another exit"), and the hint of
+	   the key under a thin bar that fills while the key is held: host "hold [F] - go now" (1.5 s), a player "hold [F] -
+	   cancel" (1 s), a guide trip I have not answered "hold [F] - agree" (1 s). The commands: coop_transition_go /
+	   coop_transition_cancel / coop_transition_confirm (coop_console.cpp).
+	2. The reminder (somebody waits at an exit and I am not there): his nick in his colour and under it "waits for you at the
+	   exit to <level> . N m".
+	3. The feed (the chat's system lines): "<nick> waits at the exit to <level>", "Everyone is here - moving in 5 s",
+	   "Transition cancelled".
+	4. The compass: a source of coop_hud_markers ("transition"): the exit as a gate mark in the waiting player's colour,
+	   labelled with his nick, above the allies' marks.
+	Pools of statics made once with the window; nothing is created in a frame.
+
+	For other scripts:
+		coop_hud_transition.current() -> the last coop.transition() table, nil when nobody waits
+		coop_hud_transition.get_window() -> the overlay while it is on the HUD
+		coop_hud_transition.layout() -> the sizes in force
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local tostring, tonumber, type, ipairs, pairs, pcall = tostring, tonumber, type, ipairs, pairs, pcall
+local math_floor, math_ceil, math_max, math_min = math.floor, math.ceil, math.max, math.min
+local string_format = string.format
+
+XML_FILE = "ui_coop_transition.xml"
+SECTION = "coop_hud_transition"
+MAX_ROWS = 8 -- the session's players (kMaxPlayers)
+CX = 512 -- the middle of the screen, in 1024x768 units
+FEED_GAP_MS = 10000 -- a player who steps in and out is announced once in this time
+HOLD_MS = { go = 1500, cancel = 1000, confirm = 1000 }
+COMMANDS = { go = "coop_transition_go", cancel = "coop_transition_cancel", confirm = "coop_transition_confirm" }
+MARK_PRIORITY = 35 -- on the compass: above the allies (30), under a wounded ally (40)
+
+local C_WHITE = { 244, 245, 246 }
+local C_DIM = { 175, 177, 175 } -- the head and the hint
+local C_AMBER = { 240, 176, 76 } -- a player who is loading
+local C_MUTED = { 150, 152, 146 }
+local C_BG = { 12, 13, 10 } -- the compass bar's panel
+local C_SHADOW = { 0, 0, 0 }
+local A_SHADOW = 0.7
+local TONE = { ready = C_WHITE, dim = C_DIM, amber = C_AMBER, muted = C_MUTED }
+
+-- Every size; configs\mod_system_*.ltx [coop_hud_transition] <key> = <number> wins (the same numbers).
+DEFAULTS = {
+	width = 300, top = 72, pad_x = 26, pad_y = 8, bg_alpha = 0.40,
+	icon = 12, head_h = 12, head_x = 16, level_y = 13, level_h = 20, slot_w = 60, slot_y = 15, big_y = 1, big_h = 34,
+	status_y = 37, status_h = 14, seg_y = 55, seg_w = 22, seg_h = 4, seg_gap = 4, seg_off_alpha = 0.18,
+	rows_y = 66, row_h = 15, stripe_w = 2, stripe_h = 12, nick_x = 8, nick_w = 150, state_w = 150,
+	bar_gap = 6, bar_h = 2, hint_gap = 3, hint_h = 12,
+	remind_w = 420, remind_nick_h = 18, remind_line_h = 14, remind_pad_x = 40,
+	dim_alpha = 0.75, text_dim_alpha = 0.85, track_alpha = 0.18,
+	fade_in_ms = 150, fade_out_ms = 150,
+}
+
+local lay
+local stats = { polled = 0, shown = 0, spoken = 0, holds = 0, errors = 0 }
+local last_t -- the last coop.transition()
+local WIN -- the overlay while it is on the HUD
+local hold -- { kind, since, fired } the use key held at the exit
+local feed_prev -- the board the feed lines were last made against
+local feed_rate = { at = {}, now = 0 }
+local players_at, players_map = nil, {}
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-hud] %s", ok and line or tostring(fmt))
+end
+
+-------------------------------------------------------------------------------
+-- Layout table
+-------------------------------------------------------------------------------
+local function read_number(ini, key)
+	local ok, v = pcall(function()
+		if ini:section_exist(SECTION) and ini:line_exist(SECTION, key) then return ini:r_string(SECTION, key) end
+	end)
+	if not (ok and type(v) == "string") then return nil end
+	v = tonumber(v:match("^%s*([%-%d%.]+)"))
+	if v and v == v and v > -1000 and v < 4000 then return v end
+	return nil
+end
+
+function reload()
+	local t = {}
+	local ini = rawget(_G, "ini_sys")
+	if not ini then
+		local ok, sys = pcall(function() return system_ini() end)
+		ini = ok and sys or nil
+	end
+	for k, def in pairs(DEFAULTS) do
+		t[k] = ini and read_number(ini, k) or def
+	end
+	lay = t
+	return t
+end
+
+function layout()
+	return lay or reload()
+end
+
+-------------------------------------------------------------------------------
+-- Engine glue
+-------------------------------------------------------------------------------
+local function live()
+	if not api then return false end
+	local ok, on = pcall(function() return api.is_active() and (api.is_host() or api.is_live()) end)
+	return ok and on == true
+end
+
+local function poll()
+	if not (api and api.transition) then return nil end
+	local ok, t = pcall(api.transition)
+	if not ok then
+		stats.errors = stats.errors + 1
+		return nil
+	end
+	stats.polled = stats.polled + 1
+	if type(t) ~= "table" then return nil end
+	return t
+end
+
+local function tr(id, fallback)
+	local ok, s = pcall(function() return game.translate_string(id) end)
+	if ok and type(s) == "string" and s ~= "" and s ~= id then return s end
+	return fallback or id
+end
+
+local function my_peer()
+	if not api then return nil end
+	local ok, id = pcall(function() return api.self_id() end)
+	id = ok and tonumber(id) or nil
+	if id and id >= 0 then return id end
+	return nil
+end
+
+local function allies()
+	return rawget(_G, "coop_allies")
+end
+
+-- A player's colour: his slot of the palette ([coop_player_colors]).
+local function peer_color(peer)
+	local A = allies()
+	if A and A.color and tonumber(peer) then
+		local ok, r, g, b = pcall(A.color, peer)
+		if ok and r then return { r, g, b } end
+	end
+	return C_WHITE
+end
+
+-- Nicks of the session's players, asked twice a second.
+local function nick_of(peer)
+	peer = tonumber(peer)
+	if not peer then return "?" end
+	local tg = time_global()
+	if not players_at or tg - players_at > 500 or tg < players_at then
+		players_at = tg
+		players_map = {}
+		if api and api.players then
+			local ok, list = pcall(api.players)
+			if ok and type(list) == "table" then
+				for _, p in ipairs(list) do
+					if type(p) == "table" and tonumber(p.id) then players_map[tonumber(p.id)] = tostring(p.nick or "") end
+				end
+			end
+		end
+	end
+	local nick = players_map[peer]
+	if nick and nick ~= "" then
+		nick = nick:gsub("%%", "")
+		if #nick > 24 then nick = nick:sub(1, 23) .. "." end
+		return nick
+	end
+	return "player " .. tostring(peer)
+end
+
+local function hud_visible()
+	local f = rawget(_G, "main_hud_shown")
+	if not f then return true end
+	local ok, v = pcall(f)
+	return not ok or v == true
+end
+
+local function argb(a, rgb)
+	return GetARGB(math_max(0, math_min(255, math_floor(a + 0.5))), rgb[1], rgb[2], rgb[3])
+end
+
+local function say(text)
+	local chat = rawget(_G, "coop_core_chat")
+	if chat and chat.system then pcall(chat.system, text) end
+	stats.spoken = stats.spoken + 1
+end
+
+-------------------------------------------------------------------------------
+-- Pure parts (the tests call them)
+-------------------------------------------------------------------------------
+-- The level's name: the string table has the stock names (st_levels.xml: "l01_escape" = Cordon); a mod's level shows its own.
+function level_title(level)
+	if type(level) ~= "string" or level == "" then return "?" end
+	return tr(level, level)
+end
+
+function head_text(t)
+	if t and t.kind == "guide" then return tr("st_coop_transition_head_guide", "TRANSITION . GUIDE") end
+	return tr("st_coop_transition_head", "TRANSITION")
+end
+
+function count_text(t)
+	return string_format("%d / %d", tonumber(t and t.ready) or 0, tonumber(t and t.total) or 0)
+end
+
+function status_text(t)
+	if t and t.state == "counting" then return tr("st_coop_transition_all_here", "Everyone is here - moving") end
+	if t and t.kind == "guide" then return tr("st_coop_transition_waiting_guide", "Waiting for your allies' answer") end
+	return tr("st_coop_transition_waiting", "Waiting for allies")
+end
+
+-- The big digit: the seconds left, rounded up.
+function countdown_digit(t)
+	local ms = tonumber(t and t.countdown_ms) or 0
+	if ms <= 0 then return 0 end
+	return math_ceil(ms / 1000)
+end
+
+local function dist_text(d)
+	d = tonumber(d)
+	if not d or d ~= d or d < 0 then return "..." end
+	return string_format(tr("st_coop_transition_row_dist", "%d m"), math_floor(d + 0.5))
+end
+
+-- What a row says on the right and how it is toned.
+local function row_state(r, t)
+	local mark = r.mark
+	local guide = t and t.kind == "guide"
+	if mark == "ready" then
+		if guide then
+			if tonumber(r.peer) == 0 then return tr("st_coop_transition_row_asked", "asked"), "ready" end
+			return tr("st_coop_transition_row_agreed", "agreed"), "ready"
+		end
+		return tr("st_coop_transition_row_ready", "here"), "ready"
+	elseif mark == "loading" then
+		local left = tonumber(t and t.load_ms) or 0
+		if left > 0 then
+			return string_format(tr("st_coop_transition_row_loading_left", "loading . %d s"), math_ceil(left / 1000)), "amber"
+		end
+		return tr("st_coop_transition_row_loading", "loading"), "amber"
+	elseif mark == "down" then
+		return tr("st_coop_transition_row_down", "not waited for"), "muted"
+	elseif mark == "elsewhere" then
+		return tr("st_coop_transition_row_elsewhere", "at another exit"), "dim"
+	end
+	if guide then return tr("st_coop_transition_row_wait", "no answer yet"), "dim" end
+	return dist_text(r.dist), "dim"
+end
+
+-- The rows of the board: { peer, nick, rgb, text, tone, ready }, at most MAX_ROWS.
+function row_texts(t)
+	local out = {}
+	for _, r in ipairs(t and t.rows or {}) do
+		if #out >= MAX_ROWS then break end
+		if type(r) == "table" and tonumber(r.peer) then
+			local text, tone = row_state(r, t)
+			out[#out + 1] = { peer = tonumber(r.peer), nick = nick_of(r.peer), rgb = peer_color(r.peer), text = text, tone = tone,
+				ready = r.mark == "ready" }
+		end
+	end
+	return out
+end
+
+-- The board is for a player at the exit (or ready for it) and for everybody in a guide trip, which has no exit to stand at.
+function shows_board(t)
+	if type(t) ~= "table" then return false end
+	if t.kind == "guide" then return true end
+	local me = t.me
+	return type(me) == "table" and (me.in_zone == true or me.ready == true)
+end
+
+-- The key held at the exit: "go" (the host), "cancel", "confirm" (a guide trip I have not answered), nil.
+function hint_kind(t)
+	local me = type(t) == "table" and t.me or nil
+	if type(me) ~= "table" then return nil end
+	if t.kind == "guide" then
+		if me.host then return me.ready and "go" or nil end
+		if me.ready then return "cancel" end
+		if me.confirm then return "confirm" end
+		return nil
+	end
+	if me.in_zone or me.ready then return me.host and "go" or "cancel" end
+	return nil
+end
+
+function hold_ms(kind)
+	return HOLD_MS[kind]
+end
+
+function hint_text(kind)
+	if kind == "go" then return tr("st_coop_transition_hint_go", "hold [F] - go now") end
+	if kind == "cancel" then return tr("st_coop_transition_hint_cancel", "hold [F] - cancel") end
+	if kind == "confirm" then return tr("st_coop_transition_hint_confirm", "hold [F] - agree") end
+	return ""
+end
+
+-- Who waits at the exit for me (the others who are ready), first by player id.
+local function waiting_others(t)
+	local out = {}
+	local me = type(t) == "table" and t.me or nil
+	local mine = me and tonumber(me.peer) or my_peer()
+	for _, r in ipairs(t and t.rows or {}) do
+		if type(r) == "table" and r.mark == "ready" and tonumber(r.peer) and tonumber(r.peer) ~= mine then out[#out + 1] = tonumber(r.peer) end
+	end
+	return out
+end
+
+-- The reminder of a player who is not at the exit: { nick, rgb, text } or nil.
+function reminder(t)
+	if type(t) ~= "table" or t.kind ~= "exit" or shows_board(t) then return nil end
+	local others = waiting_others(t)
+	if #others == 0 then return nil end
+	local nick = nick_of(others[1])
+	if #others > 1 then nick = string_format(tr("st_coop_transition_remind_more", "%s and %d more"), nick, #others - 1) end
+	local level = level_title(t.level)
+	local d = tonumber(t.me and t.me.dist)
+	local text
+	if d and d == d and d >= 0 then
+		text = string_format(tr("st_coop_transition_remind", "waits for you at the exit to %s . %d m"), level, math_floor(d + 0.5))
+	else
+		text = string_format(tr("st_coop_transition_remind_far", "waits for you at the exit to %s"), level)
+	end
+	return { nick = nick, rgb = peer_color(others[1]), text = text }
+end
+
+-- The feed lines this step makes: who got ready, everyone is here, cancelled. `rate` (the live feed): a player is announced
+-- once in FEED_GAP_MS ({ at = { [peer] = ms }, now = ms }); without it every news is told.
+function feed_events(prev, cur, who, rate)
+	local out = {}
+	if type(cur) == "table" then
+		local same = type(prev) == "table" and prev.level == cur.level and prev.kind == cur.kind
+		for _, r in ipairs(cur.rows or {}) do
+			if type(r) == "table" and r.mark == "ready" and tonumber(r.peer) and tonumber(r.peer) ~= tonumber(who) then
+				local was = false
+				if same then
+					for _, p in ipairs(prev.rows or {}) do
+						if type(p) == "table" and p.peer == r.peer and p.mark == "ready" then was = true end
+					end
+				end
+				local peer = tonumber(r.peer)
+				if not was and (not rate or not rate.at[peer] or rate.now - rate.at[peer] >= FEED_GAP_MS or rate.now < rate.at[peer]) then
+					if rate then rate.at[peer] = rate.now end
+					local id = cur.kind == "guide" and "st_coop_transition_feed_guide" or "st_coop_transition_feed_waits"
+					local fb = cur.kind == "guide" and "%s suggests moving to %s (guide)" or "%s waits at the exit to %s"
+					out[#out + 1] = string_format(tr(id, fb), nick_of(peer), level_title(cur.level))
+				end
+			end
+		end
+		if cur.state == "counting" and not (type(prev) == "table" and prev.state == "counting") then
+			out[#out + 1] = string_format(tr("st_coop_transition_feed_all", "Everyone is here - moving in %d s"), countdown_digit(cur))
+		end
+	end
+	if type(prev) == "table" and prev.state == "counting" and not (type(cur) == "table" and cur.state == "counting")
+		and (tonumber(prev.countdown_ms) or 0) > 800 then
+		out[#out + 1] = tr("st_coop_transition_feed_cancel", "Transition cancelled")
+	end
+	return out
+end
+
+-- The compass mark of the exit somebody waits at (coop_hud_markers' shape), as a list.
+function marks(t)
+	if type(t) ~= "table" or t.kind ~= "exit" or type(t.pos) ~= "table" or shows_board(t) then return {} end
+	local others = waiting_others(t)
+	if #others == 0 then return {} end
+	local x, y, z = tonumber(t.pos.x), tonumber(t.pos.y), tonumber(t.pos.z)
+	if not (x and y and z) then return {} end
+	return { { key = "exit", kind = "transition", pos = { x, y, z }, color = peer_color(others[1]), label = nick_of(others[1]),
+		state = "waiting", priority = MARK_PRIORITY, range = 0 } }
+end
+
+-------------------------------------------------------------------------------
+-- The overlay
+-------------------------------------------------------------------------------
+local function vec2(x, y)
+	return vector2():set(x, y)
+end
+
+-- A window and where the script put it.
+local function el(e)
+	return { e = e }
+end
+
+local function put(t, x, y, w, h)
+	if t.x ~= x or t.y ~= y then
+		t.e:SetWndPos(vec2(x, y))
+		t.x, t.y = x, y
+	end
+	if w and (t.w ~= w or t.h ~= h) then
+		t.e:SetWndSize(vec2(w, h))
+		t.w, t.h = w, h
+	end
+end
+
+local function show(t, on)
+	on = on and true or false
+	if t.shown ~= on then
+		t.shown = on
+		t.e:Show(on)
+	end
+end
+
+local function tint(t, a, rgb)
+	local v = argb(a, rgb)
+	if t.tinted ~= v then
+		t.tinted = v
+		t.e:SetTextureColor(v)
+	end
+end
+
+-- A text with a 1 px shadow under it.
+local function new_text(xml, parent, node)
+	return { sh = el(xml:InitTextWnd(node, parent)), tx = el(xml:InitTextWnd(node, parent)), text = nil, color = nil }
+end
+
+local function text_set(t, s, a, rgb)
+	if t.text ~= s then
+		t.text = s
+		t.tx.e:SetText(s)
+		t.sh.e:SetText(s)
+	end
+	local c = argb(a, rgb)
+	if t.color ~= c then
+		t.color = c
+		t.tx.e:SetTextColor(c)
+		t.sh.e:SetTextColor(argb(a * A_SHADOW, C_SHADOW))
+	end
+end
+
+local function text_place(t, x, y, w, h, m)
+	put(t.tx, x, y, w, h)
+	put(t.sh, x + m.px, y + m.py, w, h)
+end
+
+local function text_show(t, on)
+	show(t.tx, on)
+	show(t.sh, on)
+end
+
+local function alpha_step(a, target, dt, in_ms, out_ms)
+	dt = dt or 0
+	if target > a then return math_min(target, a + (in_ms > 0 and dt / in_ms or 1)) end
+	return math_max(target, a - (out_ms > 0 and dt / out_ms or 1))
+end
+
+class "UICoopTransition" (CUIScriptWnd)
+
+function UICoopTransition:__init() super()
+	local xml = CScriptXmlInit()
+	xml:ParseFile(XML_FILE)
+	self.root = xml:InitStatic("coop_transition", self)
+	self.g_board = xml:InitStatic("coop_transition:group", self.root)
+	self.g_remind = xml:InitStatic("coop_transition:group", self.root)
+	-- the board
+	self.bg = el(xml:InitStatic("coop_transition:bg", self.g_board))
+	self.icon = el(xml:InitStatic("coop_transition:icon", self.g_board))
+	self.t_head = new_text(xml, self.g_board, "coop_transition:head")
+	self.t_level = new_text(xml, self.g_board, "coop_transition:level")
+	self.t_slot = new_text(xml, self.g_board, "coop_transition:slot")
+	self.t_big = new_text(xml, self.g_board, "coop_transition:big")
+	self.t_status = new_text(xml, self.g_board, "coop_transition:line")
+	self.segs = {}
+	for i = 1, MAX_ROWS do self.segs[i] = el(xml:InitStatic("coop_transition:seg", self.g_board)) end
+	self.rows = {}
+	for i = 1, MAX_ROWS do
+		self.rows[i] = {
+			stripe = el(xml:InitStatic("coop_transition:stripe", self.g_board)),
+			nick = new_text(xml, self.g_board, "coop_transition:line"),
+			state = new_text(xml, self.g_board, "coop_transition:line_r"),
+		}
+	end
+	self.bar_track = el(xml:InitStatic("coop_transition:bar", self.g_board))
+	self.bar_fill = el(xml:InitStatic("coop_transition:bar", self.g_board))
+	self.t_hint = new_text(xml, self.g_board, "coop_transition:hint")
+	-- the reminder
+	self.rbg = el(xml:InitStatic("coop_transition:bg", self.g_remind))
+	self.t_rnick = new_text(xml, self.g_remind, "coop_transition:remind_nick")
+	self.t_rline = new_text(xml, self.g_remind, "coop_transition:remind_line")
+	self.g_board:Show(false)
+	self.g_remind:Show(false)
+	self.shown_board, self.shown_remind = false, false
+	self.a_board, self.a_remind = 0, 0
+	self.bv, self.rv = nil, nil -- what the group shows (kept while it fades out)
+end
+
+function UICoopTransition:__finalize()
+end
+
+local function metrics()
+	local dev = device()
+	local W, H = dev.width, dev.height
+	return { W = W, H = H, kx = 1024 * H / (768 * W), px = 1024 / W, py = 768 / H }
+end
+
+-- The board.
+function UICoopTransition:FrameBoard(tg, dt, t, m, L)
+	if t then self.bv = t end
+	local bv = self.bv
+	local a = alpha_step(self.a_board, t and 1 or 0, dt, L.fade_in_ms, L.fade_out_ms)
+	self.a_board = a
+	if a <= 0 or not bv then
+		if self.shown_board then
+			self.g_board:Show(false)
+			self.shown_board = false
+			if not t then self.bv = nil end
+		end
+		return
+	end
+	if not self.shown_board then
+		self.g_board:Show(true)
+		self.shown_board = true
+	end
+	local kx = m.kx
+	local Wd = L.width * kx
+	local x0 = CX - Wd / 2
+	local x1 = x0 + Wd
+	local top = L.top
+	local rows = row_texts(bv)
+	local n = #rows
+	local kind = hint_kind(bv)
+	local rows_bottom = top + L.rows_y + n * L.row_h
+	local bar_y = rows_bottom + L.bar_gap
+	local hint_y = bar_y + L.bar_h + L.hint_gap
+	local bottom = kind and (hint_y + L.hint_h) or rows_bottom
+	-- the soft panel
+	put(self.bg, x0 - L.pad_x * kx, top - L.pad_y, Wd + 2 * L.pad_x * kx, bottom - top + 2 * L.pad_y)
+	tint(self.bg, 255 * L.bg_alpha * a, C_BG)
+	show(self.bg, true)
+	-- the gate glyph and the head
+	put(self.icon, x0, top, L.icon * kx, L.icon)
+	tint(self.icon, 204 * a, C_WHITE)
+	show(self.icon, true)
+	text_place(self.t_head, x0 + L.head_x * kx, top, 240 * kx, L.head_h, m)
+	text_set(self.t_head, head_text(bv), 217 * a, C_DIM)
+	text_show(self.t_head, true)
+	text_place(self.t_level, x0, top + L.level_y, 240 * kx, L.level_h, m)
+	text_set(self.t_level, level_title(bv.level), 255 * a, C_WHITE)
+	text_show(self.t_level, true)
+	-- the count on the right, or the countdown (big) in the last seconds
+	local counting = bv.state == "counting"
+	text_place(self.t_slot, x1 - L.slot_w * kx, top + L.slot_y, L.slot_w * kx, L.level_h, m)
+	text_place(self.t_big, x1 - L.slot_w * kx, top + L.big_y, L.slot_w * kx, L.big_h, m)
+	if counting then
+		text_set(self.t_big, tostring(countdown_digit(bv)), 255 * a, C_WHITE)
+		text_show(self.t_big, true)
+		text_show(self.t_slot, false)
+	else
+		text_set(self.t_slot, count_text(bv), 255 * a, C_WHITE)
+		text_show(self.t_slot, true)
+		text_show(self.t_big, false)
+	end
+	text_place(self.t_status, x0, top + L.status_y, 240 * kx, L.status_h, m)
+	text_set(self.t_status, status_text(bv), 217 * a, C_WHITE)
+	text_show(self.t_status, true)
+	-- a segment per player: white when ready, dim when not
+	local total = math_min(MAX_ROWS, math_max(n, math_floor(tonumber(bv.total) or 0)))
+	for i = 1, MAX_ROWS do
+		local s = self.segs[i]
+		if i <= total then
+			put(s, x0 + (i - 1) * (L.seg_w + L.seg_gap) * kx, top + L.seg_y, L.seg_w * kx, L.seg_h)
+			local on = i <= (tonumber(bv.ready) or 0)
+			tint(s, 255 * a * (on and 1 or L.seg_off_alpha), C_WHITE)
+			show(s, true)
+		else
+			show(s, false)
+		end
+	end
+	-- the players
+	for i = 1, MAX_ROWS do
+		local r, row = rows[i], self.rows[i]
+		if r then
+			local y = top + L.rows_y + (i - 1) * L.row_h
+			put(row.stripe, x0, y + 1, L.stripe_w * kx, L.stripe_h)
+			local ra = r.ready and 1 or L.dim_alpha
+			tint(row.stripe, 255 * a * ra, r.rgb)
+			show(row.stripe, true)
+			text_place(row.nick, x0 + L.nick_x * kx, y, L.nick_w * kx, L.row_h - 1, m)
+			text_set(row.nick, r.nick, 255 * a * ra, r.rgb)
+			text_show(row.nick, true)
+			text_place(row.state, x1 - L.state_w * kx, y, L.state_w * kx, L.row_h - 1, m)
+			text_set(row.state, r.text, 255 * a * (r.tone == "ready" and 1 or L.text_dim_alpha), TONE[r.tone] or C_DIM)
+			text_show(row.state, true)
+		else
+			show(row.stripe, false)
+			text_show(row.nick, false)
+			text_show(row.state, false)
+		end
+	end
+	-- the hold of the key: the hint and the bar over it
+	if kind then
+		put(self.bar_track, x0, bar_y, Wd, L.bar_h)
+		tint(self.bar_track, 255 * a * L.track_alpha, C_WHITE)
+		show(self.bar_track, true)
+		local f = 0
+		if hold and not hold.fired and hold.kind == kind then
+			f = math_max(0, math_min(1, (tg - hold.since) / hold_ms(kind)))
+		end
+		if f > 0 then
+			put(self.bar_fill, x0, bar_y, Wd * f, L.bar_h)
+			tint(self.bar_fill, 255 * a, C_WHITE)
+			show(self.bar_fill, true)
+		else
+			show(self.bar_fill, false)
+		end
+		text_place(self.t_hint, x0, hint_y, Wd, L.hint_h, m)
+		text_set(self.t_hint, hint_text(kind), 217 * a, C_DIM)
+		text_show(self.t_hint, true)
+	else
+		show(self.bar_track, false)
+		show(self.bar_fill, false)
+		text_show(self.t_hint, false)
+	end
+end
+
+-- The reminder.
+function UICoopTransition:FrameRemind(tg, dt, rem, m, L)
+	if rem then self.rv = rem end
+	local rv = self.rv
+	local a = alpha_step(self.a_remind, rem and 1 or 0, dt, L.fade_in_ms, L.fade_out_ms)
+	self.a_remind = a
+	if a <= 0 or not rv then
+		if self.shown_remind then
+			self.g_remind:Show(false)
+			self.shown_remind = false
+			if not rem then self.rv = nil end
+		end
+		return
+	end
+	if not self.shown_remind then
+		self.g_remind:Show(true)
+		self.shown_remind = true
+	end
+	local kx = m.kx
+	local w = L.remind_w * kx
+	local h = L.remind_nick_h + L.remind_line_h
+	put(self.rbg, CX - w / 2 - L.remind_pad_x * kx, L.top - L.pad_y, w + 2 * L.remind_pad_x * kx, h + 2 * L.pad_y)
+	tint(self.rbg, 255 * L.bg_alpha * a, C_BG)
+	show(self.rbg, true)
+	text_place(self.t_rnick, CX - w / 2, L.top, w, L.remind_nick_h, m)
+	text_set(self.t_rnick, rv.nick, 255 * a, rv.rgb)
+	text_show(self.t_rnick, true)
+	text_place(self.t_rline, CX - w / 2, L.top + L.remind_nick_h, w, L.remind_line_h, m)
+	text_set(self.t_rline, rv.text, 217 * a, C_WHITE)
+	text_show(self.t_rline, true)
+end
+
+-- The use key held: the command goes out when the hold is over, once.
+local function run_hold(tg, t)
+	if not hold then return end
+	local kind = hint_kind(t)
+	if kind ~= hold.kind then
+		hold = nil -- the board changed under the key (cancelled, gone, I stepped back)
+		return
+	end
+	if not hold.fired and tg - hold.since >= hold_ms(kind) then
+		hold.fired = true
+		stats.holds = stats.holds + 1
+		pcall(exec_console_cmd, COMMANDS[kind])
+	end
+end
+
+function UICoopTransition:Frame(tg)
+	local m = metrics()
+	local L = layout()
+	local dt = self.last_tg and tg >= self.last_tg and tg - self.last_tg or 0
+	self.last_tg = tg
+	local raw = poll()
+	last_t = raw
+	-- the feed: what changed since the last board (whether or not the HUD is on top of it)
+	feed_rate.now = tg
+	for _, line in ipairs(feed_events(feed_prev, raw, my_peer(), feed_rate)) do say(line) end
+	feed_prev = raw
+	local t = raw
+	if t and not hud_visible() then t = nil end -- the inventory, the PDA, a scope: no overlay on top
+	local board = t and shows_board(t) and t or nil
+	local rem = t and reminder(t) or nil
+	if board then stats.shown = stats.shown + 1 end
+	if not board then hold = nil end
+	if board then run_hold(tg, board) end
+	self:FrameBoard(tg, dt, board, m, L)
+	self:FrameRemind(tg, dt, rem, m, L)
+end
+
+function UICoopTransition:Update()
+	CUIScriptWnd.Update(self)
+	local tg = time_global()
+	if self.off_until and tg < self.off_until then return end
+	local M = rawget(_G, "coop_hud_markers")
+	local pf = M and M.perf_start and M.perf_start("transition")
+	local ok, err = pcall(self.Frame, self, tg)
+	if pf then M.perf_stop(pf) end
+	if not ok then
+		self.off_until = tg + 5000
+		stats.errors = stats.errors + 1
+		log("! transition overlay frame failed: %s", tostring(err))
+	end
+end
+
+function get_window()
+	return WIN
+end
+
+function current()
+	return last_t
+end
+
+-- The key being held: { kind, fraction 0..1 } or nil (nothing held, or the command went out already).
+function hold_state()
+	if not hold or hold.fired then return nil end
+	local ms = hold_ms(hold.kind)
+	if not ms then return nil end
+	return { kind = hold.kind, fraction = math_max(0, math_min(1, (time_global() - hold.since) / ms)) }
+end
+
+local function win_on()
+	if WIN then return end
+	local ok, err = pcall(function()
+		WIN = UICoopTransition()
+		get_hud():AddDialogToRender(WIN)
+	end)
+	if not ok then
+		WIN = nil
+		log("! transition overlay failed: %s", tostring(err))
+	end
+end
+
+local function win_off()
+	if not WIN then return end
+	local w = WIN
+	WIN = nil
+	pcall(function() get_hud():RemoveDialogToRender(w) end)
+	last_t, feed_prev, hold = nil, nil, nil
+end
+
+-------------------------------------------------------------------------------
+-- Callbacks
+-------------------------------------------------------------------------------
+local function is_use_key(dik)
+	local ok, bind = pcall(dik_to_bind, dik)
+	return ok and bind == key_bindings.kUSE
+end
+
+local function on_key_press(dik)
+	if not WIN or not last_t or not is_use_key(dik) or not hud_visible() then return end
+	if not shows_board(last_t) then return end
+	local kind = hint_kind(last_t)
+	if not kind then return end
+	hold = { kind = kind, since = time_global(), fired = false }
+end
+
+local function on_key_release(dik)
+	if hold and is_use_key(dik) then hold = nil end
+end
+
+local function actor_on_update()
+	if live() then
+		win_on()
+	elseif WIN then
+		win_off()
+	end
+end
+
+local function actor_on_net_destroy()
+	win_off()
+end
+
+-- coop_hud_markers' source: the exit somebody waits at (a gate mark in his colour, labelled with his nick).
+local function marker_source()
+	return marks(poll())
+end
+
+function print_status()
+	log("transition: overlay %s, polled %d, board shown %d frames, spoken %d, key holds %d, errors %d | now: %s", WIN and "on" or "off",
+		stats.polled, stats.shown, stats.spoken, stats.holds, stats.errors,
+		last_t and (last_t.state .. " at " .. tostring(last_t.level) .. " " .. tostring(last_t.ready) .. "/" .. tostring(last_t.total)) or "-")
+end
+
+local function markers_module()
+	local m = rawget(_G, "coop_hud_markers")
+	if type(m) == "table" then return m end
+	local ok, v = pcall(function() return coop_hud_markers end) -- loads the script
+	return ok and type(v) == "table" and v or nil
+end
+
+function on_game_start()
+	if not api then return end -- an exe without co-op: nothing of this runs
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("actor_on_net_destroy", actor_on_net_destroy)
+	RegisterScriptCallback("on_key_press", on_key_press)
+	RegisterScriptCallback("on_key_release", on_key_release)
+	local M = markers_module()
+	if M and M.add_source then
+		local ok, err = pcall(M.add_source, "transition", marker_source, 200)
+		if not ok then log("! transition: no compass source: %s", tostring(err)) end
+	end
+end

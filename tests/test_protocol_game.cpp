@@ -84,8 +84,9 @@ TEST(protocol_game_offer_bad_faction_rejected)
 	}
 }
 
-TEST(protocol_game_protocol_is_9)
+TEST(protocol_game_protocol_is_10)
 {
-	// 9: CharOffer ends with `str faction` (the world's); a protocol 8 peer is refused at the handshake.
-	CHECK_EQ(kProtocolVersion, 9u);
+	// 10: TransitionVote carries an op, TransitionState (host -> all) is new (the waiting point of a level change); a
+	// protocol 9 peer is refused at the handshake. 9: CharOffer ends with `str faction` (the world's).
+	CHECK_EQ(kProtocolVersion, 10u);
 }
