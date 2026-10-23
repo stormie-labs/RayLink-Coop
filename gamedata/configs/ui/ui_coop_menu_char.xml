@@ -38,9 +38,13 @@
 		<cap x="10" y="391" width="132" height="22">
 			<text r="250" g="250" b="250" font="letterica18" align="c">st_coop_char_title</text>
 		</cap>
-		<info x="26" y="430" width="404" height="110">
+		<info x="26" y="430" width="404" height="76">
 			<text complex_mode="1" r="200" g="200" b="200" font="letterica16" align="l" vert_align="t"/>
 		</info>
+		<!-- the world's faction (T7): the stock faction button is off, this says why; under the info text -->
+		<world x="26" y="508" width="404" height="36">
+			<text complex_mode="1" r="225" g="225" b="225" font="letterica16" align="l" vert_align="t"/>
+		</world>
 		<sep x="447" y="432" width="1" height="104" stretch="1">
 			<texture r="255" g="255" b="255" a="40">coop_ally_white</texture>
 		</sep>

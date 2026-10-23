@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop - the world's faction in the new character window (T7 of the game settings patch, scripts\coop_menu_char.script): the player does not choose the faction, the host did when it created the game. -->
+<string_table>
+	<string id="st_coop_char_world_faction">
+		<text>World faction: %s. The host chose it when creating the game</text>
+	</string>
+	<string id="st_coop_char_world_locked">
+		<text>The faction is set by the world and cannot be changed here.</text>
+	</string>
+	<string id="st_coop_char_world_info">
+		<text>The host %s made a new character for you (%s). Pick starting gear: the faction kit is free, the rest costs points (the host's economy sets them).</text>
+	</string>
+	<string id="st_coop_char_world_info_join">
+		<text>The host %s makes your character (%s) when you press Done. Pick starting gear: the faction kit is free, the rest costs points (the host's economy sets them). Then you enter the host's world.</text>
+	</string>
+	<string id="st_coop_char_world_info_bare">
+		<text>Hardcore: your character is gone, and the new one starts with nothing - no kit, no money (the host has coop_hardcore_new_kit off). It joins the world's faction.</text>
+	</string>
+</string_table>

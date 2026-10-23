@@ -1,5 +1,7 @@
 -- Anomaly Coop temp test (W4 menu): coop_menu_char.script - new character offer, choice window, host check and
 -- kit. Real configs\items\settings\new_game_loadouts.ltx from anomaly-ref, engine/UI stand-ins. Not shipped.
+-- Game settings patch T7 (docs/GAME_SETTINGS.md section 8): the faction is the world's, the client does not choose it;
+-- the kit is bought from that faction's list only; join_spawn says where the new player appears.
 dofile("tests/lua/support/menu_stubs.lua")
 dofile("tests/lua/support/stubs.d/money.lua") -- install_money_stubs: coop.money_* of the host ledger (F2 T1)
 
@@ -9,8 +11,8 @@ local own43 = xml_paths(ROOT .. "configs/ui/ui_coop_menu_char.xml")
 local p43 = xml_paths(REF .. "configs/ui/ui_mm_faction_select.xml")
 
 STRINGS = {}
-do
-	local fh = assert(io.open(ROOT .. "configs/text/eng/st_coop_menu.xml", "r"))
+for _, file in ipairs({ "st_coop_menu.xml", "st_coop_char_world.xml" }) do -- T7: the world's faction texts have their own table
+	local fh = assert(io.open(ROOT .. "configs/text/eng/" .. file, "r"))
 	local src = fh:read("*a")
 	fh:close()
 	for id, text in src:gmatch('<string id="([^"]+)">%s*<text>(.-)</text>') do STRINGS[id] = text end
@@ -46,6 +48,27 @@ function ini_sys:section_exist(s) return s ~= "cash" end -- every item of the li
 function ini_sys:r_string_ex(s, k) local w = WEAPONS[s]; local v = w and w[k]; return v ~= nil and tostring(v) or nil end
 function ini_sys:r_float_ex(s, k) local w = WEAPONS[s]; return w and tonumber(w[k]) end
 
+-- the stock stand-in window has no rectangle and there is no cursor: every window is at 10,20 - 78,41 and the cursor at
+-- CURSOR_POS (T7: the hint of the faction button, which is off; the engine's IsCursorOverWindow is false for a button
+-- that is off, CUIButton::Enable(false) clears it, so the window compares the rectangle with the cursor)
+CURSOR_POS = { x = 500, y = 500 }
+function GetCursorPosition() return CURSOR_POS end
+local window0 = window
+function window(path)
+	local w = window0(path)
+	function w:GetAbsoluteRect(r) r.x1, r.y1, r.x2, r.y2 = 10, 20, 78, 41 end
+	return w
+end
+
+-- T7: the faction of the world as the host's chain reads it. WORLD = coop_game_settings.world_faction() (T4's Lua; the
+-- table nil or the function nil = missing), API_WORLD = the engine's coop.game.world_faction() ("" = none), JOIN_SPAWN =
+-- the running game's coop/coop_session/join_spawn (nil = not in the record).
+WORLD, API_WORLD, JOIN_SPAWN = "bandit", "", nil
+coop_game_settings = {
+	world_faction = function() return WORLD end,
+	value = function(src, path) if src == "o" and path == "coop/coop_session/join_spawn" then return JOIN_SPAWN end end,
+}
+
 -- engine / world stand-ins
 MODE = "host"
 SENT = {}
@@ -63,6 +86,7 @@ coop = {
 	disconnect = function() DISCONNECTS = DISCONNECTS + 1; SESSION = { active = false, phase = "off" }; return true end,
 	stash_set = function(k, v) STASH[k] = v; return true end,
 	stash_get = function(k) return STASH[k] end,
+	game = { world_faction = function() return API_WORLD end }, -- T2: coop.game
 }
 SESSION = { active = true, phase = "hosting" }
 DISCONNECTS = 0
@@ -135,8 +159,14 @@ function utils_ui.UICellContainer(id, owner)
 	function cc:OnKeyboard() end
 	return cc
 end
-function utils_ui.UIInfoItem() return { Update = function() end } end
-function utils_ui.UIHint() return { Update = function() end } end
+function utils_ui.UIInfoItem()
+	local o = { shown = false }
+	function o:Update() end
+	function o:Show(b) self.shown = b end
+	return o
+end
+HINT = nil -- the last text the hint window was asked for (nil = hidden)
+function utils_ui.UIHint() return { Update = function(_, txt) HINT = txt end } end
 
 local mc = load_module("coop_menu_char")
 check(coop_main.handlers["menu.char_offer"] and coop_main.handlers["menu.new_character"]
@@ -190,7 +220,8 @@ deliver("menu.new_character", { faction = "stalker" }, 2)
 check(last().name == "menu.char_result" and last().t.ok == false and last().t.reason == "not_new" and last().to == 2,
 	"returning player keeps his character")
 deliver("menu.new_character", { faction = "zombied" }, 1)
-check(last().t.reason == "faction", "zombied refused")
+check(last().t.reason == "busy",
+	"the client's faction is not read: zombied is no reason to refuse (the world's is bandit; the offline proxy: try again)")
 deliver("menu.new_character", { faction = "bandit", buy = "wpn_ak74_old,wpn_mp133" }, 1)
 check(last().t.reason == "points", "points checked with the host's tier")
 deliver("menu.new_character", { faction = "bandit", buy = "wpn_ak74_old" }, 1)
@@ -254,6 +285,33 @@ deliver("menu.new_character", { faction = "bandit" }, 1)
 check(last().t.reason == "not_new", "second choice refused")
 check(#MONEY_CALLS == 1, "no second money set")
 
+print("== T7: the old event path takes the world's faction (legacy_event_uses_world_faction)")
+WORLD = "stalker"
+check(mc.read_kit("stalker", 1).buy.wpn_ak74_old == nil and mc.read_kit("bandit", 1).buy.wpn_ak74_old ~= nil,
+	"the premise of the tests below: the old AK is in the bandit shop only")
+PLAYERS[#PLAYERS + 1] = { id = 3, nick = "Third", avatar_id = 502, rtt = 20 }
+CALLBACKS.se_stalker_on_spawn({ id = 502, section_name = function() return "coop_player_avatar" end,
+	name = function() return "coop_player_avatar0502" end })
+NPCS[502] = make_npc(502, { 801 })
+deliver("menu.new_character", { faction = "bandit", buy = "wpn_ak74_old" }, 3)
+check(last().t.ok == false and last().t.reason == "items" and mc.is_new(502),
+	"buy_only_world_kit: the bandit shop is not the stalker world's: refused 'items', the mark stays")
+RELEASED, CREATED = {}, {}
+for i = #MONEY_CALLS, 1, -1 do MONEY_CALLS[i] = nil end
+deliver("menu.new_character", { faction = "monolith", buy = "" }, 3)
+check(last().t.ok == true and last().t.faction == "stalker" and last().to == 3,
+	"legacy_event_uses_world_faction: the host's answer names the world's faction, not the monolith the client sent")
+check(NPCS[502].community == "stalker", "the proxy's community is the world's")
+local legacy = {}
+for _, c in ipairs(CREATED) do legacy[#legacy + 1] = c.sec end
+local legacy_s = table.concat(legacy, ",")
+check(legacy_s:find("novice_outfit", 1, true) and not legacy_s:find("trenchcoat_outfit", 1, true),
+	"the kit is the stalker world's (" .. legacy_s .. ")")
+check(#MONEY_CALLS == 1 and MONEY_CALLS[1].n == mc.faction_money("stalker") and MONEY_CALLS[1].peer == 3,
+	"the money is the world faction's")
+check(NEWS[#NEWS]:find("st_faction_stalker", 1, true) ~= nil, "the host's news names the world's faction")
+WORLD = "bandit"
+
 print("== client: window")
 MODE = "client"
 SENT = {}
@@ -266,7 +324,7 @@ db.actor = {
 	give_money = function(self, d) CLIENT_GIVES = CLIENT_GIVES + 1; CLIENT_MONEY = CLIENT_MONEY + d end,
 }
 for i = #MONEY_CALLS, 1, -1 do MONEY_CALLS[i] = nil end -- the host's calls are behind us
-deliver("menu.char_offer", { eco = 1, points = 1000, nick = "Guest" }, 0)
+deliver("menu.char_offer", { eco = 1, points = 1000, nick = "Guest", faction = "bandit" }, 0)
 local gui = mc.GUI
 check(gui and gui.shown, "offer opens the window")
 check(#MISSING_PATHS == 0, "xml paths exist in the stock 16:9 layout and ui_coop_menu_char.xml (" .. table.concat(MISSING_PATHS, ", ") .. ")")
@@ -291,11 +349,17 @@ local diff_nodes = {}
 for p in pairs(XML_FILES["ui_coop_menu_char.xml"]) do if not own43[p] then diff_nodes[#diff_nodes + 1] = p end end
 for p in pairs(own43) do if not XML_FILES["ui_coop_menu_char.xml"][p] then diff_nodes[#diff_nodes + 1] = p end end
 check(#diff_nodes == 0, "4:3 and 16:9 co-op layouts have the same nodes (" .. table.concat(diff_nodes, ",") .. ")")
--- pick bandit, buy the AK
+-- T7: the faction is the world's, nothing to pick; buy the AK
+check(gui.faction == "bandit" and gui.registered.btn_faction.enabled == false and gui.access,
+	"offer_faction_fixed: the window shows the offer's faction (bandit); the faction button is off")
+check(gui.world.text == coop_menu.tr("st_coop_char_world_faction", "st_faction_bandit"),
+	"the caption names the world's faction (" .. tostring(gui.world.text) .. ")")
+check(gui.info.text == coop_menu.tr("st_coop_char_world_info", "host", "Guest"), "the info text does not ask for a faction")
 click(gui, "btn_faction")
-check(gui.access == false and gui.registered.btn_bandit ~= nil and gui.registered.btn_isg == nil, "popup: only unlocked factions")
-click(gui, "btn_bandit")
-check(gui.faction == "bandit" and gui.access, "bandit selected")
+check(gui.access == true and gui.registered.btn_bandit == nil and gui.registered.btn_dolg == nil and gui.faction == "bandit",
+	"popup_never_opens: a click on the faction button changes nothing")
+gui:OnFactionSelect("dolg")
+check(gui.faction == "bandit", "a faction select that does come (a stale callback) is ignored")
 local idx
 for i, ci in pairs(gui.CC.loadout.cell) do if ci.section == "wpn_ak74_old" then idx = i end end
 gui:On_CC_Mouse1("loadout", idx)
@@ -333,6 +397,7 @@ STRINGS.l01_escape = "Cordon"
 deliver("menu.char_offer", { eco = 3, points = 400, nick = "Guest" }, 0)
 local g2 = mc2.GUI
 check(g2 and g2.shown and g2.points_left == 400, "fresh state: window with tier 3 points")
+check(g2.faction == "stalker", "an offer with no faction (an old host): the window shows stalker, never an empty faction")
 check(g2.box_map.texture == "ui_new_game_map_l01_escape" and g2.box_map.shown and g2.map_dim.shown
 	and g2.start.text == "Start: Cordon, next to the group", "level picture and start line of the current level")
 click(g2, "btn_back")
@@ -420,15 +485,18 @@ local host_actor = {
 db.actor = host_actor
 math.random = function(n) return n and 1 or 0.5 end
 
+JOIN_SPAWN = "faction_start" -- the starts of the faction, as before join_spawn (the default is the host)
 local plan = mc.host_plan_character(1, "bandit", "wpn_ak74_old")
 check(plan.ok == true and plan.where == "start:car_park" and plan.gvid == 440 and plan.lvid == 436975
 	and math.abs(plan.x - 106.27) < 1e-6 and math.abs(plan.y + 2.86) < 1e-6, "bandit: at the bandit start of the host's level")
 check(plan.faction == "bandit" and plan.money == 1000, "the faction and its money")
-local bad = mc.host_plan_character(1, "zombied", "")
-check(bad.ok == false and bad.reason == "faction", "zombied refused")
+local ignored = mc.host_plan_character(1, "zombied", "")
+check(ignored.ok == true and ignored.faction == "bandit" and ignored.where == "start:car_park",
+	"the faction the engine passes is not read (zombied): the plan is the world's")
 check(mc.host_plan_character(1, "bandit", "wpn_ak74_old,wpn_mp133").reason == "points", "points of the host's tier")
 check(mc.host_plan_character(1, "bandit", "wpn_pm").reason == "items", "the free kit cannot be bought")
-check(mc.host_plan_character(1, 7, nil).reason == "faction", "junk from the engine is refused, not an error")
+local junk = mc.host_plan_character(1, 7, nil)
+check(junk.ok == true and junk.faction == "bandit", "junk from the engine is not read either, and is not an error")
 
 local function smart(name, gv, props, x, y, z)
 	return { name = function() return name end, m_game_vertex_id = gv, m_level_vertex_id = 5000 + gv,
@@ -442,12 +510,14 @@ SIMBOARD = { smarts = {
 	[5] = { smrt = smart("esc_smart_terrain_3_16", 454, { base = 1, army = 1, dolg = 0 }, -220, -20, -160) },
 	[6] = { smrt = nil },
 } }
+WORLD = "dolg"
 local dolg = mc.host_plan_character(2, "dolg", "")
 check(dolg.ok and dolg.where == "camp:esc_smart_terrain_2_12" and dolg.gvid == 454 and dolg.lvid == 5454
 	and dolg.x == -200, "Duty, host on Cordon: the nearest Duty base of Cordon (not a lair, not another level or faction)")
 SIMBOARD = nil
 local alone = mc.host_plan_character(2, "dolg", "")
 check(alone.ok and alone.where == nil and alone.gvid == nil, "nothing of the faction here: no point (next to the host)")
+WORLD = "bandit"
 INFOS.story_mode_disabled = nil
 local st_plan = mc.host_plan_character(1, "bandit", "")
 check(st_plan.ok and st_plan.where == nil, "story mode: the bandit start of story mode is in Dark Valley: next to the host")
@@ -464,6 +534,91 @@ db.actor = host_actor
 MODE = "client"
 check(mc.host_plan_character(1, "bandit", "").ok == false, "only a host plans")
 MODE = "host"
+
+print("== T7: the world's faction and where the new player appears (docs/GAME_SETTINGS.md section 8)")
+-- the chain: coop_game_settings.world_faction() -> coop.game.world_faction() -> the host actor's community -> stalker
+host_actor.character_community = function() return COMMUNITY end
+COMMUNITY = "actor_monolith"
+WORLD, API_WORLD = "dolg", "army"
+check(mc.world_faction() == "dolg", "world_faction: the game settings' record first")
+coop_game_settings.world_faction = nil
+check(mc.world_faction() == "army", "no world_faction in the settings script (T4 not there): the engine's coop.game.world_faction")
+local gs0 = coop_game_settings
+coop_game_settings = nil
+check(mc.world_faction() == "army", "no settings script at all: the same")
+coop_game_settings = gs0
+coop_game_settings.world_faction = function() return WORLD end
+WORLD = nil
+check(mc.world_faction() == "army", "the settings know none (nil): the engine's")
+WORLD, API_WORLD = "zombied", "a b"
+check(mc.world_faction() == "monolith", "names nobody may pick (zombied, a b) are passed over: the host actor's community")
+API_WORLD = ""
+WORLD = ""
+check(mc.world_faction() == "monolith", "'' is none: the host actor's community without the actor_ prefix")
+local coop_game0 = coop.game
+coop.game = nil
+check(mc.world_faction() == "monolith", "no coop.game in this engine: the community")
+coop.game = coop_game0
+COMMUNITY = "trader"
+check(mc.world_faction() == "stalker", "nothing usable anywhere: stalker, as the engine's character_faction")
+db.actor = nil
+check(mc.world_faction() == "stalker", "no actor: stalker")
+db.actor = host_actor
+WORLD = "bandit"
+
+-- host_plan_ignores_client_faction: a hostile client says monolith in a stalker world
+WORLD, JOIN_SPAWN = "stalker", "faction_start"
+local mono = mc.host_plan_character(1, "monolith", "wpn_svt40")
+local stalker_plan = mc.host_plan_character(1, "stalker", "wpn_svt40")
+check(mono.ok == true and mono.faction == "stalker" and mono.money == mc.faction_money("stalker"),
+	"host_plan_ignores_client_faction: the plan is the stalker world's (faction and money)")
+check(mono.where ~= nil and mono.where == stalker_plan.where and mono.gvid == stalker_plan.gvid,
+	"... and so is the start: the same as when stalker is named")
+check(mc.host_plan_character(1, "stalker", "wpn_ak74_old").reason == "items"
+	and mc.host_plan_character(1, "bandit", "wpn_ak74_old").reason == "items",
+	"buy_only_world_kit: a bandit shop item is refused in a stalker world, whoever is named")
+check(mc.host_plan_character(1, "monolith", "wpn_svt40,wpn_svt40").reason == "items",
+	"the stalker shop sells one SVT: two are refused")
+
+-- join_spawn
+local asked = {}
+local host_start0 = mc.host_start
+mc.host_start = function(f) asked[#asked + 1] = f; return host_start0(f) end
+mc.host_plan_character(1, "monolith", "")
+check(#asked == 1 and asked[1] == "stalker",
+	"join_spawn_faction_start: the start is host_start(world faction), not the client's monolith (" .. table.concat(asked, ",") .. ")")
+JOIN_SPAWN, asked = "host", {}
+local at_host = mc.host_plan_character(1, "monolith", "")
+check(at_host.ok == true and at_host.where == nil and at_host.x == nil and at_host.y == nil and at_host.z == nil
+	and at_host.lvid == nil and at_host.gvid == nil and #asked == 0,
+	"join_spawn_host_no_point: rule 'host': no point (the engine puts him next to the host), no start asked")
+check(at_host.faction == "stalker" and at_host.money == mc.faction_money("stalker"), "... but the plan itself is the same")
+JOIN_SPAWN, asked = "nowhere", {}
+check(mc.host_plan_character(1, "monolith", "").where == nil and #asked == 0, "a value the rule does not know is 'host'")
+JOIN_SPAWN, asked = nil, {}
+check(mc.host_plan_character(1, "monolith", "").where == nil and #asked == 0, "no rule in the record, no option: 'host' (the default)")
+-- the rule from the machine's option while no record answers (a game from before the record, the host's own settings)
+axr_main.config:w_value("options", "coop/coop_session/join_spawn", "faction_start")
+check(mc.join_spawn() == "faction_start" and mc.host_plan_character(1, "monolith", "").where ~= nil,
+	"no record: the option coop/coop_session/join_spawn of the host's config (faction_start)")
+JOIN_SPAWN = "host"
+check(mc.join_spawn() == "host", "the record wins over the option")
+axr_main.config:w_value("options", "coop/coop_session/join_spawn", nil)
+JOIN_SPAWN = nil
+check(mc.join_spawn() == "host", "option gone: host")
+mc.host_start = host_start0
+WORLD, JOIN_SPAWN = "bandit", "faction_start"
+
+-- the offer the host sends inside the world carries the world's faction too
+MODE = "host"
+PLAYERS = { { id = 0, nick = "host", is_self = true, avatar_id = 0 }, { id = 1, nick = "Guest", avatar_id = 500, rtt = 20 } }
+SE[500] = { coop_new_char = true }
+SENT = {}
+NOW = NOW + 200000
+CALLBACKS.actor_on_update()
+check(#SENT == 1 and SENT[1].name == "menu.char_offer" and SENT[1].t.faction == "bandit",
+	"the old event offer names the world's faction")
+SE[500] = {}
 
 SE_OBJ = {}
 function alife_object(id) return SE_OBJ[id] end
@@ -494,7 +649,24 @@ check(#MONEY_CALLS == 1 and MONEY_CALLS[1].fn == "money_set" and MONEY_CALLS[1].
 check(not mc.is_new(900), "not new: never offered in the world")
 check(#NEWS == news_before + 1 and NEWS[#NEWS]:find("Guest", 1, true) ~= nil, "host news with the nick")
 check(mc.host_make_character(1, 901, "bandit", "") == false, "no server object: refused")
-check(select(2, mc.host_make_character(1, 900, "zombied", "")) == "faction", "the choice is checked again")
+-- T7 host_make_uses_world_faction: the engine passes the faction it resolved, the Lua reads the world's itself
+WORLD = "stalker"
+RELEASED, CREATED = {}, {}
+for i = #MONEY_CALLS, 1, -1 do MONEY_CALLS[i] = nil end
+local ok_w, money_w = mc.host_make_character(1, 900, "monolith", "")
+local made_w = {}
+for _, c in ipairs(CREATED) do made_w[#made_w + 1] = c.sec end
+local made_ws = table.concat(made_w, ",")
+check(ok_w == true and money_w == mc.faction_money("stalker") and made_ws:find("novice_outfit", 1, true)
+	and not made_ws:find("trenchcoat_outfit", 1, true),
+	"host_make_uses_world_faction: the kit and the money are the stalker world's, not what was passed (" .. made_ws .. ")")
+check(#MONEY_CALLS == 1 and MONEY_CALLS[1].n == mc.faction_money("stalker"), "the ledger gets the world faction's money")
+check(NEWS[#NEWS]:find("st_faction_stalker", 1, true) ~= nil, "the news names the world's faction")
+check(select(2, mc.host_make_character(1, 900, "bandit", "wpn_ak74_old")) == "items",
+	"buy_only_world_kit: the bandit shop item in a stalker world is refused at the make step too")
+WORLD = "bandit"
+for i = #MONEY_CALLS, 1, -1 do MONEY_CALLS[i] = nil end
+RELEASED, CREATED = {}, {}
 
 MC_HOOKS = {}
 coop_mods_core = { on_new_character = function(peer) MC_HOOKS[#MC_HOOKS + 1] = peer end }
@@ -525,11 +697,22 @@ local mj = load_module("coop_menu_char")
 STRINGS.ui_st_rookie_village = "Rookie Village (Cordon)"
 STRINGS.ui_st_pole_stalker_village = "Khutorok (Meadow)"
 check(mj.join_choice() == nil, "no choice before an offer")
-check(mj.join_offer(2, 700, "l01_escape", "", 0) == true, "the offer opens the window in the main menu (no actor)")
+check(mj.join_offer(2, 700, "l01_escape", "", 0, "stalker") == true, "the offer opens the window in the main menu (no actor)")
 local gj = mj.GUI
 check(gj and gj.shown and gj.points_left == 700, "window with the host's points")
-check(gj.name.text == "Guest" and gj.info.text == coop_menu.tr("st_coop_char_info_join", "Boss", "Guest"),
-	"the join text: the character is made when Done is pressed")
+check(gj.name.text == "Guest" and gj.info.text == coop_menu.tr("st_coop_char_world_info_join", "Boss", "Guest"),
+	"the join text: the character is made when Done is pressed; it does not ask for a faction")
+check(gj.faction == "stalker" and gj.registered.btn_faction.enabled == false
+	and gj.world.text == coop_menu.tr("st_coop_char_world_faction", "st_faction_stalker"),
+	"offer_faction_fixed: the faction of the offer, the faction button off, the caption says whose it is")
+do
+	local sk, free_set, foreign = mj.read_kit("stalker", 2), {}, 0
+	for _, sec in ipairs(sk.free) do free_set[sec] = true end
+	for _, ci in pairs(gj.CC.loadout.cell) do if not sk.buy[ci.section] then foreign = foreign + 1 end end
+	for _, ci in pairs(gj.CC.inventory.cell) do if not free_set[ci.section] then foreign = foreign + 1 end end
+	check(foreign == 0 and gj.CC.loadout.n > 0 and gj.CC.inventory.n > 0,
+		"the lists are the world's kit only (stalker), nothing of another faction's")
+end
 check(gj.status.text:find(STRINGS.st_coop_char_ready_join, 1, true) ~= nil, "join hint in the status line")
 check(gj.registered.btn_back.text == STRINGS.st_coop_char_btn_leave, "the second button leaves the session")
 check(gj.box_map.texture == "ui_new_game_map_l01_escape" and gj.box_map.shown, "the host's level picture")
@@ -537,23 +720,36 @@ check(gj.where.text:find("You will appear at: ", 1, true) and gj.where.text:find
 	"stalker: the line says where, by the stock name of the start on Cordon")
 check(gj.start.text == "", "the short start line is left to the 'where' line in a join offer")
 click(gj, "btn_faction")
-click(gj, "btn_dolg")
-check(gj.where.text:find(STRINGS.st_coop_char_where_camp_or_near, 1, true),
+check(gj.faction == "stalker" and gj.access and gj.registered.btn_dolg == nil,
+	"popup_never_opens: before the world too, the click changes nothing")
+mj.join_offer(2, 700, "l01_escape", "", 0, "dolg") -- a world of Duty: the host's offer names it
+check(gj.faction == "dolg" and gj.where.text:find(STRINGS.st_coop_char_where_camp_or_near, 1, true),
 	"Duty: no Duty start on Cordon and the client does not know the camps: a camp there, or next to the host")
 local camp_known0 = mj.camp_known
 mj.camp_known = function(f, lvl) return f == "dolg" and lvl == "l01_escape" end
-click(gj, "btn_faction")
-click(gj, "btn_dolg")
+mj.join_offer(2, 700, "l01_escape", "", 0, "dolg")
 check(gj.where.text:find(coop_menu.tr("st_coop_char_where_camp", "st_faction_dolg"), 1, true),
 	"Duty with a camp known on Cordon: the base is on another map, the camp of the faction")
 mj.camp_known = function() return false end
-click(gj, "btn_faction")
-click(gj, "btn_dolg")
+mj.join_offer(2, 700, "l01_escape", "", 0, "dolg")
 check(gj.where.text:find(STRINGS.st_coop_char_where_near, 1, true), "Duty with no camp on Cordon: next to the host")
 mj.camp_known = camp_known0
+check(gj.world.text == coop_menu.tr("st_coop_char_world_faction", "st_faction_dolg") and gj.registered.btn_faction.enabled == false,
+	"the caption follows the offer's faction, the button stays off")
+mj.join_offer(2, 700, "l01_escape", "", 0, "zombied")
+check(gj.faction == "stalker", "a faction nobody may pick in an offer (zombied): stalker, so the window never lists a kit it cannot buy")
+mj.join_offer(2, 700, "l01_escape", "", 0, "dolg")
+-- the hint of the button that is off: only while the cursor is on it
+CURSOR_POS = { x = 30, y = 30 }
+gj:Update()
+check(HINT == STRINGS.st_coop_char_world_locked, "the cursor on the faction button: the hint says the world sets it (" .. tostring(HINT) .. ")")
+CURSOR_POS = { x = 500, y = 500 }
+gj:Update()
+check(HINT == nil, "the cursor elsewhere: no hint")
 -- Live 2026-10-23 (build 7, GAMMA): a mod's tooltip (zzz_craft_use_in_tooltip_mcm patches UIInfoItem:Update) needs a
 -- loaded game and fails before the world. utils_ui's UICellContainer:Update asks the tooltip BEFORE it marks the cell
 -- hovered (On_Hover), so no cell was ever hovered, no click reached On_CC_Mouse1 and the choice went out with 0 bought.
+-- T7: the cells ask the window's stand-in (gj.tip), which asks gj.item_info at every call.
 do
 	local hovered, info_calls = 0, 0
 	local real = {}
@@ -566,15 +762,69 @@ do
 		end
 	end
 	local info0 = gj.item_info
-	gj.item_info = { Update = function() info_calls = info_calls + 1; error("attempt to index upvalue 'ini_craft' (a nil value)") end }
+	gj.item_info = { shown = true, Update = function() info_calls = info_calls + 1; error("attempt to index upvalue 'ini_craft' (a nil value)") end,
+		Show = function(self, b) self.shown = b end }
+	gj.item_info.shown = true -- the tooltip is on the screen when it fails
 	local ok_upd, err_upd = pcall(gj.Update, gj)
 	check(ok_upd, "a failing mod tooltip does not break the window's update (" .. tostring(err_upd) .. ")")
+	check(gj.item_info.shown == false, "T7: the tooltip that failed is hidden, not left half-built on the screen")
 	check(hovered >= 1, "the cells are still hovered without the tooltip: clicks reach On_CC_Mouse1 (" .. hovered .. ")")
 	local calls = info_calls
 	pcall(gj.Update, gj)
 	check(info_calls == calls, "the failing tooltip is not asked again (no error every frame)")
 	for name, cc in pairs(gj.CC) do cc.Update = real[name] end
 	gj.item_info = info0
+	gj.info_broken = nil
+end
+
+-- Build 9 (owner's log, 7 times): zzz_craft_use_in_tooltip_mcm replaces UIInfoItem:Update with a function that reads
+-- ini_craft, which the mod fills in its on_game_start, never run in the main menu. The mod keeps the stock function as
+-- og_info_item_update (a field of its module): before the world the window's tooltip uses it. With a world, or without
+-- the mod, nothing changes.
+do
+	local calls = { stock = {}, mod = 0 }
+	local info0 = gj.item_info
+	local info = { shown = false, Show = function(self, b) self.shown = b end,
+		Update = function() calls.mod = calls.mod + 1; error("attempt to index upvalue 'ini_craft' (a nil value)") end }
+	gj.item_info, gj.info_broken = info, nil
+	zzz_craft_use_in_tooltip_mcm = { og_info_item_update = function(self, obj, sec, flags)
+		calls.stock[#calls.stock + 1] = { self = self, obj = obj, sec = sec, flags = flags }
+	end }
+	db.actor = nil
+	local flags = { value = 5 }
+	gj.tip:Update(nil, "bandage", flags)
+	check(#calls.stock == 1 and calls.stock[1].self == info and calls.stock[1].sec == "bandage" and calls.stock[1].flags == flags
+		and calls.mod == 0, "mod tooltip, no world: the stock Update runs on the window's UIInfoItem, the mod's is not called")
+	gj.tip:Update()
+	check(#calls.stock == 2 and calls.stock[2].sec == nil and calls.mod == 0,
+		"... for the hide call too (no item under the cursor)")
+	-- through the window's own Update, with a cell under the cursor
+	local real = {}
+	for name, cc in pairs(gj.CC) do
+		real[name] = cc.Update
+		cc.Update = function(self, item_info) item_info:Update(nil, "wpn_pm", {}); return true end
+	end
+	local n = #calls.stock
+	pcall(gj.Update, gj)
+	check(#calls.stock > n and calls.mod == 0 and not gj.info_broken, "the window's update: no error, the tooltip is not given up")
+	for name, cc in pairs(gj.CC) do cc.Update = real[name] end
+	-- with a world the mod's Update works (its on_game_start ran): the window asks it
+	db.actor = { give_game_news = function() end }
+	info.Update = function() calls.mod = calls.mod + 1 end
+	local before = #calls.stock
+	gj.tip:Update(nil, "bandage", {})
+	check(calls.mod == 1 and #calls.stock == before, "mod tooltip, world loaded: the mod's Update is used (recipes in the tooltip)")
+	-- the mod is not there, or an older one without the stock function kept: the tooltip itself
+	db.actor = nil
+	zzz_craft_use_in_tooltip_mcm = nil
+	gj.tip:Update(nil, "bandage", {})
+	check(calls.mod == 2 and #calls.stock == before, "no mod: the tooltip's own Update")
+	zzz_craft_use_in_tooltip_mcm = {}
+	gj.tip:Update(nil, "bandage", {})
+	check(calls.mod == 3, "the mod without og_info_item_update: the tooltip's own Update")
+	zzz_craft_use_in_tooltip_mcm = nil
+	gj.item_info, gj.info_broken = info0, nil
+	db.actor = nil
 end
 click(gj, "btn_start")
 check(#SENT == 0, "no script event: the engine takes the choice")
@@ -583,7 +833,7 @@ check(jf == "dolg" and jb == "", "the engine gets faction and bought gear")
 check(mj.join_choice() == nil, "taken once")
 check(STASH.coop_char_joined == "dolg", "kept for the news in the world (the load rebuilds Lua)")
 check(gj.btn_start.enabled == false and gj.status.text:find("Waiting for the host...", 1, true), "waiting for the world")
-check(mj.join_offer(2, 700, "l01_escape", "points", 0) == true, "refused: offered again")
+check(mj.join_offer(2, 700, "l01_escape", "points", 0, "dolg") == true, "refused: offered again")
 check(gj.shown and gj.btn_start.enabled and gj.faction == "dolg"
 	and gj.status.text:find(coop_menu.tr("st_coop_char_refused", STRINGS.st_coop_char_reason_points), 1, true),
 	"the refusal shown, the choice kept, Done again")
@@ -591,10 +841,8 @@ gj:OnKeyboard(DIK_keys.DIK_ESCAPE, ui_events.WINDOW_KEY_PRESSED)
 check(gj.shown, "Escape does not leave the session")
 click(gj, "btn_faction")
 gj:OnKeyboard(DIK_keys.DIK_ESCAPE, ui_events.WINDOW_KEY_PRESSED)
-check(gj.shown and gj.access, "Escape closes the faction popup")
-mj.join_offer(2, 700, "l01_escape", "", 1) -- the host's game is in story mode
-click(gj, "btn_faction")
-click(gj, "btn_bandit")
+check(gj.shown and gj.access, "Escape after a click on the (off) faction button: still the window, still not leaving")
+mj.join_offer(2, 700, "l01_escape", "", 1, "bandit") -- the host's game is in story mode
 check(gj.where.text:find(STRINGS.st_coop_char_where_camp_or_near, 1, true) and not gj.where.text:find("car_park", 1, true),
 	"story mode: the bandit start of story mode is elsewhere")
 mj.join_closed("world")
@@ -716,24 +964,19 @@ for _, lang in ipairs({ "eng", "rus" }) do
 end
 
 -- the window
-check(mg.join_offer(2, 700, "l01_escape", "", 0) == true, "the offer opens the window")
+check(mg.join_offer(2, 700, "l01_escape", "", 0, "stalker") == true, "the offer opens the window")
 local gw = mg.GUI
-click(gw, "btn_faction")
-click(gw, "btn_csky")
+mg.join_offer(2, 700, "l01_escape", "", 0, "csky")
 check(gw.where.text:find("You will appear at: Rookie Village (Cordon)", 1, true)
 	and gw.where.text:find("split maps", 1, true) and gw.where.text:find("host's map", 1, true),
 	"window, Clear Sky on Cordon: the village and the split-maps note")
-click(gw, "btn_faction")
-click(gw, "btn_army")
+mg.join_offer(2, 700, "l01_escape", "", 0, "army")
 check(gw.where.text:find("Southern Checkpoint (Cordon)", 1, true), "window, a faction with a start on the host's map")
 mg.camp_known = function() return false end
-click(gw, "btn_faction")
-click(gw, "btn_dolg")
+mg.join_offer(2, 700, "l01_escape", "", 0, "dolg")
 check(gw.where.text:find("You will appear next to the host", 1, true) and not gw.where.text:find("split maps", 1, true),
 	"window, a faction with no start and no camp: next to the host")
-mg.join_offer(2, 700, "k00_marsh", "", 0)
-click(gw, "btn_faction")
-click(gw, "btn_csky")
+mg.join_offer(2, 700, "k00_marsh", "", 0, "csky")
 check(gw.where.text:find("Hidden Base (Great Swamps)", 1, true), "window, the offer names another host map: the base")
 mg.join_closed("world")
 end
@@ -777,6 +1020,13 @@ check(af == "stalker" and ab == "", "autochoose: the engine gets stalker, nothin
 check(ma.join_choice() == nil, "autochoose: taken once")
 check(ma.join_offer(1, 1700, "l01_escape", nil, 0) == true and select(1, ma.join_choice()) == "stalker",
 	"autochoose: no refusal given at all (nil) is a first offer too")
+-- T7: the faction of the answer is the offer's (the world's); the flag only asks for an unattended answer
+check(ma.join_offer(1, 1700, "l01_escape", "", 0, "dolg") == true and ma.GUI == nil, "autochoose with a world faction: answered at once, no window")
+local wf, wb = ma.join_choice()
+check(wf == "dolg" and wb == "", "autochoose_uses_offer_faction: dolg (the offer's), not stalker (the flag's)")
+check(STASH.coop_char_joined == "dolg", "... and the news in the world names it")
+check(ma.join_offer(1, 1700, "l01_escape", "", 0, "zombied") == true and select(1, ma.join_choice()) == "stalker",
+	"autochoose, the offer's faction is not one anybody may pick: the flag's")
 LOG = {}
 -- review of the fix, minor 1: "busy" is the host's fallback reason (its Lua failed for a moment); an unattended run
 -- answers once more instead of sitting in the window until the host's 10-minute kick
@@ -880,7 +1130,7 @@ check(mr.join_offer(2, 700, "l01_escape", "", 0) == true and mr.GUI and mr.GUI.s
 	"retired, no -coop_autochoose: the window opens over the level (the actor exists, the offer is a join offer)")
 local gr = mr.GUI
 check(gr.registered.btn_back.text == STRINGS.st_coop_char_btn_leave
-	and gr.info.text == coop_menu.tr("st_coop_char_info_join", "Boss", "Guest"),
+	and gr.info.text == coop_menu.tr("st_coop_char_world_info_join", "Boss", "Guest"),
 	"retired: the join texts (the character is made when Done is pressed, Leave ends the session)")
 click(gr, "btn_start")
 check(select(1, mr.join_choice()) == "stalker", "retired: Done gives the choice to the engine")
@@ -919,8 +1169,9 @@ local gh = mh.GUI
 check(gh and gh.shown and gh.points_left == 1000 and gh.name.text == "Boss",
 	"the window opens for the host: his tier's points, his nick")
 check(#SENT == 0, "no event: the host is his own authority")
-click(gh, "btn_faction")
-click(gh, "btn_bandit")
+check(gh.faction == "bandit" and gh.registered.btn_faction.enabled == false
+	and gh.world.text == coop_menu.tr("st_coop_char_world_faction", "st_faction_bandit"),
+	"the host's window shows the world's faction (bandit), nothing to pick")
 local hidx
 for i, ci in pairs(gh.CC.loadout.cell) do if ci.section == "wpn_ak74_old" then hidx = i end end
 gh:On_CC_Mouse1("loadout", hidx)
@@ -973,6 +1224,14 @@ NOW = NOW + 5000
 CALLBACKS.actor_on_update()
 check(ml.GUI and ml.GUI.shown, "after a load the window comes back for the marked host")
 check(ml.host_choose_self("dolg", "") == true and not ml.is_new(0), "... and his choice is taken")
+check(hactor.community == "actor_bandit", "host_self_uses_world_faction: dolg (what was passed) is not read, the world's bandit is")
+WORLD = "freedom"
+hactor.community = "stalker"
+ml.host_new_character()
+check(ml.is_new(0) and ml.GUI.faction == "freedom", "the next new character of the host: the window shows the world's faction")
+check(ml.host_choose_self("monolith", "") == true and hactor.community == "actor_freedom",
+	"host_self_uses_world_faction: monolith passed, the world's freedom given")
+WORLD = "bandit"
 
 -- -coop_autochoose (unattended runs): the host's choice is made at once, no window
 CMDLINE = '"x.exe" -coop_host 27960 -coop_autochoose freedom'
@@ -982,9 +1241,9 @@ mq.on_game_start()
 RELEASED, CREATED = {}, {}
 LOG = {}
 CALLBACKS.coop_host_new_character()
-check(not mq.is_new(0) and mq.GUI == nil and hactor.community == "actor_freedom" and #CREATED > 0,
-	"-coop_autochoose: the host's new character at once, no window")
-check(log_count("test: the host's new character freedom (-coop_autochoose): made") == 1, "... and that is in the log")
+check(not mq.is_new(0) and mq.GUI == nil and hactor.community == "actor_bandit" and #CREATED > 0,
+	"-coop_autochoose: the host's new character at once, no window, in the world's faction (not the flag's freedom)")
+check(log_count("test: the host's new character bandit (-coop_autochoose): made") == 1, "... and that is in the log")
 CMDLINE = '"x.exe" -coop_host 27960'
 MODE = "client"
 check(select(2, mq.host_choose_self("bandit", "")) == "busy", "only a host chooses for himself")
@@ -1034,9 +1293,8 @@ check(mc_b.join_offer(1, 0, "l01_escape", "", 0) == true and mc_b.GUI and mc_b.G
 local gb = mc_b.GUI
 check(gb.CC.inventory.n == 0 and gb.CC.loadout.n == 0 and gb.points_left == 0, "a bare offer: no kit, nothing to buy")
 check(gb.text_money.text == "0 RU" and gb.facts.text:find("0 RU", 1, true), "a bare offer: no faction money")
-check(gb.info.text == coop_menu.tr("st_coop_char_info_bare"), "a bare offer: the window says why")
-click(gb, "btn_faction")
-click(gb, "btn_dolg")
+check(gb.info.text == coop_menu.tr("st_coop_char_world_info_bare"), "a bare offer: the window says why")
+mc_b.join_offer(1, 0, "l01_escape", "", 0, "dolg")
 check(gb.CC.inventory.n == 0 and gb.text_money.text == "0 RU", "another faction: still nothing")
 click(gb, "btn_start")
 local bf, bb = mc_b.join_choice()
@@ -1055,15 +1313,16 @@ local mhb = load_module("coop_menu_char")
 mhb.on_game_start()
 for i = #MONEY_CALLS, 1, -1 do MONEY_CALLS[i] = nil end
 RELEASED, CREATED = {}, {}
+WORLD = "freedom"
 CALLBACKS.coop_host_new_character(0)
 check(mhb.is_new(0) and mhb.GUI and mhb.GUI.shown, "the host's bare new character: the window")
 local ghb = mhb.GUI
 check(ghb.points_left == 0 and ghb.CC.inventory.n == 0 and ghb.text_money.text == "0 RU",
 	"the host's bare window: no kit, no points, no money")
-click(ghb, "btn_faction")
-click(ghb, "btn_freedom")
+check(ghb.faction == "freedom", "the host's bare window: the world's faction")
 click(ghb, "btn_start")
 check(not mhb.is_new(0) and not ghb.shown and hactor.community == "actor_freedom", "chosen: the faction")
+WORLD = "bandit"
 check(#CREATED == 0 and #RELEASED == 0 and #MONEY_CALLS == 0, "nothing given, nothing taken, his money stays (0 since the engine)")
 local ml_b = load_module("coop_menu_char") -- a load before he chose keeps it bare
 CALLBACKS = {}
@@ -1084,6 +1343,28 @@ check(ml_b2.host_choose_self("bandit", "") == true and #CREATED > 0, "... and gi
 db.actor = nil
 command_line = nil
 STASH = {}
+
+-- T7: the table of the world's faction texts: every id in both languages, CRLF kept, the Russian one in cp1251
+print("== T7: string table st_coop_char_world.xml")
+for _, lang in ipairs({ "eng", "rus" }) do
+	local fh = assert(io.open(ROOT .. "configs/text/" .. lang .. "/st_coop_char_world.xml", "rb"))
+	local src = fh:read("*a")
+	fh:close()
+	for _, id in ipairs({ "st_coop_char_world_faction", "st_coop_char_world_locked", "st_coop_char_world_info",
+		"st_coop_char_world_info_join", "st_coop_char_world_info_bare" }) do
+		check(src:find('<string id="' .. id .. '">', 1, true) ~= nil, lang .. " has " .. id)
+	end
+	check(src:find("\r\n", 1, true) ~= nil and not src:find("[^\r]\n"), lang .. " world table keeps CRLF line ends")
+	check(src:find('<?xml version="1.0" encoding="windows-1251"?>', 1, true) == 1, lang .. " world table declares windows-1251")
+	check(src:find("%s", 1, true) ~= nil, lang .. " world table keeps its %s")
+	if lang == "rus" then
+		check(src:find("\195\240\243\239\239\232\240\238\226\234\224 \236\232\240\224: %s", 1, true) ~= nil,
+			"rus: cp1251 bytes, not UTF-8 (Gruppirovka mira: %s)")
+		check(not src:find("\208\147", 1, true), "rus: no UTF-8 lead bytes")
+	end
+end
+check(STRINGS.st_coop_char_world_faction == "World faction: %s. The host chose it when creating the game",
+	"the eng caption names the faction and who chose it")
 
 -- string ids used by the script exist
 local fh = assert(io.open(ROOT .. "scripts/coop_menu_char.script", "r"))

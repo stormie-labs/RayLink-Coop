@@ -16,9 +16,19 @@
 	sets its own actor_<faction> community only. Returning players (proxy not new) are never asked.
 
 	Events (coop_main.encode payloads, ids in host numbering):
-		menu.char_offer      host -> player   { eco, points, nick }            repeated every 60 s while new
+		menu.char_offer      host -> player   { eco, points, nick, faction }   repeated every 60 s while new
 		menu.new_character   player -> host   { faction, buy = "sec,sec,..." } bought items only
 		menu.char_result     host -> player   { ok, faction, money, items } | { ok = false, reason }
+
+	Protocol 9 (owner, 2026-10-23, docs/GAME_SETTINGS.md section 8: "creating the faction is part of creating the world;
+	other clients must not choose it"): the faction is the world's, chosen by the host when it made the game. The window
+	shows it (the offer names it; the faction button is off, a caption says whose it is) and lists the kit of that
+	faction only. The host never reads the faction a client sends or the engine passes: world_faction() (coop_game_settings
+	-> coop.game.world_faction() -> the community of the host's actor -> stalker) is the faction of the plan, of the kit
+	(plan_kit: only the world's <f>_loadout can be bought from), of the community and of the money, in all three paths
+	(CharChoice, the old menu.new_character event, the host's own new character). The start is the world rule
+	coop/coop_session/join_spawn (join_spawn()): "host" (default) gives no point and the engine puts the new player next to
+	the host, "faction_start" the start of the world's faction (host_start).
 
 	Protocol 8 (owner, live test 2026-10-23: "first choose the faction, then appear where needed, in my faction"):
 	a player whose key has no character chooses BEFORE the world, in the main menu, and the events above are left for
@@ -28,14 +38,15 @@
 		        host_plan_character(peer, faction, buy) -> { ok, faction, money, where, x, y, z, lvid, gvid } |
 		                                                   { ok = false, reason }
 		                                                   the check, and where the character starts (no point: next to
-		                                                   the host)
+		                                                   the host). `faction` is not read: the world's is used
 		        host_make_character(peer, proxy, faction, buy) -> true, money, items | false, reason
 		                                                   after the engine made the character there (offline, the
 		                                                   profile's supplies stripped, the faction's community): kit,
 		                                                   ammo and money; the world save follows
-		client: join_offer(eco, points, level, refusal, flags) -> shown   the window, main menu or game; refusal is
-		                                                   "" in a first offer (a string, never nil), else the host's
-		                                                   reason code for the refused choice
+		client: join_offer(eco, points, level, refusal, flags, faction) -> shown
+		                                                   the window, main menu or game; refusal is "" in a first
+		                                                   offer (a string, never nil), else the host's reason code for
+		                                                   the refused choice; faction is the world's (protocol 9)
 		        join_choice() -> faction, buy | nil        what Done gave, taken once
 		        join_closed(why)                           the world arrives: the window closes
 	Where (host_start, as the stock new game, ui_mm_faction_select.script on_game_load): one of the faction's starts of
@@ -82,13 +93,29 @@ local SESSION_POLL_MS = 250
 -- F3a (split levels): true lets a new character start on his faction's own level (newchar::kOwnLevels in the engine)
 SPLIT_LEVELS = false
 
--- Factions a player can pick (the stock screen's list; zombied is a cheat there). Each needs <f>_loadout.
+-- Factions a world can have (the stock screen's list; zombied is a cheat there). Each needs <f>_loadout.
 FACTIONS = { "stalker", "bandit", "csky", "dolg", "freedom", "killer", "army", "ecolog", "monolith",
 	"renegade", "greh", "isg" }
 local FACTION_SET = {}
 for _, f in ipairs(FACTIONS) do FACTION_SET[f] = true end
 local BASE_FACTIONS = { stalker = true, bandit = true, csky = true, dolg = true, freedom = true, killer = true,
 	army = true, ecolog = true, monolith = true }
+
+-- `f` if it is a faction with a kit, else nil.
+local function known_faction(f)
+	if type(f) == "string" and FACTION_SET[f] then return f end
+	return nil
+end
+
+-- A script module (coop_game_settings may not be there: an older game), loaded by the engine's _G on first use.
+local function module_of(name)
+	local m = rawget(_G, name)
+	if m == nil then
+		local ok, r = pcall(function() return _G[name] end)
+		m = ok and r or nil
+	end
+	return type(m) == "table" and m or nil
+end
 
 local function log(fmt, ...)
 	local ok, line = pcall(string_format, fmt, ...)
@@ -218,10 +245,61 @@ local function host_eco()
 	return math.max(1, math.min(3, v))
 end
 
--- Host check of a choice with the host's own config and economy tier:
--- { items = {sec, ...} (free kit + bought), money } | nil, reason ("faction", "items", "points").
-function plan_kit(faction, buy)
-	faction = type(faction) == "string" and faction or ""
+-- The faction of the world (docs/GAME_SETTINGS.md section 8): the host chose it when it made the game, and every
+-- new character is in it. The chain: the game settings' record (coop_game_settings.world_faction, T4) -> the engine's
+-- memory (coop.game.world_faction, "" = none) -> the community of the host's actor, without actor_ -> stalker, as the
+-- engine's newchar::character_faction. A name that has no kit (zombied, junk) is passed over.
+function world_faction()
+	local gs = module_of("coop_game_settings")
+	if gs and type(gs.world_faction) == "function" then
+		local ok, f = pcall(gs.world_faction)
+		f = ok and known_faction(f)
+		if f then return f end
+	end
+	local game_ns = api and api.game
+	if type(game_ns) == "table" and type(game_ns.world_faction) == "function" then
+		local ok, f = pcall(game_ns.world_faction)
+		f = ok and known_faction(f)
+		if f then return f end
+	end
+	local actor = db and db.actor
+	if actor then
+		local ok, c = pcall(function() return actor:character_community() end)
+		if ok and type(c) == "string" then
+			local f = known_faction((c:gsub("^actor_", "")))
+			if f then return f end
+		end
+	end
+	return "stalker"
+end
+
+-- Where a new player appears (docs/GAME_SETTINGS.md section 8.2), the world rule coop/coop_session/join_spawn:
+-- "host" (the default; no point, the engine puts him next to the host) or "faction_start" (the start of the world's
+-- faction, host_start). The running game's record first, else the host's own option (a game from before the record).
+local JOIN_SPAWN_PATH = "coop/coop_session/join_spawn"
+function join_spawn()
+	local v
+	local gs = module_of("coop_game_settings")
+	if gs and type(gs.value) == "function" then
+		local ok, r = pcall(gs.value, "o", JOIN_SPAWN_PATH)
+		if ok then v = r end
+	end
+	if v == nil then
+		local am = module_of("axr_main")
+		local cfg = am and am.config
+		if cfg then
+			local ok, r = pcall(function() return cfg:r_value("options", JOIN_SPAWN_PATH, 0) end)
+			if ok then v = r end
+		end
+	end
+	return v == "faction_start" and "faction_start" or "host"
+end
+
+-- Host check of the gear a new character asks for, against the WORLD's faction (never the one a client or the engine
+-- names: protocol 9) with the host's own config and economy tier:
+-- { faction, items = {sec, ...} (free kit + bought), money } | nil, reason ("faction", "items", "points").
+function plan_kit(buy)
+	local faction = world_faction()
 	local eco = host_eco()
 	local kit = read_kit(faction, eco)
 	if not kit then return nil, "faction" end
@@ -232,7 +310,14 @@ function plan_kit(faction, buy)
 	local items = {}
 	for _, s in ipairs(kit.free) do items[#items + 1] = s end
 	for _, s in ipairs(buys) do items[#items + 1] = s end
-	return { items = items, money = faction_money(faction) }
+	return { faction = faction, items = items, money = faction_money(faction) }
+end
+
+-- The log line of a faction that was named but is not the world's (the engine's answer, a client's word).
+local function note_other_faction(who, named, world)
+	if tostring(named) ~= world then
+		log("%s named the faction %s: not read, the world's is %s", who, tostring(named), world)
+	end
 end
 
 -------------------------------------------------------------------------------
@@ -403,7 +488,8 @@ local function host_tick()
 				if not offered[p.id] or t >= offered[p.id] then
 					offered[p.id] = t + OFFER_EVERY_MS
 					local eco = host_eco()
-					api.send_event("menu.char_offer", encode({ eco = eco, points = budget(eco), nick = p.nick }), p.id)
+					api.send_event("menu.char_offer", encode({ eco = eco, points = budget(eco), nick = p.nick,
+						faction = world_faction() }), p.id)
 				end
 			else
 				offered[p.id] = nil
@@ -449,14 +535,16 @@ local function on_new_character(payload, from)
 	local proxy = api.avatar_of(from)
 	if not proxy then return reply(from, { ok = false, reason = "no_character" }) end
 	if not is_new(proxy) then return reply(from, { ok = false, reason = "not_new" }) end
-	local faction = type(t.faction) == "string" and t.faction or ""
-	local plan, why = plan_kit(faction, t.buy)
+	-- protocol 9: what the client sent in t.faction is not read, the character is the world's
+	local plan, why = plan_kit(t.buy)
 	if not plan then return reply(from, { ok = false, reason = why }) end
 	local npc = level.object_by_id(proxy)
 	if not npc then return reply(from, { ok = false, reason = "busy" }) end
+	local faction = plan.faction
+	note_other_faction(string.format("player #%d", from), t.faction, faction)
 
 	local items = plan.items
-	local money = faction_money(faction)
+	local money = plan.money
 	-- F2 T6: the character's money is the host ledger's; the client's balance follows with the engine's reply.
 	-- F2 T6b: the money is set BEFORE the kit. A refusal then leaves the character as it is (the kit replaces the whole
 	-- inventory, so a retry after a kit that was already made would wipe and spawn everything a second time). The "new"
@@ -491,19 +579,25 @@ function join_terms()
 	return eco, budget(eco), story_mode()
 end
 
--- The engine has a choice of player `peer`: refused, or accepted with the start of the character.
+-- The engine has a choice of player `peer`: refused, or accepted with the start of the character. Protocol 9: `faction`
+-- (what the engine resolved from the client's choice) is not read; the plan, the kit and the start are the world's.
+-- The start: join_spawn "host" (the default) gives no point, the engine puts him next to the host; "faction_start" the
+-- start of the world's faction (host_start, as before).
 function host_plan_character(peer, faction, buy)
 	if not (api and api.is_host()) then return { ok = false, reason = "busy" } end
-	local plan, why = plan_kit(faction, buy)
+	local plan, why = plan_kit(buy)
 	if not plan then
 		log("player #%s: choice refused (%s)", tostring(peer), tostring(why))
 		return { ok = false, reason = why }
 	end
-	local t = { ok = true, faction = faction, money = plan.money }
-	local ok, s = pcall(host_start, faction)
-	if not ok then log("! start of %s: %s", tostring(faction), tostring(s)) end
-	if ok and s then
-		t.where, t.x, t.y, t.z, t.lvid, t.gvid = s.where, s.x, s.y, s.z, s.lvid, s.gvid
+	note_other_faction(string.format("player #%s", tostring(peer)), faction, plan.faction)
+	local t = { ok = true, faction = plan.faction, money = plan.money }
+	if join_spawn() == "faction_start" then
+		local ok, s = pcall(host_start, plan.faction)
+		if not ok then log("! start of %s: %s", plan.faction, tostring(s)) end
+		if ok and s then
+			t.where, t.x, t.y, t.z, t.lvid, t.gvid = s.where, s.x, s.y, s.z, s.lvid, s.gvid
+		end
 	end
 	return t
 end
@@ -516,8 +610,10 @@ end
 function host_make_character(peer, proxy, faction, buy, kit)
 	if not (api and api.is_host()) then return false, "busy" end
 	local bare = kit == false
-	local plan, why = plan_kit(faction, bare and "" or buy)
+	local plan, why = plan_kit(bare and "" or buy)
 	if not plan then return false, why end
+	note_other_faction(string.format("player #%s", tostring(peer)), faction, plan.faction)
+	faction = plan.faction -- protocol 9: the world's, whatever the engine passed
 	local se = alife_object(proxy)
 	if not se then return false, "no_character" end
 	if bare then
@@ -562,23 +658,6 @@ local state = { show = false, waiting = false, done = false }
 local join = { choice = nil } -- protocol 8: what Done gave, until the engine takes it (join_choice)
 GUI = nil
 
-local function unlocked_factions()
-	local out = {}
-	for f in pairs(BASE_FACTIONS) do out[f] = true end
-	local c = axr_main and axr_main.config
-	for _, f in ipairs({ "renegade", "greh", "isg" }) do
-		if c and c:r_value("unlocked_factions", f, 1) == true then out[f] = true end
-	end
-	return out
-end
-
-local FACTION_CELL = {
-	stalker = { 1, 1 }, bandit = { 1, 2 }, csky = { 1, 3 },
-	dolg = { 2, 1 }, freedom = { 2, 2 }, killer = { 2, 3 },
-	army = { 3, 1 }, ecolog = { 3, 2 }, monolith = { 3, 3 },
-	renegade = { 4, 1 }, greh = { 4, 2 }, isg = { 4, 3 },
-}
-
 -- Levels with a picture in the stock new game screen (configs\ui\textures_descr\ui_new_game.xml: ui_new_game_map_<level>).
 local LEVEL_PICTURES = {
 	l01_escape = true, l02_garbage = true, l03_agroprom = true, l03u_agr_underground = true, l04_darkvalley = true,
@@ -620,15 +699,13 @@ end
 class "UICoopNewChar" (CUIScriptWnd)
 
 function UICoopNewChar:__init() super()
-	self.factions = unlocked_factions()
-	self.faction = "stalker"
+	self.faction = "stalker" -- the world's: Fill sets it from the offer
 	self.access = true
 	self.points_left, self.points_used = 0, 0
 	self:SetWndRect(Frect():set(0, 0, 1024, 768))
 	self:Enable(true)
 	self:InitControls()
 	self:InitCallbacks()
-	self:PopupFaction(false)
 end
 
 function UICoopNewChar:__finalize()
@@ -679,6 +756,7 @@ function UICoopNewChar:InitControls()
 	self.start = own:InitTextWnd("coop_char:start", self.dialog)
 	own:InitStatic("coop_char:cap", self.dialog)
 	self.info = own:InitTextWnd("coop_char:info", self.dialog)
+	self.world = own:InitTextWnd("coop_char:world", self.dialog) -- whose faction it is (protocol 9)
 	own:InitStatic("coop_char:sep", self.dialog)
 	self.facts = own:InitTextWnd("coop_char:facts", self.dialog)
 	self.where = own:InitTextWnd("coop_char:where", self.dialog) -- where the character appears (a join offer)
@@ -689,7 +767,10 @@ function UICoopNewChar:InitControls()
 	self:Register(self.btn_start, "btn_start")
 	self.btn_back = own:Init3tButton("coop_char:btn_later", self.dialog) -- Later; Leave before the world (protocol 8)
 	self:Register(self.btn_back, "btn_back")
-	self:Register(xml:Init3tButton("main_dialog:btn_faction", self.dialog), "btn_faction")
+	-- the stock faction button stays in its place, off: the faction is the world's, chosen by the host (protocol 9)
+	self.btn_faction = xml:Init3tButton("main_dialog:btn_faction", self.dialog)
+	self.btn_faction:Enable(false)
+	self:Register(self.btn_faction, "btn_faction")
 
 	self.CC = {}
 	self.CC.inventory = utils_ui.UICellContainer("inventory", self, nil, "main_dialog:cont_inv", self.dialog)
@@ -703,13 +784,9 @@ function UICoopNewChar:InitControls()
 	self.ck_reset = xml:Init3tButton("main_dialog:check_reset", self.dialog)
 	self:Register(self.ck_reset, "check_reset")
 
-	-- faction popup
-	self.black_1 = xml:InitStatic("main_dialog:popup_faction:frame_black", self.dialog)
-	self.dialog_1 = xml:InitStatic("main_dialog:popup_faction:frame", self.dialog)
-	self.cap_faction = xml:InitStatic("main_dialog:popup_faction:cap_faction", self.dialog_1)
-	self.scroll_faction = xml:InitScrollView("main_dialog:popup_faction:scroll_faction", self.dialog_1)
-
 	self.item_info = utils_ui.UIInfoItem(self, 1000)
+	-- what the cell lists ask for the tooltip: they only call :Update on it (utils_ui UICellContainer:Update)
+	self.tip = { Update = function(_, obj, sec, flags) return self:TipUpdate(obj, sec, flags) end }
 	self.hint_wnd = utils_ui.UIHint(self)
 end
 
@@ -719,9 +796,6 @@ function UICoopNewChar:InitCallbacks()
 	self:AddCallback("btn_back", E, self.OnLater, self)
 	self:AddCallback("btn_faction", E, self.OnFactionClicked, self)
 	self:AddCallback("check_reset", E, self.OnReset, self)
-	for _, f in ipairs(FACTIONS) do
-		self:AddCallback("btn_" .. f, E, function() self:OnFactionSelect(f) end, self)
-	end
 end
 
 -- The level the character appears on: before the world (protocol 8) the host's, from the offer; in the world the
@@ -735,12 +809,17 @@ end
 -- New offer (or the same again): texts, points of the host's tier, lists.
 function UICoopNewChar:Fill(o)
 	self.offer = o
+	-- protocol 9: the faction is the world's, named by the host's offer; there is nothing to pick. An offer with none
+	-- (an old host) or one that has no kit shows stalker, never an empty faction.
+	self.faction = known_faction(o.faction) or "stalker"
+	self.btn_faction:Enable(false)
+	self.world:SetText(tr("st_coop_char_world_faction", game.translate_string("st_faction_" .. self.faction)))
 	local nick = tostring(o.nick or "")
 	self.name:SetText(nick)
 	if o.bare then -- Ruling F3-10
-		self.info:SetText(tr("st_coop_char_info_bare"))
+		self.info:SetText(tr("st_coop_char_world_info_bare"))
 	else
-		self.info:SetText(tr(o.join and "st_coop_char_info_join" or "st_coop_char_info", host_nick(), nick))
+		self.info:SetText(tr(o.join and "st_coop_char_world_info_join" or "st_coop_char_world_info", host_nick(), nick))
 	end
 	self.btn_back:TextControl():SetText(tr(o.join and "st_coop_char_btn_leave" or "st_coop_char_btn_later"))
 	if o.refusal then
@@ -915,41 +994,12 @@ function UICoopNewChar:On_CC_Mouse1(cont, idx)
 	self.CC[cont]:TransferItem(self.CC[to_inv and "inventory" or "loadout"], nil, ci.section)
 end
 
-function UICoopNewChar:PopupFaction(state_)
-	self.black_1:Show(state_)
-	self.dialog_1:Show(state_)
-	self.cap_faction:Show(state_)
-	self.scroll_faction:Clear()
-	self.access = not state_
-	if not state_ then return end
-	local list = {}
-	for _, f in ipairs(FACTIONS) do
-		if self.factions[f] then list[#list + 1] = f end
-	end
-	local rows = math.ceil(#list / 3)
-	local holder = self.xml:InitStatic("main_dialog:popup_faction:templ_faction", nil)
-	local w, h = self.scroll_faction:GetWidth(), self.scroll_faction:GetHeight()
-	for _, f in ipairs(list) do
-		local b = self.xml:Init3tButton("main_dialog:popup_faction:btn_" .. f, holder)
-		local cell = FACTION_CELL[f]
-		local bw, bh = b:GetWidth(), b:GetHeight()
-		local off_x, off_y = (w - bw * 3) / 4, (h - bh * rows) / (rows + 1)
-		b:SetWndPos(vector2():set(off_x * cell[2] + bw * (cell[2] - 1), off_y * cell[1] + bh * (cell[1] - 1)))
-		self:Register(b, "btn_" .. f)
-	end
-	self.scroll_faction:AddWindow(holder, true)
-	holder:SetAutoDelete(false)
-end
-
+-- The faction is the world's (protocol 9, docs/GAME_SETTINGS.md section 8): the stock button is off and the stock popup
+-- list of factions is not built. A click or a select that still arrives changes nothing.
 function UICoopNewChar:OnFactionClicked()
-	if self.access and not state.waiting then self:PopupFaction(true) end
 end
 
 function UICoopNewChar:OnFactionSelect(f)
-	if not self.factions[f] then return end
-	self.faction = f
-	self:PopupFaction(false)
-	self:UpdateAll()
 end
 
 function UICoopNewChar:OnReset()
@@ -1022,18 +1072,52 @@ function UICoopNewChar:FollowSession()
 	end
 end
 
--- Live 2026-10-23 (GAMMA): a mod's tooltip (zzz_craft_use_in_tooltip_mcm patches UIInfoItem:Update) needs a loaded game
--- and fails in this window before the world. utils_ui's UICellContainer:Update asks the tooltip before it marks the cell
--- hovered (On_Hover), so the failure left no cell hovered, no click reached On_CC_Mouse1 and the choice went out with
--- nothing bought. A failing tooltip is dropped for the rest of the window: the cells work without it.
+-- The stock UIInfoItem:Update that the GAMMA tooltip mod keeps, or nil. zzz_craft_use_in_tooltip_mcm replaces
+-- utils_ui.UIInfoItem.Update with a function that reads craft.ltx through ini_craft; the mod fills that in its
+-- on_game_start, which has not run in the main menu, where this window opens before the world. Its own pcall swallows the
+-- error, so it only shows in the log, once per tooltip (build 9: "attempt to index upvalue 'ini_craft' (a nil value)",
+-- 7 times). The mod keeps the function it replaced as og_info_item_update, a field of its module.
+local function stock_info_update()
+	local m = rawget(_G, "zzz_craft_use_in_tooltip_mcm")
+	local f = type(m) == "table" and m.og_info_item_update
+	return type(f) == "function" and f or nil
+end
+
+-- The window's tooltip: without a world (no actor) and with that mod, the stock Update; in a loaded game, or without the
+-- mod, the tooltip's own (with the mod, the recipes in it). Decided at each call: the window lives across loads.
+function UICoopNewChar:TipUpdate(obj, sec, flags)
+	local info = self.item_info
+	local stock = not (db and db.actor) and stock_info_update()
+	if stock then return stock(info, obj, sec, flags) end
+	return info:Update(obj, sec, flags)
+end
+
+-- Live 2026-10-23 (GAMMA): a tooltip that fails here must not take the window with it. utils_ui's
+-- UICellContainer:Update asks the tooltip before it marks the cell hovered (On_Hover), so a failure left no cell
+-- hovered, no click reached On_CC_Mouse1 and the choice went out with nothing bought. A failing tooltip is dropped for
+-- the rest of the window (the cells work without it) and hidden: a half-built one must not stay on the screen.
+function UICoopNewChar:DropTooltip(why)
+	self.info_broken = true
+	pcall(self.item_info.Show, self.item_info, false)
+	log("the item tooltip fails here (%s): the window goes on without it", tostring(why))
+end
+
 function UICoopNewChar:UpdateCells(cc)
 	if not self.info_broken then
-		local ok, found = pcall(cc.Update, cc, self.item_info)
+		local ok, found = pcall(cc.Update, cc, self.tip)
 		if ok then return found end
-		self.info_broken = true
-		log("the item tooltip fails here (%s): the window goes on without it", tostring(found))
+		self:DropTooltip(found)
 	end
 	return cc:Update(nil)
+end
+
+-- Is the cursor on window `w`? Not CUIWindow:IsCursorOverWindow: it is false for a button that is off
+-- (CUIButton::Enable(false) clears it), so the window's rectangle is compared with the cursor, as utils_ui does.
+local function cursor_on(w)
+	local r = Frect():set(0, 0, 0, 0)
+	w:GetAbsoluteRect(r)
+	local p = GetCursorPosition()
+	return p.x >= r.x1 and p.x <= r.x2 and p.y >= r.y1 and p.y <= r.y2
 end
 
 function UICoopNewChar:Update()
@@ -1045,10 +1129,12 @@ function UICoopNewChar:Update()
 			if cc:IsShown() then found = self:UpdateCells(cc) or found end
 		end
 		if not found and not self.info_broken then
-			if not pcall(self.item_info.Update, self.item_info) then self.info_broken = true end
+			local ok, err = pcall(self.tip.Update, self.tip)
+			if not ok then self:DropTooltip(err) end
 		end
 	end
-	self.hint_wnd:Update()
+	-- the faction button is off: say why while the cursor is on it
+	self.hint_wnd:Update(cursor_on(self.btn_faction) and tr("st_coop_char_world_locked") or nil)
 end
 
 function UICoopNewChar:OnKeyboard(dik, keyboard_action)
@@ -1058,9 +1144,7 @@ function UICoopNewChar:OnKeyboard(dik, keyboard_action)
 			if cc:IsShown() then cc:OnKeyboard(dik, keyboard_action) end
 		end
 		if keyboard_action == ui_events.WINDOW_KEY_PRESSED and dik == DIK_keys.DIK_ESCAPE then
-			if not self.access then
-				self:PopupFaction(false)
-			elseif not (self.offer and self.offer.join) then -- before the world Escape does not leave the session
+			if not (self.offer and self.offer.join) then -- before the world Escape does not leave the session
 				self:OnLater()
 			end
 			return true
@@ -1108,7 +1192,8 @@ end
 local function on_offer(payload, from)
 	if from ~= 0 or not (api and api.is_client()) or state.done then return end
 	local t = decode(payload)
-	offer = { eco = math.max(1, math.min(3, tonumber(t.eco) or 1)), points = tonumber(t.points), nick = t.nick }
+	offer = { eco = math.max(1, math.min(3, tonumber(t.eco) or 1)), points = tonumber(t.points), nick = t.nick,
+		faction = t.faction } -- protocol 9: the world's, named by the host
 	if state.waiting then return end -- our choice is on its way
 	state.show = not show_window()
 end
@@ -1245,8 +1330,10 @@ local function auto_choice()
 end
 
 -- The host's offer (again after a refused choice: `refusal` is its reason code): the window, now. flags: 1 = the
--- host's game has the story on. True if the window is shown (else the engine tries again).
-function join_offer(eco, points, level, refusal, flags)
+-- host's game has the story on. faction: the world's (protocol 9), the only one the window shows; a faction with no kit
+-- (or none: an old host) is stalker in the window, and an unattended answer then falls back to the flag's. True if the
+-- window is shown (else the engine tries again).
+function join_offer(eco, points, level, refusal, flags, faction)
 	if not api then
 		note("no api", "! join_offer: no coop namespace in this Lua state, the window cannot open")
 		return false
@@ -1254,6 +1341,7 @@ function join_offer(eco, points, level, refusal, flags)
 	-- The engine passes the offer as it is on the wire: a first offer has refusal "" (CharOfferMsg), not nil. Night
 	-- run 1 (2026-10-23): `not refusal` was false for "", -coop_autochoose never answered and the window waited.
 	refusal = type(refusal) == "string" and refusal ~= "" and refusal or nil
+	local world = known_faction(faction)
 	local auto = auto_choice()
 	-- "busy" is the host's fallback reason (its Lua failed for a moment): an unattended run answers once more per
 	-- window cycle instead of waiting for the host's 10-minute kick
@@ -1263,9 +1351,10 @@ function join_offer(eco, points, level, refusal, flags)
 		refusal = nil
 	end
 	if auto and not refusal then
-		join.choice = { faction = auto, buy = "" }
+		-- the flag asks for an unattended answer; the faction of it is the world's (the flag's only when the offer has none)
+		join.choice = { faction = world or auto, buy = "" }
 		state.waiting = true
-		log("test: offer answered at once with %s (-coop_autochoose)", auto)
+		log("test: offer answered at once with %s (-coop_autochoose)", world or auto)
 		return true
 	end
 	if auto then -- answered once already: a choice the host refused is not sent again blindly
@@ -1280,6 +1369,7 @@ function join_offer(eco, points, level, refusal, flags)
 		refusal = refusal,
 		story = (math.floor(tonumber(flags) or 0) % 2) == 1,
 		bare = tonumber(points) == 0, -- Ruling F3-10: the host offers a retired key no kit (no points to buy with)
+		faction = world,
 	}
 	join.choice = nil
 	state.waiting, state.done, state.show = false, false, false
@@ -1323,25 +1413,28 @@ end
 function host_offer_self()
 	local eco = host_eco()
 	local bare = se_load_var(SELF_ID, nil, BARE_VAR) == true
-	offer = { eco = eco, points = bare and 0 or budget(eco), nick = own_nick(), host_self = true, bare = bare }
+	offer = { eco = eco, points = bare and 0 or budget(eco), nick = own_nick(), host_self = true, bare = bare,
+		faction = world_faction() }
 	state.waiting, state.done = false, false
 	state.show = not show_window()
 end
 
 -- The host chose for himself: the money first, as for a proxy (F2 T6b: a refusal leaves the inventory untouched), then
 -- the kit into db.actor, the community actor_<faction>, the mark cleared. True, money, items given | false, reason.
-function host_choose_self(faction, buy)
+-- Protocol 9: the faction is the world's whatever `asked` says (the window shows it, nothing to pick).
+function host_choose_self(asked, buy)
 	if not (api and api.is_host()) then return false, "busy" end
 	if not is_new(SELF_ID) then return false, "not_new" end
 	local actor = db and db.actor
 	if not actor then return false, "busy" end
-	faction = type(faction) == "string" and faction or ""
 	local bare = se_load_var(SELF_ID, nil, BARE_VAR) == true -- Ruling F3-10: the faction only
-	local plan, why = plan_kit(faction, bare and "" or buy)
+	local plan, why = plan_kit(bare and "" or buy)
 	if not plan then
 		log("the host's own choice refused (%s)", tostring(why))
 		return false, why
 	end
+	local faction = plan.faction
+	note_other_faction("the host's own choice", asked, faction)
 	if not bare then -- bare: his money stays as the engine left it (0 when he stood up)
 		local set_ok, set_why = false, "coop.money_set is missing"
 		if type(api.money_set) == "function" then set_ok, set_why = api.money_set(SELF_ID, plan.money) end
@@ -1377,8 +1470,8 @@ function host_new_character(kit)
 	log("the host's character is out of the run: he chooses a new one")
 	local auto = auto_choice()
 	if auto then
-		local ok, why = host_choose_self(auto, "")
-		log("test: the host's new character %s (-coop_autochoose): %s", auto, ok and "made" or tostring(why))
+		local ok, why = host_choose_self(auto, "") -- the flag only asks for it: the faction is the world's
+		log("test: the host's new character %s (-coop_autochoose): %s", world_faction(), ok and "made" or tostring(why))
 		if ok then return end
 	end
 	self_next_offer = now_ms() + OFFER_EVERY_MS
