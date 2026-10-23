@@ -24,7 +24,7 @@ SKIP = [
 
 
 SOURCE_EXT = (".cpp", ".h", ".hpp", ".inl", ".c", ".md")
-SOURCE_DIRS = ("src/xrGame", "src/xrCoop", "src/xrEngine", "src/xrServerEntities", "src/xrCore")
+SOURCE_DIRS = ("src/xrGame", "src/xrCoop", "src/xrEngine", "src/xrServerEntities", "src/xrCore", "src/Layers")  # Layers: free cursor touches the render HW (2026-10-23)
 
 
 def same_text(a: Path, b: Path) -> bool:
