@@ -11,7 +11,27 @@ local function stock_stubs(W)
 		W.level.change_game_time(0, self.hours, 0) -- dream_callback, synchronous here
 	end
 	function cls.Close(self) self.closed = true end
-	W.ui_sleep_dialog = { UISleep = cls }
+	W.STOCK_ONBUTTON = cls.OnButtonSleep
+	W.ui_sleep_dialog = { UISleep = cls, sleep_forced = function(hours) W.STOCK_FORCED = hours end }
+	-- GAMMA Books Pass Time (Wait.script): a time-passing item waits `hours`
+	W.wait = { wait = function(obj, hours)
+		W.WAITED = (W.WAITED or 0) + 1
+		W.level.change_game_time(0, hours, 0)
+	end }
+	-- the engine's coop.rest (F3 T11) as a recorder; it does not take the word (false), so no doze window opens here: the
+	-- window is test_rest.lua's business. coop_rest.script needs the class machinery to load.
+	W.REST_LIE = {}
+	W.coop.rest = {
+		lie_down = function(hours, forced) W.REST_LIE[#W.REST_LIE + 1] = { hours = hours, forced = forced } return false end,
+		get_up = function() return true end,
+		state_of = function() return "awake" end,
+	}
+	W.CUIScriptWnd = {}
+	W.super = function() end
+	W.class = function(name)
+		local env = getfenv(2)
+		return function(base) env[name] = setmetatable({}, { __index = base }) end
+	end
 	-- pda + fast travel (game_fast_travel behaviour)
 	W.pda = {
 		property_box_clicked = function(ui)
@@ -83,8 +103,16 @@ local function setup(nclients, positions)
 		end
 	end
 	for p, W in pairs(WORLDS) do start_world(W) end
+	for p, W in pairs(WORLDS) do -- the economy script does not touch the sleep dialog any more (F3 T14)
+		W.ECON_LEFT_SLEEP_ALONE = W.ui_sleep_dialog.UISleep.OnButtonSleep == W.STOCK_ONBUTTON
+		load_script(W, "coop_rest")
+		W.coop_rest.on_game_start()
+	end
 	return WORLDS[0], WORLDS[1], WORLDS[2]
 end
+
+-- a time-passing item (GAMMA Wait.script) used on machine W
+local function wait_item(W, hours) W.wait.wait({}, hours) end
 
 local function sleep_ui(W, hours, forced)
 	return setmetatable({ hours = hours, forced = forced, time_track = { GetIValue = function() return hours end } },
@@ -131,62 +159,77 @@ do
 end
 
 -------------------------------------------------------------------------------
-section("group: sleep vote")
+section("group: sleep is the engine's, waiting is voted")
 do
 	local H, A = setup(1)
-	-- client asks, host is asked
+	check(H.ECON_LEFT_SLEEP_ALONE and A.ECON_LEFT_SLEEP_ALONE, "the economy script does not wrap ui_sleep_dialog.UISleep any more")
+	-- a client's sleep is not a vote: it goes to the engine (coop.rest.lie_down), nothing is proposed, nobody is asked
 	local gui = sleep_ui(A, 6)
 	gui:OnButtonSleep()
-	check(A.SLEPT == nil and gui.closed, "client sleep waits for the group (dialog closed)")
 	deliver_all()
-	check(H.BOX and H.BOX.txt:find("anna") ~= nil, "host gets a vote box naming the sleeper")
+	check(#A.REST_LIE == 1 and A.REST_LIE[1].hours == 6 and A.REST_LIE[1].forced == false, "client sleep: coop.rest.lie_down(6, false)")
+	check(#A.SENT == 0 and H.BOX == nil, "no economy.propose, no vote box on the host")
+	check(A.SLEPT == nil and A.REFUSED_CGT == 0 and H.CLOCK == 0, "the stock sleep did not run, no clock call")
+	-- the host's sleep the same way
+	sleep_ui(H, 2):OnButtonSleep()
+	deliver_all()
+	check(#H.REST_LIE == 1 and H.REST_LIE[1].hours == 2 and A.BOX == nil and H.SLEPT == nil and H.CLOCK == 0, "host sleep: lie_down(2, false), no vote")
+	-- an old client's economy.propose of kind sleep gets no vote
+	A.coop_economy_core.send("propose", { t = 1, k = "sleep", m = 360 }, 0)
+	deliver_all()
+	check(H.BOX == nil, "a 'sleep' proposal is not taken any more")
+	A.coop_economy_core.send("skip", { k = "sleep", t = 1, m = 360 }, 0)
+	deliver_all()
+	check(H.CLOCK == 0, "and a 'sleep' skip moves no clock")
+
+	-- waiting (GAMMA Books Pass Time) is still a group decision: client asks, host is asked
+	wait_item(A, 6)
+	check(A.WAITED == nil, "client wait waits for the group")
+	deliver_all()
+	check(H.BOX and H.BOX.txt:find("anna") ~= nil, "host gets a vote box naming the waiter")
 	H.BOX.ok()
 	deliver_all()
-	check(A.SLEPT == 1, "approved: the client's stock sleep runs")
+	check(A.WAITED == 1, "approved: the client's wait runs")
 	check(A.REFUSED_CGT == 0, "the client's own clock call is not passed to the engine")
 	deliver_all()
 	check(H.CLOCK == 360, "the host moved the clock by 6 h (" .. H.CLOCK .. ")")
 	check(has(H.PPE, "sleep_fade") and has(H.TIPS, "anna"), "the host sees a fade and a PDA line")
 	-- second skip without approval is refused
-	A.coop_economy_core.send("skip", { k = "sleep", t = 1, m = 360 }, 0)
+	A.coop_economy_core.send("skip", { k = "wait", t = 1, m = 360 }, 0)
 	deliver_all()
 	check(H.CLOCK == 360, "a repeated skip with a used ticket is refused")
-	A.coop_economy_core.send("skip", { k = "sleep", t = 99, m = 600 }, 0)
+	A.coop_economy_core.send("skip", { k = "wait", t = 99, m = 600 }, 0)
 	deliver_all()
 	check(H.CLOCK == 360, "a skip without approval is refused")
 
 	-- refusal
-	local gui2 = sleep_ui(A, 4)
-	gui2:OnButtonSleep()
+	wait_item(A, 4)
 	deliver_all()
 	H.BOX.cancel()
 	deliver_all()
-	check(A.SLEPT == 1 and H.CLOCK == 360 and has(A.TIPS, "does not want"), "a 'no' refuses the sleep (" .. tostring(last(A.TIPS)) .. ")")
+	check(A.WAITED == 1 and H.CLOCK == 360 and has(A.TIPS, "does not want"), "a 'no' refuses the wait (" .. tostring(last(A.TIPS)) .. ")")
 
 	-- timeout
-	local gui3 = sleep_ui(A, 4)
-	gui3:OnButtonSleep()
+	wait_item(A, 4)
 	deliver_all()
 	for i = 1, 70 do tick(H, 600) end
 	deliver_all()
-	check(A.SLEPT == 1 and has(A.TIPS, "No answer"), "no answer within the timeout is a no")
+	check(A.WAITED == 1 and has(A.TIPS, "No answer"), "no answer within the timeout is a no")
 
-	-- host sleeps, client votes
-	local hg = sleep_ui(H, 2)
-	hg:OnButtonSleep()
-	check(H.SLEPT == nil, "host sleep also asks the group")
+	-- host waits, client votes
+	wait_item(H, 2)
+	check(H.WAITED == nil, "host wait also asks the group")
 	deliver_all()
 	check(A.BOX and A.BOX.txt:find("host") ~= nil, "client gets the vote box")
 	A.BOX.ok()
 	deliver_all()
-	check(H.SLEPT == 1 and H.CLOCK == 480, "host sleeps after the yes and moves the clock")
+	check(H.WAITED == 1 and H.CLOCK == 480, "host waits after the yes and moves the clock")
 	deliver_all()
 	check(has(A.PPE, "sleep_fade") and has(A.TIPS, "host"), "client sees the fade")
 
-	-- forced sleep (scripted) is not a group decision
-	local fg = sleep_ui(H, 3, 3)
-	fg:OnButtonSleep()
-	check(H.SLEPT == 2 and H.CLOCK == 660, "forced sleep runs as in single player")
+	-- a scripted faint is the engine's too (coop.rest.lie_down(h, true)), not a vote and not the stock sleep
+	H.ui_sleep_dialog.sleep_forced(3)
+	check(#H.REST_LIE == 2 and H.REST_LIE[2].forced == true and H.SLEPT == nil and H.CLOCK == 480, "forced sleep goes to the engine as a faint")
 end
 
 section("group: other rules")
@@ -195,58 +238,58 @@ do
 	local core_h = H.coop_economy_core
 	core_h.RULES.sleep_rule = "host"
 	A.coop_economy_core.RULES.sleep_rule = "host"
-	sleep_ui(A, 5):OnButtonSleep()
+	wait_item(A, 5)
 	deliver_all()
-	check(A.SLEPT == nil and has(A.TIPS, "Only the host"), "rule host: a client's sleep is refused")
-	sleep_ui(H, 5):OnButtonSleep()
-	check(H.SLEPT == 1 and H.CLOCK == 300, "rule host: the host sleeps at once")
+	check(A.WAITED == nil and has(A.TIPS, "Only the host"), "rule host: a client's wait is refused")
+	wait_item(H, 5)
+	check(H.WAITED == 1 and H.CLOCK == 300, "rule host: the host waits at once")
 
 	core_h.RULES.sleep_rule = "gather"
 	POS[1] = { x = 50, y = 0, z = 0 }
-	sleep_ui(A, 5):OnButtonSleep()
+	wait_item(A, 5)
 	deliver_all()
-	check(A.SLEPT == nil and has(A.TIPS, "close to sleep"), "rule gather: far players refuse")
+	check(A.WAITED == nil and has(A.TIPS, "close to sleep"), "rule gather: far players refuse")
 	POS[1] = { x = 2, y = 0, z = 0 }
-	sleep_ui(A, 5):OnButtonSleep()
+	wait_item(A, 5)
 	deliver_all()
 	deliver_all()
-	check(A.SLEPT == 1 and H.CLOCK == 600, "rule gather: together = approved")
+	check(A.WAITED == 1 and H.CLOCK == 600, "rule gather: together = approved")
 
 	core_h.RULES.sleep_rule = "safe_or_vote"
 	H.EVENTS.current_safe_cover = true
-	sleep_ui(A, 1):OnButtonSleep()
+	wait_item(A, 1)
 	deliver_all()
 	deliver_all()
-	check(A.SLEPT == 2 and H.CLOCK == 660, "rule safe_or_vote: a voter in a shelter accepts by himself")
+	check(A.WAITED == 2 and H.CLOCK == 660, "rule safe_or_vote: a voter in a shelter accepts by himself")
 end
 
 section("group: three players")
 do
 	local H, A, B = setup(2)
-	sleep_ui(A, 8):OnButtonSleep()
+	wait_item(A, 8)
 	deliver_all()
 	check(H.BOX and B.BOX, "both other players are asked")
 	H.BOX.ok()
 	deliver_all()
-	check(A.SLEPT == nil, "one yes is not enough")
+	check(A.WAITED == nil, "one yes is not enough")
 	B.BOX.cancel()
 	deliver_all()
-	check(A.SLEPT == nil and has(A.TIPS, "boris") and B.BOX_HIDDEN ~= true, "boris says no: refused")
+	check(A.WAITED == nil and has(A.TIPS, "boris") and B.BOX_HIDDEN ~= true, "boris says no: refused")
 	check(has(H.TIPS, "boris"), "the other voter learns the result")
-	sleep_ui(A, 8):OnButtonSleep()
+	wait_item(A, 8)
 	deliver_all()
 	H.BOX.ok() deliver_all()
 	B.BOX.ok() deliver_all()
 	deliver_all()
-	check(A.SLEPT == 1 and H.CLOCK == 480, "all yes: approved")
+	check(A.WAITED == 1 and H.CLOCK == 480, "all yes: approved")
 	check(has(B.PPE, "sleep_fade") and has(H.PPE, "sleep_fade") and not has(A.PPE, "sleep_fade"), "fade for everybody but the sleeper")
 	-- a voter that leaves does not block
-	sleep_ui(A, 1):OnButtonSleep()
+	wait_item(A, 1)
 	deliver_all()
 	H.BOX.ok() deliver_all()
 	PLAYERS[2] = nil
 	tick(H, 600) deliver_all() deliver_all()
-	check(A.SLEPT == 2 and H.CLOCK == 540, "a voter who left does not block the vote")
+	check(A.WAITED == 2 and H.CLOCK == 540, "a voter who left does not block the vote")
 end
 
 -------------------------------------------------------------------------------

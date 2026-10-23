@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop: the doze window of the shared sleep (scripts\coop_rest.script, F3 T14). A player who lies down waits in it
+     for the others: the screen is dimmed, the line says who is still awake and what holds the sleep, the buttons get him up
+     (and, at a sleeping bag of his own, fold it). Same frame and shade as ui_coop_saves.xml. Captions are string ids
+     (configs\text\*\st_coop_rest.xml); the hours, the names and the reason are filled by the script. -->
+<w>
+	<doze_shade x="0" y="0" width="1024" height="768" stretch="1">
+		<texture r="0" g="0" b="0" a="215">ui_icons_PDA_tooltips</texture>
+	</doze_shade>
+
+	<doze x="262" y="250" width="500" height="268" stretch="1">
+		<frame x="0" y="0" width="500" height="268" stretch="1">
+			<texture>ui_inGame2_hint_wnd_main_window</texture>
+		</frame>
+
+		<cap x="20" y="12" width="460" height="30" stretch="1">
+			<text complex_mode="0" r="240" g="200" b="120" align="c" vert_align="c" font="graffiti22">st_coop_rest_title</text>
+		</cap>
+		<hours x="20" y="46" width="460" height="22" stretch="1">
+			<text complex_mode="0" r="190" g="190" b="190" align="c" vert_align="c" font="letterica16"></text>
+		</hours>
+		<waiting x="20" y="76" width="460" height="54" stretch="1">
+			<text complex_mode="1" r="220" g="220" b="220" align="c" vert_align="t" font="letterica16"></text>
+		</waiting>
+		<reason x="20" y="134" width="460" height="46" stretch="1">
+			<text complex_mode="1" r="220" g="170" b="110" align="c" vert_align="t" font="letterica16"></text>
+		</reason>
+		<hint x="20" y="184" width="460" height="20" stretch="1">
+			<text complex_mode="0" r="140" g="140" b="140" align="c" vert_align="c" font="letterica16">st_coop_rest_hint</text>
+		</hint>
+
+		<btn_getup x="20" y="218" width="220" height="32" stretch="1">
+			<text align="c" vert_align="c" font="letterica18">st_coop_rest_getup</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_getup>
+		<btn_fold x="260" y="218" width="220" height="32" stretch="1">
+			<text align="c" vert_align="c" font="letterica18">st_coop_rest_fold</text>
+			<texture>ui_button_ordinary</texture>
+		</btn_fold>
+	</doze>
+</w>

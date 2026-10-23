@@ -408,6 +408,9 @@ end
 local function info_text(v)
 	local M = amap()
 	if v.state == "alive" then
+		-- F3 T14: "resting 8 h" while he lies down for the shared sleep
+		local rest = allies().rest_mark(v.avatar)
+		if rest then return rest, CLR.text end
 		-- F3 T13: "camp" for 10 s after his checkpoint changed (the panel shows the checkpoints of the others only while
 		-- the host shares them), else the distance
 		local mark = allies().checkpoint_mark(v.avatar)

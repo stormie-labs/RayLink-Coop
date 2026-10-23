@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop - the shared sleep (F3 T14): the doze window, its reasons, the prompts and the party panel line of scripts\coop_rest.script and scripts\coop_allies.script. Ids st_coop_rest_<name>; the refusals (coop_rest_refused) are st_coop_rest_refused_<reason> with st_coop_rest_refused as the line for any other reason. -->
+<string_table>
+	<string id="st_coop_rest_title">
+		<text>Вы дремлете</text>
+	</string>
+	<string id="st_coop_rest_hours">
+		<text>Отдых: %d ч</text>
+	</string>
+	<string id="st_coop_rest_waiting">
+		<text>Ждём: %s</text>
+	</string>
+	<string id="st_coop_rest_all_ready">
+		<text>Отдыхают все. Сон начинается...</text>
+	</string>
+	<string id="st_coop_rest_block_combat">
+		<text>Сон не начнётся, пока кто-то в бою.</text>
+	</string>
+	<string id="st_coop_rest_block_world">
+		<text>Сон не начнётся во время выброса или другого события в мире.</text>
+	</string>
+	<string id="st_coop_rest_block_dead">
+		<text>Сон не начнётся, пока кто-то ранен или погиб.</text>
+	</string>
+	<string id="st_coop_rest_hint">
+		<text>Esc или клавиша действия: встать</text>
+	</string>
+	<string id="st_coop_rest_getup">
+		<text>Встать</text>
+	</string>
+	<string id="st_coop_rest_fold">
+		<text>Свернуть спальник</text>
+	</string>
+	<string id="st_coop_rest_prompt">
+		<text>%s устал и хочет отдохнуть %d ч. Найдите место для привала и отдохните тоже: тогда время пройдёт у всех.</text>
+	</string>
+	<string id="st_coop_rest_panel">
+		<text>отдыхает %d ч</text>
+	</string>
+	<string id="st_coop_rest_refused">
+		<text>Сейчас отдохнуть нельзя.</text>
+	</string>
+	<string id="st_coop_rest_refused_place">
+		<text>Здесь негде отдыхать. Найдите укрытие, палатку, спальник или костёр.</text>
+	</string>
+	<string id="st_coop_rest_refused_combat">
+		<text>В бою отдыхать нельзя.</text>
+	</string>
+	<string id="st_coop_rest_refused_dead">
+		<text>Раненый или погибший игрок не может отдыхать.</text>
+	</string>
+	<string id="st_coop_rest_refused_busy">
+		<text>Группа уже спит.</text>
+	</string>
+	<string id="st_coop_rest_refused_camp">
+		<text>Здесь не устроить привал.</text>
+	</string>
+	<string id="st_coop_rest_refused_lost">
+		<text>Хост не ответил, вы встали.</text>
+	</string>
+	<string id="st_coop_rest_slow">
+		<text>Не так быстро, подождите секунду.</text>
+	</string>
+	<string id="st_coop_rest_woke">
+		<text>Вы проспали %d ч.</text>
+	</string>
+</string_table>

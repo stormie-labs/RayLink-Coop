@@ -1,0 +1,745 @@
+--[[
+	Anomaly Coop - the shared sleep on the Lua side (gamedata\scripts\coop_rest.script), F3 task 14.
+	Spec: docs\CHECKPOINTS_DEATH.md section 4. The engine keeps the rest of every player and skips the time for everybody
+	only when all of them rest (coop_rest.cpp, host decides; Lua: coop.rest.* and the callbacks coop_rest_changed /
+	coop_rest_sleep / coop_rest_refused). This script is what the player sees and the thing that asks. Runs on every machine
+	(an "owner" script in configs\coop_route_f3.ltx). It replaces the group vote on sleep of coop_economy_group (gone).
+
+	1. The stock sleep in a session (wrappers put into the ui_sleep_dialog tables by assignment, outside a session or on an
+	   engine without coop.rest every one of them calls the stock function):
+	     UISleep:TestAndShow     no shelter check (the host looks at the rest place when the player lies down: shelter, tent,
+	                             sleeping bag, campfire); bleeding and radiation still forbid the sleep; the sleepiness
+	                             veto of GAMMA (inside the stock TestAndShow) stays, so the stock is called with force = true
+	                             after our own checks. sleep_active (given by sleep_in_zone before the dialog) is taken off
+	                             at once: it freezes every CreateTimeEvent of the machine, the host's too.
+	     UISleep:OnButtonSleep   the slider's hours go to coop.rest.lie_down(hours, false), the doze window opens. The stock
+	                             sleep, its time skip and its save do not run. A second lie-down within a second is held back
+	                             (the session takes one a second; the client's engine side paces itself too).
+	     sleep_forced(hours)     a faint (passing out of tiredness): lie_down(hours, true), the same window.
+	     sleep_bag(id, sec)      remembers which sleeping bag the player sleeps at (for the Fold button), then the stock.
+
+	2. The doze window UICoopDoze (configs\ui\ui_coop_rest.xml): the screen is dimmed, "Waiting for: <nicks>"
+	   (coop.rest.waiting_for(), once a second), what holds the sleep (coop.rest.block(): combat, world, dead), the buttons
+	   Get up (and ESC / USE) -> coop.rest.get_up(), and Fold at a sleeping bag of his own -> a pack claim at the position of
+	   the bag (coop_checkpoints.request("pack", 0, at); the host judges the owner, nothing is checked here). It closes when
+	   the engine says the rest is over: coop_rest_refused, coop_rest_changed(0, "awake"), and a poll of state_of(0) once a
+	   second (no callbacks come after a session ends). The first answer of the engine takes a moment (the client's pacing,
+	   the round trip): an "awake" state is the end only after the engine has said "resting" once, or after 6 s with no
+	   answer at all. While the window is open actor_is_sleeping is given (slow hunger and stamina leak, a machine-local info).
+
+	3. The sleep itself (coop_rest_sleep(hours), on the machines of the sleepers): the stock sequence of
+	   ui_sleep_dialog.script:153-261 without level.change_game_time (the host has skipped the time for everybody) and
+	   without the save (the host writes its autosave after the sleep): the UI off, the camera effector (the faint ones for
+	   a forced rest), fades, sound off, the weapon away; at the end of the first effector (dream_mid) stamina 1 and the
+	   callback actor_on_sleep(hours) for every mod that listens, the waking animation; at the end of the second (dream_end)
+	   the UI on, the sound back, the infos off. dream_end alone does everything dream_mid has not done yet. A dream whose
+	   effector callbacks never come ends by itself after 60 s. The engine says "awake" about 12 s after the start: the dream
+	   is closed by dream_end, never by that state. GAMMA's get_immersive_sleep_hours is not called: its random early
+	   wake-up would give this machine other hours than the world skipped.
+
+	4. Prompts: an ally lies down -> "<nick> is tired, rest too" (once per rest; not while I rest myself: my window names
+	   who is awake). The party panel line is coop_allies.rest_mark.
+
+	5. The host tells the engine once a second whether the world holds the sleep (an emission or a psi-storm:
+	   coop.rest.set_world_block("emission") / ("")): a level, not an edge - the block outlives a session and a missed
+	   release would hold the sleep for ever.
+
+	API for other scripts:
+		coop_rest.window() -> the open doze window | nil
+		coop_rest.dream_mid() / coop_rest.dream_end()   the camera effector callbacks (the engine calls them by name)
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local tostring, tonumber, type, pairs, ipairs, pcall, select = tostring, tonumber, type, pairs, ipairs, pcall, select
+local string_format, math_floor = string.format, math.floor
+
+local TICK_MS = 1000 -- the poll of the window, the world block, the dream watchdog
+local ASK_GAP_MS = 1000 -- a second lie-down within this time is not sent
+local ASK_GRACE_MS = 6000 -- the engine answers a lie-down in a moment (a client: his own pacing up to ~1.3 s, the round trip)
+local DREAM_MAX_MS = 60000 -- a dream whose camera callbacks are lost ends after this
+local BAG_REACH = 6 -- m: the sleeping bag the player sleeps at is this near at most (the host finds his bag within 4 m)
+local MAX_HOURS = 24
+local MAX_REASON = 32
+local TIP_SECONDS = 4
+local SLEEP_ANM = "camera_effects\\sleep.anm"
+local FAINT_IN_ANM = "camera_effects\\surge_02.anm"
+local FAINT_OUT_ANM = "camera_effects\\surge_01.anm"
+local CAM_ID, PPE_ID = 10, 11 -- the stock ids of the sleep effectors
+
+local BLOCK_KEYS = { combat = "block_combat", world = "block_world", dead = "block_dead" }
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-rest] %s", ok and line or tostring(fmt))
+end
+
+-- a step that may fail must not stop the ones after it (a dream that is half set up still has to end)
+local function try(what, f)
+	local ok, err = pcall(f)
+	if not ok then log("! %s failed: %s", what, tostring(err)) end
+	return ok
+end
+
+-------------------------------------------------------------------------------
+-- Session and the engine's coop.rest
+-------------------------------------------------------------------------------
+local function in_session()
+	if not api then return false end
+	local ok, active = pcall(api.is_active)
+	return ok and active == true
+end
+
+local function is_host()
+	if not in_session() then return false end
+	local ok, host = pcall(api.is_host)
+	return ok and host == true
+end
+
+local function is_client()
+	if not in_session() then return false end
+	local ok, client = pcall(api.is_client)
+	return ok and client == true
+end
+
+local function rest_api()
+	local r = api and api.rest
+	return type(r) == "table" and r or nil
+end
+
+-- a session of an engine that has coop.rest: the only case the stock sleep is replaced
+local function rest_session()
+	local r = rest_api()
+	return r ~= nil and type(r.lie_down) == "function" and in_session()
+end
+
+-- ok, result of coop.rest.<name>(...)
+local function rest_call(name, ...)
+	local r = rest_api()
+	local f = r and r[name]
+	if type(f) ~= "function" then return false end
+	return pcall(f, ...)
+end
+
+local function state_of(id)
+	local ok, s = rest_call("state_of", id)
+	return ok and type(s) == "string" and s or "awake"
+end
+
+-------------------------------------------------------------------------------
+-- Texts and tips
+-------------------------------------------------------------------------------
+local function translate(id)
+	local g = rawget(_G, "game")
+	if g and g.translate_string then
+		local ok, s = pcall(g.translate_string, id)
+		if ok and type(s) == "string" then return s end
+	end
+	return id
+end
+
+-- st_coop_rest_<key> with %s / %d filled in order (no string.format: translations may contain other %)
+local function text(key, ...)
+	local s = translate("st_coop_rest_" .. tostring(key))
+	local n = select("#", ...)
+	if n > 0 then
+		local args, i = { ... }, 0
+		s = s:gsub("%%[sd]", function()
+			i = i + 1
+			return tostring(args[i] == nil and "" or args[i])
+		end)
+	end
+	return s
+end
+
+local function known_text(key)
+	local id = "st_coop_rest_" .. tostring(key)
+	return translate(id) ~= id
+end
+
+-- a tip over the game (actor_menu.set_msg, like the other co-op hints)
+local function put_tip(msg)
+	local am = rawget(_G, "actor_menu")
+	if am and am.set_msg then pcall(am.set_msg, 1, msg, TIP_SECONDS) end
+	return msg
+end
+
+local function tell(key, ...)
+	return put_tip(text(key, ...))
+end
+
+-------------------------------------------------------------------------------
+-- The actor, the stock UI registry
+-------------------------------------------------------------------------------
+local function info_on(id)
+	local a = db.actor
+	if a then pcall(a.give_info_portion, a, id) end
+end
+
+local function info_off(id)
+	local a = db.actor
+	if a then pcall(a.disable_info_portion, a, id) end
+end
+
+local function mod(name)
+	local m = rawget(_G, name)
+	if m == nil then
+		local ok, r = pcall(function() return _G[name] end) -- _G.__index loads gamedata\scripts\<name>.script
+		m = ok and r or nil
+	end
+	return type(m) == "table" and m or nil
+end
+
+local function register_ui(name, path)
+	local f = rawget(_G, "Register_UI")
+	if f then pcall(f, name, path) end
+end
+
+local function unregister_ui(name)
+	local f = rawget(_G, "Unregister_UI")
+	if f then pcall(f, name) end
+end
+
+-- whole hours 1..24, nil for anything that is not a number
+local function normalize_hours(h)
+	h = tonumber(h)
+	if not h or h ~= h then return nil end
+	h = math_floor(h + 0.5)
+	if h < 1 then
+		h = 1
+	elseif h > MAX_HOURS then
+		h = MAX_HOURS
+	end
+	return h
+end
+
+-------------------------------------------------------------------------------
+-- State
+-------------------------------------------------------------------------------
+local win = nil -- the doze window
+local win_open = false
+local dream = nil -- { hours, forced, at, mid, music, eff } while the sleep effects run
+local st = { hours = 0, forced = false, asked = 0, seen = false, last_ask = nil, bag = nil, bag_at = nil }
+local prompted = {} -- local id of an ally -> true while his rest was announced
+local next_tick = 0
+local ours = {} -- the wrappers this script made: never wrapped again
+
+local tick, get_up, fold -- below (the window calls them)
+
+local function busy()
+	return win_open or dream ~= nil
+end
+
+-------------------------------------------------------------------------------
+-- Who is waited for, what holds the sleep
+-------------------------------------------------------------------------------
+local function nick_of(id)
+	if api then
+		local ok, list = pcall(api.players)
+		if ok and type(list) == "table" then
+			for _, p in ipairs(list) do
+				if p.avatar_id == id then return tostring(p.nick or "?") end
+			end
+		end
+	end
+	return "?"
+end
+
+local function waiting_nicks()
+	local out = {}
+	local ok, list = rest_call("waiting_for")
+	if ok and type(list) == "table" then
+		for _, n in ipairs(list) do out[#out + 1] = tostring(n) end
+	end
+	return out
+end
+
+local function block_text()
+	local ok, b = rest_call("block")
+	local key = ok and BLOCK_KEYS[b] or nil
+	return key and text(key) or ""
+end
+
+-- The emission and the psi-storm hold the sleep (the host's world; surge_manager / psi_storm_manager.is_started()).
+local function emission_running()
+	for _, name in ipairs({ "surge_manager", "psi_storm_manager" }) do
+		local m = mod(name)
+		local f = m and m.is_started
+		if type(f) == "function" then
+			local ok, started = pcall(f)
+			if ok and started then return true end
+		end
+	end
+	return false
+end
+
+local function feed_world_block()
+	if not is_host() then return end
+	rest_call("set_world_block", emission_running() and "emission" or "")
+end
+
+-------------------------------------------------------------------------------
+-- The doze window
+-------------------------------------------------------------------------------
+class "UICoopDoze" (CUIScriptWnd)
+
+function UICoopDoze:__init() super()
+	self:InitControls()
+	self:InitCallbacks()
+end
+
+function UICoopDoze:__finalize()
+end
+
+function UICoopDoze:InitControls()
+	self:SetWndRect(Frect():set(0, 0, 1024, 768))
+	self:Enable(true)
+
+	local xml = CScriptXmlInit()
+	xml:ParseFile("ui_coop_rest.xml")
+
+	xml:InitFrame("doze_shade", self)
+	local d = xml:InitStatic("doze", self)
+	xml:InitFrame("doze:frame", d)
+	xml:InitStatic("doze:cap", d)
+	self.hours_txt = xml:InitTextWnd("doze:hours", d)
+	self.waiting = xml:InitTextWnd("doze:waiting", d)
+	self.reason = xml:InitTextWnd("doze:reason", d)
+	xml:InitTextWnd("doze:hint", d)
+	self.btn_getup = xml:Init3tButton("doze:btn_getup", d)
+	self:Register(self.btn_getup, "btn_getup")
+	self.btn_fold = xml:Init3tButton("doze:btn_fold", d)
+	self:Register(self.btn_fold, "btn_fold")
+end
+
+function UICoopDoze:InitCallbacks()
+	local E = ui_events.BUTTON_CLICKED
+	self:AddCallback("btn_getup", E, self.OnGetUp, self)
+	self:AddCallback("btn_fold", E, self.OnFold, self)
+end
+
+-- hours: what he rests for; can_fold: a sleeping bag of his is at hand (the Fold button)
+function UICoopDoze:Setup(hours, can_fold)
+	self.hours_txt:SetText(text("hours", hours))
+	self.btn_fold:Show(can_fold == true)
+	self.btn_fold:Enable(can_fold == true)
+	if can_fold ~= true then -- the one button in the middle
+		local pos = self.btn_getup:GetWndPos()
+		self.btn_getup:SetWndPos(vector2():set(140, pos.y))
+	end
+	self:Refresh()
+end
+
+function UICoopDoze:Refresh()
+	local names = waiting_nicks()
+	if #names > 0 then
+		self.waiting:SetText(text("waiting", table.concat(names, ", ")))
+	else
+		self.waiting:SetText(text("all_ready"))
+	end
+	self.reason:SetText(block_text())
+end
+
+function UICoopDoze:Update()
+	CUIScriptWnd.Update(self)
+	tick()
+end
+
+function UICoopDoze:OnGetUp()
+	get_up()
+end
+
+function UICoopDoze:OnFold()
+	fold()
+end
+
+local function is_use_key(dik)
+	local ok, hit = pcall(function() return dik_to_bind(dik) == key_bindings.kUSE end)
+	return ok and hit == true
+end
+
+function UICoopDoze:OnKeyboard(dik, keyboard_action)
+	local res = CUIScriptWnd.OnKeyboard(self, dik, keyboard_action)
+	if res == false and keyboard_action == ui_events.WINDOW_KEY_PRESSED then
+		if dik == DIK_keys.DIK_ESCAPE or is_use_key(dik) then
+			get_up()
+			return true
+		end
+	end
+	return res
+end
+
+function window()
+	return win_open and win or nil
+end
+
+-- The window goes; the body wakes unless a dream is on (the dream ends it).
+local function close_doze()
+	local w, was_open = win, win_open
+	win, win_open = nil, false
+	if w then pcall(function() if w:IsShown() then w:HideDialog() end end) end
+	if was_open then unregister_ui("UICoopDoze") end
+	st.bag, st.bag_at = nil, nil
+	if not dream then
+		st.forced = false
+		info_off("actor_is_sleeping")
+	end
+end
+
+-- The position of the sleeping bag the player sleeps at, when it is one of his to fold: a client only (the host folds with the
+-- stock compression bag), a placed ph_sleepbag of the world within reach.
+local function fold_target()
+	if not is_client() then return nil end
+	local id = st.bag
+	if type(id) ~= "number" then return nil end
+	local ck = mod("coop_checkpoints")
+	if not (ck and type(ck.object_kind) == "function" and type(ck.request) == "function") then return nil end
+	local ok, at = pcall(function()
+		local obj = level.object_by_id(id)
+		if not obj then return nil end
+		if ck.object_kind(obj:section()) ~= "sleepbag" then return nil end
+		local p = obj:position()
+		if p:distance_to(db.actor:position()) > BAG_REACH then return nil end
+		return { x = p.x, y = p.y, z = p.z }
+	end)
+	return ok and at or nil
+end
+
+local function open_doze(hours, forced)
+	st.hours, st.forced, st.asked, st.seen = hours, forced == true, time_global(), false
+	info_off("sleep_active") -- it freezes every time event of the machine (_g.script, ProcessEventQueue)
+	info_on("actor_is_sleeping")
+	st.bag_at = fold_target()
+	local ok, err = pcall(function()
+		local w = UICoopDoze()
+		w:Setup(hours, st.bag_at ~= nil)
+		w:ShowDialog(true)
+		win, win_open = w, true
+	end)
+	if not ok then
+		log("! the doze window failed: %s", tostring(err))
+		rest_call("get_up") -- a rest nobody sees must not go on
+		close_doze()
+		tell("refused")
+		return false
+	end
+	register_ui("UICoopDoze", "coop_rest")
+	return true
+end
+
+-- Every second while the window is open: has the rest ended without the player's word?
+local function poll(now)
+	if not win_open then return end
+	if not rest_session() then
+		close_doze() -- the session is over: state_of(0) would only say 'awake'
+		return
+	end
+	if state_of(0) ~= "awake" then
+		st.seen = true
+	elseif st.seen then
+		close_doze() -- got up, woken (a fight, a wound), the group woke
+		return
+	elseif now - st.asked >= ASK_GRACE_MS then
+		close_doze() -- the engine never took the lie-down
+		tell("refused_lost")
+		return
+	end
+	local w = win
+	if w then pcall(w.Refresh, w) end
+end
+
+get_up = function()
+	rest_call("get_up")
+	close_doze()
+end
+
+fold = function()
+	local at = st.bag_at
+	get_up()
+	if not at then return end
+	local ck = mod("coop_checkpoints")
+	if ck and type(ck.request) == "function" then
+		local ok, err = pcall(ck.request, "pack", 0, at) -- the claim goes to the host with the bag's position
+		if not ok then log("! the pack claim failed: %s", tostring(err)) end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- The sleep effects (coop_rest_sleep)
+-------------------------------------------------------------------------------
+local function apply_sleep(hours)
+	try("stamina", function() db.actor.power = 1 end)
+	try("actor_on_sleep", function() SendScriptCallback("actor_on_sleep", hours) end)
+end
+
+local function start_dream(hours, forced)
+	dream = { hours = hours, forced = forced == true, at = time_global(), mid = false }
+	close_doze() -- the window gives way; actor_is_sleeping stays (a dream is on)
+	try("heli flag", function() save_var(db.actor, "heli_enemy_flag", nil) end)
+	try("disable_ui", function() xr_effects.disable_ui(db.actor, nil) end)
+	try("camera", function() level.add_cam_effector(forced and FAINT_IN_ANM or SLEEP_ANM, CAM_ID, false, "coop_rest.dream_mid") end)
+	try("fade", function() level.add_pp_effector("sleep_fade.ppe", PPE_ID, false) end)
+	try("sound", function()
+		-- the volumes are shared with the stock (_G.mus_vol / _G.amb_vol: bind_stalker_ext's anabiotic callback reads them too)
+		dream.music = get_console_cmd(2, "snd_volume_music")
+		dream.eff = get_console_cmd(2, "snd_volume_eff")
+		_G.mus_vol, _G.amb_vol = dream.music, dream.eff
+		exec_console_cmd("snd_volume_music 0")
+		exec_console_cmd("snd_volume_eff 0")
+	end)
+	if not dream.forced then try("weapon", function() db.actor:activate_slot(0) end) end
+	try("fade 2", function() level.add_pp_effector("surge_fade.ppe", PPE_ID, false) end)
+	info_on("actor_is_sleeping")
+end
+
+-- The end of the first camera effector (stock dream_callback): the effects of the sleep, the waking-up animation.
+function dream_mid()
+	local d = dream
+	if not d or d.mid then return end
+	d.mid = true
+	try("waking animation", function()
+		level.add_cam_effector(d.forced and FAINT_OUT_ANM or SLEEP_ANM, CAM_ID, false, "coop_rest.dream_end")
+	end)
+	apply_sleep(d.hours)
+end
+
+-- The end of the second one (stock dream_callback2): the UI and the sound back, the infos off. Does what dream_mid has not
+-- done yet, so a lost first callback costs nothing.
+function dream_end()
+	local d = dream
+	if not d then return end
+	if not d.mid then
+		d.mid = true
+		apply_sleep(d.hours)
+	end
+	dream = nil
+	try("enable_ui", function() xr_effects.enable_ui(db.actor, nil) end)
+	try("sound back", function()
+		if d.music ~= nil then exec_console_cmd("snd_volume_music " .. tostring(d.music)) end
+		if d.eff ~= nil then exec_console_cmd("snd_volume_eff " .. tostring(d.eff)) end
+		_G.amb_vol, _G.mus_vol = 0, 0
+	end)
+	info_off("tutorial_sleep")
+	info_off("sleep_active")
+	close_doze() -- (the window gave way at the start; this also takes actor_is_sleeping off)
+	tell("woke", d.hours)
+end
+
+-------------------------------------------------------------------------------
+-- Engine callbacks
+-------------------------------------------------------------------------------
+-- coop_rest_sleep(hours): the group sleeps, the time is skipped. Only the sleepers get it.
+local function on_sleep(hours)
+	local h = normalize_hours(hours)
+	if not h or dream then return end
+	start_dream(h, st.forced)
+end
+
+-- coop_rest_refused(reason): my lie-down was refused or my rest ended without my word ("place" | "combat" | "dead" | "busy"
+-- today; any other reason gets its own line when there is a string st_coop_rest_refused_<reason>, else the generic one).
+local function on_refused(reason)
+	local key = "refused"
+	if type(reason) == "string" and #reason <= MAX_REASON and reason:match("^[%w_]+$") and known_text("refused_" .. reason) then
+		key = "refused_" .. reason
+	end
+	close_doze()
+	tell(key)
+end
+
+-- coop_rest_changed(local_id, state, hours): the engine's list changed for a player (0 = me). A hint; the state is read again.
+local function on_changed(id, state, hours)
+	if type(id) ~= "number" or type(state) ~= "string" then return end
+	if id == 0 then
+		if state ~= "awake" then st.seen = true end
+		poll(time_global())
+		return
+	end
+	if state == "awake" then
+		prompted[id] = nil
+		return
+	end
+	if state ~= "resting" or prompted[id] then return end
+	if busy() or state_of(0) ~= "awake" then return end -- I rest myself: my window says who is awake
+	if state_of(id) ~= "resting" then return end -- a rest the queue replays after it is over
+	prompted[id] = true
+	tell("prompt", nick_of(id), normalize_hours(hours) or 0)
+end
+
+-- A world is entered (a load, a level change): what was open belongs to the old one.
+local function on_first_update()
+	if not rest_session() then return end
+	local w = win
+	win, win_open = nil, false
+	if w then pcall(function() if w:IsShown() then w:HideDialog() end end) end
+	unregister_ui("UICoopDoze")
+	if dream then
+		dream_end()
+	end
+	prompted = {}
+	st.bag, st.bag_at, st.forced = nil, nil, false
+	info_off("actor_is_sleeping") -- a save written while a window was open carries these
+	info_off("sleep_active")
+end
+
+tick = function()
+	local now = time_global()
+	if now < next_tick and next_tick - now <= TICK_MS then return end
+	next_tick = now + TICK_MS
+	feed_world_block()
+	poll(now)
+	local d = dream
+	if d and now - d.at > DREAM_MAX_MS then
+		log("the dream did not end in %d s, ending it", DREAM_MAX_MS / 1000)
+		dream_end()
+	end
+end
+
+-------------------------------------------------------------------------------
+-- The stock sleep dialog in a session
+-------------------------------------------------------------------------------
+local function paced()
+	local last = st.last_ask
+	if not last then return false end
+	local d = time_global() - last
+	return d >= 0 and d < ASK_GAP_MS
+end
+
+-- Asks the engine to let the player rest; the window opens when it took the word.
+local function ask_lie_down(hours, forced)
+	local ok, sent = rest_call("lie_down", hours, forced == true)
+	if not (ok and sent == true) then
+		tell("refused")
+		return false
+	end
+	st.last_ask = time_global()
+	return open_doze(hours, forced)
+end
+
+local function hide_stock(self)
+	pcall(function()
+		if self:IsShown() then
+			self:HideDialog()
+			unregister_ui("UISleep")
+		end
+	end)
+end
+
+local function wrap_test_and_show(orig)
+	return function(self, force, ...)
+		if force == true or not rest_session() then return orig(self, force, ...) end
+		if busy() then return end -- a doze or a dream is on: no second dialog
+		local bleeding, radiation = false, false
+		pcall(function()
+			bleeding = (tonumber(db.actor.bleeding) or 0) > 0
+			radiation = (tonumber(db.actor.radiation) or 0) > 0
+		end)
+		info_off("sleep_active")
+		if bleeding or radiation then
+			if bleeding and radiation then
+				put_tip(translate("st_sleep_bleeding_irradiated"))
+			elseif bleeding then
+				put_tip(translate("st_sleep_bleeding"))
+			else
+				put_tip(translate("st_sleep_irradiated"))
+			end
+			return
+		end
+		-- the shelter is the host's business now (it looks at the rest place when the player lies down); the rest of the stock
+		-- dialog (and GAMMA's sleepiness veto) is the stock's
+		return orig(self, true, ...)
+	end
+end
+
+local function wrap_on_button(orig)
+	return function(self, ...)
+		if not rest_session() then return orig(self, ...) end
+		if busy() then return end
+		if paced() then
+			tell("slow") -- the dialog stays open, the player presses again
+			return
+		end
+		local ok_f, f = pcall(function() return tonumber(self.forced) end)
+		local forced = ok_f and f ~= nil
+		local hours = nil
+		if forced then
+			hours = normalize_hours(f)
+		else
+			local ok_h, h = pcall(function() return self.time_track:GetIValue() end)
+			hours = ok_h and normalize_hours(h) or nil
+		end
+		if not hours then
+			log("! no hours from the sleep dialog")
+			tell("refused")
+			return
+		end
+		hide_stock(self)
+		ask_lie_down(hours, forced)
+	end
+end
+
+local function wrap_forced(orig)
+	return function(hours, ...)
+		if not rest_session() then return orig(hours, ...) end
+		if busy() then return end
+		st.bag = nil
+		ask_lie_down(normalize_hours(hours) or math.random(3, 9), true)
+	end
+end
+
+local function wrap_bag(orig)
+	return function(id, ...)
+		if rest_session() then st.bag = type(id) == "number" and id or nil end -- an item (use_placeable off) is not a bag to fold
+		return orig(id, ...)
+	end
+end
+
+local function wrap(tbl, key, make)
+	local orig = tbl[key]
+	if type(orig) ~= "function" or ours[orig] then return false end
+	local w = make(orig)
+	ours[w] = true
+	tbl[key] = w
+	return true
+end
+
+local function install_wrappers()
+	local m = mod("ui_sleep_dialog")
+	if not m then
+		log("! ui_sleep_dialog is missing: the sleep stays the stock one")
+		return
+	end
+	local cls = m.UISleep
+	if cls then
+		wrap(cls, "TestAndShow", wrap_test_and_show)
+		wrap(cls, "OnButtonSleep", wrap_on_button)
+	else
+		log("! ui_sleep_dialog.UISleep is missing: the sleep dialog stays the stock one")
+	end
+	wrap(m, "sleep_forced", wrap_forced)
+	wrap(m, "sleep_bag", wrap_bag)
+end
+
+-------------------------------------------------------------------------------
+-- Start
+-------------------------------------------------------------------------------
+-- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an error here would
+-- skip all the scripts after this one, single player included.
+local function start_step(what, f)
+	local ok, err = pcall(f)
+	if not ok then printf("! [coop_rest] %s failed: %s", what, tostring(err)) end
+end
+
+function on_game_start()
+	if not api then return end -- an exe without co-op: nothing of this runs
+	start_step("wrappers", install_wrappers)
+	start_step("callbacks", function()
+		AddScriptCallback("coop_rest_changed") -- fired by the engine (coop_rest.cpp)
+		AddScriptCallback("coop_rest_sleep")
+		AddScriptCallback("coop_rest_refused")
+		RegisterScriptCallback("coop_rest_changed", on_changed)
+		RegisterScriptCallback("coop_rest_sleep", on_sleep)
+		RegisterScriptCallback("coop_rest_refused", on_refused)
+		RegisterScriptCallback("actor_on_update", tick)
+		RegisterScriptCallback("actor_on_first_update", on_first_update)
+	end)
+end

@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop - the shared sleep (F3 T14): the doze window, its reasons, the prompts and the party panel line of scripts\coop_rest.script and scripts\coop_allies.script. Ids st_coop_rest_<name>; the refusals (coop_rest_refused) are st_coop_rest_refused_<reason> with st_coop_rest_refused as the line for any other reason. -->
+<string_table>
+	<string id="st_coop_rest_title">
+		<text>You are dozing</text>
+	</string>
+	<string id="st_coop_rest_hours">
+		<text>Resting for %d h</text>
+	</string>
+	<string id="st_coop_rest_waiting">
+		<text>Waiting for: %s</text>
+	</string>
+	<string id="st_coop_rest_all_ready">
+		<text>Everyone is resting. The sleep begins...</text>
+	</string>
+	<string id="st_coop_rest_block_combat">
+		<text>The sleep cannot begin while somebody is in a fight.</text>
+	</string>
+	<string id="st_coop_rest_block_world">
+		<text>The sleep cannot begin during an emission or another world event.</text>
+	</string>
+	<string id="st_coop_rest_block_dead">
+		<text>The sleep cannot begin while somebody is wounded or dead.</text>
+	</string>
+	<string id="st_coop_rest_hint">
+		<text>Esc or the Use key: get up</text>
+	</string>
+	<string id="st_coop_rest_getup">
+		<text>Get up</text>
+	</string>
+	<string id="st_coop_rest_fold">
+		<text>Fold the sleeping bag</text>
+	</string>
+	<string id="st_coop_rest_prompt">
+		<text>%s is tired and wants to rest for %d h. Find a rest spot and rest too: then time will pass for everybody.</text>
+	</string>
+	<string id="st_coop_rest_panel">
+		<text>resting %d h</text>
+	</string>
+	<string id="st_coop_rest_refused">
+		<text>You cannot rest right now.</text>
+	</string>
+	<string id="st_coop_rest_refused_place">
+		<text>There is no place to rest here. Find a shelter, a tent, a sleeping bag or a campfire.</text>
+	</string>
+	<string id="st_coop_rest_refused_combat">
+		<text>You cannot rest while you are in a fight.</text>
+	</string>
+	<string id="st_coop_rest_refused_dead">
+		<text>A wounded or dead player cannot rest.</text>
+	</string>
+	<string id="st_coop_rest_refused_busy">
+		<text>The group is already asleep.</text>
+	</string>
+	<string id="st_coop_rest_refused_camp">
+		<text>Cannot make camp here.</text>
+	</string>
+	<string id="st_coop_rest_refused_lost">
+		<text>The host did not answer, you are up.</text>
+	</string>
+	<string id="st_coop_rest_slow">
+		<text>Not so fast, wait a second.</text>
+	</string>
+	<string id="st_coop_rest_woke">
+		<text>You slept for %d h.</text>
+	</string>
+</string_table>
