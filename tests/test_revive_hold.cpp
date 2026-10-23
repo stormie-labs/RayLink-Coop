@@ -234,10 +234,453 @@ TEST(host_hold_begin_opens_it)
 
 TEST(host_hold_same_reviver_may_restart)
 {
+	// I-1: the same reviver may begin again inside his own chain (a Cancel got lost, he pressed again) once the gap of his
+	// Begins is over, but the lock is never moved past the end of the chain: its first Begin + the hold + the grace.
+	HostHold h;
+	CHECK(h.begin(1000, 4, 10, 250) == HostHold::Begin::Started); // the chain starts at 1000; the lock runs to 5250
+	CHECK(h.begin(1000 + kAnnounceGapMs, 4, 10, 400) == HostHold::Begin::Started);
+	CHECK(h.open_at(1000 + kAnnounceGapMs, 4));
+	CHECK(h.busy_for(1000 + kAnnounceGapMs, 4, 11));
+	const uint64_t chain_end = 1000 + kHoldMs + kGraceMs;
+	CHECK(h.busy_for(chain_end - 1, 4, 11));
+	CHECK(!h.busy_for(chain_end, 4, 11)); // the restart (400 ms held: 7100 on its own) did not carry the lock beyond 5500
+}
+
+TEST(host_hold_a_restart_cannot_move_the_end_past_the_chain)
+{
+	HostHold h;
+	CHECK(h.begin(1000, 4, 10, 0) == HostHold::Begin::Started);
+	const uint64_t chain_end = 1000 + kHoldMs + kGraceMs;
+	// every honest-looking restart in the chain asks for a full new hold; none of them gets it
+	for (uint64_t t = 1000 + kAnnounceGapMs; t < chain_end; t += kAnnounceGapMs)
+	{
+		CHECK(h.begin(t, 4, 10, 0) == HostHold::Begin::Started);
+		CHECK(h.busy_for(chain_end - 1, 4, 11));
+		CHECK(!h.busy_for(chain_end, 4, 11));
+	}
+}
+
+TEST(host_hold_begins_closer_than_the_pace_are_busy)
+{
+	// I-1: the host takes one Begin per reviver and wounded per kHostBeginGapMs (the announcer's kAnnounceGapMs less what
+	// the net may squeeze); a faster one is refused as Busy and changes nothing.
+	HostHold h;
+	CHECK(h.begin(1000, 4, 10, 250) == HostHold::Begin::Started); // lock to 5250
+	CHECK(h.begin(1000 + kHostBeginGapMs - 1, 4, 10, 0) == HostHold::Begin::Busy);
+	CHECK(h.busy_for(5249, 4, 11));
+	CHECK(!h.busy_for(5250, 4, 11)); // not moved by the refused one (it would have asked for 9000+)
+	// the refused one did not start the pace over either
+	CHECK(h.begin(1000 + kHostBeginGapMs, 4, 10, 250) == HostHold::Begin::Started);
+	// the jitter allowance: an honest Begin that the net squeezed to 1.6 s apart still passes
+	HostHold j;
+	CHECK(j.begin(1000, 4, 10, 250) == HostHold::Begin::Started);
+	CHECK(j.begin(1000 + kAnnounceGapMs - 400, 4, 10, 250) == HostHold::Begin::Started);
+}
+
+TEST(host_hold_pace_follows_a_cancel_but_not_another_reviver)
+{
 	HostHold h;
 	CHECK(h.begin(1000, 4, 10, 250) == HostHold::Begin::Started);
-	CHECK(h.begin(1500, 4, 10, 400) == HostHold::Begin::Started); // a lost Cancel, a new hold of his own
-	CHECK(h.busy_for(1500, 4, 11));
+	CHECK(h.stop(1100, 4, 10)); // let go
+	CHECK(h.begin(1000 + kHostBeginGapMs - 1, 4, 10, 250) == HostHold::Begin::Busy); // a Begin-Cancel pair is paced too
+	CHECK(h.begin(1000 + kHostBeginGapMs - 1, 4, 11, 250) == HostHold::Begin::Started); // the pace is his own
+}
+
+TEST(host_hold_a_lapsed_chain_locks_its_reviver_out_for_a_gap)
+{
+	// I-1: a chain that ran out without a Revive, a Cancel or a refused Request: the reviver may not start another before
+	// kAnnounceGapMs have passed; anybody else may in that window.
+	HostHold h;
+	CHECK(h.begin(1000, 4, 10, 0) == HostHold::Begin::Started);
+	const uint64_t end = 1000 + kHoldMs + kGraceMs;
+	CHECK(h.begin(1000 + kAnnounceGapMs, 4, 10, 0) == HostHold::Begin::Started); // inside the chain (the lock is not moved)
+	CHECK(h.begin(end, 4, 10, 0) == HostHold::Begin::Busy); // its end, long after his last Begin: not the pace but the lockout
+	CHECK(h.begin(end + kAnnounceGapMs - 1, 4, 10, 0) == HostHold::Begin::Busy);
+	CHECK(h.begin(end + kAnnounceGapMs, 4, 10, 0) == HostHold::Begin::Started); // a new chain
+	CHECK(h.busy_for(end + kAnnounceGapMs + kHoldMs + kGraceMs - 1, 4, 11));
+	CHECK(!h.busy_for(end + kAnnounceGapMs + kHoldMs + kGraceMs, 4, 11));
+
+	HostHold other;
+	CHECK(other.begin(1000, 4, 10, 0) == HostHold::Begin::Started);
+	CHECK(other.begin(end, 4, 11, 250) == HostHold::Begin::Started); // the window is for the others
+	CHECK(other.begin(end + 1, 4, 10, 0) == HostHold::Begin::Busy); // and the second one's lock holds against the first
+	CHECK(other.busy_for(end + 1, 4, 10));
+}
+
+TEST(host_hold_a_cancel_does_not_end_the_chain)
+{
+	// Round 2 of I-1: a Cancel closes the lock but not the chain. A Begin that follows within kAnnounceGapMs of it (the
+	// lock was not free for a whole gap, nobody had a window) is the same chain, with the same ceiling.
+	HostHold h;
+	CHECK(h.begin(1000, 4, 10, 0) == HostHold::Begin::Started); // chain from 1000, ceiling 5500
+	CHECK(h.stop(2900, 4, 10)); // let go
+	CHECK(!h.busy_for(2950, 4, 11)); // the lock is free for the others at once
+	CHECK(h.begin(3000, 4, 10, 0) == HostHold::Begin::Started); // 100 ms later: the same chain
+	const uint64_t ceiling = 1000 + kHoldMs + kGraceMs;
+	CHECK(h.busy_for(ceiling - 1, 4, 11));
+	CHECK(!h.busy_for(ceiling, 4, 11)); // not carried past the ceiling of the FIRST Begin, though this one asked for 7500
+}
+
+TEST(host_hold_a_used_up_chain_locks_its_reviver_out_after_a_cancel_too)
+{
+	HostHold h;
+	CHECK(h.begin(1000, 4, 10, 0) == HostHold::Begin::Started);
+	CHECK(h.begin(3000, 4, 10, 0) == HostHold::Begin::Started); // inside the chain
+	const uint64_t ceiling = 1000 + kHoldMs + kGraceMs;
+	CHECK(h.stop(ceiling - 10, 4, 10)); // Cancel 10 ms before the end, as a client does who wants the lock back at once
+	CHECK(h.begin(ceiling, 4, 10, 0) == HostHold::Begin::Busy); // the chain is used up: not at the ceiling,
+	CHECK(h.begin(ceiling - 10 + kAnnounceGapMs - 1, 4, 10, 0) == HostHold::Begin::Busy); // nor for a gap after his Cancel
+	CHECK(h.begin(ceiling - 10 + kAnnounceGapMs, 4, 10, 0) == HostHold::Begin::Started); // then a chain of its own
+	CHECK(h.busy_for(ceiling - 10 + kAnnounceGapMs + kHoldMs + kGraceMs - 1, 4, 11));
+	CHECK(!h.busy_for(ceiling - 10 + kAnnounceGapMs + kHoldMs + kGraceMs, 4, 11));
+}
+
+TEST(host_hold_the_window_after_a_used_up_chain_is_for_the_others)
+{
+	HostHold h;
+	CHECK(h.begin(1000, 4, 10, 0) == HostHold::Begin::Started);
+	const uint64_t ceiling = 1000 + kHoldMs + kGraceMs;
+	CHECK(h.stop(ceiling - 10, 4, 10));
+	CHECK(h.begin(ceiling, 4, 11, 250) == HostHold::Begin::Started); // somebody else may take it
+	CHECK(h.begin(ceiling + kHostBeginGapMs, 4, 10, 0) == HostHold::Begin::Busy); // and his lock holds against the first
+}
+
+TEST(host_hold_an_idle_gap_after_a_cancel_starts_a_fresh_chain)
+{
+	// The lock was free for a whole gap: the others had their window, so the chain starts over, even before the old
+	// ceiling or long after it. A reviver who lets go and comes back later is not punished.
+	HostHold h;
+	CHECK(h.begin(1000, 4, 10, 0) == HostHold::Begin::Started); // ceiling 5500
+	CHECK(h.stop(1300, 4, 10));
+	CHECK(h.begin(1300 + kAnnounceGapMs, 4, 10, 0) == HostHold::Begin::Started); // before the old ceiling: a fresh chain
+	CHECK(h.busy_for(1300 + kAnnounceGapMs + kHoldMs + kGraceMs - 1, 4, 11)); // with a ceiling of its own, past 5500
+	CHECK(h.stop(3400, 4, 10));
+	const uint64_t long_after = 3400 + 4 * kAnnounceGapMs;
+	CHECK(h.begin(long_after, 4, 10, 0) == HostHold::Begin::Started); // long after both ceilings
+	CHECK(h.busy_for(long_after + kHoldMs + kGraceMs - 1, 4, 11));
+}
+
+TEST(host_hold_a_revive_or_a_departure_ends_the_chain)
+{
+	HostHold h;
+	CHECK(h.begin(1000, 4, 10, 0) == HostHold::Begin::Started);
+	h.close(); // the revive went through / the wounded stood up
+	CHECK(h.begin(1000 + kHostBeginGapMs, 4, 10, 0) == HostHold::Begin::Started); // nothing of the old chain counts
+	CHECK(h.busy_for(1000 + kHostBeginGapMs + kHoldMs + kGraceMs - 1, 4, 11));
+	CHECK(h.drop_reviver(10)); // he left
+	CHECK(h.begin(1000 + 2 * kHostBeginGapMs, 4, 10, 0) == HostHold::Begin::Started); // and came back: a new one
+}
+
+TEST(host_hold_drop_reviver_frees_his_lock)
+{
+	// M-1: the reviver went away in the middle of the hold.
+	HostHold h;
+	CHECK(!h.drop_reviver(10)); // nothing held
+	CHECK(h.begin(1000, 4, 10, 250) == HostHold::Begin::Started);
+	CHECK_EQ(int(h.seq()), 4);
+	CHECK(!h.drop_reviver(11)); // not his lock
+	CHECK(h.open_at(1100, 4));
+	CHECK(h.drop_reviver(10)); // his: the wounded is told
+	CHECK(!h.open_at(1100, 4));
+	CHECK(!h.busy_for(1100, 4, 11)); // free for the next one
+	CHECK(!h.drop_reviver(10)); // once
+	CHECK(h.begin(1100, 4, 11, 250) == HostHold::Begin::Started);
+	h.close();
+	CHECK(!h.drop_reviver(11)); // nothing held after a revive
+}
+
+TEST(host_hold_a_request_meets_the_lock_of_another_reviver)
+{
+	// M-3: host_on_revive_request asks busy_for with the Request's reviver, as a Begin does.
+	HostHold h;
+	CHECK(h.begin(1000, 4, 10, 250) == HostHold::Begin::Started);
+	CHECK(h.busy_for(1500, 4, 11)); // a Request of somebody else: RefBusy
+	CHECK(!h.busy_for(1500, 4, 10)); // the reviver's own Request passes the lock
+	CHECK(!h.busy_for(1500, 5, 11)); // the lock is of the fall 4
+	CHECK(!h.stop(1500, 4, 11)); // and his refused Request does not end the first one's hold
+	CHECK(h.open_at(1500, 4));
+	CHECK(!h.busy_for(5250, 4, 11)); // lapsed
+	CHECK(h.stop(2000, 4, 10));
+	CHECK(!h.busy_for(1500, 4, 11)); // ended
+}
+
+namespace
+{
+// A modified client's train of Begins on a wounded character (never a Cancel, never a Request), every `period` ms from
+// `from` to `to` (exclusive); what the host answered to each.
+struct Train
+{
+	uint32_t started = 0, busy = 0;
+};
+Train begin_train(HostHold& h, uint16_t reviver, uint64_t from, uint64_t to, uint32_t period, uint32_t held_ms = 0)
+{
+	Train out;
+	for (uint64_t t = from; t < to; t += period)
+		(h.begin(t, 4, reviver, held_ms) == HostHold::Begin::Started ? out.started : out.busy)++;
+	return out;
+}
+} // namespace
+
+TEST(host_hold_a_begin_train_does_not_keep_the_lock_for_ever)
+{
+	// M-2 / I-1: a client sends Begin every 1.9 s, or every 4 s, for a minute and never a Cancel or a Request. A second
+	// reviver looks at the lock every 10 ms: it is never shut on him for longer than the first Begin's hold + grace.
+	const uint32_t periods[] = {1900, 4000, 100, 700, 2000, 2600, 4400, 4600};
+	for (const uint32_t period : periods)
+	{
+		HostHold h;
+		const uint64_t t0 = 7000;
+		uint64_t shut_since = 0, longest = 0, first_open = 0;
+		bool shut = false, opened = false;
+		uint32_t windows = 0;
+		for (uint64_t t = 0; t < 60000; t += 10)
+		{
+			if (t % period == 0)
+				h.begin(t0 + t, 4, 10, 0);
+			const bool now_shut = h.busy_for(t0 + t, 4, 11);
+			if (now_shut && !shut)
+				shut_since = t;
+			if (!now_shut && shut)
+			{
+				longest = t - shut_since > longest ? t - shut_since : longest;
+				++windows;
+				if (!opened)
+				{
+					opened = true;
+					first_open = t;
+				}
+			}
+			shut = now_shut;
+		}
+		CHECK_EQ(first_open, uint64_t(kHoldMs + kGraceMs)); // the first lock ended with its first Begin's hold + grace
+		CHECK(longest <= uint64_t(kHoldMs + kGraceMs));
+		CHECK(windows >= 6); // and it kept opening: at least one window in every ~8 s of a minute
+	}
+}
+
+TEST(host_hold_a_begin_train_leaves_a_window_for_the_second_reviver)
+{
+	// M-2: whatever the train's period, the second reviver gets Started once the first chain has lapsed, anywhere in the
+	// window of kAnnounceGapMs after it, and then the train is Busy against his lock.
+	const uint32_t periods[] = {1900, 4000, 100, 700, 2000};
+	const uint64_t t0 = 7000, end = t0 + kHoldMs + kGraceMs;
+	const uint64_t asks[] = {end, end + 700, end + kAnnounceGapMs - 1};
+	for (const uint32_t period : periods)
+		for (const uint64_t ask : asks)
+		{
+			HostHold h;
+			const Train first = begin_train(h, 10, t0, ask, period);
+			CHECK(first.started >= 1);
+			CHECK(h.begin(ask, 4, 11, 250) == HostHold::Begin::Started);
+			// his lock is a lock: the train is turned away for as long as it holds, however it is paced
+			const uint64_t his_end = ask + (kHoldMs - 250) + kGraceMs;
+			const Train second = begin_train(h, 10, ask + 10, his_end, period);
+			CHECK_EQ(second.started, uint32_t(0));
+			CHECK(second.busy >= 1);
+			CHECK(h.busy_for(his_end - 1, 4, 10));
+		}
+}
+
+namespace
+{
+// A modified client that sends a Cancel 10 ms before every Begin (round 2 of I-1: the lock is shut for 10 ms only, a chain
+// that ended at a Cancel would never run out): a Begin every `period` ms from `from` to `to` (exclusive).
+void begin_cancel_train(HostHold& h, uint16_t reviver, uint64_t from, uint64_t to, uint32_t period)
+{
+	for (uint64_t t = from; t < to; t += 10)
+	{
+		const uint64_t in_period = (t - from) % period;
+		if (in_period == 0)
+			h.begin(t, 4, reviver, 0);
+		else if (in_period == period - 10)
+			h.stop(t, 4, reviver);
+	}
+}
+} // namespace
+
+TEST(host_hold_a_begin_cancel_train_does_not_keep_the_lock)
+{
+	// Round 2 of I-1 (measured with the first fix: periods 1.5 / 2 / 2.5 s kept the lock shut for 59.6 / 59.7 / 59.76 s of
+	// 60 s, the longest window 10 ms): a Cancel right before each Begin. A second reviver looks at the lock every 10 ms for
+	// a minute: the lock is shut for 70 % of the time at the most, and the others get a whole gap again and again.
+	const uint32_t periods[] = {1500, 1900, 2000, 2500, 4000, 100, 700};
+	for (const uint32_t period : periods)
+	{
+		HostHold h;
+		const uint64_t t0 = 7000;
+		uint32_t shut_probes = 0, probes = 0, windows = 0, open_run = 0;
+		for (uint64_t t = 0; t < 60000; t += 10)
+		{
+			const uint64_t in_period = t % period;
+			if (in_period == 0)
+				h.begin(t0 + t, 4, 10, 0);
+			else if (in_period == period - 10)
+				h.stop(t0 + t, 4, 10);
+			const bool shut = h.busy_for(t0 + t, 4, 11);
+			++probes;
+			shut_probes += shut ? 1 : 0;
+			open_run = shut ? 0 : open_run + 10;
+			if (open_run == kAnnounceGapMs - 10)
+				++windows; // a stretch the others could take the lock in
+		}
+		CHECK(shut_probes * 100 <= probes * 70);
+		CHECK(windows >= 6);
+	}
+}
+
+TEST(host_hold_a_begin_cancel_train_leaves_a_window_for_the_second_reviver)
+{
+	// The second reviver gets Started once the train's chain has run out, anywhere in the gap that follows, and his lock holds
+	// against the train.
+	const uint32_t periods[] = {1500, 2000, 2500, 4000};
+	const uint64_t t0 = 7000, ceiling = t0 + kHoldMs + kGraceMs;
+	const uint64_t asks[] = {ceiling, ceiling + 700, ceiling + kAnnounceGapMs - 11};
+	for (const uint32_t period : periods)
+		for (const uint64_t ask : asks)
+		{
+			HostHold h;
+			begin_cancel_train(h, 10, t0, ask, period);
+			// the train never held the lock past the ceiling of its first Begin: at `ask` the lock is free
+			CHECK(!h.busy_for(ask, 4, 11));
+			CHECK(h.begin(ask, 4, 11, 250) == HostHold::Begin::Started);
+			const uint64_t his_end = ask + (kHoldMs - 250) + kGraceMs;
+			CHECK(h.busy_for(his_end - 1, 4, 10));
+			CHECK(h.begin(ask + kHostBeginGapMs, 4, 10, 0) == HostHold::Begin::Busy); // and the train is turned away
+		}
+}
+
+TEST(host_hold_an_honest_release_and_press_again_is_not_refused)
+{
+	// Press, let go after 1 s, press again and hold the 3 s: the announcer's Begins and Cancel go through the host's hold at
+	// the times the announcer sends them, the second Begin is Started, nobody else gets in, and the Request meets no lock of
+	// the reviver's own. Also with other first holds.
+	const uint32_t releases[] = {300, 1000, 1700, 2400};
+	for (const uint32_t release : releases)
+	{
+		HostHold h;
+		Announcer a;
+		uint32_t begins = 0;
+		a.start(); // pressed at 0
+		for (uint64_t t = 0; t <= release; t += 10) // the first hold, until let go
+			if (a.step(t, uint32_t(t)) == Announcer::Act::Begin)
+			{
+				++begins;
+				CHECK(h.begin(t, 4, 10, uint32_t(t)) == HostHold::Begin::Started);
+			}
+		CHECK(a.stop() == Announcer::Act::Cancel);
+		CHECK(h.stop(release, 4, 10));
+		const uint64_t press_again = release + 100;
+		a.start();
+		bool second_begin = false;
+		for (uint64_t t = press_again; t < press_again + kHoldMs; t += 10)
+			if (a.step(t, uint32_t(t - press_again)) == Announcer::Act::Begin)
+			{
+				++begins;
+				second_begin = true;
+				CHECK(h.begin(t, 4, 10, uint32_t(t - press_again)) == HostHold::Begin::Started);
+				CHECK(h.busy_for(t, 4, 11)); // his lock is on again
+			}
+		CHECK(second_begin);
+		CHECK_EQ(begins, uint32_t(2));
+		// the hold is over: his Request meets no lock of another reviver
+		CHECK(!h.busy_for(press_again + kHoldMs, 4, 10));
+		h.close();
+	}
+}
+
+namespace
+{
+struct Mash
+{
+	uint32_t begins = 0, started = 0, refused = 0;
+};
+
+// The reviver of mash() above against the host's hold: every message of the reviver goes through one ordered channel (a Cancel
+// never overtakes his Begin), every other Begin is held up 400 ms on its way (the host sees a pair 1.6 s apart at the least),
+// and a refused Begin ends the hold at once, without a Cancel, as stop_revive_hold(false) does.
+Mash mash_against_the_host(uint32_t hold_ms, uint32_t release_ms, uint32_t seconds)
+{
+	HostHold h;
+	Announcer a;
+	Mash out;
+	bool holding = false;
+	uint64_t press_at = 0, release_at = 0, last_arrival = 0;
+	uint32_t nth = 0;
+	const auto arrive = [&last_arrival](uint64_t sent, uint32_t delay) {
+		const uint64_t at = sent + delay > last_arrival ? sent + delay : last_arrival;
+		last_arrival = at;
+		return at;
+	};
+	for (uint64_t t = 0; t < uint64_t(seconds) * 1000; t += 10)
+	{
+		if (!holding && t >= release_at)
+		{
+			holding = true;
+			press_at = t;
+			a.start();
+		}
+		if (!holding)
+			continue;
+		const uint32_t held = uint32_t(t - press_at);
+		if (a.step(t, held) == Announcer::Act::Begin)
+		{
+			++out.begins;
+			if (h.begin(arrive(t, nth++ % 2 == 0 ? 400 : 0), 4, 10, held) == HostHold::Begin::Started)
+				++out.started;
+			else
+			{
+				++out.refused;
+				a.stop(); // no Cancel goes: the host had no hold of his
+				holding = false;
+				release_at = t + release_ms;
+				continue;
+			}
+		}
+		if (held >= kHoldMs) // the hold completed: the Request goes (the host closes the hold with the revive)
+		{
+			a.done();
+			h.close();
+			holding = false;
+			release_at = t + release_ms;
+		}
+		else if (held >= hold_ms) // let go early
+		{
+			if (a.stop() == Announcer::Act::Cancel)
+				h.stop(arrive(t, 0), 4, 10);
+			holding = false;
+			release_at = t + release_ms;
+		}
+	}
+	return out;
+}
+} // namespace
+
+TEST(host_hold_never_refuses_an_honest_hold_that_goes_the_distance)
+{
+	// Holds that complete (the Request replaces the Cancel and ends the chain) are never turned away, at any pace, however
+	// the net squeezes the Begins.
+	const uint32_t releases[] = {10, 100, 1000};
+	for (const uint32_t release : releases)
+	{
+		const Mash m = mash_against_the_host(kHoldMs, release, 120);
+		CHECK(m.begins > 10);
+		CHECK_EQ(m.refused, uint32_t(0));
+	}
+}
+
+TEST(host_hold_an_honest_mash_loses_at_most_a_window_to_the_chain)
+{
+	// A player who lets go before the end again and again for minutes looks like the Begin-Cancel train of a cheat to the
+	// host, so his chain has a ceiling too: once in 4.5 s of it he may be refused (and has to press again), never more.
+	const uint32_t holds[][2] = {{300, 100}, {400, 50}, {1700, 100}, {1900, 20}, {260, 1}, {1000, 100}};
+	for (const auto& p : holds)
+	{
+		const Mash m = mash_against_the_host(p[0], p[1], 120);
+		CHECK(m.begins > 0);
+		CHECK(m.started > 0);
+		CHECK(m.refused <= 120000 / (kHoldMs + kGraceMs) + 1);
+		CHECK_EQ(m.started + m.refused, m.begins);
+	}
 }
 
 TEST(host_hold_lapses_after_its_end_and_the_grace)
@@ -265,12 +708,12 @@ TEST(host_hold_stop_only_by_its_reviver_and_fall)
 {
 	HostHold h;
 	CHECK(h.begin(1000, 4, 10, 250) == HostHold::Begin::Started);
-	CHECK(!h.stop(4, 11)); // somebody else's Cancel
-	CHECK(!h.stop(5, 10)); // another fall
+	CHECK(!h.stop(1100, 4, 11)); // somebody else's Cancel
+	CHECK(!h.stop(1100, 5, 10)); // another fall
 	CHECK(h.open_at(1000, 4));
-	CHECK(h.stop(4, 10));
+	CHECK(h.stop(1100, 4, 10));
 	CHECK(!h.open_at(1000, 4));
-	CHECK(!h.stop(4, 10)); // once
+	CHECK(!h.stop(1100, 4, 10)); // once
 	CHECK(!h.busy_for(1000, 4, 11)); // free again
 }
 
