@@ -70,6 +70,49 @@ label_gap               = 3     ; labels: this far under the bar
 label_h                 = 12
 world_ring              = 16    ; a ping over its point in the world
 world_dot               = 6
+; v2.1 (owner 2026-10-23 19:40: "no intensity by distance"): full alpha up to fade_near_pct % of a kind's range, then
+; smoothly down to fade_far_alpha (the icon to fade_far_scale) at the range; beyond it the marker is not shown. Range 0 =
+; no limit: always shown, dimmed against fade_ref_m and staying at fade_far_alpha beyond it.
+fade_near_pct           = 25
+fade_far_alpha          = 0.35
+fade_far_scale          = 0.8
+fade_ref_m              = 300
+; ranges by kind, m (0 = no limit; a mod's kind without a line takes range_default)
+range_ally              = 0
+range_ping              = 0
+range_waypoint          = 0     ; the player's own waypoint (Personal Adjustable Waypoint)
+range_task_active       = 0
+range_task              = 400   ; the other tasks
+range_death             = 400
+range_camp              = 300
+range_pin               = 500   ; the player's PDA pins (PAW)
+range_stash             = 100
+range_npc               = 60    ; traders, mechanics, medics and the other people of the PDA
+range_sleep             = 50
+range_transition        = 300   ; level changers
+range_default           = 300
+; the sweep of the PDA marks over every object id (level.map_get_object_spots_by_id): ids per frame for the first round
+; after a load, then for the endless round (~11 s at 60 fps)
+pda_scan_first          = 2048
+pda_scan_frame          = 96
+; name tags over the players (engine, xrCoop\coop_nametag.h; read once per session): full alpha up to tag_near m,
+; smoothly down to tag_far_alpha at tag_far; a wounded one behind a wall x tag_wall_alpha; near the crosshair (radius
+; tag_aim_inner..tag_aim_outer of the screen height) down to tag_aim_alpha (wounded: tag_aim_alpha_down); icon sizes px
+tag_near                = 20
+tag_far                 = 250
+tag_far_alpha           = 0.4
+tag_wall_alpha          = 0.6
+tag_aim_inner           = 0.05
+tag_aim_outer           = 0.12
+tag_aim_alpha           = 0.45
+tag_aim_alpha_down      = 0.75
+tag_line_alpha          = 0.72  ; the distance line under the nick, of the nick's alpha
+tag_outline_alpha       = 0.55  ; the 1 px dark outline of the text
+tag_shadow_alpha        = 0.8   ; the drop shadow (+1, +1)
+tag_pulse_low           = 0.6   ; wounded: the icon and the timer line pulse between this and 1 at 1 Hz
+tag_icon                = 9     ; the chevron in the player's colour
+tag_icon_state          = 11    ; the down ring, the skull
+tag_gap                 = 2     ; between the icon and the line
 ; team panel (variant B, owner 2026-10-23): rows top left, the block grows downwards (bottom left covered the PDA news)
 team_x                  = 18    ; from the left edge of the screen
 team_top                = 20    ; the top of the highest row; -1: the rows hang from team_bottom upwards instead

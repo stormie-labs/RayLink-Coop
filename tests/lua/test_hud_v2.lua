@@ -284,6 +284,19 @@ local function machine(self_peer, opts)
 	function ObjMT:id() return self._id end
 	function ObjMT:parent() return self._parent end
 	function ObjMT:is_active_task(t) return t and t._active == true end
+	-- the engine's tasks (CGameTask): the actor's get_task, the task's PDA spot (v2.1)
+	M.etasks = {}
+	local TaskMT = {}
+	TaskMT.__index = TaskMT
+	function TaskMT:get_map_object_id() return self._obj or 65535 end
+	function TaskMT:get_map_location() return self._spot or "" end
+	function TaskMT:get_id() return self._id end
+	function M.etask(id, t)
+		t._id = id
+		M.etasks[id] = setmetatable(t, TaskMT)
+		return M.etasks[id]
+	end
+	function ObjMT:get_task(id) return M.etasks[id] end
 	M.actor = setmetatable({ _id = 0, _p = vec(0, 0, 0), health = 1 }, ObjMT)
 	M.objects[0] = M.actor
 	function M.object(id, p) M.objects[id] = setmetatable({ _id = id, _p = p }, ObjMT) return M.objects[id] end
@@ -297,6 +310,24 @@ local function machine(self_peer, opts)
 		map_change_spot_hint = function(id, t, h) M.spots[t .. "@" .. id] = h end,
 		map_remove_object_spot = function(id, t) M.spots[t .. "@" .. id] = nil end,
 		map_get_object_spot_static = function() return nil end,
+		-- modded exes (level_script.cpp): every spot of an object, { { spot_type, text } } (a new table each call)
+		map_get_object_spots_by_id = function(id)
+			M.spot_calls = (M.spot_calls or 0) + 1
+			if M.spot_idx_at ~= NOW then -- the index of M.spots by object, rebuilt once a frame
+				M.spot_idx_at, M.spot_idx = NOW, {}
+				for key, hint in pairs(M.spots) do
+					local t, sid = key:match("^(.+)@(%d+)$")
+					sid = tonumber(sid)
+					if sid then
+						M.spot_idx[sid] = M.spot_idx[sid] or {}
+						table.insert(M.spot_idx[sid], { spot_type = t, text = hint or "" })
+					end
+				end
+			end
+			local out = {}
+			for i, s in ipairs(M.spot_idx[id] or {}) do out[i] = { spot_type = s.spot_type, text = s.text } end
+			return out
+		end,
 		map_get_object_minimap_spot_static = function() return nil end,
 		get_target_dist = function() return M.target_dist or 0 end,
 		get_target_pos = function() return M.target_pos or vec(0, 0, 0) end,
@@ -1234,6 +1265,269 @@ M.active = false
 run(600, M)
 check(next(tc_m.list) == nil, "single player: no allies in Tactical Compass")
 
+-- ================================================================ 6b. v2.1 (owner 2026-10-23 19:40: "the bar shows almost nothing,
+-- no intensity by distance"): PDA marks like Tactical Compass, the player's own waypoint, tasks of a client, the fade
+local function slot_of(W, part)
+	for _, s in ipairs(W and W.slots or {}) do
+		if s.key and s.key:find(part, 1, true) and s.icon.visible then return s end
+	end
+end
+
+print("== v2.1 layout and the fade curve")
+NET = {}
+NOW = 750000
+M = machine(2)
+local LAY = M.env.coop_hud_layout
+local Ld = LAY.DEFAULTS
+check(Ld.fade_near_pct == 25 and Ld.fade_far_alpha == 0.35 and Ld.fade_far_scale == 0.8 and Ld.fade_ref_m == 300,
+	"fade defaults: full up to 25 % of a range, 0.35 and x0.8 at it, kinds without a range measured against 300 m")
+local want_ranges = { ally = 0, ping = 0, waypoint = 0, task_active = 0, task = 400, death = 400, camp = 300, pin = 500,
+	stash = 100, npc = 60, sleep = 50, transition = 300, default = 300 }
+local rng_bad = {}
+for k, v in pairs(want_ranges) do if Ld["range_" .. k] ~= v then rng_bad[#rng_bad + 1] = k end end
+table.sort(rng_bad)
+check(#rng_bad == 0, "ranges by kind in the defaults (wrong: " .. table.concat(rng_bad, ",") .. ")")
+local ltx_bad = {}
+for k, v in pairs(Ld) do
+	if k:match("^fade_") or k:match("^range_") or k:match("^pda_") then
+		local line = INI.data.coop_hud_layout and INI.data.coop_hud_layout[k]
+		if tonumber(line) ~= v then ltx_bad[#ltx_bad + 1] = k end
+	end
+end
+table.sort(ltx_bad)
+check(#ltx_bad == 0, "the v2.1 values are lines of [coop_hud_layout] with the same numbers (" .. table.concat(ltx_bad, ", ") .. ")")
+-- the engine's name tag (xrCoop/coop_nametag.h, read by coop_presence.cpp): its tag_* lines carry the header's defaults
+local hdr = readfile("engine/src/xrCoop/coop_nametag.h") or ""
+local field_default = {}
+for field, v in (hdr:match("struct Params%s*{(.-)};") or ""):gmatch("float ([%w_]+) = ([%-%d%.]+)f;") do field_default[field] = tonumber(v) end
+local tag_bad, tag_n = {}, 0
+for key, field in hdr:gmatch('{"(tag_[%w_]+)", &Params::([%w_]+),') do
+	tag_n = tag_n + 1
+	local line = INI.data.coop_hud_layout and tonumber(INI.data.coop_hud_layout[key])
+	if line == nil or field_default[field] == nil or math.abs(line - field_default[field]) > 1e-6 then tag_bad[#tag_bad + 1] = key end
+end
+check(tag_n >= 10 and #tag_bad == 0, "name tag: every tag_* key of coop_nametag.h has its line here with the header's default ("
+	.. tag_n .. " keys; wrong: " .. table.concat(tag_bad, ", ") .. ")")
+local C2 = M.compass
+local L2 = LAY.get()
+local function fo(d, r) if C2.fade_of then return C2.fade_of(d, r, L2) end end
+local fa, fs = fo(10, 100)
+check(fa and near(fa, 1) and near(fs, 1), "10 of 100 m: full alpha, full size")
+fa, fs = fo(25, 100)
+check(fa and near(fa, 1) and near(fs, 1), "up to 25 % of the range: full")
+fa, fs = fo(100, 100)
+check(fa and near(fa, 0.35) and near(fs, 0.8), "at the range: 0.35, the icon x0.8")
+fa = fo(62, 100)
+check(fa and fa < 0.9 and fa > 0.4, "between: smooth (" .. tostring(fa) .. ")")
+check(fo(101, 100) == 0, "beyond the range: not shown (0)")
+fa, fs = fo(5000, 0)
+check(fa and near(fa, 0.35) and near(fs, 0.8), "no range (allies, pings): 0.35 far away, never hidden")
+check(near(fo(70, 0), 1), "no range: full up to 25 % of 300 m")
+local mono, prev = C2.fade_of ~= nil, 2
+for d = 0, 100, 2 do
+	local x = fo(d, 100) or 0
+	if x > prev + 1e-9 then mono = false end
+	prev = x
+end
+check(mono, "the curve only goes down")
+local ro = C2.range_of
+check(ro and ro({ kind = "stash" }, L2) == 100 and ro({ kind = "task", state = "active" }, L2) == 0 and ro({ kind = "task", state = "other" }, L2) == 400
+	and ro({ kind = "ally", state = "down" }, L2) == 0 and ro({ kind = "poi" }, L2) == 300 and ro({ kind = "stash", range = 30 }, L2) == 30,
+	"the range of a marker: by its kind (a task: active / other), a mod's kind -> range_default, its own range wins")
+
+print("== v2.1 tasks: a client's stubs, the PDA spot, the waypoint")
+NET = {}
+NOW = 760000
+M = machine(2)
+M.env.task_manager = { get_task_manager = function() return M.tm end }
+local function stub(status) return setmetatable({}, { __index = { stage = 0, status = status } }) end
+-- a client: coop_tasks keeps stubs (stage / status) in task_info; the engine task has the PDA spot
+M.tm = { task_info = { c_active = stub("selected"), c_other = stub("normal"), c_nospot = stub("normal"), c_done = stub("completed") } }
+M.etask("c_active", { _active = true, _spot = "storyline_task_location", _obj = 910 })
+M.etask("c_other", { _active = false, _spot = "secondary_task_location", _obj = 911 })
+M.etask("c_nospot", { _active = false, _spot = "", _obj = 65535 })
+M.etask("c_done", { _active = false, _spot = "secondary_task_location", _obj = 912 })
+M.object(910, vec(50, 0, 0))
+M.object(911, vec(0, 0, 80))
+M.object(912, vec(0, 0, 90))
+run(300, M)
+local tl = by_kind(M.markers.list(), "task")
+check(#tl == 2, "client: tasks at their engine task's PDA spot, without a spot or done - not shown (" .. #tl .. ")")
+local tca = by_kind(tl, "task", "state", "active")[1]
+check(tca and near(tca.pos.x, 50) and tca.priority == 20, "client: the active task is the one the engine says")
+-- the host: current_target first when it is on this level, else the task's PDA spot, else nothing
+M.tm = { task_info = {
+	h1 = { t = M.etask("h1", { _active = true, _spot = "storyline_task_location", _obj = 920 }), current_target = 930, status = "selected" },
+	h2 = { t = M.etask("h2", { _active = false, _spot = "secondary_task_location", _obj = 921 }), status = "normal" },
+	h3 = { t = M.etask("h3", { _active = false, _spot = "", _obj = 65535 }), current_target = 932, status = "normal" },
+	h4 = { t = M.etask("h4", { _active = false, _spot = "secondary_task_location", _obj = 923 }), current_target = 922, status = "normal" },
+} }
+M.object(920, vec(-40, 0, 0))
+M.object(921, vec(0, 0, -60))
+M.object(922, vec(70, 0, 70))
+M.object(923, vec(-70, 0, -70))
+run(300, M)
+tl = by_kind(M.markers.list(), "task")
+local function task_at(x, z) for _, m in ipairs(tl) do if near(m.pos.x, x) and near(m.pos.z, z) then return m end end end
+check(task_at(-40, 0) and task_at(-40, 0).state == "active", "current_target not on this level: the task's PDA spot")
+check(task_at(0, -60) ~= nil, "no current_target: the PDA spot")
+check(task_at(70, 70) and not task_at(-70, -70), "both here: current_target wins")
+check(#tl == 3, "a task with neither a target here nor a spot: not shown (" .. #tl .. ")")
+-- Personal Adjustable Waypoint: its task is the player's own waypoint
+M.tm.task_info.task_placeable_waypoint = { t = M.etask("task_placeable_waypoint", { _active = false, _spot = "paw_task_default", _obj = 940 }),
+	current_target = 940, status = "normal" }
+M.object(940, vec(-30, 0, 5))
+run(200, M)
+local wpm = by_kind(M.markers.list(), "waypoint")[1]
+check(wpm and near(wpm.pos.x, -30) and same_rgb(wpm.color, 244, 245, 246) and wpm.priority == 22,
+	"PAW's task: kind waypoint, white, priority 22 (between an ally and the active task)")
+check(#by_kind(M.markers.list(), "task") == 3, "the waypoint is not a task marker too")
+
+print("== v2.1 PDA marks (Tactical Compass's spot types)")
+NET = {}
+NOW = 770000
+M = machine(2)
+local function spot(id, typ, hint, p)
+	if p then M.object(id, p) end
+	M.spots[typ .. "@" .. id] = hint or ""
+end
+spot(1001, "ui_pda2_trader_location", "%c[255,238,155,23]Sidorovich\\nTrader", vec(10, 0, 10))
+spot(1002, "treasure_unique", "Rare stash", vec(20, 0, 0))
+spot(1003, "level_changer_up", "st_no_such_string_id", vec(0, 0, 100))
+spot(1004, "paw_pin_redpush32", "My hut", vec(-15, 0, 0))
+spot(1005, "ui_pda2_actor_sleep_location", "", vec(5, 0, -5))
+spot(1006, "red_location", "squad", vec(5, 0, 5)) -- a squad of the warfare map: not a mark of the compass
+spot(1007, "ui_pda2_medic_location", "Medic", vec(-5, 0, 5))
+spot(1008, "ui_pda2_mechanic_location", "Mechanic", vec(-6, 0, 5))
+spot(1009, "coop_ally_1", "", vec(1, 0, 1)) -- the co-op's own local spot
+spot(1010, "storyline_task_location", "", vec(2, 0, 2)) -- tasks come from task_manager
+spot(1011, "paw_task_default", "", vec(3, 0, 3)) -- PAW's waypoint spot: the waypoint comes from its task
+spot(1012, "treasure", "") -- no object here: another level
+spot(1013, "treasure_player", "", vec(30, 0, 30))
+spot(1014, "treasure_searched", "", vec(31, 0, 30))
+run(700, M) -- the first sweep after a load: 2048 ids a frame, all ids in ~32 frames
+local pl = M.markers.list()
+local function pda(id) for _, m in ipairs(pl) do if m.key == "pda/pda:" .. id then return m end end end
+local tr_ = pda(1001)
+check(tr_ and tr_.kind == "npc" and tr_.state == "trader" and tr_.label == "Sidorovich" and same_rgb(tr_.color, 230, 225, 208),
+	"trader: kind npc / trader, cream, the spot's hint without colour codes and the second line (" .. tostring(tr_ and tr_.label) .. ")")
+local st1 = pda(1002)
+check(st1 and st1.kind == "stash" and st1.state == "unique" and same_rgb(st1.color, 185, 154, 224) and st1.label == "Rare stash",
+	"stash (unique): lavender, its hint")
+check(pda(1013) and pda(1013).state == "player" and same_rgb(pda(1013).color, 127, 178, 229), "own stash: blue")
+check(pda(1014) and pda(1014).state == "searched", "searched stash")
+local lc = pda(1003)
+check(lc and lc.kind == "transition" and lc.label == nil, "level changer: transition; an untranslated string id is no label")
+local pin = pda(1004)
+check(pin and pin.kind == "pin" and pin.label == "My hut", "PAW pin (paw_*): pin with its name")
+check(pda(1005) and pda(1005).kind == "sleep", "sleeping place")
+check(pda(1007) and pda(1007).state == "medic" and pda(1008) and pda(1008).state == "mechanic", "medic, mechanic")
+check(not pda(1006) and not pda(1009) and not pda(1010) and not pda(1011), "not shown: warfare squads, our own spots, task spots, PAW's waypoint spot")
+check(not pda(1012), "a spot whose object is not on this level: no marker")
+-- after the first sweep: a small budget per frame
+M.spot_calls = 0
+run(16, M)
+check(M.spot_calls > 0 and M.spot_calls <= LAY.get().pda_scan_frame, "after the first sweep: at most pda_scan_frame ids a frame (" .. M.spot_calls .. ")")
+-- a spot removed: the marker goes at the next refresh of the source
+M.spots["ui_pda2_trader_location@1001"] = nil
+run(600, M)
+pl = M.markers.list()
+check(not pda(1001), "trader's spot removed: the marker goes")
+-- a new stash found later: the slow sweep finds it within one round (65534 / pda_scan_frame frames)
+spot(1020, "treasure", "Fresh", vec(40, 0, 0))
+run(math.ceil(65534 / LAY.get().pda_scan_frame) * 16 + 700, M)
+pl = M.markers.list()
+check(pda(1020) and pda(1020).label == "Fresh", "a new spot is found by the round sweep")
+-- PAW pins come at once from its table (no sweep needed)
+M.env.tasks_placeable_waypoints = { pins = { [1030] = { name = "Camp B", icon = "paw_flag_friendly" } } }
+spot(1030, "paw_flag_friendly", "", vec(-40, 0, 10))
+run(700, M)
+pl = M.markers.list()
+check(pda(1030) and pda(1030).kind == "pin" and pda(1030).label == "Camp B", "a new PAW pin: at once, with its name")
+M.env.tasks_placeable_waypoints.pins[1030] = nil
+M.spots["paw_flag_friendly@1030"] = nil
+run(700, M)
+pl = M.markers.list()
+check(not pda(1030), "the pin removed: gone")
+-- Tactical Compass installed: it holds the engine's map_location_added and forwards it; we listen there
+NET = {}
+NOW = 775000
+M = machine(2)
+M.env.tc_binder = {}
+run(700, M)
+spot(1040, "treasure_all", "", vec(12, 0, 12))
+fire(M, "actor_map_location_added", nil, "treasure_all", 1040)
+run(700, M)
+pl = M.markers.list()
+check(pda(1040) and pda(1040).kind == "stash", "Tactical Compass's forwarded map_location_added: a new spot at once")
+-- hint cleaning (pure)
+local ch = M.markers.clean_hint
+check(ch and ch("%c[255,1,2,3]Name%c[default]\\nmore") == "Name" and ch("  Two words  ") == "Two words" and ch("") == nil
+	and ch("st_coop_hud_heading") ~= "st_coop_hud_heading" and ch("plain_id_without_string") == nil,
+	"hints: colour codes and the second line dropped, string ids translated, unknown ids dropped")
+
+print("== v2.1 the bar: fade by distance, ranges, crowding")
+NET = {}
+NOW = 780000
+M = machine(2)
+look(0)
+spot(1101, "treasure", "", at(5, 10)) -- 10 m: full
+spot(1102, "treasure", "", at(-20, 62)) -- 62 m: dimmer, smaller
+spot(1103, "treasure", "", at(20, 150)) -- 150 m > 100: not drawn
+spot(1104, "treasure", "", at(180, 30)) -- behind: not pinned
+spot(1105, "ui_pda2_trader_location", "Trader", at(40, 18))
+-- the icons of the new kinds (12 m ahead)
+spot(1110, "ui_pda2_mechanic_location", "", at(3, 12))
+spot(1111, "ui_pda2_medic_location", "", at(-3, 12))
+spot(1112, "ui_pda2_barman_location", "", at(6, 12))
+spot(1113, "ui_pda2_actor_sleep_location", "", at(-6, 12))
+spot(1114, "level_changer_left", "", at(9, 12))
+spot(1115, "paw_pin_redpush32", "", at(-9, 12))
+M.players = { { id = 0, nick = "far", avatar_id = 500, is_self = false }, { id = 2, nick = "me", avatar_id = 0, is_self = true } }
+M.object(500, at(10, 600))
+status(M, 0, "alive", 1)
+run(800, M)
+W = M.compass.get_window()
+local b1, b2, b3, b4, b5, ba = slot_of(W, "pda:1101"), slot_of(W, "pda:1102"), slot_of(W, "pda:1103"), slot_of(W, "pda:1104"),
+	slot_of(W, "pda:1105"), slot_of(W, "ally:0")
+check(b1 and b1.icon.texture == "coop_hud_stash" and alpha_of(b1.icon.tcolor) >= 250 and near(b1.icon.h, 12),
+	"stash 10 m: crate, full alpha, 12 px (" .. tostring(b1 and alpha_of(b1.icon.tcolor)) .. ")")
+check(b2 and alpha_of(b2.icon.tcolor) < 230 and alpha_of(b2.icon.tcolor) > 100 and b2.icon.h < 12 and b2.icon.h > 9.5,
+	"stash 62 m: dimmer and smaller (" .. tostring(b2 and alpha_of(b2.icon.tcolor)) .. ", " .. tostring(b2 and b2.icon.h) .. ")")
+check(not b3, "stash 150 m (range 100): not on the bar")
+check(not b4, "a stash behind: not pinned to an end (only allies, pings, the waypoint, the active task are)")
+check(b5 and b5.icon.texture == "coop_hud_trader", "trader: coins")
+check(ba and alpha_of(ba.icon.tcolor) >= 85 and alpha_of(ba.icon.tcolor) <= 95, "ally 600 m away: on the bar at ~0.35 ("
+	.. tostring(ba and alpha_of(ba.icon.tcolor)) .. ")")
+check(ba and ba.label.visible and ba.label.text:find("600", 1, true), "far ally: still labelled (" .. tostring(ba and ba.label.text) .. ")")
+-- styles of the new kinds
+local function tex_of(id)
+	local s = slot_of(W, "pda:" .. id)
+	return s and s.icon.texture
+end
+check(tex_of(1110) == "coop_hud_mechanic" and tex_of(1111) == "coop_hud_medic" and tex_of(1112) == "coop_hud_npc"
+	and tex_of(1113) == "coop_hud_sleep" and tex_of(1114) == "coop_hud_transition" and tex_of(1115) == "coop_hud_flag",
+	"icons: wrench, plus, person, moon, gate, flag")
+-- a marker moving past its range (a mod's marker with its own range) fades out, not cut
+local poi = { key = "p", kind = "poi", pos = at(-30, 40), range = 50 }
+M.markers.add_source("t21", function() return { poi } end)
+run(300, M)
+local bp = slot_of(W, "t21/p")
+check(bp and bp.icon.visible, "a mod's marker within its own range (40 of 50 m): drawn")
+poi.pos = at(-30, 60)
+run(112, M)
+check(bp.icon.visible and bp.key == "t21/p", "past its range: it fades out ...")
+run(300, M)
+check(not slot_of(W, "t21/p"), "... and is gone after ~150 ms")
+M.markers.remove_source("t21")
+-- crowded: 40 stashes in range and a far ally: the ally is drawn, the nearest stashes keep the slots
+for i = 1, 40 do spot(1200 + i, "treasure", "", at(-60 + i * 3, 20 + i)) end
+run(math.ceil(65534 / LAY.get().pda_scan_frame) * 16 + 700, M)
+local drawn, near_in, far_in = 0, slot_of(W, "pda:1201") ~= nil, slot_of(W, "pda:1240") ~= nil
+for _, s in ipairs(W.slots) do if s.icon.visible then drawn = drawn + 1 end end
+check(slot_of(W, "ally:0") ~= nil and near_in and not far_in and drawn == #W.slots,
+	"crowded bar: the ally stays, the nearest stashes keep the slots (" .. drawn .. " drawn)")
+
 -- ================================================================ 7. performance (Lua side, stubs): 8 players, 20 markers
 print("== frame cost")
 NET = {}
@@ -1272,7 +1566,8 @@ check(per_frame_ms < 1.0, "Lua side of a frame well under a millisecond in the s
 local unk = {}
 for k in pairs(UNKNOWN or {}) do unk[#unk + 1] = tostring(k) end
 table.sort(unk)
-local allowed = { axr_companions = true, profile_timer = true, task_manager = true, coop_checkpoints = true, tc_markers = true, tc_utils = true }
+local allowed = { axr_companions = true, profile_timer = true, task_manager = true, coop_checkpoints = true, tc_markers = true, tc_utils = true,
+	tasks_placeable_waypoints = true, tc_binder = true }
 local bad = {}
 for _, k in ipairs(unk) do if not allowed[k] then bad[#bad + 1] = k end end
 check(#bad == 0, "no reads of undefined globals (" .. table.concat(bad, ", ") .. ")")

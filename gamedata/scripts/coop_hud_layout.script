@@ -48,6 +48,32 @@ DEFAULTS = {
 	label_h = 12,
 	world_ring = 16, -- a ping over its point in the world
 	world_dot = 6,
+	-- v2.1 (owner 2026-10-23 19:40: "no intensity by distance"): a marker is at full alpha up to fade_near_pct % of its
+	-- kind's range, then smoothly (smoothstep) down to fade_far_alpha and its icon to fade_far_scale at the range; beyond
+	-- the range it is not shown (it fades out in 150 ms like any marker). A range of 0 = no limit: always shown, dimmed
+	-- the same way against fade_ref_m and staying at fade_far_alpha beyond it (allies, pings, the waypoint, the active task).
+	fade_near_pct = 25,
+	fade_far_alpha = 0.35,
+	fade_far_scale = 0.8,
+	fade_ref_m = 300,
+	-- ranges by kind, m (a marker's own `range` wins; a mod's kind without a line takes range_default)
+	range_ally = 0,
+	range_ping = 0,
+	range_waypoint = 0, -- the player's own waypoint (Personal Adjustable Waypoint)
+	range_task_active = 0,
+	range_task = 400, -- the other tasks
+	range_death = 400,
+	range_camp = 300,
+	range_pin = 500, -- the player's PDA pins (PAW)
+	range_stash = 100,
+	range_npc = 60, -- traders, mechanics, medics and the other people of the PDA
+	range_sleep = 50,
+	range_transition = 300, -- level changers
+	range_default = 300,
+	-- the sweep of the PDA marks (coop_hud_markers, level.map_get_object_spots_by_id over every object id): ids per
+	-- frame for the first round after a load, then per frame for the endless round (~11 s at 60 fps)
+	pda_scan_first = 2048,
+	pda_scan_frame = 96,
 	-- team panel (variant B, owner 2026-10-23): rows top left, the block grows downwards (bottom left covered the PDA
 	-- news, messages_window.xml sp_log_list 15..815 x 365..635, and the chat feed)
 	team_x = 18, -- from the left edge of the screen

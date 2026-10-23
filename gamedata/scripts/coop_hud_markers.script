@@ -8,26 +8,41 @@
 	For mods:
 		coop_hud_markers.list([tg]) -> array of markers, refreshed at most 10 times a second (the same table in between):
 			{ key = "<source>/<key>", kind, pos = {x, y, z}, color = {r, g, b}, label, state, priority, src,
-			  peer (allies, pings), bleed (seconds, a downed ally), born (ms, pings), icon (texture id), alpha (0..1) }
+			  peer (allies, pings), bleed (seconds, a downed ally), born (ms, pings), icon (texture id), alpha (0..1),
+			  range (m: shown up to here, 0 = always; else the kind's range_* of coop_hud_layout) }
 		coop_hud_markers.add_source(name, fn [, every_ms]) -> bool   fn(tg) -> array of markers in the same shape (key, kind and
-			pos needed; color, label, state, priority 10, icon, alpha optional). Asked every every_ms (default 100). An error
+			pos needed; color, label, state, priority 10, icon, alpha, range optional). Asked every every_ms (default 100). An error
 			in fn is caught (pcall), counted and logged once a minute; markers without a usable position are dropped and
 			counted. A source of the same name is replaced.
 		coop_hud_markers.remove_source(name)
 		coop_hud_markers.error_count(name) / bad_count(name)
+		coop_hud_markers.spot_kind(spot_type) -> kind, state | nil   the PDA spot types the compass shows (SPOT_KINDS)
+		coop_hud_markers.clean_hint(text) -> a label | nil            a PDA hint without colour codes and the second line
 
 	Built-in sources (docs\HUD_V2.md, Компас):
 		allies  other players with an avatar here (coop_core_hud.views: the engine's survival state wins over the report):
 		        kind "ally", state alive | down | dead | spec | respawn | unknown; colour: his own, red when down, grey when
 		        dead / spectating / returning; priority 40 when down, else 30. Only in a session.
-		tasks   task_manager's tasks with a target on this level: kind "task", state active (priority 20) | other (10).
+		tasks   task_manager's tasks: kind "task", state active (priority 20) | other (10), at current_target when it is on
+		        this level, else at the object of the task's PDA spot (CGameTask:get_map_object_id) when that is here, else
+		        not shown. A client's task_info holds coop_tasks stubs without a target: its tasks come from the engine task
+		        (db.actor:get_task) and its replicated spot. Personal Adjustable Waypoint's task (task_placeable_waypoint) is
+		        the player's own waypoint: kind "waypoint", white, priority 22.
+		pda     (v2.1, owner 2026-10-23) the PDA marks Tactical Compass shows: traders, mechanics, medics and the other
+		        people of the PDA (kind npc), stashes (stash: normal | unique | player | searched), sleeping places (sleep),
+		        level changers (transition, priority 5), the player's PAW pins (pin, with their name and custom colour).
+		        Found the way Tactical Compass finds them: level.map_get_object_spots_by_id over every object id - a fast
+		        round after a load (pda_scan_first ids a frame), then an endless slow one (pda_scan_frame ids a frame); PAW's
+		        pins at once from its own table; with Tactical Compass installed also its forwarded map_location_added (it
+		        holds the engine's one slot of that actor callback; we never take it). Label: the spot's hint. One marker
+		        per object.
 		deaths  death marks of the group (engine callback coop_death_marker on every machine): kind "death", state corpse |
 		        drop, the fallen player's nick. A mark lives while the host's PDA spot (secondary_task_location, replicated
 		        to the clients) is on the object; 10 s of grace for the spot to arrive. Only in a session.
 		camp    my own camp (coop.checkpoint.get(0)): kind "camp", state tent | campfire | rest | mod. Arrival points and
 		        story checkpoints have no place to point at.
 		pings   coop_hud_ping.active(): kind "ping", in the author's colour, priority 50.
-	Priority order on a crowded bar: ping > down > ally > active task > everything else.
+	Priority order on a crowded bar: ping > down > ally > waypoint > active task > everything else > level changers.
 
 	Also the frame-time counter of the HUD (perf_start / perf_stop, read by coop_status through coop_core_hud.print_status).
 --]]
@@ -38,14 +53,54 @@ local tostring, tonumber, type, ipairs, pairs, pcall = tostring, tonumber, type,
 local math_floor, math_max, math_min, string_format = math.floor, math.max, math.min, string.format
 
 REFRESH_MS = 100
-PRIORITY = { ping = 50, down = 40, ally = 30, task_active = 20, other = 10 }
+PRIORITY = { ping = 50, down = 40, ally = 30, waypoint = 22, task_active = 20, other = 10, low = 5 }
 COLOR = {
 	task = { 232, 194, 90 }, -- #E8C25A
 	camp = { 146, 190, 154 }, -- #92BE9A sage
 	death = { 176, 84, 72 }, -- muted red
 	ping = { 120, 225, 235 }, -- #78E1EB (the dot; the ring is the author's colour)
 	text = { 230, 225, 208 }, -- #E6E1D0
+	-- v2.1: the PDA marks (stash colours follow GAMMA's PDA: white, purple for the valuable ones, blue for the own one)
+	waypoint = { 244, 245, 246 }, -- #F4F5F6, the white of the scale
+	npc = { 230, 225, 208 }, -- #E6E1D0 cream
+	stash = { 215, 205, 180 }, -- #D7CDB4
+	stash_unique = { 185, 154, 224 }, -- #B99AE0 lavender
+	stash_player = { 127, 178, 229 }, -- #7FB2E5 blue
+	stash_searched = { 143, 138, 126 }, -- #8F8A7E
+	pin = { 214, 222, 228 }, -- #D6DEE4
+	sleep = { 146, 190, 154 }, -- sage, like the camp
+	transition = { 184, 196, 204 }, -- #B8C4CC
 }
+WAYPOINT_TASK = "task_placeable_waypoint" -- Personal Adjustable Waypoint (GAMMA 330-): the player's own waypoint
+
+-- v2.1: PDA spot type -> kind, state (Tactical Compass's tc_defs.spot_categories, the groups it shows by default:
+-- unique NPCs, sleep zones, stashes, level changers, PAW pins). Task spots come with the tasks, death marks with deaths.
+SPOT_KINDS = {
+	ui_pda2_trader_location = { "npc", "trader" },
+	ui_pda2_mechanic_location = { "npc", "mechanic" },
+	ui_pda2_medic_location = { "npc", "medic" },
+	ui_pda2_barman_location = { "npc", "barman" },
+	ui_pda2_special_location = { "npc", "special" },
+	ui_pda2_scout_location = { "npc", "scout" },
+	ui_pda2_quest_npc_location = { "npc", "quest" },
+	ui_pda2_companion_location = { "npc", "companion" },
+	ui_pda2_actor_sleep_location = { "sleep" },
+	treasure = { "stash", "normal" },
+	treasure_all = { "stash", "normal" },
+	treasure_unique = { "stash", "unique" },
+	treasure_player = { "stash", "player" },
+	treasure_searched = { "stash", "searched" },
+}
+for _, d in ipairs({ "up", "up_right", "right", "right_down", "down", "down_left", "left", "left_up" }) do
+	SPOT_KINDS["level_changer_" .. d] = { "transition" }
+end
+-- PAW's pins are its own spot types paw_*; these three are not pins (pings, the waypoint task's spot)
+local PAW_SKIP = { paw_ping = true, paw_ping_alpha50 = true, paw_task_default = true }
+local KIND_RANK = { pin = 5, stash = 4, npc = 3, sleep = 2, transition = 1 } -- one marker per object: the most telling
+local MAX_ID = 65534
+local POS_STATIC_MS = 5000 -- stashes, level changers, beds, pins do not move: their position is looked up this often
+local OFF_LEVEL_MS = 5000 -- an object not on this level is asked again after this
+local SCAN_FIRST, SCAN_FRAME = 2048, 96 -- defaults of pda_scan_first / pda_scan_frame
 DEATH_SPOT = "secondary_task_location" -- the host's PDA spot of a death mark (coop_death.script)
 DEATH_GRACE_MS = 10000
 
@@ -73,6 +128,25 @@ end
 
 local function module_of(name)
 	return rawget(_G, name)
+end
+
+-- A game script that may not be loaded yet (task_manager) or not installed at all (PAW's tasks_placeable_waypoints):
+-- the engine's auto-load (_G's __index loads <name>.script) once; a missing file is not asked for again.
+local absent = {}
+local function game_module(name)
+	local m = rawget(_G, name)
+	if m ~= nil or absent[name] then return m end
+	local ok, v = pcall(function() return _G[name] end)
+	if ok and type(v) == "table" then return v end
+	absent[name] = true
+	return nil
+end
+
+local function layout()
+	local m = rawget(_G, "coop_hud_layout")
+	if not m then return nil end
+	local ok, l = pcall(m.get)
+	return ok and type(l) == "table" and l or nil
 end
 
 local function finite(v)
@@ -128,7 +202,9 @@ local function normalize(src, m)
 	if not pos then return nil end
 	local c = type(m.color) == "table" and m.color or COLOR.text
 	local alpha = tonumber(m.alpha)
+	local range = tonumber(m.range)
 	return {
+		range = range and range == range and range >= 0 and range or nil,
 		key = src .. "/" .. tostring(key), kind = kind, pos = pos, src = src,
 		color = { clamp_byte(c[1]), clamp_byte(c[2]), clamp_byte(c[3]) },
 		label = type(m.label) == "string" and m.label ~= "" and m.label or nil,
@@ -261,21 +337,49 @@ local function is_active_task(actor, t)
 	return ok and on == true
 end
 
+local function valid_id(v)
+	v = tonumber(v)
+	return v and v > 0 and v < 65535 and v == math_floor(v) and v or nil
+end
+
+-- The engine's task (CGameTask): task_info's own on the host; a client's task_info has coop_tasks stubs without it.
+local function engine_task(actor, id, info)
+	local t = info.t
+	if t ~= nil then return t end
+	local ok, et = pcall(actor.get_task, actor, id, true)
+	return ok and et or nil
+end
+
+-- Where a task points (v2.1, owner 2026-10-23 "the bar shows almost nothing"): current_target when it is on this level
+-- (the host's task_objects keeps it fresh), else the object of the task's PDA spot (what the PDA map shows, and the
+-- only target a client has: the spot is replicated, the stub has no current_target), else nowhere.
+local function task_pos(t, info)
+	local target = valid_id(info.current_target)
+	local p = target and object_pos(target)
+	if p or t == nil then return p end
+	local ok, oid = pcall(function() return t:get_map_object_id() end)
+	oid = ok and valid_id(oid)
+	return oid and object_pos(oid) or nil
+end
+
 local function src_tasks()
-	local tm = module_of("task_manager")
+	local tm = game_module("task_manager")
 	local actor = db.actor
 	if not (tm and tm.get_task_manager and actor) then return EMPTY end
 	local ok, mgr = pcall(tm.get_task_manager)
 	local info = ok and type(mgr) == "table" and mgr.task_info
 	if type(info) ~= "table" then return EMPTY end
 	local out = {}
-	for id, t in pairs(info) do
-		if type(t) == "table" and t.t and t.status ~= "completed" and t.status ~= "fail" then
-			local target = tonumber(t.current_target)
-			if target and target > 0 and target < 65535 then
-				local p = object_pos(target)
-				if p then
-					local active = is_active_task(actor, t.t)
+	for id, ti in pairs(info) do
+		if type(ti) == "table" and ti.status ~= "completed" and ti.status ~= "fail" then
+			local t = engine_task(actor, id, ti)
+			local p = (t ~= nil or ti.current_target ~= nil) and task_pos(t, ti)
+			if p then
+				if id == WAYPOINT_TASK then
+					out[#out + 1] = { key = "task:" .. tostring(id), kind = "waypoint", pos = p, color = COLOR.waypoint,
+						priority = PRIORITY.waypoint }
+				else
+					local active = t ~= nil and is_active_task(actor, t)
 					out[#out + 1] = { key = "task:" .. tostring(id), kind = "task", pos = p, color = COLOR.task,
 						state = active and "active" or "other", priority = active and PRIORITY.task_active or PRIORITY.other }
 				end
@@ -362,8 +466,166 @@ local function src_pings(tg)
 	return out
 end
 
+-------------------------------------------------------------------------------
+-- PDA marks (v2.1): what Tactical Compass shows, found the way it finds them
+-------------------------------------------------------------------------------
+function spot_kind(spot)
+	local k = SPOT_KINDS[spot]
+	if k then return k[1], k[2] end
+	if type(spot) == "string" and spot:sub(1, 4) == "paw_" and not PAW_SKIP[spot] then return "pin" end
+	return nil
+end
+
+local function strip_hint(s)
+	s = s:gsub("%%c%[[^%]]*%]", "") -- colour codes %c[a,r,g,b] / %c[default]
+	s = s:gsub("\\n.*$", ""):gsub("[\r\n].*$", "") -- the first line (the PDA's line break is the two characters \n)
+	s = s:match("^%s*(.-)%s*$")
+	if s == "" then return nil end
+	if #s > 40 then s = s:sub(1, 40) end -- cp1251: one byte a letter
+	return s
+end
+
+-- A PDA hint as a label: no colour codes, the first line; a string id is translated, an unknown id is no label.
+function clean_hint(s)
+	if type(s) ~= "string" then return nil end
+	s = strip_hint(s)
+	if s and s:find("^[%w_%.]+$") and s:find("_", 1, true) then
+		local ok, t = pcall(game.translate_string, s)
+		if not (ok and type(t) == "string" and t ~= s) then return nil end
+		return strip_hint(t)
+	end
+	return s
+end
+
+local pda = { reg = {}, next_id = 1, first = true, rounds = 0, errors = 0 } -- reg[id] = { spot, kind, state, text, label }
+local pda_pos_cache = {} -- id -> { p, at, off_until }
+
+-- The most telling known spot of an object (spots: the engine's { { spot_type, text } }), or nil.
+local function best_spot(spots)
+	local best, best_rank = nil, 0
+	for i = 1, #spots do
+		local s = spots[i]
+		local kind, state = spot_kind(s.spot_type)
+		local r = kind and KIND_RANK[kind] or 0
+		if r > best_rank then
+			best_rank = r
+			best = { spot = s.spot_type, kind = kind, state = state, text = s.text }
+		end
+	end
+	return best
+end
+
+local function pda_note(id, spots)
+	local b = spots and spots[1] and best_spot(spots)
+	if not b then
+		pda.reg[id] = nil
+		return
+	end
+	local e = pda.reg[id]
+	if e and e.spot == b.spot and e.text == b.text then return end
+	b.label = clean_hint(b.text)
+	pda.reg[id] = b
+end
+
+-- One step of the sweep over every object id (Tactical Compass's load-time scan, tc_markers.scan_by_id, made endless).
+function pda_sweep(n)
+	local f = level and level.map_get_object_spots_by_id
+	if not f then return 0 end
+	local id = pda.next_id
+	local ok, err = pcall(function()
+		for _ = 1, n do
+			local spots = f(id)
+			if spots and spots[1] ~= nil then
+				pda_note(id, spots)
+			elseif pda.reg[id] then
+				pda.reg[id] = nil
+			end
+			id = id + 1
+			if id > MAX_ID then
+				id = 1
+				pda.first = false
+				pda.rounds = pda.rounds + 1
+			end
+		end
+	end)
+	if not ok then
+		pda.errors = pda.errors + 1
+		if pda.errors == 1 then log("! PDA marks sweep failed at id %s: %s", tostring(id), tostring(err)) end
+		id = id + 1 -- step over the id that failed
+		if id > MAX_ID then id = 1 end
+	end
+	pda.next_id = id
+	return n
+end
+
+-- Tactical Compass's forwarded actor callback map_location_added (tc_binder.script): a new spot at once.
+local function on_tc_spot(_, spot, id)
+	if type(id) ~= "number" or not spot_kind(spot) then return end
+	local ok, spots = pcall(level.map_get_object_spots_by_id, id)
+	if ok then pda_note(id, spots) end
+end
+
+local STATIC_KIND = { stash = true, transition = true, sleep = true, pin = true }
+
+-- Position of a PDA mark's object here, or nil (another level: asked again after OFF_LEVEL_MS).
+local function pda_pos(id, kind, tg)
+	local c = pda_pos_cache[id]
+	if c then
+		if c.off_until and tg < c.off_until then return nil end
+		if c.p and STATIC_KIND[kind] and tg - c.at < POS_STATIC_MS then return c.p end
+	else
+		c = {}
+		pda_pos_cache[id] = c
+	end
+	local p = object_pos(id)
+	c.p, c.at, c.off_until = p, tg, (not p) and tg + OFF_LEVEL_MS or nil
+	return p
+end
+
+local function pda_color(kind, state)
+	if kind == "stash" then return COLOR["stash_" .. tostring(state)] or COLOR.stash end
+	return COLOR[kind] or COLOR.text
+end
+
+local function src_pda(tg)
+	local by_id = {}
+	-- PAW's pins: its own table, at once and with their names (and custom colours)
+	local paw = game_module("tasks_placeable_waypoints")
+	local pins = paw and type(paw.pins) == "table" and paw.pins
+	if pins then
+		for id, pin in pairs(pins) do
+			if valid_id(id) and type(pin) == "table" then
+				local icon = type(pin.icon) == "string" and pin.icon or nil
+				if not icon or has_spot(id, icon) then
+					local c = pin.custom_colors and type(pin.colors) == "table" and pin.colors
+					by_id[id] = { kind = "pin", label = clean_hint(pin.name),
+						color = c and tonumber(c.r) and { c.r, c.g, c.b } or nil }
+				end
+			end
+		end
+	end
+	for id, e in pairs(pda.reg) do
+		if not by_id[id] then by_id[id] = e end
+	end
+	local out = {}
+	for id, e in pairs(by_id) do
+		local p = pda_pos(id, e.kind, tg)
+		if p then
+			if e.spot and not has_spot(id, e.spot) then
+				pda.reg[id] = nil -- removed since the sweep saw it
+			else
+				out[#out + 1] = { key = "pda:" .. id, kind = e.kind, state = e.state, pos = p, label = e.label,
+					color = e.color or pda_color(e.kind, e.state),
+					priority = e.kind == "transition" and PRIORITY.low or PRIORITY.other }
+			end
+		end
+	end
+	return out
+end
+
 add_source("allies", src_allies, 100)
 add_source("tasks", src_tasks, 100)
+add_source("pda", src_pda, 500)
 add_source("deaths", src_deaths, 1000)
 add_source("camp", src_camp, 1000)
 add_source("pings", src_pings, 100)
@@ -425,19 +687,36 @@ function print_status()
 		parts[#parts + 1] = string_format("%s %d%s%s", name, #s.cache, s.errors > 0 and string_format(" (errors %d)", s.errors) or "",
 			s.bad > 0 and string_format(" (bad %d)", s.bad) or "")
 	end
-	log("hud v2: frame %s | markers %d: %s", perf_line(), #list_cache, table.concat(parts, ", "))
+	local n_reg = 0
+	for _ in pairs(pda.reg) do n_reg = n_reg + 1 end
+	log("hud v2: frame %s | markers %d: %s | PDA marks known %d, sweep at id %d, %d round(s)%s", perf_line(), #list_cache,
+		table.concat(parts, ", "), n_reg, pda.next_id, pda.rounds, pda.errors > 0 and string_format(", %d error(s)", pda.errors) or "")
 end
 
 local death_cb = false
 local function on_update()
-	if death_cb then return end
-	death_cb = true
-	-- registered here, after every on_game_start: coop_death adds the callback in its own on_game_start
-	RegisterScriptCallback("coop_death_marker", on_death_marker)
+	if not death_cb then
+		death_cb = true
+		-- registered here, after every on_game_start: coop_death adds the callback in its own on_game_start
+		RegisterScriptCallback("coop_death_marker", on_death_marker)
+		-- Tactical Compass takes the engine's one slot of the actor callback map_location_added and forwards it to the
+		-- axr callback actor_map_location_added (tc_binder.script): listen there; without it the sweep finds new spots
+		if rawget(_G, "tc_binder") then RegisterScriptCallback("actor_map_location_added", on_tc_spot) end
+	end
+	local L = layout()
+	local pf = perf_start("pda sweep") -- its cost per frame shows in coop_status next to the compass
+	if pda.first then
+		pda_sweep(L and L.pda_scan_first or SCAN_FIRST)
+	else
+		pda_sweep(L and L.pda_scan_frame or SCAN_FRAME)
+	end
+	perf_stop(pf)
 end
 
 local function actor_on_net_destroy()
 	deaths = {}
+	pda.reg, pda.next_id, pda.first = {}, 1, true
+	pda_pos_cache = {}
 	list_cache, list_at = EMPTY, nil
 	for _, s in pairs(sources) do s.cache, s.next_at = EMPTY, 0 end
 end

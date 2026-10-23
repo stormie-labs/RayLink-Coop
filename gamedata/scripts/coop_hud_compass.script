@@ -20,7 +20,14 @@
 	  below): ally chevron in his colour (grey when dead / spectating / returning), downed ally red ring with a cross
 	  pulsing at 1 Hz, active task filled diamond #E8C25A, other tasks hollow at ~0.6, death mark skull / bag in muted red,
 	  own camp tent / fire in sage, ping a ring in the author's colour around a cyan dot that pops in for 300 ms.
-	- Out of the field: pinned to the end of the bar with an arrow, alpha ~0.7, no label.
+	- v2.1 (owner 2026-10-23 19:40): the PDA marks too (coop_hud_markers source pda: traders / mechanics / medics / other
+	  PDA people, stashes, sleeping places, level changers, PAW pins) and the player's own waypoint, each with its icon
+	  and colour. The fade by distance (fade_of, range_of): full alpha up to fade_near_pct % of the kind's range, smoothly
+	  down to fade_far_alpha (0.35) and the icon to fade_far_scale (x0.8) at it, not shown beyond it; allies, pings, the
+	  waypoint and the active task have no range (dimmed against fade_ref_m, never hidden). A marker well past its range
+	  or well out of the field (and not pinnable) takes no slot; a crowded bar keeps the nearest.
+	- Out of the field: pinned to the end of the bar with an arrow, alpha ~0.7, no label - only pings, allies, the
+	  waypoint and the active task (priority >= 20); the rest is not shown there (v2.1: the ends stay clean).
 	- Labels under the bar (in the marker's colour, 1 px shadow): distance for allies, pings and the active task; the nick
 	  (or a marker's label) too while it is within 10 deg of the centre; a small up / down arrow when the height differs
 	  by more than 5 m. Labels never overlap: the higher priority keeps its label (ping > down > ally > active task > the
@@ -34,7 +41,7 @@
 		coop_hud_compass.set_fov(120 | 160 | 200) / get_fov() the player's option coop/coop_player/compass_fov
 		coop_hud_compass.get_window() -> the window while it is on the HUD
 		pure helpers (tests): heading_of, bearing, rel_angle, place, edge_alpha, tick_list, smooth_k, step_alpha,
-		pick_labels, fov_of
+		pick_labels, fov_of, fade_of, range_of
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
@@ -81,9 +88,23 @@ local STYLE = {
 	camp_campfire = { tex = "coop_hud_fire" },
 	camp = { tex = "coop_hud_tent" },
 	ping = { tex = "coop_hud_ring", core = "coop_hud_dot", pop = true },
+	-- v2.1: the player's waypoint and the PDA marks
+	waypoint = { tex = "coop_hud_waypoint", always = true },
+	pin = { tex = "coop_hud_flag" },
+	stash_searched = { tex = "coop_hud_stash", alpha = 0.6 },
+	stash = { tex = "coop_hud_stash" },
+	npc_trader = { tex = "coop_hud_trader" },
+	npc_mechanic = { tex = "coop_hud_mechanic" },
+	npc_medic = { tex = "coop_hud_medic" },
+	npc = { tex = "coop_hud_npc" },
+	sleep = { tex = "coop_hud_sleep" },
+	transition = { tex = "coop_hud_transition", alpha = 0.85 },
 	default = { tex = "coop_hud_dot" },
 }
 local ALWAYS_LABEL = { ally = true, ping = true }
+local PIN_PRIORITY = 20 -- out of the field only these are pinned to an end: pings, allies, the waypoint, the active task
+local RANGE_SLACK = 1.05 -- a marker this far past its range is dropped from the bar's list (the fade-out ran before)
+local FIELD_SLACK_DEG = 10 -- the same for a marker this far out of the field that is not pinned
 
 local DIRS = { [0] = "n", [45] = "ne", [90] = "e", [135] = "se", [180] = "s", [225] = "sw", [270] = "w", [315] = "nw" }
 local DIR_DEFAULT = { n = "N", ne = "NE", e = "E", se = "SE", s = "S", sw = "SW", w = "W", nw = "NW" }
@@ -227,6 +248,31 @@ function fov_of(v)
 		if v == f then return f end
 	end
 	return DEFAULT_FOV
+end
+
+-- v2.1 (owner 2026-10-23 "no intensity by distance"): alpha factor and icon scale of a marker `d` m away with range
+-- `range` (0 = no limit) by the layout L: full up to fade_near_pct % of the range, smoothstep down to fade_far_alpha /
+-- fade_far_scale at it, 0 beyond it. No limit: the same curve against fade_ref_m, never below fade_far_alpha.
+function fade_of(d, range, L)
+	local far_a, far_s = L.fade_far_alpha, L.fade_far_scale
+	local limit = range > 0 and range or L.fade_ref_m
+	if range > 0 and d > range then return 0, far_s end
+	local near = limit * L.fade_near_pct / 100
+	if d <= near or limit <= near then return 1, 1 end
+	local t = (d - near) / (limit - near)
+	if t >= 1 then return far_a, far_s end
+	t = t * t * (3 - 2 * t)
+	return 1 - (1 - far_a) * t, 1 - (1 - far_s) * t
+end
+
+-- The range of a marker: its own, else the layout's range_<kind> (a task: range_task_active / range_task), else
+-- range_default.
+function range_of(m, L)
+	if m.range then return m.range end
+	local key = (m.kind == "task" and m.state == "active") and "range_task_active" or ("range_" .. tostring(m.kind))
+	local r = L[key]
+	if r == nil then r = L.range_default or 0 end
+	return r
 end
 
 -------------------------------------------------------------------------------
@@ -507,17 +553,31 @@ function UICoopCompass:DrawScale(heading)
 	end
 end
 
--- New marker list (10 Hz): states follow it, the draw order is rebuilt.
-function UICoopCompass:Sync(list, tg)
+-- New marker list (10 Hz): states follow it, the draw order is rebuilt. v2.1: a marker well past its range, or well out
+-- of the field without the right to be pinned (seen from the camera `cam` at `heading`), is not wanted and takes no
+-- slot; the draw order is low priority first, the farther first within a priority.
+function UICoopCompass:Sync(list, tg, cam, heading)
+	local L = self.g.L
 	local seen = {}
+	local field = fov / 2 + FIELD_SLACK_DEG
 	for _, m in ipairs(list) do
-		local st = self.states[m.key]
-		if not st then
-			st = { pos = { x = m.pos.x, y = m.pos.y, z = m.pos.z }, alpha = 0 }
-			self.states[m.key] = st
+		local r = range_of(m, L)
+		local dx, dz = m.pos.x - cam.x, m.pos.z - cam.z
+		local d2 = dx * dx + dz * dz
+		local wanted = r <= 0 or d2 <= (r * RANGE_SLACK) * (r * RANGE_SLACK)
+		if wanted and m.priority < PIN_PRIORITY and heading then
+			local b = bearing(cam, m.pos)
+			wanted = b == nil or math_abs(rel_angle(b, heading)) <= field
 		end
-		st.m, st.want = m, 1
-		seen[m.key] = true
+		if wanted then
+			local st = self.states[m.key]
+			if not st then
+				st = { pos = { x = m.pos.x, y = m.pos.y, z = m.pos.z }, alpha = 0 }
+				self.states[m.key] = st
+			end
+			st.m, st.want, st.range, st.d2 = m, 1, r, d2
+			seen[m.key] = true
+		end
 	end
 	local order = {}
 	for key, st in pairs(self.states) do
@@ -530,9 +590,10 @@ function UICoopCompass:Sync(list, tg)
 	end
 	table_sort(order, function(a, b)
 		if a.m.priority ~= b.m.priority then return a.m.priority < b.m.priority end
+		if a.d2 ~= b.d2 then return (a.d2 or 0) > (b.d2 or 0) end
 		return a.m.key < b.m.key
 	end)
-	-- more markers than slots: the lowest priorities are not drawn
+	-- more markers than slots: the lowest priorities, the farthest of them first, are not drawn
 	while #order > SLOTS do table.remove(order, 1) end
 	self.order = order
 end
@@ -569,21 +630,25 @@ function UICoopCompass:DrawMarkers(tg, dt, heading, cam, me)
 		else
 			p.x, p.y, p.z = p.x + dx * k, p.y + dy * k, p.z + dz * k
 		end
-		st.alpha = step_alpha(st.alpha, st.want, dt, FADE_MS)
 		local b = bearing(cam, p)
 		local rel = b and rel_angle(b, heading) or 0
 		local x, side = place(rel, fov, half, g.pad)
 		st.x, st.side, st.rel = x, side, rel
+		-- v2.1: the fade by distance; past the range, or out of the field without the right to be pinned: fade out
+		local ex, ez = p.x - me.x, p.z - me.z
+		local hy = p.y - me.y
+		local d = math_sqrt(ex * ex + hy * hy + ez * ez)
+		local fa, fs = fade_of(d, st.range or range_of(m, L), L)
+		if fa > 0 then st.fa, st.fs = fa, fs end
+		local shown = st.want > 0 and fa > 0 and (side == 0 or m.priority >= PIN_PRIORITY)
+		st.alpha = step_alpha(st.alpha, shown and 1 or 0, dt, FADE_MS)
 		local it = items[i]
 		it.x, it.pri, it.want, it.w = x, m.priority, false, 0
 		st.text, st.up = nil, nil
-		if side == 0 and st.want > 0 then
+		if side == 0 and shown then
 			local sty = style_of(m)
 			local focus = math_abs(rel) <= FOCUS_DEG
 			if ALWAYS_LABEL[m.kind] or sty.always or focus then
-				local ex, ez = p.x - me.x, p.z - me.z
-				local hy = p.y - me.y
-				local d = math_sqrt(ex * ex + hy * hy + ez * ez)
 				local text = format_distance(d)
 				if focus and m.label then text = m.label .. "  " .. text end
 				st.text = text
@@ -601,10 +666,11 @@ function UICoopCompass:DrawMarkers(tg, dt, heading, cam, me)
 		local m = st.m
 		local sty = style_of(m)
 		local cxm = g.cx + st.x
-		local size = L.icon
+		local fa, fs = st.fa or 1, st.fs or 1 -- v2.1: the fade by distance (the last one in range while fading out)
+		local size = L.icon * fs
 		if sty.pop and m.born then
 			local age = tg - m.born
-			if age >= 0 and age < PING_POP_MS then size = L.icon * (1 + 0.8 * (1 - age / PING_POP_MS)) end
+			if age >= 0 and age < PING_POP_MS then size = size * (1 + 0.8 * (1 - age / PING_POP_MS)) end
 		end
 		if s.size ~= size then
 			s.size = size
@@ -612,65 +678,74 @@ function UICoopCompass:DrawMarkers(tg, dt, heading, cam, me)
 		end
 		set_tex(s.icon, s, "tex", m.icon or sty.tex)
 		s.icon:SetWndPos(self:V(cxm - size * kx / 2, g.icon_cy - size / 2))
-		local a = 255 * st.alpha * (m.alpha or sty.alpha or 1) * (st.side ~= 0 and A_PINNED or 1) * (sty.pulse and pulse or 1)
+		local a = 255 * st.alpha * fa * (m.alpha or sty.alpha or 1) * (st.side ~= 0 and A_PINNED or 1) * (sty.pulse and pulse or 1)
 		s.icon:SetTextureColor(argb(a, m.color))
-		if not s.shown then
-			s.icon:Show(true)
-			s.shown = true
-		end
-		s.key = m.key
-		-- ping: the cyan dot inside the ring
-		if sty.core then
-			set_tex(s.core, s, "core_tex", sty.core)
-			s.core:SetWndPos(self:V(cxm - L.ping_dot * kx / 2, g.icon_cy - L.ping_dot / 2))
-			s.core:SetTextureColor(argb(255 * st.alpha * (st.side ~= 0 and A_PINNED or 1), C_PING))
-			if not s.core:IsShown() then s.core:Show(true) end
-		elseif s.core:IsShown() then
-			s.core:Show(false)
-		end
-		-- pinned: an arrow outside
-		if st.side ~= 0 then
-			set_tex(s.side, s, "side_tex", st.side > 0 and "coop_hud_tri_right" or "coop_hud_tri_left")
-			s.side:SetWndPos(self:V(cxm + st.side * L.side_gap * kx - L.side * kx / 2, g.icon_cy - L.side / 2))
-			s.side:SetTextureColor(argb(a, m.color))
-			if not s.side:IsShown() then s.side:Show(true) end
-		elseif s.side:IsShown() then
-			s.side:Show(false)
-		end
-		-- label (+ height arrow)
-		if it.show and st.text then
-			local tw = self:TextWidth(st.text)
-			local lx = cxm - it.w / 2
-			local la = A_LABEL * st.alpha
-			if s.text ~= st.text then
-				s.text = st.text
-				s.label:SetText(st.text)
-				s.shadow:SetText(st.text)
+		if a < 0.5 then
+			-- faded out (past its range, or out of the field and not pinned): nothing of the slot on screen
+			if s.shown then
+				for _, w in pairs({ s.icon, s.core, s.side, s.updown, s.shadow, s.label }) do w:Show(false) end
+				s.shown = false
 			end
-			s.label:SetWndSize(self:V(tw, L.label_h))
-			s.shadow:SetWndSize(self:V(tw, L.label_h))
-			s.label:SetWndPos(self:V(lx, g.label_y))
-			s.shadow:SetWndPos(self:V(lx + g.px, g.label_y + g.py))
-			s.label:SetTextColor(argb(la, m.color))
-			s.shadow:SetTextColor(GetARGB(math_floor(la * 0.8), 0, 0, 0))
-			if not s.label:IsShown() then
-				s.label:Show(true)
-				s.shadow:Show(true)
-			end
-			if st.up then
-				set_tex(s.updown, s, "up_tex", st.up)
-				s.updown:SetWndPos(self:V(lx + tw + 2 * kx, g.label_y + (L.label_h - L.updown) / 2))
-				s.updown:SetTextureColor(argb(la, C_WHITE))
-				if not s.updown:IsShown() then s.updown:Show(true) end
-			elseif s.updown:IsShown() then
-				s.updown:Show(false)
-			end
+			s.key = m.key
 		else
-			if s.label:IsShown() then
-				s.label:Show(false)
-				s.shadow:Show(false)
+			if not s.shown then
+				s.icon:Show(true)
+				s.shown = true
 			end
-			if s.updown:IsShown() then s.updown:Show(false) end
+			s.key = m.key
+			-- ping: the cyan dot inside the ring
+			if sty.core then
+				set_tex(s.core, s, "core_tex", sty.core)
+				s.core:SetWndPos(self:V(cxm - L.ping_dot * kx / 2, g.icon_cy - L.ping_dot / 2))
+				s.core:SetTextureColor(argb(255 * st.alpha * fa * (st.side ~= 0 and A_PINNED or 1), C_PING))
+				if not s.core:IsShown() then s.core:Show(true) end
+			elseif s.core:IsShown() then
+				s.core:Show(false)
+			end
+			-- pinned: an arrow outside
+			if st.side ~= 0 then
+				set_tex(s.side, s, "side_tex", st.side > 0 and "coop_hud_tri_right" or "coop_hud_tri_left")
+				s.side:SetWndPos(self:V(cxm + st.side * L.side_gap * kx - L.side * kx / 2, g.icon_cy - L.side / 2))
+				s.side:SetTextureColor(argb(a, m.color))
+				if not s.side:IsShown() then s.side:Show(true) end
+			elseif s.side:IsShown() then
+				s.side:Show(false)
+			end
+			-- label (+ height arrow)
+			if it.show and st.text then
+				local tw = self:TextWidth(st.text)
+				local lx = cxm - it.w / 2
+				local la = A_LABEL * st.alpha * math_max(fa, 0.6) -- labels stay readable on a dimmed marker
+				if s.text ~= st.text then
+					s.text = st.text
+					s.label:SetText(st.text)
+					s.shadow:SetText(st.text)
+				end
+				s.label:SetWndSize(self:V(tw, L.label_h))
+				s.shadow:SetWndSize(self:V(tw, L.label_h))
+				s.label:SetWndPos(self:V(lx, g.label_y))
+				s.shadow:SetWndPos(self:V(lx + g.px, g.label_y + g.py))
+				s.label:SetTextColor(argb(la, m.color))
+				s.shadow:SetTextColor(GetARGB(math_floor(la * 0.8), 0, 0, 0))
+				if not s.label:IsShown() then
+					s.label:Show(true)
+					s.shadow:Show(true)
+				end
+				if st.up then
+					set_tex(s.updown, s, "up_tex", st.up)
+					s.updown:SetWndPos(self:V(lx + tw + 2 * kx, g.label_y + (L.label_h - L.updown) / 2))
+					s.updown:SetTextureColor(argb(la, C_WHITE))
+					if not s.updown:IsShown() then s.updown:Show(true) end
+				elseif s.updown:IsShown() then
+					s.updown:Show(false)
+				end
+			else
+				if s.label:IsShown() then
+					s.label:Show(false)
+					s.shadow:Show(false)
+				end
+				if s.updown:IsShown() then s.updown:Show(false) end
+			end
 		end
 	end
 	for i = n + 1, SLOTS do
@@ -719,7 +794,7 @@ function UICoopCompass:Frame(tg)
 		local list = M.list(tg)
 		if list ~= self.last_list then
 			self.last_list = list
-			self:Sync(list, tg)
+			self:Sync(list, tg, cam, heading)
 		end
 	end
 	local me = cam

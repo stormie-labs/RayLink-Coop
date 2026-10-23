@@ -253,6 +253,63 @@ def arc8():  # one eighth (45 deg) of the ring around the cross, at the top; the
     return glyph(ImageChops.multiply(m, keep))
 
 
+# ---------------------------------------------------------------- v2.1: PDA marks on the compass (docs/HUD_V2.md, v2.1)
+def waypoint():  # the player's own waypoint (Personal Adjustable Waypoint task, a PDA mark): a map pin, tip down
+    head = disc(0, -0.30, 0.58)
+    tip = poly([(-0.50, -0.06), (0.50, -0.06), (0, 0.90)])
+    return glyph(union(head, tip), dark=disc(0, -0.30, 0.22))
+
+
+def flag():  # a PDA pin of the player (PAW pins): a pennant on a pole
+    pole = rect(-0.64, -0.86, -0.42, 0.88)
+    cloth = poly([(-0.44, -0.86), (0.80, -0.48), (-0.44, -0.08)])
+    return glyph(union(pole, cloth))
+
+
+def stash():  # a stash: a crate, its lid band and a lock (the death drop is the backpack)
+    box = rect(-0.74, -0.40, 0.74, 0.76, radius=0.08)
+    lid = rect(-0.84, -0.72, 0.84, -0.30, radius=0.08)
+    seam = rect(-0.74, -0.30, 0.74, -0.16)
+    lock = rect(-0.16, -0.16, 0.16, 0.22)
+    return glyph(union(box, lid), dark=union(seam, lock))
+
+
+def trader():  # trader: a stack of coins (three flat bars, the top one lying)
+    bars = union(rect(-0.66, 0.42, 0.62, 0.78, radius=0.14), rect(-0.56, 0.00, 0.72, 0.36, radius=0.14),
+                 rect(-0.70, -0.42, 0.58, -0.06, radius=0.14))
+    top = ellipse(-0.06, -0.58, 0.64, 0.26)
+    return glyph(union(bars, top))
+
+
+def mechanic():  # mechanic: a wrench, the open jaw at the top right
+    handle = union(rot_rect(-0.16, 0.16, 1.24, 0.32, -45), disc(-0.60, 0.60, 0.17))
+    head = disc(0.36, -0.36, 0.48)
+    slot = rot_rect(0.62, -0.62, 0.86, 0.34, -45)  # along the handle: the jaw opens away from it
+    return glyph(cut(union(handle, head), slot))
+
+
+def medic():  # medic: a rounded square with a plus cut in (not the downed ally's ring and cross)
+    box = rect(-0.74, -0.74, 0.74, 0.74, radius=0.24)
+    plus = union(rect(-0.15, -0.48, 0.15, 0.48), rect(-0.48, -0.15, 0.48, 0.15))
+    return glyph(box, dark=plus)
+
+
+def npc():  # any other person of the PDA (barman, scout, quest giver, companion): head and shoulders
+    head = disc(0, -0.40, 0.34)
+    shoulders = ImageChops.multiply(ellipse(0, 0.74, 0.78, 0.70), rect(-1, -0.02, 1, 0.86))
+    return glyph(union(head, shoulders))
+
+
+def sleep():  # a sleeping place: a crescent moon
+    return glyph(cut(disc(-0.06, 0.02, 0.78), disc(0.34, -0.24, 0.62)))
+
+
+def transition():  # a level changer: a gate with an arrow through it
+    arch = union(rect(-0.66, -0.26, 0.66, 0.84), disc(0, -0.26, 0.66))
+    arrow = union(poly([(0, -0.64), (0.38, -0.12), (-0.38, -0.12)]), rect(-0.13, -0.14, 0.13, 0.62))
+    return glyph(arch, dark=arrow)
+
+
 def white(n=8):
     return Image.new("RGBA", (n, n), (255, 255, 255, 255))
 
@@ -293,6 +350,16 @@ GLYPHS = [
     ("coop_hud_tri_down", lambda: tri("down"), 96, 64),
     ("coop_hud_cross", cross, 160, 64),
     ("coop_hud_arc8", arc8, 192, 64),
+    # v2.1: PDA marks (the compass shows what Tactical Compass showed)
+    ("coop_hud_waypoint", waypoint, 0, 128),
+    ("coop_hud_flag", flag, 32, 128),
+    ("coop_hud_stash", stash, 64, 128),
+    ("coop_hud_trader", trader, 96, 128),
+    ("coop_hud_mechanic", mechanic, 128, 128),
+    ("coop_hud_medic", medic, 160, 128),
+    ("coop_hud_npc", npc, 192, 128),
+    ("coop_hud_sleep", sleep, 224, 128),
+    ("coop_hud_transition", transition, 0, 160),
 ]
 
 

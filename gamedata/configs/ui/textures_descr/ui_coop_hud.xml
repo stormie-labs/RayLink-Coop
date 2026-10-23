@@ -27,6 +27,15 @@
 		<texture id="coop_hud_tri_down" x="96" y="64" width="32" height="32"/>
 		<texture id="coop_hud_cross" x="160" y="64" width="32" height="32"/>
 		<texture id="coop_hud_arc8" x="192" y="64" width="32" height="32"/>
+		<texture id="coop_hud_waypoint" x="0" y="128" width="32" height="32"/>
+		<texture id="coop_hud_flag" x="32" y="128" width="32" height="32"/>
+		<texture id="coop_hud_stash" x="64" y="128" width="32" height="32"/>
+		<texture id="coop_hud_trader" x="96" y="128" width="32" height="32"/>
+		<texture id="coop_hud_mechanic" x="128" y="128" width="32" height="32"/>
+		<texture id="coop_hud_medic" x="160" y="128" width="32" height="32"/>
+		<texture id="coop_hud_npc" x="192" y="128" width="32" height="32"/>
+		<texture id="coop_hud_sleep" x="224" y="128" width="32" height="32"/>
+		<texture id="coop_hud_transition" x="0" y="160" width="32" height="32"/>
 		<texture id="coop_hud_white" x="130" y="66" width="4" height="4"/>
 		<texture id="coop_hud_bar_bg" x="0" y="98" width="256" height="4"/>
 		<texture id="coop_hud_bar_line" x="0" y="114" width="256" height="4"/>
