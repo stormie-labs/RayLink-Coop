@@ -18,8 +18,9 @@
 	    F2 T12b (leased ids): a client with ids (coop.lease_ids() >= SWAP_IDS) swaps a weapon in its own bag as in single
 	    player - the clone is created here at once under a leased id, register answers it, the parts and m_data move to
 	    its real id, and the old weapon's release goes with the clone (the host releases it when it creates the clone,
-	    keeps it when it refuses). Without ids (right after joining) or for a weapon outside the own bag the swap is
-	    refused on a client before any world call, the player is told:
+	    keeps it when it refuses). Without ids (right after joining), for a weapon outside the own bag or one that waits
+	    for the host (its create or a clone of it not answered yet: round 1, review C1) the swap is refused on a client
+	    before any world call, the player is told:
 	      _G.alife_clone_weapon (backstop: magnifier fallback, MP-412 upgrade, any other caller)
 	      item_weapon.attach_scope / detach_scope        a weapon with scope variants (parent_section); also Toggle
 	                                                     Scope's override, canted irons' and battery hooks inside
@@ -210,12 +211,24 @@ local function holder_id(obj)
 	return ok and type(pid) == "number" and pid or nil
 end
 
+-- F2 T12b round 1 (review C1): the weapon waits for the host - its create is not answered yet (the host's budget queue,
+-- a retry), or a clone of ours replaces it already. The engine refuses its clone (nil), but the mods create the scope
+-- before the clone (detach): refused here first, before any world call.
+local function lease_waiting(wpn)
+	local f = api and api.lease_waiting
+	local id = id_of(wpn)
+	if type(f) ~= "function" or id == nil then return false end
+	local ok, w = pcall(f, id)
+	return ok and w == true
+end
+
 -- A client clones its own weapon at once under a leased id: the weapon in its own bag (the clone goes where the weapon
--- is), and ids enough for the swap.
+-- is), ids enough for the swap, and a weapon the host has made already.
 local function swap_ready(wpn, holder)
 	local a = db.actor
 	local pid = holder or holder_id(wpn)
 	return C().live_client() and a ~= nil and pid ~= nil and pid == id_of(a) and lease_ids() >= SWAP_IDS
+		and not lease_waiting(wpn)
 end
 
 -- when(...) -> the weapon the call would clone (nil: it clones nothing) and its holder's id when the call names it

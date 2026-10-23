@@ -667,7 +667,20 @@ local function refill(n)
 end
 refill(48)
 local CLONE_SOURCE = {} -- weapon id -> the leased id of its clone (a temporary object or a create the host has not answered)
+local PENDING = {} -- leased id -> true until the host's answer (coop_requests.cpp SpecBook)
 coop.lease_ids = function() return MODE == "client" and #LEASE or 0 end
+-- round 1 (review C1): an item that waits for the host - its create is not answered, or a clone of ours replaces it
+coop.lease_waiting = function(id) return MODE == "client" and (PENDING[id] == true or CLONE_SOURCE[id] ~= nil) end
+-- the host's Ok to the create of `id`: a clone's source goes with it (EntityDestroy)
+local function host_ok(id)
+	PENDING[id] = nil
+	for src, cl in pairs(CLONE_SOURCE) do
+		if cl == id then
+			CLONE_SOURCE[src] = nil
+			SE[src], OBJ[src] = nil, nil
+		end
+	end
+end
 local function take_lease(pid)
 	if MODE ~= "client" or pid ~= 0 or #LEASE == 0 then return nil end
 	return table.remove(LEASE, 1)
@@ -677,6 +690,7 @@ local function leased_spawn(sec, pid, id, cond, source, kind)
 	se.cond = cond
 	REQ[#REQ + 1] = { kind = "spawn", sec = sec, cond = cond, parent = pid, lease = id, source = source }
 	if source then CLONE_SOURCE[source] = id end
+	PENDING[id] = true
 	return se
 end
 function alife()
@@ -693,6 +707,7 @@ function alife()
 		return leased_spawn(sec, pid, id, 1)
 	end
 	a.clone_weapon = function(self, se, sec, pos, lv, gv, pid, reg)
+		if coop.lease_waiting(se.id) then return nil end -- round 1: the engine refuses (lua_clone, lease_waiting)
 		local t = clone(self, se, sec, pos, lv, gv, pid, reg)
 		local id = owned(se.id) and take_lease(pid) or nil
 		if id then
@@ -792,10 +807,34 @@ NOW = NOW + 3000
 check(refused(alife_clone_weapon, se_s, "wpn_test_scope_a"), "its clone through the backstop: refused too")
 
 -- no ids (right after joining, before the host's lease): refused as before
+local _, wpn_n = spawn("wpn_test", nil, 0, { kind = "weapon" })
 refill(2)
 NOW = NOW + 3000
-check(refused(item_weapon.attach_scope, scope_a, wpn_a), "fewer ids than a swap may take: refused, a message")
+check(refused(item_weapon.attach_scope, scope_a, wpn_n), "fewer ids than a swap may take: refused, a message")
 refill(48)
+
+-- round 1 (review C1): put a scope on and take it off at once, the clone still waiting for the host (its budget queue):
+-- the second swap is refused before the mod creates the scope (else: the detach's clone refused, the scope made - a
+-- duplicate); so is a second swap of the old weapon, which the first clone replaces
+local se_c, wpn_c = spawn("wpn_test", nil, 0, { kind = "weapon" })
+local _, scope_c = spawn("scope_a", nil, 0)
+NOW = NOW + 3000
+okl = act(item_weapon.attach_scope, scope_c, wpn_c)
+local x = clone_of(se_c.id)
+check(okl and x ~= nil and PENDING[x.lease], "a scope on: the scoped variant is here, its create waits for the host")
+local wpn_x = OBJ[x.lease]
+NOW = NOW + 3000
+check(refused(item_weapon.detach_scope, wpn_x), "and off at once: refused before any world call (no scope created), "
+	.. "a message")
+NOW = NOW + 3000
+check(refused(item_weapon.attach_scope, scope_a, wpn_c), "a second swap of the old weapon (a clone replaces it): refused")
+NOW = NOW + 3000
+check(refused(alife_clone_weapon, SE[x.lease], "wpn_test"), "the backstop on the waiting clone: refused")
+host_ok(x.lease)
+NOW = NOW + 3000
+okl = act(item_weapon.detach_scope, wpn_x)
+check(okl and clone_of(x.lease) ~= nil and count("spawn", "scope_a") == 1 and HUD == nil,
+	"after the host's Ok the scope comes off as in single player")
 
 -- I1 with an id: register answers the item, with its condition
 NOW = NOW + 3000

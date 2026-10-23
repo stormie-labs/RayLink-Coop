@@ -456,3 +456,83 @@ TEST(lease_queued_request_keeps_id)
 	CHECK_EQ(plain.id, lease::kNoId);
 	CHECK_EQ(plain.source, lease::kNoId);
 }
+
+// ============================================================================ round 1 (task-12b-review.md)
+
+TEST(lease_held_actions_wait_for_their_item)
+{
+	// Review C1: a request about an item of ours the host has not created yet (its create waits in the host's budget
+	// queue, or for a retry after RateLimited) would reach the host first and be refused (Missing) while the item is
+	// created later: a duplicate. Such requests wait here, in order, until the host's Ok; a rollback drops them.
+	lease::Held<int> held;
+	held.hold(300, 1);
+	held.hold(301, 2);
+	held.hold(300, 3);
+	CHECK(held.holds(300) && held.holds(301) && !held.holds(302));
+	CHECK_EQ(held.size(), size_t(3));
+	CHECK((held.release(300) == std::vector<int>{1, 3})); // in the order they were made
+	CHECK(!held.holds(300));
+	CHECK(held.release(300).empty());
+	std::vector<int> dropped;
+	CHECK_EQ(held.drop(301, [&](int& a) { dropped.push_back(a); }), size_t(1));
+	CHECK((dropped == std::vector<int>{2}));
+	CHECK_EQ(held.size(), size_t(0));
+	held.hold(5, 7);
+	held.hold(6, 8);
+	dropped.clear();
+	held.clear([&](int& a) { dropped.push_back(a); });
+	std::sort(dropped.begin(), dropped.end());
+	CHECK((dropped == std::vector<int>{7, 8}));
+	CHECK_EQ(held.size(), size_t(0));
+}
+
+TEST(lease_spec_first_pending)
+{
+	// Which create an action waits for: the first id it names that is ours and not answered yet.
+	lease::SpecBook book;
+	book.add(300);
+	book.add(301, 900);
+	CHECK_EQ(book.first_pending({lease::kNoId, 5, 300}), uint16_t(300));
+	CHECK_EQ(book.first_pending({301, 300}), uint16_t(301));
+	CHECK_EQ(book.first_pending({5, 900, lease::kNoId}), lease::kNoId); // a clone's source is no create of ours
+	CHECK_EQ(book.first_pending({}), lease::kNoId);
+	// a clone of a weapon the host has not made yet, or of one a pending clone replaces: refused (review C1)
+	CHECK(book.waiting(300) && book.waiting(900) && !book.waiting(5) && !book.waiting(lease::kNoId));
+}
+
+TEST(lease_quarantine_keeps_other_worlds)
+{
+	// Review I2: a rolled-back entity is freed kQuarantineMs after its release, but only in the world it was released
+	// in: a new world closed the Lua state its script object lives in, freeing it then is an access violation.
+	lease::Quarantine<int> q;
+	q.keep(1, 1000, 7);
+	q.keep(2, 5000, 7);
+	q.keep(3, 1000, 6); // released before the world changed
+	std::vector<int> freed, leaked;
+	const auto free_it = [&](int e) { freed.push_back(e); };
+	const auto leak_it = [&](int e) { leaked.push_back(e); };
+	CHECK_EQ(q.expire(1000 + 100 - 1, 100, 7, false, free_it, leak_it), size_t(0));
+	CHECK_EQ(q.expire(1100, 100, 7, false, free_it, leak_it), size_t(2)); // 1 freed, 3 of another world left
+	CHECK((freed == std::vector<int>{1}));
+	CHECK((leaked == std::vector<int>{3}));
+	CHECK_EQ(q.size(), size_t(1));
+	q.expire(1100, 100, 8, true, free_it, leak_it); // the session ends in another world: nothing of world 7 is freed
+	CHECK((freed == std::vector<int>{1}));
+	CHECK((leaked == std::vector<int>{3, 2}));
+	CHECK_EQ(q.size(), size_t(0));
+}
+
+TEST(lease_clone_state_from_source)
+{
+	// Review I1: the host builds a clone from its own source (as lua_clone copies it on the client), never from the
+	// client's blob: a modified client would get upgrades, a full magazine and a repair for the price difference.
+	const std::vector<uint8_t> client = {9, 9, 9, 9};
+	const std::vector<uint8_t> source = {1, 2};
+	spawn::StateRef s = spawn::spawn_state(900, client.data(), client.size(), source);
+	CHECK(s.data == source.data() && s.size == 2);
+	const std::vector<uint8_t> none;
+	s = spawn::spawn_state(900, client.data(), client.size(), none); // no state of the source: the section's defaults
+	CHECK_EQ(s.size, size_t(0));
+	s = spawn::spawn_state(lease::kNoId, client.data(), client.size(), source); // a create: the client's blob
+	CHECK(s.data == client.data() && s.size == 4);
+}
