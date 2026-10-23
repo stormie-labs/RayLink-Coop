@@ -5,7 +5,7 @@
 		<text>Co-op</text>
 	</string>
 	<string id="st_coop_menu_title">
-		<text>Co-op</text>
+		<text>CO-OP</text>
 	</string>
 	<string id="st_coop_menu_tab_host">
 		<text>Host a game</text>
@@ -14,31 +14,31 @@
 		<text>Join a game</text>
 	</string>
 	<string id="st_coop_menu_tab_steam">
-		<text>Steam (later)</text>
+		<text>Steam - soon</text>
 	</string>
 	<string id="st_coop_menu_nick">
-		<text>Nickname:</text>
+		<text>Your nickname</text>
 	</string>
 	<string id="st_coop_menu_port">
-		<text>Port (UDP):</text>
+		<text>Port UDP</text>
 	</string>
 	<string id="st_coop_menu_address">
-		<text>Host address:</text>
+		<text>Host address</text>
 	</string>
 	<string id="st_coop_menu_address_hint">
 		<text>IP or IP:port, e.g. 192.168.1.10 or 203.0.113.5:27960</text>
 	</string>
 	<string id="st_coop_menu_recent">
-		<text>Recent:</text>
+		<text>Recent</text>
 	</string>
 	<string id="st_coop_menu_btn_host_now">
-		<text>Host this game</text>
+		<text>Open it to partners</text>
 	</string>
 	<string id="st_coop_menu_btn_host_load">
-		<text>Load a save</text>
+		<text>Load...</text>
 	</string>
 	<string id="st_coop_menu_btn_host_last">
-		<text>Last save</text>
+		<text>Continue</text>
 	</string>
 	<string id="st_coop_menu_btn_host_new">
 		<text>New game</text>
@@ -55,50 +55,38 @@
 	<string id="st_coop_menu_btn_close">
 		<text>Close</text>
 	</string>
-	<string id="st_coop_menu_host_ingame">
-		<text>Your game is loaded: friends join your world. To play over the Internet forward UDP port %s on your router.</text>
-	</string>
-	<string id="st_coop_menu_host_menu">
-		<text>No game is loaded. Choose how to start: the session opens by itself once the level is loaded.</text>
-	</string>
 	<string id="st_coop_menu_host_dead">
-		<text>Your character is dead: load a save first.</text>
+		<text>Your character is dead: this game cannot be opened, load a save first.</text>
 	</string>
 	<string id="st_coop_menu_pending">
 		<text>The session opens on port %s as soon as the game is loaded.</text>
 	</string>
-	<string id="st_coop_menu_steam_hint">
-		<text>Steam lobbies come in a later version. For now connect by IP.</text>
-	</string>
 	<string id="st_coop_menu_join_ingame">
 		<text>Connecting closes your current game: unsaved progress is lost.</text>
 	</string>
-	<string id="st_coop_menu_status">
-		<text>Status:</text>
-	</string>
 	<string id="st_coop_menu_phase_off">
-		<text>no session</text>
+		<text>No session running</text>
 	</string>
 	<string id="st_coop_menu_phase_hosting">
-		<text>you host on port %s</text>
+		<text>Session open, port %s</text>
 	</string>
 	<string id="st_coop_menu_phase_connecting">
-		<text>connecting to %s...</text>
+		<text>Connecting to %s...</text>
 	</string>
 	<string id="st_coop_menu_phase_handshaked">
-		<text>accepted by the host, waiting for the world...</text>
+		<text>The host accepted you, waiting for the world...</text>
 	</string>
 	<string id="st_coop_menu_phase_receiving_world">
-		<text>downloading the host's world...</text>
+		<text>Downloading the host's world...</text>
 	</string>
 	<string id="st_coop_menu_phase_loading_world">
-		<text>loading the level...</text>
+		<text>Loading the level...</text>
 	</string>
 	<string id="st_coop_menu_phase_live">
-		<text>in the host's game %s</text>
+		<text>In the host's world (%s)</text>
 	</string>
 	<string id="st_coop_menu_players">
-		<text>Players %s / %s:</text>
+		<text>Players: %s of %s</text>
 	</string>
 	<string id="st_coop_menu_you">
 		<text>you</text>
@@ -119,7 +107,7 @@
 		<text>Error: %s</text>
 	</string>
 	<string id="st_coop_menu_left">
-		<text>The session was closed.</text>
+		<text>Session closed.</text>
 	</string>
 	<string id="st_coop_menu_err_nick">
 		<text>Enter a nickname: 1-32 characters, no quotes or ;</text>
@@ -165,6 +153,69 @@
 	</string>
 	<string id="st_coop_menu_reason_start">
 		<text>could not start</text>
+	</string>
+	<string id="st_coop_menu_subtitle">
+		<text>The Zone for two - and more: up to %s players</text>
+	</string>
+	<string id="st_coop_menu_nick_hint">
+		<text>this is how partners see you</text>
+	</string>
+	<string id="st_coop_menu_port_more">
+		<text>+ Advanced: port %s</text>
+	</string>
+	<string id="st_coop_menu_port_less">
+		<text>- Advanced</text>
+	</string>
+	<string id="st_coop_menu_start">
+		<text>How to start</text>
+	</string>
+	<string id="st_coop_menu_tile_badge">
+		<text>recommended</text>
+	</string>
+	<string id="st_coop_menu_tile_new">
+		<text>Pick a faction and gear for a fresh world.\nPartners choose their character when they join.</text>
+	</string>
+	<string id="st_coop_menu_tile_load">
+		<text>Any save from the list.\nPartners enter that world.</text>
+	</string>
+	<string id="st_coop_menu_tile_last_none">
+		<text>No saves yet.\nStart a new game.</text>
+	</string>
+	<string id="st_coop_menu_tile_last_bad">
+		<text>The newest save is damaged.\nPick another one with Load...</text>
+	</string>
+	<string id="st_coop_menu_open_hint">
+		<text>Is a game loaded right now?</text>
+	</string>
+	<string id="st_coop_menu_next_title">
+		<text>What happens next</text>
+	</string>
+	<string id="st_coop_menu_next_host_1">
+		<text>The world loads and the session opens by itself - you are the host.</text>
+	</string>
+	<string id="st_coop_menu_next_host_2">
+		<text>Partners press Join, enter your address, pick a character. Online: open UDP port %s on the router.</text>
+	</string>
+	<string id="st_coop_menu_next_host_3">
+		<text>Only the host saves; everyone rests on their own.</text>
+	</string>
+	<string id="st_coop_menu_next_join_1">
+		<text>You connect to the host's address.</text>
+	</string>
+	<string id="st_coop_menu_next_join_2">
+		<text>You pick a character: faction and gear.</text>
+	</string>
+	<string id="st_coop_menu_next_join_3">
+		<text>You enter the host's world and play with the others.</text>
+	</string>
+	<string id="st_coop_menu_pending_title">
+		<text>Waiting for the world to load</text>
+	</string>
+	<string id="st_coop_menu_addr_host">
+		<text>Partner's address: your IP, port %s (UDP)</text>
+	</string>
+	<string id="st_coop_menu_addr_wait">
+		<text>the partner's address appears here</text>
 	</string>
 	<string id="st_coop_char_title">
 		<text>New character</text>
@@ -299,7 +350,7 @@
 		<text>Party panel</text>
 	</string>
 	<string id="ui_mm_coop_coop_player_party_hud_desc">
-		<text>Show the other players (health, distance) on the right of the HUD.</text>
+		<text>Show the other players (health, distance, state) at the bottom left, above your own HUD.</text>
 	</string>
 	<string id="ui_mm_coop_coop_player_player_spots">
 		<text>Player markers</text>

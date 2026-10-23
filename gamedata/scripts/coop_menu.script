@@ -3,9 +3,19 @@
 	Layout: configs\ui\ui_coop_menu.xml, strings: configs\text\*\st_coop_menu.xml.
 	Entry: the "Co-op" button that modxml_coop_menu.script puts into the main menu lists.
 
-	Tabs: Host (this game now, or a save / the last save / a new game and host once the level is loaded),
-	Join (address ip[:port], recent addresses), Steam (disabled until the Steam lobby milestone).
-	Below: live status from the engine (phase, players with ping, last error) and Disconnect.
+	Window (redesign 2026-10-23 after docs\hud\coop_menu_mockup.png): a mode switch of three segments, Host / Join / Steam
+	(disabled until the Steam lobby milestone), the nickname, then
+	  Host: "How to start" as three tiles (New game, Continue = the newest save as the stock "Last save" finds it, Load...),
+	      the port folded behind "+ Advanced: port N", "Open it to partners" (only with a loaded, living game) and "Restore an
+	      autosave (N)" (only the host of a running session with autosaves; F3), a box "What happens next";
+	  Join: the host's address, one big Connect button, the recent addresses, the same box.
+	Below: the status line from the engine: a dot (grey no session, amber on its way, green open, red error), the status, a
+	second line (the address for the partner and the player count), Disconnect (a session) / Cancel (a pending host) and Close.
+	While a session is open the box shows the players with their ping. Only a real error is red: the player's own
+	"Session closed." is a plain grey status.
+	Look: flat rectangles = the solid cell of the atlas textures\ui\coop\ui_coop_menu.dds (tools\make_menu_icons.py) stretched
+	and tinted; a button is a transparent hit button above its frame and fill (the colours of a 3-state button's caption are
+	set per state in the xml; the colours of the other states of a tile or a segment are set here, see palette()).
 
 	Engine API used (coop_script.cpp), all plain C functions that answer nil/false on bad input:
 		coop.session_info()  coop.host(port)  coop.host_when_ready(port | nil)  coop.connect(addr)
@@ -254,15 +264,183 @@ local function saves()
 end
 
 -------------------------------------------------------------------------------
+-- Status line (pure, tested with stubs)
+-------------------------------------------------------------------------------
+-- The phases of a session that is still on its way to the game: the dot is amber.
+local WAITING = { connecting = true, handshaked = true, ["receiving-world"] = true, ["loading-world"] = true }
+local SEP = "  |  "
+
+-- "idle" (no session) | "wait" (on its way: connecting, the world is coming, or a host waits for its level) | "live" (open)
+function status_kind(info)
+	info = info or {}
+	local phase = tostring(info.phase or "off")
+	if phase == "hosting" or phase == "live" then return "live" end
+	if WAITING[phase] then return "wait" end
+	if info.pending_host ~= nil and not info.active then return "wait" end
+	return "idle"
+end
+
+local function players_text(info)
+	return tr("st_coop_menu_players", #(info.players or {}), info.max_players or 8)
+end
+
+-- What the status line says: { kind = idle | wait | live | error, title =, detail =, dim = }.
+-- Only a real error is an error: the player's own disconnect ("Session closed.") is a plain grey status.
+function status_view(info, local_error, tab)
+	info = info or {}
+	local err, closed = local_error, false
+	if not err or err == "" then
+		err = error_text(info)
+		closed = err ~= "" and info.last_by_user == true
+	end
+	if err ~= "" and not closed then
+		return { kind = "error", title = err, detail = phase_text(info), dim = false }
+	end
+	local kind = status_kind(info)
+	if closed and kind == "idle" then
+		return { kind = "idle", title = err, detail = "", dim = true }
+	end
+	if kind == "wait" and info.pending_host ~= nil and not info.active then
+		return { kind = "wait", title = tr("st_coop_menu_pending_title"), detail = tr("st_coop_menu_pending", info.pending_host),
+			dim = false }
+	end
+	local parts = {}
+	if tostring(info.phase) == "hosting" then parts[#parts + 1] = tr("st_coop_menu_addr_host", info.port or "?") end
+	if kind == "live" then parts[#parts + 1] = players_text(info) end
+	local detail = table.concat(parts, SEP)
+	if kind == "idle" and tab == "host" then detail = tr("st_coop_menu_addr_wait") end
+	return { kind = kind, title = phase_text(info), detail = detail, dim = false }
+end
+
+-------------------------------------------------------------------------------
+-- The newest save, for the "Continue" tile (pure, tested with stubs)
+-------------------------------------------------------------------------------
+-- The smallest plausible saved game; below it the file is cut short (coop_saves.script has the same bound). Such a file is
+-- never opened: a CSavedGameWrapper asserts on a cut file, and that is fatal in the engine.
+local MIN_SAVE_BYTES = 65536
+local MAX_SAVE_NAME = 24 -- characters of the file name on the tile, the dots of a cut name included
+
+local function ellipsize(s, n)
+	s = tostring(s)
+	if #s <= n then return s end
+	return s:sub(1, n - 3) .. "..."
+end
+
+-- A name from the saves folder goes into a complex text: no % or \ in it (%c[...] colour codes, \n).
+local function plain(s)
+	return (tostring(s):gsub("[%%\\]", "?"))
+end
+
+local function current_year()
+	local ok, y = pcall(os.date, "%Y")
+	return ok and tonumber(y) or nil
+end
+
+-- "23/10/2026 16:46" (the file time of the stock Load dialog) -> "23.10, 16:46"; another year keeps its year.
+function format_save_time(stamp, year)
+	stamp = tostring(stamp or "")
+	local d, mo, y, h, mi = stamp:match("^(%d+)/(%d+)/(%d+)%s+(%d+):(%d+)")
+	if not d then return stamp end
+	local date = string_format("%02d.%02d", tonumber(d), tonumber(mo))
+	if tonumber(y) ~= tonumber(year or current_year()) then date = date .. "." .. y end
+	return string_format("%s, %02d:%02d", date, tonumber(h), tonumber(mi))
+end
+
+-- The details of the newest save (its level) are read from the file by coop_saves.details, which unpacks it: kept while the
+-- newest save is the same file (the same name, time and size), so reopening the window costs a folder listing, not a read.
+local last_read = nil
+
+-- The save that the stock "Last save" of the main menu would load (ui_main_menu.script, OnButton_last_save): the newest
+-- .scop of $game_saves$, whatever its name. -> { name, file_time, size, damaged, level_text } or nil. The folder is read once.
+-- The level comes from coop_saves.details (guards of its own); a file below MIN_SAVE_BYTES is damaged and is not opened.
+function find_last_save()
+	local ext = rawget(_G, "saved_game_extension") or ".scop"
+	local ok, entry = pcall(function()
+		local flist = getFS():file_list_open_ex("$game_saves$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "*" .. ext)
+		if not flist or flist:Size() == 0 then return nil end
+		flist:Sort(FS.FS_sort_by_modif_down)
+		local file = flist:GetAt(0)
+		if not file then return nil end
+		local full = tostring(file:NameFull())
+		local e = { name = full:sub(1, #full - #ext), file_time = tostring(file:ModifDigitOnly()) }
+		local oks, size = pcall(function() return tonumber(file:Size()) end)
+		e.size = oks and size or nil
+		e.damaged = e.size ~= nil and e.size < MIN_SAVE_BYTES
+		return e
+	end)
+	if not ok then
+		log("! cannot look for the last save: %s", tostring(entry))
+		return nil
+	end
+	if entry and not entry.damaged then
+		local sig = string_format("%s|%s|%s", entry.name, entry.file_time, tostring(entry.size))
+		if last_read and last_read.sig == sig then
+			entry.level_text, entry.damaged = last_read.level_text, last_read.damaged
+		else
+			local sv = saves()
+			if sv and sv.details then
+				local okd, err = pcall(sv.details, entry)
+				if not okd then log("! cannot read the details of %s: %s", tostring(entry.name), tostring(err)) end
+			end
+			last_read = { sig = sig, level_text = entry.level_text, damaged = entry.damaged }
+		end
+	end
+	return entry
+end
+
+-- The two lines of the tile: "name  -  level" and the date, or why there is nothing to continue.
+function last_save_desc(e, year)
+	if not e then return tr("st_coop_menu_tile_last_none") end
+	if e.damaged then return tr("st_coop_menu_tile_last_bad") end
+	local line1 = ellipsize(plain(e.name), MAX_SAVE_NAME)
+	local level = e.level_text and plain(e.level_text) or ""
+	if level ~= "" then line1 = line1 .. "  -  " .. level end
+	return line1 .. "\\n" .. format_save_time(e.file_time, year)
+end
+
+-------------------------------------------------------------------------------
 -- Window
 -------------------------------------------------------------------------------
-local CLR = {}
-local function colors()
-	if CLR.on then return CLR end
-	CLR.on = GetARGB(255, 240, 200, 120)
-	CLR.off = GetARGB(255, 170, 170, 170)
-	CLR.disabled = GetARGB(255, 100, 100, 100)
-	return CLR
+local RECENT_STEP = 22 -- px between the rows of the recent addresses (ui_coop_menu.xml btn_recent is the first row)
+local PORT_OPEN_W = 130 -- width of the "- Advanced" toggle while the port field is unfolded
+
+-- Colours of the layout (ui_coop_menu.xml has the same values as its defaults); GetARGB only once the engine is there.
+local PAL = nil
+function palette()
+	if PAL then return PAL end
+	local function c(r, g, b) return GetARGB(255, r, g, b) end
+	PAL = {
+		text = c(226, 224, 216), grey = c(140, 138, 130), dim = c(110, 108, 102), off = c(90, 90, 86), faint = c(76, 76, 73),
+		sand = c(217, 177, 96), sand_dim = c(191, 157, 86), sand_off = c(90, 80, 60),
+		border = c(58, 58, 56), border_off = c(44, 44, 42),
+		tile = c(24, 24, 23), tile_new = c(30, 28, 22), tile_off = c(18, 18, 17),
+		seg_on = c(34, 33, 30), seg_off = c(16, 16, 15),
+		btn = c(26, 26, 24), btn_off = c(18, 18, 17),
+		dot_idle = c(120, 120, 116), dot_wait = c(232, 170, 60), dot_live = c(112, 192, 100), dot_error = c(240, 120, 100),
+		error = c(240, 120, 100),
+	}
+	return PAL
+end
+
+local NEXT_IDS = {
+	host = { "st_coop_menu_next_host_1", "st_coop_menu_next_host_2", "st_coop_menu_next_host_3" },
+	join = { "st_coop_menu_next_join_1", "st_coop_menu_next_join_2", "st_coop_menu_next_join_3" },
+}
+
+local function set_shown(list, b)
+	b = b and true or false
+	for _, w in ipairs(list) do w:Show(b) end
+end
+
+-- A flat button: the frame and the fill (statics) under a transparent hit button that carries the caption.
+-- shown / enabled change the look; a hidden button does not exist for the player.
+local function set_flat(g, shown, enabled)
+	local c = palette()
+	enabled = enabled and true or false
+	set_shown(g.list, shown)
+	g.btn:Enable(enabled)
+	g.f:SetTextureColor(enabled and (g.primary and c.tile_new or c.btn) or c.btn_off)
+	g.b:SetTextureColor(enabled and (g.primary and c.sand_dim or c.border) or c.border_off)
 end
 
 class "UICoopMenu" (CUIScriptWnd)
@@ -273,6 +451,11 @@ function UICoopMenu:__init(owner) super()
 	self.next_poll = 0
 	self.local_error = nil
 	self.players_sig = nil
+	self.port_open = false
+	self.recent = {}
+	self.last_save = nil
+	self.autosave_host = nil
+	self.autosave_count = 0
 	self:InitControls()
 	self:InitCallBacks()
 end
@@ -291,79 +474,132 @@ function UICoopMenu:InitControls()
 	xml:InitFrame("coop_shade", self)
 	local d = xml:InitStatic("coop_menu", self)
 	self.dialog = d
-	xml:InitFrame("coop_menu:frame", d)
-	xml:InitStatic("coop_menu:cap", d)
-	xml:InitFrame("coop_menu:panel_frame", d)
-	xml:InitFrame("coop_menu:status_frame", d)
 
-	local function btn(name)
+	-- Windows are drawn in the order they are created: frames and fills first, the hit button of a control last.
+	local function stat(name) return xml:InitStatic("coop_menu:" .. name, d) end
+	local function lbl(name) return xml:InitTextWnd("coop_menu:" .. name, d) end
+	local function hit(name)
 		local b = xml:Init3tButton("coop_menu:" .. name, d)
 		self:Register(b, name)
 		return b
 	end
+	local function flat(name, primary)
+		local g = { b = stat(name .. "_b"), f = stat(name .. "_f"), btn = hit(name), primary = primary }
+		g.list = { g.b, g.f, g.btn }
+		return g
+	end
 
-	self.tabs = { host = btn("tab_host"), join = btn("tab_join"), steam = btn("tab_steam") }
+	stat("win_b")
+	stat("win_f")
+	stat("win_top")
+	lbl("cap")
+	self.subtitle = lbl("subtitle")
+
+	-- mode switch: three segments (frame, fill with the caption, the sand bar, the hit button)
+	self.seg, self.tabs = {}, {}
+	for _, key in ipairs({ "host", "join", "steam" }) do
+		local s = { b = stat("seg_" .. key .. "_b"), f = stat("seg_" .. key), bar = stat("seg_" .. key .. "_bar") }
+		s.btn = hit("tab_" .. key)
+		self.seg[key] = s
+		self.tabs[key] = s.btn
+	end
 	self.tabs.steam:Enable(false) -- Steam lobby: later milestone
 
 	-- shared nickname row
-	self.cap_nick = xml:InitStatic("coop_menu:cap_nick", d)
+	lbl("cap_nick")
 	self.edit_nick = xml:InitEditBox("coop_menu:edit_nick", d)
 	self:Register(self.edit_nick, "edit_nick")
+	self.nick_hint = lbl("nick_hint")
 
+	self.flat = {}
 	-- host tab
-	self.host_ctl = {}
+	self.host_ctl = {} -- shown on the host tab only
 	local function host(w) self.host_ctl[#self.host_ctl + 1] = w; return w end
-	host(xml:InitStatic("coop_menu:cap_port", d))
-	self.edit_port = host(xml:InitEditBox("coop_menu:edit_port", d))
+	self.port_toggle = host(lbl("port_toggle"))
+	self.cap_port = lbl("cap_port")
+	self.edit_port = xml:InitEditBox("coop_menu:edit_port", d)
 	self:Register(self.edit_port, "edit_port")
-	self.host_info = host(xml:InitTextWnd("coop_menu:host_info", d))
-	self.btn_host_now = host(btn("btn_host_now"))
-	self.btn_restore = host(btn("btn_restore"))
+	self.port_ctl = { self.cap_port, self.edit_port } -- the port field: shown only while it is unfolded
+	self.btn_port_toggle = host(hit("btn_port_toggle"))
+	local pos = self.btn_port_toggle:GetWndPos()
+	self.toggle_rect = { x = pos.x, y = pos.y, w = self.btn_port_toggle:GetWidth(), h = self.btn_port_toggle:GetHeight() }
+
+	host(lbl("cap_start"))
+	local function tile(key, btn_name, primary)
+		local t = { primary = primary }
+		t.b = host(stat("tile_" .. key .. "_b"))
+		t.f = host(stat("tile_" .. key))
+		if primary then t.strip = host(stat("tile_" .. key .. "_strip")) end
+		t.ico = host(stat("tile_" .. key .. "_ico"))
+		t.title = host(lbl("tile_" .. key .. "_title"))
+		if primary then t.badge = host(lbl("tile_" .. key .. "_badge")) end
+		t.desc = host(lbl("tile_" .. key .. "_desc"))
+		t.btn = host(hit(btn_name))
+		return t
+	end
+	self.tile = { new = tile("new", "btn_host_new", true), last = tile("last", "btn_host_last"),
+		load = tile("load", "btn_host_load") }
+	self.btn_host_new, self.btn_host_last, self.btn_host_load = self.tile.new.btn, self.tile.last.btn, self.tile.load.btn
+
+	-- only when they apply
+	self.open_hint = lbl("open_hint")
+	self.flat.btn_host_now = flat("btn_host_now")
+	self.btn_host_now = self.flat.btn_host_now.btn
+	self.flat.btn_restore = flat("btn_restore")
+	self.btn_restore = self.flat.btn_restore.btn
 	local sv = saves()
 	if sv and sv.text then self.btn_restore:TextControl():SetText(sv.text("btn_restore")) end
-	self.btn_host_load = host(btn("btn_host_load"))
-	self.btn_host_last = host(btn("btn_host_last"))
-	self.btn_host_new = host(btn("btn_host_new"))
-	self.pending_text = host(xml:InitTextWnd("coop_menu:pending_text", d))
-	self.btn_cancel_pending = host(btn("btn_cancel_pending"))
 
 	-- join tab
 	self.join_ctl = {}
 	local function join(w) self.join_ctl[#self.join_ctl + 1] = w; return w end
-	join(xml:InitStatic("coop_menu:cap_address", d))
+	join(lbl("cap_address"))
+	join(lbl("address_hint"))
 	self.edit_address = join(xml:InitEditBox("coop_menu:edit_address", d))
 	self:Register(self.edit_address, "edit_address")
-	self.btn_connect = join(btn("btn_connect"))
-	join(xml:InitStatic("coop_menu:address_hint", d))
-	self.join_info = join(xml:InitTextWnd("coop_menu:join_info", d))
-	self.cap_recent = join(xml:InitStatic("coop_menu:cap_recent", d))
-	self.recent_btn = {}
+	self.flat.btn_connect = flat("btn_connect", true)
+	self.btn_connect = self.flat.btn_connect.btn
+	self.join_info = join(lbl("join_info"))
+	join(lbl("cap_recent"))
+	self.recent_btn, self.recent_row = {}, {}
 	for i = 1, MAX_RECENT do
-		local name = "btn_recent_" .. i
-		local b = xml:Init3tButton("coop_menu:btn_recent", d)
-		local pos = b:GetWndPos()
-		b:SetWndPos(vector2():set(pos.x, pos.y + (i - 1) * 30))
-		self:Register(b, name)
-		self.recent_btn[i] = join(b)
+		local row = { b = stat("recent_b"), f = stat("recent_f"), btn = xml:Init3tButton("coop_menu:btn_recent", d) }
+		row.list = { row.b, row.f, row.btn }
+		for _, w in ipairs(row.list) do
+			local p = w:GetWndPos()
+			w:SetWndPos(vector2():set(p.x, p.y + (i - 1) * RECENT_STEP))
+		end
+		self:Register(row.btn, "btn_recent_" .. i)
+		self.recent_row[i] = row
+		self.recent_btn[i] = row.btn
 	end
 
-	-- steam tab
-	self.steam_ctl = { xml:InitTextWnd("coop_menu:steam_info", d) }
-
-	-- status
-	self.status_phase = xml:InitTextWnd("coop_menu:status_phase", d)
-	self.status_error = xml:InitTextWnd("coop_menu:status_error", d)
-	self.status_players = xml:InitTextWnd("coop_menu:status_players", d)
+	-- under the tiles: what happens next, or the players of the session
+	stat("info_b")
+	stat("info_f")
+	self.info_title = lbl("info_title")
+	self.info_line = { lbl("info_line_1"), lbl("info_line_2"), lbl("info_line_3") }
 	self.status_scroll = xml:InitScrollView("coop_menu:status_scroll", d)
 
-	self.btn_disconnect = btn("btn_disconnect")
-	btn("btn_close")
+	-- status line
+	stat("status_line")
+	self.status_dot = stat("status_dot")
+	self.status_phase = lbl("status_phase")
+	self.status_error = lbl("status_error")
+	self.status_detail = lbl("status_detail")
+	self.flat.btn_disconnect = flat("btn_disconnect")
+	self.btn_disconnect = self.flat.btn_disconnect.btn
+	self.flat.btn_cancel_pending = flat("btn_cancel_pending")
+	self.btn_cancel_pending = self.flat.btn_cancel_pending.btn
+	self.flat.btn_close = flat("btn_close")
+	self.btn_close = self.flat.btn_close.btn
 end
 
 function UICoopMenu:InitCallBacks()
 	local E = ui_events.BUTTON_CLICKED
 	self:AddCallback("tab_host", E, self.OnTabHost, self)
 	self:AddCallback("tab_join", E, self.OnTabJoin, self)
+	self:AddCallback("btn_port_toggle", E, self.OnPortToggle, self)
 	self:AddCallback("btn_host_now", E, self.OnHostNow, self)
 	self:AddCallback("btn_restore", E, self.OnRestore, self)
 	self:AddCallback("btn_host_load", E, self.OnHostLoad, self)
@@ -383,37 +619,53 @@ function UICoopMenu:Reset()
 	self.local_error = nil
 	self.players_sig = nil
 	self.restore_dlg = nil
+	self.port_open = false
+	self.autosave_host = nil -- the autosave count is read again
 	self.session_at_open = api.is_active() == true -- F3: see Close()
 	self.edit_nick:SetText(get_nick())
 	self.edit_port:SetText(tostring(get_port()))
 	self.recent = get_recent()
 	self.edit_address:SetText(self.recent[1] or "")
-	for i, b in ipairs(self.recent_btn) do
-		local a = self.recent[i]
-		b:Show(a ~= nil and self.tab == "join")
-		b:TextControl():SetText(a or "")
-	end
+	for i, b in ipairs(self.recent_btn) do b:TextControl():SetText(self.recent[i] or "") end
+	-- the newest save is looked up once per opening, not by the polling
+	self.last_save = find_last_save()
+	self.tile.last.desc:SetText(last_save_desc(self.last_save))
+	self:PlacePortToggle()
 	local info = api.session_info()
-	self:SelectTab(info.client and "join" or self.tab)
-	self:Refresh(info)
+	self.subtitle:SetText(tr("st_coop_menu_subtitle", info.max_players or 8))
+	self:SelectTab(info.client and "join" or self.tab, info)
 end
 
-function UICoopMenu:SelectTab(tab)
+function UICoopMenu:SelectTab(tab, info)
 	if tab ~= "host" and tab ~= "join" then tab = "host" end
 	self.tab = tab
-	local c = colors()
-	for name, b in pairs(self.tabs) do
-		b:TextControl():SetTextColor(name == tab and c.on or (name == "steam" and c.disabled or c.off))
+	local c = palette()
+	for key, s in pairs(self.seg) do
+		local on = key == tab
+		s.f:SetTextureColor(on and c.seg_on or c.seg_off)
+		s.f:TextControl():SetTextColor(on and c.text or (key == "steam" and c.off or c.grey))
+		s.bar:Show(on)
 	end
-	for _, w in ipairs(self.host_ctl) do w:Show(tab == "host") end
-	for _, w in ipairs(self.join_ctl) do w:Show(tab == "join") end
-	for _, w in ipairs(self.steam_ctl) do w:Show(false) end
-	for i, b in ipairs(self.recent_btn) do b:Show(tab == "join" and self.recent and self.recent[i] ~= nil) end
 	self.next_poll = 0
+	self:Refresh(info)
 end
 
 function UICoopMenu:OnTabHost() self:SelectTab("host") end
 function UICoopMenu:OnTabJoin() self:SelectTab("join") end
+
+-- The port field is folded away behind "+ Advanced: port N"; the toggle is narrower while it is unfolded.
+function UICoopMenu:PlacePortToggle()
+	local r = self.toggle_rect
+	local w = self.port_open and PORT_OPEN_W or r.w
+	self.btn_port_toggle:SetWndPos(vector2():set(r.x + r.w - w, r.y))
+	self.btn_port_toggle:SetWndSize(vector2():set(w, r.h))
+end
+
+function UICoopMenu:OnPortToggle()
+	self.port_open = not self.port_open
+	self:PlacePortToggle()
+	self:Refresh()
+end
 
 function UICoopMenu:Update()
 	CUIScriptWnd.Update(self)
@@ -424,21 +676,73 @@ function UICoopMenu:Update()
 	if not ok then log("! refresh failed: %s", tostring(err)) end
 end
 
+-- F3: the emergency autosaves of a hosted session, for the "Restore an autosave (N)" button. Counted when the window opens and
+-- when the host state changes, not by the polling.
+function UICoopMenu:UpdateAutosaves(host_session)
+	if self.autosave_host == host_session then return end
+	self.autosave_host = host_session
+	self.autosave_count = 0
+	local sv = saves()
+	if host_session and sv and sv.list_autosaves then
+		local ok, list = pcall(sv.list_autosaves)
+		if ok and type(list) == "table" then
+			self.autosave_count = #list
+		else
+			log("! cannot count the autosaves: %s", tostring(list))
+		end
+	end
+	local base = sv and sv.text and sv.text("btn_restore") or ""
+	self.btn_restore:TextControl():SetText(self.autosave_count > 0 and (base .. " (" .. self.autosave_count .. ")") or base)
+end
+
+-- A tile of "How to start": on = clickable (the colours of an inactive one are dim).
+function UICoopMenu:StyleTile(t, on)
+	local c = palette()
+	local accent = t.primary
+	on = on and true or false
+	t.btn:Enable(on)
+	t.b:SetTextureColor(on and (accent and c.sand_dim or c.border) or c.border_off)
+	t.f:SetTextureColor(on and (accent and c.tile_new or c.tile) or c.tile_off)
+	t.ico:SetTextureColor(on and (accent and c.sand or c.text) or c.off)
+	t.title:SetTextColor(on and (accent and c.sand or c.text) or c.off)
+	t.desc:SetTextColor(on and c.grey or c.faint)
+	if t.strip then t.strip:SetTextureColor(on and c.sand or c.sand_off) end
+	if t.badge then t.badge:SetTextColor(on and c.sand or c.off) end
+end
+
 function UICoopMenu:Refresh(info)
 	info = info or api.session_info()
-	local active, pending = info.active, info.pending_host ~= nil
+	local c = palette()
+	local active, pending = info.active == true, info.pending_host ~= nil
 	local free = not active
+	local host_tab, join_tab = self.tab == "host", self.tab == "join"
+	local loaded = level_loaded() and true or false
+	local alive = loaded and actor_alive() and true or false
 
-	-- status
-	self.status_phase:SetText(tr("st_coop_menu_status") .. " " .. phase_text(info))
-	self.status_error:SetText(self.local_error or error_text(info))
+	-- status line: the dot, the status (red only for a real error), the second line
+	local view = status_view(info, self.local_error, self.tab)
+	local is_error = view.kind == "error"
+	self.status_dot:SetTextureColor(c["dot_" .. view.kind])
+	self.status_phase:SetText(is_error and "" or view.title)
+	self.status_phase:SetTextColor(view.dim and c.grey or c.text)
+	self.status_phase:Show(not is_error)
+	self.status_error:SetText(is_error and view.title or "")
+	self.status_error:SetTextColor(c.error)
+	self.status_error:Show(is_error)
+	self.status_detail:SetText(view.detail)
+	set_flat(self.flat.btn_disconnect, active, true)
+	set_flat(self.flat.btn_cancel_pending, pending and not active, true)
+	set_flat(self.flat.btn_close, true, true)
+
+	-- under the tiles: the players while a session is open, else what happens next
 	local lines = player_lines(info)
-	local sig = table.concat(lines, "\n")
+	local sig = (active and "1" or "0") .. "\n" .. table.concat(lines, "\n")
+	local title = active and tr("st_coop_menu_players", #lines, info.max_players or 8) or tr("st_coop_menu_next_title")
+	self.info_title:SetText(title)
 	if sig ~= self.players_sig then
 		self.players_sig = sig
 		self.status_scroll:Clear()
 		if active then
-			self.status_players:SetText(tr("st_coop_menu_players", #lines, info.max_players or 8))
 			if #lines <= 1 then lines[#lines + 1] = tr("st_coop_menu_nobody") end
 			for _, l in ipairs(lines) do
 				local row = self.xml:InitTextWnd("coop_menu:status_row", nil)
@@ -446,38 +750,52 @@ function UICoopMenu:Refresh(info)
 				self.status_scroll:AddWindow(row, true)
 				row:SetAutoDelete(true)
 			end
-		else
-			self.status_players:SetText("")
+		end
+	end
+	self.status_scroll:Show(active)
+	set_shown(self.info_line, not active)
+	if not active then
+		local ids = NEXT_IDS[host_tab and "host" or "join"]
+		for i, id in ipairs(ids) do
+			self.info_line[i]:SetText(i == 2 and host_tab and tr(id, check_port(self.edit_port:GetText()) or get_port()) or tr(id))
 		end
 	end
 
-	-- host tab
-	local loaded, alive = level_loaded(), actor_alive()
-	if loaded and not alive then
-		self.host_info:SetText(tr("st_coop_menu_host_dead"))
-	elseif loaded then
-		self.host_info:SetText(tr("st_coop_menu_host_ingame", info.port or check_port(self.edit_port:GetText()) or get_port()))
-	else
-		self.host_info:SetText(tr("st_coop_menu_host_menu"))
-	end
-	self.btn_host_now:Enable(free and alive)
-	self.btn_restore:Enable(info.host == true and saves() ~= nil) -- only the host of a running session
-	self.btn_host_load:Enable(free)
-	self.btn_host_last:Enable(free)
-	self.btn_host_new:Enable(free)
+	-- host tab: the three ways to start, nothing is offered while a session runs
+	set_shown(self.host_ctl, host_tab)
+	local last_ok = self.last_save ~= nil and not self.last_save.damaged
+	self:StyleTile(self.tile.new, free)
+	self:StyleTile(self.tile.load, free)
+	self:StyleTile(self.tile.last, free and last_ok)
+	-- the port field and its fold
+	local shown_port = check_port(self.edit_port:GetText()) or get_port()
+	set_shown(self.port_ctl, host_tab and self.port_open)
 	self.edit_port:Enable(free)
-	self.pending_text:SetText(pending and tr("st_coop_menu_pending", info.pending_host) or "")
-	self.btn_cancel_pending:Show(self.tab == "host" and pending)
+	self.port_toggle:SetText(self.port_open and tr("st_coop_menu_port_less") or tr("st_coop_menu_port_more", shown_port))
+	-- "Open it to partners": only with a game that is loaded and alive; a dead actor gets the reason instead of a button
+	local can_open = host_tab and free and alive
+	local dead = host_tab and free and loaded and not alive
+	set_flat(self.flat.btn_host_now, can_open, can_open)
+	self.open_hint:Show(can_open or dead)
+	self.open_hint:SetText(can_open and tr("st_coop_menu_open_hint") or (dead and tr("st_coop_menu_host_dead") or ""))
+	-- "Restore an autosave (N)": only the host of a running session, and only with autosaves
+	local host_session = info.host == true
+	self:UpdateAutosaves(host_session)
+	local sv = saves()
+	set_flat(self.flat.btn_restore, host_tab and host_session and sv ~= nil and self.autosave_count > 0, host_session and sv ~= nil)
 
 	-- join tab
-	self.btn_connect:Enable(free)
+	set_shown(self.join_ctl, join_tab)
+	set_flat(self.flat.btn_connect, join_tab, free)
+	for i, row in ipairs(self.recent_row) do
+		set_shown(row.list, join_tab and self.recent[i] ~= nil)
+		row.btn:Enable(free)
+	end
 	self.edit_address:Enable(free)
 	self.join_info:SetText(loaded and free and tr("st_coop_menu_join_ingame") or "")
-	for _, b in ipairs(self.recent_btn) do b:Enable(free) end
 
 	-- shared
 	self.edit_nick:Enable(free)
-	self.btn_disconnect:Enable(active or pending)
 end
 
 -- Nick from the edit box; false (and the error shown) if it is not valid.
@@ -495,6 +813,8 @@ function UICoopMenu:ReadPort()
 	local port = check_port(self.edit_port:GetText())
 	if not port then
 		self.local_error = tr("st_coop_menu_err_port")
+		self.port_open = true -- the field has to be seen to be fixed
+		self:PlacePortToggle()
 		return nil
 	end
 	set_port(port)

@@ -40,3 +40,37 @@ def test_text_files_keep_their_format(lang):
         assert raw.startswith(b'<?xml version="1.0" encoding="windows-1251"?>'), path.name
         assert b"\n" not in raw.replace(b"\r\n", b""), f"{path.name}: line ends must be CRLF"
         raw.decode("cp1251")
+
+
+SCRIPTS = ROOT / "gamedata" / "scripts"
+MENU_OPTION_PREFIX = "ui_mm_coop_coop_player_"
+
+
+def hud_ids() -> set[str]:
+    """st_coop_hud_* ids the HUD v2 scripts show (docs/HUD_V2.md), plus the key list entry kb_coop_ping."""
+    ids = set()
+    for path in SCRIPTS.glob("*.script"):
+        text = path.read_text(encoding="cp1251", errors="replace")
+        ids |= set(re.findall(r'"(st_coop_hud_[A-Za-z0-9_]+)"', text))
+        ids |= set(re.findall(r'"(kb_coop_ping)"', text))
+        ids |= set(re.findall(r'id="(kb_coop_ping)"', text))
+    # an id completed at run time (st_coop_hud_dir_ .. n / ne / ...): the compass letters
+    if "st_coop_hud_dir_" in ids:
+        ids |= {"st_coop_hud_dir_" + d for d in ("n", "ne", "e", "se", "s", "sw", "w", "nw")}
+    return {i for i in ids if not i.endswith("_")}
+
+
+@pytest.mark.parametrize("lang", ["eng", "rus"])
+def test_hud_strings_translated(lang):
+    used = hud_ids()
+    assert "st_coop_hud_heading" in used and "kb_coop_ping" in used, "HUD v2 scripts not found or renamed"
+    assert sorted(used - table_ids(lang)) == []
+
+
+@pytest.mark.parametrize("lang", ["eng", "rus"])
+def test_hud_option_strings_translated(lang):
+    """The player options of HUD v2 on the Co-op page have a title and a description."""
+    need = set()
+    for opt in ("compass_hud", "compass_fov"):
+        need |= {MENU_OPTION_PREFIX + opt, MENU_OPTION_PREFIX + opt + "_desc"}
+    assert sorted(need - table_ids(lang)) == []

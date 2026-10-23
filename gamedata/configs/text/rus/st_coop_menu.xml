@@ -5,7 +5,7 @@
 		<text>Кооператив</text>
 	</string>
 	<string id="st_coop_menu_title">
-		<text>Кооператив</text>
+		<text>КООПЕРАТИВ</text>
 	</string>
 	<string id="st_coop_menu_tab_host">
 		<text>Создать игру</text>
@@ -14,31 +14,31 @@
 		<text>Подключиться</text>
 	</string>
 	<string id="st_coop_menu_tab_steam">
-		<text>Steam (позже)</text>
+		<text>Steam - скоро</text>
 	</string>
 	<string id="st_coop_menu_nick">
-		<text>Ник:</text>
+		<text>Твой ник</text>
 	</string>
 	<string id="st_coop_menu_port">
-		<text>Порт (UDP):</text>
+		<text>Порт UDP</text>
 	</string>
 	<string id="st_coop_menu_address">
-		<text>Адрес хоста:</text>
+		<text>Адрес хоста</text>
 	</string>
 	<string id="st_coop_menu_address_hint">
 		<text>IP или IP:порт, например 192.168.1.10 или 203.0.113.5:27960</text>
 	</string>
 	<string id="st_coop_menu_recent">
-		<text>Недавние:</text>
+		<text>Недавние</text>
 	</string>
 	<string id="st_coop_menu_btn_host_now">
-		<text>Открыть текущую игру</text>
+		<text>Открыть её напарникам</text>
 	</string>
 	<string id="st_coop_menu_btn_host_load">
-		<text>Загрузить сохранение</text>
+		<text>Загрузить...</text>
 	</string>
 	<string id="st_coop_menu_btn_host_last">
-		<text>Последнее сохранение</text>
+		<text>Продолжить</text>
 	</string>
 	<string id="st_coop_menu_btn_host_new">
 		<text>Новая игра</text>
@@ -55,47 +55,35 @@
 	<string id="st_coop_menu_btn_close">
 		<text>Закрыть</text>
 	</string>
-	<string id="st_coop_menu_host_ingame">
-		<text>Игра загружена: друзья подключатся к вашему миру. Для игры через интернет пробросьте UDP-порт %s на роутере.</text>
-	</string>
-	<string id="st_coop_menu_host_menu">
-		<text>Игра не загружена. Выберите, с чего начать: сессия откроется сама, когда уровень загрузится.</text>
-	</string>
 	<string id="st_coop_menu_host_dead">
-		<text>Ваш персонаж мёртв: сначала загрузите сохранение.</text>
+		<text>Твой персонаж мёртв: эту игру не открыть, сначала загрузи сохранение.</text>
 	</string>
 	<string id="st_coop_menu_pending">
 		<text>Сессия откроется на порту %s, как только загрузится игра.</text>
 	</string>
-	<string id="st_coop_menu_steam_hint">
-		<text>Лобби Steam появятся в следующей версии. Пока - подключение по IP.</text>
-	</string>
 	<string id="st_coop_menu_join_ingame">
 		<text>Подключение закроет текущую игру: несохранённый прогресс пропадёт.</text>
 	</string>
-	<string id="st_coop_menu_status">
-		<text>Состояние:</text>
-	</string>
 	<string id="st_coop_menu_phase_off">
-		<text>нет сессии</text>
+		<text>Сессия не запущена</text>
 	</string>
 	<string id="st_coop_menu_phase_hosting">
-		<text>вы хост, порт %s</text>
+		<text>Сессия открыта, порт %s</text>
 	</string>
 	<string id="st_coop_menu_phase_connecting">
-		<text>подключение к %s...</text>
+		<text>Подключение к %s...</text>
 	</string>
 	<string id="st_coop_menu_phase_handshaked">
-		<text>хост принял вас, ждём мир...</text>
+		<text>Хост принял тебя, ждём мир...</text>
 	</string>
 	<string id="st_coop_menu_phase_receiving_world">
-		<text>загружаем мир хоста...</text>
+		<text>Загружаем мир хоста...</text>
 	</string>
 	<string id="st_coop_menu_phase_loading_world">
-		<text>загрузка уровня...</text>
+		<text>Загрузка уровня...</text>
 	</string>
 	<string id="st_coop_menu_phase_live">
-		<text>в игре хоста %s</text>
+		<text>В мире хоста (%s)</text>
 	</string>
 	<string id="st_coop_menu_players">
 		<text>Игроки: %s из %s</text>
@@ -122,16 +110,16 @@
 		<text>Сессия закрыта.</text>
 	</string>
 	<string id="st_coop_menu_err_nick">
-		<text>Введите ник: 1-32 символа, без кавычек и ;</text>
+		<text>Введи ник: 1-32 символа, без кавычек и ;</text>
 	</string>
 	<string id="st_coop_menu_err_port">
 		<text>Порт - число от 1 до 65535.</text>
 	</string>
 	<string id="st_coop_menu_err_address">
-		<text>Введите адрес хоста: IP или IP:порт.</text>
+		<text>Введи адрес хоста: IP или IP:порт.</text>
 	</string>
 	<string id="st_coop_menu_err_busy">
-		<text>Сначала отключитесь от текущей сессии.</text>
+		<text>Сначала отключись от текущей сессии.</text>
 	</string>
 	<string id="st_coop_menu_reason_ContentMismatch">
 		<text>ваш список модов отличается от хоста</text>
@@ -165,6 +153,69 @@
 	</string>
 	<string id="st_coop_menu_reason_start">
 		<text>не удалось начать</text>
+	</string>
+	<string id="st_coop_menu_subtitle">
+		<text>Зона на двоих - и больше: до %s игроков</text>
+	</string>
+	<string id="st_coop_menu_nick_hint">
+		<text>так тебя увидят напарники</text>
+	</string>
+	<string id="st_coop_menu_port_more">
+		<text>+ Дополнительно: порт %s</text>
+	</string>
+	<string id="st_coop_menu_port_less">
+		<text>- Дополнительно</text>
+	</string>
+	<string id="st_coop_menu_start">
+		<text>С чего начать</text>
+	</string>
+	<string id="st_coop_menu_tile_badge">
+		<text>рекомендуем</text>
+	</string>
+	<string id="st_coop_menu_tile_new">
+		<text>Выбери фракцию и снаряжение - новый мир.\nНапарники выбирают персонажа при входе.</text>
+	</string>
+	<string id="st_coop_menu_tile_load">
+		<text>Любое твоё сохранение из списка.\nНапарники войдут в этот мир.</text>
+	</string>
+	<string id="st_coop_menu_tile_last_none">
+		<text>Сохранений пока нет.\nНачни новую игру.</text>
+	</string>
+	<string id="st_coop_menu_tile_last_bad">
+		<text>Последнее сохранение повреждено.\nВыбери другое через «Загрузить...»</text>
+	</string>
+	<string id="st_coop_menu_open_hint">
+		<text>Сейчас загружена игра?</text>
+	</string>
+	<string id="st_coop_menu_next_title">
+		<text>Что будет дальше</text>
+	</string>
+	<string id="st_coop_menu_next_host_1">
+		<text>Мир загрузится, сессия откроется сама - ты хост.</text>
+	</string>
+	<string id="st_coop_menu_next_host_2">
+		<text>Напарник: «Подключиться», твой адрес, выбор персонажа. Через интернет: открой на роутере UDP-порт %s.</text>
+	</string>
+	<string id="st_coop_menu_next_host_3">
+		<text>Сохраняет только хост; у каждого свой привал.</text>
+	</string>
+	<string id="st_coop_menu_next_join_1">
+		<text>Ты подключаешься по адресу хоста.</text>
+	</string>
+	<string id="st_coop_menu_next_join_2">
+		<text>Выбираешь персонажа: группировку и снаряжение.</text>
+	</string>
+	<string id="st_coop_menu_next_join_3">
+		<text>Входишь в мир хоста и играешь вместе с остальными.</text>
+	</string>
+	<string id="st_coop_menu_pending_title">
+		<text>Ждём загрузки мира</text>
+	</string>
+	<string id="st_coop_menu_addr_host">
+		<text>Адрес для напарника: твой IP, порт %s (UDP)</text>
+	</string>
+	<string id="st_coop_menu_addr_wait">
+		<text>адрес для напарника появится здесь</text>
 	</string>
 	<string id="st_coop_char_title">
 		<text>Новый персонаж</text>
@@ -299,7 +350,7 @@
 		<text>Панель группы</text>
 	</string>
 	<string id="ui_mm_coop_coop_player_party_hud_desc">
-		<text>Показывать других игроков (здоровье, расстояние) справа на экране.</text>
+		<text>Показывать других игроков (здоровье, расстояние, состояние) слева внизу, над своим HUD.</text>
 	</string>
 	<string id="ui_mm_coop_coop_player_player_spots">
 		<text>Метки игроков</text>
