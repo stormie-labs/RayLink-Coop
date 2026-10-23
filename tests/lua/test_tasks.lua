@@ -266,7 +266,8 @@ local function machine(role, self_peer)
 	function CRandomTask:give_task(id, giver)
 		M.on_init[id] = (M.on_init[id] or 0) + 1
 		self.task_info[id] = { id = id, stage = 0, status = "selected", task_giver_id = giver, status_functor = "actor_has_fetch_item" }
-		M.engine_tasks[id] = { state = "in", get_id = function() return id end }
+		M.engine_tasks[id] = { state = "in", get_id = function() return id end,
+			get_title = function() return "title_" .. id end, get_icon_name = function() return nil end }
 	end
 	function CRandomTask:set_task_completed(id) if self.task_info[id] then self.task_info[id].forced_status = "complete" end end
 	function CRandomTask:set_task_failed(id) if self.task_info[id] then self.task_info[id].forced_status = "fail" end end
@@ -308,6 +309,7 @@ local function machine(role, self_peer)
 			if f then f() end
 			tm_instance.task_info[id] = nil
 		elseif state == env.task.fail then
+			env.news_manager.send_task(actor, "fail", tsk) -- the stock task_manager.task_callback sends the fail line itself
 			env.xr_effects.inc_faction_goodwill_to_actor(actor, nil, { "stalker", -25 })
 			tm_instance.task_info[id] = nil
 		end
@@ -320,6 +322,7 @@ local function machine(role, self_peer)
 			if t.state == "in" then
 				if env.task_manager.task_complete(id) then
 					t.state = "done"
+					env.news_manager.send_task(actor, "complete", t) -- bind_stalker_ext.actor_on_task_callback sends the line first
 					env.task_manager.task_callback(t, env.task.completed)
 				elseif env.task_manager.task_fail(id) then
 					t.state = "fail"

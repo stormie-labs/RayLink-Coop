@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop - сообщения в ленту КПК о общем журнале группы (scripts/coop_tasks.script, coop_quests_news.script, coop_quests_pda.script): задание, которое взял или завершил другой игрок, статья энциклопедии, которую открыл другой игрок. %s подставляет скрипт, первый - ник игрока. -->
+<string_table>
+	<string id="st_coop_news_task_new_by">
+		<text>%s взял задание</text>
+	</string>
+	<string id="st_coop_news_task_complete_by">
+		<text>%s выполнил задание</text>
+	</string>
+	<string id="st_coop_news_task_fail_by">
+		<text>%s провалил задание</text>
+	</string>
+	<string id="st_coop_news_task_cancel_by">
+		<text>%s отменил задание</text>
+	</string>
+	<string id="st_coop_news_article_caption">
+		<text>Энциклопедия</text>
+	</string>
+	<string id="st_coop_news_article_by">
+		<text>Новая статья: %s (открыл %s)</text>
+	</string>
+	<string id="st_coop_news_articles_many">
+		<text>Новых статей: %s (открыла группа)</text>
+	</string>
+</string_table>

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop - messages to the player's PDA feed about the group's shared journal (scripts/coop_tasks.script, coop_quests_news.script, coop_quests_pda.script): a task another player took / finished, an encyclopedia article another player opened. %s is filled by the script, the first one is a player's nick. -->
+<string_table>
+	<string id="st_coop_news_task_new_by">
+		<text>%s took a task</text>
+	</string>
+	<string id="st_coop_news_task_complete_by">
+		<text>%s completed a task</text>
+	</string>
+	<string id="st_coop_news_task_fail_by">
+		<text>%s failed a task</text>
+	</string>
+	<string id="st_coop_news_task_cancel_by">
+		<text>%s cancelled a task</text>
+	</string>
+	<string id="st_coop_news_article_caption">
+		<text>Encyclopedia</text>
+	</string>
+	<string id="st_coop_news_article_by">
+		<text>New article: %s (opened by %s)</text>
+	</string>
+	<string id="st_coop_news_articles_many">
+		<text>New articles: %s (opened by the group)</text>
+	</string>
+</string_table>

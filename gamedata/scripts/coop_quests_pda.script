@@ -13,8 +13,10 @@
 	Stashes from PDA messages: the client's reveal is also done by the host (the host decides the
 	content, quests.act "stash"). Opening a stash box on a client asks the host to fill it
 	(treasure_manager.try_spawn_treasure, host-domain callback that does not run on a client).
-	Encyclopedia: an article or note one player unlocks is unlocked for everybody (articles silently,
-	notes with the PDA note signal). Encyclopedia Messages Restored is kept quiet for those.
+	Encyclopedia: an article or note one player unlocks is unlocked for everybody (articles without the stock news,
+	notes with the PDA note signal). Encyclopedia Messages Restored is kept quiet for those. An article another player
+	opened is announced by coop_quests_news.show_article ("New article: ... (opened by <nick>)"), not while this machine
+	is still loading the host's world (docs\MESSAGES.md).
 	Achievements: an achievement one player earns is earned by everybody, with its rewards on each
 	player's own machine (faction unlocks of the local config, rank / reputation); the stashes
 	of "Tourist" are created by the host only. Money is the host's (F2 T6, the host ledger): the stock reward
@@ -349,7 +351,26 @@ local function host_stash(from, t)
 	local state = tm.caches and tm.caches[b]
 	if type(state) == "string" or state == true then return end -- filled or looted already
 	local spot = (t.s == "treasure_searched") and "treasure_searched" or "treasure"
-	tm.set_random_stash(spot, type(t.h) == "string" and t.h or nil, nil, b)
+	-- the stock "treasure coordinates received" line (news_manager.send_treasure(0), called when the spot is added) is the
+	-- reader's, not the host's: sent to the client who read the message (docs\MESSAGES.md)
+	local nm = qc.mod("news_manager")
+	local stock = nm and nm.send_treasure
+	local swapped = type(stock) == "function" and type(from) == "number" and from ~= 0
+	if swapped then
+		nm.send_treasure = function(param)
+			if param == 0 or param == nil then qc.send("treasure", { p = 0 }, from) else return stock(param) end
+		end
+	end
+	local ok, err = pcall(tm.set_random_stash, spot, type(t.h) == "string" and t.h or nil, nil, b)
+	if swapped then nm.send_treasure = stock end
+	if not ok then qc.report(TAG, "reveal stash", err) end
+end
+
+-- Client: the host revealed the stash this player's PDA message points to.
+local function client_on_treasure(t, from)
+	if from ~= 0 or not qc.is_client() then return end
+	local nm = qc.mod("news_manager")
+	if nm and nm.send_treasure then pcall(nm.send_treasure, 0) end
 end
 
 -- Client opened an inventory box: the host fills a revealed stash (its callback does not run here).
@@ -406,7 +427,7 @@ local function silently(fn, ...)
 end
 
 local function apply_ency(s)
-	if type(s) ~= "string" or s == "" or unlocked(s) then return end
+	if type(s) ~= "string" or s == "" or unlocked(s) then return false end
 	ency.applying = true
 	local ok, err
 	if is_note(s) then
@@ -417,6 +438,28 @@ local function apply_ency(s)
 	ency.applying = false
 	if not ok then qc.report(TAG, "unlock " .. s, err) end
 	stats.ency_in = stats.ency_in + 1
+	return ok and unlocked(s)
+end
+
+-- The article's name in this machine's language (the stock news words: UpdateName for artefacts and recipes, then the table).
+local function article_title(s)
+	local enc = qc.mod("ui_pda_encyclopedia_tab")
+	local name = s
+	if enc and type(enc.UpdateName) == "function" then
+		local ok, n = pcall(enc.UpdateName, s)
+		if ok and type(n) == "string" and n ~= "" then name = n end
+	end
+	local ok, text = pcall(game.translate_string, name)
+	return ok and type(text) == "string" and text or name
+end
+
+-- An article another player opened (not a note: those keep the stock note line), shown here as news.
+local function announce_other(s, nick)
+	if is_note(s) or not qc.active() then return end
+	local news = qc.mod("coop_quests_news")
+	if not (news and news.show_article) then return end
+	local ok, err = pcall(news.show_article, article_title(s), nick)
+	if not ok then qc.report(TAG, "article news " .. s, err) end
 end
 
 local function announce_ency(s)
@@ -424,7 +467,7 @@ local function announce_ency(s)
 	if qc.is_client() then
 		if qc.client_live() then qc.send("ency", { s = s }, 0) end
 	elseif qc.host_party() then
-		qc.send("ency", { s = s }, -1)
+		qc.send("ency", { s = s, n = qc.nick_of(0) }, -1)
 	end
 	stats.ency_out = stats.ency_out + 1
 end
@@ -433,12 +476,16 @@ local function on_ency(t, from)
 	if type(t.s) ~= "string" or #t.s > 200 then return end
 	if qc.is_host() then
 		if type(from) ~= "number" or from == 0 then return end
-		apply_ency(t.s)
+		local nick = qc.nick_of(from) -- the host knows who sent it, a client's own word is not taken
+		local fresh = apply_ency(t.s)
+		if fresh then announce_other(t.s, nick) end
 		for _, p in ipairs(qc.players()) do
-			if not p.is_self and p.id ~= from then qc.send("ency", { s = t.s }, p.id) end
+			if not p.is_self and p.id ~= from then qc.send("ency", { s = t.s, n = nick }, p.id) end
 		end
 	elseif from == 0 then
-		apply_ency(t.s)
+		local fresh = apply_ency(t.s)
+		-- applied while this machine loads the host's world: silent (no spam at join)
+		if fresh and qc.client_live() then announce_other(t.s, t.n) end
 	end
 end
 
@@ -534,6 +581,9 @@ local function grant_achv_money(peer, name)
 	if called and ok then
 		achv_paid[key] = true
 		stats.achv_paid = stats.achv_paid + 1
+		-- the "money received" line on his machine (the ledger sends only the balance)
+		local tasks = qc.mod("coop_tasks")
+		if tasks and tasks.money_line then pcall(tasks.money_line, peer, money.amount) end
 		return true
 	end
 	qc.log(TAG, "! %s money for #%d refused: %s", name, peer, tostring(called and why or ok))
@@ -587,8 +637,29 @@ local function retry_claims()
 	end
 end
 
--- The achievement for this machine's actor, rewards included (its own *_rewards function).
-local function apply_achv(name)
+-- Runs fn with the achievement toast of the stock game_statistics.actor_on_achievement_earned (news_manager.send_tip)
+-- naming the player who earned it: "<nick>: <text>". The earner's own machine does not come here.
+local function with_earner(nick, fn, ...)
+	local nm = qc.mod("news_manager")
+	local news = qc.mod("coop_quests_news")
+	local orig = nm and nm.send_tip
+	nick = news and news.clean_nick and news.clean_nick(nick)
+	if not (nick and type(orig) == "function") then return pcall(fn, ...) end
+	nm.send_tip = function(actor, news_id, ...)
+		local text = news_id
+		if type(news_id) == "string" then
+			local ok, tt = pcall(game.translate_string, news_id)
+			text = ok and type(tt) == "string" and tt or news_id
+		end
+		return orig(actor, nick .. ": " .. tostring(text), ...)
+	end
+	local res = { pcall(fn, ...) }
+	nm.send_tip = orig
+	return unpack(res)
+end
+
+-- The achievement for this machine's actor, rewards included (its own *_rewards function). `nick`: who earned it.
+local function apply_achv(name, nick)
 	if has_achv(name) then return end
 	local ga = qc.mod("game_achievements")
 	local f = type(ga) == "table" and ga[name .. "_rewards"]
@@ -600,13 +671,13 @@ local function apply_achv(name)
 			local tm = qc.mod("treasure_manager")
 			local crs = tm and tm.create_random_stash
 			if crs then tm.create_random_stash = function() end end
-			ok, err = pcall(f)
+			ok, err = with_earner(nick, f)
 			if crs then tm.create_random_stash = crs end
 		else
-			ok, err = pcall(f)
+			ok, err = with_earner(nick, f)
 		end
 	else
-		ok, err = pcall(SendScriptCallback, "actor_on_achievement_earned", name, "")
+		ok, err = with_earner(nick, SendScriptCallback, "actor_on_achievement_earned", name, "")
 	end
 	achv_applying = false
 	if not ok then qc.report(TAG, "achievement " .. name, err) end
@@ -620,7 +691,7 @@ local function on_earned(name)
 	if qc.is_client() then
 		if qc.client_live() then qc.send("achv", { a = name }, 0) end
 	elseif qc.host_party() then
-		qc.send("achv", { a = name }, -1)
+		qc.send("achv", { a = name, n = qc.nick_of(0) }, -1)
 	end
 	stats.achv_out = stats.achv_out + 1
 end
@@ -629,13 +700,14 @@ local function on_achv(t, from)
 	if type(t.a) ~= "string" or not t.a:match("^[%w_]+$") then return end
 	if qc.is_host() then
 		if type(from) ~= "number" or from == 0 then return end
-		apply_achv(t.a)
+		local nick = qc.nick_of(from) -- the host knows who sent it, a client's own word is not taken
+		apply_achv(t.a, nick)
 		for _, p in ipairs(qc.players()) do
-			if not p.is_self and p.id ~= from then qc.send("achv", { a = t.a }, p.id) end
+			if not p.is_self and p.id ~= from then qc.send("achv", { a = t.a, n = nick }, p.id) end
 		end
 		grant_achv_money(from, t.a) -- the earner's own stock reward lost its money on his machine
 	elseif from == 0 then
-		apply_achv(t.a)
+		apply_achv(t.a, t.n)
 	end
 end
 
@@ -687,6 +759,7 @@ function on_game_start()
 	qc.on("achv", on_achv, TAG)
 	qc.on("achv_got", on_achv_got, TAG)
 	qc.on("achv_ack", on_achv_ack, TAG)
+	qc.on("treasure", client_on_treasure, TAG)
 	qc.register_host_action("stash", host_stash)
 	qc.register_host_action("box", host_box)
 	RegisterScriptCallback("actor_on_update", retry_claims)

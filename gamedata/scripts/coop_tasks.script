@@ -32,7 +32,11 @@
 	    current storyline task, ...) is the host's: mirrored to clients (coop_tv); a client's save_var of
 	    such a key goes to the host (coop_tvd, counters as deltas), so a giver's "has a task for you" state
 	    is the same for everybody.
-
+	  - Messages (docs\MESSAGES.md): the host's news_manager.send_task ("new" / "updated" / "complete" / "fail" / "reversed")
+	    goes to every client as event coop_tn with the player who caused it. A client shows the stock line for its own
+	    action and for an event nobody caused, "<nick> took / completed / failed / cancelled a task" (coop_quests_news)
+	    for another player's; the host does the same for a client's action. The client's own send_task for a group
+	    task is swallowed: the engine fires the actor's task callback for the copy it applies ("new"), a second line.
 	API for scripts (any machine):
 	  coop_tasks.party_has(section, count, min_condition) -> bool   (also coop.party_has when not set)
 	  coop_tasks.party_count(section, min_condition)      -> number (multi-use items count their uses)
@@ -51,6 +55,11 @@
 	  coop_tasks.in_reward_scope() -> true while such effects belong to one player (host)
 	  coop_tasks.party_take(section, amount) -> removes that many items from the group (host), count
 	  coop_tasks.give_to_peer(peer, money, sections) -> money / items for one player (host)
+	  coop_tasks.news_actor(kind, task_id) -> peer, cancelled: the player whose action caused a task event ("new" |
+	    "complete" | "fail"; 0 = the host, nil = nobody: a script, a timer). The one rule the task lines and any
+	    other report of "who did it" (docs\MESSAGES.md, docs\ABSENT_REWARDS.md) share. Host only.
+	  coop_tasks.money_line(peer, n) -> the "money received" line on that player's machine for money the host
+	    changed outside a task reward (the achievement money of coop_quests_pda). Host only.
 	  coop_tasks.set_local_task(task_id) -> a personal task (xrRazom xrr_local_tasks): given, checked
 	    and finished on the machine that has it, never sent to the host or mirrored
 	Called by the engine: coop_tasks.host_note(task_id, "taker"|"finisher", peer)  (coop_story.cpp requests)
@@ -67,7 +76,7 @@ local EV_STATE = "coop_tl" -- host -> client(s): Lua state of one task
 local EV_LIST = "coop_tl_list" -- host -> client(s): ids + digests of all tasks
 local EV_SYNC = "coop_tl_req" -- client -> host: send me everything
 local EV_REWARD = "coop_trw" -- host -> one client: money / news / personal effect for this player
-local EV_NEWS = "coop_tn" -- host -> clients: a task was completed / failed
+local EV_NEWS = "coop_tn" -- host -> clients: a task line (new / updated / complete / fail / reversed) and who caused it
 local EV_VARS = "coop_tv" -- host -> client(s): the group's shared task bookkeeping vars (whole set)
 local EV_VAR = "coop_tvd" -- client -> host: this client's dialog changed one of them
 
@@ -101,6 +110,7 @@ end
 local stats = {
 	req_out = 0, req_in = 0, refused = 0, state_out = 0, state_in = 0, lists = 0, syncs = 0,
 	rewards_routed = 0, rewards_in = 0, party_moves = 0, party_releases = 0, stage_by_party = 0, errors = 0,
+	news_out = 0, news_in = 0, news_swallowed = 0, news_limited = 0,
 }
 
 local function report(what, err)
@@ -423,6 +433,9 @@ local host = {
 	taker = {}, -- id -> peer that took the task (0 = host)
 	finisher = {}, -- id -> peer that turned it in / cancelled it, until the task callback uses it
 	taker_note = {}, -- id -> peer told by the engine (coop_story) right before the give
+	given_by = {}, -- id -> peer whose action gave the task (0 = the host's dialog); nil: a script gave it (news only)
+	news_seen = {}, -- "<kind> <id>" -> time of the last tn event sent (dedupe)
+	news_count = 0,
 	exec_peer = nil, -- peer whose request is being executed
 	next_scan = 0,
 	next_list = 0,
@@ -629,6 +642,7 @@ function ops.give(tm, id, t, from)
 	if b and type(t.bt) == "number" then b[id] = t.bt end
 	local giver = tonumber(t.g) -- host numbering == local numbering on the host
 	host.taker[id] = from
+	host.given_by[id] = from
 	host.finisher[id] = nil
 	tm:give_task(id, giver)
 	local given = tm.task_info[id] ~= nil
@@ -734,6 +748,16 @@ local function grant_money(peer, n)
 	return true
 end
 
+-- Host: the "money received" line on a player's machine for money the host changed outside a task reward (achievement
+-- money, coop_quests_pda); the money itself is the ledger's.
+function money_line(peer, n)
+	if not is_host() then return false end
+	n = tonumber(n)
+	if not (n and peer ~= nil and tonumber(peer) ~= 0) then return false end
+	send_reward(tonumber(peer), { k = "mn", n = n })
+	return true
+end
+
 local function online_peers()
 	local list = { 0 }
 	for _, p in ipairs(players()) do
@@ -799,18 +823,21 @@ local function host_task_callback(orig, tsk, state)
 		return orig(tsk, state)
 	end
 	local rcpt = recipient(id)
+	-- messages: the player who asked for this result (nil: a script, a timer), and whether it was a cancel
+	local by = host.finisher[id]
+	local tm = tmgr()
+	local rtask = tm and tm.task_info and tm.task_info[id]
+	local cancelled = type(rtask) == "table" and rtask.cancelled_by_actor == true
 	host.finisher[id] = nil
-	if has_clients() then
-		send(EV_NEWS, pack({ i = id, ty = state == task.completed and "complete" or "fail" }), -1)
-	end
 	if rcpt ~= 0 and not avatar_obj(rcpt) then rcpt = 0 end -- left the game: the host takes it
 	local share = state == task.completed and share_rewards()
 	-- W5: also for the host's own task (rcpt 0): without the reward scope the story wrapper
 	-- (coop_quests_story) took its on_complete rewards for a story condlist and paid every client too
 	local prev = ctx
-	ctx = { task = id, rcpt = rcpt, share = share }
+	ctx = { task = id, rcpt = rcpt, share = share, by = by, cancelled = cancelled }
 	local ok, err = pcall(orig, tsk, state)
 	ctx = prev
+	host.given_by[id] = nil
 	if not ok then report("task callback " .. id, err) end
 	if rcpt ~= 0 then log("rewards of '%s' go to #%s%s", id, tostring(rcpt), share and " (money shared)" or "") end
 end
@@ -1578,12 +1605,197 @@ local function client_on_reward(payload, from)
 	end
 end
 
+-------------------------------------------------------------------------------
+-- Messages of the shared journal (docs\MESSAGES.md)
+-------------------------------------------------------------------------------
+-- The stock lines "New task" / "Task updated" / "Task completed" / "Task failed" / "Task reversed" are
+-- news_manager.send_task. The host's scripts call it ("new" and "complete" from the actor's task callback the engine fires
+-- for a state it sets itself, "fail" from task_manager.task_callback, "updated" / "reversed" from the task objects). On a
+-- client the engine applies the host's copy of a task silently (a finished one without any callback) and fires the callback
+-- for a new one once, so the client's own send_task is dropped for a group task and the host's call is sent to every
+-- client instead, as event coop_tn: kind, task id, title, icon and the player who caused it. One line per event per
+-- machine. The line the one who did it sees is the stock one; the others see "<nick> took a task" and so on
+-- (coop_quests_news.show_task), the host included when a client did it.
+local NEWS_KINDS = { new = true, updated = true, complete = true, fail = true, reversed = true }
+local NEWS_NICK_KINDS = { new = true, complete = true, fail = true } -- updated / reversed: nobody did it
+local NEWS_DEDUP_MS = { updated = 3000 }
+local NEWS_DEDUP_DEFAULT_MS = 1500
+local NEWS_LIMIT, NEWS_WINDOW_MS, NEWS_SEEN_MAX = 20, 10000, 200 -- lines a machine takes / sends in a window
+local news_out_win = { at = 0, n = 0 }
+local news_in_win = { at = 0, n = 0 }
+local orig_send_task = nil -- news_manager.send_task as it was before the wrapper
+
+local function news_mod() return rawget(_G, "coop_quests_news") end
+
+local function nick_of(peer)
+	for _, p in ipairs(players()) do
+		if p.id == peer and type(p.nick) == "string" and p.nick ~= "" then return p.nick end
+	end
+	return "#" .. tostring(peer)
+end
+
+local function cut(s, n)
+	s = type(s) == "string" and s or ""
+	if #s > n then s = s:sub(1, n) end
+	return s
+end
+
+local function window_ok(win)
+	local t = now()
+	if t - win.at >= NEWS_WINDOW_MS or t < win.at then win.at, win.n = t, 0 end
+	if win.n >= NEWS_LIMIT then return false end
+	win.n = win.n + 1
+	return true
+end
+
+local function task_id_of(tsk)
+	local ok, id = pcall(function() return tsk:get_id() end)
+	if ok and type(id) == "string" and id ~= "" then return id end
+	return nil
+end
+
+local function task_text(tsk)
+	local title, icon
+	pcall(function() title = tsk:get_title() end)
+	pcall(function() icon = tsk:get_icon_name() end)
+	return type(title) == "string" and title or "", (type(icon) == "string" and icon ~= "") and icon or nil
+end
+
+-- Host: the player whose action caused this event (a peer, 0 = the host), or nil: nobody (a script, a timer).
+-- Second value: a "fail" the player asked for (cancel).
+local function event_actor(kind, id)
+	if kind == "new" then return host.given_by[id], false end
+	if kind == "complete" then
+		local by = ctx and ctx.task == id and ctx.by or nil
+		if by == nil then by = host.finisher[id] end
+		if by == nil then by = host.given_by[id] end -- a script completed it: the one who took it
+		return by, false
+	end
+	if kind == "fail" then
+		if ctx and ctx.task == id then return ctx.by, ctx.cancelled == true end
+		local tm = tmgr()
+		local rtask = tm and tm.task_info and tm.task_info[id]
+		return host.finisher[id], type(rtask) == "table" and rtask.cancelled_by_actor == true
+	end
+	return nil, false
+end
+
+-- Host: the event to every client (deduped, limited). False if it was not sent.
+local function news_out(kind, id, title, icon, by, cancelled)
+	local key = kind .. " " .. id
+	local t = now()
+	local last = host.news_seen[key]
+	if last and t >= last and t - last < (NEWS_DEDUP_MS[kind] or NEWS_DEDUP_DEFAULT_MS) then return false end
+	if not window_ok(news_out_win) then
+		stats.news_limited = stats.news_limited + 1
+		return false
+	end
+	if host.news_count >= NEWS_SEEN_MAX then host.news_seen, host.news_count = {}, 0 end
+	if host.news_seen[key] == nil then host.news_count = host.news_count + 1 end
+	host.news_seen[key] = t
+	local rec = { k = kind, i = id, ti = cut(title, 160), ic = icon and cut(icon, 100) or nil }
+	if by ~= nil then
+		rec.by = by
+		rec.n = cut(nick_of(by), 32)
+	end
+	if cancelled then rec.c = true end
+	send(EV_NEWS, pack(rec), -1)
+	stats.news_out = stats.news_out + 1
+	return true
+end
+
+-- Host, a send_task call: the event to the clients; true if the host's own line was shown here (the nick variant for
+-- a client's action), false to let the stock line follow.
+local function host_news(kind, tsk)
+	local id = task_id_of(tsk)
+	if not id or is_local(id) then return false end
+	local by, cancelled = event_actor(kind, id)
+	local title, icon = task_text(tsk)
+	news_out(kind, id, title, icon, by, cancelled)
+	if by ~= nil and by ~= 0 and NEWS_NICK_KINDS[kind] then
+		local n = news_mod()
+		if n and n.show_task then return n.show_task(kind, title, icon, nick_of(by), cancelled) == true end
+	end
+	return false
+end
+
+function news_actor(kind, id)
+	if not is_host() or type(id) ~= "string" then return nil, false end
+	return event_actor(kind, id)
+end
+
+local function wrap_send_task(orig)
+	return function(actor, kind, tsk, ...)
+		if NEWS_KINDS[kind] then
+			if is_client() then
+				local id = task_id_of(tsk)
+				if id and not is_local(id) then
+					stats.news_swallowed = stats.news_swallowed + 1
+					return true -- the host's event carries the group's line
+				end
+			elseif is_host() and has_clients() then
+				local ok, shown = pcall(host_news, kind, tsk)
+				if not ok then
+					report("task news", shown)
+				elseif shown then
+					return true
+				end
+			end
+		end
+		return orig(actor, kind, tsk, ...)
+	end
+end
+
+-- Client: the stock line for a task the host announced (the stock function gets a stand-in for the engine task).
+local function show_stock(kind, id, title, icon)
+	local send_task = orig_send_task
+	if not send_task then
+		local nm = rawget(_G, "news_manager") or news_manager
+		send_task = nm and nm.send_task
+	end
+	if type(send_task) ~= "function" then return end
+	local stand_in = { id = id }
+	function stand_in.get_id() return id end
+	function stand_in.get_title() return title end
+	function stand_in.get_icon_name() return icon end
+	local ok, err = pcall(send_task, db.actor, kind, stand_in)
+	if not ok then
+		-- a mod's override of the stock function failed (e.g. in a dialog): the line is still shown
+		report("task line " .. kind .. " " .. id, err)
+		local n = news_mod()
+		if n and n.show_plain then n.show_plain(kind, title, icon) end
+	end
+end
+
 local function client_on_news(payload, from)
-	if from ~= 0 or not is_client() or not db.actor then return end
+	if from ~= 0 or not client_live() or not db.actor then return end
 	local t = unpack_payload(payload)
-	if type(t.i) ~= "string" then return end
-	local tsk = db.actor:get_task(t.i, false)
-	if tsk then news_manager.send_task(db.actor, t.ty == "fail" and "fail" or "complete", tsk) end
+	local kind, id = t.k, t.i
+	if not NEWS_KINDS[kind] or type(id) ~= "string" or id == "" or #id > 128 or is_local(id) then return end
+	if not window_ok(news_in_win) then
+		stats.news_limited = stats.news_limited + 1
+		return
+	end
+	stats.news_in = stats.news_in + 1
+	local title = cut(t.ti, 160)
+	local icon = (type(t.ic) == "string" and t.ic ~= "") and cut(t.ic, 100) or nil
+	local by = tonumber(t.by)
+	if by ~= nil and by ~= self_peer() and NEWS_NICK_KINDS[kind] then
+		local n = news_mod()
+		local nick = type(t.n) == "string" and t.n ~= "" and t.n or nick_of(by)
+		if n and n.show_task and n.show_task(kind, title, icon, nick, t.c == true) then return end
+	end
+	show_stock(kind, id, title, icon)
+end
+
+local function patch_task_news()
+	local nm = rawget(_G, "news_manager") or news_manager
+	if not (nm and type(nm.send_task) == "function") then
+		log("! news_manager.send_task not found: the group gets no task lines")
+		return
+	end
+	orig_send_task = nm.send_task
+	nm.send_task = wrap_send_task(orig_send_task)
 end
 
 -------------------------------------------------------------------------------
@@ -1633,6 +1845,11 @@ local function patch_task_manager()
 				return
 			end
 			if is_host() and type(id) == "string" then
+				-- news: a player's action gave it (a request, the host's own dialog, the reward of a player's task)
+				local who = host.exec_peer or host.taker_note[id]
+				if who == nil and ctx and ctx.rcpt ~= nil and ctx.rcpt ~= 0 then who = ctx.rcpt end
+				if who == nil and host_talking() then who = 0 end
+				host.given_by[id] = who
 				-- a follow-up task given by a reward belongs to the player who earned it
 				host.taker[id] = host.exec_peer or host.taker_note[id] or (ctx and ctx.rcpt) or 0
 				host.taker_note[id] = nil
@@ -1810,6 +2027,8 @@ function print_status()
 	log("rewards routed %d received %d, share %s | group items: moved %d released %d, stages %d | errors %d",
 		stats.rewards_routed, stats.rewards_in, tostring(share_rewards()), stats.party_moves, stats.party_releases,
 		stats.stage_by_party, stats.errors)
+	log("task lines: sent %d, received %d, own engine lines dropped %d, limited %d", stats.news_out, stats.news_in,
+		stats.news_swallowed, stats.news_limited)
 	if is_host() then
 		for id, peer in pairs(host.taker) do
 			if peer ~= 0 and tm and tm.task_info and tm.task_info[id] then log("  '%s' taken by #%s", id, tostring(peer)) end
@@ -1829,6 +2048,7 @@ function on_game_start()
 		patched = true
 		local steps = {
 			{ "task_manager", patch_task_manager },
+			{ "task news", patch_task_news },
 			{ "rewards", patch_rewards },
 			{ "group items", patch_party_items },
 			{ "shared vars", patch_shared_vars },

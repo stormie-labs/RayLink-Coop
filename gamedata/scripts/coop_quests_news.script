@@ -1,0 +1,163 @@
+--[[
+	Anomaly Coop - messages about the group's shared journal (gamedata\scripts\coop_quests_news.script), docs\MESSAGES.md.
+
+	The journal of tasks, the encyclopedia and the achievements are one for the whole group, but every player reads his
+	own PDA feed. This script is the presentation half of those messages (the senders are coop_tasks.script and
+	coop_quests_pda.script):
+	  - show_task(kind, title, icon, nick, cancelled): "<nick> took / completed / failed / cancelled a task" for a task
+	    event another player caused. Same icon, same PDA sound, same ten seconds as the stock news_manager.send_task;
+	    the one who did it, and an event nobody caused, still get the stock line from the sender.
+	  - show_plain(kind, title, icon): the stock line (same caption, icon and sound) drawn here, for when the stock
+	    news_manager.send_task raised an error (a mod's override may call the engine with arguments it does not take).
+	  - show_article(title, nick): "New article: <title> (opened by <nick>)" with the stock encyclopedia sound. At most
+	    three lines in ten seconds; the rest of a burst becomes one "New articles: N" line when the window ends.
+	  - clean_nick(s): a nick that came from the network, cut to 32 printable characters.
+	Nothing here changes the game outside a co-op session.
+--]]
+
+local tostring, tonumber, type, pcall = tostring, tonumber, type, pcall
+local string_format = string.format
+
+local MAX_NICK = 32
+local TASK_MS = 10000 -- stock news_manager.send_task shows a task line this long
+local ARTICLE_MS = 5000
+local BURST_LINES = 3 -- single article lines in one window
+local BURST_WINDOW_MS = 10000
+
+-- kind (the caption of the nick variant) -> string id, English fallback
+local TASK_LINES = {
+	new = { "st_coop_news_task_new_by", "%s took a task" },
+	complete = { "st_coop_news_task_complete_by", "%s completed a task" },
+	fail = { "st_coop_news_task_fail_by", "%s failed a task" },
+	cancel = { "st_coop_news_task_cancel_by", "%s cancelled a task" },
+}
+
+-- The captions of the stock news_manager.send_task
+local PLAIN_CAPTIONS = {
+	new = "general_new_task", complete = "general_complete_task", fail = "general_fail_task",
+	reversed = "general_reverse_task", updated = "general_update_task",
+}
+
+local stats = { task_lines = 0, plain_lines = 0, article_lines = 0, article_sums = 0 }
+
+local function tr(id, fallback)
+	local g = rawget(_G, "game")
+	if g and g.translate_string then
+		local ok, s = pcall(g.translate_string, id)
+		if ok and type(s) == "string" and s ~= "" and s ~= id then return s end
+	end
+	return fallback or id
+end
+
+-- string.format with the translated text; a stray % in a translation cannot break the line
+local function fill(id, fallback, ...)
+	local fmt = tr(id, fallback)
+	local ok, s = pcall(string_format, fmt, ...)
+	if ok then return s end
+	local ok2, s2 = pcall(string_format, fallback, ...)
+	return ok2 and s2 or fmt
+end
+
+local function play(snd_id)
+	local snd = rawget(_G, "xr_sound")
+	if snd and snd.set_sound_play then pcall(snd.set_sound_play, rawget(_G, "AC_ID") or 0, snd_id) end
+end
+
+local function play_file(path)
+	local uo = rawget(_G, "utils_obj")
+	if uo and uo.play_sound then pcall(uo.play_sound, path) end
+end
+
+local function feed(caption, text, icon, ms)
+	local actor = db and db.actor
+	if not actor then return false end
+	local ok = pcall(function() actor:give_game_news(caption, text, icon, 0, ms) end)
+	return ok
+end
+
+-- A nick that came over the network: printable, 32 characters at most, nil if nothing is left.
+function clean_nick(s)
+	if type(s) ~= "string" then return nil end
+	s = s:gsub("[%c%%]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+	if #s > MAX_NICK then s = s:sub(1, MAX_NICK) end
+	if s == "" then return nil end
+	return s
+end
+
+-------------------------------------------------------------------------------
+-- Tasks
+-------------------------------------------------------------------------------
+-- The line for a task event another player caused. kind: new | complete | fail (cancelled = true for a fail the player
+-- asked for). false when this kind has no nick variant (updated, reversed: the stock line is right) or nobody is named.
+function show_task(kind, title, icon, nick, cancelled)
+	nick = clean_nick(nick)
+	local line = TASK_LINES[(kind == "fail" and cancelled) and "cancel" or kind]
+	if not (line and nick) then return false end
+	local caption = fill(line[1], line[2], nick)
+	local text = tr(tostring(title or ""), tostring(title or "")) .. "."
+	play("pda_task")
+	local shown = feed(caption, text, icon or "ui_iconsTotal_storyline", TASK_MS)
+	if shown then stats.task_lines = stats.task_lines + 1 end
+	return shown
+end
+
+-- The stock line of a task event, drawn here (see the header).
+function show_plain(kind, title, icon)
+	local caption_id = PLAIN_CAPTIONS[kind]
+	if not caption_id then return false end
+	play("pda_task")
+	local shown = feed(tr(caption_id, caption_id), tr(tostring(title or ""), tostring(title or "")) .. ".",
+		icon or "ui_iconsTotal_storyline", kind == "updated" and 5000 or TASK_MS)
+	if shown then stats.plain_lines = stats.plain_lines + 1 end
+	return shown
+end
+
+-------------------------------------------------------------------------------
+-- Encyclopedia
+-------------------------------------------------------------------------------
+local art = { window_at = 0, lines = 0, extra = 0 }
+
+local function article_summary()
+	if art.extra <= 0 then return end
+	local n = art.extra
+	art.extra = 0
+	stats.article_sums = stats.article_sums + 1
+	feed(tr("st_coop_news_article_caption", "Encyclopedia"), fill("st_coop_news_articles_many", "New articles: %s (opened by the group)", tostring(n)),
+		"ui_inGame2_Poslednie_razrabotki", ARTICLE_MS)
+end
+
+-- "New article" for an article another player opened. `title` is the article's text (already translated).
+function show_article(title, nick)
+	local t = time_global()
+	if t - art.window_at >= BURST_WINDOW_MS or t < art.window_at then
+		article_summary()
+		art.window_at, art.lines = t, 0
+	end
+	if art.lines >= BURST_LINES then
+		art.extra = art.extra + 1
+		return false
+	end
+	art.lines = art.lines + 1
+	nick = clean_nick(nick) or "?"
+	local shown = feed(tr("st_coop_news_article_caption", "Encyclopedia"),
+		fill("st_coop_news_article_by", "New article: %s (opened by %s)", tostring(title or ""), nick),
+		"ui_inGame2_Poslednie_razrabotki", ARTICLE_MS)
+	if shown then
+		stats.article_lines = stats.article_lines + 1
+		play_file("device\\pda\\pda_guide_2")
+	end
+	return shown
+end
+
+local function tick()
+	if art.extra > 0 and time_global() - art.window_at >= BURST_WINDOW_MS then article_summary() end
+end
+
+function print_status()
+	printf("[coop-news] task lines for other players %d, plain %d | article lines %d, summaries %d", stats.task_lines,
+		stats.plain_lines, stats.article_lines, stats.article_sums)
+end
+
+function on_game_start()
+	RegisterScriptCallback("actor_on_update", tick)
+end
