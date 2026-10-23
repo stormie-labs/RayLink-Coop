@@ -712,7 +712,9 @@ TEST(limits_client_rate_rules)
 		{Msg::PlayerState, 64, 12}, {Msg::PlayerWounded, 16, 250}, {Msg::PlayerRevive, 8, 750}, {Msg::PlayerDied, 8, 500},
 		{Msg::Chat, 20, 125},
 		// F2 T12b: ids a client gives back (busy there, or its create was refused), paced by the client at 4 a second
-		{Msg::IdLeaseAck, 8, 250}};
+		{Msg::IdLeaseAck, 8, 250},
+		// F3a: a player leaves his level (one request per exit he steps into), and says his loading screen is up
+		{Msg::LevelMove, 4, 1000}, {Msg::LoadReady, 4, 1000}};
 	for (const Expected& e : expected)
 	{
 		const limits::RateRule* rule = nullptr;
@@ -1114,6 +1116,7 @@ const char* sender_name(MsgSender s)
 	case MsgSender::Either: return "Either";
 	case MsgSender::HostOnly: return "HostOnly";
 	case MsgSender::ClientOnly: return "ClientOnly";
+	case MsgSender::TrunkOnly: return "TrunkOnly";
 	}
 	return "?";
 }
@@ -1130,6 +1133,7 @@ struct Direction
 constexpr MsgSender kHost = MsgSender::HostOnly;
 constexpr MsgSender kClient = MsgSender::ClientOnly;
 constexpr MsgSender kBoth = MsgSender::Either;
+constexpr MsgSender kTrunk = MsgSender::TrunkOnly;
 constexpr Direction kDirections[] = {
 	// session / join / world lifecycle
 	{Msg::JoinRequest, kClient},
@@ -1222,6 +1226,24 @@ constexpr Direction kDirections[] = {
 	{Msg::RestSleep, kHost},
 	{Msg::DeathMarker, kHost},
 	{Msg::NewCharacter, kClient},
+	// F3a split levels (test_protocol_f3a.cpp): the world server's, the trunk's (map server -> world server) and a
+	// player's two requests
+	{Msg::LevelMap, kHost},
+	{Msg::LevelMove, kClient},
+	{Msg::LevelMoveResult, kHost},
+	{Msg::LevelFlush, kHost},
+	{Msg::LevelSnapshot, kTrunk},
+	{Msg::LevelEntity, kTrunk},
+	{Msg::LevelXferUp, kTrunk},
+	{Msg::LevelXferDown, kHost},
+	{Msg::LevelBrain, kHost},
+	{Msg::LevelHash, kTrunk},
+	{Msg::LevelResync, kHost},
+	{Msg::Tunnel, kBoth}, // host process <-> map server, both ways
+	{Msg::MapServerState, kTrunk},
+	{Msg::MapServerOrder, kHost},
+	{Msg::LoadWait, kHost},
+	{Msg::LoadReady, kClient},
 	// scripting and diagnostics
 	{Msg::ScriptEvent, kBoth},
 	{Msg::StateDumpRequest, kClient},

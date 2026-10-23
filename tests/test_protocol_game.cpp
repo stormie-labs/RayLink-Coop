@@ -84,9 +84,10 @@ TEST(protocol_game_offer_bad_faction_rejected)
 	}
 }
 
-TEST(protocol_game_protocol_is_10)
+TEST(protocol_game_protocol_is_11)
 {
-	// 10: TransitionVote carries an op, TransitionState (host -> all) is new (the waiting point of a level change); a
-	// protocol 9 peer is refused at the handshake. 9: CharOffer ends with `str faction` (the world's).
-	CHECK_EQ(kProtocolVersion, 10u);
+	// 11 (F3a, split levels): Msg 0x01D0..0x01DF, Hello carries a role and a token (test_protocol_f3a.cpp); a protocol 10
+	// peer is refused at the handshake. 10: TransitionVote carries an op, TransitionState (host -> all) is new (the waiting
+	// point of a level change). 9: CharOffer ends with `str faction` (the world's).
+	CHECK_EQ(kProtocolVersion, 11u);
 }
