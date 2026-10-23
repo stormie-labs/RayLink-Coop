@@ -18,19 +18,30 @@
 	     second cut here would make the penalty double. money_pct is only for the text.
 	   - Rank (rank_pct, host rule coop_death_rank, 0 = off): the rank is cut to floor(rank * (100 - rank_pct) / 100), a
 	     positive reputation the same way (a bad reputation is not made better by dying). Off by default.
-	   - Once per death: the order of the host can reach the owner twice in the RTT window (T8 review M-1, the engine cuts
-	     most of it by the death number); a coop_respawned within 20 s of the one that was acted on changes nothing but the
-	     tip, so the rank is never cut twice for one death.
+	   - Once per fall (R1 I-1, Ruling F3-12): the fifth argument seq is the number of the fall of the owner's actor. The
+	     order of the host can reach the owner twice in the RTT window (T8 review M-1): the same seq again is the same fall
+	     and changes nothing but the tip; another seq is a new fall and is acted on however soon after the last one it comes
+	     (a short respawn delay). The numbers belong to one actor, a new one (level change, load) counts from 0 again, so
+	     they are forgotten when a world is entered. Known limit: the owner applied the order and the world changed before
+	     the host heard of it (~1e-4 a death, T8 review): the new actor's debt order carries seq 0, nothing connects it to
+	     the old fall and it is acted on again. An engine without the fifth argument: every call is acted on.
+	   - The amount the host took does not reach the owner (no field in MoneyBalance), so the text says "up to money_pct %".
 
 	2. Death marks, coop_death_marker(player_local_id, marker_local_id, "drop" | "corpse") - fired by the engine on every
-	   machine, the host's too (T9): the marker is the first item that fell (drop) or the stash at the body (corpse). A PDA spot
+	   machine, the host's too (T9), but only the HOST sets, removes and restores the spots (R1 M-2, M-3): the host replicates
+	   its PDA spots to every client (coop_story.cpp on_spot_added -> MapSpot, and the whole list for a player who joins or
+	   loads a world), secondary_task_location is not one of the local types. A spot a client sets goes to the host as a
+	   request: when the host has the spot already it is ignored, but when the host's mark is gone by then (picked up, emptied)
+	   the host creates the client's spot as its own, with the client's name on the hint, and nothing here would ever remove
+	   it; and the host refuses a client's removal of a spot the host placed. So the client sets nothing. The hint is the
+	   host's text (its language). The marker is the first item that fell (drop) or the stash at the body (corpse). A PDA spot
 	   of the stock type secondary_task_location (the one the Soulslike mode uses; deadbody_location of map_spots_relations.xml
 	   has a minimap entry only) with the nick of the player who died, set with level.map_add_object_spot - NOT the _ser
 	   variant: that one is written to the save and would outlive the thing it marks. The spot goes when the object has a
 	   parent (somebody picked it up), is gone from the world, or - a stash - has been emptied; it is looked at once a second.
-	   The callback queue of the engine is shared and bounded (64), a lost callback is not sent again, and a player who joins
-	   later never gets it: when a world is entered (actor_on_first_update) the marks are set again, and the world is searched
-	   for stashes of the section coop_death_stash. A corpse stash found that way is marked without a nick (the stash does not
+	   The callback queue of the engine is shared and bounded (64) and a lost callback is not sent again: when the host enters a
+	   world (actor_on_first_update) the marks are set again, and the world is searched (once, on the host only) for stashes of
+	   the section coop_death_stash. A player who joins later gets the host's spots with the list the story sync sends. A corpse stash found that way is marked without a nick (the stash does not
 	   say whose it is). A "drop" leaves no trace in the world, so a drop mark lives as long as this Lua state does (it
 	   survives a level change, not a reconnect): known limit.
 	   A spot of that type that is already on the object (a quest mark of a mod) is left as it is and not removed by us.
@@ -50,7 +61,7 @@ local POWER_TICK_MS = 5000 -- other scripts raise the ceiling: put it back
 local FACTOR_TICK_MS = 1000
 local FACTOR_MIN = 0.2 -- the blur never fades below this before it ends
 local MAX_CONTUSION_S = 86400
-local DEDUP_MS = 20000 -- the same death reaching the owner twice (T8 review M-1)
+local MAX_HANDLED = 256 -- fall numbers kept per world
 local TIP_SECONDS = 6
 local NEWS_MS = 15000
 
@@ -75,6 +86,12 @@ local function in_session()
 	if not api then return false end
 	local ok, active = pcall(api.is_active)
 	return ok and active == true
+end
+
+local function is_host()
+	if not in_session() then return false end
+	local ok, host = pcall(api.is_host)
+	return ok and host == true
 end
 
 -------------------------------------------------------------------------------
@@ -140,7 +157,8 @@ end
 -- Contusion
 -------------------------------------------------------------------------------
 local contusion = nil -- { ends, total (ms), next_power, next_factor } | nil
-local last_respawn = nil -- time_global() of the respawn that was acted on
+local handled = {} -- seq of the falls of this world's actor that coop_respawned was acted on
+local handled_count = 0
 
 local function actor_conditions()
 	local actor = db.actor
@@ -185,12 +203,20 @@ local function start_contusion(seconds, now)
 	put_contusion(now)
 end
 
+-- Is the owner on his feet? (R1 M-6: "it has passed" is not for a player who is down, dead or being evacuated.) An exe whose
+-- coop has no life_of: yes.
+local function standing()
+	if not (api and api.life_of) then return true end
+	local ok, life = pcall(api.life_of, 0)
+	return not ok or life == nil or life == "alive"
+end
+
 local function stop_contusion(announce)
 	if not contusion then return end
 	contusion = nil
 	pcall(level.remove_pp_effector, CONTUSION_ID)
 	release_power()
-	if announce then tip(text("st_coop_contusion_off")) end
+	if announce and standing() then tip(text("st_coop_contusion_off")) end
 end
 
 local function update_contusion(now)
@@ -233,17 +259,26 @@ end
 -------------------------------------------------------------------------------
 -- coop_respawned
 -------------------------------------------------------------------------------
-local function on_respawned(kind, contusion_s, money_pct, rank_pct)
+-- Was the fall `seq` acted on already? Marks it. A seq that is not a number (an engine without it) is never "seen".
+local function fall_seen(seq)
+	if type(seq) ~= "number" then return false end
+	if handled[seq] then return true end
+	if handled_count >= MAX_HANDLED then handled, handled_count = {}, 0 end
+	handled[seq] = true
+	handled_count = handled_count + 1
+	return false
+end
+
+local function on_respawned(kind, contusion_s, money_pct, rank_pct, seq)
 	if not in_session() or not db.actor then return end
 	if type(kind) ~= "string" or not KINDS[kind] then kind = "none" end
 	local seconds, money, rank = as_seconds(contusion_s), as_pct(money_pct), as_pct(rank_pct)
 	tip(text("st_coop_respawned_" .. kind))
 	local now = time_global()
-	if last_respawn and now >= last_respawn and now - last_respawn < DEDUP_MS then
-		log("a second respawn order %d ms after the first: the penalties were applied already", now - last_respawn)
+	if fall_seen(seq) then
+		log("fall %s again: the penalties were applied already", tostring(seq))
 		return
 	end
-	last_respawn = now
 	local lines = {}
 	if seconds > 0 then
 		start_contusion(seconds, now)
@@ -435,7 +470,7 @@ end
 
 -- coop_death_marker(player_local_id, marker_local_id, "drop" | "corpse")
 local function on_death_marker(lid, id, kind)
-	if not in_session() then return end
+	if not is_host() then return end -- the spots are the host's, clients get them replicated
 	if type(lid) ~= "number" or type(id) ~= "number" or id ~= math_floor(id) or id < 0 or id >= NO_PARENT then return end
 	if kind ~= "drop" and kind ~= "corpse" then return end
 	add_marker(lid, id, kind, false, time_global())
@@ -489,8 +524,10 @@ local function on_first_update()
 		forget_markers()
 		return
 	end
+	handled, handled_count = {}, 0 -- the actor is new, its falls are counted from 0 again
 	update_contusion(now)
 	if contusion then put_contusion(now) end
+	if not is_host() then return end -- the marks are the host's
 	for _, m in pairs(markers) do
 		m.since = now
 		if spot_exists(m.id) ~= true then m.added = add_spot(m.id, hint_of(m)) end

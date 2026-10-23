@@ -38,7 +38,7 @@
 		<text>Контузия прошла.</text>
 	</string>
 	<string id="st_coop_death_money">
-		<text>Смерть отняла у тебя %s денег.</text>
+		<text>Смерть отняла у тебя до %s денег.</text>
 	</string>
 	<string id="st_coop_death_rank">
 		<text>Смерть отняла у тебя %s ранга и репутации.</text>

@@ -38,7 +38,7 @@
 		<text>The contusion has passed.</text>
 	</string>
 	<string id="st_coop_death_money">
-		<text>Death cost you %s of your money.</text>
+		<text>Death cost you up to %s of your money.</text>
 	</string>
 	<string id="st_coop_death_rank">
 		<text>Death cost you %s of your rank and reputation.</text>

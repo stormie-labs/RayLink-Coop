@@ -97,11 +97,13 @@ local function reload_world() -- a load / a level change: CMapManager::save writ
 end
 
 -- alife():iterate_objects / get_children over the stand-in world (the same shapes as the engine's bindings)
+ITERATIONS = 0
 do
 	local base = alife
 	function alife()
 		local a = base()
 		a.iterate_objects = function(_, f)
+			ITERATIONS = ITERATIONS + 1
 			local ids = {}
 			for id in pairs(SE) do ids[#ids + 1] = id end
 			table.sort(ids)
@@ -146,6 +148,10 @@ local function dress_actor(a)
 	function a:cast_Actor() return { conditions = function() return conditions end } end
 end
 
+-- coop.life_of(0): the owner's own life, "alive" | "wounded" | "dead" | "spectating" | "respawning"
+LIFE = "alive"
+coop.life_of = function(id) return LIFE end
+
 -- coop.players: the host (me), a client "Wolf" whose character is local object 7
 local base_players = coop.players
 local function wolf_players()
@@ -170,6 +176,7 @@ local function fresh(mode)
 	SPOTS, SPOT_ADDS, SPOT_REMOVES, SPOT_HINTS = {}, {}, {}, {}
 	GIVEN, MONEY, RANK, RANK_SETS, REP, REP_SETS, REP_CHANGES, POWER_SETS, MAXPOWER = {}, 1234, 3000, {}, 500, {}, {}, {}, 1
 	HANDLERS, ADDED = {}, {}
+	LIFE, ITERATIONS = "alive", 0
 	coop.players = base_players
 	NOW = NOW + 1000000
 	dress_actor(make_actor(vec3(0, 0, 0)))
@@ -197,8 +204,10 @@ local function advance(ms, step)
 	end
 end
 
-local function respawned(kind, contusion_s, money_pct, rank_pct)
-	fire("coop_respawned", kind, contusion_s, money_pct, rank_pct)
+-- coop_respawned(kind, contusion_s, money_pct, rank_pct, seq): seq (F3 round 1, Ruling F3-12) is the number of the fall of
+-- the owner's actor; an engine without it sends four arguments
+local function respawned(kind, contusion_s, money_pct, rank_pct, seq)
+	fire("coop_respawned", kind, contusion_s, money_pct, rank_pct, seq)
 end
 
 local function count_of(list, pred)
@@ -274,27 +283,64 @@ case("contusion_zero_nothing", function()
 	check(#NEWS_ITEMS == 0, "no penalty at all: no news item")
 end)
 
-case("contusion_once_per_death", function()
+case("contusion_once_per_fall", function()
 	fresh("host")
-	respawned("campfire", 600, 10, 10)
+	respawned("campfire", 600, 10, 10, 1)
 	local adds, news, rank_sets = #PPE_ADDS, #NEWS_ITEMS, #RANK_SETS
 	-- M-1 of the T8 review: the same order can reach the owner twice in the RTT window
 	advance(3000)
-	respawned("campfire", 600, 10, 10)
-	check(#PPE_ADDS == adds and #NEWS_ITEMS == news, "a repeat 3 s later: no second contusion, no second news item")
-	check(#RANK_SETS == rank_sets and RANK == 2700, "a repeat 3 s later: the rank is cut once (2700, not 2430)")
+	respawned("campfire", 600, 10, 10, 1)
+	check(#PPE_ADDS == adds and #NEWS_ITEMS == news, "the same fall again 3 s later: no second contusion, no second news item")
+	check(#RANK_SETS == rank_sets and RANK == 2700, "the same fall again: the rank is cut once (2700, not 2430)")
 	check(MSGS[#MSGS] == STR.st_coop_respawned_campfire, "the tip is shown again, harmless")
-	-- a real second death, long after: a new contusion from the start
-	advance(60000)
-	respawned("tent", 600, 10, 10)
-	check(#PPE_ADDS == adds + 1, "a later death restarts the contusion (one effector add)")
-	check(RANK == 2430 and #RANK_SETS == rank_sets + 1, "and cuts the rank again")
-	-- the contusion of the new death ends 600 s after the new one, not after the old one
-	local removes = #PPE_REMOVES
-	advance(599000)
-	check(#PPE_REMOVES == removes, "599 s after the second death it is still on")
+	-- I-1 of the T15 review: a real second fall soon after the first (a short respawn delay) is a new fall: both are paid for
 	advance(1000)
-	check(#PPE_REMOVES == removes + 1, "600 s after the second death it is over")
+	respawned("tent", 600, 10, 10, 2)
+	check(#PPE_ADDS == adds + 1, "a second fall 4 s after the first restarts the contusion (one effector add)")
+	check(RANK == 2430 and #RANK_SETS == rank_sets + 1, "and cuts the rank again")
+	check(#NEWS_ITEMS == news + 1 and news_text():find("10%", 1, true) ~= nil, "and tells what it cost")
+	respawned("tent", 600, 10, 10, 2)
+	check(RANK == 2430 and #PPE_ADDS == adds + 1, "the repeat of the second fall is one more no-op")
+	-- the contusion of the new fall ends 600 s after the new one, not after the old one
+	local t_second = NOW
+	local removes = #PPE_REMOVES
+	advance(t_second + 599000 - NOW)
+	check(#PPE_REMOVES == removes, "599 s after the second fall it is still on")
+	advance(1000)
+	check(#PPE_REMOVES == removes + 1, "600 s after the second fall it is over")
+end)
+
+case("contusion_fall_numbers", function()
+	-- an engine without the number: every call is a fall (no time window any more)
+	fresh("host")
+	respawned("campfire", 0, 0, 10)
+	advance(1000)
+	respawned("campfire", 0, 0, 10)
+	check(RANK == 2430, "no seq: two calls a second apart are both acted on")
+	-- a number that is not a number reads as none
+	fresh("host")
+	respawned("campfire", 0, 0, 10, "x")
+	respawned("campfire", 0, 0, 10, {})
+	check(RANK == 2430, "a seq that is not a number: acted on")
+	-- the counter of an actor starts from 0 when the actor is new: the first fall of a new world is seq 1 again
+	fresh("host")
+	respawned("campfire", 600, 0, 10, 1)
+	check(RANK == 2700, "fall 1")
+	fire("actor_on_first_update") -- a level change: a new actor, its counter starts again
+	respawned("campfire", 600, 0, 10, 1)
+	check(RANK == 2430, "seq 1 of the new actor of a new world is a new fall, not the old one again")
+	-- two different falls inside one world
+	respawned("campfire", 600, 0, 10, 2)
+	check(RANK == 2187, "seq 2 is one more")
+	-- known limit: the owner applied the order, the world changed before the host heard of it (T8 review, ~1e-4 a death):
+	-- the new actor's debt order is seq 0, a fall it has never seen; nothing connects it to the old one
+	respawned("campfire", 600, 0, 10, 0)
+	check(RANK == 1968, "a debt respawn of a new actor (seq 0) is acted on")
+	-- the numbers kept are bounded
+	fresh("host")
+	for i = 1, 400 do respawned("campfire", 0, 0, 0, i) end
+	for i = 301, 400 do respawned("campfire", 0, 0, 10, i) end
+	check(RANK == 3000, "the last 100 falls are still remembered after 400 (the memory is cleared only when it is full)")
 end)
 
 case("contusion_survives_a_level_change_not_a_new_state", function()
@@ -325,6 +371,36 @@ case("contusion_ends_with_the_session", function()
 	check(#PPE_REMOVES == 1 and POWER_SETS[#POWER_SETS] == 1, "the session ended: the effector and the ceiling are given back")
 	advance(10000)
 	check(#PPE_REMOVES == 1, "once")
+end)
+
+case("contusion_end_tip_when_standing", function()
+	-- M-6 of the T15 review: "the contusion has passed" is not for a player who is down, dead or being evacuated
+	for _, life in ipairs({ "wounded", "dead", "respawning", "spectating" }) do
+		fresh("host")
+		respawned("campfire", 60, 0, 0, 1)
+		LIFE = life
+		advance(61000)
+		check(#PPE_REMOVES == 1 and POWER_SETS[#POWER_SETS] == 1, life .. ": the effect still ends on time (effector and ceiling)")
+		check(MSGS[#MSGS] ~= STR.st_coop_contusion_off, life .. ": no 'it has passed' tip")
+	end
+	fresh("host")
+	respawned("campfire", 60, 0, 0, 1)
+	advance(61000)
+	check(MSGS[#MSGS] == STR.st_coop_contusion_off, "alive: the tip is shown")
+	-- the engine cannot tell (nil): shown
+	fresh("host")
+	respawned("campfire", 60, 0, 0, 1)
+	LIFE = nil
+	advance(61000)
+	check(MSGS[#MSGS] == STR.st_coop_contusion_off, "life unknown: the tip is shown")
+	-- an exe whose coop has no life_of: the tip is shown
+	fresh("host")
+	local saved = coop.life_of
+	coop.life_of = nil
+	respawned("campfire", 60, 0, 0, 1)
+	advance(61000)
+	coop.life_of = saved
+	check(MSGS[#MSGS] == STR.st_coop_contusion_off, "no coop.life_of: the tip is shown")
 end)
 
 -- ------------------------------------------------------------------ money: the host's
@@ -607,6 +683,67 @@ case("marker_session_end", function()
 	check(SPOTS[620] == nil, "and are not restored outside a session")
 end)
 
+-- ------------------------------------------------------------------ the marks are the host's (round 1, M-2 and M-3)
+-- The host replicates its PDA spots to every client (coop_story.cpp: on_spot_added -> MapSpot, the whole list for a player who
+-- joins or loads a world; the types it keeps local are "coop_*" and a few stock ones, not secondary_task_location). A spot a
+-- client sets goes to the host as a request: one that comes after the host's mark is gone makes a stale spot of the client's
+-- that nothing removes, and the host refuses a client's removal of its spot: so only the host sets, removes and restores them.
+case("client_role", function()
+	fresh("client")
+	wolf_players()
+	-- what the owner's machine does is the same on a client
+	respawned("campfire", 600, 10, 10, 1)
+	check(#PPE_ADDS == 1 and POWER_SETS[1] == 0.6 and RANK == 2700, "a client: contusion and rank as on the host")
+	check(MSGS[#MSGS] == STR.st_coop_respawned_campfire, "a client: the tip")
+	-- the marks are not his to set
+	stash(650, true)
+	fire("coop_death_marker", 7, 650, "corpse")
+	check(next(SPOTS) == nil and SPOT_ADDS[650] == nil, "a client: the mark callback sets no spot (the host's arrives by the story sync)")
+	fire("actor_on_first_update")
+	check(next(SPOTS) == nil and ITERATIONS == 0, "a client: the entry sets no spot and does not look through the world")
+	advance(30000)
+	check(next(SPOTS) == nil and SPOT_REMOVES[650] == nil, "a client: nothing is removed either")
+	check(#PPE_REMOVES == 0, "the contusion goes on")
+	advance(600000)
+	check(#PPE_REMOVES == 1 and PPE_REMOVES[1] == 39570, "and ends on a client too")
+end)
+
+case("host_looks_through_the_world_once", function()
+	fresh("host")
+	wolf_players()
+	stash(660, true)
+	fire("actor_on_first_update")
+	check(ITERATIONS == 1 and SPOTS[660] ~= nil, "the host looks through the world once on entry")
+	fire("actor_on_first_update")
+	check(ITERATIONS == 2 and SPOT_ADDS[660] == 1, "once per entry, and the spot is not set twice")
+end)
+
+case("marker_without_alife", function()
+	-- a machine without ALife (the host always has one; the branch is for what cannot be asked)
+	fresh("host")
+	wolf_players()
+	local saved = alife
+	local ok, err = pcall(function()
+		stash(640, true)
+		spawn("wpn_ak74", vec3(1, 0, 1), nil, { id = 641, kind = "weapon" })
+		alife = nil
+		fire("coop_death_marker", 7, 640, "corpse")
+		fire("coop_death_marker", 7, 641, "drop")
+		check(SPOTS[640] ~= nil and SPOTS[641] ~= nil, "the marks are set")
+		OBJ[640] = nil -- far away: not online here, and there is no ALife to say whether it exists
+		advance(60000)
+		check(SPOTS[640] ~= nil, "an object that is not online and cannot be asked about stays marked (it may be far away)")
+		check(SPOTS[641] ~= nil, "an online object without a parent stays")
+		SE[641].parent_id = 0 -- somebody picks it up: the online object says so
+		advance(2000)
+		check(SPOTS[641] == nil, "an online object that got a parent loses its mark without ALife too")
+		fire("actor_on_first_update")
+		check(SPOTS[640] ~= nil, "the entry without ALife raises no error and keeps what it has")
+	end)
+	alife = saved
+	if not ok then error(err, 0) end
+end)
+
 -- ------------------------------------------------------------------ outside a session
 case("outside_session_nothing", function()
 	fresh("sp")
@@ -680,6 +817,10 @@ case("strings_complete", function()
 			check(k == 1 and not text:find("%%[^s]"), id .. " (" .. lang .. ") has one %s")
 		end
 	end
+	-- M-1 of the T15 review: the amount the host took does not reach the owner, so the text must not invent one
+	check((eng.st_coop_death_money or ""):find("up to", 1, true) ~= nil, "st_coop_death_money (eng) says 'up to': no invented amount")
+	check((rus.st_coop_death_money or ""):find(string.char(0xE4, 0xEE, 0x20), 1, true) ~= nil,
+		"st_coop_death_money (rus, cp1251) has the word 'do': no invented amount")
 	-- the engine's kind names are the ones the script knows
 	local cp = read("engine/src/xrCoop/coop_checkpoint_rules.h") or ""
 	local names = cp:match("inline const char%* kind_name%(Kind k%)(.-)\n}") or ""
@@ -689,6 +830,21 @@ case("strings_complete", function()
 	for _, k in ipairs(engine_kinds) do
 		check(eng["st_coop_respawned_" .. k] ~= nil, "the engine's kind '" .. k .. "' has a tip")
 	end
+end)
+
+case("engine_sends_seq", function()
+	-- F3 round 1, Ruling F3-12: coop_respawned has the fall number as its fifth argument; the header of coop_survival says so
+	local cpp = read("engine/src/xrGame/coop/coop_survival.cpp")
+	local hdr = read("engine/src/xrGame/coop/coop_survival.h")
+	if not (cpp and hdr) then
+		print("  note: engine/src/xrGame/coop not found, the callback arguments are not cross-checked")
+		return
+	end
+	local call = cpp:match('queue_callback%("coop_respawned",(.-)%);') or ""
+	local n = select(2, call:gsub("script::cb_", ""))
+	check(n == 5, "the engine fires coop_respawned with 5 arguments (" .. n .. ")")
+	check(call:find("seq", 1, true) ~= nil, "the fifth is the fall number")
+	check(hdr:find("coop_respawned(kind, contusion_s, money_pct, rank_pct, seq)", 1, true) ~= nil, "coop_survival.h names the five arguments")
 end)
 
 case("marker_spot_type_is_stock", function()
