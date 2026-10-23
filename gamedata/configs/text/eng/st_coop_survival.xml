@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="windows-1251"?>
 <!-- Anomaly Coop - death and evacuation in a co-op session (F3, task 8): the HUD of a dead player waiting for
-     the respawn at his own camp. Used by the engine (coop_survival.cpp, CStringTable). -->
+     the respawn at his own camp; task 10: a player out of a hardcore run and his new character. Used by the
+     engine (coop_survival.cpp, CStringTable). -->
 <string_table>
 	<string id="st_coop_evac_title">
 		<text>You were pulled out...</text>
@@ -13,5 +14,11 @@
 	</string>
 	<string id="st_coop_evac_no_allies">
 		<text>Nobody is left alive. The world is not rolled back.</text>
+	</string>
+	<string id="st_coop_hardcore_out">
+		<text>Your character is gone.</text>
+	</string>
+	<string id="st_coop_hardcore_new_hold">
+		<text>Hold USE for 3 s to start a new character</text>
 	</string>
 </string_table>

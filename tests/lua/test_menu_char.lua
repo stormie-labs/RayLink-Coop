@@ -104,6 +104,8 @@ relation_registry = { community_relation = function() return 0 end }
 axr_main = { config = config_stub() }
 CALLBACKS = {}
 function RegisterScriptCallback(n, f) CALLBACKS[n] = f end
+ADDED_CALLBACKS = {}
+function AddScriptCallback(n) ADDED_CALLBACKS[n] = true end -- F3 Task 10: coop_host_new_character, the engine's
 
 -- utils_ui stand-ins (cell containers of the stock new game screen)
 local function cell(sec, info)
@@ -679,6 +681,150 @@ LOG = {}
 check(mn.join_offer(1, 1700, "l01_escape", "", 0) == false and mn.join_offer(1, 1700, "l01_escape", "", 0) == false,
 	"no coop namespace: false")
 check(log_count("no coop namespace") == 1, "no coop namespace: logged once")
+command_line = nil
+STASH = {}
+
+-------------------------------------------------------------------------------
+-- F3 Task 10: hardcore - the player out of the run starts a new character
+-------------------------------------------------------------------------------
+print("== F3 Task 10: a client out of a hardcore run is sent the world again and chooses in the game")
+-- The host retired his character (things in a stash, key gone) and sent him SessionReset: the client is still in the
+-- level (an actor exists), the session is receiving the world, and the host's offer comes as for a new player.
+MODE = "client"
+STASH = {}
+NEWS = {}
+SESSION = { active = true, phase = "receiving-world", nick = "Guest" }
+PLAYERS = { { id = 1, nick = "Guest", is_self = true }, { id = 0, nick = "Boss" } }
+db.actor = { give_game_news = function(self, cap, text) NEWS[#NEWS + 1] = text end }
+CMDLINE = '"x.exe" -coop_connect 127.0.0.1:27960 -coop_autochoose bandit'
+function command_line() return CMDLINE end
+local mr = load_module("coop_menu_char")
+mr.on_game_start()
+LOG = {}
+check(mr.join_offer(2, 700, "l01_escape", "", 0) == true and mr.GUI == nil,
+	"retired, in the level: -coop_autochoose answers the host's offer at once, no window")
+local rf, rb = mr.join_choice()
+check(rf == "bandit" and rb == "", "retired: the engine gets the automatic choice (CharChoice)")
+check(STASH.coop_char_joined == "bandit", "retired: the news of the new character waits for the new world")
+check(log_count("test: offer answered at once with bandit") == 1, "retired: the automatic answer is in the log")
+mr.join_closed("world")
+CMDLINE = '"x.exe" -coop_connect 127.0.0.1:27960'
+check(mr.join_offer(2, 700, "l01_escape", "", 0) == true and mr.GUI and mr.GUI.shown,
+	"retired, no -coop_autochoose: the window opens over the level (the actor exists, the offer is a join offer)")
+local gr = mr.GUI
+check(gr.registered.btn_back.text == STRINGS.st_coop_char_btn_leave
+	and gr.info.text == coop_menu.tr("st_coop_char_info_join", "Boss", "Guest"),
+	"retired: the join texts (the character is made when Done is pressed, Leave ends the session)")
+click(gr, "btn_start")
+check(select(1, mr.join_choice()) == "stalker", "retired: Done gives the choice to the engine")
+SESSION.phase = "loading-world"
+NOW = NOW + 1000
+gr:Update()
+check(not gr.shown, "retired: the window follows the session (the new world loads)")
+
+print("== F3 Task 10: the host's own new character")
+MODE = "host"
+SESSION = { active = true, phase = "hosting" }
+CMDLINE = '"x.exe" -coop_host 27960'
+STASH = {}
+CALLBACKS, ADDED_CALLBACKS = {}, {}
+local mh = load_module("coop_menu_char")
+mh.on_game_start()
+check(ADDED_CALLBACKS.coop_host_new_character and CALLBACKS.coop_host_new_character == mh.host_new_character,
+	"the engine's callback coop_host_new_character is added and taken")
+local hactor = make_npc(0, { 4001, 4002 }) -- what he picked up after standing up (his things are in the stash)
+hactor.give_game_news = function(self, cap, text) NEWS[#NEWS + 1] = text end
+db.actor = hactor
+NPCS[0] = hactor
+PLAYERS = { { id = 0, nick = "Boss", is_self = true, avatar_id = 0 }, { id = 1, nick = "Guest", avatar_id = 900 } }
+ECO = 1 -- the old AK is bought in tier 1 only
+SE[0] = nil
+SE_OBJ[0] = { id = 0 }
+SENT, NEWS, ORDER = {}, {}, {}
+RELEASED, CREATED = {}, {}
+for i = #MONEY_CALLS, 1, -1 do MONEY_CALLS[i] = nil end
+check(not mh.is_new(0), "a playing host is not new")
+check(select(2, mh.host_choose_self("bandit", "")) == "not_new", "no choice for himself without the engine's callback")
+check(#MONEY_CALLS == 0 and #CREATED == 0, "... and nothing given")
+CALLBACKS.coop_host_new_character()
+check(mh.is_new(0), "the callback marks the host's actor new (kept in the save)")
+local gh = mh.GUI
+check(gh and gh.shown and gh.points_left == 1000 and gh.name.text == "Boss",
+	"the window opens for the host: his tier's points, his nick")
+check(#SENT == 0, "no event: the host is his own authority")
+click(gh, "btn_faction")
+click(gh, "btn_bandit")
+local hidx
+for i, ci in pairs(gh.CC.loadout.cell) do if ci.section == "wpn_ak74_old" then hidx = i end end
+gh:On_CC_Mouse1("loadout", hidx)
+check(table.concat(gh:Bought(), ",") == "wpn_ak74_old", "the host buys with his points")
+MONEY_REFUSE = "no character"
+click(gh, "btn_start")
+check(gh.shown and gh.status.text:find(coop_menu.tr("st_coop_char_refused", STRINGS.st_coop_char_reason_busy), 1, true),
+	"the ledger refuses: the window stays with the reason")
+check(#CREATED == 0 and #RELEASED == 0 and hactor.community == "stalker" and mh.is_new(0),
+	"money first: a refusal touches nothing and keeps the mark")
+MONEY_REFUSE = nil
+for i = #MONEY_CALLS, 1, -1 do MONEY_CALLS[i] = nil end
+ORDER = {}
+click(gh, "btn_start")
+check(#MONEY_CALLS == 1 and MONEY_CALLS[1].fn == "money_set" and MONEY_CALLS[1].peer == 0
+	and MONEY_CALLS[1].n == mh.faction_money("bandit") and MONEY_CALLS[1].ok, "the faction's money on the host's ledger entry")
+check(ORDER[1] == "money_set" and ORDER[#ORDER] == "create", "money before the kit")
+check(#RELEASED == 0, "nothing of his released: his things are in the stash, what he picked up since stays")
+check(hactor.community == "actor_bandit", "the actor's community is actor_<faction>")
+local hmade = {}
+for _, c in ipairs(CREATED) do hmade[#hmade + 1] = c.sec .. (c.ammo and ("x" .. c.ammo) or "") end
+local hmade_s = table.concat(hmade, ",")
+check(CREATED[1] and CREATED[1].parent == 0 and hmade_s:find("trenchcoat_outfit", 1, true)
+	and hmade_s:find("wpn_ak74_old", 1, true) and hmade_s:find("ammo_5.45x39_fmjx30", 1, true),
+	"the kit, the bought gun and its ammo into db.actor (" .. hmade_s .. ")")
+check(not mh.is_new(0) and not gh.shown, "done: the mark cleared, the window closed")
+check(NEWS[#NEWS] == coop_menu.tr("st_coop_char_done", "st_faction_bandit"), "the host is told his new character")
+check(select(2, mh.host_choose_self("bandit", "")) == "not_new", "a second choice is refused")
+NOW = NOW + 70000
+CALLBACKS.actor_on_update()
+check(not gh.shown, "the host tick offers nothing after it is done")
+
+-- Later: the window comes back a minute after it, and after a load (the mark is in the save)
+CALLBACKS.coop_host_new_character()
+check(gh.shown, "a new character again: the window")
+NOW = NOW + 40000 -- he looks at it for a while
+click(gh, "btn_back")
+check(not gh.shown and NEWS[#NEWS]:find("again", 1, true), "Later closes it with the hint")
+NOW = NOW + 30000
+CALLBACKS.actor_on_update()
+check(not gh.shown, "not before a minute")
+NOW = NOW + 31000
+CALLBACKS.actor_on_update()
+check(gh.shown, "a minute after Later: the window again")
+gh:Close()
+local ml = load_module("coop_menu_char") -- a load: a fresh Lua state, the mark from the save
+CALLBACKS = {}
+ml.on_game_start()
+NOW = NOW + 5000
+CALLBACKS.actor_on_update()
+check(ml.GUI and ml.GUI.shown, "after a load the window comes back for the marked host")
+check(ml.host_choose_self("dolg", "") == true and not ml.is_new(0), "... and his choice is taken")
+
+-- -coop_autochoose (unattended runs): the host's choice is made at once, no window
+CMDLINE = '"x.exe" -coop_host 27960 -coop_autochoose freedom'
+local mq = load_module("coop_menu_char")
+CALLBACKS = {}
+mq.on_game_start()
+RELEASED, CREATED = {}, {}
+LOG = {}
+CALLBACKS.coop_host_new_character()
+check(not mq.is_new(0) and mq.GUI == nil and hactor.community == "actor_freedom" and #CREATED > 0,
+	"-coop_autochoose: the host's new character at once, no window")
+check(log_count("test: the host's new character freedom (-coop_autochoose): made") == 1, "... and that is in the log")
+CMDLINE = '"x.exe" -coop_host 27960'
+MODE = "client"
+check(select(2, mq.host_choose_self("bandit", "")) == "busy", "only a host chooses for himself")
+mq.host_new_character()
+check(not mq.is_new(0), "the callback on a client does nothing")
+db.actor = nil
+MODE = "host"
 command_line = nil
 STASH = {}
 

@@ -1,8 +1,12 @@
 // Anomaly Coop unit tests: death rules (coop_death_rules.h; F3 Task 4, CHECKPOINTS_DEATH.md §3): the host rules and
-// their wire form, which items a death takes, the wipe test and the per-player death tracker.
+// their wire form, which items a death takes, the wipe test and the per-player death tracker; F3 Task 10: hardcore's
+// "out" kept by the world, the new character and the retirement of the old one.
 #include "test_util.h"
 
+#include "coop_checkpoint_rules.h"
+#include "coop_death_items.h"
 #include "coop_death_rules.h"
+#include "coop_limits.h"
 
 #include <algorithm>
 #include <cmath>
@@ -905,6 +909,247 @@ TEST(death_worn_tail)
 		CHECK(out == std::vector<uint16_t>({2, 4}));
 		CHECK_EQ(r.remaining(), size_t(1));
 	}
+}
+
+// ---------------------------------------------------------------- hardcore: out of the run, a new character (F3 Task 10)
+
+TEST(death_out_kept_by_the_world)
+{
+	// T8 review: the trackers start over with every world the host serves (g_host is cleared), the character keeps
+	// "out" in his custom data. A hardcore death puts it there (the tracker's word after the report).
+	Tracker tr;
+	learn_out(tr, false);
+	REQUIRE(on_died(tr, 3, 1000, hardcore_rules()) == Action::Spectate);
+	CHECK(tr.hardcore_out); // what the world keeps after the report
+
+	// A level change or a load of a save written after the death: a fresh tracker learns it from the world and the
+	// first Alive of the new actor is answered by Spectate, in either mode.
+	Tracker new_world;
+	learn_out(new_world, true);
+	CHECK(new_world.hardcore_out);
+	CHECK(on_alive_report(new_world, false, false) == AliveStep::Spectate);
+	CHECK(new_world.hardcore_out);
+
+	// A world without it (a new game, a save from before the death): he plays on.
+	Tracker before;
+	learn_out(before, false);
+	CHECK(on_alive_report(before, false, false) == AliveStep::None);
+	CHECK(!before.hardcore_out);
+
+	// The world never takes it back by itself: false from the world does not clear what the tracker knows.
+	learn_out(tr, false);
+	CHECK(tr.hardcore_out);
+}
+
+TEST(death_out_dies_for_nothing)
+{
+	// An out character who falls again (an Alive that crossed his Spectate order after a world change, then a death)
+	// costs nothing a second time and is not evacuated in checkpoint mode: he stays out.
+	Rules checkpoint;
+	Tracker tr;
+	learn_out(tr, true);
+	CHECK(on_died(tr, 0, 5000, checkpoint) == Action::Spectate);
+	CHECK_EQ(tr.respawn_at, uint64_t(0));
+	CHECK(!tr.respawn_due);
+	CHECK(tr.hardcore_out);
+	CHECK(!debt_after_report(false, kLifeDead, Action::Spectate)); // and no respawn is owed for it
+	CHECK(on_died(tr, 0, 5001, checkpoint) == Action::None); // the same death once
+	CHECK(on_died(tr, 1, 6000, hardcore_rules()) == Action::Spectate);
+	CHECK(!due(tr, 1000000));
+}
+
+TEST(death_new_character_request)
+{
+	// Msg::NewCharacter (the host's own hold or console the same): only an out character starts a new one, once.
+	Tracker playing;
+	CHECK(on_new_character(playing, false) == NewCharVerdict::NotOut);
+	CHECK(on_new_character(playing, true) == NewCharVerdict::Busy);
+
+	Tracker out;
+	REQUIRE(on_died(out, 1, 1000, hardcore_rules()) == Action::Spectate);
+	CHECK(on_new_character(out, false) == NewCharVerdict::Start);
+	CHECK(on_new_character(out, true) == NewCharVerdict::Busy); // his retirement is under way: a repeat does nothing
+
+	// The host switched to checkpoint after the death (Ruling F3-7): still out, still his way back.
+	Tracker learned;
+	learn_out(learned, true);
+	CHECK(on_new_character(learned, false) == NewCharVerdict::Start);
+
+	// A checkpoint death is no way to a new character.
+	Tracker evacuated;
+	REQUIRE(on_died(evacuated, 1, 1000, Rules()) == Action::LossesAndEvacuate);
+	CHECK(on_new_character(evacuated, false) == NewCharVerdict::NotOut);
+}
+
+TEST(death_retire_waits_for_the_stash)
+{
+	// Review R2 of T9: nothing of a retiring character changes while his stash waits for his things (his key, his
+	// player): the stash knows its owner by them (same_owner).
+	CHECK(retire_step(true, true) == RetireStep::Wait);
+	CHECK(retire_step(true, false) == RetireStep::Finish);
+	CHECK(retire_step(false, true) == RetireStep::Void);
+	CHECK(retire_step(false, false) == RetireStep::Void);
+
+	// Why: once the key is off and his peer plays a new character, the pending stash has no owner any more.
+	StashOwner then;
+	then.peer = 2;
+	then.key = std::string(coop::kKeyDigestHexDigits, 'a');
+	StashOwner key_off = then;
+	key_off.key.clear();
+	CHECK(same_owner(then, key_off)); // the key alone may go while the same player plays him...
+	StashOwner rejoined = key_off;
+	rejoined.peer = 0xffffffffu; // ...but after host_rejoin_peer his old character has no player
+	CHECK(!same_owner(then, rejoined));
+}
+
+TEST(death_retire_custom_data)
+{
+	const std::string digest(coop::kKeyDigestHexDigits, 'c');
+	std::string text = "[coop]\nkey = " + digest + "\nnick = Bob\n[coop_checkpoint]\ncur = x\n[coop_death]\nout = 1\n";
+	size_t at = 0, len = 0;
+	REQUIRE(coop::find_key_value(text, at, len));
+
+	retire_custom_data(text);
+	CHECK(!coop::find_key_value(text, at, len)); // no player finds him: his next join makes a new character
+	std::string v;
+	CHECK(coop::checkpoint::ini_get(text, "coop", "retired", v) && v == "1");
+	CHECK(coop::checkpoint::ini_get(text, "coop", "nick", v) && v == "Bob");
+	CHECK(coop::checkpoint::ini_get(text, "coop_checkpoint", "cur", v) && v == "x");
+	CHECK(coop::checkpoint::ini_get(text, "coop_death", "out", v) && v == "1");
+	CHECK(text.find(digest) == std::string::npos);
+
+	// Again: the same text (one retired line).
+	const std::string once = text;
+	retire_custom_data(text);
+	CHECK(text == once);
+
+	// CRLF, a legacy key (the key itself), a duplicate key line, another section after: every key line goes.
+	const std::string legacy(coop::kPlayerKeyHexDigits, 'd');
+	std::string crlf = "[coop]\r\nkey=" + legacy + "\r\nkey = " + digest + "\r\n[other]\r\nkey = keep\r\n";
+	retire_custom_data(crlf);
+	CHECK(!coop::find_key_value(crlf, at, len));
+	CHECK(crlf.find(legacy) == std::string::npos && crlf.find(digest) == std::string::npos);
+	CHECK(coop::checkpoint::ini_get(crlf, "other", "key", v) && v == "keep");
+	CHECK(crlf.find("retired = 1\r\n") != std::string::npos);
+
+	// No custom data at all: a section of its own.
+	std::string empty;
+	retire_custom_data(empty);
+	CHECK(coop::checkpoint::ini_get(empty, "coop", "retired", v) && v == "1");
+	CHECK(!coop::find_key_value(empty, at, len));
+}
+
+TEST(death_new_key_charge_f3_9)
+{
+	// Ruling F3-9: coop_max_new_characters stops new player keys; a key that had a character (in this session, or one
+	// that retired in this world) neither checks nor spends it.
+	static_assert(kKeyDigestDigits == coop::kKeyDigestHexDigits, "a retired key is a key digest (coop_session.h)");
+	const NewKeyCharge had = new_key_charge(true, false);
+	CHECK(had.admitted && !had.spends); // the limit is full: still admitted, nothing spent
+	const NewKeyCharge had_room = new_key_charge(true, true);
+	CHECK(had_room.admitted && !had_room.spends);
+	const NewKeyCharge fresh = new_key_charge(false, true);
+	CHECK(fresh.admitted && fresh.spends); // a key without any character: the limit as before
+	const NewKeyCharge full = new_key_charge(false, false);
+	CHECK(!full.admitted && !full.spends);
+}
+
+TEST(death_retired_keys_in_the_world)
+{
+	// The retired keys are kept in the host actor's custom data ([coop_retired] <digest> = 1): a player away when his
+	// character retired, or a later session, finds his key there.
+	const std::string a(coop::kKeyDigestHexDigits, 'a');
+	const std::string b(coop::kKeyDigestHexDigits, 'b');
+	std::string text = "[coop_checkpoint]\narrival = x\n[coop_death]\nout = 1\n";
+	CHECK(!retired_key(text, a));
+	note_retired_key(text, a);
+	CHECK(retired_key(text, a));
+	CHECK(!retired_key(text, b));
+	const std::string once = text;
+	note_retired_key(text, a); // again: one line
+	CHECK(text == once);
+	note_retired_key(text, b);
+	CHECK(retired_key(text, a) && retired_key(text, b));
+	std::string v;
+	CHECK(coop::checkpoint::ini_get(text, "coop_checkpoint", "arrival", v) && v == "x"); // the rest stays
+	CHECK(coop::checkpoint::ini_get(text, "coop_death", "out", v) && v == "1");
+
+	// Only a digest is a key here: an empty or malformed one is not noted and never found.
+	std::string other = text;
+	note_retired_key(other, "");
+	note_retired_key(other, "not a digest");
+	note_retired_key(other, std::string(coop::kKeyDigestHexDigits, 'G'));
+	CHECK(other == text);
+	CHECK(!retired_key(text, ""));
+	CHECK(!retired_key("", a));
+}
+
+TEST(death_hardcore_group_not_stuck_by_the_limit)
+{
+	// Ruling F3-9: a hardcore group of 8 with coop_max_new_characters 8 dies over and over: every retired player starts
+	// again, and a ninth new key is still refused.
+	const uint32_t max = 8;
+	coop::limits::NewCharacters made;
+	std::vector<std::string> keys;
+	for (int i = 0; i < 8; ++i)
+		keys.push_back(std::string(coop::kKeyDigestHexDigits - 1, 'a') + char('0' + i));
+	std::string actor; // the host actor's custom data
+	for (const std::string& k : keys) // they join as new players
+	{
+		const NewKeyCharge c = new_key_charge(retired_key(actor, k), made.admits(k, max));
+		REQUIRE(c.admitted && c.spends);
+		made.add(k);
+	}
+	for (int round = 0; round < 5; ++round)
+		for (const std::string& k : keys) // each dies out, retires and comes back
+		{
+			note_retired_key(actor, k);
+			const NewKeyCharge c = new_key_charge(retired_key(actor, k), made.admits(k, max));
+			CHECK(c.admitted && !c.spends);
+		}
+	CHECK_EQ(made.count(), size_t(8));
+	const std::string ninth(coop::kKeyDigestHexDigits, 'f');
+	CHECK(!new_key_charge(retired_key(actor, ninth), made.admits(ninth, max)).admitted);
+
+	// A later session (nothing made yet, the limit lowered to 1): the retired keys of this world still cost nothing.
+	coop::limits::NewCharacters next;
+	next.add(ninth);
+	for (const std::string& k : keys)
+	{
+		const NewKeyCharge c = new_key_charge(retired_key(actor, k), next.admits(k, 1));
+		CHECK(c.admitted && !c.spends);
+	}
+}
+
+TEST(death_rejoin_gate_same_world)
+{
+	// Task 10 step 3: host_rejoin_peer sends SessionReset with the epoch the player is in already, and his JoinRequest
+	// goes through the same gate. His join of this world ended (WorldLoaded): forget voids nothing in flight, and the
+	// 5 s between admissions hold - a request within them waits (Later) and is admitted by due(), never lost.
+	coop::JoinGate gate;
+	const coop::PeerId p = 3;
+	REQUIRE(gate.request(p, 1000) == coop::JoinGate::Verdict::Admit);
+	REQUIRE(gate.loaded(p));
+	gate.forget(p);
+	CHECK(gate.request(p, 4000) == coop::JoinGate::Verdict::Later);
+	CHECK(gate.due(5999).empty());
+	const std::vector<coop::PeerId> due_now = gate.due(6000);
+	CHECK(due_now.size() == 1 && due_now[0] == p);
+	CHECK(gate.in_flight(p));
+
+	// Long after his last join: admitted at once.
+	coop::JoinGate later;
+	REQUIRE(later.request(p, 1000) == coop::JoinGate::Verdict::Admit);
+	REQUIRE(later.loaded(p));
+	later.forget(p);
+	CHECK(later.request(p, 60000) == coop::JoinGate::Verdict::Admit);
+
+	// A join of his still in flight (he was loading): forget voids it, the rejoin is not refused.
+	coop::JoinGate loading;
+	REQUIRE(loading.request(p, 1000) == coop::JoinGate::Verdict::Admit);
+	CHECK(loading.request(p, 9000) == coop::JoinGate::Verdict::Refused);
+	loading.forget(p);
+	CHECK(loading.request(p, 9000) == coop::JoinGate::Verdict::Admit);
 }
 
 TEST(death_hud_format_one_conversion)

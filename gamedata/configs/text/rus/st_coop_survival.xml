@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="windows-1251"?>
 <!-- Anomaly Coop - смерть и эвакуация в кооп-сессии (F3, задача 8): экран погибшего игрока, который ждёт
-     возвращения на свой привал. Использует движок (coop_survival.cpp, CStringTable). -->
+     возвращения на свой привал; задача 10: выбывший в hardcore и его новый персонаж.
+     Использует движок (coop_survival.cpp, CStringTable). -->
 <string_table>
 	<string id="st_coop_evac_title">
 		<text>Тебя вытащили...</text>
@@ -13,5 +14,11 @@
 	</string>
 	<string id="st_coop_evac_no_allies">
 		<text>Живых не осталось. Мир не откатывается.</text>
+	</string>
+	<string id="st_coop_hardcore_out">
+		<text>Твой персонаж погиб окончательно.</text>
+	</string>
+	<string id="st_coop_hardcore_new_hold">
+		<text>Удерживай «Использовать» 3 с — новый персонаж</text>
 	</string>
 </string_table>
