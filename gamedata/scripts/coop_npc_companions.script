@@ -12,6 +12,11 @@
 	  proxy: it follows, covers and keeps distance to its own player. The leader is saved with the game.
 	  The NPC flags the dialogs read (npcx_is_companion, npcx_beh_*) are mirrored to the leader's machine
 	  (npc.comp_info); other clients see the NPC as nobody's companion of theirs.
+	Recruit (Ruling F2-34, F2 T12 round 2): the host takes it only if that player held the talk lock of the NPC, or of
+	  another member of its squad, now or in the last 5 s (coop.talk_recent). The stock recruit conditions live in the
+	  dialog, which runs on the client; without a talk a modified client could recruit any free squad in 15 m and
+	  open its inventory (F2-32b: one's own companion's inventory needs no talk). 5 s and not "holds now": the host
+	  applies the DialogUnlock of the closing talk window in the session update, before the npc.comp event reaches Lua.
 	Not covered: companion hotkeys of a client (axr_companions.on_key_release is host-domain), companions
 	  given by tasks (they join the host), the squad-level travel target offline (follows the host).
 
@@ -67,7 +72,8 @@ local installed = false
 local host_on = false
 local orig = {}
 local leaders = {} -- host: squad id -> proxy id (host numbering) of the client that leads it
-local stats = { cmd_out = 0, cmd_in = 0, refused = 0, info_out = 0, info_in = 0, follow = 0 }
+local stats = { cmd_out = 0, cmd_in = 0, refused = 0, refused_talk = 0, info_out = 0, info_in = 0, follow = 0 }
+local RECRUIT_TALK_MS = 5000 -- Ruling F2-34: a recruit within this long after a talk with the squad
 
 local function resolve(full)
 	local mod, fn = full:match("^([%w_]+)%.([%w_]+)$")
@@ -155,6 +161,19 @@ local function members(squad)
 	return list
 end
 
+-- Ruling F2-34: did player `from` talk to the NPC, or to a member of its squad, now or in the last RECRUIT_TALK_MS
+-- (the host's talk locks, coop.talk_recent)? False without the engine function.
+local function talked_recently(from, npc, squad)
+	local api = rawget(_G, "coop") or coop
+	local recent = api and api.talk_recent
+	if type(recent) ~= "function" then return false end
+	if recent(from, npc:id(), RECRUIT_TALK_MS) then return true end
+	for _, o in ipairs(members(squad)) do
+		if recent(from, o:id(), RECRUIT_TALK_MS) then return true end
+	end
+	return false
+end
+
 local function host_on_cmd(t, from)
 	local full = t.f
 	local kind = type(full) == "string" and ACTIONS[full]
@@ -174,6 +193,13 @@ local function host_on_cmd(t, from)
 	-- somebody's companion already: orders only from its leader, and nobody recruits it away (W5)
 	if squad and axr_companions and axr_companions.companion_squads[squad.id] and (kind == "add" or leader ~= who:id()) then
 		stats.refused = stats.refused + 1
+		return
+	end
+	-- Ruling F2-34: a recruit only right after this player's talk with the NPC or its squad
+	if kind == "add" and not talked_recently(from, npc, squad) then
+		stats.refused_talk = stats.refused_talk + 1
+		log("recruit of %s (%s) by player #%s refused: no talk with it or its squad in the last %d ms", npc:name(),
+			tostring(npc:id()), tostring(from), RECRUIT_TALK_MS)
 		return
 	end
 	stats.cmd_in = stats.cmd_in + 1
@@ -278,9 +304,9 @@ end
 function print_status()
 	local n = 0
 	for _ in pairs(leaders) do n = n + 1 end
-	log("installed %s | squads led by clients %d | orders out %d in %d refused %d | flags out %d in %d | follow ticks %d | errors %d",
-		tostring(installed), n, stats.cmd_out, stats.cmd_in, stats.refused, stats.info_out, stats.info_in, stats.follow,
-		P.error_count(TAG))
+	log("installed %s | squads led by clients %d | orders out %d in %d refused %d, recruits without a talk %d | flags out %d in %d | follow ticks %d | errors %d",
+		tostring(installed), n, stats.cmd_out, stats.cmd_in, stats.refused, stats.refused_talk, stats.info_out, stats.info_in,
+		stats.follow, P.error_count(TAG))
 end
 
 function on_game_start()

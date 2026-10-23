@@ -103,21 +103,36 @@
     отвечает «исполнить / запрос хосту / отказ», решение — чистая `calls::decide`.
   - Переопределения — `[call_classes] namespace:function = world|owner|view|read` в `coop_route*.ltx` /
     `coop_compat_*.ltx`.
-  - Гейт работает у клиента в мире хоста (`LoadingWorld`, `Live`). Пока клиент применяет команду хоста
-    (`client_applying`, `story::applying`), вызов исполняется: так наши зеркала показывают изменение хоста. Исключение —
-    гейты `alife()`-спавна и ALife, погоды и времени: там правила класса действуют и тогда, как до T12.
+  - Гейт работает у клиента в мире хоста (`LoadingWorld`, `Live`). Пока движок применяет команду хоста (область
+    `ClientApply`) или историю хоста (`story::applying`), вызов исполняется: это изменение хоста. Исключение — гейты
+    `alife()`-спавна и ALife, погоды и времени: там правила класса действуют и тогда, как до T12.
+  - Lua-зеркала под это правило **не попадают**: `coop_npc_meet` и `coop_npc_world` получают события хоста через
+    `coop_script` (`deliver_inbox`), вне обеих областей. Поэтому функции, которые они зовут (`enable_talk`,
+    `disable_talk`, `enable_trade`, `set_start_dialog`, `explode`, `enable_anomaly` и подобные), закрывать гейтом
+    нельзя, пока зеркала не идут под областью применения (например, Lua `coop.apply(fn)` над `ClientApply`).
   - Гейт стоит в `create` / `create_ammo` / `clone_weapon` / `register` / `release` / `kill_entity` /
     `teleport_object` / `set_switch_*` / `give_info` / `disable_info` / `set_interactive` / ограничениях, погоде,
     `change_game_time`, `set_game_difficulty`, `level.spawn_item` / `spawn_phantom`, `transfer_item` / `take_item` /
-    `give_money` / `transfer_money` / `kill` / `set_npc_position` / свойствах здоровья и `change_health` /
+    `give_money` / `transfer_money` / `kill` / `set_npc_position` / свойствах здоровья и всех `change_*` /
     `set_health_ex` / инфопорциях / отношениях / `attach_vehicle` / `enable_level_changer` / `buy_supplies` /
     `destroy_object`; остальные экспорты пока исполняются как в одиночке. `tools/list_exports.py --check` сверяет
     таблицу с экспортами при каждом прогоне юнит-тестов.
   - `kill`, `set_npc_position` и здоровье — класс `owner`: на своём акторе исполняются, на чужом считаются как `world`,
     а пути запроса у них нет — отказ. Лечение NPC с клиента — синхронизация NPC (Ф2 задача 22).
   - `alife():give_info(0, …)` — путь story, как `db.actor:give_info_portion`; чужой реестр — отказ.
-  - Хост (`host_move`, Ruling F2-32): из инвентаря живого NPC — только под talk lock игрока с ним; замки ящиков и
-    трупов — как в UI стока.
+  - `set_game_difficulty` закрыт, но символически: Lua его не зовёт. Сложность сток ставит консольной командой
+    `g_game_difficulty`, и этот консольный путь — штатный путь факторов хоста (W3d `coop_settings`); `CConsole:execute`
+    — строка `world` без гейта.
+  - Хост (`host_move`, Rulings F2-32, F2-32b) проверяет инвентарь живого NPC в обе стороны: и взять из него, и
+    положить в него можно, только если игрок держит talk lock с этим NPC или NPC — его компаньон, то есть отрядом
+    командует его персонаж (`coop_npc_companions.leader_of`; инвентарь компаньона в стоке открывается без диалога).
+    Чужой компаньон и чужой NPC без разговора — отказ (`NotOwner`). Замки ящиков и трупов — как в UI стока: закрытый
+    ничего не отдаёт и не принимает, `can_take = false` не принимает.
+  - Найм компаньона (Ruling F2-34): хост принимает его, только если игрок держал talk lock с этим NPC или с членом его
+    отряда сейчас или не больше 5 с назад (`coop.talk_recent`, `xrCoop/coop_talks.h`). Иначе F2-32b открыл бы
+    инвентарь любого «нанятого» без разговора NPC. Окно, а не «держит сейчас»: хост снимает замок (`DialogUnlock`)
+    раньше, чем событие найма доходит до Lua. Отказ — строка в лог и счётчик `recruits without a talk` в
+    `coop_status`.
   - `coop_status`: `calls: refused N, requested N`, топ-10 отказов; первые 10 отказов каждого имени — в лог.
 
 ### 2.4 Зеркало состояния модов (C++)

@@ -384,6 +384,11 @@ TEST(calls_minimal_coverage)
 		{"game_object:morale", Run, No},
 		{"game_object:bleeding", Run, No},
 		{"game_object:change_health", Run, No},
+		{"game_object:change_psy_health", Run, No}, // round 2 (R1-M1)
+		{"game_object:change_power", Run, No},
+		{"game_object:change_satiety", Run, No},
+		{"game_object:change_radiation", Run, No},
+		{"game_object:change_morale", Run, No},
 		{"game_object:set_health_ex", Run, No},
 		{"level:spawn_item", Req, No},          // as alife:create (filter_spawn)
 		{"level:spawn_phantom", No, No},        // a world spawn

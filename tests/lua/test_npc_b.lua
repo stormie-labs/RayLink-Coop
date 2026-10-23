@@ -164,6 +164,8 @@ CC.on_game_start()
 H.fire("actor_on_update")
 local comp = H.add(make_obj(201, 12, 0, 0, { _name = "comp" }))
 local comp_c = C.add(make_obj(201, 12, 0, 0, { _name = "comp" }))
+-- Ruling F2-34: the host takes a recruit only right after a talk (here the client holds the talk lock of the NPC)
+H.env.coop.talk_recent = function(peer, npc_id, ms) return peer == 1 and npc_id == 201 end
 QUEUE = {}
 C.env.dialogs_axr_companion.become_actor_companion(C.env.db.actor, comp_c)
 check(C.became == nil, "client: recruit not run locally")
@@ -187,6 +189,70 @@ C.env.dialogs_axr_companion.become_actor_companion(C.env.db.actor, comp_c)
 H.became = nil
 pump()
 check(H.became == nil, "recruit from far away refused")
+
+print("== coop_npc_companions: a recruit needs a talk with the squad in the last 5 s (Ruling F2-34)")
+H, C, proxy, hav = pair()
+common(H)
+common(C)
+squad.members = { 201, 202 }
+comp_stock(H)
+comp_stock(C)
+CH = load_script(H, "coop_npc_companions")
+CC = load_script(C, "coop_npc_companions")
+CH.on_game_start()
+CC.on_game_start()
+H.fire("actor_on_update")
+comp = H.add(make_obj(201, 12, 0, 0, { _name = "comp" }))
+H.add(make_obj(202, 13, 0, 0, { _name = "comp2" }))
+comp_c = C.add(make_obj(201, 12, 0, 0, { _name = "comp" }))
+-- the host's dialog module: [peer][npc] = true while the lock is held, else the time it ended
+local talks = {}
+local asked = {}
+H.env.coop.talk_recent = function(peer, npc_id, ms)
+	asked[#asked + 1] = { peer = peer, npc = npc_id, ms = ms }
+	local t = talks[peer] and talks[peer][npc_id]
+	if t == true then return true end
+	return t ~= nil and NOW - t <= ms
+end
+local function recruit()
+	H.became = nil
+	QUEUE = {}
+	C.env.dialogs_axr_companion.become_actor_companion(C.env.db.actor, comp_c)
+	pump()
+	return H.became ~= nil
+end
+local function dismiss()
+	H.env.dialogs_axr_companion.remove_companions_from_squad(H.env.db.actor, comp)
+	NOW = NOW + 3000
+	H.fire("actor_on_update")
+end
+local function refusals()
+	local n = 0
+	for _, line in ipairs(H.log) do
+		if line:find("recruit", 1, true) and line:find("refused", 1, true) then n = n + 1 end
+	end
+	return n
+end
+check(not recruit(), "no talk: the recruit is refused")
+check(CH._leaders()[300] == nil, "no talk: no leader")
+check(CH._stats().refused_talk == 1, "no talk: counted (coop_status)")
+check(refusals() == 1, "no talk: a log line")
+check(#asked >= 1 and asked[1].peer == 1 and asked[1].npc == 201 and asked[1].ms == 5000,
+	"asked the engine about this player, the NPC recruited through, 5000 ms")
+talks[1] = { [201] = NOW - 2000 }
+check(recruit(), "a talk that ended 2 s ago: recruited")
+check(CH._leaders()[300] == 500, "the recruiter's proxy leads the squad")
+dismiss()
+talks[1] = { [201] = NOW - 10000 }
+check(not recruit(), "a talk that ended 10 s ago: refused")
+check(CH._stats().refused_talk == 2, "counted again")
+talks[1] = { [202] = NOW - 1000 }
+check(recruit(), "a talk with another member of the squad: recruited")
+dismiss()
+talks = { [7] = { [201] = true } }
+check(not recruit(), "another player's talk does not count")
+talks = { [1] = { [201] = true } }
+check(recruit(), "the talk lock held now: recruited")
 
 print("== coop_npc_disguise: the host judges a disguised client")
 H, C, proxy, hav = pair()
