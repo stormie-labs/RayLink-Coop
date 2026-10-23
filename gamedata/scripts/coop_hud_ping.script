@@ -1,0 +1,480 @@
+--[[
+	Anomaly Coop - HUD v2: the ping (gamedata\scripts\coop_hud_ping.script). Spec: docs\HUD_V2.md, Пинг.
+
+	The "Co-op: ping" key (engine action chat_team, an MP action the single-player game never uses; Options > Controls >
+	Common, entry added by modxml_coop_hud) marks the point the camera looks at: what level.get_target_pos() hits within
+	300 m, else the point 300 m along the view. Only in a session.
+	Flow (script events of the core): the client asks the host (core.ping_req -> host), the host keeps it and sends it to
+	everybody (core.ping, -1) with the author's peer id and a number of its own; the author shows it when it comes back, so
+	every machine shows the same pings. The host's own ping goes the same way without the first step. A ping lives 20 s
+	on every machine, the author's included.
+	Limits: one ping in 2 s per player, on the client (the key) and on the host (per sender; 250 ms of slack for the
+	network's jitter, F2 T3 caps script events in the engine as well). At most 3 live pings per author (the oldest goes),
+	24 in all. Bad coordinates, another level, a relay that did not come from the host: dropped and counted.
+	On arrival: a quiet stock interface click. On the compass: coop_hud_markers' "pings" source. In the world: a ring in the
+	author's colour around a cyan dot over the point, with the distance (game.world2ui), hidden off screen and with the HUD.
+	Default key: mouse 5 (free in GAMMA 2026-10-23: not in its user.ltx binds, default_controls.ltx or any MCM key_bind
+	default), set once with "bind chat_team mouse5" when chat_team has no key and mouse 5 does nothing; the player's own
+	choice is never changed again (coop/coop_player/ping_key_set).
+
+	For other scripts:
+		coop_hud_ping.active([tg]) -> { { key, peer, n, pos = {x, y, z}, at, nick }, ... }   live pings
+		coop_hud_ping.request([tg]) -> true | false, "off" | "rate" | "no_target" | "send"
+		coop_hud_ping.target_point() -> {x, y, z} | nil
+		coop_hud_ping.get_world_window() -> the world overlay while it is on the HUD
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local tostring, tonumber, type, ipairs, pairs, pcall = tostring, tonumber, type, ipairs, pairs, pcall
+local math_floor, math_max, math_min, math_abs, math_sqrt = math.floor, math.max, math.min, math.abs, math.sqrt
+local string_format = string.format
+
+EV_REQ = "core.ping_req"
+EV_PING = "core.ping"
+GAP_MS = 2000
+SLACK_MS = 250
+LIFE_MS = 20000
+RANGE = 300
+MAX_PER_AUTHOR = 3
+MAX_TOTAL = 24
+KEY_DEFAULT = "mouse5"
+OPT_KEY_SET = "coop/coop_player/ping_key_set"
+XML_FILE = "ui_coop_compass.xml"
+local COORD_MAX = 100000
+local SOUND = "interface\\inv_properties"
+local VOLUME = 0.35
+local WORLD_SLOTS = 12
+local C_PING = { 120, 225, 235 }
+local C_TEXT = { 230, 225, 208 }
+
+local pings = {} -- { key, peer, n, pos, at, nick }, oldest first
+local last_sent -- time of my own last ping (client and host)
+local last_from = {} -- host: peer -> time of his last accepted ping
+local host_seq = 0
+local stats = { sent = 0, refused = 0, relayed = 0, received = 0, rate = 0, bad = 0, foreign = 0 }
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-hud] %s", ok and line or tostring(fmt))
+end
+
+local function live()
+	if not api then return false end
+	local ok, on = pcall(function() return api.is_active() and (api.is_host() or api.is_live()) end)
+	return ok and on == true
+end
+
+local function is_host()
+	local ok, h = pcall(api.is_host)
+	return ok and h == true
+end
+
+local function codec()
+	return rawget(_G, "coop_main") or coop_main
+end
+
+local function level_name()
+	local ok, n = pcall(level.name)
+	return ok and type(n) == "string" and n or nil
+end
+
+local function nick_of(peer)
+	local ok, list = pcall(api.players)
+	if ok and type(list) == "table" then
+		for _, p in ipairs(list) do
+			if p.id == peer then return tostring(p.nick or "?") end
+		end
+	end
+	return nil
+end
+
+local function r2(v)
+	return math_floor(v * 100 + 0.5) / 100
+end
+
+local function coord(v)
+	v = tonumber(v)
+	if not (v and v == v and math_abs(v) < COORD_MAX) then return nil end
+	return v
+end
+
+local snd
+local function click()
+	local ok = pcall(function()
+		if not snd then snd = sound_object(SOUND) end
+		local okf, flag = pcall(function() return sound_object.s2d end)
+		snd.volume = VOLUME
+		snd:play(db.actor, 0, okf and flag or 0)
+	end)
+	if not ok then snd = nil end
+end
+
+-------------------------------------------------------------------------------
+-- Pings
+-------------------------------------------------------------------------------
+local function prune(tg)
+	for i = #pings, 1, -1 do
+		if tg - pings[i].at >= LIFE_MS or tg < pings[i].at - LIFE_MS then table.remove(pings, i) end
+	end
+end
+
+local function add_ping(peer, n, x, y, z, tg)
+	local key = tostring(peer) .. ":" .. tostring(n)
+	for _, p in ipairs(pings) do
+		if p.key == key then return false end
+	end
+	local own, oldest = 0, nil
+	for i, p in ipairs(pings) do
+		if p.peer == peer then
+			own = own + 1
+			oldest = oldest or i
+		end
+	end
+	if own >= MAX_PER_AUTHOR and oldest then table.remove(pings, oldest) end
+	if #pings >= MAX_TOTAL then table.remove(pings, 1) end
+	pings[#pings + 1] = { key = key, peer = peer, n = n, pos = { x = x, y = y, z = z }, at = tg, nick = nick_of(peer) }
+	click()
+	return true
+end
+
+function active(tg)
+	prune(tg or time_global())
+	return pings
+end
+
+function clear()
+	pings, last_from, last_sent = {}, {}, nil
+end
+
+-- The point the camera looks at: the hit within RANGE, else RANGE along the view.
+function target_point()
+	local dev = device()
+	local cam, dir = dev.cam_pos, dev.cam_dir
+	local okd, d = pcall(level.get_target_dist)
+	d = okd and tonumber(d) or 0
+	if d > 0 and d <= RANGE then
+		local okp, p = pcall(level.get_target_pos)
+		if okp and p and coord(p.x) and coord(p.y) and coord(p.z) then return { x = p.x, y = p.y, z = p.z } end
+	end
+	if not (cam and dir) then return nil end
+	local len = math_sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z)
+	if len < 1e-6 then return nil end
+	local k = RANGE / len
+	return { x = cam.x + dir.x * k, y = cam.y + dir.y * k, z = cam.z + dir.z * k }
+end
+
+local function host_keep(from, x, y, z, lvl, tg)
+	host_seq = host_seq + 1
+	add_ping(from, host_seq, x, y, z, tg)
+	local t = { x = r2(x), y = r2(y), z = r2(z), p = from, n = host_seq }
+	if lvl then t.l = lvl end
+	if api.send_event(EV_PING, codec().encode(t), -1) then stats.relayed = stats.relayed + 1 end
+end
+
+function request(tg)
+	tg = tg or time_global()
+	if not live() then return false, "off" end
+	if last_sent and tg - last_sent < GAP_MS and tg >= last_sent then
+		stats.refused = stats.refused + 1
+		return false, "rate"
+	end
+	local p = target_point()
+	if not p then return false, "no_target" end
+	local lvl = level_name()
+	if is_host() then
+		last_sent = tg
+		stats.sent = stats.sent + 1
+		host_keep(0, p.x, p.y, p.z, lvl, tg)
+		return true
+	end
+	local t = { x = r2(p.x), y = r2(p.y), z = r2(p.z) }
+	if lvl then t.l = lvl end
+	if not api.send_event(EV_REQ, codec().encode(t), 0) then return false, "send" end
+	last_sent = tg
+	stats.sent = stats.sent + 1
+	return true
+end
+
+-- x, y, z of a payload on this level, or nil
+local function parse(t)
+	local x, y, z = coord(t.x), coord(t.y), coord(t.z)
+	if not (x and y and z) then return nil end
+	if type(t.l) == "string" then
+		local here = level_name()
+		if here and here ~= t.l then return nil end
+	end
+	return x, y, z
+end
+
+-- Host: a client's request.
+function on_req(payload, from)
+	if not (api and is_host()) or type(from) ~= "number" or from <= 0 then return end
+	local t = codec().decode(payload)
+	local x, y, z = parse(t)
+	if not x then
+		stats.bad = stats.bad + 1
+		return
+	end
+	local tg = time_global()
+	local last = last_from[from]
+	if last and tg >= last and tg - last < GAP_MS - SLACK_MS then
+		stats.rate = stats.rate + 1
+		return
+	end
+	last_from[from] = tg
+	host_keep(from, x, y, z, type(t.l) == "string" and t.l or level_name(), tg)
+end
+
+-- Client: the host's relay.
+function on_ping(payload, from)
+	if not api or is_host() then return end
+	if from ~= 0 then
+		stats.foreign = stats.foreign + 1
+		return
+	end
+	local t = codec().decode(payload)
+	local x, y, z = parse(t)
+	local peer, n = tonumber(t.p), tonumber(t.n)
+	if not (x and peer and n and peer >= 0 and peer == math_floor(peer)) then
+		stats.bad = stats.bad + 1
+		return
+	end
+	if add_ping(peer, n, x, y, z, time_global()) then stats.received = stats.received + 1 end
+end
+
+-------------------------------------------------------------------------------
+-- The world overlay: a ring over every pinged point
+-------------------------------------------------------------------------------
+local WORLD -- the window while it is on the HUD
+local RING, DOT = 16, 6 -- px at 768 high: coop_hud_layout world_ring / world_dot
+
+local function allies()
+	return rawget(_G, "coop_allies")
+end
+
+local function hud_visible()
+	local f = rawget(_G, "main_hud_shown")
+	if not f then return true end
+	local ok, v = pcall(f)
+	return not ok or v == true
+end
+
+local function format_distance(d)
+	local m = rawget(_G, "coop_allies_map")
+	if m and m.format_distance then
+		local ok, s = pcall(m.format_distance, d)
+		if ok and s then return s end
+	end
+	return string_format("%d m", math_floor(d + 0.5))
+end
+
+class "UICoopPingWorld" (CUIScriptWnd)
+
+function UICoopPingWorld:__init() super()
+	local xml = CScriptXmlInit()
+	xml:ParseFile(XML_FILE)
+	self.root = xml:InitStatic("coop_ping", self)
+	self.rings, self.dots, self.labels, self.shadows = {}, {}, {}, {}
+	for i = 1, WORLD_SLOTS do
+		self.rings[i] = xml:InitStatic("coop_ping:ring", self.root)
+		self.dots[i] = xml:InitStatic("coop_ping:dot", self.root)
+		self.shadows[i] = xml:InitTextWnd("coop_ping:label", self.root)
+		self.labels[i] = xml:InitTextWnd("coop_ping:label", self.root)
+		for _, w in ipairs({ self.rings[i], self.dots[i], self.shadows[i], self.labels[i] }) do w:Show(false) end
+	end
+	self.text = {}
+	self.size_w = nil
+end
+
+function UICoopPingWorld:__finalize()
+end
+
+function UICoopPingWorld:Frame(tg)
+	local dev = device()
+	local W, H = dev.width, dev.height
+	local lay = rawget(_G, "coop_hud_layout") or coop_hud_layout
+	local L = lay.get()
+	if self.size_w ~= W or self.size_h ~= H or self.L ~= L then
+		self.size_w, self.size_h, self.L = W, H, L
+		RING, DOT = L.world_ring, L.world_dot
+		local kx = 1024 * H / (768 * W)
+		self.kx, self.px, self.py = kx, 1024 / W, 768 / H
+		for i = 1, WORLD_SLOTS do
+			self.rings[i]:SetWndSize(vector2():set(RING * kx, RING))
+			self.dots[i]:SetWndSize(vector2():set(DOT * kx, DOT))
+			self.labels[i]:SetWndSize(vector2():set(80 * kx, 14))
+			self.shadows[i]:SetWndSize(vector2():set(80 * kx, 14))
+		end
+	end
+	local used = 0
+	local list = active(tg)
+	local vis = hud_visible()
+	local w2ui = game and game.world2ui
+	local A = allies()
+	local actor = db.actor
+	local me = nil
+	if actor then
+		local ok, p = pcall(actor.position, actor)
+		me = ok and p or nil
+	end
+	if vis and w2ui and me then
+		local v = vector()
+		for i = #list, 1, -1 do -- newest first
+			if used >= WORLD_SLOTS then break end
+			local p = list[i]
+			local ok, s = pcall(w2ui, v:set(p.pos.x, p.pos.y, p.pos.z), false, false)
+			if ok and s and s.x and s.x > -9000 then
+				used = used + 1
+				local kx = self.kx
+				local age = tg - p.at
+				local a = math_min(1, age / 150) * math_min(1, (LIFE_MS - age) / 1000)
+				a = math_max(0, a)
+				local scale = age < 300 and (1 + 0.8 * (1 - age / 300)) or 1
+				local ring, dot, lab, sh = self.rings[used], self.dots[used], self.labels[used], self.shadows[used]
+				local c = A and { A.color(p.peer) } or C_TEXT
+				ring:SetWndSize(vector2():set(RING * scale * kx, RING * scale))
+				ring:SetWndPos(vector2():set(s.x - RING * scale * kx / 2, s.y - RING * scale / 2))
+				ring:SetTextureColor(GetARGB(math_floor(240 * a), c[1], c[2], c[3]))
+				dot:SetWndPos(vector2():set(s.x - DOT * kx / 2, s.y - DOT / 2))
+				dot:SetTextureColor(GetARGB(math_floor(255 * a), C_PING[1], C_PING[2], C_PING[3]))
+				local dx, dy, dz = p.pos.x - me.x, p.pos.y - me.y, p.pos.z - me.z
+				local text = format_distance(math_sqrt(dx * dx + dy * dy + dz * dz))
+				if self.text[used] ~= text then
+					self.text[used] = text
+					lab:SetText(text)
+					sh:SetText(text)
+				end
+				lab:SetWndPos(vector2():set(s.x - 40 * kx, s.y + RING / 2 + 2))
+				sh:SetWndPos(vector2():set(s.x - 40 * kx + self.px, s.y + RING / 2 + 2 + self.py))
+				lab:SetTextColor(GetARGB(math_floor(230 * a), c[1], c[2], c[3]))
+				sh:SetTextColor(GetARGB(math_floor(180 * a), 0, 0, 0))
+				for _, w in ipairs({ ring, dot, lab, sh }) do
+					if not w:IsShown() then w:Show(true) end
+				end
+			end
+		end
+	end
+	for i = used + 1, WORLD_SLOTS do
+		if self.rings[i]:IsShown() then
+			for _, w in ipairs({ self.rings[i], self.dots[i], self.labels[i], self.shadows[i] }) do w:Show(false) end
+		end
+	end
+end
+
+function UICoopPingWorld:Update()
+	CUIScriptWnd.Update(self)
+	local tg = time_global()
+	if self.off_until and tg < self.off_until then return end
+	local M = rawget(_G, "coop_hud_markers")
+	local pf = M and M.perf_start and M.perf_start("ping")
+	local ok, err = pcall(self.Frame, self, tg)
+	if pf then M.perf_stop(pf) end
+	if not ok then
+		self.off_until = tg + 5000
+		log("! ping overlay frame failed: %s", tostring(err))
+	end
+end
+
+function get_world_window()
+	return WORLD
+end
+
+local function world_on()
+	if WORLD then return end
+	local ok, err = pcall(function()
+		WORLD = UICoopPingWorld()
+		get_hud():AddDialogToRender(WORLD)
+	end)
+	if not ok then
+		WORLD = nil
+		log("! ping overlay failed: %s", tostring(err))
+	end
+end
+
+local function world_off()
+	if not WORLD then return end
+	local w = WORLD
+	WORLD = nil
+	pcall(function() get_hud():RemoveDialogToRender(w) end)
+end
+
+-------------------------------------------------------------------------------
+-- Key, default binding, callbacks
+-------------------------------------------------------------------------------
+local function is_ping_key(dik)
+	local kb = key_bindings and key_bindings.kCHAT_TEAM
+	if not kb then return false end
+	local ok, b = pcall(dik_to_bind, dik)
+	return ok and b == kb
+end
+
+local function on_key_press(dik)
+	if not is_ping_key(dik) or not live() or not db.actor then return end
+	local check = rawget(_G, "Check_UI")
+	if check and check() then return end
+	request(time_global())
+end
+
+local function action_key(kb)
+	local ok, dik = pcall(bind_to_dik, kb, -1)
+	if not ok then ok, dik = pcall(bind_to_dik, kb) end
+	return ok and tonumber(dik) or nil
+end
+
+-- Once: the ping key on mouse 5 when the action has no key and mouse 5 does nothing.
+local function default_key()
+	local cfg = axr_main and axr_main.config
+	local kb = key_bindings and key_bindings.kCHAT_TEAM
+	if not (cfg and kb) then return end
+	local ok_v, set = pcall(cfg.r_value, cfg, "options", OPT_KEY_SET, 1)
+	if ok_v and set == true then return end
+	local function remember()
+		pcall(cfg.w_value, cfg, "options", OPT_KEY_SET, true)
+		pcall(cfg.save, cfg)
+	end
+	local have = action_key(kb)
+	if have == nil then return end
+	if have ~= 0 then return remember() end -- the player bound it already
+	local m5 = DIK_keys and DIK_keys.MOUSE_5
+	local ok_n, none = pcall(dik_to_bind, DIK_keys.DIK_F15) -- a key nobody binds: "no action"
+	local ok_m, cur = pcall(dik_to_bind, m5)
+	if not (m5 and ok_n and ok_m) or cur ~= none then return end -- taken: no binding, the options line says where to set it
+	exec_console_cmd("bind chat_team " .. KEY_DEFAULT)
+	remember()
+	log("ping key: chat_team bound to %s (Options > Controls > Common, Co-op: ping)", KEY_DEFAULT)
+end
+
+local function actor_on_update()
+	local tg = time_global()
+	if live() then
+		prune(tg)
+		world_on()
+	elseif WORLD or #pings > 0 then
+		world_off()
+		clear()
+	end
+end
+
+local function actor_on_net_destroy()
+	world_off()
+	clear()
+end
+
+function print_status()
+	log("ping: live %d, mine sent %d (refused %d), host relayed %d, received %d, dropped: rate %d, bad %d, not from the host %d",
+		#pings, stats.sent, stats.refused, stats.relayed, stats.received, stats.rate, stats.bad, stats.foreign)
+end
+
+function on_game_start()
+	if not api then return end -- an exe without co-op: nothing of this runs
+	local cm = codec()
+	if cm and cm.add_event_handler then
+		cm.add_event_handler(EV_REQ, on_req)
+		cm.add_event_handler(EV_PING, on_ping)
+	end
+	RegisterScriptCallback("on_key_press", on_key_press)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("actor_on_first_update", default_key)
+	RegisterScriptCallback("actor_on_net_destroy", actor_on_net_destroy)
+end

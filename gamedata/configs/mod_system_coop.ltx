@@ -35,3 +35,63 @@ color_6                 = 224,218,164   ; khaki  #E0DAA4
 color_7                 = 161,134,178   ; mauve  #A186B2
 down                    = 226,58,48     ; needs help (wounded): marker ring, panel badge and label
 dead                    = 150,150,150   ; dead / spectating / respawning: marker and panel
+
+
+; HUD v2 (docs\HUD_V2.md): every size of the compass bar and the team panel, and the alphas of the bar.
+; One line per value: change it here, the HUD takes it at the next load (scripts\coop_hud_layout.script; a missing
+; or broken line keeps the script's default, which is the same value). Sizes are px at 768 high (1024x768 UI units
+; down, times kx = 1024 * H / (768 * W) across: nothing stretches on a wide screen); alphas 0..1.
+[coop_hud_layout]
+; compass bar: look (0..1; the background and the line fade out on the last 16 % at each end, baked in the textures)
+bar_bg_alpha            = 0.33  ; #0C0D0A (owner 2026-10-23: "a bit less murky", was ~0.6)
+bar_line_alpha          = 0.8   ; the white line #F4F5F6
+; compass bar: sizes
+bar_width_pct           = 38    ; of the screen width
+bar_top                 = 20    ; from the top of the screen
+bar_height              = 24
+line_y                  = 15    ; the white line through the bar, from its top
+letter_y                = 1     ; letters N NE E ...: top of their box, from the bar's top (above the line)
+letter_h                = 13
+tick_5                  = 2     ; tick lengths, down from the line
+tick_15                 = 4
+tick_45                 = 5
+notch_w                 = 8     ; the white centre mark under the line, pointing up
+notch_h                 = 6
+notch_gap               = 3     ; its tip this far under the line
+heading_y               = -14   ; the heading "247 deg" (top of its box), from the bar's top
+heading_h               = 12
+icon                    = 12    ; marker glyph
+marker_y                = 9     ; marker centre, from the bar's top (sits on the line, a bit above it)
+ping_dot                = 6     ; the cyan dot of a ping
+side                    = 8     ; the arrow of a marker pinned to an end
+side_gap                = 12    ; pinned marker: centre this far from the end of the bar, its arrow as far outside it
+updown                  = 6     ; up / down arrow at a label (height difference > 5 m)
+label_gap               = 3     ; labels: this far under the bar
+label_h                 = 12
+world_ring              = 16    ; a ping over its point in the world
+world_dot               = 6
+; team panel (variant B, owner 2026-10-23): rows bottom left, above the own HUD; the block grows upwards
+team_x                  = 18    ; from the left edge of the screen
+team_bottom             = 590   ; the bottom of the lowest row (the own HUD of GAMMA / stock starts lower, ~626 / 726)
+team_row                = 36    ; from one row to the next
+team_strip_w            = 2     ; the player's colour bar at the left of a row
+team_strip_h            = 22
+team_name_x             = 8     ; nick (white, 1 px shadow) from the row's left
+team_name_y             = -2
+team_name_h             = 14
+team_name_max           = 120   ; longer nicks end with an ellipsis
+team_star               = 9     ; host star after the nick
+team_dist_gap           = 6     ; distance this far after the nick (or the star)
+team_dist_y             = 0
+team_dist_h             = 12
+team_arrow              = 10    ; direction arrow after the distance, centred team_arrow_y from the row's top
+team_arrow_y            = 6
+team_seg_x              = 8     ; health: 4 segments of 25 % under the nick
+team_seg_y              = 15
+team_seg_w              = 30
+team_seg_h              = 5
+team_seg_gap            = 3
+team_seg_empty_alpha    = 0.18  ; the empty part of a segment, white
+team_status             = 12    ; state icon (cross in a melting ring, skull, eye, z, !) right of the segments
+team_status_gap         = 10    ; its centre this far after the last segment
+team_timer_h            = 12    ; "0:42" after the icon

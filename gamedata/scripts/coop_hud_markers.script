@@ -1,0 +1,449 @@
+--[[
+	Anomaly Coop - HUD v2: the marker data of the core (gamedata\scripts\coop_hud_markers.script). Spec: docs\HUD_V2.md.
+
+	One module per machine. It gathers the things worth pointing at from its sources and hands out one list; how they are
+	drawn is somebody else's business (the default bar is coop_hud_compass.script, Tactical Compass gets them through
+	coop_hud_tc.script, a mod may draw its own). Distance and direction are worked out by the consumer from its own camera.
+
+	For mods:
+		coop_hud_markers.list([tg]) -> array of markers, refreshed at most 10 times a second (the same table in between):
+			{ key = "<source>/<key>", kind, pos = {x, y, z}, color = {r, g, b}, label, state, priority, src,
+			  peer (allies, pings), bleed (seconds, a downed ally), born (ms, pings), icon (texture id), alpha (0..1) }
+		coop_hud_markers.add_source(name, fn [, every_ms]) -> bool   fn(tg) -> array of markers in the same shape (key, kind and
+			pos needed; color, label, state, priority 10, icon, alpha optional). Asked every every_ms (default 100). An error
+			in fn is caught (pcall), counted and logged once a minute; markers without a usable position are dropped and
+			counted. A source of the same name is replaced.
+		coop_hud_markers.remove_source(name)
+		coop_hud_markers.error_count(name) / bad_count(name)
+
+	Built-in sources (docs\HUD_V2.md, Компас):
+		allies  other players with an avatar here (coop_core_hud.views: the engine's survival state wins over the report):
+		        kind "ally", state alive | down | dead | spec | respawn | unknown; colour: his own, red when down, grey when
+		        dead / spectating / returning; priority 40 when down, else 30. Only in a session.
+		tasks   task_manager's tasks with a target on this level: kind "task", state active (priority 20) | other (10).
+		deaths  death marks of the group (engine callback coop_death_marker on every machine): kind "death", state corpse |
+		        drop, the fallen player's nick. A mark lives while the host's PDA spot (secondary_task_location, replicated
+		        to the clients) is on the object; 10 s of grace for the spot to arrive. Only in a session.
+		camp    my own camp (coop.checkpoint.get(0)): kind "camp", state tent | campfire | rest | mod. Arrival points and
+		        story checkpoints have no place to point at.
+		pings   coop_hud_ping.active(): kind "ping", in the author's colour, priority 50.
+	Priority order on a crowded bar: ping > down > ally > active task > everything else.
+
+	Also the frame-time counter of the HUD (perf_start / perf_stop, read by coop_status through coop_core_hud.print_status).
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local tostring, tonumber, type, ipairs, pairs, pcall = tostring, tonumber, type, ipairs, pairs, pcall
+local math_floor, math_max, math_min, string_format = math.floor, math.max, math.min, string.format
+
+REFRESH_MS = 100
+PRIORITY = { ping = 50, down = 40, ally = 30, task_active = 20, other = 10 }
+COLOR = {
+	task = { 232, 194, 90 }, -- #E8C25A
+	camp = { 146, 190, 154 }, -- #92BE9A sage
+	death = { 176, 84, 72 }, -- muted red
+	ping = { 120, 225, 235 }, -- #78E1EB (the dot; the ring is the author's colour)
+	text = { 230, 225, 208 }, -- #E6E1D0
+}
+DEATH_SPOT = "secondary_task_location" -- the host's PDA spot of a death mark (coop_death.script)
+DEATH_GRACE_MS = 10000
+
+local CAMP_KINDS = { tent = true, campfire = true, rest = true, mod = true }
+local GREY_STATES = { dead = true, spec = true, respawn = true }
+local ERROR_LOG_MS = 60000
+local EMPTY = {}
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-hud] %s", ok and line or tostring(fmt))
+end
+
+local function in_session()
+	if not api then return false end
+	local ok, on = pcall(api.is_active)
+	return ok and on == true
+end
+
+local function live()
+	if not in_session() then return false end
+	local ok, on = pcall(function() return api.is_host() or api.is_live() end)
+	return ok and on == true
+end
+
+local function module_of(name)
+	return rawget(_G, name)
+end
+
+local function finite(v)
+	return type(v) == "number" and v == v and v > -1e7 and v < 1e7
+end
+
+-- A plain copy of a position (an engine vector is not kept between frames).
+local function copy_pos(p)
+	if p == nil then return nil end
+	local ok, x, y, z = pcall(function() return p.x, p.y, p.z end)
+	if not (ok and finite(x) and finite(y) and finite(z)) then return nil end
+	return { x = x, y = y, z = z }
+end
+
+-- Where object `id` is on this level: the online object, else its server entity when it is on the actor's level.
+local function object_pos(id)
+	local obj = level.object_by_id(id)
+	if obj then
+		local ok, p = pcall(obj.position, obj)
+		return ok and copy_pos(p) or nil
+	end
+	local alife_f, gg_f = rawget(_G, "alife"), rawget(_G, "game_graph")
+	if not (alife_f and gg_f and db.actor) then return nil end
+	local ok, p = pcall(function()
+		local sim = alife_f()
+		local se = sim and sim:object(id)
+		if not se then return nil end
+		local gg = gg_f()
+		if gg:vertex(se.m_game_vertex_id):level_id() ~= gg:vertex(db.actor:game_vertex_id()):level_id() then return nil end
+		return se.position
+	end)
+	return ok and copy_pos(p) or nil
+end
+
+-------------------------------------------------------------------------------
+-- Sources
+-------------------------------------------------------------------------------
+local sources = {} -- name -> { name, fn, every, next_at, cache, errors, bad, err_at, bad_logged }
+local order = {} -- names, in the order they were added
+
+local function clamp_byte(v)
+	v = tonumber(v) or 255
+	return math_max(0, math_min(255, math_floor(v + 0.5)))
+end
+
+-- A marker of source `src` in the shape of list(), or nil when it cannot be drawn.
+local function normalize(src, m)
+	if type(m) ~= "table" then return nil end
+	local key, kind = m.key, m.kind
+	if not ((type(key) == "string" and key ~= "") or type(key) == "number") then return nil end
+	if type(kind) ~= "string" or kind == "" then return nil end
+	local pos = copy_pos(m.pos)
+	if not pos then return nil end
+	local c = type(m.color) == "table" and m.color or COLOR.text
+	local alpha = tonumber(m.alpha)
+	return {
+		key = src .. "/" .. tostring(key), kind = kind, pos = pos, src = src,
+		color = { clamp_byte(c[1]), clamp_byte(c[2]), clamp_byte(c[3]) },
+		label = type(m.label) == "string" and m.label ~= "" and m.label or nil,
+		state = type(m.state) == "string" and m.state or nil,
+		priority = tonumber(m.priority) or PRIORITY.other,
+		peer = tonumber(m.peer), bleed = tonumber(m.bleed), born = tonumber(m.born),
+		icon = type(m.icon) == "string" and m.icon ~= "" and m.icon or nil,
+		alpha = alpha and math_max(0, math_min(1, alpha)) or nil,
+	}
+end
+
+function add_source(name, fn, every_ms)
+	if type(name) ~= "string" or name == "" or name:find("/", 1, true) or type(fn) ~= "function" then return false end
+	local s = sources[name]
+	if not s then
+		s = { name = name, errors = 0, bad = 0, err_at = nil }
+		sources[name] = s
+		order[#order + 1] = name
+	end
+	s.fn = fn
+	s.every = math_max(16, tonumber(every_ms) or REFRESH_MS)
+	s.next_at = 0
+	s.cache = EMPTY
+	return true
+end
+
+function remove_source(name)
+	if not sources[name] then return end
+	sources[name] = nil
+	for i, n in ipairs(order) do
+		if n == name then
+			table.remove(order, i)
+			break
+		end
+	end
+end
+
+function error_count(name)
+	return sources[name] and sources[name].errors or 0
+end
+
+function bad_count(name)
+	return sources[name] and sources[name].bad or 0
+end
+
+local function ask(s, tg)
+	local ok, res = pcall(s.fn, tg)
+	if not ok then
+		s.errors = s.errors + 1
+		s.cache = EMPTY
+		if not s.err_at or tg - s.err_at >= ERROR_LOG_MS then
+			s.err_at = tg
+			log("! marker source '%s' failed (%d time(s)): %s", s.name, s.errors, tostring(res))
+		end
+		return
+	end
+	if type(res) ~= "table" then
+		s.cache = EMPTY
+		return
+	end
+	local out, bad = {}, 0
+	for _, m in ipairs(res) do
+		local n = normalize(s.name, m)
+		if n then out[#out + 1] = n else bad = bad + 1 end
+	end
+	if bad > 0 then
+		s.bad = s.bad + bad
+		if not s.bad_logged then
+			s.bad_logged = true
+			log("! marker source '%s' gave %d marker(s) without a key, kind or position: dropped", s.name, bad)
+		end
+	end
+	s.cache = out
+end
+
+local list_cache, list_at = EMPTY, nil
+local stats = { refreshes = 0 }
+
+function refresh(tg)
+	tg = tg or time_global()
+	local out = {}
+	for _, name in ipairs(order) do
+		local s = sources[name]
+		if s then
+			if tg >= s.next_at or tg < s.next_at - s.every then
+				s.next_at = tg + s.every
+				ask(s, tg)
+			end
+			for _, m in ipairs(s.cache) do out[#out + 1] = m end
+		end
+	end
+	list_cache, list_at = out, tg
+	stats.refreshes = stats.refreshes + 1
+	return out
+end
+
+function list(tg)
+	tg = tg or time_global()
+	if list_at == nil or tg - list_at >= REFRESH_MS or tg < list_at then return refresh(tg) end
+	return list_cache
+end
+
+-------------------------------------------------------------------------------
+-- Built-in sources
+-------------------------------------------------------------------------------
+local function src_allies(tg)
+	if not live() then return EMPTY end
+	local hud, A = module_of("coop_core_hud"), module_of("coop_allies")
+	if not (hud and hud.views and A) then return EMPTY end
+	local out = {}
+	for _, v in ipairs(hud.views(tg)) do
+		if v.pos then
+			local c
+			if v.state == "down" then
+				c = { A.state_color("down") }
+			elseif GREY_STATES[v.state] then
+				c = { A.state_color("dead") }
+			else
+				c = { A.color(v.peer) }
+			end
+			out[#out + 1] = { key = "ally:" .. tostring(v.peer), kind = "ally", pos = v.pos, color = c, label = v.nick,
+				state = v.state, priority = v.state == "down" and PRIORITY.down or PRIORITY.ally, peer = v.peer, bleed = v.bleed }
+		end
+	end
+	return out
+end
+
+local function is_active_task(actor, t)
+	local ok, on = pcall(actor.is_active_task, actor, t)
+	return ok and on == true
+end
+
+local function src_tasks()
+	local tm = module_of("task_manager")
+	local actor = db.actor
+	if not (tm and tm.get_task_manager and actor) then return EMPTY end
+	local ok, mgr = pcall(tm.get_task_manager)
+	local info = ok and type(mgr) == "table" and mgr.task_info
+	if type(info) ~= "table" then return EMPTY end
+	local out = {}
+	for id, t in pairs(info) do
+		if type(t) == "table" and t.t and t.status ~= "completed" and t.status ~= "fail" then
+			local target = tonumber(t.current_target)
+			if target and target > 0 and target < 65535 then
+				local p = object_pos(target)
+				if p then
+					local active = is_active_task(actor, t.t)
+					out[#out + 1] = { key = "task:" .. tostring(id), kind = "task", pos = p, color = COLOR.task,
+						state = active and "active" or "other", priority = active and PRIORITY.task_active or PRIORITY.other }
+				end
+			end
+		end
+	end
+	return out
+end
+
+local deaths = {} -- marker object id -> { kind, nick, since }
+
+local function nick_of(lid)
+	if not (api and type(lid) == "number") then return nil end
+	local ok, list_ = pcall(api.players)
+	if not (ok and type(list_) == "table") then return nil end
+	for _, p in ipairs(list_) do
+		if p.avatar_id == lid then return tostring(p.nick or "?") end
+	end
+	return nil
+end
+
+-- Engine callback coop_death_marker(player_local_id, marker_local_id, "drop" | "corpse"), fired on every machine.
+function on_death_marker(lid, id, kind)
+	if type(id) ~= "number" or id ~= math_floor(id) or id <= 0 or id >= 65535 then return end
+	if kind ~= "drop" and kind ~= "corpse" then return end
+	deaths[id] = { kind = kind, nick = nick_of(lid), since = time_global() }
+end
+
+local function has_spot(id, spot)
+	local ok, r = pcall(level.map_has_object_spot, id, spot)
+	return ok and (r == true or (type(r) == "number" and r ~= 0))
+end
+
+local function src_deaths(tg)
+	if not in_session() then
+		if next(deaths) then deaths = {} end
+		return EMPTY
+	end
+	local out = {}
+	for id, d in pairs(deaths) do
+		local obj = level.object_by_id(id)
+		local held = false
+		if obj then
+			local ok, par = pcall(obj.parent, obj)
+			held = ok and par ~= nil
+		end
+		if held or (tg - d.since > DEATH_GRACE_MS and not has_spot(id, DEATH_SPOT)) then
+			deaths[id] = nil
+		elseif obj then
+			local p = object_pos(id)
+			if p then
+				out[#out + 1] = { key = "death:" .. id, kind = "death", pos = p, color = COLOR.death, state = d.kind, label = d.nick,
+					priority = PRIORITY.other }
+			end
+		end
+	end
+	return out
+end
+
+local function src_camp()
+	local cp = api and api.checkpoint
+	if not (type(cp) == "table" and cp.get) then return EMPTY end
+	local ok, r = pcall(cp.get, 0)
+	if not (ok and type(r) == "table" and CAMP_KINDS[r.kind]) then return EMPTY end
+	local src = tonumber(r.source)
+	if not (src and src > 0 and src < 65535) then return EMPTY end
+	if type(r.level) == "string" and r.level ~= "" then
+		local okn, name = pcall(level.name)
+		if okn and type(name) == "string" and name ~= r.level then return EMPTY end
+	end
+	local p = object_pos(src)
+	if not p then return EMPTY end
+	return { { key = "camp:" .. src, kind = "camp", pos = p, color = COLOR.camp, state = r.kind, priority = PRIORITY.other } }
+end
+
+local function src_pings(tg)
+	local P, A = module_of("coop_hud_ping"), module_of("coop_allies")
+	if not (P and P.active and A) then return EMPTY end
+	local out = {}
+	for _, p in ipairs(P.active(tg)) do
+		out[#out + 1] = { key = "ping:" .. tostring(p.key), kind = "ping", pos = p.pos, color = { A.color(p.peer) }, label = p.nick,
+			priority = PRIORITY.ping, peer = p.peer, born = p.at }
+	end
+	return out
+end
+
+add_source("allies", src_allies, 100)
+add_source("tasks", src_tasks, 100)
+add_source("deaths", src_deaths, 1000)
+add_source("camp", src_camp, 1000)
+add_source("pings", src_pings, 100)
+
+-------------------------------------------------------------------------------
+-- Frame time of the HUD (profile_timer of the engine, microseconds)
+-------------------------------------------------------------------------------
+local PERF_WINDOW = 600 -- frames; a fresh timer per window keeps the float accumulator precise
+local perf = {} -- part -> { t, last, n, sum, max, done = { n, avg, max } }
+
+function perf_start(part)
+	local pt = rawget(_G, "profile_timer")
+	if not pt then return nil end
+	local p = perf[part]
+	if not p or p.n >= PERF_WINDOW then
+		local done = p and p.n > 0 and { n = p.n, avg = p.sum / p.n, max = p.max } or (p and p.done)
+		local ok, t = pcall(pt)
+		if not ok then return nil end
+		p = { t = t, last = 0, n = 0, sum = 0, max = 0, done = done }
+		perf[part] = p
+	end
+	p.t:start()
+	return p
+end
+
+function perf_stop(p)
+	if not p then return end
+	p.t:stop()
+	local now = p.t:time()
+	local d = now - p.last
+	p.last = now
+	p.n = p.n + 1
+	p.sum = p.sum + d
+	if d > p.max then p.max = d end
+end
+
+-- "compass 0.081 ms (max 0.210)" per part: the last full window, else what is counted so far.
+function perf_line()
+	local parts, total = {}, 0
+	local names = {}
+	for name in pairs(perf) do names[#names + 1] = name end
+	table.sort(names)
+	for _, name in ipairs(names) do
+		local p = perf[name]
+		local w = p.done or (p.n > 0 and { n = p.n, avg = p.sum / p.n, max = p.max }) or nil
+		if w then
+			total = total + w.avg
+			parts[#parts + 1] = string_format("%s %.3f ms (max %.3f)", name, w.avg / 1000, w.max / 1000)
+		end
+	end
+	if #parts == 0 then return "no frames counted (profile_timer missing or HUD off)" end
+	return string_format("%.3f ms a frame: %s", total / 1000, table.concat(parts, ", "))
+end
+
+function print_status()
+	local parts = {}
+	for _, name in ipairs(order) do
+		local s = sources[name]
+		parts[#parts + 1] = string_format("%s %d%s%s", name, #s.cache, s.errors > 0 and string_format(" (errors %d)", s.errors) or "",
+			s.bad > 0 and string_format(" (bad %d)", s.bad) or "")
+	end
+	log("hud v2: frame %s | markers %d: %s", perf_line(), #list_cache, table.concat(parts, ", "))
+end
+
+local death_cb = false
+local function on_update()
+	if death_cb then return end
+	death_cb = true
+	-- registered here, after every on_game_start: coop_death adds the callback in its own on_game_start
+	RegisterScriptCallback("coop_death_marker", on_death_marker)
+end
+
+local function actor_on_net_destroy()
+	deaths = {}
+	list_cache, list_at = EMPTY, nil
+	for _, s in pairs(sources) do s.cache, s.next_at = EMPTY, 0 end
+end
+
+function on_game_start()
+	if not api then return end -- an exe without co-op: nothing of this runs
+	RegisterScriptCallback("actor_on_update", on_update)
+	RegisterScriptCallback("actor_on_net_destroy", actor_on_net_destroy)
+end

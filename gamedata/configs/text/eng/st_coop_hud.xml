@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop: HUD v2 (compass bar, team panel, ping), docs\HUD_V2.md. windows-1251, CRLF. -->
+<string_table>
+	<string id="st_coop_hud_heading">
+		<text>%d°</text>
+	</string>
+	<string id="st_coop_hud_dir_n">
+		<text>N</text>
+	</string>
+	<string id="st_coop_hud_dir_ne">
+		<text>NE</text>
+	</string>
+	<string id="st_coop_hud_dir_e">
+		<text>E</text>
+	</string>
+	<string id="st_coop_hud_dir_se">
+		<text>SE</text>
+	</string>
+	<string id="st_coop_hud_dir_s">
+		<text>S</text>
+	</string>
+	<string id="st_coop_hud_dir_sw">
+		<text>SW</text>
+	</string>
+	<string id="st_coop_hud_dir_w">
+		<text>W</text>
+	</string>
+	<string id="st_coop_hud_dir_nw">
+		<text>NW</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_compass_hud">
+		<text>Compass bar</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_compass_hud_desc">
+		<text>The compass bar at the top of the screen: allies, tasks, death marks, your camp and pings. Off: Tactical Compass gets the allies and pings, if it is installed.</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_compass_fov">
+		<text>Compass field of view</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_compass_fov_desc">
+		<text>How many degrees the compass bar shows from end to end.</text>
+	</string>
+	<string id="st_coop_hud_fov_120">
+		<text>120°</text>
+	</string>
+	<string id="st_coop_hud_fov_160">
+		<text>160°</text>
+	</string>
+	<string id="st_coop_hud_fov_200">
+		<text>200°</text>
+	</string>
+	<string id="st_coop_hud_ping_note">
+		<text>Ping: the "Co-op: ping" key in Controls / Common (mouse 5 unless taken). It marks the point you look at for 20 s for the whole group.</text>
+	</string>
+	<string id="kb_coop_ping">
+		<text>Co-op: ping</text>
+	</string>
+</string_table>

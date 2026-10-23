@@ -5,7 +5,9 @@
 	Player group (every player sets their own; coop_settings.ltx: coop/coop_player/* = player):
 		nickname (console coop_nick), port for hosting ([options] coop/coop_player/host_port, read by coop_menu),
 		names above players and their distance (coop_nametags, coop_nametags_dist),
-		party panel / player markers / chat feed on the HUD (W5: applied to coop_core_hud / coop_core_chat).
+		party panel / player markers / chat feed on the HUD (W5: applied to coop_core_hud / coop_core_chat),
+		HUD v2 (docs\HUD_V2.md): compass bar on/off and its field of view 120 / 160 / 200 (coop_hud_compass), a line
+		that says where the ping key is (the key itself: Controls > Common, "Co-op: ping", modxml_coop_hud).
 	Session rules group (the host's values are used; coop_settings.ltx: coop/coop_session/* = host):
 		friendly fire, shared task rewards, bleed-out time, health after revive;
 		W5: the economy group's rules (coop_economy_core.RULES, read through coop_settings.rule("economy/<id>");
@@ -66,6 +68,15 @@ function build_page()
 				flag("party_hud", true),
 				flag("player_spots", true),
 				flag("chat_feed", true),
+				-- HUD v2 (docs\HUD_V2.md): the compass bar, its field of view, where the ping key is
+				flag("compass_hud", true),
+				{ id = "compass_fov", type = "list", val = 0, def = "160", no_str = true,
+					content = {
+						{ "120", "st_coop_hud_fov_120" },
+						{ "160", "st_coop_hud_fov_160" },
+						{ "200", "st_coop_hud_fov_200" },
+					} },
+				{ id = "ping_note", type = "desc", text = "st_coop_hud_ping_note", clr = { 255, 200, 200, 200 } },
 			}, },
 			{ id = "coop_session", sh = true, gr = {
 				slide("coop_session", "ui_options_slider_other"),
@@ -157,10 +168,22 @@ local function player_flag(id)
 	return true
 end
 
+local function player_value(id, def)
+	local am = rawget(_G, "axr_main")
+	local cfg = am and am.config
+	if not cfg then return def end
+	local ok, v = pcall(function() return cfg:r_value("options", "coop/coop_player/" .. id, 0, def) end)
+	if ok and v ~= nil then return v end
+	return def
+end
+
 function apply_player_flags()
 	local hud = rawget(_G, "coop_core_hud")
 	if hud and hud.set_party_enabled then pcall(hud.set_party_enabled, player_flag("party_hud")) end
 	if hud and hud.set_spots_enabled then pcall(hud.set_spots_enabled, player_flag("player_spots")) end
+	local compass = rawget(_G, "coop_hud_compass")
+	if compass and compass.set_enabled then pcall(compass.set_enabled, player_flag("compass_hud")) end
+	if compass and compass.set_fov then pcall(compass.set_fov, player_value("compass_fov", "160")) end
 	local chat = rawget(_G, "coop_core_chat")
 	if chat and chat.set_feed_enabled then pcall(chat.set_feed_enabled, player_flag("chat_feed")) end
 end

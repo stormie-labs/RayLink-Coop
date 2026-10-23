@@ -68,6 +68,9 @@ local function window(path)
 	function w:Clear() self.children = {} end
 	function w:AddWindow(c) self.children[#self.children + 1] = c end
 	function w:ScrollToEnd() self.at_end = true end
+	function w:SetStretchTexture() end
+	function w:EnableHeading(b) self.heading_on = b end
+	function w:SetHeading(r) self.heading = r end
 	return w
 end
 local function xml_stub(valid)
@@ -112,7 +115,7 @@ local CUIScriptWnd = { OnKeyboard = function() return false end, Update = functi
 
 -- ---------------------------------------------------------------- one machine
 local SCRIPTS = { "coop_main", "coop_core_chat", "coop_core_hud", "coop_core_player", "coop_core_world",
-	"coop_allies", "coop_allies_map", "modxml_coop_allies" }
+	"coop_allies", "coop_allies_map", "modxml_coop_allies", "coop_hud_layout" }
 
 local function machine(role, peer, nick, opts)
 	opts = opts or {}
@@ -675,25 +678,30 @@ check(H.hud_m.status_of(1).f == "" and H.hud_m.status_of(1).i == "ui_ok", "bad c
 C.actor.health = 0.8
 tick(1000)
 local party
-for wd in pairs(H.hud) do if wd.cards then party = wd end end
-check(party ~= nil and #MISSING == 0, "party panel built from ui_hud.xml + ui_coop_core.xml paths (" .. table.concat(MISSING, ", ") .. ")")
+for wd in pairs(H.hud) do if wd.team_panel then party = wd end end
+check(party ~= nil and #MISSING == 0, "team panel (HUD v2) built from ui_coop_core.xml paths (" .. table.concat(MISSING, ", ") .. ")")
 party.next_at = 0
 tick(0)
-local s1 = party.cards[1]
-check(s1.base.e.visible and s1.name.e.text == "bob" and s1.hp.e.progress == 0.8, "slot shows the client: nick and health")
-check(s1.info.e.text == "42 <st_coop_allies_m>", "distance to the avatar: " .. tostring(s1.info.e.text))
-check(not s1.host.e.visible and s1._icon == "ui_actor_bob", "no host star for a client, portrait from the status")
-check(not party.cards[2].base.e.visible, "unused slot hidden")
+local s1 = party.rows[1]
+local function seg_fill(r)
+	local w = 0
+	for _, sg in ipairs(r.segs) do if sg.fill.e.visible then w = w + sg.fill.e.w end end
+	return w
+end
+check(s1.base.e.visible and s1.name.e.text == "bob" and math.abs(seg_fill(s1) - 30 * 0.75 * 4 * 0.8) < 0.05, "row shows the client: nick and health")
+check(s1.dist.e.text == "42 <st_coop_allies_m>", "distance to the avatar: " .. tostring(s1.dist.e.text))
+check(not s1.host.e.visible, "no host star for a client")
+check(not party.rows[2].base.e.visible, "unused row hidden")
 local cparty
-for wd in pairs(C.hud) do if wd.cards then cparty = wd end end
+for wd in pairs(C.hud) do if wd.team_panel then cparty = wd end end
 cparty.next_at = 0
 tick(0)
-check(cparty.cards[1].name.e.text == "hosty" and cparty.cards[1].host.e.visible, "client sees the host with the host star")
+check(cparty.rows[1].name.e.text == "hosty" and cparty.rows[1].host.e.visible, "client sees the host with the host star")
 C.actor.health = 0.01
 tick(1000)
 party.next_at = 0
 tick(0)
-check(s1.info.e.text:find("st_coop_allies_down", 1, true) and s1.badge.e.visible, "down state + medic badge instead of the distance")
+check(s1.icon.e.visible and s1.icon.e.texture == "coop_hud_cross", "down state: a cross on the row (no word)")
 C.actor.health = 0.9
 tick(1000)
 H.hud_shown = false

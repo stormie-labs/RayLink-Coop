@@ -1,0 +1,789 @@
+--[[
+	Anomaly Coop - HUD v2: the compass bar (gamedata\scripts\coop_hud_compass.script). Spec: docs\HUD_V2.md, look:
+	docs\hud\hud_v2_mockup.png. Layout configs\ui\ui_coop_compass.xml (+ _16, the same nodes: textures and fonts only),
+	textures configs\ui\textures_descr\ui_coop_hud.xml (atlas tools\make_hud_atlas.py), every size and the plate alphas
+	coop_hud_layout.get() (configs\mod_system_coop.ltx [coop_hud_layout] overrides it, one line per value).
+
+	The default look of the core's markers (coop_hud_markers.list()). A mod may replace this file, or switch it off
+	(coop_hud_compass.set_enabled(false)) and draw coop_hud_markers.list() its own way.
+
+	Geometry, in the 1024x768 UI space (defaults, owner 2026-10-23 "a bit smaller"): 38 % of the screen width, centred,
+	20 down from the top, 24 high. Sizes are px at 768 high: units down and px * kx units across (kx = 1024 * H / (768 * W)),
+	so nothing stretches on a wide screen. The line and the ticks are one screen pixel, snapped to the pixel grid.
+	- The scale is white (owner: "more white, not yellow; colours only on the markers"): a dark plate #0C0D0A at ~0.33
+	  fading out on the last 16 % of the width at each end (texture coop_hud_bar_bg), a thin white line #F4F5F6 at ~0.8
+	  through it (coop_hud_bar_line, the same fade), the letters N NE E SE S SW W NW above the line, ticks down from it
+	  every 5 deg (2 px), 15 deg (4 px) and 45 deg (5 px), all white #F4F5F6 with a 1 px shadow and the same fade. A white
+	  notch under the line at the centre, the heading ("247" + degree sign, st_coop_hud_heading) in white above the bar.
+	  Field of view 160 deg (the player's option: 120 / 160 / 200).
+	- Markers sit on the line (a bit above it): 12 px glyphs with a dark 1 px outline, flat, no glow (style table STYLE
+	  below): ally chevron in his colour (grey when dead / spectating / returning), downed ally red ring with a cross
+	  pulsing at 1 Hz, active task filled diamond #E8C25A, other tasks hollow at ~0.6, death mark skull / bag in muted red,
+	  own camp tent / fire in sage, ping a ring in the author's colour around a cyan dot that pops in for 300 ms.
+	- Out of the field: pinned to the end of the bar with an arrow, alpha ~0.7, no label.
+	- Labels under the bar (in the marker's colour, 1 px shadow): distance for allies, pings and the active task; the nick
+	  (or a marker's label) too while it is within 10 deg of the centre; a small up / down arrow when the height differs
+	  by more than 5 m. Labels never overlap: the higher priority keeps its label (ping > down > ally > active task > the
+	  rest).
+	- Positions are smoothed every frame (markers come 10 times a second), markers fade in and out in 150 ms. The camera's
+	  own turn is applied at once.
+	Statics are pooled (made once), nothing is created in a frame. Frame time: coop_hud_markers.perf_* ("compass").
+
+	For other scripts:
+		coop_hud_compass.set_enabled(bool) / is_enabled()     the player's option coop/coop_player/compass_hud
+		coop_hud_compass.set_fov(120 | 160 | 200) / get_fov() the player's option coop/coop_player/compass_fov
+		coop_hud_compass.get_window() -> the window while it is on the HUD
+		pure helpers (tests): heading_of, bearing, rel_angle, place, edge_alpha, tick_list, smooth_k, step_alpha,
+		pick_labels, fov_of
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local tostring, tonumber, type, ipairs, pairs, pcall = tostring, tonumber, type, ipairs, pairs, pcall
+local math_floor, math_max, math_min, math_abs, math_sqrt = math.floor, math.max, math.min, math.abs, math.sqrt
+local math_atan2, math_deg, math_exp, math_sin, math_pi = math.atan2, math.deg, math.exp, math.sin, math.pi
+local string_format, table_sort = string.format, table.sort
+
+XML_FILE = "ui_coop_compass.xml"
+FOVS = { 120, 160, 200 }
+DEFAULT_FOV = 160
+
+local EDGE_FADE = 0.16 -- of the bar width, at each end (baked into the plate and line textures too)
+local LETTER_W, HEAD_W, LABEL_W = 40, 60, 120 -- text boxes, px at 768 high (the text is centred / measured)
+local SLOTS = 24
+local FOCUS_DEG = 10
+local HEIGHT_M = 5
+local POS_TAU_MS = 90 -- smoothing of a marker's position between the 10 Hz updates
+local FADE_MS = 150
+local PING_POP_MS = 300
+local SNAP_M = 60 -- a jump longer than this is not smoothed (teleport, a new avatar)
+
+-- colours and alphas of the scale (the plate and the line: coop_hud_layout)
+local C_WHITE = { 244, 245, 246 } -- #F4F5F6
+local C_BG = { 12, 13, 10 } -- #0C0D0A
+local C_PING = { 120, 225, 235 } -- #78E1EB
+local A_TICK = { [5] = 110, [15] = 170, [45] = 230 }
+local A_LETTER, A_NOTCH, A_HEAD, A_LABEL = 255, 240, 225, 230
+local A_SHADOW = 0.65 -- of the white it sits under
+local A_PINNED = 0.7
+
+-- marker look: kind[_state] -> texture, alpha, pulse; a marker's own icon / alpha win
+local STYLE = {
+	ally = { tex = "coop_hud_chevron" },
+	ally_down = { tex = "coop_hud_down", pulse = true },
+	ally_dead = { tex = "coop_hud_chevron", alpha = 0.85 },
+	ally_spec = { tex = "coop_hud_chevron", alpha = 0.85 },
+	ally_respawn = { tex = "coop_hud_chevron", alpha = 0.85 },
+	task_active = { tex = "coop_hud_diamond", always = true },
+	task = { tex = "coop_hud_diamond_hollow", alpha = 0.6 },
+	death_corpse = { tex = "coop_hud_skull" },
+	death = { tex = "coop_hud_bag" },
+	camp_campfire = { tex = "coop_hud_fire" },
+	camp = { tex = "coop_hud_tent" },
+	ping = { tex = "coop_hud_ring", core = "coop_hud_dot", pop = true },
+	default = { tex = "coop_hud_dot" },
+}
+local ALWAYS_LABEL = { ally = true, ping = true }
+
+local DIRS = { [0] = "n", [45] = "ne", [90] = "e", [135] = "se", [180] = "s", [225] = "sw", [270] = "w", [315] = "nw" }
+local DIR_DEFAULT = { n = "N", ne = "NE", e = "E", se = "SE", s = "S", sw = "SW", w = "W", nw = "NW" }
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-hud] %s", ok and line or tostring(fmt))
+end
+
+local function tr(id, fallback)
+	local ok, s = pcall(game.translate_string, id)
+	if not ok or type(s) ~= "string" or s == "" or s == id then return fallback end
+	return s
+end
+
+local function layout()
+	local m = rawget(_G, "coop_hud_layout") or coop_hud_layout
+	return m.get()
+end
+
+-------------------------------------------------------------------------------
+-- Pure helpers (strip math)
+-------------------------------------------------------------------------------
+-- Compass heading of a direction, degrees 0..360 (N = +z, E = +x); nil when looking straight up or down.
+function heading_of(dir)
+	local x, z = dir.x, dir.z
+	if x * x + z * z < 1e-8 then return nil end
+	local d = math_deg(math_atan2(x, z))
+	if d < 0 then d = d + 360 end
+	return d
+end
+
+-- Bearing from `from` to `to` on the ground, degrees 0..360; nil when on top of each other.
+function bearing(from, to)
+	local dx, dz = to.x - from.x, to.z - from.z
+	if dx * dx + dz * dz < 1e-4 then return nil end
+	local d = math_deg(math_atan2(dx, dz))
+	if d < 0 then d = d + 360 end
+	return d
+end
+
+-- Angle of `a` relative to heading `h`, (-180, 180]: positive = to the right.
+function rel_angle(a, h)
+	local d = (a - h) % 360
+	if d > 180 then d = d - 360 end
+	return d
+end
+
+-- Offset from the bar's centre of a relative angle; pinned to +-(half - pad) beyond that. Returns x, side (-1 / 0 / 1).
+function place(rel, fov, half, pad)
+	local x = rel / (fov / 2) * half
+	local lim = half - pad
+	if x > lim then return lim, 1 end
+	if x < -lim then return -lim, -1 end
+	return x, 0
+end
+
+-- Alpha factor of the fade at the ends of the bar (the last `part` of the width at each end).
+function edge_alpha(x, half, part)
+	local zone = 2 * half * part
+	if zone <= 0 then return 1 end
+	local t = (half - math_abs(x)) / zone
+	if t <= 0 then return 0 end
+	if t >= 1 then return 1 end
+	return t
+end
+
+-- The marks of the scale within the field: out[i] = { deg, rel, mid (15 deg), letter (45 deg) }; returns the count.
+function tick_list(heading, fov, out)
+	local half = fov / 2
+	local first = math.ceil((heading - half) / 5) * 5
+	local n = 0
+	for a = first, heading + half, 5 do
+		local deg = a % 360
+		local rel = a - heading
+		if rel >= -half and rel <= half then
+			n = n + 1
+			local t = out[n]
+			if not t then
+				t = {}
+				out[n] = t
+			end
+			t.deg, t.rel = deg, rel
+			t.letter = deg % 45 == 0
+			t.mid = not t.letter and deg % 15 == 0
+		end
+	end
+	return n
+end
+
+function smooth_k(dt_ms, tau_ms)
+	if dt_ms <= 0 then return 0 end
+	return 1 - math_exp(-dt_ms / tau_ms)
+end
+
+function step_alpha(a, target, dt_ms, dur_ms)
+	local step = dt_ms / dur_ms
+	if target > a then return math_min(target, a + step) end
+	return math_max(target, a - step)
+end
+
+-- items: { x, w, pri, want }; sets .show. The highest priority (then the one nearest the centre) keeps its label.
+local pick_buf = {}
+function pick_labels(items, gap)
+	local n = 0
+	for _, it in ipairs(items) do
+		it.show = false
+		if it.want then
+			n = n + 1
+			pick_buf[n] = it
+		end
+	end
+	for i = n + 1, #pick_buf do pick_buf[i] = nil end
+	table_sort(pick_buf, function(a, b)
+		if a.pri ~= b.pri then return a.pri > b.pri end
+		return math_abs(a.x) < math_abs(b.x)
+	end)
+	local shown = 0
+	for i = 1, n do
+		local it = pick_buf[i]
+		local l, r = it.x - it.w / 2 - gap, it.x + it.w / 2 + gap
+		local free = true
+		for j = 1, i - 1 do
+			local o = pick_buf[j]
+			if o.show and l < o.x + o.w / 2 and r > o.x - o.w / 2 then
+				free = false
+				break
+			end
+		end
+		if free then
+			it.show = true
+			shown = shown + 1
+		end
+	end
+	return shown
+end
+
+function fov_of(v)
+	v = tonumber(v)
+	for _, f in ipairs(FOVS) do
+		if v == f then return f end
+	end
+	return DEFAULT_FOV
+end
+
+-------------------------------------------------------------------------------
+-- Options
+-------------------------------------------------------------------------------
+local enabled = true
+local fov = DEFAULT_FOV
+local HUD -- the window while it is on the HUD
+
+function set_enabled(on)
+	enabled = on and true or false
+end
+
+function is_enabled()
+	return enabled
+end
+
+function set_fov(v)
+	fov = fov_of(v)
+end
+
+function get_fov()
+	return fov
+end
+
+function get_window()
+	return HUD
+end
+
+-------------------------------------------------------------------------------
+-- The window
+-------------------------------------------------------------------------------
+local function markers_mod()
+	return rawget(_G, "coop_hud_markers")
+end
+
+local function format_distance(d)
+	local m = rawget(_G, "coop_allies_map")
+	if m and m.format_distance then
+		local ok, s = pcall(m.format_distance, d)
+		if ok and s then return s end
+	end
+	return string_format("%d m", math_floor(d + 0.5))
+end
+
+local function hud_visible()
+	local f = rawget(_G, "main_hud_shown")
+	if not f then return true end
+	local ok, v = pcall(f)
+	return not ok or v == true
+end
+
+local function argb(a, c)
+	return GetARGB(math_max(0, math_min(255, math_floor(a + 0.5))), c[1], c[2], c[3])
+end
+
+local function shadow(a)
+	return GetARGB(math_max(0, math_min(255, math_floor(a * A_SHADOW + 0.5))), 0, 0, 0)
+end
+
+class "UICoopCompass" (CUIScriptWnd)
+
+function UICoopCompass:__init() super()
+	self.states = {} -- marker key -> { m, pos, alpha, want }
+	self.order = {} -- states in draw order (low priority first)
+	self.items = {} -- label layout items, one per slot
+	self.tick_buf = {}
+	self.width_cache, self.width_n = {}, 0
+	self.vis = nil
+	self.vis_at = 0
+	self.last_tg = nil
+	self.heading_deg = nil
+	self.v2 = vector2() -- one vector for every SetWndPos / SetWndSize (the engine copies it)
+	self:InitControls()
+end
+
+function UICoopCompass:__finalize()
+end
+
+-- The shared vector, set: never keep it.
+function UICoopCompass:V(x, y)
+	return self.v2:set(x, y)
+end
+
+function UICoopCompass:InitControls()
+	local xml = CScriptXmlInit()
+	xml:ParseFile(XML_FILE)
+	self.root = xml:InitStatic("coop_compass", self)
+	local root = self.root
+	self.bg = xml:InitStatic("coop_compass:bg", root)
+	self.line = xml:InitStatic("coop_compass:line", root)
+	-- ticks: shadows first (drawn under), then the white ones
+	local n_ticks = math_floor(FOVS[#FOVS] / 5) + 2
+	self.tick_shadows, self.ticks = {}, {}
+	for i = 1, n_ticks do
+		self.tick_shadows[i] = xml:InitStatic("coop_compass:tick", root)
+		self.tick_shadows[i]:Show(false)
+	end
+	for i = 1, n_ticks do
+		self.ticks[i] = xml:InitStatic("coop_compass:tick", root)
+		self.ticks[i]:Show(false)
+	end
+	self.letters, self.letter_shadows = {}, {}
+	for deg, id in pairs(DIRS) do
+		local text = tr("st_coop_hud_dir_" .. id, DIR_DEFAULT[id])
+		local sh = xml:InitTextWnd("coop_compass:letter", root)
+		local l = xml:InitTextWnd("coop_compass:letter", root)
+		sh:SetText(text)
+		l:SetText(text)
+		sh:Show(false)
+		l:Show(false)
+		self.letters[deg], self.letter_shadows[deg] = l, sh
+	end
+	self.notch = xml:InitStatic("coop_compass:notch", root)
+	self.heading_shadow = xml:InitTextWnd("coop_compass:heading", root)
+	self.heading = xml:InitTextWnd("coop_compass:heading", root)
+	self.heading_fmt = tr("st_coop_hud_heading", "%d")
+	self.measure = xml:InitTextWnd("coop_compass:label", root)
+	self.measure:Show(false)
+	self.slots = {}
+	for i = 1, SLOTS do
+		local s = {}
+		s.icon = xml:InitStatic("coop_compass:icon", root)
+		s.core = xml:InitStatic("coop_compass:core", root)
+		s.side = xml:InitStatic("coop_compass:side", root)
+		s.updown = xml:InitStatic("coop_compass:updown", root)
+		s.shadow = xml:InitTextWnd("coop_compass:label", root)
+		s.label = xml:InitTextWnd("coop_compass:label", root)
+		for _, w in pairs({ s.icon, s.core, s.side, s.updown, s.shadow, s.label }) do w:Show(false) end
+		s.shown = false
+		self.slots[i] = s
+		self.items[i] = { x = 0, w = 0, pri = 0, want = false, show = false }
+	end
+	self:Relayout()
+end
+
+-- Geometry for the current screen and layout.
+function UICoopCompass:Relayout()
+	local L = layout()
+	local dev = device()
+	local W, H = dev.width, dev.height
+	local kx = 1024 * H / (768 * W)
+	local g = { W = W, H = H, kx = kx, px = 1024 / W, py = 768 / H, L = L }
+	local function snap_y(u) return math_floor(u / g.py + 0.5) * g.py end
+	g.bar_w = 1024 * L.bar_width_pct / 100
+	g.bar_x = (1024 - g.bar_w) / 2
+	g.half = g.bar_w / 2
+	g.cx = g.bar_x + g.half
+	g.top, g.h = L.bar_top, L.bar_height
+	g.line_y = snap_y(L.bar_top + L.line_y) -- one screen pixel at this y
+	g.icon_cy = L.bar_top + L.marker_y
+	g.pad = L.side_gap * kx
+	g.label_y = L.bar_top + L.bar_height + L.label_gap
+	self.g = g
+	self.bar_x, self.bar_w, self.bar_y, self.bar_h = g.bar_x, g.bar_w, g.top, g.h
+	self.root:SetWndPos(self:V(0, 0))
+	self.root:SetWndSize(self:V(1024, 768))
+	self.bg:SetWndPos(self:V(g.bar_x, g.top))
+	self.bg:SetWndSize(self:V(g.bar_w, g.h))
+	self.bg:SetTextureColor(argb(255 * L.bar_bg_alpha, C_BG))
+	self.line:SetWndPos(self:V(g.bar_x, g.line_y))
+	self.line:SetWndSize(self:V(g.bar_w, g.py))
+	self.line:SetTextureColor(argb(255 * L.bar_line_alpha, C_WHITE))
+	self.notch:SetWndPos(self:V(g.cx - L.notch_w * kx / 2, g.line_y + L.notch_gap))
+	self.notch:SetWndSize(self:V(L.notch_w * kx, L.notch_h))
+	self.notch:SetTextureColor(argb(A_NOTCH, C_WHITE))
+	local hy = g.top + L.heading_y
+	self.heading:SetWndPos(self:V(g.cx - HEAD_W * kx / 2, hy))
+	self.heading:SetWndSize(self:V(HEAD_W * kx, L.heading_h))
+	self.heading:SetTextColor(argb(A_HEAD, C_WHITE))
+	self.heading_shadow:SetWndPos(self:V(g.cx - HEAD_W * kx / 2 + g.px, hy + g.py))
+	self.heading_shadow:SetWndSize(self:V(HEAD_W * kx, L.heading_h))
+	self.heading_shadow:SetTextColor(shadow(A_HEAD))
+	for deg, l in pairs(self.letters) do
+		l:SetWndSize(self:V(LETTER_W * kx, L.letter_h))
+		self.letter_shadows[deg]:SetWndSize(self:V(LETTER_W * kx, L.letter_h))
+	end
+	self.tick_len, self.tick_alpha = {}, {}
+	for _, s in ipairs(self.slots) do
+		s.size = nil
+		s.side:SetWndSize(self:V(L.side * kx, L.side))
+		s.core:SetWndSize(self:V(L.ping_dot * kx, L.ping_dot))
+		s.updown:SetWndSize(self:V(L.updown * kx, L.updown))
+		s.label:SetWndSize(self:V(LABEL_W * kx, L.label_h))
+		s.shadow:SetWndSize(self:V(LABEL_W * kx, L.label_h))
+	end
+	self.width_cache, self.width_n = {}, 0
+end
+
+-- Width (units) of a label text, measured once per text.
+function UICoopCompass:TextWidth(text)
+	local w = self.width_cache[text]
+	if w then return w end
+	self.measure:SetText(text)
+	local ok = pcall(function() self.measure:AdjustWidthToText() end)
+	w = ok and self.measure:GetWidth() or (#text * 6 * self.g.kx)
+	if self.width_n > 400 then self.width_cache, self.width_n = {}, 0 end
+	self.width_cache[text] = w
+	self.width_n = self.width_n + 1
+	return w
+end
+
+-- The scale at the current heading: a tick every 5 deg down from the line, the letters above it.
+function UICoopCompass:DrawScale(heading)
+	-- standing still: the scale is where it was (most frames), nothing to move
+	if self.scale_heading and math_abs(heading - self.scale_heading) < 0.005 and self.scale_g == self.g and self.scale_fov == fov then return end
+	self.scale_heading, self.scale_g, self.scale_fov = heading, self.g, fov
+	local g = self.g
+	local L = g.L
+	local half, kx = g.half, g.kx
+	local n = tick_list(heading, fov, self.tick_buf)
+	local letter_on = {}
+	for i = 1, n do
+		local t = self.tick_buf[i]
+		local x = t.rel / (fov / 2) * half
+		local a = edge_alpha(x, half, EDGE_FADE)
+		local kind = t.letter and 45 or (t.mid and 15 or 5)
+		local w, sh = self.ticks[i], self.tick_shadows[i]
+		if w then
+			local len = kind == 45 and L.tick_45 or (kind == 15 and L.tick_15 or L.tick_5)
+			if self.tick_len[i] ~= len then
+				self.tick_len[i] = len
+				w:SetWndSize(self:V(g.px, len))
+				sh:SetWndSize(self:V(g.px, len))
+			end
+			local px = math_floor((g.cx + x) / g.px + 0.5) * g.px
+			w:SetWndPos(self:V(px, g.line_y + g.py))
+			sh:SetWndPos(self:V(px + g.px, g.line_y + 2 * g.py))
+			local alpha = math_floor(A_TICK[kind] * a / 4 + 0.5) * 4
+			if self.tick_alpha[i] ~= alpha then
+				self.tick_alpha[i] = alpha
+				w:SetTextureColor(argb(alpha, C_WHITE))
+				sh:SetTextureColor(shadow(alpha))
+			end
+			local on = alpha > 0
+			if w:IsShown() ~= on then
+				w:Show(on)
+				sh:Show(on)
+			end
+		end
+		if t.letter then
+			local l, ls = self.letters[t.deg], self.letter_shadows[t.deg]
+			if l then
+				letter_on[t.deg] = true
+				local lx = g.cx + x - LETTER_W * kx / 2
+				local ly = g.top + L.letter_y
+				l:SetWndPos(self:V(lx, ly))
+				ls:SetWndPos(self:V(lx + g.px, ly + g.py))
+				l:SetTextColor(argb(A_LETTER * a, C_WHITE))
+				ls:SetTextColor(shadow(A_LETTER * a))
+				local on = a > 0.02
+				if l:IsShown() ~= on then
+					l:Show(on)
+					ls:Show(on)
+				end
+			end
+		end
+	end
+	for i = n + 1, #self.ticks do
+		if self.ticks[i]:IsShown() then
+			self.ticks[i]:Show(false)
+			self.tick_shadows[i]:Show(false)
+		end
+	end
+	for deg, l in pairs(self.letters) do
+		if not letter_on[deg] and l:IsShown() then
+			l:Show(false)
+			self.letter_shadows[deg]:Show(false)
+		end
+	end
+	local hd = math_floor(heading + 0.5) % 360
+	if hd ~= self.heading_deg then
+		self.heading_deg = hd
+		local ok, s = pcall(string_format, self.heading_fmt, hd)
+		s = ok and s or tostring(hd)
+		self.heading:SetText(s)
+		self.heading_shadow:SetText(s)
+	end
+end
+
+-- New marker list (10 Hz): states follow it, the draw order is rebuilt.
+function UICoopCompass:Sync(list, tg)
+	local seen = {}
+	for _, m in ipairs(list) do
+		local st = self.states[m.key]
+		if not st then
+			st = { pos = { x = m.pos.x, y = m.pos.y, z = m.pos.z }, alpha = 0 }
+			self.states[m.key] = st
+		end
+		st.m, st.want = m, 1
+		seen[m.key] = true
+	end
+	local order = {}
+	for key, st in pairs(self.states) do
+		if not seen[key] then st.want = 0 end
+		if st.want > 0 or st.alpha > 0 then
+			order[#order + 1] = st
+		else
+			self.states[key] = nil
+		end
+	end
+	table_sort(order, function(a, b)
+		if a.m.priority ~= b.m.priority then return a.m.priority < b.m.priority end
+		return a.m.key < b.m.key
+	end)
+	-- more markers than slots: the lowest priorities are not drawn
+	while #order > SLOTS do table.remove(order, 1) end
+	self.order = order
+end
+
+local function style_of(m)
+	return STYLE[m.kind .. "_" .. tostring(m.state)] or STYLE[m.kind] or STYLE.default
+end
+
+local function set_tex(w, cache_owner, field, tex)
+	if cache_owner[field] ~= tex then
+		cache_owner[field] = tex
+		w:InitTexture(tex)
+		w:SetStretchTexture(true)
+	end
+end
+
+function UICoopCompass:DrawMarkers(tg, dt, heading, cam, me)
+	local g = self.g
+	local L = g.L
+	local kx, half = g.kx, g.half
+	local k = smooth_k(dt, POS_TAU_MS)
+	local items = self.items
+	local order = self.order
+	local n = #order
+	local pulse = 0.55 + 0.45 * (0.5 + 0.5 * math_sin(tg * 2 * math_pi / 1000))
+	-- pass 1: positions, alphas, label texts
+	for i = 1, n do
+		local st = order[i]
+		local m = st.m
+		local p, goal = st.pos, m.pos
+		local dx, dy, dz = goal.x - p.x, goal.y - p.y, goal.z - p.z
+		if dx * dx + dy * dy + dz * dz > SNAP_M * SNAP_M then
+			p.x, p.y, p.z = goal.x, goal.y, goal.z
+		else
+			p.x, p.y, p.z = p.x + dx * k, p.y + dy * k, p.z + dz * k
+		end
+		st.alpha = step_alpha(st.alpha, st.want, dt, FADE_MS)
+		local b = bearing(cam, p)
+		local rel = b and rel_angle(b, heading) or 0
+		local x, side = place(rel, fov, half, g.pad)
+		st.x, st.side, st.rel = x, side, rel
+		local it = items[i]
+		it.x, it.pri, it.want, it.w = x, m.priority, false, 0
+		st.text, st.up = nil, nil
+		if side == 0 and st.want > 0 then
+			local sty = style_of(m)
+			local focus = math_abs(rel) <= FOCUS_DEG
+			if ALWAYS_LABEL[m.kind] or sty.always or focus then
+				local ex, ez = p.x - me.x, p.z - me.z
+				local hy = p.y - me.y
+				local d = math_sqrt(ex * ex + hy * hy + ez * ez)
+				local text = format_distance(d)
+				if focus and m.label then text = m.label .. "  " .. text end
+				st.text = text
+				if hy > HEIGHT_M then st.up = "coop_hud_tri_up" elseif hy < -HEIGHT_M then st.up = "coop_hud_tri_down" end
+				it.want = true
+				it.w = self:TextWidth(text) + (st.up and (L.updown + 2) * kx or 0)
+			end
+		end
+	end
+	for i = n + 1, #items do items[i].want = false end
+	pick_labels(items, 4 * kx)
+	-- pass 2: the statics
+	for i = 1, n do
+		local st, s, it = order[i], self.slots[i], items[i]
+		local m = st.m
+		local sty = style_of(m)
+		local cxm = g.cx + st.x
+		local size = L.icon
+		if sty.pop and m.born then
+			local age = tg - m.born
+			if age >= 0 and age < PING_POP_MS then size = L.icon * (1 + 0.8 * (1 - age / PING_POP_MS)) end
+		end
+		if s.size ~= size then
+			s.size = size
+			s.icon:SetWndSize(self:V(size * kx, size))
+		end
+		set_tex(s.icon, s, "tex", m.icon or sty.tex)
+		s.icon:SetWndPos(self:V(cxm - size * kx / 2, g.icon_cy - size / 2))
+		local a = 255 * st.alpha * (m.alpha or sty.alpha or 1) * (st.side ~= 0 and A_PINNED or 1) * (sty.pulse and pulse or 1)
+		s.icon:SetTextureColor(argb(a, m.color))
+		if not s.shown then
+			s.icon:Show(true)
+			s.shown = true
+		end
+		s.key = m.key
+		-- ping: the cyan dot inside the ring
+		if sty.core then
+			set_tex(s.core, s, "core_tex", sty.core)
+			s.core:SetWndPos(self:V(cxm - L.ping_dot * kx / 2, g.icon_cy - L.ping_dot / 2))
+			s.core:SetTextureColor(argb(255 * st.alpha * (st.side ~= 0 and A_PINNED or 1), C_PING))
+			if not s.core:IsShown() then s.core:Show(true) end
+		elseif s.core:IsShown() then
+			s.core:Show(false)
+		end
+		-- pinned: an arrow outside
+		if st.side ~= 0 then
+			set_tex(s.side, s, "side_tex", st.side > 0 and "coop_hud_tri_right" or "coop_hud_tri_left")
+			s.side:SetWndPos(self:V(cxm + st.side * L.side_gap * kx - L.side * kx / 2, g.icon_cy - L.side / 2))
+			s.side:SetTextureColor(argb(a, m.color))
+			if not s.side:IsShown() then s.side:Show(true) end
+		elseif s.side:IsShown() then
+			s.side:Show(false)
+		end
+		-- label (+ height arrow)
+		if it.show and st.text then
+			local tw = self:TextWidth(st.text)
+			local lx = cxm - it.w / 2
+			local la = A_LABEL * st.alpha
+			if s.text ~= st.text then
+				s.text = st.text
+				s.label:SetText(st.text)
+				s.shadow:SetText(st.text)
+			end
+			s.label:SetWndSize(self:V(tw, L.label_h))
+			s.shadow:SetWndSize(self:V(tw, L.label_h))
+			s.label:SetWndPos(self:V(lx, g.label_y))
+			s.shadow:SetWndPos(self:V(lx + g.px, g.label_y + g.py))
+			s.label:SetTextColor(argb(la, m.color))
+			s.shadow:SetTextColor(GetARGB(math_floor(la * 0.8), 0, 0, 0))
+			if not s.label:IsShown() then
+				s.label:Show(true)
+				s.shadow:Show(true)
+			end
+			if st.up then
+				set_tex(s.updown, s, "up_tex", st.up)
+				s.updown:SetWndPos(self:V(lx + tw + 2 * kx, g.label_y + (L.label_h - L.updown) / 2))
+				s.updown:SetTextureColor(argb(la, C_WHITE))
+				if not s.updown:IsShown() then s.updown:Show(true) end
+			elseif s.updown:IsShown() then
+				s.updown:Show(false)
+			end
+		else
+			if s.label:IsShown() then
+				s.label:Show(false)
+				s.shadow:Show(false)
+			end
+			if s.updown:IsShown() then s.updown:Show(false) end
+		end
+	end
+	for i = n + 1, SLOTS do
+		local s = self.slots[i]
+		if s.shown then
+			for _, w in pairs({ s.icon, s.core, s.side, s.updown, s.shadow, s.label }) do w:Show(false) end
+			s.shown = false
+			s.key = nil
+		end
+	end
+	-- fully faded out: forget
+	for i = n, 1, -1 do
+		local st = order[i]
+		if st.want == 0 and st.alpha <= 0 then
+			self.states[st.m.key] = nil
+			table.remove(order, i)
+		end
+	end
+end
+
+function UICoopCompass:Frame(tg)
+	if tg >= self.vis_at then
+		self.vis_at = tg + 100
+		local vis = hud_visible() and db.actor ~= nil
+		if vis ~= self.vis then
+			self.vis = vis
+			self.root:Show(vis)
+		end
+		local dev = device()
+		if dev.width ~= self.g.W or dev.height ~= self.g.H or layout() ~= self.g.L then self:Relayout() end
+	end
+	if not self.vis then
+		self.last_tg = nil
+		return
+	end
+	local dt = self.last_tg and math_max(0, math_min(100, tg - self.last_tg)) or 0
+	self.last_tg = tg
+	local dev = device()
+	local dir, cam = dev.cam_dir, dev.cam_pos
+	if not (dir and cam) then return end
+	local heading = heading_of(dir) or self.heading_last or 0
+	self.heading_last = heading
+	self:DrawScale(heading)
+	local M = markers_mod()
+	if M and M.list then
+		local list = M.list(tg)
+		if list ~= self.last_list then
+			self.last_list = list
+			self:Sync(list, tg)
+		end
+	end
+	local me = cam
+	local actor = db.actor
+	if actor then
+		local ok, p = pcall(actor.position, actor)
+		if ok and p then me = p end
+	end
+	self:DrawMarkers(tg, dt, heading, cam, me)
+end
+
+function UICoopCompass:Update()
+	CUIScriptWnd.Update(self)
+	local tg = time_global()
+	if self.off_until and tg < self.off_until then return end
+	local M = markers_mod()
+	local pf = M and M.perf_start and M.perf_start("compass")
+	local ok, err = pcall(self.Frame, self, tg)
+	if pf then M.perf_stop(pf) end
+	if not ok then
+		self.off_until = tg + 5000
+		log("! compass frame failed: %s", tostring(err))
+	end
+end
+
+local function compass_on()
+	if HUD then return end
+	local ok, err = pcall(function()
+		HUD = UICoopCompass()
+		get_hud():AddDialogToRender(HUD)
+	end)
+	if not ok then
+		HUD = nil
+		enabled = false
+		log("! compass failed, switched off: %s", tostring(err))
+	end
+end
+
+local function compass_off()
+	if not HUD then return end
+	local w = HUD
+	HUD = nil
+	pcall(function() get_hud():RemoveDialogToRender(w) end)
+end
+
+local function actor_on_update()
+	if enabled and db.actor then
+		compass_on()
+	elseif HUD then
+		compass_off()
+	end
+end
+
+local function actor_on_net_destroy()
+	compass_off()
+end
+
+function print_status()
+	log("compass %s, field %d deg%s", enabled and "on" or "off by the player", fov,
+		HUD and string_format(", %d marker(s) drawn", #HUD.order) or "")
+end
+
+function on_game_start()
+	if not api then return end -- an exe without co-op: nothing of this runs
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("actor_on_net_destroy", actor_on_net_destroy)
+end

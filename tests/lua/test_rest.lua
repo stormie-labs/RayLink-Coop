@@ -876,11 +876,12 @@ case("panel_rest_line", function()
 	check(coop_allies.rest_mark(7) == nil, "a failing engine: nothing, no error")
 	coop.rest = nil
 	check(coop_allies.rest_mark(7) == nil, "an engine without coop.rest: nothing")
-	-- the panel asks for it (scripts\coop_core_hud.script, info_text)
+	-- HUD v2 (variant B, the owner's pick): the team row shows no words - a resting / sleeping player (coop.rest.state_of)
+	-- gets a "z" and breathing segments, and that wins over the camp mark (scripts\coop_core_hud.script, UICoopParty:Fill)
 	local hud = read("gamedata/scripts/coop_core_hud.script") or ""
-	check(hud:find("allies().rest_mark(", 1, true) ~= nil, "coop_core_hud.info_text shows the rest line")
-	local at_rest, at_camp = hud:find("rest_mark(", 1, true), hud:find("checkpoint_mark(", 1, true)
-	check(at_rest and at_camp and at_rest < at_camp, "and before the camp mark")
+	local at_rest, at_camp = hud:find("r.rest = ", 1, true), hud:find("r.camp = ", 1, true)
+	check(at_rest ~= nil and hud:find("rest_state(v.avatar)", 1, true) ~= nil, "the team row asks coop.rest for the z")
+	check(at_rest and at_camp and at_rest < at_camp and hud:find("if r.rest then", 1, true) ~= nil, "and the rest wins over the camp mark")
 end)
 
 -- ------------------------------------------------------------------ a new world

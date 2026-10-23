@@ -1,0 +1,227 @@
+--[[
+	Anomaly Coop - HUD v2: allies and pings for Tactical Compass (gamedata\scripts\coop_hud_tc.script). Spec: docs\HUD_V2.md.
+
+	For players who keep the GAMMA mod "420- Tactical Compass - explorerbee" (off in the G.A.M.M.A profile) and switch our
+	compass off (coop/coop_player/compass_hud). Tactical Compass draws map spots of the types it knows and skips the
+	others, so it never shows our allies by itself. Here, 4 times a second while a session is on:
+	- every other player with an avatar here: tc_markers.add(avatar id, "coop_hud_ally", "companion");
+	- every live ping: tc_markers.add(fake id, "coop_hud_ping", "companion"), the fake id being 65535 + 65536 * k: a number
+	  the engine reads as the invalid object id 65535 should it ever reach it.
+	Its icons and colours, not ours. Two of its functions are wrapped once (the originals are called for everything else):
+	- tc_utils.get_world_coordinates(id): the ping's point for our fake ids, nil for any other fake id (a leftover of a
+	  save: Tactical Compass saves its list) - no engine lookup with such an id;
+	- tc_markers.drop_stale_spots(): it drops entries whose map spot is gone from the object; ours have no map spot, so
+	  they are taken out of its list for the sweep and put back; leftover fake ids are removed here.
+	Our compass on, the session over, Tactical Compass missing: our entries are removed.
+	Known limit: Tactical Compass may save our entries with its list (the host's save); after a load they are dropped by
+	its own sweep within 2 s (ally: no such spot on the avatar) or by the wrapper (fake id).
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local tostring, type, ipairs, pairs, pcall, next = tostring, type, ipairs, pairs, pcall, next
+local string_format = string.format
+
+SPOT_ALLY = "coop_hud_ally"
+SPOT_PING = "coop_hud_ping"
+CATEGORY = "companion"
+SYNC_MS = 250
+local FAKE_BASE, FAKE_STEP = 65535, 65536
+
+local ours = {} -- our key -> { id, spot }
+local fake_pos = {} -- fake id -> { x, y, z }
+local fake_of = {} -- ping key -> fake id
+local fake_k = 0
+local wrapped -- the tc_markers table our wrappers are installed on
+local stats = { added = 0, removed = 0 }
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-hud] %s", ok and line or tostring(fmt))
+end
+
+local function tc()
+	local m, u = rawget(_G, "tc_markers"), rawget(_G, "tc_utils")
+	if type(m) == "table" and type(m.add) == "function" and type(m.remove) == "function" then return m, u end
+	return nil
+end
+
+local function is_fake(id)
+	return type(id) == "number" and id > FAKE_BASE
+end
+
+local function install(m, u)
+	if wrapped == m then return end
+	wrapped = m
+	if type(u) == "table" and type(u.get_world_coordinates) == "function" then
+		local orig = u.get_world_coordinates
+		u.get_world_coordinates = function(id, ...)
+			if is_fake(id) then
+				local p = fake_pos[id]
+				if not p then return nil end
+				return vector():set(p.x, p.y, p.z)
+			end
+			return orig(id, ...)
+		end
+	end
+	if type(m.drop_stale_spots) == "function" then
+		local orig_drop = m.drop_stale_spots
+		m.drop_stale_spots = function(...)
+			local list = m.list
+			local kept = {}
+			if type(list) == "table" then
+				local mine = {}
+				for _, o in pairs(ours) do mine[o.id] = true end
+				for id, spots in pairs(list) do
+					if is_fake(id) and not mine[id] and type(spots) == "table" then
+						for spot in pairs(spots) do pcall(m.remove, id, spot) end
+					end
+				end
+				for _, o in pairs(ours) do
+					local spots = list[o.id]
+					if type(spots) == "table" and spots[o.spot] ~= nil then
+						kept[#kept + 1] = { o.id, o.spot, spots[o.spot] }
+						spots[o.spot] = nil
+						if next(spots) == nil then list[o.id] = nil end
+					end
+				end
+			end
+			local ok, err = pcall(orig_drop, ...)
+			if type(list) == "table" then
+				for _, k in ipairs(kept) do
+					local spots = list[k[1]]
+					if not spots then
+						spots = {}
+						list[k[1]] = spots
+					end
+					spots[k[2]] = k[3]
+				end
+			end
+			if not ok then error(err, 0) end
+		end
+	end
+	log("Tactical Compass found: allies and pings go to it while our compass is off")
+end
+
+local function remove_all(m)
+	for key, o in pairs(ours) do
+		if m then pcall(m.remove, o.id, o.spot) end
+		stats.removed = stats.removed + 1
+		ours[key] = nil
+	end
+	fake_pos, fake_of = {}, {}
+end
+
+local function in_session()
+	if not api then return false end
+	local ok, on = pcall(api.is_active)
+	return ok and on == true
+end
+
+local function our_compass_on()
+	local c = rawget(_G, "coop_hud_compass")
+	if not (c and c.is_enabled) then return false end
+	local ok, on = pcall(c.is_enabled)
+	return ok and on == true
+end
+
+function tracked()
+	return ours
+end
+
+function sync(tg)
+	tg = tg or time_global()
+	local m, u = tc()
+	if not m then
+		if next(ours) then remove_all(nil) end
+		return
+	end
+	if our_compass_on() or not in_session() then
+		if next(ours) then remove_all(m) end
+		return
+	end
+	install(m, u)
+	local want = {}
+	local hud = rawget(_G, "coop_core_hud")
+	if hud and hud.views then
+		local ok, list = pcall(hud.views, tg)
+		if ok and type(list) == "table" then
+			for _, v in ipairs(list) do
+				if v.avatar then want["ally:" .. tostring(v.peer)] = { id = v.avatar, spot = SPOT_ALLY } end
+			end
+		end
+	end
+	local P = rawget(_G, "coop_hud_ping")
+	local live_keys = {}
+	if P and P.active then
+		local ok, list = pcall(P.active, tg)
+		if ok and type(list) == "table" then
+			for _, p in ipairs(list) do
+				local id = fake_of[p.key]
+				if not id then
+					fake_k = fake_k + 1
+					id = FAKE_BASE + FAKE_STEP * fake_k
+					fake_of[p.key] = id
+				end
+				fake_pos[id] = p.pos
+				live_keys[p.key] = true
+				want["ping:" .. p.key] = { id = id, spot = SPOT_PING }
+			end
+		end
+	end
+	for key, id in pairs(fake_of) do
+		if not live_keys[key] then
+			fake_of[key] = nil
+			fake_pos[id] = nil
+		end
+	end
+	for key, o in pairs(ours) do
+		local w = want[key]
+		if not w or w.id ~= o.id then
+			pcall(m.remove, o.id, o.spot)
+			stats.removed = stats.removed + 1
+			ours[key] = nil
+		end
+	end
+	for key, o in pairs(want) do
+		if not ours[key] then
+			local ok, err = pcall(m.add, o.id, o.spot, CATEGORY)
+			if ok then
+				ours[key] = o
+				stats.added = stats.added + 1
+			else
+				log("! Tactical Compass refused %s: %s", key, tostring(err))
+			end
+		end
+	end
+end
+
+local next_at = 0
+local function actor_on_update()
+	local tg = time_global()
+	if tg < next_at then return end
+	next_at = tg + SYNC_MS
+	local ok, err = pcall(sync, tg)
+	if not ok then
+		next_at = tg + 10000
+		log("! Tactical Compass adapter: %s", tostring(err))
+	end
+end
+
+local function actor_on_net_destroy()
+	local m = tc()
+	remove_all(m)
+end
+
+function print_status()
+	local n = 0
+	for _ in pairs(ours) do n = n + 1 end
+	log("Tactical Compass adapter: %s, %d entr%s (added %d, removed %d)", tc() and (wrapped and "in use" or "found") or "not installed",
+		n, n == 1 and "y" or "ies", stats.added, stats.removed)
+end
+
+function on_game_start()
+	if not api then return end -- an exe without co-op: nothing of this runs
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("actor_on_net_destroy", actor_on_net_destroy)
+end

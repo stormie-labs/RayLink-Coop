@@ -1,0 +1,106 @@
+--[[
+	Anomaly Coop - HUD v2: every size of the compass bar and the team panel, and the alphas of the bar, in one table
+	(gamedata\scripts\coop_hud_layout.script). Spec: docs\HUD_V2.md.
+
+	The owner's next "a bit smaller" is one line: configs\mod_system_coop.ltx [coop_hud_layout] <key> = <number> wins over
+	the defaults below (a missing or broken line keeps the default). Read once per Lua state (a load / level change), or
+	again with reload().
+	Units: px at 768 high = 1024x768 UI units down; across, the scripts multiply by kx = 1024 * H / (768 * W), so nothing
+	stretches on a wide screen. bar_width_pct is a percentage of the screen width; alphas are 0..1. Fonts are in the XML
+	(ui_coop_compass.xml, ui_coop_core.xml team_row).
+
+	For other scripts:
+		coop_hud_layout.get() -> the table (do not change it)
+		coop_hud_layout.reload()
+--]]
+
+local tonumber, type, pairs, pcall = tonumber, type, pairs, pcall
+
+SECTION = "coop_hud_layout"
+
+-- Owner 2026-10-23 "in general a bit smaller", docs\hud\hud_v2_mockup.png
+DEFAULTS = {
+	-- compass bar: look (0..1; the background and the line fade out on the last 16 % at each end, baked in the textures)
+	bar_bg_alpha = 0.33, -- #0C0D0A (owner 2026-10-23: "a bit less murky", was ~0.6)
+	bar_line_alpha = 0.8, -- the white line #F4F5F6
+	-- compass bar: sizes
+	bar_width_pct = 38, -- of the screen width
+	bar_top = 20, -- from the top of the screen
+	bar_height = 24,
+	line_y = 15, -- the white line through the bar, from its top
+	letter_y = 1, -- letters N NE E ...: top of their box, from the bar's top (above the line)
+	letter_h = 13,
+	tick_5 = 2, -- tick lengths, down from the line
+	tick_15 = 4,
+	tick_45 = 5,
+	notch_w = 8, -- the white centre mark under the line, pointing up
+	notch_h = 6,
+	notch_gap = 3, -- its tip this far under the line
+	heading_y = -14, -- the heading "247 deg" (top of its box), from the bar's top
+	heading_h = 12,
+	icon = 12, -- marker glyph
+	marker_y = 9, -- marker centre, from the bar's top (sits on the line, a bit above it)
+	ping_dot = 6, -- the cyan dot of a ping
+	side = 8, -- the arrow of a marker pinned to an end
+	side_gap = 12, -- pinned marker: centre this far from the end of the bar, its arrow as far outside it
+	updown = 6, -- up / down arrow at a label (height difference > 5 m)
+	label_gap = 3, -- labels: this far under the bar
+	label_h = 12,
+	world_ring = 16, -- a ping over its point in the world
+	world_dot = 6,
+	-- team panel (variant B, owner 2026-10-23): rows bottom left, above the own HUD; the block grows upwards
+	team_x = 18, -- from the left edge of the screen
+	team_bottom = 590, -- the bottom of the lowest row (the own HUD of GAMMA / stock starts lower, ~626 / 726)
+	team_row = 36, -- from one row to the next
+	team_strip_w = 2, -- the player's colour bar at the left of a row
+	team_strip_h = 22,
+	team_name_x = 8, -- nick (white, 1 px shadow) from the row's left
+	team_name_y = -2,
+	team_name_h = 14,
+	team_name_max = 120, -- longer nicks end with an ellipsis
+	team_star = 9, -- host star after the nick
+	team_dist_gap = 6, -- distance this far after the nick (or the star)
+	team_dist_y = 0,
+	team_dist_h = 12,
+	team_arrow = 10, -- direction arrow after the distance, centred team_arrow_y from the row's top
+	team_arrow_y = 6,
+	team_seg_x = 8, -- health: 4 segments of 25 % under the nick
+	team_seg_y = 15,
+	team_seg_w = 30,
+	team_seg_h = 5,
+	team_seg_gap = 3,
+	team_seg_empty_alpha = 0.18, -- the empty part of a segment, white
+	team_status = 12, -- state icon (cross in a melting ring, skull, eye, z, !) right of the segments
+	team_status_gap = 10, -- its centre this far after the last segment
+	team_timer_h = 12, -- "0:42" after the icon
+}
+
+local layout
+
+local function read(ini, key)
+	local ok, v = pcall(function()
+		if ini:section_exist(SECTION) and ini:line_exist(SECTION, key) then return ini:r_string(SECTION, key) end
+	end)
+	if not (ok and type(v) == "string") then return nil end
+	v = tonumber(v:match("^%s*([%-%d%.]+)"))
+	if v and v == v and v > -1000 and v < 4000 then return v end
+	return nil
+end
+
+function reload()
+	local t = {}
+	local ini = rawget(_G, "ini_sys")
+	if not ini then
+		local ok, sys = pcall(function() return system_ini() end)
+		ini = ok and sys or nil
+	end
+	for k, def in pairs(DEFAULTS) do
+		t[k] = ini and read(ini, k) or def
+	end
+	layout = t
+	return t
+end
+
+function get()
+	return layout or reload()
+end

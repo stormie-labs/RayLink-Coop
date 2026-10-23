@@ -1,5 +1,6 @@
 -- Anomaly Coop W6 (allies UI) stub test: coop_allies + coop_allies_map + coop_core_hud on one machine that sees
 -- 1..7 other players. Real scripts, real ui_coop_core.xml / ui_hud.xml coordinates, real mod_system_coop.ltx palette.
+-- HUD v2 (variant B) replaced W6's party panel: its rows are checked here briefly, in depth in test_hud_v2.lua.
 -- Run: tools\test_lua.cmd allies   (VERBOSE=1 for logs)
 local ROOT = "gamedata/"
 local REF = "../anomaly-ref/unpacked/configs/ui/"
@@ -72,6 +73,8 @@ local function window(path, a)
 	function w:SetEllipsis(b) self.ellipsis = b end
 	function w:AdjustWidthToText() self.w = #self.text * 7 * 1024 / DEV.width end -- ~7 px per glyph
 	function w:SetFont() end
+	function w:EnableHeading(b) self.heading_on = b end
+	function w:SetHeading(r) self.heading = r end
 	return w
 end
 
@@ -133,7 +136,7 @@ STR = {}
 for id, text in readfile(ROOT .. "configs/text/eng/st_coop_allies.xml"):gmatch('<string id="([%w_]+)">%s*<text>(.-)</text>') do STR[id] = text end
 
 -- ---------------------------------------------------------------- the machine
-local SCRIPTS = { "coop_allies", "coop_allies_map", "coop_core_hud", "modxml_coop_allies" }
+local SCRIPTS = { "coop_hud_layout", "coop_allies", "coop_allies_map", "coop_core_hud", "modxml_coop_allies" }
 
 local function machine(self_peer)
 	local M = { log = {}, cb = {}, spots = {}, spot_ops = {}, hud = {}, players = {}, objects = {}, sent = {},
@@ -301,7 +304,7 @@ local function count_log(M, pat)
 end
 
 local function party_of(M)
-	for w in pairs(M.hud) do if w.cards then return w end end
+	for w in pairs(M.hud) do if w.team_panel then return w end end
 end
 
 -- roster: me + n others (peers 0..n excluding me), avatar id 500 + peer, standing peer*10 m away
@@ -398,20 +401,15 @@ for n = 1, 7 do
 	end
 	check(ok, n .. " allies: one arrow each, type by peer id, nick in his colour, none on me")
 	local P2 = party_of(M)
-	local cards, rows = 0, 0
-	for _, c in ipairs(P2.cards) do if c.base.e.visible then cards = cards + 1 end end
+	local rows = 0
 	for _, rr in ipairs(P2.rows) do if rr.base.e.visible then rows = rows + 1 end end
-	check((n <= 4 and cards == n and rows == 0) or (n > 4 and rows == n and cards == 0), n .. " allies: " .. cards .. " cards, " .. rows .. " rows")
+	check(rows == n, n .. " allies: " .. rows .. " rows")
 	if n == 7 then
 		M.players[1].nick = "A_Very_Long_Nickname_Indeed"
-		REAL_STRINGS = true
-		status(M, 0, "spec", 1)
 		run(M, 600)
-		REAL_STRINGS = false
 		local rr = P2.rows[1]
-		local label_left = rr.info.e.x + rr.info.e.w - #rr.info.e.text * 7 * 1024 / 1920
-		check(rr.info.e.text == "SPECTATING" and rr.name.e.x + rr.name.e.w <= label_left + 0.001 and rr.name.e.x > rr.host.e.x,
-			"compact row: long nick box ends before the state label, starts after the host star")
+		check(rr.name.e.w <= 120 * 1024 * 1080 / (768 * 1920) + 0.001 and rr.name.e.ellipsis and rr.host.e.x >= rr.name.e.x + rr.name.e.w
+			and rr.dist.e.x > rr.host.e.x, "a long nick is cut (ellipsis) before the host star and the distance")
 	end
 end
 
@@ -426,20 +424,25 @@ status(M, 3, "alive", 0.9)
 status(M, 0, "alive", 1)
 run(M, 600)
 P = party_of(M)
-check(P.cards[1].name.e.text == "p0" and P.cards[2].name.e.text == "p1" and P.cards[3].name.e.text == "p3", "panel sorted by peer: host first")
-check(P.cards[1].host.e.visible and not P.cards[2].host.e.visible, "host star only on the host")
-check(P.cards[2].strip.e.tcolor == A.argb(1) and P.cards[2].name.e.color == A.argb(1), "colour tab + nick in the player's colour")
-check(P.cards[2].hp.e.progress == 0.7 and P.cards[2].info.e.text == "10 <st_coop_allies_m>", "health + distance")
-check(math.abs(P.cards[2].info_bg.e.w - (#"10 <st_coop_allies_m>" * 7 * 1024 / 1920 + 4 * 1024 / 1920)) < 0.01 or P.cards[2].info_bg.e.w <= 80 * 1024 / 1920 + 0.01, "info plate hugs its text")
--- F3 T13: for 10 s after his checkpoint changed (coop_checkpoints.last_update) the plate says "camp" instead of the distance
+local function seg_fill(r)
+	local w = 0
+	for _, sg in ipairs(r.segs) do if sg.fill.e.visible then w = w + sg.fill.e.w end end
+	return w
+end
+local SEGW = 30 * 1024 * 1080 / (768 * 1920)
+check(P.rows[1].name.e.text == "p0" and P.rows[2].name.e.text == "p1" and P.rows[3].name.e.text == "p3", "panel sorted by peer: host first (on top)")
+check(P.rows[1].host.e.visible and not P.rows[2].host.e.visible, "host star only on the host")
+check(P.rows[2].strip.e.tcolor % 16777216 == A.argb(1) % 16777216, "colour bar in the player's colour")
+check(math.abs(seg_fill(P.rows[2]) - SEGW * 4 * 0.7) < 0.05 and P.rows[2].dist.e.text == "10 <st_coop_allies_m>", "health in segments + distance")
+-- F3 T13: for 10 s after his checkpoint changed (coop_checkpoints.last_update) a tent instead of nothing
 do
 	local at = NOW
 	M.env.coop_checkpoints = { last_update = function(id) return id == 501 and at or nil end }
 	run(M, 600)
-	check(P.cards[2].info.e.text == "<st_coop_cp_panel>", "checkpoint changed: the plate says 'camp' (" .. P.cards[2].info.e.text .. ")")
-	check(P.cards[3].info.e.text == "30 <st_coop_allies_m>", "another player's plate is untouched")
+	check(P.rows[2].icon.e.visible and P.rows[2].icon.e.texture == "coop_hud_tent", "checkpoint changed: a tent on his row")
+	check(not P.rows[3].icon.e.visible, "another player's row is untouched")
 	run(M, 10000)
-	check(P.cards[2].info.e.text == "10 <st_coop_allies_m>", "10 s later the distance is back (" .. P.cards[2].info.e.text .. ")")
+	check(not P.rows[2].icon.e.visible, "10 s later the tent is gone")
 	M.env.coop_checkpoints = nil
 end
 -- down
@@ -448,45 +451,44 @@ run(M, 600)
 local h1 = M.spots["coop_ally_1@501"]
 check(M.spots["coop_ally_down@501"] ~= nil and h1 ~= nil, "down: arrow kept + needs-help overlay")
 check(h1:find("<st_coop_allies_down>", 1, true) and h1:find("0:4", 1, true) and h1:find("%c[255,226,58,48]", 1, true), "hint: red state label + bleed-out timer")
-check(P.cards[2].badge.e.visible and P.cards[2].info.e.text:find("<st_coop_allies_down> 0:4", 1, true), "panel: badge + label + countdown")
+check(P.rows[2].icon.e.visible and P.rows[2].icon.e.texture == "coop_hud_cross" and P.rows[2].timer.e.text:find("0:4", 1, true),
+	"panel: cross + countdown, no word")
 local a0 = M.statics["mcoop_ally_down501"] and M.statics["mcoop_ally_down501"].tcolor
 run(M, 300)
 local a1 = M.statics["mcoop_ally_down501"] and M.statics["mcoop_ally_down501"].tcolor
 check(a0 and a1 and a0 ~= a1 and math.floor(a1 / 16777216) >= 139, "minimap overlay pulses (alpha changes every frame)")
 check(M.statics["lcoop_ally_down501"] ~= nil, "PDA overlay pulses too")
-local b0 = P.cards[2].badge.e.tcolor
+local b0 = P.rows[2].strip.e.tcolor
 run(M, 200)
-check(b0 ~= P.cards[2].badge.e.tcolor, "panel badge pulses")
+check(b0 ~= P.rows[2].strip.e.tcolor, "panel row breathes")
 -- countdown runs from the report time
-local before = P.cards[2].info.e.text
+local before = P.rows[2].timer.e.text
 run(M, 3000)
-check(P.cards[2].info.e.text ~= before, "countdown advances without new status: " .. P.cards[2].info.e.text)
+check(P.rows[2].timer.e.text ~= before, "countdown advances without new status: " .. P.rows[2].timer.e.text)
 -- dead
 status(M, 1, "dead", 0)
 run(M, 600)
 check(M.spots["coop_ally_1@501"] == nil and M.spots["coop_ally_down@501"] == nil and M.spots["coop_ally_dead@501"] ~= nil, "dead: grey marker replaces arrow and overlay")
-check(P.cards[2].icon.e.tcolor == M.env.GetARGB(255, 105, 105, 105) and not P.cards[2].hp.e.visible and not P.cards[2].badge.e.visible, "panel: grey portrait, no health bar")
-check(P.cards[2].info.e.text == "<st_coop_allies_dead>", "panel: DEAD label")
+check(P.rows[2].icon.e.texture == "coop_hud_skull" and P.rows[2].segs[1].fill.e.tcolor % 16777216 == M.env.GetARGB(0, 120, 120, 120),
+	"panel: skull, grey segments")
 -- spectating / respawning
 status(M, 1, "spec", 1)
 run(M, 600)
-check(M.spots["coop_ally_dead@501"] ~= nil and P.cards[2].info.e.text == "<st_coop_allies_spec>", "spectating: grey marker, label")
-check(P.cards[2].badge.e.visible and P.cards[2].badge.e.texture == "coop_icon_eye_48", "W8: spectating -> eye badge on the card")
+check(M.spots["coop_ally_dead@501"] ~= nil and P.rows[2].icon.e.texture == "coop_hud_eye", "spectating: grey marker, eye on the row")
 status(M, 1, "alive", 1)
 run(M, 600)
 check(M.spots["coop_ally_dead@501"] == nil and M.spots["coop_ally_1@501"] ~= nil, "back alive: arrow back")
 -- status that stops coming
 run(M, 16000)
-check(P.cards[2].info.e.text == "<st_coop_allies_unknown>", "no status for 15 s: NO SIGNAL")
-check(P.cards[2].badge.e.visible and P.cards[2].badge.e.texture == "coop_icon_alert_48", "W8: no signal -> warning badge on the card")
+check(P.rows[2].icon.e.visible and P.rows[2].icon.e.texture == "coop_hud_warn", "no status for 15 s: amber ! on the row")
 check(M.spots["coop_ally_1@501"] and M.spots["coop_ally_1@501"]:find("<st_coop_allies_unknown>", 1, true), "hint says no signal, arrow stays (position is live)")
 -- engine survival state wins
 M.env.coop.life_of = function(id) return id == 503 and "wounded" or "alive" end
 M.env.coop.bleed_left = function(id) return id == 503 and 30000 or 0 end
 status(M, 3, "alive", 0.9)
 run(M, 600)
-check(M.spots["coop_ally_down@503"] ~= nil and P.cards[3].info.e.text:find("0:30", 1, true), "coop.life_of/bleed_left override the reported state")
-check(P.cards[3].badge.e.visible and P.cards[3].badge.e.texture == "coop_ally_badge_48", "W8: down -> medic badge back after another badge")
+check(M.spots["coop_ally_down@503"] ~= nil and P.rows[3].timer.e.text:find("0:30", 1, true), "coop.life_of/bleed_left override the reported state")
+check(P.rows[3].icon.e.visible and P.rows[3].icon.e.texture == "coop_hud_cross", "down -> cross back after another icon")
 M.env.coop.life_of, M.env.coop.bleed_left = nil, nil
 status(M, 3, "alive", 0.9)
 run(M, 600)
@@ -523,7 +525,7 @@ M.actor.health = 1
 print("== leave / rejoin")
 table.remove(M.players, 2) -- p1 leaves
 run(M, 600)
-check(count_spots(M, "@501$") == 0 and P.cards[3].base.e.visible == false, "left: markers removed, panel shrinks")
+check(count_spots(M, "@501$") == 0 and P.rows[3].base.e.visible == false, "left: markers removed, panel shrinks")
 M.players[#M.players + 1] = { id = 1, nick = "p1", avatar_id = 520, rtt = 30, is_self = false } -- back, new avatar
 M.avatar(520, 70)
 run(M, 300)
@@ -535,7 +537,7 @@ check(M.spots["coop_ally_4@520"] ~= nil and M.spots["coop_ally_1@520"] == nil, "
 -- avatar not spawned yet: panel only
 M.players[#M.players].avatar_id = nil
 run(M, 600)
-check(count_spots(M, "@520$") == 0 and P.cards[3].name.e.text == "p1" and P.cards[3].base.e.visible and P.cards[3].info.e.text == "", "no avatar yet: no marker, panel entry without distance")
+check(count_spots(M, "@520$") == 0 and P.rows[3].name.e.text == "p1" and P.rows[3].base.e.visible and not P.rows[3].dist.e.visible, "no avatar yet: no marker, panel entry without distance")
 
 -- ================================================================ toggles, HUD, session end
 print("== toggles")
@@ -549,14 +551,14 @@ check(count_spots(M, ".") == n_before, "markers on again")
 M.hudm.set_party_enabled(false)
 run(M, 600)
 local any = false
-for _, c in ipairs(P.cards) do any = any or c.base.e.visible end
+for _, c in ipairs(P.rows) do any = any or c.base.e.visible end
 check(not any, "party panel off")
 M.hudm.set_party_enabled(true)
 run(M, 600)
 M.hud_shown = false
 run(M, 40)
 any = false
-for _, c in ipairs(P.cards) do any = any or c.base.e.visible end
+for _, c in ipairs(P.rows) do any = any or c.base.e.visible end
 check(not any, "hidden with the main HUD within a frame or two (inventory/PDA/scope)")
 M.hud_shown = true
 M.active = false
@@ -569,14 +571,14 @@ M = machine(0)
 roster(M, 0, 1) -- the host + client #1, standing 10 m away, nothing received yet
 run(M, 600)
 local HP = party_of(M)
-check(HP and HP.cards[1].base.e.visible and HP.cards[1].name.e.text == "p1", "host: card for the client from coop.players() alone")
-check(HP.cards[1].info.e.text ~= "" and not HP.cards[1].badge.e.visible, "host: distance shown, state alive (no badge): " .. HP.cards[1].info.e.text)
+check(HP and HP.rows[1].base.e.visible and HP.rows[1].name.e.text == "p1", "host: a row for the client from coop.players() alone")
+check(HP.rows[1].dist.e.text ~= "" and not HP.rows[1].icon.e.visible, "host: distance shown, state alive (no icon): " .. HP.rows[1].dist.e.text)
 local sent_status = 0
 for _, e in ipairs(M.sent) do if e.name == "core.status" and (e.target == nil or e.target == -1) then sent_status = sent_status + 1 end end
 check(sent_status >= 1, "host broadcasts its own status to everybody (target -1)")
 M.handlers["core.status"](M.env.coop_main.encode({ h = 0.5, s = "alive", f = "stalker", i = "" }), 1)
 run(M, 600)
-check(M.env.coop_core_hud.status_of(1) ~= nil and HP.cards[1].hp.e.progress == 0.5, "host accepts a status from a client (from = its peer id)")
+check(M.env.coop_core_hud.status_of(1) ~= nil and math.abs(seg_fill(HP.rows[1]) - SEGW * 2) < 0.05, "host accepts a status from a client (from = its peer id)")
 M.env.coop_core_hud.print_status()
 check(count_log(M, "hud: panel visible, 1 other player(s): #1 p1 alive, 10 m, status 1 s ago") == 1, "status line lists the panel's players")
 M.hud_shown = false
@@ -608,66 +610,37 @@ check(adds == 3, "steady state: no re-adding of spots (" .. adds .. " adds)")
 
 -- ================================================================ layout at several resolutions
 print("== layout")
-local function rect_of(entry)
-	local b = entry.base.e
-	return b.x, b.y, b.x + b.w, b.y + b.h
-end
 local report = {}
 for _, res in ipairs({ { 1920, 1080 }, { 2560, 1440 }, { 3840, 2160 }, { 1280, 720 }, { 1024, 768 }, { 1600, 1200 }, { 3440, 1440 } }) do
 	DEV.width, DEV.height = res[1], res[2]
-	for _, n in ipairs({ 4, 7 }) do
-		M = machine(0)
-		roster(M, 0, n)
-		run(M, 600)
-		local PL = party_of(M)
-		local set = PL.cards[1].base.e.visible and PL.cards or PL.rows
-		local kind = set == PL.cards and "cards" or "rows"
-		local x1, y1 = rect_of(set[1])
-		local _, _, x2, y2 = rect_of(set[n])
-		local px = function(u, axis) return math.floor(u * (axis == "x" and res[1] / 1024 or res[2] / 768) + 0.5) end
-		local okr = x2 <= 1024 and y1 >= 66 and x1 >= 512 and (kind == "rows" and y2 <= 340 or y2 <= 340)
-		check(okr, ("%dx%d, %d players, %s: units x %.1f..%.1f y %.1f..%.1f = px x %d..%d y %d..%d"):format(res[1], res[2], n, kind,
-			x1, x2, y1, y2, px(x1, "x"), px(x2, "x"), px(y1, "y"), px(y2, "y")))
-		report[#report + 1] = ("| %dx%d | %d | %s | x %d..%d, y %d..%d px | units x %.0f..%.0f, y %.0f..%.0f |"):format(res[1], res[2], n,
-			kind, px(x1, "x"), px(x2, "x"), px(y1, "y"), px(y2, "y"), x1, x2, y1, y2)
-		if kind == "cards" then
-			-- one card in pixels at this resolution (scaled by max(1, h/1080))
-			local c = set[1].base.e
-			report[#report] = report[#report] .. (" card %dx%d px |"):format(px(c.w, "x"), px(c.h, "y"))
-		end
-	end
+	M = machine(0)
+	roster(M, 0, 7)
+	run(M, 600)
+	local PL = party_of(M)
+	local top, bottom = PL.rows[1].base.e.y, PL.rows[7].base.e.y + 22
+	local kx = 1024 * res[2] / (768 * res[1])
+	check(math.abs(PL.rows[1].base.e.x - 18 * kx) < 0.01 and math.abs(bottom - 590) < 0.01 and top > 340,
+		("%dx%d, 7 players: rows y %.0f..%.0f units, above the own HUD"):format(res[1], res[2], top, bottom))
+	report[#report + 1] = ("| %dx%d | 7 | x %.1f units | y %.0f..%.0f units |"):format(res[1], res[2], PL.rows[1].base.e.x, top, bottom)
 end
 DEV.width, DEV.height = 1920, 1080
 local fh2 = assert(io.open(OUT .. "layout_report.txt", "wb"))
 fh2:write(table.concat(report, "\n") .. "\n")
 fh2:close()
 
--- companions: shift left only on overlap
+-- HUD v2: the stock companion column is not moved any more (the old panel's shift is gone)
 print("== companions")
 M = machine(0)
 roster(M, 0, 4)
 local chud = { dialog = window("comp", { x = 949, y = 47 }), companion_info = {} }
-for i = 1, 8 do
-	local base = window("slot", { x = 0, y = 0, width = 90 * 1024 / 1920, height = 67 * 768 / 1080 })
-	base.y = (8 - i) * (base.h + 10 * 768 / 1080)
-	base.visible = i <= 2
-	chud.companion_info[i] = { base = base }
-end
 M.env.axr_companions = { HUD = chud }
 run(M, 600)
-check(chud.dialog.x == 949, "2 companions (bottom slots) do not overlap 4 cards: column stays")
-for i = 1, 8 do chud.companion_info[i].base.visible = i <= 7 end
-run(M, 600)
-local PL = party_of(M)
-check(chud.dialog.x < PL.bounds.l and chud.dialog.x + 90 * 1024 / 1920 <= PL.bounds.l, "7 companions would overlap: column moved left of the panel (x " .. string.format("%.1f", chud.dialog.x) .. ")")
-for i = 1, 8 do chud.companion_info[i].base.visible = i <= 1 end
-run(M, 600)
-check(chud.dialog.x == 949, "overlap gone: column back")
+check(chud.dialog.x == 949, "companion column stays where it is")
 
 local unk = {}
 for k in pairs(UNKNOWN) do unk[#unk + 1] = tostring(k) end
 table.sort(unk)
-check(#unk == 0 or table.concat(unk, ",") == "axr_companions", "no reads of undefined globals (" .. table.concat(unk, ", ") .. ")")
+check(#unk == 0, "no reads of undefined globals (" .. table.concat(unk, ", ") .. ")")
 print(("== %d passed, %d failed"):format(PASSES, FAILS))
 if FAILS > 0 then os.exit(1) end
 -- module fields after the whole run (accidental globals would show up here)

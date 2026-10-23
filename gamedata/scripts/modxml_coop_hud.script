@@ -1,0 +1,27 @@
+--[[
+	Anomaly Coop - HUD v2 seams in the stock XML (gamedata\scripts\modxml_coop_hud.script). Spec: docs\HUD_V2.md, Пинг.
+	The modxml_ prefix is required: dxml_core loads modxml_*.script at script start-up (the cold-start main menu too) and
+	calls their on_xml_read().
+
+	- Adds "Co-op: ping" (kb_coop_ping, engine action chat_team: coop_hud_ping) to Options > Controls > Common, after the
+	  stock entries (the chat entry of modxml_coop_menu is there too). Strings: st_coop_hud.xml.
+	Does nothing on an exe without the co-op engine (namespace `coop` missing).
+--]]
+
+-- Module function, not a closure: dxml keeps one entry per function value.
+function inject_keybinding(xml_file_name, xml_obj)
+	if xml_file_name ~= [[ui\ui_keybinding.xml]] then return end
+	local ok, err = pcall(function()
+		local groups = xml_obj:query("group[name=kb_grp_common]")
+		local g = groups and groups[1]
+		if not g then return end
+		if #xml_obj:query("command[id=kb_coop_ping]") > 0 then return end
+		xml_obj:insertFromXMLString([[<command id="kb_coop_ping" exe="chat_team"/>]], g, #g.kids)
+	end)
+	if not ok then printf("! [coop-hud] ping key binding entry not added: %s", tostring(err)) end
+end
+
+function on_xml_read()
+	if not rawget(_G, "coop") then return end -- vanilla exe: no co-op
+	RegisterScriptCallback("on_xml_read", inject_keybinding)
+end
