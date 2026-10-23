@@ -54,8 +54,26 @@ local function codec()
 	return rawget(_G, "coop_main") or coop_main
 end
 
+-- F3a task 6 (docs/plans/2026-10-24-f3a-split-levels.md 1.1, 1.2): what this process is. The host process is the world server
+-- AND a player (the host player, a client of its own server over the internal channel); a remote client is a player and a
+-- mirror of the host's world. `new_name` is the engine's role function, `old_name` what a build without it has (the old pair
+-- says the same today); a name the build lacks answers no.
+local function role(new_name, old_name)
+	if not (api and api.is_active()) then return false end
+	local f = type(api[new_name]) == "function" and api[new_name] or api[old_name]
+	if type(f) ~= "function" then return false end
+	local ok, yes = pcall(f)
+	return ok and yes == true
+end
+
+local function is_world_server() return role("is_world_server", "is_host") end -- world logic: the session notice, /go
+local function is_player() return role("is_player", "is_client") end -- the player's own screen: the fade of a group move
+local function is_mirror() return role("is_mirror", "is_client") end -- the Lua state is a copy of the host's
+
+-- A player is in the world: the host player (the host is live as soon as its world is up) or a live remote client. A build
+-- without coop.is_player() has only players in a session.
 local function live()
-	return api ~= nil and api.is_active() and (api.is_host() or api.is_live())
+	return api ~= nil and api.is_active() and role("is_player", "is_active") and api.is_live()
 end
 
 local function players()
@@ -162,7 +180,8 @@ local function register_pdata()
 	if not pdata_ok then log("! per-player keys not registered (%s, %s)", tostring(ok1), tostring(ok2)) end
 end
 
--- Client, first live update of this Lua state: the restored keys are in m_data, the actor exists.
+-- Mirror (a remote client), first live update of this Lua state: the restored keys are in m_data, the actor exists. The host
+-- player's Lua state is its own (the save it loaded is its), so there is nothing to put back for it.
 local function client_after_load()
 	after_load_done = true
 	if pdata_ok then
@@ -205,7 +224,7 @@ local function roster_tick()
 		roster = now
 		if api.stash_get and api.stash_get(STASH_SEEN) ~= "1" then
 			if api.stash_set then api.stash_set(STASH_SEEN, "1") end
-			if api.is_host() then
+			if is_world_server() then
 				notice(tr("st_coop_core_session_host", "You are hosting a co-op session."))
 			else
 				notice(string_format(tr("st_coop_core_session_client", "Connected to the co-op session of %s."),
@@ -252,7 +271,7 @@ end
 -- Host: /go in the chat: the group goes now through the exit somebody waits at (the engine's coop_accept_transition says
 -- when nobody does).
 function accept_transition()
-	if not (api and api.is_host()) then return false end
+	if not is_world_server() then return false end
 	if vote and time_global() - vote.at < 600000 then
 		api.send_event(EV_MOVING, codec().encode({ nick = vote.nick }), -1)
 		vote = nil
@@ -267,7 +286,7 @@ function accept_transition()
 end
 
 local function on_moving(payload, from)
-	if from ~= 0 or not (api and api.is_client()) or not db.actor then return end
+	if from ~= 0 or not is_player() or not db.actor then return end
 	hud_msg(tr("st_coop_core_moving", "The group moves to another level..."))
 	pcall(level.add_pp_effector, "sleep_fade.ppe", 1313, false)
 end
@@ -283,7 +302,7 @@ local function actor_on_update()
 		return
 	end
 	if not live() then return end
-	if api.is_client() and not after_load_done and db.actor then
+	if is_mirror() and not after_load_done and db.actor then
 		local ok, err = pcall(client_after_load)
 		if not ok then log("! own state after the world load: %s", tostring(err)) end
 	end

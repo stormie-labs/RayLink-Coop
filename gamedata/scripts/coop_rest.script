@@ -21,7 +21,7 @@
 	2. The doze window UICoopDoze (configs\ui\ui_coop_rest.xml): the screen is dimmed, "Waiting for: <nicks>"
 	   (coop.rest.waiting_for(), once a second), what holds the sleep (coop.rest.block(): combat, world, dead), the buttons
 	   Get up (and ESC / USE) -> coop.rest.get_up(), and Fold at a sleeping bag of his own -> a pack claim at the position of
-	   the bag (coop_checkpoints.request("pack", 0, at); the host judges the owner, nothing is checked here). It closes when
+	   the bag (coop_checkpoints.request("pack", 0, at); the world server judges the owner, nothing is checked here). It closes when
 	   the engine says the rest is over: coop_rest_refused, coop_rest_changed(0, "awake"), and a poll of state_of(0) once a
 	   second (no callbacks come after a session ends). The first answer of the engine takes a moment (the client's pacing,
 	   the round trip): an "awake" state is the end only after the engine has said "resting" once, or after 6 s with no
@@ -40,7 +40,7 @@
 	4. Prompts: an ally lies down -> "<nick> is tired, rest too" (once per rest; not while I rest myself: my window names
 	   who is awake). The party panel line is coop_allies.rest_mark.
 
-	5. The host tells the engine once a second whether the world holds the sleep (an emission or a psi-storm:
+	5. The world server tells the engine once a second whether the world holds the sleep (an emission or a psi-storm:
 	   coop.rest.set_world_block("emission") / ("")): a level, not an edge - the block outlives a session and a missed
 	   release would hold the sleep for ever.
 
@@ -90,16 +90,23 @@ local function in_session()
 	return ok and active == true
 end
 
-local function is_host()
+-- F3a task 6 (docs/plans/2026-10-24-f3a-split-levels.md 1.1, 1.2): the roles of this process. The host process is the world
+-- server AND a player (the host player, a client of its own server over the internal channel). The world's rest rules
+-- (the emission block) are the world server's; what the player sees and asks for - the sleep, the doze window, Fold - is the
+-- same for the host player and a remote client. A build without the role functions has the old pair, whose host folded its
+-- bag with the stock compression bag.
+local function is_world_server()
 	if not in_session() then return false end
-	local ok, host = pcall(api.is_host)
-	return ok and host == true
+	local f = type(api.is_world_server) == "function" and api.is_world_server or api.is_host
+	local ok, yes = pcall(f)
+	return ok and yes == true
 end
 
-local function is_client()
+local function is_player()
 	if not in_session() then return false end
-	local ok, client = pcall(api.is_client)
-	return ok and client == true
+	local f = type(api.is_player) == "function" and api.is_player or api.is_client
+	local ok, yes = pcall(f)
+	return ok and yes == true
 end
 
 local function rest_api()
@@ -260,7 +267,7 @@ local function block_text()
 	return key and text(key) or ""
 end
 
--- The emission and the psi-storm hold the sleep (the host's world; surge_manager / psi_storm_manager.is_started()).
+-- The emission and the psi-storm hold the sleep (the world server's world; surge_manager / psi_storm_manager.is_started()).
 local function emission_running()
 	for _, name in ipairs({ "surge_manager", "psi_storm_manager" }) do
 		local m = mod(name)
@@ -274,7 +281,7 @@ local function emission_running()
 end
 
 local function feed_world_block()
-	if not is_host() then return end
+	if not is_world_server() then return end
 	rest_call("set_world_block", emission_running() and "emission" or "")
 end
 
@@ -386,10 +393,10 @@ local function close_doze()
 	end
 end
 
--- The position of the sleeping bag the player sleeps at, when it is one of his to fold: a client only (the host folds with the
--- stock compression bag), a placed ph_sleepbag of the world within reach.
+-- The position of the sleeping bag the player sleeps at, when it is one of his to fold: a player (the host player too, F3a T6:
+-- he asks the world server with a pack claim like a remote client), a placed ph_sleepbag of the world within reach.
 local function fold_target()
-	if not is_client() then return nil end
+	if not is_player() then return nil end
 	local id = st.bag
 	if type(id) ~= "number" then return nil end
 	local ck = mod("coop_checkpoints")

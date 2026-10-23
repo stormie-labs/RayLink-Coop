@@ -23,11 +23,14 @@
 	   (no tip, no panel mark). Every incoming player also gets coop_checkpoint_changed(0, "none", -1, ...): normal.
 
 	2. Story checkpoints: the stock xr_effects.scenario_autosave (an empty function in stock, ~30 calls from the story
-	   logic; a save in some mods) is replaced in a session: the host calls coop.checkpoint.story(<save name>), a client does
-	   nothing, and no console command is run. Outside a session the original function runs.
+	   logic; a save in some mods) is replaced in a session: the world server calls coop.checkpoint.story(<save name>), anybody
+	   else does nothing, and no console command is run. Outside a session the original function runs.
 
-	3. Claims of a client (the host puts the tent up and takes the item, Ruling F3-6): request(what, delay_ms) with what
-	   "tent" | "sleepbag" | "pack". The client never touches the item. One claim at a time. It ends by the host's answer: the
+	3. Claims of a player (the world server puts the tent up and takes the item, Ruling F3-6): request(what, delay_ms) with what
+	   "tent" | "sleepbag" | "pack". The player never touches the item. F3a T6: a player is the host player too - the host's
+	   process is the world server AND a client of it over the internal channel, so its claim is the same
+	   coop.checkpoint.claim_tent a remote client sends (a role question, coop.is_player(), not "am I a client"). One claim at
+	   a time. It ends by the world server's answer: the
 	   camp on a tent (coop_checkpoint_changed with kind tent), the item arriving (pack-up), a refusal
 	   (coop_checkpoint_refused(reason, what): st_coop_cp_refused_<reason>), or after about 5 s with nothing (a lost callback; no
 	   tip, nothing was taken). reason "far" for a pack-up also means "no tent of yours here" (its own text).
@@ -37,12 +40,12 @@
 		coop_checkpoints.item_kind(section) -> "tent" | "sleepbag" | "pack" | nil   (stock lists of itms_manager.ltx)
 		coop_checkpoints.object_kind(section) -> "tent" | "sleepbag" | nil          (ph_tent, ph_sleepbag)
 		coop_checkpoints.placeable(kind) -> bool       (the ltx switch use_placeable)
-		coop_checkpoints.request(what, delay_ms [, at]) -> bool client: a claim after delay_ms, at {x, y, z} or the player
-		coop_checkpoints.report_placed(kind, id) -> bool        host: the stock put object `id` up, it is the host's camp
+		coop_checkpoints.request(what, delay_ms [, at]) -> bool player: a claim after delay_ms, at {x, y, z} or the player
+		coop_checkpoints.report_placed(kind, id) -> bool        world server: the stock put object `id` up, it is the host's camp (goes, see there)
 		coop_checkpoints.own_tent_source() -> id | nil          the tent or sleeping bag that is my camp
 		coop_checkpoints.is_mine_tent(id [, obj]) -> bool       client: a tent / bag I put up (see below)
 		coop_checkpoints.my_objects() -> { [id] = true }        client: the tents and bags that were my camp (do not change it)
-		coop_checkpoints.pack_nearby([at]) -> bool              client: ask the host to pack up my tent / bag within reach
+		coop_checkpoints.pack_nearby([at]) -> bool              player: ask the world server to pack up my tent / bag within reach
 		coop_checkpoints.tell(key [, close_menu]) -> text       a tip st_coop_cp_<key>
 		coop_checkpoints.text(key, ...) -> text                 st_coop_cp_<key> with %s filled in order
 --]]
@@ -80,16 +83,22 @@ local function in_session()
 	return ok and active == true
 end
 
-local function is_host()
+-- F3a task 6 (docs/plans/2026-10-24-f3a-split-levels.md 1.1, 1.2): the roles of this process. The host process is the world
+-- server AND a player (the host player, a client of its own server over the internal channel); a remote client is a player.
+-- The world server decides (story checkpoints, the report of the stock tent); the player asks (claims), the host player the
+-- same way a remote client does. A build without the role functions has the old pair: its host took the stock tent itself.
+local function is_world_server()
 	if not in_session() then return false end
-	local ok, host = pcall(api.is_host)
-	return ok and host == true
+	local f = type(api.is_world_server) == "function" and api.is_world_server or api.is_host
+	local ok, yes = pcall(f)
+	return ok and yes == true
 end
 
-local function is_client()
+local function is_player()
 	if not in_session() then return false end
-	local ok, client = pcall(api.is_client)
-	return ok and client == true
+	local f = type(api.is_player) == "function" and api.is_player or api.is_client
+	local ok, yes = pcall(f)
+	return ok and yes == true
 end
 
 local function checkpoint_api()
@@ -416,7 +425,7 @@ local function send_claim(my)
 	if not p or p.token ~= my or p.sent then return end
 	local actor = db.actor
 	local cp = checkpoint_api()
-	if not (cp and cp.claim_tent and actor and actor:alive() and is_client()) then
+	if not (cp and cp.claim_tent and actor and actor:alive() and is_player()) then
 		pending = nil
 		return
 	end
@@ -430,11 +439,12 @@ local function send_claim(my)
 	end
 end
 
--- Client: ask the host to put a tent / sleeping bag up or to pack mine up, after `delay_ms` (the put-up animation). The item
--- stays where it is: the host takes it when it has put the tent up. False when something is still waiting for the host,
--- or the engine has no claims.
+-- Player (the host player too, F3a T6): ask the world server to put a tent / sleeping bag up or to pack mine up, after
+-- `delay_ms` (the put-up animation). The item stays where it is: the world server takes it when it has put the tent up. False
+-- when something is still waiting for the world server, or the engine has no claims. The host player's claim is the same
+-- coop.checkpoint.claim_tent a remote client sends (the engine's CheckpointClaim from node 0).
 function request(what, delay_ms, at)
-	if not WHATS[what] or not is_client() then return false end
+	if not WHATS[what] or not is_player() then return false end
 	if at ~= nil and not (type(at) == "table" and type(at.x) == "number" and type(at.y) == "number" and type(at.z) == "number") then
 		at = nil
 	end
@@ -463,16 +473,19 @@ function request(what, delay_ms, at)
 	return true
 end
 
--- Client: pack up the tent or sleeping bag of mine within reach of the player (the host finds it at the player's spot). For a
--- button of the sleep window: using a placed sleeping bag is the stock sleep.
+-- Player: pack up the tent or sleeping bag of mine within reach of the player (the world server finds it at the player's
+-- spot). For a button of the sleep window: using a placed sleeping bag is the stock sleep.
 function pack_nearby(at) -- at: the bag the player sleeps in (the sleep window's Fold), else the player's position
 	return request("pack", 0, at)
 end
 
--- Host: the stock item_tent put object `id` up for the host: tell the engine it is the host's camp. The engine takes the
--- nearest new tent of this kind at that spot nobody owns.
+-- World server: the stock item_tent put object `id` up in the host's world: tell the engine it is the host's camp. The engine
+-- takes the nearest new tent of this kind at that spot nobody owns.
+-- F3a T6: this is the LAST direct branch of "the host claims its own tent". It stays only because coop_tent_guard.script (not
+-- a T6 file) still lets the host use the stock tent and calls it afterwards; when that script sends the host player through
+-- request() like a client (the engine's host_claim_tent then puts the tent up for node 0), this function goes.
 function report_placed(kind, id)
-	if not (is_host() and WHATS[kind] and kind ~= "pack") then return false end
+	if not (is_world_server() and WHATS[kind] and kind ~= "pack") then return false end
 	local cp = checkpoint_api()
 	if not (cp and cp.claim_tent) then return false end
 	local se = alife_object(id)
@@ -568,11 +581,11 @@ end
 -------------------------------------------------------------------------------
 local story_ours = {} -- the wrappers this script made: never wrapped again (review M-1)
 
--- The body of the wrapper: in a session the host sets a story checkpoint for every living player (the reason is the save
--- name, only logged), a client does nothing, nobody saves; outside a session the function it wraps runs.
+-- The body of the wrapper: in a session the world server sets a story checkpoint for every living player (the reason is the
+-- save name, only logged), anybody else does nothing, nobody saves; outside a session the function it wraps runs.
 local function story_dispatch(orig, actor, npc, p)
 	if in_session() then
-		if is_host() then
+		if is_world_server() then
 			local cp = checkpoint_api()
 			if cp and cp.story then
 				local reason = type(p) == "table" and p[1] or nil

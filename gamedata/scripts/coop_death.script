@@ -94,10 +94,15 @@ local function in_session()
 	return ok and active == true
 end
 
-local function is_host()
+-- F3a task 6 (docs/plans/2026-10-24-f3a-split-levels.md 1.1, 1.2): the PDA marks of the dead are the world server's work (its
+-- spots reach every player through coop_story's replication). What the dead player's own screen shows - the respawn tip, the
+-- contusion, the rank cut - runs on the owner's machine whatever role it has, the host player's included, so nothing of it
+-- asks "am I the host". A build without coop.is_world_server() has the old name.
+local function is_world_server()
 	if not in_session() then return false end
-	local ok, host = pcall(api.is_host)
-	return ok and host == true
+	local f = type(api.is_world_server) == "function" and api.is_world_server or api.is_host
+	local ok, yes = pcall(f)
+	return ok and yes == true
 end
 
 -------------------------------------------------------------------------------
@@ -485,7 +490,7 @@ end
 
 -- coop_death_marker(player_local_id, marker_local_id, "drop" | "corpse")
 local function on_death_marker(lid, id, kind)
-	if not is_host() then return end -- the spots are the host's, clients get them replicated
+	if not is_world_server() then return end -- the spots are the world server's, clients get them replicated
 	if type(lid) ~= "number" or type(id) ~= "number" or id ~= math_floor(id) or id < 0 or id >= NO_PARENT then return end
 	if kind ~= "drop" and kind ~= "corpse" then return end
 	add_marker(lid, id, kind, false, time_global())
@@ -562,7 +567,7 @@ local function on_first_update()
 	handled, handled_count = {}, 0 -- the actor is new, its falls are counted from 0 again
 	update_contusion(now)
 	if contusion then put_contusion(now) end
-	if not is_host() then return end -- the marks are the host's
+	if not is_world_server() then return end -- the marks are the world server's
 	for _, m in pairs(markers) do
 		m.since = now
 		if spot_exists(m.id) ~= true then m.added = add_spot(m.id, hint_of(m)) end

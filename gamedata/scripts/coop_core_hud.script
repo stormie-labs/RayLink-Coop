@@ -53,8 +53,18 @@ local function log(fmt, ...)
 	printf("[coop-hud] %s", ok and line or tostring(fmt))
 end
 
+-- F3a task 6 (docs/plans/2026-10-24-f3a-split-levels.md 1.1, 1.2): the HUD, the team panel, the markers and the own status
+-- belong to a PLAYER in the world - the host player (the host process is the world server and a client of it) or a live
+-- remote client - so the question is the role (coop.is_player()), not "am I the host". The host is live as soon as its world
+-- is up (coop.is_live()). A world server with no player has no actor to report. A build without coop.is_player() has only
+-- players in a session.
 local function live()
-	return api ~= nil and api.is_active() and (api.is_host() or api.is_live())
+	if not (api ~= nil and api.is_active()) then return false end
+	if type(api.is_player) == "function" then
+		local ok, yes = pcall(api.is_player)
+		if not (ok and yes == true) then return false end
+	end
+	return api.is_live() == true
 end
 
 local function players()

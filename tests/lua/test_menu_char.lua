@@ -77,6 +77,8 @@ coop = {
 	is_active = function() return true end,
 	is_host = function() return MODE == "host" end,
 	is_client = function() return MODE == "client" end,
+	is_world_server = function() return MODE == "host" end, -- F3a T6: the roles of the engine today (old meanings):
+	is_player = function() return true end, -- the host process is the world server and a player, a client a player
 	players = function() return PLAYERS end,
 	avatar_of = function(peer) for _, p in ipairs(PLAYERS) do if p.id == peer then return p.avatar_id end end end,
 	send_event = function(name, payload, target) SENT[#SENT + 1] = { name = name, t = PAYLOADS[payload], to = target }
@@ -102,6 +104,25 @@ function coop_main.encode(t) pn = pn + 1; local k = "p" .. pn; local c = {}; for
 function coop_main.decode(s) local c = {}; for a, b in pairs(PAYLOADS[s] or {}) do c[a] = b end; return c end
 function coop_main.add_event_handler(n, f) coop_main.handlers[n] = f; return true end
 local function deliver(name, t, from) coop_main.handlers[name](coop_main.encode(t), from, name) end
+-- F3a T6: the host player and the world server are one process; the events between them are from / to node 0 (the internal
+-- channel), so the test carries the events sent to 0 to the handlers, the way the channel does
+local function pump()
+	local rounds = 0
+	while rounds < 20 do
+		local took = false
+		for i, e in ipairs(SENT) do
+			if e.to == 0 then
+				table.remove(SENT, i)
+				local h = coop_main.handlers[e.name]
+				if h then h(coop_main.encode(e.t), 0, e.name) end
+				took = true
+				break
+			end
+		end
+		if not took then return end
+		rounds = rounds + 1
+	end
+end
 
 SE = {}
 function se_save_var(id, name, var, val) SE[id] = SE[id] or {}; SE[id][var] = val end
@@ -228,9 +249,11 @@ deliver("menu.new_character", { faction = "bandit", buy = "wpn_ak74_old" }, 1)
 check(last().t.reason == "busy", "offline proxy: try again")
 deliver("menu.new_character", { faction = "bandit" }, 7)
 check(last().t.reason == "no_character", "unknown peer")
-local n_sent = #SENT
+-- F3a T6: node 0 is the host player, whose event is the client's event and is answered like any client's
 deliver("menu.new_character", { faction = "bandit" }, 0)
-check(#SENT == n_sent, "from the host itself: ignored")
+check(last().name == "menu.char_result" and last().to == 0 and last().t.ok == false and last().t.reason == "not_new",
+	"from the host player (node 0): answered like a client's - not_new while the host's character is not marked new")
+SENT[#SENT] = nil
 
 check(#MONEY_CALLS == 0, "refused choices set no money")
 
@@ -1165,10 +1188,15 @@ check(select(2, mh.host_choose_self("bandit", "")) == "not_new", "no choice for 
 check(#MONEY_CALLS == 0 and #CREATED == 0, "... and nothing given")
 CALLBACKS.coop_host_new_character()
 check(mh.is_new(0), "the callback marks the host's actor new (kept in the save)")
+-- F3a T6: the world server offers the choice to the host player with the event a client's in-world offer is (node 0)
+check(#SENT == 1 and SENT[1].name == "menu.char_offer" and SENT[1].to == 0 and SENT[1].t.renew == true
+	and SENT[1].t.faction == "bandit" and SENT[1].t.points == 1000, "the world server offers it to the host player over menu.char_offer")
+check(mh.GUI == nil, "... and opens no window itself")
+pump()
 local gh = mh.GUI
 check(gh and gh.shown and gh.points_left == 1000 and gh.name.text == "Boss",
 	"the window opens for the host: his tier's points, his nick")
-check(#SENT == 0, "no event: the host is his own authority")
+check(#SENT == 0, "the offer was taken: no event is left")
 check(gh.faction == "bandit" and gh.registered.btn_faction.enabled == false
 	and gh.world.text == coop_menu.tr("st_coop_char_world_faction", "st_faction_bandit"),
 	"the host's window shows the world's faction (bandit), nothing to pick")
@@ -1178,6 +1206,9 @@ gh:On_CC_Mouse1("loadout", hidx)
 check(table.concat(gh:Bought(), ",") == "wpn_ak74_old", "the host buys with his points")
 MONEY_REFUSE = "no character"
 click(gh, "btn_start")
+check(#SENT == 1 and SENT[1].name == "menu.new_character" and SENT[1].to == 0 and #MONEY_CALLS == 0 and #CREATED == 0,
+	"Done sends menu.new_character to node 0, the client's event; the player's branch gives nothing itself")
+pump()
 check(gh.shown and gh.status.text:find(coop_menu.tr("st_coop_char_refused", STRINGS.st_coop_char_reason_busy), 1, true),
 	"the ledger refuses: the window stays with the reason")
 check(#CREATED == 0 and #RELEASED == 0 and hactor.community == "stalker" and mh.is_new(0),
@@ -1186,6 +1217,7 @@ MONEY_REFUSE = nil
 for i = #MONEY_CALLS, 1, -1 do MONEY_CALLS[i] = nil end
 ORDER = {}
 click(gh, "btn_start")
+pump()
 check(#MONEY_CALLS == 1 and MONEY_CALLS[1].fn == "money_set" and MONEY_CALLS[1].peer == 0
 	and MONEY_CALLS[1].n == mh.faction_money("bandit") and MONEY_CALLS[1].ok, "the faction's money on the host's ledger entry")
 check(ORDER[1] == "money_set" and ORDER[#ORDER] == "create", "money before the kit")
@@ -1206,15 +1238,18 @@ check(not gh.shown, "the host tick offers nothing after it is done")
 
 -- Later: the window comes back a minute after it, and after a load (the mark is in the save)
 CALLBACKS.coop_host_new_character()
+pump()
 check(gh.shown, "a new character again: the window")
 NOW = NOW + 40000 -- he looks at it for a while
 click(gh, "btn_back")
 check(not gh.shown and NEWS[#NEWS]:find("again", 1, true), "Later closes it with the hint")
 NOW = NOW + 30000
 CALLBACKS.actor_on_update()
+pump()
 check(not gh.shown, "not before a minute")
 NOW = NOW + 31000
 CALLBACKS.actor_on_update()
+pump()
 check(gh.shown, "a minute after Later: the window again")
 gh:Close()
 local ml = load_module("coop_menu_char") -- a load: a fresh Lua state, the mark from the save
@@ -1222,14 +1257,22 @@ CALLBACKS = {}
 ml.on_game_start()
 NOW = NOW + 5000
 CALLBACKS.actor_on_update()
+pump()
 check(ml.GUI and ml.GUI.shown, "after a load the window comes back for the marked host")
-check(ml.host_choose_self("dolg", "") == true and not ml.is_new(0), "... and his choice is taken")
+-- F3a T6: his choice is the client's event from node 0; the answer closes his window
+deliver("menu.new_character", { faction = "dolg", buy = "" }, 0)
+check(SENT[#SENT].name == "menu.char_result" and SENT[#SENT].t.ok == true and not ml.is_new(0), "... and his choice is taken")
+pump()
+check(not ml.GUI.shown, "... the answer closes his window")
 check(hactor.community == "actor_bandit", "host_self_uses_world_faction: dolg (what was passed) is not read, the world's bandit is")
 WORLD = "freedom"
 hactor.community = "stalker"
 ml.host_new_character()
+pump()
 check(ml.is_new(0) and ml.GUI.faction == "freedom", "the next new character of the host: the window shows the world's faction")
-check(ml.host_choose_self("monolith", "") == true and hactor.community == "actor_freedom",
+deliver("menu.new_character", { faction = "monolith", buy = "" }, 0)
+pump()
+check(hactor.community == "actor_freedom" and not ml.is_new(0),
 	"host_self_uses_world_faction: monolith passed, the world's freedom given")
 WORLD = "bandit"
 
@@ -1241,9 +1284,10 @@ mq.on_game_start()
 RELEASED, CREATED = {}, {}
 LOG = {}
 CALLBACKS.coop_host_new_character()
+pump() -- F3a T6: the offer goes to the host player, whose handler answers the flag with the client's event
 check(not mq.is_new(0) and mq.GUI == nil and hactor.community == "actor_bandit" and #CREATED > 0,
 	"-coop_autochoose: the host's new character at once, no window, in the world's faction (not the flag's freedom)")
-check(log_count("test: the host's new character bandit (-coop_autochoose): made") == 1, "... and that is in the log")
+check(log_count("test: offer answered at once with bandit (-coop_autochoose)") == 1, "... and that is in the log")
 CMDLINE = '"x.exe" -coop_host 27960'
 MODE = "client"
 check(select(2, mq.host_choose_self("bandit", "")) == "busy", "only a host chooses for himself")
@@ -1315,12 +1359,16 @@ for i = #MONEY_CALLS, 1, -1 do MONEY_CALLS[i] = nil end
 RELEASED, CREATED = {}, {}
 WORLD = "freedom"
 CALLBACKS.coop_host_new_character(0)
+check(SENT[#SENT].name == "menu.char_offer" and SENT[#SENT].to == 0 and SENT[#SENT].t.bare == true and SENT[#SENT].t.points == 0,
+	"the host's bare new character: the offer to the host player is bare (no points)")
+pump()
 check(mhb.is_new(0) and mhb.GUI and mhb.GUI.shown, "the host's bare new character: the window")
 local ghb = mhb.GUI
 check(ghb.points_left == 0 and ghb.CC.inventory.n == 0 and ghb.text_money.text == "0 RU",
 	"the host's bare window: no kit, no points, no money")
 check(ghb.faction == "freedom", "the host's bare window: the world's faction")
 click(ghb, "btn_start")
+pump()
 check(not mhb.is_new(0) and not ghb.shown and hactor.community == "actor_freedom", "chosen: the faction")
 WORLD = "bandit"
 check(#CREATED == 0 and #RELEASED == 0 and #MONEY_CALLS == 0, "nothing given, nothing taken, his money stays (0 since the engine)")
@@ -1333,13 +1381,19 @@ CALLBACKS = {}
 ml_b2.on_game_start()
 NOW = NOW + 5000
 CALLBACKS.actor_on_update()
+pump()
 check(ml_b2.GUI and ml_b2.GUI.shown and ml_b2.GUI.points_left == 0, "after a load the host's window is still bare")
 CREATED = {}
-check(ml_b2.host_choose_self("bandit", "wpn_ak74_old") == true and #CREATED == 0, "bare after the load too")
+deliver("menu.new_character", { faction = "bandit", buy = "wpn_ak74_old" }, 0) -- F3a T6: the client's event from node 0
+pump()
+check(not ml_b2.is_new(0) and #CREATED == 0, "bare after the load too")
 CALLBACKS.coop_host_new_character(1)
+pump()
 check(ml_b2.GUI.points_left == 1000, "coop_hardcore_new_kit on: the host's window offers the kit")
 CREATED = {}
-check(ml_b2.host_choose_self("bandit", "") == true and #CREATED > 0, "... and gives it")
+deliver("menu.new_character", { faction = "bandit", buy = "" }, 0)
+pump()
+check(not ml_b2.is_new(0) and #CREATED > 0, "... and gives it")
 db.actor = nil
 command_line = nil
 STASH = {}

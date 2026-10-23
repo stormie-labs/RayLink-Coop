@@ -122,10 +122,23 @@ local RULES_EVERY_MS = 2000
 local MAX_TRANSFER = 4294967295 -- the most coop.money_set_rules takes
 local rules = { next_at = 0, missing_logged = false }
 
--- Host: money_transfer and max_money_transfer as this host's options have them, pushed into the ledger. The ledger keeps
--- them for the process, but a new session or a new world may be a stranger to them: they are said again every 2 s.
+-- F3a task 6 (docs/plans/2026-10-24-f3a-split-levels.md 1.1, 1.2): the ledger belongs to the world server, so the rules go
+-- into it from there. What a player does with money - give_money, the notes about gifts and refusals - is the same for the
+-- host player and a remote client (the host player's coop.money_give goes to the world server over the internal channel and
+-- is answered by a coop_money_note like any client's), so none of it asks "am I the host". A build without
+-- coop.is_world_server() has the old name.
+local function is_world_server()
+	local api = core.engine()
+	if not (api and core.in_session()) then return false end
+	local f = type(api.is_world_server) == "function" and api.is_world_server or api.is_host
+	local ok, yes = pcall(f)
+	return ok and yes == true
+end
+
+-- World server: money_transfer and max_money_transfer as this host's options have them, pushed into the ledger. The ledger
+-- keeps them for the process, but a new session or a new world may be a stranger to them: they are said again every 2 s.
 local function push_rules()
-	if not core.is_host() then return end
+	if not is_world_server() then return end
 	local api = core.engine()
 	if not (api and type(api.money_set_rules) == "function") then
 		if not rules.missing_logged then

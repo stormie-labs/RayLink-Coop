@@ -17,7 +17,8 @@
 
 	Events (coop_main.encode payloads, ids in host numbering):
 		menu.char_offer      host -> player   { eco, points, nick, faction }   repeated every 60 s while new
-		menu.new_character   player -> host   { faction, buy = "sec,sec,..." } bought items only
+		                                      (the host player's own: + renew = true, bare = true for a bare character)
+		menu.new_character   player -> host   { faction, buy = "sec,sec,..." } bought items only (the host player: from node 0)
 		menu.char_result     host -> player   { ok, faction, money, items } | { ok = false, reason }
 
 	Protocol 9 (owner, 2026-10-23, docs/GAME_SETTINGS.md section 8: "creating the faction is part of creating the world;
@@ -62,12 +63,15 @@
 	Hardcore's new character (F3 Task 10, coop_survival.cpp). A client out of the run who holds USE gets his old character
 	retired by the host (his things in a stash at the body, his key gone) and joins the world again: with no character for
 	his key the flow above runs as for a new player, in the game this time (the window opens over the level; the answer
-	of -coop_autochoose too). The host is his own authority: the engine retires his things into a stash, stands his actor
-	up at his arrival point with nothing and 0 RU and fires the callback coop_host_new_character(); here the host chooses
-	in the same window, and host_choose_self gives the kit to db.actor with apply_kit (community actor_<faction>, nothing
-	of his released: his things went into the stash, what he picked up since stays) and his money on the ledger
-	(coop.money_set(0, ...)). Until he is done the actor is marked new (NEW_VAR on id 0, kept in the save): the window
-	comes back a minute after Later and after a load.
+	of -coop_autochoose too). The host's own character: the engine retires his things into a stash, stands his actor up at
+	his arrival point with nothing and 0 RU and fires the callback coop_host_new_character() on the world server. F3a T6: the
+	host is a client of his own server (docs/plans/2026-10-24-f3a-split-levels.md 1.2), so he goes the way a client in the
+	world goes, over the same events, to node 0: host_new_character marks the actor new (NEW_VAR on id 0, kept in the save) and
+	host_offer_self sends menu.char_offer to the host player (renew = true; the minute tick repeats it while he is new);
+	his on_offer opens the window (or answers -coop_autochoose); Done sends menu.new_character; on_new_character takes it
+	from node 0 and host_choose_self gives the kit to db.actor with apply_kit (community actor_<faction>, nothing of his
+	released: his things went into the stash, what he picked up since stays) and his money on the ledger
+	(coop.money_set(0, ...)); menu.char_result closes his window. The window comes back a minute after Later and after a load.
 	Ruling F3-10 (a retirement is no farm): unless the host's coop_hardcore_new_kit is on, the new character of a retired
 	key starts with nothing. The engine passes kit = false to host_make_character (no items, no mods' starter kit, money
 	0) and offers such a player 0 points: a join offer with 0 points is a bare one (offer.bare), the window lists no kit
@@ -76,6 +80,24 @@
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+-- F3a task 6 (docs/plans/2026-10-24-f3a-split-levels.md 1.1, 1.2): what this process is. The host process is the world server
+-- AND a player (the host player, a client of its own server over the internal channel); a remote client is a player. The
+-- world server judges a choice, puts the money on the ledger and gives the kit; the player shows the window and sends the
+-- choice - the host player over the same events a remote client uses, to node 0. `new_name` is the engine's role function,
+-- `old_name` what a build without it has (the old pair says the same today).
+local HOST_PEER = 0 -- the world server as a node (kHostPeer); the host player is node 0 of its own session too
+
+local function role(new_name, old_name)
+	if not api then return false end
+	local f = type(api[new_name]) == "function" and api[new_name] or api[old_name]
+	if type(f) ~= "function" then return false end
+	local ok, yes = pcall(f)
+	return ok and yes == true
+end
+
+local function is_world_server() return role("is_world_server", "is_host") end
+local function is_player() return role("is_player", "is_client") end
 
 local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
 local string_format = string.format
@@ -431,7 +453,7 @@ end
 
 -- se_stalker_on_spawn (host only, [callbacks_host]): a proxy made just now is a new character.
 local function se_stalker_on_spawn(se)
-	if not (api and api.is_host()) then return end
+	if not is_world_server() then return end
 	local ok, sec = pcall(function() return se:section_name() end)
 	if ok and sec == PROXY_SECTION then
 		se_save_var(se.id, se:name(), NEW_VAR, true)
@@ -530,8 +552,15 @@ local function apply_kit(npc, community, items, keep)
 end
 
 local function on_new_character(payload, from)
-	if not (api and api.is_host()) or type(from) ~= "number" or from == 0 then return end
+	if not is_world_server() or type(from) ~= "number" then return end
 	local t = decode(payload)
+	if from == 0 then
+		-- F3a T6: the host player's choice is the same event a remote client sends, from node 0, and is answered the same way:
+		-- his character is the host's actor (host_choose_self), not a proxy
+		local ok, money_or_why, given, faction = host_choose_self(t.faction, t.buy)
+		if ok then return reply(from, { ok = true, faction = faction, money = money_or_why, items = given }) end
+		return reply(from, { ok = false, reason = money_or_why })
+	end
 	local proxy = api.avatar_of(from)
 	if not proxy then return reply(from, { ok = false, reason = "no_character" }) end
 	if not is_new(proxy) then return reply(from, { ok = false, reason = "not_new" }) end
@@ -584,7 +613,7 @@ end
 -- The start: join_spawn "host" (the default) gives no point, the engine puts him next to the host; "faction_start" the
 -- start of the world's faction (host_start, as before).
 function host_plan_character(peer, faction, buy)
-	if not (api and api.is_host()) then return { ok = false, reason = "busy" } end
+	if not is_world_server() then return { ok = false, reason = "busy" } end
 	local plan, why = plan_kit(buy)
 	if not plan then
 		log("player #%s: choice refused (%s)", tostring(peer), tostring(why))
@@ -608,7 +637,7 @@ end
 -- Ruling F3-10: `kit` false (a retired key, coop_hardcore_new_kit off): the faction only - no items, no mods' starter
 -- kit, money 0 on the ledger (not the faction's). nil is an engine before F3-10: the kit.
 function host_make_character(peer, proxy, faction, buy, kit)
-	if not (api and api.is_host()) then return false, "busy" end
+	if not is_world_server() then return false, "busy" end
 	local bare = kit == false
 	local plan, why = plan_kit(bare and "" or buy)
 	if not plan then return false, why end
@@ -655,6 +684,7 @@ end
 -------------------------------------------------------------------------------
 local offer = nil -- last offer { eco, points, nick } (protocol 8 adds join = true, level, story, refusal)
 local state = { show = false, waiting = false, done = false }
+local later_until = 0 -- the host player pressed Later: no window before this time (a new offer waits, the tick shows it)
 local join = { choice = nil } -- protocol 8: what Done gave, until the engine takes it (join_choice)
 GUI = nil
 
@@ -1009,12 +1039,6 @@ end
 function UICoopNewChar:OnStart()
 	if not self.access or state.waiting then return end
 	local buy = table.concat(self:Bought(), ",")
-	if self.offer and self.offer.host_self then
-		-- F3 Task 10: the host's own new character; he is his own authority, no event goes anywhere
-		local ok, why = host_choose_self(self.faction, buy)
-		if not ok then self:SetStatus("bad", tr("st_coop_char_refused", tr("st_coop_char_reason_" .. tostring(why)))) end
-		return
-	end
 	if self.offer and self.offer.join then
 		-- protocol 8: the engine takes it (join_choice) and sends it to the host as a CharChoice
 		join.choice = { faction = self.faction, buy = buy }
@@ -1024,7 +1048,9 @@ function UICoopNewChar:OnStart()
 		log("choice made before the world: %s, bought: %s", self.faction, buy ~= "" and buy or "-")
 		return
 	end
-	local ok, why = api.send_event("menu.new_character", encode({ faction = self.faction, buy = buy }), 0)
+	-- A remote client and the host player (F3a T6: the new character of the host after a hardcore death) send the same event
+	-- to the world server; the answer is menu.char_result for both.
+	local ok, why = api.send_event("menu.new_character", encode({ faction = self.faction, buy = buy }), HOST_PEER)
 	if not ok then
 		self:SetStatus("bad", tr("st_coop_char_refused", tostring(why)))
 		return
@@ -1045,9 +1071,8 @@ function UICoopNewChar:OnLater()
 		if api and api.disconnect then pcall(api.disconnect) end
 		return
 	end
-	if self.offer and self.offer.host_self then
-		self_next_offer = now_ms() + OFFER_EVERY_MS -- F3 Task 10: the host's own window comes back a minute from now
-	end
+	-- the host player's new character (F3a T6): his window comes back a minute after Later, as it always did
+	if self.offer and self.offer.renew then later_until = now_ms() + OFFER_EVERY_MS end
 	self:Close()
 	pcall(function() db.actor:give_game_news("Co-op", tr("st_coop_char_later_hint"), "ui_iconsTotal_grouping", 0, 5000) end)
 end
@@ -1189,17 +1214,40 @@ local function show_window()
 end
 
 -- Every offer opens the window again (after "Later" too); the client tick retries until the actor exists.
+local auto_choice -- below
+
 local function on_offer(payload, from)
-	if from ~= 0 or not (api and api.is_client()) or state.done then return end
+	if from ~= 0 or not is_player() then return end
 	local t = decode(payload)
+	-- F3a T6: `renew` is the host player's new character after a hardcore death (a character that retired earlier has left
+	-- `done` behind in this Lua state: this is a new choice)
+	if t.renew == true then state.done = false end
+	if state.done then return end
 	offer = { eco = math.max(1, math.min(3, tonumber(t.eco) or 1)), points = tonumber(t.points), nick = t.nick,
-		faction = t.faction } -- protocol 9: the world's, named by the host
+		faction = t.faction, -- protocol 9: the world's, named by the host
+		bare = t.bare == true or nil, -- Ruling F3-10: no kit, no points
+		renew = t.renew == true or nil }
 	if state.waiting then return end -- our choice is on its way
+	local auto = offer.renew and auto_choice()
+	if auto then
+		-- -coop_autochoose (unattended runs): the offer is answered at once, as a join offer is (join_offer); the faction of
+		-- it is the world's
+		local faction = known_faction(offer.faction) or auto
+		if api.send_event("menu.new_character", encode({ faction = faction, buy = "" }), HOST_PEER) then
+			state.waiting = true
+			log("test: offer answered at once with %s (-coop_autochoose)", faction)
+			return
+		end
+	end
+	if offer.renew and now_ms() < later_until then
+		state.show = true -- Later was pressed a moment ago: the tick opens the window when the minute is over
+		return
+	end
 	state.show = not show_window()
 end
 
 local function on_result(payload, from)
-	if from ~= 0 or not (api and api.is_client()) then return end
+	if from ~= 0 or not is_player() then return end
 	local t = decode(payload)
 	state.waiting = false
 	if t.ok and type(t.faction) == "string" and FACTION_SET[t.faction] then
@@ -1309,7 +1357,7 @@ end
 -- Unattended test runs (`-coop_autochoose <faction>` with -coop_connect): the offer is answered at once with that
 -- faction and no purchases, as if the player pressed Done. Nil without the flag or for an unknown faction.
 local auto_retried = false -- the one retry after "busy" is spent (join_closed starts over)
-local function auto_choice()
+auto_choice = function()
 	local ok, cl = pcall(command_line)
 	if not (ok and type(cl) == "string") then
 		note("no command line", "! command_line() failed (%s): -coop_autochoose cannot be read", tostring(cl))
@@ -1409,21 +1457,26 @@ end
 -------------------------------------------------------------------------------
 -- Host: his own new character after a hardcore death (F3 Task 10; see the header)
 -------------------------------------------------------------------------------
--- The window for the host's own choice (the faction kit, points of his economy tier), unless it is open already.
+-- World server: offers the host's own choice (the faction kit, points of his economy tier) to the host PLAYER, with the event
+-- a remote client's in-world offer is (menu.char_offer, F3a T6): the host player's on_offer opens the window, or answers the
+-- -coop_autochoose flag, exactly as a client's does. `renew` tells that Lua state this is a new character after the old one
+-- retired. Answered by menu.new_character from node 0 (on_new_character -> host_choose_self), then menu.char_result.
 function host_offer_self()
 	local eco = host_eco()
 	local bare = se_load_var(SELF_ID, nil, BARE_VAR) == true
-	offer = { eco = eco, points = bare and 0 or budget(eco), nick = own_nick(), host_self = true, bare = bare,
-		faction = world_faction() }
-	state.waiting, state.done = false, false
-	state.show = not show_window()
+	local ok, why = api.send_event("menu.char_offer", encode({ eco = eco, points = bare and 0 or budget(eco), nick = host_nick(),
+		faction = world_faction(), bare = bare or nil, renew = true }), HOST_PEER)
+	if not ok then log("! the offer to the host player was not sent: %s", tostring(why)) end
+	return ok
 end
 
--- The host chose for himself: the money first, as for a proxy (F2 T6b: a refusal leaves the inventory untouched), then
--- the kit into db.actor, the community actor_<faction>, the mark cleared. True, money, items given | false, reason.
+-- World server: the host player chose for himself (F3a T6: his menu.new_character from node 0 arrives in on_new_character,
+-- the window is the player's and is closed by his menu.char_result): the money first, as for a proxy (F2 T6b: a refusal leaves
+-- the inventory untouched), then the kit into db.actor (his character is the host's actor), the community actor_<faction>,
+-- the mark cleared. True, money, items given, faction | false, reason.
 -- Protocol 9: the faction is the world's whatever `asked` says (the window shows it, nothing to pick).
 function host_choose_self(asked, buy)
-	if not (api and api.is_host()) then return false, "busy" end
+	if not is_world_server() then return false, "busy" end
 	if not is_new(SELF_ID) then return false, "not_new" end
 	local actor = db and db.actor
 	if not actor then return false, "busy" end
@@ -1450,30 +1503,20 @@ function host_choose_self(asked, buy)
 	end
 	se_save_var(SELF_ID, nil, NEW_VAR, nil)
 	se_save_var(SELF_ID, nil, BARE_VAR, nil)
-	offer = nil
-	state.show, state.waiting = false, false
-	if GUI then pcall(GUI.Close, GUI) end
 	log("the host's new character: faction %s, %d item(s), money %s", faction, given, bare and "as it is" or tostring(plan.money))
-	local name = game.translate_string("st_faction_" .. faction)
-	pcall(function() actor:give_game_news("Co-op", tr("st_coop_char_done", name), "ui_iconsTotal_grouping", 0, 7000) end)
 	if not bare then new_character_hook(SELF_ID) end
-	return true, bare and 0 or plan.money, given
+	return true, bare and 0 or plan.money, given, faction
 end
 
--- The engine's callback: the host's things are in the stash, his actor stands at his arrival point with nothing. The
--- mark first (a save made now keeps the choice open), then the window, or -coop_autochoose's faction at once. `kit`
--- (Ruling F3-10): 1 with the host's coop_hardcore_new_kit on, 0 = a bare new character (nil: an engine before F3-10).
+-- The engine's callback (the world server): the host's things are in the stash, his actor stands at his arrival point with
+-- nothing. The mark first (a save made now keeps the choice open), then the offer to the host player (host_offer_self: his
+-- window, or -coop_autochoose's answer). `kit` (Ruling F3-10): 1 with the host's coop_hardcore_new_kit on, 0 = a bare new
+-- character (nil: an engine before F3-10).
 function host_new_character(kit)
-	if not (api and api.is_host()) then return end
+	if not is_world_server() then return end
 	se_save_var(SELF_ID, nil, NEW_VAR, true)
 	se_save_var(SELF_ID, nil, BARE_VAR, tonumber(kit) == 0 or nil)
 	log("the host's character is out of the run: he chooses a new one")
-	local auto = auto_choice()
-	if auto then
-		local ok, why = host_choose_self(auto, "") -- the flag only asks for it: the faction is the world's
-		log("test: the host's new character %s (-coop_autochoose): %s", world_faction(), ok and "made" or tostring(why))
-		if ok then return end
-	end
 	self_next_offer = now_ms() + OFFER_EVERY_MS
 	host_offer_self()
 end
@@ -1487,11 +1530,11 @@ local function actor_on_update()
 	local t = now_ms()
 	if t < next_tick then return end
 	next_tick = t + TICK_MS
-	if api.is_host() then
+	if is_world_server() then
 		local ok, err = pcall(host_tick)
 		if not ok then log("! host tick: %s", tostring(err)) end
-		return
 	end
+	if not is_player() then return end
 	-- protocol 8: the character chosen before the world, told once in it
 	local joined = api.stash_get and api.stash_get(STASH_JOINED)
 	if type(joined) == "string" and db and db.actor then
@@ -1501,7 +1544,7 @@ local function actor_on_update()
 		pcall(function() db.actor:give_game_news("Co-op", tr("st_coop_char_done", name), "ui_iconsTotal_grouping", 0, 7000) end)
 		log("in the world as %s (chosen before it)", joined)
 	end
-	if state.show and not state.waiting then
+	if state.show and not state.waiting and now_ms() >= later_until then
 		state.show = not show_window()
 	end
 end
