@@ -250,6 +250,9 @@
 	<string id="st_coop_char_start_camp">
 		<text>Старт: %s, в лагере группировки или рядом с группой</text>
 	</string>
+	<string id="st_coop_char_info_bare">
+		<text>Хардкор: ваш персонаж погиб, а новый начинает ни с чем - без стартового снаряжения и без денег (у хоста выключено coop_hardcore_new_kit). Выберите группировку, в которой начнёте.</text>
+	</string>
 	<string id="ui_mm_menu_coop">
 		<text>Кооператив</text>
 	</string>

@@ -45,6 +45,13 @@ w_shotgun = gear
 w_sniper = gear
 w_misc = gear
 
+; Hardcore (coop_death_mode hardcore, F3 Task 10, Ruling F3-10): a player out of the run starts a new character, and
+; his old one's things wait in a stash at the body. The new character starts with nothing - no starting kit, no faction
+; money - so that dying out is no farm. new_kit = 1 gives him the faction's kit and money as to a new player; the host's
+; console coop_hardcore_new_kit 1 does the same (either turns it on).
+[coop_hardcore]
+new_kit = 0
+
 ; The stash of the corpse mode (and of a hardcore character that retires): the stock backpack stash container
 ; (items_anim.ltx, made by item_backpack.script), spawned by the host at the body.
 [coop_death_stash]:inv_backpack

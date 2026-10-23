@@ -828,6 +828,96 @@ MODE = "host"
 command_line = nil
 STASH = {}
 
+print("== F3 Task 10 fix round 1, Ruling F3-10: the new character of a retired key starts with nothing")
+MODE = "host"
+SESSION = { active = true, phase = "hosting" }
+CMDLINE = '"x.exe" -coop_host 27960'
+function command_line() return CMDLINE end
+CALLBACKS = {}
+local mb = load_module("coop_menu_char")
+mb.on_game_start()
+-- a client's character made before the world: the engine passes kit = false (coop_hardcore_new_kit off)
+SE_OBJ[910] = { id = 910 }
+CALLBACKS.se_stalker_on_spawn({ id = 910, section_name = function() return "coop_player_avatar" end,
+	name = function() return "coop_player_avatar0910" end })
+for i = #MONEY_CALLS, 1, -1 do MONEY_CALLS[i] = nil end
+RELEASED, CREATED, NEWS = {}, {}, {}
+local okb, moneyb, givenb = mb.host_make_character(1, 910, "bandit", "wpn_ak74_old", false)
+check(okb == true and moneyb == 0 and givenb == 0 and #CREATED == 0, "no kit: nothing is given, not even what he bought")
+check(#MONEY_CALLS == 1 and MONEY_CALLS[1].fn == "money_set" and MONEY_CALLS[1].peer == 1 and MONEY_CALLS[1].n == 0
+	and MONEY_CALLS[1].ok, "no faction money: his balance on the ledger is 0")
+check(not mb.is_new(910) and SE[910].coop_new_char_hook == nil, "made: not new, and no mods' starter kit either")
+SE_OBJ[911] = { id = 911 }
+CALLBACKS.se_stalker_on_spawn({ id = 911, section_name = function() return "coop_player_avatar" end,
+	name = function() return "coop_player_avatar0911" end })
+for i = #MONEY_CALLS, 1, -1 do MONEY_CALLS[i] = nil end
+CREATED = {}
+local okk, moneyk, givenk = mb.host_make_character(1, 911, "bandit", "", true)
+check(okk == true and moneyk == mb.faction_money("bandit") and givenk == #CREATED and givenk > 3
+	and MONEY_CALLS[1].n == mb.faction_money("bandit"), "coop_hardcore_new_kit on: the kit and the money as a new player")
+
+-- the client's window: the host offers 0 points for a bare character
+MODE = "client"
+SESSION = { active = true, phase = "receiving-world", nick = "Guest" }
+PLAYERS = { { id = 1, nick = "Guest", is_self = true }, { id = 0, nick = "Boss" } }
+CMDLINE = '"x.exe" -coop_connect 127.0.0.1:27960'
+db.actor = { give_game_news = function(self, cap, text) NEWS[#NEWS + 1] = text end }
+local mc_b = load_module("coop_menu_char")
+check(mc_b.join_offer(1, 0, "l01_escape", "", 0) == true and mc_b.GUI and mc_b.GUI.shown, "a bare offer opens the window")
+local gb = mc_b.GUI
+check(gb.CC.inventory.n == 0 and gb.CC.loadout.n == 0 and gb.points_left == 0, "a bare offer: no kit, nothing to buy")
+check(gb.text_money.text == "0 RU" and gb.facts.text:find("0 RU", 1, true), "a bare offer: no faction money")
+check(gb.info.text == coop_menu.tr("st_coop_char_info_bare"), "a bare offer: the window says why")
+click(gb, "btn_faction")
+click(gb, "btn_dolg")
+check(gb.CC.inventory.n == 0 and gb.text_money.text == "0 RU", "another faction: still nothing")
+click(gb, "btn_start")
+local bf, bb = mc_b.join_choice()
+check(bf == "dolg" and bb == "", "Done: the faction only")
+mc_b.join_closed("world")
+
+-- the host himself: the engine's callback says kit 0
+MODE = "host"
+SESSION = { active = true, phase = "hosting" }
+CMDLINE = '"x.exe" -coop_host 27960'
+db.actor = hactor
+hactor.community = "stalker"
+SE[0] = nil
+CALLBACKS = {}
+local mhb = load_module("coop_menu_char")
+mhb.on_game_start()
+for i = #MONEY_CALLS, 1, -1 do MONEY_CALLS[i] = nil end
+RELEASED, CREATED = {}, {}
+CALLBACKS.coop_host_new_character(0)
+check(mhb.is_new(0) and mhb.GUI and mhb.GUI.shown, "the host's bare new character: the window")
+local ghb = mhb.GUI
+check(ghb.points_left == 0 and ghb.CC.inventory.n == 0 and ghb.text_money.text == "0 RU",
+	"the host's bare window: no kit, no points, no money")
+click(ghb, "btn_faction")
+click(ghb, "btn_freedom")
+click(ghb, "btn_start")
+check(not mhb.is_new(0) and not ghb.shown and hactor.community == "actor_freedom", "chosen: the faction")
+check(#CREATED == 0 and #RELEASED == 0 and #MONEY_CALLS == 0, "nothing given, nothing taken, his money stays (0 since the engine)")
+local ml_b = load_module("coop_menu_char") -- a load before he chose keeps it bare
+CALLBACKS = {}
+ml_b.on_game_start()
+CALLBACKS.coop_host_new_character(0)
+local ml_b2 = load_module("coop_menu_char")
+CALLBACKS = {}
+ml_b2.on_game_start()
+NOW = NOW + 5000
+CALLBACKS.actor_on_update()
+check(ml_b2.GUI and ml_b2.GUI.shown and ml_b2.GUI.points_left == 0, "after a load the host's window is still bare")
+CREATED = {}
+check(ml_b2.host_choose_self("bandit", "wpn_ak74_old") == true and #CREATED == 0, "bare after the load too")
+CALLBACKS.coop_host_new_character(1)
+check(ml_b2.GUI.points_left == 1000, "coop_hardcore_new_kit on: the host's window offers the kit")
+CREATED = {}
+check(ml_b2.host_choose_self("bandit", "") == true and #CREATED > 0, "... and gives it")
+db.actor = nil
+command_line = nil
+STASH = {}
+
 -- string ids used by the script exist
 local fh = assert(io.open(ROOT .. "scripts/coop_menu_char.script", "r"))
 local src = fh:read("*a")

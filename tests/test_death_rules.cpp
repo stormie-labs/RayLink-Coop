@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <set>
 
@@ -984,11 +985,16 @@ TEST(death_new_character_request)
 TEST(death_retire_waits_for_the_stash)
 {
 	// Review R2 of T9: nothing of a retiring character changes while his stash waits for his things (his key, his
-	// player): the stash knows its owner by them (same_owner).
-	CHECK(retire_step(true, true) == RetireStep::Wait);
-	CHECK(retire_step(true, false) == RetireStep::Finish);
-	CHECK(retire_step(false, true) == RetireStep::Void);
-	CHECK(retire_step(false, false) == RetireStep::Void);
+	// player): the stash knows its owner by them (same_owner). A client's character (`released`) and the host's actor.
+	for (const bool released : {true, false})
+	{
+		CHECK(retire_step(true, StashOutcome::Pending, false, released) == RetireStep::Wait);
+		CHECK(retire_step(true, StashOutcome::Pending, true, released) == RetireStep::Wait);
+		CHECK(retire_step(true, StashOutcome::Done, false, released) == RetireStep::Finish);
+		CHECK(retire_step(false, StashOutcome::Pending, false, released) == RetireStep::Void);
+		CHECK(retire_step(false, StashOutcome::Done, false, released) == RetireStep::Void);
+		CHECK(retire_step(false, StashOutcome::GaveUp, true, released) == RetireStep::Void);
+	}
 
 	// Why: once the key is off and his peer plays a new character, the pending stash has no owner any more.
 	StashOwner then;
@@ -1000,6 +1006,34 @@ TEST(death_retire_waits_for_the_stash)
 	StashOwner rejoined = key_off;
 	rejoined.peer = 0xffffffffu; // ...but after host_rejoin_peer his old character has no player
 	CHECK(!same_owner(then, rejoined));
+}
+
+TEST(death_retire_cancelled_when_his_things_stay_on_him)
+{
+	// Fix round 1, I1: the stash gave up (T9 GiveUp: his player stayed away 10 min while the stash was online) or world
+	// items are still on him: a client's character is released when he retires, and what is on him would go with him.
+	// The retirement is cancelled - key, player and character stay, he is still out and may ask again.
+	CHECK(retire_step(true, StashOutcome::GaveUp, true, true) == RetireStep::Cancel);
+	CHECK(retire_step(true, StashOutcome::GaveUp, false, true) == RetireStep::Cancel);
+	CHECK(retire_step(true, StashOutcome::Done, true, true) == RetireStep::Cancel);
+
+	// The host's actor is not released: what the stash could not take stays with his new character.
+	CHECK(retire_step(true, StashOutcome::GaveUp, true, false) == RetireStep::Finish);
+	CHECK(retire_step(true, StashOutcome::Done, true, false) == RetireStep::Finish);
+}
+
+TEST(death_retired_marker)
+{
+	// Fix round 1, C1: the release of a retired character is confirmed by his entity being gone. The id may be given to
+	// a new character meanwhile (his player's own new one): only an entity that still says `retired = 1` is the old one.
+	std::string text = "[coop]\nkey = " + std::string(coop::kKeyDigestHexDigits, 'c') + "\nnick = Bob\n";
+	CHECK(!is_retired(text));
+	retire_custom_data(text);
+	CHECK(is_retired(text));
+	CHECK(!is_retired(""));
+	CHECK(!is_retired("[coop]\nretired = 0\n"));
+	CHECK(!is_retired("[other]\nretired = 1\n"));
+	CHECK(is_retired("[COOP]\r\nRetired = 1\r\n"));
 }
 
 TEST(death_retire_custom_data)
@@ -1074,6 +1108,11 @@ TEST(death_retired_keys_in_the_world)
 	CHECK(coop::checkpoint::ini_get(text, "coop_checkpoint", "arrival", v) && v == "x"); // the rest stays
 	CHECK(coop::checkpoint::ini_get(text, "coop_death", "out", v) && v == "1");
 
+	// The order is the order of noting; noting a key again makes it the newest.
+	CHECK(retired_keys(text) == std::vector<std::string>({a, b}));
+	note_retired_key(text, a);
+	CHECK(retired_keys(text) == std::vector<std::string>({b, a}));
+
 	// Only a digest is a key here: an empty or malformed one is not noted and never found.
 	std::string other = text;
 	note_retired_key(other, "");
@@ -1082,6 +1121,46 @@ TEST(death_retired_keys_in_the_world)
 	CHECK(other == text);
 	CHECK(!retired_key(text, ""));
 	CHECK(!retired_key("", a));
+}
+
+TEST(death_retired_keys_bounded)
+{
+	// Fix round 1, I2: the host actor's custom data goes into one 16 KB packet with every save: at most kMaxRetiredKeys
+	// keys are kept, the oldest goes first (it only spends a slot of coop_max_new_characters again).
+	auto key = [](unsigned i) {
+		char buf[16];
+		std::snprintf(buf, sizeof(buf), "%08x", i);
+		return std::string(kKeyDigestDigits - 8, 'e') + buf;
+	};
+	std::string text = "[coop_checkpoint]\narrival = x\n[coop_retired]\n" + std::string("[coop_death]\nout = 1\n");
+	for (unsigned i = 0; i < kMaxRetiredKeys; ++i)
+		note_retired_key(text, key(i));
+	CHECK_EQ(retired_keys(text).size(), size_t(kMaxRetiredKeys));
+	CHECK(retired_key(text, key(0)));
+	note_retired_key(text, key(kMaxRetiredKeys)); // one more: the oldest goes
+	CHECK_EQ(retired_keys(text).size(), size_t(kMaxRetiredKeys));
+	CHECK(!retired_key(text, key(0)));
+	CHECK(retired_key(text, key(1)) && retired_key(text, key(kMaxRetiredKeys)));
+	note_retired_key(text, key(1)); // noted again: the newest, so key(2) goes next
+	note_retired_key(text, key(kMaxRetiredKeys + 1));
+	CHECK(retired_key(text, key(1)) && !retired_key(text, key(2)));
+	for (unsigned i = 0; i < 1000; ++i)
+		note_retired_key(text, key(5000 + i));
+	CHECK_EQ(retired_keys(text).size(), size_t(kMaxRetiredKeys));
+	CHECK(text.size() < size_t(kMaxRetiredKeys) * (kKeyDigestDigits + 8) + 200); // bounded, far below 16 KB
+	std::string v;
+	CHECK(coop::checkpoint::ini_get(text, "coop_checkpoint", "arrival", v) && v == "x");
+	CHECK(coop::checkpoint::ini_get(text, "coop_death", "out", v) && v == "1");
+}
+
+TEST(death_new_character_kit_f3_10)
+{
+	// Ruling F3-10: a retirement is no farm. A new character of a retired key starts with no kit and no faction money
+	// unless the host's coop_hardcore_new_kit is on; any other new key gets the kit as before.
+	CHECK(new_character_bare(true, false));
+	CHECK(!new_character_bare(true, true));
+	CHECK(!new_character_bare(false, false));
+	CHECK(!new_character_bare(false, true));
 }
 
 TEST(death_hardcore_group_not_stuck_by_the_limit)
