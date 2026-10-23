@@ -1,28 +1,41 @@
 """List the engine functions Lua can call and check the call classes of the call router (F2 T12, MOD_LAYER.md §2.3).
 
-The call router (engine/src/xrCoop/coop_calls.h, kCalls) gives every engine function a script can call a class:
-world, owner, view or read. Its names are "<namespace>:<function>":
-  alife:<f>        a method of alife() (class_<CALifeSimulator>("alife_simulator"), xrGame/alife_simulator_script.cpp)
-  game_object:<f>  a method of a game object (class_<CScriptGameObject>("game_object"),
-                   xrGame/script_game_object_script*.cpp)
-  <module>:<f>     a function of a named module of xrGame/level_script.cpp: level, actor_stats, debug_render,
-                   weather, hud_adjust, relation_registry, game
-Not listed: helper value classes (ray_pick, rq_result, CTime, DBG_Script*, CEnvironment, CSightParams, iterators,
-enums) and the unnamed globals of level_script.cpp (command_line, IsGameTypeSingle ...): they change nothing.
+The call router (engine/src/xrCoop/coop_calls.h) gives every engine export a script can reach a class: world, owner,
+view or read. Names are "<namespace>:<name>", the namespace being the Lua class or module:
+  alife:<f>          a method of alife() (class_<CALifeSimulator>("alife_simulator"))
+  game_object:<f>    a method or property of a game object (class_<CScriptGameObject>("game_object"))
+  <class>:<f>        a method, field or property of any other class of the sources below (CZoneCampfire,
+                     hanging_lamp, CHelicopter, CCar, CPhysicObject, CConsole, the server objects cse_*, CTime, ...)
+  <module>:<f>       a function of a named module (level, actor_stats, debug_render, weather, hud_adjust,
+                     relation_registry, game)
+  _G:<f>             a global function (alife, get_console, command_line, IsGameTypeSingle, ...)
+What counts as an export: .def("f", ...), def("f", ...), .def_readwrite / .def_readonly("f", ...), .property("f",
+...), and the virtual methods a server object class gets from its luabind_class_* macro (xrServer_script_macroses.h:
+STATE_Read, on_register, switch_online, update ...). Enum values are constants, not exports. Overloads count once.
+
+Sources (engine/src): xrGame/alife_simulator_script.cpp, script_game_object_script*.cpp, level_script.cpp,
+MosquitoBald_script.cpp, HangingLamp.cpp, helicopter_script.cpp, CarScript.cpp, PhysicObject_script.cpp,
+console_registrator_script.cpp; xrServerEntities/xrServer_Objects*_script*.cpp. Other script exports of the engine
+(vectors, matrices, ini files, net packets, UI, sounds, the physics shell, particles, actions and planners ...) are
+outside the table and read as `read` by the router (MOD_LAYER §6).
 
 The sources are read as the game build compiles them: comments dropped, #ifdef / #ifndef / #if 0 / #if 1 / #else /
-#endif resolved with the macros #defined in engine/src/build_config_defines.h (DEBUG and the rest are not defined).
-Overloads count once. The list is sorted, one name per line: the same sources always give the same file.
+#endif resolved with the macros #defined in engine/src/build_config_defines.h plus XRGAME_EXPORTS (xrGame.vcxproj);
+DEBUG and the rest are not defined. The list is sorted, one name per line: the same sources give the same file.
 
-Usage: python -I tools/list_exports.py [--write | --check]
+Usage: python -I tools/list_exports.py [--write | --check | --kinds]
   (none)   prints the list
+  --kinds  prints the list with each export's kind (method, field, field_ro, property, property_ro, virtual)
   --write  writes it to tests/lua_exports.txt (read by tests/test_calls.cpp, calls_every_export_classified)
   --check  checks, without writing:
              1. every name of kCalls is an export (a typo or a removed function is printed as "not exported");
-             2. every export has a row in kCalls ("unclassified");
+             2. every export is classified: a row in kCalls, or a server object's macro virtual in kMacroVirtuals
+                ("unclassified");
              3. no name has two rows in kCalls ("duplicate");
-             4. tests/lua_exports.txt is the list of the sources ("stale list", run --write).
+             4. a read-only export (field_ro, property_ro) has the class read ("read-only, not read");
+             5. tests/lua_exports.txt is the list of the sources ("stale list", run --write).
            Prints every problem and "N problem(s)"; exit code 1 if any, 0 if none, 2 if a source is missing.
+           tests/test_calls.cpp (calls_export_list_is_live) runs it on every unit-test run.
 """
 import argparse
 import re
@@ -31,29 +44,38 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ENGINE = ROOT / "engine" / "src"
-XRGAME = ENGINE / "xrGame"
 DEFINES = ENGINE / "build_config_defines.h"
+MACROS = ENGINE / "xrServerEntities" / "xrServer_script_macroses.h"
 TABLE = ENGINE / "xrCoop" / "coop_calls.h"
 LIST = ROOT / "tests" / "lua_exports.txt"
+PROJECT_MACROS = {"XRGAME_EXPORTS"}  # xrGame.vcxproj PreprocessorDefinitions
 
-# file -> (namespace of a .def outside any class_<...>("name"), {context: namespace})
-#   context "class:<lua class name>" for .def("f" of that class, "module:<name>" for def("f" of a named module.
+# file (from engine/src) -> namespace of a .def outside any class_<...>("name") (the game_object parts extend the
+# class passed in), or None
 SOURCES = {
-    "alife_simulator_script.cpp": (None, {"class:alife_simulator": "alife"}),
-    # script_register_game_object1/2/_trader extend the game_object class passed in, no class_<...>("name") of their own
-    "script_game_object_script.cpp": (None, {"class:game_object": "game_object"}),
-    "script_game_object_script2.cpp": ("game_object", {}),
-    "script_game_object_script3.cpp": ("game_object", {}),
-    "script_game_object_script_trader.cpp": ("game_object", {}),
-    "level_script.cpp": (None, {"module:" + m: m for m in (
-        "level", "actor_stats", "debug_render", "weather", "hud_adjust", "relation_registry", "game")}),
+    "xrGame/alife_simulator_script.cpp": None,
+    "xrGame/script_game_object_script.cpp": None,
+    "xrGame/script_game_object_script2.cpp": "game_object",
+    "xrGame/script_game_object_script3.cpp": "game_object",
+    "xrGame/script_game_object_script_trader.cpp": "game_object",
+    "xrGame/level_script.cpp": None,
+    "xrGame/MosquitoBald_script.cpp": None,
+    "xrGame/HangingLamp.cpp": None,
+    "xrGame/helicopter_script.cpp": None,
+    "xrGame/CarScript.cpp": None,
+    "xrGame/PhysicObject_script.cpp": None,
+    "xrGame/console_registrator_script.cpp": None,
 }
+SOURCE_GLOBS = ["xrServerEntities/xrServer_Objects*_script*.cpp", "xrServerEntities/xrserver_objects*_script*.cpp"]
+CLASS_NS = {"alife_simulator": "alife"}  # Lua class -> namespace when it is not the class name
+MACRO_PREFIX = "cse_"  # every luabind_class_* class is a server object "cse_*" in any case (kMacroVirtuals apply there only)
 
-HEADER = "# Engine functions Lua can call, by call-router name. Generated by tools/list_exports.py --write: do not edit.\n"
+HEADER = "# Engine exports Lua can reach, by call-router name. Generated by tools/list_exports.py --write: do not edit.\n"
+READ_ONLY = ("field_ro", "property_ro")
 
 
 def defined_macros():
-    out = set()
+    out = set(PROJECT_MACROS)
     for line in DEFINES.read_text(encoding="utf-8", errors="replace").splitlines():
         m = re.match(r"\s*#\s*define\s+(\w+)", line)
         if m:
@@ -88,7 +110,8 @@ def strip_comments(text):
 
 
 def preprocess(text, macros, name):
-    """Keeps the lines the build compiles. Only the forms these files use are understood; any other #if is an error."""
+    """Keeps the lines the build compiles (#define lines too). Only the forms these files use are understood; any other
+    #if is an error."""
     kept = []
     stack = []  # (this branch on, any branch taken, parent on)
     on = True
@@ -127,62 +150,171 @@ def preprocess(text, macros, name):
     return "\n".join(kept)
 
 
+def macro_virtuals(macros):
+    """luabind_class_<kind><n> -> the virtual methods it defines, read from xrServer_script_macroses.h."""
+    text = preprocess(strip_comments(MACROS.read_text(encoding="utf-8", errors="replace")), macros, MACROS.name)
+    text = re.sub(r"\\\s*\n", " ", text)  # join continued #define lines
+    bodies = {}
+    for m in re.finditer(r"#\s*define\s+(luabind_(?:virtual|class)_\w+)\s*\([^)]*\)([^\n]*)", text):
+        bodies[m.group(1)] = m.group(2)
+    memo = {}
+
+    def expand(name, depth=0):
+        if name in memo:
+            return memo[name]
+        if depth > 20 or name not in bodies:
+            raise SystemExit(f"{MACROS.name}: cannot expand {name}")
+        found = []
+        body = bodies[name]
+        for v in re.finditer(r"DEFINE_LUABIND_VIRTUAL_FUNCTION\w*\s*\(\s*\w+\s*,\s*[\w<>]+\s*,\s*(\w+)", body):
+            found.append(v.group(1))
+        for v in re.finditer(r"\b(luabind_virtual_\w+)\s*\(", body):
+            if v.group(1) != name:
+                found += expand(v.group(1), depth + 1)
+        memo[name] = sorted(set(found))
+        return memo[name]
+
+    return {name: expand(name) for name in bodies if name.startswith("luabind_class_")}
+
+
+def call_args(text, start):
+    """Top-level comma count of the argument list that starts right after `start` (just past the name string)."""
+    depth, commas, i = 0, 0, start
+    while i < len(text):
+        c = text[i]
+        if c in "(<[":
+            depth += 1
+        elif c in ")>]":
+            if depth == 0 and c == ")":
+                return commas
+            depth -= 1
+        elif c == "," and depth == 0:
+            commas += 1
+        elif c == '"':
+            j = text.find('"', i + 1)
+            i = j if j > 0 else i
+        i += 1
+    return commas
+
+
 TOKEN = re.compile(
-    r'class_\s*<.+?>\s*(?:\w+\s*)?\(\s*"(?P<cls>\w+)"\s*\)'  # class_<T>("name") or class_<T> instance("name")
-    r'|module\s*\(\s*L\s*(?:,\s*"(?P<mod>\w+)"\s*)?\)'      # module(L) or module(L, "name")
-    r'|(?P<dot>\.)?(?<![\w])def\s*\(\s*"(?P<fn>\w+)"'        # .def("f" (a method) or def("f" (a function)
+    r'luabind_class_(?P<mkind>\w+?\d)\s*\(\s*\w+\s*,\s*"(?P<mcls>\w+)"'       # luabind_class_alife1(T, "name", ...)
+    r'|class_\s*<.+?>\s*(?:\w+\s*)?\(\s*"(?P<cls>\w+)"\s*\)'                 # class_<T>("name"), class_<T> x("name")
+    r'|module\s*\(\s*L\s*(?:,\s*"(?P<mod>\w+)"\s*)?\)'                       # module(L) or module(L, "name")
+    r'|(?P<dot>\.)?(?<![\w])(?P<what>def_readwrite|def_readonly|property|def)\s*\(\s*"(?P<fn>\w+)"'
 )
 
 
-def exports_of(path, default_ns, contexts, macros):
+def exports_of(path, default_ns, macros, virtuals):
+    """{name: kind} of one source file."""
     text = preprocess(strip_comments(path.read_text(encoding="utf-8", errors="replace")), macros, path.name)
-    names = set()
-    cls = None  # lua class of the last class_<...>("name")
+    names = {}
+    cls = None  # Lua class of the last class_<...>("name") / luabind_class_*
     mod = None  # last module(L[, "name"]): "" for the unnamed one
+
+    def add(name, kind):
+        old = names.get(name)
+        # one row per name: a getter and a setter of one name, or a method and a field, keep the strongest kind
+        order = ["field_ro", "property_ro", "virtual", "method", "field", "property"]
+        if old is None or order.index(kind) > order.index(old):
+            names[name] = kind
+
     for m in TOKEN.finditer(text):
-        if m.group("cls"):
+        if m.group("mcls"):
+            cls = m.group("mcls")
+            if not cls.lower().startswith(MACRO_PREFIX):
+                raise SystemExit(f"{path.name}: luabind_class_* class {cls} is not {MACRO_PREFIX}*: kMacroVirtuals "
+                                 "would not cover it")
+            macro = "luabind_class_" + m.group("mkind")
+            if macro not in virtuals:
+                raise SystemExit(f"{path.name}: unknown macro {macro}")
+            for v in virtuals[macro]:
+                add(f"{CLASS_NS.get(cls, cls)}:{v}", "virtual")
+        elif m.group("cls"):
             cls = m.group("cls")
         elif m.group(0).startswith("module"):
             mod = m.group("mod") or ""
             cls = None
         elif m.group("fn"):
+            what = m.group("what")
             if m.group("dot"):
-                ns = contexts.get(f"class:{cls}") if cls else default_ns
+                owner = cls if cls else default_ns
+                if not owner:
+                    raise SystemExit(f"{path.name}: .{what}(\"{m.group('fn')}\") outside a class")
+                ns = CLASS_NS.get(owner, owner)
+            elif what == "def":
+                ns = mod if mod else "_G"
             else:
-                ns = contexts.get(f"module:{mod}") if mod else None
-            if ns:
-                names.add(f"{ns}:{m.group('fn')}")
+                raise SystemExit(f"{path.name}: {what}(\"{m.group('fn')}\") outside a class")
+            if what == "def":
+                kind = "method"
+            elif what == "def_readwrite":
+                kind = "field"
+            elif what == "def_readonly":
+                kind = "field_ro"
+            else:
+                kind = "property" if call_args(text, m.end()) >= 2 else "property_ro"
+            add(f"{ns}:{m.group('fn')}", kind)
     return names
 
 
+def source_paths():
+    paths = [ENGINE / f for f in SOURCES]
+    seen = set(p.resolve() for p in paths)
+    for g in SOURCE_GLOBS:
+        for p in sorted(ENGINE.glob(g)):
+            if p.resolve() not in seen:
+                seen.add(p.resolve())
+                paths.append(p)
+    return paths
+
+
 def all_exports():
+    """{name: kind} of every source."""
     macros = defined_macros()
-    names = set()
-    for file, (default_ns, contexts) in SOURCES.items():
-        path = XRGAME / file
+    virtuals = macro_virtuals(macros)
+    names = {}
+    for path in source_paths():
         if not path.exists():
             print(f"missing source: {path}")
             sys.exit(2)
-        names |= exports_of(path, default_ns, contexts, macros)
-    return sorted(names, key=lambda s: (s.split(":")[0], s.lower()))
+        rel = path.relative_to(ENGINE).as_posix()
+        for name, kind in exports_of(path, SOURCES.get(rel), macros, virtuals).items():
+            if name in names and names[name] != kind:
+                order = ["field_ro", "property_ro", "virtual", "method", "field", "property"]
+                kind = max(kind, names[name], key=order.index)
+            names[name] = kind
+    return names
 
 
-def table_rows():
-    """Names of kCalls in coop_calls.h, in order (one {"ns:f", CallClass::X} row each)."""
+def sorted_names(names):
+    return sorted(names, key=lambda s: (s.split(":")[0].lower(), s.lower()))
+
+
+def table():
+    """(rows of kCalls as [(name, class)], {macro virtual: class}) from coop_calls.h."""
     if not TABLE.exists():
         print(f"missing table: {TABLE}")
         sys.exit(2)
     text = strip_comments(TABLE.read_text(encoding="utf-8", errors="replace"))
-    start = text.find("kCalls[]")
-    if start < 0:
-        print(f"{TABLE}: no kCalls[] table")
-        sys.exit(2)
-    end = text.find("};", start)
-    return re.findall(r'\{\s*"([\w]+:[\w]+)"\s*,\s*CallClass::\w+\s*\}', text[start:end])
+
+    def block(marker):
+        start = text.find(marker)
+        if start < 0:
+            print(f"{TABLE}: no {marker} table")
+            sys.exit(2)
+        return text[start:text.find("};", start)]
+
+    rows = re.findall(r'\{\s*"(\w+:\w+)"\s*,\s*CallClass::(\w+)\s*\}', block("kCalls[]"))
+    virt = dict(re.findall(r'\{\s*"(\w+)"\s*,\s*CallClass::(\w+)\s*\}', block("kMacroVirtuals[]")))
+    return rows, virt
 
 
-def render(names):
-    return HEADER + "".join(n + "\n" for n in names)
+def render(names, kinds=None):
+    lines = []
+    for n in sorted_names(names):
+        lines.append(f"{n} {kinds[n]}" if kinds else n)
+    return HEADER + "".join(line + "\n" for line in lines)
 
 
 def main():
@@ -190,6 +322,7 @@ def main():
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--write", action="store_true", help="write tests/lua_exports.txt")
     g.add_argument("--check", action="store_true", help="check kCalls and tests/lua_exports.txt against the sources")
+    g.add_argument("--kinds", action="store_true", help="print the list with each export's kind")
     args = ap.parse_args()
 
     names = all_exports()
@@ -198,29 +331,36 @@ def main():
         print(f"{len(names)} export(s) written to {LIST.relative_to(ROOT)}")
         return 0
     if not args.check:
-        sys.stdout.write(render(names))
+        sys.stdout.write(render(names, names if args.kinds else None))
         return 0
 
     problems = []
-    rows = table_rows()
+    rows, virt = table()
     lower = {n.lower(): n for n in names}
     seen = {}
-    for r in rows:
+    for r, cls in rows:
         key = r.lower()
         if key in seen:
             problems.append(f"duplicate: {r} (kCalls has it twice)")
-        seen[key] = r
+        seen[key] = cls
         if key not in lower:
-            problems.append(f"not exported: {r} (a typo, or the function is gone)")
-    for n in names:
-        if n.lower() not in seen:
-            problems.append(f"unclassified: {n} (no row in kCalls)")
+            problems.append(f"not exported: {r} (a typo, or the export is gone)")
+    virt_lower = {k.lower(): v for k, v in virt.items()}
+    for n in sorted_names(names):
+        ns, fn = n.split(":")
+        cls = seen.get(n.lower())
+        if cls is None and ns.lower().startswith(MACRO_PREFIX):
+            cls = virt_lower.get(fn.lower())
+        if cls is None:
+            problems.append(f"unclassified: {n} ({names[n]}; no row in kCalls)")
+        elif names[n] in READ_ONLY and cls != "Read":
+            problems.append(f"read-only, not read: {n} ({names[n]}) is {cls}")
     current = LIST.read_text(encoding="utf-8") if LIST.exists() else ""
     if current != render(names):
         problems.append(f"stale list: {LIST.relative_to(ROOT)} differs from the sources (run --write)")
     for p in problems:
         print(p)
-    print(f"{len(names)} export(s), {len(rows)} kCalls row(s), {len(problems)} problem(s)")
+    print(f"{len(names)} export(s), {len(rows)} kCalls row(s), {len(virt)} macro virtual(s), {len(problems)} problem(s)")
     return 1 if problems else 0
 
 

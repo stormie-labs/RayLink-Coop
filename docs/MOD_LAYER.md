@@ -94,18 +94,31 @@
   - Требует разведки: какие поля CSE заполняет клиент и как откат действует на мод.
 - **Сейчас** (Ф2 задача 12). Часть пути уже есть: маршрутизатор `CLevel::Send`, ReqSpawn, ReqHit, торговля, контейнеры.
   Единая таблица классов и гейт клиента — в движке, но гейт стоит не на всех экспортах.
-  - Таблица — `xrCoop/coop_calls.h` (`kCalls`: класс каждого экспорта `alife` / `game_object` / модулей
-    `level_script.cpp`; незнакомое — `read`). Гейт клиента — `xrGame/coop/coop_callgate.cpp`, функция
-    `callgate::client_gate` (и `client_gate_id` / `client_gate_own`): отвечает «исполнить / запрос хосту / отказ».
+  - Таблица — `xrCoop/coop_calls.h`. В `kCalls` класс каждого экспорта (`.def`, `def`, `.def_readwrite`,
+    `.def_readonly`, `.property`) из `alife` / `game_object` / модулей `level_script.cpp` и классов `CCar`,
+    `CHelicopter`, `CPhysicObject`, `CConsole`, `hanging_lamp`, `CZoneCampfire`, серверных объектов `cse_*` и
+    др.; виртуальные методы `cse_*` из макросов `luabind_class_*` — одной таблицей `kMacroVirtuals`. Свойство или
+    пара геттер+сеттер — одна строка с классом сеттера; незнакомое — `read`. Гейт клиента —
+    `xrGame/coop/coop_callgate.cpp`, функция `callgate::client_gate` (и `client_gate_id` / `client_gate_own`):
+    отвечает «исполнить / запрос хосту / отказ», решение — чистая `calls::decide`.
   - Переопределения — `[call_classes] namespace:function = world|owner|view|read` в `coop_route*.ltx` /
     `coop_compat_*.ltx`.
+  - Гейт работает у клиента в мире хоста (`LoadingWorld`, `Live`). Пока клиент применяет команду хоста
+    (`client_applying`, `story::applying`), вызов исполняется: так наши зеркала показывают изменение хоста. Исключение —
+    гейты `alife()`-спавна и ALife, погоды и времени: там правила класса действуют и тогда, как до T12.
   - Гейт стоит в `create` / `create_ammo` / `clone_weapon` / `register` / `release` / `kill_entity` /
-    `teleport_object` / `set_switch_*`, погоде и `change_game_time`, `transfer_item` / `give_money` / `kill` /
-    `set_npc_position` / инфопорциях / отношениях / `attach_vehicle`; остальные экспорты пока исполняются как в
-    одиночке. `tools/list_exports.py --check` сверяет таблицу с экспортами.
-  - `kill` и `set_npc_position` — класс `owner`: на своём акторе исполняются, на чужом считаются как `world`, а пути
-    запроса у них нет — отказ.
-  - `coop_status`: `calls: refused N, requested N`, топ-10 отказов; первые 10 отказов сессии — в лог.
+    `teleport_object` / `set_switch_*` / `give_info` / `disable_info` / `set_interactive` / ограничениях, погоде,
+    `change_game_time`, `set_game_difficulty`, `level.spawn_item` / `spawn_phantom`, `transfer_item` / `take_item` /
+    `give_money` / `transfer_money` / `kill` / `set_npc_position` / свойствах здоровья и `change_health` /
+    `set_health_ex` / инфопорциях / отношениях / `attach_vehicle` / `enable_level_changer` / `buy_supplies` /
+    `destroy_object`; остальные экспорты пока исполняются как в одиночке. `tools/list_exports.py --check` сверяет
+    таблицу с экспортами при каждом прогоне юнит-тестов.
+  - `kill`, `set_npc_position` и здоровье — класс `owner`: на своём акторе исполняются, на чужом считаются как `world`,
+    а пути запроса у них нет — отказ. Лечение NPC с клиента — синхронизация NPC (Ф2 задача 22).
+  - `alife():give_info(0, …)` — путь story, как `db.actor:give_info_portion`; чужой реестр — отказ.
+  - Хост (`host_move`, Ruling F2-32): из инвентаря живого NPC — только под talk lock игрока с ним; замки ящиков и
+    трупов — как в UI стока.
+  - `coop_status`: `calls: refused N, requested N`, топ-10 отказов; первые 10 отказов каждого имени — в лог.
 
 ### 2.4 Зеркало состояния модов (C++)
 Моды хранят состояние в `m_data` через колбэки `save_state` / `load_state`. Пример — Hideout Furniture:
@@ -176,3 +189,6 @@
 - Колбэки «на игрока» у хоста: моды, которые на хосте должны работать для прокси игрока (подмена `db.actor`), —
   разведка по модам GAMMA в Ф4.
 - Частота и стоимость снятия `m_data` на больших сборках (GAMMA): замер в Ф2.
+- Экспорты вне таблицы маршрутизатора вызовов (§2.3) читаются как `read`: векторы, матрицы, ini, net packet, UI,
+  звуки, оболочка физики, частицы, планировщики действий. Какие из них меняют мир у клиента (оболочка физики,
+  `CConsole:execute` — внутри таблицы, но без гейта) — разведка по модам GAMMA.
