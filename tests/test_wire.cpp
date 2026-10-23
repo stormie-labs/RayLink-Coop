@@ -1,6 +1,8 @@
 // Anomaly Coop unit tests: Writer/Reader, crc32, manifest helpers, handshake structs, names.
 #include "test_util.h"
 
+#include "coop_checkpoint_source_rules.h" // F3 T7 round 1: the claim and its answer in protocol 8
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -834,6 +836,49 @@ TEST(protocol_version_bumped_for_sync_api)
 		CHECK_EQ(std::string(msg_name(r.type)), std::string(r.name));
 		CHECK(msg_sender(r.type) == r.sender);
 	}
+}
+
+// F3 T7 round 1 (Rulings F3-5, F3-6, F3-8): protocol 8 has not shipped, so the claim's kinds and the host's refusal
+// join it without a new version (the history line says so). CheckpointClaim: u8 what (1 tent, 2 sleeping bag, 3 pack
+// up), vec3 pos — 13 bytes. CheckpointState flags 4 alone: u16 character, u8 4, u8 what, u8 reason — 5 bytes.
+TEST(protocol_8_checkpoint_claim_and_refusal)
+{
+	static_assert(kProtocolVersion == 8u, "the claim's kinds and its refusal are part of protocol 8");
+	static_assert(static_cast<uint16_t>(Msg::CheckpointState) == 0x01C0, "F3 range");
+	static_assert(static_cast<uint16_t>(Msg::CheckpointClaim) == 0x01C1, "F3 range");
+	CHECK(msg_sender(Msg::CheckpointState) == MsgSender::HostOnly);
+	CHECK(msg_sender(Msg::CheckpointClaim) == MsgSender::ClientOnly);
+
+	const float pos[3] = {1.5f, -2.0f, 300.25f};
+	for (const checkpoint::ClaimWhat w :
+	    {checkpoint::ClaimWhat::Tent, checkpoint::ClaimWhat::Sleepbag, checkpoint::ClaimWhat::Pack})
+	{
+		Writer claim;
+		checkpoint::write_claim(claim, w, pos);
+		REQUIRE(claim.size() == 13);
+		CHECK_EQ(claim.ptr()[0], static_cast<uint8_t>(w)); // what first
+		Reader rd(claim.ptr(), claim.size());
+		checkpoint::ClaimWhat what = checkpoint::ClaimWhat::Tent;
+		float out[3] = {0, 0, 0};
+		REQUIRE(checkpoint::read_claim(rd, what, out));
+		CHECK(what == w);
+		CHECK_EQ(out[2], 300.25f);
+	}
+
+	Writer refusal;
+	checkpoint::write_refusal(refusal, 0x0102, checkpoint::ClaimWhat::Pack, checkpoint::Refusal::Far);
+	REQUIRE(refusal.size() == 5);
+	const uint8_t* b = refusal.ptr();
+	CHECK_EQ(b[2], checkpoint::kStateRefused); // after the u16 character
+	CHECK_EQ(b[3], uint8_t(3)); // pack
+	CHECK_EQ(b[4], uint8_t(2)); // far
+	Reader rd(refusal.ptr(), refusal.size());
+	checkpoint::StateMsg m;
+	REQUIRE(checkpoint::read_state(rd, m));
+	CHECK(m.refused());
+	CHECK_EQ(m.character, uint16_t(0x0102));
+	CHECK(m.what == checkpoint::ClaimWhat::Pack);
+	CHECK(m.reason == checkpoint::Refusal::Far);
 }
 
 TEST(char_name_validation)

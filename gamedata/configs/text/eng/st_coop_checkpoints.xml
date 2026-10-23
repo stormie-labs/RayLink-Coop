@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop - checkpoints (F3): the host refused a tent / sleeping bag claim (coop_checkpoint_refused, engine coop_checkpoint_sources.cpp). -->
+<string_table>
+	<string id="st_coop_cp_refused_limit">
+		<text>You already have as many tents and sleeping bags in the world as a player may. Pack one up first.</text>
+	</string>
+	<string id="st_coop_cp_refused_no_item">
+		<text>You have no tent or sleeping bag to put up.</text>
+	</string>
+	<string id="st_coop_cp_refused_failed">
+		<text>The host could not do it. Nothing has changed.</text>
+	</string>
+</string_table>

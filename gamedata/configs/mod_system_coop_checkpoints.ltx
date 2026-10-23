@@ -2,12 +2,15 @@
 ; system.ltx (DLTX); read by the engine on the host (coop_checkpoint_sources.cpp) when a session starts.
 ;   campfire  - a lit campfire within campfire_radius, stood next to it campfire_dwell_ms and not in a fight
 ;               (an enemy within combat_radius picked him); a fight restarts the count;
-;   tent      - the player's own tent: he says "I put up a tent here" (coop.checkpoint.claim_tent), the host gives him
-;               the nearest new tent of tent_sections within tent_claim_radius (a client's tent the host puts up
-;               itself, the first section); his tent within tent_rest_radius is also a rest place;
+;   tent      - the player's own tent or sleeping bag (objects of tent_sections): he claims "I put one up here"
+;               (coop.checkpoint.claim_tent). The host's own is put up by the stock item_tent, and the claim takes the
+;               nearest new one within tent_claim_radius. A client's the host puts up itself (tent_section /
+;               sleepbag_section), paid with an item of his from the stock lists in item_lists, at most 8 per player;
+;               "pack" gives that item back. His tent within tent_rest_radius is also a rest place;
 ;   rest      - inside a stock sleep zone ([coop_rest_zones]) or a surge cover ([list] of cover_list), when he lies down;
 ;   mod       - an object a mod declares with coop.checkpoint.register_source(id, radius), as a campfire.
-; A radius is in metres, 0 < r <= 500; a time is in ms, 0..600000. A value outside falls back to the one below.
+; A radius is in metres, 0 < r <= 500; a time is in ms, 0..600000 (tent_claim_ms 5000..600000). A value outside falls
+; back to the one below; tent_section / sleepbag_section must spawn and be in tent_sections, else clients get none.
 ; Mod packs change them or add rest zones with DLTX (![coop_checkpoints], ![coop_rest_zones]).
 
 [coop_checkpoints]
@@ -15,10 +18,13 @@ campfire_radius   = 3
 campfire_dwell_ms = 5000
 combat_radius     = 50
 tent_sections     = ph_tent, ph_sleepbag
+tent_section      = ph_tent       ; put up for a client's tent claim (stock itm_tent placeable_section)
+sleepbag_section  = ph_sleepbag   ; put up for a client's sleeping bag claim (stock itm_sleepbag placeable_section)
 tent_rest_radius  = 2
 tent_claim_radius = 4
 tent_claim_ms     = 15000
 cover_list        = misc\surge_manager.ltx   ; section [list]: stock surge covers (294)
+item_lists        = items\settings\itms_manager.ltx   ; [tent_i_bag_sections], [sleeping_bag_sections]: what pays
 
 [coop_rest_zones]   ; stock sleep restrictors, ui_sleep_dialog.script:292-318
 actor_surge_hide_2

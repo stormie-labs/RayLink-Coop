@@ -94,11 +94,11 @@ TEST(cps_state_rejects)
 	StateMsg untouched;
 	untouched.character = 99;
 
-	// unknown flag bit
+	// unknown flag bit (4 is the refusal since F3 T7 round 1: see cps_refusal_*)
 	{
 		Writer w;
 		w.u16(5);
-		w.u8(4);
+		w.u8(8);
 		write(w, good);
 		StateMsg m = untouched;
 		CHECK(!read_back(w, m));
@@ -168,6 +168,94 @@ TEST(cps_state_rejects)
 }
 
 // ---------------------------------------------------------------- custom data
+
+// ---------------------------------------------------------------- the refusal of a claim (F3 T7 round 1, Ruling F3-5)
+
+TEST(cps_refusal_names)
+{
+	CHECK_EQ(std::string(claim_what_name(ClaimWhat::Tent)), std::string("tent"));
+	CHECK_EQ(std::string(claim_what_name(ClaimWhat::Sleepbag)), std::string("sleepbag"));
+	CHECK_EQ(std::string(claim_what_name(ClaimWhat::Pack)), std::string("pack"));
+	CHECK_EQ(std::string(refusal_name(Refusal::Dead)), std::string("dead"));
+	CHECK_EQ(std::string(refusal_name(Refusal::Far)), std::string("far"));
+	CHECK_EQ(std::string(refusal_name(Refusal::Combat)), std::string("combat"));
+	CHECK_EQ(std::string(refusal_name(Refusal::Limit)), std::string("limit"));
+	CHECK_EQ(std::string(refusal_name(Refusal::NoItem)), std::string("no_item"));
+	CHECK_EQ(std::string(refusal_name(Refusal::Failed)), std::string("failed"));
+	CHECK(claim_what_ok(1) && claim_what_ok(2) && claim_what_ok(3));
+	CHECK(!claim_what_ok(0) && !claim_what_ok(4) && !claim_what_ok(255));
+	CHECK(refusal_ok(1) && refusal_ok(6));
+	CHECK(!refusal_ok(0) && !refusal_ok(7) && !refusal_ok(255));
+}
+
+TEST(cps_refusal_roundtrip)
+{
+	Writer w;
+	write_refusal(w, 7, ClaimWhat::Sleepbag, Refusal::NoItem);
+	CHECK_EQ(w.size(), size_t(5)); // u16 character, u8 flags, u8 what, u8 reason: nothing else
+	StateMsg m;
+	REQUIRE(read_back(w, m));
+	CHECK(m.refused());
+	CHECK(!m.cleared());
+	CHECK(!m.rollback());
+	CHECK_EQ(m.character, uint16_t(7));
+	CHECK(m.what == ClaimWhat::Sleepbag);
+	CHECK(m.reason == Refusal::NoItem);
+	CHECK(!m.record.valid());
+
+	// an ordinary state is no refusal
+	Writer s;
+	write_state(s, 7, true, rec(Kind::Tent, 9));
+	StateMsg n;
+	REQUIRE(read_back(s, n));
+	CHECK(!n.refused());
+}
+
+TEST(cps_refusal_rejects)
+{
+	StateMsg untouched;
+	untouched.character = 99;
+	const auto bytes = [](uint8_t flags, uint8_t what, uint8_t reason, bool tail) {
+		Writer w;
+		w.u16(5);
+		w.u8(flags);
+		w.u8(what);
+		w.u8(reason);
+		if (tail)
+			w.u8(0);
+		return w;
+	};
+	const uint8_t bad[][4] = {
+		{kStateRefused | kStateRollback, 1, 1, 0}, // with another flag
+		{kStateRefused | kStateCleared, 1, 1, 0},
+		{kStateRefused, 0, 1, 0}, // unknown what
+		{kStateRefused, 4, 1, 0},
+		{kStateRefused, 1, 0, 0}, // unknown reason
+		{kStateRefused, 1, 7, 0},
+		{kStateRefused, 1, 1, 1}, // a byte after it
+	};
+	for (const auto& b : bad)
+	{
+		const Writer w = bytes(b[0], b[1], b[2], b[3] != 0);
+		StateMsg m = untouched;
+		CHECK(!read_back(w, m));
+		CHECK_EQ(m.character, uint16_t(99));
+	}
+	{
+		Writer w; // short: no reason
+		w.u16(5);
+		w.u8(kStateRefused);
+		w.u8(1);
+		StateMsg m = untouched;
+		CHECK(!read_back(w, m));
+	}
+	{
+		Writer w; // no character
+		write_refusal(w, 0xffff, ClaimWhat::Tent, Refusal::Far);
+		StateMsg m = untouched;
+		CHECK(!read_back(w, m));
+	}
+}
 
 TEST(cps_ini_roundtrip_keeps_other_lines)
 {
