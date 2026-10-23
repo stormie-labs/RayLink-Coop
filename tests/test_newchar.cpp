@@ -4,6 +4,7 @@
 #include "coop_newchar.h"
 
 #include <algorithm>
+#include <iterator>
 
 using namespace coop;
 
@@ -95,4 +96,67 @@ TEST(newchar_start_on_the_hosts_level_until_split_levels)
 	CHECK(!newchar::point_usable(true, false));
 	CHECK(!newchar::point_usable(false, true));
 	CHECK(!newchar::point_usable(false, false));
+}
+
+// ---------------------------------------------------------------- game settings T3 (docs/GAME_SETTINGS.md §8)
+// Owner, 2026-10-23: the faction is part of the world, not of the player. The host builds a new character from the
+// world's faction; what the client sent in CharChoice::faction is never used, whoever the client is.
+
+namespace
+{
+// The stock new-game list (coop_menu_char.FACTIONS) - every faction a hostile client could ask for.
+const char* const kFactions[] = {"stalker", "bandit", "csky", "dolg", "freedom", "killer", "army", "ecolog",
+	"monolith", "renegade", "greh", "isg"};
+} // namespace
+
+TEST(newchar_hostile_client_faction_ignored)
+{
+	// The world is stalker, the client asks for monolith: the character is stalker (a host actor of another faction
+	// does not matter while the world has one).
+	CHECK_EQ(newchar::character_faction("stalker", "", "monolith"), std::string("stalker"));
+	CHECK_EQ(newchar::character_faction("stalker", "dolg", "monolith"), std::string("stalker"));
+}
+
+TEST(newchar_world_empty_uses_host_actor)
+{
+	// An old save without the world's faction: the faction of the host's own character.
+	CHECK_EQ(newchar::character_faction("", "dolg", "monolith"), std::string("dolg"));
+	// A world faction that is not a name (a corrupt record) is no faction either.
+	CHECK_EQ(newchar::character_faction("a b", "dolg", "monolith"), std::string("dolg"));
+	CHECK_EQ(newchar::character_faction(std::string(kMaxCharName + 1, 'x'), "dolg", "monolith"), std::string("dolg"));
+}
+
+TEST(newchar_nothing_valid_uses_stalker)
+{
+	CHECK_EQ(newchar::character_faction("", "a b", ""), std::string("stalker"));
+	CHECK_EQ(newchar::character_faction("x/y", "a,b", "monolith"), std::string("stalker"));
+	CHECK_EQ(newchar::character_faction("", std::string(kMaxCharName + 1, 'x'), "monolith"), std::string("stalker"));
+}
+
+TEST(newchar_no_level_and_no_actor_uses_stalker)
+{
+	// Ruling GS-2: host_actor_faction() answers "" when there is no level or no Actor() yet (a CharOffer in the main
+	// menu, a world still loading). With a world that has no faction either the answer is stalker - and a hostile
+	// client gets nothing of what it asked for.
+	for (const char* sent : kFactions)
+		CHECK_EQ(newchar::character_faction("", "", sent), std::string("stalker"));
+	CHECK_EQ(newchar::character_faction("", "", ""), std::string("stalker"));
+}
+
+TEST(newchar_sent_never_used)
+{
+	// Security: whatever the client sends - any of the 12 factions, a stranger, nothing, a forged string - the answer
+	// depends on the world and the host only.
+	static_assert(sizeof(kFactions) / sizeof(kFactions[0]) == 12, "the stock list has 12 factions");
+	std::vector<std::string> sent(std::begin(kFactions), std::end(kFactions));
+	for (const char* odd : {"", "a b", "zombied", "..\\x", "%s"})
+		sent.emplace_back(odd);
+	sent.emplace_back(kMaxCharName + 1, 'x');
+	for (const std::string& s : sent)
+	{
+		CHECK_EQ(newchar::character_faction("freedom", "", s), std::string("freedom"));
+		CHECK_EQ(newchar::character_faction("freedom", "dolg", s), std::string("freedom"));
+		CHECK_EQ(newchar::character_faction("", "dolg", s), std::string("dolg"));
+		CHECK_EQ(newchar::character_faction("", "", s), std::string("stalker"));
+	}
 }

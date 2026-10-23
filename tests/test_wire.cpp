@@ -801,7 +801,8 @@ TEST(avatar_list_rejects_bad_tables)
 // CharChoice, the host makes the character at its faction's start and sends the world.
 TEST(protocol_version_bumped_for_character_before_world)
 {
-	static_assert(kProtocolVersion == 8u, "protocol 8: CharOffer / CharChoice (protocol 7 has not shipped)");
+	// Game settings T3: protocol 9 adds the world's faction to CharOffer (test_protocol_game.cpp); the messages are 8's.
+	static_assert(kProtocolVersion >= 8u, "protocol 8: CharOffer / CharChoice (protocol 7 has not shipped)");
 	static_assert(static_cast<uint16_t>(Msg::CharOffer) == 0x0108, "join lifecycle range, append only");
 	static_assert(static_cast<uint16_t>(Msg::CharChoice) == 0x0109, "join lifecycle range, append only");
 	static_assert(static_cast<uint16_t>(Msg::CharOffer) >= static_cast<uint16_t>(Msg::GameBase), "a game message");
@@ -843,7 +844,7 @@ TEST(protocol_version_bumped_for_sync_api)
 // up), vec3 pos — 13 bytes. CheckpointState flags 4 alone: u16 character, u8 4, u8 what, u8 reason — 5 bytes.
 TEST(protocol_8_checkpoint_claim_and_refusal)
 {
-	static_assert(kProtocolVersion == 8u, "the claim's kinds and its refusal are part of protocol 8");
+	static_assert(kProtocolVersion >= 8u, "the claim's kinds and its refusal are part of protocol 8 (and so of 9)");
 	static_assert(static_cast<uint16_t>(Msg::CheckpointState) == 0x01C0, "F3 range");
 	static_assert(static_cast<uint16_t>(Msg::CheckpointClaim) == 0x01C1, "F3 range");
 	CHECK(msg_sender(Msg::CheckpointState) == MsgSender::HostOnly);
@@ -901,9 +902,10 @@ TEST(char_offer_roundtrip)
 	m.flags = CharOfferMsg::StoryMode;
 	m.level = "l01_escape";
 	m.refusal = "points";
+	m.faction = "stalker"; // protocol 9: the world's faction ends the offer (test_protocol_game.cpp)
 	Writer w;
 	m.write(w);
-	CHECK_EQ(w.size(), size_t(1 + 4 + 1 + 1 + 10 + 1 + 6));
+	CHECK_EQ(w.size(), size_t(1 + 4 + 1 + 1 + 10 + 1 + 6 + 1 + 7));
 	CharOfferMsg back;
 	Reader r(w.ptr(), w.size());
 	CHECK(back.read(r));
@@ -911,11 +913,13 @@ TEST(char_offer_roundtrip)
 	CHECK(back.eco == 3 && back.points == 400u && back.flags == CharOfferMsg::StoryMode);
 	CHECK_EQ(back.level, std::string("l01_escape"));
 	CHECK_EQ(back.refusal, std::string("points"));
+	CHECK_EQ(back.faction, std::string("stalker"));
 
 	// The first offer has no refusal; a host on a level without a name (cannot happen in game) sends none.
 	CharOfferMsg first;
 	first.eco = 1;
 	first.points = 1000;
+	first.faction = "stalker";
 	Writer wf;
 	first.write(wf);
 	CharOfferMsg first2;
@@ -932,6 +936,7 @@ TEST(char_offer_rejects_bad_input)
 	good.points = 700;
 	good.level = "zaton";
 	good.refusal = "items";
+	good.faction = "bandit";
 	Writer w;
 	good.write(w);
 	for (size_t cut = 0; cut < w.size(); ++cut)
@@ -947,6 +952,7 @@ TEST(char_offer_rejects_bad_input)
 		b.u8(flags);
 		b.str(level);
 		b.str(refusal);
+		b.str("stalker"); // protocol 9: the world's faction (a bad one: test_protocol_game.cpp)
 		CharOfferMsg m;
 		Reader r(b.ptr(), b.size());
 		return m.read(r);
