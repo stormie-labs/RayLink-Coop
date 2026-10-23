@@ -15,6 +15,7 @@
 		coop_allies.argb(peer [, alpha]) -> ARGB     coop_allies.text_tag(peer) -> "%c[255,r,g,b]" (text colour code)
 		coop_allies.state_color(state) -> r, g, b    ("down" red, "dead"/"spec"/"respawn" grey, else nil)
 		coop_allies.state_of(player, status) -> state, bleed_seconds|nil
+		coop_allies.checkpoint_mark(local_id [, tg]) -> "camp" | nil   (party panel: his checkpoint changed < 10 s ago; F3 T13)
 --]]
 
 local api = rawget(_G, "coop")
@@ -147,6 +148,25 @@ function state_of(player, st, tg)
 		end
 	end
 	return s, bleed
+end
+
+-------------------------------------------------------------------------------
+-- Checkpoint mark of the party panel (F3 task 13)
+-------------------------------------------------------------------------------
+CHECKPOINT_MARK_MS = 10000 -- the panel shows the mark this long after the player's checkpoint changed
+
+-- The short text "camp" (st_coop_cp_panel) while the player whose avatar has local id `local_id` set a new checkpoint
+-- less than 10 s ago (coop_checkpoints.last_update), else nil. Nothing breaks when coop_checkpoints is missing or fails.
+function checkpoint_mark(local_id, tg)
+	if type(local_id) ~= "number" then return nil end
+	local m = rawget(_G, "coop_checkpoints") -- loaded at the game start like every script with on_game_start
+	if not (type(m) == "table" and m.last_update) then return nil end
+	local ok_at, at = pcall(m.last_update, local_id)
+	if not (ok_at and type(at) == "number") then return nil end
+	tg = tg or time_global()
+	if tg < at or tg - at > CHECKPOINT_MARK_MS then return nil end
+	local ok_t, s = pcall(function() return game.translate_string("st_coop_cp_panel") end)
+	return ok_t and type(s) == "string" and s ~= "" and s or nil
 end
 
 function print_status()

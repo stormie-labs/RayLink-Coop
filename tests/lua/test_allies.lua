@@ -431,6 +431,17 @@ check(P.cards[1].host.e.visible and not P.cards[2].host.e.visible, "host star on
 check(P.cards[2].strip.e.tcolor == A.argb(1) and P.cards[2].name.e.color == A.argb(1), "colour tab + nick in the player's colour")
 check(P.cards[2].hp.e.progress == 0.7 and P.cards[2].info.e.text == "10 <st_coop_allies_m>", "health + distance")
 check(math.abs(P.cards[2].info_bg.e.w - (#"10 <st_coop_allies_m>" * 7 * 1024 / 1920 + 4 * 1024 / 1920)) < 0.01 or P.cards[2].info_bg.e.w <= 80 * 1024 / 1920 + 0.01, "info plate hugs its text")
+-- F3 T13: for 10 s after his checkpoint changed (coop_checkpoints.last_update) the plate says "camp" instead of the distance
+do
+	local at = NOW
+	M.env.coop_checkpoints = { last_update = function(id) return id == 501 and at or nil end }
+	run(M, 600)
+	check(P.cards[2].info.e.text == "<st_coop_cp_panel>", "checkpoint changed: the plate says 'camp' (" .. P.cards[2].info.e.text .. ")")
+	check(P.cards[3].info.e.text == "30 <st_coop_allies_m>", "another player's plate is untouched")
+	run(M, 10000)
+	check(P.cards[2].info.e.text == "10 <st_coop_allies_m>", "10 s later the distance is back (" .. P.cards[2].info.e.text .. ")")
+	M.env.coop_checkpoints = nil
+end
 -- down
 status(M, 1, "down", 0.01, 45)
 run(M, 600)

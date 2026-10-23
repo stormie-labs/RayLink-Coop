@@ -1,71 +1,88 @@
 --[[
-	Anomaly Coop - stop-gap for tents and sleeping bags on a co-op client (gamedata\scripts\coop_tent_guard.script), F3 hotfix.
-	Research: docs\research\2026-10-22-f3-saves-sleep-recon.md, B.3 and Z2 / Z6 / Z7 / Z8.
+	Anomaly Coop - tents and sleeping bags on a co-op machine: the adapter of the stock item_tent
+	(gamedata\scripts\coop_tent_guard.script). F3 hotfix (a client got a message), rewritten by F3 task 13 (a client asks the
+	host). Research: docs\research\2026-10-22-f3-saves-sleep-recon.md, B.3 and Z2 / Z6 / Z7 / Z8.
+	What the player sees and the claims themselves: coop_checkpoints.script (request, report_placed, tips).
 
-	Why. A client cannot create a world object: the engine returns nil for alife_create without a parent (the host
-	does not take such a request). The stock item_tent then reads se_obj.id of that nil:
+	Why. A client cannot create a world object: the engine returns nil for alife_create without a parent (the host does not
+	take such a request). The stock item_tent then reads se_obj.id of that nil:
 	  - itm_tent_func runs as a level.add_call functor (no pcall): a Lua error there is FATAL in a release build;
 	  - the sleeping bag branch of the local actor_on_item_use fails the same way, the item is lost;
 	  - packing a tent / bag up releases the host's object, which a client may not do: the item is handed out twice.
-	Until F3 lets the host place the tent on a client's request, a client only gets a message.
+	And the stock func_use_tent / func_use_bag free the used item themselves (CreateTimeEvent 0) about 4 s BEFORE a tent would
+	be put up. So on a client the stock functions never run.
 
-	What. On a co-op CLIENT the entry points of the item_tent module table are replaced (assigned at load time, so
-	that everything that looks them up by name later finds the wrapper, including the local actor_on_item_use of the stock
-	file, which calls start_timer and use_compression_bag through the module table):
-	  func_use_tent, func_use_bag   use1_action_functor of the items (stock itm_tent, GAMMA itm_sleepbag too): the item is
-	                                not touched, the stock function (which would free it) is not called;
-	  start_timer                   the use callback of an item the engine may have eaten (itm_tent, itm_tent_bag next to a
-	                                tent): no timer functor is queued;
-	  use_compression_bag           the same for a compression bag; the message appears only when a placed sleeping bag
-	                                is in reach (without one the stock function does nothing);
-	  itm_tent_func, itm_tent_bag_func   the timer functors themselves, in case one gets queued anyway;
-	  on_game_start                 after the stock one has registered its local use callback, that callback is replaced
-	                                by a guard: on a client it refuses the placeable sleeping bag branch (stock itm_sleepbag,
-	                                the engine eats the item) and hands everything else to the stock callback unchanged.
-	The client sees a message (string st_coop_tent_blocked, the inventory window is closed first, as itms_manager does);
-	nothing is spawned or released.
-	An item is handed back only when the engine really took it: CInventory::Eat deletes it when remove_after_use is true
-	(default) and max_uses is 1. itm_tent and itm_sleepbag are given back; itm_tent_bag and compression_bag
-	(remove_after_use = false) stay in the inventory, a second copy would be a duplicate.
-	On the host and in single player every wrapper calls the stock function with the same arguments.
+	What on a co-op CLIENT (Ruling F3-6, F3 T7 round 1). The host puts the tent up and takes the item from the client's
+	inventory itself (no item: the host refuses, "no_item"), so the client does not touch the item at all, whatever the
+	use does:
+	  tent / sleeping bag    coop_checkpoints.request("tent" | "sleepbag"): after the put-up animation (4 s with the video
+	                         option, as stock; a sleeping bag at once) coop.checkpoint.claim_tent(x, y, z, what) with the spot
+	                         3 m ahead (a bag: under the player). The item stays; the host's answer is a camp on the tent, a
+	                         refusal, or nothing (the wait ends by itself);
+	  itm_tent_bag, compression_bag, using my own tent (the object that is my camp)
+	                         "pack": the host gives back the item it took. No bag is handed out to a client.
+	Entry points (assigned into the item_tent module table at load time, so everything that looks them up later by name finds
+	the wrapper, including the local actor_on_item_use of the stock file, which calls start_timer and use_compression_bag
+	through the module table):
+	  func_use_tent, func_use_bag   use1_action_functor of the items (stock itm_tent, GAMMA itm_sleepbag too): not eaten by
+	                                the engine, the stock function would free the item - it is not called on a client;
+	  start_timer, use_compression_bag, itm_tent_func, itm_tent_bag_func   the stock timer and pack-up functions: nothing on
+	                                a client (a mod may call them);
+	  on_game_start                 after the stock one has registered its local use callback, that callback is replaced:
+	                                on a client it turns the four sections of the stock into claims, and everything else goes
+	                                on to the stock callback unchanged.
+	The engine eats an item used from the inventory (CInventory::Eat deletes it when remove_after_use is true (default) and
+	max_uses is 1): stock Anomaly eats itm_sleepbag; GAMMA does not (the action functor). When the engine did eat it, the
+	client creates it again first (alife_create_item with the actor as parent, which the host accepts) and claims a moment
+	later; itm_tent_bag and compression_bag (remove_after_use = false) stay and are never given back.
+	With use_placeable = false in itms_manager.ltx the stock uses the item directly (no object is put up): left to the stock.
 
-	Accepted: the give-back is an alife_create_item whose result on a client is nil, so the client's item processor may log a
-	false "refused" error for it, and stats.returned counts the request, not the arrival.
+	What on the HOST. Everything is stock; afterwards the host tells the engine about the object the stock put up
+	(coop_checkpoints.report_placed -> coop.checkpoint.claim_tent at the object's position): after itm_tent_func and after a
+	sleeping bag was placed (func_use_bag, or the use callback of stock Anomaly). Objects that are in the item_tent lists are
+	never reported twice. A tent the engine put up for a client (callback coop_tent_placed(tent, character)) is added to
+	item_tent's lists, so the host's own tent bag packs it up (CHECKPOINTS_DEATH 10.2); the callback queue is lossy, so the
+	first update of a world adds, from the objects of the world, every tent and sleeping bag coop.checkpoint.tent_owner(id) names.
 
-	Loaded by axr_main like any script that has on_game_start; nothing is added to coop_main or the domain tables
-	(the name falls under coop_* = view; the use guard is a view callback, pcall-protected on a client like the stock one).
+	Single player and an exe without co-op: every wrapper calls the stock function with the same arguments.
+	Loaded by axr_main like any script that has on_game_start; nothing is added to coop_main or the domain tables (the name
+	falls under coop_* = view; the callbacks are view callbacks, pcall-protected on a client like the stock one).
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace (nil on an exe without co-op)
 
-local TEXT_ID = "st_coop_tent_blocked"
-local TEXT_FALLBACK = "Tents and sleeping bags cannot be used from a co-op client yet. The item stays in your inventory."
 local USE_CALLBACK = "actor_on_item_use"
+local ANIMATION_MS = 4000 -- stock: the put-up animation with the video option "video/player/animations"
+local GIVE_BACK_MS = 1500 -- the item the engine ate is created again; the claim waits for it to reach the host
 
-stats = { blocked = 0, returned = 0, return_failed = 0 }
+stats = { claims = 0, given_back = 0, return_failed = 0, reported = 0, registered = 0, reconciled = 0 }
 
 local function log(fmt, ...)
 	local ok, line = pcall(string.format, fmt, ...)
 	printf("[coop-tent-guard] %s", ok and line or tostring(fmt))
 end
 
--- A client of a co-op session; the answer is taken at every call (the role is not known when the script loads).
-local function is_client()
-	if not api then return false end
-	local ok, active = pcall(api.is_active)
-	if not (ok and active == true) then return false end
-	local ok_client, client = pcall(api.is_client)
-	return ok_client and client == true
+local function checkpoints()
+	return rawget(_G, "coop_checkpoints") or coop_checkpoints
 end
 
-local function say()
-	local text = TEXT_FALLBACK
-	local ok, s = pcall(game.translate_string, TEXT_ID)
-	if ok and type(s) == "string" and s ~= "" and s ~= TEXT_ID then text = s end
-	-- The message is drawn behind the inventory window: close it first (itms_manager does the same before its set_msg).
-	pcall(function() utils_xml.hide_menu() end)
-	local am = rawget(_G, "actor_menu")
-	if am and am.set_msg then pcall(am.set_msg, 1, text, 4) end
+-- Roles are asked at every call (the role is not known when the script loads).
+local function in_session()
+	if not api then return false end
+	local ok, active = pcall(api.is_active)
+	return ok and active == true
+end
+
+local function is_client()
+	if not in_session() then return false end
+	local ok, client = pcall(api.is_client)
+	return ok and client == true
+end
+
+local function is_host()
+	if not in_session() then return false end
+	local ok, host = pcall(api.is_host)
+	return ok and host == true
 end
 
 local function section_of(obj)
@@ -84,6 +101,15 @@ local function upvalue(f, name)
 	return nil
 end
 
+local function animation_ms()
+	local ok, on = pcall(function() return ui_options.get("video/player/animations") end)
+	return (ok and on) and ANIMATION_MS or 0
+end
+
+local function play_fx()
+	pcall(function() actor_effects.play_item_fx("itm_sleepbag") end)
+end
+
 -- Did the engine take the item for this use? CInventory::Eat deletes it only when remove_after_use is true (default) and
 -- no use is left (max_uses, default 1). An unreadable section counts as "not taken": no give-back, no duplicate.
 local function eaten_for_good(section)
@@ -97,41 +123,98 @@ end
 -- Put one back in the inventory (the parent is the actor, so the client's request is forwarded and accepted).
 local function give_back(section)
 	local actor = db.actor
-	if not (section and actor and eaten_for_good(section)) then return end
+	if not (section and actor and eaten_for_good(section)) then return false end
 	local ok, err = pcall(alife_create_item, section, actor)
 	if ok then
-		stats.returned = stats.returned + 1
+		stats.given_back = stats.given_back + 1
 	else
 		stats.return_failed = stats.return_failed + 1
 		log("! could not return %s: %s", section, tostring(err))
 	end
+	return ok
 end
 
-local function refuse(what, give_section)
-	stats.blocked = stats.blocked + 1
-	log("%s is not available on a client", what)
-	say()
-	give_back(give_section)
+-------------------------------------------------------------------------------
+-- The stock module's lists and what the host has already told the engine about
+-------------------------------------------------------------------------------
+local function stock_module()
+	return rawget(_G, "item_tent")
 end
 
--- A placed sleeping bag within `dist` of the actor, the way the stock use_compression_bag looks for one: only then the stock
--- function would do something (and release the host's object).
-local function placed_sleepbag_near(mod, dist)
-	local ok, found = pcall(function()
-		local reach = tonumber(dist) or 1.5
-		local here = db.actor:position()
-		for id, v in pairs(mod.get_spawned_sleepbags()) do
-			local obj = level.object_by_id(id)
-			if obj and v == true and obj:section() == "ph_sleepbag" and obj:position():distance_to(here) < reach then
-				return true
-			end
+-- item_tent.get_spawned_tents() / get_spawned_sleepbags(): { [object id] = true }
+local function spawned(getter)
+	local m = stock_module()
+	local f = m and m[getter]
+	if type(f) ~= "function" then return nil end
+	local ok, t = pcall(f)
+	return ok and type(t) == "table" and t or nil
+end
+
+local reported = nil -- host: ids of tents and sleeping bags the engine already knows (set at the start and each world entry)
+
+local function seed()
+	reported = {}
+	for _, getter in ipairs({ "get_spawned_tents", "get_spawned_sleepbags" }) do
+		local t = spawned(getter)
+		if t then
+			for id in pairs(t) do reported[id] = true end
 		end
-		return false
-	end)
-	return ok and found == true
+	end
 end
 
--- ------------------------------------------------------------------ the use callback of the stock file
+-- Before the stock runs: whatever shows up in the lists afterwards is new.
+local function ensure_seeded()
+	if not reported then seed() end
+end
+
+local function scan(kind, getter)
+	local t = spawned(getter)
+	local c = checkpoints()
+	if not (t and c and reported) then return end
+	for id, v in pairs(t) do
+		if v == true and not reported[id] then
+			reported[id] = true
+			if c.report_placed(kind, id) then stats.reported = stats.reported + 1 end
+		end
+	end
+end
+
+local function scan_all()
+	scan("tent", "get_spawned_tents")
+	scan("sleepbag", "get_spawned_sleepbags")
+end
+
+-- Returns what the stock returned; on the host first tells the engine about what the stock put up.
+local function after_stock(host, ...)
+	if host then
+		local ok, err = pcall(scan_all)
+		if not ok then log("! scan failed: %s", tostring(err)) end
+	end
+	return ...
+end
+
+-------------------------------------------------------------------------------
+-- A client uses an item: the item stays, the host is asked
+-------------------------------------------------------------------------------
+local function client_item(c, obj, orig, ...)
+	local kind = c.item_kind(section_of(obj))
+	if kind == nil then
+		-- no tent of ours: the stock function would free the item, so it is not called either
+		c.tell("unsupported", true)
+		return
+	end
+	if kind ~= "pack" and not c.placeable(kind) then return orig(obj, ...) end -- the ltx says "do not put up": stock
+	if kind == "tent" then
+		if c.request("tent", animation_ms()) then play_fx() end
+	else
+		c.request(kind, 0)
+	end
+	stats.claims = stats.claims + 1
+end
+
+-------------------------------------------------------------------------------
+-- The use callback of the stock file
+-------------------------------------------------------------------------------
 local stock_use = nil -- the file local actor_on_item_use of item_tent (an upvalue of func_use_tent / func_use_bag)
 local use_guard = nil -- what replaces it in the callback list
 
@@ -152,8 +235,19 @@ local function swap_use_callback()
 	if not use_guard then
 		use_guard = function(obj, ...)
 			if is_client() then
+				local c = checkpoints()
 				local sec = section_of(obj)
-				if sec and sleepbag_branch(sec) then return refuse(USE_CALLBACK .. "(" .. sec .. ")", sec) end
+				local kind = c and sec and c.item_kind(sec)
+				if kind == "sleepbag" and sleepbag_branch(sec) then
+					-- stock Anomaly: the engine ate the bag before this callback; it comes back, then the host takes it
+					give_back(sec)
+					c.request("sleepbag", GIVE_BACK_MS)
+					return
+				elseif kind == "pack" then
+					-- the client's spawned_tents is a snapshot of the host's at his entry: the host decides what is near
+					c.request("pack", 0)
+					return
+				end
 			end
 			return old(obj, ...)
 		end
@@ -162,46 +256,147 @@ local function swap_use_callback()
 	RegisterScriptCallback(USE_CALLBACK, use_guard)
 end
 
--- ------------------------------------------------------------------ wrappers: name -> make(orig, mod) -> wrapper
-local function make_use_functor(name)
+-- Host: stock Anomaly eats the sleeping bag and the stock callback places it; look at the lists a moment later (the order of
+-- the two callbacks is not known). Public: the tests tell this callback from the stock one.
+local scan_serial = 0
+function on_item_use(obj)
+	if not is_host() then return end
+	local c = checkpoints()
+	if not (c and c.item_kind(section_of(obj)) == "sleepbag") then return end
+	scan_serial = scan_serial + 1
+	CreateTimeEvent("coop_tent_guard", "scan_" .. scan_serial, 0, function()
+		pcall(scan_all)
+		return true
+	end)
+end
+
+-- Client: using my own tent (the object that is my camp) packs it up. A sleeping bag is used to sleep.
+local function on_physic_use(obj, who)
+	if not is_client() or obj == nil then return end
+	local c = checkpoints()
+	if not c then return end
+	if who ~= nil then -- the use of another player is not mine to answer
+		local ok_who, wid = pcall(function() return who:id() end)
+		local actor = db.actor
+		if ok_who and actor and wid ~= actor:id() then return end
+	end
+	local ok, sec, id = pcall(function() return obj:section(), obj:id() end)
+	if not ok or c.object_kind(sec) ~= "tent" then return end
+	if id ~= nil and id == c.own_tent_source() then c.request("pack", 0) end
+end
+
+-------------------------------------------------------------------------------
+-- Host: tents the engine put up for clients
+-------------------------------------------------------------------------------
+local function register_owned(id)
+	local c = checkpoints()
+	local se = alife_object(id)
+	local kind = se and c and c.object_kind(se:section_name())
+	if not kind then return false end
+	local t = spawned(kind == "sleepbag" and "get_spawned_sleepbags" or "get_spawned_tents")
+	if not t then return false end
+	t[id] = true
+	if reported then reported[id] = true end -- not the host's own: no claim for it
+	return true
+end
+
+-- coop_tent_placed(tent, character): the engine put a tent / sleeping bag up for a client.
+local function on_tent_placed(tent, character)
+	if not is_host() or type(tent) ~= "number" then return end
+	if register_owned(tent) then stats.registered = stats.registered + 1 end
+end
+
+-- The callback queue is lossy: for every tent and sleeping bag of the world the engine knows an owner of, make sure the
+-- stock lists have it. Once per world, host only.
+local function reconcile()
+	if not is_host() then return end
+	local cp = api and api.checkpoint
+	local c = checkpoints()
+	if not (cp and cp.tent_owner and c) then return end
+	local sim = alife and alife()
+	if not (sim and sim.iterate_objects) then return end
+	local tents, bags = spawned("get_spawned_tents"), spawned("get_spawned_sleepbags")
+	if not (tents and bags) then return end
+	local found = 0
+	local ok, err = pcall(sim.iterate_objects, sim, function(se)
+		local kind = c.object_kind(se:section_name())
+		if kind then
+			local t = kind == "sleepbag" and bags or tents
+			local id = se.id
+			if t[id] == nil and cp.tent_owner(id) ~= nil then
+				t[id] = true
+				if reported then reported[id] = true end
+				found = found + 1
+			end
+		end
+		return false
+	end)
+	if not ok then log("! looking through the world for tents failed: %s", tostring(err)) end
+	stats.reconciled = stats.reconciled + found
+	if found > 0 then log("%d tent(s) / sleeping bag(s) of players added to the stock lists", found) end
+end
+
+local function on_first_update()
+	local ok, err = pcall(seed)
+	if not ok then log("! seed failed: %s", tostring(err)) end
+	ok, err = pcall(reconcile)
+	if not ok then log("! reconcile failed: %s", tostring(err)) end
+end
+
+-------------------------------------------------------------------------------
+-- Wrappers: name -> make(orig, mod) -> wrapper
+-------------------------------------------------------------------------------
+local function use_functor_maker()
 	return function(orig)
 		return function(obj, ...)
-			if obj ~= nil and is_client() then return refuse(name) end
-			return orig(obj, ...)
+			local c = checkpoints()
+			if obj ~= nil and c and is_client() then return client_item(c, obj, orig, ...) end
+			local host = obj ~= nil and is_host()
+			if host then ensure_seeded() end
+			return after_stock(host, orig(obj, ...))
 		end
 	end
 end
 
-local function make_timer_functor(name)
+local function timer_functor_maker(reports)
 	return function(orig)
 		return function(...)
-			if is_client() then return refuse(name) end
-			return orig(...)
+			if is_client() then return end -- queued by a mod: it would index the nil of alife_create
+			local host = reports and is_host()
+			if host then ensure_seeded() end
+			return after_stock(host, orig(...))
 		end
 	end
 end
 
 local MAKERS = {
-	{ "func_use_tent", make_use_functor("func_use_tent") },
-	{ "func_use_bag", make_use_functor("func_use_bag") },
-	{ "itm_tent_func", make_timer_functor("itm_tent_func") },
-	{ "itm_tent_bag_func", make_timer_functor("itm_tent_bag_func") },
+	{ "func_use_tent", use_functor_maker() },
+	{ "func_use_bag", use_functor_maker() },
+	{ "itm_tent_func", timer_functor_maker(true) },
+	{ "itm_tent_bag_func", timer_functor_maker(false) },
 	{ "start_timer", function(orig)
 		return function(obj, ...)
 			if is_client() then
+				local c = checkpoints()
 				local sec = section_of(obj)
-				if sec == "itm_tent" or sec == "itm_tent_bag" then return refuse("start_timer(" .. sec .. ")", sec) end
+				if c and sec == "itm_tent" then
+					-- reached from the use callback: the engine ate the tent. It comes back, then the host takes it
+					give_back(sec)
+					c.request("tent", math.max(animation_ms(), GIVE_BACK_MS))
+					return
+				elseif c and sec == "itm_tent_bag" then
+					c.request("pack", 0)
+					return
+				end
 			end
 			return orig(obj, ...)
 		end
 	end },
-	{ "use_compression_bag", function(orig, mod)
+	{ "use_compression_bag", function(orig)
 		return function(obj, dist, ...)
 			if is_client() then
-				if placed_sleepbag_near(mod, dist) then
-					local sec = section_of(obj)
-					refuse("use_compression_bag", sec == "compression_bag" and sec or nil)
-				end
+				local c = checkpoints()
+				if c and obj ~= nil then c.request("pack", 0) end
 				return
 			end
 			return orig(obj, dist, ...)
@@ -225,7 +420,7 @@ local function install()
 	for _, entry in ipairs(MAKERS) do
 		local name, make = entry[1], entry[2]
 		local cur = mod[name]
-		-- A mod that overwrote the function after us is wrapped again (the guard must not go silent).
+		-- A mod that overwrote the function after us is wrapped again (the adapter must not go silent).
 		if type(cur) == "function" and cur ~= wrappers[name] then
 			if stock_use == nil and (name == "func_use_tent" or name == "func_use_bag") then
 				stock_use = upvalue(cur, "actor_on_item_use") -- the file local both functors call
@@ -253,6 +448,16 @@ function on_game_start()
 		local ok_swap, err_swap = pcall(swap_use_callback)
 		if not ok_swap then log("! use callback swap failed: %s", tostring(err_swap)) end
 	end
+	if not api then return end
+	local ok_reg, err_reg = pcall(function()
+		AddScriptCallback("coop_tent_placed") -- fired by the engine on the host (coop_checkpoint_sources.cpp)
+		RegisterScriptCallback("coop_tent_placed", on_tent_placed)
+		RegisterScriptCallback(USE_CALLBACK, on_item_use)
+		RegisterScriptCallback("physic_object_on_use_callback", on_physic_use)
+		RegisterScriptCallback("actor_on_first_update", on_first_update)
+		seed()
+	end)
+	if not ok_reg then log("! registering the callbacks failed: %s", tostring(err_reg)) end
 end
 
 -- Load time (before any on_game_start): the wrappers are in place before anybody looks the functions up.

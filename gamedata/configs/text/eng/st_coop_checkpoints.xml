@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="windows-1251"?>
-<!-- Anomaly Coop - checkpoints (F3): the host refused a tent / sleeping bag claim (coop_checkpoint_refused, engine coop_checkpoint_sources.cpp). -->
+<!-- Anomaly Coop - checkpoints (F3): the host refused a tent / sleeping bag claim (coop_checkpoint_refused, engine coop_checkpoint_sources.cpp); F3 T13 adds the tips and PDA hints of scripts\coop_checkpoints.script. -->
 <string_table>
 	<string id="st_coop_cp_refused_limit">
 		<text>You already have as many tents and sleeping bags in the world as a player may. Pack one up first.</text>
@@ -9,5 +9,56 @@
 	</string>
 	<string id="st_coop_cp_refused_failed">
 		<text>The host could not do it. Nothing has changed.</text>
+	</string>
+	<string id="st_coop_cp_updated_campfire">
+		<text>Camp updated: campfire.</text>
+	</string>
+	<string id="st_coop_cp_updated_rest">
+		<text>Camp updated: resting place.</text>
+	</string>
+	<string id="st_coop_cp_updated_tent">
+		<text>Camp updated: your tent or sleeping bag.</text>
+	</string>
+	<string id="st_coop_cp_updated_arrival">
+		<text>Camp updated: arrival point.</text>
+	</string>
+	<string id="st_coop_cp_updated_story">
+		<text>Camp updated: story checkpoint.</text>
+	</string>
+	<string id="st_coop_cp_updated_mod">
+		<text>Camp updated: a place marked by a mod.</text>
+	</string>
+	<string id="st_coop_cp_rollback">
+		<text>The place of your camp is gone. You are back at the previous camp.</text>
+	</string>
+	<string id="st_coop_cp_rollback_none">
+		<text>The place of your camp is gone. You have no camp now.</text>
+	</string>
+	<string id="st_coop_cp_ally">
+		<text>Camp of %s</text>
+	</string>
+	<string id="st_coop_cp_spot">
+		<text>Your camp</text>
+	</string>
+	<string id="st_coop_cp_panel">
+		<text>camp</text>
+	</string>
+	<string id="st_coop_cp_refused_combat">
+		<text>You cannot set up camp while enemies are after you.</text>
+	</string>
+	<string id="st_coop_cp_refused_dead">
+		<text>A dead player cannot set up camp.</text>
+	</string>
+	<string id="st_coop_cp_refused_far">
+		<text>That spot is out of your reach.</text>
+	</string>
+	<string id="st_coop_cp_refused_far_pack">
+		<text>There is no tent or sleeping bag of yours within reach to pack up.</text>
+	</string>
+	<string id="st_coop_cp_claim_busy">
+		<text>Wait a moment before the next try.</text>
+	</string>
+	<string id="st_coop_cp_unsupported">
+		<text>This item cannot be set up in a co-op session.</text>
 	</string>
 </string_table>

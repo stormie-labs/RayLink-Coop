@@ -1,0 +1,536 @@
+--[[
+	Anomaly Coop - checkpoints on the Lua side (gamedata\scripts\coop_checkpoints.script), F3 task 13.
+	Spec: docs\CHECKPOINTS_DEATH.md section 2. The engine keeps the checkpoints (coop_checkpoints.cpp, host decides) and puts
+	tents up for clients (coop_checkpoint_sources.cpp); this script is what the player sees and the thing that asks.
+	Runs on every machine (a "view" script in configs\coop_domains_checkpoints.ltx). The item_tent side of the tents
+	(wrappers of the stock functions, the host's report of a stock tent) is coop_tent_guard.script.
+
+	1. Tips and PDA spots (engine callback coop_checkpoint_changed(local_id, kind, source, rollback, level)).
+	   The player's own camp: a tip st_coop_cp_updated_<kind> (st_coop_cp_rollback when the camp was lost and the previous one
+	   is used again) and a PDA spot (ui_pda2_actor_sleep_location, as the stock tent has) on its source. An ally's camp (the
+	   host shares them: coop_checkpoints_group): the same spot with his nick, no tip. A spot is moved when the source
+	   changes; one source has one spot however many players camp there. Arrival points and story checkpoints have no spot
+	   (plan decision 7). A spot that already exists (the stock tent's, a replicated one) is left as it is and not removed.
+	   NOTE: the engine shares every map spot that is not of a "coop_*" type (coop_story.cpp, spot_type_local), so these
+	   spots reach the other players whatever the group setting says.
+	   The callback queue of the engine is shared and bounded, a lost callback is not sent again: when a world is entered
+	   (actor_on_first_update) all checkpoints are read again with coop.checkpoint.get. The host's list that follows the
+	   entry repeats what is known, so for 6 s (ENTRY_QUIET_MS) the first record of a player and an unchanged one are no news
+	   (no tip, no panel mark). Every incoming player also gets coop_checkpoint_changed(0, "none", -1, ...): normal.
+
+	2. Story checkpoints: the stock xr_effects.scenario_autosave (an empty function in stock, ~30 calls from the story
+	   logic; a save in some mods) is replaced in a session: the host calls coop.checkpoint.story(<save name>), a client does
+	   nothing, and no console command is run. Outside a session the original function runs.
+
+	3. Claims of a client (the host puts the tent up and takes the item, Ruling F3-6): request(what, delay_ms) with what
+	   "tent" | "sleepbag" | "pack". The client never touches the item. One claim at a time. It ends by the host's answer: the
+	   camp on a tent (coop_checkpoint_changed with kind tent), the item arriving (pack-up), a refusal
+	   (coop_checkpoint_refused(reason, what): st_coop_cp_refused_<reason>), or after about 5 s with nothing (a lost callback; no
+	   tip, nothing was taken). reason "far" for a pack-up also means "no tent of yours here" (its own text).
+
+	API for other scripts:
+		coop_checkpoints.last_update(local_id) -> time_global() ms of his last checkpoint change | nil
+		coop_checkpoints.item_kind(section) -> "tent" | "sleepbag" | "pack" | nil   (stock lists of itms_manager.ltx)
+		coop_checkpoints.object_kind(section) -> "tent" | "sleepbag" | nil          (ph_tent, ph_sleepbag)
+		coop_checkpoints.placeable(kind) -> bool       (the ltx switch use_placeable)
+		coop_checkpoints.request(what, delay_ms) -> bool        client: a claim after delay_ms
+		coop_checkpoints.report_placed(kind, id) -> bool        host: the stock put object `id` up, it is the host's camp
+		coop_checkpoints.own_tent_source() -> id | nil          the tent or sleeping bag that is my camp
+		coop_checkpoints.tell(key [, close_menu]) -> text       a tip st_coop_cp_<key>
+		coop_checkpoints.text(key, ...) -> text                 st_coop_cp_<key> with %s filled in order
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local tostring, tonumber, type, pairs, ipairs, pcall, next = tostring, tonumber, type, pairs, ipairs, pcall, next
+local string_format, math_sqrt = string.format, math.sqrt
+
+-- The spot of the stock tent and sleeping bag (map_spots.xml); text is the hint.
+local SPOT_TYPE = "ui_pda2_actor_sleep_location"
+local ENTRY_QUIET_MS = 6000 -- after a world is entered the host's list repeats what is known
+local RESPONSE_MS = 5000 -- the host's answer to a claim (it comes in a frame or two; a callback may be lost)
+local SCHEDULE_MS = 15000 -- a claim not sent by now was lost (the delay is a few seconds at most)
+local TIP_SECONDS = 4
+local TENT_DISTANCE = 3 -- stock: the tent stands 3 m ahead of the player
+local MAX_REASON = 128 -- the engine takes a story reason of at most 128 bytes
+
+local TIP_KINDS = { campfire = true, rest = true, tent = true, arrival = true, story = true, mod = true }
+local SPOT_KINDS = { campfire = true, rest = true, tent = true, mod = true } -- arrival and story have no spot (plan decision 7)
+local REASONS = { dead = true, far = true, combat = true, limit = true, no_item = true, failed = true }
+local WHATS = { tent = true, sleepbag = true, pack = true }
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-checkpoints] %s", ok and line or tostring(fmt))
+end
+
+-------------------------------------------------------------------------------
+-- Session
+-------------------------------------------------------------------------------
+local function in_session()
+	if not api then return false end
+	local ok, active = pcall(api.is_active)
+	return ok and active == true
+end
+
+local function is_host()
+	if not in_session() then return false end
+	local ok, host = pcall(api.is_host)
+	return ok and host == true
+end
+
+local function is_client()
+	if not in_session() then return false end
+	local ok, client = pcall(api.is_client)
+	return ok and client == true
+end
+
+local function checkpoint_api()
+	local cp = api and api.checkpoint
+	return type(cp) == "table" and cp or nil
+end
+
+local function players()
+	if not api then return {} end
+	local ok, list = pcall(api.players)
+	return ok and type(list) == "table" and list or {}
+end
+
+-------------------------------------------------------------------------------
+-- Texts and tips
+-------------------------------------------------------------------------------
+-- st_coop_cp_<key> with %s filled in order (no string.format: translations may contain other %).
+function text(key, ...)
+	local id = "st_coop_cp_" .. tostring(key)
+	local s = tostring(game and game.translate_string and game.translate_string(id) or id)
+	local n = select("#", ...)
+	if n > 0 then
+		local args, i = { ... }, 0
+		s = s:gsub("%%s", function()
+			i = i + 1
+			return tostring(args[i] == nil and "" or args[i])
+		end)
+	end
+	return s
+end
+
+-- A tip over the game (actor_menu.set_msg, like the other co-op hints). The tip is drawn behind the inventory window: a tip
+-- that answers something the player has just done closes it first (itms_manager does the same before its set_msg).
+function tell(key, close_menu)
+	local msg = text(key)
+	if close_menu then pcall(function() utils_xml.hide_menu() end) end
+	local am = rawget(_G, "actor_menu")
+	if am and am.set_msg then pcall(am.set_msg, 1, msg, TIP_SECONDS) end
+	return msg
+end
+
+-------------------------------------------------------------------------------
+-- Item lists (stock: itms_manager.ini_manager; the host's engine reads the same lists to take the item)
+-------------------------------------------------------------------------------
+local lists = nil
+
+local function read_keys(ini, section, out)
+	if not ini:section_exist(section) then return false end
+	local any = false
+	for i = 0, ini:line_count(section) - 1 do
+		local _, key = ini:r_line(section, i, "", "")
+		if type(key) == "string" and key ~= "" then
+			out[key] = true
+			any = true
+		end
+	end
+	return any
+end
+
+local function get_lists()
+	if lists then return lists end
+	lists = {
+		tent_items = { itm_tent = true, tent_bag = true },
+		sleep_items = { itm_sleepbag = true, sleep_bag = true },
+		tent_objects = { ph_tent = true },
+		sleep_objects = { ph_sleepbag = true },
+		tent_placeable = true,
+		sleep_enabled = true,
+		sleep_placeable = true,
+	}
+	local ok, err = pcall(function()
+		local m = rawget(_G, "itms_manager") or itms_manager
+		local ini = m and m.ini_manager
+		if not ini then return end
+		for name, section in pairs({ tent_items = "tent_i_bag_sections", sleep_items = "sleeping_bag_sections",
+			tent_objects = "tent_i_bag_ph_sections", sleep_objects = "sleeping_bag_ph_sections" }) do
+			local set = {}
+			if read_keys(ini, section, set) then lists[name] = set end
+		end
+		lists.tent_placeable = ini:r_bool_ex("tent_i_bag", "use_placeable", true) ~= false
+		lists.sleep_enabled = ini:r_bool_ex("sleeping_bag", "enable", true) ~= false
+		lists.sleep_placeable = lists.sleep_enabled and ini:r_bool_ex("sleeping_bag", "use_placeable", true) ~= false
+	end)
+	if not ok then log("! reading the item lists failed, stock names are used: %s", tostring(err)) end
+	return lists
+end
+
+-- What an inventory item does: "tent" / "sleepbag" put one up, "pack" is what takes one down again.
+function item_kind(sec)
+	if type(sec) ~= "string" then return nil end
+	local L = get_lists()
+	if L.tent_items[sec] then return "tent" end
+	if L.sleep_enabled and L.sleep_items[sec] then return "sleepbag" end
+	if sec == "itm_tent_bag" or sec == "compression_bag" then return "pack" end
+	return nil
+end
+
+-- What a placed object is.
+function object_kind(sec)
+	if type(sec) ~= "string" then return nil end
+	local L = get_lists()
+	if L.tent_objects[sec] then return "tent" end
+	if L.sleep_enabled and L.sleep_objects[sec] then return "sleepbag" end
+	return nil
+end
+
+-- The ltx switch use_placeable: false means the stock uses the item right away instead of putting it up.
+function placeable(kind)
+	local L = get_lists()
+	if kind == "tent" then return L.tent_placeable end
+	if kind == "sleepbag" then return L.sleep_placeable end
+	return true
+end
+
+-------------------------------------------------------------------------------
+-- Checkpoints as this machine knows them, and the PDA spots
+-------------------------------------------------------------------------------
+local recs = {} -- local id (0 = me) -> { kind, source, level, spot = the source a spot reference is held on }
+local updated = {} -- local id -> time_global() of his last change
+local refs = {} -- source id -> { owners = { [local id] = true }, added = bool, hint }
+local quiet_until = 0 -- time_global() until which the host's list after a world entry is no news
+
+local function nick_of(lid)
+	for _, p in ipairs(players()) do
+		if p.avatar_id == lid then return tostring(p.nick or "?") end
+	end
+	return "?"
+end
+
+local function spot_hint(ent)
+	if ent.owners[0] then return text("spot") end
+	local first = nil
+	for lid in pairs(ent.owners) do
+		if first == nil or lid < first then first = lid end
+	end
+	return text("ally", nick_of(first))
+end
+
+-- true / false, nil when the engine cannot tell (map_has_object_spot returns a u16: 0 is a number, not false)
+local function spot_exists(id)
+	local f = level and level.map_has_object_spot
+	if type(f) ~= "function" then return nil end
+	local ok, r = pcall(f, id, SPOT_TYPE)
+	if not ok then return nil end
+	return r == true or (type(r) == "number" and r ~= 0)
+end
+
+local function add_spot(id, hint)
+	local f = level and level.map_add_object_spot_ser
+	if type(f) ~= "function" then return false end
+	local ok, err = pcall(f, id, SPOT_TYPE, hint)
+	if not ok then log("! map spot on %s failed: %s", tostring(id), tostring(err)) end
+	return ok
+end
+
+local function drop_spot(id)
+	local f = level and level.map_remove_object_spot
+	if type(f) == "function" then pcall(f, id, SPOT_TYPE) end
+end
+
+local function change_hint(id, hint)
+	local f = level and level.map_change_spot_hint
+	if type(f) == "function" then pcall(f, id, SPOT_TYPE, hint) end
+end
+
+-- Player `lid` camps at object `id`: one spot per source, added by the first one, with the hint of the strongest owner.
+local function link(lid, id)
+	local ent = refs[id]
+	if not ent then
+		ent = { owners = {}, added = false, hint = nil }
+		refs[id] = ent
+	end
+	ent.owners[lid] = true
+	local hint = spot_hint(ent)
+	if ent.added then
+		if ent.hint ~= hint then change_hint(id, hint) end
+	elseif spot_exists(id) ~= true then -- a spot of the stock or a replicated one stays as it is
+		ent.added = add_spot(id, hint)
+	end
+	ent.hint = hint
+end
+
+-- He no longer camps where the record says: the spot goes with its last owner (only a spot this script added).
+local function unlink(lid)
+	local rec = recs[lid]
+	local id = rec and rec.spot
+	if not id then return end
+	rec.spot = nil
+	local ent = refs[id]
+	if not ent then return end
+	ent.owners[lid] = nil
+	if next(ent.owners) == nil then
+		if ent.added then drop_spot(id) end
+		refs[id] = nil
+		return
+	end
+	local hint = spot_hint(ent)
+	if ent.added and ent.hint ~= hint then change_hint(id, hint) end
+	ent.hint = hint
+end
+
+local function put_record(lid, kind, source, lvl)
+	unlink(lid)
+	local rec = { kind = kind, source = source, level = lvl }
+	recs[lid] = rec
+	if source and SPOT_KINDS[kind] then
+		rec.spot = source
+		link(lid, source)
+	end
+end
+
+local function clear_record(lid)
+	unlink(lid)
+	recs[lid] = nil
+	updated[lid] = nil
+end
+
+-- coop.checkpoint.get(lid) -> kind, source (local id), level | nil
+local function read_record(lid)
+	local cp = checkpoint_api()
+	if not (cp and cp.get) then return nil end
+	local ok, r = pcall(cp.get, lid)
+	if not (ok and type(r) == "table" and type(r.kind) == "string") then return nil end
+	return r
+end
+
+function last_update(local_id)
+	return updated[local_id]
+end
+
+-- The tent or sleeping bag that is my camp now (the one a "use" of the object may pack up).
+function own_tent_source()
+	local rec = recs[0]
+	return rec and rec.kind == "tent" and rec.source or nil
+end
+
+-------------------------------------------------------------------------------
+-- Claims of a client
+-------------------------------------------------------------------------------
+local pending = nil -- { what, since, sent = time_global() of the send | nil, token }
+local token = 0
+
+-- Where the tent goes: 3 m ahead of the player on the ground (stock puts it there); a sleeping bag lies where he stands.
+local function claim_point(what, actor)
+	local p = actor:position()
+	local x, y, z = p.x, p.y, p.z
+	if what == "tent" then
+		local ok, d = pcall(actor.direction, actor)
+		if ok and d then
+			local len = math_sqrt(d.x * d.x + d.z * d.z)
+			if len > 0.001 then
+				x = x + d.x / len * TENT_DISTANCE
+				z = z + d.z / len * TENT_DISTANCE
+			end
+		end
+	end
+	return x, y, z
+end
+
+local function send_claim(my)
+	local p = pending
+	if not p or p.token ~= my or p.sent then return end
+	local actor = db.actor
+	local cp = checkpoint_api()
+	if not (cp and cp.claim_tent and actor and actor:alive() and is_client()) then
+		pending = nil
+		return
+	end
+	local x, y, z = claim_point(p.what, actor)
+	local ok, sent = pcall(cp.claim_tent, x, y, z, p.what)
+	if ok and sent == true then
+		p.sent = time_global()
+	else
+		pending = nil
+		tell("claim_busy", true)
+	end
+end
+
+-- Client: ask the host to put a tent / sleeping bag up or to pack mine up, after `delay_ms` (the put-up animation). The item
+-- stays where it is: the host takes it when it has put the tent up. False when something is still waiting for the host,
+-- or the engine has no claims.
+function request(what, delay_ms)
+	if not WHATS[what] or not is_client() then return false end
+	local cp = checkpoint_api()
+	if not (cp and cp.claim_tent) then
+		tell("unsupported", true) -- an exe without claims: the item is not touched, the player knows why nothing happens
+		return false
+	end
+	if pending then
+		tell("claim_busy", true)
+		return false
+	end
+	token = token + 1
+	local my = token
+	pending = { what = what, since = time_global(), sent = nil, token = my }
+	local delay = tonumber(delay_ms) or 0
+	if delay < 0 then delay = 0 end
+	CreateTimeEvent("coop_checkpoints", "claim_" .. my, delay / 1000, function()
+		local ok, err = pcall(send_claim, my)
+		if not ok then
+			log("! claim failed: %s", tostring(err))
+			if pending and pending.token == my then pending = nil end
+		end
+		return true
+	end)
+	return true
+end
+
+-- Host: the stock item_tent put object `id` up for the host: tell the engine it is the host's camp. The engine takes the
+-- nearest new tent of this kind at that spot nobody owns.
+function report_placed(kind, id)
+	if not (is_host() and WHATS[kind] and kind ~= "pack") then return false end
+	local cp = checkpoint_api()
+	if not (cp and cp.claim_tent) then return false end
+	local se = alife_object(id)
+	local pos = se and se.position
+	if not pos then return false end
+	local ok, sent = pcall(cp.claim_tent, pos.x, pos.y, pos.z, kind)
+	return ok and sent == true
+end
+
+-------------------------------------------------------------------------------
+-- Engine callbacks
+-------------------------------------------------------------------------------
+-- The camp of a player changed: coop_checkpoint_changed(local_id, kind, source local id or -1, rollback, level or nil).
+-- kind "none": he has none (rolled back to nothing, gone, no longer shared; also the first message of every player who
+-- comes into the world).
+local function on_changed(lid, kind, source, rollback, lvl)
+	if type(lid) ~= "number" or type(kind) ~= "string" then return end
+	rollback = rollback == true
+	if kind == "none" then
+		local had = recs[lid] ~= nil
+		clear_record(lid)
+		if lid == 0 and rollback and had then tell("rollback_none") end
+		return
+	end
+	if not TIP_KINDS[kind] then return end
+	if type(source) ~= "number" or source < 0 or source >= 65535 then source = nil end
+	local now = time_global()
+	local old = recs[lid]
+	if now < quiet_until and not rollback
+		and (old == nil or (old.kind == kind and old.source == source and old.level == lvl)) then
+		-- the list the host sends when a world is entered: what is known again, or the first we hear of him
+		if not old then put_record(lid, kind, source, lvl) end
+		return
+	end
+	put_record(lid, kind, source, lvl)
+	updated[lid] = now
+	if lid ~= 0 then return end
+	if kind == "tent" and not rollback and pending and pending.sent and pending.what ~= "pack" then
+		pending = nil -- the answer to my claim
+	end
+	tell(rollback and "rollback" or ("updated_" .. kind))
+end
+
+-- The host refused my claim: coop_checkpoint_refused(reason, what).
+local function on_refused(reason, what)
+	pending = nil
+	local r = REASONS[reason] and reason or "failed"
+	if r == "far" and what == "pack" then r = "far_pack" end -- nothing of mine within reach
+	tell("refused_" .. r, true)
+end
+
+-- Packing up has no answer of its own: the item comes back into the inventory.
+local function on_item_take(obj)
+	if not (pending and pending.sent and pending.what == "pack") then return end
+	local ok, sec = pcall(function() return obj:section() end)
+	local kind = ok and item_kind(sec) or nil
+	if kind == "tent" or kind == "sleepbag" then pending = nil end
+end
+
+local function on_update()
+	local p = pending
+	if not p then return end
+	local now = time_global()
+	if p.sent and now - p.sent > RESPONSE_MS then
+		log("no answer of the host to the %s claim in %d s, the wait ends (the item was not touched)", p.what, RESPONSE_MS / 1000)
+		pending = nil
+	elseif not p.sent and now - p.since > SCHEDULE_MS then
+		pending = nil
+	end
+end
+
+-- A world is entered (a load, a level change): the old records belong to the old world. Read everything again.
+local wrap_story -- below
+
+local function on_first_update()
+	recs, updated, refs, pending = {}, {}, {}, nil
+	quiet_until = time_global() + ENTRY_QUIET_MS
+	local own = read_record(0)
+	if own then put_record(0, own.kind, tonumber(own.source), own.level) end
+	for _, p in ipairs(players()) do
+		local lid = p.avatar_id
+		if not p.is_self and type(lid) == "number" and lid > 0 then
+			local r = read_record(lid)
+			if r then put_record(lid, r.kind, tonumber(r.source), r.level) end
+		end
+	end
+	wrap_story()
+end
+
+-------------------------------------------------------------------------------
+-- Story checkpoints
+-------------------------------------------------------------------------------
+local story_orig = nil
+local story_wrapper
+
+-- xr_effects.scenario_autosave(actor, npc, {save name}): in a session the host sets a story checkpoint for every living
+-- player (the reason is the save name, only logged), a client does nothing, nobody saves. Outside a session: stock.
+story_wrapper = function(actor, npc, p)
+	if in_session() then
+		if is_host() then
+			local cp = checkpoint_api()
+			if cp and cp.story then
+				local reason = type(p) == "table" and p[1] or nil
+				if type(reason) ~= "string" then
+					reason = nil
+				elseif #reason > MAX_REASON then
+					reason = reason:sub(1, MAX_REASON)
+				end
+				local ok, err = pcall(cp.story, reason)
+				if not ok then log("! story checkpoint failed: %s", tostring(err)) end
+			end
+		end
+		return
+	end
+	if story_orig then return story_orig(actor, npc, p) end
+end
+
+wrap_story = function()
+	if not api then return end
+	local ok, xe = pcall(function() return rawget(_G, "xr_effects") or xr_effects end)
+	if not (ok and type(xe) == "table") then return end
+	local cur = xe.scenario_autosave
+	if type(cur) ~= "function" or cur == story_wrapper then return end
+	story_orig = cur -- a mod that replaced it after us is wrapped again, keeping what it did
+	xe.scenario_autosave = story_wrapper
+end
+
+-------------------------------------------------------------------------------
+function on_game_start()
+	if not api then return end
+	AddScriptCallback("coop_checkpoint_changed") -- fired by the engine (coop_checkpoints.cpp)
+	AddScriptCallback("coop_checkpoint_refused") -- fired by the engine (coop_checkpoint_sources.cpp)
+	RegisterScriptCallback("coop_checkpoint_changed", on_changed)
+	RegisterScriptCallback("coop_checkpoint_refused", on_refused)
+	RegisterScriptCallback("actor_on_first_update", on_first_update)
+	RegisterScriptCallback("actor_on_update", on_update)
+	RegisterScriptCallback("actor_on_item_take", on_item_take)
+	wrap_story()
+end

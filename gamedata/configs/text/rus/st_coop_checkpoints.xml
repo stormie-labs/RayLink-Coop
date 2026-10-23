@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="windows-1251"?>
-<!-- Anomaly Coop - checkpoints (F3): the host refused a tent / sleeping bag claim (coop_checkpoint_refused, engine coop_checkpoint_sources.cpp). -->
+<!-- Anomaly Coop - checkpoints (F3): the host refused a tent / sleeping bag claim (coop_checkpoint_refused, engine coop_checkpoint_sources.cpp); F3 T13 adds the tips and PDA hints of scripts\coop_checkpoints.script. -->
 <string_table>
 	<string id="st_coop_cp_refused_limit">
 		<text>У вас в мире уже столько палаток и спальников, сколько можно игроку. Сначала сверните одну.</text>
@@ -9,5 +9,56 @@
 	</string>
 	<string id="st_coop_cp_refused_failed">
 		<text>Хосту не удалось это сделать. Ничего не изменилось.</text>
+	</string>
+	<string id="st_coop_cp_updated_campfire">
+		<text>Привал обновлён: костёр.</text>
+	</string>
+	<string id="st_coop_cp_updated_rest">
+		<text>Привал обновлён: место отдыха.</text>
+	</string>
+	<string id="st_coop_cp_updated_tent">
+		<text>Привал обновлён: ваша палатка или спальник.</text>
+	</string>
+	<string id="st_coop_cp_updated_arrival">
+		<text>Привал обновлён: точка прибытия.</text>
+	</string>
+	<string id="st_coop_cp_updated_story">
+		<text>Привал обновлён: сюжетный момент.</text>
+	</string>
+	<string id="st_coop_cp_updated_mod">
+		<text>Привал обновлён: место, отмеченное модом.</text>
+	</string>
+	<string id="st_coop_cp_rollback">
+		<text>Место вашего привала пропало. Вы вернулись к предыдущему привалу.</text>
+	</string>
+	<string id="st_coop_cp_rollback_none">
+		<text>Место вашего привала пропало. Привала у вас больше нет.</text>
+	</string>
+	<string id="st_coop_cp_ally">
+		<text>Привал: %s</text>
+	</string>
+	<string id="st_coop_cp_spot">
+		<text>Ваш привал</text>
+	</string>
+	<string id="st_coop_cp_panel">
+		<text>привал</text>
+	</string>
+	<string id="st_coop_cp_refused_combat">
+		<text>Нельзя ставить привал, пока за вами охотятся.</text>
+	</string>
+	<string id="st_coop_cp_refused_dead">
+		<text>Мёртвый игрок не может ставить привал.</text>
+	</string>
+	<string id="st_coop_cp_refused_far">
+		<text>Это место вне досягаемости.</text>
+	</string>
+	<string id="st_coop_cp_refused_far_pack">
+		<text>Рядом нет вашей палатки или спальника, чтобы свернуть.</text>
+	</string>
+	<string id="st_coop_cp_claim_busy">
+		<text>Подождите немного перед следующей попыткой.</text>
+	</string>
+	<string id="st_coop_cp_unsupported">
+		<text>Этот предмет нельзя поставить в кооперативной сессии.</text>
 	</string>
 </string_table>
