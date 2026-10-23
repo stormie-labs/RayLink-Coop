@@ -377,18 +377,18 @@ function UICoopParty:InitControls()
 				flash = el(xml:InitStatic("team_row:bar", b)),
 			}
 		end
-		r.name_sh = el(xml:InitTextWnd("team_row:text", b))
-		r.name = el(xml:InitTextWnd("team_row:text", b))
+		r.name_sh = el(xml:InitTextWnd("team_row:label", b))
+		r.name = el(xml:InitTextWnd("team_row:label", b))
 		r.host = el(xml:InitStatic("team_row:icon", b))
-		r.dist_sh = el(xml:InitTextWnd("team_row:text", b))
-		r.dist = el(xml:InitTextWnd("team_row:text", b))
+		r.dist_sh = el(xml:InitTextWnd("team_row:label", b))
+		r.dist = el(xml:InitTextWnd("team_row:label", b))
 		r.arrow = el(xml:InitStatic("team_row:arrow", b))
 		r.arcs = {}
 		for k = 1, ARCS do r.arcs[k] = el(xml:InitStatic("team_row:arc", b)) end
 		r.icon = el(xml:InitStatic("team_row:icon", b))
-		r.timer_sh = el(xml:InitTextWnd("team_row:text", b))
-		r.timer = el(xml:InitTextWnd("team_row:text", b))
-		r.measure = xml:InitTextWnd("team_row:text", b)
+		r.timer_sh = el(xml:InitTextWnd("team_row:label", b))
+		r.timer = el(xml:InitTextWnd("team_row:label", b))
+		r.measure = xml:InitTextWnd("team_row:label", b)
 		r.measure:Show(false)
 		set_tex(r.host, "coop_hud_star")
 		for k = 1, ARCS do

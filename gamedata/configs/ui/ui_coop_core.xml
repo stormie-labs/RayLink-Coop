@@ -45,16 +45,17 @@
 	     left above the own HUD. These nodes give the textures and fonts; the script places and sizes everything from the
 	     layout table (scripts\coop_hud_layout.script team_*, one line per value in [coop_hud_layout] of
 	     configs\mod_system_coop.ltx) and sets colours and alphas (player colours: [coop_player_colors]).
-	     bar: the colour strip and the health segments; text: nick, distance, timer (with their shadows); icon: host
+	     bar: the colour strip and the health segments; label: nick, distance, timer (with their shadows; not
+	     named `text`: InitStatic("team_row") would read it as the row's own font node and FATAL on pTmpFont); icon: host
 	     star and the state icon; arrow and arc turn (heading="1": the box stays square, the engine applies the aspect).
 	     Textures: configs\ui\textures_descr\ui_coop_hud.xml (tools\make_hud_atlas.py). -->
 	<team_row x="0" y="0" width="1" height="1">
 		<bar x="0" y="0" width="30" height="5" stretch="1">
 			<texture>coop_hud_white</texture>
 		</bar>
-		<text x="0" y="0" width="100" height="14">
+		<label x="0" y="0" width="100" height="14">
 			<text complex_mode="0" r="244" g="245" b="246" align="l" vert_align="c" font="letterica16"/>
-		</text>
+		</label>
 		<icon x="0" y="0" width="12" height="12" stretch="1">
 			<texture>coop_hud_dot</texture>
 		</icon>
