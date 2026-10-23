@@ -35,4 +35,15 @@ RegisterScriptCallback("actor_on_update", from_script("house_of_horrors_configs"
 SendScriptCallback("actor_on_update")
 check(RAN.addon_upd == true, "an unlisted script without world calls runs on actor_on_update on a client (owner)")
 check(RAN.hoh_cfg_upd == nil, "house_of_horrors_configs is host-only on a client whatever the callback (its rule)")
+-- FDDA Redone (GAMMA, liz_fdda_redone_*): animations of the local actor. Its consumables part creates and eats a dummy
+-- item (world calls: the generator made it host), but its backpack part runs on a client and reads the consumables'
+-- ini, which on_game_load fills. Host-only, the ini stayed an empty table there: lam2 failed every frame, the backpack
+-- stayed in the hands and only the move keys worked (live, 2026-10-23). configs\coop_compat_fdda.ltx makes it owner.
+AddScriptCallback("on_game_load")
+RegisterScriptCallback("on_game_load", from_script("liz_fdda_redone_consumables", "return function() RAN.fdda_load = true end"))
+RegisterScriptCallback("on_option_change", from_script("liz_fdda_redone_consumables", "return function() RAN.fdda_opt = true end"))
+SendScriptCallback("on_game_load")
+SendScriptCallback("on_option_change")
+check(RAN.fdda_load == true and RAN.fdda_opt == true,
+	"liz_fdda_redone_consumables gets on_game_load / on_option_change on a client (coop_compat_fdda.ltx: owner)")
 done("DOMAINS")

@@ -1,0 +1,14 @@
+; Anomaly Coop - FDDA Redone (lizzardman, in GAMMA): food, drug, drink and backpack animations of the local actor. Read
+; after every coop_route*.ltx (coop_route.ltx explains the order), so it wins over the generated coop_route_gamma.ltx.
+;
+; liz_fdda_redone_consumables creates and eats a dummy item (alife_create_item "items_anm_dummy"), so the generator
+; made it host (Ruling F2-29). But its parts are not separable: liz_fdda_redone_backpack (no rule, owner by its
+; callbacks) and its own file-level patches of itms_manager / ui_inventory run on a client and read the ini that only
+; its on_game_load / on_option_change fill. Host-only, that ini stayed an empty table on a client: lam2 failed every
+; frame in get_template_action_play_animation_fdda_config, the backpack stayed in the hands and only the move keys
+; worked (live on the GAMMA stand, 2026-10-23). Owner: every machine animates its own actor. Since F2 T12 the call
+; router refuses the dummy's alife_create on a client (logged), and FDDA's eat of a missing dummy is a logged no-op
+; (CScriptGameObject::eat checks for nil), so nothing is duplicated.
+
+[route_scripts]
+liz_fdda_redone_consumables = owner

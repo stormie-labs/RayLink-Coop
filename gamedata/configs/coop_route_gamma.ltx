@@ -14,7 +14,7 @@
 ; that script its own rule in a configs\coop_compat_<mod>.ltx: those are read last and win over this file, and
 ; the next run of the generator leaves the script out.
 ; Generated 2026-10-23 from E:\AnomalyCoopGamma\gamedata\scripts (keys already in coop_route_stock.ltx left out):
-;   1121 scripts, 184 call world functions, 79 of those have a rule; 105 below (75 register a handler
+;   1125 scripts, 184 call world functions, 80 of those have a rule; 104 below (74 register a handler
 ;   literally, the others are routed when somebody else registers their functions).
 ; Comment of a line: world calls in the file | literal registrations (unique_call / time_event: timers).
 
@@ -59,7 +59,6 @@ keep_guns_on_bodies                      = host   ;   1 | -
 kit_binder                               = host   ;   7 | -
 lc_custom                                = host   ;   4 | actor_on_first_update
 lc_extra_transitions                     = host   ;   4 | actor_on_first_update load_state on_option_change save_state +1
-liz_fdda_redone_consumables              = host   ;   2 | actor_on_first_update on_before_key_press on_game_load on_option_change
 magnifier_switch                         = host   ;   2 | actor_item_to_slot actor_on_changed_slot actor_on_first_update actor_on_hud_animation_end +13
 meat_spoiling                            = host   ;   3 | actor_on_first_update actor_on_item_take actor_on_item_use load_state +2
 mosin_carbine_reload_script              = host   ;   1 | actor_on_first_update actor_on_hud_animation_mark actor_on_hud_animation_play time_event
