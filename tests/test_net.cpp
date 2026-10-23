@@ -1362,14 +1362,17 @@ TEST(host_drops_transport_connection_that_never_says_hello)
 
 TEST(nicknames_are_sanitized)
 {
-	Node host("", 37040), a("\x01" "Al\x07" "ice\x7F", 37040), b("", 37040), c("", 37040);
+	Node host("", 37040), a("\x01" "Al\x07" "ice\x7F", 37040), b("", 37040), c("", 37040), d("Bo\"b", 37040);
 	c.cfg.nick = std::string(47, 'a') + "\xD0\xBF"; // 49 bytes, the last character would be cut in half
-	start_and_join(host, {&a, &b, &c}, 37040);
+	start_and_join(host, {&a, &b, &c, &d}, 37040);
 	CHECK_EQ(a.welcome.host_nick, std::string("Host")); // empty host nick gets a default
-	REQUIRE(host.joined.size() == 3);
+	REQUIRE(host.joined.size() == 4);
 	CHECK_EQ(host.joined[0].nick, std::string("Alice"));
 	CHECK_EQ(host.joined[1].nick, std::string("Player2")); // default is derived from the slot
 	CHECK_EQ(host.joined[2].nick, std::string(47, 'a'));
+	// L-1 report: the nick goes unquoted into the proxy's custom data ([coop] nick = ...); an odd '"' left CInifile reading
+	// to the end of the text and the proxy's net_Spawn hit an R_ASSERT on the host
+	CHECK_EQ(host.joined[3].nick, std::string("Bob"));
 }
 
 TEST(peer_info_reports_rtt_and_loss)
