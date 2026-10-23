@@ -2,8 +2,9 @@
 -- death marker spots), the host rules on the "Co-op" options page (scripts\coop_menu_options.script) and the string
 -- tables configs\text\{eng,rus}\st_coop_death.xml. Not shipped. Run: tools\test_lua.cmd death
 --
--- The engine is a stand-in: the callbacks coop_respawned(kind, contusion_s, money_pct, rank_pct) (owner only) and
--- coop_death_marker(player_local_id, marker_local_id, "drop" | "corpse") (every machine) are fired by hand; level.* effectors
+-- The engine is a stand-in: the callbacks coop_respawned(kind, contusion_s, money_pct, rank_pct, seq) (owner only) and
+-- coop_death_marker(player_local_id, marker_local_id, "drop" | "corpse") (every machine; the marks are the host's) are
+-- fired by hand; level.* effectors
 -- and map spots, the actor (money, rank, reputation, conditions) and the server world (SE / OBJ of stubs_mods.lua) are
 -- recorders. The host takes the money of a death itself (death::host_take_money): the actor stand-in fails any test that
 -- lets Lua touch the balance.
@@ -341,6 +342,19 @@ case("contusion_fall_numbers", function()
 	for i = 1, 400 do respawned("campfire", 0, 0, 0, i) end
 	for i = 301, 400 do respawned("campfire", 0, 0, 10, i) end
 	check(RANK == 3000, "the last 100 falls are still remembered after 400 (the memory is cleared only when it is full)")
+end)
+
+case("contusion_new_session_same_world", function()
+	-- N-1 of the T15 re-review: coop_disconnect, then coop_host again on the same level: no new world, but the engine's
+	-- fall counter starts again; the first fall of the second session is not the old fall 1
+	fresh("host")
+	respawned("campfire", 0, 0, 10, 1)
+	check(RANK == 2700, "fall 1 of the first session")
+	MODE = "sp"
+	advance(1000) -- an update without a session (nothing else running: no contusion, no marks)
+	MODE = "host"
+	respawned("campfire", 0, 0, 10, 1)
+	check(RANK == 2430, "fall 1 of the next session on the same level is a new fall")
 end)
 
 case("contusion_survives_a_level_change_not_a_new_state", function()

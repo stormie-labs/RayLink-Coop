@@ -3,9 +3,10 @@
 	Spec: docs\CHECKPOINTS_DEATH.md section 3. The host decides everything that matters (coop_survival.cpp, coop_death.cpp: who
 	falls, what is lost, the money, the respawn point); this script is what the dead player's own screen shows afterwards, and the
 	PDA marks of the group. It runs on every machine (an "owner" script in configs\coop_route_f3.ltx): the contusion and the
-	penalty texts only on the machine of the player who stood up, the marks everywhere.
+	penalty texts only on the machine of the player who stood up; the marks on the host only (its spots reach the clients
+	through coop_story's spot replication, round 1 of the T15 review M-2/M-3).
 
-	1. Respawn, coop_respawned(kind, contusion_s, money_pct, rank_pct) - fired by the engine on the owner only, when the player
+	1. Respawn, coop_respawned(kind, contusion_s, money_pct, rank_pct, seq) - fired by the engine on the owner only, when the player
 	   stands up at his camp (kind: campfire | rest | tent | arrival | story | mod | none).
 	   - A tip st_coop_respawned_<kind>.
 	   - Contusion, for contusion_s seconds (host rule coop_contusion): the post-process effector blur.ppe (id 39570) with a
@@ -505,6 +506,9 @@ end
 -- Engine callbacks
 -------------------------------------------------------------------------------
 local function on_update()
+	-- N-1 of the T15 re-review: a session can end and another start on the same level (coop_disconnect, coop_host):
+	-- no new world, but the engine counts the falls from 0 again, so the numbers of the old session go with it
+	if handled_count > 0 and not in_session() then handled, handled_count = {}, 0 end
 	if contusion == nil and next(markers) == nil then return end
 	local now = time_global()
 	if not in_session() then -- the session is over: the contusion and the marks were of the session
