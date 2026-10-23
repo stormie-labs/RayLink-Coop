@@ -1138,6 +1138,8 @@ bool timer_due(Schedule& s, uint64_t now_ms, uint32_t interval_min, bool busy, u
 
 ### Task 14: Lua shared sleep — stock sleep dialog in co-op, doze window, prompts, sleep effects
 
+> **Carry from F3 T13 (2026-10-23):** a client's sleeping bag cannot be folded by «use» (use = sleep). Add a «Fold» button to the sleep window that calls `coop_checkpoints.pack_nearby(at)` with the bag's position (T13 review M-11: the `pack` claim has no kind or id, so pass the position of the bag the player sleeps in). Until then the per-client limit of 8 is a dead end for sleeping bags. Also M-12: if `db.actor:spawn_ini()` lacks `[coop] key` on a client, send the claim anyway and let the host check the owner.
+
 **Файлы:**
 - Создать:
   - `gamedata/scripts/coop_rest.script`, `gamedata/configs/ui/ui_coop_rest.xml`;
