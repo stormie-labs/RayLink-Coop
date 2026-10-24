@@ -917,6 +917,8 @@ namespace
 {
 using Peers = std::vector<uint32_t>;
 using Rows = std::vector<std::pair<uint32_t, bool>>;
+constexpr uint32_t kOldWorld = 1; // this machine's world generation (join::world_generation) at LoadWait Prepared
+constexpr uint32_t kNewWorld = 2; // ... once the transition's world is created
 } // namespace
 
 TEST(load_enter_together)
@@ -1008,15 +1010,15 @@ TEST(load_screen_holds_from_the_save_to_enter)
 {
 	LoadScreen sc;
 	CHECK(!sc.holds());
-	CHECK(sc.prepared(5, true, 1000)); // a remote client: the save comes as a blob
+	CHECK(sc.prepared(5, true, 1000, kOldWorld)); // a remote client: the save comes as a blob
 	CHECK(sc.stage == Load::Waiting);
 	CHECK(!sc.holds()); // still in the old world while the save comes
-	CHECK(!sc.world_up(1500)); // nothing to say before the save is loading
+	CHECK(!sc.world_up(1500, kNewWorld)); // nothing to say before the save is loading
 	CHECK(sc.loading()); // the save came, its load is issued
 	CHECK(!sc.loading());
 	CHECK(sc.holds());
-	CHECK(sc.world_up(20000)); // LoadReady now
-	CHECK(!sc.world_up(20001)); // once
+	CHECK(sc.world_up(20000, kNewWorld)); // LoadReady now
+	CHECK(!sc.world_up(20001, kNewWorld)); // once
 	CHECK(sc.stage == Load::Holding);
 	CHECK(sc.holds());
 	CHECK(!sc.enter(4, 30000)); // another epoch's Enter
@@ -1026,22 +1028,22 @@ TEST(load_screen_holds_from_the_save_to_enter)
 	CHECK(sc.stage == Load::Entering);
 	// an Enter that comes while the world still loads: the screen goes as soon as the world is up, without a hold
 	LoadScreen early;
-	early.prepared(7, true, 0);
+	early.prepared(7, true, 0, kOldWorld);
 	early.loading();
 	CHECK(early.enter(7, 100));
 	CHECK(early.stage == Load::Entering);
 	CHECK(!early.holds());
-	CHECK(!early.world_up(200));
+	CHECK(!early.world_up(200, kNewWorld));
 }
 
 TEST(load_screen_says_ready_again_until_enter)
 {
 	LoadScreen sc;
-	CHECK(sc.prepared(5, false, 0)); // the host player: his process loads the world itself
+	CHECK(sc.prepared(5, false, 0, kOldWorld)); // the host player: his process loads the world itself
 	CHECK(sc.stage == Load::Loading);
 	CHECK(sc.local);
 	CHECK(sc.holds());
-	CHECK(sc.world_up(1000));
+	CHECK(sc.world_up(1000, kNewWorld));
 	CHECK(!sc.repeat(1000 + kLoadReadyRepeatMs - 1));
 	CHECK(sc.repeat(1000 + kLoadReadyRepeatMs));
 	CHECK(!sc.repeat(1000 + kLoadReadyRepeatMs + 1));
@@ -1053,9 +1055,9 @@ TEST(load_screen_says_ready_again_until_enter)
 TEST(load_screen_enters_alone_only_after_the_server_world_was_up)
 {
 	LoadScreen sc;
-	sc.prepared(5, true, 0);
+	sc.prepared(5, true, 0, kOldWorld);
 	sc.loading();
-	sc.world_up(10000); // the client is up long before the host
+	sc.world_up(10000, kNewWorld); // the client is up long before the host
 	CHECK(!sc.alone(10000 + 600000)); // no word from the server's world: nobody plays in a world the host is not in
 	sc.waiting(5, Rows{{0, true}, {1, true}, {2, false}}, 50000); // the server's world is up, 2 is missing
 	CHECK_EQ(sc.host_up_at, uint64_t(50000));
@@ -1066,8 +1068,8 @@ TEST(load_screen_enters_alone_only_after_the_server_world_was_up)
 	CHECK(sc.alone(50000 + kLoadWaitMs + kLoadAloneGraceMs));
 	// the host player: his own world is the server's
 	LoadScreen h;
-	h.prepared(5, false, 0);
-	h.world_up(30000);
+	h.prepared(5, false, 0, kOldWorld);
+	h.world_up(30000, kNewWorld);
 	CHECK(!h.alone(30000 + kLoadWaitMs + kLoadAloneGraceMs - 1));
 	CHECK(h.alone(30000 + kLoadWaitMs + kLoadAloneGraceMs));
 	// not holding: nothing to let go
@@ -1078,9 +1080,9 @@ TEST(load_screen_enters_alone_only_after_the_server_world_was_up)
 TEST(load_screen_other_epochs_change_nothing)
 {
 	LoadScreen sc;
-	CHECK(sc.prepared(5, true, 0));
-	CHECK(!sc.prepared(5, true, 10)); // the same again
-	CHECK(!sc.prepared(4, true, 10)); // an older one
+	CHECK(sc.prepared(5, true, 0, kOldWorld));
+	CHECK(!sc.prepared(5, true, 10, kOldWorld)); // the same again
+	CHECK(!sc.prepared(4, true, 10, kOldWorld)); // an older one
 	sc.waiting(4, Rows{{2, false}}, 20);
 	CHECK_EQ(sc.host_up_at, uint64_t(0));
 	CHECK(sc.waiting_for.empty());
@@ -1089,7 +1091,7 @@ TEST(load_screen_other_epochs_change_nothing)
 	CHECK(sc.cancel(5));
 	CHECK(sc.stage == Load::None);
 	CHECK(!sc.holds());
-	CHECK(sc.prepared(6, true, 30)); // a newer transition starts over
+	CHECK(sc.prepared(6, true, 30, kOldWorld)); // a newer transition starts over
 	CHECK(sc.stage == Load::Waiting);
 	CHECK_EQ(sc.epoch, 6u);
 }
@@ -1097,7 +1099,7 @@ TEST(load_screen_other_epochs_change_nothing)
 TEST(load_screen_lost_save_asks_for_the_world)
 {
 	LoadScreen sc;
-	sc.prepared(5, true, 0);
+	sc.prepared(5, true, 0, kOldWorld);
 	sc.progress(5000);
 	CHECK(!sc.stalled(500000)); // the server's world is not up: its own load may be what holds the rest of the save
 	sc.waiting(5, Rows{{0, true}, {1, false}}, 60000);
@@ -1277,13 +1279,31 @@ TEST(board_vote_and_state_travel_the_gated_link)
 namespace
 {
 // engine/src/xrGame/coop/<name>, next to this source file (tests\ -> ..\engine\src\xrGame\coop)
-std::string coop_join_source()
+std::string coop_source(const char* name)
 {
 	std::string here = __FILE__;
 	const size_t slash = here.find_last_of("\\/");
 	here.resize(slash == std::string::npos ? 0 : slash);
-	std::ifstream f(here + "/../engine/src/xrGame/coop/coop_join.cpp", std::ios::binary);
+	std::ifstream f(here + "/../engine/src/xrGame/coop/" + name, std::ios::binary);
 	return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+std::string coop_join_source() { return coop_source("coop_join.cpp"); }
+
+// The text of the function whose definition starts with `head` (a declaration of it is skipped), up to its closing brace at
+// the start of a line; "" if none.
+std::string body_of(const std::string& src, const std::string& head)
+{
+	for (size_t at = src.find(head); at != std::string::npos; at = src.find(head, at + 1))
+	{
+		const size_t close = src.find(')', at);
+		const size_t next = close == std::string::npos ? std::string::npos : src.find_first_not_of(" \t\r\n", close + 1);
+		if (next == std::string::npos || src[next] != '{')
+			continue; // a declaration
+		const size_t end = src.find("\n}", at);
+		return src.substr(at, end == std::string::npos ? std::string::npos : end - at);
+	}
+	return std::string();
 }
 } // namespace
 
@@ -1297,4 +1317,117 @@ TEST(board_host_direct_path_gone)
 	CHECK(src.find("g.board.release(0)") == std::string::npos); // transition_step / transition_cancel's own release
 	CHECK(src.find("g.view = transition::state_message") == std::string::npos); // the host's placard from the board itself
 	CHECK(src.find("Msg::TransitionVote, w);") != std::string::npos); // every player votes with the message
+}
+
+// ---------------------------------------------------------------- F3a T8, fix round 1
+
+// R1 4: a frame of the old world never counts as the new world's readiness: the screen reaches Holding only in a world
+// created after its LoadWait Prepared (the host player's process still runs the old level for a frame or two after the go).
+TEST(load_screen_old_world_is_no_readiness)
+{
+	LoadScreen h;
+	CHECK(h.prepared(5, false, 0, kOldWorld)); // the host player: his process is still in the old world
+	CHECK(!h.world_up(100, kOldWorld)); // the old world is up: no LoadReady from it
+	CHECK(h.stage == Load::Loading);
+	CHECK(h.holds());
+	CHECK(h.world_up(30000, kNewWorld)); // the transition's world
+	CHECK(h.stage == Load::Holding);
+	LoadScreen c;
+	c.prepared(6, true, 0, kOldWorld);
+	c.loading();
+	CHECK(!c.world_up(500, kOldWorld));
+	CHECK(c.world_up(20000, kNewWorld));
+}
+
+// R1 3: the pump before the host's reload is done when the movers' saves are handed to the network. The session counts the
+// BlobChunk bytes it sends (2 bytes of type, 4 of blob id, then data); after the go's epoch move only the movers' saves
+// stream (every other blob is cut by the move and ends with no chunk more), so the data bytes sent since the pump began
+// reach the movers' total exactly when each mover's save is handed over (none can send more than its own size). Another
+// peer's cut blob ending (a BlobEnd) does not count.
+TEST(load_saves_handed_counts_the_movers_data_only)
+{
+	const uint64_t two_saves = 2000000 + 1500000;
+	const uint64_t chunks = (2000000 + 65535) / 65536 + (1500000 + 65535) / 65536;
+	CHECK(!saves_handed(0, 0, two_saves));
+	CHECK(saves_handed(two_saves + chunks * kBlobChunkHeader, chunks, two_saves)); // every chunk of both went out
+	// one save short of its last 100 bytes (sent in a chunk of its own): not yet, however many headers came with the rest
+	CHECK(!saves_handed(two_saves - 100 + (chunks - 1) * kBlobChunkHeader, chunks - 1, two_saves));
+	CHECK(!saves_handed(two_saves - 1 + chunks * kBlobChunkHeader, chunks, two_saves));
+	CHECK(saves_handed(0, 0, 0)); // nothing to hand over
+}
+
+// R1 5: the reload follows the go within a frame or two (MakeReconnect is a deferred engine event); frames that still run
+// kReloadWatchMs after the saves went out mean no reload is coming: the prepared load is called off, so a later unrelated
+// world is not taken for the transition's.
+TEST(load_reload_watchdog)
+{
+	CHECK(!reload_overdue(false, 1000, 1000 + kReloadWatchMs * 10)); // nothing pending
+	CHECK(!reload_overdue(true, 0, 999999)); // the pump has not ended
+	CHECK(!reload_overdue(true, 1000, 1000 + kReloadWatchMs - 1));
+	CHECK(reload_overdue(true, 1000, 1000 + kReloadWatchMs));
+	CHECK(kReloadWatchMs >= 5000 && kReloadWatchMs <= 30000);
+}
+
+// R1 6: the order of the go (host_prepare), read in the source: LoadWait Prepared to the movers while they are in the old
+// epoch, then the epoch, then their saves (a blob carries the epoch it is queued in), then the host player's LoadWait over
+// the link (a link packet of an older epoch is dropped). Each step of another order loses the message (tests above).
+TEST(load_go_order_in_the_source)
+{
+	const std::string go = body_of(coop_join_source(), "void host_prepare(");
+	REQUIRE(!go.empty());
+	const size_t to_movers = go.find("host_load_send(m.peer, prepared)");
+	const size_t epoch = go.find("s.set_world_epoch(epoch)");
+	const size_t saves = go.find("s.send_blob(m.peer, BlobPreparedSave");
+	const size_t to_host = go.find("host_load_send(kHostPeer, prepared)");
+	CHECK(to_movers != std::string::npos && epoch != std::string::npos && saves != std::string::npos &&
+	    to_host != std::string::npos);
+	CHECK(to_movers < epoch);
+	CHECK(epoch < saves);
+	CHECK(saves < to_host);
+}
+
+// R1 1: behind a held loading screen nobody plays: the stock "press any key" pauses the game, a session never pauses
+// (G18), so the hold itself keeps the player's actor out of harm (the CActor::Hit choke point) and the level from his input.
+TEST(load_held_screen_blocks_hits_and_input)
+{
+	const std::string hit = body_of(coop_source("coop_events.cpp"), "bool client_block_actor_hit(");
+	REQUIRE(!hit.empty());
+	const size_t first = hit.find('{');
+	const size_t held = hit.find("hold_loading_screen()");
+	CHECK(held != std::string::npos);
+	CHECK(held != std::string::npos && hit.find(';', first) > held); // the first statement of the hook
+	const std::string join = coop_join_source();
+	const std::string input = body_of(join, "void load_screen_input(");
+	CHECK(input.find("g_bDisableAllInput = true") != std::string::npos);
+	CHECK(input.find("DeactivateSoft") != std::string::npos);
+	const std::string step = body_of(join, "void player_load_step(");
+	CHECK(step.find("load_screen_input(g.screen.holds())") != std::string::npos);
+	CHECK(body_of(join, "void load_screen_off(").find("load_screen_input(false)") != std::string::npos);
+	CHECK(body_of(join, "void on_session_lost(").find("load_screen_input(false)") != std::string::npos);
+}
+
+// R1 2: the client's join time limit (kJoinTimeoutMs) measures his own download and load; a screen held for the others
+// starts it again (that wait has its own bound: the server's minute, then alone()).
+TEST(load_join_clock_restarts_on_the_held_screen)
+{
+	const std::string step = body_of(coop_join_source(), "void player_load_step(");
+	REQUIRE(!step.empty());
+	const size_t up = step.find("g.screen.world_up(now");
+	const size_t clock = step.find("g.receive_started = now");
+	CHECK(up != std::string::npos && clock != std::string::npos && up < clock);
+}
+
+// R1 5: the watchdog runs every frame on the host and calls the load off through the one way out (host_load_void); then
+// everybody rejoins this world by the world-change path (a SessionReset of the epoch the go gave: a player still in the
+// old epoch must hear it too, which a rejoin of the movers alone would miss).
+TEST(load_reload_watchdog_in_the_source)
+{
+	const std::string join = coop_join_source();
+	const std::string watch = body_of(join, "void host_load_watch(");
+	REQUIRE(!watch.empty());
+	CHECK(watch.find("reload_overdue(") != std::string::npos);
+	CHECK(watch.find("host_load_void(") != std::string::npos);
+	CHECK(watch.find("sync::host_begin_join(") != std::string::npos);
+	CHECK(watch.find("g.reset_pending = true") != std::string::npos);
+	CHECK(body_of(join, "void frame(").find("host_load_watch(") != std::string::npos);
 }
