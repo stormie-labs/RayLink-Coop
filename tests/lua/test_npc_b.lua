@@ -644,5 +644,44 @@ HF.set_enemy(hf)
 check(hf.picked == 500, "a kept target stays (no pick while flag_by_enemy is off)")
 H.env.heli_combat, H.env.heli_fire = nil, nil
 
+print("== coop_npc_compat: an old corpse near a client is not released (audit B6)")
+H, C, proxy, hav = pair()
+local RB = {}
+-- release_body_manager.script Crelease_body:clear L144-199: releases what lies >= dist (sq) from db.actor
+RB.clear = function(self, all, dist)
+	local pos = H.env.db.actor:position()
+	for id, v in pairs(self.release_objects_table) do
+		local se = H.env.alife():object(id)
+		if all or pos:distance_to_sqr(se.position) >= (dist or 5625) then
+			self.released[#self.released + 1] = id
+			self.release_objects_table[id] = nil
+			self.size = self.size - 1
+		end
+	end
+end
+H.env.release_body_manager = { Crelease_body = RB }
+local bodies = {
+	[801] = { position = vector():set(proxy:position().x + 10, 0, proxy:position().z) }, -- next to the client
+	[802] = { position = vector():set(proxy:position().x + 900, 0, proxy:position().z + 900) }, -- far from everybody
+}
+H.env.alife = function() return { object = function(_, id) return bodies[id] end } end
+local KB = load_script(H, "coop_npc_compat")
+KB.on_game_start()
+KB._set_host_on(true)
+H.env.db.actor._pos = vector():set(5000, 0, 5000)
+local rb = setmetatable({ release_objects_table = { [801] = true, [802] = true }, size = 6, released = {} }, { __index = RB })
+RB.clear(rb)
+check(#rb.released == 1 and rb.released[1] == 802, "only the body far from every player is released")
+check(rb.release_objects_table[801] == true and rb.release_objects_table[802] == nil, "the body near the client stays queued")
+check(rb.size == 5, "the count follows what was released")
+rb.released = {}
+RB.clear(rb, true)
+check(#rb.released == 1 and rb.released[1] == 801, "clear(all) is the stock's (a level change, the option)")
+KB._set_host_on(false)
+rb.release_objects_table, rb.released = { [801] = true }, {}
+RB.clear(rb)
+check(#rb.released == 1, "single player / no clients: the stock pass")
+H.env.release_body_manager, H.env.alife = nil, nil
+
 print(string.format("\nRESULT: %d passed, %d failed", PASSES, FAILS))
 if FAILS > 0 then error("tests failed") end

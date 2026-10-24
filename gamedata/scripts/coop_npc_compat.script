@@ -350,6 +350,42 @@ local function wrap_helis()
 	end
 end
 
+-- Audit B6 (2026-10-24): an old corpse is released when there are more than five and it lies 75 m from the HOST's
+-- actor (release_body_manager Crelease_body:clear), so a body next to a client went while he came to loot it. A body
+-- within that distance of any other player stays in the queue but is not offered to the stock pass this time.
+local RELEASE_DIST_SQR = 5625 -- release_body_manager MIN_RELEASE_DISTANCE (75 m, squared)
+local function wrap_body_release()
+	local m = mod("release_body_manager")
+	local cls = m and m.Crelease_body
+	local f = cls and cls.clear
+	if type(f) ~= "function" or orig.body_release then return end
+	orig.body_release = f
+	cls.clear = function(self, all, dist, ...)
+		local queue = self and self.release_objects_table
+		if all or not host_on or type(queue) ~= "table" then return f(self, all, dist, ...) end
+		local sim = alife()
+		local near = tonumber(dist) or RELEASE_DIST_SQR
+		local kept = {}
+		for id, v in pairs(queue) do
+			local se = sim and sim:object(id)
+			if se and se.position then
+				for _, p in ipairs(P.others()) do
+					if p:position():distance_to_sqr(se.position) < near then
+						kept[id] = v
+						break
+					end
+				end
+			end
+		end
+		if next(kept) == nil then return f(self, all, dist, ...) end
+		for id in pairs(kept) do queue[id] = nil end
+		local ok, err = pcall(f, self, all, dist, ...)
+		for id, v in pairs(kept) do queue[id] = v end
+		if not ok then report("body release", err) end
+	end
+	applied[#applied + 1] = "body_release"
+end
+
 local function wrap_stealth()
 	if not mod("stealth_mcm") then return end
 	local m = mod("visual_memory_manager")
@@ -447,7 +483,8 @@ function on_game_start()
 		end
 		for _, s in ipairs({ { "ai_rework", wrap_ai_rework }, { "night_mutants", wrap_night_mutants },
 			{ "stealth", wrap_stealth }, { "peace_zone", wrap_peace_zone }, { "loot", wrap_loot },
-			{ "squads", wrap_squads }, { "smart_respawn", wrap_smart_respawn }, { "helis", wrap_helis } }) do
+			{ "squads", wrap_squads }, { "smart_respawn", wrap_smart_respawn }, { "helis", wrap_helis },
+			{ "body_release", wrap_body_release } }) do
 			local ok, err = pcall(s[2])
 			if not ok then report("install " .. s[1], err) end
 		end
