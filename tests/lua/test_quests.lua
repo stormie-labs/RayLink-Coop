@@ -400,6 +400,72 @@ fire(Cm, "actor_on_before_hit", { draftsman = zone }, 1, 0)
 pump()
 check(Hm.time_jumps == 1, "same mine within the window: no second jump")
 
+-- DAO behaviours (audit C2): what a behaviour leaves running is this player's on a client
+print("== DAO behaviours run for the client's actor")
+local function dao_full(M)
+	local da = { anomalies_hit_functions = {}, callbacks = {}, ticks = 0 }
+	-- drx_da_main.script register_callback L295-311 / unregister_callback L313-321, actor_on_update L2891-2898
+	function da.register_callback(callback, fn, on_end, key)
+		if key and da.callbacks[key] then M.env.UnregisterScriptCallback(da.callbacks[key].callback, da.callbacks[key].func) end
+		local k = key or (#da.callbacks + 1)
+		da.callbacks[k] = { callback = callback, func = fn, on_end = on_end }
+		M.env.RegisterScriptCallback(callback, fn)
+		return k
+	end
+	function da.actor_on_update() da.ticks = da.ticks + 1 end
+	M.env.drx_da_main = da
+	M.env.UnregisterScriptCallback = function(name, f)
+		local list = M.callbacks[name] or {}
+		for i = #list, 1, -1 do if list[i] == f then table.remove(list, i) end end
+	end
+	return da
+end
+local function source_of(f) return debug.getinfo(f, "S").source end
+local function has(M, name, f)
+	for _, g in ipairs(M.callbacks[name] or {}) do if g == f then return true end end
+	return false
+end
+local Hd, Cd = dao_full(Hm), dao_full(Cm)
+-- an anomaly spawned with the level registered its update before the coop patch (bind_anomaly_field net_spawn L2733)
+local spawned_hits = 0
+local level_anomaly = function() spawned_hits = spawned_hits + 1 end
+Cd.register_callback("actor_on_update", level_anomaly, nil, "anomaly_900_update")
+local host_anomaly = function() end
+Hd.register_callback("actor_on_update", host_anomaly, nil, "anomaly_900_update")
+for _, M in ipairs({ Hm, Cm }) do
+	M.callbacks.actor_on_update = {}
+	if M == Cm then M.env.RegisterScriptCallback("actor_on_update", level_anomaly) end
+	if M == Hm then M.env.RegisterScriptCallback("actor_on_update", host_anomaly) end
+	local s = load_script(M, "coop_quests_story")
+	s.on_game_start()
+	fire(M, "actor_on_first_update")
+end
+local again = Cd.callbacks.anomaly_900_update and Cd.callbacks.anomaly_900_update.func
+check(again ~= nil and again ~= level_anomaly and not has(Cm, "actor_on_update", level_anomaly) and has(Cm, "actor_on_update", again),
+	"client: a handler registered before the patch is registered again")
+check(again and source_of(again):find("coop_quests_story", 1, true) ~= nil,
+	"client: it is a function of coop_quests_story now (the router runs it here)")
+again()
+check(spawned_hits == 1, "client: it still calls DAO's own")
+check(Hd.callbacks.anomaly_900_update.func == host_anomaly and has(Hm, "actor_on_update", host_anomaly),
+	"host: DAO's handlers stay as they are")
+-- a behaviour registers a handler during play (zone_mine_sphere L2087-2098)
+local resisted = 0
+local sphere = function(s_hit) resisted = resisted + 1 end
+Cd.register_callback("actor_on_before_hit", sphere, nil, "zone_mine_sphere")
+local reg = Cd.callbacks.zone_mine_sphere.func
+check(reg ~= sphere and source_of(reg):find("coop_quests_story", 1, true) ~= nil, "client: a behaviour's handler runs on this machine")
+fire(Cm, "actor_on_before_hit", { type = 6 }, 1, 0)
+check(resisted == 1, "client: the behaviour's effect reaches this player's hits")
+Hd.register_callback("actor_on_before_hit", sphere, nil, "zone_mine_sphere")
+check(Hd.callbacks.zone_mine_sphere.func == sphere, "host: a behaviour's handler is DAO's own")
+-- the timed effects: driven here on a live client only
+local before_c, before_h = Cd.ticks, Hd.ticks
+fire(Cm, "actor_on_update")
+fire(Hm, "actor_on_update")
+check(Cd.ticks == before_c + 1, "client: DAO's timed effects are driven for this player")
+check(Hd.ticks == before_h, "host: DAO drives its own (not twice)")
+
 -- ---------------------------------------------------------------- PDA
 print("== encyclopedia and achievements")
 local function ency(M)

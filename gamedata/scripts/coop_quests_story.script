@@ -115,7 +115,7 @@ local CLIENT_FALSE_CONDITIONS = {
 	"recover_mutant_data_precondition", "all_attackers_dead",
 }
 
-local stats = { suppressed = 0, shared = 0, forwarded = 0, fx_run = 0, guards = 0, helmets = 0, flash = 0 }
+local stats = { suppressed = 0, shared = 0, forwarded = 0, fx_run = 0, guards = 0, helmets = 0, flash = 0, dao_handlers = 0 }
 
 local function ct() return rawget(_G, "coop_tasks") or coop_tasks end
 local function party() return qc.mod("coop_quests_party") end
@@ -437,9 +437,57 @@ local function host_flash(zone_id, d, h, m)
 end
 
 local dao_hits = nil -- DAO's actor hit table, when the mod is installed
+local dao = nil -- drx_da_main, when the mod is installed
+
+-- Audit C2 (2026-10-24): on a client DAO's behaviours near this player's actor do run (the anomaly binder's update is
+-- not routed), but what they leave running - handlers they register (drx_da_main.register_callback) and their timed
+-- effects - were host-domain handlers of drx_da_main, skipped here: a sphere's bullet resistance, a springboard's
+-- camera, a green dragon's slow-down, the detector beeps of an anomaly never happened to a client. On a client such a
+-- handler is registered through a function of this script (view: it runs on this player's machine, for his actor),
+-- and the timed effects are driven from here (client_dao_update). The ones registered before this patch (the
+-- anomalies spawned with the level) are registered again the same way. The host keeps DAO's own.
+local function on_this_machine(fn)
+	local inner = fn
+	return function(...) return inner(...) end
+end
+
+local function patch_dao_behaviours(da)
+	local reg = da.register_callback
+	if type(reg) ~= "function" or da._coop_register_callback then return end
+	da._coop_register_callback = reg
+	dao = da
+	da.register_callback = function(callback, fn, on_end, key)
+		if type(fn) == "function" and qc.is_client() then
+			fn = on_this_machine(fn)
+			stats.dao_handlers = stats.dao_handlers + 1
+		end
+		return reg(callback, fn, on_end, key)
+	end
+	if not qc.is_client() or type(da.callbacks) ~= "table" then return end
+	local again = {}
+	for key, t in pairs(da.callbacks) do
+		if type(t) == "table" and type(t.func) == "function" then again[#again + 1] = { key, t } end
+	end
+	for _, kt in ipairs(again) do
+		local key, t = kt[1], kt[2]
+		if type(key) == "number" then
+			UnregisterScriptCallback(t.callback, t.func)
+			da.callbacks[key] = nil
+			key = nil
+		end
+		da.register_callback(t.callback, t.func, t.on_end, key)
+	end
+	qc.log(TAG, "Dynamic Anomalies Overhaul: its behaviours' handlers run for this player (%d registered again)", #again)
+end
+
+-- Client: DAO's timed effects (its actor_on_update, a host-domain handler skipped here), for this player's actor.
+local function client_dao_update()
+	if dao and type(dao.actor_on_update) == "function" and qc.client_live() then dao.actor_on_update() end
+end
 
 local function patch_dao()
 	local da = rawget(_G, "drx_da_main") -- optional mod: loaded by axr_main if present
+	if type(da) == "table" then patch_dao_behaviours(da) end
 	local hits = type(da) == "table" and da.anomalies_hit_functions
 	if type(hits) ~= "table" or type(hits.zone_mine_flash) ~= "function" then return end
 	dao_hits = hits
@@ -490,8 +538,9 @@ end
 -- Status, start
 -------------------------------------------------------------------------------
 function print_status()
-	qc.log(TAG, "client condlist effects skipped %d, story rewards shared %d | world effects sent to the host %d, run for clients %d | client guards %d, helmets %d, flash jumps %d",
-		stats.suppressed, stats.shared, stats.forwarded, stats.fx_run, stats.guards, stats.helmets, stats.flash)
+	qc.log(TAG, "client condlist effects skipped %d, story rewards shared %d | world effects sent to the host %d, run for clients %d | client guards %d, helmets %d, flash jumps %d, DAO handlers here %d",
+		stats.suppressed, stats.shared, stats.forwarded, stats.fx_run, stats.guards, stats.helmets, stats.flash,
+		stats.dao_handlers)
 end
 
 local installed = false
@@ -520,5 +569,6 @@ function on_game_start()
 	qc.register_host_action("flash", host_on_flash)
 	qc.on("relay", client_on_relay, TAG)
 	RegisterScriptCallback("actor_on_before_hit", client_before_hit)
+	RegisterScriptCallback("actor_on_update", client_dao_update)
 	RegisterScriptCallback("actor_on_first_update", install)
 end
