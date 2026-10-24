@@ -289,9 +289,9 @@ end
 -- Emission and psi-storm (R-10.1)
 -------------------------------------------------------------------------------
 local surge_cls_patched, host_hooks = false, false
-local env_host = { sig = nil, next_send = 0, serial = 0, kill_sent = {} }
+local env_host = { sig = nil, next_send = 0, serial = 0, kill_sent = {}, cover_rep = {} }
 local env_cl = { have = false, s = false, sg = 0, p = false, pg = 0, tf = nil, cover = true, at = 0,
-	next_tick = 0, req_at = 0, mirror_errors = 0 }
+	next_tick = 0, req_at = 0, mirror_errors = 0, cover_at = 0 }
 
 local function surge_mgr()
 	local mod = rawget(_G, "surge_manager") or surge_manager
@@ -310,9 +310,14 @@ local function env_phase(m)
 	return true, (ok and gs) or 0
 end
 
--- The surge script's own shelter test (surge covers from misc\surge_manager.ltx) applied to a proxy.
-local function proxy_in_cover(obj)
-	if GetEvent and GetEvent("underground") then return true end
+-- Audit 2026-10-24 (E1): a remote player's shelter is his own. His machine knows it (the stock covers, its underground
+-- flag, G.A.M.M.A.'s ray-cast cover and coordinate safe zones) and reports it with coop_env_cover; a fresh report
+-- decides. Without one, the surge script's static covers (misc\surge_manager.ltx) at his character. The host's own
+-- underground flag never decides for him (it spared every client while the host sat in a cellar).
+local COVER_FRESH_MS = 3000
+local function player_in_cover(peer, obj)
+	local rep = env_host.cover_rep[peer]
+	if rep and time_global() - rep.at <= COVER_FRESH_MS then return rep.c end
 	local sm = surge_mgr()
 	if not sm then return true end
 	if sm.init_surge_covers then sm:init_surge_covers() end
@@ -338,14 +343,14 @@ end
 
 local function host_surge_kill_check(m)
 	if not (api and api.is_host()) then return end
-	if db.actor and load_var and load_var(db.actor, "surge_immuned", false) == true then return end
+	-- audit E3: the host's story immunity (surge_immuned) is his own; a client's is checked on his machine (coop_env_kill)
 	for _, p in ipairs(players()) do
 		if not p.is_self and env_host.kill_sent[p.id] ~= env_host.serial and anabiotic(p.id) then
 			-- spared at this kill moment only: one who wakes before the next one is judged then
 			log("emission: %s (#%d) sleeps on an anabiotic, spared", tostring(p.nick), p.id)
 		elseif not p.is_self and env_host.kill_sent[p.id] ~= env_host.serial then
 			local obj = p.avatar_id and level.object_by_id(p.avatar_id)
-			if obj and obj:alive() and not proxy_in_cover(obj) then
+			if obj and obj:alive() and not player_in_cover(p.id, obj) then
 				env_host.kill_sent[p.id] = env_host.serial
 				api.send_event("coop_env_kill", encode({ kind = "surge" }), p.id)
 				log("emission: %s (#%d) is outside a shelter, kill sent", tostring(p.nick), p.id)
@@ -396,7 +401,7 @@ local function host_env_tick()
 			local cover = true
 			if active then
 				local obj = p.avatar_id and level.object_by_id(p.avatar_id)
-				cover = (obj == nil) or proxy_in_cover(obj)
+				cover = (obj == nil) or player_in_cover(p.id, obj)
 			end
 			api.send_event("coop_env", encode({ s = s_on, sg = s_gs, p = p_on, pg = p_gs, tf = tf, c = cover }), p.id)
 		end
@@ -557,6 +562,25 @@ add_event_handler("coop_env_req", function(payload, from)
 	if api and api.is_host() then env_host.next_send = 0 end
 end)
 
+-- Host: a client's own shelter, reported while an emission or a psi storm runs (player_in_cover).
+add_event_handler("coop_env_cover", function(payload, from)
+	if not (api and api.is_host()) or type(from) ~= "number" or from == 0 then return end
+	local t = decode(payload)
+	env_host.cover_rep[from] = { c = t.c == true, at = time_global() }
+end)
+
+-- Client: this machine's view of its shelter. Any of: the underground flag, the cover this machine's scripts keep in
+-- "current_safe_cover" (G.A.M.M.A.'s dynamic cover; with_cover only lends it the host's verdict while the mirror runs
+-- and gives it back), the static covers of the surge script.
+local function own_cover()
+	if GetEvent and GetEvent("underground") then return true end
+	if GetEvent and GetEvent("current_safe_cover") == true then return true end
+	local sm, actor = surge_mgr(), db.actor
+	if not (sm and actor) then return false end
+	if sm.init_surge_covers then sm:init_surge_covers() end
+	return sm:pos_in_cover(actor:position()) == true
+end
+
 add_event_handler("coop_env_kill", function(payload, from)
 	if from ~= 0 or not (api and api.is_client()) then return end
 	local actor = db.actor
@@ -706,6 +730,11 @@ local function actor_on_update()
 			api.send_event("coop_env_req", "", 0)
 		end
 		client_env_tick()
+		if (env_cl.s or env_cl.p) and tg >= env_cl.cover_at then
+			env_cl.cover_at = tg + 1000
+			local ok, c = pcall(own_cover)
+			api.send_event("coop_env_cover", encode({ c = ok and c == true }), 0)
+		end
 	end
 end
 

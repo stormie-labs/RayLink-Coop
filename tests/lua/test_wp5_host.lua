@@ -57,6 +57,42 @@ n = #SENT
 sm:kill_all_unhided()
 check(#SENT == n, "sheltered player is not killed")
 
+-- Live audit 2026-10-24 (E1, E3): the host's own shelter must not decide for a client, the client's report does.
+-- (1) the host is underground (or immune): an uncovered client is still killed
+sm.started = false
+NOW = NOW + 300
+SendScriptCallback("actor_on_update")
+sm.started = true
+NOW = NOW + 300
+SendScriptCallback("actor_on_update")
+PROXY_POS.cover = false
+SetEvent("underground", true)
+n = #SENT
+sm:kill_all_unhided()
+check(#SENT == n + 1 and SENT[#SENT].name == "coop_env_kill", "host underground: the uncovered client is still killed")
+SetEvent("underground", nil)
+-- (2) a client who reports his own shelter (G.A.M.M.A. cover computed on his machine) is spared though the static check says no
+sm.started = false
+NOW = NOW + 300
+SendScriptCallback("actor_on_update")
+sm.started = true
+NOW = NOW + 300
+SendScriptCallback("actor_on_update")
+coop_main.on_event("coop_env_cover", coop_main.encode({ c = true }), 1)
+n = #SENT
+sm:kill_all_unhided()
+check(#SENT == n, "the client's fresh report of his shelter spares him")
+-- (3) a stale report falls back to the static check
+sm.started = false
+NOW = NOW + 300
+SendScriptCallback("actor_on_update")
+sm.started = true
+NOW = NOW + 10000
+SendScriptCallback("actor_on_update")
+n = #SENT
+sm:kill_all_unhided()
+check(#SENT == n + 1, "a stale report: the static cover decides (uncovered: killed)")
+
 coop_main.on_event("coop_env_req", "", 1)
 NOW = NOW + 300
 n = #SENT
