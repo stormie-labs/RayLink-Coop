@@ -245,6 +245,46 @@ local function wrap_loot()
 	end
 end
 
+-- Audit B3 (2026-10-24): a squad may not come online within excl_dist (75 m) of the player - the HOST's player, so
+-- squads popped into view next to a far client. The stock rule runs again as each other player (with_identity); any
+-- "no" stands.
+local function wrap_squads()
+	local m = mod("sim_squad_scripted")
+	local cls = m and m.sim_squad_scripted
+	local f = cls and cls.check_online_status
+	if type(f) ~= "function" or orig.squad_online then return end
+	orig.squad_online = f
+	cls.check_online_status = function(self, ...)
+		f(self, ...)
+		if self.forced_online_status ~= nil or self.online or not host_on then return end
+		for _, p in ipairs(P.others()) do
+			local ok, err = pcall(P.with_identity, p, f, self, ...)
+			if not ok then
+				report("squad online exclusion", err)
+			elseif self.forced_online_status == false then
+				return
+			end
+		end
+	end
+	applied[#applied + 1] = "squad_exclusion"
+end
+
+-- Audit B4: a smart terrain does not respawn within its respawn_radius of the HOST's player only; any player counts.
+local function wrap_smart_respawn()
+	local m = mod("smart_terrain")
+	local cls = m and m.se_smart_terrain
+	local f = cls and cls.try_respawn
+	if type(f) ~= "function" or orig.smart_respawn then return end
+	orig.smart_respawn = f
+	cls.try_respawn = function(self, ...)
+		if host_on and self.position and P.any_within(self.position, tonumber(self.respawn_radius) or 150) then
+			return -- a player is near: nothing spawns in his view
+		end
+		return f(self, ...)
+	end
+	applied[#applied + 1] = "smart_respawn"
+end
+
 local function wrap_stealth()
 	if not mod("stealth_mcm") then return end
 	local m = mod("visual_memory_manager")
@@ -341,7 +381,8 @@ function on_game_start()
 			if not ok then report("rewrite " .. name, err) end
 		end
 		for _, s in ipairs({ { "ai_rework", wrap_ai_rework }, { "night_mutants", wrap_night_mutants },
-			{ "stealth", wrap_stealth }, { "peace_zone", wrap_peace_zone }, { "loot", wrap_loot } }) do
+			{ "stealth", wrap_stealth }, { "peace_zone", wrap_peace_zone }, { "loot", wrap_loot },
+			{ "squads", wrap_squads }, { "smart_respawn", wrap_smart_respawn } }) do
 			local ok, err = pcall(s[2])
 			if not ok then report("install " .. s[1], err) end
 		end

@@ -550,5 +550,33 @@ KL._set_host_on(false)
 check(H.env.xr_corpse_detection.near_actor(body) == false, "no clients: the stock rule alone")
 H.env.xr_corpse_detection, H.env.xr_gather_items, H.env.ui_options = nil, nil, nil
 
+print("== coop_npc_compat: squads and smart respawns keep away from every player (audit B3, B4)")
+H, C, proxy, hav = pair()
+local SQ = {}
+SQ.check_online_status = function(self)
+	if self.position:distance_to(H.env.db.actor:position()) <= 75 then self.forced_online_status = false else self.forced_online_status = nil end
+end
+local SM = {}
+SM.try_respawn = function(self) self.respawned = true end
+H.env.sim_squad_scripted = { sim_squad_scripted = SQ }
+H.env.smart_terrain = { se_smart_terrain = SM }
+local KS = load_script(H, "coop_npc_compat")
+KS.on_game_start()
+KS._set_host_on(true)
+H.env.db.actor._pos = vector():set(5000, 0, 5000) -- the host far away: only the client's character can keep the squad off
+local squad = { online = false, position = vector():set(proxy:position().x + 20, 0, proxy:position().z) }
+SQ.check_online_status(squad)
+check(squad.forced_online_status == false, "a squad 20 m from a client's character stays offline")
+local far_squad = { online = false, position = vector():set(proxy:position().x + 900, 0, proxy:position().z + 900) }
+SQ.check_online_status(far_squad)
+check(far_squad.forced_online_status == nil, "far from every player: no rule")
+local smart = { position = vector():set(proxy:position().x + 30, 0, proxy:position().z), respawn_radius = 150 }
+SM.try_respawn(smart)
+check(smart.respawned == nil, "no respawn 30 m from a client")
+local far_smart = { position = vector():set(proxy:position().x + 900, 0, proxy:position().z + 900), respawn_radius = 150 }
+SM.try_respawn(far_smart)
+check(far_smart.respawned == true, "far from every player: respawns")
+H.env.sim_squad_scripted, H.env.smart_terrain = nil, nil
+
 print(string.format("\nRESULT: %d passed, %d failed", PASSES, FAILS))
 if FAILS > 0 then error("tests failed") end
