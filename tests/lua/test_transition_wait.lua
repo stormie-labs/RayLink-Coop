@@ -718,6 +718,60 @@ run(MN, 400)
 fire(MN, "on_key_press", DIK_F)
 run(MN, 2000)
 check(#MN.console == 0 and MN.T.hold_state() == nil, "nobody else at the exit: the use key is left alone")
+
+-- live 2026-10-24 (build 15, G.A.M.M.A.): "the key is not held, it is pressed once - I cannot hold it to go with my mate".
+-- G.A.M.M.A. passes every key through on_before_key_press first (level_input.script), and any mod may take it there
+-- (flags.ret_value = false): then on_key_press never comes. The key's own hold events (on_key_hold, every frame while it
+-- is down) start the hold as well and keep it; when they stop (its release went elsewhere) the hold is over.
+print("== keys: G.A.M.M.A. input")
+local function run_holding(M, ms)
+	local t_end = NOW + (ms or 0)
+	repeat
+		fire(M, "on_key_hold", DIK_F)
+		fire(M, "actor_on_update")
+		for w in pairs(M.hud) do w:Update() end
+		NOW = NOW + 16
+	until NOW >= t_end
+end
+local MH = machine(1)
+MH.t = away
+run(MH, 400)
+run_holding(MH, 1100)
+check(#MH.console == 1 and MH.console[1] == "coop_transition_consent",
+	"the press taken by another mod: the key's hold events alone go with the group after a second")
+local started = false
+for _, line in ipairs(MH.log) do if line:find("use key held", 1, true) then started = true end end
+check(started, "... and the log says the hold started")
+fire(MH, "on_key_release", DIK_F)
+-- the hold events stop without a release (it went to another script): the hold ends, nothing goes out
+local MS = machine(1)
+MS.t = away
+run(MS, 400)
+run_holding(MS, 500)
+run(MS, 1500)
+check(#MS.console == 0 and MS.T.hold_state() == nil, "the key's events stop half way: the hold is over, nothing goes out")
+-- a frame without the HUD (a mod's window flashing up under the key) does not drop the hold
+local MV = machine(1)
+MV.t = away
+run(MV, 400)
+fire(MV, "on_key_press", DIK_F)
+run_holding(MV, 300)
+MV.hud_shown = false
+run_holding(MV, 50)
+MV.hud_shown = true
+run_holding(MV, 800)
+check(#MV.console == 1 and MV.console[1] == "coop_transition_consent", "the HUD hidden for a moment under the held key: it still goes")
+fire(MV, "on_key_release", DIK_F)
+-- the press alone (no hold events at all, as before): released after 0.3 s - the log says why nothing went out
+local ML = machine(1)
+ML.t = away
+run(ML, 400)
+fire(ML, "on_key_press", DIK_F)
+run(ML, 300)
+fire(ML, "on_key_release", DIK_F)
+local why = false
+for _, line in ipairs(ML.log) do if line:find("let go", 1, true) then why = true end end
+check(#ML.console == 0 and why, "let go early: nothing goes out, the log says the key was let go")
 -- the board goes while the key is held
 local MZ = machine(1)
 MZ.t = away

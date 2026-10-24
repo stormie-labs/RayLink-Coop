@@ -52,6 +52,12 @@ MAX_ROWS = 8 -- the session's players (kMaxPlayers)
 CX = 512 -- the middle of the screen, in 1024x768 units
 FEED_GAP_MS = 10000 -- a player who steps in and out is announced once in this time
 HOLD_MS = { consent = 1000, cancel = 1000, confirm = 1000 }
+-- Live 2026-10-24 (build 15, G.A.M.M.A.): "the key is not held, it is pressed once". G.A.M.M.A. hands every key to
+-- on_before_key_press first (level_input.script) and a mod may take it there: then on_key_press never comes. The key's
+-- hold events (on_key_hold, every frame while it is down) start and keep the hold as well; when they stop this long
+-- (its release went to another script) the hold is over. A moment without the HUD under the held key (a window
+-- flashing up) is not the end of it either: only this long.
+HOLD_GAP_MS = 300
 COMMANDS = { consent = "coop_transition_consent", cancel = "coop_transition_cancel", confirm = "coop_transition_confirm" }
 MARK_PRIORITY = 35 -- on the compass: above the allies (30), under a wounded ally (40)
 FADE_PPE = "sleep_fade.ppe" -- the go: the darkening of ui_sr_teleport and _g.ChangeLevel
@@ -82,7 +88,10 @@ local lay
 local stats = { polled = 0, shown = 0, spoken = 0, holds = 0, errors = 0, fades = 0 }
 local last_t -- the last coop.transition()
 local WIN -- the overlay while it is on the HUD
-local hold -- { kind, since, fired } the use key held (away from the exit, or a guide trip)
+local hold -- { kind, since, fired, hidden_at } the use key held (away from the exit, or a guide trip)
+-- the use key as its events show it: down; events_at, seen (hold events came: their end is its release); latched (a hold
+-- ended while it is still down: a new one only after it is let go)
+local key = { down = false, events_at = nil, seen = false, latched = false }
 local faded = false -- the screen darkened for the go that runs now
 local feed_prev -- the board the feed lines were last made against
 local feed_rate = { at = {}, now = 0 }
@@ -695,19 +704,54 @@ function UICoopTransition:FrameRemind(tg, dt, rem, m, L)
 	end
 end
 
+-- The hold ends; while the key is still down a new one waits for it to be let go. `why` goes to the log when nothing
+-- went out (the live tests read it: "it is pressed once").
+local function drop_hold(tg, why)
+	if not hold then return end
+	if not hold.fired and why then
+		log("transition: the use key hold (%s) ended after %d ms, nothing sent: %s", hold.kind, tg - hold.since, why)
+	end
+	hold = nil
+	if key.down then key.latched = true end
+end
+
 -- The use key held: the command goes out when the hold is over, once.
 local function run_hold(tg, t)
 	if not hold then return end
 	local kind = hint_kind(t)
 	if kind ~= hold.kind then
-		hold = nil -- the board changed under the key (gone, I stepped in, the engine took it: the hint is another now)
+		-- the board changed under the key (gone, I stepped in, the engine took it: the hint is another now)
+		drop_hold(tg, string_format("the hint is %s now", tostring(kind)))
 		return
 	end
 	if not hold.fired and tg - hold.since >= hold_ms(kind) then
 		hold.fired = true
 		stats.holds = stats.holds + 1
+		log("transition: the use key held %d ms: %s", tg - hold.since, COMMANDS[kind])
 		pcall(exec_console_cmd, COMMANDS[kind])
 	end
+end
+
+-- Every frame: the hold on the board itself (not on what the HUD shows this frame).
+function step_hold(tg, raw)
+	if key.down and key.seen and key.events_at and tg - key.events_at > HOLD_GAP_MS then
+		key.down, key.seen, key.latched = false, false, false -- its release went to another script
+		drop_hold(tg, "the key's events stopped")
+	end
+	if not hold then return end
+	if not (raw and (shows_board(raw) or reminder(raw))) then
+		drop_hold(tg, "the placard is gone")
+		return
+	end
+	if hud_visible() then
+		hold.hidden_at = nil
+	elseif not hold.hidden_at then
+		hold.hidden_at = tg
+	elseif tg - hold.hidden_at > HOLD_GAP_MS then
+		drop_hold(tg, "the HUD is hidden (an inventory, a menu)")
+		return
+	end
+	run_hold(tg, raw)
 end
 
 -- The go: the screen darkens once (every moving player, the host player too: the board's Going state reaches all of them);
@@ -750,7 +794,7 @@ function UICoopTransition:Frame(tg)
 	local rem = t and reminder(t) or nil
 	if rem then rem.kind = hint_kind(t) end
 	if board then stats.shown = stats.shown + 1 end
-	if board or rem then run_hold(tg, t) else hold = nil end
+	step_hold(tg, raw)
 	self:FrameBoard(tg, dt, board, m, L)
 	self:FrameRemind(tg, dt, rem, m, L)
 end
@@ -804,6 +848,7 @@ local function win_off()
 	WIN = nil
 	pcall(function() get_hud():RemoveDialogToRender(w) end)
 	last_t, feed_prev, hold, faded = nil, nil, nil, false
+	key.down, key.events_at, key.seen, key.latched = false, nil, false, false
 end
 
 -------------------------------------------------------------------------------
@@ -814,16 +859,40 @@ local function is_use_key(dik)
 	return ok and bind == key_bindings.kUSE
 end
 
-local function on_key_press(dik)
-	if not WIN or not last_t or not is_use_key(dik) or not hud_visible() then return end
+-- A hold starts with the key going down under a placard that names it (the HUD on: an inventory owns the key).
+local function start_hold(tg, how)
+	if hold or key.latched or not WIN or not last_t or not hud_visible() then return end
 	if not (shows_board(last_t) or reminder(last_t)) then return end -- a key only with a placard that names it
 	local kind = hint_kind(last_t)
 	if not kind then return end
-	hold = { kind = kind, since = time_global(), fired = false }
+	hold = { kind = kind, since = tg, fired = false }
+	log("transition: the use key held (%s, from its %s)", kind, how)
+end
+
+local function on_key_press(dik)
+	if not is_use_key(dik) then return end
+	local tg = time_global()
+	key.down, key.events_at, key.seen, key.latched = true, tg, false, false
+	start_hold(tg, "press")
+end
+
+-- Every frame while the key is down: it keeps the key known as down, and starts the hold when its press went to
+-- another script.
+local function on_key_hold(dik)
+	if not is_use_key(dik) then return end
+	local tg = time_global()
+	if not key.down then key.down, key.latched = true, false end -- the press never came here
+	key.events_at, key.seen = tg, true
+	start_hold(tg, "hold events")
 end
 
 local function on_key_release(dik)
-	if hold and is_use_key(dik) then hold = nil end
+	if not is_use_key(dik) then return end
+	key.down, key.seen, key.latched = false, false, false
+	if hold then
+		local tg = time_global()
+		drop_hold(tg, string_format("let go after %d ms", tg - hold.since))
+	end
 end
 
 local function actor_on_update()
@@ -862,6 +931,7 @@ function on_game_start()
 	RegisterScriptCallback("actor_on_net_destroy", actor_on_net_destroy)
 	RegisterScriptCallback("on_key_press", on_key_press)
 	RegisterScriptCallback("on_key_release", on_key_release)
+	RegisterScriptCallback("on_key_hold", on_key_hold)
 	local M = markers_module()
 	if M and M.add_source then
 		local ok, err = pcall(M.add_source, "transition", marker_source, 200)
