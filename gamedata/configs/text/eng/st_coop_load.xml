@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop F3a T8, the simultaneous load of a group transition (engine coop_join.cpp): the header line of a held loading
+screen ("Waiting for: <nicks>", the nicks follow the text), and the row of the transition placard for a player on another map
+(scripts\coop_hud_transition.script, the together entry of split levels). -->
+<string_table>
+	<string id="st_coop_load_wait">
+		<text>Waiting for:</text>
+	</string>
+	<string id="st_coop_load_all">
+		<text>Everyone is here</text>
+	</string>
+	<string id="st_coop_together_row_other">
+		<text>on another map</text>
+	</string>
+</string_table>

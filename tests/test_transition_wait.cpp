@@ -2,16 +2,28 @@
 // wait for your allies to go to the next level"). The host's board of who is ready for which exit and when the group
 // goes (everybody, the loading players' 60 s, the 5 s countdown, "go now"), the two messages (TransitionVote ops and the
 // host's TransitionState), the hold at the exit and the client's reconciling of what it wants with what the host says.
+// F3a T8: the board through the local link (the host player is peer 0 and votes like anybody), the rows of the together
+// entry of split levels, and the simultaneous load of a group transition (PreparedLoad on the server, LoadScreen on each
+// player, and the order of LoadWait / epoch / save on a real session that the host's "go" relies on).
 #include "test_util.h"
 
+#include "coop_levels_wire.h"
 #include "coop_limits.h"
+#include "coop_local_link.h"
+#include "coop_session.h"
 #include "coop_transition.h"
+#include "coop_world_gate.h"
 
 #include <cstring>
+#include <fstream>
+#include <iterator>
+#include <string>
+#include <utility>
 #include <vector>
 
 using namespace coop;
 using namespace coop::transition;
+using t::Node;
 
 namespace
 {
@@ -719,4 +731,570 @@ TEST(transition_intent_forgets_on_reset)
 	i.sent(100);
 	i.reset(); // a new world: the refresh clock starts over
 	CHECK(i.wants(true, kA, true, kA, 100 + kClaimRefreshMs) == Send::Nothing);
+}
+
+// ---------------------------------------------------------------- F3a T8: the board through the local link
+
+namespace
+{
+VoteMsg vote_ready(uint32_t exit)
+{
+	VoteMsg v;
+	v.op = VoteReady;
+	v.changer = uint16_t(exit);
+	return v;
+}
+
+VoteMsg vote_cancel()
+{
+	VoteMsg v;
+	v.op = VoteCancel;
+	return v;
+}
+
+VoteFacts near_exit()
+{
+	VoteFacts f;
+	f.in_world = true;
+	f.exit_known = true;
+	f.dist = 1.f;
+	return f;
+}
+} // namespace
+
+TEST(board_host_claim_via_link)
+{
+	// The host player is peer 0 of the server's players(), a member like any other: no claim of his own until his vote comes
+	// over the local link, and that vote goes through the same rule as a remote client's (from = 0).
+	Board b;
+	const auto m = party({0, 1});
+	CHECK(apply_vote(b, 1, vote_ready(kA), near_exit(), 100) == Verdict::Claimed);
+	Status s = b.tick(m, kNear, 100);
+	CHECK_EQ(int(row_of(s, 0).mark), int(Mark::Away)); // being the host makes him ready for nothing
+	CHECK_EQ(s.ready, 1u);
+	CHECK_EQ(s.total, 2u);
+	CHECK(apply_vote(b, 0, vote_ready(kA), near_exit(), 200) == Verdict::Claimed); // his vote
+	s = b.tick(m, kNear, 200);
+	CHECK_EQ(int(row_of(s, 0).mark), int(Mark::Ready));
+	CHECK_EQ(int(s.state), int(State::Counting));
+	CHECK(apply_vote(b, 0, vote_ready(kA), near_exit(), 5200) == Verdict::Refreshed); // his refresh keeps the claim's age
+	CHECK(apply_vote(b, 0, vote_ready(kB), near_exit(), 5300) == Verdict::Claimed); // another exit replaces it
+	CHECK(apply_vote(b, 0, vote_cancel(), VoteFacts(), 5400) == Verdict::Released); // a cancel needs no facts
+	CHECK(apply_vote(b, 0, vote_cancel(), VoteFacts(), 5400) == Verdict::Nothing);
+	s = b.tick(m, kNear, 5500);
+	CHECK(s.cancelled);
+	CHECK_EQ(int(row_of(s, 0).mark), int(Mark::Away));
+	// the same checks as anybody's
+	VoteFacts out = near_exit();
+	out.in_world = false;
+	CHECK(apply_vote(b, 0, vote_ready(kA), out, 6000) == Verdict::NotInWorld);
+	VoteFacts nowhere = near_exit();
+	nowhere.exit_known = false;
+	CHECK(apply_vote(b, 0, vote_ready(kA), nowhere, 6000) == Verdict::NoExit);
+	VoteFacts far = near_exit();
+	far.dist = kReachM + 0.5f;
+	CHECK(apply_vote(b, 0, vote_ready(kA), far, 6000) == Verdict::TooFar);
+	VoteFacts edge = near_exit();
+	edge.dist = kReachM;
+	CHECK(apply_vote(b, 0, vote_ready(kA), edge, 6000) == Verdict::Claimed);
+	VoteFacts unknown = near_exit();
+	unknown.dist = -1.f;
+	CHECK(apply_vote(b, 1, vote_ready(kB), unknown, 6000) == Verdict::TooFar); // no distance, no claim on the exit's map
+	uint32_t goal = 0;
+	CHECK(b.claimed(1, &goal) && goal == kA); // a refused vote leaves the claim he had
+	// a guide trip: a ready without an exit is a yes, only while the trip runs
+	VoteMsg yes;
+	yes.op = VoteReady;
+	yes.changer = kNoChanger;
+	CHECK(apply_vote(b, 1, yes, near_exit(), 7000) == Verdict::NoGuide);
+	VoteFacts trip = near_exit();
+	trip.guide_running = true;
+	trip.dist = -1.f; // no exit, no distance
+	CHECK(apply_vote(b, 1, yes, trip, 7000) == Verdict::Claimed);
+	CHECK(b.claimed(1, &goal) && goal == kGuideGoal);
+}
+
+TEST(together_on_target_not_counted)
+{
+	// The together entry (split levels): who already stands on the level the exit leads to does not go, is not waited for and
+	// has no row; a claim of his means nothing.
+	Board b;
+	auto m = party({0, 1, 2});
+	m[2].on_target = true;
+	b.claim(0, kA, 0);
+	b.claim(1, kA, 0);
+	Status s = b.tick(m, kNear, 10);
+	CHECK_EQ(int(s.state), int(State::Counting));
+	CHECK_EQ(s.ready, 2u);
+	CHECK_EQ(s.total, 2u);
+	CHECK_EQ(s.rows.size(), size_t(2));
+	CHECK_EQ(row_of(s, 2).id, 0xdeadbeefu);
+	b.claim(2, kA, 20);
+	s = b.tick(m, kNear, 30);
+	CHECK(!b.claimed(2));
+	CHECK_EQ(s.total, 2u);
+	CHECK_EQ(int(s.state), int(State::Counting));
+	m[2].on_target = false; // he left that level: he is waited for again
+	s = b.tick(m, kNear, 40);
+	CHECK_EQ(int(s.state), int(State::Waiting));
+	CHECK_EQ(s.total, 3u);
+	CHECK_EQ(int(row_of(s, 2).mark), int(Mark::Away));
+}
+
+TEST(together_remote_confirm)
+{
+	// A player on another map says yes with the exit's id: no distance is asked of him (he is not near it), the board does
+	// not drop his claim for being far, his row has no metres.
+	Board b;
+	auto m = party({0, 1});
+	m[1].other_map = true;
+	VoteFacts there;
+	there.in_world = true;
+	there.exit_known = true;
+	there.other_map = true; // dist unknown
+	CHECK(apply_vote(b, 1, vote_ready(kA), there, 0) == Verdict::Claimed);
+	VoteFacts far_there = there;
+	far_there.dist = 900.f;
+	CHECK(apply_vote(b, 1, vote_ready(kA), far_there, 10) == Verdict::Refreshed);
+	b.claim(0, kA, 5);
+	const DistFn far = [](uint32_t id, uint32_t) { return id == 1 ? 900.f : 1.f; };
+	const Status s = b.tick(m, far, 20);
+	CHECK(b.claimed(1));
+	CHECK_EQ(int(row_of(s, 1).mark), int(Mark::Ready));
+	CHECK_EQ(row_of(s, 1).dist_m, kUnknownDist);
+	CHECK_EQ(int(s.state), int(State::Counting));
+	CHECK_EQ(s.ready, 2u);
+	// on the exit's own map the same vote needs the distance
+	VoteFacts here = there;
+	here.other_map = false;
+	CHECK(apply_vote(b, 1, vote_ready(kA), here, 30) == Verdict::TooFar);
+}
+
+TEST(together_row_flags)
+{
+	Board b;
+	auto m = party({0, 1, 2});
+	m[2].other_map = true;
+	b.claim(0, kA, 0);
+	const Status s = b.tick(m, kNear, 10);
+	CHECK(!row_of(s, 0).other_map);
+	CHECK(!row_of(s, 1).other_map);
+	CHECK(row_of(s, 2).other_map);
+	CHECK_EQ(int(row_of(s, 2).mark), int(Mark::Away));
+	const StateMsg msg = state_message(s, "l01_escape");
+	Writer w;
+	msg.write(w);
+	// the flag rides in the high bit of the mark byte: the layout of protocol 10 (7 bytes a row) stays
+	StateMsg plain = msg;
+	for (Row& r : plain.rows)
+		r.other_map = false;
+	Writer w0;
+	plain.write(w0);
+	CHECK_EQ(w.size(), w0.size());
+	CHECK(w.data() != w0.data());
+	Reader r = reader_of(w);
+	StateMsg back;
+	CHECK(back.read(r));
+	CHECK_EQ(back.rows.size(), size_t(3));
+	if (back.rows.size() == 3)
+	{
+		CHECK(!back.rows[0].other_map);
+		CHECK(!back.rows[1].other_map);
+		CHECK(back.rows[2].other_map);
+		CHECK_EQ(int(back.rows[2].mark), int(Mark::Away));
+	}
+	// a mark nobody knows is refused with the flag set as without it
+	std::vector<uint8_t> bytes(w.data());
+	bytes[bytes.size() - 3] = uint8_t(kRowOtherMap | 77); // the mark byte of the last row (u32 id, u8 mark, u16 dist)
+	Reader r2(bytes.data(), bytes.size());
+	StateMsg bad;
+	CHECK(!bad.read(r2));
+}
+
+// ---------------------------------------------------------------- F3a T8: the simultaneous load, the server's side
+
+namespace
+{
+using Peers = std::vector<uint32_t>;
+using Rows = std::vector<std::pair<uint32_t, bool>>;
+} // namespace
+
+TEST(load_enter_together)
+{
+	PreparedLoad l;
+	l.start(5, {0, 1, 2}, 1000);
+	CHECK(l.active());
+	CHECK_EQ(l.epoch(), 5u);
+	CHECK(l.is_mover(0) && l.is_mover(1) && l.is_mover(2) && !l.is_mover(3));
+	CHECK(l.take_entering(1000).empty()); // the server's world is not up: nobody enters a world that is not there
+	CHECK(l.ready(1, 5)); // 1 loaded before the host: his LoadReady waited in the world gate and replayed
+	CHECK(!l.ready(1, 5)); // again: nothing new
+	CHECK(!l.ready(2, 4)); // another epoch is not an answer
+	CHECK(!l.ready(3, 5)); // not a mover
+	CHECK(l.take_entering(20000).empty());
+	l.world_up(31000); // the server's world, and the host player with it
+	CHECK(l.world_is_up());
+	CHECK(l.is_ready(0) && l.is_ready(1) && !l.is_ready(2));
+	CHECK(l.rows() == (Rows{{0, true}, {1, true}, {2, false}}));
+	CHECK(l.take_entering(31000).empty()); // 2 is still loading
+	CHECK(!l.finished());
+	CHECK(l.ready(2, 5));
+	CHECK(l.take_entering(32000) == (Peers{0, 1, 2})); // all at once
+	CHECK(l.entered(0) && l.entered(1) && l.entered(2));
+	CHECK(l.take_entering(32100).empty());
+	CHECK(l.finished());
+	l.clear();
+	CHECK(!l.active());
+	CHECK(!l.ready(1, 5));
+}
+
+TEST(load_minute_counts_from_the_server_world)
+{
+	PreparedLoad l;
+	l.start(5, {0, 1, 2}, 0);
+	CHECK(l.ready(1, 5));
+	l.world_up(70000); // the host loaded for 70 s: the others' minute starts now, not at the go
+	CHECK(l.is_ready(1)); // and who was ready stays ready
+	CHECK(l.take_entering(70000).empty());
+	CHECK(l.take_entering(129999).empty());
+	CHECK(l.take_entering(130000) == (Peers{0, 1})); // a minute after the server's world: who is ready goes
+	CHECK(!l.finished());
+	CHECK(l.take_entering(140000).empty());
+	CHECK(l.ready(2, 5)); // the laggard enters alone
+	CHECK(l.take_entering(150000) == (Peers{2}));
+	CHECK(l.finished());
+}
+
+TEST(load_a_mover_who_never_reports_holds_nobody_beyond_the_minute)
+{
+	PreparedLoad l;
+	l.start(9, {0, 1, 2}, 0);
+	l.world_up(10000);
+	CHECK(l.ready(1, 9));
+	CHECK(l.take_entering(69999).empty());
+	CHECK(l.take_entering(70000) == (Peers{0, 1}));
+	CHECK(!l.finished()); // 2 never said a word
+	l.drop(2); // he left, or asked for the world the usual way
+	CHECK(!l.is_mover(2));
+	CHECK(l.rows() == (Rows{{0, true}, {1, true}}));
+	CHECK(l.finished());
+	// a mover dropped before the server's world is up is not waited for at all
+	PreparedLoad k;
+	k.start(3, {0, 4}, 0);
+	k.drop(4);
+	k.world_up(500);
+	CHECK(k.take_entering(500) == (Peers{0}));
+	CHECK(k.finished());
+}
+
+TEST(load_a_new_go_replaces_the_old_load)
+{
+	PreparedLoad l;
+	l.start(5, {0, 1, 2}, 0);
+	l.world_up(100);
+	l.ready(1, 5);
+	l.start(6, {0, 1}, 200); // the group moves again before 2 was in (he is no mover of this one)
+	CHECK_EQ(l.epoch(), 6u);
+	CHECK(!l.world_is_up());
+	CHECK(!l.is_ready(1));
+	CHECK(!l.is_mover(2));
+	CHECK(!l.ready(1, 5));
+	CHECK(l.ready(1, 6));
+}
+
+// ---------------------------------------------------------------- F3a T8: the simultaneous load, a player's screen
+
+TEST(load_screen_holds_from_the_save_to_enter)
+{
+	LoadScreen sc;
+	CHECK(!sc.holds());
+	CHECK(sc.prepared(5, true, 1000)); // a remote client: the save comes as a blob
+	CHECK(sc.stage == Load::Waiting);
+	CHECK(!sc.holds()); // still in the old world while the save comes
+	CHECK(!sc.world_up(1500)); // nothing to say before the save is loading
+	CHECK(sc.loading()); // the save came, its load is issued
+	CHECK(!sc.loading());
+	CHECK(sc.holds());
+	CHECK(sc.world_up(20000)); // LoadReady now
+	CHECK(!sc.world_up(20001)); // once
+	CHECK(sc.stage == Load::Holding);
+	CHECK(sc.holds());
+	CHECK(!sc.enter(4, 30000)); // another epoch's Enter
+	CHECK(sc.holds());
+	CHECK(sc.enter(5, 30000));
+	CHECK(!sc.holds());
+	CHECK(sc.stage == Load::Entering);
+	// an Enter that comes while the world still loads: the screen goes as soon as the world is up, without a hold
+	LoadScreen early;
+	early.prepared(7, true, 0);
+	early.loading();
+	CHECK(early.enter(7, 100));
+	CHECK(early.stage == Load::Entering);
+	CHECK(!early.holds());
+	CHECK(!early.world_up(200));
+}
+
+TEST(load_screen_says_ready_again_until_enter)
+{
+	LoadScreen sc;
+	CHECK(sc.prepared(5, false, 0)); // the host player: his process loads the world itself
+	CHECK(sc.stage == Load::Loading);
+	CHECK(sc.local);
+	CHECK(sc.holds());
+	CHECK(sc.world_up(1000));
+	CHECK(!sc.repeat(1000 + kLoadReadyRepeatMs - 1));
+	CHECK(sc.repeat(1000 + kLoadReadyRepeatMs));
+	CHECK(!sc.repeat(1000 + kLoadReadyRepeatMs + 1));
+	CHECK(sc.repeat(1000 + 2 * kLoadReadyRepeatMs));
+	CHECK(sc.enter(5, 9000));
+	CHECK(!sc.repeat(1000 + 10 * kLoadReadyRepeatMs));
+}
+
+TEST(load_screen_enters_alone_only_after_the_server_world_was_up)
+{
+	LoadScreen sc;
+	sc.prepared(5, true, 0);
+	sc.loading();
+	sc.world_up(10000); // the client is up long before the host
+	CHECK(!sc.alone(10000 + 600000)); // no word from the server's world: nobody plays in a world the host is not in
+	sc.waiting(5, Rows{{0, true}, {1, true}, {2, false}}, 50000); // the server's world is up, 2 is missing
+	CHECK_EQ(sc.host_up_at, uint64_t(50000));
+	CHECK(sc.waiting_for == (Peers{2}));
+	sc.waiting(5, Rows{{0, true}, {1, true}, {2, false}}, 50500);
+	CHECK_EQ(sc.host_up_at, uint64_t(50000)); // the first word counts
+	CHECK(!sc.alone(50000 + kLoadWaitMs + kLoadAloneGraceMs - 1));
+	CHECK(sc.alone(50000 + kLoadWaitMs + kLoadAloneGraceMs));
+	// the host player: his own world is the server's
+	LoadScreen h;
+	h.prepared(5, false, 0);
+	h.world_up(30000);
+	CHECK(!h.alone(30000 + kLoadWaitMs + kLoadAloneGraceMs - 1));
+	CHECK(h.alone(30000 + kLoadWaitMs + kLoadAloneGraceMs));
+	// not holding: nothing to let go
+	LoadScreen idle;
+	CHECK(!idle.alone(10000000));
+}
+
+TEST(load_screen_other_epochs_change_nothing)
+{
+	LoadScreen sc;
+	CHECK(sc.prepared(5, true, 0));
+	CHECK(!sc.prepared(5, true, 10)); // the same again
+	CHECK(!sc.prepared(4, true, 10)); // an older one
+	sc.waiting(4, Rows{{2, false}}, 20);
+	CHECK_EQ(sc.host_up_at, uint64_t(0));
+	CHECK(sc.waiting_for.empty());
+	CHECK(!sc.cancel(4));
+	CHECK(sc.stage == Load::Waiting);
+	CHECK(sc.cancel(5));
+	CHECK(sc.stage == Load::None);
+	CHECK(!sc.holds());
+	CHECK(sc.prepared(6, true, 30)); // a newer transition starts over
+	CHECK(sc.stage == Load::Waiting);
+	CHECK_EQ(sc.epoch, 6u);
+}
+
+TEST(load_screen_lost_save_asks_for_the_world)
+{
+	LoadScreen sc;
+	sc.prepared(5, true, 0);
+	sc.progress(5000);
+	CHECK(!sc.stalled(500000)); // the server's world is not up: its own load may be what holds the rest of the save
+	sc.waiting(5, Rows{{0, true}, {1, false}}, 60000);
+	CHECK(!sc.stalled(60000 + kLoadBlobStallMs - 1));
+	sc.progress(80000); // still coming
+	CHECK(!sc.stalled(80000 + kLoadBlobStallMs - 1));
+	CHECK(sc.stalled(80000 + kLoadBlobStallMs));
+	CHECK(sc.loading()); // it came after all
+	CHECK(!sc.stalled(900000));
+}
+
+// ---------------------------------------------------------------- F3a T8: the order of the "go" on a real session
+
+namespace
+{
+Writer load_wait(uint8_t state, uint32_t epoch, uint16_t level)
+{
+	levels::wire::LoadWaitMsg m;
+	m.state = state;
+	m.epoch = epoch;
+	m.level = level;
+	Writer w;
+	CHECK(m.write(w));
+	return w;
+}
+} // namespace
+
+// The world server's "go" (coop_join.cpp host_prepare): LoadWait Prepared to a moving client while he is still in the old
+// epoch (a game message to a client of another epoch is not sent), then the epoch, then the save (a blob carries the epoch it
+// was queued in: queued before the move it would be cancelled by it). The client takes the new epoch from the LoadWait, so
+// the save completes there.
+TEST(load_prepared_world_reaches_the_client_across_the_epoch_move)
+{
+	Node host("Boss", 37801), cl("Alice", 37801);
+	REQUIRE(host.host());
+	host.s.set_world_epoch(3);
+	REQUIRE(cl.connect(37801));
+	REQUIRE(t::pump_until({&host.s, &cl.s}, 5000, [&] { return cl.s.is_active() && host.s.peers().size() == 1; }));
+	const PeerId id = host.s.peers()[0].id;
+	CHECK_EQ(cl.s.world_epoch(), 3u);
+	std::vector<uint32_t> prepared;
+	cl.s.on(Msg::LoadWait, [&](PeerId from, Reader& r) {
+		levels::wire::LoadWaitMsg m;
+		CHECK_EQ(from, kHostPeer);
+		if (m.read(r) && m.state == levels::wire::LoadWaitMsg::Prepared)
+		{
+			prepared.push_back(m.epoch);
+			cl.s.set_world_epoch(m.epoch); // as client_on_load_wait
+		}
+	});
+	host.s.send(id, Lane::Reliable, Msg::LoadWait, load_wait(levels::wire::LoadWaitMsg::Prepared, 4, 7));
+	host.s.set_world_epoch(4);
+	host.s.send_blob(id, 2, t::random_bytes(300000, 7)); // join::BlobPreparedSave
+	// what is sent to him after the move and before he follows does not reach him
+	host.s.send(id, Lane::Reliable, Msg::LoadWait, load_wait(levels::wire::LoadWaitMsg::Prepared, 99, 7));
+	REQUIRE(t::pump_until({&host.s, &cl.s}, 10000, [&] { return !cl.blobs.empty(); }));
+	CHECK(prepared == (std::vector<uint32_t>{4}));
+	CHECK_EQ(cl.blobs[0].kind, 2u);
+	CHECK_EQ(cl.blobs[0].data.size(), size_t(300000));
+	CHECK_EQ(cl.s.world_epoch(), 4u);
+	CHECK(host.logged("not sent until it rejoins"));
+}
+
+// Plan §1.5 step 7: a LoadReady of the new epoch that comes while the server still builds its world waits in the world gate
+// (LoadReady = Hold) and runs when the world is up, from a remote client and from the host player over the local link.
+TEST(load_ready_before_the_server_world_waits_and_replays)
+{
+	LocalLink link; // outlives the session it is attached to
+	Node host("Boss", 37802), cl("Alice", 37802);
+	REQUIRE(host.host());
+	host.s.set_world_epoch(4);
+	wgate::World world = wgate::World::Hole; // the host's process loads the world of the transition
+	host.s.set_world_gate([&] { return world; });
+	std::vector<std::pair<PeerId, uint32_t>> ready;
+	host.s.on(Msg::LoadReady, [&](PeerId from, Reader& r) {
+		levels::wire::LoadReadyMsg m;
+		if (m.read(r))
+			ready.emplace_back(from, m.epoch);
+	});
+	REQUIRE(cl.connect(37802));
+	REQUIRE(t::pump_until({&host.s, &cl.s}, 5000, [&] { return cl.s.is_active() && host.s.peers().size() == 1; }));
+	const PeerId id = host.s.peers()[0].id;
+	levels::wire::LoadReadyMsg m;
+	m.epoch = 4;
+	Writer w;
+	m.write(w);
+	cl.s.send(kHostPeer, Lane::Reliable, Msg::LoadReady, w);
+	REQUIRE(t::pump_until({&host.s, &cl.s}, 5000, [&] { return host.s.world_gate_stats().queued == 1; }));
+	CHECK(ready.empty());
+	world = wgate::World::Up;
+	REQUIRE(t::pump_until({&host.s, &cl.s}, 5000, [&] { return !ready.empty(); }));
+	CHECK(ready[0] == (std::pair<PeerId, uint32_t>{id, 4u}));
+	// the host player's, over the link
+	host.s.attach_local(&link);
+	world = wgate::World::Hole;
+	REQUIRE(link.push_to_server(Msg::LoadReady, Lane::Reliable, w));
+	host.s.update(t::now_ms());
+	CHECK_EQ(ready.size(), size_t(1));
+	CHECK_EQ(host.s.world_gate_stats().queued, size_t(1));
+	world = wgate::World::Up;
+	host.s.update(t::now_ms());
+	REQUIRE(ready.size() == 2);
+	CHECK(ready[1] == (std::pair<PeerId, uint32_t>{kHostPeer, 4u}));
+	host.s.attach_local(nullptr);
+}
+
+// The host player's LoadWait goes over the local link AFTER the epoch move: a link packet carries the epoch it was pushed in
+// and one of an older epoch is dropped at the pump (F3a T4 R1).
+TEST(load_wait_to_the_host_player_goes_after_the_epoch_move)
+{
+	LocalLink link;
+	Node host("Boss", 37803);
+	REQUIRE(host.host());
+	host.s.attach_local(&link);
+	host.s.set_world_epoch(4);
+	std::vector<uint32_t> got;
+	link.on(Msg::LoadWait, [&](PeerId from, Reader& r) {
+		CHECK_EQ(from, kHostPeer);
+		levels::wire::LoadWaitMsg m;
+		if (m.read(r))
+			got.push_back(m.epoch);
+	});
+	host.s.send(kHostPeer, Lane::Reliable, Msg::LoadWait, load_wait(levels::wire::LoadWaitMsg::Prepared, 5, 7)); // too early
+	host.s.set_world_epoch(5);
+	host.s.send(kHostPeer, Lane::Reliable, Msg::LoadWait, load_wait(levels::wire::LoadWaitMsg::Prepared, 5, 7));
+	host.s.update(t::now_ms());
+	CHECK(got == (std::vector<uint32_t>{5}));
+	CHECK_EQ(link.stats().stale, uint64_t(1));
+	host.s.attach_local(nullptr);
+}
+
+// F3a T8 moved the board and the load onto the host player's local link (coop_local_link.h kLinkMessages): with the game's
+// gate his vote reaches the world server's handler from peer 0 and the board, LoadWait come back to his handlers.
+TEST(board_vote_and_state_travel_the_gated_link)
+{
+	const Msg moved[] = {Msg::TransitionVote, Msg::TransitionState, Msg::LoadWait, Msg::LoadReady};
+	for (Msg m : moved)
+		CHECK(link_enabled(m));
+	LocalLink link;
+	link.set_gate(&link_enabled);
+	Node host("Boss", 37804);
+	REQUIRE(host.host());
+	host.s.attach_local(&link);
+	std::vector<PeerId> votes_from;
+	host.s.on(Msg::TransitionVote, [&](PeerId from, Reader& r) {
+		VoteMsg v;
+		CHECK(v.read(r));
+		votes_from.push_back(from);
+	});
+	std::vector<StateMsg> boards;
+	link.on(Msg::TransitionState, [&](PeerId from, Reader& r) {
+		CHECK_EQ(from, kHostPeer);
+		StateMsg m;
+		CHECK(m.read(r));
+		boards.push_back(m);
+	});
+	int waits = 0;
+	link.on(Msg::LoadWait, [&](PeerId, Reader&) { ++waits; });
+	Writer vote;
+	vote_ready(kA).write(vote);
+	REQUIRE(link.push_to_server(Msg::TransitionVote, Lane::Reliable, vote));
+	Board b;
+	b.claim(0, kA, 0);
+	Writer board;
+	state_message(b.tick(party({0}), kNear, 10), "l01_escape").write(board);
+	host.s.broadcast(Lane::Reliable, Msg::TransitionState, board); // the server's broadcast reaches the host player too
+	host.s.send(kHostPeer, Lane::Reliable, Msg::LoadWait, load_wait(levels::wire::LoadWaitMsg::Enter, 0, 7));
+	host.s.update(t::now_ms());
+	CHECK(votes_from == (std::vector<PeerId>{kHostPeer}));
+	REQUIRE(boards.size() == 1);
+	CHECK_EQ(boards[0].rows.size(), size_t(1));
+	CHECK_EQ(waits, 1);
+	CHECK_EQ(link.stats().refused, uint64_t(0));
+	host.s.attach_local(nullptr);
+}
+
+namespace
+{
+// engine/src/xrGame/coop/<name>, next to this source file (tests\ -> ..\engine\src\xrGame\coop)
+std::string coop_join_source()
+{
+	std::string here = __FILE__;
+	const size_t slash = here.find_last_of("\\/");
+	here.resize(slash == std::string::npos ? 0 : slash);
+	std::ifstream f(here + "/../engine/src/xrGame/coop/coop_join.cpp", std::ios::binary);
+	return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+} // namespace
+
+// Review Focus 1 (plan §5): with TransitionVote / TransitionState on the link the host player's claim and placard travel
+// it; the host's process must not also claim for him on the board, release his claim or set his placard directly.
+TEST(board_host_direct_path_gone)
+{
+	const std::string src = coop_join_source();
+	REQUIRE(src.size() > 10000);
+	CHECK(src.find("g.board.claim(0, goal, now)") == std::string::npos); // transition_step's own claim
+	CHECK(src.find("g.board.release(0)") == std::string::npos); // transition_step / transition_cancel's own release
+	CHECK(src.find("g.view = transition::state_message") == std::string::npos); // the host's placard from the board itself
+	CHECK(src.find("Msg::TransitionVote, w);") != std::string::npos); // every player votes with the message
 }

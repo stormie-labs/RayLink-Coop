@@ -11,7 +11,8 @@
 
 	  coop.transition() -> nil | { state "waiting" | "counting", kind "exit" | "guide", level (stock name), changer, ready,
 	    total, countdown_ms (left), load_ms (left of the loaders' minute), rows = { { peer, mark "ready" | "away" | "loading" |
-	    "down" | "elsewhere", dist (m) }, ... }, me = { peer, host, in_zone, ready, dist, confirm }, pos = { x, y, z } }
+	    "down" | "elsewhere", dist (m), other (true: on another map, F3a) }, ... }, me = { peer, host, in_zone, ready, dist,
+	    confirm }, pos = { x, y, z } }
 	  polled every frame; nil when nobody waits.
 
 	1. The board (me at the exit, or a guide trip): top centre under the compass: the small caps head, the level's name, the
@@ -249,6 +250,11 @@ end
 local function row_state(r, t)
 	local mark = r.mark
 	local guide = t and t.kind == "guide"
+	-- F3a: a player on another map (the together entry of split levels) answers from there: no metres to show
+	if r.other == true and (mark == "ready" or mark == "away") then
+		if mark == "ready" then return tr("st_coop_transition_row_agreed", "agreed"), "ready" end
+		return tr("st_coop_together_row_other", "on another map"), "dim"
+	end
 	if mark == "ready" then
 		if guide then
 			if tonumber(r.peer) == 0 then return tr("st_coop_transition_row_asked", "asked"), "ready" end
