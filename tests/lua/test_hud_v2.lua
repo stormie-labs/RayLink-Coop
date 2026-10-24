@@ -1562,6 +1562,25 @@ print(("  info %d markers, %.3f ms per frame in the stubs (the engine adds luabi
 check(n_markers >= 20, "20 markers on the bar (" .. n_markers .. ")")
 check(per_frame_ms < 1.0, "Lua side of a frame well under a millisecond in the stubs (" .. string.format("%.3f", per_frame_ms) .. " ms)")
 
+-- Live 2026-10-24: after a resolution change the minimap is back although video/hud/show_minimap is off. The engine
+-- rebuilds the game UI (CHUDManager::OnScreenResolutionChanged: UnLoad + Load) and the new main window shows the
+-- minimap; the game applies the option on the first update only (actor_effects).
+print("== the minimap option holds after a resolution change")
+local motion = { shown = true, Show = function(self, b) self.shown = b end }
+local main = { UIZoneMap = { disabled = false }, UIMotionIcon = motion }
+M.env.ActorMenu = { get_maingame = function() return main end }
+local minimap_on = false
+M.env.ui_options = { get = function(key) if key == "video/hud/show_minimap" then return minimap_on end end }
+fire(M, "on_screen_resolution_changed")
+check(main.UIZoneMap.disabled == true and motion.shown == false, "minimap off: the rebuilt main window hides it again")
+minimap_on = true
+fire(M, "on_screen_resolution_changed")
+check(main.UIZoneMap.disabled == false and motion.shown == true, "minimap on: it stays")
+M.env.ActorMenu = { get_maingame = function() return nil end }
+fire(M, "on_screen_resolution_changed")
+check(true, "no main window (menu): nothing to do, no error")
+M.env.ui_options, M.env.ActorMenu = nil, nil
+
 -- ================================================================
 local unk = {}
 for k in pairs(UNKNOWN or {}) do unk[#unk + 1] = tostring(k) end

@@ -877,10 +877,25 @@ function print_status()
 	end
 end
 
+-- Live 2026-10-24: a resolution change brought the minimap back although video/hud/show_minimap is off. The engine
+-- rebuilds the game UI then (CHUDManager::OnScreenResolutionChanged: UnLoad + Load), the new main window shows the
+-- minimap, and the game applies the option on the first update only (actor_effects.actor_on_first_update).
+local function on_screen_resolution_changed()
+	local ok, err = pcall(function()
+		local main = ActorMenu and ActorMenu.get_maingame()
+		if not (main and main.UIZoneMap and ui_options) then return end
+		local on = ui_options.get("video/hud/show_minimap") and true or false
+		main.UIZoneMap.disabled = not on
+		if main.UIMotionIcon then main.UIMotionIcon:Show(on) end
+	end)
+	if not ok then log("! the minimap option after a resolution change: %s", tostring(err)) end
+end
+
 function on_game_start()
 	if not api then return end -- an exe without co-op: nothing of this runs
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("actor_on_net_destroy", actor_on_net_destroy)
+	RegisterScriptCallback("on_screen_resolution_changed", on_screen_resolution_changed)
 	local cm = codec()
 	if cm and cm.add_event_handler then cm.add_event_handler(EV_STATUS, on_status) end
 end
