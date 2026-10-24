@@ -298,6 +298,16 @@ check(dlg.tab == "join" and dlg.seg.join.bar.shown and not dlg.seg.host.bar.show
 	and dlg.seg.host.f.tcolor == pal.seg_off, "the segment bar follows the tab")
 check(dlg.recent_btn[1].shown and dlg.recent_btn[5].shown and dlg.edit_address.shown and dlg.btn_connect.shown
 	and not dlg.edit_port.shown and not dlg.port_toggle.shown, "join tab shows its controls, the port fold is a host thing")
+-- Live 2026-10-24 (build 12): "I cannot type the host's address". The engine hands a click to every ENABLED child under
+-- the cursor, shown or not (CUIWindow::OnMouseAction checks IsEnabled only), and an edit box passes the click on: the
+-- hidden host tiles (28.5,198 - 643.5,322) lie over the address field and took it. A hidden control is never enabled.
+check(dlg.edit_address.enabled and dlg.btn_host_new.enabled == false and dlg.btn_host_load.enabled == false
+	and dlg.btn_host_last.enabled == false and dlg.btn_port_toggle.enabled == false and dlg.edit_port.enabled == false,
+	"join tab: the hidden host tiles, the port fold and the port field take no clicks")
+click(dlg, "tab_host")
+check(dlg.edit_address.enabled == false and dlg.recent_btn[1].enabled == false and dlg.btn_connect.enabled == false
+	and dlg.btn_host_new.enabled and dlg.btn_port_toggle.enabled, "host tab: the hidden join controls take no clicks")
+click(dlg, "tab_join")
 check(not dlg.btn_host_new.shown and not dlg.tile.new.f.shown and not dlg.tile.new.ico.shown and not dlg.open_hint.shown,
 	"host controls are gone on the join tab")
 check(dlg.info_line[1].text:find("connect to the host's address", 1, true) and dlg.info_line[3].text:find("host's world", 1, true),

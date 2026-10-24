@@ -437,8 +437,9 @@ end
 local function set_flat(g, shown, enabled)
 	local c = palette()
 	enabled = enabled and true or false
+	shown = shown and true or false
 	set_shown(g.list, shown)
-	g.btn:Enable(enabled)
+	g.btn:Enable(enabled and shown) -- hidden: no clicks (the engine hands a click to any enabled child, shown or not)
 	g.f:SetTextureColor(enabled and (g.primary and c.tile_new or c.btn) or c.btn_off)
 	g.b:SetTextureColor(enabled and (g.primary and c.sand_dim or c.border) or c.border_off)
 end
@@ -761,16 +762,19 @@ function UICoopMenu:Refresh(info)
 		end
 	end
 
-	-- host tab: the three ways to start, nothing is offered while a session runs
+	-- host tab: the three ways to start, nothing is offered while a session runs. A hidden control is never enabled: the
+	-- engine hands a click to every enabled child under the cursor, shown or not, and an edit box passes it on - the hidden
+	-- tiles lie over the address field and took its clicks (live 2026-10-24: "I cannot type the host's address").
 	set_shown(self.host_ctl, host_tab)
 	local last_ok = self.last_save ~= nil and not self.last_save.damaged
-	self:StyleTile(self.tile.new, free)
-	self:StyleTile(self.tile.load, free)
-	self:StyleTile(self.tile.last, free and last_ok)
+	self:StyleTile(self.tile.new, free and host_tab)
+	self:StyleTile(self.tile.load, free and host_tab)
+	self:StyleTile(self.tile.last, free and last_ok and host_tab)
+	self.btn_port_toggle:Enable(host_tab and true or false)
 	-- the port field and its fold
 	local shown_port = check_port(self.edit_port:GetText()) or get_port()
 	set_shown(self.port_ctl, host_tab and self.port_open)
-	self.edit_port:Enable(free)
+	self.edit_port:Enable((free and host_tab and self.port_open) and true or false)
 	self.port_toggle:SetText(self.port_open and tr("st_coop_menu_port_less") or tr("st_coop_menu_port_more", shown_port))
 	-- "Open it to partners": only with a game that is loaded and alive; a dead actor gets the reason instead of a button
 	local can_open = host_tab and free and alive
@@ -789,9 +793,9 @@ function UICoopMenu:Refresh(info)
 	set_flat(self.flat.btn_connect, join_tab, free)
 	for i, row in ipairs(self.recent_row) do
 		set_shown(row.list, join_tab and self.recent[i] ~= nil)
-		row.btn:Enable(free)
+		row.btn:Enable((free and join_tab and self.recent[i] ~= nil) and true or false)
 	end
-	self.edit_address:Enable(free)
+	self.edit_address:Enable((free and join_tab) and true or false)
 	self.join_info:SetText(loaded and free and tr("st_coop_menu_join_ingame") or "")
 
 	-- shared
