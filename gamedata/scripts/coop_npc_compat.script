@@ -212,6 +212,26 @@ local function wrap_night_mutants()
 	applied[#applied + 1] = "night_mutants"
 end
 
+-- Audit B5 (2026-10-24): NPCs do not loot a corpse or pick up an item within the loot distance of the HOST's actor
+-- (xr_corpse_detection / xr_gather_items near_actor), so they looted a client's kills right in front of him. Any player
+-- within that distance counts. The module calls near_actor through its own table: the wrapper is seen at once.
+local function wrap_loot()
+	for _, name in ipairs({ "xr_corpse_detection", "xr_gather_items" }) do
+		local m = mod(name)
+		local f = m and m.near_actor
+		if type(f) == "function" and not orig["loot_" .. name] then
+			orig["loot_" .. name] = f
+			m.near_actor = function(obj)
+				if f(obj) then return true end
+				if not (host_on and obj) then return false end
+				local dist = tonumber(ui_options.get("gameplay/general/npc_loot_distance"))
+				return dist ~= nil and dist > 0 and coop_npc_any_player_within(obj, dist) == true
+			end
+			applied[#applied + 1] = "loot:" .. name
+		end
+	end
+end
+
 local function wrap_stealth()
 	if not mod("stealth_mcm") then return end
 	local m = mod("visual_memory_manager")
@@ -308,7 +328,7 @@ function on_game_start()
 			if not ok then report("rewrite " .. name, err) end
 		end
 		for _, s in ipairs({ { "ai_rework", wrap_ai_rework }, { "night_mutants", wrap_night_mutants },
-			{ "stealth", wrap_stealth }, { "peace_zone", wrap_peace_zone } }) do
+			{ "stealth", wrap_stealth }, { "peace_zone", wrap_peace_zone }, { "loot", wrap_loot } }) do
 			local ok, err = pcall(s[2])
 			if not ok then report("install " .. s[1], err) end
 		end

@@ -531,5 +531,21 @@ local ok1_call, res1 = pcall(H.env.trade_manager.update, {}, false)
 check(ok1 and ok1_call and res1 == "wrapped" and calls1.n == 1, "trader_autoinject rerun: the original is called exactly once")
 H.env.trade_manager, H.env.some_other_mod, H.env.trader_autoinject = nil, nil, nil
 
+print("== coop_npc_compat: NPCs do not loot next to any player (audit B5)")
+H, C, proxy, hav = pair()
+H.env.ui_options = { get = function(k) if k == "gameplay/general/npc_loot_distance" then return 10 end end }
+H.env.xr_corpse_detection = { near_actor = function(obj) return obj:position():distance_to(H.env.db.actor:position()) < 10 end }
+H.env.xr_gather_items = { near_actor = function() return false end }
+local KL = load_script(H, "coop_npc_compat")
+KL.on_game_start()
+KL._set_host_on(true)
+local body = H.add(make_obj(777, proxy:position().x + 3, 0, proxy:position().z, { _name = "corpse" }))
+check(H.env.xr_corpse_detection.near_actor(body) == true, "a corpse 3 m from a client's character is 'near the player'")
+local far_body = H.add(make_obj(778, proxy:position().x + 300, 0, proxy:position().z, { _name = "far corpse" }))
+check(H.env.xr_corpse_detection.near_actor(far_body) == false, "far from every player: lootable")
+KL._set_host_on(false)
+check(H.env.xr_corpse_detection.near_actor(body) == false, "no clients: the stock rule alone")
+H.env.xr_corpse_detection, H.env.xr_gather_items, H.env.ui_options = nil, nil, nil
+
 print(string.format("\nRESULT: %d passed, %d failed", PASSES, FAILS))
 if FAILS > 0 then error("tests failed") end
