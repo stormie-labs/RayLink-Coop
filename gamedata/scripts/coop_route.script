@@ -112,6 +112,27 @@ end
 
 -- f runs where domain d runs. skip_ret: returned when it does not run here; err_ret: returned when its protected call
 -- failed on a client.
+-- Audit C1 / M3 (2026-10-24): a host script that makes things happen around "the player" (G.A.M.M.A.'s phantoms and
+-- psy hits around db.actor) runs its actor_on_update as each player in turn - one call per tick, the identity rotating
+-- (coop_npc_players.with_identity), so its own timers stay as they are and the clients get it too.
+local ROTATE = { xcv_phantoms = true, more_dangerous_phantoms = true }
+local turn = {}
+
+local function as_player_in_turn(script, f, ...)
+	local P = rawget(_G, "coop_npc_players")
+	if not (P and P.everyone and P.with_identity) then return f(...) end
+	local list = P.everyone()
+	local n = #list
+	if n <= 1 then return f(...) end
+	local i = (turn[script] or 0) % n + 1
+	turn[script] = i
+	local who = list[i]
+	if who == db.actor then return f(...) end
+	return P.with_identity(who, f, ...)
+end
+
+function _rotate_turn(script) return turn[script] end
+
 local function guard(f, d, script, what, skip_ret, err_ret)
 	local w = function(...)
 		if not runs(d) then
@@ -121,6 +142,9 @@ local function guard(f, d, script, what, skip_ret, err_ret)
 		note(d, "ran")
 		if client then
 			return finish(d, script, what, err_ret, pcall(f, ...))
+		end
+		if d == "host" and what == "actor_on_update" and ROTATE[script] then
+			return as_player_in_turn(script, f, ...)
 		end
 		return f(...)
 	end
