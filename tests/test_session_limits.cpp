@@ -45,8 +45,10 @@ size_t peers_with_key(const Session& s, const PlayerKey& key)
 
 std::string hex(const Sha256& d) { return to_hex(d.data(), d.size()); }
 
-// Longer than kReplaceSilentLinkMs (3000, coop_session.cpp): a link not pumped for this long may be replaced.
-constexpr uint32_t kSilentMs = 3300;
+// Longer than kReplaceSilentLinkMs (3000, coop_session.cpp) + kOwnerAliveMs (1000, coop_transport.cpp: the transport's
+// helper keeps answering for that long after the owner's last frame, 2026-10-24): a link not pumped for this long may be
+// replaced.
+constexpr uint32_t kSilentMs = 4300;
 
 bool has_delete_advice(const std::string& text)
 {

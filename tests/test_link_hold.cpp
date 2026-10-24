@@ -192,13 +192,15 @@ TEST(a_crash_between_the_check_and_the_hold_is_silence)
 	CHECK(link_hold::keep_held(fs));
 	// ... a worker thread crashes right then (on_crash) ...
 	cl.s.seal_connection_hold();
+	// The helper pumps between the owner's frames (2026-10-24); from the crash on it stops (one pass may be in flight).
+	const uint64_t at_crash = cl.s.keepalive_services();
 	// ... and the frame arms the hold it decided on. It does not take: nothing holds the link after a crash.
 	cl.s.hold_connection(link_hold::kLoadHoldMs);
 	cl.s.hold_connection(link_hold::kLoadHoldMs);
 	// The crashed client never pumps again: dropped after the silence timeout, not after kLoadHoldMs.
 	REQUIRE(t::pump_until({&host.s}, 15000, [&] { return !host.left.empty(); }));
 	CHECK(host.left[0].second.find("lost") != std::string::npos);
-	CHECK_EQ(cl.s.keepalive_services(), uint64_t(0)); // the helper never answered for it
+	CHECK(cl.s.keepalive_services() <= at_crash + 1); // the helper never answered for it after the crash
 }
 
 // Review of protocol 8 (Minor 3): joins that come while the host's own level precaches wait for it, and the engine's
