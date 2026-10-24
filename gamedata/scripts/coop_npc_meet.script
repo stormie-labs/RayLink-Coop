@@ -599,7 +599,17 @@ local function push_npc(npc)
 	end
 end
 
+-- A player's avatar is no talk partner (live 2026-10-24: "[F] Talk: <a random stalker name>" on a client's character):
+-- G.A.M.M.A.'s xr_meet switches talk on for everybody, and the hint of its HUD marks follows the flag.
+local function mute_avatar(obj)
+	if obj:is_talk_enabled() then obj:disable_talk() end
+end
+
 local function process_npc_usability(npc)
+	if npc and P.is_proxy(npc) then
+		mute_avatar(npc) -- the stock meet rules do not apply to a player (and his storage may be gone)
+		return
+	end
 	if not (npc and db.storage[npc:id()]) then
 		if P.active() then return end -- storage torn down by a level change: the stock code would crash
 	end
@@ -726,6 +736,7 @@ local function actor_on_update()
 	local now = time_global()
 	if now < next_tick then return end
 	next_tick = now + 250
+	for _, obj in ipairs(P.others()) do mute_avatar(obj) end -- a client's puppets of players run no xr_meet of their own
 	local was = host_on
 	host_on = installed and P.host_with_clients()
 	if was and not host_on then sent_talk, sent_wnd = {}, {} end

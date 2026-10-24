@@ -242,5 +242,19 @@ do
 	check(pcall(H.env.xr_meet.process_npc_usability, npc), "process_npc_usability survives it")
 end
 
+-- Live 2026-10-24: the host saw "[F] Talk: <a random stalker name>" on a client's character. A player's avatar is no
+-- talk partner: the host's xr_meet (G.A.M.M.A.: talk for everybody) switched it on, and the hint follows the flag.
+print("== a player's avatar never offers a talk")
+do
+	local H, C, proxy, MH, MC = scene("gamma")
+	proxy._talk = true
+	H.env.xr_meet.process_npc_usability(proxy)
+	check(proxy._talk == false, "host: after xr_meet ran for the client's character, its talk is off")
+	proxy._talk = true
+	NOW = NOW + 300
+	H.fire("actor_on_update")
+	check(proxy._talk == false, "host: the update keeps the avatars mute (a mod switched it on again)")
+end
+
 print(string.format("\nRESULT: %d passed, %d failed", PASSES, FAILS))
 if FAILS > 0 then error("tests failed") end
