@@ -1676,3 +1676,296 @@ TEST(audit_lost_heal_reclaims_a_spawning_holder)
 	CHECK_EQ(count_op(m1.on_packet(Packet{Op::Abort, {31, 0}, kWorld, kM1, {}}, t), Op::AbortAck, kWorld), size_t(1));
 	CHECK(m1.authors(31)); // gen 0: nothing of it to let go
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Fix round 3 (re-review of round 2: a fresh spawn lost to packets of an earlier life; a peer used twice across a load)
+// ---------------------------------------------------------------------------------------------------------------------
+
+// Review round 3, H4 (path a; fuzzer seed 0x8ba0dd2c583d8a04, reuse profile): a late copy of an Abort for an earlier grant
+// - already answered, the gen declined - reaches the map server while it spawns the same id anew. Spawning lets go only
+// of an Abort above everything barred here (a heal's reclaim carries a fresh gen); the copy is about an earlier life.
+TEST(xfer_late_abort_copy_keeps_a_new_spawn)
+{
+	Ledger w;
+	connect(w);
+	Holder m1(kM1);
+	w.add_world_object(5, {1});
+	const uint64_t t = 1000;
+	std::vector<Packet> gr = w.on_packet(one(m1.want_online(5, t)), t); // the Grant is lost
+	REQUIRE(gr.size() == 1);
+	std::vector<Packet> ab = w.abort(5, t);
+	std::vector<Packet> again = w.tick(t + kRetryFirstMs); // the same Abort repeated: this copy comes late
+	REQUIRE(ab.size() == 1);
+	REQUIRE(again.size() == 1);
+	CHECK(again[0].op == Op::Abort);
+	CHECK_EQ(again[0].key.gen, ab[0].key.gen);
+	std::vector<Packet> aa = m1.on_packet(ab[0], t); // the request is refused and the gen declined
+	REQUIRE(aa.size() == 1);
+	CHECK(w.on_packet(aa[0], t).empty());
+	m1.take_events();
+	REQUIRE(w.world_destroy(5, t + 300));
+	std::vector<Packet> sp = m1.spawned(5, {2}, t + 400); // the id is leased again and spawned at once
+	CHECK(w.on_packet(one(sp), t + 400).empty()); // the world waits out the tombstone (R4)
+
+	m1.on_packet(again[0], t + 500); // the late copy
+	CHECK(m1.authors(5));
+	CHECK_EQ(count_events(m1.take_events(), Holder::Event::Kind::Remove, 5), size_t(0));
+
+	// The spawn is registered once the tombstone is over.
+	const uint64_t t2 = t + 400 + kTombstoneMs + 2000;
+	w.tick(t2);
+	std::vector<Packet> sp2 = m1.tick(t2);
+	REQUIRE(sp2.size() == 1);
+	std::vector<Packet> ack = w.on_packet(sp2[0], t2);
+	REQUIRE(ack.size() == 1);
+	CHECK(ack[0].op == Op::Ack);
+	// A heal's reclaim still gets through: its Abort carries a fresh gen, above the one declined (Ack lost, the engine
+	// lost the object).
+	std::vector<Finding> f = audit(w, kM1, {});
+	REQUIRE(f.size() == 1);
+	CHECK(f[0].kind == Violation::Lost);
+	std::vector<Packet> hab = heal(w, f);
+	REQUIRE(hab.size() == 1);
+	CHECK(hab[0].op == Op::Abort);
+	CHECK(hab[0].key.gen > ab[0].key.gen);
+	std::vector<Packet> aa2 = m1.on_packet(hab[0], t2);
+	CHECK_EQ(count_op(aa2, Op::AbortAck, kWorld), size_t(1));
+	CHECK(!m1.authors(5));
+	CHECK_EQ(count_events(m1.take_events(), Holder::Event::Kind::Remove, 5), size_t(1));
+	CHECK(w.on_packet(aa2[0], t2).empty());
+	CHECK(w.world_authors(5));
+}
+
+// Review round 3, path (b) (seed 0x872b5b2c1b93bf2e, reuse profile): a duplicate of an old Destroy {g} reaches the world
+// after it made the id anew and destroyed it; the world answers Drop {g} ("gone there already"), and the map server, which
+// spawned the id meanwhile, took it for the release of its spawn. Spawning lets go of a Drop {0} only.
+TEST(xfer_late_drop_keeps_a_new_spawn)
+{
+	Ledger w;
+	connect(w);
+	Holder m1(kM1);
+	w.add_world_object(5, {1});
+	Wire net(w, {&m1});
+	net.take(m1, 5);
+	REQUIRE(m1.authors(5));
+	const uint64_t t = net.now;
+	const uint32_t g = m1.gen(5);
+	std::vector<Packet> ds = m1.destroyed(5, t); // Destroy {g}; a copy of it stays in the network
+	REQUIRE(ds.size() == 1);
+	std::vector<Packet> dn = w.on_packet(ds[0], t);
+	REQUIRE(dn.size() == 1);
+	CHECK(dn[0].op == Op::Done);
+	CHECK(m1.on_packet(dn[0], t).empty());
+	CHECK(m1.idle());
+
+	w.add_world_object(5, {2}); // the id is used again: made anew by the world, destroyed ...
+	REQUIRE(w.world_destroy(5, t + 100));
+	std::vector<Packet> sp = m1.spawned(5, {3}, t + 200); // ... and spawned by the map server
+	CHECK(w.on_packet(one(sp), t + 200).empty()); // R4
+
+	std::vector<Packet> late = w.on_packet(ds[0], t + 300); // the old copy arrives
+	REQUIRE(late.size() == 1);
+	CHECK(late[0].op == Op::Drop);
+	CHECK_EQ(late[0].key.gen, g);
+	CHECK(m1.on_packet(late[0], t + 300).empty());
+	CHECK(m1.authors(5)); // Drop {g} is about incarnations up to g; a spawn not answered yet is not one
+	CHECK_EQ(count_events(m1.take_events(), Holder::Event::Kind::Remove, 5), size_t(0));
+
+	const uint64_t t2 = t + 200 + kTombstoneMs + 2000;
+	w.tick(t2);
+	std::vector<Packet> sp2 = m1.tick(t2);
+	REQUIRE(sp2.size() == 1);
+	std::vector<Packet> ack = w.on_packet(sp2[0], t2);
+	REQUIRE(ack.size() == 1);
+	CHECK(m1.on_packet(ack[0], t2).empty());
+	CHECK_EQ(w.owner(5), kM1);
+	CHECK_EQ(m1.gen(5), w.gen(5));
+	CHECK(m1.idle());
+}
+
+// The refusal of a spawn is the one Drop a spawn not answered yet obeys: Drop {0} (the id is someone else's).
+TEST(xfer_refusal_drop_zero_releases_a_spawn)
+{
+	Ledger w;
+	connect(w);
+	Holder m1(kM1);
+	w.add_world_object(5, {1}); // the id is the world's
+	const uint64_t t = 1000;
+	std::vector<Packet> sp = m1.spawned(5, {2}, t);
+	std::vector<Packet> refusal = w.on_packet(one(sp), t);
+	REQUIRE(refusal.size() == 1);
+	CHECK(refusal[0].op == Op::Drop);
+	CHECK_EQ(refusal[0].key.gen, uint32_t(0));
+	m1.take_events();
+	CHECK(m1.on_packet(refusal[0], t).empty());
+	CHECK(!m1.authors(5));
+	CHECK_EQ(count_events(m1.take_events(), Holder::Event::Kind::Remove, 5), size_t(1));
+	CHECK(m1.idle());
+	CHECK(w.world_authors(5));
+}
+
+// Review round 3, path (c) (seed 0xd7ecc817e7b7d751, reuse profile): the world answered a Destroy {0} it could not take with
+// Drop {0}, which a later spawn of the same id read as the refusal of its own SpawnPrepare. Now the answer is a Done under
+// a fresh gen: no Drop {0} for anything but a refused spawn.
+TEST(xfer_rejected_destroy_zero_is_not_a_refusal)
+{
+	Ledger w;
+	connect(w);
+	Holder m1(kM1);
+	const uint64_t t = 1000;
+	m1.spawned(7, {1}, t); // a first life of id 7: its SpawnPrepare is lost
+	std::vector<Packet> d0 = m1.destroyed(7, t); // Destroy {0}: this copy stays in the network
+	REQUIRE(d0.size() == 1);
+	CHECK_EQ(d0[0].key.gen, uint32_t(0));
+	std::vector<Packet> d0b = m1.tick(t + kRetryFirstMs); // the repeat gets through: tombstoned, Done
+	REQUIRE(d0b.size() == 1);
+	CHECK(d0b[0].op == Op::Destroy);
+	std::vector<Packet> dn = w.on_packet(d0b[0], t + kRetryFirstMs);
+	REQUIRE(dn.size() == 1);
+	CHECK(dn[0].op == Op::Done);
+	CHECK(m1.on_packet(dn[0], t + kRetryFirstMs).empty());
+	CHECK(m1.idle());
+
+	w.add_world_object(7, {9}); // the world makes the id (the tombstone is cleared); the old copy comes
+	std::vector<Packet> ans = w.on_packet(d0[0], t + 600);
+	REQUIRE(ans.size() == 1);
+	CHECK(ans[0].op == Op::Done); // not Drop {0}
+	CHECK_EQ(ans[0].key.gen, uint32_t(0)); // Done {0}: only a Destroying {0} takes it
+	CHECK(w.world_authors(7)); // nothing changed at the world
+	REQUIRE(w.world_destroy(7, t + 700));
+	std::vector<Packet> sp = m1.spawned(7, {2}, t + 800); // the id is spawned again at M1
+	CHECK(w.on_packet(one(sp), t + 800).empty()); // R4
+
+	CHECK(m1.on_packet(ans[0], t + 900).empty()); // the late answer: a spawn not answered yet ignores a Done
+	CHECK(m1.authors(7));
+	CHECK_EQ(count_events(m1.take_events(), Holder::Event::Kind::Remove, 7), size_t(0));
+
+	const uint64_t t2 = t + 700 + kTombstoneMs + 2000;
+	w.tick(t2);
+	std::vector<Packet> sp2 = m1.tick(t2);
+	REQUIRE(sp2.size() == 1);
+	std::vector<Packet> ack = w.on_packet(sp2[0], t2);
+	REQUIRE(ack.size() == 1);
+	CHECK(m1.on_packet(ack[0], t2).empty());
+	CHECK_EQ(w.owner(7), kM1);
+	CHECK_EQ(m1.gen(7), w.gen(7));
+	CHECK(m1.idle());
+}
+
+// The same answer where it belongs: a map server destroying a spawn not answered yet (Destroying {0}) takes the Done and
+// stops asking; a map server that holds the object (Held) ignores it.
+TEST(xfer_rejected_destroy_zero_ends_the_destroy)
+{
+	Ledger w;
+	connect(w);
+	Holder m1(kM1);
+	Holder m2(kM2);
+	const uint64_t t = 1000;
+	w.add_world_object(8, {1}); // the id is the world's: a Destroy {0} of M2 cannot be taken
+	m2.spawned(8, {2}, t);
+	std::vector<Packet> d8 = m2.destroyed(8, t);
+	REQUIRE(d8.size() == 1);
+	std::vector<Packet> a8 = w.on_packet(d8[0], t);
+	REQUIRE(a8.size() == 1);
+	CHECK(a8[0].op == Op::Done);
+	CHECK(w.world_authors(8)); // nothing changed at the world
+	CHECK(m2.on_packet(a8[0], t).empty());
+	CHECK(m2.idle());
+	CHECK(m2.tick(t + kRetryMaxMs * 4).empty()); // it does not ask again
+
+	w.add_world_object(12, {5});
+	Wire net(w, {&m1});
+	net.take(m1, 12);
+	REQUIRE(m1.authors(12));
+	const uint32_t g = m1.gen(12);
+	std::vector<Packet> a12 = w.on_packet(Packet{Op::Destroy, {12, 0}, kM1, kWorld, {}}, net.now); // not its spawn
+	REQUIRE(a12.size() == 1);
+	CHECK(a12[0].op == Op::Done);
+	CHECK(m1.on_packet(a12[0], net.now).empty()); // Held ignores it
+	CHECK(m1.authors(12));
+	CHECK_EQ(m1.gen(12), g);
+	CHECK(m1.idle());
+	CHECK_EQ(w.owner(12), kM1);
+}
+
+// Found while landing round 3: the answer to a rejected Destroy {0} must not end the destroy of a LATER incarnation.
+// With a Done under a fresh gen (the reviewer's first form) a map server in Destroying {g} took the stray answer of an
+// earlier life's Destroy {0} for the Done of its own destroy, stopped repeating Destroy {g} (lost) and the world kept the
+// object - a destroy undone. Done {0} ends a Destroying {0} only.
+TEST(xfer_stray_destroy_answer_leaves_a_later_destroy_alone)
+{
+	Ledger w;
+	connect(w);
+	Holder m1(kM1);
+	const uint64_t t = 1000;
+	m1.spawned(5, {1}, t); // an earlier life of id 5: spawned (lost) and destroyed; a copy of Destroy {0} stays out
+	std::vector<Packet> old0 = m1.destroyed(5, t);
+	REQUIRE(old0.size() == 1);
+	std::vector<Packet> rep = m1.tick(t + kRetryFirstMs);
+	REQUIRE(rep.size() == 1);
+	std::vector<Packet> dn = w.on_packet(rep[0], t + kRetryFirstMs);
+	REQUIRE(dn.size() == 1);
+	CHECK(m1.on_packet(dn[0], t + kRetryFirstMs).empty());
+	CHECK(m1.idle());
+
+	w.add_world_object(5, {1}); // the world makes the id; M1 takes it and its engine destroys it at once
+	Wire net(w, {&m1});
+	net.take(m1, 5);
+	REQUIRE(m1.authors(5));
+	std::vector<Packet> ds = m1.destroyed(5, net.now); // Destroy {g}: lost
+	REQUIRE(ds.size() == 1);
+	CHECK(ds[0].key.gen != 0);
+
+	std::vector<Packet> ans = w.on_packet(old0[0], net.now); // the old copy: the record is M1's at g, not a spawn of M1's
+	REQUIRE(ans.size() == 1);
+	CHECK(ans[0].op == Op::Done);
+	CHECK(m1.on_packet(ans[0], net.now).empty());
+	CHECK(m1.busy(5)); // still destroying
+	std::vector<Packet> again = m1.tick(net.now + kRetryMaxMs * 2);
+	REQUIRE(again.size() == 1); // and repeating Destroy {g} until the world answers
+	CHECK(again[0].op == Op::Destroy);
+	CHECK_EQ(again[0].key.gen, ds[0].key.gen);
+	std::vector<Packet> done = w.on_packet(again[0], net.now + kRetryMaxMs * 2);
+	REQUIRE(done.size() == 1);
+	CHECK(done[0].op == Op::Done);
+	CHECK(!w.registered(5)); // the destroy reached the world
+	CHECK(m1.on_packet(done[0], net.now + kRetryMaxMs * 2).empty());
+	CHECK(m1.idle());
+}
+
+// Review round 3, H5: a load hands out a peer the live ledger used after the save (the journal keeps the counter of the
+// save only), so a packet of the pre-load connection with that peer counted as the new one's. The engine carries the live
+// ledger's counter into the post-load ledger (set_peer_floor): a peer is never handed out twice in one process.
+TEST(xfer_peer_floor_survives_a_load)
+{
+	Ledger w;
+	const Peer p1 = w.register_server();
+	w.add_world_object(5, {1});
+	const std::string journal = w.save_journal(); // next peer 2
+	const Peer p2 = w.register_server(); // after the save
+	CHECK(p2 > p1);
+	CHECK_EQ(w.next_peer(), Peer(p2 + 1));
+	Holder m2(p2);
+	const uint64_t t = 1000;
+	std::vector<Packet> sp = m2.spawned(9, {9}, t); // in flight when the host loads
+
+	Ledger l;
+	l.add_world_object(5, {1});
+	REQUIRE(l.load_journal(journal));
+	l.resolve_after_load();
+	l.set_peer_floor(w.next_peer()); // the live ledger's counter (the engine's duty at every load)
+	CHECK_EQ(l.next_peer(), w.next_peer());
+	const Peer q = l.register_server();
+	CHECK(q > p2);
+	CHECK(l.on_packet(one(sp), t).empty()); // the pre-load connection is not heard
+	CHECK(!l.registered(9));
+	l.set_peer_floor(1); // a floor never lowers the counter
+	CHECK_EQ(l.next_peer(), Peer(q + 1));
+	CHECK(l.register_server() > q);
+
+	// The floor goes into the journal: the next save and load keep it.
+	Ledger l2;
+	REQUIRE(l2.load_journal(l.save_journal()));
+	l2.resolve_after_load();
+	CHECK(l2.register_server() > q);
+}

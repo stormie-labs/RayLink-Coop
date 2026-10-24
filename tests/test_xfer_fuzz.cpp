@@ -10,7 +10,8 @@
 //             world aborting a grant, a map server crash (its late packets still arrive), the bridge cut, a map server
 //             drained and stopped, a restart (a new peer id, or the old one when nothing of it is in flight), a save
 //             (the world's objects plus the journal) and a load (a fresh Ledger, load_journal, resolve_after_load,
-//             every map server restarted empty);
+//             set_peer_floor with the live ledger's counter as the engine will, every map server restarted empty; half
+//             the runs keep the packets of the old connections in flight);
 //   ce1     - the mix that found review C1: 30 % takes, 25 % edge of the radius, 30 % world aborts (half of them aimed
 //             at a grant whose map server is committing a release or destroying the id), one map server, one object,
 //             no random quiet;
@@ -26,9 +27,11 @@
 // After every step (and for the touched id after every delivered packet): the ledger's ids are the model's, one owner
 // each, the world's copy is the last confirmed state; no id with two authors (the world when it owns the object and it
 // is not frozen, a map server when its engine runs it); a holder and its engine agree; a destroyed id is not written;
-// a take carries the last confirmed state; a lost map server's prepared release is completed with its state. In a quiet
-// period (no new wishes, the network drained): the journal is empty, no fault is left, every state is the last one the
-// game gave it, the owner's copy is the world's, the auditor finds nothing and the level hashes agree.
+// a take carries the last confirmed state; a lost map server's prepared release is completed with its state; a spawn
+// the world never registered vanishes only if its engine destroyed it or the world refused it with a Drop {0} (round 3,
+// outside the runs with injected faults). In a quiet period (no new wishes, the network drained): the journal is empty,
+// no fault is left, every state is the last one the game gave it, the owner's copy is the world's, the auditor finds
+// nothing and the level hashes agree.
 //   COOP_FUZZ_RUNS=<n>         runs (default 300 000), seeds splitmix64(kSeedBase + run index), on all cores
 //   COOP_FUZZ_PROFILE=<name>   default | ce1 | reuse | limits: every run of that profile
 //   COOP_FUZZ_SEED=<seed>      replay one seed with a trace (decimal or 0x hex); COOP_FUZZ_OPS=<n> limits operations
@@ -365,6 +368,12 @@ private:
 	std::map<uint16_t, Fault> m_faulty;
 	// Destroys the engines performed (id -> the map server and its peer then): never undone (review round 2, H1).
 	std::map<uint16_t, std::pair<size_t, Peer>> m_destroyed;
+	// The spawn oracle (review round 3, H4): a spawn the world never registered may vanish only if its engine destroyed
+	// it or the world refused it with a Drop {0}. Both are per life of the id (spawn() starts a new one).
+	std::set<uint16_t> m_spawn_destroyed, m_spawn_refused;
+	// A load keeps the packets in flight (the pre-load connections' packets must not count for the new ones'): the
+	// engine carries the live ledger's peer counter into the new ledger, as Ledger::set_peer_floor demands (R7).
+	bool m_keep_net = false;
 
 	// The injected duplicate itself: map server k runs the fault's incarnation of id.
 	bool injected(uint16_t id, size_t k) const
@@ -485,6 +494,7 @@ private:
 		m_audits = m_r.percent(50);
 		m_faults = m_audits && m_r.percent(33);
 		m_dup_pct = m_faults ? 5 + m_r.below(16) : 0;
+		m_keep_net = m_r.percent(50);
 		m_res.ops = std::min(ops, m_op_limit);
 		m_w = std::make_unique<Ledger>(m_limits);
 		m_maps.resize(maps);
@@ -610,6 +620,8 @@ private:
 		switch (p.op)
 		{
 		case Op::SpawnPrepare:
+			if (reply(Op::Drop))
+				m_spawn_refused.insert(id); // the id is someone else's: the map server lets go of its spawn
 			if (reply(Op::Ack) && !m_reg.count(id))
 			{
 				auto sp = m_spawning.find(id);
@@ -622,8 +634,11 @@ private:
 			break;
 		case Op::Destroy:
 			// A spawn the world never registered ends when its map server forgets it (housekeeping): a Done for a
-			// Destroy {0} may answer an earlier life's copy (R4), so it says nothing about this one.
-			if (reply(Op::Done) && m_reg.erase(id))
+			// Destroy {0} may answer an earlier life's copy (R4), so it says nothing about this one. A Destroy {0} the
+			// world cannot take (the id is registered and it is not that map server's own spawn) is answered with a Done
+			// too (review round 3, path c) that buries nothing: only a record that is gone was destroyed. (The ledger is
+			// asked only to tell the two apart; the model's own sets decide the rest.)
+			if (reply(Op::Done) && !m_w->registered(id) && m_reg.erase(id))
 			{
 				m_dead.insert(id);
 				m_conf.erase(id);
@@ -950,6 +965,12 @@ private:
 			const uint16_t id = it->first;
 			if (k >= 0 && !m_w->registered(id) && !m_maps[size_t(k)].h->busy(id) && !m_maps[size_t(k)].h->authors(id))
 			{
+				// Review round 3, H4: a fresh spawn is lost when a packet of an earlier life of the id removes it. The
+				// injected faults (a healed duplicate, a lost object) remove spawns on purpose.
+				if (!m_faults && !m_spawn_destroyed.count(id) && !m_spawn_refused.count(id))
+					return fail_id("a spawn the world never registered vanished: its engine did not destroy it, the world "
+					               "did not refuse it",
+						id);
 				touch(id);
 				m_truth.erase(id);
 				m_dead.insert(id);
@@ -1150,6 +1171,7 @@ private:
 				Map& m = m_maps[size_t(k)];
 				log("op destroy id " + std::to_string(id) + " at M" + std::to_string(m.peer));
 				m_destroyed[id] = {size_t(k), m.peer};
+				m_spawn_destroyed.insert(id);
 				m.has.erase(id);
 				m.wanted.erase(id);
 				send(m.h->destroyed(id, m_now));
@@ -1334,6 +1356,8 @@ private:
 		Map& m = m_maps[size_t(k)];
 		log("op spawn id " + std::to_string(id) + " at M" + std::to_string(m.peer));
 		m_spawning[id] = m.peer;
+		m_spawn_destroyed.erase(id); // a new life of the id
+		m_spawn_refused.erase(id);
 		m.has.insert(id);
 		send(m.h->spawned(id, new_state(id), m_now));
 		events(size_t(k));
@@ -1366,13 +1390,18 @@ private:
 	{
 		log("op load");
 		const Save& s = *m_save;
+		const Peer floor = m_w->next_peer(); // the live ledger's counter: peers registered after the save are not reused
 		m_w = std::make_unique<Ledger>(m_limits);
 		for (const auto& o : s.world)
 			m_w->add_world_object(o.first, o.second);
 		if (!m_w->load_journal(s.journal))
 			return fail("load_journal refused a journal it saved");
 		m_w->resolve_after_load();
-		m_net.clear(); // every connection is new
+		m_w->set_peer_floor(floor); // the engine's duty at every load (R7, R8): the journal has the counter of the save only
+		// Every connection is new. Half the runs keep the packets of the old ones on their way (round 3, H5): the new
+		// ledger must not hear them, and no new connection may bear a peer an old one had.
+		if (!m_keep_net)
+			m_net.clear();
 		for (size_t k = 0; k < m_maps.size(); ++k)
 			start_map(k, m_w->register_server());
 		m_reg = s.reg;
