@@ -1,7 +1,8 @@
 // Anomaly Coop unit tests: the pure part of the checkpoint sources on the host (coop_checkpoint_source_rules.h; F3
 // Task 7, CHECKPOINTS_DEATH.md §2.2): the settings and their bounds, the CheckpointClaim message, the nearest source,
 // the objects mods declare as camps, the sections behind source ids, the mark a tent carries in its custom data, the
-// item a tent is paid with and the book of tents and claims.
+// item a tent is paid with, the book of tents and who may pack which tent up (F3a T7 R1: the claims that waited for a
+// stock tent of the host are gone with their tests).
 #include "test_util.h"
 
 #include "coop_checkpoint_source_rules.h"
@@ -63,11 +64,6 @@ bool has(const std::vector<uint16_t>& v, uint16_t id)
 	return false;
 }
 
-// A claim for a tent (what = Tent) of `key`.
-bool claim_tent(TentBook& b, uint16_t character, const std::string& key, uint64_t now, const float* at = kAt0)
-{
-	return b.claim(character, key, ClaimWhat::Tent, at, now, 15000);
-}
 } // namespace
 
 // ---------------------------------------------------------------- settings
@@ -377,181 +373,7 @@ TEST(cpsrc_pick_item)
 	CHECK_EQ(pick_item({item(4, "itm_tent")}, {}), kNoSource);
 }
 
-// ---------------------------------------------------------------- tents and claims
-
-TEST(cpsrc_tents_of_the_served_world_are_old)
-{
-	TentBook b;
-	b.new_world();
-	CHECK(b.observe({tent(1, 0.0f)}, 1000)); // stood when the world was served
-	CHECK(b.observe({tent(1, 0.0f), tent(2, 10.0f)}, 2000)); // put up since
-	CHECK_EQ(b.tents(), size_t(2));
-
-	const float at1[3] = {1.0f, 0.0f, 0.0f};
-	CHECK(claim_tent(b, 0, kHostOwner, 2500, at1));
-	CHECK(b.match({tent(1, 0.0f), tent(2, 10.0f)}, 4.0f, 15000).empty()); // the old one is nobody's new tent
-	CHECK(b.has_claim(0));
-
-	const float at2[3] = {9.0f, 0.0f, 0.0f};
-	CHECK(claim_tent(b, 0, kHostOwner, 2600, at2)); // replaces his first claim
-	CHECK_EQ(b.claims(), size_t(1));
-	const std::vector<TentMatch> m = b.match({tent(1, 0.0f), tent(2, 10.0f)}, 4.0f, 15000);
-	REQUIRE(m.size() == 1);
-	CHECK_EQ(m[0].character, uint16_t(0));
-	CHECK_EQ(m[0].tent, uint16_t(2));
-	CHECK(m[0].what == ClaimWhat::Tent);
-	CHECK_EQ(b.owner_of(2), std::string(kHostOwner));
-	CHECK(!b.has_claim(0));
-	CHECK(b.owner_of(1).empty());
-}
-
-TEST(cpsrc_claim_takes_the_nearest_tent_nobody_owns)
-{
-	TentBook b;
-	b.new_world();
-	b.observe({}, 0);
-	const std::vector<TentSeen> seen{tent(5, 1.0f), tent(6, 2.0f), tent(7, 3.5f), tent(8, 30.0f)};
-	b.observe(seen, 1000);
-	CHECK(b.set_owner(5, kKeyB)); // somebody's already
-	CHECK(claim_tent(b, 3, kKeyA, 1200));
-	const std::vector<TentMatch> m = b.match(seen, 4.0f, 15000);
-	REQUIRE(m.size() == 1);
-	CHECK_EQ(m[0].character, uint16_t(3));
-	CHECK_EQ(m[0].tent, uint16_t(6)); // 5 is owned, 6 is nearer than 7, 8 is out of reach
-	CHECK_EQ(b.owner_of(5), kKeyB);
-	CHECK_EQ(b.owner_of(6), kKeyA); // the claimant's key, not his id
-	CHECK_EQ(b.owned_by(kKeyA), size_t(1));
-	CHECK_EQ(b.owned_by(kKeyB), size_t(1));
-}
-
-TEST(cpsrc_claim_takes_its_own_kind)
-{
-	// R1 F3-6: a sleeping bag is no answer to a tent claim, and the other way round; another tent section answers both
-	TentBook b;
-	b.new_world();
-	b.observe({}, 0);
-	const std::vector<TentSeen> seen{tent(1, 0.5f, 0.0f, uint8_t(ClaimWhat::Sleepbag)),
-		tent(2, 1.5f, 0.0f, uint8_t(ClaimWhat::Tent))};
-	b.observe(seen, 100);
-	CHECK(b.claim(4, kKeyA, ClaimWhat::Tent, kAt0, 200, 15000));
-	std::vector<TentMatch> m = b.match(seen, 4.0f, 15000);
-	REQUIRE(m.size() == 1);
-	CHECK_EQ(m[0].tent, uint16_t(2)); // the nearer one is a sleeping bag
-
-	CHECK(b.claim(5, kKeyB, ClaimWhat::Sleepbag, kAt0, 300, 15000));
-	m = b.match(seen, 4.0f, 15000);
-	REQUIRE(m.size() == 1);
-	CHECK_EQ(m[0].tent, uint16_t(1));
-	CHECK(m[0].what == ClaimWhat::Sleepbag);
-
-	const std::vector<TentSeen> other{tent(3, 0.5f)}; // a mod's tent section: either kind
-	b.observe(other, 400);
-	CHECK(b.claim(6, kKeyB, ClaimWhat::Sleepbag, kAt0, 500, 15000));
-	m = b.match(other, 4.0f, 15000);
-	REQUIRE(m.size() == 1);
-	CHECK_EQ(m[0].tent, uint16_t(3));
-
-	CHECK(!b.claim(7, kKeyA, ClaimWhat::Pack, kAt0, 600, 15000)); // packing never waits for a tent
-}
-
-TEST(cpsrc_claim_fresh_window)
-{
-	TentBook b;
-	b.new_world();
-	b.observe({}, 0);
-	b.observe({tent(1, 0.0f)}, 1000); // appeared at 1 s
-
-	CHECK(claim_tent(b, 2, kKeyA, 17000)); // 16 s later: not the tent of this claim
-	CHECK(b.match({tent(1, 0.0f)}, 4.0f, 15000).empty());
-	CHECK(claim_tent(b, 2, kKeyA, 16000)); // exactly 15 s later: still it
-	CHECK_EQ(b.match({tent(1, 0.0f)}, 4.0f, 15000).size(), size_t(1));
-
-	// a tent that appears after the claim answers it
-	TentBook c;
-	c.new_world();
-	c.observe({}, 0);
-	CHECK(claim_tent(c, 4, kKeyA, 5000));
-	c.observe({tent(3, 1.0f)}, 9000);
-	const std::vector<TentMatch> m = c.match({tent(3, 1.0f)}, 4.0f, 15000);
-	REQUIRE(m.size() == 1);
-	CHECK_EQ(m[0].tent, uint16_t(3));
-
-	// a tent the book has not observed is no answer
-	TentBook d;
-	d.new_world();
-	d.observe({}, 0);
-	CHECK(claim_tent(d, 4, kKeyA, 5000));
-	CHECK(d.match({tent(3, 1.0f)}, 4.0f, 15000).empty());
-}
-
-TEST(cpsrc_one_tent_two_claims)
-{
-	TentBook b;
-	b.new_world();
-	b.observe({}, 0);
-	CHECK(claim_tent(b, 7, kKeyA, 100));
-	CHECK(claim_tent(b, 8, kKeyB, 200));
-	b.observe({tent(1, 0.5f)}, 300);
-	const std::vector<TentMatch> m = b.match({tent(1, 0.5f)}, 4.0f, 15000);
-	REQUIRE(m.size() == 1);
-	CHECK_EQ(m[0].character, uint16_t(7)); // the older claim
-	CHECK(b.has_claim(8)); // the other one waits for its own tent
-	b.observe({tent(1, 0.5f), tent(2, -0.5f)}, 400);
-	const std::vector<TentMatch> m2 = b.match({tent(1, 0.5f), tent(2, -0.5f)}, 4.0f, 15000);
-	REQUIRE(m2.size() == 1);
-	CHECK_EQ(m2[0].character, uint16_t(8));
-	CHECK_EQ(m2[0].tent, uint16_t(2));
-}
-
-TEST(cpsrc_claim_expires)
-{
-	TentBook b;
-	b.new_world();
-	b.observe({}, 0);
-	CHECK(b.claim(5, kKeyA, ClaimWhat::Sleepbag, kAt0, 1000, 15000));
-	CHECK(b.expire(15999).empty());
-	const std::vector<ClaimEnd> gone = b.expire(16000);
-	REQUIRE(gone.size() == 1);
-	CHECK_EQ(gone[0].character, uint16_t(5));
-	CHECK(gone[0].what == ClaimWhat::Sleepbag); // the answer names what was claimed
-	CHECK(!b.has_claim(5));
-	b.observe({tent(1, 0.0f)}, 16500);
-	CHECK(b.match({tent(1, 0.0f)}, 4.0f, 15000).empty());
-}
-
-TEST(cpsrc_claim_bound_and_bad_claims)
-{
-	TentBook b;
-	b.new_world();
-	for (uint16_t c = 1; c <= kMaxClaims; ++c)
-		REQUIRE(claim_tent(b, c, kKeyA, 10));
-	CHECK(!claim_tent(b, 1000, kKeyA, 10)); // a new character over the bound
-	CHECK(claim_tent(b, 1, kKeyA, 20)); // a known one replaces his own
-	CHECK_EQ(b.claims(), kMaxClaims);
-
-	TentBook c;
-	CHECK(!claim_tent(c, 1, "", 10)); // no owner key
-	CHECK(!claim_tent(c, 1, "a b", 10));
-	const float nan_at[3] = {std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f};
-	CHECK(!claim_tent(c, 1, kKeyA, 10, nan_at));
-	CHECK_EQ(c.claims(), size_t(0));
-}
-
-TEST(cpsrc_claims_of_absent_players_dropped)
-{
-	TentBook b;
-	b.new_world();
-	CHECK(claim_tent(b, 0, kHostOwner, 10));
-	CHECK(b.claim(5, kKeyA, ClaimWhat::Sleepbag, kAt0, 10, 15000));
-	CHECK(claim_tent(b, 6, kKeyB, 10));
-	const std::vector<ClaimEnd> dropped = b.keep_claims_of({0, 6});
-	REQUIRE(dropped.size() == 1);
-	CHECK_EQ(dropped[0].character, uint16_t(5));
-	CHECK(dropped[0].what == ClaimWhat::Sleepbag);
-	CHECK(b.has_claim(0));
-	CHECK(!b.has_claim(5));
-	CHECK(b.has_claim(6));
-}
+// ---------------------------------------------------------------- tents
 
 TEST(cpsrc_tent_forget_and_new_world)
 {
@@ -571,13 +393,27 @@ TEST(cpsrc_tent_forget_and_new_world)
 	CHECK(has(k, 77)); // owned ones are checked too
 	CHECK(!has(k, 1));
 
-	CHECK(claim_tent(b, 4, kKeyA, 200));
 	b.new_world();
-	CHECK_EQ(b.claims(), size_t(0));
 	CHECK_EQ(b.owners(), size_t(0));
-	b.observe({tent(2, 1.0f), tent(3, 2.0f)}, 300); // both stood when this world was served
-	CHECK(claim_tent(b, 4, kKeyA, 400));
-	CHECK(b.match({tent(2, 1.0f), tent(3, 2.0f)}, 4.0f, 15000).empty());
+	CHECK_EQ(b.tents(), size_t(0));
+	b.observe({tent(2, 1.0f), tent(3, 2.0f)}, 300);
+	CHECK_EQ(b.tents(), size_t(2));
+}
+
+TEST(cpsrc_may_pack)
+{
+	// F3a T7 R1: who folds which tent. His own tent: yes. A tent nobody owns (no mark: the stock put it up for the host
+	// before F3a T7, in single player or before a claim named it) is the host player's - a client's tent always carries
+	// his mark (Ruling F3-6). Another player's tent: never.
+	CHECK(may_pack(kKeyA, kKeyA)); // marked, his own
+	CHECK(may_pack(kHostOwner, kHostOwner)); // the host's own, marked
+	CHECK(may_pack(kHostOwner, "")); // unmarked: the host player's
+	CHECK(!may_pack(kKeyA, "")); // unmarked: never a client's
+	CHECK(!may_pack(kKeyA, kKeyB)); // marked, another player's
+	CHECK(!may_pack(kKeyA, kHostOwner)); // the host's, not his
+	CHECK(!may_pack(kHostOwner, kKeyA)); // a client's, not the host's
+	CHECK(!may_pack("", "")); // no key: nothing
+	CHECK(!may_pack("a b", "a b")); // a malformed key: nothing
 }
 
 TEST(cpsrc_player_tent_limit)

@@ -518,6 +518,48 @@ TEST(t7_script_event_of_the_host_process_to_peer_0_through_the_link)
 	CHECK_EQ(from_seen.size(), size_t(1));
 }
 
+// ============================================================================ fix round 1: the host player's new life
+
+TEST(t7r1_spectator_takes_any_respawn_as_his_new_life)
+{
+	// The only Respawn a spectator is sent is his new life (Ruling F3-7: out of the run nobody is respawned): the world
+	// may name a fall it never heard of (its records start over with a world, reported_seq unknown) - he takes it anyway.
+	using death::RespawnTake;
+	CHECK(death::take_respawn(death::kLifeSpectating, 5, 5) == RespawnTake::NewLife);
+	CHECK(death::take_respawn(death::kLifeSpectating, 5, 9) == RespawnTake::NewLife); // another fall named
+	CHECK(death::take_respawn(death::kLifeSpectating, 5, death::kNewLifeSeq) == RespawnTake::NewLife);
+	// a standing or dead owner: his fall only, and the new-life order (no fall) never moves him
+	CHECK(death::take_respawn(death::kLifeDead, 5, 5) == RespawnTake::Respawn);
+	CHECK(death::take_respawn(death::kLifeAlive, 5, 5) == RespawnTake::Respawn); // owed after a leave or a world change
+	CHECK(death::take_respawn(death::kLifeDead, 5, 4) == RespawnTake::Stale);
+	CHECK(death::take_respawn(death::kLifeAlive, 5, 6) == RespawnTake::Stale);
+	CHECK(death::take_respawn(death::kLifeAlive, 5, death::kNewLifeSeq) == RespawnTake::Stale);
+	CHECK(death::take_respawn(death::kLifeDead, 0, death::kNewLifeSeq) == RespawnTake::Stale);
+	CHECK(death::take_respawn(death::kLifeWounded, 5, 5) == RespawnTake::Stale);
+	CHECK(death::take_respawn(death::kLifeRespawning, 5, 5) == RespawnTake::Stale); // a duplicate while he stands up
+}
+
+TEST(t7r1_lost_new_life_order_is_sent_again)
+{
+	constexpr uint32_t kRetry = 10000;
+	const uint8_t spect = death::kLifeSpectating;
+	// The world gave him a new life (not out, no retirement) but he still reports Spectating: the order did not reach him.
+	death::NewLife none; // the world's record of him starts over with a world: the order of the old one is unknown
+	CHECK(death::new_life_lost(spect, false, false, none, 50000, kRetry)); // order lost across a reload -> healed
+	death::NewLife sent;
+	sent.sent = true;
+	sent.at = 1000;
+	// the Spectating report that crossed the order on its way: not again yet
+	CHECK(!death::new_life_lost(spect, false, false, sent, 1500, kRetry));
+	CHECK(!death::new_life_lost(spect, false, false, sent, 1000 + kRetry - 1, kRetry));
+	CHECK(death::new_life_lost(spect, false, false, sent, 1000 + kRetry, kRetry)); // still a spectator: lost, again
+	// nothing to heal: out of the run (he may ask himself), his retirement under way, or he is no spectator
+	CHECK(!death::new_life_lost(spect, true, false, none, 50000, kRetry));
+	CHECK(!death::new_life_lost(spect, false, true, none, 50000, kRetry));
+	for (uint8_t life : {death::kLifeAlive, death::kLifeWounded, death::kLifeDead, death::kLifeRespawning})
+		CHECK(!death::new_life_lost(life, false, false, none, 50000, kRetry)); // never a standing player
+}
+
 // ============================================================================ no direct branch next to the link
 
 namespace
