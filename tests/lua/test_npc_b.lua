@@ -501,6 +501,9 @@ local twice = K.rewrite_text("A A", { { "A", "B" } })
 check(twice == nil, "ambiguous literal: untouched")
 local chained = K.rewrite_text("x = 1 y = 2", { { "x = 1", "x = 3" }, { "y = 2", "y = 4" } })
 check(chained == "x = 3 y = 4", "pairs applied in order")
+local every = K.rewrite_text("A x A", { { "A", "B", all = true } })
+check(every == "B x B", "all = true: every occurrence (audit D2)")
+check(K.rewrite_text("x", { { "A", "B", all = true } }) == nil, "all = true needs at least one")
 
 print("== coop_npc_compat: a rewritten script that wraps another module at load runs twice without wrapping itself")
 -- trader_autoinject's shape: it captures trade_manager.update into a global of its own, then wraps it
