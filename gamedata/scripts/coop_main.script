@@ -289,7 +289,7 @@ end
 -- Emission and psi-storm (R-10.1)
 -------------------------------------------------------------------------------
 local surge_cls_patched, host_hooks = false, false
-local env_host = { sig = nil, next_send = 0, serial = 0, kill_sent = {}, cover_rep = {} }
+local env_host = { sig = nil, next_send = 0, serial = 0, kill_sent = {}, cover_rep = {}, npc_kill_at = {} }
 local env_cl = { have = false, s = false, sg = 0, p = false, pg = 0, tf = nil, cover = true, at = 0,
 	next_tick = 0, req_at = 0, mirror_errors = 0, cover_at = 0 }
 
@@ -408,6 +408,53 @@ local function host_env_tick()
 	end
 end
 
+-- Audit E2 (2026-10-24), client: the stock kill of the people a wave / vortex reaches (kill_objects_at_pos) goes to the
+-- host with where it is (surge: the wave's z, false = everybody unhidden; psi storm: the vortex). Once a second for
+-- the wave (the stock calls it every 5 game seconds), every vortex.
+local NPC_KILL_WAVE_MS = 1000
+local npc_kill_cl = { wave_at = -NPC_KILL_WAVE_MS }
+local function forward_npc_kill(cls, kind)
+	if not cls then return 0 end
+	local ok, orig = pcall(function() return cls.kill_objects_at_pos end)
+	if not (ok and type(orig) == "function") then return 0 end
+	cls.kill_objects_at_pos = function(self, pos)
+		if not (api and api.is_client()) then return end
+		local t = { k = kind }
+		if kind == "p" then
+			if type(pos) ~= "userdata" and type(pos) ~= "table" then return end
+			t.x, t.y, t.z = pos.x, pos.y, pos.z
+		else
+			local tg = time_global()
+			if tg - npc_kill_cl.wave_at < NPC_KILL_WAVE_MS then return end
+			npc_kill_cl.wave_at = tg
+			t.z = tonumber(pos) -- nil: everybody unhidden around him
+		end
+		api.send_event("coop_env_npc_kill", encode(t), 0)
+	end
+	return 1
+end
+
+-- Audit E2, client: the hide task is this player's own. Its id is made personal (coop_tasks.set_local_task: never
+-- sent to the host, never mirrored), then the stock gives it here; its condition ({=surge_complete}) reads the
+-- mirrored phase, so it is done when the host's emission ends here.
+local function personal_hide_task(cls, fname, field, default_id)
+	if not cls then return 0 end
+	local ok, orig = pcall(function() return cls[fname] end)
+	if not (ok and type(orig) == "function") then return 0 end
+	cls[fname] = function(self, ...)
+		local sect = self[field]
+		if sect == "empty" then return end
+		local id = (sect == nil or sect == "") and default_id or sect
+		local ct = rawget(_G, "coop_tasks")
+		if not (ct and type(ct.set_local_task) == "function" and ct.set_local_task(id)) then
+			log("! hide task '%s' cannot be personal here: not given", tostring(id))
+			return
+		end
+		return orig(self, ...)
+	end
+	return 1
+end
+
 -- Client: stop the parts of the stock managers that change the world or decide the actor's death.
 local function patch_env_classes_for_client()
 	if surge_cls_patched then return end
@@ -427,12 +474,19 @@ local function patch_env_classes_for_client()
 	local sm_mod = rawget(_G, "surge_manager") or surge_manager
 	local pm_mod = rawget(_G, "psi_storm_manager") or psi_storm_manager
 	-- R5 I2: launch_rockets (signal lights) is the host's too: the psi storm calls it unconditionally
-	local n = neutralize(sm_mod and sm_mod.CSurgeManager, { "kill_objects_at_pos", "kill_crows_at_pos",
-		"turn_to_zombie", "explode", "kill_actor_at_pos", "kill_all_unhided", "give_surge_hide_task",
-		"launch_rockets" })
-	n = n + neutralize(pm_mod and pm_mod.CPsiStormManager, { "kill_objects_at_pos", "kill_crows_at_pos",
-		"give_psi_storm_hide_task", "launch_rockets" })
-	log("emission/psi-storm: %d world-changing method(s) disabled, phases follow the host", n)
+	local n = neutralize(sm_mod and sm_mod.CSurgeManager, { "kill_crows_at_pos",
+		"turn_to_zombie", "explode", "kill_actor_at_pos", "kill_all_unhided", "launch_rockets" })
+	n = n + neutralize(pm_mod and pm_mod.CPsiStormManager, { "kill_crows_at_pos", "launch_rockets" })
+	-- Audit E2: the people this player's wave / vortex reaches die on the host (the stock kill there, kept to his
+	-- area); his hide task is his own (a personal task, finished when the host's phase ends here).
+	local f = 0
+	f = f + forward_npc_kill(sm_mod and sm_mod.CSurgeManager, "s")
+	f = f + forward_npc_kill(pm_mod and pm_mod.CPsiStormManager, "p")
+	f = f + personal_hide_task(sm_mod and sm_mod.CSurgeManager, "give_surge_hide_task", "surge_task_sect", "hide_from_surge")
+	f = f + personal_hide_task(pm_mod and pm_mod.CPsiStormManager, "give_psi_storm_hide_task", "psi_storm_task_sect",
+		"hide_from_psi_storm")
+	log("emission/psi-storm: %d world-changing method(s) disabled, %d routed (kills to the host, personal hide tasks), "
+		.. "phases follow the host", n, f)
 end
 
 -- R5 I2: a client never ends an emission / psi storm by itself. The stock update() ends it when the elapsed
@@ -472,10 +526,10 @@ local function mirror_start_surge(m)
 	m.game_time_factor = level.get_time_factor()
 	if m.finalize then m:finalize() end
 	m.started, m.finished = true, false
-	m.task_given = true -- the hide task is the host's business
 	m.blowout_waves, m.objects_to_kill, m.stages, m.body_tears = {}, {}, {}, {}
 	m.hitFactor, m.zombie_count = 0, 0
 	m.effector_set, m.second_message_given, m.ui_disabled = false, false, false
+	m.task_given = false -- audit E2: the stock update gives this player's personal hide task at its moment
 	m.blowout_sound, m.wave_sound = false, false
 	pcall(SendScriptCallback, "actor_on_interaction", "anomalies", nil, "emission_start")
 	log("emission started by the host")
@@ -494,14 +548,13 @@ local function mirror_start_psi(m)
 	m.hitFactor = 0
 	m.stages, m.vortexes, m.humanParticles = {}, {}, {}
 	m.next_vortex_at = nil
-	m.task_given = true
+	m.task_given = false -- audit E2: a personal hide task, given by the stock update
 	pcall(SendScriptCallback, "actor_on_interaction", "anomalies", nil, "psi_storm_start")
 	log("psi-storm started by the host")
 end
 
 local function mirror_update(m, game_sec, what, limit_field)
 	m.first_update = true -- the host already validated level and options
-	m.task_given = true
 	m[limit_field] = NEVER_ENDS -- R5 I2: only the host ends the emission / psi storm
 	set_inited(m, game_sec)
 	with_cover(env_cl.cover, function() m:update() end, what)
@@ -563,6 +616,78 @@ add_event_handler("coop_env_req", function(payload, from)
 end)
 
 -- Host: a client's own shelter, reported while an emission or a psi storm runs (player_in_cover).
+-- Audit E2, host: a client's wave / vortex reached the people around him. The stock kill runs here (the host's online
+-- NPCs), for the psi storm at that vortex (near his character), for the emission only among the NPCs within
+-- NPC_KILL_RADIUS of his character (the wave is a plane across the level from where each player stands: his must not
+-- reach the host's people before the host's own wave does). Only while that phase runs here; a few per second.
+local NPC_KILL_RADIUS = 250
+local NPC_KILL_MIN_MS = 200
+local function dist_xz(a, b)
+	local dx, dz = a.x - b.x, a.z - b.z
+	return math.sqrt(dx * dx + dz * dz)
+end
+
+local function avatar_of(peer)
+	for _, p in ipairs(players()) do
+		if p.id == peer and not p.is_self then return p.avatar_id and level.object_by_id(p.avatar_id) end
+	end
+end
+
+-- Runs fn with db.OnlineStalkers holding only the NPCs within radius of pos (the stock kill walks that list).
+local function with_online_near(pos, radius, fn)
+	local all = db.OnlineStalkers or {}
+	local near = {}
+	for i = 1, #all do
+		local id = all[i]
+		local npc = db.storage and db.storage[id] and db.storage[id].object or level.object_by_id(id)
+		local ok, p = pcall(function() return npc and npc:position() end)
+		if ok and p and dist_xz(p, pos) <= radius then near[#near + 1] = id end
+	end
+	db.OnlineStalkers = near
+	local ok, err = pcall(fn)
+	db.OnlineStalkers = all
+	if not ok then report_error("coop_main", "emission kill near a player", err) end
+end
+
+local function option(name, def)
+	local uo = rawget(_G, "ui_options")
+	local ok, v = pcall(function() return uo and uo.get(name) end)
+	if ok and v ~= nil then return v end
+	return def
+end
+
+add_event_handler("coop_env_npc_kill", function(payload, from)
+	if not (api and api.is_host()) or type(from) ~= "number" or from == 0 then return end
+	local tg = time_global()
+	if tg - (env_host.npc_kill_at[from] or -NPC_KILL_MIN_MS) < NPC_KILL_MIN_MS then return end
+	local obj = avatar_of(from)
+	if not obj then return end
+	local t = decode(payload)
+	local apos = obj:position()
+	if t.k == "p" then
+		local pm = psi_mgr()
+		local x, y, z = tonumber(t.x), tonumber(t.y), tonumber(t.z)
+		if not (pm and pm.started == true and x and y and z) then return end
+		if dist_xz({ x = x, z = z }, apos) > NPC_KILL_RADIUS then return end
+		env_host.npc_kill_at[from] = tg
+		local pos = vector():set(x, y, z)
+		local okc, err = pcall(pm.kill_crows_at_pos, pm, pos)
+		if not okc then report_error("coop_main", "psi-storm crows near a player", err) end
+		local fate = option("alife/event/psi_storm_fate", "kill_at_vortex")
+		if fate ~= "unhurt" then
+			local okk, errk = pcall(pm.kill_objects_at_pos, pm, pos, fate)
+			if not okk then report_error("coop_main", "psi-storm kill near a player", errk) end
+		end
+	elseif t.k == "s" then
+		local sm = surge_mgr()
+		if not (sm and sm.started == true) then return end
+		env_host.npc_kill_at[from] = tg
+		local z = tonumber(t.z)
+		local fate = option("alife/event/emission_fate", "kill_at_wave")
+		with_online_near(apos, NPC_KILL_RADIUS, function() sm:kill_objects_at_pos(z or false, fate) end)
+	end
+end)
+
 add_event_handler("coop_env_cover", function(payload, from)
 	if not (api and api.is_host()) or type(from) ~= "number" or from == 0 then return end
 	local t = decode(payload)
