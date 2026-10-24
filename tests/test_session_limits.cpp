@@ -1226,6 +1226,7 @@ constexpr Direction kDirections[] = {
 	{Msg::RestState, kHost},
 	{Msg::RestSleep, kHost},
 	{Msg::DeathMarker, kHost},
+	{Msg::MonsterEffect, kHost}, // audit A5
 	{Msg::NewCharacter, kClient},
 	// F3a split levels (test_protocol_f3a.cpp): the world server's, the trunk's (map server -> world server) and a
 	// player's two requests

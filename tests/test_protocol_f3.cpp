@@ -37,6 +37,7 @@ const F3Msg kF3[] = {
 	{Msg::RestState, 0x01C3, "RestState", MsgSender::HostOnly}, // who rests, what holds the sleep
 	{Msg::RestSleep, 0x01C4, "RestSleep", MsgSender::HostOnly}, // the host skipped the time
 	{Msg::DeathMarker, 0x01C5, "DeathMarker", MsgSender::HostOnly}, // where a player's things lie
+	{Msg::MonsterEffect, 0x01C7, "MonsterEffect", MsgSender::HostOnly}, // audit A5: a monster ability on a remote player
 	{Msg::NewCharacter, 0x01C6, "NewCharacter", MsgSender::ClientOnly}, // hardcore: a dead player starts again
 };
 } // namespace

@@ -127,6 +127,7 @@ constexpr Row kExpected[] = {
 	{Msg::RestState, kWorld},
 	{Msg::RestSleep, kWorld},
 	{Msg::DeathMarker, kMap},
+	{Msg::MonsterEffect, kMap}, // audit A5
 	{Msg::NewCharacter, kWorld},
 	// scripting and diagnostics
 	{Msg::ScriptEvent, kWorld},
