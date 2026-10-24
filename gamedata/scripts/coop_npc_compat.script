@@ -235,8 +235,8 @@ local function wrap_loot()
 		if type(f) == "function" and not orig["loot_" .. name] then
 			orig["loot_" .. name] = f
 			m.near_actor = function(obj)
-				if f(obj) then return true end
-				if not (host_on and obj) then return false end
+				local r = f(obj)
+				if r or not (host_on and obj) then return r end -- single player: the stock answer as it is
 				local dist = tonumber(ui_options.get("gameplay/general/npc_loot_distance"))
 				return dist ~= nil and dist > 0 and coop_npc_any_player_within(obj, dist) == true
 			end
