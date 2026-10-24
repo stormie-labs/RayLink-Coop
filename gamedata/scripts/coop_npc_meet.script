@@ -637,12 +637,36 @@ end
 -------------------------------------------------------------------------------
 -- Client: apply the host's flags; help-wounded goes to the host
 -------------------------------------------------------------------------------
+-- Live 2026-10-24: "I cannot talk to anybody on the client; the host walked up - now he can". xr_meet runs on the host for
+-- the NPCs near the host's actor only, so a far NPC's flag never came and the client had no hint and no talk. A client's
+-- NPC near him is talkable unless the host said no (host_no); the host's lock decides for this player (talk_verdict, B8).
+local host_no = {} -- local id -> true: the host sent "no talk" for this NPC
+local TALK_NEAR = 12 -- m around the client's actor
+
+local function client_talk_near()
+	local actor = db.actor
+	if not (actor and level.iterate_nearest) then return end
+	local stalker = rawget(_G, "IsStalker")
+	level.iterate_nearest(actor:position(), TALK_NEAR, function(o)
+		if o:id() ~= actor:id() and (stalker and stalker(o)) and o:alive() and not P.is_proxy(o) and not host_no[o:id()]
+			and not o:is_talk_enabled() then
+			o:enable_talk()
+		end
+	end)
+end
+
 local function client_on_talk(t)
 	if type(t.i) ~= "number" then return end
 	local npc = level.object_by_id(P.to_local(t.i))
 	if not (npc and npc:alive()) then return end
 	stats.talk_in = stats.talk_in + 1
-	if t.t == true then npc:enable_talk() elseif t.t == false then npc:disable_talk() end
+	if t.t == true then
+		host_no[npc:id()] = nil
+		npc:enable_talk()
+	elseif t.t == false then
+		host_no[npc:id()] = true
+		npc:disable_talk()
+	end
 	if t.r == true then npc:enable_trade() elseif t.r == false then npc:disable_trade() end
 	if type(t.x) == "string" then npc:set_tip_text(t.x) end
 	if type(t.d) == "string" then
@@ -737,6 +761,7 @@ local function actor_on_update()
 	if now < next_tick then return end
 	next_tick = now + 250
 	for _, obj in ipairs(P.others()) do mute_avatar(obj) end -- a client's puppets of players run no xr_meet of their own
+	if P.client_live() then client_talk_near() end
 	local was = host_on
 	host_on = installed and P.host_with_clients()
 	if was and not host_on then sent_talk, sent_wnd = {}, {} end
@@ -786,4 +811,5 @@ end
 function _set_host_on(v) host_on = v end
 function _stats() return stats end
 function _soft() return soft end
+function _client_on_talk(t) client_on_talk(t) end
 function _talk_state(npc, who) return talk_state(npc, who) end

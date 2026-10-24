@@ -256,5 +256,36 @@ do
 	check(proxy._talk == false, "host: the update keeps the avatars mute (a mod switched it on again)")
 end
 
+-- Live 2026-10-24: "I cannot talk to anybody on the client; the host walked up - now he can". xr_meet runs on the host
+-- for the NPCs near the host's actor only, so the flag of a far NPC never reached the client: no hint, F did nothing.
+-- A client's NPC near him is talkable unless the host said no; the host's lock decides (talk_verdict, B8).
+print("== a client talks far from the host")
+do
+	local H, C, proxy, MH, MC = scene("gamma")
+	C.env.level.iterate_nearest = function(pos, r, f)
+		for _, o in pairs(C.objects) do
+			if o:position():distance_to(pos) <= r and f(o) == true then return end
+		end
+	end
+	local far = C.add(make_obj(300, 3, 0, 0, { _name = "far_npc", _stalker = true }))
+	far._talk = false
+	local denied = C.add(make_obj(301, 4, 0, 0, { _name = "denied_npc", _stalker = true }))
+	denied._talk = false
+	local dead = C.add(make_obj(302, 2, 0, 0, { _name = "dead_npc", _stalker = true, _alive = false }))
+	dead._talk = false
+	C.env.IsStalker = function(o) return o._stalker == true end
+	MC._client_on_talk({ i = 301, t = false })
+	NOW = NOW + 300
+	C.fire("actor_on_update")
+	check(far._talk == true, "an NPC by the client, far from the host: talkable (the host's lock decides)")
+	check(denied._talk == false, "the host's explicit no stands")
+	check(dead._talk == false, "a dead NPC: no")
+	check(C.objects[500]._talk ~= true, "the host's avatar: never")
+	MC._client_on_talk({ i = 301, t = true })
+	NOW = NOW + 300
+	C.fire("actor_on_update")
+	check(denied._talk == true, "the host's yes lifts it")
+end
+
 print(string.format("\nRESULT: %d passed, %d failed", PASSES, FAILS))
 if FAILS > 0 then error("tests failed") end
