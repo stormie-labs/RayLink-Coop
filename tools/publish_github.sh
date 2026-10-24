@@ -14,7 +14,7 @@ ZIP="$ROOT/releases/anomaly-coop-0.${BUILD}.0.zip"
 [ -f "$ZIP" ] || { echo "no $ZIP (powershell -File tools/package.ps1 -Version 0.${BUILD}.0 -Force)"; exit 2; }
 gh auth status >/dev/null 2>&1 || { echo "gh is not logged in: run gh auth login"; exit 3; }
 gh auth setup-git
-OWNER="$(gh api user -q .login)"
+OWNER="${OWNER:-$(gh api user -q .login)}" # OWNER=stormie-labs: an organization
 echo "owner: $OWNER, visibility: $VIS"
 
 repo_exists() { gh repo view "$1" >/dev/null 2>&1; }
