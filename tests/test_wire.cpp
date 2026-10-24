@@ -630,6 +630,29 @@ TEST(snapshot_anim_byte_packs_creature_flags)
 	// back) follows the anims as a u16 id; the flags still fit the nibble.
 	CHECK_EQ(pack_anim_byte(2, CreatureHolds), uint8_t(0x22));
 	CHECK_EQ(creature_flags_of(pack_anim_byte(4, CreatureTorchLit | CreatureHolds | CreatureStrapped)), uint8_t(7));
+	// Protocol 13 (live 2026-10-24: "the NPC does not point its gun and walks oddly sideways in front of the client"): a
+	// stalker's aim (spine, shoulder, head bone rotations) follows as 3 quaternions; all four flags fill the nibble.
+	CHECK_EQ(creature_flags_of(pack_anim_byte(4, CreatureTorchLit | CreatureHolds | CreatureStrapped | CreatureAims)),
+		uint8_t(15));
+	CHECK_EQ(uint8_t(CreatureAims), uint8_t(8));
+}
+
+TEST(snapshot_aim_quaternion_components_round_trip)
+{
+	const float values[] = {-1.f, -0.70710678f, -0.25f, 0.f, 0.001f, 0.5f, 0.70710678f, 1.f};
+	for (float v : values)
+	{
+		const float back = unpack_unit(pack_unit(v));
+		CHECK(back - v < 1.f / 32767.f && v - back < 1.f / 32767.f);
+	}
+	CHECK_EQ(pack_unit(1.f), int16_t(32767));
+	CHECK_EQ(pack_unit(-1.f), int16_t(-32767));
+	CHECK_EQ(pack_unit(0.f), int16_t(0));
+	// out of range (a not quite normalised quaternion) is clamped, never wraps around
+	CHECK_EQ(pack_unit(1.5f), int16_t(32767));
+	CHECK_EQ(pack_unit(-7.f), int16_t(-32767));
+	CHECK_EQ(unpack_unit(int16_t(-32768)), -1.f);
+	static_assert(kSnapshotAimBytes == 24, "3 quaternions x 4 components x int16");
 }
 
 TEST(protocol_version_bumped_for_c2)

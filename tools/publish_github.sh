@@ -30,7 +30,7 @@ ENGINE_SHA="$(git -C "$ROOT/engine" rev-parse --short HEAD)"
 PROJECT_SHA="$(git -C "$ROOT" rev-parse --short HEAD)"
 if ! gh release view "b$BUILD" --repo "$OWNER/RayLink-Coop" >/dev/null 2>&1; then
 	gh release create "b$BUILD" "$ZIP" --repo "$OWNER/RayLink-Coop" --target main --title "Сборка $BUILD" --notes \
-"Сборка $BUILD RayLink: движок $OWNER/RayLink-Engine $ENGINE_SHA + надстройка $PROJECT_SHA, протокол 12.
+"Сборка $BUILD RayLink: движок $OWNER/RayLink-Engine $ENGINE_SHA + надстройка $PROJECT_SHA, протокол 13.
 Ставится лаунчером RayLink (кнопка «Обновить сборку») или вручную как мод MO2 (архив с FOMOD). Что проверено — docs/STATUS.md."
 fi
 if [ -f "$ENGINE_EXE" ] && ! gh release view "b$BUILD" --repo "$OWNER/RayLink-Engine" >/dev/null 2>&1; then
@@ -38,7 +38,7 @@ if [ -f "$ENGINE_EXE" ] && ! gh release view "b$BUILD" --repo "$OWNER/RayLink-En
 	mkdir -p "$STAGE" && cp "$ENGINE_EXE" "$STAGE/AnomalyCoopDX11AVX.exe"
 	gh release create "b$BUILD" "$STAGE/AnomalyCoopDX11AVX.exe" --repo "$OWNER/RayLink-Engine" --target main \
 		--title "RayLink Engine, сборка $BUILD" --notes \
-"Движок RayLink для S.T.A.L.K.E.R. Anomaly 1.5.3 (DX11 AVX), коммит $ENGINE_SHA, протокол 12.
+"Движок RayLink для S.T.A.L.K.E.R. Anomaly 1.5.3 (DX11 AVX), коммит $ENGINE_SHA, протокол 13.
 Для игры нужна надстройка $OWNER/RayLink-Coop — её сборка уже содержит этот exe."
 fi
 
