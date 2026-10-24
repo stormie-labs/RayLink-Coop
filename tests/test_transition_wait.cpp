@@ -1,7 +1,9 @@
 // Anomaly Coop unit tests: the waiting point of a level change (coop_transition.h; owner 2026-10-23: "a place where you
 // wait for your allies to go to the next level"). The host's board of who is ready for which exit and when the group
-// goes (everybody, the loading players' 60 s, the 5 s countdown, "go now"), the two messages (TransitionVote ops and the
-// host's TransitionState), the hold at the exit and the client's reconciling of what it wants with what the host says.
+// goes (everybody, at once - no countdown since the live test of 2026-10-24 -, the loading players' 60 s, the chat's /go),
+// the claims (at the exit, through a route restrictor, "go with the group" from afar), the two messages (TransitionVote ops
+// and the host's TransitionState), the hold at the exit and the client's reconciling of what it wants with what the host
+// says.
 // F3a T8: the board through the local link (the host player is peer 0 and votes like anybody), the rows of the together
 // entry of split levels, and the simultaneous load of a group transition (PreparedLoad on the server, LoadScreen on each
 // player, and the order of LoadWait / epoch / save on a real session that the host's "go" relies on).
@@ -17,6 +19,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -70,33 +73,28 @@ TEST(transition_nothing_claimed_is_idle)
 	CHECK(s.rows.empty());
 }
 
-TEST(transition_lone_host_goes_after_the_countdown)
+TEST(transition_lone_player_goes_at_once)
 {
+	// Owner 2026-10-24: "there is some waiting timer that should not exist at all": nobody missing = the group goes on that
+	// tick (the host's own load follows kGoFadeMs later, while every moving player's screen darkens: coop_join.cpp).
 	Board b;
 	const auto m = party({0});
 	b.claim(0, kA, 1000);
 	Status s = b.tick(m, kNear, 1000);
-	CHECK_EQ(int(s.state), int(State::Counting));
+	CHECK(s.go);
+	CHECK_EQ(int(s.state), int(State::Going));
 	CHECK_EQ(s.ready, 1u);
 	CHECK_EQ(s.total, 1u);
 	CHECK_EQ(s.goal, kA);
-	CHECK_EQ(s.countdown_ms, 5000u);
-	CHECK(!s.go);
-	s = b.tick(m, kNear, 3000);
-	CHECK_EQ(s.countdown_ms, 3000u);
-	s = b.tick(m, kNear, 5999);
-	CHECK_EQ(s.countdown_ms, 1u);
-	CHECK(!s.go);
-	s = b.tick(m, kNear, 6000);
-	CHECK(s.go);
-	CHECK_EQ(s.goal, kA);
-	s = b.tick(m, kNear, 6100); // the claims went with the group
+	CHECK_EQ(s.rows.size(), size_t(1)); // the rows of the go are the placard's last word
+	s = b.tick(m, kNear, 1100); // the claims went with the group
 	CHECK_EQ(int(s.state), int(State::Idle));
 	CHECK(!s.go);
 }
 
-TEST(transition_waits_for_every_player_then_counts)
+TEST(transition_waits_for_every_player_however_long_then_goes)
 {
+	// "We wait for the second player as long as it takes while we stand in the transition radius."
 	Board b;
 	const auto m = party({0, 1, 2});
 	b.claim(0, kA, 1000);
@@ -105,17 +103,25 @@ TEST(transition_waits_for_every_player_then_counts)
 	CHECK_EQ(int(s.state), int(State::Waiting));
 	CHECK_EQ(s.ready, 2u);
 	CHECK_EQ(s.total, 3u);
-	CHECK_EQ(s.countdown_ms, 0u);
+	CHECK(!s.go);
 	CHECK_EQ(int(row_of(s, 0).mark), int(Mark::Ready));
 	CHECK_EQ(int(row_of(s, 1).mark), int(Mark::Ready));
 	CHECK_EQ(int(row_of(s, 2).mark), int(Mark::Away));
-	b.claim(2, kA, 2500);
-	s = b.tick(m, kNear, 2600);
-	CHECK_EQ(int(s.state), int(State::Counting));
+	bool went = false;
+	for (uint64_t now = 2000; now <= 2000 + 30 * 60000; now += kClaimRefreshMs) // half an hour, 1 refreshing his claim
+	{
+		b.claim(1, kA, now);
+		s = b.tick(m, kNear, now);
+		went = went || s.go;
+	}
+	CHECK(!went);
+	CHECK_EQ(int(s.state), int(State::Waiting));
+	CHECK_EQ(s.ready, 2u);
+	b.claim(2, kA, 2000 + 30 * 60000 + 1);
+	s = b.tick(m, kNear, 2000 + 30 * 60000 + 2);
+	CHECK(s.go); // on the tick he arrives
+	CHECK_EQ(int(s.state), int(State::Going));
 	CHECK_EQ(s.ready, 3u);
-	CHECK_EQ(s.countdown_ms, 5000u);
-	s = b.tick(m, kNear, 7600);
-	CHECK(s.go);
 }
 
 TEST(transition_a_player_at_another_exit_does_not_count)
@@ -137,37 +143,38 @@ TEST(transition_a_player_at_another_exit_does_not_count)
 	CHECK_EQ(int(row_of(s, 0).mark), int(Mark::Away));
 }
 
-TEST(transition_a_player_who_steps_back_breaks_the_countdown)
+TEST(transition_a_player_who_steps_back_is_waited_for_again)
+{
+	Board b;
+	const auto m = party({0, 1, 2});
+	b.claim(0, kA, 0);
+	b.claim(1, kA, 0);
+	Status s = b.tick(m, kNear, 100);
+	CHECK_EQ(int(s.state), int(State::Waiting));
+	CHECK(b.release(1)); // he steps out of the zone
+	s = b.tick(m, kNear, 2000);
+	CHECK_EQ(int(s.state), int(State::Waiting));
+	CHECK_EQ(s.ready, 1u);
+	CHECK_EQ(int(row_of(s, 1).mark), int(Mark::Away));
+	b.claim(2, kA, 3000); // the last one arrives: 1 is missing now
+	s = b.tick(m, kNear, 3000);
+	CHECK(!s.go);
+	b.claim(1, kA, 4000);
+	s = b.tick(m, kNear, 4000);
+	CHECK(s.go);
+}
+
+TEST(transition_everybody_leaving_goes_idle)
 {
 	Board b;
 	const auto m = party({0, 1});
 	b.claim(0, kA, 0);
-	b.claim(1, kA, 0);
-	Status s = b.tick(m, kNear, 100);
-	CHECK_EQ(int(s.state), int(State::Counting));
-	CHECK(!s.cancelled);
-	CHECK(b.release(1));
-	s = b.tick(m, kNear, 2000);
-	CHECK_EQ(int(s.state), int(State::Waiting));
-	CHECK(s.cancelled); // once
-	CHECK(!b.tick(m, kNear, 2100).cancelled);
-	b.claim(1, kA, 3000);
-	s = b.tick(m, kNear, 3000);
-	CHECK_EQ(int(s.state), int(State::Counting));
-	CHECK_EQ(s.countdown_ms, 5000u); // starts over
-}
-
-TEST(transition_everybody_leaving_cancels_and_goes_idle)
-{
-	Board b;
-	const auto m = party({0});
-	b.claim(0, kA, 0);
-	CHECK_EQ(int(b.tick(m, kNear, 10).state), int(State::Counting));
+	CHECK_EQ(int(b.tick(m, kNear, 10).state), int(State::Waiting));
 	b.release(0);
 	const Status s = b.tick(m, kNear, 20);
 	CHECK_EQ(int(s.state), int(State::Idle));
-	CHECK(s.cancelled);
 	CHECK(!s.go);
+	CHECK(s.rows.empty());
 }
 
 TEST(transition_loading_player_holds_the_group_for_a_minute)
@@ -193,12 +200,11 @@ TEST(transition_loading_player_holds_the_group_for_a_minute)
 	s = b.tick(m, kNear, 60999);
 	CHECK_EQ(int(s.state), int(State::Waiting));
 	CHECK_EQ(s.load_ms, 1u);
-	s = b.tick(m, kNear, 61000); // the minute is over: the group does not wait for him any more
-	CHECK_EQ(int(s.state), int(State::Counting));
-	CHECK_EQ(s.countdown_ms, 5000u);
+	s = b.tick(m, kNear, 61000); // the minute is over: the group does not wait for him any more, it goes now
+	CHECK(s.go);
+	CHECK_EQ(int(s.state), int(State::Going));
 	CHECK_EQ(s.total, 2u);
 	CHECK_EQ(int(row_of(s, 2).mark), int(Mark::Loading)); // still shown
-	CHECK(b.tick(m, kNear, 66000).go);
 }
 
 TEST(transition_the_loading_minute_starts_when_everyone_else_is_ready)
@@ -244,7 +250,7 @@ TEST(transition_a_downed_player_does_not_block)
 	m[1].alive = false; // wounded or dead: he cannot walk to the exit
 	b.claim(0, kA, 0);
 	const Status s = b.tick(m, kNear, 10);
-	CHECK_EQ(int(s.state), int(State::Counting));
+	CHECK(s.go); // he goes with the group
 	CHECK_EQ(s.total, 1u);
 	CHECK_EQ(int(row_of(s, 1).mark), int(Mark::Down));
 }
@@ -337,7 +343,9 @@ TEST(transition_rows_are_in_player_order_with_rounded_distances)
 	CHECK_EQ(s.rows[2].dist_m, uint16_t(119));
 }
 
-TEST(transition_go_now_goes_at_once_even_if_not_everybody_is_ready)
+// The chat's /go (coop_accept_transition) is the one way to go without everybody; the host's hold of a key is gone
+// (owner 2026-10-24: a key is held only by those who are NOT at the exit, to come along).
+TEST(transition_force_goes_at_once_even_if_not_everybody_is_ready)
 {
 	Board b;
 	const auto m = party({0, 1, 2});
@@ -346,13 +354,13 @@ TEST(transition_go_now_goes_at_once_even_if_not_everybody_is_ready)
 	Status s = b.tick(m, kNear, 10);
 	CHECK(s.go);
 	CHECK_EQ(s.goal, kA);
-	CHECK_EQ(s.countdown_ms, 0u);
+	CHECK_EQ(int(s.state), int(State::Going));
 	s = b.tick(m, kNear, 20);
 	CHECK(!s.go);
 	CHECK_EQ(int(s.state), int(State::Idle));
 }
 
-TEST(transition_go_now_needs_somebody_waiting_at_that_exit)
+TEST(transition_force_needs_somebody_waiting_at_that_exit)
 {
 	Board b;
 	const auto m = party({0, 1});
@@ -404,10 +412,11 @@ TEST(transition_a_guide_trip_waits_for_everybody_to_confirm)
 	CHECK_EQ(s.goal, kGuideGoal);
 	CHECK_EQ(s.ready, 1u);
 	CHECK_EQ(s.total, 2u);
-	b.claim(1, kGuideGoal, 9000); // he confirms
+	b.claim(1, kGuideGoal, 9000); // he confirms: the group goes at once
 	s = b.tick(m, kNear, 9000);
-	CHECK_EQ(int(s.state), int(State::Counting));
-	CHECK(b.tick(m, kNear, 14000).go);
+	CHECK(s.go);
+	CHECK_EQ(int(s.state), int(State::Going));
+	CHECK_EQ(s.goal, kGuideGoal);
 }
 
 TEST(transition_a_guide_trip_is_not_cancelled_by_distance)
@@ -432,6 +441,233 @@ TEST(transition_a_guide_trip_expires_after_a_minute)
 	CHECK(!s.go);
 	CHECK(!b.claimed(0));
 	CHECK(!b.tick(m, kNear, 61100).expired); // once
+}
+
+// ---------------------------------------------------------------- "go with the group" from afar (owner 2026-10-24)
+
+namespace
+{
+VoteMsg vote_of(uint8_t op, uint32_t exit, uint16_t route = kNoChanger)
+{
+	VoteMsg v;
+	v.op = op;
+	v.changer = uint16_t(exit);
+	v.route = route;
+	return v;
+}
+
+VoteMsg vote_ready_at(uint32_t exit) { return vote_of(VoteReady, exit); }
+VoteMsg vote_cancel_op() { return vote_of(VoteCancel, kNoChanger); }
+
+VoteFacts in_world_far() // in the world, the exit known, far from it
+{
+	VoteFacts f;
+	f.in_world = true;
+	f.exit_known = true;
+	f.dist = 480.f;
+	return f;
+}
+} // namespace
+
+TEST(transition_consent_counts_without_distance)
+{
+	// A player who is NOT at the exit holds the key: he comes along. No kReachM when he says it, no kLeaveM on the board,
+	// his row says so (Row::consent).
+	Board b;
+	const auto m = party({0, 1, 2});
+	b.claim(0, kA, 0);
+	CHECK(apply_vote(b, 1, vote_of(VoteConsent, kA), in_world_far(), 100) == Verdict::Claimed);
+	const DistFn far1 = [](uint32_t id, uint32_t) { return id == 0 ? 1.f : 480.f; };
+	Status s = b.tick(m, far1, 200);
+	CHECK(b.claimed(1));
+	CHECK_EQ(int(s.state), int(State::Waiting));
+	CHECK_EQ(s.ready, 2u);
+	CHECK_EQ(int(row_of(s, 1).mark), int(Mark::Ready));
+	CHECK(row_of(s, 1).consent);
+	CHECK(!row_of(s, 0).consent);
+	CHECK_EQ(row_of(s, 1).dist_m, uint16_t(480)); // shown, never held against him
+	CHECK(apply_vote(b, 1, vote_of(VoteConsent, kA), in_world_far(), 5100) == Verdict::Refreshed);
+	CHECK(apply_vote(b, 2, vote_of(VoteConsent, kA), in_world_far(), 5200) == Verdict::Claimed);
+	s = b.tick(m, far1, 5300);
+	CHECK(s.go); // everybody is ready: two of them from far away
+	CHECK_EQ(s.goal, kA);
+}
+
+TEST(transition_consent_needs_somebody_waiting_at_that_exit)
+{
+	Board b;
+	CHECK(apply_vote(b, 1, vote_of(VoteConsent, kA), in_world_far(), 0) == Verdict::NotWaited); // nobody waits anywhere
+	b.claim(0, kB, 10);
+	CHECK(apply_vote(b, 1, vote_of(VoteConsent, kA), in_world_far(), 20) == Verdict::NotWaited); // somebody, at another exit
+	CHECK(!b.claimed(1));
+	CHECK(apply_vote(b, 1, vote_of(VoteConsent, kB), in_world_far(), 30) == Verdict::Claimed);
+	b.release(0);
+	CHECK(apply_vote(b, 2, vote_of(VoteConsent, kB), in_world_far(), 40) == Verdict::NotWaited); // a consent is nobody's anchor
+	CHECK(!b.anchored(kB, 2));
+	VoteFacts out = in_world_far();
+	out.in_world = false;
+	b.claim(0, kB, 50);
+	CHECK(apply_vote(b, 2, vote_of(VoteConsent, kB), out, 60) == Verdict::NotInWorld);
+	VoteFacts nowhere = in_world_far();
+	nowhere.exit_known = false;
+	CHECK(apply_vote(b, 2, vote_of(VoteConsent, kB), nowhere, 60) == Verdict::NoExit);
+	CHECK(b.anchored(kB, 2));
+	CHECK(!b.anchored(kB, 0)); // his own claim is not his anchor
+}
+
+TEST(transition_consent_ends_with_the_wait_at_its_exit)
+{
+	// Nobody stands at that exit any more (he stepped out): the wait there is over and so is "coming along" to it.
+	Board b;
+	const auto m = party({0, 1, 2});
+	b.claim(0, kA, 0);
+	b.consent(1, kA, 10);
+	CHECK(b.claimed(1));
+	b.release(0);
+	const Status s = b.tick(m, kNear, 20);
+	CHECK(!b.claimed(1));
+	CHECK_EQ(int(s.state), int(State::Idle));
+	CHECK(!s.go);
+}
+
+TEST(transition_consent_lapses_and_is_cancelled)
+{
+	Board b;
+	const auto m3 = party({0, 1, 2, 3}); // 3 is missing: the board keeps waiting
+	b.claim(0, kA, 0);
+	b.consent(1, kA, 0);
+	b.consent(2, kA, 0);
+	CHECK_EQ(b.tick(m3, kNear, 100).ready, 3u);
+	b.consent(1, kA, 15000); // his refresh (a client says "still coming" every kClaimRefreshMs)
+	Status s = b.tick(m3, kNear, kClaimLapseMs + 1);
+	CHECK(b.claimed(1));
+	CHECK(!b.claimed(2)); // no word since 0: he disconnected, or his game is gone
+	CHECK_EQ(s.ready, 2u);
+	CHECK(apply_vote(b, 1, vote_cancel_op(), VoteFacts(), kClaimLapseMs + 2) == Verdict::Released); // the key held again
+	s = b.tick(m3, kNear, kClaimLapseMs + 3);
+	CHECK_EQ(s.ready, 1u);
+	CHECK(b.claimed(0));
+}
+
+TEST(transition_a_zone_claim_replaces_a_consent)
+{
+	Board b;
+	const auto m = party({0, 1, 2});
+	b.claim(0, kA, 0);
+	b.consent(1, kA, 10);
+	b.claim(1, kA, 20); // he walked into the zone after all: a claim of the exit's own now
+	uint32_t goal = 0, place = 0;
+	CHECK(b.claimed(1, &goal, &place));
+	CHECK_EQ(goal, kA);
+	CHECK_EQ(place, kA);
+	Status s = b.tick(m, kNear, 30);
+	CHECK(!row_of(s, 1).consent);
+	const DistFn far1 = [](uint32_t id, uint32_t) { return id == 1 ? kLeaveM + 1.f : 1.f; };
+	s = b.tick(m, far1, 40); // and it is measured like anybody's at the exit
+	CHECK(!b.claimed(1));
+	// the other way: a consent where he stood at the exit keeps the claim's age, without the distance
+	b.claim(1, kA, 50);
+	b.consent(1, kA, 60);
+	CHECK(b.claimed(1, &goal, &place));
+	CHECK_EQ(place, kNoPlace);
+	b.tick(m, far1, 70);
+	CHECK(b.claimed(1));
+}
+
+// ---------------------------------------------------------------- route exits (owner 2026-10-24)
+
+TEST(transition_route_claim_is_measured_against_its_restrictor)
+{
+	// A route restrictor of sr_teleport_sections.ltx whose drop point lies in level changer kA: the player who stands in it
+	// stands at that exit. The host checks him against the restrictor (kReachM when he says it, kLeaveM after), never against
+	// the changer, which may be tens of metres behind the mark.
+	constexpr uint16_t kRoute = 4242;
+	Board b;
+	const auto m = party({0, 1, 2});
+	VoteFacts f = in_world_far(); // 480 m from the changer
+	f.route_known = true;
+	f.route_dist = 1.f;
+	CHECK(apply_vote(b, 1, vote_of(VoteRoute, kA, kRoute), f, 0) == Verdict::Claimed);
+	uint32_t goal = 0, place = 0;
+	CHECK(b.claimed(1, &goal, &place));
+	CHECK_EQ(goal, kA);
+	CHECK(is_route_place(place));
+	CHECK_EQ(route_of_place(place), kRoute);
+	uint32_t asked = 0;
+	const DistFn measure = [&asked](uint32_t id, uint32_t where) -> float
+	{
+		if (id == 1 && is_route_place(where))
+		{
+			++asked;
+			return 2.f; // near his restrictor
+		}
+		return 480.f; // far from the changer
+	};
+	Status s = b.tick(m, measure, 10);
+	CHECK(b.claimed(1));
+	CHECK(asked > 0);
+	CHECK_EQ(int(row_of(s, 1).mark), int(Mark::Ready));
+	CHECK(!row_of(s, 1).consent);
+	CHECK(b.anchored(kA, 2)); // somebody stands at that exit: the others may come along
+	const DistFn left = [](uint32_t id, uint32_t where) { return id == 1 && is_route_place(where) ? kLeaveM + 1.f : 1.f; };
+	b.tick(m, left, 20);
+	CHECK(!b.claimed(1)); // he walked away from the mark
+	// the checks of the vote
+	VoteFacts too_far = f;
+	too_far.route_dist = kReachM + 0.5f;
+	CHECK(apply_vote(b, 1, vote_of(VoteRoute, kA, kRoute), too_far, 30) == Verdict::TooFar);
+	VoteFacts unknown = f;
+	unknown.route_dist = -1.f;
+	CHECK(apply_vote(b, 1, vote_of(VoteRoute, kA, kRoute), unknown, 30) == Verdict::TooFar);
+	VoteFacts no_route = f;
+	no_route.route_known = false;
+	CHECK(apply_vote(b, 1, vote_of(VoteRoute, kA, kRoute), no_route, 30) == Verdict::NoRoute);
+	VoteFacts no_exit = f;
+	no_exit.exit_known = false;
+	CHECK(apply_vote(b, 1, vote_of(VoteRoute, kA, kRoute), no_exit, 30) == Verdict::NoExit);
+	CHECK(!b.claimed(1));
+	// with the route restrictor and the changer's own zone the same exit: the claim follows what he does now
+	CHECK(apply_vote(b, 1, vote_of(VoteRoute, kA, kRoute), f, 40) == Verdict::Claimed);
+	CHECK(apply_vote(b, 1, vote_of(VoteRoute, kA, kRoute), f, 50) == Verdict::Refreshed);
+	VoteFacts at_changer = f;
+	at_changer.dist = 1.f;
+	CHECK(apply_vote(b, 1, vote_ready_at(kA), at_changer, 60) == Verdict::Claimed); // the zone itself: another claim
+	CHECK(b.claimed(1, &goal, &place));
+	CHECK_EQ(place, kA);
+}
+
+TEST(transition_route_exit_is_the_changer_around_the_drop_point)
+{
+	// coop.transition_route: the enabled level changer whose shapes the route's drop point lies in (or within kRouteDropM:
+	// the stock teleport puts the actor there and his body touches the zone), the nearest if several; none: a route inside
+	// the level (the stock teleport stays).
+	CHECK_EQ(route_exit({}), kNoChanger);
+	CHECK_EQ(route_exit({{16600, 0.f}}), uint16_t(16600));
+	CHECK_EQ(route_exit({{16600, kRouteDropM}}), uint16_t(16600));
+	CHECK_EQ(route_exit({{16600, kRouteDropM + 0.1f}}), kNoChanger);
+	CHECK_EQ(route_exit({{16600, 1.5f}, {16601, 0.f}, {16602, 0.5f}}), uint16_t(16601));
+	CHECK_EQ(route_exit({{16602, 0.f}, {16601, 0.f}}), uint16_t(16601)); // a tie: the lower id
+	CHECK_EQ(route_exit({{16600, -1.f}, {16601, std::numeric_limits<float>::infinity()}}), kNoChanger); // unknown, no shapes
+}
+
+TEST(transition_routes_remember_where_a_restrictor_leads)
+{
+	Routes r;
+	CHECK_EQ(r.changer_of(10), kNoChanger);
+	CHECK(r.add(10, 16600));
+	CHECK_EQ(r.changer_of(10), uint16_t(16600));
+	CHECK(r.add(10, 16601)); // the same restrictor again: replaced, not added
+	CHECK_EQ(r.changer_of(10), uint16_t(16601));
+	CHECK_EQ(r.all().size(), size_t(1));
+	CHECK(!r.add(kNoChanger, 16600));
+	CHECK(!r.add(11, kNoChanger));
+	for (uint16_t i = 0; i < 200; ++i)
+		r.add(uint16_t(100 + i), 16600);
+	CHECK_EQ(r.all().size(), kMaxRoutes); // bounded: a level has a handful
+	CHECK(r.forget(10));
+	CHECK_EQ(r.changer_of(10), kNoChanger);
+	r.clear();
+	CHECK(r.all().empty());
 }
 
 // ---------------------------------------------------------------- the messages
@@ -470,11 +706,33 @@ TEST(transition_vote_round_trip)
 	CHECK(back2.read(r2));
 	CHECK_EQ(int(back2.op), int(VoteCancel));
 	CHECK_EQ(back2.changer, kNoChanger); // a cancel names no exit; a ready without one confirms the guide trip
+
+	// 2026-10-24: "go with the group" names the exit it comes along to; a route claim names its restrictor too
+	VoteMsg consent = vote_of(VoteConsent, 16601);
+	Writer w3;
+	consent.write(w3);
+	CHECK_EQ(w3.size(), size_t(3));
+	Reader r3 = reader_of(w3);
+	VoteMsg back3;
+	CHECK(back3.read(r3));
+	CHECK_EQ(int(back3.op), int(VoteConsent));
+	CHECK_EQ(back3.changer, uint16_t(16601));
+	VoteMsg route = vote_of(VoteRoute, 16601, 812);
+	Writer w4;
+	route.write(w4);
+	CHECK_EQ(w4.size(), size_t(5)); // op, u16 changer, u16 route restrictor
+	Reader r4 = reader_of(w4);
+	VoteMsg back4;
+	CHECK(back4.read(r4));
+	CHECK_EQ(int(back4.op), int(VoteRoute));
+	CHECK_EQ(back4.changer, uint16_t(16601));
+	CHECK_EQ(back4.route, uint16_t(812));
+	CHECK_EQ(r4.remaining(), size_t(0));
 }
 
 TEST(transition_vote_rejects_unknown_ops_and_cut_packets)
 {
-	const uint8_t bad_op[] = {2, 0x59, 0x40};
+	const uint8_t bad_op[] = {4, 0x59, 0x40};
 	Reader r(bad_op, sizeof(bad_op));
 	VoteMsg v;
 	CHECK(!v.read(r));
@@ -484,7 +742,20 @@ TEST(transition_vote_rejects_unknown_ops_and_cut_packets)
 	const uint8_t old_layout[] = {0x59, 0x40}; // protocol 9: just the u16
 	Reader r3(old_layout, sizeof(old_layout));
 	CHECK(!v.read(r3));
-	CHECK(v.is_client_op(VoteReady) && v.is_client_op(VoteCancel) && !v.is_client_op(2));
+	CHECK(v.is_client_op(VoteReady) && v.is_client_op(VoteCancel) && v.is_client_op(VoteConsent) &&
+	    v.is_client_op(VoteRoute) && !v.is_client_op(4));
+	const uint8_t consent_nowhere[] = {VoteConsent, 0xff, 0xff}; // coming along to no exit
+	Reader r4(consent_nowhere, sizeof(consent_nowhere));
+	CHECK(!v.read(r4));
+	const uint8_t route_cut[] = {VoteRoute, 0x59, 0x40}; // the restrictor is missing
+	Reader r5(route_cut, sizeof(route_cut));
+	CHECK(!v.read(r5));
+	const uint8_t route_nowhere[] = {VoteRoute, 0xff, 0xff, 0x2c, 0x03}; // a route into no exit
+	Reader r6(route_nowhere, sizeof(route_nowhere));
+	CHECK(!v.read(r6));
+	const uint8_t route_none[] = {VoteRoute, 0x59, 0x40, 0xff, 0xff}; // no restrictor
+	Reader r7(route_none, sizeof(route_none));
+	CHECK(!v.read(r7));
 }
 
 namespace
@@ -498,7 +769,6 @@ StateMsg sample_state()
 	m.level = "l01_escape";
 	m.ready = 1;
 	m.total = 2;
-	m.countdown_ms = 0;
 	m.load_ms = 30000;
 	m.rows.push_back({0, Mark::Ready, 2});
 	m.rows.push_back({1, Mark::Away, 118});
@@ -511,7 +781,8 @@ TEST(transition_state_round_trip)
 	const StateMsg m = sample_state();
 	Writer w;
 	m.write(w);
-	CHECK_EQ(w.size(), size_t(42));
+	CHECK_EQ(w.size(), size_t(42)); // the layout of protocol 11 stays: the countdown's u32 is always 0 now
+	CHECK_EQ(m.countdown_ms, 0u);
 	Reader r = reader_of(w);
 	StateMsg back;
 	CHECK(back.read(r));
@@ -597,6 +868,20 @@ TEST(transition_status_makes_the_message)
 	CHECK_EQ(msg.total, uint16_t(2));
 	CHECK_EQ(msg.rows.size(), size_t(2));
 	CHECK_EQ(msg.level, std::string("l01_escape"));
+	CHECK_EQ(msg.countdown_ms, 0u);
+	// the go: Going, the rows of that tick (every machine's screen darkens on it, coop_hud_transition)
+	Board go;
+	go.claim(0, kA, 0);
+	go.claim(1, kA, 0);
+	const StateMsg gm0 = state_message(go.tick(m, kNear, 10), "l01_escape");
+	CHECK_EQ(int(gm0.state), int(State::Going));
+	CHECK_EQ(gm0.rows.size(), size_t(2));
+	Writer gw;
+	gm0.write(gw);
+	Reader gr = reader_of(gw);
+	StateMsg gback;
+	CHECK(gback.read(gr));
+	CHECK_EQ(int(gback.state), int(State::Going));
 	// a guide trip has no exit
 	Board g;
 	g.start_guide(0, 0);
@@ -733,6 +1018,21 @@ TEST(transition_intent_forgets_on_reset)
 	CHECK(i.wants(true, kA, true, kA, 100 + kClaimRefreshMs) == Send::Nothing);
 }
 
+TEST(transition_intent_says_it_again_when_the_way_changes)
+{
+	// The same exit another way: from "go with the group" into the zone (a claim measured at the exit now), from a route
+	// restrictor into the changer's own zone. The board shows "ready" either way, so the op that went out decides.
+	Intent i;
+	CHECK(i.wants(true, kA, false, 0, 100, VoteConsent) == Send::Ready);
+	i.sent(100, VoteConsent);
+	CHECK(i.wants(true, kA, true, kA, 100 + kIntentSettleMs, VoteConsent) == Send::Nothing);
+	CHECK(i.wants(true, kA, true, kA, 100 + kIntentSettleMs, VoteReady) == Send::Ready); // he walked into the zone
+	CHECK(i.wants(true, kA, true, kA, 100 + 16, VoteReady) == Send::Nothing); // not while the last one settles
+	i.sent(100 + kIntentSettleMs, VoteReady);
+	CHECK(i.wants(true, kA, true, kA, 100 + 2 * kIntentSettleMs, VoteReady) == Send::Nothing);
+	CHECK(i.wants(true, kA, true, kA, 100 + 2 * kIntentSettleMs, VoteRoute) == Send::Ready);
+}
+
 // ---------------------------------------------------------------- F3a T8: the board through the local link
 
 namespace
@@ -767,22 +1067,23 @@ TEST(board_host_claim_via_link)
 	// The host player is peer 0 of the server's players(), a member like any other: no claim of his own until his vote comes
 	// over the local link, and that vote goes through the same rule as a remote client's (from = 0).
 	Board b;
-	const auto m = party({0, 1});
+	const auto m = party({0, 1, 2}); // 2 never comes: the board keeps waiting
 	CHECK(apply_vote(b, 1, vote_ready(kA), near_exit(), 100) == Verdict::Claimed);
 	Status s = b.tick(m, kNear, 100);
 	CHECK_EQ(int(row_of(s, 0).mark), int(Mark::Away)); // being the host makes him ready for nothing
 	CHECK_EQ(s.ready, 1u);
-	CHECK_EQ(s.total, 2u);
+	CHECK_EQ(s.total, 3u);
 	CHECK(apply_vote(b, 0, vote_ready(kA), near_exit(), 200) == Verdict::Claimed); // his vote
 	s = b.tick(m, kNear, 200);
 	CHECK_EQ(int(row_of(s, 0).mark), int(Mark::Ready));
-	CHECK_EQ(int(s.state), int(State::Counting));
+	CHECK_EQ(int(s.state), int(State::Waiting));
+	CHECK_EQ(s.ready, 2u);
 	CHECK(apply_vote(b, 0, vote_ready(kA), near_exit(), 5200) == Verdict::Refreshed); // his refresh keeps the claim's age
 	CHECK(apply_vote(b, 0, vote_ready(kB), near_exit(), 5300) == Verdict::Claimed); // another exit replaces it
 	CHECK(apply_vote(b, 0, vote_cancel(), VoteFacts(), 5400) == Verdict::Released); // a cancel needs no facts
 	CHECK(apply_vote(b, 0, vote_cancel(), VoteFacts(), 5400) == Verdict::Nothing);
 	s = b.tick(m, kNear, 5500);
-	CHECK(s.cancelled);
+	CHECK_EQ(int(s.state), int(State::Waiting));
 	CHECK_EQ(int(row_of(s, 0).mark), int(Mark::Away));
 	// the same checks as anybody's
 	VoteFacts out = near_exit();
@@ -819,26 +1120,30 @@ TEST(together_on_target_not_counted)
 	// The together entry (split levels): who already stands on the level the exit leads to does not go, is not waited for and
 	// has no row; a claim of his means nothing.
 	Board b;
-	auto m = party({0, 1, 2});
+	auto m = party({0, 1, 2, 3}); // 3 is still on his way: the board waits
 	m[2].on_target = true;
 	b.claim(0, kA, 0);
 	b.claim(1, kA, 0);
 	Status s = b.tick(m, kNear, 10);
-	CHECK_EQ(int(s.state), int(State::Counting));
+	CHECK_EQ(int(s.state), int(State::Waiting));
 	CHECK_EQ(s.ready, 2u);
-	CHECK_EQ(s.total, 2u);
-	CHECK_EQ(s.rows.size(), size_t(2));
+	CHECK_EQ(s.total, 3u);
+	CHECK_EQ(s.rows.size(), size_t(3));
 	CHECK_EQ(row_of(s, 2).id, 0xdeadbeefu);
 	b.claim(2, kA, 20);
 	s = b.tick(m, kNear, 30);
 	CHECK(!b.claimed(2));
-	CHECK_EQ(s.total, 2u);
-	CHECK_EQ(int(s.state), int(State::Counting));
+	CHECK_EQ(s.total, 3u);
 	m[2].on_target = false; // he left that level: he is waited for again
 	s = b.tick(m, kNear, 40);
 	CHECK_EQ(int(s.state), int(State::Waiting));
-	CHECK_EQ(s.total, 3u);
+	CHECK_EQ(s.total, 4u);
 	CHECK_EQ(int(row_of(s, 2).mark), int(Mark::Away));
+	m[2].on_target = true;
+	b.claim(3, kA, 50); // the one who was missing: the group goes without the one already there
+	s = b.tick(m, kNear, 60);
+	CHECK(s.go);
+	CHECK_EQ(s.total, 3u);
 }
 
 TEST(together_remote_confirm)
@@ -846,7 +1151,7 @@ TEST(together_remote_confirm)
 	// A player on another map says yes with the exit's id: no distance is asked of him (he is not near it), the board does
 	// not drop his claim for being far, his row has no metres.
 	Board b;
-	auto m = party({0, 1});
+	auto m = party({0, 1, 2}); // 2 is missing: the board waits
 	m[1].other_map = true;
 	VoteFacts there;
 	there.in_world = true;
@@ -862,7 +1167,7 @@ TEST(together_remote_confirm)
 	CHECK(b.claimed(1));
 	CHECK_EQ(int(row_of(s, 1).mark), int(Mark::Ready));
 	CHECK_EQ(row_of(s, 1).dist_m, kUnknownDist);
-	CHECK_EQ(int(s.state), int(State::Counting));
+	CHECK_EQ(int(s.state), int(State::Waiting));
 	CHECK_EQ(s.ready, 2u);
 	// on the exit's own map the same vote needs the distance
 	VoteFacts here = there;
@@ -909,6 +1214,37 @@ TEST(together_row_flags)
 	Reader r2(bytes.data(), bytes.size());
 	StateMsg bad;
 	CHECK(!bad.read(r2));
+}
+
+// 2026-10-24: "comes along" rides in the next bit of the mark byte (kRowConsent), the 7 bytes a row stay.
+TEST(transition_rows_say_who_comes_along)
+{
+	Board b;
+	auto m = party({0, 1, 2, 3});
+	m[2].other_map = true;
+	b.claim(0, kA, 0);
+	b.consent(1, kA, 0);
+	b.consent(2, kA, 0);
+	const Status s = b.tick(m, kNear, 10);
+	CHECK(!row_of(s, 0).consent);
+	CHECK(row_of(s, 1).consent);
+	CHECK(row_of(s, 2).consent && row_of(s, 2).other_map);
+	CHECK(!row_of(s, 3).consent);
+	CHECK_EQ(int(row_of(s, 1).mark), int(Mark::Ready));
+	const StateMsg msg = state_message(s, "l01_escape");
+	Writer w;
+	msg.write(w);
+	CHECK_EQ(w.size(), size_t(28 + 4 * 7)); // the head with "l01_escape" (as sample_state's 42 = 28 + 2 x 7), 7 a row
+	Reader r = reader_of(w);
+	StateMsg back;
+	CHECK(back.read(r));
+	REQUIRE(back.rows.size() == 4);
+	CHECK(!back.rows[0].consent && !back.rows[0].other_map);
+	CHECK(back.rows[1].consent && !back.rows[1].other_map);
+	CHECK(back.rows[2].consent && back.rows[2].other_map);
+	CHECK_EQ(int(back.rows[2].mark), int(Mark::Ready));
+	CHECK(!back.rows[3].consent);
+	CHECK_EQ(int(back.rows[3].mark), int(Mark::Away));
 }
 
 // ---------------------------------------------------------------- F3a T8: the simultaneous load, the server's side
@@ -1317,6 +1653,49 @@ TEST(board_host_direct_path_gone)
 	CHECK(src.find("g.board.release(0)") == std::string::npos); // transition_step / transition_cancel's own release
 	CHECK(src.find("g.view = transition::state_message") == std::string::npos); // the host's placard from the board itself
 	CHECK(src.find("Msg::TransitionVote, w);") != std::string::npos); // every player votes with the message
+}
+
+// ---------------------------------------------------------------- the live test of 2026-10-24, read in the source
+
+// The host's "go now" hold is gone (a key is held only by those who are not at the exit: coop_transition_consent); the
+// chat's /go (coop_accept_transition) stays.
+TEST(transition_host_go_now_is_gone)
+{
+	const std::string join = coop_join_source();
+	const std::string console = coop_source("coop_console.cpp");
+	REQUIRE(join.size() > 10000 && console.size() > 1000);
+	CHECK(join.find("transition_go_now") == std::string::npos);
+	CHECK(console.find("\"coop_transition_go\"") == std::string::npos);
+	CHECK(console.find("\"coop_transition_consent\"") != std::string::npos);
+	CHECK(console.find("\"coop_accept_transition\"") != std::string::npos);
+	CHECK(body_of(join, "bool accept_transition(").find("g.board.force(") != std::string::npos);
+}
+
+// The go: every player's screen darkens on the board's Going state and the host's own load starts kGoFadeMs later (the
+// host player is frozen once his save is being written, so his fade must be on the screen before it); no new claim then.
+TEST(transition_the_go_darkens_before_the_load)
+{
+	const std::string join = coop_join_source();
+	const std::string step = body_of(join, "void host_board_step(");
+	REQUIRE(!step.empty());
+	CHECK(step.find("kGoFadeMs") != std::string::npos);
+	CHECK(step.find("host_release(g.going_goal)") != std::string::npos);
+	CHECK(step.find("host_release(st.goal)") == std::string::npos); // never on the tick of the go itself
+	CHECK(body_of(join, "void host_on_transition_vote(").find("g.going") != std::string::npos);
+	CHECK(body_of(join, "void transition_world_replaced(").find("g.going = false") != std::string::npos);
+}
+
+// A route restrictor whose drop point lies in a level changer is that changer's exit while the actor is inside it (the
+// engine tests it every frame: the restrictor's own logic fires once per entry of ANY player, coop_npc_logic).
+TEST(transition_route_restrictors_are_exits_in_the_source)
+{
+	const std::string join = coop_join_source();
+	CHECK(body_of(join, "void register_lua(").find("\"transition_route\"") != std::string::npos);
+	const std::string step = body_of(join, "void transition_step(");
+	CHECK(step.find("route_touched(") != std::string::npos);
+	CHECK(step.find("transition::VoteRoute") != std::string::npos);
+	CHECK(step.find("transition::VoteConsent") != std::string::npos);
+	CHECK(body_of(join, "void transition_world_replaced(").find("g.routes.clear()") != std::string::npos);
 }
 
 // ---------------------------------------------------------------- F3a T8, fix round 1

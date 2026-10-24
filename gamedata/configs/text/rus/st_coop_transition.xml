@@ -19,6 +19,9 @@
 	<string id="st_coop_transition_row_ready">
 		<text>на месте</text>
 	</string>
+	<string id="st_coop_transition_row_consent">
+		<text>идЄт с группой</text>
+	</string>
 	<string id="st_coop_transition_row_asked">
 		<text>предложил</text>
 	</string>
@@ -46,8 +49,8 @@
 	<string id="st_coop_transition_hint_cancel">
 		<text>удерживай [$$ACTION_USE$$] Ч отменить</text>
 	</string>
-	<string id="st_coop_transition_hint_go">
-		<text>удерживай [$$ACTION_USE$$] Ч перейти сейчас</text>
+	<string id="st_coop_transition_hint_consent">
+		<text>удерживай [$$ACTION_USE$$] Ч идти с группой</text>
 	</string>
 	<string id="st_coop_transition_hint_confirm">
 		<text>удерживай [$$ACTION_USE$$] Ч согласитьс€</text>
@@ -67,10 +70,7 @@
 	<string id="st_coop_transition_feed_guide">
 		<text>%s предлагает перейти на %s (проводник)</text>
 	</string>
-	<string id="st_coop_transition_feed_all">
-		<text>¬се на месте Ч переход через %d с</text>
-	</string>
-	<string id="st_coop_transition_feed_cancel">
-		<text>ѕереход отменЄн</text>
+	<string id="st_coop_transition_feed_consent">
+		<text>%s идЄт с группой на %s</text>
 	</string>
 </string_table>

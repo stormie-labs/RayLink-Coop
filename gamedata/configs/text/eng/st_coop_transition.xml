@@ -19,6 +19,9 @@
 	<string id="st_coop_transition_row_ready">
 		<text>here</text>
 	</string>
+	<string id="st_coop_transition_row_consent">
+		<text>comes along</text>
+	</string>
 	<string id="st_coop_transition_row_asked">
 		<text>asked</text>
 	</string>
@@ -46,8 +49,8 @@
 	<string id="st_coop_transition_hint_cancel">
 		<text>hold [$$ACTION_USE$$] — cancel</text>
 	</string>
-	<string id="st_coop_transition_hint_go">
-		<text>hold [$$ACTION_USE$$] — go now</text>
+	<string id="st_coop_transition_hint_consent">
+		<text>hold [$$ACTION_USE$$] — go with the group</text>
 	</string>
 	<string id="st_coop_transition_hint_confirm">
 		<text>hold [$$ACTION_USE$$] — agree</text>
@@ -67,10 +70,7 @@
 	<string id="st_coop_transition_feed_guide">
 		<text>%s suggests moving to %s (guide)</text>
 	</string>
-	<string id="st_coop_transition_feed_all">
-		<text>Everyone is here — moving in %d s</text>
-	</string>
-	<string id="st_coop_transition_feed_cancel">
-		<text>Transition cancelled</text>
+	<string id="st_coop_transition_feed_consent">
+		<text>%s goes with the group to %s</text>
 	</string>
 </string_table>

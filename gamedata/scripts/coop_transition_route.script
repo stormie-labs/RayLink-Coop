@@ -1,0 +1,214 @@
+--[[
+	Anomaly Coop - the stock route exits in a session with company (gamedata\scripts\coop_transition_route.script)
+
+	Anomaly / G.A.M.M.A. lead most exits through a route restrictor, not the level changer itself: a space restrictor of
+	sr_teleport_sections.ltx (logic scripts\sr_teleport_logic.ltx: on_actor_inside = sr_idle@run %=sr_teleport%) whose effect
+	xr_effects.sr_teleport -> ui_sr_teleport.msg_box_ui darkens the screen at once (sleep_fade.ppe) and 3 s later puts the
+	actor at the route's drop point (its "position", or the first point of its "path"), which lies inside the real level
+	changer. In a session with company that was the live test of 2026-10-24: "why does everything get darker when ONE player
+	walks up?" and "the second player is teleported to the first one" (the drop point is one for everybody).
+
+	Here, on every machine, for its own player:
+	1. The hook of ui_sr_teleport.msg_box_ui:OnMsgOk (reached after the stock checks of msg_box_ui:__init: a route unknown to
+	   the player was rejected there, as before). The engine is asked which level changer holds the drop point
+	   (coop.transition_route(restrictor, x, y, z), engine\src\xrGame\coop\coop_join.cpp): it answers only while the group
+	   waits at exits here (a client in the host's world, a host with company), and remembers the pair for this world. An
+	   answer = no fade, no teleport, no on_before_level_changing: the player who stands in that restrictor stands at that
+	   changer's exit (the engine tests it every frame, transition_step), the group's board waits for everybody, and the
+	   group's level change is the changer's own (the darkening comes at the go, scripts\coop_hud_transition.script). No answer
+	   (alone, single player, a route inside the level, a restrictor without a drop point): the stock OnMsgOk.
+	2. The player's own entry. The restrictor's logic runs for the group (coop_npc_logic evaluates on_actor_inside against
+	   every player): once one player stands in it, it stays in @run and a second player's entry fires nothing. So every
+	   SCAN_MS this machine looks whether its actor is inside a route restrictor of the level (db.zone_by_name, listed again
+	   every LIST_MS), and on each entry asks as the stock entry does: is the route known (alife_storage_manager opened_routes,
+	   txr_routes.scan_route, mlr_utils "routes_<name>"), then the engine. An unknown route is left to the restrictor's own
+	   rejection.
+
+	For other scripts: coop_transition_route.section_of(obj), drop_point(name), known(name), take(obj, name), print_status().
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local tostring, tonumber, type, pairs, pcall = tostring, tonumber, type, pairs, pcall
+local string_format, string_find = string.format, string.find
+
+SECTIONS_FILE = "sr_teleport_sections.ltx"
+SCAN_MS = 250 -- this machine's actor against the route restrictors of the level
+LIST_MS = 5000 -- the route restrictors of the level, listed again (they come online with the level)
+
+local ini -- the route sections, read once
+local orig_ok -- ui_sr_teleport.msg_box_ui.OnMsgOk as it was
+local routes = {} -- restrictor id -> { obj, name } of the level now
+local inside = {} -- restrictor id -> true: the actor was in it at the last scan
+local listed_at, scanned_at = nil, nil
+local stats = { taken = 0, stock = 0, entries = 0, unknown = 0, errors = 0, listed = 0 }
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-route] %s", ok and line or tostring(fmt))
+end
+
+local function sections()
+	if not ini then ini = ini_file(SECTIONS_FILE) end
+	return ini
+end
+
+local function session_on()
+	if not api then return false end
+	local ok, on = pcall(api.is_active)
+	return ok and on == true
+end
+
+-------------------------------------------------------------------------------
+-- The route of a restrictor
+-------------------------------------------------------------------------------
+-- The route's section: the restrictor's name, or its story id when the name is made of its id (as msg_box_ui:__init).
+function section_of(obj)
+	if not obj then return nil end
+	local name, id = obj:name(), obj:id()
+	if type(name) ~= "string" then return nil end
+	if string_find(name, tostring(id), 1, true) then
+		local story = get_object_story_id(id)
+		if type(story) == "string" and story ~= "" then name = story end
+	end
+	return name
+end
+
+-- The drop point of route `name` (x, y, z): its "position" "x, y, z[, dir]", else the first point of its "path" (as OnMsgOk);
+-- nil if it has none.
+function drop_point(name)
+	local i = sections()
+	if type(name) ~= "string" or not (i and i:section_exist(name)) then return nil end
+	local pos = i:r_string_ex(name, "position")
+	if type(pos) == "string" then
+		local x, y, z = pos:match("^%s*([%-%d%.]+)%s*,%s*([%-%d%.]+)%s*,%s*([%-%d%.]+)")
+		x, y, z = tonumber(x), tonumber(y), tonumber(z)
+		if x and y and z then return x, y, z end
+		return nil
+	end
+	local path = i:r_string_ex(name, "path")
+	if type(path) ~= "string" then return nil end
+	local ok, p = pcall(function() return patrol(path):point(0) end)
+	if not (ok and p) then return nil end
+	return p.x, p.y, p.z
+end
+
+-- Known to this player, asked as ui_sr_teleport.msg_box_ui:__init asks (txr_routes.scan_route opens a route that is open
+-- by default for his faction, as the stock entry does).
+function known(name)
+	local ok, yes = pcall(function()
+		local st = alife_storage_manager.get_state()
+		if type(st) == "table" and st.opened_routes == true then return true end
+		return (txr_routes.scan_route(name) or mlr_utils.load_var("routes_" .. name)) and true or false
+	end)
+	return ok and yes == true
+end
+
+-- Restrictor `obj` of route `name`, with this machine's actor in it: true if the engine took it (the group waits at exits
+-- here and the drop point lies in a level changer: standing in it is standing at that exit).
+function take(obj, name)
+	if not (obj and api and api.transition_route) then return false end
+	local x, y, z = drop_point(name)
+	if not x then return false end
+	local ok, changer = pcall(api.transition_route, obj:id(), x, y, z)
+	if not ok then
+		stats.errors = stats.errors + 1
+		log("! the engine did not answer for route %s: %s", tostring(name), tostring(changer))
+		return false
+	end
+	return tonumber(changer) ~= nil
+end
+
+-------------------------------------------------------------------------------
+-- 1. The hook of the stock effect
+-------------------------------------------------------------------------------
+local function patched_ok(self, ...)
+	local ok, taken = pcall(take, self.obj, self.name)
+	if ok and taken then
+		stats.taken = stats.taken + 1
+		return -- no fade, no teleport: he stands at the exit, the group's board has him
+	end
+	if not ok then
+		stats.errors = stats.errors + 1
+		log("! route %s: %s (the stock route goes on)", tostring(self.name), tostring(taken))
+	end
+	stats.stock = stats.stock + 1
+	return orig_ok(self, ...)
+end
+
+local function install()
+	local ok, m = pcall(function() return ui_sr_teleport end)
+	local cls = ok and type(m) == "table" and m.msg_box_ui or nil
+	local f = cls and cls.OnMsgOk
+	if type(f) ~= "function" then
+		log("! ui_sr_teleport.msg_box_ui:OnMsgOk not found: route exits stay the stock ones in a session")
+		return false
+	end
+	orig_ok = f
+	cls.OnMsgOk = patched_ok
+	return true
+end
+
+-------------------------------------------------------------------------------
+-- 2. The player's own entry
+-------------------------------------------------------------------------------
+local function list(now)
+	listed_at = now
+	routes = {}
+	local i = sections()
+	for _, obj in pairs(db.zone_by_name or {}) do
+		local ok, id, name = pcall(function() return obj:id(), section_of(obj) end)
+		if ok and id and name and i:section_exist(name) then routes[id] = { obj = obj, name = name } end
+	end
+	stats.listed = 0
+	for _ in pairs(routes) do stats.listed = stats.listed + 1 end
+end
+
+local function scan(now)
+	scanned_at = now
+	if not (session_on() and db.actor) then
+		inside = {}
+		return
+	end
+	if not listed_at or now - listed_at >= LIST_MS or now < listed_at then list(now) end
+	local pos = db.actor:position()
+	for id, r in pairs(routes) do
+		local ok, yes = pcall(r.obj.inside, r.obj, pos)
+		if ok and yes then
+			if not inside[id] then
+				inside[id] = true
+				stats.entries = stats.entries + 1
+				if known(r.name) then
+					take(r.obj, r.name)
+				else
+					stats.unknown = stats.unknown + 1
+				end
+			end
+		else
+			inside[id] = nil
+		end
+	end
+end
+
+local function actor_on_update()
+	local now = time_global()
+	if scanned_at and now >= scanned_at and now - scanned_at < SCAN_MS then return end
+	local ok, err = pcall(scan, now)
+	if not ok then
+		stats.errors = stats.errors + 1
+		log("! route exits: %s", tostring(err))
+	end
+end
+
+function print_status()
+	log("route exits: %d of the level, %d taken (no fade, no teleport), %d left to the stock, %d entries, %d unknown, %d errors",
+		stats.listed, stats.taken, stats.stock, stats.entries, stats.unknown, stats.errors)
+end
+
+-- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop (W5).
+function on_game_start()
+	if not api then return end -- an exe without co-op: nothing of this runs
+	local ok, err = pcall(install)
+	if not ok then log("! route exits not hooked: %s", tostring(err)) end
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+end

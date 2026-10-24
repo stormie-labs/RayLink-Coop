@@ -1,8 +1,9 @@
 -- Anomaly Coop, the waiting point of a level change (docs\hud\transition_wait_mockup.png): the placard of
 -- scripts\coop_hud_transition.script on top of coop.transition(): the board (the level's name, who is ready, who is missing,
--- who is loading), the countdown, the reminder line of a player who is not at the exit, the guide trip, the keys held at the
--- exit (host: go now, player: cancel, guide: agree), the feed lines, the compass mark through coop_hud_markers.add_source,
--- nothing outside a session, the assets the script names (XML nodes, atlas textures, eng and rus strings).
+-- who is loading, who comes along), the go (no countdown since the live test of 2026-10-24: the screen darkens, the host
+-- player's too), the reminder line of a player who is not at the exit, the guide trip, the keys (only away from the exit: go
+-- with the group / cancel it; guide: agree), the feed lines, the compass mark through coop_hud_markers.add_source, nothing
+-- outside a session, the assets the script names (XML nodes, atlas textures, eng and rus strings).
 -- Real scripts (coop_allies for the palette, coop_hud_transition), real ui_coop_transition.xml / strings / ltx.
 -- Run: tools\test_lua.cmd transition   (VERBOSE=1 for logs)
 local ROOT = "gamedata/"
@@ -153,7 +154,7 @@ local BIND_USE, BIND_OTHER = 10, 11
 -- A machine: the engine stand-ins and the real scripts. opts.coop = false: an exe without the co-op namespace.
 local function machine(self_peer, opts)
 	opts = opts or {}
-	local M = { peer = self_peer, log = {}, cb = {}, cb_added = {}, hud = {}, console = {}, feed = {}, sources = {}, polls = 0 }
+	local M = { peer = self_peer, log = {}, cb = {}, cb_added = {}, hud = {}, console = {}, feed = {}, sources = {}, polls = 0, pp = {} }
 	local env = setmetatable({}, { __index = function(_, k)
 		local v = _G[k]
 		if v == nil then
@@ -195,6 +196,7 @@ local function machine(self_peer, opts)
 	end
 	env.AddScriptCallback = function(name) M.cb_added[#M.cb_added + 1] = name end
 	env.exec_console_cmd = function(cmd) M.console[#M.console + 1] = cmd end
+	env.level = { add_pp_effector = function(file, id, cyclic) M.pp[#M.pp + 1] = { file = file, id = id, cyclic = cyclic } end }
 	env.DIK_keys = { DIK_F = DIK_F, DIK_G = DIK_G }
 	env.key_bindings = { kUSE = BIND_USE }
 	env.dik_to_bind = function(dik) return dik == DIK_F and BIND_USE or BIND_OTHER end
@@ -326,7 +328,7 @@ local function board(M, o)
 	local me = o.me or { peer = M.peer, host = M.peer == 0, in_zone = true, ready = true, dist = 3, confirm = false }
 	local t = {
 		state = o.state or "waiting", kind = o.kind or "exit", level = o.level or "l01_escape", changer = 16601,
-		ready = o.ready or 2, total = o.total or 3, countdown_ms = o.countdown_ms or 0, load_ms = o.load_ms or 0,
+		ready = o.ready or 2, total = o.total or 3, load_ms = o.load_ms or 0,
 		rows = o.rows or { { peer = 0, mark = "ready", dist = 2 }, { peer = 1, mark = "ready", dist = 3 }, { peer = 2, mark = "away", dist = 118 } },
 		me = me, pos = (o.pos ~= false) and { x = 10, y = 2, z = 30 } or nil,
 	}
@@ -386,7 +388,7 @@ do
 	for id in pairs(STR_ENG) do if not ids[id] then unused[#unused + 1] = id end end
 	check(#unused == 0, "and the tables hold nothing the script does not use (" .. table.concat(unused, ",") .. ")")
 	local keys_ok = true
-	for _, id in ipairs({ "st_coop_transition_hint_cancel", "st_coop_transition_hint_go", "st_coop_transition_hint_confirm" }) do
+	for _, id in ipairs({ "st_coop_transition_hint_cancel", "st_coop_transition_hint_consent", "st_coop_transition_hint_confirm" }) do
 		keys_ok = keys_ok and (STR_ENG[id] or ""):find("$$ACTION_USE$$", 1, true) ~= nil and (STR_RUS[id] or ""):find("$$ACTION_USE$$", 1, true) ~= nil
 	end
 	check(keys_ok, "the key hints take the use key from the engine ($$ACTION_USE$$), not a hard-coded F")
@@ -405,9 +407,8 @@ check(T.head_text({ kind = "exit" }) == STR_ENG.st_coop_transition_head and T.he
 check(T.count_text({ ready = 2, total = 3 }) == "2 / 3" and T.count_text({ ready = 0, total = 0 }) == "0 / 0", "the count: ready / total")
 check(T.status_text({ state = "waiting", kind = "exit" }) == STR_ENG.st_coop_transition_waiting
 	and T.status_text({ state = "waiting", kind = "guide" }) == STR_ENG.st_coop_transition_waiting_guide
-	and T.status_text({ state = "counting", kind = "exit" }) == STR_ENG.st_coop_transition_all_here, "the status line: waiting, waiting for the answer, everyone is here")
-check(T.countdown_digit({ countdown_ms = 5000 }) == 5 and T.countdown_digit({ countdown_ms = 4001 }) == 5 and T.countdown_digit({ countdown_ms = 1 }) == 1
-	and T.countdown_digit({ countdown_ms = 0 }) == 0 and T.countdown_digit({ countdown_ms = -50 }) == 0 and T.countdown_digit({}) == 0, "the countdown digit: seconds left, rounded up")
+	and T.status_text({ state = "going", kind = "exit" }) == STR_ENG.st_coop_transition_all_here, "the status line: waiting, waiting for the answer, everyone is here (the go)")
+check(rawget(T, "countdown_digit") == nil, "no countdown digit: the group goes the moment everybody is ready (owner 2026-10-24)")
 
 local ROWS = T.row_texts(board(M0, { rows = {
 	{ peer = 0, mark = "ready", dist = 2 }, { peer = 1, mark = "away", dist = 118.4 }, { peer = 2, mark = "loading" },
@@ -419,6 +420,12 @@ check(ROWS[3].tone == "amber", "... in amber")
 check(ROWS[4].text == STR_ENG.st_coop_transition_row_down and ROWS[4].tone == "muted", "a downed one: not waited for")
 check(ROWS[5].text == STR_ENG.st_coop_transition_row_elsewhere, "one at another exit says so")
 check(ROWS[6].text == "..." or ROWS[6].text == "?" or ROWS[6].text:find("^%.%.%.") ~= nil, "no distance known: dots, not a made-up number")
+do
+	local along = T.row_texts(board(M0, { rows = { { peer = 1, mark = "ready", dist = 240, consent = true }, { peer = 2, mark = "ready", dist = 2 } } }))
+	check(along[1].text == STR_ENG.st_coop_transition_row_consent and along[1].tone == "ready" and along[1].ready,
+		"one who comes along from afar: 'comes along', bright, ready (no metres)")
+	check(along[2].text == STR_ENG.st_coop_transition_row_ready, "... the one at the exit: here")
+end
 check(ROWS[1].nick == "player_a" and ROWS[2].nick == "player_b" and ROWS[3].nick == "Guest" and ROWS[4].nick == "player 3", "nicks come from coop.players(), a stranger is player N")
 do
 	local r0, g0, b0 = M0.A.color(0)
@@ -438,17 +445,31 @@ local function me(o)
 	for k, v in pairs(o or {}) do m[k] = v end
 	return m
 end
-check(T.hint_kind(board(M0, { me = me({ host = true, peer = 0 }) })) == "go", "host at an exit: hold to go now")
-check(T.hint_kind(board(M0, { me = me() })) == "cancel", "a player at an exit: hold to cancel")
-check(T.hint_kind(board(M0, { me = me({ in_zone = false, ready = false }) })) == nil, "not at the exit: no key")
+-- owner 2026-10-24: "holding a key for a quick transition is fine, but only for those who are NOT standing in the transition
+-- zone": at the exit there is nothing to hold (he withdraws by stepping out), the host has no "go now" any more
+local others_wait = { { peer = 0, mark = "ready", dist = 2 }, { peer = 1, mark = "away", dist = 240 }, { peer = 2, mark = "away", dist = 118 } }
+check(T.hint_kind(board(M0, { me = me({ host = true, peer = 0 }) })) == nil, "the host at an exit: no key (no 'go now')")
+check(T.hint_kind(board(M0, { me = me() })) == nil, "a player at an exit: no key, he steps out to withdraw")
+check(T.hint_kind(board(M0, { me = me({ in_zone = true, ready = false }) })) == nil, "... nor while the board has not caught up")
+check(T.hint_kind(board(M0, { me = me({ in_zone = false, ready = false }), rows = others_wait })) == "consent",
+	"away from the exit somebody waits at: hold to go with the group")
+check(T.hint_kind(board(M0, { me = me({ host = true, peer = 2, in_zone = false, ready = false }), rows = others_wait })) == "consent",
+	"... the host player too")
+check(T.hint_kind(board(M0, { me = me({ in_zone = false, ready = false }), rows = { { peer = 1, mark = "away" }, { peer = 2, mark = "away" } } })) == nil,
+	"away, but nobody else waits there: no key")
+check(T.hint_kind(board(M0, { me = me({ in_zone = false, ready = true, consent = true }), rows = others_wait })) == "cancel",
+	"coming along: hold again to cancel it")
+check(T.hint_kind(board(M0, { me = me({ in_zone = false, ready = false, consent = true }), rows = others_wait })) == "cancel",
+	"... also before the board shows it")
+check(T.hint_kind(board(M0, { state = "going", me = me({ in_zone = false, ready = false }), rows = others_wait })) == nil, "the group goes: no key")
 check(T.hint_kind(board(M0, { kind = "guide", me = me({ in_zone = false, ready = false, confirm = true }) })) == "confirm", "a guide trip I have not answered: hold to agree")
 check(T.hint_kind(board(M0, { kind = "guide", me = me({ in_zone = false, ready = true }) })) == "cancel", "... once I agreed: hold to cancel")
-check(T.hint_kind(board(M0, { kind = "guide", me = me({ host = true, peer = 0, in_zone = false, ready = true }) })) == "go", "the host of a guide trip: go now")
+check(T.hint_kind(board(M0, { kind = "guide", me = me({ host = true, peer = 0, in_zone = false, ready = true }) })) == "cancel", "the host of a guide trip: hold to call it off")
 check(T.hint_kind(nil) == nil, "no board, no key")
-check(T.hold_ms("go") == 1500 and T.hold_ms("cancel") == 1000 and T.hold_ms("confirm") == 1000 and T.hold_ms("nope") == nil,
-	"the holds: the host's go is 1.5 s like the revive, the others 1 s")
-check(T.hint_text("go") == STR_ENG.st_coop_transition_hint_go and T.hint_text("cancel") == STR_ENG.st_coop_transition_hint_cancel
-	and T.hint_text("confirm") == STR_ENG.st_coop_transition_hint_confirm, "the hint texts")
+check(T.hold_ms("consent") == 1000 and T.hold_ms("cancel") == 1000 and T.hold_ms("confirm") == 1000 and T.hold_ms("go") == nil and T.hold_ms("nope") == nil,
+	"the holds: 1 s each; no 'go'")
+check(T.hint_text("consent") == STR_ENG.st_coop_transition_hint_consent and T.hint_text("cancel") == STR_ENG.st_coop_transition_hint_cancel
+	and T.hint_text("confirm") == STR_ENG.st_coop_transition_hint_confirm and T.hint_text("go") == "", "the hint texts")
 
 -- the reminder of a player who is not at the exit
 local away = board(M0, { me = me({ in_zone = false, ready = false, dist = 118.4 }), rows = { { peer = 0, mark = "away" }, { peer = 1, mark = "away" }, { peer = 2, mark = "ready", dist = 3 } } })
@@ -465,6 +486,11 @@ check(T.reminder(board(M0, { kind = "guide", me = me({ in_zone = false, ready = 
 check(T.reminder(nil) == nil, "no board, no reminder")
 check(T.shows_board(board(M0)) == true and T.shows_board(away) == false and T.shows_board(board(M0, { kind = "guide", me = me({ in_zone = false, ready = false, confirm = true }) })) == true
 	and T.shows_board(nil) == false, "the board is for the ones at the exit and for a guide trip")
+local along = board(M0, { me = me({ in_zone = false, ready = true, consent = true, dist = 240 }), rows = { { peer = 0, mark = "ready" }, { peer = 1, mark = "ready", consent = true }, { peer = 2, mark = "away" } } })
+check(T.shows_board(along) == true and T.reminder(along) == nil, "one who comes along sees the board, not the reminder")
+check(T.shows_board(board(M0, { me = me({ in_zone = false, ready = false, consent = true }) })) == true, "... from the moment he held the key")
+local going_away = board(M0, { state = "going", ready = 2, total = 2, me = me({ in_zone = false, ready = false, dist = 30 }), rows = { { peer = 0, mark = "ready" }, { peer = 1, mark = "down" } } })
+check(T.shows_board(going_away) == true and T.reminder(going_away) == nil, "the group goes: everybody sees the board (a downed one too), no reminder")
 
 -- the feed
 local function feed(prev, cur, who)
@@ -477,19 +503,15 @@ check(#ev == 1 and ev[1] == "player_a waits at the exit to Cordon", "the first b
 ev = feed(p0, p1)
 check(#ev == 1 and ev[1] == "player_a waits at the exit to Cordon", "a player gets ready: his line")
 check(#feed(p1, p1) == 0, "nothing new: nothing said")
-local c1 = board(M0, { state = "counting", ready = 3, total = 3, countdown_ms = 5000, me = me(), rows = { { peer = 0, mark = "ready" }, { peer = 1, mark = "ready" }, { peer = 2, mark = "ready" } } })
+local c1 = board(M0, { state = "going", ready = 3, total = 3, me = me(), rows = { { peer = 0, mark = "ready" }, { peer = 1, mark = "ready" }, { peer = 2, mark = "ready" } } })
 ev = feed(p1, c1)
 local joined = table.concat(ev, "|")
-check(joined:find(string.format(STR_ENG.st_coop_transition_feed_all, 5), 1, true), "all ready: the countdown line with the seconds")
-check(joined:find("waits at the exit", 1, true) ~= nil, "(player_b / Guest who got ready in the same step are announced too)")
-local c2 = board(M0, { state = "counting", ready = 3, total = 3, countdown_ms = 2600, me = me(), rows = c1.rows })
-check(#feed(c1, c2) == 0, "the countdown running: nothing more")
-ev = feed(c2, p1)
-check(#ev == 1 and ev[1] == "Transition cancelled", "back to waiting during the countdown: cancelled")
-ev = feed(c2, nil)
-check(#ev == 1 and ev[1] == "Transition cancelled", "the board gone during the countdown (left the zone, everybody): cancelled")
-local c3 = board(M0, { state = "counting", ready = 3, total = 3, countdown_ms = 300, me = me(), rows = c1.rows })
-check(#feed(c3, nil) == 0, "the board gone with 0.3 s left: the group went, not cancelled")
+check(#ev == 1 and joined:find("Guest waits at the exit", 1, true) ~= nil, "the go: only who got ready in that step is announced (no countdown line)")
+check(not joined:find("moving in", 1, true) and not joined:find("cancelled", 1, true), "... nothing about seconds or a cancel")
+check(#feed(c1, nil) == 0, "the board gone after the go: nothing (it went, nothing was cancelled)")
+check(#feed(p1, nil) == 0 and #feed(p1, p0) == 0, "a player steps back, everybody leaves: no 'cancelled' line either")
+ev = feed(p1, board(M0, { me = me(), rows = { { peer = 0, mark = "ready" }, { peer = 1, mark = "ready" }, { peer = 2, mark = "ready", consent = true } } }))
+check(#ev == 1 and ev[1] == string.format(STR_ENG.st_coop_transition_feed_consent, "Guest", "Cordon"), "one who comes along from afar: his own line")
 local g1 = board(M0, { kind = "guide", level = "zaton", me = me({ in_zone = false, ready = false, confirm = true }), rows = { { peer = 0, mark = "ready" }, { peer = 1, mark = "away" } } })
 ev = feed(nil, g1)
 check(#ev == 1 and ev[1] == "player_a suggests moving to Zaton (guide)", "a guide trip: who suggests it")
@@ -529,7 +551,8 @@ check(w.g_board.visible and not w.g_remind.visible, "waiting at the exit: the bo
 check(set[STR_ENG.st_coop_transition_head] and set["Cordon"] and set["2 / 3"] and set[STR_ENG.st_coop_transition_waiting], "head, the level's name, 2 / 3 and the status line are on it")
 check(set["player_a"] and set["player_b"] and set["Guest"], "all three players are listed")
 check(set[STR_ENG.st_coop_transition_row_ready] == 4, "'here' for the two who are ready (a text and its shadow each)")
-check(set["118 m"] and set[STR_ENG.st_coop_transition_hint_cancel], "the missing one with the metres, the hint to cancel")
+check(set["118 m"] and not set[STR_ENG.st_coop_transition_hint_cancel], "the missing one with the metres; at the exit no key hint")
+check(count_path(M, "coop_transition:bar") == 0 and count_path(M, "coop_transition:hint") == 0, "... no bar, no hint line")
 check(count_path(M, "coop_transition:stripe") == 3, "a stripe per player")
 local nick_a = find_text(M, "player_a")
 check(nick_a and is_rgb(nick_a.color, { M.A.color(0) }) and alpha_of(nick_a.color) == 255, "the host's nick in his colour, bright")
@@ -543,7 +566,7 @@ for _, e in ipairs(visible(M)) do
 	end
 end
 check(on == 2 and off == 1, "two white segments, one dim")
-check(not find_text(M, "5") and count_path(M, "coop_transition:big") == 0, "no big countdown digit while waiting")
+check(not find_text(M, "5") and count_path(M, "coop_transition:big") == 0, "no big digit")
 -- placement: centred under the compass, in 1024x768 units
 do
 	local bg
@@ -560,17 +583,13 @@ end
 local lvl = find_text(M, "Cordon")
 check(lvl ~= nil, "the level name is the string table's (\"Cordon\")")
 
--- the countdown: big digit on the right, the status says everyone is here
-M.t = board(M, { state = "counting", ready = 3, total = 3, countdown_ms = 3200, me = me(), rows = c1.rows })
+-- the go: the count stays (no digit), the status says everyone is here
+M.t = board(M, { state = "going", ready = 3, total = 3, me = me(), rows = c1.rows })
 run(M, 300)
 set = texts(M)
-check(set["4"] and not set["2 / 3"] and not set["3 / 3"], "counting: the digit (3.2 s left shows 4) instead of the count")
-check(set[STR_ENG.st_coop_transition_all_here] ~= nil, "... and 'everyone is here'")
-check(count_path(M, "coop_transition:big") == 2, "the big digit is its own window (a text and its shadow)")
-M.t = board(M, { state = "counting", ready = 3, total = 3, countdown_ms = 700, me = me(), rows = c1.rows })
-run(M, 32)
-set = texts(M)
-check(set["1"] ~= nil, "0.7 s left: 1")
+check(set["3 / 3"] and set[STR_ENG.st_coop_transition_all_here] ~= nil, "the go: 3 / 3 and 'everyone is here'")
+check(count_path(M, "coop_transition:big") == 0 and not set["5"] and not set["1"], "no countdown digit")
+check(not set[STR_ENG.st_coop_transition_hint_cancel] and not set[STR_ENG.st_coop_transition_hint_consent], "... and no key")
 -- loading player with the minute running
 M.t = board(M, { ready = 2, total = 3, load_ms = 33000, me = me(), rows = { { peer = 0, mark = "ready" }, { peer = 1, mark = "ready" }, { peer = 2, mark = "loading" } } })
 run(M, 300)
@@ -610,6 +629,13 @@ check(w.g_remind.visible and not w.g_board.visible, "not at the exit: the remind
 check(set["Guest"] and set[string.format(STR_ENG.st_coop_transition_remind, "Cordon", 118)], "his nick and the line with the place and the metres")
 local rn = find_text(M, "Guest")
 check(rn and is_rgb(rn.color, { M.A.color(2) }) and alpha_of(rn.color) == 255, "the nick in his colour")
+check(set[STR_ENG.st_coop_transition_hint_consent] ~= nil and count_path(M, "coop_transition:remind_hint") == 2,
+	"under it the key: hold to go with the group (a text and its shadow, centred)")
+do
+	local track
+	for _, e in ipairs(visible(M)) do if e.path == "coop_transition:bar" and e.w > 0 then track = e end end
+	check(track ~= nil, "... over the bar the hold fills")
+end
 -- the player comes to the exit: the reminder gives way to the board
 M.t = board(M, { me = me() })
 run(M, 600)
@@ -633,15 +659,16 @@ check(set[STR_ENG.st_coop_transition_row_asked] and set[STR_ENG.st_coop_transiti
 
 -- ================================================================ 6. the keys
 print("== keys")
+-- away from the exit somebody waits at: the key held 1 s = go with the group
 local MK = machine(1)
-MK.t = board(MK, { me = me() })
+MK.t = away
 run(MK, 400)
 fire(MK, "on_key_press", DIK_G)
 run(MK, 1500)
 check(#MK.console == 0, "another key does nothing")
 fire(MK, "on_key_press", DIK_F)
 local hs = MK.T.hold_state()
-check(hs and hs.kind == "cancel" and hs.fraction == 0, "the use key held at an exit starts a hold to cancel")
+check(hs and hs.kind == "consent" and hs.fraction == 0, "the use key held away from the exit starts a hold to go with the group")
 run(MK, 500)
 hs = MK.T.hold_state()
 check(hs and near(hs.fraction, 0.5, 0.08), "half way after 0.5 s of the 1 s")
@@ -653,21 +680,29 @@ run(MK, 1500)
 check(#MK.console == 0 and MK.T.hold_state() == nil, "let go early: nothing happens, the hold is gone")
 fire(MK, "on_key_press", DIK_F)
 run(MK, 1100)
-check(#MK.console == 1 and MK.console[1] == "coop_transition_cancel", "held for a second: coop_transition_cancel, once")
+check(#MK.console == 1 and MK.console[1] == "coop_transition_consent", "held for a second: coop_transition_consent, once")
 run(MK, 1500)
 check(#MK.console == 1, "still held: it is not repeated")
+-- the engine takes it: he comes along (the board now), the same key held again calls it off
+MK.t = board(MK, { me = me({ in_zone = false, ready = true, consent = true, dist = 118 }),
+	rows = { { peer = 0, mark = "away" }, { peer = 1, mark = "ready", consent = true }, { peer = 2, mark = "ready", dist = 3 } } })
+run(MK, 400)
+check(#MK.console == 1 and MK.T.hold_state() == nil, "the hint changed under the held key: nothing more, the hold is gone")
+check(win(MK).g_board.visible and texts(MK)[STR_ENG.st_coop_transition_hint_cancel] ~= nil, "coming along: the board, 'hold to cancel'")
 fire(MK, "on_key_release", DIK_F)
-MK.console = {}
--- the host: 1.5 s, go now
-local MH = machine(0)
-MH.t = board(MH, { me = me({ host = true, peer = 0 }) })
-run(MH, 400)
-fire(MH, "on_key_press", DIK_F)
-run(MH, 1300)
-check(#MH.console == 0, "the host's go takes 1.5 s: not at 1.3")
-run(MH, 400)
-check(#MH.console == 1 and MH.console[1] == "coop_transition_go", "the host held 1.5 s: coop_transition_go")
-fire(MH, "on_key_release", DIK_F)
+fire(MK, "on_key_press", DIK_F)
+run(MK, 1100)
+check(#MK.console == 2 and MK.console[2] == "coop_transition_cancel", "held again: coop_transition_cancel")
+fire(MK, "on_key_release", DIK_F)
+-- at the exit: nothing to hold, the key is the game's own (the host's too: no "go now")
+for _, peer in ipairs({ 1, 0 }) do
+	local MX = machine(peer)
+	MX.t = board(MX, { me = me({ host = peer == 0, peer = peer }) })
+	run(MX, 400)
+	fire(MX, "on_key_press", DIK_F)
+	run(MX, 2000)
+	check(#MX.console == 0 and MX.T.hold_state() == nil, (peer == 0 and "the host" or "a player") .. " at the exit: the use key is left alone")
+end
 -- a guide trip to agree to
 local MG = machine(1)
 MG.t = g1
@@ -676,16 +711,16 @@ fire(MG, "on_key_press", DIK_F)
 run(MG, 1100)
 check(#MG.console == 1 and MG.console[1] == "coop_transition_confirm", "agreeing to a guide trip: coop_transition_confirm")
 fire(MG, "on_key_release", DIK_F)
--- not at the exit: the key is the game's own
+-- nobody waits anywhere I could join: the key is the game's own
 local MN = machine(1)
-MN.t = away
+MN.t = board(MN, { me = me({ in_zone = false, ready = false }), rows = { { peer = 0, mark = "away" }, { peer = 1, mark = "away" } } })
 run(MN, 400)
 fire(MN, "on_key_press", DIK_F)
 run(MN, 2000)
-check(#MN.console == 0 and MN.T.hold_state() == nil, "not at the exit: the use key is left alone")
+check(#MN.console == 0 and MN.T.hold_state() == nil, "nobody else at the exit: the use key is left alone")
 -- the board goes while the key is held
 local MZ = machine(1)
-MZ.t = board(MZ, { me = me() })
+MZ.t = away
 run(MZ, 400)
 fire(MZ, "on_key_press", DIK_F)
 run(MZ, 300)
@@ -694,12 +729,40 @@ run(MZ, 2000)
 check(#MZ.console == 0 and MZ.T.hold_state() == nil, "the board went away while the key was held: no command")
 -- an inventory open: the key belongs to it
 local MI = machine(1)
-MI.t = board(MI, { me = me() })
+MI.t = away
 run(MI, 400)
 MI.hud_shown = false
 fire(MI, "on_key_press", DIK_F)
 run(MI, 1500)
 check(#MI.console == 0, "an open inventory / PDA: the key is not taken")
+
+-- ================================================================ 6b. the go: the screen darkens (owner 2026-10-24)
+print("== the go")
+for _, peer in ipairs({ 1, 0 }) do
+	local MD = machine(peer)
+	MD.t = board(MD, { me = me({ host = peer == 0, peer = peer }) })
+	run(MD, 2000)
+	check(#MD.pp == 0, (peer == 0 and "the host player" or "a player") .. " waiting at the exit: no darkening")
+	MD.t = board(MD, { state = "going", ready = 3, total = 3, me = me({ host = peer == 0, peer = peer }), rows = c1.rows })
+	run(MD, 1000)
+	check(#MD.pp == 1 and MD.pp[1].file == "sleep_fade.ppe" and MD.pp[1].id == 1313 and MD.pp[1].cyclic == false,
+		"the group goes: " .. (peer == 0 and "the host player's" or "his") .. " screen darkens once (sleep_fade.ppe, the stock id 1313)")
+	MD.hud_shown = false
+	MD.t = nil
+	run(MD, 200)
+	MD.t = board(MD, { state = "going", ready = 3, total = 3, me = me({ host = peer == 0, peer = peer }), rows = c1.rows })
+	run(MD, 300)
+	check(#MD.pp == 2, "another go (after the board was gone): again, inventory open or not")
+end
+do
+	local MW = machine(1)
+	MW.t = away
+	run(MW, 3000)
+	check(#MW.pp == 0, "a player away from the exit while the board waits: no darkening")
+	MW.t = board(MW, { state = "going", ready = 2, total = 2, me = me({ in_zone = false, ready = false, dist = 30 }), rows = { { peer = 0, mark = "ready" }, { peer = 1, mark = "down" } } })
+	run(MW, 300)
+	check(#MW.pp == 1 and win(MW).g_board.visible, "a downed one goes with the group: his screen darkens too, the board says so")
+end
 
 -- ================================================================ 7. the feed, live
 print("== feed")
@@ -712,13 +775,9 @@ run(MF, 200)
 check(#MF.feed == 1 and MF.feed[1] == "player_a waits at the exit to Cordon", "a player arrives: one line in the feed")
 run(MF, 2000)
 check(#MF.feed == 1, "and only one")
-MF.t = board(MF, { state = "counting", ready = 3, total = 3, countdown_ms = 5000, me = me(), rows = c1.rows })
-run(MF, 200)
-local last = MF.feed[#MF.feed]
-check(last and last:find("moving in", 1, true) ~= nil, "everyone is here: the countdown line")
 MF.t = board(MF, { me = me(), rows = { { peer = 0, mark = "ready" }, { peer = 1, mark = "ready" }, { peer = 2, mark = "away" } } })
 run(MF, 200)
-check(MF.feed[#MF.feed] == "Transition cancelled", "a player steps back: cancelled")
+check(#MF.feed == 1, "a player steps back: no 'cancelled' line (nothing was counting)")
 local n = #MF.feed
 -- a player who flaps does not fill the feed
 for i = 1, 6 do
@@ -756,7 +815,10 @@ MR.t = board(MR, { me = me() })
 run(MR, 400)
 local rset = texts(MR)
 check(rset[STR_RUS.st_coop_transition_head] and rset[STR_RUS.st_coop_transition_waiting] and rset["RUS_CORDON"], "the russian strings and the russian level name")
-check(rset[STR_RUS.st_coop_transition_hint_cancel] ~= nil, "... and the key hint")
+MR.t = away
+run(MR, 400)
+rset = texts(MR)
+check(rset[STR_RUS.st_coop_transition_hint_consent] ~= nil, "... and the key hint of one who is away (go with the group)")
 MR.T.print_status()
 check(#MR.log > 0 and MR.log[#MR.log]:find("transition: overlay", 1, true) ~= nil, "print_status says what the overlay did")
 -- the session ends: the overlay goes
@@ -790,9 +852,9 @@ do
 	MV.t = board(MV, { me = me(), ready = 2, total = 3 })
 	run(MV, 500)
 	dump("board", MV)
-	MV.t = board(MV, { state = "counting", ready = 3, total = 3, countdown_ms = 3000, me = me(), rows = c1.rows })
+	MV.t = board(MV, { state = "going", ready = 3, total = 3, me = me(), rows = c1.rows })
 	run(MV, 500)
-	dump("counting", MV)
+	dump("going", MV)
 	MV.t = board(MV, { ready = 2, total = 3, load_ms = 42000, me = me(), rows = { { peer = 0, mark = "ready" }, { peer = 1, mark = "ready" }, { peer = 2, mark = "loading" } } })
 	run(MV, 500)
 	dump("loading", MV)
@@ -812,7 +874,7 @@ run(MP, 400)
 local t0 = os.clock()
 local frames = 400
 for i = 1, frames do
-	MP.t = board(MP, { state = (i % 300 < 100) and "counting" or "waiting", countdown_ms = 5000 - (i % 100) * 50, me = me(),
+	MP.t = board(MP, { state = (i % 300 < 100) and "going" or "waiting", me = me(),
 		rows = { { peer = 0, mark = "ready", dist = 2 }, { peer = 1, mark = "ready", dist = i % 9 }, { peer = 2, mark = "away", dist = 100 + i % 50 } } })
 	fire(MP, "actor_on_update")
 	for w2 in pairs(MP.hud) do w2:Update() end

@@ -25,7 +25,7 @@
 		<bar x="0" y="0" width="300" height="2" stretch="1">
 			<texture>coop_hud_white</texture>
 		</bar>
-		<!-- the texts: the small caps line, the level, the count on the right, the countdown, a player's row, the hint -->
+		<!-- the texts: the small caps line, the level, the count on the right, a player's row, the hint -->
 		<head x="0" y="0" width="240" height="12">
 			<text complex_mode="0" r="175" g="177" b="175" align="l" vert_align="c" font="letterica16"/>
 		</head>
@@ -35,9 +35,6 @@
 		<slot x="0" y="0" width="60" height="20">
 			<text complex_mode="0" r="244" g="245" b="246" align="r" vert_align="c" font="letterica18"/>
 		</slot>
-		<big x="0" y="0" width="60" height="34">
-			<text complex_mode="0" r="244" g="245" b="246" align="r" vert_align="c" font="graffiti32"/>
-		</big>
 		<line x="0" y="0" width="200" height="14">
 			<text complex_mode="0" r="244" g="245" b="246" align="l" vert_align="c" font="letterica16"/>
 		</line>
@@ -47,12 +44,16 @@
 		<hint x="0" y="0" width="300" height="12">
 			<text complex_mode="0" r="175" g="177" b="175" align="l" vert_align="c" font="letterica16"/>
 		</hint>
-		<!-- the reminder of a player who is not at the exit: his nick in his colour, one line under it, centred -->
+		<!-- the reminder of a player who is not at the exit: his nick in his colour, lines under it, centred -->
 		<remind_nick x="0" y="0" width="300" height="18">
 			<text complex_mode="0" r="244" g="245" b="246" align="c" vert_align="c" font="letterica18"/>
 		</remind_nick>
 		<remind_line x="0" y="0" width="420" height="14">
 			<text complex_mode="0" r="244" g="245" b="246" align="c" vert_align="c" font="letterica16"/>
 		</remind_line>
+		<!-- under the reminder, the key of a player who is not at the exit: hold to go with the group (2026-10-24) -->
+		<remind_hint x="0" y="0" width="420" height="12">
+			<text complex_mode="0" r="175" g="177" b="175" align="c" vert_align="c" font="letterica16"/>
+		</remind_hint>
 	</coop_transition>
 </w>
