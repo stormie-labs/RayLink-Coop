@@ -132,4 +132,7 @@
 	<string id="st_coop_lease_lost">
 		<text>Кооп: хост не ответил, новый предмет убран</text>
 	</string>
+	<string id="st_coop_host_silent">
+		<text>Нет связи с хостом - ждём %u с</text>
+	</string>
 </string_table>

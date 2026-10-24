@@ -132,4 +132,7 @@
 	<string id="st_coop_lease_lost">
 		<text>Co-op: the host did not answer, a new item was taken back</text>
 	</string>
+	<string id="st_coop_host_silent">
+		<text>No connection to the host - waiting %u s</text>
+	</string>
 </string_table>
