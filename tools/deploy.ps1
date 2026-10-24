@@ -188,3 +188,18 @@ foreach ($inst in 'a', 'b') {
     }
     Write-Host "instance ${inst}: $TestRoot\fsgame_$inst.ltx, $appdata"
 }
+
+# 5. a double-click per instance in the stand's root (owner's request 2026-10-24): launch.ps1 with this stand.
+#    ASCII only: cmd parses a .bat in the OEM code page, Cyrillic breaks the commands themselves.
+$launchPs1 = (Resolve-Path (Join-Path $PSScriptRoot 'launch.ps1')).Path
+if (($launchPs1 + $TestRoot) -match '[^\x20-\x7E]') { throw "launcher .bat needs ASCII paths: $launchPs1, $TestRoot" }
+foreach ($bat in @(@{ inst = 'a'; name = 'Player A - host.bat' }, @{ inst = 'b'; name = 'Player B - client.bat' })) {
+    $lines = @(
+        '@echo off',
+        "rem Anomaly Coop: player $($bat.inst) on this stand (written by tools\deploy.ps1)",
+        "powershell -NoProfile -ExecutionPolicy Bypass -File `"$launchPs1`" $($bat.inst) -GameDir `"$TestRoot`"",
+        'if errorlevel 1 pause'
+    )
+    [System.IO.File]::WriteAllText((Join-Path $TestRoot $bat.name), (($lines -join "`r`n") + "`r`n"), [System.Text.Encoding]::ASCII)
+    Write-Host "launcher: $TestRoot\$($bat.name)"
+}
