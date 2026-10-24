@@ -626,6 +626,10 @@ TEST(snapshot_anim_byte_packs_creature_flags)
 	CHECK_EQ(anim_count_of(pack_anim_byte(0xFF, 0)), uint8_t(15));
 	CHECK_EQ(creature_flags_of(pack_anim_byte(0, 0xFF)), uint8_t(15));
 	static_assert(pack_anim_byte(2, CreatureTorchLit) == 0x12, "constexpr");
+	// Protocol 12 (live 2026-10-24: a client never saw an NPC raise its weapon): a stalker's item in its hands (or on its
+	// back) follows the anims as a u16 id; the flags still fit the nibble.
+	CHECK_EQ(pack_anim_byte(2, CreatureHolds), uint8_t(0x22));
+	CHECK_EQ(creature_flags_of(pack_anim_byte(4, CreatureTorchLit | CreatureHolds | CreatureStrapped)), uint8_t(7));
 }
 
 TEST(protocol_version_bumped_for_c2)
