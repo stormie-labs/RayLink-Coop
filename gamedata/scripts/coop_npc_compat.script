@@ -285,6 +285,71 @@ local function wrap_smart_respawn()
 	applied[#applied + 1] = "smart_respawn"
 end
 
+-- Audit B7 (2026-10-24): helicopters (heli_combat / heli_fire, stock scripts in the archives: class methods are wrapped)
+-- know the HOST's actor as "the actor" and every other player's character as an ordinary NPC, so a heli set on the
+-- player (actor_always_enemy, combat_enemy = actor, heli_fire enemy = actor) never turned on a client. A player's
+-- character counts as the actor: the actor's enemy rule (his own heli flag - set on his character when he shot the
+-- heli - or actor_always_enemy), and "the actor" as a target is the nearest player (heli_fire: the nearest it sees).
+local function wrap_helis()
+	local hc = mod("heli_combat")
+	local cls = hc and hc.heli_combat
+	local is_enemy = cls and cls.is_enemy
+	if type(is_enemy) == "function" and not orig.heli_is_enemy then
+		orig.heli_is_enemy = is_enemy
+		cls.is_enemy = function(self, obj)
+			if not (host_on and obj and P.is_proxy(obj)) then return is_enemy(self, obj) end
+			-- the stock's checks for anybody, then its rule for the actor (heli_combat.script is_enemy)
+			if not obj:alive() or IsWounded(obj) then return false end
+			if xr_combat_ignore.ignore_enemy_by_overrides(self.object, obj) then return false end
+			local se_obj = alife_object(self.object:id())
+			if not (se_obj and se_obj.community) then return false end
+			if string.find(character_community(obj), se_obj.community, 1, true) then return false end
+			local st = db.storage[obj:id()]
+			if st and st.heli_enemy_flag == true then return true end
+			return self.actor_always_enemy or false
+		end
+		applied[#applied + 1] = "heli:enemy"
+	end
+	local from_data = cls and cls.set_enemy_from_custom_data
+	if type(from_data) == "function" and not orig.heli_from_data then
+		orig.heli_from_data = from_data
+		cls.set_enemy_from_custom_data = function(self, combat_enemy, ...)
+			local r = from_data(self, combat_enemy, ...)
+			if host_on and combat_enemy == "actor" and self.st and self.st.enemy_id == AC_ID and self.object then
+				local near = P.nearest(self.object:position())
+				if near and P.is_proxy(near) then self.st.enemy_id = near:id() end
+			end
+			return r
+		end
+		applied[#applied + 1] = "heli:combat_enemy"
+	end
+	local hf = mod("heli_fire")
+	local fcls = hf and hf.heli_fire
+	local set_enemy = fcls and fcls.set_enemy
+	if type(set_enemy) == "function" and not orig.heli_fire then
+		orig.heli_fire = set_enemy
+		fcls.set_enemy = function(self, ...)
+			-- the moment the stock picks "the actor" (no target kept): the nearest player it sees; none seen - the stock's
+			if host_on and self.enemy_ == "actor" and self.flag_by_enemy and self.obj then
+				local ok, heli = pcall(self.obj.get_helicopter, self.obj)
+				if ok and heli then
+					local pos = self.obj:position()
+					local best, best_d = nil, math.huge
+					for _, o in ipairs(P.everyone()) do
+						if heli:isVisible(o) then
+							local d = o:position():distance_to_sqr(pos)
+							if d < best_d then best, best_d = o, d end
+						end
+					end
+					self.enemy_id = best and P.is_proxy(best) and best:id() or nil
+				end
+			end
+			return set_enemy(self, ...)
+		end
+		applied[#applied + 1] = "heli:fire"
+	end
+end
+
 local function wrap_stealth()
 	if not mod("stealth_mcm") then return end
 	local m = mod("visual_memory_manager")
@@ -382,7 +447,7 @@ function on_game_start()
 		end
 		for _, s in ipairs({ { "ai_rework", wrap_ai_rework }, { "night_mutants", wrap_night_mutants },
 			{ "stealth", wrap_stealth }, { "peace_zone", wrap_peace_zone }, { "loot", wrap_loot },
-			{ "squads", wrap_squads }, { "smart_respawn", wrap_smart_respawn } }) do
+			{ "squads", wrap_squads }, { "smart_respawn", wrap_smart_respawn }, { "helis", wrap_helis } }) do
 			local ok, err = pcall(s[2])
 			if not ok then report("install " .. s[1], err) end
 		end

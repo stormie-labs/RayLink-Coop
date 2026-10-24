@@ -578,5 +578,71 @@ SM.try_respawn(far_smart)
 check(far_smart.respawned == true, "far from every player: respawns")
 H.env.sim_squad_scripted, H.env.smart_terrain = nil, nil
 
+print("== coop_npc_compat: helicopters hunt every player as the actor (audit B7)")
+H, C, proxy, hav = pair()
+common(H)
+proxy._comm = "stalker"
+local HC = {}
+HC.is_enemy = function(self, obj) H.stock_heli_enemy = (H.stock_heli_enemy or 0) + 1; return "stock" end
+HC.set_enemy_from_custom_data = function(self, combat_enemy)
+	if combat_enemy == "actor" then self.st.enemy_id = 0 end
+end
+local HF = {}
+HF.set_enemy = function(self) self.picked = self.enemy_id or "actor" end
+H.env.heli_combat = { heli_combat = HC }
+H.env.heli_fire = { heli_fire = HF }
+H.env.AC_ID = 0
+H.env.xr_combat_ignore = { ignore_enemy_by_overrides = function() return false end }
+H.env.alife_object = function(id) return id == 900 and { community = "army" } or nil end
+local KH = load_script(H, "coop_npc_compat")
+KH.on_game_start()
+KH._set_host_on(true)
+local heli_obj = make_obj(900, 0, 50, 0, { _name = "heli" })
+local hc = setmetatable({ object = heli_obj, st = {}, actor_always_enemy = false }, { __index = HC })
+check(HC.is_enemy(hc, proxy) == false, "a client's character is no enemy without his flag or actor_always_enemy")
+H.env.db.storage[500] = { heli_enemy_flag = true }
+check(HC.is_enemy(hc, proxy) == true, "his own heli flag (he shot it) makes him an enemy, as the actor's")
+H.env.db.storage[500] = {}
+hc.actor_always_enemy = true
+check(HC.is_enemy(hc, proxy) == true, "actor_always_enemy covers a client's character too")
+proxy._comm = "army"
+check(HC.is_enemy(hc, proxy) == false, "the heli's own community is spared")
+proxy._comm = "stalker"
+proxy._wounded = true
+check(HC.is_enemy(hc, proxy) == false, "a wounded player is not a target")
+proxy._wounded = nil
+local n = H.stock_heli_enemy or 0
+local npc_b = make_obj(300, 5, 0, 5)
+check(HC.is_enemy(hc, npc_b) == "stock" and H.stock_heli_enemy == n + 1, "an NPC goes to the stock rule")
+KH._set_host_on(false)
+check(HC.is_enemy(hc, proxy) == "stock", "single player / no clients: the stock rule")
+KH._set_host_on(true)
+
+H.env.db.actor._pos = vector():set(3000, 0, 3000) -- the host far away, the client's character near the heli
+HC.set_enemy_from_custom_data(hc, "actor")
+check(hc.st.enemy_id == 500, "combat_enemy = actor: the nearest player (a client's character)")
+H.env.db.actor._pos = vector():set(1, 0, 1)
+hc.st.enemy_id = nil
+HC.set_enemy_from_custom_data(hc, "actor")
+check(hc.st.enemy_id == 0, "the host's actor when he is the nearest")
+
+local visible = { [500] = true }
+heli_obj.get_helicopter = function() return { isVisible = function(_, o) return visible[o:id()] == true end } end
+local hf = setmetatable({ obj = heli_obj, enemy_ = "actor", flag_by_enemy = true }, { __index = HF })
+HF.set_enemy(hf)
+check(hf.picked == 500, "heli_fire enemy = actor: the nearest player it sees (the client's character)")
+visible = { [0] = true, [500] = true }
+hf.enemy_id, hf.flag_by_enemy = nil, true
+HF.set_enemy(hf)
+check(hf.picked == "actor", "the host's actor when he is the nearest seen (the stock's pick)")
+visible = {}
+hf.enemy_id, hf.flag_by_enemy = 500, true
+HF.set_enemy(hf)
+check(hf.picked == "actor", "nobody seen: the stock's actor")
+hf.enemy_id, hf.flag_by_enemy = 500, false
+HF.set_enemy(hf)
+check(hf.picked == 500, "a kept target stays (no pick while flag_by_enemy is off)")
+H.env.heli_combat, H.env.heli_fire = nil, nil
+
 print(string.format("\nRESULT: %d passed, %d failed", PASSES, FAILS))
 if FAILS > 0 then error("tests failed") end
