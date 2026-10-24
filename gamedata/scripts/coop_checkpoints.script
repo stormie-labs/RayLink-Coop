@@ -3,7 +3,7 @@
 	Spec: docs\CHECKPOINTS_DEATH.md section 2. The engine keeps the checkpoints (coop_checkpoints.cpp, host decides) and puts
 	tents up for clients (coop_checkpoint_sources.cpp); this script is what the player sees and the thing that asks.
 	Runs on every machine (a "view" script in configs\coop_domains_checkpoints.ltx). The item_tent side of the tents
-	(wrappers of the stock functions, the host's report of a stock tent) is coop_tent_guard.script.
+	(wrappers of the stock functions; F3a task 7: the host player claims like any player) is coop_tent_guard.script.
 
 	1. Tips and PDA spots (engine callback coop_checkpoint_changed(local_id, kind, source, rollback, level)).
 	   The player's own camp: a tip st_coop_cp_updated_<kind> (st_coop_cp_rollback when the camp was lost and the previous one
@@ -41,7 +41,6 @@
 		coop_checkpoints.object_kind(section) -> "tent" | "sleepbag" | nil          (ph_tent, ph_sleepbag)
 		coop_checkpoints.placeable(kind) -> bool       (the ltx switch use_placeable)
 		coop_checkpoints.request(what, delay_ms [, at]) -> bool player: a claim after delay_ms, at {x, y, z} or the player
-		coop_checkpoints.report_placed(kind, id) -> bool        world server: the stock put object `id` up, it is the host's camp (goes, see there)
 		coop_checkpoints.own_tent_source() -> id | nil          the tent or sleeping bag that is my camp
 		coop_checkpoints.is_mine_tent(id [, obj]) -> bool       client: a tent / bag I put up (see below)
 		coop_checkpoints.my_objects() -> { [id] = true }        client: the tents and bags that were my camp (do not change it)
@@ -85,8 +84,8 @@ end
 
 -- F3a task 6 (docs/plans/2026-10-24-f3a-split-levels.md 1.1, 1.2): the roles of this process. The host process is the world
 -- server AND a player (the host player, a client of its own server over the internal channel); a remote client is a player.
--- The world server decides (story checkpoints, the report of the stock tent); the player asks (claims), the host player the
--- same way a remote client does. A build without the role functions has the old pair: its host took the stock tent itself.
+-- The world server decides (story checkpoints); the player asks (claims), the host player the same way a remote client does
+-- (F3a task 7: report_placed, the host's report of a stock tent, is gone). A build without the role functions has the old pair.
 local function is_world_server()
 	if not in_session() then return false end
 	local f = type(api.is_world_server) == "function" and api.is_world_server or api.is_host
@@ -477,22 +476,6 @@ end
 -- spot). For a button of the sleep window: using a placed sleeping bag is the stock sleep.
 function pack_nearby(at) -- at: the bag the player sleeps in (the sleep window's Fold), else the player's position
 	return request("pack", 0, at)
-end
-
--- World server: the stock item_tent put object `id` up in the host's world: tell the engine it is the host's camp. The engine
--- takes the nearest new tent of this kind at that spot nobody owns.
--- F3a T6: this is the LAST direct branch of "the host claims its own tent". It stays only because coop_tent_guard.script (not
--- a T6 file) still lets the host use the stock tent and calls it afterwards; when that script sends the host player through
--- request() like a client (the engine's host_claim_tent then puts the tent up for node 0), this function goes.
-function report_placed(kind, id)
-	if not (is_world_server() and WHATS[kind] and kind ~= "pack") then return false end
-	local cp = checkpoint_api()
-	if not (cp and cp.claim_tent) then return false end
-	local se = alife_object(id)
-	local pos = se and se.position
-	if not pos then return false end
-	local ok, sent = pcall(cp.claim_tent, pos.x, pos.y, pos.z, kind)
-	return ok and sent == true
 end
 
 -------------------------------------------------------------------------------

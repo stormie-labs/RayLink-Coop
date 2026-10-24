@@ -5,7 +5,9 @@
 -- same way; func_use_tent / func_use_bag free the used item themselves (CreateTimeEvent 0) about 4 s BEFORE a tent would be put
 -- up. Since F3 T13 a client asks the host (coop.checkpoint.claim_tent) and never touches the item: the host takes it (and
 -- answers "no_item" when it is gone). The wrappers replace the entry points of the item_tent module table on a client and leave
--- host / single player alone (the host only tells the engine about what the stock put up).
+-- host / single player alone. F3a task 7: "a client" is any PLAYER (coop.is_player(): the host player too, a client of his own
+-- world server over the internal channel - the last section); the stub's host without the role functions is the world server
+-- only, and the report of a stock tent (coop_checkpoints.report_placed) is gone.
 MODE = "host"
 dofile("tests/lua/support/stubs_mods.lua")
 dofile("tests/lua/support/item_tent_stock.lua")
@@ -681,7 +683,8 @@ do
 		"host: ph_tent is created and the bag is given (" .. created_secs() .. ")")
 	check(#RELEASED == 1 and RELEASED[1].sec == "itm_tent", "host: the used tent item is released like stock")
 	check(HUD == nil and #EV == 0, "host: no message")
-	check(claims() == "tent", "host: the engine is told about the tent that was put up (" .. claims() .. ")")
+	-- F3a task 7: report_placed is gone; a build without the role functions (this stub) is the world server only
+	check(claims() == "", "host of a build without roles: the stock tent is not reported, nothing is claimed (" .. claims() .. ")")
 end
 boot("sp")
 start_all_scripts()
@@ -703,5 +706,88 @@ do
 	check(#RELEASED == 2 and count_sec("itm_sleepbag") == 1, "host: the compression bag still packs the placed sleeping bag up")
 	check(#CLAIMS == 0, "host: packing up claims nothing")
 end
+
+-- ------------------------------------------------------------------ F3a task 7: the host PLAYER claims like a client
+-- The host's process is the world server AND a player (docs/plans/2026-10-24-f3a-split-levels.md 1.2): with the role
+-- functions the host player's tent, sleeping bag and pack-up are claims to his world server, as a client's are; the stock
+-- does not put his tent up any more, and nothing reports a stock tent.
+print("== F3a task 7: the host player (roles) claims like a client")
+local function host_player_roles(on)
+	if on then
+		coop.is_player = function() return MODE ~= "sp" end
+		coop.is_world_server = function() return MODE == "host" end
+	else
+		coop.is_player, coop.is_world_server = nil, nil
+	end
+end
+host_player_roles(true)
+boot("host")
+start_all_scripts()
+do
+	local _, o = item("itm_tent")
+	item_tent.func_use_tent(o)
+	check(#ADD_CALLS == 0, "the host player: func_use_tent queues no stock timer functor")
+	run_add_calls()
+	run_time_events(5000)
+	check(claims() == "tent", "the host player: a tent claim to his world server (" .. claims() .. ")")
+	check(ALIFE_CREATE == 0 and count_sec("ph_tent") == 0 and #RELEASED == 0, "the host player: the stock puts nothing up, the item stays")
+end
+boot("host")
+start_all_scripts()
+do
+	local _, o = item("itm_sleepbag")
+	item_tent.func_use_bag(o)
+	run_time_events(300)
+	check(claims() == "sleepbag" and ALIFE_CREATE == 0, "the host player: func_use_bag is a sleeping bag claim (" .. claims() .. ")")
+end
+boot("host")
+start_all_scripts()
+do
+	local _, o = item("itm_sleepbag")
+	engine_eat(o)
+	local ok3, err3 = pcall(fire_use, o)
+	check(ok3, "the host player, stock Anomaly: no error out of the use callback (" .. tostring(err3) .. ")")
+	check(#CLAIMS == 0, "the host player, stock Anomaly: the claim waits for the bag to come back")
+	run_time_events(2000)
+	check(created_secs() == "itm_sleepbag<0" and claims() == "sleepbag", "then the eaten bag is back and claimed (" .. created_secs() .. ")")
+	check(count_sec("ph_sleepbag") == 0 and ALIFE_CREATE == 0, "the stock places no sleeping bag for him")
+end
+boot("host")
+start_all_scripts()
+do
+	local _, o = item("itm_tent_bag")
+	item_tent.start_timer(o)
+	run_time_events(300)
+	check(claims() == "pack" and #ADD_CALLS == 0, "the host player's tent bag: a pack-up claim, no stock pack-up (" .. claims() .. ")")
+end
+boot("host")
+start_all_scripts()
+do
+	local _, bag = spawn("ph_sleepbag", vec3(1, 0, 0))
+	item_tent.get_spawned_sleepbags()[bag:id()] = true
+	local _, o = item("compression_bag")
+	fire_use(o)
+	run_time_events(300)
+	check(claims() == "pack" and #RELEASED == 0, "the host player's compression bag: a pack-up claim, nothing released here (" .. claims() .. ")")
+end
+boot("client")
+start_all_scripts()
+do
+	local _, o = item("itm_tent")
+	item_tent.func_use_tent(o)
+	run_time_events(5000)
+	check(claims() == "tent" and ALIFE_CREATE == 0, "a client with the role functions: the same claim as before (" .. claims() .. ")")
+end
+boot("host")
+coop.is_player = function() return false end -- a world server that is no player (none ships yet)
+start_all_scripts()
+do
+	local _, o = item("itm_tent")
+	item_tent.func_use_tent(o)
+	run_add_calls()
+	run_time_events(300)
+	check(count_sec("ph_tent") == 1 and #CLAIMS == 0, "a world server that is no player: the stock as it is, nothing claimed")
+end
+host_player_roles(false)
 
 done("TENT_GUARD")

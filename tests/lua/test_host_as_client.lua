@@ -282,17 +282,14 @@ case("checkpoints: story checkpoints are the world server's", function()
 	check(#STORIES == 0 and ORIG_STORY == 1, "outside a session the stock function runs")
 end)
 
-case("checkpoints: report_placed (the stock tent of the host) is world-side", function()
-	local ck = load_checkpoints("names_world")
-	spawn("ph_tent", vec3(4, 0, 5), nil, { id = 900 })
-	check(ck.report_placed("tent", 900) == true, "the world server reports the object the stock put up")
-	check(#CLAIMS == 1 and CLAIMS[1].what == "tent" and CLAIMS[1].x == 4 and CLAIMS[1].z == 5, "... at the object's position")
-	ck = load_checkpoints("not_world")
-	spawn("ph_tent", vec3(4, 0, 5), nil, { id = 900 })
-	check(ck.report_placed("tent", 900) == false and #CLAIMS == 0, "not the world server: no report")
-	ck = load_checkpoints("client")
-	spawn("ph_tent", vec3(4, 0, 5), nil, { id = 900 })
-	check(ck.report_placed("tent", 900) == false and #CLAIMS == 0, "a client: no report")
+-- F3a task 7: the last direct branch of "the host claims its own tent" is gone: coop_tent_guard sends the host player the
+-- client's way (a claim the engine answers for peer 0), so nothing may report a stock tent of the host any more.
+case("checkpoints: report_placed (the stock tent of the host) is gone", function()
+	for _, role in ipairs({ "hostplayer", "names_world", "client" }) do
+		local ck = load_checkpoints(role)
+		check(ck.report_placed == nil, role .. ": coop_checkpoints.report_placed does not exist")
+		check(#CLAIMS == 0, role .. ": nothing claimed")
+	end
 end)
 
 -- =================================================================== coop_rest
@@ -911,6 +908,14 @@ case("menu_char: world-side handlers run on the world server, accept peer 0, and
 	mh = load_menu_char("dedicated")
 	coop_main.handlers["menu.char_offer"](coop_main.encode({ eco = 1, points = 1000, nick = "Boss", faction = "bandit" }), 0)
 	check(mh.GUI == nil, "a world server with no player shows no window")
+
+	-- F3a task 7: only the world server offers the host's choice (host_offer_self), as only it answers it
+	mh = load_menu_char("not_world")
+	check(mh.host_offer_self() == false and #SENT == 0, "is_host yes but not the world server: host_offer_self sends nothing")
+	mh = load_menu_char("client")
+	check(mh.host_offer_self() == false and #SENT == 0, "a client: host_offer_self sends nothing")
+	mh = load_menu_char("names_world")
+	check(mh.host_offer_self() == true and events_to(0, "menu.char_offer") == 1, "the world server offers to peer 0")
 end)
 
 done("HOST_AS_CLIENT")

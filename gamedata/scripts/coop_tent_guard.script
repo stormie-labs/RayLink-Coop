@@ -2,7 +2,15 @@
 	Anomaly Coop - tents and sleeping bags on a co-op machine: the adapter of the stock item_tent
 	(gamedata\scripts\coop_tent_guard.script). F3 hotfix (a client got a message), rewritten by F3 task 13 (a client asks the
 	host). Research: docs\research\2026-10-22-f3-saves-sleep-recon.md, B.3 and Z2 / Z6 / Z7 / Z8.
-	What the player sees and the claims themselves: coop_checkpoints.script (request, report_placed, tips).
+	What the player sees and the claims themselves: coop_checkpoints.script (request, tips).
+
+	F3a task 7 (docs/plans/2026-10-24-f3a-split-levels.md 1.2): the roles of the process, not "host / client". The host's
+	process is the world server AND a player - the host player is a client of his own world server over the internal
+	channel. So everything below that says "a client" is now "a PLAYER" (coop.is_player(): a remote client and the host
+	player alike), and "the host" is "the WORLD SERVER" (coop.is_world_server()). The host player's tent goes up the way a
+	client's does (a claim; the engine puts it up for peer 0); the stock no longer puts it up and no report of a stock tent
+	exists any more (coop_checkpoints.report_placed is gone with this change: the host would have claimed twice). A build
+	without the role functions falls back to the old pair.
 
 	Why. A client cannot create a world object: the engine returns nil for alife_create without a parent (the host does not
 	take such a request). The stock item_tent then reads se_obj.id of that nil:
@@ -46,12 +54,10 @@
 	later; itm_tent_bag and compression_bag (remove_after_use = false) stay and are never given back.
 	With use_placeable = false in itms_manager.ltx the stock uses the item directly (no object is put up): left to the stock.
 
-	What on the HOST. Everything is stock; afterwards the host tells the engine about the object the stock put up
-	(coop_checkpoints.report_placed -> coop.checkpoint.claim_tent at the object's position): after itm_tent_func and after a
-	sleeping bag was placed (func_use_bag, or the use callback of stock Anomaly). Objects that are in the item_tent lists are
-	never reported twice. A tent the engine put up for a client (callback coop_tent_placed(tent, character)) is added to
-	item_tent's lists, so the host's own tent bag packs it up (CHECKPOINTS_DEATH 10.2); the callback queue is lossy, so the
-	first update of a world adds, from the objects of the world, every tent and sleeping bag coop.checkpoint.tent_owner(id) names.
+	What on the WORLD SERVER. A tent the engine put up for a player (callback coop_tent_placed(tent, character), the host
+	player's too) is added to item_tent's lists (CHECKPOINTS_DEATH 10.2); the callback queue is lossy, so the first update of
+	a world adds, from the objects of the world, every tent and sleeping bag coop.checkpoint.tent_owner(id) names. A world
+	server that is no player (none yet) leaves the stock alone.
 
 	Single player and an exe without co-op: every wrapper calls the stock function with the same arguments.
 	Loaded by axr_main like any script that has on_game_start; nothing is added to coop_main or the domain tables (the name
@@ -64,7 +70,7 @@ local USE_CALLBACK = "actor_on_item_use"
 local ANIMATION_MS = 4000 -- stock: the put-up animation with the video option "video/player/animations"
 local GIVE_BACK_MS = 1500 -- the item the engine ate is created again; the claim waits for it to reach the host
 
-stats = { claims = 0, given_back = 0, return_failed = 0, reported = 0, registered = 0, reconciled = 0 }
+stats = { claims = 0, given_back = 0, return_failed = 0, registered = 0, reconciled = 0 }
 
 local function log(fmt, ...)
 	local ok, line = pcall(string.format, fmt, ...)
@@ -82,16 +88,20 @@ local function in_session()
 	return ok and active == true
 end
 
-local function is_client()
+-- F3a task 7: a player asks (a remote client, the host player); the world server keeps the stock lists. A build without the
+-- role functions has the old pair.
+local function is_player()
 	if not in_session() then return false end
-	local ok, client = pcall(api.is_client)
-	return ok and client == true
+	local f = type(api.is_player) == "function" and api.is_player or api.is_client
+	local ok, yes = pcall(f)
+	return ok and yes == true
 end
 
-local function is_host()
+local function is_world_server()
 	if not in_session() then return false end
-	local ok, host = pcall(api.is_host)
-	return ok and host == true
+	local f = type(api.is_world_server) == "function" and api.is_world_server or api.is_host
+	local ok, yes = pcall(f)
+	return ok and yes == true
 end
 
 local function section_of(obj)
@@ -144,7 +154,7 @@ local function give_back(section)
 end
 
 -------------------------------------------------------------------------------
--- The stock module's lists and what the host has already told the engine about
+-- The stock module's lists
 -------------------------------------------------------------------------------
 local function stock_module()
 	return rawget(_G, "item_tent")
@@ -159,51 +169,8 @@ local function spawned(getter)
 	return ok and type(t) == "table" and t or nil
 end
 
-local reported = nil -- host: ids of tents and sleeping bags the engine already knows (set at the start and each world entry)
-
-local function seed()
-	reported = {}
-	for _, getter in ipairs({ "get_spawned_tents", "get_spawned_sleepbags" }) do
-		local t = spawned(getter)
-		if t then
-			for id in pairs(t) do reported[id] = true end
-		end
-	end
-end
-
--- Before the stock runs: whatever shows up in the lists afterwards is new.
-local function ensure_seeded()
-	if not reported then seed() end
-end
-
-local function scan(kind, getter)
-	local t = spawned(getter)
-	local c = checkpoints()
-	if not (t and c and reported) then return end
-	for id, v in pairs(t) do
-		if v == true and not reported[id] then
-			reported[id] = true
-			if c.report_placed(kind, id) then stats.reported = stats.reported + 1 end
-		end
-	end
-end
-
-local function scan_all()
-	scan("tent", "get_spawned_tents")
-	scan("sleepbag", "get_spawned_sleepbags")
-end
-
--- Returns what the stock returned; on the host first tells the engine about what the stock put up.
-local function after_stock(host, ...)
-	if host then
-		local ok, err = pcall(scan_all)
-		if not ok then log("! scan failed: %s", tostring(err)) end
-	end
-	return ...
-end
-
 -------------------------------------------------------------------------------
--- A client uses an item: the item stays, the host is asked
+-- A player uses an item: the item stays, the world server is asked
 -------------------------------------------------------------------------------
 local function client_item(c, obj, orig, ...)
 	local kind = c.item_kind(section_of(obj))
@@ -243,7 +210,7 @@ local function swap_use_callback()
 	if reg == false then return end -- the stock callback is not registered: nothing to guard
 	if not use_guard then
 		use_guard = function(obj, ...)
-			if is_client() then
+			if is_player() then
 				local c = checkpoints()
 				local sec = section_of(obj)
 				local kind = c and sec and c.item_kind(sec)
@@ -265,24 +232,10 @@ local function swap_use_callback()
 	RegisterScriptCallback(USE_CALLBACK, use_guard)
 end
 
--- Host: stock Anomaly eats the sleeping bag and the stock callback places it; look at the lists a moment later (the order of
--- the two callbacks is not known). Public: the tests tell this callback from the stock one.
-local scan_serial = 0
-function on_item_use(obj)
-	if not is_host() then return end
-	local c = checkpoints()
-	if not (c and c.item_kind(section_of(obj)) == "sleepbag") then return end
-	scan_serial = scan_serial + 1
-	CreateTimeEvent("coop_tent_guard", "scan_" .. scan_serial, 0, function()
-		pcall(scan_all)
-		return true
-	end)
-end
-
--- Client: using a tent of mine packs it up, the one I used (its position goes with the claim; the engine packs the tent of mine
+-- Player: using a tent of mine packs it up, the one I used (its position goes with the claim; the engine packs the tent of mine
 -- at that spot). A sleeping bag is used to sleep.
 local function on_physic_use(obj, who)
-	if not is_client() or obj == nil then return end
+	if not is_player() or obj == nil then return end
 	local c = checkpoints()
 	if not c then return end
 	if who ~= nil then -- the use of another player is not mine to answer
@@ -299,7 +252,7 @@ local function on_physic_use(obj, who)
 end
 
 -------------------------------------------------------------------------------
--- Host: tents the engine put up for clients
+-- World server: tents the engine put up for players
 -------------------------------------------------------------------------------
 local function register_owned(id)
 	local c = checkpoints()
@@ -309,20 +262,19 @@ local function register_owned(id)
 	local t = spawned(kind == "sleepbag" and "get_spawned_sleepbags" or "get_spawned_tents")
 	if not t then return false end
 	t[id] = true
-	if reported then reported[id] = true end -- not the host's own: no claim for it
 	return true
 end
 
--- coop_tent_placed(tent, character): the engine put a tent / sleeping bag up for a client.
+-- coop_tent_placed(tent, character): the engine put a tent / sleeping bag up for a player (the host player's too).
 local function on_tent_placed(tent, character)
-	if not is_host() or type(tent) ~= "number" then return end
+	if not is_world_server() or type(tent) ~= "number" then return end
 	if register_owned(tent) then stats.registered = stats.registered + 1 end
 end
 
 -- The callback queue is lossy: for every tent and sleeping bag of the world the engine knows an owner of, make sure the
--- stock lists have it. Once per world, host only.
+-- stock lists have it. Once per world, world server only.
 local function reconcile()
-	if not is_host() then return end
+	if not is_world_server() then return end
 	local cp = api and api.checkpoint
 	local c = checkpoints()
 	if not (cp and cp.tent_owner and c) then return end
@@ -338,7 +290,6 @@ local function reconcile()
 			local id = se.id
 			if t[id] == nil and cp.tent_owner(id) ~= nil then
 				t[id] = true
-				if reported then reported[id] = true end
 				found = found + 1
 			end
 		end
@@ -355,8 +306,6 @@ local function on_first_update()
 	-- an entry point that a mod replaced after our on_game_start is wrapped again (review M-3)
 	local ok, err = pcall(install)
 	if not ok then log("! install failed: %s", tostring(err)) end
-	ok, err = pcall(seed)
-	if not ok then log("! seed failed: %s", tostring(err)) end
 	ok, err = pcall(reconcile)
 	if not ok then log("! reconcile failed: %s", tostring(err)) end
 end
@@ -376,11 +325,13 @@ local function pick_tent(dist, result)
 	for id, v in pairs(tents) do
 		if v == true then ids[id] = true end
 	end
-	local client = is_client()
-	if client then
+	local player = is_player()
+	if player then
 		for id in pairs(c.my_objects()) do ids[id] = true end -- his own tents, though the host's snapshot has not got them
 	end
 	local cp = api and api.checkpoint
+	-- the host player's process holds the world's book of owners: his own tents of an older world are his too (tent_owner)
+	local world = player and is_world_server() and cp and cp.tent_owner
 	local here = actor:position()
 	local seen = false
 	local best_id, best_rank, best_dist = nil, nil, nil
@@ -391,8 +342,8 @@ local function pick_tent(dist, result)
 			local d = obj:position():distance_to(here)
 			if d < dist then
 				local rank
-				if client then
-					rank = c.is_mine_tent(id, obj) and 1 or 3
+				if player then
+					rank = (c.is_mine_tent(id, obj) or (world and cp.tent_owner(id) == 0)) and 1 or 3
 				else
 					local owner = cp and cp.tent_owner and cp.tent_owner(id)
 					rank = owner == 0 and 1 or (owner == nil and 2 or 3) -- the host's claimed tent, an unclaimed one, a client's
@@ -428,26 +379,22 @@ local function use_functor_maker()
 	return function(orig)
 		return function(obj, ...)
 			local c = checkpoints()
-			if obj ~= nil and c and is_client() then return client_item(c, obj, orig, ...) end
-			local host = obj ~= nil and is_host()
-			if host then ensure_seeded() end
-			return after_stock(host, orig(obj, ...))
+			if obj ~= nil and c and is_player() then return client_item(c, obj, orig, ...) end
+			return orig(obj, ...)
 		end
 	end
 end
 
-local function timer_functor_maker(reports, tent_func)
+local function timer_functor_maker(tent_func)
 	return function(orig)
 		return function(...)
-			if is_client() then
+			if is_player() then
 				-- use_placeable = false: the stock gives the item back to the actor (a parent the host accepts), nothing is put up
 				local c = checkpoints()
 				if tent_func and c and not c.placeable("tent") then return orig(...) end
 				return -- queued by a mod: it would index the nil of alife_create
 			end
-			local host = reports and is_host()
-			if host then ensure_seeded() end
-			return after_stock(host, orig(...))
+			return orig(...)
 		end
 	end
 end
@@ -455,12 +402,12 @@ end
 local MAKERS = {
 	{ "func_use_tent", use_functor_maker() },
 	{ "func_use_bag", use_functor_maker() },
-	{ "itm_tent_func", timer_functor_maker(true, true) },
-	{ "itm_tent_bag_func", timer_functor_maker(false, false) },
+	{ "itm_tent_func", timer_functor_maker(true) },
+	{ "itm_tent_bag_func", timer_functor_maker(false) },
 	{ "get_nearby_tent", nearby_tent_maker() },
 	{ "start_timer", function(orig)
 		return function(obj, ...)
-			if is_client() then
+			if is_player() then
 				local c = checkpoints()
 				local sec = section_of(obj)
 				if c and sec == "itm_tent" and c.placeable("tent") then
@@ -478,7 +425,7 @@ local MAKERS = {
 	end },
 	{ "use_compression_bag", function(orig)
 		return function(obj, dist, ...)
-			if is_client() then
+			if is_player() then
 				local c = checkpoints()
 				if c and obj ~= nil then c.request("pack", 0) end
 				return
@@ -536,10 +483,8 @@ function on_game_start()
 	local ok_reg, err_reg = pcall(function()
 		AddScriptCallback("coop_tent_placed") -- fired by the engine on the host (coop_checkpoint_sources.cpp)
 		RegisterScriptCallback("coop_tent_placed", on_tent_placed)
-		RegisterScriptCallback(USE_CALLBACK, on_item_use)
 		RegisterScriptCallback("physic_object_on_use_callback", on_physic_use)
 		RegisterScriptCallback("actor_on_first_update", on_first_update)
-		seed()
 	end)
 	if not ok_reg then log("! registering the callbacks failed: %s", tostring(err_reg)) end
 end

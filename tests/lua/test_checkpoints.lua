@@ -698,7 +698,9 @@ case("client_item_cases", function()
 	check(created_secs() == "itm_tent<0" and #CLAIMS == 1 and #ADD_CALLS == 0, "start_timer(itm_tent) after the engine ate it: given back, claimed, no functor")
 end)
 
--- ------------------------------------------------------------------ the host: the stock puts the tent up, the claim names it
+-- ------------------------------------------------------------------ the host: the stock puts the tent up
+-- F3a task 7: the stub's host has no role functions (the world server only, as an old build): the stock puts its tent up and
+-- nothing reports it any more (coop_checkpoints.report_placed is gone). The host PLAYER's claims: host_player_claims below.
 case("host_own_tent_and_bag", function()
 	fresh("host")
 	local _, o = item("itm_tent")
@@ -707,10 +709,7 @@ case("host_own_tent_and_bag", function()
 	run_add_calls()
 	run_time_events(100)
 	check(count_sec("ph_tent") == 1 and created_secs():find("ph_tent<nil", 1, true), "the stock created the tent (" .. created_secs() .. ")")
-	check(#CLAIMS == 1 and CLAIMS[1].what == "tent", "claim_tent(..., 'tent') for it")
-	local tent_se
-	for _, se in pairs(SE) do if se._sec == "ph_tent" then tent_se = se end end
-	check(CLAIMS[1] and tent_se and CLAIMS[1].x == tent_se.position.x and CLAIMS[1].z == tent_se.position.z, "at the tent's own position")
+	check(#CLAIMS == 0, "the stock tent is not reported: nothing claimed (report_placed is gone)")
 	check(#RELEASED == 1 and RELEASED[1].sec == "itm_tent", "the stock freed the used item")
 	-- GAMMA: the sleeping bag through the action functor
 	fresh("host")
@@ -718,7 +717,7 @@ case("host_own_tent_and_bag", function()
 	local _, b = item("itm_sleepbag")
 	item_tent.func_use_bag(b)
 	run_time_events(100)
-	check(#CLAIMS == 1 and CLAIMS[1].what == "sleepbag", "func_use_bag: claim_tent(..., 'sleepbag')")
+	check(#CLAIMS == 0, "func_use_bag: nothing claimed")
 	check(count_sec("ph_sleepbag") == 1 and count_sec("compression_bag") == 1, "the stock placed the bag and gave the compression bag")
 	-- stock Anomaly: the engine eats it and the stock callback places it
 	fresh("host")
@@ -726,7 +725,7 @@ case("host_own_tent_and_bag", function()
 	engine_eat(b2)
 	fire("actor_on_item_use", b2)
 	run_time_events(100)
-	check(#CLAIMS == 1 and CLAIMS[1].what == "sleepbag", "the use callback: one claim (callback and functor never both claim)")
+	check(#CLAIMS == 0 and count_sec("ph_sleepbag") == 1, "the use callback: the stock placed it, nothing claimed")
 	-- a tent that was there before is not claimed again
 	fresh("host")
 	local _, old_tent = spawn("ph_tent", vec3(1, 0, 1))
@@ -736,7 +735,7 @@ case("host_own_tent_and_bag", function()
 	item_tent.func_use_tent(o3)
 	run_add_calls()
 	run_time_events(100)
-	check(#CLAIMS == 1, "only the new tent is claimed, not the one that was already known")
+	check(#CLAIMS == 0 and count_sec("ph_tent") == 2, "the new tent stands, nothing claimed")
 	-- no session / client: nothing
 	fresh("sp")
 	local _, o4 = item("itm_tent")
@@ -753,6 +752,59 @@ case("host_own_tent_and_bag", function()
 	local _, bag = item("itm_tent_bag")
 	item_tent.itm_tent_bag_func()
 	check(#CLAIMS == 0 and #RELEASED >= 1, "the host's stock pack-up runs as it is")
+end)
+
+-- ------------------------------------------------------------------ F3a task 7: the host PLAYER claims like a client
+-- The host's process is the world server AND a player: with the role functions (coop.is_player / is_world_server) his tent,
+-- sleeping bag and pack-up are claims to his world server, the same coop.checkpoint.claim_tent a client sends; the engine
+-- puts the tent up for peer 0. The stock never puts his tent up.
+case("host_player_claims", function()
+	coop.is_player = function() return MODE ~= "sp" end
+	coop.is_world_server = function() return MODE == "host" end
+	local ok, err = pcall(function()
+		fresh("host")
+		db.actor._pos = vec3(0, 0, 0)
+		local _, o = item("itm_tent")
+		item_tent.func_use_tent(o)
+		check(#ADD_CALLS == 0, "the host player: no stock timer functor")
+		run_time_events(5000)
+		check(#CLAIMS == 1 and CLAIMS[1].what == "tent", "the host player's tent: claim_tent(..., 'tent'), as a client's")
+		check(count_sec("ph_tent") == 0 and #RELEASED == 0 and count_sec("itm_tent") == 1, "the stock puts nothing up, the item stays (the world takes it)")
+		-- the answer: his camp on the tent the engine put up for him (over the internal channel, coop_checkpoint_changed)
+		local _, tent = spawn("ph_tent", vec3(3, 0, 0))
+		fire("coop_checkpoint_changed", 0, "tent", tent:id(), false, "l01_escape")
+		check(MSG == STR.st_coop_cp_updated_tent and SPOTS[tent:id()] ~= nil, "the world's answer: the tent is his camp, tip and PDA spot")
+		check(ck().own_tent_source() == tent:id(), "his own tent source")
+		-- his sleeping bag (GAMMA: the action functor)
+		fresh("host")
+		local _, b = item("itm_sleepbag")
+		item_tent.func_use_bag(b)
+		run_time_events(300)
+		check(#CLAIMS == 1 and CLAIMS[1].what == "sleepbag" and count_sec("ph_sleepbag") == 0, "the host player's sleeping bag: a claim, nothing placed by the stock")
+		-- his tent bag and his own tent used: pack-up claims
+		fresh("host")
+		db.actor._pos = vec3(4, 0, 4)
+		local _, tb = item("itm_tent_bag")
+		fire("actor_on_item_use", tb)
+		run_time_events(200)
+		check(#CLAIMS == 1 and CLAIMS[1].what == "pack" and #ADD_CALLS == 0, "the host player's tent bag: a pack-up claim, no stock pack-up")
+		fire("coop_checkpoint_refused", "failed", "pack")
+		local _, mine = spawn("ph_tent", vec3(5, 0, 4))
+		fire("coop_checkpoint_changed", 0, "tent", mine:id(), false, "l01_escape")
+		fire("physic_object_on_use_callback", mine, db.actor)
+		run_time_events(200)
+		check(#CLAIMS == 2 and CLAIMS[2].what == "pack" and CLAIMS[2].x == 5, "using his own tent: a pack-up claim at it")
+		check(ck().pack_nearby() == false, "one claim at a time")
+		fire("coop_checkpoint_refused", "far", "pack")
+		check(ck().pack_nearby() == true, "pack_nearby() on the host player: asks, as a client's")
+		-- the world server registers the tents the engine put up (his and the clients')
+		fresh("host")
+		local _, t = spawn("ph_tent", vec3(5, 0, 5))
+		fire("coop_tent_placed", t:id(), 0)
+		check(item_tent.get_spawned_tents()[t:id()] == true and #CLAIMS == 0, "his tent the engine put up goes into the stock lists, nothing claimed")
+	end)
+	coop.is_player, coop.is_world_server = nil, nil
+	if not ok then error(err, 0) end
 end)
 
 case("host_refused_is_a_tip", function()

@@ -1462,6 +1462,7 @@ end
 -- -coop_autochoose flag, exactly as a client's does. `renew` tells that Lua state this is a new character after the old one
 -- retired. Answered by menu.new_character from node 0 (on_new_character -> host_choose_self), then menu.char_result.
 function host_offer_self()
+	if not is_world_server() then return false end -- F3a T7: only the world server offers (as host_choose_self answers)
 	local eco = host_eco()
 	local bare = se_load_var(SELF_ID, nil, BARE_VAR) == true
 	local ok, why = api.send_event("menu.char_offer", encode({ eco = eco, points = bare and 0 or budget(eco), nick = host_nick(),
