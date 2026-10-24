@@ -17,7 +17,7 @@
 |---|---|
 | `coop.is_active()`, `is_host()`, `is_client()`, `is_live()` | есть ли сессия; эта машина хост; клиент; в мире (хост или клиент после загрузки) |
 | `coop.self_id()` | свой id игрока: хост — 0, клиенты — 1..7 |
-| `coop.players()` | `{ {id, nick, avatar_id, rtt, is_self}, ... }` |
+| `coop.players()` | `{ {id, nick, avatar_id, rtt, loss, is_self}, ... }`; `rtt` мс, `loss` 0..1 — потери пакетов по оценке транспорта (у себя 0; у клиента числа есть только у хоста, id 0; сетевой график — `coop_hud_netgraph`) |
 | `coop.avatar_of(peer)`, `coop.peer_of_avatar(id)` | персонаж игрока и обратно, в нумерации этой машины |
 | `coop.owners_known()` | клиент уже знает, кто играет каким персонажем |
 | `coop.to_host_id(id)`, `coop.to_local_id(id)` | перевод id объекта между нумерацией хоста и своей (у клиента меняются местами 0 и id его персонажа) |

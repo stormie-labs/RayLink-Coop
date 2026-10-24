@@ -101,6 +101,15 @@ DEFAULTS = {
 	team_status = 12, -- state icon (cross in a melting ring, skull, eye, z, !) right of the segments
 	team_status_gap = 10, -- its centre this far after the last segment
 	team_timer_h = 12, -- "0:42" after the icon
+	-- net graph (coop_hud_netgraph): FPS / ping / loss, a block at the top right under the stock timers (hud_timer ends at
+	-- 66), clear of the compass bar (38 % in the middle) and of the team panel (top left)
+	net_right = 12, -- from the right edge of the screen
+	net_top = 74, -- the top of the plate
+	net_w = 136, -- the plate: pad + label column + number + pad
+	net_pad = 5, -- between the plate's edge and the rows
+	net_row = 13, -- from one row to the next (a row is as high)
+	net_label_w = 80, -- the label column (the longest label, Russian "loss max", is 78 wide); the number takes the rest
+	net_bg_alpha = 0.33, -- the plate #0C0D0A, as the compass bar's
 }
 
 local layout

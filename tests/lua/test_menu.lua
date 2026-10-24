@@ -9,8 +9,8 @@ STRINGS = {}
 do
 	-- the option captions of the host's death rules (F3 task 15) are in st_coop_death.xml, next to the texts of coop_death;
 	-- those of HUD v2 (compass, its field of view, the ping line) in st_coop_hud.xml; the Restore caption of the window
-	-- (F3 task 17) in st_coop_saves.xml
-	for _, file in ipairs({ "st_coop_menu.xml", "st_coop_death.xml", "st_coop_hud.xml", "st_coop_saves.xml" }) do
+	-- (F3 task 17) in st_coop_saves.xml; the net graph's in st_coop_netgraph.xml
+	for _, file in ipairs({ "st_coop_menu.xml", "st_coop_death.xml", "st_coop_hud.xml", "st_coop_saves.xml", "st_coop_netgraph.xml" }) do
 		local fh = assert(io.open(ROOT .. "configs/text/eng/" .. file, "r"))
 		local src = fh:read("*a")
 		fh:close()
@@ -757,7 +757,7 @@ end
 check(#no_tex == 0 and atlas.coop_menu_white, "every coop_menu_* texture of the layout is in the atlas (" .. table.concat(no_tex, ",") .. ")")
 -- rus has the same ids
 local rus = {}
-for _, file in ipairs({ "st_coop_menu.xml", "st_coop_death.xml", "st_coop_hud.xml", "st_coop_saves.xml" }) do
+for _, file in ipairs({ "st_coop_menu.xml", "st_coop_death.xml", "st_coop_hud.xml", "st_coop_saves.xml", "st_coop_netgraph.xml" }) do
 	local fr = assert(io.open(ROOT .. "configs/text/rus/" .. file, "rb"))
 	local rsrc = fr:read("*a")
 	fr:close()

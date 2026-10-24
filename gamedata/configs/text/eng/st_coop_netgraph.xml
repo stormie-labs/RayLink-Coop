@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop: the net graph (scripts\coop_hud_netgraph.script) and its option on the Co-op page. windows-1251, CRLF. -->
+<string_table>
+	<string id="st_coop_netgraph_fps">
+		<text>FPS</text>
+	</string>
+	<string id="st_coop_netgraph_ping">
+		<text>PING</text>
+	</string>
+	<string id="st_coop_netgraph_ping_max">
+		<text>PING max</text>
+	</string>
+	<string id="st_coop_netgraph_loss">
+		<text>LOSS</text>
+	</string>
+	<string id="st_coop_netgraph_loss_max">
+		<text>LOSS max</text>
+	</string>
+	<string id="st_coop_netgraph_players">
+		<text>PLAYERS</text>
+	</string>
+	<string id="st_coop_netgraph_ms">
+		<text>%d ms</text>
+	</string>
+	<string id="st_coop_netgraph_none">
+		<text>-</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_netgraph">
+		<text>Net graph</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_netgraph_desc">
+		<text>A small block in the top right corner of the screen: FPS, ping to the host and packet loss (the host sees the worst of its players and how many there are). Green is fine, amber is so-so, red is bad: a ping of 150 ms or more, or 5 % of the packets lost. Only in a co-op session.</text>
+	</string>
+</string_table>

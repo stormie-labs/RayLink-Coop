@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop net graph (scripts\coop_hud_netgraph.script): the 16:9 copy of ui_coop_netgraph.xml (the engine loads it on
+     a wide screen): the same nodes. The texture and the fonts only; the script places, sizes and colours everything from
+     the layout table (scripts\coop_hud_layout.script, the net_* lines of [coop_hud_layout] in configs\mod_system_coop.ltx).
+     The node of a number is called num, not text: a child window named text is read as a font description (engine FATAL
+     pTmpFont). -->
+<w>
+	<coop_netgraph x="0" y="0" width="1024" height="768">
+		<!-- the dark plate #0C0D0A behind the rows (the same as the compass bar's) -->
+		<bg x="0" y="0" width="112" height="60" stretch="1">
+			<texture>coop_hud_white</texture>
+		</bg>
+		<label x="0" y="0" width="62" height="13">
+			<text complex_mode="0" r="175" g="177" b="175" align="l" vert_align="c" font="letterica16"/>
+		</label>
+		<num x="0" y="0" width="40" height="13">
+			<text complex_mode="0" r="244" g="245" b="246" align="r" vert_align="c" font="letterica16"/>
+		</num>
+	</coop_netgraph>
+</w>

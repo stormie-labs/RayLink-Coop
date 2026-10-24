@@ -7,7 +7,8 @@
 		names above players and their distance (coop_nametags, coop_nametags_dist),
 		party panel / player markers / chat feed on the HUD (W5: applied to coop_core_hud / coop_core_chat),
 		HUD v2 (docs\HUD_V2.md): compass bar on/off and its field of view 120 / 160 / 200 (coop_hud_compass), a line
-		that says where the ping key is (the key itself: Controls > Common, "Co-op: ping", modxml_coop_hud).
+		that says where the ping key is (the key itself: Controls > Common, "Co-op: ping", modxml_coop_hud),
+		the net graph (FPS / ping / loss at the top right, coop_hud_netgraph; off by default, unlike the other switches).
 	The host's rules are not on this page any more (game settings, docs\GAME_SETTINGS.md 3.6 and 4.3): friendly fire,
 	shared task rewards, the death rules (docs\CHECKPOINTS_DEATH.md section 9), the autosave, the economy group's rules
 	(coop_economy_core.RULES, read through coop_settings.rule("economy/<id>")) belong to one game. They are set on the new
@@ -55,6 +56,7 @@ function build_page()
 						{ "200", "st_coop_hud_fov_200" },
 					} },
 				{ id = "ping_note", type = "desc", text = "st_coop_hud_ping_note", clr = { 255, 200, 200, 200 } },
+				flag("netgraph", false), -- coop_hud_netgraph: strings st_coop_netgraph.xml
 			}, },
 			-- the host's rules (the old group coop_session) are a game's settings now: see the header
 		},
@@ -91,13 +93,16 @@ end
 -------------------------------------------------------------------------------
 -- Player group toggles -> core HUD / chat (W5). Read straight from axr_options (player-owned paths); absent = on.
 -------------------------------------------------------------------------------
-local function player_flag(id)
+-- `def` is what an option nobody set reads as (on, except the net graph).
+local function player_flag(id, def)
+	if def == nil then def = true end
 	local am = rawget(_G, "axr_main")
 	local cfg = am and am.config
-	if not cfg then return true end
-	local ok, v = pcall(function() return cfg:r_value("options", "coop/coop_player/" .. id, 1) end)
+	if not cfg then return def end
+	local ok, v = pcall(function() return cfg:r_value("options", "coop/coop_player/" .. id, 1, def) end)
 	if ok and v == false then return false end
-	return true
+	if ok and v == true then return true end
+	return def
 end
 
 local function player_value(id, def)
@@ -118,6 +123,8 @@ function apply_player_flags()
 	if compass and compass.set_fov then pcall(compass.set_fov, player_value("compass_fov", "160")) end
 	local chat = rawget(_G, "coop_core_chat")
 	if chat and chat.set_feed_enabled then pcall(chat.set_feed_enabled, player_flag("chat_feed")) end
+	local net = rawget(_G, "coop_hud_netgraph")
+	if net and net.set_enabled then pcall(net.set_enabled, player_flag("netgraph", false)) end
 end
 
 local function on_option_change() apply_player_flags() end

@@ -1,0 +1,442 @@
+--[[
+	Anomaly Coop - the net graph (gamedata\scripts\coop_hud_netgraph.script): a small CS2-style block at the top right of the
+	screen, switched on separately by the player's option (Options > Co-op > "Net graph", coop/coop_player/netgraph, off by
+	default; coop_menu_options applies it).
+		FPS      from the frame time, over the last ~0.5 s
+		PING     the round trip to the host (a client); the host shows the worst of its clients ("PING max")
+		LOSS     packet loss, the same way (the transport's smoothed value, percent)
+		PLAYERS  (the host) how many players are in the session
+	Every number is green / amber / red by the thresholds below, the labels are dim. What is not known is a dash in the dim
+	colour: the host alone, a failed player list, the first quarter of a second of the fps. A number is graded as it is shown
+	(fps rounded to a whole number, loss cut to a tenth, so "ok < 1 %" holds for the digits on the screen).
+	Data: coop.players() -> { id, rtt (ms), loss (0..1), is_self, ... }; on a client the host is the entry with id 0 (the other
+	clients' lines carry no numbers there). The text is rewritten 4 times a second (REFRESH_MS), not every frame, and only a
+	number that changed is written. Nothing is created in a frame: the statics are made once with the window.
+	Hidden: the option is off, no session (or a client that has not finished loading the host's world), no actor, and while the
+	main HUD is hidden (inventory, PDA, a dialogue: main_hud_shown()) - the rule of the compass bar and the team panel.
+	Place: coop_hud_layout net_* (top right under the stock timers, px at 768 high, never stretched; one line each in
+	[coop_hud_layout] of configs\mod_system_coop.ltx), look: configs\ui\ui_coop_netgraph.xml (+ _16), strings:
+	st_coop_netgraph.xml. A CUIScriptWnd on get_hud():AddDialogToRender, like the compass.
+
+	For other scripts:
+		coop_hud_netgraph.set_enabled(bool) / is_enabled()   the player's option coop/coop_player/netgraph
+		coop_hud_netgraph.get_window() -> the window while it is on the HUD
+		pure helpers (tests): grade_ping, grade_loss, grade_fps, color_of, fps_of, summarize
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local tostring, tonumber, type, ipairs, pcall = tostring, tonumber, type, ipairs, pcall
+local math_floor, math_max, math_min = math.floor, math.max, math.min
+local string_format, table_insert, table_remove = string.format, table.insert, table.remove
+
+XML_FILE = "ui_coop_netgraph.xml"
+
+-- thresholds (owner 2026-10-24: "green when everything is fine, red when loss is heavy or the ping is high")
+PING_WARN, PING_BAD = 80, 150 -- ms: ok < 80, warn < 150, bad >= 150
+LOSS_WARN, LOSS_BAD = 1, 5 -- percent: ok < 1, warn < 5, bad >= 5
+FPS_OK, FPS_BAD = 50, 30 -- ok >= 50, warn >= 30, bad < 30
+
+REFRESH_MS = 250 -- the text is rewritten 4 times a second
+FPS_BUCKETS = 2 -- refreshes the fps is averaged over: 2 x 250 ms = ~0.5 s
+VIS_MS = 100 -- how often the HUD visibility and the screen size are looked at
+HOST_PEER = 0 -- the host's peer id: a client's ping and loss are the numbers of this entry
+ROWS = 4 -- FPS, PING, LOSS and (the host) PLAYERS
+SHOWN_MAX = { ping = 999, fps = 999, loss = 100 } -- what the narrow number column can show
+
+-- colours (the same palette as the rest of HUD v2: the compass bar's plate, the transition board's amber)
+local C_OK = { 104, 214, 118 } -- green
+local C_WARN = { 240, 176, 76 } -- amber
+local C_BAD = { 226, 58, 48 } -- red
+local C_DIM = { 175, 177, 175 } -- labels, a dash
+local C_PLAIN = { 244, 245, 246 } -- a count that is not a verdict
+local C_BG = { 12, 13, 10 } -- #0C0D0A
+local A_LABEL, A_NUM = 217, 255 -- 0..255
+local A_SHADOW = 0.65 -- of the text it sits under
+
+-- row id -> { string id, text if the string table has none }
+local LABEL = {
+	fps = { "st_coop_netgraph_fps", "FPS" },
+	ping = { "st_coop_netgraph_ping", "PING" },
+	ping_max = { "st_coop_netgraph_ping_max", "PING max" },
+	loss = { "st_coop_netgraph_loss", "LOSS" },
+	loss_max = { "st_coop_netgraph_loss_max", "LOSS max" },
+	players = { "st_coop_netgraph_players", "PLAYERS" },
+}
+local STR_MS = "st_coop_netgraph_ms"
+local STR_NONE = "st_coop_netgraph_none"
+local ROWS_CLIENT = { "fps", "ping", "loss" }
+local ROWS_HOST = { "fps", "ping_max", "loss_max", "players" }
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-hud] %s", ok and line or tostring(fmt))
+end
+
+local function tr(id, fallback)
+	local ok, s = pcall(game.translate_string, id)
+	if not ok or type(s) ~= "string" or s == "" or s == id then return fallback end
+	return s
+end
+
+local function layout()
+	local m = rawget(_G, "coop_hud_layout") or coop_hud_layout
+	return m.get()
+end
+
+-------------------------------------------------------------------------------
+-- Pure helpers
+-------------------------------------------------------------------------------
+-- Loss as it is shown: percent cut (not rounded) to a tenth, so that 0.99 reads 0.9 and is green.
+local function loss_shown(pct)
+	return math_floor(math_min(pct, SHOWN_MAX.loss) * 10 + 1e-6) / 10
+end
+
+function grade_ping(ms)
+	if ms >= PING_BAD then return "bad" end
+	if ms >= PING_WARN then return "warn" end
+	return "ok"
+end
+
+function grade_loss(pct)
+	pct = loss_shown(pct)
+	if pct >= LOSS_BAD then return "bad" end
+	if pct >= LOSS_WARN then return "warn" end
+	return "ok"
+end
+
+function grade_fps(fps)
+	fps = math_floor(fps + 0.5)
+	if fps >= FPS_OK then return "ok" end
+	if fps >= FPS_BAD then return "warn" end
+	return "bad"
+end
+
+-- { r, g, b } of a grade; anything else is the dim colour
+function color_of(grade)
+	if grade == "ok" then return C_OK end
+	if grade == "warn" then return C_WARN end
+	if grade == "bad" then return C_BAD end
+	return C_DIM
+end
+
+-- Frames per second of `frames` frames in `ms` milliseconds; nil without time.
+function fps_of(frames, ms)
+	if not ms or ms <= 0 then return nil end
+	return frames * 1000 / ms
+end
+
+local function number(v)
+	v = tonumber(v)
+	if v and v == v and v >= 0 and v < 1e9 then return v end
+	return nil
+end
+
+-- What the net graph shows of a coop.players() list: { players = count of everybody, ping = ms | nil, loss = percent | nil }.
+-- The host: the worst of its clients. A client: the host's entry only. An entry without `loss` (an older exe) counts as 0 %;
+-- garbage (no number, NaN, negative) is skipped.
+function summarize(list, host)
+	local out = { players = 0 }
+	if type(list) ~= "table" then return out end
+	for _, p in ipairs(list) do
+		if type(p) == "table" then
+			out.players = out.players + 1
+			if not p.is_self and (host or p.id == HOST_PEER) then
+				local rtt = number(p.rtt)
+				if rtt and (out.ping == nil or rtt > out.ping) then out.ping = rtt end
+				local loss = p.loss == nil and 0 or number(p.loss)
+				if loss then
+					loss = math_min(loss * 100, 100)
+					if out.loss == nil or loss > out.loss then out.loss = loss end
+				end
+			end
+		end
+	end
+	return out
+end
+
+-------------------------------------------------------------------------------
+-- Options
+-------------------------------------------------------------------------------
+local enabled = false -- off until the player's option says so (coop_menu_options.apply_player_flags)
+local WIN -- the window while it is on the HUD
+
+function set_enabled(on)
+	enabled = on and true or false
+end
+
+function is_enabled()
+	return enabled
+end
+
+function get_window()
+	return WIN
+end
+
+-------------------------------------------------------------------------------
+-- Engine glue
+-------------------------------------------------------------------------------
+local function live()
+	if not api then return false end
+	local ok, on = pcall(function() return api.is_active() and (api.is_host() or api.is_live()) end)
+	return ok and on == true
+end
+
+local function is_host()
+	local ok, h = pcall(api.is_host)
+	return ok and h == true
+end
+
+local function players_list()
+	local ok, list = pcall(api.players)
+	if ok and type(list) == "table" then return list end
+	return nil
+end
+
+local function hud_visible()
+	local f = rawget(_G, "main_hud_shown")
+	if not f then return true end
+	local ok, v = pcall(f)
+	return not ok or v == true
+end
+
+local function argb(a, c)
+	return GetARGB(math_max(0, math_min(255, math_floor(a + 0.5))), c[1], c[2], c[3])
+end
+
+-------------------------------------------------------------------------------
+-- The window
+-------------------------------------------------------------------------------
+class "UICoopNetgraph" (CUIScriptWnd)
+
+function UICoopNetgraph:__init() super()
+	self.v2 = vector2() -- one vector for every SetWndPos / SetWndSize (the engine copies it)
+	self.rows = {}
+	self.vis = nil
+	self.vis_at = 0
+	self.frames = 0 -- frames since the last refresh
+	self.last_at = nil -- time of the last refresh; nil: the next frame starts the count
+	self.buckets = {} -- { f = frames, ms = time } of the last refreshes
+	self.n_rows = 0
+	self.fps_nil = true
+	self:InitControls()
+end
+
+function UICoopNetgraph:__finalize()
+end
+
+-- The shared vector, set: never keep it.
+function UICoopNetgraph:V(x, y)
+	return self.v2:set(x, y)
+end
+
+function UICoopNetgraph:InitControls()
+	local xml = CScriptXmlInit()
+	xml:ParseFile(XML_FILE)
+	self.root = xml:InitStatic("coop_netgraph", self)
+	self.bg = xml:InitStatic("coop_netgraph:bg", self.root)
+	for i = 1, ROWS do
+		local r = {}
+		r.label_sh = xml:InitTextWnd("coop_netgraph:label", self.root)
+		r.label = xml:InitTextWnd("coop_netgraph:label", self.root)
+		r.num_sh = xml:InitTextWnd("coop_netgraph:num", self.root)
+		r.num = xml:InitTextWnd("coop_netgraph:num", self.root)
+		r.on = false
+		for _, w in ipairs({ r.label_sh, r.label, r.num_sh, r.num }) do w:Show(false) end
+		self.rows[i] = r
+	end
+	self:Relayout()
+end
+
+-- Geometry for the current screen and layout. Sizes are px at 768 high: units down, px * kx across.
+function UICoopNetgraph:Relayout()
+	local L = layout()
+	local dev = device()
+	local W, H = dev.width, dev.height
+	local kx = 1024 * H / (768 * W)
+	local g = { W = W, H = H, kx = kx, px = 1024 / W, py = 768 / H, L = L }
+	g.w = L.net_w * kx
+	g.x = 1024 - L.net_right * kx - g.w
+	g.pad = L.net_pad * kx
+	g.label_w = L.net_label_w * kx
+	g.num_w = math_max(0, g.w - 2 * g.pad - g.label_w)
+	self.g = g
+	self.root:SetWndPos(self:V(0, 0))
+	self.root:SetWndSize(self:V(1024, 768))
+	self.bg:SetWndPos(self:V(g.x, L.net_top))
+	self.bg:SetTextureColor(argb(255 * L.net_bg_alpha, C_BG))
+	for i, r in ipairs(self.rows) do
+		local y = L.net_top + L.net_pad + (i - 1) * L.net_row
+		local lx, nx = g.x + g.pad, g.x + g.pad + g.label_w
+		r.label:SetWndPos(self:V(lx, y))
+		r.label_sh:SetWndPos(self:V(lx + g.px, y + g.py))
+		r.num:SetWndPos(self:V(nx, y))
+		r.num_sh:SetWndPos(self:V(nx + g.px, y + g.py))
+		for _, w in ipairs({ r.label, r.label_sh }) do w:SetWndSize(self:V(g.label_w, L.net_row)) end
+		for _, w in ipairs({ r.num, r.num_sh }) do w:SetWndSize(self:V(g.num_w, L.net_row)) end
+		r.label:SetTextColor(argb(A_LABEL, C_DIM))
+		r.label_sh:SetTextColor(argb(A_LABEL * A_SHADOW, { 0, 0, 0 }))
+		r.rgb = nil -- the number's colour is set again at the next refresh
+	end
+	self.n_rows_set = nil -- the plate's height, set again
+	if self.n_rows > 0 then self:ShowRows(self.n_rows) end
+end
+
+-- n rows on the plate (the host has a row more than a client).
+function UICoopNetgraph:ShowRows(n)
+	local L = self.g.L
+	if self.n_rows_set ~= n then
+		self.n_rows_set = n
+		self.bg:SetWndSize(self:V(self.g.w, 2 * L.net_pad + n * L.net_row))
+	end
+	self.n_rows = n
+	for i, r in ipairs(self.rows) do
+		local on = i <= n
+		if r.on ~= on then
+			r.on = on
+			for _, w in ipairs({ r.label, r.label_sh, r.num, r.num_sh }) do w:Show(on) end
+		end
+	end
+end
+
+-- The label of a row, once per change of its meaning (the host / client rows differ).
+function UICoopNetgraph:SetLabel(r, id)
+	if r.label_id == id then return end
+	r.label_id = id
+	local def = LABEL[id]
+	local text = tr(def[1], def[2])
+	r.label:SetText(text)
+	r.label_sh:SetText(text)
+end
+
+-- The number of a row: text and colour, written only when they changed.
+function UICoopNetgraph:SetNumber(r, text, rgb)
+	if r.text ~= text then
+		r.text = text
+		r.num:SetText(text)
+		r.num_sh:SetText(text)
+	end
+	if r.rgb ~= rgb then
+		r.rgb = rgb
+		r.num:SetTextColor(argb(A_NUM, rgb))
+		r.num_sh:SetTextColor(argb(A_NUM * A_SHADOW, { 0, 0, 0 }))
+	end
+end
+
+-- Every REFRESH_MS: the fps of the last ~0.5 s and the numbers of the session, written to the rows.
+function UICoopNetgraph:Refresh(tg)
+	if self.last_at then
+		local dt = tg - self.last_at
+		if dt < 0 then
+			self.buckets = {} -- the clock went back (a new Lua state): start over
+		elseif dt > 0 and self.frames > 0 then
+			table_insert(self.buckets, { f = self.frames, ms = dt })
+			while #self.buckets > FPS_BUCKETS do table_remove(self.buckets, 1) end
+		end
+	end
+	self.frames, self.last_at = 0, tg
+	local frames, ms = 0, 0
+	for _, b in ipairs(self.buckets) do frames, ms = frames + b.f, ms + b.ms end
+	local fps = fps_of(frames, ms)
+
+	local host = is_host()
+	local list = players_list()
+	local sum = summarize(list, host)
+	local none = tr(STR_NONE, "-")
+	local ids = host and ROWS_HOST or ROWS_CLIENT
+	self:ShowRows(#ids)
+	for i, id in ipairs(ids) do
+		local r = self.rows[i]
+		self:SetLabel(r, id)
+		local text, rgb = none, C_DIM
+		if id == "fps" then
+			if fps then
+				text = tostring(math_min(math_floor(fps + 0.5), SHOWN_MAX.fps))
+				rgb = color_of(grade_fps(fps))
+			end
+		elseif id == "ping" or id == "ping_max" then
+			if sum.ping then
+				text = string_format(tr(STR_MS, "%d ms"), math_min(math_floor(sum.ping + 0.5), SHOWN_MAX.ping))
+				rgb = color_of(grade_ping(sum.ping))
+			end
+		elseif id == "loss" or id == "loss_max" then
+			if sum.loss then
+				text = string_format("%.1f%%", loss_shown(sum.loss))
+				rgb = color_of(grade_loss(sum.loss))
+			end
+		elseif id == "players" then
+			if list then
+				text = tostring(sum.players)
+				rgb = C_PLAIN
+			end
+		end
+		self:SetNumber(r, text, rgb)
+	end
+end
+
+function UICoopNetgraph:Frame(tg)
+	if tg >= self.vis_at or tg < self.vis_at - VIS_MS then
+		self.vis_at = tg + VIS_MS
+		local vis = hud_visible() and db.actor ~= nil
+		if vis ~= self.vis then
+			self.vis = vis
+			self.root:Show(vis)
+			-- hidden for a while: the frames counted before it say nothing about the fps after it
+			self.last_at, self.frames, self.buckets = nil, 0, {}
+		end
+		local dev = device()
+		if dev.width ~= self.g.W or dev.height ~= self.g.H or layout() ~= self.g.L then self:Relayout() end
+	end
+	if not self.vis then return end
+	self.frames = self.frames + 1
+	if not self.last_at or tg - self.last_at >= REFRESH_MS or tg < self.last_at then self:Refresh(tg) end
+end
+
+function UICoopNetgraph:Update()
+	CUIScriptWnd.Update(self)
+	local tg = time_global()
+	if self.off_until and tg < self.off_until then return end
+	local ok, err = pcall(self.Frame, self, tg)
+	if not ok then
+		self.off_until = tg + 5000
+		log("! net graph frame failed: %s", tostring(err))
+	end
+end
+
+local function net_on()
+	if WIN then return end
+	local ok, err = pcall(function()
+		WIN = UICoopNetgraph()
+		get_hud():AddDialogToRender(WIN)
+	end)
+	if not ok then
+		WIN = nil
+		enabled = false
+		log("! net graph failed, switched off: %s", tostring(err))
+	end
+end
+
+local function net_off()
+	if not WIN then return end
+	local w = WIN
+	WIN = nil
+	pcall(function() get_hud():RemoveDialogToRender(w) end)
+end
+
+local function actor_on_update()
+	if enabled and db.actor and live() then
+		net_on()
+	elseif WIN then
+		net_off()
+	end
+end
+
+local function actor_on_net_destroy()
+	net_off()
+end
+
+function on_game_start()
+	if not api then return end -- an exe without co-op: nothing of this runs
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("actor_on_net_destroy", actor_on_net_destroy)
+end

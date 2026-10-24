@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop: the net graph (scripts\coop_hud_netgraph.script) and its option on the Co-op page. windows-1251, CRLF. -->
+<string_table>
+	<string id="st_coop_netgraph_fps">
+		<text>FPS</text>
+	</string>
+	<string id="st_coop_netgraph_ping">
+		<text>ПИНГ</text>
+	</string>
+	<string id="st_coop_netgraph_ping_max">
+		<text>ПИНГ макс</text>
+	</string>
+	<string id="st_coop_netgraph_loss">
+		<text>ПОТЕРИ</text>
+	</string>
+	<string id="st_coop_netgraph_loss_max">
+		<text>ПОТЕРИ макс</text>
+	</string>
+	<string id="st_coop_netgraph_players">
+		<text>ИГРОКИ</text>
+	</string>
+	<string id="st_coop_netgraph_ms">
+		<text>%d мс</text>
+	</string>
+	<string id="st_coop_netgraph_none">
+		<text>-</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_netgraph">
+		<text>Сетевой график</text>
+	</string>
+	<string id="ui_mm_coop_coop_player_netgraph_desc">
+		<text>Маленький блок в правом верхнем углу экрана: FPS, пинг до хоста и потери пакетов (у хоста - худшие из игроков и их число). Зелёный - всё хорошо, жёлтый - так себе, красный - плохо: пинг от 150 мс или потери от 5 %. Только в кооперативной сессии.</text>
+	</string>
+</string_table>
