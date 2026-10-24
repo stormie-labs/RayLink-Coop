@@ -40,6 +40,13 @@ size_t count_events(const std::vector<Holder::Event>& ev, Holder::Event::Kind ki
 	return n;
 }
 
+// Registers the map servers kM1 and kM2 with the ledger (R7: it hears registered peers only).
+void connect(Ledger& w)
+{
+	REQUIRE(w.register_server() == kM1);
+	REQUIRE(w.register_server() == kM2);
+}
+
 // The only packet of `ps` (the test stops when there is not exactly one).
 const Packet& one(const std::vector<Packet>& ps)
 {
@@ -124,6 +131,7 @@ struct Wire
 TEST(xfer_take_happy)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	w.add_world_object(10, {1, 2, 3});
 	CHECK(w.registered(10));
@@ -192,6 +200,7 @@ TEST(xfer_take_happy)
 TEST(xfer_release_happy)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	Wire net(w, {&m1});
 	w.add_world_object(10, {1});
@@ -244,6 +253,7 @@ TEST(xfer_release_happy)
 TEST(xfer_take_retry_idempotent)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	w.add_world_object(10, {1});
 	const uint64_t t0 = 1000;
@@ -311,6 +321,7 @@ TEST(xfer_take_retry_idempotent)
 TEST(xfer_release_before_ack_still_owner)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	Wire net(w, {&m1});
 	w.add_world_object(10, {1});
@@ -364,6 +375,7 @@ TEST(xfer_release_before_ack_still_owner)
 TEST(xfer_duplicate_prepare)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	Wire net(w, {&m1});
 	w.add_world_object(10, {1});
@@ -432,6 +444,7 @@ TEST(xfer_duplicate_prepare)
 TEST(xfer_abort_two_phase)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	w.add_world_object(10, {1});
 	const uint64_t now = 1000;
@@ -524,6 +537,7 @@ TEST(xfer_abort_two_phase)
 TEST(xfer_grant_while_holding)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	Wire net(w, {&m1});
 	w.add_world_object(10, {1});
@@ -556,6 +570,7 @@ TEST(xfer_grant_while_holding)
 TEST(xfer_spawn_registers)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	const uint64_t now = 1000;
 	std::vector<Packet> sp = m1.spawned(500, {7}, now);
@@ -608,6 +623,7 @@ TEST(xfer_spawn_registers)
 TEST(xfer_destroy_idempotent)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	Wire net(w, {&m1});
 	w.add_world_object(10, {1});
@@ -686,6 +702,7 @@ TEST(xfer_destroy_idempotent)
 TEST(xfer_snapshot_stream)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	Wire net(w, {&m1});
 	w.add_world_object(10, {1});
@@ -738,6 +755,7 @@ TEST(xfer_snapshot_stream)
 TEST(xfer_journal_roundtrip)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1), m2(kM2);
 	Wire net(w, {&m1, &m2});
 	w.add_world_object(10, {1});
@@ -782,6 +800,7 @@ TEST(xfer_journal_roundtrip)
 TEST(xfer_journal_limits)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	Wire net(w, {&m1});
 	for (uint16_t id = 100; id < 170; ++id)
@@ -807,6 +826,7 @@ TEST(xfer_journal_limits)
 
 	// Large states: the byte limit holds first.
 	Ledger w2;
+	connect(w2);
 	Holder m2(kM2);
 	Wire net2(w2, {&m2});
 	for (uint16_t id = 200; id < 210; ++id)
@@ -835,6 +855,7 @@ TEST(xfer_journal_limits)
 TEST(xfer_journal_resolve)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1), m2(kM2);
 	Wire net(w, {&m1, &m2});
 	w.add_world_object(10, {1});
@@ -883,11 +904,14 @@ TEST(xfer_journal_resolve)
 	CHECK_EQ(l.counters().completed, uint64_t(1));
 	CHECK_EQ(l.counters().rolled_back, uint64_t(1));
 
-	// New transfers: gens of a newer epoch, above everything from before the load.
-	Holder m3(kM1);
+	// New transfers: gens of a newer epoch, above everything from before the load; the map server registers anew under
+	// a peer never used before (the journal keeps the counter).
+	const Peer p3 = l.register_server();
+	CHECK(p3 > kM2);
+	Holder m3(p3);
 	Wire net3(l, {&m3});
 	net3.take(m3, 10);
-	CHECK_EQ(l.owner(10), kM1);
+	CHECK_EQ(l.owner(10), p3);
 	CHECK(l.gen(10) > max_gen);
 	CHECK((l.gen(10) >> kEpochShift) > (max_gen >> kEpochShift));
 }
@@ -897,6 +921,7 @@ TEST(xfer_journal_resolve)
 TEST(xfer_server_lost)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1), m2(kM2);
 	Wire net(w, {&m1, &m2});
 	w.add_world_object(10, {1});
@@ -945,6 +970,7 @@ TEST(xfer_server_lost)
 TEST(audit_duplicate_heals)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1), m2(kM2);
 	Wire net(w, {&m1, &m2});
 	w.add_world_object(10, {1});
@@ -982,6 +1008,7 @@ TEST(audit_duplicate_heals)
 TEST(audit_lost_heals)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	Wire net(w, {&m1});
 	w.add_world_object(10, {1});
@@ -1036,6 +1063,7 @@ TEST(audit_lost_heals)
 TEST(audit_drift_resyncs)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	Wire net(w, {&m1});
 	w.add_world_object(10, {1});
@@ -1098,6 +1126,7 @@ TEST(hash_bucket_mismatch)
 
 	// The world's expectation and the map server's report agree after transfers.
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	Wire net(w, {&m1});
 	for (uint16_t id = 1; id <= 40; ++id)
@@ -1116,6 +1145,7 @@ TEST(hash_bucket_mismatch)
 TEST(counters_in_flight_and_retries)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	w.add_world_object(10, {1});
 	w.add_world_object(11, {2});
@@ -1148,6 +1178,7 @@ TEST(counters_in_flight_and_retries)
 TEST(counters_journal_fixed_and_rolled_back)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	Wire net(w, {&m1});
 	w.add_world_object(10, {1});
@@ -1189,6 +1220,7 @@ TEST(counters_journal_fixed_and_rolled_back)
 TEST(counters_violations_and_resyncs)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	Wire net(w, {&m1});
 	w.add_world_object(10, {1});
@@ -1216,6 +1248,7 @@ TEST(counters_violations_and_resyncs)
 TEST(xfer_abort_ack_bars_the_grant)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	w.add_world_object(5, {0});
 	uint64_t t = 1000;
@@ -1263,22 +1296,38 @@ TEST(xfer_abort_ack_bars_the_grant)
 	CHECK(m1.idle());
 }
 
-// Review C1, the spawn side: an abort answered while spawning bars the grant's gen but not the spawn's own Ack.
+// Review C1, the spawn side: a gen declined earlier bars grants of it, never the Ack of a later spawn of the same id;
+// and a refusal (Abort gen 0) that arrives late while the map server spawns the id leaves the spawn alone.
 TEST(xfer_abort_while_spawning_keeps_the_spawn)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
+	w.add_world_object(30, {1});
 	const uint64_t t = 1000;
-	std::vector<Packet> sp = m1.spawned(30, {3}, t);
-	std::vector<Packet> aa = m1.on_packet(Packet{Op::Abort, {30, 0x00ffffffu}, kWorld, kM1, {}}, t);
+	std::vector<Packet> req = m1.want_online(30, t);
+	std::vector<Packet> gr = w.on_packet(one(req), t);
+	m1.want_offline(30, {}, t); // not wanted any more: the grant is declined
+	std::vector<Packet> aa = m1.on_packet(one(gr), t);
 	CHECK_EQ(count_op(aa, Op::AbortAck, kWorld), size_t(1));
-	CHECK(m1.authors(30));
-	std::vector<Packet> ack = w.on_packet(one(sp), t);
-	CHECK(m1.on_packet(one(ack), t).empty());
+	w.on_packet(one(aa), t);
+	CHECK_EQ(count_op(m1.on_packet(one(gr), t), Op::TakeCommit, kWorld), size_t(0)); // the declined gen stays barred
+	REQUIRE(w.world_destroy(30, t));
+	std::vector<Packet> req2 = m1.want_online(30, t); // asked again: refused (gen 0) - the refusal is late
+	std::vector<Packet> refusal = w.on_packet(one(req2), t);
+	REQUIRE(refusal.size() == 1);
+	CHECK(refusal[0].op == Op::Abort);
+	CHECK_EQ(refusal[0].key.gen, uint32_t(0));
+	m1.want_offline(30, {}, t);
+	w.tick(t + kTombstoneMs + 1000); // the id is free again; the map server spawns it
+	std::vector<Packet> sp = m1.spawned(30, {3}, t + kTombstoneMs + 1000);
+	CHECK_EQ(count_op(m1.on_packet(refusal[0], t + kTombstoneMs + 1000), Op::AbortAck, kWorld), size_t(1));
+	CHECK(m1.authors(30)); // the late refusal leaves the spawn alone
+	std::vector<Packet> ack = w.on_packet(one(sp), t + kTombstoneMs + 1000);
+	CHECK(m1.on_packet(one(ack), t + kTombstoneMs + 1000).empty()); // its own Ack is taken
 	CHECK(m1.idle());
 	CHECK_EQ(m1.gen(30), w.gen(30));
-	// the barred gen: a grant under it is refused, never made
-	CHECK_EQ(count_op(m1.on_packet(Packet{Op::Grant, {31, 5}, kWorld, kM1, {}}, t), Op::AbortAck, kWorld), size_t(1));
+	CHECK_EQ(w.owner(30), kM1);
 }
 
 // Review I2: a record the world makes anew takes a fresh gen, so a late ReleaseCommit of the id's earlier life is still
@@ -1286,6 +1335,7 @@ TEST(xfer_abort_while_spawning_keeps_the_spawn)
 TEST(xfer_late_release_commit_after_id_reuse)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	w.add_world_object(7, {0});
 	CHECK(w.gen(7) != 0);
@@ -1323,6 +1373,7 @@ TEST(xfer_late_release_commit_after_id_reuse)
 TEST(audit_lost_heal_is_two_phase)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	Wire net(w, {&m1});
 	w.add_world_object(10, {0});
@@ -1352,10 +1403,11 @@ TEST(audit_lost_heal_is_two_phase)
 }
 
 // Review I4: a lost map server is gone for good (R7) - its late messages are ignored (a grant to a dead peer would
-// freeze the object behind an abort nobody answers); server_joined takes the peer id back for a new connection.
+// freeze the object behind an abort nobody answers); a new connection registers under a new peer.
 TEST(xfer_lost_peer_ignored)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	w.add_world_object(10, {1});
 	const uint64_t t = 1000;
@@ -1369,14 +1421,15 @@ TEST(xfer_lost_peer_ignored)
 	CHECK(!w.registered(20));
 	CHECK(w.tick(t + 100000).empty());
 
-	w.server_joined(kM1); // a new connection under the same peer id
-	Holder m1b(kM1);
+	const Peer again = w.register_server(); // a new connection
+	CHECK(again != kM1);
+	Holder m1b(again);
 	Wire net(w, {&m1b});
 	net.take(m1b, 10);
-	CHECK_EQ(w.owner(10), kM1);
+	CHECK_EQ(w.owner(10), again);
 	CHECK(m1b.authors(10));
-	w.server_lost(kM1, net.now);
-	CHECK(audit(w, kM1, m1b.report()).empty()); // the auditor does not judge a lost peer
+	w.server_lost(again, net.now);
+	CHECK(audit(w, again, m1b.report()).empty()); // the auditor does not judge a lost peer
 	CHECK(w.world_authors(10));
 }
 
@@ -1385,6 +1438,7 @@ TEST(xfer_lost_peer_ignored)
 TEST(xfer_abort_refuses_and_keeps_the_wish)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	w.add_world_object(10, {1});
 	w.add_world_object(11, {2});
@@ -1422,6 +1476,7 @@ TEST(xfer_abort_refuses_and_keeps_the_wish)
 TEST(counters_are_honest)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	w.add_world_object(600, {1});
 	std::vector<Packet> sp = m1.spawned(600, {2}, 1000);
@@ -1437,6 +1492,7 @@ TEST(counters_are_honest)
 
 	// A Releasing entry is applied even where the loading world has the object at a map server.
 	Ledger src;
+	connect(src);
 	Holder m3(kM1);
 	Wire net(src, {&m3});
 	src.add_world_object(10, {1});
@@ -1445,6 +1501,7 @@ TEST(counters_are_honest)
 	REQUIRE(src.on_packet(one(rp), net.now).size() == 1);
 	const std::string journal = src.save_journal();
 	Ledger l;
+	connect(l);
 	Holder m4(kM2);
 	Wire net4(l, {&m4});
 	l.add_world_object(10, {1});
@@ -1481,6 +1538,7 @@ TEST(xfer_gen_epochs_stay_low)
 TEST(xfer_destroyed_spawn_outlives_an_old_tombstone)
 {
 	Ledger w;
+	connect(w);
 	Holder m1(kM1);
 	w.add_world_object(4, {1});
 	const uint64_t t = 1000;
@@ -1500,4 +1558,121 @@ TEST(xfer_destroyed_spawn_outlives_an_old_tombstone)
 	Holder m2(kM2);
 	std::vector<Packet> sp2 = m2.spawned(4, {3}, late + kTombstoneMs + 1000);
 	CHECK_EQ(count_op(w.on_packet(one(sp2), late + kTombstoneMs + 1000), Op::Ack, kM2), size_t(1));
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Fix round 2 (re-review of T2)
+// ---------------------------------------------------------------------------------------------------------------------
+
+// Review round 2, H1: a destroy at the map server is never undone. A copy of the grant of the incarnation being
+// destroyed gets no answer (declining it would let the world take the object back); the world takes the Destroy.
+TEST(xfer_destroy_is_never_undone)
+{
+	Ledger w;
+	connect(w);
+	Holder m1(kM1);
+	w.add_world_object(5, {7});
+	const uint64_t t = 1000;
+	std::vector<Packet> req = m1.want_online(5, t);
+	std::vector<Packet> gr = w.on_packet(one(req), t);
+	std::vector<Packet> tc = m1.on_packet(one(gr), t); // late in the network
+	m1.take_events();
+	std::vector<Packet> ds = m1.destroyed(5, t); // the engine killed it at once; late in the network
+	CHECK(m1.on_packet(one(gr), t).empty()); // the copy of the grant: no AbortAck
+	w.on_packet(one(tc), t);
+	std::vector<Packet> done = w.on_packet(one(ds), t);
+	REQUIRE(done.size() == 1);
+	CHECK(done[0].op == Op::Done);
+	CHECK(!w.registered(5));
+	CHECK(m1.on_packet(done[0], t).empty());
+	CHECK(m1.idle());
+
+	// The world aborts the grant while the map server destroys its object: the destroy wins.
+	w.add_world_object(6, {8});
+	std::vector<Packet> req6 = m1.want_online(6, t);
+	std::vector<Packet> gr6 = w.on_packet(one(req6), t);
+	m1.on_packet(one(gr6), t); // Held, the commit lost
+	m1.take_events();
+	std::vector<Packet> ds6 = m1.destroyed(6, t);
+	std::vector<Packet> ab6 = w.abort(6, t);
+	CHECK(m1.on_packet(one(ab6), t).empty()); // the abort of the gen it destroys: not confirmed
+	CHECK(w.frozen(6)); // the world waits ...
+	std::vector<Packet> done6 = w.on_packet(one(ds6), t); // ... for the Destroy, taken while Aborting
+	REQUIRE(done6.size() == 1);
+	CHECK(done6[0].op == Op::Done);
+	CHECK(!w.registered(6));
+	CHECK_EQ(w.journal_size(), size_t(0));
+	CHECK(m1.on_packet(done6[0], t).empty());
+	CHECK(m1.idle());
+}
+
+// Review round 2, H2 (ruling: safe by construction): every connection gets a peer never used before, so nothing of an
+// old connection - a grant on its way to it, its late SpawnPrepare - can pass for a new one's.
+TEST(xfer_peers_are_never_reused)
+{
+	Ledger w;
+	const Peer old = w.register_server();
+	CHECK(old != kWorld);
+	Holder m_old(old);
+	w.add_world_object(5, {7});
+	const uint64_t t = 1000;
+	std::vector<Packet> req = m_old.want_online(5, t);
+	std::vector<Packet> gr = w.on_packet(one(req), t); // in flight to the old connection
+	std::vector<Packet> sp = m_old.spawned(9, {1}, t); // in flight from it
+	w.server_lost(old, t); // the grant is rolled back
+	const Peer neu = w.register_server(); // the same session slot connects again
+	CHECK(neu != old);
+	Holder m_neu(neu);
+	std::vector<Packet> req2 = m_neu.want_online(5, t);
+	CHECK(m_neu.on_packet(one(gr), t).empty()); // the old grant is not addressed to it
+	CHECK(!m_neu.authors(5));
+	CHECK(w.world_authors(5));
+	CHECK(w.on_packet(one(sp), t).empty()); // the dead connection's spawn registers nothing
+	CHECK(!w.registered(9));
+	CHECK(w.on_packet(Packet{Op::TakeReq, {5, 0}, 77, kWorld, {}}, t).empty()); // a peer never registered: not heard
+	Wire net(w, {&m_neu});
+	net.send(std::move(req2));
+	net.pump();
+	CHECK_EQ(w.owner(5), neu);
+	CHECK(m_neu.authors(5));
+	CHECK(!w.world_authors(5));
+
+	// The counter outlives a load: the journal keeps it.
+	Ledger l;
+	REQUIRE(l.load_journal(w.save_journal()));
+	l.resolve_after_load();
+	CHECK(l.register_server() > neu);
+}
+
+// Review round 2, item 3: a Lost heal reaches a holder still spawning the object (the spawn's Ack lost, its engine lost
+// the object): the Abort means "let go of every incarnation up to its gen" - the holder lets go, and only then does the
+// world write it. An Abort with gen 0 (a refusal of a request for an id the world never knew) leaves a spawn alone.
+TEST(audit_lost_heal_reclaims_a_spawning_holder)
+{
+	Ledger w;
+	connect(w);
+	Holder m1(kM1);
+	const uint64_t t = 1000;
+	std::vector<Packet> sp = m1.spawned(30, {3}, t);
+	REQUIRE(w.on_packet(one(sp), t).size() == 1); // registered; its Ack is lost
+	std::vector<Finding> f = audit(w, kM1, {}); // the engine lost it: the report lacks it
+	REQUIRE(f.size() == 1);
+	CHECK(f[0].kind == Violation::Lost);
+	std::vector<Packet> ab = heal(w, f);
+	CHECK(!w.world_authors(30));
+	m1.take_events();
+	std::vector<Packet> aa = m1.on_packet(one(ab), t);
+	REQUIRE(aa.size() == 1);
+	CHECK(aa[0].op == Op::AbortAck);
+	CHECK(!m1.authors(30));
+	CHECK_EQ(count_events(m1.take_events(), Holder::Event::Kind::Remove, 30), size_t(1));
+	CHECK(!(w.world_authors(30) && m1.authors(30)));
+	w.on_packet(aa[0], t);
+	CHECK(w.world_authors(30));
+	CHECK(confirmed_is(w, 30, {3}));
+	CHECK(m1.idle());
+
+	std::vector<Packet> sp2 = m1.spawned(31, {4}, t);
+	CHECK_EQ(count_op(m1.on_packet(Packet{Op::Abort, {31, 0}, kWorld, kM1, {}}, t), Op::AbortAck, kWorld), size_t(1));
+	CHECK(m1.authors(31)); // gen 0: nothing of it to let go
 }

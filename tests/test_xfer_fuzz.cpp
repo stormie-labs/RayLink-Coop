@@ -2,7 +2,8 @@
 // 2026-10-24-f3a §1.7, §4.1 requirement 5).
 // One run = one world server (Ledger), 1-3 map servers (Holder) and a bad network between them (loss 0-30 %,
 // duplicates 0-10 %, a packet picked at random among the first 8 in flight that are due, delay 0-2000 ms; a packet
-// older than kMaxAgeMs is lost), driven by a xorshift64 stream of the run's seed. Each run draws a profile:
+// older than the run's tombstone less a second, at most kMaxAgeMs, is lost), driven by a xorshift64 stream of the
+// run's seed. Each run draws a profile:
 //   default - takes, releases, changes, spawns, destroys at a map server and at the world, a player's move (release
 //             here, take there), the edge of the online radius (out and in at once), a squad as a unit, a story
 //             teleport of an NPC (release, teleport at the world, take elsewhere), a player leaving mid-transfer, the
@@ -10,7 +11,9 @@
 //             drained and stopped, a restart (a new peer id, or the old one when nothing of it is in flight), a save
 //             (the world's objects plus the journal) and a load (a fresh Ledger, load_journal, resolve_after_load,
 //             every map server restarted empty);
-//   ce1     - the mix that found review C1: 30 % takes, 25 % edge of the radius, 30 % world aborts, no random quiet;
+//   ce1     - the mix that found review C1: 30 % takes, 25 % edge of the radius, 30 % world aborts (half of them aimed
+//             at a grant whose map server is committing a release or destroying the id), one map server, one object,
+//             no random quiet;
 //   reuse   - the default mix plus ids used again (a map server spawns a destroyed id, the world makes one anew);
 //   limits  - the default mix with ids used again under small limits (journal 1-4 entries / 200-600 bytes,
 //             tombstones 6-12 s, grant timeout 1.5-5 s), so R6 and the tombstone's end are reached.
@@ -31,6 +34,8 @@
 //   COOP_FUZZ_SEED=<seed>      replay one seed with a trace (decimal or 0x hex); COOP_FUZZ_OPS=<n> limits operations
 //   COOP_FUZZ_THREADS=<n>      worker threads (default: the hardware's, at most 16)
 //   COOP_FUZZ_BIG=<n>          one run in n is full-size (default kBigEvery; 0: none)
+//   COOP_FUZZ_BASE=<seed>      another seed base. Nightly: COOP_FUZZ_RUNS=3000000 with a new base each night
+//                              (about 75 s on 12 cores), and COOP_FUZZ_PROFILE=ce1 COOP_FUZZ_RUNS=1000000
 // On a violation: the seed, the step, the smallest operation count that still fails and its trace.
 // One run in kBigEvery (not ce1) is the full-size world of the plan (20-200 objects, 150-399 operations); the others
 // are small (3-10 objects, 10-49 operations).
@@ -65,8 +70,8 @@ using Bytes = std::vector<uint8_t>;
 constexpr uint64_t kDefaultRuns = 300000;
 constexpr uint64_t kSeedBase = 0xC00F5EED20261024ull;
 constexpr size_t kWindow = 8; // a packet is picked among the first kWindow in flight that are due
-constexpr uint64_t kMaxAgeMs = 5000; // R4: a tombstone outlives every packet - older ones are lost
-constexpr uint32_t kBigEvery = 20; // 300 000 runs stay under 60 s on one thread (measured: 53 s)
+constexpr uint64_t kMaxAgeMs = 30000; // R4: a tombstone outlives every packet - older ones are lost
+constexpr uint32_t kBigEvery = 24; // 300 000 runs stay under 60 s on one thread (measured: 51 s)
 constexpr uint64_t kFullCheckEvery = 64;
 constexpr uint32_t kQuietStepMs = 100;
 constexpr uint32_t kQuietMaxMs = 600000; // a quiet period that does not settle in 10 simulated minutes is a livelock
@@ -338,10 +343,10 @@ private:
 	Ledger::Limits m_limits;
 	std::unique_ptr<Ledger> m_w;
 	std::vector<Map> m_maps;
-	Peer m_next_peer = 1;
 	std::deque<Flight> m_net;
 	uint64_t m_now = 1000;
 	uint32_t m_loss = 0, m_dup = 0, m_delay = 0;
+	uint64_t m_max_age = kMaxAgeMs; // R4: below the run's tombstone
 	uint16_t m_next_id = 1000;
 	// The model: what the game did and what the replies said, kept apart from the ledger.
 	std::set<uint16_t> m_reg; // registered: made by the world, or a spawn the world answered
@@ -352,7 +357,22 @@ private:
 	std::map<uint16_t, uint32_t> m_ver; // versions handed out (never reused)
 	std::map<uint16_t, Release> m_rel;
 	std::set<uint16_t> m_world; // written by the world at the last check
-	std::map<uint16_t, size_t> m_faulty; // an injected duplicate: the map server that holds it
+	struct Fault // an injected duplicate: the map server that holds it and the incarnation (the grant's gen)
+	{
+		size_t slot;
+		uint32_t gen;
+	};
+	std::map<uint16_t, Fault> m_faulty;
+	// Destroys the engines performed (id -> the map server and its peer then): never undone (review round 2, H1).
+	std::map<uint16_t, std::pair<size_t, Peer>> m_destroyed;
+
+	// The injected duplicate itself: map server k runs the fault's incarnation of id.
+	bool injected(uint16_t id, size_t k) const
+	{
+		auto f = m_faulty.find(id);
+		return f != m_faulty.end() && f->second.slot == k && m_maps[k].h->authors(id) &&
+		       m_maps[k].h->gen(id) == f->second.gen;
+	}
 	std::map<uint16_t, size_t> m_teleport; // story teleports waiting for the NPC to be back at the world
 	std::unique_ptr<Save> m_save;
 	std::vector<uint16_t> m_dirty; // ids touched since the last check
@@ -422,7 +442,16 @@ private:
 
 	void setup()
 	{
-		m_profile = m_forced >= 0 ? Profile(m_forced) : Profile(m_r.below(100) < 40 ? 0 : 1 + m_r.below(3));
+		// The mix (round 2): default 30 %, ce1 40 %, reuse 15 %, limits 15 %. ce1 finds the class of review C1 about
+		// once in 93 000 of its runs (the bug put back, 12 seed bases: mean of the first hits, median 54 000), so a
+		// default 300 000 expects about 1.3 hits (the default seeds hit it at run 180 988) and a nightly 3 000 000
+		// (COOP_FUZZ_RUNS, a new COOP_FUZZ_BASE each night) about 13.
+		const uint32_t roll = m_r.below(100);
+		m_profile = m_forced >= 0 ? Profile(m_forced) :
+		            roll < 30     ? Profile::Default :
+		            roll < 70     ? Profile::Ce1 :
+		            roll < 85     ? Profile::Reuse :
+		                            Profile::Limits;
 		m_res.profile = m_profile;
 		const bool big = m_profile != Profile::Ce1 && m_big_every && m_r.below(m_big_every) == 0;
 		m_res.stats.big = big ? 1 : 0;
@@ -435,10 +464,11 @@ private:
 		m_delay = m_r.below(2001);
 		if (m_profile == Profile::Ce1)
 		{
-			maps = 1 + m_r.below(2);
-			objects = 1 + m_r.below(3);
-			ops = 40 + m_r.below(41);
-			m_loss = m_r.below(11);
+			maps = 1;
+			objects = 1;
+			ops = 150 + m_r.below(151);
+			m_loss = 5 + m_r.below(16);
+			m_dup = 5 + m_r.below(11);
 			m_delay = 1000 + m_r.below(1001);
 			m_random_quiet = false;
 		}
@@ -451,6 +481,7 @@ private:
 			m_limits.tombstone_ms = 6000 + m_r.below(6001);
 			m_limits.grant_timeout_ms = 1500 + m_r.below(3501);
 		}
+		m_max_age = std::min<uint64_t>(kMaxAgeMs, m_limits.tombstone_ms - 1000);
 		m_audits = m_r.percent(50);
 		m_faults = m_audits && m_r.percent(33);
 		m_dup_pct = m_faults ? 5 + m_r.below(16) : 0;
@@ -458,7 +489,7 @@ private:
 		m_w = std::make_unique<Ledger>(m_limits);
 		m_maps.resize(maps);
 		for (size_t k = 0; k < maps; ++k)
-			start_map(k, m_next_peer++);
+			start_map(k, m_w->register_server());
 		for (uint16_t id = 1; id <= objects; ++id)
 			world_add(id);
 		log(std::string("setup: profile ") + profile_name(m_profile) + (big ? " (full size)" : "") + ", " +
@@ -497,18 +528,18 @@ private:
 	}
 
 	// Delivers up to `n` packets that are due, each picked at random among the first kWindow in flight; a packet older
-	// than kMaxAgeMs is lost.
+	// than m_max_age is lost.
 	size_t deliver(size_t n)
 	{
 		size_t done = 0;
 		for (; done < n && m_res.ok; ++done)
 		{
-			while (!m_net.empty() && m_now > m_net.front().sent + kMaxAgeMs)
+			while (!m_net.empty() && m_now > m_net.front().sent + m_max_age)
 				m_net.pop_front();
 			size_t due[kWindow];
 			size_t k = 0;
 			for (size_t i = 0; i < m_net.size() && i < kWindow; ++i)
-				if (m_net[i].at <= m_now && m_now <= m_net[i].sent + kMaxAgeMs)
+				if (m_net[i].at <= m_now && m_now <= m_net[i].sent + m_max_age)
 					due[k++] = i;
 			if (!k)
 				break;
@@ -555,7 +586,7 @@ private:
 			Packet q = p;
 			q.to = m.peer;
 			log("fault: misrouted copy " + describe_packet(q));
-			m_faulty[p.key.id] = b;
+			m_faulty[p.key.id] = Fault{b, p.key.gen};
 			send(m.h->on_packet(q, m_now));
 			events(b);
 			if (m.h->authors(p.key.id))
@@ -645,7 +676,8 @@ private:
 				if (!m.wanted.count(e.id) && !removed.count(e.id))
 					return fail_id("an object created that nobody asked for", e.id);
 				auto f = m_faulty.find(e.id);
-				if ((f == m_faulty.end() || f->second != k) && m_reg.count(e.id) && version_of(e.state) != m_conf[e.id])
+				const bool copy = f != m_faulty.end() && f->second.slot == k; // the misrouted grant itself
+				if (!copy && m_reg.count(e.id) && version_of(e.state) != m_conf[e.id])
 					return fail_id("a take that does not carry the last confirmed state", e.id);
 				m.has.insert(e.id);
 				m.wanted.erase(e.id);
@@ -656,7 +688,7 @@ private:
 				if (!m.has.count(e.id) && !m.lost.count(e.id))
 					return fail_id("an object removed that is not there", e.id);
 				auto f = m_faulty.find(e.id);
-				if (f != m_faulty.end() && f->second == k)
+				if (f != m_faulty.end() && f->second.slot == k)
 					m_faulty.erase(f); // the injected copy is gone
 				m.has.erase(e.id);
 				m.lost.erase(e.id);
@@ -717,8 +749,7 @@ private:
 			const bool runs = m.has.count(id) != 0;
 			if (m.h->authors(id) != (runs || m.lost.count(id)))
 				return fail_id("a holder and its engine disagree", id);
-			auto f = m_faulty.find(id);
-			if (runs && (f == m_faulty.end() || f->second != k))
+			if (runs && !injected(id, k)) // only the injected incarnation itself is not counted
 				++authors;
 		}
 		if (authors > 1)
@@ -810,7 +841,7 @@ private:
 			for (const Finding& f : found)
 			{
 				auto fault = m_faulty.find(f.id);
-				if (f.kind == Violation::Duplicate && (fault == m_faulty.end() || fault->second != k))
+				if (f.kind == Violation::Duplicate && (fault == m_faulty.end() || fault->second.slot != k))
 					return fail_id("the auditor found a duplicate nobody injected", f.id);
 				if (f.kind == Violation::Lost && !m.lost.count(f.id))
 					return fail_id("the auditor found a loss nobody injected", f.id);
@@ -837,9 +868,9 @@ private:
 		if (k < 0)
 			return;
 		Map& m = m_maps[size_t(k)];
-		std::vector<uint16_t> settled;
+		std::vector<uint16_t> settled; // settled objects, and spawns the world has not answered yet (round 2, item 3)
 		for (uint16_t id : m.has)
-			if (m.h->authors(id) && !m.h->busy(id) && !m.h->frozen(id) && !m_faulty.count(id))
+			if (m.h->authors(id) && !m.h->frozen(id) && !m_faulty.count(id) && (!m.h->busy(id) || m.h->gen(id) == 0))
 				settled.push_back(id);
 		uint16_t id = 0;
 		if (!pick(settled, id))
@@ -888,14 +919,29 @@ private:
 		}
 		for (auto it = m_faulty.begin(); it != m_faulty.end();)
 		{
-			const Map& m = m_maps[it->second];
-			if (!m.up || !m.h->authors(it->first))
+			const Map& m = m_maps[it->second.slot];
+			if (!m.up || !m.h->authors(it->first) || m.h->gen(it->first) != it->second.gen)
 			{
 				touch(it->first);
 				it = m_faulty.erase(it);
 			}
 			else
 				++it;
+		}
+		// A destroy the engine performed is never undone: once its map server is done with it, the world must not have
+		// the object (a crash or a load of that map server is the only way back).
+		for (auto it = m_destroyed.begin(); it != m_destroyed.end() && m_res.ok;)
+		{
+			const uint16_t id = it->first;
+			const Map& m = m_maps[it->second.first];
+			if (!m.up || m.peer != it->second.second)
+				it = m_destroyed.erase(it); // its map server crashed: the world rolls back to the last confirmed state
+			else if (m.h->busy(id) || m.h->authors(id))
+				++it;
+			else if (m_w->registered(id))
+				return fail_id("a destroy the engine performed was undone", id);
+			else
+				it = m_destroyed.erase(it);
 		}
 		// A spawn the world never registered and its map server forgot (destroyed first, or refused): gone.
 		for (auto it = m_spawning.begin(); it != m_spawning.end();)
@@ -929,7 +975,7 @@ private:
 		m.wanted.clear();
 		m.lost.clear();
 		for (auto it = m_faulty.begin(); it != m_faulty.end();)
-			it = it->second == k ? m_faulty.erase(it) : std::next(it);
+			it = it->second.slot == k ? m_faulty.erase(it) : std::next(it);
 		m_w->server_lost(peer, m_now); // its Drops go to a closed connection
 		for (auto it = m_rel.begin(); it != m_rel.end();)
 		{
@@ -991,7 +1037,7 @@ private:
 		for (uint16_t id : m.has)
 		{
 			auto f = m_faulty.find(id);
-			if (!m.h->frozen(id) && (f == m_faulty.end() || f->second != size_t(k))) // not an injected duplicate
+			if (!m.h->frozen(id) && (f == m_faulty.end() || f->second.slot != size_t(k))) // not an injected duplicate
 				free.push_back(id);
 		}
 		return pick(free, out);
@@ -1014,7 +1060,7 @@ private:
 		touch(id);
 		Map& m = m_maps[size_t(k)];
 		auto f = m_faulty.find(id);
-		if (m.lost.count(id) || (f != m_faulty.end() && f->second == size_t(k)))
+		if (m.lost.count(id) || (f != m_faulty.end() && f->second.slot == size_t(k)))
 			return; // the engine does not have it, or it is an injected duplicate that only the auditor removes
 		const bool runs = m.has.count(id) && !m.h->frozen(id);
 		log("op release id " + std::to_string(id) + " at M" + std::to_string(m.peer));
@@ -1103,6 +1149,7 @@ private:
 			{
 				Map& m = m_maps[size_t(k)];
 				log("op destroy id " + std::to_string(id) + " at M" + std::to_string(m.peer));
+				m_destroyed[id] = {size_t(k), m.peer};
 				m.has.erase(id);
 				m.wanted.erase(id);
 				send(m.h->destroyed(id, m_now));
@@ -1180,11 +1227,20 @@ private:
 		}
 		case Do::Abort:
 		{
-			std::vector<uint16_t> granting;
+			// An adversary: half the time it aborts a grant whose map server is in the middle of something else with
+			// the id - committing a release or destroying it (the window of review C1 and round-2 H1).
+			std::vector<uint16_t> granting, window;
 			for (uint16_t i : m_reg)
-				if (m_w->phase(i) == Phase::Granting)
-					granting.push_back(i);
-			if (pick(granting, id))
+			{
+				if (m_w->phase(i) != Phase::Granting)
+					continue;
+				granting.push_back(i);
+				const int k = slot_of(m_w->peer(i));
+				if (k >= 0 && m_maps[size_t(k)].h->busy(i) && !m_maps[size_t(k)].h->authors(i) &&
+				    !m_maps[size_t(k)].h->requesting(i))
+					window.push_back(i);
+			}
+			if (m_r.percent(50) ? pick(window, id) || pick(granting, id) : pick(granting, id))
 			{
 				log("op world abort id " + std::to_string(id));
 				send(m_w->abort(id, m_now));
@@ -1231,13 +1287,8 @@ private:
 			for (size_t k = 0; k < m_maps.size(); ++k)
 				if (!m_maps[k].up)
 				{
-					const Peer old = m_maps[k].peer;
-					bool quiet_link = m_r.percent(50);
-					for (const Flight& f : m_net)
-						quiet_link = quiet_link && f.p.from != old && f.p.to != old;
-					const Peer peer = quiet_link ? old : m_next_peer++;
-					if (quiet_link)
-						m_w->server_joined(peer);
+					// A new connection: a new peer, while whatever the old one sent or was sent is still on its way.
+					const Peer peer = m_w->register_server();
 					log("op restart slot " + std::to_string(k) + " as M" + std::to_string(peer));
 					start_map(k, peer);
 					break;
@@ -1253,6 +1304,7 @@ private:
 		case Do::Reuse:
 			if (!pick(m_dead, id))
 				break;
+			m_destroyed.erase(id);
 			++m_res.stats.reused;
 			if (m_r.percent(50))
 			{
@@ -1322,7 +1374,7 @@ private:
 		m_w->resolve_after_load();
 		m_net.clear(); // every connection is new
 		for (size_t k = 0; k < m_maps.size(); ++k)
-			start_map(k, m_next_peer++);
+			start_map(k, m_w->register_server());
 		m_reg = s.reg;
 		m_dead = s.dead;
 		m_conf = s.conf;
@@ -1331,6 +1383,7 @@ private:
 		m_spawning.clear();
 		m_teleport.clear();
 		m_faulty.clear();
+		m_destroyed.clear();
 		m_world.clear();
 		m_dirty.clear();
 		++m_res.stats.loads;
@@ -1525,6 +1578,7 @@ TEST(xfer_fuzz)
 	}
 
 	const uint64_t runs = env_u64("COOP_FUZZ_RUNS", kDefaultRuns);
+	const uint64_t base = env_u64("COOP_FUZZ_BASE", kSeedBase);
 	const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
 	const unsigned threads = unsigned(std::max<uint64_t>(1, std::min<uint64_t>(env_u64("COOP_FUZZ_THREADS", hw), 16)));
 	std::atomic<uint64_t> next{0};
@@ -1545,7 +1599,7 @@ TEST(xfer_fuzz)
 			const uint64_t i = next.fetch_add(1);
 			if (i >= runs || stop.load())
 				break;
-			const uint64_t seed = splitmix64(kSeedBase + i);
+			const uint64_t seed = splitmix64(base + i);
 			Result r = Sim(seed, UINT32_MAX, nullptr, forced, big_every).run();
 			r.stats.runs = 1;
 			w.merge(r.worst);
@@ -1602,6 +1656,8 @@ TEST(xfer_fuzz)
 	}
 	CHECK(!failed);
 	CHECK_EQ(all.runs, runs);
-	if (runs == kDefaultRuns && forced < 0)
-		CHECK(ms <= kTimeLimitMs);
+	// Ruling (round 2): the time is reported, not judged - a busy machine must not fail the suite.
+	if (runs == kDefaultRuns && forced < 0 && ms > kTimeLimitMs)
+		std::printf("    WARNING: %" PRIu64 " runs on %u threads took %.1f s, over the %.0f s budget\n", all.runs,
+			threads, double(ms) / 1000.0, double(kTimeLimitMs) / 1000.0);
 }
