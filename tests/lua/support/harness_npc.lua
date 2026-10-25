@@ -32,6 +32,8 @@ function vec(x, y, z) return vector():set(x, y or 0, z or 0) end
 -- ---------------------------------------------------------------- game objects
 local O = {}
 O.__index = O
+-- luabind: game_object has no ==; two different objects raise (live 2026-10-24, coop_mods_core as_player)
+O.__eq = function() error("No such operator __eq defined in class [game_object]", 2) end
 function O:id() return self._id end
 function O:position() return self._pos end
 function O:alive() return self._alive ~= false end

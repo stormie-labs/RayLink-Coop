@@ -85,6 +85,8 @@ function machine(role, self_peer)
 	M.objects = objects
 	local ObjMT = {}
 	ObjMT.__index = ObjMT
+	-- luabind: game_object has no ==; two different objects raise (live 2026-10-24, coop_mods_core as_player)
+	ObjMT.__eq = function() error("No such operator __eq defined in class [game_object]", 2) end
 	M.ObjMT = ObjMT
 	function ObjMT:id() return self._id end
 	function ObjMT:section() return self._sec end

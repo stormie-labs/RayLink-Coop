@@ -712,8 +712,7 @@ local function rcpt_client()
 end
 
 local function is_my_actor(obj)
-	if obj == nil or not db.actor then return false end
-	if obj == db.actor then return true end
+	if obj == nil or not db.actor then return false end -- compared by id below: game_object has no == in luabind
 	local ok, id = pcall(function()
 		local f = obj.id
 		if type(f) == "function" then return obj:id() end

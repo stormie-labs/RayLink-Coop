@@ -69,6 +69,8 @@ function ini_sys:r_float_ex(s, k, d) local t = INI[s]; local v = t and tonumber(
 
 local GO = {}
 GO.__index = GO
+-- luabind: game_object has no ==; two different objects raise (live 2026-10-24, coop_mods_core as_player)
+GO.__eq = function() error("No such operator __eq defined in class [game_object]", 2) end
 function GO:id() return self._id end
 function GO:section() return self._sec end
 function GO:position() return vector():set(self._pos) end

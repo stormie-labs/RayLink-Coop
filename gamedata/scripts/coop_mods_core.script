@@ -305,9 +305,11 @@ local function finish_identity(real, ok, ...)
 	return ok, ...
 end
 
+-- Live 2026-10-24 (FATAL on the first story mission): game_object has no == in luabind, two different objects raise
+-- "No such operator __eq defined in class [game_object]". Objects are compared by id.
 function as_player(obj, f, ...)
 	local real = db.actor
-	if obj == nil or obj == real or identity ~= nil then return pcall(f, ...) end
+	if obj == nil or identity ~= nil or (real ~= nil and obj:id() == real:id()) then return pcall(f, ...) end
 	identity = { obj = obj, peer = peer_of(obj:id()) }
 	db.actor = obj
 	return finish_identity(real, pcall(f, ...))

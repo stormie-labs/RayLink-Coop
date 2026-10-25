@@ -127,7 +127,7 @@ local function as_player_in_turn(script, f, ...)
 	local i = (turn[script] or 0) % n + 1
 	turn[script] = i
 	local who = list[i]
-	if who == db.actor then return f(...) end
+	if db.actor and who:id() == db.actor:id() then return f(...) end -- by id: game_object has no == in luabind
 	return P.with_identity(who, f, ...)
 end
 

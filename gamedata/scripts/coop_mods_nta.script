@@ -74,7 +74,7 @@ end
 local function others_here()
 	local out = {}
 	for _, p in ipairs(C().player_objects()) do
-		if p.obj ~= db.actor and p.obj:alive() then out[#out + 1] = p end
+		if (not db.actor or p.obj:id() ~= db.actor:id()) and p.obj:alive() then out[#out + 1] = p end -- by id: no == in luabind
 	end
 	return out
 end
