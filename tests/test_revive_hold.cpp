@@ -995,3 +995,35 @@ TEST(revive_row_a_mash_sends_at_most_a_pair_per_gap)
 	const Bucket b = mash(300, 100, 120);
 	CHECK(b.taken <= uint64_t(2) * (120000 / kAnnounceGapMs + 1));
 }
+
+// Live 2026-10-25 (owner): "sometimes you cannot revive an ally when a corpse or something else clickable lies next to
+// him". F revived only what the crosshair hit; a corpse or an item nearer along the ray took the F (loot). A wounded
+// teammate in reach and in front of the camera wins over them.
+TEST(revive_pick_target_prefers_a_wounded_teammate_in_front)
+{
+	const Vec3 eye{0.f, 1.6f, 0.f};
+	const Vec3 feet{0.f, 0.f, 0.f};
+	const Vec3 ahead{0.f, -0.6f, 1.f}; // looking down and forward at a body on the ground
+	std::vector<ReviveCandidate> c;
+	CHECK_EQ(pick_revive_target(eye, ahead, feet, c), kNoTarget); // nobody
+
+	c.push_back({7, {0.2f, 0.f, 1.5f}, true}); // wounded, 1.5 m ahead
+	CHECK_EQ(pick_revive_target(eye, ahead, feet, c), uint16_t(7));
+
+	c[0].wounded = false; // alive or dead: nothing to revive
+	CHECK_EQ(pick_revive_target(eye, ahead, feet, c), kNoTarget);
+	c[0].wounded = true;
+
+	c[0].pos = {0.f, 0.f, 3.2f}; // out of reach (kReviveRange 2.5 m from the feet)
+	CHECK_EQ(pick_revive_target(eye, ahead, feet, c), kNoTarget);
+
+	c[0].pos = {0.f, 0.f, -1.5f}; // behind: I am not turned to him (I may loot the corpse in front)
+	CHECK_EQ(pick_revive_target(eye, ahead, feet, c), kNoTarget);
+	c[0].pos = {1.5f, 0.f, 0.2f}; // at my side, 80 degrees off the view
+	CHECK_EQ(pick_revive_target(eye, ahead, feet, c), kNoTarget);
+
+	// two in front: the one nearer the middle of the view
+	c[0].pos = {1.0f, 0.f, 1.4f};
+	c.push_back({9, {0.1f, 0.f, 1.6f}, true});
+	CHECK_EQ(pick_revive_target(eye, ahead, feet, c), uint16_t(9));
+}
