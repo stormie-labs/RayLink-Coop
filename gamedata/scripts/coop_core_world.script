@@ -128,7 +128,13 @@ local DYN_PERSONAL = {
 local PERSONAL_TYPES = { trade = true, upgrade = true }
 -- Scripts that copy dynamic_news_helper.send_tip into a local when they load (the copy ignores any later
 -- wrapper): world events whose announcements every player gets. script -> name of that local.
-local WORLD_ALIASES = { tasks_defense = "send_tip" }
+-- script -> the name of its local that holds the stock send_tip. Live 2026-10-25 (owner): the pump station defense call
+-- ("guys, come here!") came to the host only; it calls the whole group, so it is world news now (W12 had kept it personal).
+local WORLD_ALIASES = { tasks_defense = "send_tip", tasks_pump_station_defense = "news" }
+-- functions a script defines into another table keep its local as well: { table, function, local name }. GAMMA's Barrier
+-- Defense Task Emission Fix (z_barrier_defense_emission_fix) defines Lukash's announcements as
+-- xr_effects.barrier_defense_news with its own `local send_tip`.
+local WORLD_ALIAS_FUNCS = { { "xr_effects", "barrier_defense_news", "send_tip" } }
 
 local news_report = { senders = "not wrapped", class = "not patched", methods = 0, wanted = 0, aliases = 0 }
 
@@ -396,11 +402,25 @@ local function world_send_tip(...)
 	return in_scope("world", f, ...)
 end
 
+-- The upvalue `lname` of f (a function holding the stock sender) now holds the world sender. One upvalue, shared by every
+-- function of that script.
+local function repoint_upvalue(dbg, f, lname)
+	local i = 1
+	while true do
+		local ok, name, val = pcall(dbg.getupvalue, f, i)
+		if not ok or name == nil then return false end
+		if name == lname and type(val) == "function" then
+			return val == world_send_tip or pcall(dbg.setupvalue, f, i, world_send_tip)
+		end
+		i = i + 1
+	end
+end
+
 local function repoint_aliases()
 	local n = 0
 	local dbg = debug
 	if not (dbg and dbg.getupvalue and dbg.setupvalue) then
-		log("! news: no debug library, barrier-defense news stay on the host")
+		log("! news: no debug library, barrier and pump station defense news stay on the host")
 		return
 	end
 	for modname, lname in pairs(WORLD_ALIASES) do
@@ -408,26 +428,19 @@ local function repoint_aliases()
 		if type(mod) == "table" then
 			local found = false
 			for _, f in pairs(mod) do
-				if type(f) == "function" then
-					local i = 1
-					while true do
-						local ok, name, val = pcall(dbg.getupvalue, f, i)
-						if not ok or name == nil then break end
-						if name == lname and type(val) == "function" then
-							-- one upvalue, shared by every function of that script
-							if val == world_send_tip or pcall(dbg.setupvalue, f, i, world_send_tip) then
-								found = true
-								n = n + 1
-							end
-							break
-						end
-						i = i + 1
-					end
+				if type(f) == "function" and repoint_upvalue(dbg, f, lname) then
+					found = true
+					n = n + 1
+					break
 				end
-				if found then break end
 			end
 			if not found then log("news: %s keeps no '%s' local to hand a world sender (nothing to do)", modname, lname) end
 		end
+	end
+	for _, a in ipairs(WORLD_ALIAS_FUNCS) do
+		local tbl = module_of(a[1])
+		local f = type(tbl) == "table" and rawget(tbl, a[2]) or nil
+		if type(f) == "function" and repoint_upvalue(dbg, f, a[3]) then n = n + 1 end
 	end
 	news_report.aliases = n
 end

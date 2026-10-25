@@ -118,7 +118,14 @@ end
 ]],
 	-- keeps its alias but is a task: stays personal
 	tasks_pump_station_defense = [[
-local news = dynamic_news_helper.send_tip
+local news = dynamic_news_helper.send_tip -- stock: `local news = dynamic_news_helper.send_tip` (line 14), intro/start/loot
 function chatter() news("pump station chatter", "Stalker", nil, nil, "ui_npc_p", nil, "npc") end
+]],
+	-- GAMMA's Barrier Defense Task Emission Fix: Lukash's announcements, defined into xr_effects with its own local
+	z_barrier_defense_emission_fix = [[
+local send_tip = dynamic_news_helper.send_tip
+function xr_effects.barrier_defense_news(a, b, c)
+	send_tip("lukash " .. tostring(c and c[1]), "Lukash", nil, nil, "ui_inGame2_lukash", nil, "npc")
+end
 ]],
 }

@@ -419,9 +419,11 @@ local function machine(role, peer, nick, opts)
 		setfenv(f, mod)
 		f()
 	end
+	env.xr_effects = env.xr_effects or {} -- the stock table scripts define effects into
 	if opts.alias_first then
 		load_stock("tasks_defense")
 		load_stock("tasks_pump_station_defense")
+		load_stock("z_barrier_defense_emission_fix")
 	end
 
 	-- load the scripts like CScriptStorage (module table, __index = this machine's globals)
@@ -439,6 +441,7 @@ local function machine(role, peer, nick, opts)
 	if not opts.alias_first then
 		load_stock("tasks_defense")
 		load_stock("tasks_pump_station_defense")
+		load_stock("z_barrier_defense_emission_fix")
 	end
 	M.main, M.chat, M.hud_m, M.player, M.world =
 		env.coop_main, env.coop_core_chat, env.coop_core_hud, env.coop_core_player, env.coop_core_world
@@ -925,9 +928,13 @@ check(not has(C.tips, "drx start"), "a direct personal sender (task start talk) 
 local nc2 = #C.tips
 H.env.dynamic_news_helper.send_tip("st_host_own", "Hdr")
 H.env.news_manager.send_tip(H.actor, "st_arena_fight_begin", nil, "arena")
+pump()
+check(has(H.tips, "dyn:st_host_own") and #C.tips == nc2, "dialogs, arena (no generator scope) stay on the host")
+-- live 2026-10-25 (owner): the pump station call ("guys, come here, pseudodogs attack us north of the pump station") came
+-- to the host only. It calls the whole group: tasks_pump_station_defense keeps send_tip in a local `news` - handed over.
 H.env.tasks_pump_station_defense.chatter()
 pump()
-check(has(H.tips, "dyn:st_host_own") and #C.tips == nc2, "dialogs, arena, task chatter (no generator scope) stay on the host")
+check(has(C.tips, "dyn:pump station chatter"), "the pump station defense call reaches the client")
 
 -- error inside a scoped method: the error goes on and the scope is closed
 hi.boom = true
@@ -969,6 +976,10 @@ check(has(C.tips, "dyn:barrier chatter monolith") and has(C.tips, "dyn:barrier s
 local bc
 for _, c in ipairs(C.dyn_calls) do if c.m == "barrier chatter monolith" then bc = c end end
 check(bc and bc.h == "Stalker" and bc.s == "ui_npc_b" and bc.ib == "npc", "... with the same sender icon")
+-- GAMMA replaces Lukash's announcements (z_barrier_defense_emission_fix: xr_effects.barrier_defense_news with its own local)
+H.env.xr_effects.barrier_defense_news(nil, nil, { "start" })
+pump()
+check(has(C.tips, "dyn:lukash start"), "GAMMA's barrier defense announcements (xr_effects, own local) reach the client")
 
 -- faction radio / NPC chatter: always world, with the stalker's portrait
 H.snd_calls, C.snd_calls = {}, {}
@@ -1060,19 +1071,20 @@ for _, name in ipairs(SCRIPTS) do
 end
 local qa = #QUEUE
 A.env.tasks_defense.f_chatter("zombie", 2)
-A.env.tasks_pump_station_defense.chatter()
 local sent = A.last_sent
+A.env.tasks_pump_station_defense.chatter()
 check(sent and sent.name == "core.news" and A.main.decode(sent.payload).m == "barrier chatter zombie", "alias taken before the wrapper: handed over, barrier news go out")
-check(A.sent_count == 1, "... and the task's chatter (second alias) does not")
+check(A.sent_count == 2 and A.main.decode(A.last_sent.payload).m == "pump station chatter",
+	"... and the pump station defense too (second alias, owner 2026-10-25)")
 QUEUE = {}
 
 -- the log tells what went out and what stayed (live test aid), and the status line shows the install state
 check(count_log(H, "news sent (dyn): gossip: rain") >= 1 and count_log(H, "news kept, personal talk: companion: life is hard") >= 1
 	and count_log(H, "news kept, outside a world generator: st_host_own") == 1 and count_log(H, "news sent (snd): radio_msg") == 1,
 	"the log names the news that went to the players and those kept on the host")
-check(count_log(H, "news relay: senders wrapped, DynamicNewsManager partly patched (11/18 methods), world aliases handed over 1") == 1
+check(count_log(H, "news relay: senders wrapped, DynamicNewsManager partly patched (11/18 methods), world aliases handed over 3") == 1
 	and count_log(H, "! news: DynamicNewsManager.GossipBounty not patched") == 1,
-	"the install report: senders, the 11 methods the stand-in has (of 18), 1 alias; a missing method is named")
+	"the install report: senders, the 11 methods the stand-in has (of 18), 3 aliases; a missing method is named")
 H.world.print_status()
 C.world.print_status()
 check(count_log(H, "world: news out ") == 1 and count_log(C, "world: news out ") == 1, "print_status works on both sides")
