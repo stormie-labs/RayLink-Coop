@@ -1367,3 +1367,18 @@ TEST(death_hud_format_one_conversion)
 	CHECK(!one_conversion("", 'd'));
 	CHECK(!one_conversion(nullptr, 'd'));
 }
+
+// Live 2026-10-25 (owner): "when somebody dies for good while lying, nobody revived him, there is no animation of his
+// death". The dead pose was a looping wounded idle: a dead body breathed and moved like a wounded one. A dead body makes
+// its last move and lies still kDeathStillMs after the death.
+TEST(death_body_lies_still_after_the_last_move)
+{
+	static_assert(kDeathStillMs == 1000, "a second of the last move");
+	CHECK(!body_still(BodyPose::Dead, 5000, 5000));
+	CHECK(!body_still(BodyPose::Dead, 5000, 5999));
+	CHECK(body_still(BodyPose::Dead, 5000, 6000));
+	CHECK(body_still(BodyPose::Dead, 5000, 600000));
+	CHECK(!body_still(BodyPose::Wounded, 5000, 600000)); // a wounded one moves while he lives
+	CHECK(!body_still(BodyPose::Standing, 5000, 600000));
+	CHECK(body_still(BodyPose::Dead, 9000, 3000)); // a clock that went back: still, not a new last move
+}

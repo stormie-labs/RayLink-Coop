@@ -173,7 +173,9 @@ local function scan(now)
 	if not listed_at or now - listed_at >= LIST_MS or now < listed_at then list(now) end
 	local pos = db.actor:position()
 	for id, r in pairs(routes) do
-		local ok, yes = pcall(r.obj.inside, r.obj, pos)
+		-- live 2026-10-25 (Busy Hands at a level change): r.obj.inside was read outside the pcall, and a route object
+		-- released with the old level threw there. The whole call is protected now.
+		local ok, yes = pcall(function() return r.obj:inside(pos) end)
 		if ok and yes then
 			if not inside[id] then
 				inside[id] = true
