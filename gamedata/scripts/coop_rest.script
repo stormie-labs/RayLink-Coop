@@ -625,9 +625,10 @@ local function paced()
 	return d >= 0 and d < ASK_GAP_MS
 end
 
--- Asks the engine to let the player rest; the window opens when it took the word.
+-- Asks the engine to let the player rest; the window opens when it took the word. A rest on a sleeping bag names the bag
+-- (protocol 14): the host lets one sleeper on it.
 local function ask_lie_down(hours, forced)
-	local ok, sent = rest_call("lie_down", hours, forced == true)
+	local ok, sent = rest_call("lie_down", hours, forced == true, (not forced) and st.bag or nil)
 	if not (ok and sent == true) then
 		tell("refused")
 		return false
@@ -648,6 +649,7 @@ end
 local function wrap_test_and_show(orig)
 	return function(self, force, ...)
 		if force == true or not rest_session() then return orig(self, force, ...) end
+		if st.bag_dialog then st.bag_dialog = false else st.bag = nil end -- a dialog not opened by sleep_bag has no bag
 		if busy() then return end -- a doze or a dream is on: no second dialog
 		local bleeding, radiation = false, false
 		pcall(function()
@@ -709,9 +711,26 @@ end
 
 local function wrap_bag(orig)
 	return function(id, ...)
-		if rest_session() then st.bag = type(id) == "number" and id or nil end -- an item (use_placeable off) is not a bag to fold
+		if rest_session() then
+			st.bag = type(id) == "number" and id or nil -- an item (use_placeable off) is not a bag to fold
+			st.bag_dialog = true -- the TestAndShow that follows is this bag's
+		end
 		return orig(id, ...)
 	end
+end
+
+-- coop_objects.cpp client_intercept_use (live 2026-10-25: "F does not press" on a sleeping bag on a client: the bag's
+-- ph_idle logic runs on the host, and a Use sent there never opens this player's window). The use stays here and opens
+-- the stock sleep dialog for the bag, as item_tent's physic_object_on_use_callback does; the host decides the sleep (the
+-- rest place, one sleeper per bag: refusal "occupied").
+function use_sleep_place(obj)
+	if obj == nil then return false end
+	local ok, id, sec = pcall(function() return obj:id(), obj:section() end)
+	if not (ok and type(id) == "number") then return false end
+	local m = mod("ui_sleep_dialog")
+	if not (m and type(m.sleep_bag) == "function") then return false end
+	if type(hide_hud_inventory) == "function" then pcall(hide_hud_inventory) end
+	return (pcall(m.sleep_bag, id, sec))
 end
 
 local function wrap(tbl, key, make)

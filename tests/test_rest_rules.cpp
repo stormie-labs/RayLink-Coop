@@ -168,12 +168,13 @@ TEST(rest_hours_of_the_decision_are_in_range)
 
 namespace
 {
-coop::Writer request_bytes(uint8_t op, uint8_t hours, uint8_t forced)
+coop::Writer request_bytes(uint8_t op, uint8_t hours, uint8_t forced, uint16_t bag = kNoBag)
 {
 	coop::Writer w;
 	w.u8(op);
 	w.u8(hours);
 	w.u8(forced);
+	w.u16(bag);
 	return w;
 }
 
@@ -249,6 +250,10 @@ TEST(rest_refusal_names)
 	CHECK(refusal_from_name("combat") == Refusal::Combat);
 	CHECK(refusal_from_name("dead") == Refusal::Dead);
 	CHECK(refusal_from_name("busy") == Refusal::Busy);
+	CHECK_EQ(std::string(refusal_name(Refusal::Occupied)), std::string("occupied"));
+	CHECK(refusal_from_name("occupied") == Refusal::Occupied);
+	CHECK(refusal_ok(uint8_t(Refusal::Occupied)));
+	CHECK(!refusal_ok(uint8_t(Refusal::Occupied) + 1));
 	// host_cancel with a reason nobody knows still tells the player something he can show.
 	CHECK(refusal_from_name("none") == Refusal::Busy);
 	CHECK(refusal_from_name("") == Refusal::Busy);
@@ -291,12 +296,18 @@ TEST(rest_request_message)
 	in.forced = true;
 	coop::Writer w;
 	write_request(w, in);
-	CHECK_EQ(int(w.size()), 3);
+	CHECK_EQ(int(w.size()), 5); // protocol 14: + u16 bag
 	Request out;
 	REQUIRE(parse_request(w, out));
 	CHECK(out.op == Op::LieDown);
 	CHECK_EQ(int(out.hours), 7);
 	CHECK(out.forced);
+	CHECK_EQ(out.bag, kNoBag); // not at a sleeping bag
+	in.bag = 1234;
+	coop::Writer wb;
+	write_request(wb, in);
+	REQUIRE(parse_request(wb, out));
+	CHECK_EQ(out.bag, uint16_t(1234));
 
 	CHECK(parse_request(request_bytes(2, 0, 0), out));
 	CHECK(out.op == Op::GetUp);
@@ -314,6 +325,30 @@ TEST(rest_request_message)
 	shorter.u8(1);
 	shorter.u8(8);
 	CHECK(!parse_request(shorter, out));
+	coop::Writer protocol13; // op, hours, forced and nothing more: an old client
+	protocol13.u8(1);
+	protocol13.u8(8);
+	protocol13.u8(0);
+	CHECK(!parse_request(protocol13, out));
+}
+
+// Owner 2026-10-25: "one sleeping bag cannot be taken twice: if somebody took it, the second one hears: this sleeping bag
+// is taken". The host's book knows whose rest is on which bag.
+TEST(rest_group_one_player_per_sleeping_bag)
+{
+	Group g;
+	CHECK_EQ(g.bag_taker(100, 2), kNoId);
+	CHECK(g.lie_down(1, 8, false, false, 100));
+	CHECK_EQ(g.bag_taker(100, 2), uint16_t(1)); // B asks for A's bag: taken
+	CHECK_EQ(g.bag_taker(100, 1), kNoId); // A lies down there again (a new wish): his own bag
+	CHECK_EQ(g.bag_taker(101, 2), kNoId); // the next bag is free
+	CHECK_EQ(g.bag_taker(kNoBag, 2), kNoId); // a rest zone or a campfire holds any number
+	CHECK(g.lie_down(2, 8, false, false)); // B rests without a bag
+	CHECK_EQ(g.bag_taker(kNoBag, 3), kNoId);
+	CHECK(g.get_up(1));
+	CHECK_EQ(g.bag_taker(100, 2), kNoId); // A got up: free again
+	CHECK(g.lie_down(2, 8, false, false, 100)); // B moves onto the bag
+	CHECK_EQ(g.bag_taker(100, 1), uint16_t(2));
 }
 
 TEST(rest_state_message)
@@ -346,7 +381,7 @@ TEST(rest_state_message_malformed)
 	const Entry ok = entry(3, State::Resting, 8);
 	CHECK(parse_state(state_bytes(1, {ok}, 0), out));
 	CHECK(!parse_state(state_bytes(5, {ok}, 0), out)); // no such block
-	CHECK(!parse_state(state_bytes(1, {ok}, 6), out)); // no such refusal (5 is Camp since round 1)
+	CHECK(!parse_state(state_bytes(1, {ok}, 7), out)); // no such refusal (5 is Camp since round 1, 6 Occupied since protocol 14)
 	CHECK(!parse_state(state_bytes(1, {entry(3, State(3), 8)}, 0), out)); // no such state
 	CHECK(!parse_state(state_bytes(1, {entry(3, State::Awake, 8)}, 0), out)); // awake has no hours
 	CHECK(!parse_state(state_bytes(1, {entry(3, State::Resting, 0)}, 0), out)); // resting has 1..24
@@ -685,7 +720,9 @@ TEST(rest_refusal_camp)
 	StateMsg out;
 	REQUIRE(parse_state(state_bytes(1, {entry(3, State::Awake, 0)}, 5), out));
 	CHECK(out.refused == Refusal::Camp);
-	CHECK(!parse_state(state_bytes(1, {entry(3, State::Awake, 0)}, 6), out));
+	REQUIRE(parse_state(state_bytes(1, {entry(3, State::Awake, 0)}, 6), out)); // protocol 14: Occupied
+	CHECK(out.refused == Refusal::Occupied);
+	CHECK(!parse_state(state_bytes(1, {entry(3, State::Awake, 0)}, 7), out));
 }
 
 TEST(rest_group_refused_lie_down_ends_a_waiting_rest)

@@ -52,6 +52,9 @@
 	<string id="st_coop_rest_refused_busy">
 		<text>Группа уже спит.</text>
 	</string>
+	<string id="st_coop_rest_refused_occupied">
+		<text>Этот спальник занят.</text>
+	</string>
 	<string id="st_coop_rest_refused_camp">
 		<text>Здесь не устроить привал.</text>
 	</string>

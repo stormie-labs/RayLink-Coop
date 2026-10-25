@@ -86,10 +86,11 @@ TEST(protocol_game_offer_bad_faction_rejected)
 
 TEST(protocol_game_protocol_is_11)
 {
+	// 14: RestRequest carries the sleeping bag (test_rest_rules.cpp).
 	// 13: EntitySnapshot carries a stalker's aim (CreatureAims + 3 quaternions after the item id).
 	// 12: EntitySnapshot carries a stalker's item in hands (CreatureHolds + u16 id after the anims).
 	// 11 (F3a, split levels): Msg 0x01D0..0x01DF, Hello carries a role and a token (test_protocol_f3a.cpp); a protocol 10
 	// peer is refused at the handshake. 10: TransitionVote carries an op, TransitionState (host -> all) is new (the waiting
 	// point of a level change). 9: CharOffer ends with `str faction` (the world's).
-	CHECK_EQ(kProtocolVersion, 13u);
+	CHECK_EQ(kProtocolVersion, 14u);
 }

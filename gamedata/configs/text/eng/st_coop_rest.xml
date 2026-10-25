@@ -55,6 +55,9 @@
 	<string id="st_coop_rest_refused_camp">
 		<text>Cannot make camp here.</text>
 	</string>
+	<string id="st_coop_rest_refused_occupied">
+		<text>This sleeping bag is taken.</text>
+	</string>
 	<string id="st_coop_rest_refused_lost">
 		<text>The host did not answer, you are up.</text>
 	</string>

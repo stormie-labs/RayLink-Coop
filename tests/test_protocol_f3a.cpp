@@ -168,7 +168,7 @@ TEST(protocol_f3a_version_is_11)
 {
 	// 11: the F3a messages, Hello carries a role and a token, PlayerState carries the vertices, TransitionState a flags
 	// byte, WeatherSync a weather set; a protocol 10 peer is refused at the handshake.
-	CHECK_EQ(kProtocolVersion, 13u); // 12: a stalker's item in hands, 13: its aim (test_wire.cpp)
+	CHECK_EQ(kProtocolVersion, 14u); // 12: a stalker's item in hands, 13: its aim (test_wire.cpp), 14: the rest's bag
 }
 
 TEST(protocol_f3a_hello_carries_a_role_and_a_token)

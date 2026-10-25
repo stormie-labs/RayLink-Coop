@@ -140,8 +140,8 @@ REST = {}
 local function install_rest_api()
 	REST = { calls = {}, lie = {}, ups = 0, worlds = {}, states = {}, hours = {}, waiting = {}, block = "none", lie_ok = true }
 	coop.rest = {
-		lie_down = function(hours, forced)
-			REST.lie[#REST.lie + 1] = { hours = hours, forced = forced }
+		lie_down = function(hours, forced, bag)
+			REST.lie[#REST.lie + 1] = { hours = hours, forced = forced, bag = bag }
 			REST.calls[#REST.calls + 1] = "lie_down"
 			return REST.lie_ok
 		end,
@@ -365,6 +365,23 @@ case("shelter_check_skipped_in_session", function()
 	spawn("ph_sleepbag", vec3(1, 0, 0), nil, { id = 777 })
 	ui_sleep_dialog.sleep_bag(777, "itm_sleepbag")
 	check(STOCK.bags[1] == 777 and ui_sleep_dialog.GUI:IsShown(), "sleep_bag (stock call) opens the dialog without a shelter")
+	-- live 2026-10-25: F on a sleeping bag on a client ("F does not press") - the engine keeps the use here and calls
+	-- use_sleep_place, which opens the stock dialog for that bag; the lie-down names the bag, so the host lets one sleeper
+	-- on it (owner: "if somebody took the bag, the second one hears: this sleeping bag is taken")
+	fresh("host")
+	local _, bag = spawn("ph_sleepbag", vec3(1, 0, 0), nil, { id = 778 }) -- the game object (the engine passes one)
+	coop_rest.use_sleep_place(bag)
+	check(STOCK.bags[1] == 778 and ui_sleep_dialog.GUI:IsShown(), "use_sleep_place opens the sleep dialog for that bag")
+	ui_sleep_dialog.GUI:OnButtonSleep()
+	check(REST.lie[1] and REST.lie[1].bag == 778, "the lie-down names the sleeping bag")
+	fresh("host")
+	stock_ui(6):OnButtonSleep()
+	check(REST.lie[1] and REST.lie[1].bag == nil, "a rest away from a bag names none")
+	check(coop_rest.use_sleep_place(nil) == false, "nothing to use: nothing opens")
+	for _, lang in ipairs({ "eng", "rus" }) do
+		local x = read("gamedata/configs/text/" .. lang .. "/st_coop_rest.xml") or ""
+		check(x:find('id="st_coop_rest_refused_occupied"', 1, true) ~= nil, lang .. ": the 'sleeping bag is taken' line exists")
+	end
 	-- while one rests, nobody opens a second dialog
 	fresh("host")
 	stock_ui(6):OnButtonSleep()
