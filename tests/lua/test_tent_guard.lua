@@ -790,4 +790,24 @@ do
 end
 host_player_roles(false)
 
+-- live 2026-10-25: a client's use of a world object goes to the host (coop_objects client_intercept_use), so F on his own
+-- tent never reached on_physic_use here. The engine keeps a tent's use on his machine and calls use_tent.
+boot("client")
+start_all_scripts()
+do
+	local asked = {}
+	coop_checkpoints = {
+		object_kind = function(sec) return sec == "ph_tent" and "tent" or nil end,
+		is_mine_tent = function(id) return id == 4001 end,
+		request = function(what, delay, at) asked[#asked + 1] = { what = what, at = at }; return true end,
+	}
+	local _, mine = spawn("ph_tent", vec3(3, 0, 4), nil, { id = 4001 })
+	local _, other = spawn("ph_tent", vec3(5, 0, 5), nil, { id = 4002 })
+	check(coop_tent_guard.use_tent(mine) == true and #asked == 1 and asked[1].what == "pack" and asked[1].at.x == 3,
+		"use_tent: F on my own tent asks the host to pack it up at its spot")
+	check(coop_tent_guard.use_tent(other) == false and #asked == 1, "use_tent: somebody else's tent - nothing")
+	check(coop_tent_guard.use_tent(nil) == false, "use_tent: no object - nothing")
+	coop_checkpoints = nil
+end
+
 done("TENT_GUARD")

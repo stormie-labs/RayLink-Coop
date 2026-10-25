@@ -247,8 +247,15 @@ local function on_physic_use(obj, who)
 	if not ok or c.object_kind(sec) ~= "tent" then return end
 	if id ~= nil and c.is_mine_tent(id, obj) then
 		local pos = obj:position()
-		c.request("pack", 0, { x = pos.x, y = pos.y, z = pos.z })
+		return c.request("pack", 0, { x = pos.x, y = pos.y, z = pos.z }) == true
 	end
+end
+
+-- coop_objects.cpp client_intercept_use (live 2026-10-25): a player's F on a tent stays on his machine - a Use sent to the
+-- host never reached on_physic_use here. True when it asked the host to pack his tent up.
+function use_tent(obj)
+	if obj == nil then return false end
+	return on_physic_use(obj, nil) == true
 end
 
 -------------------------------------------------------------------------------
