@@ -38,7 +38,8 @@ publish_engine() {
 	fi
 	uid="$(gh api user -q .id)"
 	local mail="$uid+$OWNER@users.noreply.github.com"
-	snap="$(GIT_AUTHOR_NAME="$OWNER" GIT_AUTHOR_EMAIL="$mail" GIT_COMMITTER_NAME="$OWNER" GIT_COMMITTER_EMAIL="$mail" \n		git -C "$ROOT/engine" commit-tree "$tree" ${prev:+-p "$prev"} -m "RayLink Engine, build $BUILD")"
+	snap="$(GIT_AUTHOR_NAME="$OWNER" GIT_AUTHOR_EMAIL="$mail" GIT_COMMITTER_NAME="$OWNER" GIT_COMMITTER_EMAIL="$mail" \
+		git -C "$ROOT/engine" commit-tree "$tree" ${prev:+-p "$prev"} -m "RayLink Engine, build $BUILD")"
 	git -C "$ROOT/engine" branch -f publish "$snap"
 	git -C "$ROOT/engine" push "$url" "$snap:refs/heads/main"
 }
