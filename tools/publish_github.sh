@@ -31,6 +31,15 @@ publish_engine() {
 	tree="$(git -C "$ROOT/engine" rev-parse 'HEAD^{tree}')"
 	if [ -n "$prev" ]; then
 		git -C "$ROOT/engine" fetch -q "$url" main
+		# The snapshot is this machine's tree: commits made on GitHub (or in another clone) would be undone by it. Main must be
+		# the last snapshot made here (branch `publish`) or our own history (before the one-time rewrite).
+		local last
+		last="$(git -C "$ROOT/engine" rev-parse -q --verify publish || true)"
+		if [ "$prev" != "$last" ] && ! git -C "$ROOT/engine" merge-base --is-ancestor "$prev" HEAD; then
+			echo "! RayLink-Engine main ($prev) has commits made outside this script: bring them into engine\\ (branch coop)"
+			echo "  first, then publish again. Nothing was published."
+			exit 4
+		fi
 		if [ "$(git -C "$ROOT/engine" rev-parse "$prev^{tree}")" = "$tree" ]; then
 			echo "engine: main already has this tree"
 			return
