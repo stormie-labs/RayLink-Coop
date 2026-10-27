@@ -364,6 +364,8 @@ local function patch_anabiotic()
 		stats.anabiotic = stats.anabiotic + 1
 	end
 	-- Stock clears anabiotic_in_process here; in a session the poll clears it when the emission is over.
+	-- Original bind_stalker_ext.anabiotic_callback2 restores these local sound controls and UI.
+	-- The networked immunity lifetime is deliberately managed by RayLink's emission poll instead.
 	bse.anabiotic_callback2 = function(...)
 		if not P.active() then return cb2(...) end
 		xr_effects.enable_ui(db.actor, nil)

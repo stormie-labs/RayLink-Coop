@@ -418,7 +418,8 @@ local function host_take(from, t)
 end
 
 -------------------------------------------------------------------------------
--- Client: anomaly measurement where the player stands
+-- Client: anomaly measurement where the player stands.
+-- Task save fields and detector/distance rules follow original tasks_measure.script; the UI is owner-local.
 -------------------------------------------------------------------------------
 local measure = { armed = nil, next = 0 }
 

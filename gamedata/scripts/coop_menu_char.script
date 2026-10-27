@@ -765,7 +765,8 @@ function UICoopNewChar:InitControls()
 	self.box_item_temp = xml:InitStatic("main_dialog:box_item", self.dialog)
 	xml:InitStatic("main_dialog:frame_front", self.dialog)
 
-	-- stock texts
+	-- Original ui_mm_faction_select.InitControls/ShowDescription supply these widgets and XML paths.
+	-- Retain their cell/text ownership rules; RayLink changes the session/character-selection flow.
 	self.text_descr = xml:InitTextWnd("main_dialog:text_descr", nil)
 	self.scroll_desc = xml:InitScrollView("main_dialog:scroll_desc", self.dialog)
 	self.scroll_desc:AddWindow(self.text_descr, true)

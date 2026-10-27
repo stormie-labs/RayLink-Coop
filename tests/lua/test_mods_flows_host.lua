@@ -87,6 +87,19 @@ INI.device_glowstick = { light_section = "glow_def" }
 INI.glow_def = { color_r2 = "0.1,0.5,0.3,0.9" }
 utils_stpk = { get_lamp_data = function() return {} end, set_lamp_data = function(d, se) se._lamp = d end }
 zz_glowstick_mcm = { spawn_glowstick = function() end, glowstick_binder = { update = function() end }, glowsticks = {} }
+-- Native animation callback resolves globals through its script module, as CScriptStorage does.
+setmetatable(zz_glowstick_mcm, { __index = _G })
+zz_glowstick_mcm.actor_on_hud_animation_end = setfenv(function(item, section, motion)
+	if section:find("glowstick", 1, true) and motion == "anm_throw_stick" then
+		CreateTimeEvent("glowstick", "hide_anm", 0.007, function()
+			GS_HIDDEN = item:section()
+			return true
+		end)
+		alife_release_id(item:id())
+	end
+end, zz_glowstick_mcm)
+AddScriptCallback("actor_on_hud_animation_end")
+RegisterScriptCallback("actor_on_hud_animation_end", zz_glowstick_mcm.actor_on_hud_animation_end)
 INI.dropper_bread = { visual = "x" }
 model_dropper_mcm = { spawn_object = function(sec) local p = db.actor:position(); alife_create("dropper_" .. sec, p, 1, 2) end }
 z_auto_looter = { config = { delete_misc = true }, handle_delete = function(c) AL_DELETED = c:id() end,
@@ -234,7 +247,58 @@ check(#CREATED == 0 and SE[v2:id()] ~= nil, "PBA corpse: a kill of somebody else
 -- Items
 -------------------------------------------------------------------------------
 OBJ[500]._pos = vec3(20, 0, 0)
-from_client("gs_throw", { s = "device_glowstick", t = true, c = 0.8, x = 20.5, y = 1, z = 0, dx = 1, dy = 0, dz = 0, lv = 1, gv = 2, i = 1 })
+local function gs_request(id, thrown, section)
+	NOW = NOW + 1100 -- exercise validation, not the event rate limiter
+	from_client("gs_throw", { s = section or "device_glowstick", t = thrown, c = 0.8,
+		x = 20.5, y = 1, z = 0, dx = 1, dy = 0, dz = 0, lv = 1, gv = 2, i = id })
+end
+local function lamp_count()
+	local n = 0
+	for _, se in pairs(SE) do if se._sec == "lights_glowstick" then n = n + 1 end end
+	return n
+end
+gs_request(1, true)
+check(lamp_count() == 0, "glowstick: nonexistent source cannot create a lamp")
+gs_request(nil, true)
+check(lamp_count() == 0, "glowstick: missing source cannot create a lamp")
+local foreign_gs = spawn("device_glowstick", vec3(20, 0, 0), 0)
+local before = lamp_count()
+gs_request(foreign_gs.id, true)
+check(lamp_count() == before and SE[foreign_gs.id] ~= nil, "glowstick: host-owned source cannot be thrown by a client")
+local wrong_gs = spawn("medkit", vec3(20, 0, 0), 500)
+before = lamp_count()
+gs_request(wrong_gs.id, true)
+check(lamp_count() == before and SE[wrong_gs.id] ~= nil, "glowstick: source section must match the request")
+local ground_gs = spawn("device_glowstick", vec3(20, 0, 0))
+before = lamp_count()
+gs_request(ground_gs.id, true)
+check(lamp_count() == before and SE[ground_gs.id] ~= nil, "glowstick: a throw requires the requesting avatar's inventory")
+local source_gs = spawn("device_glowstick", vec3(20, 0, 0), 500, { cond = 0.8 })
+local get_data = utils_stpk.get_lamp_data
+utils_stpk.get_lamp_data = function() return nil end
+before = lamp_count()
+gs_request(source_gs.id, true)
+check(SE[source_gs.id] ~= nil and lamp_count() == before, "glowstick: failed lamp creation keeps the source for retry")
+utils_stpk.get_lamp_data = get_data
+local release = alife_release_id
+local spent = 0
+alife_release_id = function(id)
+	if id == source_gs.id then
+		spent = spent + 1
+		check(lamp_count() == before + 1, "glowstick: source is consumed after successful lamp creation")
+		return -- native release of an online object queues GE_DESTROY; the source can still resolve this frame
+	end
+	return release(id)
+end
+gs_request(source_gs.id, true)
+check(spent == 1, "glowstick: owned throw consumes exactly one source")
+before = lamp_count()
+gs_request(source_gs.id, true)
+check(lamp_count() == before and spent == 1, "glowstick: replay rejected even while source destruction is queued")
+alife_release_id = release
+release(source_gs.id)
+gs_request(source_gs.id, true)
+check(lamp_count() == before, "glowstick: replay of a destroyed source cannot create another lamp")
 local lamp
 for id, se in pairs(SE) do if se._sec == "lights_glowstick" then lamp = id end end
 check(lamp and zz_glowstick_mcm.glowsticks[lamp] and zz_glowstick_mcm.glowsticks[lamp][2] == 0.8, "glowstick: lamp created and burnt down by the host's mod")
@@ -243,11 +307,29 @@ check(OBJ[lamp]._force and OBJ[lamp]._force[1] > 0, "glowstick: thrown with the 
 from_client("gs_throw", { s = "medkit", t = true, c = 1, x = 20, y = 0, z = 0, lv = 1, gv = 2 })
 local n = 0
 for _, se in pairs(SE) do if se._sec == "lights_glowstick" then n = n + 1 end end
-check(n == 1, "glowstick: a non-glowstick section refused")
+check(n == before, "glowstick: a non-glowstick section refused")
 CREATED = {}
 from_client("gs_pick", { l = lamp })
 check(SE[lamp] == nil and CREATED[1] and CREATED[1].sec == "device_glowstick" and CREATED[1].parent == 500 and CREATED[1].cond == 0.8,
 	"glowstick: picked up lamp returns the glowstick with its charge to that player")
+local dropping = spawn("device_glowstick", vec3(20, 0, 0), 500)
+before = lamp_count()
+gs_request(dropping.id, false)
+check(SE[dropping.id] == nil and lamp_count() == before + 1, "glowstick: dropped callback in flight may still belong to requesting avatar on host")
+before = lamp_count()
+gs_request(ground_gs.id, false)
+check(SE[ground_gs.id] == nil and lamp_count() == before + 1, "glowstick: legitimate nearby ground callback still converts its source")
+-- The native animation finishes after sending spawn_glowstick, while the host request is in flight.
+MODE = "client"
+local anim_se, anim_item = spawn("device_glowstick", vec3(0, 0, 0), 0)
+local original_release = rawget(zz_glowstick_mcm, "alife_release_id")
+SendScriptCallback("actor_on_hud_animation_end", anim_item, "device_glowstick", "anm_throw_stick")
+run_time_events(50)
+check(SE[anim_se.id] ~= nil and zz_glowstick_mcm.GS_HIDDEN == "device_glowstick", "glowstick: client animation hides/equips without racing the host's source consumption")
+check(rawget(zz_glowstick_mcm, "alife_release_id") == original_release, "glowstick: scoped animation release override is restored")
+MODE = "host"
+SendScriptCallback("actor_on_hud_animation_end", anim_item, "device_glowstick", "anm_throw_stick")
+check(SE[anim_se.id] == nil, "glowstick: host animation retains native consumption")
 CREATED = {}
 from_client("md_drop", { s = "bread", a = false })
 check(CREATED[1] and CREATED[1].sec == "dropper_bread", "model drop: the mod's drop ran on the host")
@@ -340,6 +422,14 @@ coop_mods_core.on_container_opened(1, zbox:id())
 check(ZCP_ROLL and ZCP_ROLL.box == zbox:id() and ZCP_ROLL.actor == 500, "ZCP: a client's container rolled with that player as the actor")
 coop_main.on_event("mods.song", coop_main.encode({ s = "guitar\\song1", l = 3000 }), 1)
 check(SOUNDS[#SOUNDS] and SOUNDS[#SOUNDS].name == "guitar\\song1" and SOUNDS[#SOUNDS].at == 500, "guitar: a client's song plays at its character")
+
+local reload_source = spawn("device_glowstick", vec3(20, 0, 0), 500)
+gs_request(reload_source.id, true)
+spawn("device_glowstick", vec3(20, 0, 0), 500, { id = reload_source.id }) -- restored world reuses the id
+SendScriptCallback("load_state", alife_storage_manager.get_state())
+before = lamp_count()
+gs_request(reload_source.id, true)
+check(lamp_count() == before + 1 and SE[reload_source.id] == nil, "glowstick: load clears spent ids from the previous world")
 
 coop_main.print_status()
 check(coop_mods_core.stats.errors == 0, "no Lua errors (" .. coop_mods_core.stats.errors .. ")")

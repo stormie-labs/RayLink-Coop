@@ -24,3 +24,9 @@ bind_campfire                    = owner  ; matches on a campfire and the campfi
 ; GUI_* view; illish.patches.itms_manager's actor_on_item_take stays owner like the stock itms_manager).
 illish.patches.surge_manager     = host
 illish.patches.axr_companions    = host
+
+; These native wrappers keep the original mod's host-only authority. The general coop_* = view
+; rule must not make an upstream world callback execute on clients merely because we decorated it.
+[route_pairs]
+npc_on_hit_callback@coop_npc_adapters = host
+npc_on_before_hit@coop_npc_adapters   = host

@@ -66,27 +66,32 @@ local function mirror_flush(m)
 	if tg < m.next then return end
 	m.next = tg + 500
 	local host = C().is_host()
-	local batch, size, n = {}, 0, 0
+	local batch, size, n, included = {}, 0, 0, {}
 	for id in pairs(m.dirty) do
-		m.dirty[id] = nil
 		-- The host reports every change it knows of (a client's report included: the others need it once the
 		-- item leaves that player); a client reports what it carries, unless an item rider channel does.
 		if host or (own(id) and not m.client_elsewhere) then
 			local ok, v = pcall(m.get, id)
-			local s = ok and v ~= nil and C().ser(v) or ""
+			local s = ok and (v == nil and "" or C().ser(v)) or nil
 			-- Raw sizes: coop_main.encode may triple them, the engine takes 16 KiB per event.
 			if s and #s < 3000 then
 				n = n + 1
+				included[n] = id
 				batch["i" .. n] = C().hid(id)
 				batch["d" .. n] = s
 				size = size + #s + 16
 				if size > 4000 then break end
-			end
+			else m.dirty[id] = nil end -- cannot mirror an invalid or oversized value
+		else
+			m.dirty[id] = nil -- a client no longer owns this item or item rider handles it
 		end
 	end
 	if n == 0 then return end
 	batch.n = n
-	if host then C().to_all(m.verb, batch) else C().to_host(m.verb, batch) end
+	local sent
+	if host then sent = C().to_all(m.verb, batch) else sent = C().to_host(m.verb, batch) end
+	if not sent then return end
+	for _, id in ipairs(included) do m.dirty[id] = nil end
 	m.out = (m.out or 0) + 1
 end
 

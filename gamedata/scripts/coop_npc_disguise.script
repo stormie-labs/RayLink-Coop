@@ -129,7 +129,8 @@ end
 
 local h = { tmr = 0, val = 1 }
 
--- The stock bar, fed by the host's meter (the stock one reads NPC updates that never run on a client).
+-- Original gameplay_disguise.hud_update defines bar_disguise and its text/colour contract.
+-- RayLink drives that local widget from the host's meter; NPC updates never run on a client.
 local function client_hud_update()
 	local g = gd()
 	local hud = get_hud()
@@ -150,11 +151,7 @@ local function client_hud_update()
 	local wnd = hud_d and hud_d:wnd()
 	if not wnd then return end
 	local val = fresh() and mine.meter or 0
-	if val > h.val and val - h.val > 10 then
-		h.val = h.val + 10
-	elseif val < h.val and h.val - val > 10 then
-		h.val = h.val - 10
-	end
+	h.val = h.val + math.max(-10, math.min(10, val - h.val))
 	h.val = math.max(0, math.min(100, h.val))
 	wnd:TextControl():SetTextST(g.hud_val_to_str(h.val))
 	wnd:TextControl():SetTextColor(GetARGB(255, math.floor(255 * h.val / 100), math.floor(255 * (100 - h.val) / 100), 50))

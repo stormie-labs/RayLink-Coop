@@ -57,6 +57,7 @@ local CHUNK = 150
 local PENDING_TTL = 120000
 local KILL_RELAY_MS = 500
 
+-- Condition names are the original xr_logic.try_switch_to_another_section LTX contract.
 -- Switch conditions that name the actor; the first four can be an arrival (a player comes in).
 local ACTOR_CONDS = {
 	on_actor_dist_le = true, on_actor_dist_le_nvis = true, on_actor_dist_ge = true, on_actor_dist_ge_nvis = true,
@@ -502,6 +503,7 @@ local function determine_section(npc, ini, section_logic, actor)
 	return orig.determine(npc, ini, section_logic, actor)
 end
 
+-- Original xr_logic.initialize_obj supports [logic] cfg in spawn_ini: these keys are engine data.
 -- custom_data caps at 4 KiB, so real logic often lives in the cfg-linked ltx.
 local function resolve_logic_ini(obj)
 	local ini = obj:spawn_ini()

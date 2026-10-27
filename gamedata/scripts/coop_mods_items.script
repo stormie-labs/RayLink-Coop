@@ -45,6 +45,7 @@ end
 -------------------------------------------------------------------------------
 local LAMP = "lights_glowstick"
 local GS = { mod = nil, holder = nil, idx = nil }
+local gs_spent = {} -- online release queues GE_DESTROY; reject replays until the source is gone
 
 -- The mod's live lamp table (id -> { section, charge }); a file local that load_state replaces.
 local function gs_table()
@@ -130,18 +131,25 @@ local function host_gs_throw(t, from)
 	local function unit(v) v = tonumber(v) or 0 if v ~= v then return 0 end return math.max(-1, math.min(1, v)) end
 	local dir = vector():set(unit(t.dx), unit(t.dy), unit(t.dz))
 	local charge = math.max(0, math.min(1, tonumber(t.c) or 0.01))
-	local item = nil
-	if not throw then
-		-- A dropped glowstick lies on the ground: it becomes the lamp.
-		local iid = C().lid(tonumber(t.i))
-		item = type(iid) == "number" and iid < 65535 and alife_object(iid)
-		if not (item and item:section_name() == section and (item.parent_id == nil or item.parent_id == 65535)) then
+	local iid = C().lid(tonumber(t.i))
+	if gs_spent[iid] then return refuse("gs_throw", from, "source item already spent") end
+	local item = type(iid) == "number" and iid < 65535 and alife_object(iid)
+	if not (item and item:section_name() == section) then return refuse("gs_throw", from, "no matching source item") end
+	if throw or item.parent_id == who:id() then
+		-- A throw still holds the detector. A drop request can overtake its ownership event.
+		if item.parent_id ~= who:id() then return refuse("gs_throw", from, "source item is not the player's") end
+	else
+		if not (item.parent_id == nil or item.parent_id == 65535) then
 			return refuse("gs_throw", from, "the dropped glowstick is not on the ground")
+		end
+		if not (item.position and who:position():distance_to_sqr(item.position) <= 9) then
+			return refuse("gs_throw", from, "the dropped glowstick is not near the player")
 		end
 	end
 	local id = host_create_lamp(section, pos, dir, lv, gv, charge, throw)
 	if not id then return refuse("gs_throw", from, "lamp not created") end
-	if item then alife_release_id(item.id) end
+	gs_spent[iid] = true
+	alife_release_id(item.id)
 	st.gs_throw = st.gs_throw + 1
 end
 
@@ -198,6 +206,25 @@ local function install_glowsticks()
 			return true
 		end
 	end)
+	local wrapped, old = C().wrap(m, "actor_on_hud_animation_end", "zz_glowstick_mcm.actor_on_hud_animation_end", function(orig)
+		return function(item, section, motion, ...)
+			if not (C().is_client() and item and type(section) == "string"
+				and section:find("glowstick", 1, true) and motion == "anm_throw_stick") then
+				return orig(item, section, motion, ...)
+			end
+			-- Keep native hide/equip-next, but only the host may spend the source after creating its lamp.
+			-- Scope the override to this callback and this item; a failed/rejected request keeps the item.
+			local saved, release = rawget(m, "alife_release_id"), m.alife_release_id
+			m.alife_release_id = function(id, ...)
+				if id ~= item:id() then return release(id, ...) end
+			end
+			local ok, result = pcall(orig, item, section, motion, ...)
+			m.alife_release_id = saved
+			if not ok then error(result) end
+			return result
+		end
+	end)
+	if wrapped then C().swap_callback("actor_on_hud_animation_end", old, m.actor_on_hud_animation_end) end
 	local binder = m.glowstick_binder
 	C().wrap(binder, "update", "zz_glowstick_mcm.glowstick_binder.update", function(orig)
 		return function(self, delta, ...)
@@ -216,6 +243,7 @@ local function install_glowsticks()
 	C().set_limit("gs_throw", 4, 1)
 	C().set_limit("gs_pick", 4, 2)
 	RegisterScriptCallback("on_key_press", client_gs_key)
+	RegisterScriptCallback("load_state", function() gs_spent = {} end)
 end
 
 -------------------------------------------------------------------------------
@@ -419,6 +447,7 @@ end
 local first_done = false
 local function actor_on_update()
 	if C().is_host() then
+		for id in pairs(gs_spent) do if not alife_object(id) then gs_spent[id] = nil end end
 		host_md_clean()
 	elseif not first_done and C().is_client() and GS.mod then
 		-- The save's lamp table describes the host's lamps; a client never burns or picks them up itself.

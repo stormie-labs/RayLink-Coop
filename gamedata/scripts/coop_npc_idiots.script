@@ -1,6 +1,8 @@
 --[[
 	Anomaly Coop - Useful Idiots (bellyillish, G.A.M.M.A. "450- Useful Idiots") for several players
-	gamedata\scripts\coop_npc_idiots.script (W8, GAMMA pass; same job as xrRazom's xrr_rewrites\xrr_useful_idiots.ltx)
+	Historical W8 implementation used borrowed literal rewrite data. The current bounded
+	transform is independently specified from bellyillish's original Useful Idiots package
+	(E:/GAMMA/mods/450- Useful Idiots - bellyillish/gamedata/scripts/illish/patches/xr_danger.lua).
 
 	Useful Idiots replaces xr_danger.is_danger in its package illish.patches.xr_danger (a require()'d .lua that
 	z_idiots_patches.script loads at its file scope). The last check of that function tells the player from
@@ -9,9 +11,12 @@
 
 	Fix: a package searcher, put in front of Lua's file searcher at this file's scope (axr_main loads every
 	script by name before any on_game_start, coop_* before z_idiots_patches). For that one package it reads the
-	file, replaces the two comparisons with coop_idiots_player_id() and compiles the text under the file's own
-	name. All-or-nothing: if a text is not there exactly once (another version of the mod), the package loads
-	untouched and the log says why. Without Useful Idiots, or on an exe without co-op, nothing happens.
+	file, recognises the original final relation guard by Lua tokens and changes only its two player tests.
+	Comments/strings are not executable matches; formatting does not matter. A different guard or ambiguous
+	code falls through to Lua's normal loader unchanged. No module is replayed and package callbacks run once.
+	A native decorator cannot reach this private early return without duplicating the complete upstream
+	policy or faking game_object userdata. This source transform deliberately retains every preceding guard
+	and every luabind argument. No xrRazom code/assets were used to implement it.
 	Outside a session coop_idiots_player_id(id) is id == 0: single player behaves exactly like the mod.
 
 	For other scripts / status: coop_npc_idiots.state = { installed, applied, file, why }
@@ -21,10 +26,6 @@ local tostring, type, ipairs, pcall = tostring, type, ipairs, pcall
 local string_format = string.format
 
 MODULE = "illish.patches.xr_danger"
-PAIRS = {
-	{ "dangerObject:id() == 0", "coop_idiots_player_id(dangerObject:id())" },
-	{ "dangerObject:id() ~= 0", "not coop_idiots_player_id(dangerObject:id())" },
-}
 
 state = { installed = false, applied = false, tried = false, file = nil, why = nil }
 
@@ -34,39 +35,103 @@ local function log(fmt, ...)
 	if pf then pcall(pf, "[coop-npc:idiots] %s", ok and line or tostring(fmt)) end
 end
 
--- Player check used by the rewritten package: the host's actor (id 0) or any co-op player's character.
-local is_player -- coop_npc_players' global, found on first use
+-- Only the host extends the actor rule to real player proxies. No cached predicate:
+-- leaving a session or changing roles must immediately restore the upstream classification.
 _G.coop_idiots_player_id = function(id)
 	if id == 0 then return true end
-	if not is_player then
-		is_player = rawget(_G, "coop_npc_is_player_id")
-		if not is_player then
-			pcall(function() return coop_npc_players end) -- _G.__index loads it; it defines the global
-			is_player = rawget(_G, "coop_npc_is_player_id")
+	local ok, P = pcall(function() return coop_npc_players end)
+	return ok and type(P) == "table" and type(P.host_with_clients) == "function"
+		and P.host_with_clients() and P.is_player_id(id) == true or false
+end
+
+-- Small lexical scanner, not a Lua reformatter: retain byte offsets and leave the rest of
+-- the source untouched. Long strings/comments and escaped quotes cannot become matches.
+local function tokens(text)
+	local out, i, size = {}, 1, #text
+	local function long_end(at)
+		local eq = text:match("^%[(=*)%[", at)
+		if eq == nil then return nil end
+		local _, last = text:find("]" .. eq .. "]", at + #eq + 2, true)
+		return last or false
+	end
+	while i <= size do
+		local c = text:sub(i, i)
+		if c:match("%s") then
+			i = i + 1
+		elseif text:sub(i, i + 1) == "--" then
+			local last = long_end(i + 2)
+			if last == false then return nil, "unterminated long comment" end
+			i = last and last + 1 or (text:find("\n", i + 2, true) or size + 1)
+		else
+			local last, value
+			if c == '"' or c == "'" then
+				local at = i + 1
+				while at <= size do
+					local ch = text:sub(at, at)
+					if ch == "\\" then at = at + 2
+					elseif ch == c then last = at; break
+					else at = at + 1 end
+				end
+				if not last then return nil, "unterminated quoted string" end
+				value = "<string>"
+			elseif c == "[" then
+				last = long_end(i)
+				if last == false then return nil, "unterminated long string" end
+				if last then value = "<string>" end
+			end
+			if not last then
+				local word = text:match("^[%a_][%w_]*", i) or text:match("^%d[%w_%.]*", i)
+				local op = text:sub(i, i + 1)
+				value = word or ((op == "==" or op == "~=" or op == "<=" or op == ">=") and op or c)
+				last = i + #value - 1
+			end
+			out[#out + 1] = { value = value, first = i, last = last }
+			i = last + 1
 		end
-		if not is_player then return false end
 	end
-	return is_player(id) == true
+	return out
 end
 
-local function count(text, s)
-	local n, i = 0, 1
-	while true do
-		local a, b = text:find(s, i, true)
-		if not a then return n end
-		n, i = n + 1, b + 1
+local function matches(code, pattern)
+	local found = {}
+	for i = 1, #code - #pattern + 1 do
+		local same = true
+		for j, token in ipairs(pattern) do
+			if code[i + j - 1].value ~= token.value then same = false; break end
+		end
+		if same then found[#found + 1] = i end
 	end
+	return found
 end
 
--- Text with every pair replaced, or nil + why (each "from" must be there exactly once).
+-- The upstream final branch is deliberately version-gated: changing a threshold or
+-- introducing another executable player test requires review, not a guessed adaptation.
+local GUARD = tokens([[if dangerObject:id() == 0 and npc:relation(dangerObject) < 1 or dangerObject:id() ~= 0 and npc:relation(dangerObject) < 2 then
+return false end return xr_danger.danger_in_radius(npc, danger, dangerType) end]])
+local HEADER = tokens("function xr_danger.is_danger(npc, danger)")
+local PLAYER_TESTS = {
+	{ tokens("dangerObject:id() == 0"), "coop_idiots_player_id(dangerObject:id())" },
+	{ tokens("dangerObject:id() ~= 0"), "not coop_idiots_player_id(dangerObject:id())" },
+}
+
 function rewrite(text)
-	for _, p in ipairs(PAIRS) do
-		local n = count(text, p[1])
-		if n ~= 1 then return nil, string_format("'%s' found %d time(s)", p[1], n) end
+	local code, why = tokens(text)
+	if not code then return nil, why end
+	local headers, guards = matches(code, HEADER), matches(code, GUARD)
+	if #headers ~= 1 or #guards ~= 1 or guards[1] < headers[1] then return nil, "unsupported final relation guard" end
+	local edits = {}
+	for _, spec in ipairs(PLAYER_TESTS) do
+		local found = matches(code, spec[1])
+		if #found ~= 1 or found[1] < guards[1] or found[1] >= guards[1] + #GUARD then
+			return nil, "ambiguous executable player test"
+		end
+		local at = found[1]
+		edits[#edits + 1] = { first = code[at].first, last = code[at + #spec[1] - 1].last, text = spec[2] }
 	end
-	for _, p in ipairs(PAIRS) do
-		local a, b = text:find(p[1], 1, true)
-		text = text:sub(1, a - 1) .. p[2] .. text:sub(b + 1)
+	-- Apply from right to left so original offsets stay valid.
+	table.sort(edits, function(a, b) return a.first > b.first end)
+	for _, edit in ipairs(edits) do
+		text = text:sub(1, edit.first - 1) .. edit.text .. text:sub(edit.last + 1)
 	end
 	return text
 end

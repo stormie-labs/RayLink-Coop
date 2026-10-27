@@ -679,7 +679,7 @@ TEST(transition_message_numbers_and_directions)
 	CHECK(msg_sender(Msg::TransitionVote) == MsgSender::ClientOnly);
 	CHECK(msg_sender(Msg::TransitionState) == MsgSender::HostOnly);
 	CHECK_EQ(std::string(msg_name(Msg::TransitionState)), std::string("TransitionState"));
-	CHECK_EQ(kProtocolVersion, 14u); // since protocol 10 TransitionVote carries an op (F3a made it 11: protocol 10 peers are refused)
+	CHECK_EQ(kProtocolVersion, 15u); // instrument snapshots; protocol 14 peers are refused by the handshake
 }
 
 TEST(transition_vote_round_trip)

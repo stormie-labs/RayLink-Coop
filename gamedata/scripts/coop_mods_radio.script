@@ -305,7 +305,8 @@ local function pkg_client_follow()
 	for id, target in pairs(targets) do
 		if pkg.examined[id] == nil then
 			local se = alife_object(id)
-			pkg.examined[id] = se ~= nil and se:section_name():find(PKG_PREFIX, 1, true) ~= nil
+			-- Saved RF targets can arrive before their streamed object; examine only once it exists.
+			if se then pkg.examined[id] = se:section_name():find(PKG_PREFIX, 1, true) ~= nil end
 			if pkg.examined[id] and type(target) == "table" and target.freq then
 				pkg.tracked = id
 				tb.tb_target_item = id

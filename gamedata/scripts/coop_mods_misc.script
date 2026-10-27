@@ -11,8 +11,8 @@
 	                                           player's inventory any more are dropped at the first update.
 	Kill Tracker (ish_kill_tracker)            a player's character is named by the player's nick; the mod's
 	                                           own records are per player (keys found from its save_state).
-	Guitar / harmonica (guitar_anim, harmonica_anim)  the song a player plays is heard at that player's
-	                                           character on every machine (event mods.song).
+	Guitar / harmonica (guitar_anim, harmonica_anim)  original Daiviey HUD entry points feed bounded native
+	                                           coop.instrument state; older engines retain event mods.song.
 	Immersive Sleep (ui_sleep_dialog)          the tiredness veto judges the most tired player of the group
 	                                           (mods.sleepy client -> host, mods.sleepy_max host -> all).
 	Zone Customization Project (smr_loot)      bonus loot is rolled by the host only; a client's container is
@@ -120,32 +120,73 @@ end
 -------------------------------------------------------------------------------
 local songs = {} -- peer -> sound object playing on this machine
 
-local function announcing(orig)
-	return function(...)
+-- Provenance: installed GAMMA 382 Guitar Animation - Daiviey guitar_anim/harmonica_anim;
+-- draw -> play -> holster_guitar -> restore, including harmonica's original holster_guitar spelling.
+-- NPC world poses/attachments are the engine's original NPC assets, not HUD meshes or another co-op's code.
+local function native_instrument(kind, phase, track, length)
+	if not (C().active() and api and type(api.instrument) == "function") then return false end
+	local ok, accepted = pcall(api.instrument, kind, phase, track or 0, length or 0)
+	return ok and accepted == true
+end
+
+local function announcing(kind)
+	return function(orig) return function(...)
 		if not C().active() then return orig(...) end
 		local real = _G.sound_object
-		local track, snd
+		local track, snd, native, fallback_play
+		local function pack(...) return { n = select("#", ...), ... } end
 		local proxy = setmetatable({}, {
 			__call = function(_, name, ...)
 				local s = real(name, ...)
 				if track == nil then track, snd = name, s end
+				local prefix = kind == 1 and "^music\\guitar_(%d+)$" or "^music\\harmonica_(%d+)$"
+				local n = type(name) == "string" and tonumber(name:match(prefix))
+				if s and n and n >= 1 and n <= (kind == 1 and 28 or 5) and type(api.instrument) == "function" then
+					local function play(method, ...)
+						local ok, length = pcall(function() return s:length() end)
+						if ok and type(length) == "number" and length > 0 and length <= 600000 and
+							native_instrument(kind, 2, n, math.floor(length)) then
+							local args = pack(...)
+							fallback_play = function() return s[method](s, unpack(args, 1, args.n)) end
+							native = true
+							return
+						end
+						return s[method](s, ...)
+					end
+					return setmetatable({
+						play = function(_, ...) return play("play", ...) end,
+						play_no_feedback = function(_, ...) return play("play_no_feedback", ...) end,
+						play_at_pos = function(_, ...) return play("play_at_pos", ...) end,
+					}, { __index = function(_, k)
+						local value = s[k]
+						if type(value) == "function" then return function(_, ...) return value(s, ...) end end
+						return value
+					end })
+				end
 				return s
 			end,
 			__index = function(_, k) return real[k] end,
 		})
 		_G.sound_object = proxy
-		local res = { pcall(orig, ...) }
+		local res = pack(pcall(orig, ...))
 		_G.sound_object = real
-		if not res[1] then error(res[2], 0) end
-		if type(track) == "string" and snd then
+		if not res[1] then
+			if native then
+				native_instrument(kind, 0)
+				if fallback_play then pcall(fallback_play) end
+			end
+			error(res[2], 0)
+		end
+		if not native and type(api.instrument) ~= "function" and type(track) == "string" and snd then
 			local ok, len = pcall(function() return snd:length() end)
 			C().to_all("song", { s = track, l = ok and tonumber(len) or 0 })
 		end
-		return unpack(res, 2)
-	end
+		return unpack(res, 2, res.n)
+	end end
 end
 
 local function on_song(t, from)
+	if api and type(api.instrument) == "function" then return end -- protocol 15 owns its only source
 	local track = t.s
 	if type(track) ~= "string" or #track > 200 or track:find("..", 1, true) then return end
 	local obj = C().avatar(from)
@@ -162,8 +203,19 @@ local guitar_done = false
 local function install_guitar()
 	if guitar_done or not api then return end
 	guitar_done = true
-	C().wrap(C().mod("guitar_anim"), "play_guitar", "guitar_anim.play_guitar", announcing)
-	C().wrap(C().mod("harmonica_anim"), "play_harmonica", "harmonica_anim.play_harmonica", announcing)
+	for _, spec in ipairs({ { "guitar_anim", "guitar", 1 }, { "harmonica_anim", "harmonica", 2 } }) do
+		local mod, name, kind = C().mod(spec[1]), spec[2], spec[3]
+		C().wrap(mod, "play_" .. name, spec[1] .. ".play", announcing(kind))
+		for _, action in ipairs({ { "draw_" .. name, 1 }, { "holster_guitar", 3 }, { "restore", 0 } }) do
+			local phase = action[2]
+			C().wrap(mod, action[1], spec[1] .. "." .. action[1], function(orig)
+				return function(...)
+					native_instrument(kind, phase)
+					return orig(...)
+				end
+			end)
+		end
+	end
 end
 
 -------------------------------------------------------------------------------

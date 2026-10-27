@@ -76,6 +76,8 @@ end
 
 function request(opts)
 	if type(opts) ~= "table" or not core.word(opts.verb, 48) or type(opts.obj_id) ~= "number" then return false end
+	-- A joining client is already in a session but cannot yet address host objects. Never run its verb here.
+	if core.in_session() and not core.live() then return false end
 	local verb, obj_id = opts.verb, opts.obj_id
 	local resolve, on_ready = opts.resolve, opts.on_ready
 	local key = verb .. ":" .. obj_id
@@ -90,7 +92,7 @@ function request(opts)
 	local state = opts.state
 	if type(state) ~= "number" then state = state and 1 or 0 end
 	local args = type(opts.args) == "string" and opts.args:sub(1, 1024) or ""
-	if not core.live() then
+	if not core.in_session() then
 		dispatch(verb, obj_id, state, args, 0) -- single player: same handler, here
 	elseif core.is_host() then
 		dispatch(verb, obj_id, state, args, core.self_id())

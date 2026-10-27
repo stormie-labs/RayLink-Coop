@@ -341,42 +341,19 @@ local function eva_evaluate(self)
 	return self.a.meet_manager.current_distance ~= nil
 end
 
--- Stock action; the gtfo distance and the commander threat target are the nearest player.
+-- Keep the installed xr_meet action (including other mods' movement/animation changes).
+-- RayLink supplies its nearest player's identity; only its remote conversation lock is additional state.
 local function act_execute(self)
 	if not host_on then return orig.act_execute(self) end
 	local npc = self.object
-	if self.a.gtfo and self.a.can_gtfo == "true" then
+	if self.a.gtfo and self.a.can_gtfo == "true" and self.a.meet_manager.coop_talk == true then
 		action_base.execute(self)
-		local talking = npc:is_talking() or self.a.meet_manager.coop_talk == true -- W11: a client talks to it
-		if talking or P.nearest_dist_sqr(npc:position()) > 4 then
-			utils_obj.send_to_nearest_accessible_vertex(npc, npc:level_vertex_id())
-			self.a.gtfo, self.a.vertex_id, self.a.stage = nil, nil, 0
-			return
-		end
-		if self.a.stage == 0 then
-			self.a.vertex_id = utils_obj.try_go_backward(npc, 5, self.a.vertex_id)
-			if self.a.vertex_id then
-				npc:set_desired_direction()
-				state_mgr.set_state(npc, "patrol")
-				self.a.stage = 1
-				self.a.dtimer = time_global() + 4000
-			end
-		elseif self.a.stage == 1 then
-			if npc:level_vertex_id() == self.a.vertex_id or time_global() > self.a.dtimer then
-				self.a.gtfo, self.a.vertex_id, self.a.stage = nil, nil, 0
-				return
-			end
-			utils_obj.send_to_nearest_accessible_vertex(npc, self.a.vertex_id)
-		end
+		utils_obj.send_to_nearest_accessible_vertex(npc, npc:level_vertex_id())
+		self.a.gtfo, self.a.vertex_id, self.a.stage = nil, nil, 0
 		return
-	elseif self.a.commander_threat then
-		-- The stock rush-and-threat sequence needs the target; outside of it the stock action is right.
-		local target = P.nearest(npc:position()) or db.actor
-		if target and target:id() ~= 0 then
-			return P.with_identity(target, orig.act_execute, self)
-		end
 	end
-	return orig.act_execute(self)
+	local target = P.nearest(npc:position()) or db.actor
+	return P.with_identity(target, orig.act_execute, self)
 end
 
 -------------------------------------------------------------------------------

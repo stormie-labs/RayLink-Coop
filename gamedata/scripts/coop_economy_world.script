@@ -20,6 +20,7 @@
 	Events:
 		economy.wf_tip      host -> clients  { s = smart name }        warfare auto-capture started
 		economy.loot_taken  host -> clients  { id, t = marker type }   a world loot item was picked up
+		economy.loot_roll   host -> clients  { id, s = section, n = roll } late roll on the existing item
 --]]
 
 local core = coop_economy_core
@@ -129,6 +130,52 @@ local function bake(gs, id, section, num)
 end
 
 -- Host: every rolled world item gets its value as soon as it can carry it.
+-- Taken items no longer have a world_itm_on entry; their retries belong to the item, not its reusable spot.
+local taken_rolls, roll_errors = {}, {}
+
+local function try_bake(gs, id, section, num)
+	local ok, done = pcall(bake, gs, id, section, num)
+	if not ok then
+		stats.errors = stats.errors + 1
+		if not roll_errors[id] then core.log("! world loot %s: %s", tostring(id), tostring(done)) end
+		roll_errors[id] = true
+	elseif done then
+		roll_errors[id] = nil
+		return true
+	end
+	return false
+end
+
+local function bake_taken(gs)
+	for id, roll in pairs(taken_rolls) do
+		local se = alife_object(id)
+		if se and se:section_name() ~= roll.s then
+			taken_rolls[id], roll_errors[id] = nil, nil
+		elseif se then
+			if not roll.applied and try_bake(gs, id, roll.s, roll.n) then
+				roll.applied = true
+				stats.baked = stats.baked + 1
+			end
+			if roll.applied then
+				local delivered = true
+				if core.is_host() then
+					-- The owner must apply it too: coop_items enforces the owner's state on its host copy.
+					roll.sent = roll.sent or {}
+					for _, p in ipairs(core.players()) do
+						if not p.is_self and not roll.sent[p.id] then
+							roll.sent[p.id] = core.send("loot_roll", { id = id, s = roll.s, n = roll.n }, p.id)
+							if not roll.sent[p.id] then delivered = false end
+						end
+					end
+				end
+				if delivered then taken_rolls[id] = nil end
+			end
+		elseif not se and core.is_host() then
+			taken_rolls[id], roll_errors[id] = nil, nil -- destroyed, rather than a future reused id
+		end
+	end
+end
+
 local function bake_pending()
 	local gs = gs_ready()
 	if not gs then return end
@@ -138,17 +185,13 @@ local function bake_pending()
 		local id = id_of[name]
 		local se = id and alife_object(id)
 		if se then
-			local ok, done = pcall(bake, gs, id, se:section_name(), num)
-			if not ok then
-				stats.errors = stats.errors + 1
-				core.log("! world loot %s: %s", tostring(name), tostring(done))
-				gs.world_itm_num[name] = nil
-			elseif done then
+			if try_bake(gs, id, se:section_name(), num) then
 				gs.world_itm_num[name] = nil
 				stats.baked = stats.baked + 1
 			end
 		end
 	end
+	bake_taken(gs)
 end
 
 -- Host: a player's character took an item (the client picked it up). Stock does this for the host actor.
@@ -163,14 +206,14 @@ local function npc_on_item_take(npc, item)
 	if not name then return end
 	stats.peer_takes = stats.peer_takes + 1
 	local section = item:section()
-	pcall(gs.try_spawn_world_item)
+	local num = gs.world_itm_num[name]
+	if num then taken_rolls[id] = { s = section, n = num } end
+	-- Detach before spawning/baking: a new item at this spot must never inherit the old item's retry.
+	gs.world_itm_num[name] = nil
 	gs.world_itm_on[id] = nil
 	gs.world_itm_off[name] = true
-	local num = gs.world_itm_num[name]
-	if num then
-		pcall(bake, gs, id, section, num)
-		gs.world_itm_num[name] = nil
-	end
+	bake_taken(gs)
+	pcall(gs.try_spawn_world_item)
 	local info = gs.world_itm_info[name]
 	if info and info.typ then
 		pcall(gs.remove_marker, id, info.typ)
@@ -202,6 +245,15 @@ end
 -- Events, update, status, start
 -------------------------------------------------------------------------------
 local function register_events()
+	core.on("loot_roll", function(t, from)
+		if from ~= 0 or not core.is_client() then return end
+		local id, section, num = core.int(t.id, 1, 65534), core.word(t.s, 128), core.num(t.n, 0)
+		local gs = gs_ready()
+		if not (id and section and num and gs) then return end
+		id = core.local_id(id)
+		taken_rolls[id] = { s = section, n = num }
+		bake_taken(gs) -- may wait for streaming or a temporarily unavailable setter
+	end)
 	core.on("wf_tip", function(t, from)
 		if from ~= 0 or core.is_host() then return end
 		local s = core.word(t.s, 96)
@@ -218,11 +270,16 @@ end
 
 local next_bake = 0
 local function actor_on_update()
-	if not core.is_host() then return end
+	if not core.live() then return end
 	local t = core.now()
 	if t < next_bake then return end
 	next_bake = t + 1000
-	if core.others_count() > 0 then pcall(bake_pending) end
+	if core.is_host() then
+		if core.others_count() > 0 or next(taken_rolls) then pcall(bake_pending) end
+	else
+		local gs = gs_ready()
+		if gs then bake_taken(gs) end
+	end
 end
 
 function print_status()
@@ -243,4 +300,11 @@ function on_game_start()
 	start_step("patch_game_setup", patch_game_setup)
 	register_events()
 	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("save_state", function(mdata)
+		if core.is_host() then mdata.coop_world_rolls = taken_rolls end
+	end)
+	RegisterScriptCallback("load_state", function(mdata)
+		taken_rolls = core.is_host() and type(mdata.coop_world_rolls) == "table" and mdata.coop_world_rolls or {}
+		roll_errors, next_bake = {}, 0
+	end)
 end

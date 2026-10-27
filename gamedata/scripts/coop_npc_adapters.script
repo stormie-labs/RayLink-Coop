@@ -1,0 +1,167 @@
+-- Native NPC compatibility hooks, independently specified from the installed upstream mods.
+-- Sources of behaviour (not replacement source templates): GAMMA schemes_ai_gamma,
+-- Andruxa's Stealth Overhaul visual_memory_manager, Anomaly/GAMMA xr_danger corpse action,
+-- and trader_autoinject's existing trade_manager.update chain. No module is reexecuted here.
+
+local type, pairs, ipairs, pcall = type, pairs, ipairs, pcall
+local installed = false
+
+-- A module-private callback may already be registered by value, or may be registered later
+-- by its startup closure. Change the captured function AND the existing registration.
+local function private_callback(C, m, name, callback, make)
+	local old, holder, index = C.find_local(m, name)
+	if type(old) ~= "function" or not holder then return false end
+	local wrapped = make(old)
+	debug.setupvalue(holder, index, wrapped)
+	C.swap_callback(callback, old, wrapped)
+	return true
+end
+
+local function ai(C, P, active)
+	local m = C.mod("schemes_ai_gamma")
+	local verification = m and C.find_local(m, "verification_npc")
+	if type(verification) ~= "table" then return false end
+	return private_callback(C, m, "npc_on_hit_callback", "npc_on_hit_callback", function(old)
+		-- Return all values, including nils, from the original private callback.
+		local function finish(npc, who, ...)
+			if active() and npc and who and P.is_proxy(who) then verification[npc:id()] = 0 end
+			return ...
+		end
+		return function(npc, amount, direction, who, bone, ...)
+			-- Callback routes also declare this wrapper host-only. Keep direct invocations
+			-- safe: active()==false on a client must not fall through to host world code.
+			if P.is_client() then return end
+			return finish(npc, who, old(npc, amount, direction, who, bone, ...))
+		end
+	end)
+end
+
+local function corpse(C, P, active)
+	local m = C.mod("xr_danger")
+	local old, holder, index = C.find_local(m, "script_action_danger_corpse")
+	if type(old) ~= "function" or not holder then return false end
+	debug.setupvalue(holder, index, function(npc, st, danger, object, dependent, kind, ...)
+		if active() and npc and st then
+			local body = object or dependent
+			local storage = body and db.storage[body:id()]
+			local killer_storage = storage and storage.death_by_id and db.storage[storage.death_by_id]
+			local killer = dependent or (killer_storage and killer_storage.object)
+			-- Only extend the upstream actor branch. Host/NPC killers still take that branch
+			-- in old(), with the original stage, path, sound and random-choice behaviour.
+			if killer and P.is_proxy(killer) and killer:alive() then
+				if st.stage >= 2 and npc:relation(killer) >= game_object.neutral and npc:see(killer) then
+					local squad = get_object_squad(npc)
+					if squad then
+						for member in squad:squad_members() do
+							local entry = db.storage[member.id]
+							local obj = entry and entry.object or level.object_by_id(member.id)
+							if obj then obj:force_set_goodwill(-1000, killer) end
+						end
+					else
+						npc:force_set_goodwill(-1000, killer)
+					end
+				elseif npc:relation(killer) < game_object.neutral then
+					npc:make_object_visible_somewhen(killer)
+				end
+			end
+		end
+		return old(npc, st, danger, object, dependent, kind, ...)
+	end)
+	return true
+end
+
+local function stealth(C, P, active)
+	if not C.mod("stealth_mcm") then return false end
+	local m = C.mod("visual_memory_manager")
+	local visible, hit = m and m.get_visible_value, m and m.npc_on_before_hit
+	if type(visible) ~= "function" or type(hit) ~= "function" then return false end
+	local slots, initial = {}, {}
+	for _, name in ipairs({ "vision_memory", "marked", "actor_marked" }) do
+		local value, holder, index = C.find_local(m, name)
+		if not holder or (name ~= "actor_marked" and type(value) ~= "table")
+			or (name == "actor_marked" and type(value) ~= "number") then return false end
+		slots[#slots + 1] = { name = name, holder = holder, index = index }
+		initial[name] = value
+	end
+	-- The host keeps its existing state; proxies and non-player observations get their
+	-- own banks. In particular marked and actor_marked must never follow another player.
+	local banks = { [0] = initial }
+	local function finish(bank, saved, ok, ...)
+		for i, slot in ipairs(slots) do
+			local _, value = debug.getupvalue(slot.holder, slot.index)
+			bank[slot.name] = value
+			debug.setupvalue(slot.holder, slot.index, saved[i])
+		end
+		if not ok then error((...), 0) end
+		return ...
+	end
+	local function scoped(who, reset, f, ...)
+		local id = who and who:id()
+		local player = id ~= nil and P.is_player_id(id)
+		local key = player and id or "npc"
+		local bank = banks[key]
+		if not bank then
+			bank = { vision_memory = {}, marked = {}, actor_marked = 0 }
+			banks[key] = bank
+		end
+		local saved = {}
+		for i, slot in ipairs(slots) do
+			local _, value = debug.getupvalue(slot.holder, slot.index)
+			saved[i] = value
+			debug.setupvalue(slot.holder, slot.index, reset and slot.name == "actor_marked" and 0 or bank[slot.name])
+		end
+		-- with_identity restores db.actor and story id even on an upstream error;
+		-- finish does the same for the three shared upvalues. Do not retry the call.
+		if player then return finish(bank, saved, pcall(P.with_identity, who, f, ...)) end
+		return finish(bank, saved, pcall(f, ...))
+	end
+	m.get_visible_value = function(npc, who, ...)
+		if not active() then return visible(npc, who, ...) end
+		return scoped(who, true, visible, npc, who, ...)
+	end
+	local wrapped = function(npc, h, ...)
+		if P.is_client() then return end
+		if not active() then return hit(npc, h, ...) end
+		return scoped(h and h.draftsman, false, hit, npc, h, ...)
+	end
+	m.npc_on_before_hit = wrapped
+	C.swap_callback("npc_on_before_hit", hit, wrapped)
+	return true
+end
+
+local function trader(C, P, active)
+	if not C.mod("trader_autoinject") then return false end
+	local m = C.mod("trade_manager")
+	local old = m and m.update
+	if type(old) ~= "function" then return false end
+	m.update = function(npc, ...)
+		if active() and npc and npc:alive() and not P.in_identity() then
+			local name = npc:name()
+			if name == "esc_m_trader" or name == "red_m_lesnik" then
+				-- Select a nearby real player, then enter the existing complete wrapper chain
+				-- once. Its restock timer, force_refresh and custom hooks remain authoritative.
+				local near, distance = P.nearest(npc)
+				if near and distance <= 400 and P.is_proxy(near) then
+					return P.with_identity(near, old, npc, ...)
+				end
+			end
+		end
+		return old(npc, ...)
+	end
+	return true
+end
+
+function install(P, active, applied)
+	if installed then return end
+	local C = coop_mods_core
+	if not (C and type(C.find_local) == "function") then return end
+	installed = true
+	for _, spec in ipairs({ { "ai_hit", ai }, { "danger_corpse", corpse }, { "stealth", stealth }, { "trader", trader } }) do
+		local ok, result = pcall(spec[2], C, P, active)
+		if not ok then
+			P.report("compat", "native " .. spec[1], result)
+		elseif result then
+			applied[#applied + 1] = "native:" .. spec[1]
+		end
+	end
+end

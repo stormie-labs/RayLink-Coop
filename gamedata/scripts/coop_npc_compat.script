@@ -1,8 +1,8 @@
 --[[
 	Anomaly Coop - NPC group (W4 "npc"): third-party mods (G.A.M.M.A. and friends) that assume one player.
-	Port of the behaviour of xrRazom 1.4 xrr_patch_ai_rework, xrr_patch_night_mutants, xrr_patch_stealth,
-	xrr_patch_stealth_kill_detection, xrr_patch_rostok_peace_zone and of its rewrite configs
-	configs\xrr_rewrites\*.ltx (gamma_ai, silent_kills, trader_autoinject, useful_idiots).
+	Historical W4 wrappers were ported from xrRazom behaviour. Native hooks now live in
+	coop_npc_adapters: independently derived from the original Anomaly/GAMMA mods, without
+	using xrRazom source/assets as an implementation reference.
 
 	Every patch activates only when its mod's script exists; nothing here touches plain Anomaly 1.5.3 except
 	what is said. Outside a session every patched function answers exactly like the original.
@@ -17,14 +17,15 @@
 	    shooting Duty does not set the host's crime bit and a client without crimes is not attacked.
 	  - Stealth Kill Detection (Catspaw): a client's silent kill judged by the host (coop_npc_world) is
 	    credited to that client's statistics (npc.stat).
-	Rewrites (consumer in xrRazom: its engine's script loader, which replaced literal text in a mod script
-	before compiling it). Here: when the mod's script is a loose file, its text is read, the literal
-	comparisons with id 0 / db.actor are replaced by calls of coop_npc_players' globals (all-or-nothing per
-	file), and the body is run again into the module before its on_game_start. A packed or changed file is
-	left untouched (logged). Targets: xr_danger (G.A.M.M.A. copy only), schemes_ai_gamma,
-	visual_memory_manager (Stealth Overhaul copy only), stealth_kill_detection, trader_autoinject.
-	Not ported: illish.patches.xr_danger (Useful Idiots, a require()'d .lua package), and the stock
-	gameplay_silent_kills rewrite (coop_npc_world judges clients' silent kills with the stock rules instead).
+	Native: AI Rework's private hit callback; corpse-action proxy hostility; per-player vision,
+	marks and identity scopes; furniture-trader proximity through the existing update chain.
+	SKD's actor-only hook stays intact: coop_npc_world already judges proxy silent kills and
+	credits their owner here, so broadening SKD would duplicate that path.
+	Retained D2 loose-source rewrites: hxf damage classification, grok friendly-kill classification,
+	smr civil-war classification (our 2026-10-24 audit, not borrowed rewrite templates).
+	Their private early-return branches have no safe identity-only hook; preserve their complete
+	mod bodies and reject changed versions rather than replacing their policies. Useful Idiots
+	is handled separately by coop_npc_idiots, with token-aware checks derived from the original mod.
 
 	Events: npc.stat host -> client { k = statistic id }
 --]]
@@ -50,26 +51,9 @@ local function mod(name)
 end
 
 -------------------------------------------------------------------------------
--- Source rewrites (data from xrRazom's configs\xrr_rewrites, aimed at our globals)
+-- Transitional D2 source rewrites, independently specified by our attacker-domain audit.
 -------------------------------------------------------------------------------
 local REWRITES = {
-	xr_danger = {
-		{ "st.stage >= 2 and killer and killer:id() == 0", "st.stage >= 2 and killer and coop_npc_is_player_id(killer:id())" },
-		{ "elseif (killer and killer:id() == 0", "elseif (killer and coop_npc_is_player_id(killer:id())" },
-	},
-	schemes_ai_gamma = {
-		{ "if who:id() == AC_ID then", "if coop_npc_is_player_id(who:id()) then" },
-	},
-	visual_memory_manager = {
-		{ "vision_memory[npc:id()] = {}", "vision_memory[npc:id()] = coop_npc_multi() and vision_memory[npc:id()] or {}" },
-		{ "marked[npc:id()] = marked[npc:id()] or true", "marked[coop_npc_multi() and (npc:id() * 65536 + shit.draftsman:id()) or npc:id()] = true" },
-		{ "marked[member:id()] = marked[member:id()] or true", "marked[coop_npc_multi() and (member:id() * 65536 + shit.draftsman:id()) or member:id()] = true" },
-		{ "if marked[npc:id()] then", "if marked[coop_npc_multi() and (npc:id() * 65536 + who:id()) or npc:id()] then" },
-		{ "local memory_factor = 0", "local memory_factor = 0 if coop_npc_multi() then actor_marked = 0 end" },
-	},
-	stealth_kill_detection = {
-		{ "if (killer_id ~= 0) then return end", "if not coop_npc_is_player_id(killer_id) then return end" },
-	},
 	-- audit D2 (2026-10-24): a client counted as an NPC attacker (no companion / important-NPC damage scaling, no
 	-- friendly-kill goodwill loss, civil-war kills ignored)
 	hxf_tough_important_npcs = {
@@ -81,9 +65,6 @@ local REWRITES = {
 	},
 	smr_civil_war = {
 		{ "(not (killer.id == AC_ID) and", "(not coop_npc_is_player_id(killer.id) and" },
-	},
-	trader_autoinject = {
-		{ "npc:position():distance_to(db.actor:position()) > 20", "(not coop_npc_any_player_within(npc, 20))" },
 	},
 }
 
@@ -386,23 +367,6 @@ local function wrap_body_release()
 	applied[#applied + 1] = "body_release"
 end
 
-local function wrap_stealth()
-	if not mod("stealth_mcm") then return end
-	local m = mod("visual_memory_manager")
-	local f = m and m.get_visible_value
-	if type(f) ~= "function" or orig.vis then return end
-	orig.vis = f
-	-- The engine looks this function up by name on every call.
-	m.get_visible_value = function(npc, who, ...)
-		if host_on and who and P.is_proxy(who) then
-			local ok, r = pcall(P.with_identity, who, f, npc, who, ...)
-			if ok and type(r) == "number" then return r end
-		end
-		return f(npc, who, ...)
-	end
-	applied[#applied + 1] = "stealth"
-end
-
 -- Rostok peace zone: crimes per player.
 local crime = {} -- proxy id -> true
 
@@ -481,8 +445,10 @@ function on_game_start()
 			local ok, err = pcall(apply_rewrite, name, list)
 			if not ok then report("rewrite " .. name, err) end
 		end
+		local adapters = mod("coop_npc_adapters")
+		if adapters then adapters.install(P, function() return host_on and P.host_with_clients() end, applied) end
 		for _, s in ipairs({ { "ai_rework", wrap_ai_rework }, { "night_mutants", wrap_night_mutants },
-			{ "stealth", wrap_stealth }, { "peace_zone", wrap_peace_zone }, { "loot", wrap_loot },
+			{ "peace_zone", wrap_peace_zone }, { "loot", wrap_loot },
 			{ "squads", wrap_squads }, { "smart_respawn", wrap_smart_respawn }, { "helis", wrap_helis },
 			{ "body_release", wrap_body_release } }) do
 			local ok, err = pcall(s[2])

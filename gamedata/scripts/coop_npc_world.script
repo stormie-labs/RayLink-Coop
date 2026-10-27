@@ -397,13 +397,22 @@ end
 -- Instruments
 -------------------------------------------------------------------------------
 local function play_instrument(kind, count)
-	local path = "music\\" .. kind .. "_" .. tostring(math.random(count))
+	-- Original itms_manager.use_guitar/use_harmonica supply sound paths and the owner's local effect.
+	-- RayLink adds spatial playback at the corresponding player on other machines.
+	local track = math.random(count)
+	local path = "music\\" .. kind .. "_" .. tostring(track)
 	local snd = sound_object(path)
 	if not snd then return end
 	local period = snd:length()
-	snd:play_no_feedback(db.actor, 0, 0, db.actor:position(), 1.0, 1.0)
+	local api = rawget(_G, "coop")
+	local native = false
+	if P.active() and api and type(api.instrument) == "function" then
+		local ok, accepted = pcall(api.instrument, kind == "guitar" and 1 or 2, 2, track, math.floor(period))
+		native = ok and accepted == true
+	end
+	if not native then snd:play_no_feedback(db.actor, 0, 0, db.actor:position(), 1.0, 1.0) end
 	actor_effects.play_continuous_effect(period)
-	if P.active() and P.send(EV_ISND, { p = path, a = P.to_host(0) }, -1) then stats.music = stats.music + 1 end
+	if not native and P.active() and P.send(EV_ISND, { p = path, a = P.to_host(0) }, -1) then stats.music = stats.music + 1 end
 end
 
 local function on_isnd(t)

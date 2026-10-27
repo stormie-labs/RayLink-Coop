@@ -259,7 +259,9 @@ local function item_poll()
 		end
 		for _, d in ipairs(item_keys) do
 			local tbl = m[d.key]
-			local packed = core.pack(type(tbl) == "table" and tbl[id] or nil)
+			local value
+			if type(tbl) == "table" then value = tbl[id] end -- preserve false; nil means removal
+			local packed = core.pack(value)
 			if b[d.key] ~= packed then
 				b[d.key] = packed
 				if not silent then out[#out + 1] = { core.host_id(id), d.key, packed } end

@@ -24,7 +24,8 @@ SKIP = [
 
 
 SOURCE_EXT = (".cpp", ".h", ".hpp", ".inl", ".c", ".md")
-SOURCE_DIRS = ("src/xrGame", "src/xrCoop", "src/xrEngine", "src/xrServerEntities", "src/xrCore", "src/Layers")  # Layers: free cursor touches the render HW (2026-10-23)
+SOURCE_DIRS = ("src/xrGame", "src/xrCoop", "src/xrEngine", "src/xrServerEntities", "src/xrCore", "src/Layers",
+               "src/xrSound")  # Native instrument playback extends the sound interface as well as xrGame.
 
 
 def same_text(a: Path, b: Path) -> bool:

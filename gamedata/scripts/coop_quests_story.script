@@ -36,6 +36,7 @@ local math_floor, math_random, math_ceil = math.floor, math.random, math.ceil
 
 local TAG = "story"
 
+-- Names below are the original xr_effects / dialogs / DRX effect API, not private implementations.
 -- Skipped on a client inside a condlist: the host's run of the same logic counts.
 local SUPPRESS_ON_CLIENT = {
 	"reward_money", "reward_random_money", "reward_random_money_by_dist", "reward_item_cost_mult_and_remove",

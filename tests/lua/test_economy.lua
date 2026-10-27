@@ -36,7 +36,7 @@ local function stock_stubs(W)
 	W.pda = {
 		property_box_clicked = function(ui)
 			local prop = ui:GetSelectedItem():GetTextItem():GetText()
-			if prop:find("^Travel to ") then
+			if prop:find("^Travel to ") or prop == "Backpack travel" then
 				W.level.change_game_time(0, 2, 30)
 				W.db.actor:set_actor_position(vec(500, 0, 500))
 				W.TRAVELLED = (W.TRAVELLED or 0) + 1
@@ -335,6 +335,19 @@ do
 	check(A.KA and H.CLOCK == 150 + 190 and A.REFUSED_CGT == 0, "guide to another level: time cost on the host")
 end
 
+section("travel: stock backpack menu")
+do
+	local H, A = setup(1)
+	local ui = { GetSelectedItem = function() return { GetTextItem = function() return { GetText = function() return "Backpack travel" end } end } end }
+	POS[0] = { x = 300, y = 0, z = 0 }
+	A.pda.property_box_clicked(ui)
+	check(A.TRAVELLED == nil, "stock backpack travel waits for a gathered party")
+	POS[0] = { x = 3, y = 0, z = 0 }
+	A.pda.property_box_clicked(ui)
+	deliver_all()
+	check(A.TRAVELLED == 1 and math.abs(POS[0].x - 500) < 1, "translated backpack action moves the group")
+end
+
 section("travel: story teleport")
 do
 	local H, A, B = setup(2)
@@ -418,6 +431,19 @@ do
 	tick(H, 1200)
 	check(ammo.ammo == 7 and gs.world_itm_num.spot1 == nil, "online ammo gets its rolled count on the host")
 	check(H.bind_item.item_condition[701] == 0.4 and gs.world_itm_num.spot2 == nil, "an offline weapon's condition goes to bind_item")
+	-- A transient setter failure must leave the roll queued for a later host update.
+	local retry_ammo = add_item(H, 703, "ammo_9x19", 65535)
+	gs.world_itm_on[703], gs.world_itm_num.spot_retry = "spot_retry", 11
+	local attempts = 0
+	function retry_ammo:ammo_set_count(num)
+		attempts = attempts + 1
+		if attempts == 1 then error("item temporarily unavailable") end
+		self.ammo = num
+	end
+	tick(H, 1200)
+	check(attempts == 1 and gs.world_itm_num.spot_retry == 11, "failed bake keeps the rolled value")
+	tick(H, 1200)
+	check(attempts == 2 and retry_ammo.ammo == 11 and gs.world_itm_num.spot_retry == nil, "later update retries the bake")
 	-- a client's pickup: the host sees its character take the item
 	local char = H.level.object_by_id(501)
 	fire(H, "npc_on_item_take", char, ammo)
@@ -431,6 +457,86 @@ do
 end
 
 -------------------------------------------------------------------------------
+section("world: pickup roll survives a failed apply and ownership change")
+for _, owner in ipairs({ 501, 0 }) do
+	local H, A = setup(1)
+	local gs = H.game_setup
+	local item = add_item(H, 704, "ammo_9x19", 501)
+	local mirror = add_item(A, 704, "ammo_9x19", owner == 501 and 0 or 501)
+	gs.world_itm_on[704], gs.world_itm_num.pickup_retry = "pickup_retry", 13
+	gs.world_itm_info.pickup_retry = { typ = "red_mark" }
+	local ready, attempts = false, 0
+	function item:ammo_set_count(num)
+		attempts = attempts + 1
+		if not ready then error("pickup setter temporarily unavailable") end
+		self.ammo = num
+	end
+	fire(H, "npc_on_item_take", H.level.object_by_id(501), item)
+	deliver_all()
+	check(item.ammo == 30 and attempts > 0, "pickup roll: regression reaches the throwing setter")
+	check(gs.world_itm_on[704] == nil and gs.world_itm_off.pickup_retry and H.WORLD_SPAWNS == 1,
+		"pickup roll: spot released and next spawn requested exactly once")
+	-- Stock can reuse the spot while the old item is waiting; it must keep its own independent roll.
+	add_item(H, 705, "ammo_9x19", 65535)
+	gs.world_itm_on[705], gs.world_itm_num.pickup_retry = "pickup_retry", 19
+	item._parent, H.SE[704].parent_id = owner, owner
+	local failed_attempts = attempts
+	for i = 1, 4 do tick(H, 1200) end
+	local errors = 0
+	for _, line in ipairs(H.LOG) do if line:find("pickup setter temporarily unavailable", 1, true) then errors = errors + 1 end end
+	check(errors == 1 and attempts > failed_attempts, "pickup roll: repeated setter failure logs once while retries continue")
+	ready = true
+	-- Owner streaming / setter can lag behind the successful host apply, too.
+	local client_ready, client_attempts = false, 0
+	function mirror:ammo_set_count(num)
+		client_attempts = client_attempts + 1
+		if not client_ready then error("client setter temporarily unavailable") end
+		self.ammo = num
+	end
+	tick(H, 1200) deliver_all()
+	check(item.ammo == 13 and H.OBJ[705].ammo == 19, "pickup roll: original item gets its retained roll after transfer to owner " .. owner)
+	check(mirror.ammo == 30 and client_attempts > 0, "pickup roll: client apply failure is retained for retry")
+	client_ready = true
+	tick(A, 1200) deliver_all()
+	check(mirror.ammo == 13, "pickup roll: final state reaches the client on the same item id")
+	local applied = attempts
+	tick(H, 1200) tick(A, 1200) deliver_all()
+	fire(H, "npc_on_item_take", H.level.object_by_id(501), item)
+	check(attempts == applied and H.WORLD_SPAWNS == 1 and H.OBJ[704] == item and A.OBJ[704] == mirror,
+		"pickup roll: completed retry and duplicate pickup create no duplicate or repeated apply")
+end
+
+section("world: pending pickup roll survives save/load and client streaming")
+do
+	local H, A = setup(1)
+	local item = add_item(H, 706, "ammo_9x19", 501)
+	H.game_setup.world_itm_on[706], H.game_setup.world_itm_num.saved_retry = "saved_retry", 17
+	H.OBJ[706] = nil -- bake returns false instead of throwing
+	fire(H, "npc_on_item_take", H.level.object_by_id(501), item)
+	local saved = {}
+	fire(H, "save_state", saved)
+	saved = H.coop_economy_core.unpack(H.coop_economy_core.pack(saved))
+	H, A = setup(1)
+	local restored = add_item(H, 706, "ammo_9x19", 501)
+	fire(H, "load_state", saved)
+	local send = H.coop.send_event
+	local rejected = false
+	H.coop.send_event = function(name, ...)
+		if name == "economy.loot_roll" and not rejected then rejected = true return false end
+		return send(name, ...)
+	end
+	tick(H, 1200) deliver_all()
+	check(restored.ammo == 17 and rejected, "pickup roll: false apply remains queued across save/load")
+	tick(H, 1200) deliver_all() -- retry the rejected send; client entity is not streamed in yet
+	local mirror = add_item(A, 706, "ammo_9x19", 0)
+	tick(A, 1200) deliver_all()
+	check(mirror.ammo == 17 and H.WORLD_SPAWNS == nil, "pickup roll: rejected send and client streaming retry without another spawn")
+	A.coop_economy_core.send("loot_roll", { id = 706, s = "ammo_9x19", n = 99 }, 0)
+	A.coop_main.on_event("economy.loot_roll", A.coop_main.encode({ id = 706, s = "ammo_9x19", n = 99 }), 2)
+	deliver_all()
+	check(restored.ammo == 17 and mirror.ammo == 17, "pickup roll: a client cannot forge an authoritative roll")
+end
+
 section("mdata: se_object store")
 do
 	local H, A, B = setup(2)
@@ -491,6 +597,14 @@ do
 	tick(A, 1100)
 	deliver_all()
 	check(H.MDATA.exo_devices and H.MDATA.exo_devices[850].power == 0.5 and B.MDATA.exo_devices[850].power == 0.5, "rider reaches host and boris")
+	A.MDATA.exo_devices[850] = false
+	tick(A, 1100) deliver_all()
+	check(H.MDATA.exo_devices[850] == false and B.MDATA.exo_devices[850] == false, "false rider stays distinct from nil")
+	A.MDATA.exo_devices[850] = nil
+	tick(A, 1100) deliver_all()
+	check(H.MDATA.exo_devices[850] == nil and B.MDATA.exo_devices[850] == nil, "nil rider removes the stored value")
+	A.MDATA.exo_devices[850] = { power = 0.5 }
+	tick(A, 1100) deliver_all()
 	B.INV = { 850 }
 	tick(B, 1100)
 	local n = #B.SENT
@@ -882,6 +996,13 @@ do
 	tick(H, 400) deliver_all()
 	run_time_events(A)
 	check(ready == 42 and not A.coop_economy_intent.is_inflight("hf:workshop_stash", 870), "resolved through the synced se var")
+	A.coop.is_live = function() return false end -- in a session, but still loading the host world
+	local before = #got
+	local accepted = A.coop_economy_intent.request({ verb = "hf:workshop_stash", obj_id = 871, state = 0 })
+	deliver_all()
+	check(accepted == false and #got == before and not A.coop_economy_intent.is_inflight("hf:workshop_stash", 871),
+		"joining client cannot execute a host-only intent locally")
+	A.coop.is_live = function() return true end
 	A.coop_economy_core.send("intent", { v = "nope:x", o = 1 }, 0)
 	deliver_all()
 	check(#got == 1, "unknown verb dropped")

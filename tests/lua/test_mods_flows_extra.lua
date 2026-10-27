@@ -110,6 +110,12 @@ if which == "host" then
 	from("hf_show", { c = case:id(), i = gun.id, m = 1, s = "" }, 1)
 	local map = sent("mods.hf_show_map")
 	check(map and map.c == case:id() and map.m:find("^" .. gun.id .. ":") ~= nil, "showcase: mounted on the host, map sent")
+	local displays = 0
+	for _, made in ipairs(CREATED) do if made.sec == "display_copy" then displays = displays + 1 end end
+	from("hf_show", { c = case:id(), i = gun.id, m = 1, s = "" }, 1)
+	local after_retry = 0
+	for _, made in ipairs(CREATED) do if made.sec == "display_copy" then after_retry = after_retry + 1 end end
+	check(displays == 1 and after_retry == displays, "showcase: repeated mount does not create another world display")
 	local gun2 = spawn("wpn_ak", vec3(21, 0, 0), 0)
 	from("hf_show", { c = case:id(), i = gun2.id, m = 1, s = "" }, 1)
 	check(log_has("hf_show from #1 refused") ~= nil, "showcase: an item outside the case refused")
@@ -158,6 +164,12 @@ else
 	check(weapon_showcase.respawn_weapon_displays() == true and not RESPAWNED, "showcase: displays never re-created on a client")
 	from("hf_show_map", { c = case:id(), m = "1500:1600:2:wpn_ak" }, 0)
 	check(weapon_showcase.weapon_displays[case:id()][1500] == 1600, "showcase: the host's map applied")
+	weapon_showcase.weapon_displays = false
+	weapon_showcase.weapon_display_slots = false
+	weapon_showcase.weapon_display_sections = false
+	from("hf_show_map", { c = case:id(), m = "1500:1600:2:wpn_ak" }, 0)
+	check(type(weapon_showcase.weapon_displays) == "table" and weapon_showcase.weapon_displays[case:id()][1500] == 1600,
+		"showcase: false save fields normalize to tables as in the original mod")
 	-- WPO
 	local _, box = spawn("box", vec3(21, 0, 0))
 	box._kind = "box"

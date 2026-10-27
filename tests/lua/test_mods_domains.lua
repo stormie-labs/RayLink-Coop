@@ -129,4 +129,11 @@ local B3_HOST = { "campfire_placeable", "item_mine", "txr_mines", "bind_anomaly_
 for _, n in ipairs(B3_HOST) do
 	check(domain_of("actor_on_update", n) == "host", n .. " stays host-only (world mechanic)")
 end
+-- Native wrappers retain the authority of the original mod callback despite coop_* = view.
+for _, cb in ipairs({ "npc_on_hit_callback", "npc_on_before_hit" }) do
+	check(domain_of(cb, "coop_npc_adapters") == "host", "native adapter preserves host authority: " .. cb)
+	RegisterScriptCallback(cb, from_script("coop_npc_adapters", "return function() RAN.native_host_callback = true end"))
+	SendScriptCallback(cb)
+	check(RAN.native_host_callback == nil, "client does not execute original host callback through native wrapper: " .. cb)
+end
 done("DOMAINS")

@@ -655,6 +655,12 @@ local function install_gadgets()
 		if t.m == 1 then
 			local se = alife_object(item_id)
 			if not (se and se.parent_id == case_id) then return refuse("hf_show", from, "the item is not in that case") end
+			local displays = type(ws.weapon_displays) == "table" and ws.weapon_displays[case_id]
+			local world_id = type(displays) == "table" and displays[item_id]
+			if world_id and alife_object(world_id) then
+				publish_case(ws, case_id)
+				return
+			end
 			local sec = (type(t.s) == "string" and t.s ~= "" and ini_sys:section_exist(t.s)) and t.s or nil -- W5
 			pcall(show.orig_spawn, case_id, item_id, nil, sec)
 		else

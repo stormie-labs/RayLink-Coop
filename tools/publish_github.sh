@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # RayLink on GitHub (owner's layout 2026-10-24): three repositories and their releases. Needs `gh auth login` first.
-#   OWNER=stormie-labs bash tools/publish_github.sh        (VISIBILITY=private for closed repositories; BUILD=<N>)
+#   OWNER=stormie-labs bash tools/publish_github.sh        (VISIBILITY=private; BUILD=<N>; SKIP_LAUNCHER=1 for engine/coop only)
 # RayLink-Engine    main = one commit per build with the tree of engine\ (branch coop): the history of xray-monolith (74
 #                   authors) stays local and upstream, not on GitHub (owner 2026-10-26); release b<N> = the engine exe
 # RayLink-Coop      main = this project (gamedata, tools, tests, docs); release b<N> = releases\anomaly-coop-0.<N>.0.zip
@@ -13,6 +13,8 @@ VIS="${VISIBILITY:-public}"
 BUILD="${BUILD:-16}"
 ZIP="$ROOT/releases/anomaly-coop-0.${BUILD}.0.zip"
 ENGINE_EXE="$ROOT/engine-ci/_build/_game/bin_dbg/AnomalyDX11AVX.exe"
+PROTOCOL="$(sed -n 's/^[[:space:]]*constexpr uint32_t kProtocolVersion[[:space:]]*=[[:space:]]*\([0-9][0-9]*\);.*/\1/p' "$ROOT/engine/src/xrCoop/coop_protocol.h")"
+[[ "$PROTOCOL" =~ ^[0-9]+$ ]] || { echo "cannot read the engine protocol version"; exit 2; }
 [ -f "$ZIP" ] || { echo "no $ZIP (powershell -File tools/package.ps1 -Version 0.${BUILD}.0 -Force)"; exit 2; }
 gh auth status >/dev/null 2>&1 || { echo "gh is not logged in: run gh auth login"; exit 3; }
 gh auth setup-git
@@ -60,7 +62,7 @@ ENGINE_SHA="$(git ls-remote "https://github.com/$OWNER/RayLink-Engine.git" refs/
 PROJECT_SHA="$(git -C "$ROOT" rev-parse --short HEAD)"
 if ! gh release view "b$BUILD" --repo "$OWNER/RayLink-Coop" >/dev/null 2>&1; then
 	gh release create "b$BUILD" "$ZIP" --repo "$OWNER/RayLink-Coop" --target main --title "Сборка $BUILD" --notes \
-"Сборка $BUILD RayLink: движок $OWNER/RayLink-Engine $ENGINE_SHA + надстройка $PROJECT_SHA, протокол 14.
+"Сборка $BUILD RayLink: движок $OWNER/RayLink-Engine $ENGINE_SHA + надстройка $PROJECT_SHA, протокол $PROTOCOL.
 Ставится лаунчером RayLink (кнопка «Обновить сборку») или вручную как мод MO2 (архив с FOMOD). Что проверено — docs/STATUS.md."
 fi
 if [ -f "$ENGINE_EXE" ] && ! gh release view "b$BUILD" --repo "$OWNER/RayLink-Engine" >/dev/null 2>&1; then
@@ -68,13 +70,15 @@ if [ -f "$ENGINE_EXE" ] && ! gh release view "b$BUILD" --repo "$OWNER/RayLink-En
 	mkdir -p "$STAGE" && cp "$ENGINE_EXE" "$STAGE/AnomalyCoopDX11AVX.exe"
 	gh release create "b$BUILD" "$STAGE/AnomalyCoopDX11AVX.exe" --repo "$OWNER/RayLink-Engine" --target main \
 		--title "RayLink Engine, сборка $BUILD" --notes \
-"Движок RayLink для S.T.A.L.K.E.R. Anomaly 1.5.3 (DX11 AVX), коммит $ENGINE_SHA, протокол 14.
+"Движок RayLink для S.T.A.L.K.E.R. Anomaly 1.5.3 (DX11 AVX), коммит $ENGINE_SHA, протокол $PROTOCOL.
 Для игры нужна надстройка $OWNER/RayLink-Coop — её сборка уже содержит этот exe."
 fi
 
+if [ "${SKIP_LAUNCHER:-0}" != "1" ]; then
 ensure_repo RayLink-Launcher "RayLink Launcher - one button: update the build, build the stand, play"
 (cd "$LAUNCHER" && cmd //c "lite\\build.cmd $OWNER/RayLink-Coop")
 git -C "$LAUNCHER" push "https://github.com/$OWNER/RayLink-Launcher.git" HEAD:refs/heads/main
 echo "launcher release: build lite\\out\\rel\\RayLinkLauncher.exe and RayLinkSetup.exe, then"
 echo "  gh release upload v0.1.0 <both> --repo $OWNER/RayLink-Launcher --clobber"
+fi
 echo "done: https://github.com/$OWNER/RayLink-Coop/releases  https://github.com/$OWNER/RayLink-Engine/releases"
