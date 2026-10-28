@@ -5,8 +5,9 @@
 #                   authors) stays local and upstream, not on GitHub (owner 2026-10-26); release b<N> = the engine exe
 # RayLink-Coop      main = this project (gamedata, tools, tests, docs); release b<N> = releases\anomaly-coop-0.<N>.0.zip
 #                   (tools\package.ps1: the build the launcher installs)
-# RayLink-Launcher main = ..\raylink-launcher; native releases contain RayLinkSetup.exe only.
+# RayLink-Launcher = public product page and installers only; application source goes to private RayLink-Launcher-Source.
 set -euo pipefail
+export GH_HOST=github.com
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LAUNCHER="$(cd "$ROOT/../raylink-launcher" && pwd)"
 VIS="${VISIBILITY:-public}"
@@ -19,6 +20,14 @@ PROTOCOL="$(sed -n 's/^[[:space:]]*constexpr uint32_t kProtocolVersion[[:space:]
 gh auth status >/dev/null 2>&1 || { echo "gh is not logged in: run gh auth login"; exit 3; }
 gh auth setup-git
 OWNER="${OWNER:-$(gh api user -q .login)}"
+
+if [ "${SKIP_LAUNCHER:-0}" != "1" ]; then
+  SOURCE_REPO="$OWNER/RayLink-Launcher-Source"
+  gh repo view "$SOURCE_REPO" >/dev/null 2>&1 || gh repo create "$SOURCE_REPO" --private --description 'Private source for RayLink Launcher'
+  [ "$(gh repo view "github.com/$SOURCE_REPO" --json visibility --jq .visibility)" = PRIVATE ] || {
+    echo '! Launcher source destination must be PRIVATE. No source will be pushed.' >&2; exit 4;
+  }
+fi
 echo "owner: $OWNER, visibility: $VIS, build $BUILD"
 
 repo_exists() { gh repo view "$1" >/dev/null 2>&1; }
@@ -75,9 +84,9 @@ if [ -f "$ENGINE_EXE" ] && ! gh release view "b$BUILD" --repo "$OWNER/RayLink-En
 fi
 
 if [ "${SKIP_LAUNCHER:-0}" != "1" ]; then
-ensure_repo RayLink-Launcher "RayLink Launcher - one button: update the build, build the stand, play"
+ensure_repo RayLink-Launcher "RayLink Launcher - downloads, updates and support (proprietary application)"
 (cd "$LAUNCHER" && npm run build && powershell.exe -NoProfile -File scripts/build-release.ps1)
-git -C "$LAUNCHER" push "https://github.com/$OWNER/RayLink-Launcher.git" HEAD:refs/heads/main
+git -C "$LAUNCHER" push "https://github.com/$OWNER/RayLink-Launcher-Source.git" HEAD:refs/heads/main
 echo "launcher release: upload only releases/v<VERSION>/RayLinkSetup.exe to $OWNER/RayLink-Launcher"
 fi
 echo "done: https://github.com/$OWNER/RayLink-Coop/releases  https://github.com/$OWNER/RayLink-Engine/releases"
