@@ -5,7 +5,7 @@
 #                   authors) stays local and upstream, not on GitHub (owner 2026-10-26); release b<N> = the engine exe
 # RayLink-Coop      main = this project (gamedata, tools, tests, docs); release b<N> = releases\anomaly-coop-0.<N>.0.zip
 #                   (tools\package.ps1: the build the launcher installs)
-# RayLink-Launcher  main = ..\raylink-launcher; release v0.1.0 = RayLinkLauncher.exe + RayLinkSetup.exe (channel RayLink-Coop)
+# RayLink-Launcher main = ..\raylink-launcher; native releases contain RayLinkSetup.exe only.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LAUNCHER="$(cd "$ROOT/../raylink-launcher" && pwd)"
@@ -76,9 +76,8 @@ fi
 
 if [ "${SKIP_LAUNCHER:-0}" != "1" ]; then
 ensure_repo RayLink-Launcher "RayLink Launcher - one button: update the build, build the stand, play"
-(cd "$LAUNCHER" && cmd //c "lite\\build.cmd $OWNER/RayLink-Coop")
+(cd "$LAUNCHER" && npm run build && powershell.exe -NoProfile -File scripts/build-release.ps1)
 git -C "$LAUNCHER" push "https://github.com/$OWNER/RayLink-Launcher.git" HEAD:refs/heads/main
-echo "launcher release: build lite\\out\\rel\\RayLinkLauncher.exe and RayLinkSetup.exe, then"
-echo "  gh release upload v0.1.0 <both> --repo $OWNER/RayLink-Launcher --clobber"
+echo "launcher release: upload only releases/v<VERSION>/RayLinkSetup.exe to $OWNER/RayLink-Launcher"
 fi
 echo "done: https://github.com/$OWNER/RayLink-Coop/releases  https://github.com/$OWNER/RayLink-Engine/releases"
