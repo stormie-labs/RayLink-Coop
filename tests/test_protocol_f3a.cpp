@@ -168,7 +168,7 @@ TEST(protocol_f3a_version_is_11)
 {
 	// 11: the F3a messages, Hello carries a role and a token, PlayerState carries the vertices, TransitionState a flags
 	// byte, WeatherSync a weather set; a protocol 10 peer is refused at the handshake.
-	CHECK_EQ(kProtocolVersion, 15u); // 15: bounded instrument state and NPC prop kind
+	CHECK_EQ(kProtocolVersion, 16u); // 16: generic NPC attachments instead of an instrument-only kind
 }
 
 TEST(protocol_f3a_hello_carries_a_role_and_a_token)
