@@ -3,6 +3,82 @@
 #include <limits>
 using namespace coop;
 
+namespace
+{
+using ResourcePath = char[128];
+struct ResourceFile {};
+struct ResourceFileSystem
+{
+    int three_arg_calls = 0;
+    int four_arg_calls = 0;
+    ResourceFile file;
+
+    const ResourceFile* lookup(const ResourcePath& path)
+    {
+        const std::string resolved(path);
+        return resolved == "$game_meshes$/instruments/guitar.ogf" ||
+            resolved == "$game_sounds$/music/guitar_1.ogg" ? &file : nullptr;
+    }
+
+    const ResourceFile* exist(ResourcePath& path, const char* alias, const char* name)
+    {
+        ++three_arg_calls;
+        std::snprintf(path, sizeof(path), "%s/%s", alias, name);
+        return lookup(path);
+    }
+
+    const ResourceFile* exist(ResourcePath& path, const char* alias, const char* name, const char* extension)
+    {
+        ++four_arg_calls;
+        CHECK(extension != nullptr); // Real CLocatorAPI::exist passes this directly to strconcat.
+        if (!extension)
+            return nullptr;
+        std::snprintf(path, sizeof(path), "%s/%s%s", alias, name, extension);
+        return lookup(path);
+    }
+};
+} // namespace
+
+TEST(instrument_resource_full_mesh_name_uses_three_arg_exist)
+{
+    ResourceFileSystem fs;
+    ResourcePath path = {};
+    CHECK(instrument::resource_exists(fs, path, "$game_meshes$", "instruments/guitar.ogf", nullptr));
+    CHECK_EQ(fs.three_arg_calls, 1);
+    CHECK_EQ(fs.four_arg_calls, 0);
+    CHECK_EQ(std::string(path), "$game_meshes$/instruments/guitar.ogf");
+}
+
+TEST(instrument_resource_sound_extension_uses_four_arg_exist)
+{
+    ResourceFileSystem fs;
+    ResourcePath path = {};
+    CHECK(instrument::resource_exists(fs, path, "$game_sounds$", "music/guitar_1", ".ogg"));
+    CHECK_EQ(fs.three_arg_calls, 0);
+    CHECK_EQ(fs.four_arg_calls, 1);
+    CHECK_EQ(std::string(path), "$game_sounds$/music/guitar_1.ogg");
+}
+
+TEST(instrument_resource_missing_mesh_remains_false)
+{
+    ResourceFileSystem fs;
+    ResourcePath path = {};
+    CHECK(!instrument::resource_exists(fs, path, "$game_meshes$", "missing.ogf", nullptr));
+    CHECK_EQ(fs.three_arg_calls, 1);
+    CHECK_EQ(fs.four_arg_calls, 0);
+    CHECK_EQ(std::string(path), "$game_meshes$/missing.ogf");
+}
+
+TEST(instrument_resource_missing_sound_remains_false)
+{
+    ResourceFileSystem fs;
+    ResourcePath path = {};
+    CHECK(!instrument::resource_exists(fs, path, "$game_sounds$", "music/missing", ".ogg"));
+    CHECK_EQ(fs.three_arg_calls, 0);
+    CHECK_EQ(fs.four_arg_calls, 1);
+    CHECK_EQ(std::string(path), "$game_sounds$/music/missing.ogg");
+}
+
 TEST(instrument_wire_is_bounded_and_atomic)
 {
     instrument::State s;
