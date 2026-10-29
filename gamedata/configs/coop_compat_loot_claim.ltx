@@ -1,0 +1,13 @@
+; Anomaly Coop - NPC Loot Claim (G.A.M.M.A. NPC Loot Claim Remade, grok_loot_claim.script, in GAMMA; and the older
+; NPC Loot Claim mods it replaces): off while a session is on, the host included. Read after every coop_route*.ltx
+; (coop_route.ltx explains the order).
+;
+; The mod lets nobody loot a body an NPC killed: its death callback records the killer unless it is db.actor. On the
+; host a client's kill has the client's avatar as the killer, and the avatar is a stalker NPC, so every body a client
+; killed was "claimed" by that stalker and the loot key gave threats instead of the body (live 2026-10-29, GAMMA).
+; Owner 2026-10-29: the mod is not loaded in co-op at all. Outside a session (single player) it works as installed.
+
+[route_scripts]
+grok_loot_claim                = none
+npc_loot_claim                 = none
+zz_npc_loot_claim_softcore     = none

@@ -136,4 +136,13 @@ for _, cb in ipairs({ "npc_on_hit_callback", "npc_on_before_hit" }) do
 	SendScriptCallback(cb)
 	check(RAN.native_host_callback == nil, "client does not execute original host callback through native wrapper: " .. cb)
 end
+-- NPC Loot Claim (GAMMA's grok_loot_claim): on the host a client's kill has his avatar, an NPC, as the killer, so every
+-- body a client killed was claimed and its loot refused with threats (live 2026-10-29). coop_compat_loot_claim.ltx:
+-- off in a session (owner), its loot key included.
+for _, cb in ipairs({ "npc_on_death_callback", "monster_on_death_callback", "on_before_key_press", "save_state", "load_state" }) do
+	check(domain_of(cb, "grok_loot_claim") == "none", "grok_loot_claim: " .. cb .. " runs nowhere in a session")
+end
+RegisterScriptCallback("on_before_key_press", from_script("grok_loot_claim", "return function() RAN.loot_claim_key = true end"))
+SendScriptCallback("on_before_key_press")
+check(RAN.loot_claim_key == nil, "grok_loot_claim's loot key check does not run on a client")
 done("DOMAINS")
