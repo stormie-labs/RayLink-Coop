@@ -142,3 +142,23 @@ TEST(avatar_carries_its_player_nick)
 	CHECK(name.find("m_character_name_str =") == npos);
 	CHECK(between(src, "bool apply_equip(", "\n}\n").find("apply_name(avatar_id, av)") != npos);
 }
+
+// Live b29 (2026-10-29): "random names, even on important NPCs". A player character's nick lived only in the server
+// entity's display copy (m_character_name), which every STATE_Read rebuilds from the stored m_character_name_str: each
+// spawn showed the avatar profile's random stalker name, and to a client the host's character is a stalker puppet. The
+// host stores the nick (the same text apply_name shows), on a new character and on every world sent; the role swap
+// swaps the stored names too.
+TEST(player_character_stores_its_nick)
+{
+	const std::string src = game_source("coop/coop_join.cpp");
+	REQUIRE(src.size() > 10000);
+	const std::string set = between(src, "void set_player_name(", "\n}\n");
+	REQUIRE(!set.empty());
+	CHECK(set.find("nametag::character_name(") != npos);
+	CHECK(set.find("m_character_name_str = name") != npos);
+	CHECK(set.find("TranslateName(") != npos);
+	CHECK(src.find("proxy->m_character_name = p.nick.c_str();") == npos);
+	CHECK(src.find("set_player_name(*proxy, p.nick);") != npos);
+	CHECK(src.find("set_player_name(*proxy, p->nick);") != npos);
+	CHECK(src.find("swap_values(actor->m_character_name_str, proxy->m_character_name_str);") != npos);
+}
