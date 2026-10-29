@@ -315,6 +315,50 @@ do
 	check(#M.sent == 1 and M.sent[1].target == 1 and hits == 0, "confirmed proxy silent kill credits its owner once without rerunning SKD")
 end
 
+-- G.A.M.M.A. No NPC Friendly Fire zeroes a hit between friendly or neutral NPCs unless the shooter is db.actor. On the
+-- host a client's character is an NPC of his faction: his shots at friendly NPCs did nothing and they never turned on
+-- him (live 2026-10-29). A player's character shoots like the actor; NPC-to-NPC friendly fire stays off.
+local function friendly_fire(E)
+	local m = {}
+	function m.npc_on_before_hit(npc, h, bone, flags)
+		if h.draftsman:id() == E.db.actor:id() then return end
+		h.power = 0
+		flags.ret_value = false
+	end
+	function m.on_game_start() E.RegisterScriptCallback("npc_on_before_hit", m.npc_on_before_hit) end
+	E.grok_no_npc_friendly_fire = m
+	return m
+end
+
+for _, started in ipairs({ false, true }) do
+	local M, E, proxy, other = boot()
+	local m = friendly_fire(E)
+	local npc, shooter = M.add(make_obj(20, 100, 0, 0)), M.add(make_obj(30, 100, 0, 0))
+	if started then m.on_game_start() end
+	install(M)
+	if not started then m.on_game_start() end
+	local by_player, by_other, by_npc = { draftsman = proxy, power = 1 }, { draftsman = other, power = 1 },
+		{ draftsman = shooter, power = 1 }
+	local f1, f2, f3 = { ret_value = true }, { ret_value = true }, { ret_value = true }
+	M.fire("npc_on_before_hit", npc, by_player, 0, f1)
+	M.fire("npc_on_before_hit", npc, by_other, 0, f2)
+	M.fire("npc_on_before_hit", npc, by_npc, 0, f3)
+	check(by_player.power == 1 and f1.ret_value and by_other.power == 1 and f2.ret_value,
+		"a player's character hurts a friendly NPC like the actor; started=" .. tostring(started))
+	check(by_npc.power == 0 and f3.ret_value == false, "NPC-to-NPC friendly fire stays off; started=" .. tostring(started))
+	check(#M.callbacks.npc_on_before_hit == 1, "friendly fire callback is registered once; started=" .. tostring(started))
+end
+
+do
+	local M, E, proxy = boot("single")
+	local m = friendly_fire(E)
+	m.on_game_start()
+	install(M)
+	local h, f = { draftsman = proxy, power = 1 }, { ret_value = true }
+	M.fire("npc_on_before_hit", M.add(make_obj(20, 0, 0, 0)), h, 0, f)
+	check(h.power == 0 and f.ret_value == false, "single player: No NPC Friendly Fire is unchanged")
+end
+
 do
 	local M, E = boot()
 	install(M)

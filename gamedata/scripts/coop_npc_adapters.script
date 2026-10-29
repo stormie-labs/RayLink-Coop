@@ -151,12 +151,32 @@ local function trader(C, P, active)
 	return true
 end
 
+-- G.A.M.M.A. No NPC Friendly Fire zeroes a hit between friendly or neutral NPCs and resets their relation unless the
+-- shooter is db.actor. On the host a client's character is an NPC of his faction, so his shots at friendly and neutral
+-- NPCs did no damage and the NPCs never turned on him (live 2026-10-29). A player's character shoots like the actor;
+-- NPC-to-NPC friendly fire stays off.
+local function friendly_fire(C, P, active)
+	local m = C.mod("grok_no_npc_friendly_fire")
+	local hit = m and m.npc_on_before_hit
+	if type(hit) ~= "function" then return false end
+	local wrapped = function(npc, h, ...)
+		if P.is_client() then return end
+		local who = active() and h and h.draftsman
+		if who and P.is_player_id(who:id()) then return end
+		return hit(npc, h, ...)
+	end
+	m.npc_on_before_hit = wrapped
+	C.swap_callback("npc_on_before_hit", hit, wrapped)
+	return true
+end
+
 function install(P, active, applied)
 	if installed then return end
 	local C = coop_mods_core
 	if not (C and type(C.find_local) == "function") then return end
 	installed = true
-	for _, spec in ipairs({ { "ai_hit", ai }, { "danger_corpse", corpse }, { "stealth", stealth }, { "trader", trader } }) do
+	for _, spec in ipairs({ { "ai_hit", ai }, { "danger_corpse", corpse }, { "stealth", stealth }, { "trader", trader },
+		{ "friendly_fire", friendly_fire } }) do
 		local ok, result = pcall(spec[2], C, P, active)
 		if not ok then
 			P.report("compat", "native " .. spec[1], result)
