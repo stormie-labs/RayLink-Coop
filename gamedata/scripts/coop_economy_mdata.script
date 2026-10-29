@@ -231,17 +231,16 @@ local function item_decl(key)
 	end
 end
 
+local function item_apply(d, id, value)
+	local applied, why = pcall(d.apply, id, value)
+	if not applied then core.log("! item rider %s apply: %s", d.key, tostring(why)) end
+end
+
+-- One item's value of a rider table; no table is made just to keep nothing.
 local function item_store(m, d, id, value)
-	local tbl = m[d.key]
-	if type(tbl) == "table" then
-		tbl[id] = value
-	elseif value ~= nil then
-		m[d.key] = { [id] = value }
-	end
-	if d.apply then
-		local ok, err = pcall(d.apply, id, value)
-		if not ok then core.log("! item rider %s apply: %s", d.key, tostring(err)) end
-	end
+	if type(m[d.key]) ~= "table" and value ~= nil then m[d.key] = {} end
+	if type(m[d.key]) == "table" then m[d.key][id] = value end
+	if d.apply then item_apply(d, id, value) end
 end
 
 local function item_poll()

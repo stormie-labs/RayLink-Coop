@@ -172,12 +172,15 @@ local function is_travel_prop(prop)
 	return prop:sub(1, #prefix) == prefix
 end
 
+-- The text of the row picked in the map's property menu (nil: none, or the menu is gone).
 local function selected_prop(property_ui)
-	local ok, prop = pcall(function()
-		local item = property_ui:GetSelectedItem()
-		return item and item:GetTextItem():GetText()
+	local ok, text = pcall(function()
+		local row = property_ui:GetSelectedItem()
+		if row == nil then return nil end
+		return row:GetTextItem():GetText()
 	end)
-	return ok and prop or nil
+	if ok then return text end
+	return nil
 end
 
 local function patch_pda()

@@ -267,8 +267,9 @@ end
 
 -- nil = not a replicated restrictor's condlist on a host with clients.
 function audience_of(npc)
-	local st = current(npc)
-	return st and audience(npc, st) or nil
+	local state = current(npc)
+	if state == nil then return nil end
+	return audience(npc, state) or nil
 end
 
 -------------------------------------------------------------------------------
@@ -368,54 +369,59 @@ local function has_actor_conds(st, l)
 	return st.coop_actor_conds
 end
 
+-- The conditions a logic section switches on (the set of stock xr_logic.try_switch_to_another_section), each a test of
+-- (here, condition): the actor's are read against every alive player, the others as stock reads them.
+local function radius_sqr(c)
+	local r = tonumber(c.v1) or 0
+	return r * r
+end
+local SWITCH_TESTS = {
+	on_actor_dist_le = function(x, c) return sees_player(x.npc, x.pos(), radius_sqr(c)) end,
+	on_actor_dist_le_nvis = function(x, c) return x.near() <= radius_sqr(c) end,
+	on_actor_dist_ge = function(x, c) return x.near() > radius_sqr(c) and sees_player(x.npc) end,
+	on_actor_dist_ge_nvis = function(x, c) return x.near() > radius_sqr(c) end,
+	on_signal = function(x, c)
+		local signals = x.st.signals
+		return signals ~= nil and signals[c.v1]
+	end,
+	on_info = function() return true end,
+	on_timer = function(x, c) return time_global() >= (x.ost.activation_time or 0) + c.v1 end,
+	on_game_timer = function(x, c)
+		local since = x.ost.activation_game_time
+		-- a nil CTime into the luabind diffSec is a native crash, not a Lua error (W5)
+		return since ~= nil and game.get_game_time():diffSec(since) >= c.v1
+	end,
+	on_actor_in_zone = function(_, c) return zone_has_player(db.zone_by_name[c.v1]) end,
+	on_actor_not_in_zone = function(_, c) return not zone_has_player(db.zone_by_name[c.v1]) end,
+	on_npc_in_zone = function(_, c) return utils_obj.npc_in_zone(level.object_by_id(c.npc_id), db.zone_by_name[c.v2]) end,
+	on_npc_not_in_zone = function(_, c) return not utils_obj.npc_in_zone(level.object_by_id(c.npc_id), db.zone_by_name[c.v2]) end,
+	on_actor_inside = function(x) return zone_has_player(x.npc) end,
+	on_actor_outside = function(x) return not zone_has_player(x.npc) end,
+}
+
 -- Vanilla's loop with the actor conditions read against every alive player.
 local function team_try_switch(npc, st, actor, l)
 	local npc_id = npc:id()
 	local ost = db.storage[npc_id] or {}
 	local replicated = ost.stype == STYPE_RESTRICTOR and ost.coop_local == false
-	local pos, nd
-	local function near()
-		pos = pos or npc:position()
-		if not nd then nd = P.nearest_dist_sqr(pos) end
-		return nd
+	-- what the tests ask about this NPC, the position and the nearest player's squared distance read once
+	local here = { npc = npc, st = st, ost = ost }
+	local pos, nearest
+	function here.pos()
+		if pos == nil then pos = npc:position() end
+		return pos
+	end
+	function here.near()
+		if nearest == nil then nearest = P.nearest_dist_sqr(here.pos()) end
+		return nearest
 	end
 	local switched = false
 	for _, c in pairs(l) do
-		local name, fire = c.name, false
-		if name == "on_actor_dist_le" then
-			pos = pos or npc:position()
-			local d = tonumber(c.v1) or 0
-			fire = sees_player(npc, pos, d * d)
-		elseif name == "on_actor_dist_le_nvis" then
-			local d = tonumber(c.v1) or 0
-			fire = near() <= d * d
-		elseif name == "on_actor_dist_ge" then
-			local d = tonumber(c.v1) or 0
-			fire = near() > d * d and sees_player(npc)
-		elseif name == "on_actor_dist_ge_nvis" then
-			local d = tonumber(c.v1) or 0
-			fire = near() > d * d
-		elseif name == "on_signal" then
-			fire = st.signals and st.signals[c.v1]
-		elseif name == "on_info" then
-			fire = true
-		elseif name == "on_timer" then
-			fire = time_global() >= (ost.activation_time or 0) + c.v1
-		elseif name == "on_game_timer" then
-			-- a nil CTime into the luabind diffSec is a native crash, not a Lua error (W5)
-			fire = ost.activation_game_time ~= nil and game.get_game_time():diffSec(ost.activation_game_time) >= c.v1
-		elseif name == "on_actor_in_zone" then
-			fire = zone_has_player(db.zone_by_name[c.v1])
-		elseif name == "on_actor_not_in_zone" then
-			fire = not zone_has_player(db.zone_by_name[c.v1])
-		elseif name == "on_npc_in_zone" then
-			fire = utils_obj.npc_in_zone(level.object_by_id(c.npc_id), db.zone_by_name[c.v2])
-		elseif name == "on_npc_not_in_zone" then
-			fire = not utils_obj.npc_in_zone(level.object_by_id(c.npc_id), db.zone_by_name[c.v2])
-		elseif name == "on_actor_inside" then
-			fire = zone_has_player(npc)
-		elseif name == "on_actor_outside" then
-			fire = not zone_has_player(npc)
+		local name = c.name
+		local test = SWITCH_TESTS[name]
+		local fire = false
+		if test ~= nil then
+			fire = test(here, c)
 		else
 			printf("WARNING: object '%s': try_switch_to_another_section: unknown condition '%s' encountered", npc:name(), tostring(name))
 		end
@@ -507,12 +513,11 @@ end
 -- custom_data caps at 4 KiB, so real logic often lives in the cfg-linked ltx.
 local function resolve_logic_ini(obj)
 	local ini = obj:spawn_ini()
-	if not (ini and ini:section_exist("logic")) then return ini end
-	local cfg = ini:r_string_ex("logic", "cfg")
-	if cfg and cfg ~= "" then
-		local ok, linked = pcall(ini_file, cfg)
-		if ok and linked and linked:section_exist("logic") then return linked end
-	end
+	if ini == nil or not ini:section_exist("logic") then return ini end
+	local linked_name = ini:r_string_ex("logic", "cfg")
+	if linked_name == nil or linked_name == "" then return ini end
+	local loaded, linked = pcall(ini_file, linked_name)
+	if loaded and linked ~= nil and linked:section_exist("logic") then return linked end
 	return ini
 end
 
@@ -792,18 +797,18 @@ local function install()
 		return
 	end
 	STYPE_RESTRICTOR = modules and modules.stype_restrictor or STYPE_RESTRICTOR
-	orig.try_switch = xr_logic.try_switch_to_another_section
-	orig.determine = xr_logic.determine_section_to_activate
-	orig.initialize = xr_logic.initialize_obj
-	orig.switch = xr_logic.switch_to_section
-	orig.pick = xr_logic.pick_section_from_condlist
-	orig.save_obj = xr_logic.save_obj
-	xr_logic.try_switch_to_another_section = try_switch
-	xr_logic.determine_section_to_activate = determine_section
-	xr_logic.initialize_obj = initialize
-	xr_logic.switch_to_section = switch_to_section
-	xr_logic.pick_section_from_condlist = pick_section
-	xr_logic.save_obj = save_obj
+	-- stock xr_logic function, our name for the original, our replacement
+	for _, o in ipairs({
+		{ "try_switch_to_another_section", "try_switch", try_switch },
+		{ "determine_section_to_activate", "determine", determine_section },
+		{ "initialize_obj", "initialize", initialize },
+		{ "switch_to_section", "switch", switch_to_section },
+		{ "pick_section_from_condlist", "pick", pick_section },
+		{ "save_obj", "save_obj", save_obj },
+	}) do
+		orig[o[2]] = xr_logic[o[1]]
+		xr_logic[o[1]] = o[3]
+	end
 	installed = true
 	for name in pairs(ACTOR_FX) do wrap_effect(name) end
 	local steps = { { "conditions", patch_conditions }, { "schemes", patch_schemes } }

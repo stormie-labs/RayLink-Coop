@@ -18,22 +18,22 @@ if which == "client" then
 	make_actor()
 	start_all()
 	local P = coop_mods_pdata
-	check(P.owns("experience_framework_savedata") and P.owns("wd_bracer_worn") and P.owns("skills_levels")
-		and P.owns("perk_based_artefacts_cooldowns"), "mod keys registered (EF, WD, skills, PBA)")
+	check(P.owns("experience_framework_savedata") and P.owns("skills_levels")
+		and P.owns("perk_based_artefacts_cooldowns"), "mod keys registered (EF, skills, PBA)")
+	check(not P.owns("wd_bracer_worn"), "Wearable Devices is not adapted (clean room, 2026-10-29)")
 	check(not P.owns("sleep") and not P.owns("RF_freq"), "stock keys left to coop_economy_mdata")
 
 	-- 1. first join: no record for this character -> the host's values are dropped
 	local save = {
 		experience_framework_savedata = { XP = 999, nls_storage = { npc = 3 } }, -- the host's XP
 		skills_levels = { strength = 9 },
-		wd_bracer_worn = true,
 		coop_mods_pdata = { ["777"] = { t = "other", d = { skills_levels = { strength = 1 } } } },
 	}
 	local seen_at_load
 	RegisterScriptCallback("load_state", function(m) seen_at_load = { xp = m.experience_framework_savedata.XP, sk = m.skills_levels } end)
 	alife_storage_manager.CALifeStorageManager_load(save)
 	local m = alife_storage_manager.get_state()
-	check(m.skills_levels == nil and m.wd_bracer_worn == nil, "new player: the host's values are not taken")
+	check(m.skills_levels == nil, "new player: the host's values are not taken")
 	check(m.experience_framework_savedata.XP == nil and m.experience_framework_savedata.nls_storage.npc == 3,
 		"sub-keys: player part cleared, world part (nls_storage) kept")
 	check(seen_at_load and seen_at_load.xp == nil and seen_at_load.sk == nil, "load_state already saw the player's values")

@@ -299,9 +299,10 @@ end
 
 function UICoopChat:Open()
 	self:Refill()
-	self.input:SetText("")
 	self:ShowDialog(true)
-	self.input:CaptureFocus(true)
+	local box = self.input
+	box:SetText("")
+	box:CaptureFocus(true)
 	if rawget(_G, "Register_UI") then Register_UI("UICoopChat", "coop_core_chat") end
 end
 

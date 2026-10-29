@@ -142,25 +142,30 @@ function open_box_when_online(box_id, timeout_ms)
 	end)
 end
 
+-- The box an owner's record names, when it is an inventory box of the world; `mirror_fn` hears of it.
 local function box_resolver(lookup, mirror_fn)
 	return function(owner_id)
-		local stash_id = lookup(owner_id)
-		local se = type(stash_id) == "number" and alife_object(stash_id)
-		if not (se and IsInvbox(nil, se:clsid())) then return nil end
-		if mirror_fn then pcall(mirror_fn, owner_id, stash_id) end
-		return stash_id
+		local box = lookup(owner_id)
+		if type(box) ~= "number" then return nil end
+		local entity = alife_object(box)
+		if entity == nil or not IsInvbox(nil, entity:clsid()) then return nil end
+		if mirror_fn ~= nil then pcall(mirror_fn, owner_id, box) end
+		return box
 	end
 end
 
 function linked_box_resolver(key, mirror_fn)
-	return box_resolver(function(owner_id) return se_load_var(owner_id, nil, key) end, mirror_fn)
+	local function by_var(owner_id) return se_load_var(owner_id, nil, key) end
+	return box_resolver(by_var, mirror_fn)
 end
 
 function mdata_box_resolver(table_key)
-	return box_resolver(function(owner_id)
-		local map = alife_storage_manager.get_state()[table_key]
-		return type(map) == "table" and map[owner_id] or nil
-	end)
+	local function by_mdata(owner_id)
+		local boxes = alife_storage_manager.get_state()[table_key]
+		if type(boxes) ~= "table" then return nil end
+		return boxes[owner_id]
+	end
+	return box_resolver(by_mdata)
 end
 
 local function on_intent(t, from)

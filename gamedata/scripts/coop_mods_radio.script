@@ -276,18 +276,16 @@ end
 local PKG_PREFIX = "quest_tb_package_"
 local pkg = { TB = nil, tracked = nil, examined = {}, next_tick = 0, orig_take = nil }
 
+-- The package mod's state with no package (its own start values), and its receiver's.
+local PKG_IDLE = { tb_package_active = false, tb_target_item = 0, tb_package_in_level = "empty", tb_reminder = "empty",
+	tb_scan_time = 4000 }
+local RECEIVER_IDLE = { tb_in_range = false, tb_sound_object = false, tb_flash_time = 0 }
+
 local function pkg_clear_local()
-	local tb, IR = pkg.TB, rf.IR
 	pkg.tracked = nil
-	tb.tb_package_active = false
-	tb.tb_target_item = 0
-	tb.tb_package_in_level = "empty"
-	tb.tb_reminder = "empty"
-	tb.tb_scan_time = 4000
-	if IR then
-		IR.tb_in_range = false
-		IR.tb_sound_object = false
-		IR.tb_flash_time = 0
+	for field, value in pairs(PKG_IDLE) do pkg.TB[field] = value end
+	if rf.IR then
+		for field, value in pairs(RECEIVER_IDLE) do rf.IR[field] = value end
 	end
 end
 
@@ -309,12 +307,10 @@ local function pkg_client_follow()
 			if se then pkg.examined[id] = se:section_name():find(PKG_PREFIX, 1, true) ~= nil end
 			if pkg.examined[id] and type(target) == "table" and target.freq then
 				pkg.tracked = id
-				tb.tb_target_item = id
-				tb.tb_freq = target.freq
-				tb.tb_package_in_level = alife():level_name(game_graph():vertex(se.m_game_vertex_id):level_id())
-				tb.tb_package_active = true
-				tb.tb_badguy_spawned = true -- the ambush is the host's
-				tb.tb_scan_time = 4000
+				local level_id = game_graph():vertex(se.m_game_vertex_id):level_id()
+				local follow = { tb_target_item = id, tb_freq = target.freq, tb_package_in_level = alife():level_name(level_id),
+					tb_package_active = true, tb_badguy_spawned = true, tb_scan_time = 4000 } -- the ambush is the host's
+				for field, value in pairs(follow) do tb[field] = value end
 				log("following the host's package %d", id)
 				return
 			end

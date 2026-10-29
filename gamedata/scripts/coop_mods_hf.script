@@ -546,11 +546,21 @@ end
 -------------------------------------------------------------------------------
 local show = { orig_spawn = nil, orig_remove = nil }
 
+-- weapon_showcase.script keeps three globals (guns per case, their slots, their sections); made when missing.
+local WS_TABLES = { "weapon_displays", "weapon_display_slots", "weapon_display_sections" }
 local function ws_tables(ws)
-	ws.weapon_displays = ws.weapon_displays or {}
-	ws.weapon_display_slots = ws.weapon_display_slots or {}
-	ws.weapon_display_sections = ws.weapon_display_sections or {}
-	return ws.weapon_displays, ws.weapon_display_slots, ws.weapon_display_sections
+	for _, key in ipairs(WS_TABLES) do
+		if not ws[key] then ws[key] = {} end -- a saved false is "none" too, as the mod treats it
+	end
+	return ws[WS_TABLES[1]], ws[WS_TABLES[2]], ws[WS_TABLES[3]]
+end
+
+-- The slot of a case that shows `world_id` ("" when none).
+local function slot_of(case_slots, world_id)
+	for slot, shown in pairs(case_slots) do
+		if shown == world_id then return tostring(slot) end
+	end
+	return ""
 end
 
 -- "item:world:slot:section|..." for one case.
@@ -558,16 +568,13 @@ local function encode_case(ws, case_id)
 	local guns, slots, secs = ws_tables(ws)
 	local case = guns[case_id]
 	if type(case) ~= "table" then return "" end
-	local cslots, csecs = slots[case_id] or {}, secs[case_id] or {}
-	local out = {}
+	local case_slots, case_secs = slots[case_id] or {}, secs[case_id] or {}
+	local parts = {}
 	for item_id, world_id in pairs(case) do
-		local slot = ""
-		for s, id in pairs(cslots) do
-			if id == world_id then slot = tostring(s) break end
-		end
-		out[#out + 1] = string.format("%s:%s:%s:%s", tostring(item_id), tostring(world_id), slot, tostring(csecs[item_id] or ""))
+		local fields = { tostring(item_id), tostring(world_id), slot_of(case_slots, world_id), tostring(case_secs[item_id] or "") }
+		parts[#parts + 1] = table.concat(fields, ":")
 	end
-	return table.concat(out, "|")
+	return table.concat(parts, "|")
 end
 
 local function apply_case(ws, case_id, map)

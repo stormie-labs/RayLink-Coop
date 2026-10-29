@@ -181,14 +181,15 @@ local function dyn_update()
 	if not host_on then return orig.dyn() end
 	local baf = bind_anomaly_field
 	local lvl = level.name()
-	local t = baf.dyn_anomalies and baf.dyn_anomalies[lvl]
-	if not t then return true end
-	for id, state in pairs(t) do
-		local obj = level.object_by_id(id)
-		if obj and P.nearest_dist_sqr(obj:position()) > SAFE_DIST_SQR then
+	local on_level = (baf.dyn_anomalies or {})[lvl]
+	if on_level == nil then return true end
+	for anomaly_id, state in pairs(on_level) do
+		local obj = level.object_by_id(anomaly_id)
+		local far = obj ~= nil and P.nearest_dist_sqr(obj:position()) > SAFE_DIST_SQR -- nobody stands in it
+		if far then
 			obj:enable_anomaly()
 			if state == false then obj:disable_anomaly() end
-			if baf.add_marker then baf.add_marker(lvl, obj:section(), id, state) end
+			if baf.add_marker then baf.add_marker(lvl, obj:section(), anomaly_id, state) end
 		end
 	end
 	return true

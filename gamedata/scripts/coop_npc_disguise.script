@@ -128,23 +128,29 @@ local function client_on_expose(t)
 end
 
 local h = { tmr = 0, val = 1 }
+local DISGUISE_BAR = "bar_disguise" -- the custom static gameplay_disguise defines
+
+-- The bar the first time it shows (deleted with the HUD).
+local function make_disguise_bar(hud)
+	hud:AddCustomStatic(DISGUISE_BAR, true)
+	local bar = hud:GetCustomStatic(DISGUISE_BAR)
+	local wnd = bar and bar:wnd()
+	if wnd then wnd:SetAutoDelete(true) end
+	return bar
+end
 
 -- Original gameplay_disguise.hud_update defines bar_disguise and its text/colour contract.
 -- RayLink drives that local widget from the host's meter; NPC updates never run on a client.
 local function client_hud_update()
 	local g = gd()
 	local hud = get_hud()
-	local hud_d = hud:GetCustomStatic("bar_disguise")
-	if not (g.is_actor_disguised() and not db.actor:is_talking()) then
-		if hud_d ~= nil then hud:RemoveCustomStatic("bar_disguise") end
+	local shown = g.is_actor_disguised() and not db.actor:is_talking()
+	local hud_d = hud:GetCustomStatic(DISGUISE_BAR)
+	if not shown then
+		if hud_d then hud:RemoveCustomStatic(DISGUISE_BAR) end
 		return
 	end
-	if hud_d == nil then
-		hud:AddCustomStatic("bar_disguise", true)
-		hud_d = hud:GetCustomStatic("bar_disguise")
-		local w = hud_d and hud_d:wnd()
-		if w then w:SetAutoDelete(true) end
-	end
+	hud_d = hud_d or make_disguise_bar(hud)
 	local tg = time_global()
 	if h.tmr >= tg then return end
 	h.tmr = tg + 500

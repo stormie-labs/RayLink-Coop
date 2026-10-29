@@ -6,7 +6,8 @@
 	Experience Framework (experience_core)     XP, skills, traits, own XP tasks, potion buff are per player
 	                                           (coop_mods_pdata, sub-keys of experience_framework_savedata;
 	                                           NPC levels nls_storage stay the host's).
-	Wearable Devices (wd_core)                 worn devices and Promin modules are per player (coop_mods_pdata).
+	Wearable Devices (wd_core)                 not adapted (2026-10-29 clean room: its key list came only from another
+	                                           co-op's patch, the mod is not in our GAMMA to derive it from).
 	Quick Action Wheel (haru_qaw)              the layout is per player; entries whose item is not in this
 	                                           player's inventory any more are dropped at the first update.
 	Kill Tracker (ish_kill_tracker)            a player's character is named by the player's nick; the mod's
@@ -39,28 +40,14 @@ local installed = {}
 local function log(tag, fmt, ...) C().log(tag, fmt, ...) end
 
 -------------------------------------------------------------------------------
--- Experience Framework, Wearable Devices, Quick Action Wheel, Kill Tracker: per-player keys
+-- Experience Framework, Quick Action Wheel, Kill Tracker: per-player keys
 -------------------------------------------------------------------------------
 local EF_SUBS = { "XP", "skills_savedata", "traits_savedata", "tasks_manager", "potion_xp_buff" }
-
-local WD_KEYS = {
-	"wd_bracer_worn", "wd_bracer_worn_id",
-	"metro_watch_worn", "metro_watch_worn_id",
-	"vektor_worn", "vektor_worn_id",
-	"wd_promin_worn", "wd_promin_worn_id",
-	"wd_glowstick_section", "wd_glowstick_section_id",
-	"wd_slots_loadout", "wd_slots_loadout_ids",
-	"wd_promin_modules", "wd_promin_page",
-}
 
 local function install_pdata()
 	if C().mod("experience_core") then
 		P().register("experience_framework_savedata", { subs = EF_SUBS, prime = { "experience_core" } })
 		installed[#installed + 1] = "experience_framework"
-	end
-	if C().mod("wd_core") then
-		for _, k in ipairs(WD_KEYS) do P().register(k, { prime = { "wd_core" } }) end
-		installed[#installed + 1] = "wearable_devices"
 	end
 	if C().mod("haru_quick_action_wheel_mcm") then
 		P().register("haru_qaw", { prime = { "haru_quick_action_wheel_mcm" } })

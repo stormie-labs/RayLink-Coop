@@ -179,11 +179,12 @@ end
 local function bake_pending()
 	local gs = gs_ready()
 	if not gs then return end
-	local id_of = {}
-	for id, name in pairs(gs.world_itm_on) do id_of[name] = id end
+	local spawned = {} -- point name -> the id of what stands there now
+	for obj_id, point in pairs(gs.world_itm_on) do spawned[point] = obj_id end
 	for name, num in pairs(gs.world_itm_num) do
-		local id = id_of[name]
-		local se = id and alife_object(id)
+		local id = spawned[name]
+		local se = nil
+		if id ~= nil then se = alife_object(id) end
 		if se then
 			if try_bake(gs, id, se:section_name(), num) then
 				gs.world_itm_num[name] = nil

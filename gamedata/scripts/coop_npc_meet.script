@@ -73,10 +73,11 @@ local function pick_num(who, npc, condlist, def)
 	return tonumber(pick(who, npc, condlist)) or def
 end
 
+-- A player's community without the "actor_" prefix of a player's character ("stalker" when it has none).
 local function player_comm(who)
-	local c = who:character_community() or ""
-	if c:sub(1, 6) == "actor_" then c = c:sub(7) end
-	return c ~= "" and c or "stalker"
+	local community = (who:character_community() or ""):gsub("^actor_", "", 1)
+	if community == "" then return "stalker" end
+	return community
 end
 
 local function enemy_for(npc, who)
@@ -223,13 +224,12 @@ local function mm_update(self)
 		end
 		local is_close = visible and dist <= pick_num(p, npc, cfg.close_distance, 3)
 		local is_far = visible and dist <= pick_num(p, npc, cfg.far_distance, 5)
-		if is_close then
-			if focus_state ~= "close" or dist < focus_dist then
-				focus_id, focus_state, focus_dist = pid, "close", dist
-			end
-		elseif is_far then
-			if not focus_state or (focus_state == "far" and dist < focus_dist) then
-				focus_id, focus_state, focus_dist = pid, "far", dist
+		-- the NPC turns to the nearest close player, else to the nearest far one
+		local rank = (is_close and 2) or (is_far and 1) or 0
+		if rank > 0 then
+			local held = (focus_state == "close" and 2) or (focus_state == "far" and 1) or 0
+			if rank > held or (rank == held and dist < focus_dist) then
+				focus_id, focus_state, focus_dist = pid, rank == 2 and "close" or "far", dist
 			end
 		elseif dist > (self.a.reset_distance or 30) then
 			fl.hello, fl.bye = false, false
@@ -327,16 +327,17 @@ local function eva_evaluate(self)
 			end
 		end
 	end
+	-- the squad's commander threatens (stock meet action meet_base + 1 in "threat_na"): his men join while a player is near
 	local squad = get_object_squad(obj)
-	local commander = squad and squad:commander_id() ~= obj:id() and level.object_by_id(squad:commander_id())
-	if commander and state_mgr.get_state(commander) == "threat_na"
-		and utils_obj.get_current_action_id(commander) == xr_actions_id.stohe_meet_base + 1 then
-		if any_player_seen_or_near(obj, 225) then
-			self.a.commander_threat = true
-			return true
-		end
-	else
+	local commander_id = squad and squad:commander_id()
+	local commander = commander_id ~= nil and commander_id ~= obj:id() and level.object_by_id(commander_id) or nil
+	local threatening = commander ~= nil and state_mgr.get_state(commander) == "threat_na"
+		and utils_obj.get_current_action_id(commander) == xr_actions_id.stohe_meet_base + 1
+	if not threatening then
 		self.a.commander_threat = nil
+	elseif any_player_seen_or_near(obj, 225) then
+		self.a.commander_threat = true
+		return true
 	end
 	return self.a.meet_manager.current_distance ~= nil
 end
