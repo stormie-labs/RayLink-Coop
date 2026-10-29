@@ -336,6 +336,17 @@ TEST(reject_reason_names)
 	CHECK(std::strlen(reject_reason_name(static_cast<RejectReason>(200))) > 0);
 }
 
+TEST(manifest_leaves_out_textures_only)
+{
+	CHECK(manifest_visual_only("textures\\ui\\ui_icons_npc.dds"));
+	CHECK(manifest_visual_only("Textures/act/act_stalker_head.thm"));
+	CHECK(!manifest_visual_only("textures"));
+	CHECK(!manifest_visual_only("texturesx\\a.dds"));
+	CHECK(!manifest_visual_only("configs\\textures.ltx"));
+	CHECK(!manifest_visual_only("meshes\\textures\\a.ogf"));
+	CHECK(!manifest_visual_only("scripts\\grok_textures.script"));
+}
+
 TEST(manifest_fingerprint_order_independent)
 {
 	Manifest a = {{"a.ltx", 1}, {"b.script", 2}, {"c.ogf", 3}, {"d.dds", 4}};
