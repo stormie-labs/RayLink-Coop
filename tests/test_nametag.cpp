@@ -175,3 +175,31 @@ TEST(nametag_params_from_the_layout_lines)
 	CHECK(!nametag::set_param(q, "tag_far", 10.f));
 	CHECK(near_f(q.far_m, Params().far_m));
 }
+
+// Owner 2026-10-29 (build 29): "remove the random names on each other" - a player's character is called by his nick.
+// ChangeName -> TranslateName splits "x:lname_y" at ':' (and asserts on 3+ parts); '%' opens a UI colour code.
+TEST(nametag_character_name_is_the_nick_the_engine_can_take)
+{
+	char buf[nametag::kMaxCharacterName];
+	CHECK_EQ(nametag::character_name(buf, sizeof(buf), "C3N50R3D"), size_t(8));
+	CHECK(std::string(buf) == "C3N50R3D");
+	CHECK_EQ(nametag::character_name(buf, sizeof(buf), "a:lname_b:c"), size_t(9));
+	CHECK(std::string(buf) == "alname_bc");
+	nametag::character_name(buf, sizeof(buf), "%c[255,255,0,0]Red");
+	CHECK(std::string(buf) == "c[255,255,0,0]Red");
+	const char* cyr = "\xD0\xA1\xD0\xB5\xD1\x80\xD0\xB3\xD0\xB5\xD0\xB9"; // a Cyrillic nick (UTF-8) stays whole
+	CHECK_EQ(nametag::character_name(buf, sizeof(buf), cyr), std::strlen(cyr));
+	CHECK(std::string(buf) == cyr);
+	// nothing left, nothing given, no room: 0 (the caller keeps the name the character has)
+	CHECK_EQ(nametag::character_name(buf, sizeof(buf), ":%:"), size_t(0));
+	CHECK(buf[0] == 0);
+	CHECK_EQ(nametag::character_name(buf, sizeof(buf), nullptr), size_t(0));
+	CHECK_EQ(nametag::character_name(buf, 0, "abc"), size_t(0));
+	// a short buffer never ends inside a UTF-8 sequence: "ab" + one 2-byte letter, the second does not fit
+	char small[6];
+	CHECK_EQ(nametag::character_name(small, sizeof(small), "ab\xD0\x96\xD0\x96"), size_t(4));
+	CHECK(std::string(small) == "ab\xD0\x96");
+	// the longest nick fits (sanitize_nick: 48 bytes)
+	const std::string longest(48, 'x');
+	CHECK_EQ(nametag::character_name(buf, sizeof(buf), longest.c_str()), size_t(48));
+}

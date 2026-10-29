@@ -13,6 +13,11 @@ $spawn                  = "coop\player_avatar"
 character_profile       = sim_default_stalker_0
 spec_rank               = experienced
 community               = stalker
+; Owner, live 2026-10-29 (build 29): "the PDA in the hands for others". coop_equip.cpp (show_pda) draws the PDA a player
+; holds as an attachment of his avatar, at the PDA's own attach_bone_name / offsets (the left hand). The engine attaches
+; only the sections listed here, by exact name (attachment_owner.cpp can_attach), and the stalker list has only
+; device_pda. '>' appends to the inherited list (DLTX): the torches, the guitars and the rest of it stay.
+>attachable_items       = device_pda_1, device_pda_2, device_pda_3, device_pda_milspec, itm_pda_common, itm_pda_uncommon, itm_pda_rare
 
 ; Player colours (W6 allies UI). One colour per player, the same everywhere the player is shown: minimap and PDA
 ; map arrows and edge pointers, the party panel, name tags over heads (C++ coop_presence), chat nicks.
