@@ -34,6 +34,17 @@ TEST(talks_recent_window)
 	CHECK(!talked_recently(kNone, r, 201, t0 + 1, 0));       // a zero window: only holding now counts
 }
 
+// R4 2 on Anomaly 1.5.3: xr_meet keeps the trade flag off, so a talk with the trader stands for it (live 2026-10-29:
+// every client purchase was refused "no trader" and the items went back to the trader).
+TEST(talks_trade_counterparty)
+{
+	CHECK(may_trade_with(true, false, false));   // an engine trade window: the stock flag
+	CHECK(may_trade_with(false, true, false));   // Anomaly: the flag is off, the player talked to the trader
+	CHECK(!may_trade_with(false, false, false)); // a trader the player did not talk to
+	CHECK(!may_trade_with(true, true, true));    // wounded: never
+	CHECK(kTradeAfterTalkMs >= 60000);           // a trade window stays open longer than the dialog
+}
+
 // Bounded: the last kKept ends are kept, the same NPC keeps one entry with its latest end.
 TEST(talks_recent_bounded)
 {
