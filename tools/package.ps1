@@ -20,12 +20,22 @@
   Entries use "/" separators (written with System.IO.Compression, not Compress-Archive); empty folders get a
   directory entry ("Anomaly Coop - GAMMA/gamedata/").
 
+  Engine build (one number from build to package): the minor part of -Version is the build, 0.28.0 = build 28. The
+  engine names its build itself (engine\src\xrCore\raylink_version.h: window title, main menu, log, console `version`,
+  crash dialogs): "RayLink Engine b28" for a CI tree synced with `python tools\ci_sync.py --build 28`, "RayLink Engine
+  dev" without --build. This script reads that stamp out of the exe and stops when it is not the package's build.
+  -EngineBuild <n> packs the exe of another build on purpose (a scripts-only build: 0.29.0 with the b28 exe),
+  -EngineBuild dev a development exe, -EngineBuild any whatever the exe says (tests; also an exe without a stamp).
+  The stamp goes into anomaly-coop-release.txt.
+
 .EXAMPLE
-  powershell -ExecutionPolicy Bypass -File tools\package.ps1 -Version 0.1.0
+  powershell -ExecutionPolicy Bypass -File tools\package.ps1 -Version 0.28.0
+  powershell -ExecutionPolicy Bypass -File tools\package.ps1 -Version 0.29.0 -EngineBuild 28
 #>
 param(
     [string]$Version = '0.1.0',
     [string]$BuiltExe = '',
+    [string]$EngineBuild = '',
     [switch]$KeepStage,
     [switch]$Force
 )
@@ -79,6 +89,29 @@ if (-not $Force) {
     $age = (Get-Date) - $exe.LastWriteTime
     if ($age.TotalSeconds -lt 60) { throw "Exe was written $([int]$age.TotalSeconds) s ago - a build still running? (-Force to pack anyway)" }
 }
+
+# --- the engine build the exe names itself: "RayLink Engine b28" / "RayLink Engine dev" (a string literal, so it ends
+# with a zero byte in the exe; raylink_version.h RAYLINK_ENGINE_VERSION). -Force does not skip this check.
+$packageBuild = [int]($Version.Split('.')[1])
+$latin1 = [System.Text.Encoding]::GetEncoding(28591)   # one char per byte
+$stamps = @([regex]::Matches($latin1.GetString([System.IO.File]::ReadAllBytes($exe.FullName)), 'RayLink Engine (b[1-9][0-9]*|dev)\x00') |
+    ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+if ($stamps.Count -gt 1) { throw "Exe names more than one RayLink Engine build ($($stamps -join ', ')): $BuiltExe" }
+$engineLabel = if ($stamps.Count -eq 1) { $stamps[0] } else { '' }
+switch -Regex ($EngineBuild) {
+    '^$' { $wantLabel = "b$packageBuild"; break }
+    '^any$' { $wantLabel = ''; break }
+    '^dev$' { $wantLabel = 'dev'; break }
+    '^[1-9][0-9]*$' { $wantLabel = "b$EngineBuild"; break }
+    default { throw "-EngineBuild must be a build number, dev or any (got '$EngineBuild')" }
+}
+if ($wantLabel -and $engineLabel -ne $wantLabel) {
+    $has = if ($engineLabel) { "RayLink Engine $engineLabel" } else { 'no RayLink Engine build stamp (an exe from before build 28?)' }
+    throw ("Exe says $has, package $Version needs RayLink Engine $wantLabel ($BuiltExe). Number the build: " +
+        "python tools\ci_sync.py --build $packageBuild, then MSBuild in engine-ci; or pass -EngineBuild <n> to pack " +
+        "another build's exe on purpose (scripts-only build).")
+}
+$engineName = if ($engineLabel) { "RayLink Engine $engineLabel" } else { 'RayLink Engine (exe without a build stamp)' }
 
 # --- facts for the release text
 $protocol = (Select-String -LiteralPath $ProtocolHeader -Pattern 'kProtocolVersion\s*=\s*(\d+)' | Select-Object -First 1).Matches[0].Groups[1].Value
@@ -169,7 +202,7 @@ $release = @"
 Anomaly Coop $Version
 
 protocol      $protocol
-engine        $engineCommit (xray-monolith fork, built $built)
+engine        $engineName, commit $engineCommit (xray-monolith fork, built $built)
 project       $projectCommit
 exe           $EngineMod\bin\$ExeName  $([math]::Round($exe.Length / 1MB, 1)) MB  sha256 $exeHash
 parts         3 MO2 mods, one installer run per part: $EngineMod, $CoreMod, $GammaMod (G.A.M.M.A. only)
@@ -230,6 +263,6 @@ if (-not $KeepStage) {
 
 $skippedAll = @($core.Skipped) + @($eng.Skipped) + @($gamma.Skipped)
 Write-Host "Packed $zip"
-Write-Host ("  {0} entries, {1:N1} MB; protocol {2}; engine {3}; project {4}" -f $names.Count, ((Get-Item -LiteralPath $zip).Length / 1MB), $protocol, $engineCommit, $projectCommit)
+Write-Host ("  {0} entries, {1:N1} MB; protocol {2}; {3}, engine {4}; project {5}" -f $names.Count, ((Get-Item -LiteralPath $zip).Length / 1MB), $protocol, $engineName, $engineCommit, $projectCommit)
 Write-Host ("  Engine: gamedata {0} files, exe {1:N1} MB; Core: gamedata {2} files; GAMMA: gamedata {3} files" -f $eng.Count, ($exe.Length / 1MB), $core.Count, $gamma.Count)
 if ($skippedAll.Count -gt 0) { Write-Host ("  left out: {0}" -f ($skippedAll -join ', ')) }

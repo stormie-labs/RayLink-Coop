@@ -125,7 +125,7 @@
 		<text>your mod list differs from the host's</text>
 	</string>
 	<string id="st_coop_menu_reason_BuildMismatch">
-		<text>a different Anomaly Coop build</text>
+		<text>a different RayLink Engine build</text>
 	</string>
 	<string id="st_coop_menu_reason_ProtocolMismatch">
 		<text>a different co-op version</text>
@@ -572,7 +572,7 @@
 		<text>Different co-op version</text>
 	</string>
 	<string id="st_coop_ui_title_BuildMismatch">
-		<text>Different game build</text>
+		<text>Different RayLink Engine build</text>
 	</string>
 	<string id="st_coop_ui_title_SessionFull">
 		<text>The session is full</text>
@@ -596,7 +596,7 @@
 		<text>Ask the host to raise the player limit or wait until somebody leaves. Or the host has used up this session's limit of new characters (coop_max_new_characters).</text>
 	</string>
 	<string id="st_coop_ui_hint_build">
-		<text>Install the same Anomaly Coop build as the host (both bin\ and gamedata\).</text>
+		<text>Install the same RayLink build as the host (both bin\ and gamedata\).</text>
 	</string>
 	<string id="st_coop_ui_reason_code">
 		<text>Reason code: %s</text>

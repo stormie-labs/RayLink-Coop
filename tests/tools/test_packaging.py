@@ -152,7 +152,7 @@ def test_package_archive_layout() -> None:
     try:
         run = subprocess.run(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(PACKAGE_PS1),
-             "-Version", version, "-Force"],
+             "-Version", version, "-Force", "-EngineBuild", "any"],
             cwd=ROOT, capture_output=True, text=True, timeout=600,
         )
         assert run.returncode == 0, run.stdout + run.stderr
@@ -190,6 +190,78 @@ def test_package_archive_layout() -> None:
         assert f"<Version>{version}</Version>" in info_xml
         for part in (ENGINE, CORE, GAMMA):
             assert part in release_txt
+        assert "engine        RayLink Engine" in release_txt
     finally:
         if zip_path.exists():
             zip_path.unlink()
+
+
+# --- the engine build of a package (tools/package.ps1 + engine/src/xrCore/raylink_version.h): the exe says
+# "RayLink Engine bN" (a zero-terminated literal), the package version 0.N.0 must agree. Fake exes: no engine build needed.
+needs_powershell = pytest.mark.skipif(shutil.which("powershell") is None, reason="needs Windows PowerShell")
+
+
+def _fake_exe(folder: Path, *stamps: bytes) -> Path:
+    exe = folder / "AnomalyDX11AVX.exe"
+    body = b"MZ" + b"\0" * 510
+    for stamp in stamps:
+        body += b"RayLink Engine " + stamp + b"\0" + b"\0" * 64
+    # a longer text that starts with the same words is not a stamp (crash dialog title)
+    body += b"RayLink Engine b99 - Fatal Error\0"
+    exe.write_bytes(body + b"\0" * 512)
+    return exe
+
+
+def _package(version: str, exe: Path, *extra: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(PACKAGE_PS1),
+         "-Version", version, "-BuiltExe", str(exe), "-Force", *extra],
+        cwd=ROOT, capture_output=True, text=True, timeout=600,
+    )
+
+
+def _release_text(version: str) -> str:
+    zip_path = ROOT / "releases" / f"anomaly-coop-{version}.zip"
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            return archive.read("anomaly-coop-release.txt").decode("utf-8")
+    finally:
+        zip_path.unlink()
+
+
+@needs_powershell
+def test_package_refuses_an_exe_of_another_build(work: Path) -> None:
+    run = _package("0.8.0-pytest", _fake_exe(work, b"b7"))
+    out = run.stdout + run.stderr
+    assert run.returncode != 0
+    assert "RayLink Engine b7" in out and "RayLink Engine b8" in out and "ci_sync.py --build 8" in out
+    assert not (ROOT / "releases" / "anomaly-coop-0.8.0-pytest.zip").exists()
+
+
+@needs_powershell
+def test_package_refuses_unstamped_and_ambiguous_exes(work: Path) -> None:
+    unstamped = _package("0.8.0-pytest", _fake_exe(work))
+    assert unstamped.returncode != 0 and "no RayLink Engine build stamp" in unstamped.stdout + unstamped.stderr
+    dev = _package("0.8.0-pytest", _fake_exe(work), "-EngineBuild", "dev")
+    assert dev.returncode != 0
+    two = _package("0.8.0-pytest", _fake_exe(work, b"b8", b"dev"))
+    assert two.returncode != 0 and "more than one" in two.stdout + two.stderr
+    bad = _package("0.8.0-pytest", _fake_exe(work, b"b8"), "-EngineBuild", "eight")
+    assert bad.returncode != 0 and "-EngineBuild must be" in bad.stdout + bad.stderr
+    assert not (ROOT / "releases" / "anomaly-coop-0.8.0-pytest.zip").exists()
+
+
+@needs_powershell
+def test_package_records_the_engine_build(work: Path) -> None:
+    # the normal case: package 0.7.0 of an exe built with ci_sync.py --build 7
+    run = _package("0.7.0-pytest", _fake_exe(work, b"b7"))
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "engine        RayLink Engine b7, commit " in _release_text("0.7.0-pytest")
+
+
+@needs_powershell
+def test_package_scripts_only_build_names_the_older_engine(work: Path) -> None:
+    # a scripts-only build: package 0.8.0 with the b7 exe, said on purpose
+    run = _package("0.8.0-pytest", _fake_exe(work, b"b7"), "-EngineBuild", "7")
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "engine        RayLink Engine b7, commit " in _release_text("0.8.0-pytest")

@@ -125,7 +125,7 @@
 		<text>ваш список модов отличается от хоста</text>
 	</string>
 	<string id="st_coop_menu_reason_BuildMismatch">
-		<text>другая сборка Anomaly Coop</text>
+		<text>другая сборка RayLink Engine</text>
 	</string>
 	<string id="st_coop_menu_reason_ProtocolMismatch">
 		<text>другая версия кооператива</text>
@@ -572,7 +572,7 @@
 		<text>Другая версия кооператива</text>
 	</string>
 	<string id="st_coop_ui_title_BuildMismatch">
-		<text>Другая сборка игры</text>
+		<text>Другая сборка RayLink Engine</text>
 	</string>
 	<string id="st_coop_ui_title_SessionFull">
 		<text>Сессия заполнена</text>
@@ -596,7 +596,7 @@
 		<text>Попросите хоста увеличить лимит игроков или дождитесь, пока кто-то выйдет. Или хост исчерпал лимит новых персонажей за сессию (coop_max_new_characters).</text>
 	</string>
 	<string id="st_coop_ui_hint_build">
-		<text>Установите ту же сборку Anomaly Coop, что у хоста (и bin\, и gamedata\).</text>
+		<text>Установите ту же сборку RayLink, что у хоста (и bin\, и gamedata\).</text>
 	</string>
 	<string id="st_coop_ui_reason_code">
 		<text>Код причины: %s</text>

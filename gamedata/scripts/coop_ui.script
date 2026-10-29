@@ -299,7 +299,7 @@ end
 
 local TITLES = {
 	ProtocolMismatch = "Different co-op version",
-	BuildMismatch = "Different game build",
+	BuildMismatch = "Different RayLink Engine build",
 	SessionFull = "The session is full",
 	HostNotReady = "The host is not ready",
 	Kicked = "Removed from the session",
@@ -320,7 +320,7 @@ local function generic(info)
 			"Ask the host to raise the player limit or wait until somebody leaves. Or the host has used up this session's limit of new characters (coop_max_new_characters).")
 	elseif info.reason == "ProtocolMismatch" or info.reason == "BuildMismatch" then
 		lines[#lines + 1] = T("st_coop_ui_hint_build",
-			"Install the same Anomaly Coop build as the host (both bin\\ and gamedata\\).")
+			"Install the same RayLink build as the host (both bin\\ and gamedata\\).")
 	end
 	return title, tostring(info.text or ""), lines, T("st_coop_ui_reason_code", "Reason code: %s", reason)
 end

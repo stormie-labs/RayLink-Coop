@@ -3,7 +3,7 @@
   <Name>Anomaly Coop</Name>
   <Author>Anomaly Coop</Author>
   <Version>0.1.0</Version>
-  <Description>Co-op for S.T.A.L.K.E.R. Anomaly 1.5.3: up to 8 players (a host and 7 guests) in one Zone. Own engine build (AnomalyCoopDX11AVX.exe) + scripts, installed as three MO2 mods: Engine, Core, GAMMA (G.A.M.M.A. only). / Кооператив для S.T.A.L.K.E.R. Anomaly 1.5.3: до 8 игроков (хост и 7 гостей) в одной Зоне. Своя сборка движка (AnomalyCoopDX11AVX.exe) и скрипты; ставится тремя модами MO2: Engine, Core, GAMMA (только для G.A.M.M.A.).</Description>
+  <Description>Co-op for S.T.A.L.K.E.R. Anomaly 1.5.3: up to 8 players (a host and 7 guests) in one Zone. Own engine, RayLink Engine (AnomalyCoopDX11AVX.exe, a fork of X-Ray Monolith) + scripts, installed as three MO2 mods: Engine, Core, GAMMA (G.A.M.M.A. only). / Кооператив для S.T.A.L.K.E.R. Anomaly 1.5.3: до 8 игроков (хост и 7 гостей) в одной Зоне. Свой движок RayLink Engine (AnomalyCoopDX11AVX.exe, форк X-Ray Monolith) и скрипты; ставится тремя модами MO2: Engine, Core, GAMMA (только для G.A.M.M.A.).</Description>
   <Groups>
     <element>Multiplayer</element>
   </Groups>

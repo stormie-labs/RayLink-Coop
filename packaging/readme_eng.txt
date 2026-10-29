@@ -3,12 +3,13 @@ ANOMALY COOP - co-op for S.T.A.L.K.E.R. Anomaly 1.5.3
 
 Up to 8 players (a host and 7 guests) in one Zone: the host plays his own save, guests join it with a character of
 their own. Version, protocol and build: anomaly-coop-release.txt. Every player needs the same version and the same
-mods (the host refuses a player whose files differ and shows what differs).
+mods (the host refuses a player whose files differ and shows what differs). The engine build is on the
+main menu's version line ("RayLink Engine b28") and in the console (command version).
 
 WHAT IS IN THE ARCHIVE
   Three ready Mod Organizer 2 mods (the top folders of the archive) and an installer:
   fomod\                    Mod Organizer 2 installer (one run makes one mod)
-  Anomaly Coop - Engine\    part 1. bin\AnomalyCoopDX11AVX.exe - our engine build (DX11, AVX) and the gamedata\ of that
+  Anomaly Coop - Engine\    part 1. bin\AnomalyCoopDX11AVX.exe - RayLink Engine (DX11, AVX) and the gamedata\ of that
                             build. Own file name: your other exes stay as they are, and the G.A.M.M.A. launcher does
                             not remove it when it restores its exes.
   Anomaly Coop - Core\      part 2. gamedata\ - Anomaly Coop scripts, configs, interface.
