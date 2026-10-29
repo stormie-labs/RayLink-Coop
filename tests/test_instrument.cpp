@@ -126,6 +126,28 @@ TEST(instrument_mirror_accepts_zero_motion_and_rejects_real_invalid)
     CHECK(!instrument::phase_needs_sync(1.1f, 1.f));
 }
 
+TEST(instrument_mirror_never_picks_an_additive_hit_flinch)
+{
+    // The tie rule that let the flinch win: equal weights go to the later blend.
+    CHECK(instrument::prefer_blend(true, false, 1.f, true, false, 1.f));
+    // A host stalker's legs during a hit: the walk cycle at full weight, then hit_downl on channel 3 at power 1.
+    const instrument::BlendView legs[] = {{true, false, 1.f, 0}, {true, false, 1.f, 3}};
+    CHECK_EQ(instrument::pick_mirror_blend(2u, [&](uint32_t i) { return legs[i]; }), 0u);
+    // The torso: an old cycle fading, a new one accruing, a heavier channel-2 flinch (power 2) on top.
+    const instrument::BlendView torso[] = {{true, true, .9f, 0}, {true, false, .2f, 0}, {true, false, 2.f, 2}};
+    CHECK_EQ(instrument::pick_mirror_blend(3u, [&](uint32_t i) { return torso[i]; }), 1u);
+    // Nothing but flinches: nothing to mirror (kNoMotion), the client keeps the cycle it plays.
+    const instrument::BlendView only_hit[] = {{true, false, 1.f, 2}};
+    CHECK_EQ(instrument::pick_mirror_blend(1u, [&](uint32_t i) { return only_hit[i]; }), 1u);
+    CHECK_EQ(instrument::pick_mirror_blend(0u, [&](uint32_t i) { return legs[i]; }), 0u);
+    // The base rules stay: free slots never, a live blend beats a fading one, ties go to the later blend.
+    const instrument::BlendView base[] = {{false, false, 1.f, 0}, {true, true, 1.f, 0}, {true, false, .3f, 0}, {true, false, .3f, 0}};
+    CHECK_EQ(instrument::pick_mirror_blend(4u, [&](uint32_t i) { return base[i]; }), 3u);
+    CHECK(instrument::mirrored_channel(0));
+    CHECK(!instrument::mirrored_channel(2));
+    CHECK(!instrument::mirrored_channel(3));
+}
+
 TEST(instrument_presentation_interpolates_only_within_a_phase)
 {
     instrument::State a;
