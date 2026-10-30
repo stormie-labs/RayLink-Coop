@@ -111,7 +111,7 @@ TEST(world_gate_requests_wait_on_the_host_and_are_dropped_on_a_client)
 	         Msg::ItemState, Msg::EntityEvent, Msg::PlayerWounded, Msg::PlayerRevive, Msg::NewCharacter,
 	         Msg::CheckpointClaim, Msg::RestRequest, Msg::StateDumpRequest, Msg::IdLease, Msg::IdLeaseAck,
 	         Msg::EntitySpawn, Msg::EntityDestroy, Msg::EntitySwitch, Msg::EntityParent, Msg::EntityDied,
-	         Msg::EntityLocal})
+	         Msg::EntityLocal, Msg::EntityVisual})
 	{
 		CHECK(need_of(m) == Need::Hold);
 		CHECK(decide(need_of(m), World::Hole) == Act::Hold);

@@ -78,6 +78,7 @@ TEST(rules_live_only)
 	CHECK(live_only(Msg::EntityParent));
 	CHECK(live_only(Msg::EntityDied));
 	CHECK(live_only(Msg::EntityLocal));
+	CHECK(live_only(Msg::EntityVisual));
 	CHECK(live_only(Msg::EntityState));
 	CHECK(live_only(Msg::ZoneState));
 	CHECK(live_only(Msg::ItemState));

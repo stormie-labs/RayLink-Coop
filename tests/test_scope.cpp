@@ -76,6 +76,7 @@ constexpr Row kExpected[] = {
 	{Msg::EntityLocal, kMap},
 	{Msg::ItemState, kMap},
 	{Msg::EntitySound, kMap},
+	{Msg::EntityVisual, kMap},
 	// requests (Req*, except the money) and their results
 	{Msg::ReqSpawn, kMap},
 	{Msg::ReqDestroy, kMap},

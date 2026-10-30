@@ -1176,6 +1176,7 @@ constexpr Direction kDirections[] = {
 	{Msg::EntityLocal, kHost},
 	{Msg::ItemState, kBoth}, // the owner's item, relayed; the host's authority
 	{Msg::EntitySound, kHost},
+	{Msg::EntityVisual, kHost}, // protocol 17: a host creature's new visual
 	// requests and their results
 	{Msg::ReqSpawn, kClient},
 	{Msg::ReqDestroy, kClient},
