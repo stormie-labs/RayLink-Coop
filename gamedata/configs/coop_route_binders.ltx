@@ -69,6 +69,7 @@ item_artefact.artefact_binder             = update
 item_device.device_binder                 = update
 ; The creature binders' death, hit and use callbacks: the engine reaches them through set_callback, not through the binder,
 ; and does not catch their errors in Release (script_callback_ex.h process_error is empty without XRAY_EXCEPTIONS). A
-; puppet dies when the host says so, the player uses a corpse, nobody asked the player's game for these.
+; puppet dies when the host says so, the player uses a corpse, nobody asked the player's game for these. The update of a
+; dead mutant runs on a client as well (coop::rules::puppet_binder_runs): it offers the skinning.
 xr_motivator.motivator_binder         = death_callback, hit_callback, use_callback
-bind_monster.generic_object_binder    = death_callback, hit_callback, use_callback
+bind_monster.generic_object_binder    = death_callback, hit_callback, use_callback, update

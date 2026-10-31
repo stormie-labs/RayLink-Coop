@@ -87,6 +87,7 @@ zzz_player_injuries = { health = { head = 0, torso = 0, leftarm = 5, rightarm = 
 	medkits = { medkit = { head = 3, torso = 20 } } }
 utils_obj = { save_var = function(o, k, v) SAVED = SAVED or {}; SAVED[k] = v end }
 smr_loot = { try_spawn = function() ZCP_LOCAL = true end }
+death_manager = { create_release_item = function() CRI_LOCAL = true end }
 
 start_all()
 local C = coop_mods_core
@@ -168,6 +169,9 @@ run_time_events(3000)
 check(LOOTED_AGAIN and sent("mods.al_del").c == corpse:id(), "autolooter: looted again, then the host deletes")
 SENT = {}
 grok_stashes_on_corpses.npc_on_use(corpse)
+SendScriptCallback("actor_on_first_update")
+death_manager.create_release_item(corpse)
+check(sent("mods.corpse_loot").n == corpse:id() and not CRI_LOCAL, "corpse loot: a client asks the host, no local roll")
 check(sent("mods.gso_use").n == corpse:id() and not ORIG_GSO, "corpse stash: rolled by the host")
 
 -------------------------------------------------------------------------------
@@ -254,6 +258,18 @@ check(type(_G.sound_object) == "table" and getmetatable(_G.sound_object).__call 
 coop_mods_core.on_actor_revived(0, "medkit")
 local b = zzz_player_injuries
 check(b.health.head == 4 and b.health.torso == 11 and SAVED and SAVED["health.head"] == 4, "BHS: revive lifts head/torso and applies the medkit")
+-- A respawn stands up a fresh body. The engine knows only its own health: the mod's parts stayed, and with a torso or a
+-- head at zero the mod puts health at -1 on the next update, so the player fell again and again (live 2026-10-31).
+b.health.head, b.health.torso, b.health.leftarm, b.health.rightleg = 0, 0, 0, 2
+b.timedhp.torso, b.timedhp.leftleg = 4, 3
+SAVED = {}
+SendScriptCallback("coop_respawned", "campfire", 600, 10, 0, 7)
+local whole = true
+for _, k in ipairs({ "head", "torso", "leftarm", "rightarm", "leftleg", "rightleg" }) do
+	whole = whole and b.health[k] == b.maxhp[k] and b.timedhp[k] == 0 and SAVED["health." .. k] == b.maxhp[k]
+		and SAVED["timedhp." .. k] == 0
+end
+check(whole, "BHS: a respawn gives every part back, in the mod and in what its load reads")
 check(smr_loot.try_spawn({}) == nil and not ZCP_LOCAL, "ZCP: no local loot roll on a client")
 from_host("tp", { x = 5, y = 6, z = 7 })
 check(db.actor._tp and db.actor._tp.y == 6, "teleport order from the host moves the own actor")

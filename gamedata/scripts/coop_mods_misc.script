@@ -366,6 +366,15 @@ local function bhs_tables(b)
 	return b and type(b.health) == "table" and type(b.maxhp) == "table" and type(b.timedhp) == "table"
 end
 
+-- What the mod's own load reads back.
+local function bhs_save(b)
+	if not (utils_obj and utils_obj.save_var) then return end
+	for _, k in ipairs(PARTS) do
+		pcall(utils_obj.save_var, db.actor, "health." .. k, b.health[k])
+		pcall(utils_obj.save_var, db.actor, "timedhp." .. k, b.timedhp[k])
+	end
+end
+
 local function bhs_on_revived(reviver, section)
 	local b = C().mod("zzz_player_injuries")
 	if not (bhs_tables(b) and db.actor) then return end
@@ -386,14 +395,21 @@ local function bhs_on_revived(reviver, section)
 		b.medkits.lastregen = time_global()
 		b.medkits.timedhealth = kit.timeregen
 	end
-	-- What the mod's own load reads back.
-	if utils_obj and utils_obj.save_var then
-		for _, k in ipairs(PARTS) do
-			pcall(utils_obj.save_var, db.actor, "health." .. k, b.health[k])
-			pcall(utils_obj.save_var, db.actor, "timedhp." .. k, b.timedhp[k])
-		end
-	end
+	bhs_save(b)
 	log("bhs", "revived (%s): head %s, torso %s", tostring(section), tostring(b.health.head), tostring(b.health.torso))
+end
+
+-- The engine's respawn knows only its own health. With a head or a torso still at zero the mod sets health to -1 on its next
+-- update: the fresh body fell at once, again and again (live 2026-10-31). A respawn gives every part back.
+local function bhs_on_respawned()
+	local b = C().mod("zzz_player_injuries")
+	if not (bhs_tables(b) and db.actor) then return end
+	for _, k in ipairs(PARTS) do
+		b.health[k] = b.maxhp[k]
+		b.timedhp[k] = 0
+	end
+	bhs_save(b)
+	log("bhs", "respawned: every part back")
 end
 
 local function install_bhs()
@@ -401,6 +417,7 @@ local function install_bhs()
 	if not bhs_tables(b) then return end
 	P().register("head_tbl", { prime = { "zzz_player_injuries" } })
 	C().listen("actor_revived", bhs_on_revived)
+	C().listen("actor_respawned", bhs_on_respawned)
 	installed[#installed + 1] = "bhs"
 end
 

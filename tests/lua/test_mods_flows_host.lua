@@ -101,7 +101,17 @@ end, zz_glowstick_mcm)
 AddScriptCallback("actor_on_hud_animation_end")
 RegisterScriptCallback("actor_on_hud_animation_end", zz_glowstick_mcm.actor_on_hud_animation_end)
 INI.dropper_bread = { visual = "x" }
-model_dropper_mcm = { spawn_object = function(sec) local p = db.actor:position(); alife_create("dropper_" .. sec, p, 1, 2) end }
+-- As the mod: the drop is created now, and a time event then puts it at "the actor".
+demonized_time_events = { CreateTimeEvent = function(a, b, delay, f, ...) TE_PENDING = { f = f, args = { ... } } end }
+model_dropper_mcm = { spawn_object = function(sec)
+	local p = db.actor:position()
+	local se = alife_create("dropper_" .. sec, p, 1, 2)
+	demonized_time_events.CreateTimeEvent(0, "model_drop", 0, function(id)
+		MOVED_TO = db.actor:id()
+		return true
+	end, se.id)
+end }
+death_manager = { create_release_item = function(npc) CRI_RUNS = (CRI_RUNS or 0) + 1; CRI_ACTOR = db.actor:id() end }
 z_auto_looter = { config = { delete_misc = true }, handle_delete = function(c) AL_DELETED = c:id() end,
 	is_placable_stash = function(c) return c._placeable end }
 grok_stashes_on_corpses = { npc_on_use = function(npc) GSO_ROLLS = (GSO_ROLLS or 0) + 1; GSO_ACTOR = db.actor:id() end }
@@ -335,6 +345,11 @@ from_client("md_drop", { s = "bread", a = false })
 check(CREATED[1] and CREATED[1].sec == "dropper_bread", "model drop: the mod's drop ran on the host")
 local drop_id = CREATED[1].id
 check(OBJ[drop_id]:position().x == 20, "model drop: at the client's character")
+local dropper_event = TE_PENDING
+check(dropper_event ~= nil, "model drop: the mod's time event is queued")
+check(dropper_event.f(unpack(dropper_event.args)) == true, "model drop: the time event ends")
+check(MOVED_TO == 500, "model drop: the time event, later than the call, still acts for the client's character, not the host")
+check(db.actor:id() ~= 500, "model drop: the host's actor is back after it")
 OBJ[500]._pos = vec3(500, 0, 0)
 NOW = NOW + 6000
 SendScriptCallback("actor_on_update")
@@ -356,6 +371,8 @@ from_client("al_del", { c = pstash:id() })
 check(AL_DELETED == nil, "autolooter: a player's stash refused")
 from_client("gso_use", { n = corpse:id() })
 from_client("gso_use", { n = corpse:id() })
+from_client("corpse_loot", { n = corpse:id() })
+check(CRI_RUNS == 1 and CRI_ACTOR == 500, "corpse loot: a client's body is filled on the host, for that player")
 check(GSO_ROLLS == 1 and GSO_ACTOR == 500, "corpse stash: rolled once, for the requesting player")
 
 -------------------------------------------------------------------------------

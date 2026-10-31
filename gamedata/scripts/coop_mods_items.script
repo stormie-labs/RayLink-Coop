@@ -18,6 +18,9 @@
 	                 its own settings (not while the host itself is looting that container).
 	Stash Overhaul corpse stashes (grok_stashes_on_corpses)
 	  mods.gso_use   client -> host { n corpse }  the corpse's stash roll runs once, on the host, for that player.
+	Corpse loot (death_manager)
+	  mods.corpse_loot client -> host { n corpse }  a body gets its loot when it is first used. A client's spawns are
+	                 refused, so a body opened only by a client stayed without it: the host fills it, once, for everybody
 --]]
 
 local api = rawget(_G, "coop")
@@ -273,7 +276,21 @@ local function host_md_drop(t, from)
 		if se then made[#made + 1] = se end
 		return se
 	end
+	-- The mod places the drop at "the actor" in a time event, after this call: it landed at the host (live 2026-10-31).
+	local events = rawget(_G, "demonized_time_events")
+	local real_event = events and events.CreateTimeEvent
+	if real_event then
+		events.CreateTimeEvent = function(ev, action, delay, f, ...)
+			return real_event(ev, action, delay, function(...)
+				local body = C().avatar(from)
+				if not body then return true end
+				local run, done = C().as_player(body, f, ...)
+				return done or not run
+			end, ...)
+		end
+	end
 	local okp, ok, e = pcall(C().as_player, who, M.spawn_object, t.s, t.a == true)
+	if real_event then events.CreateTimeEvent = real_event end
 	_G.alife_create = real -- restored even if as_player itself failed (W5)
 	if not (okp and ok) then C().report("items", "model drop", okp and e or ok) end
 	for _, se in ipairs(made) do md.dropped[se.id] = vector():set(se.position) end
@@ -442,6 +459,41 @@ local function install_gso()
 end
 
 -------------------------------------------------------------------------------
+-- Corpse loot
+-------------------------------------------------------------------------------
+local corpse_loot_wrapped = false
+
+-- At the first update: Haru's skills and FDDA replace create_release_item when they load, and a wrapper put here earlier
+-- would be replaced with it. The stock function keeps a body to one roll (death_dropped).
+local function wrap_corpse_loot()
+	if corpse_loot_wrapped then return end
+	corpse_loot_wrapped = true
+	C().wrap(death_manager, "create_release_item", "death_manager.create_release_item", function(orig)
+		return function(npc, ...)
+			if not (C().is_client() and npc) then return orig(npc, ...) end
+			if not npc:alive() then C().to_host("corpse_loot", { n = C().hid(npc:id()) }) end
+		end
+	end)
+end
+
+local function install_corpse_loot()
+	if not C().fn(C().mod("death_manager"), "create_release_item") then return end
+	installed[#installed + 1] = "corpse loot"
+	RegisterScriptCallback("actor_on_first_update", wrap_corpse_loot)
+	C().on("corpse_loot", function(t, from)
+		local id = C().lid(tonumber(t.n))
+		local npc = type(id) == "number" and id ~= 0 and level.object_by_id(id)
+		local who = C().avatar(from)
+		if not (npc and who and IsStalker(npc) and not npc:alive() and near(npc, who, 6)) then
+			return refuse("corpse_loot", from, "no corpse there")
+		end
+		local ok, e = C().as_player(who, death_manager.create_release_item, npc)
+		if not ok then C().report("items", "corpse loot", e) end
+	end, "host")
+	C().set_limit("corpse_loot", 6, 2)
+end
+
+-------------------------------------------------------------------------------
 -- Start
 -------------------------------------------------------------------------------
 local first_done = false
@@ -470,6 +522,7 @@ function on_game_start()
 	start_step("install_model_dropper", install_model_dropper)
 	start_step("install_autolooter", install_autolooter)
 	start_step("install_gso", install_gso)
+	start_step("install_corpse_loot", install_corpse_loot)
 	if #installed == 0 then return end
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	C().status_line("items", function()

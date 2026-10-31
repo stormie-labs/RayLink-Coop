@@ -924,6 +924,7 @@ ensure_callback("coop_on_chat")
 ensure_callback("coop_actor_revived")
 ensure_callback("coop_on_container_opened")
 ensure_callback("coop_avatar_step")
+ensure_callback("coop_respawned") -- coop_death adds it at its own start: a subscriber that starts earlier would be lost
 
 -- The callback router's Lua half on every machine with the engine API, the host and single player too: a session
 -- can start in this Lua state, and none holds on the host as well (F2 T10).

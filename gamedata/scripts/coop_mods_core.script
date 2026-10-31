@@ -610,6 +610,7 @@ end
 -- Notifications from the engine or other coop scripts (see Requests in the W4 report).
 -- They call these entry points when they exist; nothing here depends on them being called.
 --   coop_mods_core.on_actor_revived(reviver_peer, medkit_section)   owner of the revived actor, after a revive
+--   coop_respawned (engine callback)                                owner, a fresh body after a death: "actor_respawned"
 --   coop_mods_core.on_container_opened(peer, container_id)          host, a client opened a box or a corpse
 --   coop_mods_core.on_new_character(peer)                           host, a player joined with a new character
 --   coop_mods_core.on_avatar_step(avatar_id, material, power, move_state)   any machine, footstep of an avatar
@@ -757,6 +758,7 @@ function on_game_start()
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	-- engine notifications (W5); coop_main creates the callback names at load
 	RegisterScriptCallback("coop_actor_revived", engine_revived)
+	RegisterScriptCallback("coop_respawned", function(...) if active() then fire("actor_respawned", ...) end end)
 	RegisterScriptCallback("coop_on_container_opened", on_container_opened)
 	RegisterScriptCallback("coop_avatar_step", on_avatar_step)
 end
