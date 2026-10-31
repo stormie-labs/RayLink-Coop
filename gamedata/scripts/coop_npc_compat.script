@@ -66,6 +66,32 @@ local REWRITES = {
 	smr_civil_war = {
 		{ "(not (killer.id == AC_ID) and", "(not coop_npc_is_player_id(killer.id) and" },
 	},
+	-- audit B3 (2026-10-31): the kill and loot checks of the New Tasks Addon tasks compared the killer / user with AC_ID, the
+	-- host's actor: a client's kill, hit or search of a body never counted. is_axe() reads db.actor's hand; it now gets
+	-- the killer (nta_utils.is_axe wrapper in coop_mods_nta). The handlers are host-only callbacks.
+	tasks_brain_game = {
+		{ "(killer and killer:id() == AC_ID)", "(killer and coop_npc_is_player_id(killer:id()))" },
+	},
+	tasks_gambling_with_life = {
+		{ "if shit.draftsman:id() ~= AC_ID or not nta_utils.is_strike(shit) or nta_utils.is_axe() then",
+		"if not coop_npc_is_player_id(shit.draftsman:id()) or not nta_utils.is_strike(shit) or nta_utils.is_axe(shit.draftsman) then" },
+		{ "(killer and killer:id() == AC_ID)", "(killer and coop_npc_is_player_id(killer:id()))" },
+	},
+	tasks_vengence_amplified = {
+		{ "(killer and killer:id() == AC_ID) and nta_utils.is_axe() then",
+		"(killer and coop_npc_is_player_id(killer:id())) and nta_utils.is_axe(killer) then" },
+	},
+	tasks_mystery_of_the_swamps = {
+		{ "and who:id() == AC_ID then", "and coop_npc_is_player_id(who:id()) then", all = true },
+	},
+	tasks_skyfall = {
+		{ 'if who:section() == "actor" then', "if coop_npc_is_player_id(who:id()) then" },
+	},
+	-- enemy audit F6 (2026-10-31): the psy drain under a controller asks the controller for an enemy; a client's copy of a
+	-- monster is a puppet without AI and has none. On a client the distance (10 m) decides.
+	gunslinger_controller = {
+		{ "elseif obj:get_enemy() and obj:position()", "elseif (coop_npc_on_client() or obj:get_enemy()) and obj:position()" },
+	},
 }
 
 local function count_plain(s, needle)
@@ -158,6 +184,7 @@ local function apply_rewrite(name, list)
 end
 
 function _rerun(name, m, src, path) return rerun(name, m, src, path) end
+function _rewrites() return REWRITES end
 
 -------------------------------------------------------------------------------
 -- Wrappers
@@ -385,6 +412,34 @@ local function wrap_body_release()
 	applied[#applied + 1] = "body_release"
 end
 
+-- Enemy audit F8 (2026-10-31): a mounted gun (ph_minigun) aims at a target's feet + 0.1 m; only the host's actor gets the chest
+-- point (+1 m, the stock "FAKE" aim), so a client, a proxy on the host, was shot at the ground. rot_to_firepoint receives the
+-- point the aim has just computed: for a player's proxy, when the point is on his spot (xz), it moves to his chest.
+local CHEST_HEIGHT = 1 -- the stock chest aim of the actor
+local AIM_XZ_SQR = 0.0025 -- 5 cm: the stock jitter is 1 cm
+
+local function wrap_mounted_guns()
+	local m = mod("ph_minigun")
+	local cls = m and m.action_mgun
+	local f = cls and cls.rot_to_firepoint
+	if type(f) ~= "function" or orig.mgun_aim then return end
+	orig.mgun_aim = f
+	cls.rot_to_firepoint = function(self, pt, ...)
+		local tid = host_on and pt and self.st and self.st.target_id
+		if tid and P.is_proxy(tid) then
+			local st = db.storage[tid]
+			local target = st and st.object
+			local ok, tp = pcall(function() return target:position() end)
+			if ok and tp then
+				local dx, dz = pt.x - tp.x, pt.z - tp.z
+				if dx * dx + dz * dz <= AIM_XZ_SQR then pt.y = tp.y + CHEST_HEIGHT + (math.random(-1, 1) / 100) end
+			end
+		end
+		return f(self, pt, ...)
+	end
+	applied[#applied + 1] = "mounted_guns"
+end
+
 -- Rostok peace zone: crimes per player.
 local crime = {} -- proxy id -> true
 
@@ -459,6 +514,8 @@ function on_game_start()
 	if not rawget(_G, "coop") then return end
 	if not installed then
 		installed = true
+		-- for rewritten mod code: this machine is a client (its monster puppets have no AI, so no enemy)
+		_G.coop_npc_on_client = function() return P.client_live() end
 		for name, list in pairs(REWRITES) do
 			local ok, err = pcall(apply_rewrite, name, list)
 			if not ok then report("rewrite " .. name, err) end
@@ -468,7 +525,7 @@ function on_game_start()
 		for _, s in ipairs({ { "ai_rework", wrap_ai_rework }, { "night_mutants", wrap_night_mutants },
 			{ "peace_zone", wrap_peace_zone }, { "loot", wrap_loot },
 			{ "squads", wrap_squads }, { "smart_respawn", wrap_smart_respawn }, { "helis", wrap_helis },
-			{ "body_release", wrap_body_release } }) do
+			{ "body_release", wrap_body_release }, { "mounted_guns", wrap_mounted_guns } }) do
 			local ok, err = pcall(s[2])
 			if not ok then report("install " .. s[1], err) end
 		end

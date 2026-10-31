@@ -1,0 +1,9 @@
+; Anomaly Coop - the AWR workshop vise (bind_awr.script). Read after every coop_route*.ltx (coop_route.ltx explains the order).
+;
+; The script stays host (generated coop_route_stock.ltx): it spawns lamps and gives infos. The window of a vise is the player's
+; own: coop_npc_logic sends a client's press back to him and calls the handler there, and the handler opens the window from a
+; time event of bind_awr (delay_workshop, the length of the use animation). Host-only, the router would remove that timer on a
+; client and the window would never open.
+
+[route_pairs]
+time_event@bind_awr = owner

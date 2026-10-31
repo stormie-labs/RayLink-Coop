@@ -1,0 +1,13 @@
+; Anomaly Coop - Gunslinger Controller (G.A.M.M.A., gunslinger_controller.script). Read after every coop_route*.ltx
+; (coop_route.ltx explains the order).
+;
+; The mod keeps a table of the live controllers (monster_on_net_spawn / _net_destroy / _death_callback) and, every update of the
+; player's own actor, drains his sanity and tilts his gun when one stands within 10 m. monster_* callbacks are host-only, so the
+; table stayed empty on a client and the effect was the host's alone (enemy audit F6, 2026-10-31). The three callbacks run
+; where the player is. On a client the monster is a puppet without an enemy: the rewrite in coop_npc_compat takes the distance
+; alone there.
+
+[route_pairs]
+monster_on_net_spawn@gunslinger_controller = owner
+monster_on_net_destroy@gunslinger_controller = owner
+monster_on_death_callback@gunslinger_controller = owner

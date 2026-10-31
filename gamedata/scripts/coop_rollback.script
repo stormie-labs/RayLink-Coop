@@ -1,0 +1,107 @@
+-- Anomaly Coop: the rollback death mode (coop_death_mode rollback). A death nobody undid takes the group back to the last save
+-- of the game. coop_survival.cpp decides and counts the delay (Lua time events may stand while the host is dead), this script
+-- warns everybody, finds the save and has the host load it. The world is replaced and everybody rejoins it, as with any load
+-- of the host. With no save to load, every waiting death goes the checkpoint way.
+local PREFIX = "[coop] rollback: "
+local EXT = ".scop"
+local api = rawget(_G, "coop")
+
+local waiting = nil -- the deaths that wait for the load: { { id, seq }, ... }
+
+local function log(fmt, ...)
+	printf(PREFIX .. fmt, ...)
+end
+
+local function show(msg)
+	if actor_menu and actor_menu.set_msg then pcall(actor_menu.set_msg, 1, msg, 6) end
+end
+
+local function warn(nick, seconds)
+	show(strformat(game.translate_string("st_coop_rollback_warn"), tostring(nick), tonumber(seconds) or 0))
+end
+
+function pending()
+	return api.rollback_pending() == true
+end
+
+-- Working files of a session carry the game's block too: none of them is a place to go back to.
+local function working_file(stem)
+	return stem:find("^coop_join_") or stem:find("^coop_auto_tmp") or stem:find("^__raylink")
+end
+
+-- The newest save of the game being played, by file time, nil when there is none.
+function newest_save()
+	local game_id = api.autosave.game()
+	if type(game_id) ~= "string" or game_id == "" then return nil end
+	local found
+	local ok, err = pcall(function()
+		local flist = getFS():file_list_open_ex("$game_saves$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "*" .. EXT)
+		local count = flist and flist:Size() or 0
+		if count == 0 then return end
+		flist:Sort(FS.FS_sort_by_modif_down)
+		for i = 0, count - 1 do
+			local full = tostring(flist:GetAt(i):NameFull())
+			local stem = full:sub(1, #full - #EXT)
+			if not working_file(stem) and coop_game_settings.game_of_save(stem) == game_id then
+				found = stem
+				return
+			end
+		end
+	end)
+	if not ok then log("! cannot list the saves: %s", tostring(err)) end
+	return found
+end
+
+local function give_up()
+	local list = waiting or {}
+	waiting = nil
+	show(game.translate_string("st_coop_rollback_none"))
+	for _, death in ipairs(list) do api.rollback_failed(death[1], death[2]) end
+end
+
+local function on_go()
+	if not waiting then return end
+	local name = newest_save()
+	local ok, why = false, "no save"
+	if name then ok, why = coop_saves.restore(name, api.autosave.game()) end
+	if ok then
+		log("back to %s", name)
+	else
+		log("! no way back: %s", tostring(why))
+		give_up()
+	end
+end
+
+local function on_group_rollback(id, seq, nick, seconds, first)
+	if first ~= 1 then
+		waiting = waiting or {}
+		waiting[#waiting + 1] = { id, seq }
+		return
+	end
+	waiting = { { id, seq } }
+	warn(nick, seconds)
+	coop_mods_core.to_all("rollback", { n = nick, s = seconds })
+end
+
+-- The new world is up: whatever waited is over.
+local function on_first_update()
+	waiting = nil
+end
+
+-- A client's F5 (coop_saves): the host saves for the group.
+local function on_save_request()
+	if pending() then return end
+	level_input.action_quick_save()
+end
+
+function on_game_start()
+	if not api then return end
+	AddScriptCallback("coop_group_rollback") -- fired by the engine; this script is the only subscriber
+	AddScriptCallback("coop_group_rollback_go")
+	RegisterScriptCallback("coop_group_rollback", on_group_rollback)
+	RegisterScriptCallback("coop_group_rollback_go", on_go)
+	RegisterScriptCallback("actor_on_first_update", on_first_update)
+	coop_mods_core.on("rollback", function(t) warn(t.n, t.s) end, "client")
+	coop_mods_core.on("save_req", on_save_request, "host")
+	coop_mods_core.set_limit("save_req", 2, 0.2)
+end

@@ -703,4 +703,7 @@
 	<string id="st_coop_opt_machine_note">
 		<text>For co-op games these are the defaults for new games. A created game has its own settings.</text>
 	</string>
+	<string id="st_coop_game_death_mode_rollback">
+		<text>Back to the last save</text>
+	</string>
 </string_table>

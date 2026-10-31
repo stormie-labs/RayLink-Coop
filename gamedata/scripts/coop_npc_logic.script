@@ -20,6 +20,11 @@
 	    within [coop_npc] scene_radius of them. The host runs the effect only if its own player is in the
 	    audience; the others get it as npc.fx and run it on their own actor. enable_ui/enable_imput/
 	    stop_tutorial always run on the host too (an unlock never hurts, sr_cutscene locks outside condlists).
+	  - A physics object (ph_idle, ph_button: lifts, valves, switches) remembers who used it (generic_physics_binder
+	    use_callback): its actor effects, the delayed sections of on_timer / on_game_timer included, go to that player, and
+	    a logic that teleports takes the players within scene_radius of him along. Nobody used it: stock, the host's.
+	  - A use whose window is the player's own never opens it on the host: a code pad (ph_code) and an AWR vise go back to
+	    the client who pressed. The code he types comes to the host, which checks the reach and runs OnNumberReceive.
 	Client:
 	  - Never evaluates a replicated restrictor (no switch, no condlist, no on_value of sr_timer): it takes
 	    the host's section (npc.logic), so the section schemes (no-weapon zones, psy antenna, postprocess,
@@ -36,11 +41,17 @@
 	  npc.logic_req  client -> host  { } (all sections) | { i = object }
 	  npc.logic_all  host -> client  { n, i1, s1, i2, s2, ... } (chunks of <= 150)
 	  npc.fx         host -> one     { i = object | -1, f = effect name, a = args "p1:p2" }  (actor effects)
-	API: deliver(name, npc, p), audience_of(npc), is_replicated(id), register_actor_effect(name, always)
+	  npc.pad        host -> one     { i = pad }  (open the numpad)
+	  npc.pad_code   client -> host  { i = pad, t = digits }
+	  npc.vise       host -> one     { i = vise }  (open the workshop)
+	API: deliver(name, npc, p), audience_of(npc), is_replicated(id), register_actor_effect(name, always), user_of(npc),
+	press_spares_host(npc), relay_to_all(name, args, except_peer)
 	Stock functions wrapped: xr_logic.try_switch_to_another_section, determine_section_to_activate,
 	initialize_obj, switch_to_section, pick_section_from_condlist, save_obj; sr_timer.action_timer.update;
 	sr_crow_spawner.crowkiller.update; sr_monster.fake_monster.update; xr_conditions.dist_to_actor_le,
-	dist_to_actor_ge, actor_see_npc, actor_near_smart, actor_in_zone, actor_out_zone; xr_effects.<actor effects>.
+	dist_to_actor_ge, actor_see_npc, actor_near_smart, actor_in_zone, actor_out_zone, actor_inside_zone,
+	has_active_tutorial; xr_effects.<actor effects>; bind_physic_object.generic_physics_binder.use_callback;
+	ph_code.codepad.use_callback.
 --]]
 
 local tostring, tonumber, type, pairs, ipairs, pcall, next = tostring, tonumber, type, pairs, ipairs, pcall, next
@@ -53,9 +64,12 @@ local function log(fmt, ...) P.log(TAG, fmt, ...) end
 local function report(what, err) P.report(TAG, what, err) end
 
 local EV_SECTION, EV_REQ, EV_ALL, EV_FX = "npc.logic", "npc.logic_req", "npc.logic_all", "npc.fx"
+local EV_PAD, EV_PAD_CODE, EV_VISE = "npc.pad", "npc.pad_code", "npc.vise"
 local CHUNK = 150
 local PENDING_TTL = 120000
 local KILL_RELAY_MS = 500
+local PAD_MAX_TEXT = 13 -- ui_numpad.UINumpad:AddNumber stops there
+local LIFT_BLACK = 3009 -- id of the black effector of pri_b306_ph_button.ltx and lx8_lift_button.ltx
 
 -- Condition names are the original xr_logic.try_switch_to_another_section LTX contract.
 -- Switch conditions that name the actor; the first four can be an arrival (a player comes in).
@@ -80,9 +94,11 @@ local GATHERS = { disable_ui = true, disable_ui_only = true, teleport_actor = tr
 local ACTOR_FX = {
 	disable_ui = true, disable_ui_only = true, run_tutorial = true, kill_actor = true, hit_actor = true,
 	save_actor_position = true, restore_actor_position = true, teleport_actor = true, sr_teleport = true,
-	bar_arena_teleport = true, bar_arena_teleport_2 = true, bar_arena_weapon_slot = true,
+	bar_arena_teleport = true, bar_arena_teleport_2 = true, bar_arena_weapon_slot = true, jup_teleport_actor = true,
 	enable_ui = "always", enable_imput = "always", stop_tutorial = "always",
 }
+-- The host sees a moved player late and repeats the effect: on a client it counts only while he still stands in this zone.
+local FX_ZONES = { jup_teleport_actor = "jup_b16_teleport" }
 -- A kill that spares whoever holds the item (judged on each player's machine).
 local KILL_GATES = { x16_timer_restrictor = "good_psy_helmet" }
 
@@ -161,6 +177,12 @@ local function classify(st, ini)
 	st.coop_scene = positional and gathers
 end
 
+local function id_of(npc)
+	local id = npc.id
+	if type(id) == "function" then return npc:id() end
+	return id
+end
+
 local function storage_of(obj)
 	if not obj then return nil end
 	local id = obj.id
@@ -177,9 +199,12 @@ local function restrictor_st(obj)
 	return nil
 end
 
+-- True when this logic's actor effects are routed here: a replicated restrictor, or a pressed physics object while the host
+-- has company (coop_economy_travel then leaves its teleport to us).
 function is_replicated(id)
 	local st = db.storage[id]
-	return st ~= nil and st.stype == STYPE_RESTRICTOR and st.coop_local == false
+	if st == nil then return false end
+	return (st.stype == STYPE_RESTRICTOR and st.coop_local == false) or (host_on and st.coop_press ~= nil)
 end
 
 local function is_local_restrictor(obj)
@@ -265,11 +290,51 @@ local function current(npc)
 	return top.st
 end
 
--- nil = not a replicated restrictor's condlist on a host with clients.
+-- A logic that teleports whoever uses it is a scene (the Pripyat and X-8 lifts). A valve or a switch is the presser's alone.
+local function press_moves(st)
+	if st.coop_press_moves == nil then
+		local moves = false
+		if st.ini then
+			each_line(st.ini, function(_, _, value)
+				moves = type(value) == "string" and value:find("=teleport_actor", 1, true) ~= nil
+				return moves
+			end)
+		end
+		st.coop_press_moves = moves
+	end
+	return st.coop_press_moves
+end
+
+local function press_audience(st, obj, id)
+	local aud = { [id] = true }
+	if press_moves(st) then add_nearby(obj, aud) end
+	return aud
+end
+
+-- The players the last press of this physics object is for; nil = nobody pressed it, or the host is alone.
+local function press_of(npc)
+	if not host_on then return nil end
+	local st = storage_of(npc)
+	return st and st.coop_press or nil
+end
+
+-- nil = neither a replicated restrictor's condlist nor a pressed physics object on a host with clients.
 function audience_of(npc)
 	local state = current(npc)
-	if state == nil then return nil end
+	if state == nil then return press_of(npc) end
 	return audience(npc, state) or nil
+end
+
+-- The object id of the player who used this physics object last, nil = nobody did.
+function user_of(npc)
+	local st = storage_of(npc)
+	return st and st.coop_user or nil
+end
+
+-- True when the press belongs to other players: what it shows is not for the host's screen (coop_npc_effects).
+function press_spares_host(npc)
+	local aud = press_of(npc)
+	return aud ~= nil and db.actor ~= nil and aud[db.actor:id()] ~= true
 end
 
 -------------------------------------------------------------------------------
@@ -294,12 +359,26 @@ local function relay(aud, npc_id, name, args)
 	end
 end
 
--- true = run the effect on this machine, false = skip it, nil = not a replicated restrictor's condlist.
+-- A lift drops its riders inside a level exit and stock changes the level at once, so its logic never lifts the black
+-- screen and the UI lock there (the next level's button does). Here the exit's board waits for the others: nobody waits blind
+-- and frozen. Stepping out of the zone later runs the stock end of the chain.
+local function end_ride(npc)
+	xr_effects.stop_postprocess(db.actor, npc, { LIFT_BLACK })
+	xr_effects.enable_ui(db.actor, npc, {})
+end
+
+-- true = run the effect on this machine, false = skip it, nil = stock: not a replicated restrictor's condlist, no press.
 function deliver(name, npc, p)
 	if replaying then return true end
 	if not installed or not P.active() then return nil end
 	local st = restrictor_st(npc)
-	if not (st and st.coop_local == false) then return nil end
+	if not (st and st.coop_local == false) then
+		local aud = press_of(npc)
+		if not aud then return nil end
+		relay(aud, id_of(npc), name, args_of(p))
+		if name == "teleport_actor" then end_ride(npc) end
+		return aud[db.actor:id()] == true or ACTOR_FX[name] == "always"
+	end
 	if P.is_client() then return true end -- a scheme's own call (sr_cutscene): this player's
 	if not current(npc) then return true end -- scheme-internal on the host: vanilla
 	local aud = audience(npc, st)
@@ -326,6 +405,16 @@ local function wrap_effect(name)
 		if deliver(name, npc, p) == false then return end
 		return f(actor, npc, p)
 	end
+end
+
+-- For other scripts: an actor effect on every other player's own character, when no object names an audience (a dialog).
+function relay_to_all(name, args, except_peer)
+	if not (installed and P.is_host() and ACTOR_FX[name]) then return end
+	local aud = {}
+	for _, o in ipairs(P.others()) do
+		if P.peer_of(o) ~= except_peer then aud[o:id()] = true end
+	end
+	relay(aud, -1, name, args or "")
 end
 
 -- For other scripts (mods group): an effect that acts on db.actor joins the audience routing.
@@ -657,6 +746,8 @@ local function client_on_fx(t)
 		local gate = KILL_GATES[npc:name()]
 		if gate and db.actor:object(gate) then return end
 	end
+	local zone = db.zone_by_name[FX_ZONES[name]]
+	if zone and not zone:inside(db.actor:position()) then return end
 	local args = type(t.a) == "string" and t.a or ""
 	local p = args ~= "" and xr_logic.parse_func_params(args) or {}
 	stats.fx_in = stats.fx_in + 1
@@ -724,17 +815,32 @@ local function patch_conditions()
 		if not zone then return f(actor, npc, p) end
 		return not zone_has_player(zone)
 	end end)
+	-- Stock reads db.actor_inside_zones, which only the host's actor feeds (bind_restrictor on_enter).
+	wrap("actor_inside_zone", function(f) return function(actor, npc, p)
+		local r = f(actor, npc, p)
+		if r or not (team_actor(actor, npc) and p) then return r end
+		for i = 1, #p do
+			if zone_has_player(db.zone_by_name[p[i]]) then return true end
+		end
+		return false
+	end end)
+	-- A client's tutorial runs on his machine, and a hint of these zones lasts until he presses its key or walks out. Stock
+	-- reads "none" on the host, falls back and fires run_tutorial again on every pass (sr_sleep.ltx, pri_b306_sr_generator.ltx).
+	wrap("has_active_tutorial", function(f) return function(actor, npc, p)
+		local r = f(actor, npc, p)
+		local st = not r and npc and current(npc)
+		if not st then return r end
+		local aud = audience(npc, st)
+		for _, o in ipairs(P.others()) do
+			if aud[o:id()] and npc:inside(o:position()) then return true end
+		end
+		return false
+	end end)
 end
 
 -------------------------------------------------------------------------------
 -- Host: condlist context of replicated restrictors
 -------------------------------------------------------------------------------
-local function id_of(npc)
-	local id = npc.id
-	if type(id) == "function" then return npc:id() end
-	return id
-end
-
 local function pick_section(obj, npc, condlist)
 	if not host_on or npc == nil then return orig.pick(obj, npc, condlist) end
 	local ok_id, id = pcall(id_of, npc) -- npc can be a game object, a server object or a squad
@@ -747,6 +853,111 @@ local function pick_section(obj, npc, condlist)
 	ctx[#ctx] = nil
 	if not ok then error(r, 0) end
 	return r
+end
+
+-------------------------------------------------------------------------------
+-- Physics objects: who used them; uses whose window is the player's own
+-------------------------------------------------------------------------------
+local pad_offers = {} -- host: peer -> the pad he may answer
+local pad_tries = {} -- host: peer -> time of his last code
+local PAD_TRY_MS = 1000
+local pad_owner = {} -- client: the owner of the stock numpad window
+
+-- Client: Close() of the window answers "" and that means nothing. OK keeps it open: every try goes to the host.
+function pad_owner:OnNumberReceive(text)
+	if self.id and type(text) == "string" and text ~= "" then P.send(EV_PAD_CODE, { i = self.id, t = text }, 0) end
+end
+
+local function client_on_pad(t)
+	local ui = _G["ui_numpad"]
+	if type(t.i) ~= "number" or not (ui and db.actor) then return end
+	pad_owner.id = t.i
+	-- stock keeps the first window with its first owner for good
+	if ui.GUI then ui.GUI.owner = pad_owner end
+	ui.start(pad_owner)
+end
+
+-- The stock pad checks the code, here, at the object's own scheme. C++ checked the reach of the press (host_on_use).
+local function host_on_pad_code(t, from)
+	local id, text = t.i, t.t
+	if type(id) ~= "number" or pad_offers[from] ~= id then return end
+	if type(text) ~= "string" or #text > PAD_MAX_TEXT or not text:find("^%d+$") then return end
+	local now = time_global()
+	if pad_tries[from] and now - pad_tries[from] < PAD_TRY_MS then return end
+	pad_tries[from] = now
+	local obj, who, st = level.object_by_id(id), P.object_of_peer(from), db.storage[id]
+	if not (obj and who and st and st.active_scheme == "ph_code") then return end
+	local reach = P.setting("pad_reach", 6)
+	if who:position():distance_to_sqr(obj:position()) > reach * reach then
+		log("! code from #%s refused: too far from %s", tostring(from), obj:name())
+		return
+	end
+	xr_logic.issue_event(obj, st[st.active_scheme], "OnNumberReceive", text)
+end
+
+-- The window of bind_awr.physic_object_on_use_callback, on the presser's machine. full_access ran on the host only, so the
+-- host's answer is the one that counts; the 1.5 m of the handler is then measured from his own actor.
+local function client_on_vise(t)
+	local awr = _G["bind_awr"]
+	local obj = type(t.i) == "number" and level.object_by_id(P.to_local(t.i))
+	if not (awr and obj and db.actor) then return end
+	local access = awr.access
+	awr.access = function() return true end
+	local ok, err = pcall(awr.physic_object_on_use_callback, obj, db.actor)
+	awr.access = access
+	if not ok then error(err, 0) end
+end
+
+local function host_vise_use(obj, who)
+	local awr = _G["bind_awr"]
+	-- it indexes its table by the object's name: a vise of a mod it does not list must not cost the host the session
+	local ok, yes = pcall(awr.access, obj)
+	if ok and yes then P.send(EV_VISE, { i = obj:id() }, P.peer_of(who)) end
+end
+
+-- Host, every use of a physics object with logic. True = done: the use belongs to the client's machine.
+local function on_use(obj, who)
+	local st = db.storage[obj:id()]
+	local id = who:id()
+	local player = P.is_player_id(id)
+	if st then
+		st.coop_user = player and id or nil
+		st.coop_press = host_on and player and press_audience(st, obj, id) or nil
+	end
+	if P.is_proxy(id) and obj:name():find("awr_tiski", 1, true) then
+		host_vise_use(obj, who)
+		return true
+	end
+	return false
+end
+
+local function patch_uses()
+	local pb = _G["bind_physic_object"] and bind_physic_object.generic_physics_binder
+	local use = pb and pb.use_callback
+	-- the binder hands this method to set_callback on every update: existing objects get it too
+	if type(use) == "function" and not orig.ph_use then
+		orig.ph_use = use
+		pb.use_callback = function(self, obj, who)
+			if installed and who and P.is_host() and on_use(self.object, who) then return end
+			return use(self, obj, who)
+		end
+	end
+	local pad = _G["ph_code"] and ph_code.codepad
+	local pad_use = pad and pad.use_callback
+	if type(pad_use) == "function" and not orig.pad_use then
+		orig.pad_use = pad_use
+		pad.use_callback = function(self, obj, who)
+			if not (installed and who and P.is_host() and P.is_proxy(who)) then
+				-- in a session too the second pad of a level must not answer to the first (see client_on_pad)
+				local ui = P.active() and _G["ui_numpad"]
+				if ui and ui.GUI then ui.GUI.owner = self end
+				return pad_use(self, obj, who)
+			end
+			local id, peer = self.object:id(), P.peer_of(who)
+			pad_offers[peer] = id
+			P.send(EV_PAD, { i = id }, peer)
+		end
+	end
 end
 
 -------------------------------------------------------------------------------
@@ -811,7 +1022,7 @@ local function install()
 	end
 	installed = true
 	for name in pairs(ACTOR_FX) do wrap_effect(name) end
-	local steps = { { "conditions", patch_conditions }, { "schemes", patch_schemes } }
+	local steps = { { "conditions", patch_conditions }, { "schemes", patch_schemes }, { "uses", patch_uses } }
 	for _, s in ipairs(steps) do
 		local ok, err = pcall(s[2])
 		if not ok then report("install " .. s[1], err) end
@@ -845,6 +1056,9 @@ local function register_events()
 		for k = 1, math.min(n, CHUNK) do client_on_section(t["i" .. k], t["s" .. k]) end
 	end, "client", TAG)
 	P.on(EV_FX, client_on_fx, "client", TAG)
+	P.on(EV_PAD, client_on_pad, "client", TAG)
+	P.on(EV_PAD_CODE, host_on_pad_code, "host", TAG)
+	P.on(EV_VISE, client_on_vise, "client", TAG)
 	P.on(EV_REQ, function(t, from)
 		if type(t.i) == "number" then
 			local st = db.storage[t.i]

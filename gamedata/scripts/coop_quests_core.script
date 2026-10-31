@@ -430,7 +430,7 @@ function print_status()
 	for _ in pairs(actions) do n = n + 1 end
 	log("core", "host actions: %d registered, sent %d, run %d, refused %d | lua errors %d",
 		n, action_stats.out, action_stats.in_, action_stats.refused, errors)
-	for _, name in ipairs({ "coop_quests_offer", "coop_quests_party", "coop_quests_story", "coop_quests_pda", "coop_quests_news" }) do
+	for _, name in ipairs({ "coop_quests_offer", "coop_quests_party", "coop_quests_story", "coop_quests_missions", "coop_quests_pda", "coop_quests_news" }) do
 		local m = rawget(_G, name)
 		if type(m) == "table" and type(m.print_status) == "function" then
 			local ok, err = pcall(m.print_status)

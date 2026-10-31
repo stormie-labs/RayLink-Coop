@@ -179,7 +179,7 @@
 		<text>Enter</text>
 	</string>
 	<string id="st_coop_menu_steam_hint">
-		<text>Through Steam: lobby in the RayLink launcher</text>
+		<text>Through Steam: Shift+Tab, invite a friend</text>
 	</string>
 	<string id="st_coop_menu_empty_title">
 		<text>No games yet</text>
@@ -416,7 +416,7 @@
 		<text>When a player dies</text>
 	</string>
 	<string id="ui_mm_coop_coop_session_death_mode_desc">
-		<text>Back at camp: a dead player watches his allies for the respawn delay, then stands up at his own camp, with a contusion. Hardcore: the death is final, the player starts again with a new character.</text>
+		<text>Back at camp: a dead player watches his allies for the respawn delay, then stands up at his own camp, with a contusion. Hardcore: the death is final, the player starts again with a new character. Back to the last save: if nobody revives the player, the whole group returns to the last save, nothing is lost, and the host saves and loads as in the stock game. Decided when the game is created.</text>
 	</string>
 	<string id="st_coop_opt_death_hardcore">
 		<text>Hardcore</text>
@@ -678,5 +678,11 @@
 	</string>
 	<string id="st_coop_menu_gap_hours">
 		<text>%s h %s min without saves</text>
+	</string>
+	<string id="st_coop_opt_death_rollback">
+		<text>Back to the last save</text>
+	</string>
+	<string id="st_coop_menu_btn_steam_invite">
+		<text>Invite through Steam</text>
 	</string>
 </string_table>

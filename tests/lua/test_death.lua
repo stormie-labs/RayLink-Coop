@@ -1055,7 +1055,7 @@ case("options_page_rules_moved", function()
 		for _, e in ipairs(sc.item(key).values) do t[#t + 1] = tostring(e[1]) end
 		return table.concat(t, ",")
 	end
-	check(tokens("c|coop_death_mode") == "checkpoint,hardcore", "death_mode offers checkpoint and hardcore (" .. tokens("c|coop_death_mode") .. ")")
+	check(tokens("c|coop_death_mode") == "checkpoint,hardcore,rollback", "death_mode offers checkpoint, hardcore, rollback (" .. tokens("c|coop_death_mode") .. ")")
 	check(tokens("c|coop_death_drop") == "drop,corpse,lose,keep", "death_drop offers drop, corpse, lose and (build 10) keep")
 	check(tokens("c|coop_death_share") == "50,100,150,200", "death_share offers 50, 100, 150, 200")
 	check(sc.editable("c|coop_death_mode", true) == false and sc.editable("c|coop_death_drop", true) == true,
@@ -1064,7 +1064,7 @@ case("options_page_rules_moved", function()
 	-- the tokens are the engine's
 	local surv = read("engine/src/xrGame/coop/coop_survival.cpp")
 	if surv then
-		for _, t in ipairs({ "checkpoint", "hardcore", "drop", "corpse", "lose", "keep" }) do
+		for _, t in ipairs({ "checkpoint", "hardcore", "rollback", "drop", "corpse", "lose", "keep" }) do
 			check(surv:find('{"' .. t .. '",', 1, true) ~= nil, "the engine has the token '" .. t .. "'")
 		end
 	end

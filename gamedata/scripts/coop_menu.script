@@ -760,8 +760,8 @@ function UICoopMenu:BuildBar()
 	self.hint:SetText(tr("st_coop_menu_steam_hint"))
 
 	-- Disconnect / Cancel: where the way to a friend is not needed
-	local function action(name, text_id)
-		local ax = rx(B.hint_x)
+	local function action(name, text_id, x)
+		local ax = rx(x or B.hint_x)
 		local line = self.ui:outline(g, ax, fy, B.hint_w, B.field_h, "line")
 		local t = self.ui:label(g, ax, fy, B.hint_w, B.field_h, "go", "c")
 		t:SetText(tr(text_id))
@@ -771,6 +771,7 @@ function UICoopMenu:BuildBar()
 	end
 	self.disconnect = action("btn_disconnect", "st_coop_menu_btn_disconnect")
 	self.cancel = action("btn_cancel_pending", "st_coop_menu_btn_cancel")
+	self.invite = action("btn_steam_invite", "st_coop_menu_btn_steam_invite", B.field_x)
 
 	local close_text = self.ui:label(g, w - B.pad - B.close_w, 0, B.close_w, B.h, "link", "r")
 	close_text:SetText(tr("st_coop_menu_btn_close"))
@@ -859,6 +860,7 @@ function UICoopMenu:InitCallBacks()
 	self:AddCallback("btn_roll", E, self.OnRoll, self)
 	self:AddCallback("btn_connect", E, self.OnConnect, self)
 	self:AddCallback("btn_disconnect", E, self.OnDisconnect, self)
+	self:AddCallback("btn_steam_invite", E, self.OnSteamInvite, self)
 	self:AddCallback("btn_cancel_pending", E, self.OnCancelPending, self)
 	self:AddCallback("btn_close", E, self.Close, self)
 	self:AddCallback("btn_recent_toggle", E, self.OnRecentToggle, self)
@@ -1718,6 +1720,7 @@ function UICoopMenu:Refresh(info)
 	set_shown({ self.hint }, free and not pending)
 	set_control(self.disconnect, active, true)
 	set_control(self.cancel, pending and not active, true)
+	set_control(self.invite, active and api.is_host() and type(api.steam_invite_ready) == "function" and api.steam_invite_ready() == true, true)
 	self:RefreshRecent(free)
 
 	-- the rail: the players of a session, else the games. Rows are rewritten only when something changed.
@@ -2073,6 +2076,10 @@ function UICoopMenu:OnDisconnect()
 	self.local_error = nil
 	api.disconnect()
 	self:Refresh()
+end
+
+function UICoopMenu:OnSteamInvite()
+	api.steam_invite()
 end
 
 function UICoopMenu:Close()

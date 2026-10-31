@@ -57,7 +57,13 @@ local function logic_audience(npc)
 	return ok and aud or nil
 end
 
--- Peers to receive something fired by `npc`: its restrictor audience, else every client (-1 = all).
+-- A press of a lever by other players: what it shows is theirs, the host's screen stays out of it (coop_npc_logic).
+local function spares_host(npc)
+	local L = _G["coop_npc_logic"]
+	return L ~= nil and L.press_spares_host ~= nil and npc ~= nil and L.press_spares_host(npc)
+end
+
+-- Peers to receive something fired by `npc`: its audience (a restrictor's, a press's), else every client (-1 = all).
 local function send_scoped(name, t, npc)
 	local aud = logic_audience(npc)
 	if not aud then
@@ -192,7 +198,7 @@ end
 -------------------------------------------------------------------------------
 local function relay_fx(npc, t)
 	if not host_on then return end
-	if db.actor and db.actor:is_talking() then return end
+	if db.actor and db.actor:is_talking() and not spares_host(npc) then return end
 	if send_scoped(EV_CFX, t, npc) then stats.cfx_out = stats.cfx_out + 1 end
 end
 
@@ -210,7 +216,8 @@ local function patch_effects()
 		if type(f) ~= "function" or orig["fx_" .. name] then return end
 		orig["fx_" .. name] = f
 		xe[name] = function(actor, npc, p, ...)
-			local r = f(actor, npc, p, ...)
+			local r
+			if not (host_on and spares_host(npc)) then r = f(actor, npc, p, ...) end
 			if host_on then
 				local ok, err = pcall(after, npc, p)
 				if not ok then report("relay " .. name, err) end

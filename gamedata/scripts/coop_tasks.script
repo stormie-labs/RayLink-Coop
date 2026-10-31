@@ -54,6 +54,9 @@
 	  coop_tasks.with_recipient(peer, fn, ...) -> the same for a given player (host)
 	  coop_tasks.in_reward_scope() -> true while such effects belong to one player (host)
 	  coop_tasks.party_take(section, amount) -> removes that many items from the group (host), count
+	  coop_tasks.party_inventory_walker(real) -> an iterate_inventory over every player's character (host, for one call)
+	  coop_tasks.taker_money(task_id) -> the ledger balance of the client who took the task (host; nil: the host took it)
+	  coop_tasks.giving_npc() -> the giver of the client's give request being run (host; nil outside one)
 	  coop_tasks.give_to_peer(peer, money, sections) -> money / items for one player (host)
 	  coop_tasks.news_actor(kind, task_id) -> peer, cancelled: the player whose action caused a task event ("new" |
 	    "complete" | "fail"; 0 = the host, nil = nobody: a script, a timer). The one rule the task lines and any
@@ -83,7 +86,7 @@ local EV_VAR = "coop_tvd" -- client -> host: this client's dialog changed one of
 -- Actor pstor keys that are task bookkeeping of the whole group (DRX storyline: givers with outstanding
 -- tasks, current storyline task, ...). Written by the giving dialog on whichever machine, read by dialog
 -- preconditions everywhere, cleared by on_complete on the host. Host-owned, mirrored, client writes routed.
-local SHARED_PREFIXES = { "drx_sl_" }
+local SHARED_PREFIXES = { "drx_sl_", "task_target_anomaly" } -- the second: the escort tasks' target anomaly, its level and analyzed flag
 
 local SCAN_MS = 500
 local LIST_MS = 10000
@@ -98,6 +101,8 @@ local FETCH_MIN_COND = { -- stock actor_has_fetch_item asks for a minimal condit
 }
 -- Effects that change the turning-in player's own character: run on that player's machine (R-3.4).
 local FORWARD_EFFECTS = { drx_sl_change_factions = true }
+local MONEY_FUNCTOR = "drx_sl_money_task_status" -- DRX money tasks (faction change): the finisher pays from his own money
+local WAIT_FUNCTOR = "check_if_enough_time_passed" -- tm_yantar: Sakharov's helmet upgrade, a wait counted from the give
 
 -------------------------------------------------------------------------------
 -- Logging, roles
@@ -437,6 +442,7 @@ local host = {
 	news_seen = {}, -- "<kind> <id>" -> time of the last tn event sent (dedupe)
 	news_count = 0,
 	exec_peer = nil, -- peer whose request is being executed
+	giver = nil, -- giver (npc id) of the client's give request being run
 	next_scan = 0,
 	next_list = 0,
 }
@@ -587,6 +593,13 @@ function taker(id)
 	return host.taker[id] or 0
 end
 
+-- Host: the giver of the task a client's request is giving right now (the speaker an on_init effect asks the
+-- host's dialog for; the host is not talking then), or nil.
+function giving_npc()
+	local id = host.giver
+	return type(id) == "number" and level.object_by_id(id) or nil
+end
+
 -- Host: runs fn as if `peer` had asked for it through a task request (give_task inside = its task).
 function run_as(peer, fn, ...)
 	local prev = host.exec_peer
@@ -624,6 +637,40 @@ local function engine_task_running(id)
 	return ok and t ~= nil
 end
 
+-- Host: a player's balance on the host ledger (coop.money_of), nil when the ledger does not answer.
+local function ledger_money(peer)
+	local fn = api and api.money_of
+	if type(fn) ~= "function" then return nil end
+	local ok, n = pcall(fn, peer)
+	return ok and type(n) == "number" and n or nil
+end
+
+-- Host: the ledger balance of the client who took a task (nil: the host took it, or the ledger does not answer). The
+-- host's own status functors read db.actor:money(), the host's: a money task a client took needs HIS money.
+function taker_money(id)
+	local peer = host.taker[id]
+	if not is_host() or not peer or peer == 0 then return nil end
+	return ledger_money(peer)
+end
+
+-- True if `peer` cannot pay the DRX money task `id` (its price is the task var "<id>_fetch").
+local function money_short(tm, id, peer)
+	local tsk = tm.task_info[id]
+	if not (type(tsk) == "table" and tsk.status_functor == MONEY_FUNCTOR) then return false end
+	local have = ledger_money(peer)
+	return have ~= nil and have < (tonumber(load_var(db.actor, id .. "_fetch", 0)) or 0)
+end
+
+-- The wait of a "check_if_enough_time_passed" task is counted from the give. Its giving dialog saves the time right after
+-- give_task, in the pstor of the machine that talks: a client's, where the host never sees it (a CTime cannot travel) and
+-- the wait would end at once. The host stamps the give itself (over a time an earlier give of the client left in the vars).
+-- (G.A.M.M.A. sets the wait of the helmet upgrade to 0; the stock task waits two days.)
+local function stamp_wait(id, tsk)
+	if type(tsk) ~= "table" or tsk.status_functor ~= WAIT_FUNCTOR then return end
+	local save_time = rawget(_G, "save_ctime")
+	if type(save_time) == "function" then save_time(db.actor, id, game.get_game_time()) end
+end
+
 -- Client request handlers (host). Return true when accepted; the state is then broadcast by the scan.
 local ops = {}
 
@@ -644,9 +691,13 @@ function ops.give(tm, id, t, from)
 	host.taker[id] = from
 	host.given_by[id] = from
 	host.finisher[id] = nil
-	tm:give_task(id, giver)
+	host.giver = giver
+	local gave, gerr = pcall(tm.give_task, tm, id, giver)
+	host.giver = nil
+	if not gave then error(gerr, 0) end
 	local given = tm.task_info[id] ~= nil
 	if given then
+		stamp_wait(id, tm.task_info[id])
 		-- host-side parts of the offer the client's dialog prepared (pinned target squads, ...)
 		local qo = rawget(_G, "coop_quests_offer")
 		if type(qo) == "table" and type(qo.host_after_give) == "function" then
@@ -660,6 +711,10 @@ end
 local function finish(method)
 	return function(tm, id, t, from)
 		if tm.task_info[id] == nil or not engine_task_running(id) then return false end
+		if method == "set_task_completed" and money_short(tm, id, from) then
+			log("#%s cannot turn in '%s': not enough money", tostring(from), id)
+			return false
+		end
 		if host.finisher[id] == nil then host.finisher[id] = from end
 		tm[method](tm, id)
 		return "pending" -- the task callback follows when the host checks its tasks
@@ -963,6 +1018,13 @@ local function patch_rewards()
 				local peer = rcpt_client()
 				if peer and type(p) == "table" and p[1] ~= nil then
 					local money = tonumber(load_var(db.actor, p[1], 0)) or 0
+					local have = money > 0 and ledger_money(peer) or nil
+					if have and have < money then
+						-- spent since the turn-in: the ledger would stop at 0 and the faction change would be free
+						ctx.unpaid = true
+						log("'%s': #%s has %d RU, the task takes %d: not paid", tostring(ctx.task), tostring(peer), have, money)
+						return
+					end
 					if money > 0 then grant_money(peer, -money) end
 					return
 				end
@@ -977,6 +1039,10 @@ local function patch_rewards()
 			if type(orig) == "function" then
 				xe[fname] = function(actor, npc, p)
 					local peer = rcpt_client()
+					if peer and ctx.unpaid then
+						log("'%s': %s skipped, the task was not paid", tostring(ctx.task), fname)
+						return
+					end
 					if peer and type(p) == "table" then
 						local t = { k = "fx", f = fname }
 						for i = 1, 4 do
@@ -1129,6 +1195,25 @@ function party_take(sec, amt)
 	return n or 0
 end
 
+-- Host: a db.actor:iterate_inventory for ONE call (coop_quests_core.with_actor) that walks every player's character: the
+-- turning-in player's first, then the host's, then the rest. Stock tasks_multifetch counts, pays for and takes items through
+-- db.actor:iterate_inventory and releases them by id, so the group's items count and go like the host's own.
+-- real = the plain method of db.actor. f(item_owner, item) returning true stops the walk, as in the engine.
+function party_inventory_walker(real)
+	return function(me, f, x)
+		local stop = false
+		local function g(owner, item)
+			local r = f(owner, item)
+			if r == true then stop = true end
+			return r
+		end
+		for _, h in ipairs(holders()) do
+			if h.self then real(me, g, x) else h.obj:iterate_inventory(g, x) end
+			if stop then return end
+		end
+	end
+end
+
 -- Host: money and items for one player (0 = the host's own actor). Items are spawned by the host into
 -- that player's character; the player sees the news on its own machine.
 function give_to_peer(peer, money, sections)
@@ -1255,6 +1340,25 @@ local function patch_party_items()
 			if not ok then report("remove_artefact_item " .. sec, done) end
 			if ok and done then return end
 			return remove_art(actor, npc, p)
+		end
+	end
+
+	-- tasks_multifetch: its effects count and take through db.actor:iterate_inventory (the check is in coop_quests_party)
+	for _, name in ipairs({ "multifetch_remove", "multifetch_task_trigger_extra_items_condlist" }) do
+		local stock = xe[name]
+		if type(stock) == "function" then
+			xe[name] = function(...)
+				local qc = rawget(_G, "coop_quests_core")
+				local qp = rawget(_G, "coop_quests_party")
+				if not (host_party_on() and db.actor and qc and type(qc.with_actor) == "function")
+					or (qp and type(qp.checking_task) == "function" and qp.checking_task()) then
+					return stock(...)
+				end
+				local fields = { iterate_inventory = party_inventory_walker(db.actor.iterate_inventory) }
+				local res = { qc.with_actor(fields, stock, ...) }
+				if not res[1] then error(res[2], 0) end
+				return unpack(res, 2)
+			end
 		end
 	end
 

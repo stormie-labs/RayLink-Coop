@@ -14,6 +14,7 @@
 	- The Living Fire: a client's hit on Prometheus is judged for that player (his revenge burns and kills that
 	  player, not the host); the earthquake of the finale is shown on every machine.
 	- On a client NTA never spawns anything itself (nta_utils.spawn_at_position returns nil there).
+	- nta_utils.is_axe(killer) reads the killer's hand (the kill tasks pass him, see coop_npc_compat).
 --]]
 
 local api = rawget(_G, "coop")
@@ -64,6 +65,19 @@ local function install_helpers(nu)
 		return function(...)
 			if C().is_client() then return nil end
 			return orig(...)
+		end
+	end)
+	-- is_axe() asks db.actor's hand. The kill tasks (brain game, gambling with life, vengence amplified; coop_npc_compat
+	-- rewrites their handlers) pass the killer: his hand decides, not the host's.
+	C().wrap(nu, "is_axe", "nta_utils.is_axe", function(orig)
+		return function(who, ...)
+			if not (C().is_host() and who) then return orig() end
+			local ok, r = C().as_player(who, orig)
+			if not ok then
+				C().report("nta", "is_axe", r)
+				return nil
+			end
+			return r
 		end
 	end)
 end

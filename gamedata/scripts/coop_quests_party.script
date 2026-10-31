@@ -36,6 +36,11 @@ local CHIMERA_RANGE = 20
 
 -- Status functors that compare the actor's position with the task target: name -> reference
 -- (true = the task's current target, a string = that smart terrain).
+-- DRX money tasks (faction change) read db.actor:money(): the taker's ledger balance, not the host's.
+local MONEY_FUNCTOR = "drx_sl_money_task_status"
+-- tasks_multifetch counts through db.actor:iterate_inventory: every player's character.
+local PARTY_INVENTORY_FUNCTORS = { multifetch_status_functor = true }
+
 local POSITION_FUNCTORS = {
 	measure_task = true,
 	fate_task = true,
@@ -121,6 +126,13 @@ local function patch_check_task()
 				return ct().party_object(sec)
 			end,
 		}
+		if self.status_functor == MONEY_FUNCTOR then
+			local money = ct().taker_money and ct().taker_money(self.id)
+			if money then fields.money = function() return money end end
+		end
+		if PARTY_INVENTORY_FUNCTORS[self.status_functor] and ct().party_inventory_walker then
+			fields.iterate_inventory = ct().party_inventory_walker(a.iterate_inventory)
+		end
 		local ref = POSITION_FUNCTORS[self.status_functor]
 		if ref then
 			local pos = ref_position(self, ref)
@@ -360,31 +372,6 @@ local function patch_task_types()
 	end
 end
 
--- An item of `sec` from the group handed to npc (host does it; a client asks the host).
-function give_to_npc(sec, npc)
-	if not (type(sec) == "string" and npc) then return end
-	if qc.is_client() then
-		qc.request_host_action("give_npc", { s = sec, n = qc.to_host_id(npc:id()) })
-		return
-	end
-	if db.actor:object(sec) then
-		itms_manager.relocate_item_from_actor(db.actor, npc, sec, 1)
-		return
-	end
-	if ct().party_take(sec, 1) > 0 then alife_create_item(sec, npc) end
-end
-
-local function host_give_npc(from, t)
-	local npc = tonumber(t.n) and level.object_by_id(tonumber(t.n))
-	if not (npc and type(t.s) == "string" and ini_sys:section_exist(t.s)) then return end
-	local who = qc.avatar_obj(from)
-	if who and npc:position():distance_to_sqr(who:position()) > 900 then return end
-	ct().with_recipient(from, give_to_npc, t.s, npc) -- the "item given" news goes to that player
-end
-
--------------------------------------------------------------------------------
--- Client: quest items the player lacks come from the group
--------------------------------------------------------------------------------
 local function count_own(sec)
 	local n = 0
 	pcall(db.actor.iterate_inventory, db.actor, function(_, item)
@@ -392,6 +379,36 @@ local function count_own(sec)
 	end, nil)
 	return n
 end
+
+-- `count` items (default 1) of `sec` from the group handed to npc (host does it; a client asks the host).
+function give_to_npc(sec, npc, count)
+	if not (type(sec) == "string" and npc) then return end
+	count = math.floor(tonumber(count) or 1)
+	if count < 1 then return end
+	if qc.is_client() then
+		qc.request_host_action("give_npc", { s = sec, n = qc.to_host_id(npc:id()), c = count })
+		return
+	end
+	local mine = math.min(count, count_own(sec))
+	if mine > 0 then itms_manager.relocate_item_from_actor(db.actor, npc, sec, mine) end
+	for _ = 1, count - mine do
+		if ct().party_take(sec, 1) > 0 then alife_create_item(sec, npc) end
+	end
+end
+
+local function host_give_npc(from, t)
+	local npc = tonumber(t.n) and level.object_by_id(tonumber(t.n))
+	if not (npc and type(t.s) == "string" and ini_sys:section_exist(t.s)) then return end
+	local count = math.floor(tonumber(t.c) or 1)
+	if not (count >= 1 and count <= 50) then return end
+	local who = qc.avatar_obj(from)
+	if who and npc:position():distance_to_sqr(who:position()) > 900 then return end
+	ct().with_recipient(from, give_to_npc, t.s, npc, count) -- the "item given" news goes to that player
+end
+
+-------------------------------------------------------------------------------
+-- Client: quest items the player lacks come from the group
+-------------------------------------------------------------------------------
 
 local function patch_client_removal()
 	local xe = qc.mod("xr_effects")
@@ -407,6 +424,27 @@ local function patch_client_removal()
 		if own < need and not qc.in_condlist() then
 			qc.request_host_action("take", { s = p[1], n = need - own })
 		end
+		return r
+	end
+end
+
+-- Dialogs hand an item to an NPC with itms_manager.relocate_item_from_actor. The group check above makes the dialog offer it
+-- when another player holds the item, but the stock function takes from the speaker's own inventory only (the log says "not
+-- enough item" and the reward still pays): what the player lacks comes from the group through the host.
+local function patch_client_relocate()
+	local im = qc.mod("itms_manager")
+	if not (im and type(im.relocate_item_from_actor) == "function") then return end
+	local orig = im.relocate_item_from_actor
+	im.relocate_item_from_actor = function(actor, npc, section, amount, ...)
+		if not (qc.client_live() and db.actor and actor and npc and type(section) == "string" and actor:id() == db.actor:id()) then
+			return orig(actor, npc, section, amount, ...)
+		end
+		local need = math.floor(tonumber(amount) or 1)
+		local own = count_own(section)
+		if own >= need then return orig(actor, npc, section, amount, ...) end
+		local r
+		if own > 0 then r = orig(actor, npc, section, own, ...) end
+		give_to_npc(section, npc, need - own)
 		return r
 	end
 end
@@ -520,7 +558,7 @@ local function install()
 	for _, s in ipairs({
 		{ "check_task", patch_check_task }, { "has_item_by_id", patch_has_item_by_id },
 		{ "conditions", patch_conditions }, { "task types", patch_task_types },
-		{ "client removal", patch_client_removal }, { "rf", patch_rf },
+		{ "client removal", patch_client_removal }, { "client relocate", patch_client_relocate }, { "rf", patch_rf },
 	}) do
 		local ok, err = pcall(s[2])
 		if not ok then qc.report(TAG, "install " .. s[1], err) end

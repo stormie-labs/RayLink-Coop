@@ -17,8 +17,12 @@
 	  dialog, which runs on the client; without a talk a modified client could recruit any free squad in 15 m and
 	  open its inventory (F2-32b: one's own companion's inventory needs no talk). 5 s and not "holds now": the host
 	  applies the DialogUnlock of the closing talk window in the session update, before the npc.comp event reaches Lua.
-	Not covered: companion hotkeys of a client (axr_companions.on_key_release is host-domain), companions
-	  given by tasks (they join the host), the squad-level travel target offline (follows the host).
+	Companions a task gives (setup_companion_task, add_task_companion, add_speaker_companion, add_special_squad,
+	  nta_utils.spawn_companion_squad) join the player the task was taken by (coop_tasks.reward_peer): the squads such
+	  a call adds are led by his proxy. add_speaker_companion takes the giver of the request for the speaker (the host
+	  is not talking while a client takes the task).
+	Not covered: companion hotkeys of a client (axr_companions.on_key_release is host-domain), the squad-level travel
+	  target offline (follows the host).
 
 	Events (ids in host numbering):
 	  npc.comp       client -> host  { f = "module.function", i = npc }
@@ -72,7 +76,7 @@ local installed = false
 local host_on = false
 local orig = {}
 local leaders = {} -- host: squad id -> proxy id (host numbering) of the client that leads it
-local stats = { cmd_out = 0, cmd_in = 0, refused = 0, refused_talk = 0, info_out = 0, info_in = 0, follow = 0 }
+local stats = { cmd_out = 0, cmd_in = 0, refused = 0, refused_talk = 0, info_out = 0, info_in = 0, follow = 0, task_squads = 0 }
 local RECRUIT_TALK_MS = 5000 -- Ruling F2-34: a recruit within this long after a talk with the squad
 
 local function resolve(full)
@@ -249,6 +253,88 @@ local function patch_beh()
 	end
 end
 
+-- Companions a task gives (on_init of the escort, raid and hostage tasks, Mystery of the Swamps, the speaker of
+-- simulation_task_66/67) join the player the task was taken by, not the host. While coop_tasks gives a task for a client
+-- (reward_peer), every squad one of these calls adds to companion_squads is led by that player's proxy, like a dialog
+-- recruit: axr_beh then follows him.
+-- (axr_companions first: loading it defines its xr_effects, which are looked up after it)
+local TASK_SQUADS = {
+	{ "axr_companions", "add_special_squad" }, { "nta_utils", "spawn_companion_squad" },
+	{ "xr_effects", "setup_companion_task" }, { "xr_effects", "add_task_companion" },
+	{ "xr_effects", "add_speaker_companion" },
+}
+
+local function task_taker()
+	local ct = rawget(_G, "coop_tasks")
+	local peer = ct and type(ct.reward_peer) == "function" and ct.reward_peer()
+	return type(peer) == "number" and peer or nil
+end
+
+local function squad_ids()
+	local ids = {}
+	local cs = axr_companions and axr_companions.companion_squads
+	if type(cs) == "table" then
+		for id, sq in pairs(cs) do
+			if sq then ids[id] = true end
+		end
+	end
+	return ids
+end
+
+local function claim_new_squads(before, peer)
+	local who = P.object_of_peer(peer)
+	if not who then return end
+	for id in pairs(squad_ids()) do
+		if not before[id] then
+			leaders[id] = who:id()
+			stats.task_squads = stats.task_squads + 1
+		end
+	end
+end
+
+-- The speaker of add_speaker_companion is the NPC the host's player talks to; the host is not talking while a client
+-- takes the task, so the giver stands in for the talk for this one call.
+local function as_speaker(giver, f, ...)
+	local mt = rawget(_G, "mob_trade")
+	local talking = mt and mt.GetTalkingNpc
+	if mt then mt.GetTalkingNpc = function() return giver end end
+	local a = db.actor
+	local is_talking = a.is_talking
+	a.is_talking = function() return true end
+	local res = { pcall(f, ...) }
+	a.is_talking = is_talking
+	if mt then mt.GetTalkingNpc = talking end
+	if not res[1] then error(res[2], 0) end
+	return unpack(res, 2)
+end
+
+local function wrap_task_squads()
+	for _, t in ipairs(TASK_SQUADS) do
+		local key = t[1] .. "." .. t[2]
+		local okm, m = pcall(function() return _G[t[1]] end)
+		local f = okm and type(m) == "table" and m[t[2]]
+		if type(f) == "function" and not orig[key] then
+			orig[key] = f
+			m[t[2]] = function(...)
+				local peer = installed and task_taker()
+				if not peer then return f(...) end
+				local before = squad_ids()
+				local res
+				local ct = rawget(_G, "coop_tasks")
+				local giver = t[2] == "add_speaker_companion" and ct and type(ct.giving_npc) == "function" and ct.giving_npc()
+				if giver and not db.actor:is_talking() then
+					res = { pcall(as_speaker, giver, f, ...) }
+				else
+					res = { pcall(f, ...) }
+				end
+				claim_new_squads(before, peer)
+				if not res[1] then error(res[2], 0) end
+				return unpack(res, 2)
+			end
+		end
+	end
+end
+
 local function host_refresh()
 	if not axr_companions then return end
 	for squad_id, proxy_id in pairs(leaders) do
@@ -313,7 +399,8 @@ function on_game_start()
 	P = coop_npc_players
 	if not rawget(_G, "coop") then return end
 	if not installed then
-		for _, s in ipairs({ { "client actions", patch_client_actions }, { "beh", patch_beh } }) do
+		for _, s in ipairs({ { "client actions", patch_client_actions }, { "beh", patch_beh },
+			{ "task squads", wrap_task_squads } }) do
 			local ok, err = pcall(s[2])
 			if not ok then report("install " .. s[1], err) end
 		end

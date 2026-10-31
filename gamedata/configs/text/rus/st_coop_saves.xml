@@ -51,4 +51,19 @@
 	<string id="st_coop_saves_restore_failed_missing">
 		<text>Файл сохранения не найден или повреждён.</text>
 	</string>
+	<string id="st_coop_saves_asked">
+		<text>Хосту отправлена просьба сохранить игру.</text>
+	</string>
+	<string id="st_coop_saves_host_only">
+		<text>Кооп: сохраняет и загружает только хост. F5 просит хоста сохранить игру.</text>
+	</string>
+	<string id="st_coop_rollback_warn">
+		<text>%s погиб. Откат к последнему сохранению через %s с.</text>
+	</string>
+	<string id="st_coop_rollback_none">
+		<text>Сохранений этой игры нет: смерть идёт обычным порядком.</text>
+	</string>
+	<string id="st_coop_saves_not_alive">
+		<text>Кооп: нельзя сохраняться, пока вы ранены или мертвы.</text>
+	</string>
 </string_table>

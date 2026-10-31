@@ -51,6 +51,8 @@ coop = {
 	is_host = function() return MODE == "host" end,
 	is_client = function() return MODE == "client" end,
 	is_live = function() return MODE ~= "off" end,
+	saves_open = function() return SAVES_OPEN == true end,
+	life_of = function() return LIFE or "alive" end,
 	session_info = function() return INFO end,
 	-- the engine's pause of the host's autosaves (coop_autosave.cpp): the window holds it, a lease the engine ends itself
 	autosave = { suspend = function(on) SUSPEND[#SUSPEND + 1] = on; return true end },
@@ -225,6 +227,52 @@ for _, who in ipairs({ "host", "client" }) do
 		check(flags.ret == true, who .. ": save input type " .. typ .. " refused")
 		check(#HUD == 1 and HUD[1] == want, who .. ": type " .. typ .. " shows st_coop_saves_auto_" .. who)
 	end
+end
+
+print("== rollback_mode_saves_as_in_stock")
+do
+	local asked = {}
+	coop_mods_core = { to_host = function(verb) asked[#asked + 1] = verb return true end }
+	SAVES_OPEN = true
+	set_mode("host")
+	HUD = {}
+	local flags = { ret = false }
+	SendScriptCallback("on_before_save_input", flags, 2, "Save")
+	check(flags.ret == false and #HUD == 0, "rollback: the host's F5 goes through")
+	flags = { ret = false }
+	SendScriptCallback("on_before_load_input", 66, 0, flags)
+	check(flags.ret == false, "rollback: the host's F7 goes through")
+	LIFE = "wounded"
+	HUD = {}
+	flags = { ret = false }
+	SendScriptCallback("on_before_save_input", flags, 2, "Save")
+	check(flags.ret == true and HUD[1] == STRINGS.st_coop_saves_not_alive, "rollback: a host who is down does not save")
+	LIFE = nil
+	check(not STRINGS.st_coop_rollback_warn:find("%%d"), "the real strformat knows %s only")
+	coop_rollback = { pending = function() return true end }
+	flags = { ret = false }
+	SendScriptCallback("on_before_save_input", flags, 2, "Save")
+	check(flags.ret == true, "rollback: no save while the group goes back")
+	flags = { ret = false }
+	SendScriptCallback("on_before_load_input", 66, 0, flags)
+	check(flags.ret == true, "rollback: no other load while the group goes back")
+	coop_rollback = nil
+	set_mode("client")
+	HUD = {}
+	flags = { ret = false }
+	SendScriptCallback("on_before_save_input", flags, 2, "Save")
+	check(flags.ret == true and asked[1] == "save_req", "rollback: a client's F5 asks the host")
+	check(#HUD == 1 and HUD[1] == STRINGS.st_coop_saves_asked, "rollback: and says so")
+	HUD = {}
+	flags = { ret = false }
+	SendScriptCallback("on_before_save_input", flags, 1, "Save")
+	check(flags.ret == true and #asked == 1 and HUD[1] == STRINGS.st_coop_saves_host_only, "rollback: a client's Save window asks nothing")
+	HUD = {}
+	flags = { ret = false }
+	SendScriptCallback("on_before_load_input", 66, 0, flags)
+	check(flags.ret == true and HUD[1] == STRINGS.st_coop_saves_host_only, "rollback: a client does not load")
+	SAVES_OPEN = false
+	coop_mods_core = nil
 end
 
 print("== load_input_refused")
@@ -677,7 +725,7 @@ for _, lang in ipairs({ "eng", "rus" }) do
 		check(raw:sub(1, #HEADER) == HEADER, lang .. ": windows-1251 header")
 		check(not raw:gsub("\r\n", ""):find("\n", 1, true), lang .. ": CRLF line ends only")
 		local t, n = strings_of(path)
-		check(n == 16, lang .. ": " .. n .. " strings")
+		check(n == 21, lang .. ": " .. n .. " strings")
 		for id, text in pairs(t) do
 			(lang == "eng" and eng_ids or rus_ids)[id] = true
 			if text:find("^%s*$") then check(false, lang .. ": " .. id .. " is empty") end

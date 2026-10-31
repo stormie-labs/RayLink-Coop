@@ -103,6 +103,8 @@ local HOST_EFFECTS = {
 	"spawn_item_at_pos", "spawn_strelok_notes", "spawn_x8_documents", "spawn_monolith_shard",
 	"spawn_stitch_decoder", "spawn_contact_lost_pda", "spawn_jupiter_documents", "jup_b219_restore_gate",
 	"barrier_defense_first_spawn", "ht_add_mine", "ht_init_second_task_2",
+	-- the key of a tutorial: on a client it moved his copy of the Red Forest bridge alone (the restrictor is a local one)
+	"bridge_down", "bridge_up", "bridge_stop",
 }
 
 -- Client: no-op (they read host ALife caches that are empty or stale on a client).
@@ -277,7 +279,21 @@ local function patch_host_effects()
 			stats.forwarded = stats.forwarded + 1
 		end
 	end
+
+	local dl = qc.mod("dialogs_lostzone")
+	if type(dl) == "table" and type(dl.spawn_pass_hall_isg_companion_squad) == "function" then
+		local orig = dl.spawn_pass_hall_isg_companion_squad
+		fx_orig.isg_companion_squad = function() return orig() end
+		dl.spawn_pass_hall_isg_companion_squad = function(...)
+			if not qc.client_live() then return orig(...) end
+			-- Crossfire (dialogs_lostzone_hb.xml): the squad is the host's to make, nothing retries a refused one
+			qc.request_host_action("fx", { f = "isg_companion_squad" })
+			stats.forwarded = stats.forwarded + 1
+		end
+	end
 end
+
+local isg_squad_made = false
 
 local function host_fx(from, t)
 	local f = type(t.f) == "string" and fx_orig[t.f]
@@ -286,7 +302,16 @@ local function host_fx(from, t)
 		return
 	end
 	local npc = tonumber(t.n) and level.object_by_id(tonumber(t.n)) or nil
+	if t.f == "isg_companion_squad" then -- nothing on the host stops a repeat of this client's dialog action
+		if isg_squad_made then return end
+		isg_squad_made = true
+	end
 	stats.fx_run = stats.fx_run + 1
+	local tasks = t.f == "isg_companion_squad" and qc.mod("coop_tasks") -- a companion follows the one who talked
+	if tasks then
+		tasks.with_recipient(from, f, db.actor, npc, params_of(t))
+		return
+	end
 	f(db.actor, npc, params_of(t))
 end
 

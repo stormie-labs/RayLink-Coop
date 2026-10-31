@@ -278,7 +278,7 @@ TEST(death_rules_reject)
 	}();
 
 	const std::vector<uint8_t> bad[] = {
-		pack(2, 0, 60000, 0.3f, 30000, 600, 10, 10, 0),    // mode 2
+		pack(3, 0, 60000, 0.3f, 30000, 600, 10, 10, 0),    // mode 3
 		pack(255, 0, 60000, 0.3f, 30000, 600, 10, 10, 0),  // mode 255
 		pack(0, 4, 60000, 0.3f, 30000, 600, 10, 10, 0),    // drop 4 (3 is keep since build 10)
 		pack(0, 255, 60000, 0.3f, 30000, 600, 10, 10, 0),  // drop 255
@@ -393,6 +393,40 @@ TEST(death_body_pose_and_look)
 
 // Live 2026-10-30 (owner): "monsters keep at you after you go down". Nobody hunts a player out of the run; a monster also
 // leaves a wounded one, a stalker may still finish him. Life numbers are survival::Life.
+TEST(death_rollback_takes_the_group_back_once_per_death)
+{
+	Rules r;
+	r.mode = Mode::Rollback;
+	Tracker t;
+	CHECK(on_died(t, 1, 1000, r) == Action::Rollback);
+	CHECK_EQ(t.respawn_at, 0u); // nobody comes back at a camp: the save brings everybody back
+	CHECK(on_died(t, 1, 1500, r) == Action::None);
+	CHECK(on_died(t, 2, 2000, r) == Action::Rollback);
+}
+
+TEST(death_rollback_without_a_save_goes_the_checkpoint_way)
+{
+	Rules r;
+	r.mode = Mode::Rollback;
+	r.delay_ms = 30000;
+	Tracker t;
+	CHECK(on_died(t, 7, 1000, r) == Action::Rollback);
+	CHECK(!rollback_refused(t, 6, 2000, r)); // an older death has no say
+	CHECK(rollback_refused(t, 7, 2000, r));
+	CHECK_EQ(t.respawn_at, 32000u);
+	CHECK(!rollback_refused(t, 7, 3000, r)); // once
+	CHECK(!due(t, 31999));
+	CHECK(due(t, 32000));
+}
+
+TEST(death_rollback_goes_over_the_wire)
+{
+	Rules r;
+	REQUIRE(read_rules(pack(2, 0, 60000, 0.3f, 30000, 600, 10, 10, 0), r));
+	CHECK(r.mode == Mode::Rollback);
+	CHECK(!read_rules(pack(3, 0, 60000, 0.3f, 30000, 600, 10, 10, 0), r));
+}
+
 TEST(death_who_is_left_alone)
 {
 	CHECK(!out_of_fight(kLifeAlive));

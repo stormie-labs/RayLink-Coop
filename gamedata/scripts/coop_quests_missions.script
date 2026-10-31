@@ -1,0 +1,213 @@
+--[[
+	Anomaly Coop - mission glue of the quests group (gamedata\scripts\coop_quests_missions.script).
+	Mission audits B findings 4 and 6, A items 6, 8 and T4 (2026-10-31). Built on coop_quests_core (host actions) and
+	coop_tasks (the player a call is run for).
+
+	Dialog actions of host-domain task modules. A dialog runs on the talker's machine; the module's state (a task's table, a
+	flag, a timer) lives on the host, and a client's world calls (spawn a squad, create an item) are refused. So these
+	actions change nothing on a client, or fail halfway, and on the host the task never moves. On a client each action in
+	RELAY is not run but sent to the host (quests.act "rly"), which runs the stock function for that player: his scope for
+	rewards, companions and the task he takes (coop_tasks.with_recipient / run_as), the host's actor and the NPC as the two
+	speakers. The host runs only names on its own list, and only for an NPC that is there: alive, within 15 m of the
+	player, and (when the engine tells) one he talked to in the last 5 s. The same action from one player is paced to one a
+	second.
+	  tasks_pump_station_defense.give_before_attack_talk       the commander's flag (stage 1 -> 2)
+	  tasks_mystery_of_the_swamps.start_task                   the two squads and the task
+	  tasks_defense.barrier_defense_*_start / _complete         the squads and the task / the surge lock and the reward
+	  dialogs_lostzone.set_impending_doom_timer                the start of the Impending Doom deadline
+	Not here: the Sakharov upgrade wait (its dialog also moves the player's own money and helmet; the host stamps the time
+	when it gives the task, coop_tasks).
+
+	A status functor's kill. xr_effects.kill_actor() called with no NPC from inside a task check (the Impending Doom deadline
+	of lttz_ms_decisive_blow / _endgame, Sabaoth's psi death) kills the host's actor only. The host passes it on to every
+	client (quests.kill), at most once in 2 s per player: the functor repeats it on every check until the task is over.
+
+	Semenov's tissue samples (yan_ecolog_semenov_task_1). The kill counter lives in grok_loot_claim, which a session turns
+	off for everybody (coop_compat_loot_claim.ltx). The host counts a mutant any player killed while the task needs samples.
+--]]
+
+local qc = coop_quests_core
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+
+local TAG = "missions"
+local MAX_DIST_SQR = 225 -- 15 m: the dialog was face to face
+local TALK_MS = 5000 -- the talk window may have closed when the request arrives
+local PACE_MS = 1000
+local KILL_GAP_MS = 2000
+
+local function task_of(id)
+	return task_manager.get_task_manager().task_info[id]
+end
+
+local function not_given(id)
+	return function() return task_of(id) == nil end
+end
+
+-- Paying for a task needs the task, still open: completing one only marks it, the same call then pays.
+local function open_task(id)
+	return function()
+		local info = task_of(id)
+		return info ~= nil and info.forced_status == nil
+	end
+end
+
+-- Allow list: "module.function" -> what must hold on the host. The dialog's own conditions ran on the client, and a repeat
+-- must change nothing. The host looks a function up from these entries, never from the wire.
+local RELAY = {
+	["tasks_pump_station_defense.give_before_attack_talk"] = function() return true end,
+	["tasks_mystery_of_the_swamps.start_task"] = not_given("task_mystery_of_the_swamps"),
+	["tasks_defense.barrier_defense_monolith_start"] = not_given("barrier_defense_monolith"),
+	["tasks_defense.barrier_defense_zombie_start"] = not_given("barrier_defense_zombie"),
+	["tasks_defense.barrier_defense_monolith_complete"] = open_task("barrier_defense_monolith"),
+	["tasks_defense.barrier_defense_zombie_complete"] = open_task("barrier_defense_zombie"),
+	["dialogs_lostzone.set_impending_doom_timer"] = function() return load_ctime(db.actor, "impending_doom_timer") == nil end,
+}
+
+local stats = { sent = 0, run = 0, refused = 0, paced = 0, kills_out = 0, kills_in = 0, tissue = 0 }
+local orig = {}
+local last_run = {} -- "peer:module.function" -> time
+local last_kill = {} -- peer -> time
+
+local function ct() return rawget(_G, "coop_tasks") or coop_tasks end
+
+local function resolve(full)
+	local mod, fn = full:match("^([%w_]+)%.([%w_]+)$")
+	return mod and qc.mod(mod), fn
+end
+
+-------------------------------------------------------------------------------
+-- Dialog actions: client -> host
+-------------------------------------------------------------------------------
+local function patch_client_relay()
+	for full in pairs(RELAY) do
+		local m, fn = resolve(full)
+		local f = m and m[fn]
+		if type(f) == "function" and not orig[full] then
+			orig[full] = f
+			m[fn] = function(a, b, ...)
+				if not qc.is_client() then return f(a, b, ...) end
+				if not qc.client_live() then return end
+				local npc = (a and a:id() == 0) and b or a
+				local ok = qc.request_host_action("rly", { f = full, n = npc and qc.to_host_id(npc:id()) or nil })
+				if ok then stats.sent = stats.sent + 1 end
+			end
+		end
+	end
+end
+
+local function talked_recently(from, npc)
+	local api = qc.engine()
+	local recent = api and api.talk_recent
+	if type(recent) ~= "function" then return true end -- an engine without the talk locks: the reach check alone
+	return recent(from, npc:id(), TALK_MS) == true
+end
+
+local function host_relay(from, t)
+	local full = t.f
+	if not (type(full) == "string" and RELAY[full]) then
+		stats.refused = stats.refused + 1
+		qc.log(TAG, "! relay '%s' from #%s refused: not on the list", tostring(full), tostring(from))
+		return
+	end
+	local now = time_global()
+	local key = tostring(from) .. ":" .. full
+	if last_run[key] and now - last_run[key] < PACE_MS then
+		stats.paced = stats.paced + 1
+		return
+	end
+	last_run[key] = now
+	local m, fn = resolve(full)
+	local f = m and m[fn]
+	if type(f) ~= "function" then return end
+	local nid = tonumber(t.n)
+	local npc = nid and not qc.is_character_id(nid) and level.object_by_id(nid) -- a player is nobody's dialog partner here
+	local who = qc.avatar_obj(from)
+	if not (npc and who and npc:alive() and npc:position():distance_to_sqr(who:position()) <= MAX_DIST_SQR
+		and talked_recently(from, npc)) then
+		stats.refused = stats.refused + 1
+		qc.log(TAG, "! relay '%s' from #%s refused: the NPC is not there, or not talked to", full, tostring(from))
+		return
+	end
+	if not RELAY[full]() then
+		stats.refused = stats.refused + 1
+		qc.log(TAG, "! relay '%s' from #%s refused: not due now", full, tostring(from))
+		return
+	end
+	stats.run = stats.run + 1
+	ct().with_recipient(from, f, db.actor, npc)
+end
+
+-------------------------------------------------------------------------------
+-- A status functor's kill reaches every player
+-------------------------------------------------------------------------------
+local function patch_status_kill()
+	local xe = qc.mod("xr_effects")
+	local kill = xe and xe.kill_actor
+	if type(kill) ~= "function" or orig.kill_actor then return end
+	orig.kill_actor = kill
+	xe.kill_actor = function(actor, npc, p, ...)
+		local qp = qc.mod("coop_quests_party")
+		if npc == nil and qc.host_party() and qp and type(qp.checking_task) == "function" and qp.checking_task() then
+			local now = time_global()
+			for _, c in ipairs(qc.characters()) do
+				if not c.self and (not last_kill[c.peer] or now - last_kill[c.peer] >= KILL_GAP_MS) then
+					last_kill[c.peer] = now
+					if qc.send("kill", {}, c.peer) then stats.kills_out = stats.kills_out + 1 end
+				end
+			end
+		end
+		return kill(actor, npc, p, ...)
+	end
+end
+
+local function client_on_kill(t, from)
+	if from ~= 0 or not qc.client_live() or not db.actor then return end
+	local xe = qc.mod("xr_effects")
+	if xe and type(xe.kill_actor) == "function" then
+		stats.kills_in = stats.kills_in + 1
+		xe.kill_actor(db.actor, nil, {})
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Semenov's tissue samples
+-------------------------------------------------------------------------------
+local TISSUE_NEED = "yan_ecolog_semenov_task_1_tissue_need"
+local TISSUE_COUNT = "yan_ecolog_semenov_task_1_tissue_count"
+
+local function monster_on_death(victim, killer)
+	if not (qc.is_host() and victim and killer) then return end
+	local ok, kid = pcall(function() return killer:id() end)
+	if not (ok and qc.is_character_id(kid) and IsMonster(victim)) then return end
+	if not get_story_object("yan_ecolog_semenov") then return end
+	if (load_var(db.actor, TISSUE_NEED) or 0) > 0 then
+		save_var(db.actor, TISSUE_COUNT, (load_var(db.actor, TISSUE_COUNT) or 0) + 1)
+		stats.tissue = stats.tissue + 1
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Status, start
+-------------------------------------------------------------------------------
+function print_status()
+	qc.log(TAG, "dialog actions sent %d, run for players %d (refused %d, paced %d) | kills passed on %d, received %d | tissue samples %d",
+		stats.sent, stats.run, stats.refused, stats.paced, stats.kills_out, stats.kills_in, stats.tissue)
+end
+
+local installed = false
+local function install()
+	if installed then return end
+	installed = true
+	for _, s in ipairs({ { "relay", patch_client_relay }, { "status kill", patch_status_kill } }) do
+		local ok, err = pcall(s[2])
+		if not ok then qc.report(TAG, "install " .. s[1], err) end
+	end
+end
+
+function on_game_start()
+	if not qc.engine() then return end
+	qc.register_host_action("rly", host_relay)
+	qc.on("kill", client_on_kill, TAG)
+	RegisterScriptCallback("monster_on_death_callback", monster_on_death)
+	RegisterScriptCallback("actor_on_first_update", install)
+end

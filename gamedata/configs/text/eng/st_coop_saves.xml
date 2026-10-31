@@ -51,4 +51,19 @@
 	<string id="st_coop_saves_restore_failed_missing">
 		<text>The save file is missing or damaged.</text>
 	</string>
+	<string id="st_coop_saves_asked">
+		<text>The host was asked to save.</text>
+	</string>
+	<string id="st_coop_saves_host_only">
+		<text>Co-op: only the host saves and loads. F5 asks the host to save.</text>
+	</string>
+	<string id="st_coop_rollback_warn">
+		<text>%s died. The group goes back to the last save in %s s.</text>
+	</string>
+	<string id="st_coop_rollback_none">
+		<text>No save of this game to go back to: the death goes the usual way.</text>
+	</string>
+	<string id="st_coop_saves_not_alive">
+		<text>Co-op: you cannot save while you are down or dead.</text>
+	</string>
 </string_table>

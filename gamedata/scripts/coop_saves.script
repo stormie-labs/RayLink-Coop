@@ -168,10 +168,32 @@ local function refusal_key(kind)
 	return (kind == "load" and "load_" or "auto_") .. (is_host() and "host" or "client")
 end
 
+-- The rollback death mode: saves work as in the stock game, the host's to make and load.
+local function saves_open()
+	return type(api) == "table" and type(api.saves_open) == "function" and api.saves_open() == true
+end
+
+local function rollback_on_its_way()
+	local m = rawget(_G, "coop_rollback")
+	return m and m.pending and m.pending() == true
+end
+
 -- Stock: level_input.action_quick_save (F5, type 2) and the menu's F5 / F6 / Save (types 2, 3, 1) send this before they
 -- save; flags.ret = true stops them.
 local function on_before_save_input(flags, typ, label)
 	if type(flags) ~= "table" or not in_session() then return end
+	if saves_open() then
+		if rollback_on_its_way() then
+			flags.ret = true
+		elseif not is_host() then
+			flags.ret = true
+			if typ == 2 and coop_mods_core.to_host("save_req", {}) then hint("asked") else hint("host_only") end
+		elseif api.life_of(0) ~= "alive" then -- the engine's actor stands in for him: such a save loads to a black screen
+			flags.ret = true
+			hint("not_alive")
+		end
+		return
+	end
 	flags.ret = true
 	hint(refusal_key("save"))
 end
@@ -179,6 +201,12 @@ end
 -- Stock: level_input.action_quick_load (F7). Note the argument order.
 local function on_before_load_input(dik, bind, flags)
 	if type(flags) ~= "table" or not in_session() then return end
+	if saves_open() then
+		if is_host() and not rollback_on_its_way() then return end
+		flags.ret = true
+		hint("host_only")
+		return
+	end
 	flags.ret = true
 	hint(refusal_key("load"))
 end
@@ -206,8 +234,8 @@ local function wrap_main_menu()
 		local ok, orig = pcall(function() return cls[fname] end)
 		if ok and type(orig) == "function" and menu_wrappers[fname] ~= orig then
 			local function wrapper(self, ...)
-				if in_session() then
-					hint(refusal_key(kind), self)
+				if in_session() and (not (saves_open() and is_host()) or rollback_on_its_way()) then
+					hint(saves_open() and "host_only" or refusal_key(kind), self)
 					return
 				end
 				return orig(self, ...)

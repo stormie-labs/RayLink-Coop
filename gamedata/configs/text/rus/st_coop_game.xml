@@ -703,4 +703,7 @@
 	<string id="st_coop_opt_machine_note">
 		<text>Для кооп-игр это значения по умолчанию для новых игр. У созданной игры — её настройки.</text>
 	</string>
+	<string id="st_coop_game_death_mode_rollback">
+		<text>Откат к сохранению</text>
+	</string>
 </string_table>

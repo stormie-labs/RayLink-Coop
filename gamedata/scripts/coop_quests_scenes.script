@@ -1,0 +1,169 @@
+--[[
+	Anomaly Coop - two story moments one player decides for the group (gamedata\scripts\coop_quests_scenes.script), from the
+	mission audit of 2026-10-31.
+
+	Wish Granter (sar_monolith.ltx: on_use = %=make_a_wish%). A client's use runs on the host (coop_objects.cpp host_on_use), so
+	the stock window opened on the host's screen. Here xr_effects.make_a_wish still runs on the host, but the window goes to
+	the player who pressed; his choice comes back and runs on the host (quests.act "wish"). Choice 1 is error() in stock, which
+	would end the session for everybody: in a session it spends the wish and tells every player, and the group plays on.
+
+	Osoznanie (dialogs_warlab.osoznanie_decline). The dialog moves only the player who speaks, and the room is left for good
+	(the restrictor destroys Osoznanie and blacks the screen): every other player follows through npc.fx, and one who respawns
+	before the waves are over (sar2_monolith_end) is sent back, since this teleport is the only stock way there.
+
+	The list of a wish is closures of the stock function, kept between the press and the answer; they hold no game object.
+
+	Events: quests.wish host -> one { n, s1, s2, ... }; quests.zone_gone host -> all { };
+	host actions: wish { c = choice }, oso_decline { }.
+	Stock functions wrapped: xr_effects.make_a_wish, dialogs_warlab.osoznanie_decline.
+--]]
+
+local qc = coop_quests_core
+local tostring, tonumber, type, ipairs = tostring, tonumber, type, ipairs
+local unpack = unpack
+local math_min = math.min
+
+local TAG = "scenes"
+local MAX_CHOICES = 8
+local ZONE_GONE_SECONDS = 8
+local OSO_WALK, OSO_LOOK = "warlab_jump_sar2_walk", "warlab_jump_sar2_look"
+local OSO_ARGS = OSO_WALK .. ":" .. OSO_LOOK
+
+local wish = nil -- host: { peer, list } the window that is out
+
+local function logic() return qc.mod("coop_npc_logic") end
+
+-------------------------------------------------------------------------------
+-- Wish Granter
+-------------------------------------------------------------------------------
+local function show_zone_gone()
+	local am = qc.mod("actor_menu")
+	if am and am.set_msg then am.set_msg(1, game.translate_string("st_zone_disappeared"), ZONE_GONE_SECONDS) end
+end
+
+-- Host: choice 1. The other wishes end in this info too, it closes the Granter (sar_monolith.ltx).
+local function zone_gone()
+	give_info("actor_made_wish")
+	qc.send("zone_gone", {}, -1)
+	show_zone_gone()
+end
+
+-- The window and the list of the stock function, without the window.
+local function run_for_list(orig, actor, npc, p)
+	local box = qc.mod("ui_dyn_msg_box")
+	local window = box.multi_choice
+	local got
+	box.multi_choice = function(list, ...) got = { list = list, names = { ... } } end
+	local ok, err = pcall(orig, actor, npc, p)
+	box.multi_choice = window
+	if not ok then error(err, 0) end
+	return got, window
+end
+
+-- The client who pressed, nil = the host's own press (or nobody known: the host answers).
+local function presser_peer(npc)
+	local L = logic()
+	local id = L and L.user_of(npc)
+	if not id or (db.actor and id == db.actor:id()) then return nil end
+	local P = qc.mod("coop_npc_players")
+	return P and P.peer_of(id) or nil
+end
+
+local function host_make_a_wish(orig, actor, npc, p)
+	local got, window = run_for_list(orig, actor, npc, p)
+	if not got then return end
+	got.list[1] = zone_gone
+	local peer = presser_peer(npc)
+	if not peer then return window(got.list, unpack(got.names)) end
+	wish = { peer = peer, list = got.list }
+	local t = { n = #got.names }
+	for i, name in ipairs(got.names) do t["s" .. i] = name end
+	qc.send("wish", t, peer)
+end
+
+local function client_on_wish(t, from)
+	if from ~= 0 or not (qc.is_client() and db.actor) then return end
+	local list, names = {}, {}
+	for i = 1, math_min(tonumber(t.n) or 0, MAX_CHOICES) do
+		names[i] = tostring(t["s" .. i])
+		list[i] = function() qc.request_host_action("wish", { c = i }) end
+	end
+	if #names > 0 then qc.mod("ui_dyn_msg_box").multi_choice(list, unpack(names)) end
+end
+
+local function host_wish(from, t)
+	local w = wish
+	if not (w and w.peer == from) then
+		qc.log(TAG, "! a wish from #%s that nobody offered", tostring(from))
+		return
+	end
+	wish = nil
+	local f = w.list[tonumber(t.c)]
+	if type(f) == "function" then f() end
+end
+
+-------------------------------------------------------------------------------
+-- Osoznanie
+-------------------------------------------------------------------------------
+-- As the stock decline does it. Not through xr_effects.teleport_actor: coop_economy_travel would take the players around along.
+local function move_here()
+	if not level.patrol_path_exists(OSO_WALK) then return end
+	local walk, look = patrol(OSO_WALK), patrol(OSO_LOOK)
+	db.actor:set_actor_position(walk:point(0))
+	db.actor:set_actor_direction(-look:point(0):sub(walk:point(0)):getH())
+end
+
+local function host_oso_decline(from)
+	if not level.patrol_path_exists(OSO_WALK) then return end
+	move_here()
+	logic().relay_to_all("teleport_actor", OSO_ARGS, from)
+end
+
+-- Fired on the owner's machine only, with the player back on his feet at his camp.
+local function on_respawned()
+	local a = db.actor
+	if not (qc.active() and a) then return end
+	if a:has_info("warlab_actor_teleported_to_sar2") and not a:has_info("sar2_monolith_end") then move_here() end
+end
+
+-------------------------------------------------------------------------------
+-- Start
+-------------------------------------------------------------------------------
+local installed = false
+local function install()
+	if installed then return end
+	installed = true
+	local xe = qc.mod("xr_effects")
+	local stock_wish = xe and xe.make_a_wish
+	if type(stock_wish) == "function" then
+		xe.make_a_wish = function(actor, npc, p)
+			if not qc.is_host() then return stock_wish(actor, npc, p) end
+			return host_make_a_wish(stock_wish, actor, npc, p)
+		end
+	end
+	local dw = qc.mod("dialogs_warlab")
+	local stock_decline = dw and dw.osoznanie_decline
+	if type(stock_decline) == "function" then
+		dw.osoznanie_decline = function(npc, actor)
+			local r = stock_decline(npc, actor)
+			if qc.client_live() then
+				qc.request_host_action("oso_decline", {})
+			elseif qc.host_party() then
+				logic().relay_to_all("teleport_actor", OSO_ARGS)
+			end
+			return r
+		end
+	end
+end
+
+function on_game_start()
+	if not qc.engine() then return end
+	qc.register_host_action("wish", host_wish)
+	qc.register_host_action("oso_decline", host_oso_decline)
+	qc.on("wish", client_on_wish, TAG)
+	qc.on("zone_gone", function(_, from)
+		if from == 0 and qc.is_client() then show_zone_gone() end
+	end, TAG)
+	RegisterScriptCallback("coop_respawned", on_respawned)
+	RegisterScriptCallback("actor_on_first_update", install)
+end

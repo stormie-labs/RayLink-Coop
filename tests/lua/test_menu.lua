@@ -309,7 +309,8 @@ do
 end
 check(dlg.status_phase.text == "No session running" and dlg.status_dot.tcolor == dlg.ui:color("idle"), "status off: grey dot")
 check(flat_shown(dlg.connect) and flat_hidden(dlg.disconnect) and flat_hidden(dlg.cancel), "no session: the way to a friend, no Disconnect, no Cancel")
-check(dlg.hint.shown and dlg.hint.text:find("RayLink", 1, true), "Steam lives in the launcher: a hint, no tab")
+check(dlg.hint.shown and dlg.hint.text:find("Shift+Tab", 1, true), "Steam: a hint, no tab")
+check(flat_hidden(dlg.invite), "no session: no Steam invite")
 check(flat_hidden(dlg.host_now) and not dlg.open_hint.shown, "no game loaded: no Open button, no hint")
 check(not dlg.tl_block.shown and dlg.clip.shown and dlg.tile_block.shown, "closed: the tile, no timeline")
 

@@ -179,7 +179,7 @@
 		<text>Войти</text>
 	</string>
 	<string id="st_coop_menu_steam_hint">
-		<text>Через Steam: лобби в лаунчере RayLink</text>
+		<text>Через Steam: Shift+Tab, пригласить друга</text>
 	</string>
 	<string id="st_coop_menu_empty_title">
 		<text>Пока ни одной игры</text>
@@ -416,7 +416,7 @@
 		<text>Когда игрок погибает</text>
 	</string>
 	<string id="ui_mm_coop_coop_session_death_mode_desc">
-		<text>Возврат на привал: погибший игрок смотрит за союзниками, пока идёт задержка, и встаёт на своём привале с контузией. Хардкор: смерть окончательна, игрок начинает заново новым персонажем.</text>
+		<text>Возврат на привал: погибший игрок смотрит за союзниками, пока идёт задержка, и встаёт на своём привале с контузией. Откат к сохранению: если игрока не подняли, вся группа возвращается к последнему сохранению, ничего не теряется, а хост сохраняет и загружает как в обычной игре. Хардкор: смерть окончательна, игрок начинает заново новым персонажем.</text>
 	</string>
 	<string id="st_coop_opt_death_hardcore">
 		<text>Хардкор</text>
@@ -678,5 +678,11 @@
 	</string>
 	<string id="st_coop_menu_gap_hours">
 		<text>%s ч %s мин без сохранений</text>
+	</string>
+	<string id="st_coop_opt_death_rollback">
+		<text>Откат к сохранению</text>
+	</string>
+	<string id="st_coop_menu_btn_steam_invite">
+		<text>Пригласить через Steam</text>
 	</string>
 </string_table>

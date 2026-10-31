@@ -62,7 +62,7 @@ cvar("coop_friendly_fire", "int", 0, 1, 1)
 cvar("coop_max_new_characters", "int", 1, 64, 8)
 cvar("coop_share_rewards", "int", 0, 1, 0)
 -- respawn / respawn_keep: old user.ltx files, the engine reads them as checkpoint
-cvar("coop_death_mode", "token", nil, nil, "checkpoint", { "checkpoint", "hardcore" },
+cvar("coop_death_mode", "token", nil, nil, "checkpoint", { "checkpoint", "hardcore", "rollback" },
 	{ respawn = "checkpoint", respawn_keep = "checkpoint" })
 cvar("coop_death_drop", "token", nil, nil, "drop", { "drop", "corpse", "lose", "keep" })
 cvar("coop_bleedout", "float", 10, 600, 60)
@@ -186,7 +186,7 @@ end
 local RULE = "o|coop/coop_session/"
 
 -- Tab 1. Death and help
-c_item("death", "coop_death_mode", "list", { v = { "checkpoint", "hardcore" }, when = "create" })
+c_item("death", "coop_death_mode", "list", { v = { "checkpoint", "hardcore", "rollback" }, when = "create" })
 c_item("death", "coop_death_drop", "list", { v = { "drop", "corpse", "lose", "keep" } })
 c_item("death", "coop_death_share", "list", { v = { 50, 100, 150, 200 }, unit = "pct",
 	shown_if = { key = "c|coop_death_drop", any = { "drop", "lose" } } })

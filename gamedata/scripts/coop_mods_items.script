@@ -20,7 +20,8 @@
 	  mods.gso_use   client -> host { n corpse }  the corpse's stash roll runs once, on the host, for that player.
 	Corpse loot (death_manager)
 	  mods.corpse_loot client -> host { n corpse }  a body gets its loot when it is first used. A client's spawns are
-	                 refused, so a body opened only by a client stayed without it: the host fills it, once, for everybody
+	                 refused, so a body opened only by a client stayed without it: the host fills it, once, for everybody;
+	                 the host-only npc_on_use handlers of tasks (Mystery of the Swamps) hear the client's use too
 --]]
 
 local api = rawget(_G, "coop")
@@ -463,6 +464,12 @@ end
 -------------------------------------------------------------------------------
 local corpse_loot_wrapped = false
 
+-- Host-only npc_on_use handlers of tasks that wait for a player to search a corpse (Mystery of the Swamps: the ecologists'
+-- bodies). The stock callback runs on the machine of the player who used the body, where a host-domain handler is skipped, so
+-- a client's search never reached them. Called one by one with the client's character: SendScriptCallback would run the loot,
+-- stash and inventory handlers of every other mod a second time.
+local USE_HANDLERS = { "tasks_mystery_of_the_swamps" }
+
 -- At the first update: Haru's skills and FDDA replace create_release_item when they load, and a wrapper put here earlier
 -- would be replaced with it. The stock function keeps a body to one roll (death_dropped).
 local function wrap_corpse_loot()
@@ -489,6 +496,13 @@ local function install_corpse_loot()
 		end
 		local ok, e = C().as_player(who, death_manager.create_release_item, npc)
 		if not ok then C().report("items", "corpse loot", e) end
+		for _, name in ipairs(USE_HANDLERS) do
+			local handler = C().fn(C().mod(name), "npc_on_use")
+			if handler then
+				local done, err = pcall(handler, npc, who)
+				if not done then C().report("items", name .. ".npc_on_use", err) end
+			end
+		end
 	end, "host")
 	C().set_limit("corpse_loot", 6, 2)
 end

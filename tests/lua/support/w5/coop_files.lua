@@ -39,9 +39,11 @@ COOP_FILES = {
 	"coop_npc_world",
 	"coop_npc_idiots", -- W8: Useful Idiots package searcher (file scope only)
 	"coop_quests_core",
+	"coop_quests_missions", -- mission audits: dialog actions on the host for a client, a status functor's kill, tissue samples
 	"coop_quests_offer",
 	"coop_quests_party",
 	"coop_quests_pda",
+	"coop_quests_scenes",
 	"coop_quests_story",
 	"coop_route", -- F2 T10: the callback router shim
 	"coop_settings",
