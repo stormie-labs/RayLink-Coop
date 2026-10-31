@@ -270,7 +270,23 @@ end
 -- know the HOST's actor as "the actor" and every other player's character as an ordinary NPC, so a heli set on the
 -- player (actor_always_enemy, combat_enemy = actor, heli_fire enemy = actor) never turned on a client. A player's
 -- character counts as the actor: the actor's enemy rule (his own heli flag - set on his character when he shot the
--- heli - or actor_always_enemy), and "the actor" as a target is the nearest player (heli_fire: the nearest it sees).
+-- heli - or actor_always_enemy), and "the actor" as a target is the nearest player.
+-- Live 2026-10-31: heli_fire with enemy = actor picks once and keeps it, and a player who is down is alive for the engine: a
+-- mission's heli fired at the host alone, even dead. It now works through the players it sees, on their feet, in turns.
+local HELI_TURN_MS = 10000 -- how long one player has its attention
+local HELI_LOOK_MS = 1000 -- how often it looks while it has nobody
+
+local function heli_next_player(self, heli)
+	local seen = {}
+	for _, o in ipairs(P.everyone()) do
+		if P.standing(o) and heli:isVisible(o) then seen[#seen + 1] = o end
+	end
+	if #seen == 0 then return nil end
+	table.sort(seen, function(a, b) return a:id() < b:id() end)
+	self.coop_turn = (self.coop_turn or 0) % #seen + 1
+	return seen[self.coop_turn]
+end
+
 local function wrap_helis()
 	local hc = mod("heli_combat")
 	local cls = hc and hc.heli_combat
@@ -278,6 +294,7 @@ local function wrap_helis()
 	if type(is_enemy) == "function" and not orig.heli_is_enemy then
 		orig.heli_is_enemy = is_enemy
 		cls.is_enemy = function(self, obj)
+			if host_on and obj and P.is_player_id(obj:id()) and not P.standing(obj) then return false end
 			if not (host_on and obj and P.is_proxy(obj)) then return is_enemy(self, obj) end
 			-- the stock's checks for anybody, then its rule for the actor (heli_combat.script is_enemy)
 			if not obj:alive() or IsWounded(obj) then return false end
@@ -310,21 +327,22 @@ local function wrap_helis()
 	if type(set_enemy) == "function" and not orig.heli_fire then
 		orig.heli_fire = set_enemy
 		fcls.set_enemy = function(self, ...)
-			-- the moment the stock picks "the actor" (no target kept): the nearest player it sees; none seen - the stock's
-			if host_on and self.enemy_ == "actor" and self.flag_by_enemy and self.obj then
-				local ok, heli = pcall(self.obj.get_helicopter, self.obj)
-				if ok and heli then
-					local pos = self.obj:position()
-					local best, best_d = nil, math.huge
-					for _, o in ipairs(P.everyone()) do
-						if heli:isVisible(o) then
-							local d = o:position():distance_to_sqr(pos)
-							if d < best_d then best, best_d = o, d end
-						end
-					end
-					self.enemy_id = best and P.is_proxy(best) and best:id() or nil
-				end
+			if not (host_on and self.enemy_ == "actor" and self.obj) then return set_enemy(self, ...) end
+			local ok, heli = pcall(self.obj.get_helicopter, self.obj)
+			if not (ok and heli) then return set_enemy(self, ...) end
+			local now = time_global()
+			local st = self.enemy_id and db.storage[self.enemy_id]
+			local lost = self.enemy_id ~= nil and not (st and st.object and P.standing(st.object))
+			local wait = (self.enemy_id and not self.flag_by_enemy) and HELI_TURN_MS or HELI_LOOK_MS
+			if lost or now - (self.coop_picked or -wait) >= wait then
+				self.coop_picked = now
+				local target = heli_next_player(self, heli)
+				self.enemy_id = target and target:id() or nil
+				self.flag_by_enemy = target ~= nil
+				if not target then heli:ClearEnemy() end
 			end
+			-- the stock would take the host's actor for an empty target
+			if self.enemy_id == nil then return end
 			return set_enemy(self, ...)
 		end
 		applied[#applied + 1] = "heli:fire"

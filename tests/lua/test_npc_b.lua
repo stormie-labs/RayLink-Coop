@@ -626,22 +626,70 @@ hc.st.enemy_id = nil
 HC.set_enemy_from_custom_data(hc, "actor")
 check(hc.st.enemy_id == 0, "the host's actor when he is the nearest")
 
+-- heli_fire enemy = actor (a mission's heli). Live 2026-10-31: the stock picks once and never again, and a player who is down
+-- is alive for the engine, so the heli fired at the host alone, even dead. It works through the players it sees, standing ones.
 local visible = { [500] = true }
-heli_obj.get_helicopter = function() return { isVisible = function(_, o) return visible[o:id()] == true end } end
+local cleared = 0
+local life = {}
+H.env.coop.life_of = function(id) return life[id] or "alive" end
+heli_obj.get_helicopter = function()
+	return { isVisible = function(_, o) return visible[o:id()] == true end, ClearEnemy = function() cleared = cleared + 1 end }
+end
+H.env.db.storage[0] = { object = H.env.db.actor }
+H.env.db.storage[500] = { object = proxy }
 local hf = setmetatable({ obj = heli_obj, enemy_ = "actor", flag_by_enemy = true }, { __index = HF })
 HF.set_enemy(hf)
-check(hf.picked == 500, "heli_fire enemy = actor: the nearest player it sees (the client's character)")
+check(hf.picked == 500, "heli_fire enemy = actor: the one player it sees (the client's character)")
+NOW = NOW + 500
+hf.flag_by_enemy = false
+HF.set_enemy(hf)
+check(hf.enemy_id == 500 and hf.flag_by_enemy == false, "a kept target stays between the turns")
 visible = { [0] = true, [500] = true }
-hf.enemy_id, hf.flag_by_enemy = nil, true
+local turns = {}
+for i = 1, 4 do
+	NOW = NOW + 11000
+	hf.flag_by_enemy = false
+	HF.set_enemy(hf)
+	turns[#turns + 1] = hf.enemy_id
+end
+check(turns[1] ~= turns[2] and turns[2] ~= turns[3] and turns[1] == turns[3] and turns[2] == turns[4],
+	"two players in sight take turns: neither is left alone by it")
+life[0] = "wounded"
+hf.enemy_id, hf.flag_by_enemy = 0, false
+NOW = NOW + 100
 HF.set_enemy(hf)
-check(hf.picked == "actor", "the host's actor when he is the nearest seen (the stock's pick)")
+check(hf.enemy_id == 500, "the host goes down: the target leaves him at once, for the player still standing")
+life[0] = "dead"
+life[500] = "wounded"
+cleared = 0
+hf.picked, hf.enemy_id, hf.flag_by_enemy = nil, 500, false
+NOW = NOW + 100
+HF.set_enemy(hf)
+check(hf.enemy_id == nil and cleared == 1 and hf.picked == nil, "everybody down: no target, and the stock does not fall back on the host's actor")
+life = {}
 visible = {}
-hf.enemy_id, hf.flag_by_enemy = 500, true
+hf.picked, hf.enemy_id, hf.flag_by_enemy = nil, nil, true
+NOW = NOW + 2000
 HF.set_enemy(hf)
-check(hf.picked == "actor", "nobody seen: the stock's actor")
-hf.enemy_id, hf.flag_by_enemy = 500, false
+check(hf.picked == nil and hf.enemy_id == nil, "nobody in sight: no target either")
+visible = { [500] = true }
+NOW = NOW + 2000
 HF.set_enemy(hf)
-check(hf.picked == 500, "a kept target stays (no pick while flag_by_enemy is off)")
+check(hf.picked == 500, "a player comes into sight: taken within a look")
+hf.enemy_ = "stalker_id"
+hf.picked, hf.enemy_id = nil, nil
+HF.set_enemy(hf)
+check(hf.picked == "actor", "a heli on another target keeps the stock's own pick")
+hf.enemy_ = "actor"
+
+-- heli_combat: the actor's rule did not know a host who is down either
+life[0] = "wounded"
+hc.actor_always_enemy = true
+local n2 = H.stock_heli_enemy or 0
+check(HC.is_enemy(hc, H.env.db.actor) == false and H.stock_heli_enemy == n2, "a host who is down is no target of heli_combat")
+life = {}
+check(HC.is_enemy(hc, H.env.db.actor) == "stock", "a host on his feet: the stock rule")
+hc.actor_always_enemy = false
 H.env.heli_combat, H.env.heli_fire = nil, nil
 
 print("== coop_npc_compat: an old corpse near a client is not released (audit B6)")

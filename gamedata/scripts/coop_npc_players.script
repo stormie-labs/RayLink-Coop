@@ -209,6 +209,17 @@ function is_proxy(obj_or_id)
 	return id ~= nil and id ~= 0 and is_player_id(id)
 end
 
+-- On its feet: the engine keeps a player who is down, dead or spectating alive, so obj:alive() does not tell.
+function standing(obj_or_id)
+	local id = id_of(obj_or_id)
+	if id == nil then return false end
+	if api and api.life_of then
+		local ok, life = pcall(api.life_of, id)
+		if ok and type(life) == "string" then return life == "alive" end
+	end
+	return true
+end
+
 local function pos_of(x)
 	if x and type(x.position) == "function" then return x:position() end
 	return x
