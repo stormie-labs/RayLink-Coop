@@ -118,7 +118,7 @@
 |---|---|---|---|---|---|---|---|
 | 1 | `coop_friendly_fire` | `coop_console.cpp:177`, `coop_requests.cpp:55` | 1 | 0/1 | каждое попадание (`coop_requests.cpp:2414, 3588, 3611`) | Л | Опции → Кооп (`coop_menu_options.script:84`) |
 | 2 | `coop_max_new_characters` | `coop_console.cpp:178`, `coop_join.cpp:43` | 8 | 1..64 (`coop_limits.h:175-177`) | каждый вход нового ключа (`coop_join.cpp:592`) | Л | **нет** (только консоль) |
-| 3 | `coop_share_rewards` | `coop_story.cpp:2333`, `:34` | 0 | 0/1 | сдача задания (`coop_tasks.script:434`) | Л | Опции `:85` |
+| 3 | `coop_share_rewards` | `coop_story.cpp`, `coop_reward_group.script` | 0 | 0 сдавшему, 1 деньги поровну в игре, 2 всем, кто играл, поровну, 3 всем, кто играл, полная | сдача задания (`coop_tasks.script:434`) | Л | Опции `:85` |
 | 4 | `coop_death_mode` | `coop_survival.cpp:2526`, `:135` | checkpoint | checkpoint/hardcore (respawn* — синонимы) | каждый кадр `console_rules()` (`:176-189`, `host_frame :1643`) | Л | Опции `:88`; экран новой игры (`coop_newgame_modes.script:215`) |
 | 5 | `coop_death_drop` | `:2527`, `:136`, токены `:155` | drop | drop / corpse / lose / **keep** (сборка 10: `death::Drop::Keep = 3`, ничего не теряется, мешочка и метки нет; деньги, износ и ранг — по своим правилам) | то же | Л | Опции `:92`; экран новой игры (`:227`) |
 | 6 | `coop_bleedout` | `:2528` | 60 с | 10..600 | то же | Л | Опции `:97` |

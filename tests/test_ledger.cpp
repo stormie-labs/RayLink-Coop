@@ -65,6 +65,16 @@ MoneyReq req(uint32_t seq, int32_t delta, Cause cause = Cause::Script, uint32_t 
 std::vector<uint8_t> bytes_of(const Writer& w) { return std::vector<uint8_t>(w.ptr(), w.ptr() + w.size()); }
 } // namespace
 
+TEST(ledger_capped_balance)
+{
+	CHECK_EQ(coop::ledger::capped_balance(100, 50, 1000), 150u);
+	CHECK_EQ(coop::ledger::capped_balance(100, -50, 1000), 50u);
+	CHECK_EQ(coop::ledger::capped_balance(100, -500, 1000), 0u); // never below 0
+	CHECK_EQ(coop::ledger::capped_balance(900, 500, 1000), 1000u); // stops at the limit
+	CHECK_EQ(coop::ledger::capped_balance(2000, 500, 1000), 2000u); // over the limit: stays, is not cut
+	CHECK_EQ(coop::ledger::capped_balance(2000, -500, 1000), 1500u);
+}
+
 TEST(ledger_spend)
 {
 	HostSide h;

@@ -21,7 +21,8 @@
 	    In the task callback the rewards go to the player who turned it in (R-7.6): money through the host
 	    ledger (coop.money_grant onto the player's character, F2 T6; the client only gets the news line in
 	    event coop_trw), items spawned by the host into that player's character, goodwill/faction effects
-	    keyed to that character. Console coop_share_rewards 1 splits money equally among the online players;
+	    keyed to that character. Console coop_share_rewards: 1 splits money equally among the online players,
+	    2 and 3 reward everyone who played, split or in full (coop_reward_group.script);
 	    items still go to the finisher.
 	  - Quest items count from any group member's inventory (R-7.5): fetch / stash status functors also count
 	    the other players' characters, and removing the items takes them from whoever holds them (the player
@@ -449,9 +450,18 @@ local host = {
 local ctx = nil -- host: { task, rcpt (peer), share } while a task callback hands out rewards
 local raw_create = nil -- alife_create_item without the reward redirect
 
-local function share_rewards()
+local function reward_group()
+	return _G.coop_reward_group
+end
+
+local function news_mod() return _G.coop_quests_news end
+
+-- Host: the setting coop_share_rewards. 0 the finisher, 1 money split online, 2 and 3 see coop_reward_group.script.
+local EVERYONE_SHARED, EVERYONE_FULL = 2, 3
+
+local function reward_mode()
 	local ok, v = pcall(function() return get_console():get_integer("coop_share_rewards") end)
-	return ok and tonumber(v) == 1
+	return ok and tonumber(v) or 0
 end
 
 -- Host: online character of a peer (0 = the host's actor).
@@ -823,6 +833,13 @@ end
 -- Host, in a reward scope: pays n to the player who turned the task in, or splits it over the online players
 -- (coop_share_rewards 1; the remainder goes to the finisher). give(peer, amount) pays one share, peer 0 = the host.
 local function split_money(n, give)
+	if ctx.group then
+		local rg = reward_group()
+		for _, e in ipairs(rg.money_plan(n, ctx.group, ctx.rcpt, ctx.full)) do
+			if e.m.in_world then give(e.m.peer, e.n) else rg.pay_absent(e.m, e.n) end
+		end
+		return
+	end
 	local list = ctx.share and online_peers() or { ctx.rcpt }
 	local part = math_floor(n / #list)
 	local rest = n - part * #list
@@ -871,6 +888,56 @@ local function redirect_payout(orig)
 	end
 end
 
+local FETCH_EFFECTS = { "fetch_reward_and_remove", "remove_fetch_item", "remove_artefact_item" }
+
+-- Host: one unit of a group reward (coop_share_rewards 2, 3). The stock code that asked gets the item of the player who
+-- turned the task in, if he got one.
+local function give_to_group(create, section, t)
+	local rg = reward_group()
+	local res
+	for _, m in ipairs(rg.item_targets(ctx.group, ctx.full)) do
+		local owner = rg.holder(m)
+		local se = owner and create(section, owner, t)
+		if se then
+			local g = ctx.given[m.id]
+			if not g then
+				g = { m = m, items = {} }
+				ctx.given[m.id] = g
+			end
+			g.items[section] = (g.items[section] or 0) + 1
+			ctx.counted[section] = true
+			if res == nil or m.peer == ctx.rcpt then res = se end
+		end
+	end
+	return res
+end
+
+-- Host, when (a part of) a group reward was handed out: one line per player and section, however many units the stock
+-- code made. A player who is away gets a note instead.
+local news_item = nil -- news_manager.relocate_item as it was before patch_rewards
+
+local function group_lines(c)
+	if not c.group then return end
+	local rg = reward_group()
+	for _, g in pairs(c.given) do
+		for section, n in pairs(g.items) do
+			if not g.m.in_world then
+				rg.note_item(g.m.id, section, n)
+			elseif g.m.peer == 0 then
+				if news_item then news_item(db.actor, "in", section, n) end
+			else
+				send_reward(g.m.peer, { k = "news", ty = "in", s = section, n = n, t = c.task })
+			end
+		end
+	end
+	c.given = {}
+	if c.noted then return end
+	c.noted = true
+	for _, m in ipairs(c.group) do
+		if not m.in_world then rg.note(m.id, "c", 1) end
+	end
+end
+
 local function host_task_callback(orig, tsk, state)
 	local okid, id = pcall(function() return tsk:get_id() end)
 	if not (is_host() and okid and type(id) == "string") or not (state == task.completed or state == task.fail) then
@@ -884,13 +951,21 @@ local function host_task_callback(orig, tsk, state)
 	local cancelled = type(rtask) == "table" and rtask.cancelled_by_actor == true
 	host.finisher[id] = nil
 	if rcpt ~= 0 and not avatar_obj(rcpt) then rcpt = 0 end -- left the game: the host takes it
-	local share = state == task.completed and share_rewards()
+	local mode = state == task.completed and reward_mode() or 0
+	local share = mode ~= 0
+	local everyone = mode == EVERYONE_SHARED or mode == EVERYONE_FULL
 	-- W5: also for the host's own task (rcpt 0): without the reward scope the story wrapper
 	-- (coop_quests_story) took its on_complete rewards for a story condlist and paid every client too
 	local prev = ctx
 	ctx = { task = id, rcpt = rcpt, share = share, by = by, cancelled = cancelled }
+	if everyone then
+		ctx.group, ctx.full = reward_group().list(), mode == EVERYONE_FULL
+		ctx.given, ctx.counted = {}, {}
+	end
+	local this = ctx
 	local ok, err = pcall(orig, tsk, state)
 	ctx = prev
+	group_lines(this)
 	host.given_by[id] = nil
 	if not ok then report("task callback " .. id, err) end
 	if rcpt ~= 0 then log("rewards of '%s' go to #%s%s", id, tostring(rcpt), share and " (money shared)" or "") end
@@ -955,6 +1030,9 @@ local function patch_rewards()
 	if type(create) == "function" then
 		raw_create = create
 		_G.alife_create_item = function(section, obj, t)
+			if ctx and ctx.group and not ctx.returns and is_my_actor(obj) and reward_group().shareable(section) then
+				return give_to_group(create, section, t)
+			end
 			local peer = rcpt_client()
 			if peer and is_my_actor(obj) then
 				local o = avatar_obj(peer)
@@ -970,7 +1048,9 @@ local function patch_rewards()
 	local nm = rawget(_G, "news_manager") or news_manager
 	if nm and type(nm.relocate_item) == "function" then
 		local orig = nm.relocate_item
+		news_item = orig
 		nm.relocate_item = function(actor, typ, item, amount)
+			if ctx and ctx.group and ctx.counted[item] and typ == "in" and is_my_actor(actor) then return true end -- group_lines
 			local peer = rcpt_client()
 			if peer and is_my_actor(actor) then
 				send_reward(peer, { k = "news", ty = tostring(typ), s = tostring(item), n = tonumber(amount) or 1 })
@@ -1031,6 +1111,23 @@ local function patch_rewards()
 				return pay(actor, npc, p)
 			end
 		end
+		-- Stock fetch effects take the player's goods and hand back what is left of them: the artefact out of its container,
+		-- the empty container, the leftover uses. That is no reward: the group gets no copies of it.
+		local fetch_module = _G.tasks_fetch -- it adds these effects to xr_effects when it loads: loads it now
+		for _, fname in ipairs(FETCH_EFFECTS) do
+			local orig = fetch_module ~= false and xe[fname]
+			if type(orig) == "function" then
+				xe[fname] = function(...)
+					if not (ctx and ctx.group) then return orig(...) end
+					local c, prev = ctx, ctx.returns
+					c.returns = true
+					local res = { pcall(orig, ...) }
+					c.returns = prev
+					if not res[1] then error(res[2], 0) end
+					return unpack(res, 2)
+				end
+			end
+		end
 		-- tasks_multifetch pays on_complete with db.actor:give_money (the host's actor): to the one who turned it in
 		if type(xe.multifetch_remove) == "function" then xe.multifetch_remove = redirect_payout(xe.multifetch_remove) end
 		-- effects on the player's own character run on that player's machine
@@ -1072,12 +1169,18 @@ local function patch_rewards()
 	if type(cte) == "function" then
 		_G.CreateTimeEvent = function(ev_id, act_id, timer, f, ...)
 			if ctx and type(f) == "function" then
-				local c, f0 = ctx, f
+				local c, f0, returns = ctx, f, ctx.returns
 				f = function(...)
 					local prev = ctx
 					ctx = c
+					-- the group may have changed since the task was turned in; a return stays one a second later
+					local prev_returns = c.returns
+					c.returns = returns
+					if c.group then c.group = reward_group().list() end
 					local res = { pcall(f0, ...) }
+					c.returns = prev_returns
 					ctx = prev
+					group_lines(c)
 					if not res[1] then
 						report("delayed task reward", res[2])
 						return true
@@ -1699,6 +1802,12 @@ local function client_on_reward(payload, from)
 		if n ~= 0 then news_manager.relocate_money(db.actor, n > 0 and "in" or "out", n > 0 and n or -n) end
 	elseif t.k == "news" and type(t.s) == "string" then
 		news_manager.relocate_item(db.actor, t.ty == "out" and "out" or "in", t.s, tonumber(t.n) or 1)
+	elseif t.k == "away" then
+		-- what the group's rewards brought while this player was out of the game (coop_reward_group)
+		local nw, rg = news_mod(), reward_group()
+		if nw and nw.show_rewards and rg then
+			nw.show_rewards(tonumber(t.c) or 0, tonumber(t.m) or 0, rg.parse_items(t.i), tonumber(t.x) or 0)
+		end
 	elseif t.k == "gw" and type(t.c) == "string" then
 		local mlr = rawget(_G, "dialogs_mlr") or dialogs_mlr
 		if mlr and mlr.show_goodwill_change_message then mlr.show_goodwill_change_message(t.c, nil, nil, t.g == true) end
@@ -1728,7 +1837,6 @@ local news_out_win = { at = 0, n = 0 }
 local news_in_win = { at = 0, n = 0 }
 local orig_send_task = nil -- news_manager.send_task as it was before the wrapper
 
-local function news_mod() return rawget(_G, "coop_quests_news") end
 
 local function nick_of(peer)
 	for _, p in ipairs(players()) do
@@ -2100,7 +2208,13 @@ local function register_events()
 	end
 	cm.add_event_handler(EV_REQ, guarded("task request", host_on_request))
 	cm.add_event_handler(EV_SYNC, guarded("task sync", function(_, from)
-		if is_host() and type(from) == "number" and from ~= 0 then host_full_sync(from) end
+		if is_host() and type(from) == "number" and from ~= 0 then
+			host_full_sync(from)
+			local rg = reward_group()
+			local id = rg and rg.id_of(from)
+			local e = id and rg.take(id)
+			if e then send_reward(from, { k = "away", m = e.m, c = e.c, x = e.x, i = rg.items_text(e.i) }) end
+		end
 	end))
 	cm.add_event_handler(EV_STATE, guarded("task state", function(payload, from)
 		if from == 0 and is_client() then client_apply_state(payload) end
@@ -2128,7 +2242,7 @@ function print_status()
 	log("role %s, tasks: %d script, %d mirrored | requests out %d in %d refused %d | states out %d in %d, lists %d, syncs %d",
 		role, n_real, n_stub, stats.req_out, stats.req_in, stats.refused, stats.state_out, stats.state_in, stats.lists, stats.syncs)
 	log("rewards routed %d received %d, share %s | group items: moved %d released %d, stages %d | errors %d",
-		stats.rewards_routed, stats.rewards_in, tostring(share_rewards()), stats.party_moves, stats.party_releases,
+		stats.rewards_routed, stats.rewards_in, tostring(reward_mode()), stats.party_moves, stats.party_releases,
 		stats.stage_by_party, stats.errors)
 	log("task lines: sent %d, received %d, own engine lines dropped %d, limited %d", stats.news_out, stats.news_in,
 		stats.news_swallowed, stats.news_limited)

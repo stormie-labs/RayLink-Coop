@@ -201,7 +201,7 @@ end
 local ENGINE = {
 	{ "coop_friendly_fire", "int", 0, 1, 1 }, -- coop_console.cpp:177 CCC_Integer 0..1
 	{ "coop_max_new_characters", "int", 1, 64, 8 }, -- coop_console.cpp:178, coop_limits.h:175-177 kNewCharacters*
-	{ "coop_share_rewards", "int", 0, 1, 0 }, -- coop_story.cpp:2333 CCC_Integer 0..1
+	{ "coop_share_rewards", "int", 0, 3, 0 }, -- coop_story.cpp CCC_Integer 0..3
 	{ "coop_death_mode", "token", nil, nil, "checkpoint", { "checkpoint", "hardcore", "rollback" } }, -- coop_survival.cpp:2562 CCC_Token
 	{ "coop_death_drop", "token", nil, nil, "drop", { "drop", "corpse", "lose", "keep" } }, -- :2563, keep = build 10
 	{ "coop_bleedout", "float", 10, 600, 60 }, -- coop_survival.cpp:2564 CCC_Float

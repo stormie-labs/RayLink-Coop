@@ -22,4 +22,22 @@
 	<string id="st_coop_news_articles_many">
 		<text>Новых статей: %s (открыла группа)</text>
 	</string>
+	<string id="st_coop_news_away">
+		<text>Награды за время вашего отсутствия</text>
+	</string>
+	<string id="st_coop_news_away_tasks">
+		<text>Группа выполнила заданий: %d.</text>
+	</string>
+	<string id="st_coop_news_away_money">
+		<text>Деньги: +%d руб.</text>
+	</string>
+	<string id="st_coop_news_away_items">
+		<text>Предметы: %s.</text>
+	</string>
+	<string id="st_coop_news_away_item">
+		<text>%s x%d</text>
+	</string>
+	<string id="st_coop_news_away_more">
+		<text>И ещё предметов: %d.</text>
+	</string>
 </string_table>

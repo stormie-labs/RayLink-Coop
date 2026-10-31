@@ -1,0 +1,178 @@
+--[[
+	Anomaly Coop - task rewards for the whole group (gamedata\scripts\coop_reward_group.script). Host only.
+	Test: tests\lua\test_reward_group.lua. Handed out by coop_tasks.
+
+	The game setting coop_share_rewards says who gets a completed task's money and items:
+		0  the player who turned it in
+		1  the money is split over the players in the game, the items go to the one who turned it in
+		2  everyone who played, shared: the money is split, the items go by turns
+		3  everyone who played, in full: each gets what a lone player would
+
+	Modes 2 and 3 count the characters of the world (coop.members), also of players who left: such a character lives on
+	in the host's save, so its money (coop.money_grant_to) and items go straight onto it. A character out of a hardcore
+	run is no member. What came meanwhile is noted per character, in the host's save, and shown to its player once, when
+	he is back: the money and every item in his PDA feed (coop_tasks, event k = "away"; coop_quests_news.show_rewards).
+	Quest items stay single: the story needs one of them, and a group check counts the whole party anyway. Reputation,
+	rank and goodwill stay with the player who turned the task in.
+
+		coop_reward_group.list() -> the group of one reward, the host first: { id, peer | nil, in_world }
+		coop_reward_group.shareable(section) -> bool
+		coop_reward_group.money_plan(n, group, rcpt, full) -> { { m = member, n = RU }, ... }
+		coop_reward_group.item_targets(group, full) -> the members one unit goes to
+		coop_reward_group.holder(m) -> the object or server object to create an item in
+		coop_reward_group.pay_absent(m, n) -> RU that really came
+		coop_reward_group.note(id, field, n)    field: m money, c tasks
+		coop_reward_group.note_item(id, section, n)
+		coop_reward_group.peek(id) / take(id) -> the note of a character / and forgets it:
+			{ m = RU, c = tasks, i = { [section] = units }, x = units of sections over MAX_SECTIONS }
+		coop_reward_group.items_text(i) / parse_items(text) -> the items of a note on the wire ("medkit:2,bread:1")
+		coop_reward_group.id_of(peer) -> the character of a player
+]]
+
+local api = rawget(_G, "coop") -- engine namespace (nil on an exe without co-op)
+local floor = math.floor
+
+local MAX_SECTIONS = 32 -- different items a note names; a long absence must not grow the save or the event for ever
+
+local book = {} -- character id -> what came while its player was away, see peek
+local turn = 0 -- how many items of shared rewards were given: the next one goes to this place of the group
+
+function list()
+	local group = { { id = 0, peer = 0, in_world = true } }
+	local get = api and api.members
+	local ok, members = false, nil
+	if type(get) == "function" then ok, members = pcall(get) end
+	if ok and type(members) == "table" then
+		for _, m in ipairs(members) do
+			group[#group + 1] = { id = m.id, peer = m.peer, in_world = m.in_world == true }
+		end
+	end
+	return group
+end
+
+function shareable(section)
+	local ini = rawget(_G, "ini_sys")
+	return not (ini and ini:r_bool_ex(section, "quest_item", false))
+end
+
+-- rcpt: the peer who turned the task in; the remainder of a split goes to him, or to the host when he is not in the group.
+function money_plan(n, group, rcpt, full)
+	local plan = {}
+	if full then
+		for _, m in ipairs(group) do plan[#plan + 1] = { m = m, n = n } end
+		return plan
+	end
+	local part = floor(n / #group)
+	local rest = n - part * #group
+	local rest_to = group[1]
+	for _, m in ipairs(group) do
+		if m.peer == rcpt then rest_to = m end
+	end
+	for _, m in ipairs(group) do
+		local amount = part + (m == rest_to and rest or 0)
+		if amount > 0 then plan[#plan + 1] = { m = m, n = amount } end
+	end
+	return plan
+end
+
+function item_targets(group, full)
+	if full then return group end
+	local m = group[turn % #group + 1]
+	turn = turn + 1
+	return { m }
+end
+
+function holder(m)
+	if m.id == 0 then return db.actor end
+	return level.object_by_id(m.id) or alife_object(m.id)
+end
+
+local function entry(id)
+	local e = book[id]
+	if not e then
+		e = { m = 0, c = 0, x = 0, i = {} }
+		book[id] = e
+	end
+	return e
+end
+
+function note(id, field, n)
+	local e = entry(id)
+	e[field] = e[field] + n
+end
+
+function note_item(id, section, n)
+	local e = entry(id)
+	if e.i[section] == nil then
+		local kinds = 0
+		for _ in pairs(e.i) do kinds = kinds + 1 end
+		if kinds >= MAX_SECTIONS then
+			e.x = e.x + n
+			return
+		end
+	end
+	e.i[section] = (e.i[section] or 0) + n
+end
+
+function items_text(items)
+	local out = {}
+	for section, n in pairs(items) do out[#out + 1] = section .. ":" .. n end
+	table.sort(out)
+	return table.concat(out, ",")
+end
+
+function parse_items(text)
+	local items = {}
+	for section, n in tostring(text or ""):gmatch("([^:,]+):(%d+)") do items[section] = tonumber(n) end
+	return items
+end
+
+function pay_absent(m, n)
+	local grant = api and api.money_grant_to
+	if type(grant) ~= "function" then return 0 end
+	local ok, added = pcall(grant, m.id, n)
+	added = ok and tonumber(added) or 0
+	if added > 0 then note(m.id, "m", added) end
+	return added
+end
+
+function peek(id)
+	return book[id]
+end
+
+function take(id)
+	local e = book[id]
+	book[id] = nil
+	return e
+end
+
+function id_of(peer)
+	for _, m in ipairs(list()) do
+		if m.peer == peer then return m.id end
+	end
+	return nil
+end
+
+local function save_state(m_data)
+	local kept = {}
+	for id, e in pairs(book) do kept[id] = { m = e.m, c = e.c, x = e.x, i = items_text(e.i) } end
+	m_data.coop_reward_group = (next(kept) or turn ~= 0) and { book = kept, turn = turn } or nil
+end
+
+local function load_state(m_data)
+	book, turn = {}, 0
+	local s = m_data.coop_reward_group
+	if type(s) ~= "table" then return end
+	turn = tonumber(s.turn) or 0
+	if type(s.book) ~= "table" then return end
+	for id, e in pairs(s.book) do
+		if type(id) == "number" and type(e) == "table" then
+			book[id] = { m = tonumber(e.m) or 0, c = tonumber(e.c) or 0, x = tonumber(e.x) or 0, i = parse_items(e.i) }
+		end
+	end
+end
+
+function on_game_start()
+	RegisterScriptCallback("save_state", save_state)
+	RegisterScriptCallback("load_state", load_state)
+end

@@ -22,4 +22,22 @@
 	<string id="st_coop_news_articles_many">
 		<text>New articles: %s (opened by the group)</text>
 	</string>
+	<string id="st_coop_news_away">
+		<text>Rewards while you were away</text>
+	</string>
+	<string id="st_coop_news_away_tasks">
+		<text>Tasks done by the group: %d.</text>
+	</string>
+	<string id="st_coop_news_away_money">
+		<text>Money: +%d RU.</text>
+	</string>
+	<string id="st_coop_news_away_items">
+		<text>Items: %s.</text>
+	</string>
+	<string id="st_coop_news_away_item">
+		<text>%s x%d</text>
+	</string>
+	<string id="st_coop_news_away_more">
+		<text>And %d more items.</text>
+	</string>
 </string_table>

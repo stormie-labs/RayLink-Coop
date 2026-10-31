@@ -11,6 +11,8 @@
 	    news_manager.send_task raised an error (a mod's override may call the engine with arguments it does not take).
 	  - show_article(title, nick): "New article: <title> (opened by <nick>)" with the stock encyclopedia sound. At most
 	    three lines in ten seconds; the rest of a burst becomes one "New articles: N" line when the window ends.
+	  - show_rewards(tasks, money, items, more): what the group's rewards brought a player while he was away
+	    (coop_reward_group): a short line over the game, and the money and every item in his PDA feed.
 	  - clean_nick(s): a nick that came from the network, cut to 32 printable characters.
 	Nothing here changes the game outside a co-op session.
 --]]
@@ -23,6 +25,8 @@ local TASK_MS = 10000 -- stock news_manager.send_task shows a task line this lon
 local ARTICLE_MS = 5000
 local BURST_LINES = 3 -- single article lines in one window
 local BURST_WINDOW_MS = 10000
+local REWARDS_MS = 20000
+local REWARDS_ICON = "ui_iconsTotal_found_money"
 
 -- kind (the caption of the nick variant) -> string id, English fallback
 local TASK_LINES = {
@@ -73,6 +77,32 @@ local function feed(caption, text, icon, ms)
 	if not actor then return false end
 	local ok = pcall(function() actor:give_game_news(caption, text, icon, 0, ms) end)
 	return ok
+end
+
+local function item_name(section)
+	local ui = rawget(_G, "ui_item")
+	if ui and ui.get_sec_name then
+		local ok, name = pcall(ui.get_sec_name, section)
+		if ok and type(name) == "string" and name ~= "" then return name end
+	end
+	return section
+end
+
+function show_rewards(tasks, money, items, more)
+	local caption = tr("st_coop_news_away", "Rewards while you were away")
+	local am = rawget(_G, "actor_menu")
+	if am and am.set_msg then pcall(am.set_msg, 1, caption, 10) end
+	local names = {}
+	for section, n in pairs(items) do names[#names + 1] = fill("st_coop_news_away_item", "%s x%d", item_name(section), n) end
+	table.sort(names)
+	local text = { fill("st_coop_news_away_tasks", "Tasks done by the group: %d.", tasks) }
+	if money > 0 then text[#text + 1] = fill("st_coop_news_away_money", "Money: +%d RU.", money) end
+	if #names > 0 then
+		text[#text + 1] = fill("st_coop_news_away_items", "Items: %s.", table.concat(names, ", "))
+	end
+	if more > 0 then text[#text + 1] = fill("st_coop_news_away_more", "And %d more items.", more) end
+	play("pda_tips")
+	return feed(caption, table.concat(text, " "), REWARDS_ICON, REWARDS_MS)
 end
 
 -- A nick that came over the network: printable, 32 characters at most, nil if nothing is left.

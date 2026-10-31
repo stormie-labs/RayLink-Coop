@@ -60,7 +60,7 @@ end
 
 cvar("coop_friendly_fire", "int", 0, 1, 1)
 cvar("coop_max_new_characters", "int", 1, 64, 8)
-cvar("coop_share_rewards", "int", 0, 1, 0)
+cvar("coop_share_rewards", "int", 0, 3, 0)
 -- respawn / respawn_keep: old user.ltx files, the engine reads them as checkpoint
 cvar("coop_death_mode", "token", nil, nil, "checkpoint", { "checkpoint", "hardcore", "rollback" },
 	{ respawn = "checkpoint", respawn_keep = "checkpoint" })
@@ -202,7 +202,7 @@ c_item("death", "coop_checkpoints_group", "check")
 
 -- Tab 2. Group and economy
 c_item("party", "coop_friendly_fire", "check")
-c_item("party", "coop_share_rewards", "check")
+c_item("party", "coop_share_rewards", "list", { v = { 0, 1, 2, 3 } })
 c_item("party", "coop_max_new_characters", "list", { v = { 1, 2, 4, 8, 16, 32, 64 } })
 -- F3a: split levels (a switch: off = everything as in F3, the group on the host's level and the waiting point at every exit)
 -- and "story levels together" (only while the levels are split; off = the story levels are better-together hints only).
