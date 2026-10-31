@@ -794,4 +794,31 @@ do
 	end
 end
 
+print("== title and at (co-op window, docs\\plans\\2026-10-30-coop-chronicle-menu.md)")
+do
+	local codec = STUB
+	local env = { now = function() return 1000 end, rand = function() return 1 end, date = function() return "2026-10-29 20:31" end }
+	local r = rec.new({}, { name = "Stalker", title = "With Kent" }, env)
+	check(r.title == "With Kent" and r.name == "Stalker", "a new record keeps the title apart from the character's name")
+	local plain = rec.new({}, { name = "Stalker" }, env)
+	check(plain.title == nil, "no title: none (the window names the game by its date)")
+	local c = rec.clone(r)
+	check(c.title == "With Kent", "clone keeps the title")
+	local back = rec.decode(rec.encode(r, codec), codec)
+	check(back and back.title == "With Kent", "encode and decode keep the title")
+	check(rec.merge(r, nil).title == "With Kent", "merge keeps the title")
+	local long = rec.new({}, { title = string.rep("x", 500) }, env)
+	check(#rec.decode(rec.encode(long, codec), codec).title <= 64, "a title has a limit in the file")
+	r.at = { level = "k00_marsh", game_time = "15/03/2012 07:05", real_time = 1000, players = { "stormie", "kent" }, junk = 1 }
+	local d = rec.decode(rec.encode(r, codec), codec)
+	check(d.at and d.at.level == "k00_marsh" and d.at.game_time == "15/03/2012 07:05" and d.at.real_time == 1000, "where and when a save was made comes through")
+	check(d.at.players[2] == "kent" and d.at.junk == nil, "the players too, and nothing else")
+	local cl = rec.clone(r)
+	check(cl.at ~= r.at and cl.at.players ~= r.at.players and cl.at.players[1] == "stormie", "a clone has its own copy")
+	r.at = { players = "x", level = 5 }
+	check(rec.decode(rec.encode(r, codec), codec).at == nil, "an `at` with nothing usable in it is dropped")
+	r.at = "junk"
+	check(rec.decode(rec.encode(r, codec), codec).at == nil, "and one that is no table")
+end
+
 finish()

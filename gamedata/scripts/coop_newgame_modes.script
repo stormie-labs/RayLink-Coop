@@ -327,13 +327,16 @@ local function flag(ctl)
 	return nil
 end
 
--- What the record takes from the stock controls: the name, the group's faction and the creation flags of the world
-local function record_meta(dlg)
+-- What the record takes from the stock controls: the name, the group's faction and the creation flags of the world; and the
+-- title the player typed in the Co-op window before this screen.
+function record_meta(dlg)
 	local name = ""
 	local ok, text = pcall(function() return dlg.character_name:GetText() end)
 	if ok and type(text) == "string" then name = text end
+	local games = mod("coop_games")
 	return {
 		name = name,
+		title = games and games.take_new_title and games.take_new_title() or nil,
 		faction = type(dlg.selected_faction) == "string" and dlg.selected_faction or nil,
 		world = {
 			story = flag(dlg.ck_story), routes = flag(dlg.ck_routes),

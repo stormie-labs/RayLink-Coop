@@ -997,5 +997,61 @@ section("status")
 check(type(gs.status_line()) == "string" and gs.status_line():find(S1.id, 1, true) ~= nil, "status_line names the game")
 check(pcall(cs.print_status) and pcall(gs.print_status), "the status lines print")
 
+-------------------------------------------------------------------------------
+section("the chronicle window: title, where a save was made, the autosave's game")
+SET_GAME = {}
+SET_GAME_RESULT = true
+coop.autosave = { set_game = function(id) SET_GAME[#SET_GAME + 1] = id; return SET_GAME_RESULT end }
+level.name = function() return "k00_marsh" end
+game = game or {}
+game.get_game_time = function()
+	return { get = function() return 2012, 3, 15, 7, 5, 0, 0 end }
+end
+local keep_session = SESSION
+SESSION = { players = { { nick = "stormie" }, { nick = "kent" } } }
+local RT = rc.new({}, { name = "Stalker", title = "With Kent", faction = "stalker" })
+GAME.staged = nil
+assert(gs.stage_new(RT))
+gs.before_world_start("new", "")
+check(SET_GAME[#SET_GAME] == RT.id, "a game in force gives its id to the autosaves")
+check(RT.id:find("^[0-9a-z%-]+$") ~= nil and #RT.id <= 32, "the id of a record is one the engine takes (" .. RT.id .. ")")
+check(gs.autosave_game("g-1") == true and SET_GAME[#SET_GAME] == "g-1", "the window names the ring on every choice of a game")
+check(gs.autosave_game(nil) == true and SET_GAME[#SET_GAME] == "", "no game: the old ring")
+SET_GAME_RESULT = false
+check(gs.autosave_game("Bad_Id") == false, "an id the engine refuses: no error, and the caller can tell")
+SET_GAME_RESULT = true
+gs.autosave_game(RT.id)
+check(gs.active().title == "With Kent", "the new game's title is in the record")
+local m = {}
+gs.save_state(m)
+check(m.coop_game and m.coop_game.at and m.coop_game.at.level == "k00_marsh", "every save says where it was made")
+check(m.coop_game.at.game_time == "15/03/2012 07:05", "at what time of the game (the form of coop_saves.details)")
+check(type(m.coop_game.at.real_time) == "number", "and of the real world")
+check(m.coop_game.at.players[1] == "stormie" and m.coop_game.at.players[2] == "kent", "and who was there")
+check(gs.active().at == nil, "the record itself carries no `at`")
+check(card_of(RT.id).title == "With Kent" and card_of(RT.id).at == nil, "the card has the title and no `at`")
+VFS[SAVES .. "atsave.scoc"] = marshal.encode(m)
+MTIME[SAVES .. "atsave.scoc"] = 99
+local gid, grec = gs.game_of_save("atsave")
+check(gid == RT.id and grec.at and grec.at.level == "k00_marsh" and grec.title == "With Kent", "game_of_save gives it back without opening the save")
+local found
+for _, g in ipairs(gs.list_games()) do if g.id == RT.id then found = g end end
+check(found and found.title == "With Kent", "list_games has the title")
+gs.before_world_start("load", "atsave")
+check(gs.active() and gs.active().id == RT.id and gs.active().at == nil and SET_GAME[#SET_GAME] == RT.id, "a load: the same game, `at` stays in the save")
+local n_set = #SET_GAME
+gs.before_world_start("load", "nothing_here")
+check(SET_GAME[n_set + 1] == "" and gs.active() == nil, "a world without a game: the old autosave names")
+coop.autosave = {}
+check(pcall(gs.before_world_start, "new", ""), "an exe without set_game works")
+check(gs.autosave_game("g1") == false, "and says nothing was set")
+coop.autosave = nil
+check(pcall(gs.before_world_start, "new", ""), "and one without coop.autosave")
+level.name = nil
+gs.before_world_start("load", "atsave")
+local m2 = {}
+check(pcall(gs.save_state, m2) and m2.coop_game and m2.coop_game.at == nil or (m2.coop_game and m2.coop_game.at.level == nil), "no level name: the save is still written")
+SESSION = keep_session
+
 print(string.format("%d passed, %d failed", PASSES, FAILS))
 os.exit(FAILS == 0 and 0 or 1)

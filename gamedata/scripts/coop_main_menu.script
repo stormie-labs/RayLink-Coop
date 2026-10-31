@@ -1,0 +1,516 @@
+--[[
+	Anomaly Coop - the main menu "Halt" (gamedata\scripts\coop_main_menu.script)
+
+	A view of its own over the stock menu. The class ui_main_menu.main_menu, its handlers and the widget CUIMMShniaga all stay and keep
+	their work, because the mods of a pack lean on them (main_menu_on_init, wrapped OnButton_*, buttons added to the XML lists):
+	the widget goes silent, its list is read from it, and a press goes through it, to the same callbacks by name as a click. So a
+	button of a mod is an item here with no word about it in this file.
+
+		coop_main_menu.attach(menu)      from main_menu_on_init (modxml_coop_menu), for every menu window the engine makes
+
+	The engine makes a menu window on every show and on a change of the screen's shape, so nothing here outlives its window: the view
+	sits in menu.coop_view and is built anew. A theme (main_menu in coop_menu_theme) holds all of the look and can turn it off.
+	An exe without the widget's methods, a failure while building or in any frame: the view is gone and the stock menu is there
+	and works; that is what the root window and the one log line are for.
+--]]
+
+local type, ipairs, pcall, tostring, rawget = type, ipairs, pcall, tostring, rawget
+local min, max = math.min, math.max
+
+local XML_FILE = "ui_coop_chronicle.xml"
+local UI_W, UI_H = 1024, 768
+local WIDGET_API = { "GetButtonCount", "GetButtonName", "GetButtonCaption", "PressButton", "SetSilent" }
+
+local K, G, UI -- coop_menu_kit, coop_games, coop_ui_kit: scripts, loaded by _G when the first view is built
+
+local function log(fmt, ...)
+	local pf = rawget(_G, "printf")
+	if not pf then return end
+	local ok, line = pcall(string.format, fmt, ...)
+	pcall(pf, "%s", "[coop-main-menu] " .. (ok and line or tostring(fmt)))
+end
+
+local function tr(id, ...)
+	local s = game and game.translate_string and game.translate_string(id) or id
+	s = tostring(s)
+	local n = select("#", ...)
+	if n > 0 then
+		local args, i = { ... }, 0
+		s = s:gsub("%%s", function()
+			i = i + 1
+			return tostring(args[i] == nil and "" or args[i])
+		end)
+	end
+	return s
+end
+
+local function level_loaded()
+	return level and level.present and level.present() and true or false
+end
+
+local function has_widget_api(sh)
+	if not sh then return false end
+	for _, name in ipairs(WIDGET_API) do
+		local ok, fn = pcall(function() return sh[name] end)
+		if not (ok and fn) then return false end
+	end
+	return true
+end
+
+local View = {}
+View.__index = View
+
+-------------------------------------------------------------------------------
+-- What the list says
+-------------------------------------------------------------------------------
+-- Title, place, date of the save "continue" loads.
+local function last_save_sub()
+	local e = G.last_save()
+	if not e then return nil end
+	local line, parts = { e.title, e.level_text, G.day_time_text(e.stamp) }, {}
+	for i = 1, 3 do -- not ipairs: a save with no place has a hole in the middle
+		local s = line[i]
+		if type(s) == "string" and s ~= "" then parts[#parts + 1] = s end
+	end
+	return table.concat(parts, ", "), e.level
+end
+
+local function coop_sub()
+	local games = #G.list()
+	local most = 8
+	local ok, n = pcall(function() return coop_menu.max_players() end)
+	if ok and n then most = n end
+	if games == 0 then return tr("st_coop_mm_sub_coop_none", most) end
+	return tr("st_coop_mm_sub_coop", games, most)
+end
+
+-- The buttons of the page the widget shows: names and captions are the widget's, the rest is the theme's.
+function View:read_items()
+	local sh, M = self.menu.shniaga, self.M
+	local all, taken, out = {}, {}, {}
+	for i = 0, sh:GetButtonCount() - 1 do
+		local name = sh:GetButtonName(i)
+		if name then all[#all + 1] = { name = name, caption = sh:GetButtonCaption(i) or "" } end
+	end
+	for _, want in ipairs(M.first) do
+		for _, it in ipairs(all) do
+			if it.name == want and not taken[it] then
+				taken[it] = true
+				out[#out + 1] = it
+			end
+		end
+	end
+	for _, it in ipairs(all) do
+		if not taken[it] then out[#out + 1] = it end
+	end
+	for i = #out, M.rows + 1, -1 do
+		log("! no room for the button %s", tostring(out[i].name))
+		out[i] = nil
+	end
+
+	local level_art = self.in_level and G.art_of(level.name(), self.T.art) or nil
+	for _, it in ipairs(out) do
+		local sub_id = M.subs[it.name]
+		it.sub = sub_id and tr(sub_id) or ""
+		local place = nil
+		if it.name == "btn_lastsave" then
+			local text, save_level = last_save_sub()
+			it.sub, place = text or "", save_level
+		elseif it.name == "btn_coop" then
+			it.sub = coop_sub()
+		end
+		if not self.in_level and M.captions[it.name] then it.caption = tr(M.captions[it.name]) end
+		it.art = level_art or (place and G.art_of(place, self.T.art)) or G.art_named(M.arts[it.name], self.T.art)
+	end
+	return out
+end
+
+-------------------------------------------------------------------------------
+-- Building
+-------------------------------------------------------------------------------
+function View:build_back()
+	local ui = self.ui
+	ui:full_box("ink")
+	self.hero = ui:hero(self.root)
+	for _, tex in ipairs(self.M.shade_strips) do ui:full_box("shade", tex) end
+end
+
+function View:build_embers()
+	local ui, E = self.ui, self.M.embers
+	self.embers = {}
+	self.ember_v = vector2()
+	for i = 1, E.count do
+		local n = i - 1
+		local w = ui:box(self.root, 0, 0, E.size, E.size, "accent_hi", "coop_menu_soft")
+		w:SetTextureColor(ui:color("accent_hi", 0))
+		self.embers[i] = {
+			w = w,
+			x = E.left + (n * E.x_step) % E.x_span,
+			life = E.life + (n * E.life_step) % E.life_span,
+			delay = n * E.delay_step,
+			shift = (n % 2 == 1 and 1 or -1) * (E.shift + (n * E.shift_step) % E.shift_span),
+		}
+	end
+end
+
+function View:build_logo()
+	local ui, Logo = self.ui, self.M.logo
+	if Logo.texture == "" or not G.texture_exists(Logo.texture) then return end
+	local tw, th = Logo.size[1], Logo.size[2]
+	local r = Logo.rect
+	local rw, rh = r[3] - r[1], r[4] - r[2]
+	if rw <= 0 or rh <= 0 then r, rw, rh = nil, tw, th end
+	local h = Logo.w * rh / rw
+	local g = ui:block("mm_logo", Logo.x, Logo.y, Logo.w, h)
+	local w = ui:image(g)
+	ui:place(w, 0, 0, Logo.w, h)
+	w:InitTexture(Logo.texture)
+	if r then w:SetTextureRect(Frect():set(r[1], r[2], r[3], r[4])) end
+	w:SetTextureColor(ui:color("white", 0))
+	self.logo_g, self.logo_w, self.logo_feather = g, w, {}
+	self.logo_h = h
+	local f = Logo.feather
+	if f > 0 then
+		ui:box(g, 0, 0, f, h, "shade", "coop_menu_ramp_l", self.logo_feather)
+		ui:box(g, Logo.w - f, 0, f, h, "shade", "coop_menu_ramp_r", self.logo_feather)
+		ui:box(g, 0, 0, Logo.w, f, "shade", "coop_menu_ramp_t", self.logo_feather)
+		ui:box(g, 0, h - f, Logo.w, f, "shade", "coop_menu_ramp_b", self.logo_feather)
+		ui:fade(self.logo_feather, 0)
+	end
+end
+
+function View:build_list()
+	local ui, M = self.ui, self.M
+	local B = M.layout.list
+	self.list = ui:block("mm_list", B.x, B.y, B.w, B.bottom - B.y)
+	self.corner_list = {}
+	self.corners = ui:corners(self.list, "accent", self.corner_list)
+	ui:fade(self.corner_list, 0)
+	self.rows = {}
+	for i = 1, M.rows do
+		local r = { index = i, open = K.tween(0), hot = K.tween(0) }
+		r.title = ui:label(self.list, 0, 0, B.w, B.title_h, "mm_item", "l")
+		r.sub = ui:label(self.list, 0, 0, B.w, B.sub_h, "mm_sub", "l")
+		r.hit = ui:hit(self.list, 0, 0, B.w, B.row_h, "mm_row_" .. i, false)
+		r.hit:Show(false)
+		r.title:SetText("")
+		r.sub:SetText("")
+		ui:fade_text(r.title, "dim", 0)
+		ui:fade_text(r.sub, "dim", 0)
+		self.menu:AddCallback("mm_row_" .. i, ui_events.BUTTON_CLICKED, function() self:press(i) end, self.menu)
+		ui:on_hover(r.hit, function(on)
+			if on and self.items[i] then self:select(i, self.now) end
+		end)
+		self.rows[i] = r
+	end
+end
+
+function View:build_foot()
+	local ui, B = self.ui, self.M.layout.foot
+	local x = self.T.design.w - B.right - B.w
+	local y = self.T.design.h - B.bottom - B.h
+	local g = ui:block("mm_foot", x, y, B.w, B.h)
+	self.foot = {}
+	local version = ui:label(g, 0, 0, B.w, B.h, "mm_foot_on", "r", self.foot)
+	local flavor = rawget(_G, "anomaly_flavor") and anomaly_flavor.get_flavor and anomaly_flavor.get_flavor() or nil
+	local line = tr("ui_st_game_version")
+	if type(flavor) == "string" and flavor ~= "" then line = line .. " - " .. flavor end
+	version:SetText(line)
+	version:AdjustWidthToText()
+	local width = version:GetWidth() / (self.ui.L.s * self.ui.L.kx)
+	ui:place(version, 0, 0, B.w, B.h)
+	local nick = ui:label(g, 0, 0, B.w - width - B.gap, B.h, "mm_foot", "r", self.foot)
+	local ok, name = pcall(function() return coop_menu.plain(coop_menu.get_nick()) end)
+	nick:SetText(ok and type(name) == "string" and name or "")
+	ui:fade(self.foot, 0)
+end
+
+-- Every picture of the list into the cold-start menu's first frame, which takes seconds anyway: under the pointer a texture is loaded
+-- on its first draw, and that would be a stall on the first pass over the list. In a level the list has one picture.
+function View:touch_arts()
+	if self.in_level then return end
+	local seen = {}
+	for _, it in ipairs(self.items) do
+		if it.art and not seen[it.art] then
+			seen[it.art] = true
+			local b = self.ui:image(self.root)
+			b:SetWndRect(Frect():set(0, 0, 1, 1))
+			b:InitTexture(it.art)
+			b:SetTextureColor(self.ui:color("white", 0))
+		end
+	end
+end
+
+-- The rows of the items. Sizes: a list that does not fit closes up.
+function View:bind_list(now)
+	local B = self.M.layout.list
+	self.items = self:read_items()
+	self.page = self.menu.shniaga.GetPage and self.menu.shniaga:GetPage() or 0
+	self.on = 1
+	local free = B.bottom - B.y - B.sub_gap - B.sub_h
+	self.step = max(B.min_h, min(B.row_h, #self.items > 0 and free / #self.items or B.row_h))
+	self.top = B.top * self.step / B.row_h
+	for i, r in ipairs(self.rows) do
+		local it = self.items[i]
+		r.hit:Show(it ~= nil)
+		r.primary = i == 1
+		if it then
+			r.has_sub = it.sub ~= ""
+			r.title:SetText(it.caption)
+			r.sub:SetText(it.sub)
+			self.ui:style(r.title, r.primary and "mm_item_primary" or "mm_item")
+			K.tween_set(r.open, i == 1 and 1 or 0)
+			K.tween_set(r.hot, i == 1 and 1 or 0)
+		else
+			r.title:SetText("")
+			r.sub:SetText("")
+		end
+	end
+	self.cur_y, self.cur_h = K.tween(0), K.tween(self:row_height(1))
+	if self.items[1] then self.hero:show(self.items[1].art, now, 0) end
+	self.busy_until = now + self:entrance_end()
+	self.moving, self.arriving = true, true
+end
+
+function View:row_height(i)
+	local B, r = self.M.layout.list, self.rows[i]
+	return self.step + ((r and r.has_sub) and B.sub_gap + B.sub_h or 0)
+end
+
+-------------------------------------------------------------------------------
+-- The picture and the pick
+-------------------------------------------------------------------------------
+function View:select(i, now)
+	if i == self.on or not self.items[i] then return end
+	local A, ms = self.M.anim, function(v) return self.ui:ms(v) end
+	local old, new = self.rows[self.on], self.rows[i]
+	K.tween_to(old.open, 0, now, ms(A.row), 0, self.settle)
+	K.tween_to(new.open, 1, now, ms(A.row), 0, self.settle)
+	K.tween_to(old.hot, 0, now, ms(A.color))
+	K.tween_to(new.hot, 1, now, ms(A.color))
+	K.tween_to(self.cur_y, (i - 1) * self.step, now, ms(A.cursor), 0, self.settle)
+	K.tween_to(self.cur_h, self:row_height(i), now, ms(A.cursor), 0, self.settle)
+	self.on = i
+	self.hero:show(self.items[i].art, now, ms(A.art_fade), self.ease)
+	self.busy_until = max(self.busy_until, now + max(A.row, max(A.color, A.cursor)))
+	self.moving = true
+end
+
+function View:press(i)
+	local it = self.items[i]
+	if not it then return end
+	self:select(i, self.now)
+	local ok, err = pcall(function() return self.menu.shniaga:PressButton(it.name) end)
+	if not ok then log("! the button %s: %s", tostring(it.name), tostring(err)) end
+end
+
+-- The co-op window gives back the screen it had: from that picture to the one of the pick, with no flash.
+function View:take_art(tex)
+	local now = device():time_continual() -- this view has not ticked while the window was over it
+	self.hero:show(tex, now, 0)
+	local it = self.items[self.on]
+	if it then self.hero:show(it.art, now, self.ui:ms(self.M.anim.art_fade), self.ease) end
+end
+
+-------------------------------------------------------------------------------
+-- Every frame
+-------------------------------------------------------------------------------
+function View:entrance_end()
+	local A = self.M.anim
+	if not self.ui.motion then return 0 end
+	local last = A.item_delay + A.item_step * max(0, #self.items - 1) + A.item_in
+	return self.pace * max(A.logo_delay + A.logo_in, max(last, A.foot_delay + A.foot_in))
+end
+
+-- 0..1 of a part of the entrance.
+function View:entrance(now, delay, dur)
+	if not self.ui.motion then return 1 end
+	return self.settle(K.after(now, self.t0, delay * self.pace, dur * self.pace))
+end
+
+function View:anim_entrance(now)
+	local A, ui = self.M.anim, self.ui
+	if self.logo_w then
+		local u = self:entrance(now, A.logo_delay, A.logo_in)
+		local Logo = self.M.logo
+		ui:place(self.logo_w, 0, A.logo_shift * (u - 1), Logo.w, self.logo_h)
+		self.logo_w:SetTextureColor(ui:color("white", u))
+		ui:fade(self.logo_feather, u)
+	end
+	ui:fade(self.foot, self:entrance(now, A.foot_delay, A.foot_in))
+	ui:fade(self.corner_list, self:entrance(now, A.item_delay, A.item_in))
+end
+
+function View:anim_list(now)
+	local ui, M = self.ui, self.M
+	local B, C, A = M.layout.list, M.layout.cursor, M.anim
+	local y = 0
+	for i = 1, #self.items do
+		local r = self.rows[i]
+		local open = K.tween_at(r.open, now)
+		local extra = r.has_sub and open * (B.sub_gap + B.sub_h) or 0
+		local h = self.step + extra
+		local u = self:entrance(now, A.item_delay + (i - 1) * A.item_step, A.item_in)
+		local x = A.item_shift * (u - 1) + K.mix(B.pad, B.pad_on, open)
+		ui:place(r.title, x, y + self.top, B.w - x, B.title_h)
+		ui:fade_text(r.title, "dim", u)
+		if not r.primary then r.title:SetTextColor(ui:mix("dim", "text", K.tween_at(r.hot, now))) end
+		if r.has_sub then
+			ui:place(r.sub, x, y + self.top + B.title_h + B.sub_gap, B.w - x, B.sub_h)
+			ui:fade_text(r.sub, "dim", u * open)
+		end
+		ui:place(r.hit, 0, y, B.w, h)
+		y = y + h
+	end
+	ui:place_corners(self.corners, 0, K.tween_at(self.cur_y, now), C.w, K.tween_at(self.cur_h, now), C.len, C.thick)
+end
+
+function View:anim_embers(now)
+	if not self.ui.motion then return end
+	local E, L, v = self.M.embers, self.ui.L, self.ember_v
+	local base_y = L:y(self.T.design.h - E.size / 2 + 12, 1)
+	for _, e in ipairs(self.embers) do
+		local u = ((now + e.delay) % e.life) / e.life
+		local a
+		if u < E.peak_at then
+			a = K.mix(0, E.peak, u / E.peak_at)
+		elseif u < E.mid_at then
+			a = K.mix(E.peak, E.mid, (u - E.peak_at) / (E.mid_at - E.peak_at))
+		else
+			a = K.mix(E.mid, 0, (u - E.mid_at) / (1 - E.mid_at))
+		end
+		e.w:SetWndPos(v:set(L:x(e.x + e.shift * u, 0) * L.kx, (base_y - E.rise * L.s * u) * L.ky))
+		e.w:SetTextureColor(self.ui:color("accent_hi", a))
+	end
+end
+
+function View:tick(now)
+	self.now = now
+	local sh = self.menu.shniaga
+	if sh.GetPage and sh:GetPage() ~= self.page then self:bind_list(now) end
+	self:hover()
+	self.hero:draw(now)
+	self:anim_embers(now)
+	if self.arriving then -- to the end of the entrance, whatever the frames do: the last one stands at 1
+		self:anim_entrance(now)
+		self.arriving = now < self.t0 + self:entrance_end()
+	end
+	if self.moving then
+		self:anim_list(now)
+		self.moving = now < self.busy_until
+	end
+end
+
+-- A pointer that rests on a row when the menu opens picks nothing until it moves: the list opens on its first item.
+function View:hover()
+	if not self.pointer_moved then
+		local ok, p = pcall(GetCursorPosition)
+		if not ok or not p then
+			self.pointer_moved = true
+		elseif self.pointer_x == nil then
+			self.pointer_x, self.pointer_y = p.x, p.y
+		else
+			self.pointer_moved = p.x ~= self.pointer_x or p.y ~= self.pointer_y
+		end
+	end
+	if self.pointer_moved then self.ui:hover() end
+end
+
+-- The menu's Update runs twice in a frame, and the clock stands still inside one.
+-- A long frame stops the entrance instead of eating it: the very first one of the cold-start menu takes seconds (the textures of
+-- the whole menu), and nobody would see the logo and the list come in.
+function View:update()
+	local now = device():time_continual()
+	if now == self.last then return end
+	local gap = now - (self.last or now)
+	if gap > self.M.anim.stall then
+		self.t0, self.busy_until = self.t0 + gap, self.busy_until + gap
+	end
+	self.last = now
+	local ok, err = pcall(self.tick, self, now)
+	if not ok then self:drop(err) end
+end
+
+-- Anything wrong: the stock menu is under this view and alive.
+function View:drop(err)
+	log("! the view is gone, the stock menu stays: %s", tostring(err))
+	self.menu.coop_view = nil
+	pcall(function() self.menu.shniaga:SetSilent(false) end)
+	if self.root then pcall(function() self.root:Show(false) end) end
+end
+
+-------------------------------------------------------------------------------
+-- The seams of the stock class
+-------------------------------------------------------------------------------
+local hooked = false
+
+function on_keyboard(dik, action, menu)
+	if action ~= ui_events.WINDOW_KEY_PRESSED then return end
+	local v = menu and menu.coop_view
+	if not v then return end
+	local keys = DIK_keys
+	if dik == keys.DIK_UP then
+		v:select((v.on - 2) % #v.items + 1, v.now)
+	elseif dik == keys.DIK_DOWN then
+		v:select(v.on % #v.items + 1, v.now)
+	elseif dik == keys.DIK_RETURN or dik == keys.DIK_NUMPADENTER then
+		v:press(v.on)
+	end
+end
+
+-- Once in a script state. The Update of the class, not of the window: luabind finds a method of a script class there.
+local function hook()
+	if hooked then return end
+	hooked = true
+	RegisterScriptCallback("main_menu_on_keyboard", on_keyboard)
+	local cls = ui_main_menu.main_menu
+	local stock = cls.Update
+	cls.Update = function(self)
+		stock(self)
+		local v = self.coop_view
+		if v then v:update() end
+	end
+end
+
+function attach(menu)
+	local T = coop_menu_theme_base.load()
+	if not T.main_menu.enabled then return false end
+	if not has_widget_api(menu.shniaga) then
+		log("this exe has no list of the widget: the stock menu stays")
+		return false
+	end
+	K, G, UI = coop_menu_kit, coop_games, coop_ui_kit
+	local M = T.main_menu
+	local now = device():time_continual()
+	local self = setmetatable({ menu = menu, T = T, M = M, rows = {}, items = {}, on = 1, t0 = now, now = now, in_level = level_loaded() }, View)
+	self.settle = K.easing(M.anim.settle)
+	self.ease = K.easing(T.anim.ease)
+	self.pace = self.in_level and M.anim.in_level or 1
+	local ok, err = pcall(function()
+		menu.shniaga:SetSilent(true)
+		self.ui = UI.new(menu, XML_FILE, T)
+		self.root = self.ui.xml:InitStatic("tpl_free", menu)
+		self.root:SetWndRect(Frect():set(0, 0, UI_W, UI_H))
+		self.ui.parent = self.root
+		self.ui:flush_text(self.root) -- the stock version lines lie under the view, and text is drawn after every static
+		self:build_back()
+		self:build_embers()
+		self:build_logo()
+		self:build_list()
+		self:build_foot()
+		self:bind_list(now)
+		self:touch_arts()
+		self:anim_entrance(now)
+		self:anim_list(now)
+		hook()
+		-- the hints of the stock menu (SetMsg) stay on top: they were there before the view
+		menu:DetachChild(menu.msg_wnd)
+		menu:AttachChild(menu.msg_wnd)
+		menu.coop_view = self
+	end)
+	if not ok then
+		self:drop(err)
+		return false
+	end
+	return true
+end

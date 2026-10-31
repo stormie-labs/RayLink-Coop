@@ -1,11 +1,11 @@
 -- Anomaly Coop F3 task 17 temp test: nobody saves or loads by hand in a co-op session, the stock save modes are
 -- neutralized, the host restores from the emergency autosaves coop_auto_N.
--- Real scripts: coop_saves, coop_core_player, coop_menu; real layouts ui_coop_menu.xml / ui_coop_saves.xml; real string
+-- Real scripts: coop_saves, coop_core_player, coop_menu; real layouts ui_coop_chronicle.xml / ui_coop_saves.xml; real string
 -- tables st_coop_saves.xml. The engine, the stock game_autosave_new / ui_main_menu and the file system are stand-ins
 -- (menu_stubs.lua). Not shipped. Run: tools\test_lua.cmd saves
 dofile("tests/lua/support/menu_stubs.lua")
 
-XML_FILES["ui_coop_menu.xml"] = xml_paths(ROOT .. "configs/ui/ui_coop_menu.xml")
+XML_FILES["ui_coop_chronicle.xml"] = xml_paths(ROOT .. "configs/ui/ui_coop_chronicle.xml")
 XML_FILES["ui_coop_saves.xml"] = xml_paths(ROOT .. "configs/ui/ui_coop_saves.xml")
 
 local function read_file(path)
@@ -83,7 +83,7 @@ axr_main = { config = config_stub() }
 CONSOLE = {}
 function get_console_cmd(typ, name) return CONSOLE[name] end
 FRAME = 1
-function device() return { time_continual = function() return NOW end, frame = FRAME } end
+function device() return { width = 1920, height = 1080, time_continual = function() return NOW end, frame = FRAME } end
 
 -- ------------------------------------------------------------------ the saves folder
 FS = { FS_ListFiles = 1, FS_RootOnly = 2, FS_sort_by_modif_down = 5 }
@@ -480,23 +480,12 @@ end
 
 set_mode("off")
 local dlg = open_window()
-check(dlg ~= nil and dlg.btn_restore ~= nil, "the window has a Restore button")
-check(dlg.btn_restore.enabled == false, "no session: Restore disabled")
-check(dlg.btn_restore.text == STRINGS.st_coop_saves_btn_restore and dlg.btn_restore.text ~= "", "Restore caption comes from st_coop_saves")
-click(dlg, "btn_restore")
-check(dlg.shown and dlg.restore_dlg == nil, "no session: clicking Restore opens nothing")
-check(dlg.status_error.text == STRINGS.st_coop_saves_restore_failed_not_host, "and says why")
-set_mode("client")
-dlg:Refresh()
-check(dlg.btn_restore.enabled == false, "client: Restore disabled")
+check(dlg ~= nil, "the Co-op window opens")
+-- The window goes back from its timeline (tests\lua\test_menu.lua); the list window of this script is reached by open_restore.
+local function open_list()
+	dlg.restore_dlg = saves.open_restore(dlg)
+end
 set_mode("host")
-dlg:Refresh()
-check(dlg.btn_restore.enabled == true, "host in a session: Restore enabled")
-check(dlg.btn_restore.shown, "Restore is on the host tab")
-click(dlg, "tab_join")
-check(dlg.btn_restore.shown == false, "Restore hidden on the join tab")
-click(dlg, "tab_host")
-check(dlg.btn_restore.shown, "Restore back on the host tab")
 
 -- open the list
 SAVES = {}
@@ -504,7 +493,7 @@ add_save("coop_auto_1.scop", 100)
 add_save("quicksave.scop", 400)
 add_save("coop_auto_2.scop", 300, { level = "l02_garbage" })
 EXEC, WRAPPED = {}, {}
-click(dlg, "btn_restore")
+open_list()
 local rd = dlg.restore_dlg
 check(rd ~= nil and rd.shown, "the restore window opens")
 check(not dlg.shown, "over the Co-op window")
@@ -532,7 +521,7 @@ check(#WRAPPED == 2, "a row looked at again is not read again")
 click(rd, "btn_back")
 check(not rd.shown and dlg.shown and dlg.visible ~= false, "Back returns to the Co-op window")
 -- open again, confirm
-click(dlg, "btn_restore")
+open_list()
 rd = dlg.restore_dlg
 click(rd, "btn_row_1")
 click(rd, "btn_confirm")
@@ -546,7 +535,7 @@ add_save("coop_auto_2.scop", 300, { size = 40, truncated = true })
 add_save("coop_auto_3.scop", 200, { bad = true, truncated = true })
 EXEC, WRAPPED = {}, {}
 set_mode("host")
-click(dlg, "btn_restore")
+open_list()
 rd = dlg.restore_dlg
 check(rd.rows[1].text:find(STRINGS.st_coop_saves_restore_row_damaged, 1, true) ~= nil
 	and not rd.rows[3].text:find(STRINGS.st_coop_saves_restore_row_damaged, 1, true), "a file that is too small is marked in its row")
@@ -569,7 +558,7 @@ add_save("coop_auto_2.scop", 300)
 
 -- the file is gone / the session ended between the list and the confirm
 set_mode("host")
-click(dlg, "btn_restore")
+open_list()
 rd = dlg.restore_dlg
 click(rd, "btn_row_1")
 SAVES = {}
@@ -587,7 +576,7 @@ click(rd, "btn_back")
 set_mode("host")
 SAVES = {}
 dlg:Refresh()
-click(dlg, "btn_restore")
+open_list()
 rd = dlg.restore_dlg
 check(rd.empty.shown and not rd.rows[1].shown and rd.btn_confirm.enabled == false, "no autosaves yet: the note, no rows")
 check(rd.empty.text ~= "" or STRINGS.st_coop_saves_restore_none ~= nil, "the empty note has a string")
@@ -630,7 +619,7 @@ add_save("coop_auto_1.scop", 100)
 add_save("coop_auto_2.scop", 300)
 set_mode("host")
 SUSPEND, EXEC = {}, {}
-click(dlg, "btn_restore")
+open_list()
 rd = dlg.restore_dlg
 check(SUSPEND[#SUSPEND] == true, "opening the window pauses the autosaves")
 local n_susp = #SUSPEND
@@ -642,7 +631,7 @@ click(rd, "btn_back")
 check(SUSPEND[#SUSPEND] == false, "Back lets the pause go")
 
 -- closed some other way (the main menu switched off, a hide from outside): nothing renews the pause, the engine's lease ends it
-click(dlg, "btn_restore")
+open_list()
 rd = dlg.restore_dlg
 rd:HideDialog()
 n_susp = #SUSPEND
@@ -650,7 +639,7 @@ rd:Update()
 check(#SUSPEND == n_susp, "a window that is not shown renews nothing")
 
 -- the load: the pause is let go after the command is given (the engine starts the interval afresh)
-click(dlg, "btn_restore")
+open_list()
 rd = dlg.restore_dlg
 click(rd, "btn_row_1")
 EXEC = {}
@@ -668,7 +657,7 @@ check(okr == false and #SUSPEND == 0, "a refused restore touches nothing")
 -- an exe whose coop table has no autosave: the window works as before
 local autosave_api = coop.autosave
 coop.autosave = nil
-click(dlg, "btn_restore")
+open_list()
 rd = dlg.restore_dlg
 check(rd ~= nil and rd.shown, "no coop.autosave: the window still opens")
 rd:Update()
@@ -713,13 +702,14 @@ check(rus_raw:find("\202\238\238\239\229\240\224\242\232\226", 1, true) ~= nil, 
 local used = {}
 local function collect(path, pat, prefix)
 	local src = read_file(path) or ""
-	for key in src:gmatch(pat) do used[(prefix or "") .. key] = path end
+	for key in src:gmatch(pat) do
+		if key:sub(-1) ~= "_" then used[(prefix or "") .. key] = path end -- a prefix completed at run time: the reasons below
+	end
 end
 collect(ROOT .. "scripts/coop_saves.script", 'text%("([%w_]+)"', "st_coop_saves_")
 collect(ROOT .. "scripts/coop_saves.script", 'hint%("([%w_]+)"', "st_coop_saves_")
 collect(ROOT .. "scripts/coop_saves.script", '"(st_coop_saves_[%w_]+)"')
 collect(ROOT .. "configs/ui/ui_coop_saves.xml", ">(st_coop_[%w_]+)<")
-collect(ROOT .. "configs/ui/ui_coop_menu.xml", ">(st_coop_saves_[%w_]+)<")
 collect(ROOT .. "scripts/coop_menu.script", 'text%("([%w_]+)"', "st_coop_saves_")
 local absent, n_used = {}, 0
 for id, where in pairs(used) do
@@ -747,6 +737,41 @@ if engine_src then
 		"and only the save and load entries")
 else
 	print("  (engine sources not found: skipped)")
+end
+
+print("== the ring of a game: coop.autosave.parse_slot, the local rule on an old exe")
+do
+	SAVES = {}
+	add_save("coop_auto_6ae366d4-db00_2.scop", 500)
+	add_save("coop_auto_3.scop", 400)
+	add_save("quicksave.scop", 300)
+	add_save("coop_auto_tmp.scop", 200)
+	local function names()
+		local t = {}
+		for _, e in ipairs(saves.list_autosaves()) do t[e.name] = e.slot end
+		return t
+	end
+	local n = names()
+	check(n.coop_auto_3 == 3 and n["coop_auto_6ae366d4-db00_2"] == nil and n.quicksave == nil, "an exe without parse_slot: the old ring, the local rule")
+	coop.autosave.parse_slot = function(stem) return stem:match("^coop_auto_6ae366d4%-db00_(%d+)$") and tonumber(stem:match("(%d+)$")) or nil end
+	n = names()
+	check(n["coop_auto_6ae366d4-db00_2"] == 2 and n.coop_auto_3 == nil, "with the game set: the engine's rule, the running game's ring")
+	set_mode("host")
+	EXEC = {}
+	local ok3, why3 = saves.restore("quicksave")
+	check(ok3 == false and why3 == "bad_name" and #EXEC == 0, "restore without a game: autosaves only")
+	check(saves.restore("coop_auto_6ae366d4-db00_2") == true and EXEC[#EXEC] == "load coop_auto_6ae366d4-db00_2", "a slot of the ring")
+	coop_game_settings = { game_of_save = function(stem) return (stem == "quicksave" or stem == "coop_auto_3") and "g1" or nil end }
+	ok3, why3 = saves.restore("quicksave", "g2")
+	check(ok3 == false and why3 == "bad_name", "a save of another game is refused")
+	check(saves.restore("quicksave", "g1") == true and EXEC[#EXEC] == "load quicksave", "a save of the running game goes back like an autosave")
+	check(saves.restore("coop_auto_3", "g1") == true and EXEC[#EXEC] == "load coop_auto_3", "and so does an old slot of the same game: the chronicle shows it through its block")
+	coop.autosave.parse_slot = function() error("boom") end
+	check(names().coop_auto_3 == 3, "a parse_slot that fails: the local rule")
+	coop.autosave.parse_slot = nil
+	coop_game_settings = nil
+	set_mode("off")
+	check(type(saves.hold) == "function", "the pause of the autosaves is there for the window's confirmation")
 end
 
 print(string.format("%d passed, %d failed", PASSES, FAILS))

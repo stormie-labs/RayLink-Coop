@@ -1,0 +1,343 @@
+--[[
+	Anomaly Coop - what a theme of the co-op window has to say, and what stands in for it (coop_menu_theme_base.script)
+
+	The window's logic (coop_menu.script) holds no colour, font, art rule, duration or layout number. They are in a theme: a plain
+	table `theme` in coop_menu_theme.script. gamedata\ holds the one of plain Anomaly; the same path in a pack's layer replaces
+	it (gamedata_gamma\scripts\coop_menu_theme.script for G.A.M.M.A., the layer "Anomaly Coop - GAMMA" right above Core). This
+	file is never replaced: DEFAULTS is the complete table, so a theme names only what it changes, and a field that is missing or
+	broken takes the default instead of a crash. A new pack needs a theme in its own layer and no change in the code.
+
+	load() -> the resolved theme of this game, a fresh table each time (the window may keep it).
+
+	Colours are { r, g, b [, alpha 0..1] }; a role is a key of `colors`. Fonts: `fonts.register` is what the window hands to
+	RegisterFont(name, texture_base[, shader]); `fonts.roles` is role -> { name = for GetFontByName, stock = a stock font when
+	the exe has no such font }. Text styles: `text`, name -> { font = role, color = role }. Numbers of `layout` are pixels of a
+	1920 x 1080 design, durations are milliseconds, curves are the four numbers of a cubic-bezier.
+--]]
+
+local type, pairs, ipairs, pcall, tostring = type, pairs, ipairs, pcall, tostring
+
+DEFAULTS = {
+	-- false: nothing moves, every state is reached at once
+	motion = true,
+
+	design = { w = 1920, h = 1080 },
+
+	colors = {
+		accent = { 217, 171, 91 }, accent_hi = { 239, 199, 124 }, on_accent = { 20, 17, 10 },
+		text = { 236, 230, 216 }, dim = { 236, 230, 216, .68 }, faint = { 236, 230, 216, .42 }, line = { 236, 230, 216, .16 },
+		tile_line = { 236, 230, 216, .34 }, pick = { 236, 230, 216, .07 }, hover = { 236, 230, 216, .05 },
+		field = { 236, 230, 216, .07 },
+		ink = { 10, 11, 9 }, panel = { 12, 13, 11, .94 }, bar = { 9, 10, 8, .9 }, ghost = { 10, 11, 9, .5 }, label_bg = { 9, 10, 8, .84 },
+		map_bg = { 11, 12, 10 }, shade = { 8, 9, 7 }, modal_dim = { 0, 0, 0, .62 },
+		stop_fill = { 21, 20, 15 }, bullet_fill = { 27, 27, 22 }, halo = { 217, 171, 91, .24 }, accent_soft = { 217, 171, 91, .5 },
+		live = { 134, 210, 111 }, wait = { 224, 164, 88 }, idle = { 108, 108, 102 }, error = { 240, 120, 100 },
+		white = { 255, 255, 255 },
+	},
+
+	fonts = {
+		register = {
+			-- a font family: ui\ui_font_menu_title_h720 / _h1080 / _h1440, the engine takes the tier of the screen
+			{ name = "menu_title", texture = "ui\\ui_font_menu_title" },
+			{ name = "menu_head", texture = "ui\\ui_font_menu_head" },
+			{ name = "menu_item", texture = "ui\\ui_font_menu_item" },
+			{ name = "menu_time", texture = "ui\\ui_font_menu_time" },
+			{ name = "menu_body", texture = "ui\\ui_font_menu_body" },
+			{ name = "menu_small", texture = "ui\\ui_font_menu_small" },
+		},
+		roles = {
+			title = { name = "menu_title", stock = "graffiti50" },
+			head = { name = "menu_head", stock = "graffiti22" },
+			item = { name = "menu_item", stock = "graffiti32" },
+			time = { name = "menu_time", stock = "letterica25" },
+			body = { name = "menu_body", stock = "letterica18" },
+			small = { name = "menu_small", stock = "letterica16" },
+		},
+		edit = "body",
+	},
+
+	-- text styles of the window
+	text = {
+		mark = { font = "time", color = "accent" }, who = { font = "small", color = "dim" },
+		game_title = { font = "time", color = "dim" }, game_title_on = { font = "time", color = "text" },
+		game_sub = { font = "small", color = "faint" }, game_sub_on = { font = "small", color = "dim" },
+		hist_count = { font = "small", color = "faint" }, add = { font = "time", color = "dim" }, add_plus = { font = "body", color = "dim" },
+		h1 = { font = "title", color = "text" }, meta = { font = "body", color = "dim" }, meta_on = { font = "body", color = "text" },
+		play = { font = "head", color = "on_accent" }, ghost = { font = "body", color = "text" }, empty = { font = "body", color = "dim" },
+		cap = { font = "time", color = "text" }, cap_sub = { font = "small", color = "dim" },
+		tl_head = { font = "head", color = "text" }, tl_fold = { font = "small", color = "faint" }, tl_sub = { font = "small", color = "faint" },
+		tl_time = { font = "time", color = "text" }, tl_loc = { font = "body", color = "dim" }, tl_tag = { font = "small", color = "faint" },
+		tl_gap = { font = "small", color = "faint" }, tl_note = { font = "small", color = "dim" }, tl_roll = { font = "body", color = "on_accent" }, tl_more = { font = "small", color = "faint" },
+		stop_time = { font = "body", color = "accent" }, stop_loc = { font = "small", color = "text" },
+		status = { font = "body", color = "dim" }, status_sub = { font = "small", color = "faint" }, status_err = { font = "body", color = "error" },
+		join = { font = "body", color = "faint" }, go = { font = "body", color = "text" }, hint = { font = "small", color = "faint" },
+		link = { font = "body", color = "dim" }, field_hint = { font = "body", color = "faint" }, recent = { font = "body", color = "dim" },
+		modal_title = { font = "head", color = "text" }, modal_text = { font = "body", color = "dim" }, modal_ok = { font = "body", color = "on_accent" },
+		modal_no = { font = "body", color = "text" },
+		mm_item = { font = "item", color = "dim" }, mm_item_on = { font = "item", color = "text" }, mm_item_primary = { font = "item", color = "accent_hi" },
+		mm_sub = { font = "body", color = "dim" }, mm_foot = { font = "small", color = "faint" }, mm_foot_on = { font = "small", color = "dim" },
+	},
+
+	-- the art of a level
+	art = {
+		pattern = "intro\\intro_%s_%d", max_n = 12,
+		levels = {}, -- level -> texture: a pack can name its own
+		fallback = {}, -- textures to try when a level has no art; none: the ink colour shows
+		size = { 2048, 1024 }, -- of the textures, when the exe cannot say (GetTextureSize)
+		area = { x1 = .04, y1 = .07, x2 = .96, y2 = .71 }, -- the working area of the texture
+		pos = { x = .62, y = .38 }, -- which part of it fills the screen
+		thumb_pos = { x = .5, y = .5 }, -- and the picture of a save in the timeline
+		tint = { 255, 255, 255 },
+		drift_from = 1.01, drift_to = 1.08, drift_x = { -6, 10 }, -- zoom and shift (design pixels) of the slow drift
+		open_zoom = 1.14,
+	},
+
+	-- patches of the factions: textures of a stock atlas
+	patches = {
+		prefix = "ui_mm_faction_", fallback = "stalker",
+		known = { stalker = true, bandit = true, csky = true, dolg = true, freedom = true, killer = true, army = true, ecolog = true,
+			monolith = true, greh = true, renegade = true, isg = true },
+	},
+
+	map = {
+		w = 1920, h = 3840, -- the whole texture on the screen, design pixels
+		size = { 4096, 8192 }, -- of the texture, when the exe cannot say
+		tint = { 168, 160, 138 }, alpha = 1,
+		focus = { x = 880, y = 345 }, -- where the middle of a route sits on the open map
+		fit = { w = 640, h = 540 }, least = .5, -- the free part of the open map: the map zooms out until a route fits it, down to `least`
+		lit = { x1 = 420, x2 = 1330 }, -- the part of the screen the open shade leaves: the map keeps it covered
+		fade_h = 300, -- the south of the map fades into colors.map_bg
+		mirror = true, -- mirrored copies left and right, under the shade: the map opens without a dark edge on a wide screen
+		dot_step = 12, dot_size = 16, dot_limit = 220,
+		stop_limit = 16, other_limit = 7,
+		stop_size = 16, stop_halo = 30, stop_gap = 12, label_w = 340, label_h = 28, label_pad = 10, label_gap = 7,
+		patch = 54, ring = 76, other = 38, other_alpha = .82,
+		ring_from = .72, ring_to = 1.5,
+	},
+
+	-- full-screen shades: strips of the atlas (a pack can name its own), tinted by colors.shade
+	shades = {
+		base = { "coop_menu_shade_base_h", "coop_menu_shade_base_v" },
+		open = { "coop_menu_shade_open_h", "coop_menu_shade_open_v" }, -- the first one lies over the stage, the others over the screen
+		open_side = .98, -- beside the stage on a wide screen
+	},
+
+	corners = { len = 16, thick = 2, tile_len = 18, tile_inset = 6, row_inset = 5 },
+
+	-- which side of the screen a block keeps to on a screen of another shape: x, y; -1 start, 1 end, 0 with the stage
+	anchors = {
+		rail = { -1, -1 }, title = { -1, 1 }, tile = { 1, 1 }, timeline = { 1, -1 }, bar = { 0, 1 }, who = { 1, -1 },
+		mm_logo = { -1, -1 }, mm_list = { -1, -1 }, mm_foot = { 1, 1 },
+	},
+
+	layout = {
+		rail = { x = 64, y = 54, w = 468, mark_h = 24, list_y = 67, row_h = 83, step = 93, rows = 7, patch = 50, patch_off = .78, pad = 16, text_x = 82,
+			title_h = 32, sub_h = 22, pick_w = 386, hist_x = 402, hist_w = 66, hist_h = 78, hist_icon = 24, hist_ico_y = 14, hist_n_y = 42,
+			add_gap = 4, add_box = 50, add_pad = 14 },
+		who = { x = 1560, y = 18, w = 296, h = 24, dot = 8, gap = 10 },
+		title = { x = 600, y = 680, w = 860, h = 268, h1_y = 28, h1_h = 100, meta_y = 137, meta_h = 28, meta_gap = 30, acts_y = 192, acts_h = 76,
+			play_w = 237, play_notch = 18, play_icon = 30, play_pad = 30, play_gap = 14, gear_x = 249, gear_w = 76, gear_icon = 24,
+			ghost_x = 337, ghost_w = 300 },
+		tile = { x = 1516, y = 750, w = 340, h = 214, cap_h = 74, cap_pad = 14, cap_line = 34 },
+		timeline = { x = 1320, w = 600, top = 54, head_h = 34, sub_y = 40, sub_h = 22, list_y = 132, pad = 34, line_x = 40, line_y = 14, item_x = 68,
+			fold_w = 160, more_y = 30, more_line = 24,
+			gap_h = 26, gap_minutes = 30, -- the line between two rows: the day when it changes, a time without saves longer than this
+			item_w = 468, row_h = 46, rows = 14, row_pad = 14, time_w = 94, time_gap = 12, loc_w = 220, bullet = 11, bullet_line = 1.5, bullet_x = 35, more_gap = 2,
+			thumb_h = 138, note_y = 149, note_h = 30, roll_y = 184, roll_h = 48, roll_w = 212, roll_notch = 10, more_h = 242, right = 64 },
+		bar = { h = 84, pad = 48, dot = 12, status_x = 26, status_w = 760, status_two = 22, status_gap = 4, error_h = 48,
+			field_x = 1103, field_w = 290, field_h = 48, field_pad = 16, go_x = 1405, go_w = 106, label_w = 300, label_gap = 12,
+			hint_x = 1523, hint_w = 240, hint_h = 44, close_w = 120, recent_h = 40, chevron = 20, chevron_x = 10, chevron_hit = 18 },
+		modal = { w = 620, h = 320, pad = 32, title_h = 40, text_y = 80, text_h = 64, edit_y = 150, edit_h = 48, edit_pad = 14, btn_h = 48, btn_w = 170,
+			btn_gap = 12, notch = 10, top_y = 300 },
+	},
+
+	anim = {
+		-- curves
+		swing = { .62, .02, .18, 1 }, rise = { .2, .8, .2, 1 }, ease = { .25, .1, .25, 1 }, in_out = { .42, 0, .58, 1 }, out = { 0, 0, .58, 1 },
+		-- the map tile opening into the whole map; the camera moves with it. All of it reads as one quick move: done in about half a second
+		map_open = 450, map_close = 350, -- closing is never slower: nothing of the closing outlasts map_close
+		hero_fade = 900, hero_out = 350, hero_zoom = 450, drift = 28000,
+		shade_open = 300, shade_delay = 100,
+		tile_fade = 150,
+		timeline_slide = 350, timeline_delay = 80,
+		line_grow = 350, line_delay = 120,
+		tl_rise = 220, tl_delay = 120, tl_step = 28, tl_shift = 26, expand = 200, expand_late = .7,
+		route = 500, route_delay = 150,
+		stop_fade = 150, stop_delay = 150, stop_step = 70, stop_span = 450, stop_last_delay = 500,
+		other_fade = 200, other_delay = 350,
+		ping = 2600, ring_still = .75,
+		title_rise = 550, title_shift = 22, title_step = 80,
+		rail_in = 500, rail_step = 70, rail_shift = 20,
+		modal_fade = 180,
+	},
+
+	-- The main menu "Halt": a view of its own over the stock widget (coop_main_menu.script). The items are the widget's, by the name of
+	-- the button, so a mod's button appears by itself; everything here is keyed by that name and may leave a button out.
+	main_menu = {
+		enabled = true, -- false: the stock menu stays as it is
+		-- texture: none draws no logo. rect: the part of the texture, in its pixels; all zeros, the whole of it. feather: design pixels of
+		-- its edges that melt into colors.shade, for a logo that is only there baked into a picture
+		logo = { texture = "", x = 112, y = 74, w = 400, size = { 400, 200 }, rect = { 0, 0, 0, 0 }, feather = 0 },
+		first = { "btn_ret", "btn_lastsave", "btn_coop" }, -- these lead the list, the others follow in the widget's order
+		captions = { btn_lastsave = "st_coop_mm_continue" }, -- string ids that replace the widget's caption in the cold-start menu
+		subs = { -- the line under a button: string ids. btn_lastsave and btn_coop have theirs from the data
+			btn_ret = "st_coop_mm_sub_ret", btn_newgame = "st_coop_mm_sub_new", btn_load = "st_coop_mm_sub_load", btn_save = "st_coop_mm_sub_save",
+			btn_options = "st_coop_mm_sub_options", btn_mcm = "st_coop_mm_sub_mcm", btn_originals = "st_coop_mm_sub_originals",
+			btn_quit = "st_coop_mm_sub_quit", btn_quit_to_mm = "st_coop_mm_sub_quit_mm",
+		},
+		arts = {}, -- the picture of a button in the cold-start menu, a texture; btn_lastsave shows the place of the save when it is known, in a level every button shows that level
+		rows = 14, -- the most buttons the view has room for
+		shade_strips = { "coop_menu_shade_mm_h", "coop_menu_shade_mm_v" },
+		layout = {
+			list = { x = 112, y = 372, w = 620, bottom = 1040, row_h = 66, min_h = 48, top = 13, title_h = 40, pad = 22, pad_on = 34, sub_gap = 6, sub_h = 27 },
+			cursor = { w = 520, len = 20, thick = 2 },
+			foot = { right = 56, bottom = 34, h = 22, gap = 26, w = 900 },
+		},
+		embers = { count = 16, size = 14, left = 180, x_step = 137, x_span = 1500, life = 11000, life_step = 7000, life_span = 9000, delay_step = 1900,
+			shift = 30, shift_step = 23, shift_span = 90, rise = 760, peak = .9, mid = .55, peak_at = .12, mid_at = .7 },
+		anim = {
+			settle = { .2, .8, .2, 1 },
+			logo_delay = 150, logo_in = 1100, logo_shift = 14, -- the entrance
+			item_delay = 450, item_step = 75, item_in = 600, item_shift = 26,
+			foot_delay = 1100, foot_in = 800,
+			in_level = .5, -- Esc in a game builds the menu anew: the entrance takes this part of its time
+			row = 320, color = 180, cursor = 340, -- the pointer on a button
+			art_fade = 1000,
+			stall = 250, -- a frame longer than this stops the entrance
+		},
+	},
+}
+
+-------------------------------------------------------------------------------
+-- Resolving a theme over the defaults
+-------------------------------------------------------------------------------
+local function log(fmt, ...)
+	local pf = rawget(_G, "printf")
+	if not pf then return end
+	local ok, line = pcall(string.format, fmt, ...)
+	pcall(pf, "%s", "[coop-theme] " .. (ok and line or tostring(fmt)))
+end
+
+local function copy(v)
+	if type(v) ~= "table" then return v end
+	local out = {}
+	for k, x in pairs(v) do out[k] = copy(x) end
+	return out
+end
+
+local function is_color(v)
+	if type(v) ~= "table" or (#v ~= 3 and #v ~= 4) then return false end
+	for i = 1, 3 do
+		if type(v[i]) ~= "number" or v[i] < 0 or v[i] > 255 then return false end
+	end
+	if v[4] ~= nil and (type(v[4]) ~= "number" or v[4] < 0 or v[4] > 1) then return false end
+	return true
+end
+
+-- { 1, 2, 3 } of numbers: a colour, a curve, a size. Only another list of as many numbers can take its place.
+local function is_number_list(t)
+	return type(t) == "table" and #t > 0 and type(t[1]) == "number"
+end
+
+local function same_list(v, def)
+	if type(v) ~= "table" or #v ~= #def then return false end
+	for i = 1, #def do
+		if type(v[i]) ~= "number" then return false end
+	end
+	return true
+end
+
+-- Keys a pack fills itself: anything of the right type comes through.
+local OPEN = { levels = true, known = true, fallback = true, register = true, base = true, open = true, first = true, captions = true, subs = true,
+	arts = true, shade_strips = true }
+
+local function merge(def, user, path)
+	local out = copy(def)
+	if user == nil then return out end
+	if type(user) ~= "table" then
+		log("! %s is not a table: the default stays", path)
+		return out
+	end
+	for k, dv in pairs(def) do
+		local uv = user[k]
+		local p = path .. "." .. tostring(k)
+		if uv == nil then
+			-- stays
+		elseif OPEN[k] and type(dv) == "table" then
+			if type(uv) == "table" then out[k] = copy(uv) else log("! %s: the default stays", p) end
+		elseif is_number_list(dv) then
+			if same_list(uv, dv) then out[k] = copy(uv) else log("! %s: the default stays", p) end
+		elseif type(dv) == "table" then
+			out[k] = merge(dv, uv, p)
+		elseif type(uv) == type(dv) and (type(uv) ~= "number" or uv >= 0 or dv < 0) then
+			out[k] = uv
+		else
+			log("! %s: the default stays", p)
+		end
+	end
+	return out
+end
+
+local function merge_colors(def, user)
+	local out = copy(def)
+	if type(user) ~= "table" then return out end
+	for role, v in pairs(user) do
+		if is_color(v) then
+			out[role] = copy(v)
+		else
+			log("! colors.%s: the default stays", tostring(role))
+		end
+	end
+	return out
+end
+
+local function merge_fonts(def, user)
+	local out = merge(def, user, "fonts")
+	for role, d in pairs(def.roles) do
+		local r = out.roles[role]
+		if type(r.name) ~= "string" then r.name = d.name end
+		if type(r.stock) ~= "string" then r.stock = d.stock end
+	end
+	local user_roles = type(user) == "table" and type(user.roles) == "table" and user.roles or {}
+	for role, r in pairs(user_roles) do -- a role of the pack's own
+		if out.roles[role] == nil and type(r) == "table" and type(r.name) == "string" then out.roles[role] = copy(r) end
+	end
+	return out
+end
+
+-- A style names a colour role and a font role that exist; what does not exist stays the default's.
+local function merge_text(def, user, colors, fonts)
+	local out = copy(def)
+	if type(user) ~= "table" then return out end
+	for name, st in pairs(user) do
+		if type(st) == "table" and out[name] then
+			if colors[st.color] then out[name].color = st.color elseif st.color ~= nil then log("! text.%s.color: the default stays", tostring(name)) end
+			if fonts.roles[st.font] then out[name].font = st.font elseif st.font ~= nil then log("! text.%s.font: the default stays", tostring(name)) end
+		end
+	end
+	return out
+end
+
+function resolve(user)
+	if type(user) ~= "table" then user = {} end
+	local d = DEFAULTS
+	local t = merge(d, user, "theme")
+	t.colors = merge_colors(d.colors, user.colors)
+	t.fonts = merge_fonts(d.fonts, user.fonts)
+	t.text = merge_text(d.text, user.text, t.colors, t.fonts)
+	return t
+end
+
+-- The theme of this game: coop_menu_theme.theme of the highest layer that has the script.
+function load()
+	local ok, m = pcall(function()
+		local mod = rawget(_G, "coop_menu_theme")
+		if mod == nil then mod = _G["coop_menu_theme"] end
+		return mod
+	end)
+	if not ok then
+		log("! the theme script does not load: %s", tostring(m))
+		return resolve(nil)
+	end
+	return resolve(type(m) == "table" and m.theme or nil)
+end

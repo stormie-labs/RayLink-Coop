@@ -24,10 +24,11 @@
 		before_world_start(mode, save)     active() -> record | nil     locked() -> bool     origin() -> string | nil
 		value(src, path) -> raw | nil      put(src, path, raw)          world_faction() -> string | nil
 		defaults() -> values               stage_new(record) -> bool
-		list_games() -> { {id, name, faction, created, last_save, last_played, rev, migrated}, ... }
+		list_games() -> { {id, name, title, faction, created, last_save, last_played, rev, migrated}, ... }
 		game_of_save(stem) -> id | nil, record | nil       load_card(id) -> record | nil
 		save_edits(id, changes) -> ok, why       take_machine(id) -> ok, n       running_id() -> id | nil
 		ensure_record() -> id | nil, why   (a world opened to partners that has no record yet)
+		autosave_game(id | nil) -> bool    the ring of the host's autosaves; the engine keeps it, so every choice of a game says it
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
@@ -407,6 +408,24 @@ end
 -------------------------------------------------------------------------------
 -- Switching a record on
 -------------------------------------------------------------------------------
+-- The autosaves of the engine keep a ring per game (coop_auto_<id>_<N>); nil or "" is the old ring. The game stays in the engine
+-- over a session and a world (coop.autosave.reset leaves it), so whoever chooses a game says so. An id that is not [0-9a-z-]
+-- is refused: the engine has logged it and uses the old ring, the saves are written all the same. An exe without the call: false.
+function autosave_game(id)
+	local a = api and api.autosave
+	if type(a) ~= "table" or type(a.set_game) ~= "function" then return false end
+	local ok, res = pcall(a.set_game, id or "")
+	if not ok then
+		log("! the autosaves did not take the game: %s", tostring(res))
+		return false
+	end
+	if res == false then
+		log("! the autosaves refuse the id '%s': this game's autosaves go to the old ring", tostring(id))
+		return false
+	end
+	return true
+end
+
 local function apply_cvars()
 	local g = api and api.game
 	if not (S.rec and type(g) == "table" and type(g.set_cvars) == "function") then return end
@@ -442,7 +461,9 @@ end
 local function activate(record, origin)
 	local r = records()
 	S.rec = r.clone(record)
+	S.rec.at = nil -- it belongs to the save it came from
 	S.origin = origin
+	autosave_game(S.rec.id)
 	-- coop_settings patches ini_file_ex when it is loaded: load it now, so that the record covers the options from the first
 	-- read of any script that comes after this one (the world start is the earliest point there is)
 	mod("coop_settings")
@@ -469,6 +490,7 @@ local function before_world_start_impl(mode, save)
 		log("a client: the game's settings come from the host")
 		return
 	end
+	autosave_game("") -- until a record is in force
 	local r = records()
 	if not r then
 		log("! coop_game_record is not there: the game's settings are off")
@@ -592,6 +614,37 @@ local function write_running_card()
 	return write_card(card)
 end
 
+-- Where and when this save is made: the Co-op window lists saves from this, without opening them. Each part may be missing.
+local function at_now()
+	local at = {}
+	local lv = rawget(_G, "level")
+	if type(lv) == "table" and type(lv.name) == "function" then
+		local ok, name = pcall(lv.name)
+		if ok and type(name) == "string" and name ~= "" then at.level = name end
+	end
+	local ok, when = pcall(function()
+		local y, m, d, h, mi = 0, 0, 0, 0, 0
+		local s, ms = 0, 0
+		y, m, d, h, mi, s, ms = game.get_game_time():get(y, m, d, h, mi, s, ms)
+		return string_format("%02d/%02d/%d %02d:%02d", d, m, y, h, mi) -- the form of coop_saves.details
+	end)
+	if ok then at.game_time = when end
+	local okt, now = pcall(os.time)
+	if okt then at.real_time = now end
+	local players = {}
+	if api and type(api.session_info) == "function" then
+		local oki, info = pcall(api.session_info)
+		if oki and type(info) == "table" then
+			for _, p in ipairs(type(info.players) == "table" and info.players or {}) do
+				if type(p) == "table" and type(p.nick) == "string" then players[#players + 1] = p.nick end
+			end
+			if #players == 0 and type(info.nick) == "string" and info.nick ~= "" then players[1] = info.nick end
+		end
+	end
+	if #players > 0 then at.players = players end
+	return at
+end
+
 local function save_state_impl(m_data)
 	if client_now() or type(m_data) ~= "table" or not S.rec then return end
 	if S.first_done then mirror_factors() end
@@ -601,6 +654,7 @@ local function save_state_impl(m_data)
 		log("! the record of game %s cannot be put into the save", tostring(S.rec.id))
 		return
 	end
+	block.at = at_now()
 	m_data.coop_game = block
 	stats.saves = stats.saves + 1
 	write_running_card()
@@ -768,7 +822,7 @@ function list_games()
 		local c = load_card(id)
 		if c then
 			out[#out + 1] = {
-				id = c.id, name = c.name or "", faction = c.faction, created = c.created, last_save = c.last_save,
+				id = c.id, name = c.name or "", title = c.title, faction = c.faction, created = c.created, last_save = c.last_save,
 				last_played = c.last_played, rev = c.rev, migrated = c.migrated,
 			}
 		end

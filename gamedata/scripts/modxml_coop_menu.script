@@ -67,6 +67,8 @@ end
 
 function main_menu_init(menu)
 	coop_menu.on_main_menu_init(menu)
+	local ok, err = pcall(function() coop_main_menu.attach(menu) end)
+	if not ok then printf("[coop-menu] ! the main menu view: %s", tostring(err)) end
 end
 
 function on_xml_read()

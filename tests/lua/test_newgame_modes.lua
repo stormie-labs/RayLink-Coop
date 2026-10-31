@@ -1009,4 +1009,16 @@ do
 		"the text of 'other' has three %s (options, addons' options, time) in both languages")
 end
 
+print("== the title typed in the Co-op window")
+do
+	coop_games = { take_new_title = function() local t = TITLE; TITLE = nil; return t end }
+	TITLE = "With Kent"
+	local nm = rawget(_G, "coop_newgame_modes")
+		local meta = nm.record_meta({ character_name = { GetText = function() return "Strelok" end } })
+	check(meta.title == "With Kent" and meta.name == "Strelok", "it goes into the record, next to the character's name")
+	meta = nm.record_meta({ character_name = { GetText = function() return "Strelok" end } })
+	check(meta.title == nil, "once")
+	coop_games = nil
+end
+
 print(string.format("%d passed, %d failed", PASSES, FAILS))

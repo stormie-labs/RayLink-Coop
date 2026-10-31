@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop: templates of the co-op window (scripts\coop_menu.script). The window is built and placed by the script over the
+     whole screen, in the 1024x768 UI space scaled per axis (coop_menu_kit.layout), so it needs no _16 file: the engine falls back
+     to this one on every aspect. Everything here is a stand-in: sizes, colours and fonts are set from Lua out of the theme
+     (coop_menu_theme.script), and a <text> names a stock font only because the engine asserts on a <text> without one.
+       tpl_box     a stretched flat rectangle (the solid white cell of the atlas); the script tints it or gives it a texture
+       tpl_image   a stretched static for a texture file: it never had an atlas rectangle, so it shows the whole file
+       tpl_free    an empty window, a parent
+       tpl_text_*  text: left / centred / right on one line, m = several lines from the top
+       tpl_none    a button that is never seen: the look and the hover are statics of the script (a 3-state button keeps the size of
+                   its template for its own textures, SetWndRect does not reach them)
+       tpl_edit_*  an edit box without a frame (no <texture>: no frame line); the field under it is the script's -->
+<w>
+	<tpl_box x="0" y="0" width="8" height="8" stretch="1"><texture>coop_menu_white</texture></tpl_box>
+	<tpl_image x="0" y="0" width="8" height="8" stretch="1"/>
+	<tpl_free x="0" y="0" width="8" height="8"/>
+
+	<tpl_text_l x="0" y="0" width="8" height="8"><text complex_mode="0" align="l" vert_align="c" font="letterica16"></text></tpl_text_l>
+	<tpl_text_c x="0" y="0" width="8" height="8"><text complex_mode="0" align="c" vert_align="c" font="letterica16"></text></tpl_text_c>
+	<tpl_text_r x="0" y="0" width="8" height="8"><text complex_mode="0" align="r" vert_align="c" font="letterica16"></text></tpl_text_r>
+	<tpl_text_m x="0" y="0" width="8" height="8"><text complex_mode="1" align="l" vert_align="t" font="letterica16"></text></tpl_text_m>
+
+	<tpl_none x="0" y="0" width="8" height="8" stretch="1"><texture>coop_menu_none</texture></tpl_none>
+
+	<tpl_edit_address x="0" y="0" width="8" height="8" max_symb_count="64"><text x="0" vert_align="c" font="letterica18"></text></tpl_edit_address>
+	<tpl_edit_title x="0" y="0" width="8" height="8" max_symb_count="48"><text x="0" vert_align="c" font="letterica18"></text></tpl_edit_title>
+</w>

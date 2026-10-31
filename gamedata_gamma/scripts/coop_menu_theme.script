@@ -1,0 +1,97 @@
+--[[
+	Anomaly Coop - the look of the co-op window in G.A.M.M.A. This file stands in the layer "Anomaly Coop - GAMMA" above Core and
+	replaces gamedata\scripts\coop_menu_theme.script (the one of plain Anomaly). A plain table and nothing else; a field that is
+	missing or wrong takes the default of coop_menu_theme_base.script. Colours are { r, g, b [, alpha 0..1] }, numbers of `layout`
+	are pixels of a 1920 x 1080 design, durations are milliseconds, curves are the four numbers of a cubic-bezier.
+	This is the prototype's sand look (temp\coop-menu-mock, variant D).
+--]]
+
+theme = {
+	motion = true, -- false: nothing moves, every state is reached at once
+
+	colors = {
+		accent = { 217, 171, 91 }, accent_hi = { 239, 199, 124 }, on_accent = { 20, 17, 10 },
+		accent_soft = { 217, 171, 91, .5 }, halo = { 217, 171, 91, .24 },
+		text = { 236, 230, 216 }, dim = { 236, 230, 216, .68 }, faint = { 236, 230, 216, .42 }, line = { 236, 230, 216, .16 },
+		tile_line = { 236, 230, 216, .34 }, pick = { 236, 230, 216, .07 }, hover = { 236, 230, 216, .05 }, field = { 236, 230, 216, .07 },
+		ink = { 10, 11, 9 }, panel = { 12, 13, 11, .94 }, bar = { 9, 10, 8, .9 }, ghost = { 10, 11, 9, .5 }, label_bg = { 9, 10, 8, .84 },
+		map_bg = { 11, 12, 10 }, shade = { 8, 9, 7 },
+		live = { 134, 210, 111 }, wait = { 224, 164, 88 }, idle = { 108, 108, 102 }, error = { 240, 120, 100 },
+	},
+
+	fonts = {
+		-- what the window registers: RegisterFont(name, font family: ui\ui_font_menu_title_h720 / _h1080 / _h1440, the tier of the screen)
+		register = {
+			{ name = "menu_title", texture = "ui\\ui_font_menu_title" },
+			{ name = "menu_head", texture = "ui\\ui_font_menu_head" },
+			{ name = "menu_item", texture = "ui\\ui_font_menu_item" },
+			{ name = "menu_time", texture = "ui\\ui_font_menu_time" },
+			{ name = "menu_body", texture = "ui\\ui_font_menu_body" },
+			{ name = "menu_small", texture = "ui\\ui_font_menu_small" },
+		},
+		-- role -> GetFontByName(name), or a stock font on an exe without it
+		roles = {
+			title = { name = "menu_title", stock = "graffiti50" },
+			head = { name = "menu_head", stock = "graffiti22" },
+			item = { name = "menu_item", stock = "graffiti32" },
+			time = { name = "menu_time", stock = "letterica25" },
+			body = { name = "menu_body", stock = "letterica18" },
+			small = { name = "menu_small", stock = "letterica16" },
+		},
+	},
+
+	-- which texture a level shows: `levels` names one by hand, else the pattern with the numbers that exist, chosen by the level's name
+	art = {
+		pattern = "intro\\intro_%s_%d", max_n = 12,
+		levels = {},
+		fallback = { "intro\\intro_k00_marsh_1", "intro\\intro_l01_escape_1" },
+		size = { 2048, 1024 },
+		area = { x1 = .04, y1 = .07, x2 = .96, y2 = .71 }, -- the working area of these textures
+		pos = { x = .62, y = .38 },
+		drift_from = 1.01, drift_to = 1.08, drift_x = { -6, 10 }, open_zoom = 1.14,
+	},
+
+	map = {
+		w = 1920, h = 3840, size = { 4096, 8192 },
+		tint = { 168, 160, 138 }, alpha = 1, -- the satellite picture toned down towards sand
+		focus = { x = 880, y = 345 },
+		fit = { w = 640, h = 540 }, least = .5, -- the free part of the open map: the map zooms out until a route fits it
+		lit = { x1 = 420, x2 = 1330 }, -- the part the open shade leaves: the map keeps it covered, its mirrored copies stay under the shade
+		dot_step = 12, dot_size = 16,
+	},
+
+	shades = {
+		base = { "coop_menu_shade_base_h", "coop_menu_shade_base_v" },
+		open = { "coop_menu_shade_open_h", "coop_menu_shade_open_v" },
+	},
+
+	corners = { len = 16, thick = 2, tile_len = 18, tile_inset = 6, row_inset = 5 },
+
+	layout = {
+		rail = { x = 64, y = 54, w = 468 },
+		title = { x = 600 },
+		tile = { x = 1516, y = 750, w = 340, h = 214 },
+		timeline = { x = 1320, w = 600 },
+		bar = { h = 84 },
+	},
+
+	anim = {
+		swing = { .62, .02, .18, 1 }, rise = { .2, .8, .2, 1 },
+		map_open = 450, map_close = 350, hero_fade = 900, hero_out = 350, hero_zoom = 450, drift = 28000, -- the opening is one quick move
+		shade_open = 300, shade_delay = 100, tile_fade = 150,
+		timeline_slide = 350, timeline_delay = 80, line_grow = 350, line_delay = 120,
+		tl_step = 28, tl_rise = 220, tl_delay = 120, expand = 200,
+		route = 500, route_delay = 150, stop_step = 70, stop_span = 450, stop_delay = 150, stop_fade = 150, stop_last_delay = 500,
+		other_fade = 200, other_delay = 350,
+		title_rise = 550, rail_in = 500,
+	},
+
+	main_menu = {
+		enabled = true, -- false: the stock main menu
+		logo = { texture = "GAMMAMainMenuLogo", rect = { 486, 190, 1565, 778 }, size = { 2048, 1024 } },
+		arts = {
+			btn_lastsave = "intro\\intro_k00_marsh_1", btn_coop = "intro\\intro_l06_rostok_1", btn_newgame = "intro\\intro_jupiter_5", btn_load = "intro\\intro_l05_bar_1",
+			btn_options = "intro\\intro_l01_escape_3", btn_mcm = "intro\\intro_l01_escape_3", btn_quit = "intro\\intro_l12_stancia_1",
+		},
+	},
+}

@@ -1,0 +1,487 @@
+--[[
+	Anomaly Coop - the data of the co-op window (gamedata\scripts\coop_games.script), docs\plans\2026-10-30-coop-chronicle-menu.md
+	No window here: what the window shows, read so that opening it never stalls. Tested by tests\lua\test_games.lua.
+
+	A game is a card <id>.cgame (coop_game_settings.list_games). Its saves are all *.scop of the saves folder whose block says
+	this id. The block is small; it also carries where and when the save was made (at = { level, game_time, real_time,
+	players }, written by coop_game_settings at every save), so a list of saves never opens a save. An old save has no `at`:
+	coop_saves.details() reads it, one per step, only for the game on the screen and never in a session.
+
+	  list() -> { { id, title, name, faction, created, last_played, count, level, level_text, stamp }, ... }
+	  display_title(card)                   the player's title, else "Game of <date>"
+	  scan_begin()                          lists the folder (once, newest first)
+	  scan_step([n]) -> done, touched       reads the blocks of the next n files (no n: for a share of a frame); touched = { [id] = true }
+	  scan_until_usable(id) -> save|nil     reads up to the newest good save of a game, for a click that needs it
+	  scan_finish()                         the rest at once, for a click that needs the answer
+	  saves_of(id) -> { { name, t, stamp, size, damaged, level, level_text, game_time, real_time, players, legacy }, ... } newest first
+	  usable(id) -> the newest save that can be loaded
+	  legacy_step(id) -> true when an old save was read
+	  route_of(saves) -> { { level, level_text, pick, t, u, v }, ... }    one stop per run of a level, oldest first; pick = the
+	                                        newest save of the run; a save of an unknown level is no stop
+	  level_uv(level) -> u, v               where a level is on the global map, 0..1 of its texture; nil when it is not known
+	  map_texture() -> texture name         of the global map
+	  art_of(level, rule) -> texture        chosen by the level's name among the files that exist (rule: theme.art)
+	  patch_of(faction, rule) -> texture    (rule: theme.patches)
+	  set_new_title(s) / take_new_title()   the title typed in the window, on its way to the new game's record
+--]]
+
+local tostring, tonumber, type, ipairs, pairs, pcall = tostring, tonumber, type, ipairs, pairs, pcall
+local string_format = string.format
+
+local EXT = ".scop"
+local TEMP_STEMS = { coop_auto_tmp = true, coop_auto_bak = true } -- the names of a save on its way to a slot
+local SCAN_BUDGET_MS = 3 -- of a frame; one file is read whatever it costs
+local MIN_SAVE_BYTES = 65536 -- as in coop_saves.script: below this a file was cut short and is never opened
+local MAX_TITLE = 48
+local MAP_FILE = "game_maps_single.ltx"
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	line = "[coop-games] " .. (ok and line or tostring(fmt))
+	local pf = rawget(_G, "printf")
+	if pf then pcall(pf, "%s", line) end
+end
+
+-- A script module by name, loaded by _G on the first use.
+local function module_of(name)
+	local m = rawget(_G, name)
+	if m == nil then
+		local ok, found = pcall(function() return _G[name] end)
+		m = ok and found or nil
+	end
+	return type(m) == "table" and m or nil
+end
+
+local function in_session()
+	local api = rawget(_G, "coop")
+	if not (api and api.is_active) then return false end
+	local ok, active = pcall(api.is_active)
+	return ok and active == true
+end
+
+local function tr(id, ...)
+	local s = tostring(game and game.translate_string and game.translate_string(id) or id)
+	local n = select("#", ...)
+	if n > 0 then
+		local args, i = { ... }, 0
+		s = s:gsub("%%s", function()
+			i = i + 1
+			return tostring(args[i] == nil and "" or args[i])
+		end)
+	end
+	return s
+end
+
+-------------------------------------------------------------------------------
+-- Stamps: "2026-10-29 20:31" of a card, "29/10/2026 20:31" of a file
+-------------------------------------------------------------------------------
+local function parse_stamp(s)
+	if type(s) ~= "string" then return nil end
+	local y, mo, d, h, mi = s:match("^(%d%d%d%d)%-(%d+)%-(%d+)%s+(%d+):(%d+)")
+	if not y then d, mo, y, h, mi = s:match("^(%d+)/(%d+)/(%d+)%s+(%d+):(%d+)") end
+	if not y then return nil end
+	return tonumber(y), tonumber(mo), tonumber(d), tonumber(h), tonumber(mi)
+end
+
+local function this_year()
+	local ok, y = pcall(os.date, "%Y")
+	return ok and tonumber(y) or nil
+end
+
+function day_text(stamp, year)
+	local y, mo, d = parse_stamp(stamp)
+	if not y then return stamp ~= nil and tostring(stamp) or "" end
+	local s = string_format("%d %s", d, tr("st_coop_menu_month_" .. mo))
+	if y ~= (year or this_year()) then s = s .. " " .. y end
+	return s
+end
+
+function time_text(stamp)
+	local y, _, _, h, mi = parse_stamp(stamp)
+	if not y then return "" end
+	return string_format("%02d:%02d", h, mi)
+end
+
+-- What stands between two neighbours of a timeline, newest first: the day of the older one when the day changes, else how long
+-- nobody saved when that is more than `long` minutes, else nil. By the stamps of the saves: today has nothing to do with it.
+function gap_text(newer, older, long, year)
+	local y1, mo1, d1, h1, mi1 = parse_stamp(newer)
+	local y2, mo2, d2, h2, mi2 = parse_stamp(older)
+	if not (y1 and y2) then return nil end
+	if y1 ~= y2 or mo1 ~= mo2 or d1 ~= d2 then return day_text(older, year) end
+	local minutes = (h1 * 60 + mi1) - (h2 * 60 + mi2)
+	if not long or minutes <= long then return nil end
+	if minutes < 60 then return tr("st_coop_menu_gap_min", minutes) end
+	return tr("st_coop_menu_gap_hours", math.floor(minutes / 60), minutes % 60)
+end
+
+function day_time_text(stamp, year)
+	local t = time_text(stamp)
+	if t == "" then return day_text(stamp, year) end
+	return day_text(stamp, year) .. ", " .. t
+end
+
+-------------------------------------------------------------------------------
+-- Titles
+-------------------------------------------------------------------------------
+-- What goes into a text of the window: no format characters (%c[...], \n), no control characters, a limit.
+function clean_title(s)
+	s = tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", ""):gsub("[%c]", " "):gsub("[%%\\]", "?")
+	return s:sub(1, MAX_TITLE)
+end
+
+function display_title(card)
+	card = type(card) == "table" and card or {}
+	local t = clean_title(card.title)
+	if t ~= "" then return t end
+	local day = day_text(card.created)
+	if day ~= "" then return tr("st_coop_menu_game_from", day) end
+	return tr("st_coop_menu_game_unnamed")
+end
+
+local new_title = nil
+
+function set_new_title(s)
+	local t = clean_title(s)
+	new_title = t ~= "" and t or nil
+end
+
+function take_new_title()
+	local t = new_title
+	new_title = nil
+	return t
+end
+
+-------------------------------------------------------------------------------
+-- The saves of the folder, over several frames
+-------------------------------------------------------------------------------
+local S = { files = {}, next = 1, by_game = {} }
+local legacy_seen = {} -- name | time | size -> what details() said: a file is opened once
+
+local function folder_files()
+	local out = {}
+	local ok, err = pcall(function()
+		local flist = getFS():file_list_open_ex("$game_saves$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "*" .. EXT)
+		local count = flist and flist:Size() or 0
+		if count == 0 then return end
+		flist:Sort(FS.FS_sort_by_modif_down)
+		for i = 0, count - 1 do
+			local file = flist:GetAt(i)
+			local full = tostring(file:NameFull())
+			local stem = full:sub(1, #full - #EXT)
+			if not TEMP_STEMS[stem:lower()] then
+				local oks, size = pcall(function() return tonumber(file:Size()) end)
+				size = oks and size or nil
+				out[#out + 1] = { name = stem, stamp = tostring(file:ModifDigitOnly()), size = size,
+					damaged = size ~= nil and size < MIN_SAVE_BYTES }
+			end
+		end
+	end)
+	if not ok then log("! cannot list the saves: %s", tostring(err)) end
+	return out
+end
+
+local function legacy_key(e)
+	return string_format("%s|%s|%s", e.name, tostring(e.stamp), tostring(e.size))
+end
+
+local function level_text_of(level)
+	if type(level) ~= "string" or level == "" then return nil end
+	local ok, t = pcall(game.translate_string, level)
+	if ok and type(t) == "string" and t ~= "" then return t end
+	return level
+end
+
+local function fill_from_block(e, at)
+	if type(at) == "table" then
+		e.level, e.game_time, e.real_time, e.players = at.level, at.game_time, at.real_time, at.players
+		e.level_text = level_text_of(at.level)
+		return
+	end
+	e.legacy = true
+	local seen = legacy_seen[legacy_key(e)]
+	if seen then
+		e.details_done, e.level, e.level_text, e.game_time_str = true, seen.level, seen.level_text, seen.game_time_str
+		e.damaged = e.damaged or seen.damaged
+	end
+end
+
+function scan_begin()
+	S = { files = folder_files(), next = 1, by_game = {} }
+end
+
+function scan_done()
+	return S.next > #S.files
+end
+
+-- The CPU clock: device():time_continual() stands still within a frame.
+local function stopwatch()
+	local ok, w = pcall(function()
+		local t = profile_timer()
+		t:start()
+		return t
+	end)
+	return ok and w or nil
+end
+
+local function spent_ms(w)
+	w:stop()
+	local ms = w:time() / 1000 -- it counts in microseconds
+	w:start()
+	return ms
+end
+
+function scan_step(n)
+	local touched = {}
+	local gs = module_of("coop_game_settings")
+	local last = n and math.min(#S.files, S.next + n - 1) or #S.files
+	local watch = not n and stopwatch() or nil
+	local i = S.next
+	while i <= last do
+		local e = S.files[i]
+		local ok, id, block = false, nil, nil
+		if gs and gs.game_of_save then ok, id, block = pcall(gs.game_of_save, e.name) end
+		if ok and type(id) == "string" then
+			fill_from_block(e, type(block) == "table" and block.at or nil)
+			e.t = time_text(e.stamp)
+			local list = S.by_game[id]
+			if not list then
+				list = {}
+				S.by_game[id] = list
+			end
+			list[#list + 1] = e
+			touched[id] = true
+		end
+		i = i + 1
+		if not n and (not watch or spent_ms(watch) >= SCAN_BUDGET_MS) then break end
+	end
+	S.next = i
+	return scan_done(), touched
+end
+
+-- The folder is listed newest first, so the first good save of the game is the answer.
+function scan_until_usable(id)
+	while not scan_done() and not usable(id) do scan_step(1) end
+	return usable(id)
+end
+
+function scan_finish()
+	if not scan_done() then scan_step(#S.files) end
+end
+
+function saves_of(id)
+	return S.by_game[id] or {}
+end
+
+function usable(id)
+	for _, e in ipairs(saves_of(id)) do
+		if not e.damaged then return e end
+	end
+	return nil
+end
+
+-- One old save of this game, read the way coop_saves reads it (its own guards), kept for the next window.
+function legacy_step(id)
+	if in_session() then return false end
+	local sv = module_of("coop_saves")
+	if not (sv and sv.details) then return false end
+	for _, e in ipairs(saves_of(id)) do
+		if e.legacy and not e.details_done and not e.damaged then
+			local ok, err = pcall(sv.details, e)
+			if not ok then
+				e.damaged = true
+				log("! cannot read the details of %s: %s", tostring(e.name), tostring(err))
+			end
+			e.details_done = true
+			legacy_seen[legacy_key(e)] = { level = e.level, level_text = e.level_text, game_time_str = e.game_time_str, damaged = e.damaged }
+			return true
+		end
+	end
+	return false
+end
+
+-------------------------------------------------------------------------------
+-- The games
+-------------------------------------------------------------------------------
+-- count, the newest place, the newest stamp, from what the scan knows now.
+function fill_summary(g)
+	local saves = saves_of(g.id)
+	g.count = #saves
+	g.level, g.level_text, g.stamp = nil, nil, saves[1] and saves[1].stamp or nil
+	for _, e in ipairs(saves) do
+		if e.level then
+			g.level, g.level_text = e.level, e.level_text or level_text_of(e.level)
+			break
+		end
+	end
+	return g
+end
+
+-- The save the stock menu's "last save" loads: the newest file, whatever it is. Title and place from its co-op record; a save without one
+-- is shown by its file name, and an old one without a place stays so: opening a file here would be a price on every menu.
+function last_save()
+	local e
+	local ok, err = pcall(function()
+		local flist = getFS():file_list_open_ex("$game_saves$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "*" .. EXT)
+		if not (flist and flist:Size() > 0) then return end
+		flist:Sort(FS.FS_sort_by_modif_down)
+		local file = flist:GetAt(0)
+		local full = tostring(file:NameFull())
+		e = { name = full:sub(1, #full - #EXT), stamp = tostring(file:ModifDigitOnly()) }
+	end)
+	if not ok then log("! cannot list the saves: %s", tostring(err)) end
+	if not e then return nil end
+	e.title = e.name
+	local gs = module_of("coop_game_settings")
+	if gs and gs.game_of_save then
+		local oks, id, block = pcall(gs.game_of_save, e.name)
+		if oks and type(id) == "string" then
+			fill_from_block(e, type(block) == "table" and block.at or nil)
+			for _, g in ipairs(list()) do
+				if g.id == id then e.title = g.title end
+			end
+		end
+	end
+	return e
+end
+
+function list()
+	local out = {}
+	local gs = module_of("coop_game_settings")
+	if not (gs and gs.list_games) then return out end
+	local ok, rows = pcall(gs.list_games)
+	if not (ok and type(rows) == "table") then
+		log("! cannot list the games: %s", tostring(rows))
+		return out
+	end
+	for _, r in ipairs(rows) do
+		out[#out + 1] = fill_summary({ id = r.id, title = display_title(r), name = r.name, faction = r.faction, created = r.created,
+			last_played = r.last_played })
+	end
+	return out
+end
+
+-------------------------------------------------------------------------------
+-- The global map
+-------------------------------------------------------------------------------
+local map_read, map_bound, map_tex, map_ini = false, nil, nil, nil
+
+local function numbers(s)
+	local out = {}
+	for v in tostring(s):gmatch("[^,%s]+") do out[#out + 1] = tonumber(v) end
+	return out
+end
+
+-- The engine's CUIGlobalMap takes bound_rect and CUILevelMap global_rect from the same ini, both in the same units (they share
+-- one x scale), and stretches the whole texture over bound_rect: a point of global_rect over bound_rect is a fraction of the texture.
+local function read_map()
+	if map_read then return end
+	map_read = true
+	local ok, err = pcall(function()
+		local ini = ini_file(MAP_FILE)
+		if not (ini and ini:section_exist("global_map") and ini:line_exist("global_map", "bound_rect")) then return end
+		local b = numbers(ini:r_string("global_map", "bound_rect"))
+		if #b < 4 or b[3] <= b[1] or b[4] <= b[2] then return end
+		map_bound, map_ini = b, ini
+		if ini:line_exist("global_map", "texture") then map_tex = ini:r_string("global_map", "texture") end
+	end)
+	if not ok then log("! cannot read %s: %s", MAP_FILE, tostring(err)) end
+end
+
+function map_texture()
+	read_map()
+	return map_bound and map_tex or nil
+end
+
+function level_uv(level)
+	if type(level) ~= "string" or level == "" then return nil end
+	read_map()
+	if not map_bound then return nil end
+	local ok, u, v = pcall(function()
+		if not (map_ini:section_exist(level) and map_ini:line_exist(level, "global_rect")) then return nil end
+		local r = numbers(map_ini:r_string(level, "global_rect"))
+		if #r < 4 then return nil end
+		local b = map_bound
+		return ((r[1] + r[3]) / 2 - b[1]) / (b[3] - b[1]), ((r[2] + r[4]) / 2 - b[2]) / (b[4] - b[2])
+	end)
+	if not (ok and u and v) or u < 0 or u > 1 or v < 0 or v > 1 then return nil end
+	return u, v
+end
+
+-------------------------------------------------------------------------------
+-- The route
+-------------------------------------------------------------------------------
+function route_of(saves)
+	local stops = {}
+	for i = #saves, 1, -1 do
+		local e = saves[i]
+		local u, v = this.level_uv(e.level)
+		if u then
+			local last = stops[#stops]
+			if last and last.level == e.level then
+				last.pick, last.t = i, e.t
+			else
+				stops[#stops + 1] = { level = e.level, level_text = e.level_text or level_text_of(e.level), pick = i, t = e.t, u = u, v = v }
+			end
+		end
+	end
+	return stops
+end
+
+-------------------------------------------------------------------------------
+-- Art
+-------------------------------------------------------------------------------
+local art_files = {} -- level -> the files of that level that exist
+
+function texture_exists(name)
+	local ok, found = pcall(function() return getFS():exist("$game_textures$", name .. ".dds") end)
+	return ok and found ~= nil and found ~= false
+end
+
+local function files_of(level, rule)
+	local list = art_files[level]
+	if list then return list end
+	list = {}
+	if type(rule.pattern) == "string" then
+		for n = 1, tonumber(rule.max_n) or 0 do
+			local ok, name = pcall(string_format, rule.pattern, level, n)
+			if ok and texture_exists(name) then list[#list + 1] = name end
+		end
+	end
+	art_files[level] = list
+	return list
+end
+
+-- The same answer for the same level on every run, whatever else is on the disk.
+local function name_hash(s)
+	local h = 7
+	for i = 1, #s do h = (h * 31 + s:byte(i)) % 65521 end
+	return h
+end
+
+function art_of(level, rule)
+	rule = type(rule) == "table" and rule or {}
+	if type(level) == "string" and level ~= "" then
+		local named = type(rule.levels) == "table" and rule.levels[level] or nil
+		if type(named) == "string" and named ~= "" then return named end
+		local files = files_of(level, rule)
+		if #files > 0 then return files[name_hash(level) % #files + 1] end
+	end
+	for _, name in ipairs(type(rule.fallback) == "table" and rule.fallback or {}) do
+		if texture_exists(name) then return name end
+	end
+	return nil
+end
+
+-- A picture a theme names, when the game has it; else the fallback of the rule.
+function art_named(name, rule)
+	if type(name) == "string" and name ~= "" and texture_exists(name) then return name end
+	return art_of(nil, rule)
+end
+
+function patch_of(faction, rule)
+	rule = type(rule) == "table" and rule or {}
+	local known = type(rule.known) == "table" and rule.known or {}
+	local f = known[faction] and faction or rule.fallback
+	return tostring(rule.prefix or "") .. tostring(f or "")
+end

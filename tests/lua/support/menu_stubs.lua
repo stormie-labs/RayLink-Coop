@@ -15,7 +15,8 @@ function log_has(pat)
 end
 
 NOW = 100000
-function device() return { time_continual = function() return NOW end } end
+SCREEN = { w = 1920, h = 1080 }
+function device() return { time_continual = function() return NOW end, width = SCREEN.w, height = SCREEN.h } end
 function time_global() return NOW end
 
 -- XML element paths of a layout file ("a", "a:b", ...), root <w> skipped
@@ -46,6 +47,7 @@ local function lines_obj(owner)
 	function l:SetText(t) owner.text = t end
 	function l:SetTextColor(c) owner.color = c end
 	function l:GetText() return owner.text end
+	function l:SetFont(f) owner.font = f end
 	return l
 end
 
@@ -74,6 +76,20 @@ function window(path)
 	function w:SetTextureColor(c) self.tcolor = c end
 	function w:SetStretchTexture() end
 	function w:CaptureFocus() end
+	-- the chronicle window: everything is placed from Lua
+	function w:SetWndRect(r) self.pos = { x = r.x1, y = r.y1 }; self.w, self.h = r.x2 - r.x1, r.y2 - r.y1 end
+	function w:SetTextureRect(r) self.trect = { x1 = r.x1, y1 = r.y1, x2 = r.x2, y2 = r.y2 } end
+	function w:SetFont(f) self.font = f end
+	function w:SetEllipsis(b) self.ellipsis = b end
+	function w:AdjustWidthToText() self.w = #tostring(self.text) * 6 end
+	function w:IsCursorOverWindow() return self.hot == true end
+	function w:cast_Static() return self end
+	if ENGINE_CLIP then -- what a new exe has
+		function w:SetClipChildren(b) self.clip = b end
+		function w:SetTextAlpha(a) self.talpha = a end
+		function w:SetFlushText(b) self.flush = b end
+		function w:GetTextureSize() return { x = 0, y = 0 } end
+	end
 	return w
 end
 
@@ -95,12 +111,15 @@ end
 
 CUIScriptWnd = {}
 function CUIScriptWnd.OnKeyboard(self, dik, act) return false end
+function CUIScriptWnd.OnMouse(self, x, y, act) return false end
 function CUIScriptWnd.Update(self) end
-function Frect() return { set = function(self) return self end } end
+function Frect()
+	return { set = function(self, a, b, c, d) self.x1, self.y1, self.x2, self.y2 = a, b, c, d; return self end }
+end
 function vector2() return { set = function(self, x, y) self.x, self.y = x, y; return self end } end
 function GetARGB(a, r, g, b) return a * 16777216 + r * 65536 + g * 256 + b end
 ui_events = { BUTTON_CLICKED = 17, WINDOW_KEY_PRESSED = 1, MESSAGE_BOX_QUIT_GAME_CLICKED = 30,
-	MESSAGE_BOX_QUIT_WIN_CLICKED = 31, LIST_ITEM_SELECT = 40 }
+	MESSAGE_BOX_QUIT_WIN_CLICKED = 31, LIST_ITEM_SELECT = 40, WINDOW_MOUSE_WHEEL_UP = 50, WINDOW_MOUSE_WHEEL_DOWN = 51 }
 DIK_keys = { DIK_ESCAPE = 1, DIK_RETURN = 28 }
 function super() end
 
@@ -232,4 +251,19 @@ function load_module(name, dir)
 	local header = 'local this = {} ' .. name .. ' = this setmetatable(this, {__index = _G}) setfenv(1, this) '
 	assert(loadstring(header .. src, "@" .. name .. ".script"))()
 	return _G[name]
+end
+
+-- The engine's _G loads a script on the first use of its name. The window's own modules come the same way here; a test that
+-- wants a stand-in simply sets the global first (the loader never runs then).
+local AUTOLOAD = { coop_games = true, coop_menu_kit = true, coop_ui_kit = true, coop_menu_theme_base = true, coop_menu_theme = true }
+do
+	local mt = getmetatable(_G) or {} -- another harness may have a loader of its own: it stays behind this one
+	local before = mt.__index
+	mt.__index = function(t, k)
+		if AUTOLOAD[k] then return load_module(k) end
+		if type(before) == "function" then return before(t, k) end
+		if type(before) == "table" then return before[k] end
+		return nil
+	end
+	setmetatable(_G, mt)
 end

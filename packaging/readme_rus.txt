@@ -115,3 +115,6 @@ G.A.M.M.A.: ЧТО ВЫКЛЮЧИТЬ
   "Файлы отличаются" при входе: окно перечисляет их - поставьте те же моды и ту же версию Anomaly Coop, что у хоста.
   Мод назван не так или стоит не на своём месте: в MO2 правый клик по моду - Rename Mod / Send to..., расставьте
   по пункту 3 установки.
+
+  Шрифты меню: Tektur (c) 2023 The Tektur Project Authors, Onest (c) 2021 The Onest Project Authors,
+  лицензия SIL Open Font License 1.1.

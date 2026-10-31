@@ -3,8 +3,9 @@
 	Spec: docs\CHECKPOINTS_DEATH.md section 7. Recon: docs\research\2026-10-22-f3-saves-sleep-recon.md section A.
 
 	In a session NOBODY saves or loads by hand, the host included. The world is saved by the host's engine (emergency
-	autosaves coop_auto_1 .. coop_auto_N, rotation rules in coop_autosave_rules.h) and the host goes back to one of them
-	with the Restore button of the Co-op window (this script owns the list, the confirmation and the load).
+	autosaves, a ring per game: coop_auto_<game>_<N>, or coop_auto_<N> of a world without a game; rotation rules in
+	coop_autosave_rules.h) and the host goes back to one of them from the timeline of the Co-op window, which asks for the
+	confirmation and calls restore(); the list window of this script stays for coop_saves.open_restore.
 	The session is "active" (coop.is_active()): a host that waits for a save to load (host_when_ready) is not in a session
 	yet, so the stock Load / Last save / New game still work for "host after load".
 
@@ -33,13 +34,16 @@
 
 	API:
 	  coop_saves.list_autosaves() -> { { name, slot, file_time, size, damaged }, ... } newest first.
-	      name "coop_auto_2", file_time "dd/mm/yyyy hh:mm" (when the file was written), size in bytes, damaged = the file is
+	      name "coop_auto_2" or "coop_auto_<game>_2", file_time "dd/mm/yyyy hh:mm" (when the file was written), size in bytes,
+	      damaged = the file is
 	      below MIN_SAVE_BYTES. Only what the autosave engine writes counts (coop_autosave_rules.h parse_slot); quicksaves
 	      and other names are not listed. Works when no coop_auto_N exists yet (empty list). Nothing is opened.
 	  coop_saves.details(entry) -> entry   fills level (the engine's level name), level_text (its translation), game_time_str
 	      "dd/mm/yyyy hh:mm" once, under pcall; a file with a bad header or one the wrapper cannot read gets damaged = true.
-	  coop_saves.restore(name) -> true | false, why   host only, in a session: "load <name>";
+	  coop_saves.restore(name[, game_id]) -> true | false, why   host only, in a session: "load <name>". Without game_id only an
+	      autosave; with it also any save whose block says that game (the timeline of the Co-op window).
 	      why = not_host | bad_name | missing | damaged
+	  coop_saves.hold(on)                            renews or lets go the pause of the autosaves (see below)
 	  coop_saves.open_restore(owner) -> window       opens the list over the Co-op window `owner`
 	  coop_saves.text(key, ...)                      the string st_coop_saves_<key> with %s filled in order
 
@@ -268,10 +272,16 @@ end
 -------------------------------------------------------------------------------
 -- The autosaves
 -------------------------------------------------------------------------------
--- "coop_auto_7" -> 7: the same rule as coop::autosave::parse_slot (coop_autosave_rules.h): lower case, a plain number
--- from 1 (no leading zero), at most nine digits, nothing after it.
+-- The slots of the ring in use: coop.autosave.parse_slot, the engine's own rule (coop_autosave_rules.h): the running game's
+-- coop_auto_<game>_<N>, or coop_auto_<N> without a game. An exe without it has only the old ring, and this is its rule: lower
+-- case, a plain number from 1 (no leading zero), at most nine digits, nothing after it.
 local function parse_slot(stem)
 	if type(stem) ~= "string" then return nil end
+	local a = api and api.autosave
+	if type(a) == "table" and type(a.parse_slot) == "function" then
+		local ok, n = pcall(a.parse_slot, stem)
+		if ok then return tonumber(n) end
+	end
 	local digits = stem:match("^coop_auto_([1-9]%d*)$")
 	if not digits or #digits > MAX_SLOT_DIGITS then return nil end
 	return tonumber(digits)
@@ -310,11 +320,35 @@ function list_autosaves()
 	return out
 end
 
+-- What the folder says about one save, autosave or not. Nothing is opened.
+local function find_save(name)
+	local fs = getFS()
+	local flist = fs:file_list_open_ex("$game_saves$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), name .. EXT)
+	if not flist or flist:Size() == 0 then return nil end
+	for i = 0, flist:Size() - 1 do
+		local file = flist:GetAt(i)
+		if file:NameFull():lower() == (name .. EXT):lower() then
+			local oks, size = pcall(function() return tonumber(file:Size()) end)
+			size = oks and size or nil
+			return { name = name, size = size, damaged = size ~= nil and size < MIN_SAVE_BYTES }
+		end
+	end
+	return nil
+end
+
 local function find_autosave(name)
 	for _, e in ipairs(list_autosaves()) do
 		if e.name == name then return e end
 	end
 	return nil
+end
+
+-- Does the block of this save say this game?
+local function save_of_game(name, game_id)
+	local ok, gs = pcall(function() return rawget(_G, "coop_game_settings") or coop_game_settings end)
+	if not (ok and type(gs) == "table" and type(gs.game_of_save) == "function") then return false end
+	local okg, id = pcall(gs.game_of_save, name)
+	return okg and id ~= nil and id == game_id
 end
 
 -- The Load dialog's way of reading a save, for ONE entry, once: level, level_text, game_time_str. A file known to be
@@ -360,12 +394,18 @@ local function hold_autosaves(on)
 	if not ok then log("! cannot %s the autosaves: %s", on and "pause" or "resume", tostring(err)) end
 end
 
--- Host in a session, a real autosave that is in the folder and not damaged: the same command the stock Load dialog gives
--- in a running game.
-function restore(name)
+-- For a confirmation of another window: the same lease, renewed every frame while it is open.
+function hold(on)
+	hold_autosaves(on)
+end
+
+-- Host in a session, a real autosave (or, with game_id, a save of that game) that is in the folder and not damaged: the
+-- same command the stock Load dialog gives in a running game.
+function restore(name, game_id)
 	if not (in_session() and is_host()) then return false, "not_host" end
-	if not parse_slot(name) then return false, "bad_name" end
-	local e = find_autosave(name)
+	local slot = parse_slot(name)
+	if not slot and not (game_id and save_of_game(name, game_id)) then return false, "bad_name" end
+	local e = slot and find_autosave(name) or (not slot and find_save(name)) or nil
 	if not e then return false, "missing" end
 	if e.damaged then return false, "damaged" end
 	local ok, valid = pcall(valid_saved_game, name)

@@ -115,3 +115,6 @@ PROBLEMS
   the host.
   A mod has a wrong name or stands in a wrong place: in MO2 right-click the mod - Rename Mod / Send to..., and put the
   mods in order as in step 3 of the install.
+
+  Menu fonts: Tektur (c) 2023 The Tektur Project Authors, Onest (c) 2021 The Onest Project Authors,
+  SIL Open Font License 1.1.

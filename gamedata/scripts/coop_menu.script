@@ -1,43 +1,45 @@
 --[[
-	Anomaly Coop - co-op window of the main menu (W4 menu), gamedata\scripts\coop_menu.script
-	Layout: configs\ui\ui_coop_menu.xml, strings: configs\text\*\st_coop_menu.xml.
+	Anomaly Coop - the co-op window of the main menu, gamedata\scripts\coop_menu.script
+	Variant D "Chronicle + map" (docs\plans\2026-10-30-coop-chronicle-menu.md): the games on the left, the art of a level over the
+	whole screen, the title, Play and a tile with the map; the tile opens into the whole map with the route of the saves, and a
+	timeline of the saves comes in from the right, to go back to any of them. At the bottom the status and the way to a friend.
+
+	This file is the logic: what is on the screen and when, the session, the animation. It holds no look: every colour, font,
+	art rule, duration and layout number comes from the theme (coop_menu_theme.script in the pack's layer, coop_menu_theme_base
+	for what a theme leaves out). The data is coop_games, the pure helpers coop_menu_kit, the templates ui_coop_chronicle.xml,
+	the strings configs\text\*\st_coop_menu.xml.
 	Entry: the "Co-op" button that modxml_coop_menu.script puts into the main menu lists.
 
-	Window (redesign 2026-10-23 after docs\hud\coop_menu_mockup.png): a mode switch of three segments, Host / Join / Steam
-	(disabled until the Steam lobby milestone), the nickname, then
-	  Host: "How to start" as three tiles (New game, Continue = the newest save as the stock "Last save" finds it, Load...),
-	      the port folded behind "+ Advanced: port N", "Open it to partners" (only with a loaded, living game) and "Restore an
-	      autosave (N)" (only the host of a running session with autosaves; F3), a box "What happens next";
-	  Join: the host's address, one big Connect button, the recent addresses, the same box.
-	Below: the status line from the engine: a dot (grey no session, amber on its way, green open, red error), the status, a
-	second line (the address for the partner and the player count), Disconnect (a session) / Cancel (a pending host) and Close.
-	While a session is open the box shows the players with their ping. Only a real error is red: the player's own
-	"Session closed." is a plain grey status.
-	Look: flat rectangles = the solid cell of the atlas textures\ui\coop\ui_coop_menu.dds (tools\make_menu_icons.py) stretched
-	and tinted; a button is a transparent hit button above its frame and fill (the colours of a 3-state button's caption are
-	set per state in the xml; the colours of the other states of a tile or a segment are set here, see palette()).
+	The window is built by this script in design pixels (coop_menu_kit.layout): a parent per block, its children relative to it,
+	all pools made once. Windows are drawn in the order they are created, so the blocks are made from the back to the front.
+	Clicks: a button is never seen (tpl_none), statics under it are the look and the hover: 3-state buttons cannot be tinted from Lua.
+	A hidden control is never enabled: the engine hands a click to every enabled child under the cursor, shown or not.
 
 	Engine API used (coop_script.cpp), all plain C functions that answer nil/false on bad input:
 		coop.session_info()  coop.host(port)  coop.host_when_ready(port | nil)  coop.connect(addr)
 		coop.disconnect()
+	Generic UI of the engine that an old exe may lack; the window checks, and shows less:
+		RegisterFont(name, texture_base[, shader])  GetFontByName(name)   stock fonts instead
+		CUIWindow:SetClipChildren(bool)                                   no opening animation: the map just appears
+		CUIStatic:GetTextureSize()                                        the sizes the theme gives
 	Per-player storage (never shared with the host): appdata\axr_options.ltx
-		[options] coop/coop_player/host_port   (also on the co-op options page)
+		[options] coop/coop_player/host_port   (set on the co-op options page, coop_menu_options)
 		[coop_menu] recent = addr|addr|...     (last 5 addresses this player connected to)
-	The nickname is the engine's console variable coop_nick (user.ltx).
+	The nickname is the engine's console variable coop_nick (user.ltx), set on the co-op options page too.
 
 	Main menu changes (all no-ops without a session): the Co-op button, and "Quit game" / "Quit to Windows"
 	close the co-op session first (graceful goodbye instead of a timeout for the others).
 
-	F3 (saves, scripts\coop_saves.script): the host of a running session has a Restore button on the Host tab: the list
-	of the emergency autosaves coop_auto_N, a confirmation and the load. Nobody saves or loads by hand in a session; a
-	session that the host starts under this window (the in-game menu was opened before it) ends the old menu when the window
-	is closed, because the old list still has the Save / Load entries.
+	F3 (saves, scripts\coop_saves.script): nobody saves or loads by hand in a session; the host goes back from the timeline, with a
+	confirmation, through coop_saves.restore. A session that the host starts under this window (the in-game menu was opened
+	before it) ends the old menu when the window is closed, because the old list still has the Save / Load entries.
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
 
 local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
 local string_format = string.format
+local floor, min, max = math.floor, math.min, math.max
 
 local CFG_SECTION = "coop_menu"
 local PORT_KEY = "coop/coop_player/host_port" -- [options], player-owned (coop_settings.ltx)
@@ -45,6 +47,11 @@ local DEFAULT_PORT = 27960
 local MAX_RECENT = 5
 local MAX_NICK = 32
 local POLL_MS = 250
+local REBIND_MS = 200 -- how often new data is shown while the saves are being read
+local XML_FILE = "ui_coop_chronicle.xml"
+local UI_W, UI_H = 1024, 768
+
+local K, G, UI -- coop_menu_kit, coop_games, coop_ui_kit: scripts, loaded by _G when the first window is built
 
 local function log(fmt, ...)
 	local ok, line = pcall(string_format, fmt, ...)
@@ -80,6 +87,11 @@ end
 
 local function trim(s)
 	return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+-- A name from outside goes into a text: no % or \ in it (%c[...] colour codes, \n).
+function plain(s)
+	return (tostring(s):gsub("[%%\\]", "?"))
 end
 
 -------------------------------------------------------------------------------
@@ -139,14 +151,6 @@ function get_port()
 	return info and tonumber(info.default_port) or DEFAULT_PORT
 end
 
-function set_port(p)
-	local c = cfg()
-	if not (c and check_port(p)) then return end
-	if tonumber(c:r_value("options", PORT_KEY, 2, nil)) == p then return end
-	c:w_value("options", PORT_KEY, p)
-	c:save()
-end
-
 function get_recent()
 	local c = cfg()
 	local raw = c and c:r_value(CFG_SECTION, "recent", 0, "") or ""
@@ -182,16 +186,6 @@ function get_nick()
 	return info and info.nick or ""
 end
 
-function set_nick(n)
-	n = check_nick(n)
-	if not n then return false end
-	if n ~= get_nick() or trim(get_console_cmd and get_console_cmd(0, "coop_nick") or "") == "" then
-		exec_console_cmd("coop_nick " .. n)
-		exec_console_cmd("cfg_save") -- user.ltx, like any console variable changed in the options
-	end
-	return true
-end
-
 -------------------------------------------------------------------------------
 -- Status texts (pure, tested with stubs)
 -------------------------------------------------------------------------------
@@ -219,23 +213,21 @@ function error_text(info)
 	return tr("st_coop_menu_error", text)
 end
 
--- One line per player: "nick (you, host) - 45 ms".
-function player_lines(info)
+-- One row per player: the nick, and "you, host" / "joining" / "44 ms" under it.
+function player_rows(info)
 	local out = {}
 	for _, p in ipairs(info and info.players or {}) do
 		local tags = {}
 		if p.is_self then tags[#tags + 1] = tr("st_coop_menu_you") end
 		if p.is_host then tags[#tags + 1] = tr("st_coop_menu_host") end
 		if p.joined == false then tags[#tags + 1] = tr("st_coop_menu_joining") end
-		local line = tostring(p.nick or "?")
-		if #tags > 0 then line = line .. " (" .. table.concat(tags, ", ") .. ")" end
-		if not p.is_self then line = line .. "  -  " .. tr("st_coop_menu_ms", math.floor(tonumber(p.rtt) or 0)) end
-		out[#out + 1] = line
+		if not p.is_self then tags[#tags + 1] = tr("st_coop_menu_ms", math.floor(tonumber(p.rtt) or 0)) end
+		out[#out + 1] = { nick = plain(p.nick or "?"), sub = table.concat(tags, ", ") }
 	end
 	return out
 end
 
--- Real time for the window's polling: time_global() stands still in the paused in-game main menu.
+-- Real time for the window: time_global() stands still in the paused in-game main menu.
 local function now_ms()
 	local d = rawget(_G, "device")
 	if d then
@@ -253,14 +245,24 @@ local function actor_alive()
 	return level_loaded() and db.actor:alive()
 end
 
--- coop_saves owns the Restore window and its texts; nil if the script is not there (the button stays off).
-local function saves()
-	local m = rawget(_G, "coop_saves")
+-- A script module by name, nil if it is not there.
+local function module_of(name)
+	local m = rawget(_G, name)
 	if m == nil then
-		local ok, found = pcall(function() return coop_saves end)
+		local ok, found = pcall(function() return _G[name] end)
 		m = ok and found or nil
 	end
 	return type(m) == "table" and m or nil
+end
+
+local function saves()
+	return module_of("coop_saves")
+end
+
+-- The autosaves belong to a game (nil: the old ring). The engine keeps the choice, so every way into a game says it first.
+local function choose_ring(id)
+	local gs = module_of("coop_game_settings")
+	if gs and gs.autosave_game then gs.autosave_game(id) end
 end
 
 -------------------------------------------------------------------------------
@@ -286,7 +288,7 @@ end
 
 -- What the status line says: { kind = idle | wait | live | error, title =, detail =, dim = }.
 -- Only a real error is an error: the player's own disconnect ("Session closed.") is a plain grey status.
-function status_view(info, local_error, tab)
+function status_view(info, local_error)
 	info = info or {}
 	local err, closed = local_error, false
 	if not err or err == "" then
@@ -307,126 +309,12 @@ function status_view(info, local_error, tab)
 	local parts = {}
 	if tostring(info.phase) == "hosting" then parts[#parts + 1] = tr("st_coop_menu_addr_host", info.port or "?") end
 	if kind == "live" then parts[#parts + 1] = players_text(info) end
-	local detail = table.concat(parts, SEP)
-	if kind == "idle" and tab == "host" then detail = tr("st_coop_menu_addr_wait") end
-	return { kind = kind, title = phase_text(info), detail = detail, dim = false }
+	return { kind = kind, title = phase_text(info), detail = table.concat(parts, SEP), dim = false }
 end
 
 -------------------------------------------------------------------------------
--- The newest save, for the "Continue" tile (pure, tested with stubs)
+-- Controls
 -------------------------------------------------------------------------------
--- The smallest plausible saved game; below it the file is cut short (coop_saves.script has the same bound). Such a file is
--- never opened: a CSavedGameWrapper asserts on a cut file, and that is fatal in the engine.
-local MIN_SAVE_BYTES = 65536
-local MAX_SAVE_NAME = 24 -- characters of the file name on the tile, the dots of a cut name included
-
-local function ellipsize(s, n)
-	s = tostring(s)
-	if #s <= n then return s end
-	return s:sub(1, n - 3) .. "..."
-end
-
--- A name from the saves folder goes into a complex text: no % or \ in it (%c[...] colour codes, \n).
-local function plain(s)
-	return (tostring(s):gsub("[%%\\]", "?"))
-end
-
-local function current_year()
-	local ok, y = pcall(os.date, "%Y")
-	return ok and tonumber(y) or nil
-end
-
--- "23/10/2026 16:46" (the file time of the stock Load dialog) -> "23.10, 16:46"; another year keeps its year.
-function format_save_time(stamp, year)
-	stamp = tostring(stamp or "")
-	local d, mo, y, h, mi = stamp:match("^(%d+)/(%d+)/(%d+)%s+(%d+):(%d+)")
-	if not d then return stamp end
-	local date = string_format("%02d.%02d", tonumber(d), tonumber(mo))
-	if tonumber(y) ~= tonumber(year or current_year()) then date = date .. "." .. y end
-	return string_format("%s, %02d:%02d", date, tonumber(h), tonumber(mi))
-end
-
--- The details of the newest save (its level) are read from the file by coop_saves.details, which unpacks it: kept while the
--- newest save is the same file (the same name, time and size), so reopening the window costs a folder listing, not a read.
-local last_read = nil
-
--- The save that the stock "Last save" of the main menu would load (ui_main_menu.script, OnButton_last_save): the newest
--- .scop of $game_saves$, whatever its name. -> { name, file_time, size, damaged, level_text } or nil. The folder is read once.
--- The level comes from coop_saves.details (guards of its own); a file below MIN_SAVE_BYTES is damaged and is not opened.
-function find_last_save()
-	local ext = rawget(_G, "saved_game_extension") or ".scop"
-	local ok, entry = pcall(function()
-		local flist = getFS():file_list_open_ex("$game_saves$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "*" .. ext)
-		if not flist or flist:Size() == 0 then return nil end
-		flist:Sort(FS.FS_sort_by_modif_down)
-		local file = flist:GetAt(0)
-		if not file then return nil end
-		local full = tostring(file:NameFull())
-		local e = { name = full:sub(1, #full - #ext), file_time = tostring(file:ModifDigitOnly()) }
-		local oks, size = pcall(function() return tonumber(file:Size()) end)
-		e.size = oks and size or nil
-		e.damaged = e.size ~= nil and e.size < MIN_SAVE_BYTES
-		return e
-	end)
-	if not ok then
-		log("! cannot look for the last save: %s", tostring(entry))
-		return nil
-	end
-	if entry and not entry.damaged then
-		local sig = string_format("%s|%s|%s", entry.name, entry.file_time, tostring(entry.size))
-		if last_read and last_read.sig == sig then
-			entry.level_text, entry.damaged = last_read.level_text, last_read.damaged
-		else
-			local sv = saves()
-			if sv and sv.details then
-				local okd, err = pcall(sv.details, entry)
-				if not okd then log("! cannot read the details of %s: %s", tostring(entry.name), tostring(err)) end
-			end
-			last_read = { sig = sig, level_text = entry.level_text, damaged = entry.damaged }
-		end
-	end
-	return entry
-end
-
--- The two lines of the tile: "name  -  level" and the date, or why there is nothing to continue.
-function last_save_desc(e, year)
-	if not e then return tr("st_coop_menu_tile_last_none") end
-	if e.damaged then return tr("st_coop_menu_tile_last_bad") end
-	local line1 = ellipsize(plain(e.name), MAX_SAVE_NAME)
-	local level = e.level_text and plain(e.level_text) or ""
-	if level ~= "" then line1 = line1 .. "  -  " .. level end
-	return line1 .. "\\n" .. format_save_time(e.file_time, year)
-end
-
--------------------------------------------------------------------------------
--- Window
--------------------------------------------------------------------------------
-local RECENT_STEP = 22 -- px between the rows of the recent addresses (ui_coop_menu.xml btn_recent is the first row)
-local PORT_OPEN_W = 130 -- width of the "- Advanced" toggle while the port field is unfolded
-
--- Colours of the layout (ui_coop_menu.xml has the same values as its defaults); GetARGB only once the engine is there.
-local PAL = nil
-function palette()
-	if PAL then return PAL end
-	local function c(r, g, b) return GetARGB(255, r, g, b) end
-	PAL = {
-		text = c(226, 224, 216), grey = c(140, 138, 130), dim = c(110, 108, 102), off = c(90, 90, 86), faint = c(76, 76, 73),
-		sand = c(217, 177, 96), sand_dim = c(191, 157, 86), sand_off = c(90, 80, 60),
-		border = c(58, 58, 56), border_off = c(44, 44, 42),
-		tile = c(24, 24, 23), tile_new = c(30, 28, 22), tile_off = c(18, 18, 17),
-		seg_on = c(34, 33, 30), seg_off = c(16, 16, 15),
-		btn = c(26, 26, 24), btn_off = c(18, 18, 17),
-		dot_idle = c(120, 120, 116), dot_wait = c(232, 170, 60), dot_live = c(112, 192, 100), dot_error = c(240, 120, 100),
-		error = c(240, 120, 100),
-	}
-	return PAL
-end
-
-local NEXT_IDS = {
-	host = { "st_coop_menu_next_host_1", "st_coop_menu_next_host_2", "st_coop_menu_next_host_3" },
-	join = { "st_coop_menu_next_join_1", "st_coop_menu_next_join_2", "st_coop_menu_next_join_3" },
-}
-
 local function set_shown(list, b)
 	b = b and true or false
 	-- Show calls virtual Enable, even when visibility is unchanged. On an edit box, Enable(false) broadcasts
@@ -441,31 +329,31 @@ local function set_edit_enabled(w, b)
 	if w:IsEnabled() ~= b then w:Enable(b) end
 end
 
--- A flat button: the frame and the fill (statics) under a transparent hit button that carries the caption.
--- shown / enabled change the look; a hidden button does not exist for the player.
-local function set_flat(g, shown, enabled)
-	local c = palette()
-	enabled = enabled and true or false
+-- A button: what it is made of, and its hit window. A hidden button does not exist for the player.
+local function set_control(c, shown, enabled)
 	shown = shown and true or false
-	set_shown(g.list, shown)
-	g.btn:Enable(enabled and shown) -- hidden: no clicks (the engine hands a click to any enabled child, shown or not)
-	g.f:SetTextureColor(enabled and (g.primary and c.tile_new or c.btn) or c.btn_off)
-	g.b:SetTextureColor(enabled and (g.primary and c.sand_dim or c.border) or c.border_off)
+	set_shown(c.list, shown)
+	c.btn:Enable((shown and enabled) and true or false)
 end
 
+-------------------------------------------------------------------------------
+-- Window
+-------------------------------------------------------------------------------
 class "UICoopMenu" (CUIScriptWnd)
 
 function UICoopMenu:__init(owner) super()
 	self.owner = owner
-	self.tab = "host"
 	self.next_poll = 0
 	self.local_error = nil
-	self.players_sig = nil
-	self.port_open = false
 	self.recent = {}
-	self.last_save = nil
-	self.autosave_host = nil
-	self.autosave_count = 0
+	self.games, self.saves, self.stops, self.route = {}, {}, {}, {}
+	self.game, self.sel_id = nil, nil
+	self.pick, self.prev_pick = 1, nil
+	self.open = false
+	self.modal = nil
+	self.recent_open = false
+	self.rail_first, self.tl_first = 1, 1
+	self.data_dirty, self.next_bind = false, 0
 	self:InitControls()
 	self:InitCallBacks()
 end
@@ -474,363 +362,1580 @@ function UICoopMenu:__finalize()
 end
 
 function UICoopMenu:InitControls()
-	self:SetWndRect(Frect():set(0, 0, 1024, 768))
+	self:SetWndRect(Frect():set(0, 0, UI_W, UI_H))
 	self:Enable(true)
 
-	local xml = CScriptXmlInit()
-	self.xml = xml
-	xml:ParseFile("ui_coop_menu.xml")
+	K, G, UI = coop_menu_kit, coop_games, coop_ui_kit
+	self.T = coop_menu_theme_base.load()
+	local T = self.T
+	self.ui = UI.new(self, XML_FILE, T)
+	self.L, self.view, self.xml = self.ui.L, self.ui.view, self.ui.xml
+	local A = T.anim
+	self.curve = { swing = K.easing(A.swing), rise = K.easing(A.rise), ease = K.easing(A.ease), in_out = K.easing(A.in_out), out = K.easing(A.out) }
+	self.tw = {
+		map = K.tween(0), hero_out = K.tween(0), hero_zoom = K.tween(0), shade = K.tween(0), tile = K.tween(1), timeline = K.tween(0),
+		line = K.tween(0), route = K.tween(0), expand = K.tween(1), collapse = K.tween(0),
+	}
 
-	xml:InitFrame("coop_shade", self)
-	local d = xml:InitStatic("coop_menu", self)
-	self.dialog = d
 
-	-- Windows are drawn in the order they are created: frames and fills first, the hit button of a control last.
-	local function stat(name) return xml:InitStatic("coop_menu:" .. name, d) end
-	local function lbl(name) return xml:InitTextWnd("coop_menu:" .. name, d) end
-	local function hit(name)
-		local b = xml:Init3tButton("coop_menu:" .. name, d)
-		self:Register(b, name)
-		return b
+	-- from the back to the front
+	self:BuildBack()
+	self:BuildMap()
+	self:BuildOpenShade()
+	self:BuildTile()
+	self:BuildRail()
+	self:BuildTitle()
+	self:BuildTimeline()
+	self:BuildBar()
+	self:BuildWho()
+	self:BuildModal()
+end
+
+-------------------------------------------------------------------------------
+-- Building: the art and its shade
+-------------------------------------------------------------------------------
+function UICoopMenu:BuildBack()
+	self.ui:full_box("ink")
+	self.hero = self.ui:hero(self)
+	for _, tex in ipairs(self.T.shades.base) do self.ui:full_box("shade", tex) end
+end
+
+-- The shade of the open map. Its first strip lies over the stage, not the screen, with bands beside it on a wide screen: the lit part
+-- is then the same place on every screen, and map.lit means what it says.
+function UICoopMenu:BuildOpenShade()
+	local T, L = self.T, self.L
+	self.open_shade = {}
+	local function add(b, k)
+		b:SetTextureColor(self.ui:color("shade", 0))
+		b:Show(false)
+		self.open_shade[#self.open_shade + 1] = { w = b, k = k }
 	end
-	local function flat(name, primary)
-		local g = { b = stat(name .. "_b"), f = stat(name .. "_f"), btn = hit(name), primary = primary }
-		g.list = { g.b, g.f, g.btn }
-		return g
+	local x1, x2 = L:x(0), L:x(T.design.w)
+	for i, tex in ipairs(T.shades.open) do
+		local b = self.ui:full_box("shade", tex)
+		if i == 1 then b:SetWndRect(Frect():set(x1, 0, x2, UI_H)) end
+		add(b, 1)
 	end
-
-	stat("win_b")
-	stat("win_f")
-	stat("win_top")
-	lbl("cap")
-	self.subtitle = lbl("subtitle")
-
-	-- mode switch: three segments (frame, fill with the caption, the sand bar, the hit button)
-	self.seg, self.tabs = {}, {}
-	for _, key in ipairs({ "host", "join", "steam" }) do
-		local s = { b = stat("seg_" .. key .. "_b"), f = stat("seg_" .. key), bar = stat("seg_" .. key .. "_bar") }
-		s.btn = hit("tab_" .. key)
-		self.seg[key] = s
-		self.tabs[key] = s.btn
+	if x1 > 0 then
+		local left, right = self.ui:full_box("shade"), self.ui:full_box("shade")
+		left:SetWndRect(Frect():set(0, 0, x1, UI_H))
+		right:SetWndRect(Frect():set(x2, 0, UI_W, UI_H))
+		add(left, T.shades.open_side)
+		add(right, T.shades.open_side)
 	end
-	self.tabs.steam:Enable(false) -- Steam lobby: later milestone
+end
 
-	-- shared nickname row
-	lbl("cap_nick")
-	self.edit_nick = xml:InitEditBox("coop_menu:edit_nick", d)
-	self:Register(self.edit_nick, "edit_nick")
-	self.nick_hint = lbl("nick_hint")
+-------------------------------------------------------------------------------
+-- Building: the map
+-------------------------------------------------------------------------------
+function UICoopMenu:map_tint()
+	local M = self.T.map
+	return UI.argb(M.tint, M.alpha)
+end
 
-	self.flat = {}
-	-- host tab
-	self.host_ctl = {} -- shown on the host tab only
-	local function host(w) self.host_ctl[#self.host_ctl + 1] = w; return w end
-	self.port_toggle = host(lbl("port_toggle"))
-	self.cap_port = lbl("cap_port")
-	self.edit_port = xml:InitEditBox("coop_menu:edit_port", d)
-	self:Register(self.edit_port, "edit_port")
-	self.port_ctl = { self.cap_port, self.edit_port } -- the port field: shown only while it is unfolded
-	self.btn_port_toggle = host(hit("btn_port_toggle"))
-	local pos = self.btn_port_toggle:GetWndPos()
-	self.toggle_rect = { x = pos.x, y = pos.y, w = self.btn_port_toggle:GetWidth(), h = self.btn_port_toggle:GetHeight() }
+function UICoopMenu:map_static(parent, tex)
+	local b = self.ui:image(parent)
+	b:InitTexture(tex)
+	b:SetTextureColor(self:map_tint())
+	self.ui:place(b, 0, 0, self.T.map.w, self.T.map.h)
+	return b
+end
 
-	host(lbl("cap_start"))
-	local function tile(key, btn_name, primary)
-		local t = { primary = primary }
-		t.b = host(stat("tile_" .. key .. "_b"))
-		t.f = host(stat("tile_" .. key))
-		if primary then t.strip = host(stat("tile_" .. key .. "_strip")) end
-		t.ico = host(stat("tile_" .. key .. "_ico"))
-		t.title = host(lbl("tile_" .. key .. "_title"))
-		if primary then t.badge = host(lbl("tile_" .. key .. "_badge")) end
-		t.desc = host(lbl("tile_" .. key .. "_desc"))
-		t.btn = host(hit(btn_name))
-		return t
-	end
-	self.tile = { new = tile("new", "btn_host_new", true), last = tile("last", "btn_host_last"),
-		load = tile("load", "btn_host_load") }
-	self.btn_host_new, self.btn_host_last, self.btn_host_load = self.tile.new.btn, self.tile.last.btn, self.tile.load.btn
+function UICoopMenu:BuildMap()
+	local T, L, M = self.T, self.L, self.T.map
+	-- The tile and the whole map are one window: its rectangle grows from the tile to the screen, and the map inside it moves as
+	-- the camera. Without clipping (an old exe) the window stays on the screen and the map jumps between its two states.
+	local clip = self.xml:InitStatic("tpl_free", self)
+	clip:SetWndRect(Frect():set(0, 0, UI_W, UI_H))
+	self.clip = clip
+	self.has_clip = self.ui:clip(clip)
+	self.map_fill = self.ui:box(clip, 0, 0, 1, 1, "map_bg")
 
-	-- only when they apply
-	self.open_hint = lbl("open_hint")
-	self.flat.btn_host_now = flat("btn_host_now")
-	self.btn_host_now = self.flat.btn_host_now.btn
-	self.flat.btn_restore = flat("btn_restore")
-	self.btn_restore = self.flat.btn_restore.btn
-	local sv = saves()
-	if sv and sv.text then self.btn_restore:TextControl():SetText(sv.text("btn_restore")) end
-
-	-- join tab
-	self.join_ctl = {}
-	local function join(w) self.join_ctl[#self.join_ctl + 1] = w; return w end
-	join(lbl("cap_address"))
-	join(lbl("address_hint"))
-	self.edit_address = join(xml:InitEditBox("coop_menu:edit_address", d))
-	self:Register(self.edit_address, "edit_address")
-	self.flat.btn_connect = flat("btn_connect", true)
-	self.btn_connect = self.flat.btn_connect.btn
-	self.join_info = join(lbl("join_info"))
-	join(lbl("cap_recent"))
-	self.recent_btn, self.recent_row = {}, {}
-	for i = 1, MAX_RECENT do
-		local row = { b = stat("recent_b"), f = stat("recent_f"), btn = xml:Init3tButton("coop_menu:btn_recent", d) }
-		row.list = { row.b, row.f, row.btn }
-		for _, w in ipairs(row.list) do
-			local p = w:GetWndPos()
-			w:SetWndPos(vector2():set(p.x, p.y + (i - 1) * RECENT_STEP))
+	local tex = G.map_texture()
+	self.map_tex = tex
+	if tex then
+		self.map_c = self:map_static(clip, tex)
+		self.tex_w, self.tex_h = UI.texture_size(self.map_c, M.size)
+		-- Mirrored copies at the sides, so that the map opens without a dark edge. Only under the shade: a mirrored map in plain
+		-- sight looks like a blot, so the camera keeps the lit part of the screen on the map itself (kit.camera_open, lit).
+		self.map_copies = {}
+		if M.mirror then
+			for dx = -1, 1, 2 do
+				local b = self:map_static(clip, tex)
+				b:SetTextureRect(Frect():set(self.tex_w, 0, 0, self.tex_h))
+				self.map_copies[#self.map_copies + 1] = { w = b, dx = dx }
+			end
 		end
-		self:Register(row.btn, "btn_recent_" .. i)
-		self.recent_row[i] = row
-		self.recent_btn[i] = row.btn
+		self.map_fade = self.ui:box(clip, 0, 0, 1, 1, "map_bg", "coop_menu_strip_cap") -- the south ends in the colour under the map
 	end
 
-	-- under the tiles: what happens next, or the players of the session
-	stat("info_b")
-	stat("info_f")
-	self.info_title = lbl("info_title")
-	self.info_line = { lbl("info_line_1"), lbl("info_line_2"), lbl("info_line_3") }
-	self.status_scroll = xml:InitScrollView("coop_menu:status_scroll", d)
+	-- what moves with the map: the dots under the patches of the other games, under the stops
+	local layer = self.ui:free(clip, 0, 0, M.w, M.h)
+	self.layer = layer
+	self.dot_layer = self.ui:free(layer, 0, 0, M.w, M.h)
+	self.dots = {}
+	self.others = {}
+	for i = 1, M.other_limit do
+		local root = self.ui:free(layer, 0, 0, M.other, M.other)
+		local o = { root = root, items = {} }
+		o.patch = self.ui:box(root, 0, 0, M.other, M.other, "white", nil, o.items)
+		o.btn = self.ui:hit(root, 0, 0, M.other, M.other, "btn_other_" .. i)
+		root:Show(false)
+		self.others[i] = o
+	end
+	self.stop_w = {}
+	for i = 1, M.stop_limit do self.stop_w[i] = self:BuildStop(i) end
 
-	-- status line
-	stat("status_line")
-	self.status_dot = stat("status_dot")
-	self.status_phase = lbl("status_phase")
-	self.status_error = lbl("status_error")
-	self.status_detail = lbl("status_detail")
-	self.flat.btn_disconnect = flat("btn_disconnect")
-	self.btn_disconnect = self.flat.btn_disconnect.btn
-	self.flat.btn_cancel_pending = flat("btn_cancel_pending")
-	self.btn_cancel_pending = self.flat.btn_cancel_pending.btn
-	self.flat.btn_close = flat("btn_close")
-	self.btn_close = self.flat.btn_close.btn
+	-- the tile on the screen, in design pixels of the stage
+	local tile, a = T.layout.tile, T.anchors.tile
+	local ex, ey = L.ox / L.s, L.oy / L.s
+	self.tile_stage = { x = tile.x + ex * (a and a[1] or 0), y = tile.y + ey * (a and a[2] or 0), w = tile.w, h = tile.h }
+	self.cam = { x0 = 0, y0 = 0, x1 = 0, y1 = 0 }
+	self.map_t, self.map_dirty, self.map_z = 0, true, 1
+end
+
+function UICoopMenu:BuildStop(i)
+	local M = self.T.map
+	local root = self.ui:free(self.layer, 0, 0, M.ring + M.label_w, M.ring) -- the marker in the middle of the ring's square, the label to its right
+	local c = M.ring / 2
+	local s = { root = root, items = {}, label_items = {}, c = c }
+	local d = M.stop_size * 1.42
+	s.halo = self.ui:box(root, c - M.stop_halo / 2, c - M.stop_halo / 2, M.stop_halo, M.stop_halo, "halo", "coop_menu_diamond_f")
+	s.fill = self.ui:box(root, c - d / 2, c - d / 2, d, d, "stop_fill", "coop_menu_diamond_f", s.items)
+	s.fill_item = s.items[#s.items]
+	s.line = self.ui:box(root, c - d / 2, c - d / 2, d, d, "accent", "coop_menu_diamond", s.items)
+	s.ring = self.ui:box(root, 0, 0, M.ring, M.ring, "accent", "coop_menu_ring")
+	s.patch = self.ui:box(root, c - M.patch / 2, c - M.patch / 2, M.patch, M.patch, "white", nil)
+	s.bg = self.ui:box(root, 0, 0, 1, M.label_h, "label_bg", nil, s.label_items)
+	s.time = self.ui:label(root, 0, 0, 1, M.label_h, "stop_time", "l", s.label_items)
+	s.loc = self.ui:label(root, 0, 0, 1, M.label_h, "stop_loc", "l", s.label_items)
+	s.btn = self.ui:hit(root, 0, 0, 1, 1, "btn_stop_" .. i, false)
+	root:Show(false)
+	return s
+end
+
+-------------------------------------------------------------------------------
+-- Building: the tile
+-------------------------------------------------------------------------------
+function UICoopMenu:BuildTile()
+	local T, B, C = self.T, self.T.layout.tile, self.T.corners
+	local g = self.ui:block("tile", B.x, B.y, B.w, B.h)
+	self.tile_block = g
+	self.tile_items = {}
+	local items = self.tile_items
+	self.tile_lines = self.ui:outline(g, 0, 0, B.w, B.h, "tile_line", items)
+	self.ui:box(g, 0, B.h - B.cap_h, B.w, B.cap_h, "shade", "coop_menu_strip_cap", items)
+	self.tile_loc = self.ui:label(g, B.cap_pad, B.h - B.cap_line, B.w * .6, B.cap_line - 6, "cap", "l", items)
+	self.tile_count = self.ui:label(g, B.w * .5, B.h - B.cap_line, B.w * .5 - B.cap_pad, B.cap_line - 6, "cap_sub", "r", items)
+	self.tile_corners = self.ui:corners(g, "accent")
+	self.ui:place_corners(self.tile_corners, -C.tile_inset, -C.tile_inset, B.w + 2 * C.tile_inset, B.h + 2 * C.tile_inset, C.tile_len, C.thick)
+	set_shown(self.tile_corners, false)
+	self.btn_tile = self.ui:hit(g, 0, 0, B.w, B.h, "btn_tile", false)
+	self.ui:on_hover(self.btn_tile, function(on)
+		self.ui:swap_role(items, on and "tile_line" or "accent", on and "accent" or "tile_line")
+		set_shown(self.tile_corners, on)
+	end)
+end
+
+-------------------------------------------------------------------------------
+-- Building: the rail
+-------------------------------------------------------------------------------
+function UICoopMenu:BuildRail()
+	local R = self.T.layout.rail
+	local h = R.list_y + R.rows * R.step + R.add_box + 2 * R.add_pad + R.add_gap
+	local g = self.ui:block("rail", R.x, R.y, R.w, h)
+	self.rail_block = g
+	self.mark = self.ui:label(g, 0, 0, R.w, R.mark_h, "mark", "l")
+	self.rows = {}
+	for i = 1, R.rows do
+		local y = R.list_y + (i - 1) * R.step
+		local root = self.ui:free(g, 0, y, R.w, R.row_h)
+		local row = { root = root, y = y, e = 1 }
+		row.bg = self.ui:box(root, 0, 0, R.pick_w, R.row_h, "pick")
+		row.patch = self.ui:box(root, R.pad, (R.row_h - R.patch) / 2, R.patch, R.patch, "white", nil)
+		row.title = self.ui:label(root, R.text_x, R.pad - 2, R.pick_w - R.text_x - R.pad, R.title_h, "game_title", "l")
+		row.title:SetEllipsis(true)
+		row.sub = self.ui:label(root, R.text_x, R.pad + R.title_h, R.pick_w - R.text_x - R.pad, R.sub_h, "game_sub", "l")
+		row.sub:SetEllipsis(true)
+		local hy = (R.row_h - R.hist_h) / 2
+		row.hist_ico = self.ui:box(root, R.hist_x + (R.hist_w - R.hist_icon) / 2, hy + R.hist_ico_y, R.hist_icon, R.hist_icon, "faint", "coop_menu_ico_history")
+		row.hist_n = self.ui:label(root, R.hist_x, hy + R.hist_n_y, R.hist_w, R.sub_h, "hist_count", "c")
+		row.hist_line = self.ui:outline(root, R.hist_x, hy, R.hist_w, R.hist_h, "accent_soft")
+		set_shown(row.hist_line, false)
+		row.btn = self.ui:hit(root, 0, 0, R.pick_w, R.row_h, "btn_row_" .. i)
+		row.btn_hist = self.ui:hit(root, R.hist_x, hy, R.hist_w, R.hist_h, "btn_hist_" .. i)
+		local slot = i
+		self.ui:on_hover(row.btn_hist, function(on) self:PaintHist(self.rows[slot], on) end)
+		root:Show(false)
+		self.rows[i] = row
+	end
+	self.rail_corners = self.ui:corners(g, "accent")
+	local add = self.ui:free(g, 0, 0, R.pick_w, R.add_box + 2 * R.add_pad)
+	self.add_row = { root = add, items = {} }
+	self.ui:box(add, R.pad, R.add_pad, R.add_box, R.add_box, "line", "coop_menu_box", self.add_row.items)
+	self.ui:label(add, R.pad, R.add_pad, R.add_box, R.add_box, "add_plus", "c", self.add_row.items):SetText("+")
+	self.add_label = self.ui:label(add, R.text_x, R.add_pad, R.pick_w - R.text_x, R.add_box, "add", "l", self.add_row.items)
+	self.btn_add = self.ui:hit(add, 0, 0, R.pick_w, R.add_box + 2 * R.add_pad, "btn_add")
+end
+
+-------------------------------------------------------------------------------
+-- Building: the title
+-------------------------------------------------------------------------------
+function UICoopMenu:BuildTitle()
+	local B = self.T.layout.title
+	local g = self.ui:block("title", B.x, B.y, B.w, B.h)
+	self.title_block = g
+	self.h1_items = {}
+	self.h1 = self.ui:label(g, 0, B.h1_y, B.w, B.h1_h, "h1", "l", self.h1_items)
+	self.h1:SetEllipsis(true)
+
+	self.meta_block = self.ui:free(g, 0, B.meta_y, B.w, B.meta_h)
+	self.meta_items = {}
+	self.meta = {}
+	for i = 1, 4 do self.meta[i] = self.ui:label(self.meta_block, 0, 0, B.w, B.meta_h, i == 1 and "meta_on" or "meta", "l", self.meta_items) end
+	self.empty_text = self.ui:label(g, 0, B.meta_y - 6, B.w * .8, B.acts_y - B.meta_y, "empty", "m", self.meta_items)
+
+	local acts = self.ui:free(g, 0, B.acts_y, B.w, B.acts_h)
+	self.acts_block = acts
+	self.acts_items = {}
+	local items = self.acts_items
+	local n = B.play_notch
+	local pieces = self.ui:notched(acts, 0, 0, B.play_w, B.acts_h, n, "accent", items)
+	self.play_ico = self.ui:box(acts, B.play_pad, (B.acts_h - B.play_icon) / 2, B.play_icon, B.play_icon, "on_accent", "coop_menu_ico_play", items)
+	local tx = B.play_pad + B.play_icon + B.play_gap
+	self.play_text = self.ui:label(acts, tx, 0, B.play_w - tx, B.acts_h, "play", "l", items)
+	self.btn_play = self.ui:hit(acts, 0, 0, B.play_w, B.acts_h, "btn_play")
+	self.play = { list = { pieces[1], pieces[2], pieces[3], self.play_ico, self.play_text, self.btn_play }, btn = self.btn_play }
+	self.ui:on_hover(self.btn_play, function(on) self.ui:tint(pieces, on and "accent_hi" or "accent") end)
+
+	-- what stands after Play moves with its width (BindTitle)
+	local after = self.ui:free(acts, B.gear_x, 0, B.w - B.gear_x, B.acts_h)
+	self.after_play = after
+	self.play_pieces = pieces
+	local gear_bg = self.ui:box(after, 0, 0, B.gear_w, B.acts_h, "ghost", nil, items)
+	local gear_line = self.ui:outline(after, 0, 0, B.gear_w, B.acts_h, "line", items)
+	self.gear_ico = self.ui:box(after, (B.gear_w - B.gear_icon) / 2, (B.acts_h - B.gear_icon) / 2, B.gear_icon, B.gear_icon, "dim", "coop_menu_ico_gear", items)
+	self.btn_gear = self.ui:hit(after, 0, 0, B.gear_w, B.acts_h, "btn_gear")
+	self.gear = { list = { gear_bg, gear_line[1], gear_line[2], gear_line[3], gear_line[4], self.gear_ico, self.btn_gear }, btn = self.btn_gear }
+	self.ui:on_hover(self.btn_gear, function(on) self.ui:tint(gear_line, on and "accent" or "line") end)
+
+	local gx = B.ghost_x - B.gear_x
+	local ghost_bg = self.ui:box(after, gx, 0, B.ghost_w, B.acts_h, "ghost", nil, items)
+	local ghost_line = self.ui:outline(after, gx, 0, B.ghost_w, B.acts_h, "line", items)
+	local ghost_text = self.ui:label(after, gx, 0, B.ghost_w, B.acts_h, "ghost", "c", items)
+	ghost_text:SetText(tr("st_coop_menu_btn_host_now"))
+	self.btn_host_now = self.ui:hit(after, gx, 0, B.ghost_w, B.acts_h, "btn_host_now")
+	self.host_now = { list = { ghost_bg, ghost_line[1], ghost_line[2], ghost_line[3], ghost_line[4], ghost_text, self.btn_host_now }, btn = self.btn_host_now }
+	self.open_hint = self.ui:label(after, gx, 0, B.w - B.ghost_x, B.acts_h, "empty", "m", items)
+	self.ui:on_hover(self.btn_host_now, function(on) self.ui:tint(ghost_line, on and "accent" or "line") end)
+end
+
+-------------------------------------------------------------------------------
+-- Building: the timeline
+-------------------------------------------------------------------------------
+function UICoopMenu:BuildTimeline()
+	local B = self.T.layout.timeline
+	local v = self.view
+	local a = self.T.anchors.timeline
+	local bar_h = self.T.layout.bar.h
+	-- from the top of the screen to the bar
+	local h = (v.bottom - v.top) - bar_h
+	self.tl_h = h
+	local g = self.ui:block("timeline", B.x, a and a[2] == -1 and 0 or v.top, B.w, h)
+	self.tl_block = g
+	self.tl_x, self.tl_y = g:GetWndPos().x, g:GetWndPos().y
+	local right = B.w - B.right
+	self.ui:label(g, B.pad, B.top, right - B.pad - B.fold_w, B.head_h, "tl_head", "l"):SetText(tr("st_coop_menu_chronicle"))
+	self.tl_sub = self.ui:label(g, B.pad, B.top + B.sub_y, right - B.pad, B.sub_h, "tl_sub", "l")
+	self.tl_fold = self.ui:label(g, right - B.fold_w, B.top, B.fold_w, B.head_h, "tl_fold", "r")
+	self.tl_fold:SetText(tr("st_coop_menu_fold"))
+	self.btn_fold = self.ui:hit(g, right - B.fold_w, B.top, B.fold_w, B.head_h, "btn_fold", false)
+	self.tl_line_y = B.list_y + B.line_y
+	self.tl_line = self.ui:box(g, B.line_x, self.tl_line_y, 1, h - self.tl_line_y, "accent", "coop_menu_strip_line")
+
+	-- the column of the times is as wide as the font makes a time (on a small screen the font is larger than the stage's scale)
+	local probe = self.ui:label(g, 0, 0, 1, 1, "tl_time", "l")
+	probe:SetText("00:00")
+	probe:AdjustWidthToText()
+	local time_w = max(B.time_w, probe:GetWidth() / (self.L.s * self.L.kx) + B.time_gap)
+	probe:SetText("")
+	self.tl_rows = {}
+	for i = 1, B.rows do
+		local root = self.ui:free(g, B.line_x - 10, B.list_y + (i - 1) * B.row_h, B.item_x - B.line_x + 10 + B.item_w, B.row_h)
+		local r = { root = root, items = {}, x0 = B.line_x - 10 }
+		local ix = B.item_x - B.line_x + 10
+		r.bg = self.ui:box(root, ix, 0, B.item_w, B.row_h, "pick")
+		local bx, by = B.bullet_x - B.line_x + 10, (B.row_h - B.bullet) / 2
+		self.ui:box(root, bx, by, B.bullet, B.bullet, "accent", "coop_menu_dot", r.items)
+		local inner = B.bullet - 2 * B.bullet_line
+		r.b_fill = self.ui:box(root, bx + B.bullet_line, by + B.bullet_line, inner, inner, "bullet_fill", "coop_menu_dot", r.items)
+		r.b_item = r.items[#r.items]
+		r.time = self.ui:label(root, ix + B.row_pad, 0, time_w, B.row_h, "tl_time", "l", r.items)
+		r.loc = self.ui:label(root, ix + B.row_pad + time_w, 0, B.loc_w, B.row_h, "tl_loc", "l", r.items)
+		r.loc:SetEllipsis(true)
+		r.tag = self.ui:label(root, ix + B.row_pad + time_w + B.loc_w, 0, B.item_w - 2 * B.row_pad - time_w - B.loc_w, B.row_h, "tl_tag", "r", r.items)
+		r.gap = self.ui:label(root, ix + B.row_pad, -B.gap_h, B.item_w - 2 * B.row_pad, B.gap_h, "tl_gap", "l", r.items) -- over the row, in the room AnimTimeline leaves
+		r.btn = self.ui:hit(root, ix, 0, B.item_w, B.row_h, "btn_tl_" .. i)
+		root:Show(false)
+		self.tl_rows[i] = r
+	end
+	self.tl_room = h - B.list_y - B.more_h
+	self.tl_slots = max(1, min(B.rows, floor(self.tl_room / B.row_h)))
+	self.tl_more = self.ui:label(g, B.item_x, h - B.more_y, B.item_w, B.more_line, "tl_more", "r")
+
+	-- what the picked row opens: one block, under the picked row
+	local m = self.xml:InitStatic("tpl_free", g)
+	self.more = m
+	self.more_clip = self.ui:clip(m)
+	self.ui:place(m, B.item_x, 0, B.item_w, B.more_h)
+	self.more_items = {}
+	local inner = B.item_w - 2 * B.row_pad
+	self.thumb = self.ui:image(m)
+	self.ui:place(self.thumb, B.row_pad, B.more_gap, inner, B.thumb_h)
+	self.note = self.ui:label(m, B.row_pad, B.note_y, inner, B.note_h, "tl_note", "m", self.more_items)
+	local pieces = self.ui:notched(m, B.row_pad, B.roll_y, B.roll_w, B.roll_h, B.roll_notch, "accent", self.more_items)
+	local cap = self.ui:label(m, B.row_pad, B.roll_y, B.roll_w, B.roll_h, "tl_roll", "c", self.more_items)
+	cap:SetText(tr("st_coop_menu_roll"))
+	self.btn_roll = self.ui:hit(m, B.row_pad, B.roll_y, B.roll_w, B.roll_h, "btn_roll")
+	self.roll = { list = { pieces[1], pieces[2], pieces[3], cap, self.btn_roll }, btn = self.btn_roll }
+	self.ui:on_hover(self.btn_roll, function(on)
+		self.ui:swap_role(self.more_items, on and "accent" or "accent_hi", on and "accent_hi" or "accent")
+	end)
+	m:Show(false)
+	g:Show(false)
+end
+
+-------------------------------------------------------------------------------
+-- Building: the bar and the small things
+-------------------------------------------------------------------------------
+function UICoopMenu:BuildBar()
+	local T, B = self.T, self.T.layout.bar
+	local v = self.view
+	local w = v.right - v.left
+	local g = self.ui:block("bar", v.left, T.design.h - B.h, w, B.h)
+	self.bar_block = g
+	self.bar_w = w
+	self.ui:box(g, 0, 0, w, B.h, "bar")
+	self.ui:box(g, 0, 0, w, 1, "line")
+	self.status_dot = self.ui:box(g, B.pad, (B.h - B.dot) / 2, B.dot, B.dot, "idle", "coop_menu_dot")
+	local tx = B.pad + B.status_x
+	self.status_phase = self.ui:label(g, tx, 0, B.status_w, B.h, "status", "l")
+	self.status_error = self.ui:label(g, tx, 0, B.status_w, B.h, "status_err", "m")
+	self.status_detail = self.ui:label(g, tx, B.h / 2 + B.status_gap, B.status_w, B.status_two, "status_sub", "l")
+
+	-- from the right edge of the stage: the distance to the edge stays on a screen of another shape
+	local dw = T.design.w
+	local function rx(x) return w - (dw - x) end
+	local join = {}
+	local label = self.ui:label(g, rx(B.field_x) - B.label_gap - B.label_w, 0, B.label_w, B.h, "join", "r")
+	label:SetText(tr("st_coop_menu_join_label"))
+	local fy = (B.h - B.field_h) / 2
+	local fx = rx(B.field_x)
+	local field = self.ui:box(g, fx, fy, B.field_w, B.field_h, "field")
+	local fl = self.ui:outline(g, fx, fy, B.field_w, B.field_h, "line")
+	self.field_hint = self.ui:label(g, fx + B.field_pad, fy, B.field_w - 2 * B.field_pad, B.field_h, "field_hint", "l")
+	self.field_hint:SetText(tr("st_coop_menu_join_hint"))
+	join[1], join[2], join[3], join[4], join[5], join[6] = label, field, fl[1], fl[2], fl[3], fl[4]
+
+	self.edit_address = self.xml:InitEditBox("tpl_edit_address", g)
+	self.ui:place(self.edit_address, fx + B.field_pad, fy, B.field_w - B.field_pad - B.chevron_hit - B.chevron, B.field_h)
+	self:Register(self.edit_address, "edit_address")
+	self.ui:style_edit(self.edit_address)
+
+	local chev = self.ui:box(g, fx + B.field_w - B.chevron - B.chevron_x, (B.h - B.chevron) / 2, B.chevron, B.chevron, "dim", "coop_menu_chevron")
+	self.btn_recent_toggle = self.ui:hit(g, fx + B.field_w - B.chevron - B.chevron_hit, fy, B.chevron + B.chevron_hit, B.field_h, "btn_recent_toggle", false)
+	self.recent_toggle = { list = { chev, self.btn_recent_toggle }, btn = self.btn_recent_toggle }
+
+	local gx = rx(B.go_x)
+	local go_line = self.ui:outline(g, gx, fy, B.go_w, B.field_h, "line")
+	local go_text = self.ui:label(g, gx, fy, B.go_w, B.field_h, "go", "c")
+	go_text:SetText(tr("st_coop_menu_go"))
+	self.btn_connect = self.ui:hit(g, gx, fy, B.go_w, B.field_h, "btn_connect")
+	self.connect = { list = { go_line[1], go_line[2], go_line[3], go_line[4], go_text, self.btn_connect }, btn = self.btn_connect }
+	self.ui:on_hover(self.btn_connect, function(on) self.ui:tint(go_line, on and "accent" or "line") end)
+	self.join_list = join
+
+	local hx = rx(B.hint_x)
+	self.hint = self.ui:label(g, hx, (B.h - B.hint_h) / 2, B.hint_w, B.hint_h, "hint", "m")
+	self.hint:SetText(tr("st_coop_menu_steam_hint"))
+
+	-- Disconnect / Cancel: where the way to a friend is not needed
+	local function action(name, text_id)
+		local ax = rx(B.hint_x)
+		local line = self.ui:outline(g, ax, fy, B.hint_w, B.field_h, "line")
+		local t = self.ui:label(g, ax, fy, B.hint_w, B.field_h, "go", "c")
+		t:SetText(tr(text_id))
+		local btn = self.ui:hit(g, ax, fy, B.hint_w, B.field_h, name)
+		self.ui:on_hover(btn, function(on) self.ui:tint(line, on and "accent" or "line") end)
+		return { list = { line[1], line[2], line[3], line[4], t, btn }, btn = btn }
+	end
+	self.disconnect = action("btn_disconnect", "st_coop_menu_btn_disconnect")
+	self.cancel = action("btn_cancel_pending", "st_coop_menu_btn_cancel")
+
+	local close_text = self.ui:label(g, w - B.pad - B.close_w, 0, B.close_w, B.h, "link", "r")
+	close_text:SetText(tr("st_coop_menu_btn_close"))
+	self.btn_close = self.ui:hit(g, w - B.pad - B.close_w, fy, B.close_w, B.field_h, "btn_close", false)
+	self.ui:on_hover(self.btn_close, function(on)
+		local c = self.T.text[on and "go" or "link"].color
+		close_text:SetTextColor(self.ui:color(c))
+	end)
+
+	-- the recent addresses: a little list over the field
+	local pop = self.ui:block("bar", B.field_x, T.design.h - B.h - MAX_RECENT * B.recent_h, B.field_w, MAX_RECENT * B.recent_h, 1, 1)
+	self.recent_pop = pop
+	self.recent_row, self.recent_btn = {}, {}
+	for i = 1, MAX_RECENT do
+		local y = (MAX_RECENT - i) * B.recent_h
+		local bg = self.ui:box(pop, 0, y, B.field_w, B.recent_h, "panel")
+		local t = self.ui:label(pop, B.field_pad, y, B.field_w - 2 * B.field_pad, B.recent_h, "recent", "l")
+		local btn = self.ui:hit(pop, 0, y, B.field_w, B.recent_h, "btn_recent_" .. i)
+		self.recent_row[i] = { list = { bg, t, btn }, text = t, btn = btn }
+		self.recent_btn[i] = btn
+	end
+	pop:Show(false)
+end
+
+function UICoopMenu:BuildWho()
+	local B = self.T.layout.who
+	local g = self.ui:block("who", B.x, B.y, B.w, B.h)
+	self.who_block = g
+	self.who_dot = self.ui:box(g, 0, (B.h - B.dot) / 2, B.dot, B.dot, "live", "coop_menu_dot")
+	self.who = self.ui:label(g, B.dot + B.gap, 0, B.w - B.dot - B.gap, B.h, "who", "l")
+end
+
+function UICoopMenu:BuildModal()
+	local B = self.T.layout.modal
+	local T, L = self.T, self.L
+	local root = self.xml:InitStatic("tpl_free", self)
+	root:SetWndRect(Frect():set(0, 0, UI_W, UI_H))
+	self.modal_root = root
+	self.ui:flush_text(root) -- the texts under the dialog must not show through it; an old exe: it stands where nothing is written
+	self.modal_dim = self.xml:InitStatic("tpl_box", root)
+	self.modal_dim:SetWndRect(Frect():set(0, 0, UI_W, UI_H))
+	self.modal_dim:SetTextureColor(self.ui:color("modal_dim"))
+	local back = self.xml:Init3tButton("tpl_none", root) -- nothing under the dialog takes a click
+	back:SetWndRect(Frect():set(0, 0, UI_W, UI_H))
+	self:Register(back, "btn_modal_back")
+
+	local x = (T.design.w - B.w) / 2
+	local p = self.xml:InitStatic("tpl_free", root)
+	p:SetWndRect(Frect():set(L:rect(x, B.top_y, B.w, B.h)))
+	self.modal_panel = p
+	self.ui:box(p, 0, 0, B.w, B.h, "panel")
+	self.ui:outline(p, 0, 0, B.w, B.h, "line")
+	self.modal_title = self.ui:label(p, B.pad, B.pad, B.w - 2 * B.pad, B.title_h, "modal_title", "l")
+	self.modal_text = self.ui:label(p, B.pad, B.text_y, B.w - 2 * B.pad, B.text_h, "modal_text", "m")
+
+	local field = self.ui:box(p, B.pad, B.edit_y, B.w - 2 * B.pad, B.edit_h, "field")
+	local fl = self.ui:outline(p, B.pad, B.edit_y, B.w - 2 * B.pad, B.edit_h, "line")
+	self.edit_title = self.xml:InitEditBox("tpl_edit_title", p)
+	self.ui:place(self.edit_title, B.pad + B.edit_pad, B.edit_y, B.w - 2 * (B.pad + B.edit_pad), B.edit_h)
+	self:Register(self.edit_title, "edit_title")
+	self.ui:style_edit(self.edit_title)
+	self.modal_edit = { field, fl[1], fl[2], fl[3], fl[4] }
+
+	local by = B.h - B.pad - B.btn_h
+	local okx = B.w - B.pad - B.btn_w
+	local pieces = self.ui:notched(p, okx, by, B.btn_w, B.btn_h, B.notch, "accent")
+	self.modal_ok_text = self.ui:label(p, okx, by, B.btn_w, B.btn_h, "modal_ok", "c")
+	self.btn_modal_ok = self.ui:hit(p, okx, by, B.btn_w, B.btn_h, "btn_modal_ok")
+	self.ui:on_hover(self.btn_modal_ok, function(on) self.ui:tint(pieces, on and "accent_hi" or "accent") end)
+	local nox = okx - B.btn_gap - B.btn_w
+	local no_line = self.ui:outline(p, nox, by, B.btn_w, B.btn_h, "line")
+	self.ui:label(p, nox, by, B.btn_w, B.btn_h, "modal_no", "c"):SetText(tr("st_coop_menu_btn_cancel"))
+	self.btn_modal_no = self.ui:hit(p, nox, by, B.btn_w, B.btn_h, "btn_modal_no")
+	self.ui:on_hover(self.btn_modal_no, function(on) self.ui:tint(no_line, on and "accent" or "line") end)
+	root:Show(false)
 end
 
 function UICoopMenu:InitCallBacks()
 	local E = ui_events.BUTTON_CLICKED
-	self:AddCallback("tab_host", E, self.OnTabHost, self)
-	self:AddCallback("tab_join", E, self.OnTabJoin, self)
-	self:AddCallback("btn_port_toggle", E, self.OnPortToggle, self)
+	self:AddCallback("btn_tile", E, self.OnToggleMap, self)
+	self:AddCallback("btn_fold", E, self.OnToggleMap, self)
+	self:AddCallback("btn_add", E, self.OnNewGame, self)
+	self:AddCallback("btn_play", E, self.OnPlay, self)
+	self:AddCallback("btn_gear", E, self.OnGear, self)
 	self:AddCallback("btn_host_now", E, self.OnHostNow, self)
-	self:AddCallback("btn_restore", E, self.OnRestore, self)
-	self:AddCallback("btn_host_load", E, self.OnHostLoad, self)
-	self:AddCallback("btn_host_last", E, self.OnHostLast, self)
-	self:AddCallback("btn_host_new", E, self.OnHostNew, self)
-	self:AddCallback("btn_cancel_pending", E, self.OnCancelPending, self)
+	self:AddCallback("btn_roll", E, self.OnRoll, self)
 	self:AddCallback("btn_connect", E, self.OnConnect, self)
 	self:AddCallback("btn_disconnect", E, self.OnDisconnect, self)
+	self:AddCallback("btn_cancel_pending", E, self.OnCancelPending, self)
 	self:AddCallback("btn_close", E, self.Close, self)
+	self:AddCallback("btn_recent_toggle", E, self.OnRecentToggle, self)
+	self:AddCallback("btn_modal_ok", E, self.OnModalOk, self)
+	self:AddCallback("btn_modal_no", E, self.CloseModal, self)
+	self:AddCallback("btn_modal_back", E, self.CloseModal, self)
 	for i = 1, MAX_RECENT do
 		self:AddCallback("btn_recent_" .. i, E, function() self:OnRecent(i) end, self)
 	end
+	for i = 1, #self.rows do
+		self:AddCallback("btn_row_" .. i, E, function() self:OnRow(i) end, self)
+		self:AddCallback("btn_hist_" .. i, E, function() self:OnHist(i) end, self)
+	end
+	for i = 1, #self.tl_rows do
+		self:AddCallback("btn_tl_" .. i, E, function() self:OnTimelineRow(i) end, self)
+	end
+	for i = 1, #self.stop_w do
+		self:AddCallback("btn_stop_" .. i, E, function() self:OnStop(i) end, self)
+	end
+	for i = 1, #self.others do
+		self:AddCallback("btn_other_" .. i, E, function() self:OnOther(i) end, self)
+	end
 end
 
+-------------------------------------------------------------------------------
+-- Opening
+-------------------------------------------------------------------------------
 -- Values from storage; called every time the window opens.
 function UICoopMenu:Reset()
+	local now = now_ms()
+	-- the same picture the main menu shows, at once: the art fades from there to the game's, with no flash of the ink
+	local view = self.owner and self.owner.coop_view
+	if view and view.hero then self.hero:show(view.hero.tex, now, 0) end
 	self.local_error = nil
-	self.players_sig = nil
-	self.restore_dlg = nil
-	self.port_open = false
-	self.autosave_host = nil -- the autosave count is read again
 	self.session_at_open = api.is_active() == true -- F3: see Close()
-	self.edit_nick:SetText(get_nick())
-	self.edit_port:SetText(tostring(get_port()))
 	self.recent = get_recent()
 	self.edit_address:SetText(self.recent[1] or "")
-	for i, b in ipairs(self.recent_btn) do b:TextControl():SetText(self.recent[i] or "") end
-	-- the newest save is looked up once per opening, not by the polling
-	self.last_save = find_last_save()
-	self.tile.last.desc:SetText(last_save_desc(self.last_save))
-	self:PlacePortToggle()
-	local info = api.session_info()
-	self.subtitle:SetText(tr("st_coop_menu_subtitle", info.max_players or 8))
-	self:SelectTab(info.client and "join" or self.tab, info)
-end
+	for i, row in ipairs(self.recent_row) do row.text:SetText(self.recent[i] or "") end
+	self.recent_open = false
+	self.settings_win = module_of("coop_game_settings_window") -- the settings of a game, when there is such a window
+	self:CloseModal()
+	self:SetOpen(false, now, true)
 
-function UICoopMenu:SelectTab(tab, info)
-	if tab ~= "host" and tab ~= "join" then tab = "host" end
-	self.tab = tab
-	local c = palette()
-	for key, s in pairs(self.seg) do
-		local on = key == tab
-		s.f:SetTextureColor(on and c.seg_on or c.seg_off)
-		s.f:TextControl():SetTextColor(on and c.text or (key == "steam" and c.off or c.grey))
-		s.bar:Show(on)
-	end
+	local nick = plain(get_nick())
+	self.who:SetText(nick)
+	self.who:AdjustWidthToText()
+	self:PlaceWho()
+
+	G.scan_begin()
+	self.scan_done = false
+	G.set_new_title(nil) -- of a start that never came
+	self.games = G.list()
+	self.listed_for = nil
+	local info = api.session_info()
+	self:ChooseGame(info)
+	self.rail_first, self.tl_first = 1, 1
+	self.rail_t0 = now
+	self.mark:SetText(K.spaced(tr("st_coop_menu_title")))
+	self.add_label:SetText(tr("st_coop_menu_new_game"))
+	self.pick, self.prev_pick = 1, nil
+	self:BindData(now)
+	self.swap_t0 = now
 	self.next_poll = 0
+	self.players_sig = nil
 	self:Refresh(info)
 end
 
-function UICoopMenu:OnTabHost() self:SelectTab("host") end
-function UICoopMenu:OnTabJoin() self:SelectTab("join") end
-
--- The port field is folded away behind "+ Advanced: port N"; the toggle is narrower while it is unfolded.
-function UICoopMenu:PlacePortToggle()
-	local r = self.toggle_rect
-	local w = self.port_open and PORT_OPEN_W or r.w
-	self.btn_port_toggle:SetWndPos(vector2():set(r.x + r.w - w, r.y))
-	self.btn_port_toggle:SetWndSize(vector2():set(w, r.h))
+function UICoopMenu:PlaceWho()
+	local B = self.T.layout.who
+	local L = self.L
+	local tw = self.who:GetWidth()
+	local x = L:w(B.w) - tw
+	self.who:SetWndPos(vector2():set(x, 0))
+	self.who_dot:SetWndPos(vector2():set(x - L:w(B.gap + B.dot), L:h((B.h - B.dot) / 2)))
 end
 
-function UICoopMenu:OnPortToggle()
-	self.port_open = not self.port_open
-	self:PlacePortToggle()
-	self:Refresh()
-end
-
-function UICoopMenu:Update()
-	CUIScriptWnd.Update(self)
-	local now = now_ms()
-	if now < self.next_poll then return end
-	self.next_poll = now + POLL_MS
-	local ok, err = pcall(self.Refresh, self)
-	if not ok then log("! refresh failed: %s", tostring(err)) end
-end
-
--- F3: the emergency autosaves of a hosted session, for the "Restore an autosave (N)" button. Counted when the window opens and
--- when the host state changes, not by the polling.
-function UICoopMenu:UpdateAutosaves(host_session)
-	if self.autosave_host == host_session then return end
-	self.autosave_host = host_session
-	self.autosave_count = 0
-	local sv = saves()
-	if host_session and sv and sv.list_autosaves then
-		local ok, list = pcall(sv.list_autosaves)
-		if ok and type(list) == "table" then
-			self.autosave_count = #list
-		else
-			log("! cannot count the autosaves: %s", tostring(list))
+-- Which game the window shows: the running one, else the one shown last, else the newest. In a session it is the running one
+-- or none: going back loads a save of the game on the screen, and that must be the game of the session. A client has no game
+-- here at all: the world is the host's.
+function UICoopMenu:ChooseGame(info)
+	local running = nil
+	local gs = module_of("coop_game_settings")
+	if gs and gs.running_id then
+		local ok, id = pcall(gs.running_id)
+		if ok then running = id end
+	end
+	local in_session = info ~= nil and info.active == true
+	local want = running or (not in_session and self.sel_id or nil)
+	local function find()
+		for _, g in ipairs(self.games) do
+			if g.id == want then return g end
 		end
 	end
-	local base = sv and sv.text and sv.text("btn_restore") or ""
-	self.btn_restore:TextControl():SetText(self.autosave_count > 0 and (base .. " (" .. self.autosave_count .. ")") or base)
+	self.game = nil
+	if not (info ~= nil and info.client == true) then
+		self.game = find()
+		if not self.game and running and running ~= self.listed_for then -- Open to partners made its record after the list
+			self.listed_for = running
+			self.games = G.list()
+			self.game = find()
+		end
+		if not in_session then self.game = self.game or self.games[1] end
+	end
+	self.guest = self.game == nil and (in_session or (info ~= nil and info.client == true))
+	if self.game then self.sel_id = self.game.id end
+	self.session_on = in_session
 end
 
--- A tile of "How to start": on = clickable (the colours of an inactive one are dim).
-function UICoopMenu:StyleTile(t, on)
-	local c = palette()
-	local accent = t.primary
-	on = on and true or false
-	t.btn:Enable(on)
-	t.b:SetTextureColor(on and (accent and c.sand_dim or c.border) or c.border_off)
-	t.f:SetTextureColor(on and (accent and c.tile_new or c.tile) or c.tile_off)
-	t.ico:SetTextureColor(on and (accent and c.sand or c.text) or c.off)
-	t.title:SetTextColor(on and (accent and c.sand or c.text) or c.off)
-	t.desc:SetTextColor(on and c.grey or c.faint)
-	if t.strip then t.strip:SetTextureColor(on and c.sand or c.sand_off) end
-	if t.badge then t.badge:SetTextColor(on and c.sand or c.off) end
+-- Everything the screen knows about the data, again: nothing here animates, and setting the same text is a no-op.
+function UICoopMenu:BindData(now)
+	local keep = self.saves[self.pick]
+	for _, g in ipairs(self.games) do G.fill_summary(g) end
+	local g = self.game
+	self.saves = g and G.saves_of(g.id) or {}
+	self.stops = G.route_of(self.saves)
+	self.pick = 1
+	if keep then
+		for i, e in ipairs(self.saves) do
+			if e.name == keep.name then self.pick = i end
+		end
+	end
+	self:BindTitle()
+	self:BindTile()
+	self:BindRoute()
+	self:BindTimeline()
+	self:BindRail()
+	-- the art waits for the saves: a window that opens again keeps its picture while they are being read
+	if (g and g.level) or self.scan_done then
+		self.hero_level = g and g.level or nil
+		self:BindHero(now)
+	end
 end
 
-function UICoopMenu:Refresh(info)
+-------------------------------------------------------------------------------
+-- The art
+-------------------------------------------------------------------------------
+function UICoopMenu:BindHero(now)
+	self.hero:show(G.art_of(self.hero_level, self.T.art), now, self.ui:ms(self.T.anim.hero_fade), self.curve.ease)
+end
+
+function UICoopMenu:AnimHero(now)
+	local out = 1 - K.tween_at(self.tw.hero_out, now)
+	self.hero:draw(now, K.mix(1, self.T.art.open_zoom, K.tween_at(self.tw.hero_zoom, now)), out)
+end
+
+-------------------------------------------------------------------------------
+-- The title and the tile
+-------------------------------------------------------------------------------
+function UICoopMenu:BindTitle()
+	local g = self.game
+	self.h1:SetText(g and g.title or tr("st_coop_menu_empty_title"))
+	self.empty_text:SetText(g and "" or tr("st_coop_menu_empty_text"))
+	self.play_text:SetText(tr(g and "st_coop_menu_play" or "st_coop_menu_empty_btn"))
+	self:FitPlay()
+	local values = { "", "", "", "" }
+	if g then
+		values[1] = g.level_text or ""
+		values[2] = g.faction and tr_opt("st_faction_" .. g.faction, "") or ""
+		values[3] = G.day_time_text(g.stamp or g.last_played or g.created)
+		local newest = self.saves[1]
+		local who = newest and newest.players
+		values[4] = plain(type(who) == "table" and table.concat(who, ", ") or (g.name or ""))
+	end
+	local B = self.T.layout.title
+	local x = 0
+	local gap, full = self.L:w(B.meta_gap), self.L:w(B.w)
+	for i, t in ipairs(self.meta) do
+		t:SetText(values[i])
+		t:AdjustWidthToText()
+		t:SetWndPos(vector2():set(x, 0))
+		-- Dots only for what really does not fit: the engine cuts a text unless it is shorter than its window, and a window
+		-- made to the text's width is not. A long list of players ends in dots at the edge of the block.
+		local over = x + t:GetWidth() > full
+		t:SetEllipsis(over)
+		if over then t:SetWndSize(vector2():set(max(0, full - x), self.L:h(B.meta_h))) end
+		if values[i] ~= "" then x = x + t:GetWidth() + gap end
+	end
+end
+
+-- Play grows with its caption ("CREATE A GAME" does not fit the width of "PLAY"), and what stands after it moves along.
+function UICoopMenu:FitPlay()
+	local B = self.T.layout.title
+	local L = self.L
+	self.play_text:AdjustWidthToText()
+	local text_w = self.play_text:GetWidth() / (L.s * L.kx)
+	local w = max(B.play_w, B.play_pad + B.play_icon + B.play_gap + text_w + B.play_pad)
+	if w == self.play_w_now then return end
+	self.play_w_now = w
+	local n = B.play_notch
+	local p = self.play_pieces
+	self.ui:place(p[1], 0, 0, w - n, B.acts_h)
+	self.ui:place(p[2], w - n, 0, n, B.acts_h - n)
+	self.ui:place(p[3], w - n, B.acts_h - n, n, n)
+	self.ui:place(self.btn_play, 0, 0, w, B.acts_h)
+	self.after_play:SetWndPos(vector2():set(L:w(w + B.gear_x - B.play_w), 0))
+end
+
+function UICoopMenu:BindTile()
+	local g = self.game
+	self.tile_loc:SetText(g and (g.level_text or "") or "")
+	self.tile_count:SetText(tr("st_coop_menu_saves_n", g and g.count or 0))
+end
+
+function UICoopMenu:AnimTitle(now)
+	if not self.swap_t0 then return end
+	local A = self.T.anim
+	local L = self.L
+	local parts = {
+		{ w = self.h1, items = self.h1_items, y = self.T.layout.title.h1_y },
+		{ w = self.meta_block, items = self.meta_items, y = self.T.layout.title.meta_y },
+		{ w = self.acts_block, items = self.acts_items, y = self.T.layout.title.acts_y },
+	}
+	local running = false
+	for i, p in ipairs(parts) do
+		local u = K.after(now, self.swap_t0, self.ui:ms((i - 1) * A.title_step), self.ui:ms(A.title_rise))
+		local e = self.curve.rise(u)
+		self.ui:fade(p.items, e)
+		p.w:SetWndPos(vector2():set(0, L:h(p.y + A.title_shift * (1 - e))))
+		if u < 1 then running = true end
+	end
+	if not running then self.swap_t0 = nil end
+end
+
+-------------------------------------------------------------------------------
+-- The rail
+-------------------------------------------------------------------------------
+-- A row of the rail as it stands, at the fade of its entrance. A game is brighter when selected, its history button lights up
+-- under the cursor and while its map is open.
+function UICoopMenu:PaintRow(row)
+	local T, e = self.T, row.e
+	local on = row.selected and "_on" or ""
+	local hist = row.hover or (row.selected and self.open)
+	row.bg:SetTextureColor(self.ui:color("pick", row.selected and e or 0))
+	local title_role = T.text["game_title" .. (row.player and "_on" or on)].color
+	local sub_role = T.text["game_sub" .. (row.player and "_on" or on)].color
+	local hist_role = hist and "accent" or "faint"
+	row.title:SetTextColor(self.ui:color(title_role))
+	row.sub:SetTextColor(self.ui:color(sub_role))
+	row.hist_n:SetTextColor(self.ui:color(hist_role))
+	self.ui:fade_text(row.title, title_role, e)
+	self.ui:fade_text(row.sub, sub_role, e)
+	self.ui:fade_text(row.hist_n, hist_role, e)
+	row.patch:SetTextureColor(self.ui:color("white", (row.selected and 1 or T.layout.rail.patch_off) * e))
+	row.hist_ico:SetTextureColor(self.ui:color(hist_role, e))
+	set_shown(row.hist_line, hist and row.has_hist)
+end
+
+function UICoopMenu:PaintHist(row, hover)
+	row.hover = hover
+	self:PaintRow(row)
+end
+
+function UICoopMenu:BindRail(info)
 	info = info or api.session_info()
-	local c = palette()
-	local active, pending = info.active == true, info.pending_host ~= nil
-	local free = not active
-	local host_tab, join_tab = self.tab == "host", self.tab == "join"
-	local loaded = level_loaded() and true or false
-	local alive = loaded and actor_alive() and true or false
+	local R, C = self.T.layout.rail, self.T.corners
+	local active = info.active == true
+	local list, players = self.games, false
+	if active then
+		list, players = player_rows(info), true
+		if #list <= 1 then list[#list + 1] = { nick = tr("st_coop_menu_nobody"), sub = "" } end
+	end
+	self.rail_first = max(1, min(self.rail_first, max(1, #list - #self.rows + 1)))
+	self.rail_players = players
+	local shown_sel = nil
+	for slot, row in ipairs(self.rows) do
+		local item = list[self.rail_first + slot - 1]
+		set_shown({ row.root }, item ~= nil)
+		row.index = self.rail_first + slot - 1
+		row.has_hist = false
+		row.selected = false
+		if item then
+			if players then
+				row.title:SetText(item.nick)
+				row.sub:SetText(item.sub)
+				set_shown({ row.patch, row.hist_ico, row.hist_n }, false)
+				row.btn:Enable(false)
+				row.btn_hist:Enable(false)
+			else
+				row.selected = item.id == self.sel_id
+				row.has_hist = true
+				row.title:SetText(item.title)
+				local sub = item.level_text and (item.level_text .. ", ") or ""
+				row.sub:SetText(sub .. G.day_time_text(item.stamp or item.last_played or item.created))
+				row.hist_n:SetText(tostring(item.count or 0))
+				set_shown({ row.patch, row.hist_ico, row.hist_n }, true)
+				local tex = G.patch_of(item.faction, self.T.patches)
+				if row.patch_tex ~= tex then
+					row.patch_tex = tex
+					row.patch:InitTexture(tex)
+					row.patch:SetStretchTexture(true)
+				end
+				row.btn:Enable(true)
+				row.btn_hist:Enable(true)
+				if row.selected then shown_sel = row end
+			end
+			row.player = players
+			self:PaintRow(row)
+		end
+	end
+	set_shown(self.rail_corners, shown_sel ~= nil)
+	if shown_sel then
+		local i = C.row_inset
+		self.ui:place_corners(self.rail_corners, -i, shown_sel.y - i, R.w + 2 * i, R.row_h + 2 * i, C.len, C.thick)
+	end
+	local count = min(#list, #self.rows)
+	local ay = R.list_y + count * R.step + R.add_gap
+	self.add_row.root:SetWndPos(vector2():set(0, self.L:h(ay)))
+	set_shown({ self.add_row.root }, not active)
+	self.btn_add:Enable(not active)
+end
 
-	-- status line: the dot, the status (red only for a real error), the second line
-	local view = status_view(info, self.local_error, self.tab)
-	local is_error = view.kind == "error"
-	self.status_dot:SetTextureColor(c["dot_" .. view.kind])
-	self.status_phase:SetText(is_error and "" or view.title)
-	self.status_phase:SetTextColor(view.dim and c.grey or c.text)
-	self.status_phase:Show(not is_error)
-	self.status_error:SetText(is_error and view.title or "")
-	self.status_error:SetTextColor(c.error)
-	self.status_error:Show(is_error)
-	self.status_detail:SetText(view.detail)
-	set_flat(self.flat.btn_disconnect, active, true)
-	set_flat(self.flat.btn_cancel_pending, pending and not active, true)
-	set_flat(self.flat.btn_close, true, true)
+function UICoopMenu:AnimRail(now)
+	if not self.rail_t0 then return end
+	local A, R = self.T.anim, self.T.layout.rail
+	local L = self.L
+	local running = false
+	for i, row in ipairs(self.rows) do
+		local u = K.after(now, self.rail_t0, self.ui:ms((i - 1) * A.rail_step), self.ui:ms(A.rail_in))
+		local e = self.curve.rise(u)
+		row.e = e
+		row.root:SetWndPos(vector2():set(L:w(-A.rail_shift * (1 - e)), L:h(row.y)))
+		if row.root:IsShown() then self:PaintRow(row) end
+		if u < 1 then running = true end
+	end
+	if not running then self.rail_t0 = nil end
+end
 
-	-- under the tiles: the players while a session is open, else what happens next
-	local lines = player_lines(info)
-	local sig = (active and "1" or "0") .. "\n" .. table.concat(lines, "\n")
-	local title = active and tr("st_coop_menu_players", #lines, info.max_players or 8) or tr("st_coop_menu_next_title")
-	self.info_title:SetText(title)
-	if sig ~= self.players_sig then
-		self.players_sig = sig
-		self.status_scroll:Clear()
-		if active then
-			if #lines <= 1 then lines[#lines + 1] = tr("st_coop_menu_nobody") end
-			for _, l in ipairs(lines) do
-				local row = self.xml:InitTextWnd("coop_menu:status_row", nil)
-				row:SetText(l)
-				self.status_scroll:AddWindow(row, true)
-				row:SetAutoDelete(true)
+-------------------------------------------------------------------------------
+-- The map
+-------------------------------------------------------------------------------
+function UICoopMenu:map_visible()
+	return self.map_tex ~= nil and self.game ~= nil and not self.guest
+end
+
+function UICoopMenu:BindRoute()
+	local T, M = self.T, self.T.map
+	local route = {}
+	local first = max(1, #self.stops - M.stop_limit + 1)
+	for i = first, #self.stops do route[#route + 1] = self.stops[i] end
+	-- real routes are longer than the screen: the map zooms out until this one fits
+	local z = K.map_fit(route, M.w, M.h, M.fit, M.least)
+	self.map_z = z
+	local mw, mh = M.w * z, M.h * z
+	for _, s in ipairs(route) do s.x, s.y = s.u * mw, s.v * mh end
+	self.route = route
+	self.ui:place(self.layer, 0, 0, mw, mh)
+	self.ui:place(self.dot_layer, 0, 0, mw, mh)
+	local dots = K.dots_along(route, M.dot_step, M.dot_limit)
+	self.dot_list = dots
+	for i, d in ipairs(dots) do
+		local w = self.dots[i]
+		if not w then
+			w = self.ui:box(self.dot_layer, 0, 0, M.dot_size, M.dot_size, "accent", "coop_menu_route_dot")
+			self.dots[i] = w
+		end
+		w:SetWndPos(vector2():set(self.L:w(d.x - M.dot_size / 2), self.L:h(d.y - M.dot_size / 2)))
+	end
+	for i = #dots + 1, #self.dots do self.dots[i]:Show(false) end
+
+	for i, w in ipairs(self.stop_w) do
+		local s = route[i]
+		set_shown({ w.root }, s ~= nil)
+		w.btn:Enable(false)
+		if s then
+			w.s = s
+			w.last = i == #route
+			w.root:SetWndPos(vector2():set(self.L:w(s.x - w.c), self.L:h(s.y - w.c)))
+			set_shown({ w.fill, w.line }, not w.last)
+			set_shown({ w.patch, w.ring }, w.last)
+			if w.last then
+				local tex = G.patch_of(self.game and self.game.faction, T.patches)
+				if w.patch_tex ~= tex then
+					w.patch_tex = tex
+					w.patch:InitTexture(tex)
+					w.patch:SetStretchTexture(true)
+				end
 			end
 		end
 	end
-	self.status_scroll:Show(active)
-	set_shown(self.info_line, not active)
-	if not active then
-		local ids = NEXT_IDS[host_tab and "host" or "join"]
-		for i, id in ipairs(ids) do
-			self.info_line[i]:SetText(i == 2 and host_tab and tr(id, check_port(self.edit_port:GetText()) or get_port()) or tr(id))
+	self:PaintStops()
+
+	-- the other games: a patch where each of them is now
+	local n = 0
+	for _, g in ipairs(self.games) do
+		if g.id ~= self.sel_id and n < #self.others then
+			local u, v = G.level_uv(g.level)
+			if u then
+				n = n + 1
+				local o = self.others[n]
+				o.id = g.id
+				local tex = G.patch_of(g.faction, T.patches)
+				if o.patch_tex ~= tex then
+					o.patch_tex = tex
+					o.patch:InitTexture(tex)
+					o.patch:SetStretchTexture(true)
+				end
+				o.root:SetWndPos(vector2():set(self.L:w(u * mw - M.other / 2), self.L:h(v * mh - M.other / 2)))
+			end
 		end
 	end
-
-	-- host tab: the three ways to start, nothing is offered while a session runs. A hidden control is never enabled: the
-	-- engine hands a click to every enabled child under the cursor, shown or not, and an edit box passes it on - the hidden
-	-- tiles lie over the address field and took its clicks (live 2026-10-24: "I cannot type the host's address").
-	set_shown(self.host_ctl, host_tab)
-	local last_ok = self.last_save ~= nil and not self.last_save.damaged
-	self:StyleTile(self.tile.new, free and host_tab)
-	self:StyleTile(self.tile.load, free and host_tab)
-	self:StyleTile(self.tile.last, free and last_ok and host_tab)
-	self.btn_port_toggle:Enable(host_tab and true or false)
-	-- the port field and its fold
-	local shown_port = check_port(self.edit_port:GetText()) or get_port()
-	set_shown(self.port_ctl, host_tab and self.port_open)
-	set_edit_enabled(self.edit_port, free and host_tab and self.port_open)
-	self.port_toggle:SetText(self.port_open and tr("st_coop_menu_port_less") or tr("st_coop_menu_port_more", shown_port))
-	-- "Open it to partners": only with a game that is loaded and alive; a dead actor gets the reason instead of a button
-	local can_open = host_tab and free and alive
-	local dead = host_tab and free and loaded and not alive
-	set_flat(self.flat.btn_host_now, can_open, can_open)
-	self.open_hint:Show(can_open or dead)
-	self.open_hint:SetText(can_open and tr("st_coop_menu_open_hint") or (dead and tr("st_coop_menu_host_dead") or ""))
-	-- "Restore an autosave (N)": only the host of a running session, and only with autosaves
-	local host_session = info.host == true
-	self:UpdateAutosaves(host_session)
-	local sv = saves()
-	set_flat(self.flat.btn_restore, host_tab and host_session and sv ~= nil and self.autosave_count > 0, host_session and sv ~= nil)
-
-	-- join tab
-	set_shown(self.join_ctl, join_tab)
-	set_flat(self.flat.btn_connect, join_tab, free)
-	for i, row in ipairs(self.recent_row) do
-		set_shown(row.list, join_tab and self.recent[i] ~= nil)
-		row.btn:Enable((free and join_tab and self.recent[i] ~= nil) and true or false)
+	for i, o in ipairs(self.others) do
+		if i > n then o.id = nil end
 	end
-	set_edit_enabled(self.edit_address, free and join_tab)
-	self.join_info:SetText(loaded and free and tr("st_coop_menu_join_ingame") or "")
 
-	-- shared
-	set_edit_enabled(self.edit_nick, free)
+	local last = route[#route] or { x = mw / 2, y = mh / 2 }
+	self.cam.x0, self.cam.y0 = K.camera_closed(last, self.tile_stage)
+	self.cam.x1, self.cam.y1 = K.camera_open(route, M.focus, { w = mw, h = mh }, self.view, { open_below = true, lit = M.lit, fit_h = M.fit.h })
+	self.map_dirty = true
 end
 
--- Nick from the edit box; false (and the error shown) if it is not valid.
-function UICoopMenu:ApplyNick()
-	local nick = check_nick(self.edit_nick:GetText())
-	if not nick then
-		self.local_error = tr("st_coop_menu_err_nick")
-		return false
+-- Which stop the picked save is at (d.js: every stop of its level), and the time it shows.
+function UICoopMenu:PaintStops()
+	local M = self.T.map
+	local L = self.L
+	local picked = self.saves[self.pick]
+	local place = picked and picked.level
+	for _, w in ipairs(self.stop_w) do
+		local s = w.s
+		if s and w.root:IsShown() then
+			local here = s.level == place
+			w.fill_item.role = here and "accent" or "stop_fill"
+			w.here = here
+			w.time:SetText(here and picked.t or s.t or "")
+			w.loc:SetText(plain(s.level_text or ""))
+			w.time:AdjustWidthToText()
+			w.loc:AdjustWidthToText()
+			local lx = w.c + (w.last and M.patch / 2 or M.stop_size / 2) + M.stop_gap
+			local x = L:w(lx)
+			local pad, gap = L:w(M.label_pad), L:w(M.label_gap)
+			local y = L:h(w.c - M.label_h / 2)
+			local h = L:h(M.label_h)
+			local width = pad + w.time:GetWidth() + gap + w.loc:GetWidth() + pad
+			w.bg:SetWndRect(Frect():set(x, y, x + width, y + h))
+			w.time:SetWndPos(vector2():set(x + pad, y))
+			w.loc:SetWndPos(vector2():set(x + pad + w.time:GetWidth() + gap, y))
+			local bx = L:w(w.c - (w.last and M.patch / 2 or M.stop_size))
+			w.btn:SetWndRect(Frect():set(bx, min(y, L:h(w.c - M.patch / 2)), x + width, max(y + h, L:h(w.c + M.patch / 2))))
+		end
 	end
-	set_nick(nick)
-	return true
+end
+
+-- The clip window and the camera at t: 0 the tile, 1 the whole screen.
+function UICoopMenu:PlaceMap(t)
+	local L, M, v, tile = self.L, self.T.map, self.view, self.tile_stage
+	local cam = self.cam
+	local mw, mh = M.w * self.map_z, M.h * self.map_z
+	local x1, y1, x2, y2 = v.left, v.top, v.right, v.bottom
+	local cx, cy = K.mix(cam.x0, cam.x1, t), K.mix(cam.y0, cam.y1, t)
+	if self.has_clip then
+		x1, y1 = K.mix(tile.x, v.left, t), K.mix(tile.y, v.top, t)
+		x2, y2 = K.mix(tile.x + tile.w, v.right, t), K.mix(tile.y + tile.h, v.bottom, t)
+		self.clip:SetWndRect(Frect():set(L:x(x1), L:y(y1), L:x(x2), L:y(y2)))
+	end
+	local px, py = L:w(cx - x1), L:h(cy - y1)
+	self.layer:SetWndPos(vector2():set(px, py))
+	self.ui:place(self.map_fill, 0, 0, x2 - x1, y2 - y1)
+	if not self.map_c then return end
+	if self.has_clip or t >= 1 then
+		self.map_c:SetWndRect(Frect():set(px, py, px + L:w(mw), py + L:h(mh)))
+		if not self.has_clip then self.map_c:SetTextureRect(Frect():set(0, 0, self.tex_w, self.tex_h)) end
+		local uw, uh = L:w(mw), L:h(mh)
+		for _, c in ipairs(self.map_copies) do
+			local cx1 = px + c.dx * uw
+			c.w:SetWndRect(Frect():set(cx1, py, cx1 + uw, py + uh))
+			if not c.w:IsShown() then c.w:Show(true) end
+		end
+		self.map_fade:SetWndRect(Frect():set(px - uw, py + uh - L:h(M.fade_h), px + 2 * uw, py + uh))
+		if not self.map_fade:IsShown() then self.map_fade:Show(true) end
+	else
+		-- no clipping, closed: the map is a static of the tile's size with the part of the texture it would show
+		local tx, ty = tile.x - x1, tile.y - y1
+		self.map_c:SetWndRect(Frect():set(L:w(tx), L:h(ty), L:w(tx + tile.w), L:h(ty + tile.h)))
+		local kx, ky = self.tex_w / mw, self.tex_h / mh
+		local mx, my = tile.x - cx, tile.y - cy
+		self.map_c:SetTextureRect(Frect():set(mx * kx, my * ky, (mx + tile.w) * kx, (my + tile.h) * ky))
+		for _, c in ipairs(self.map_copies) do
+			if c.w:IsShown() then c.w:Show(false) end
+		end
+		if self.map_fade:IsShown() then self.map_fade:Show(false) end
+	end
+end
+
+function UICoopMenu:AnimMap(now)
+	local t = K.tween_at(self.tw.map, now)
+	local shown = self:map_visible()
+	if self.clip:IsShown() ~= shown then self.clip:Show(shown) end
+	if not shown then return end
+	if t ~= self.map_t or self.map_dirty then
+		self.map_t, self.map_dirty = t, false
+		self:PlaceMap(t)
+	end
+
+	-- the shade of the open map
+	local a = K.tween_at(self.tw.shade, now)
+	for _, b in ipairs(self.open_shade) do
+		local on = a > 0
+		if b.w:IsShown() ~= on then b.w:Show(on) end
+		if on then b.w:SetTextureColor(self.ui:color("shade", a * b.k)) end
+	end
+end
+
+-- The route: the dots appear in order along the way, the stops one by one; the last stop is always there.
+function UICoopMenu:AnimRoute(now)
+	local A, M = self.T.anim, self.T.map
+	local p = K.tween_at(self.tw.route, now)
+	local visible = self.map_t > 0 or self.open
+	for i, d in ipairs(self.dot_list or {}) do
+		local w = self.dots[i]
+		local on = visible and d.f <= p
+		if w:IsShown() ~= on then w:Show(on) end
+	end
+	local n = #self.route
+	local step = n > 1 and min(A.stop_step, A.stop_span / n) or A.stop_step
+	local t0 = self.open_t0 or now
+	for i, w in ipairs(self.stop_w) do
+		if w.s and w.root:IsShown() then
+			local a
+			if w.last then
+				a = 1
+			elseif self.open then
+				a = self.curve.ease(K.after(now, t0, self.ui:ms(A.stop_delay + (i - 1) * step), self.ui:ms(A.stop_fade)))
+			else
+				a = 1 - self.curve.ease(K.after(now, t0, 0, self.ui:ms(A.stop_fade)))
+			end
+			self.ui:fade(w.items, a)
+			w.halo:SetTextureColor(self.ui:color("halo", (w.here and not w.last) and a or 0))
+			local la
+			if self.open then
+				la = self.curve.ease(K.after(now, t0, self.ui:ms(w.last and A.stop_last_delay or (A.stop_delay + (i - 1) * step)), self.ui:ms(A.stop_fade)))
+			else
+				la = 0
+			end
+			self.ui:fade(w.label_items, la)
+			local clickable = self.open and a >= 1
+			if w.btn:IsEnabled() ~= clickable then w.btn:Enable(clickable) end
+			if w.last then self:AnimRing(w, now) end
+		end
+	end
+	for i, o in ipairs(self.others) do
+		local on = o.id ~= nil and visible
+		if o.root:IsShown() ~= on then o.root:Show(on) end
+		if on then
+			local a = self.open and K.after(now, t0, self.ui:ms(A.other_delay), self.ui:ms(A.other_fade)) or 0
+			o.patch:SetTextureColor(self.ui:color("white", a * M.other_alpha))
+			o.btn:Enable(a >= 1)
+		end
+	end
+end
+
+function UICoopMenu:AnimRing(w, now)
+	local A, M = self.T.anim, self.T.map
+	if not self.ui.motion then
+		w.ring:SetTextureColor(self.ui:color("accent", A.ring_still))
+		return
+	end
+	local e = self.curve.out((now % A.ping) / A.ping)
+	local size = M.ring * K.mix(M.ring_from, M.ring_to, e)
+	self.ui:place(w.ring, w.c - size / 2, w.c - size / 2, size, size)
+	w.ring:SetTextureColor(self.ui:color("accent", 1 - e))
+end
+
+-- Opens or closes the map. `at_once`: the window is opening, the map is simply closed.
+function UICoopMenu:SetOpen(open, now, at_once)
+	open = open and true or false
+	now = now or now_ms()
+	if open == self.open and not at_once then return end
+	self.open = open
+	self.open_t0 = now
+	local A, tw, c = self.T.anim, self.tw, self.curve
+	-- closing is never slower than opening: nothing of it outlasts map_close
+	local function ms(v) return at_once and 0 or self.ui:ms(open and v or min(v, A.map_close)) end
+	local to = open and 1 or 0
+	local map_ms = self.has_clip and ms(open and A.map_open or A.map_close) or 0
+	K.tween_to(tw.map, to, now, map_ms, 0, c.swing)
+	K.tween_to(tw.hero_out, to, now, ms(A.hero_out), 0, c.ease)
+	K.tween_to(tw.hero_zoom, to, now, ms(A.hero_zoom), 0, c.swing)
+	K.tween_to(tw.shade, to, now, ms(A.shade_open), open and ms(A.shade_delay) or 0, c.ease)
+	K.tween_to(tw.tile, 1 - to, now, ms(A.tile_fade), 0, c.ease)
+	K.tween_to(tw.timeline, to, now, ms(A.timeline_slide), open and ms(A.timeline_delay) or 0, c.swing)
+	K.tween_to(tw.line, to, now, ms(A.line_grow), open and ms(A.line_delay) or 0, c.swing)
+	K.tween_to(tw.route, to, now, ms(A.route), open and ms(A.route_delay) or 0, c.in_out)
+	self.btn_tile:Enable(not open)
+	self.map_dirty = true
+	for _, row in ipairs(self.rows) do
+		if row.root:IsShown() and row.has_hist then self:PaintRow(row) end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- The timeline
+-------------------------------------------------------------------------------
+function UICoopMenu:timeline_allowed(info)
+	info = info or api.session_info()
+	if not self.game then return false end
+	return info.active ~= true or info.host == true
+end
+
+-- The line over the row of save i, or nil. The top row of a list scrolled down says its day, if it is not the header's.
+function UICoopMenu:GapOf(i, first)
+	local s = self.saves
+	if i <= 1 or not s[i] then return nil end
+	if i == first then return G.gap_text(s[1].stamp, s[i].stamp) end
+	return G.gap_text(s[i - 1].stamp, s[i].stamp, self.T.layout.timeline.gap_minutes)
+end
+
+-- How many rows fit from save `first` down, with their lines.
+function UICoopMenu:RowsFrom(first)
+	local B = self.T.layout.timeline
+	local used, n = 0, 0
+	for i = first, #self.saves do
+		used = used + B.row_h + (self:GapOf(i, first) and B.gap_h or 0)
+		if used > self.tl_room or n == B.rows then break end
+		n = n + 1
+	end
+	return n
+end
+
+function UICoopMenu:BindTimeline()
+	local s = self.saves
+	local first = max(1, min(self.tl_first, #s))
+	while first > 1 and first - 2 + self:RowsFrom(first - 1) >= #s do first = first - 1 end -- no empty room under the last row
+	self.tl_first = first
+	self.tl_slots = max(1, self:RowsFrom(first))
+	self.tl_sub:SetText(s[1] and tr("st_coop_menu_sub", G.day_text(s[1].stamp), #s) or tr("st_coop_menu_no_saves"))
+	for slot, r in ipairs(self.tl_rows) do
+		local i = self.tl_first + slot - 1
+		local e = slot <= self.tl_slots and s[i] or nil
+		set_shown({ r.root }, e ~= nil)
+		r.i = i
+		if e then
+			r.time:SetText(e.t or "")
+			r.loc:SetText(plain(e.level_text or ""))
+			r.tag:SetText(e.damaged and tr("st_coop_menu_damaged") or (i == 1 and tr("st_coop_menu_latest") or ""))
+			local gap = self:GapOf(i, first)
+			r.gap_on = gap ~= nil
+			r.gap:SetText(gap or "")
+		end
+	end
+	local rest = #s - (self.tl_first + self.tl_slots - 1) + (self.tl_first - 1)
+	self.tl_more:SetText(rest > 0 and tr("st_coop_menu_more_rows", rest) or "")
+	self:BindMore()
+	self:PaintRows()
+end
+
+function UICoopMenu:PaintRows()
+	for _, r in ipairs(self.tl_rows) do
+		local on = r.i == self.pick
+		r.bg:SetTextureColor(self.ui:color("pick", on and 1 or 0))
+		r.b_item.role = (on or r.i == 1) and "accent" or "bullet_fill"
+		r.b_fill:SetTextureColor(self.ui:color(r.b_item.role))
+	end
+end
+
+function UICoopMenu:BindMore()
+	local T, B = self.T, self.T.layout.timeline
+	local e = self.saves[self.pick]
+	if not e then return end
+	local tex = G.art_of(e.level, T.art)
+	if tex ~= self.thumb_tex then
+		self.thumb_tex = tex
+		if tex then
+			local tw, th = self.ui:load_image(self.thumb, tex, T.art.size)
+			local aspect = (B.item_w - 2 * B.row_pad) / B.thumb_h
+			self.thumb:SetTextureRect(Frect():set(K.cover(tw, th, T.art.area, aspect, T.art.thumb_pos.x, T.art.thumb_pos.y)))
+		end
+	end
+	self.thumb:SetTextureColor(self.ui:color("white", tex and 1 or 0))
+	local info = api.session_info()
+	local can = self.pick > 1 and not e.damaged and self:timeline_allowed(info)
+	if e.damaged then
+		self.note:SetText(tr("st_coop_menu_note_damaged"))
+	elseif not self:timeline_allowed(info) then
+		self.note:SetText(tr("st_coop_menu_note_guest"))
+	elseif self.pick == 1 then
+		self.note:SetText(tr("st_coop_menu_note_last"))
+	else
+		self.note:SetText(tr("st_coop_menu_note_back", e.t or ""))
+	end
+	set_control(self.roll, can, can)
+end
+
+function UICoopMenu:PickSave(i, now)
+	i = max(1, min(i, #self.saves))
+	if i == self.pick then return end
+	now = now or now_ms()
+	local A, c = self.T.anim, self.curve
+	self.prev_pick = self.pick
+	self.pick = i
+	if i < self.tl_first then self.tl_first = i end
+	while i > self.tl_first + self:RowsFrom(self.tl_first) - 1 do self.tl_first = self.tl_first + 1 end
+	K.tween_set(self.tw.collapse, K.tween_at(self.tw.expand, now))
+	K.tween_to(self.tw.collapse, 0, now, self.ui:ms(A.expand), 0, c.ease)
+	K.tween_set(self.tw.expand, 0)
+	K.tween_to(self.tw.expand, 1, now, self.ui:ms(A.expand), 0, c.ease)
+	self:BindTimeline()
+	self:PaintStops()
+end
+
+function UICoopMenu:AnimTimeline(now)
+	local A, B = self.T.anim, self.T.layout.timeline
+	local L = self.L
+	local slide = K.tween_at(self.tw.timeline, now)
+	local shown = slide > 0
+	if self.tl_block:IsShown() ~= shown then self.tl_block:Show(shown) end
+	if not shown then return end
+	local x = self.tl_x + L:w(B.w + L.ox / L.s) * (1 - slide)
+	self.tl_block:SetWndPos(vector2():set(x, self.tl_y))
+	local line_h = (self.tl_h - self.tl_line_y) * K.tween_at(self.tw.line, now)
+	self.tl_line:SetWndSize(vector2():set(L:w(1), L:h(line_h)))
+
+	local ex = K.tween_at(self.tw.expand, now)
+	local co = K.tween_at(self.tw.collapse, now)
+	local y = B.list_y
+	local t0 = self.open_t0 or now
+	for slot, r in ipairs(self.tl_rows) do
+		if r.root:IsShown() then
+			local a = 1
+			local off = 0
+			if self.open then
+				local u = K.after(now, t0, self.ui:ms(A.tl_delay + (slot - 1) * A.tl_step), self.ui:ms(A.tl_rise))
+				local e = self.curve.rise(u)
+				a, off = e, A.tl_shift * (1 - e)
+			end
+			self.ui:fade(r.items, a)
+			if r.gap_on then y = y + B.gap_h end
+			r.root:SetWndPos(vector2():set(L:w(r.x0 + off), L:h(y)))
+			local grow = r.i == self.pick and ex or (r.i == self.prev_pick and co or 0)
+			r.bg:SetWndSize(vector2():set(L:w(B.item_w), L:h(B.row_h + B.more_h * grow)))
+			if r.i == self.pick then self:PlaceMore(y + B.row_h, ex, a) end
+			y = y + B.row_h + B.more_h * grow
+		end
+	end
+	local picked_shown = self.pick >= self.tl_first and self.pick <= self.tl_first + self.tl_slots - 1 and self.saves[self.pick] ~= nil
+	if self.more:IsShown() ~= picked_shown then self.more:Show(picked_shown) end
+end
+
+function UICoopMenu:PlaceMore(y, e, a)
+	local A, B = self.T.anim, self.T.layout.timeline
+	if self.more_clip then
+		self.ui:place(self.more, B.item_x, y, B.item_w, B.more_h * e)
+		self.ui:fade(self.more_items, a)
+	else
+		self.ui:place(self.more, B.item_x, y, B.item_w, B.more_h)
+		local late = K.clamp01((e - A.expand_late) / (1 - A.expand_late))
+		self.ui:fade(self.more_items, a * late)
+		self.thumb:SetTextureColor(self.ui:color("white", (self.thumb_tex and 1 or 0) * a * late))
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Every frame
+-------------------------------------------------------------------------------
+function UICoopMenu:Update()
+	CUIScriptWnd.Update(self)
+	local now = now_ms()
+	local ok, err = pcall(self.Tick, self, now)
+	if not ok and not self.tick_failed then
+		self.tick_failed = true
+		log("! tick failed: %s", tostring(err))
+	end
+	if now < self.next_poll then return end
+	self.next_poll = now + POLL_MS
+	local ok2, err2 = pcall(self.Refresh, self)
+	if not ok2 then log("! refresh failed: %s", tostring(err2)) end
+end
+
+function UICoopMenu:Tick(now)
+	if now == self.last_tick then return end -- the engine updates a dialog of the main menu twice per frame
+	self.last_tick = now
+	self:StepData(now)
+	self:AnimHero(now)
+	self:AnimMap(now)
+	self:AnimRoute(now)
+	self:AnimTimeline(now)
+	self:AnimTitle(now)
+	self:AnimRail(now)
+	self:AnimTile(now)
+	if self.modal then
+		if self.modal == "confirm" then
+			local sv = saves()
+			if sv and sv.hold then sv.hold(true) end -- the autosave timer must not write over the save that is being picked
+		end
+	else
+		self.ui:hover()
+	end
+end
+
+function UICoopMenu:AnimTile(now)
+	local a = K.tween_at(self.tw.tile, now)
+	local shown = a > 0 and self:map_visible()
+	if self.tile_block:IsShown() ~= shown then self.tile_block:Show(shown) end
+	if shown then self.ui:fade(self.tile_items, a) end
+end
+
+-- The saves are read a little in every frame, so the window never stalls; what comes in reaches the screen a few times a second.
+function UICoopMenu:StepData(now)
+	if not self.scan_done then
+		local done, touched = G.scan_step()
+		self.scan_done = done
+		if next(touched) ~= nil or done then self.data_dirty = true end
+	elseif self.game and K.tween_done(self.tw.map, now) and K.tween_done(self.tw.hero_out, now) then
+		if G.legacy_step(self.game.id) then self.data_dirty = true end
+	end
+	if self.data_dirty and (now >= self.next_bind or self.scan_done) then
+		self.data_dirty = false
+		self.next_bind = now + REBIND_MS
+		self:BindData(now)
+	end
+end
+
+-------------------------------------------------------------------------------
+-- The session on the screen
+-------------------------------------------------------------------------------
+local KIND_ROLE = { idle = "idle", wait = "wait", live = "live", error = "error" }
+
+function UICoopMenu:Refresh(info)
+	info = info or api.session_info()
+	local active, pending = info.active == true, info.pending_host ~= nil
+	local free = not active
+	-- a session that opens under the window: from now on the screen is the game that runs
+	if active ~= self.session_on then
+		local now = now_ms()
+		local before = self.sel_id
+		self:ChooseGame(info)
+		self.players_sig = nil
+		if self.sel_id ~= before then
+			self.pick, self.prev_pick, self.saves = 1, nil, {}
+			self.swap_t0 = now
+		end
+		self:BindData(now)
+	end
+	local loaded = level_loaded() and true or false
+	local alive = loaded and actor_alive() and true or false
+
+	-- the status: the dot, the status (red only for a real error), the second line
+	local view = status_view(info, self.local_error)
+	local is_error = view.kind == "error"
+	local two = view.detail ~= "" and not is_error
+	local Bar = self.T.layout.bar
+	self.status_dot:SetTextureColor(self.ui:color(KIND_ROLE[view.kind]))
+	self.status_phase:SetText(is_error and "" or view.title)
+	self.status_phase:SetTextColor(self.ui:color(view.dim and self.T.text.status_sub.color or self.T.text.status.color))
+	self.status_phase:Show(not is_error)
+	self.ui:place(self.status_phase, Bar.pad + Bar.status_x, two and Bar.h / 2 - Bar.status_two or 0, Bar.status_w, two and Bar.status_two or Bar.h)
+	self.status_error:SetText(is_error and view.title or "")
+	self.status_error:Show(is_error)
+	self.ui:place(self.status_error, Bar.pad + Bar.status_x, (Bar.h - Bar.error_h) / 2, Bar.status_w, Bar.error_h)
+	self.status_detail:SetText(two and view.detail or "")
+
+	-- the bar: the way to a friend while there is no session; a session has Disconnect, a pending host Cancel
+	set_shown(self.join_list, free)
+	set_shown({ self.edit_address }, free)
+	set_edit_enabled(self.edit_address, free)
+	set_control(self.connect, free, free)
+	set_control(self.recent_toggle, free and #self.recent > 0, true)
+	set_shown({ self.field_hint }, free and self.edit_address:GetText() == "")
+	set_shown({ self.hint }, free and not pending)
+	set_control(self.disconnect, active, true)
+	set_control(self.cancel, pending and not active, true)
+	self:RefreshRecent(free)
+
+	-- the rail: the players of a session, else the games. Rows are rewritten only when something changed.
+	local sig = active and ("1\n" .. self:players_key(info)) or "0"
+	if sig ~= self.players_sig then
+		self.players_sig = sig
+		self:BindRail(info)
+		self:BindMore()
+	end
+
+	-- the title: Play while there is no session; the game of a session belongs to its host
+	local g = self.game
+	local guest = self.guest or (active and info.host ~= true) or info.client == true
+	self.guest = guest
+	set_shown({ self.title_block }, not guest)
+	if guest and self.open then self:SetOpen(false) end
+	local playable = g == nil or self.scan_done ~= true or G.usable(g.id) ~= nil
+	set_control(self.play, free, playable)
+	self:RefreshGear(g ~= nil and not guest)
+	-- "Open to partners": only with a game that is loaded and alive; a dead actor gets the reason instead of a button
+	local can_open = free and alive
+	local dead = free and loaded and not alive
+	set_control(self.host_now, can_open, can_open)
+	self.open_hint:Show(dead)
+	self.open_hint:SetText(dead and tr("st_coop_menu_host_dead") or "")
+	self.btn_add:Enable(free)
+end
+
+function UICoopMenu:players_key(info)
+	local t = {}
+	for i, r in ipairs(player_rows(info)) do t[i] = r.nick .. "|" .. r.sub end
+	return table.concat(t, "\n")
+end
+
+function UICoopMenu:RefreshGear(shown)
+	local win = self.settings_win
+	local can = shown and win ~= nil and type(win.open) == "function"
+	set_control(self.gear, shown, can)
+	self.gear_ico:SetTextureColor(self.ui:color(can and "dim" or "faint"))
+end
+
+function UICoopMenu:RefreshRecent(free)
+	local show = free and self.recent_open
+	set_shown({ self.recent_pop }, show)
+	for i, row in ipairs(self.recent_row) do
+		local here = show and self.recent[i] ~= nil
+		set_shown(row.list, here)
+		row.btn:Enable(here and true or false)
+	end
+end
+
+-------------------------------------------------------------------------------
+-- What the player does: games, saves, the map
+-------------------------------------------------------------------------------
+function UICoopMenu:SelectGame(g, now)
+	if not g or g.id == self.sel_id then return end
+	now = now or now_ms()
+	self.game, self.sel_id = g, g.id
+	self.pick, self.prev_pick = 1, nil
+	self.tl_first = 1
+	self.saves = {}
+	K.tween_set(self.tw.expand, 1)
+	K.tween_set(self.tw.collapse, 0)
+	self:BindData(now)
+	self.swap_t0 = now
+	self.players_sig = nil
+end
+
+function UICoopMenu:OnRow(slot)
+	local row = self.rows[slot]
+	if self.rail_players or not row then return end
+	self.local_error = nil
+	self:SelectGame(self.games[row.index])
+end
+
+-- The history button of a game: the same game folds the map, another one opens on it.
+function UICoopMenu:OnHist(slot)
+	local row = self.rows[slot]
+	if self.rail_players or not row then return end
+	local g = self.games[row.index]
+	if not g then return end
+	local same = g.id == self.sel_id
+	self:SelectGame(g)
+	self:SetOpen(not (same and self.open))
+	self:BindRail()
+end
+
+function UICoopMenu:OnToggleMap()
+	if not self.game then return end
+	self:SetOpen(not self.open)
+	self:BindRail()
+end
+
+function UICoopMenu:OnTimelineRow(slot)
+	local r = self.tl_rows[slot]
+	if r and self.saves[r.i] then self:PickSave(r.i) end
+end
+
+function UICoopMenu:OnStop(i)
+	local w = self.stop_w[i]
+	if w and w.s then self:PickSave(w.s.pick) end
+end
+
+function UICoopMenu:OnOther(i)
+	local o = self.others[i]
+	if not (o and o.id) or api.is_active() then return end
+	for _, g in ipairs(self.games) do
+		if g.id == o.id then return self:SelectGame(g) end
+	end
+end
+
+function UICoopMenu:OnGear()
+	local win = self.settings_win
+	if win and win.open and self.game then win.open(self, self.game.id) end
+end
+
+function UICoopMenu:ScrollTimeline(step)
+	local before = self.tl_first
+	self.tl_first = self.tl_first + step
+	self:BindTimeline()
+	return before ~= self.tl_first
+end
+
+function UICoopMenu:ScrollRail(step)
+	local before = self.rail_first
+	self.rail_first = self.rail_first + step
+	self:BindRail()
+	return before ~= self.rail_first
+end
+
+function UICoopMenu:OnMouse(x, y, action)
+	local up, down = ui_events.WINDOW_MOUSE_WHEEL_UP, ui_events.WINDOW_MOUSE_WHEEL_DOWN
+	if (action == up or action == down) and not self.modal then
+		local step = action == up and -1 or 1
+		if self.open and x >= self.tl_x then
+			self:ScrollTimeline(step)
+		elseif x < self.L:x(self.T.layout.rail.x + self.T.layout.rail.w, -1) then
+			self:ScrollRail(step)
+		end
+	end
+	return CUIScriptWnd.OnMouse(self, x, y, action)
+end
+
+-------------------------------------------------------------------------------
+-- A small dialog: the name of a new game, or the question before going back
+-------------------------------------------------------------------------------
+function UICoopMenu:ShowModal(kind, title, text, ok_text, with_edit)
+	self.modal = kind
+	self.modal_title:SetText(title)
+	self.modal_text:SetText(text)
+	self.modal_ok_text:SetText(ok_text)
+	set_shown({ self.modal_root }, true)
+	set_shown(self.modal_edit, with_edit)
+	set_shown({ self.edit_title }, with_edit)
+	set_edit_enabled(self.edit_title, with_edit)
+	if with_edit then
+		self.edit_title:SetText("")
+		self.edit_title:CaptureFocus(true)
+	end
+end
+
+function UICoopMenu:CloseModal()
+	if self.modal == "confirm" then
+		local sv = saves()
+		if sv and sv.hold then sv.hold(false) end
+	end
+	self.modal = nil
+	self.confirm_save = nil
+	set_edit_enabled(self.edit_title, false)
+	set_shown({ self.edit_title }, false)
+	set_shown({ self.modal_root }, false)
+end
+
+function UICoopMenu:OnNewGame()
+	if api.is_active() then return end
+	self.local_error = nil
+	self:ShowModal("new", tr("st_coop_menu_new_title"), tr("st_coop_menu_new_text"), tr("st_coop_menu_new_ok"), true)
+end
+
+function UICoopMenu:OnModalOk()
+	local kind = self.modal
+	if kind == "new" then
+		local title = self.edit_title:GetText()
+		self:CloseModal()
+		self:HostAfter("new", nil, title)
+	elseif kind == "confirm" then
+		local e = self.confirm_save
+		local sv = saves()
+		local ok, why = false, "missing"
+		if e and sv and sv.restore then
+			choose_ring(self.sel_id)
+			ok, why = sv.restore(e.name, self.sel_id)
+		end
+		if ok then
+			-- The load command has closed the main menu. Nothing of ours may stay open (the stock Load dialog leaves it so).
+			self.modal = nil
+			if self:IsShown() then self:HideDialog() end
+			return
+		end
+		self:CloseModal()
+		self.local_error = sv and sv.text and sv.text("restore_failed_" .. tostring(why)) or tostring(why)
+		self:Refresh()
+	end
+end
+
+-------------------------------------------------------------------------------
+-- What the player does: the session
+-------------------------------------------------------------------------------
+-- The nick and the port live on the options page; false (and the error shown) when they cannot be used.
+function UICoopMenu:ApplyNick()
+	if check_nick(get_nick()) then return true end
+	self.local_error = tr("st_coop_menu_err_nick")
+	return false
 end
 
 function UICoopMenu:ReadPort()
-	local port = check_port(self.edit_port:GetText())
-	if not port then
-		self.local_error = tr("st_coop_menu_err_port")
-		self.port_open = true -- the field has to be seen to be fixed
-		self:PlacePortToggle()
-		return nil
-	end
-	set_port(port)
+	local port = check_port(get_port())
+	if not port then self.local_error = tr("st_coop_menu_err_port") end
 	return port
 end
 
@@ -852,53 +1957,84 @@ function UICoopMenu:Failed(why)
 	self:Refresh()
 end
 
+-- The world that is loaded: its record, made from this machine's values if it has none yet, names the ring.
 function UICoopMenu:OnHostNow()
 	local port = self:PrepareHost()
 	if not port then return end
+	local gs = module_of("coop_game_settings")
+	local id = nil
+	if gs and gs.ensure_record then
+		local ok, res = pcall(gs.ensure_record)
+		if ok then id = res end
+	end
+	choose_ring(id)
 	local ok, why = api.host(port)
 	if not ok then return self:Failed(why) end
 	log("hosting this game on port %d", port)
 	self:Refresh()
 end
 
--- F3: the host goes back to one of the emergency autosaves (list and confirmation in coop_saves).
-function UICoopMenu:OnRestore()
-	self.local_error = nil
-	local sv = saves()
-	if not (sv and sv.open_restore and sv.text) then return self:Failed("coop_saves") end
-	if not api.is_host() then
-		self.local_error = sv.text("restore_failed_not_host")
-		return self:Refresh()
+-- The stock Load dialog's way to one save (ui_load_dialog.load_game_internal; ui_main_menu.OnButton_last_save closes the menu first).
+local function load_save(stem)
+	if rawget(_G, "alife") == nil or alife() == nil then
+		exec_console_cmd("main_menu off")
+		exec_console_cmd("start server(" .. stem .. "/single/alife/load) client(localhost)")
+	else
+		exec_console_cmd("load " .. stem)
 	end
-	self.restore_dlg = sv.open_restore(self)
-	if not self.restore_dlg then self:Failed("restore") end
 end
 
--- Pending host + one of the main menu's own ways to get a level.
-function UICoopMenu:HostAfter(start)
+-- Pending host + a way to get a level: the stock new game screen, or a save of this game.
+function UICoopMenu:HostAfter(start, stem, title)
 	local port = self:PrepareHost()
 	if not port then return end
+	choose_ring(start == "save" and self.sel_id or nil) -- a new game has no id yet: its record names the ring when it is in force
 	local ok, why = api.host_when_ready(port)
 	if not ok then return self:Failed(why) end
-	log("will host on port %d after %s", port, start)
+	if title then G.set_new_title(title) end
+	log("will host on port %d after %s", port, stem or start)
 	local owner = self.owner
 	self:Close()
+	if start == "save" then
+		local ok2, err = pcall(load_save, stem)
+		if not ok2 then log("! cannot load '%s': %s", tostring(stem), tostring(err)) end
+		return
+	end
 	if not owner then return end
-	local ok2, err = pcall(function()
-		if start == "load" then
-			owner:OnButton_load_clicked()
-		elseif start == "last" then
-			owner:OnButton_last_save()
-		else
-			owner:ShowFactionUI()
-		end
-	end)
-	if not ok2 then log("! cannot open '%s' from the main menu: %s", start, tostring(err)) end
+	local ok2, err = pcall(function() owner:ShowFactionUI() end)
+	if not ok2 then log("! cannot open the new game screen from the main menu: %s", tostring(err)) end
 end
 
-function UICoopMenu:OnHostLoad() self:HostAfter("load") end
-function UICoopMenu:OnHostLast() self:HostAfter("last") end
-function UICoopMenu:OnHostNew() self:HostAfter("new") end
+-- Play: the newest save of the game that can be loaded. A game without games: the first one is created.
+function UICoopMenu:OnPlay()
+	self.local_error = nil
+	if not self.game then return self:OnNewGame() end
+	local e = G.scan_until_usable(self.game.id)
+	self.scan_done = G.scan_done()
+	if not e then
+		self.local_error = tr("st_coop_menu_err_no_save")
+		return self:Refresh()
+	end
+	self:HostAfter("save", e.name)
+end
+
+-- Go back here: outside a session like Play, with the picked save; the host of a session asks first.
+function UICoopMenu:OnRoll()
+	self.local_error = nil
+	local e = self.saves[self.pick]
+	if not e or e.damaged then return end
+	if not api.is_active() then return self:HostAfter("save", e.name) end
+	if not api.is_host() then
+		local sv = saves()
+		self.local_error = sv and sv.text and sv.text("restore_failed_not_host") or tr("st_coop_menu_note_guest")
+		return self:Refresh()
+	end
+	self.confirm_save = e
+	local sv = saves()
+	if sv and sv.hold then sv.hold(true) end
+	self:ShowModal("confirm", tr("st_coop_menu_confirm_title"), tr("st_coop_menu_confirm_text", e.t or "", plain(e.level_text or "")),
+		tr("st_coop_menu_roll"), false)
+end
 
 function UICoopMenu:OnCancelPending()
 	api.host_when_ready(nil)
@@ -921,9 +2057,16 @@ function UICoopMenu:OnConnect()
 	self:Refresh()
 end
 
+function UICoopMenu:OnRecentToggle()
+	self.recent_open = not self.recent_open
+	self:Refresh()
+end
+
 function UICoopMenu:OnRecent(i)
 	local a = self.recent and self.recent[i]
 	if a then self.edit_address:SetText(a) end
+	self.recent_open = false
+	self:Refresh()
 end
 
 function UICoopMenu:OnDisconnect()
@@ -945,6 +2088,9 @@ function UICoopMenu:Close()
 	local owner = self.owner
 	if owner then
 		pcall(function()
+			if owner.coop_view then owner.coop_view:take_art(self.hero.tex) end
+		end)
+		pcall(function()
 			owner:ShowDialog(true)
 			owner:Show(true)
 		end)
@@ -952,10 +2098,29 @@ function UICoopMenu:Close()
 end
 
 function UICoopMenu:OnKeyboard(dik, keyboard_action)
+	-- before the edit box of a dialog: it takes both keys for itself (live 2026-10-30: the first Esc only took its focus away)
+	if self.modal and keyboard_action == ui_events.WINDOW_KEY_PRESSED then
+		if dik == DIK_keys.DIK_ESCAPE then
+			self:CloseModal()
+			return true
+		elseif dik == DIK_keys.DIK_RETURN then
+			self:OnModalOk()
+			return true
+		end
+	end
 	local res = CUIScriptWnd.OnKeyboard(self, dik, keyboard_action)
-	if res == false and keyboard_action == ui_events.WINDOW_KEY_PRESSED and dik == DIK_keys.DIK_ESCAPE then
-		self:Close()
-		return true
+	if res == false and keyboard_action == ui_events.WINDOW_KEY_PRESSED then
+		if dik == DIK_keys.DIK_ESCAPE then
+			if self.recent_open then
+				self:OnRecentToggle()
+			elseif self.open then
+				self:SetOpen(false)
+				self:BindRail()
+			else
+				self:Close()
+			end
+			return true
+		end
 	end
 	return res
 end
@@ -984,6 +2149,12 @@ end
 -- Module functions (not closures): the callback is stored per menu instance by AddCallback.
 function on_btn_coop(menu) open(menu) end
 
+-- The most players a session takes, for the line under the button of the main menu.
+function max_players()
+	local info = api and api.session_info and api.session_info()
+	return info and info.max_players or 8
+end
+
 local function stop_session_first()
 	if api and api.is_active() then
 		log("leaving the co-op session before quitting")
@@ -1001,6 +2172,21 @@ function on_quit_win(menu)
 	return menu:OnMessageQuitWin()
 end
 
+-- The big map costs one long frame the first time it is drawn (measured 2026-10-30, warm disk: 117 ms; building the window 27 ms). In
+-- the cold-start menu that frame goes into the menu's own first frame, which takes seconds anyway: a static of no size and no
+-- alpha draws it there and holds it. Not in a running game: Esc must not pay for a window that may never open.
+local function touch_map(menu)
+	if level_loaded() then return end
+	local tex = coop_games.map_texture()
+	if not tex then return end
+	local xml = CScriptXmlInit()
+	xml:ParseFile(XML_FILE)
+	local b = xml:InitStatic("tpl_image", menu)
+	b:SetWndRect(Frect():set(0, 0, 1, 1))
+	b:InitTexture(tex)
+	b:SetTextureColor(coop_ui_kit.argb(coop_menu_theme_base.DEFAULTS.colors.white, 0))
+end
+
 -- main_menu_on_init (registered by modxml_coop_menu): last statement of main_menu:__init, so the shniaga,
 -- the message box and the callback table exist. The stock callbacks of msg_box are replaced per instance
 -- (AddCallback replaces a control+event pair); the replacements call the stock methods.
@@ -1013,4 +2199,6 @@ function on_main_menu_init(menu)
 		menu:AddCallback("msg_box", ui_events.MESSAGE_BOX_QUIT_WIN_CLICKED, on_quit_win, menu)
 	end)
 	if not ok then log("! main menu hook failed: %s", tostring(err)) end
+	local okt, errt = pcall(touch_map, menu)
+	if not okt then log("! the map is not touched: %s", tostring(errt)) end
 end

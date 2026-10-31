@@ -1,0 +1,361 @@
+--[[
+	Anomaly Coop - the widgets of a window built by script (gamedata\scripts\coop_ui_kit.script)
+	Shared by the co-op window (coop_menu) and the main menu (coop_main_menu). A window asks for one object and builds everything
+	through it, in design pixels (coop_menu_kit.layout), with the look of the theme. ui.parent, when a window sets it, is where the
+	full-screen pieces go instead of the window:
+
+		local ui = coop_ui_kit.new(window, "ui_coop_chronicle.xml", theme)
+		local g = ui:block("rail", 64, 54, 468, 900)          a parent on the window; anchors of the theme by its name
+		local t = ui:label(g, 0, 0, 200, 24, "mark", "l")     text of a style of theme.text
+		local b = ui:box(g, 0, 40, 50, 50, "accent", tex)     a flat rectangle or a texture, tinted by a colour role
+		local h = ui:hit(g, 0, 40, 50, 50, "btn_x")           an invisible button with a veil of the theme under the cursor
+		ui:on_hover(h, fn)  and  ui:hover()  every frame
+		local art = ui:hero(parent)                           two layers over the whole screen: art:show(tex, now, ms, curve), art:draw(now)
+
+	No look here either: every colour, font and size comes from the theme or the caller. Windows are drawn in the order they are
+	created. Generic UI of the engine that an old exe may lack; every call is guarded and shows less:
+		RegisterFont(name, base, shader, target_height), GetFontByName(name)   stock fonts instead
+		CUIStatic:GetTextureSize()                                             the size the caller gives
+		CUITextWnd:SetTextAlpha(a)                                             SetTextColor
+		CUIWindow:SetFlushText(bool), SetClipChildren(bool)                    see flush_text, clip
+--]]
+
+local type, ipairs, pairs, pcall, tostring, rawget = type, ipairs, pairs, pcall, tostring, rawget
+local floor = math.floor
+local UI_W, UI_H = 1024, 768
+
+local function log(fmt, ...)
+	local pf = rawget(_G, "printf")
+	if not pf then return end
+	local ok, line = pcall(string.format, fmt, ...)
+	pcall(pf, "%s", "[coop-ui] " .. (ok and line or tostring(fmt)))
+end
+
+-- The one place a colour is made: { r, g, b [, alpha 0..1] }, times a fade.
+function argb(c, fade)
+	return GetARGB(floor((c[4] or 1) * (fade or 1) * 255 + .5), c[1], c[2], c[3])
+end
+
+local STOCK_FONTS = {
+	graffiti19 = "GetFontGraffiti19Russian", graffiti22 = "GetFontGraffiti22Russian", graffiti32 = "GetFontGraffiti32Russian",
+	graffiti50 = "GetFontGraffiti50Russian", letterica16 = "GetFontLetterica16Russian", letterica18 = "GetFontLetterica18Russian",
+	letterica25 = "GetFontLetterica25", small = "GetFontSmall", medium = "GetFontMedium", di = "GetFontDI",
+}
+
+local function stock_font(name)
+	local getter = rawget(_G, STOCK_FONTS[name] or "GetFontLetterica16Russian")
+	if type(getter) ~= "function" then return nil end
+	local ok, f = pcall(getter)
+	return ok and f or nil
+end
+
+-- The size of a texture: the engine's answer (0, 0 when it does not know), else what the caller says.
+function texture_size(w, fallback)
+	local ok, v = pcall(function() return w:GetTextureSize() end)
+	if ok and v and type(v.x) == "number" and v.x > 0 and v.y > 0 then return v.x, v.y end
+	return fallback[1], fallback[2]
+end
+
+-- The theme's fonts for this screen. The stage is scaled by the narrower side, so a font is asked for the height the stage really
+-- has (1080 * scale), not the screen's: on 4:3 the screen's would be a third too large. Calling again switches the tier.
+function register_fonts(theme, target)
+	local reg = rawget(_G, "RegisterFont")
+	if type(reg) ~= "function" then return end
+	for _, e in ipairs(theme.fonts.register) do
+		if type(e) == "table" and type(e.name) == "string" and type(e.texture) == "string" then
+			local ok = pcall(reg, e.name, e.texture, e.shader or "font", target)
+			if not ok then ok = pcall(reg, e.name, e.texture) end -- an exe before the target height
+			if not ok then log("! font %s is not registered", e.name) end
+		end
+	end
+end
+
+local UI = {}
+UI.__index = UI
+
+function new(window, xml_file, theme)
+	local ui = setmetatable({ window = window, T = theme, hot = {}, fonts = {} }, UI)
+	local d = device()
+	ui.L = coop_menu_kit.layout(d.width, d.height, theme.design.w, theme.design.h)
+	ui.view = ui.L:view()
+	ui.motion = theme.motion == true
+	ui.xml = CScriptXmlInit()
+	ui.xml:ParseFile(xml_file)
+	register_fonts(theme, theme.design.h * ui.L.s)
+	local byname = rawget(_G, "GetFontByName")
+	for role, r in pairs(theme.fonts.roles) do
+		local font = nil
+		if type(byname) == "function" then
+			local ok, f = pcall(byname, r.name)
+			if ok then font = f end
+		end
+		ui.fonts[role] = font or stock_font(r.stock)
+	end
+	return ui
+end
+
+function UI:color(role, fade)
+	return argb(self.T.colors[role] or self.T.colors.text, fade)
+end
+
+-- A colour between two roles, t 0..1.
+function UI:mix(role_a, role_b, t)
+	local a, b = self.T.colors[role_a] or self.T.colors.text, self.T.colors[role_b] or self.T.colors.text
+	local K = coop_menu_kit
+	return argb({ floor(K.mix(a[1], b[1], t) + .5), floor(K.mix(a[2], b[2], t) + .5), floor(K.mix(a[3], b[3], t) + .5), K.mix(a[4] or 1, b[4] or 1, t) })
+end
+
+-- A duration of the theme, or none when nothing moves.
+function UI:ms(v)
+	return self.motion and v or 0
+end
+
+-- A size and a place of a child inside its parent, in design pixels.
+function UI:place(w, x, y, ww, hh)
+	local L = self.L
+	w:SetWndRect(Frect():set(L:w(x), L:h(y), L:w(x + ww), L:h(y + hh)))
+end
+
+-- A block: a parent on the window; anchors of the theme by its name, or the ones given.
+function UI:block(name, x, y, w, h, ax, ay)
+	local a = self.T.anchors[name]
+	if a then ax, ay = ax or a[1], ay or a[2] end
+	local b = self.xml:InitStatic("tpl_free", self.parent or self.window)
+	b:SetWndRect(Frect():set(self.L:rect(x, y, w, h, ax, ay)))
+	return b
+end
+
+function UI:free(parent, x, y, w, h)
+	local b = self.xml:InitStatic("tpl_free", parent)
+	self:place(b, x, y, w, h)
+	return b
+end
+
+-- A flat rectangle, or a texture of the atlas, tinted by a role. `list` collects what fades together.
+function UI:box(parent, x, y, w, h, role, tex, list)
+	local b = self.xml:InitStatic("tpl_box", parent)
+	if tex then
+		b:InitTexture(tex)
+		b:SetStretchTexture(true)
+	end
+	self:place(b, x, y, w, h)
+	b:SetTextureColor(self:color(role))
+	if list then list[#list + 1] = { w = b, role = role } end
+	return b
+end
+
+-- A static for a texture file. Not tpl_box: InitTexture of a file keeps the rectangle a static already has, and that one is the
+-- atlas cell of the template; a static that never had one shows the whole file, whatever its size.
+function UI:image(parent)
+	return self.xml:InitStatic("tpl_image", parent)
+end
+
+-- A file into such a static, again and again: -> its width and height. The rectangle of the last picture goes first, it would
+-- crop the new one (live 2026-10-30: each picture came out zoomed into the last one).
+function UI:load_image(w, tex, fallback)
+	w:SetTextureRect(Frect():set(0, 0, 0, 0))
+	w:InitTexture(tex)
+	return texture_size(w, fallback)
+end
+
+function UI:full_box(role, tex)
+	local b = self.xml:InitStatic("tpl_box", self.parent or self.window)
+	if tex then
+		b:InitTexture(tex)
+		b:SetStretchTexture(true)
+	end
+	b:SetWndRect(Frect():set(0, 0, UI_W, UI_H))
+	b:SetTextureColor(self:color(role))
+	return b
+end
+
+function UI:style(t, style)
+	local st = self.T.text[style]
+	local f = self.fonts[st.font]
+	if f then t:SetFont(f) end
+	t:SetTextColor(self:color(st.color))
+end
+
+function UI:label(parent, x, y, w, h, style, align, list)
+	local t = self.xml:InitTextWnd("tpl_text_" .. (align or "l"), parent)
+	if self.has_text_alpha == nil then self.has_text_alpha = pcall(function() t:SetTextAlpha(255) end) end
+	self:place(t, x, y, w, h)
+	self:style(t, style)
+	if list then list[#list + 1] = { w = t, role = self.T.text[style].color, text = true } end
+	return t
+end
+
+-- The hit window of a control. A 3-state button keeps the size of its template for its own textures (SetWndRect does not reach
+-- them), so the button itself is never seen, and `veil` is a rectangle of the theme under the cursor.
+function UI:hit(parent, x, y, w, h, name, veil)
+	local v = nil
+	if veil ~= false then
+		v = self:box(parent, x, y, w, h, "hover")
+		v:SetTextureColor(self:color("hover", 0))
+	end
+	local b = self.xml:Init3tButton("tpl_none", parent)
+	self:place(b, x, y, w, h)
+	self.window:Register(b, name)
+	if v then
+		self:on_hover(b, function(on) v:SetTextureColor(self:color("hover", on and 1 or 0)) end)
+	end
+	return b
+end
+
+-- A one-line frame out of four rectangles.
+function UI:outline(parent, x, y, w, h, role, list)
+	local out = {}
+	out[1] = self:box(parent, x, y, w, 1, role, nil, list)
+	out[2] = self:box(parent, x, y + h - 1, w, 1, role, nil, list)
+	out[3] = self:box(parent, x, y, 1, h, role, nil, list)
+	out[4] = self:box(parent, x + w - 1, y, 1, h, role, nil, list)
+	return out
+end
+
+-- Eight rectangles: the corners of a target around a thing. Placed by place_corners.
+function UI:corners(parent, role, list)
+	local out = {}
+	for i = 1, 8 do out[i] = self:box(parent, 0, 0, 1, 1, role, nil, list) end
+	return out
+end
+
+function UI:place_corners(c, x, y, w, h, len, t)
+	local r, b = x + w, y + h
+	self:place(c[1], x, y, len, t)
+	self:place(c[2], x, y, t, len)
+	self:place(c[3], r - len, y, len, t)
+	self:place(c[4], r - t, y, t, len)
+	self:place(c[5], x, b - t, len, t)
+	self:place(c[6], x, b - len, t, len)
+	self:place(c[7], r - len, b - t, len, t)
+	self:place(c[8], r - t, b - len, t, len)
+end
+
+-- A filled button with a cut corner at the lower right: three pieces, tinted together.
+function UI:notched(parent, x, y, w, h, n, role, list)
+	local out = {}
+	out[1] = self:box(parent, x, y, w - n, h, role, nil, list)
+	out[2] = self:box(parent, x + w - n, y, n, h - n, role, nil, list)
+	out[3] = self:box(parent, x + w - n, y + h - n, n, n, role, "coop_menu_notch", list)
+	return out
+end
+
+function UI:tint(list, role)
+	for _, w in ipairs(list) do w:SetTextureColor(self:color(role)) end
+end
+
+-- The fade of a text. SetTextAlpha multiplies the colour's own alpha at draw time; SetTextColor would parse complex text again.
+function UI:fade_text(t, role, a)
+	if self.has_text_alpha then
+		t:SetTextAlpha(floor(a * 255 + .5))
+	else
+		t:SetTextColor(self:color(role, a))
+	end
+end
+
+-- Everything in a list at the same fade; a text keeps its colour role.
+function UI:fade(list, a)
+	for _, it in ipairs(list) do
+		if it.text then self:fade_text(it.w, it.role, a) else it.w:SetTextureColor(self:color(it.role, a)) end
+	end
+end
+
+-- A role in a list a fade paints every frame: a tint alone lasts one frame.
+function UI:swap_role(list, from, to)
+	for _, it in ipairs(list) do
+		if it.role == from then it.role = to end
+	end
+end
+
+function UI:on_hover(btn, fn)
+	self.hot[#self.hot + 1] = { btn = btn, fn = fn, on = false }
+end
+
+function UI:hover()
+	for _, h in ipairs(self.hot) do
+		local on = (h.btn:IsEnabled() and h.btn:IsCursorOverWindow()) and true or false
+		if on ~= h.on then
+			h.on = on
+			h.fn(on)
+		end
+	end
+end
+
+-- The font and the colour of an edit box: it is a static in the engine, and a cast reaches its text.
+function UI:style_edit(e, role)
+	pcall(function()
+		local lines = e:cast_Static():TextControl()
+		local f = self.fonts[self.T.fonts.edit]
+		if f then lines:SetFont(f) end
+		lines:SetTextColor(self:color(role or "text"))
+	end)
+end
+
+-- Text is queued and drawn after every static: a window over other windows sends the queue out first, or what lies under it
+-- shows through. SetFlushText says so; a clip window does the same as a side effect (an exe before it).
+function UI:flush_text(w)
+	if pcall(function() w:SetFlushText(true) end) then return true end
+	return pcall(function() w:SetClipChildren(true) end)
+end
+
+-- Children cut to the window's rectangle. false on an old exe.
+function UI:clip(w)
+	return (pcall(function() w:SetClipChildren(true) end))
+end
+
+-------------------------------------------------------------------------------
+-- The art of a window: two layers over the whole screen that cross-fade, and a slow drift of the theme (theme.art, anim.drift) by
+-- the clock, so two windows that show one picture show it at the same spot and one can follow the other without a jump.
+-------------------------------------------------------------------------------
+local Hero = {}
+Hero.__index = Hero
+
+function UI:hero(parent)
+	local K = coop_menu_kit
+	local h = setmetatable({ ui = self, layers = {}, on = 1, tex = nil, curve = K.easing(self.T.anim.in_out) }, Hero)
+	for i = 1, 2 do
+		local w = self:image(parent)
+		w:SetWndRect(Frect():set(0, 0, UI_W, UI_H))
+		h.layers[i] = { w = w, alpha = K.tween(0), tex = nil, tw = 0, th = 0 }
+	end
+	return h
+end
+
+-- A new picture over `dur` ms; none fades to what lies under it. No duration: it is there at once.
+function Hero:show(tex, now, dur, ease)
+	if tex == self.tex then return end
+	self.tex = tex
+	local K = coop_menu_kit
+	local on, off = self.layers[3 - self.on], self.layers[self.on]
+	self.on = 3 - self.on
+	if tex then on.tw, on.th = self.ui:load_image(on.w, tex, self.ui.T.art.size) end
+	on.tex = tex
+	K.tween_to(on.alpha, tex and 1 or 0, now, dur, 0, ease)
+	K.tween_to(off.alpha, 0, now, dur, 0, ease)
+end
+
+-- zoom: on top of the drift. out: 0..1, the whole picture fades with it.
+function Hero:draw(now, zoom, out)
+	local K, ui = coop_menu_kit, self.ui
+	local Art, L = ui.T.art, ui.L
+	local e = 0
+	if ui.motion then
+		local drift = ui.T.anim.drift
+		local u = (now % (2 * drift)) / drift
+		if u > 1 then u = 2 - u end
+		e = self.curve(u)
+	end
+	local z = (zoom or 1) * K.mix(Art.drift_from, Art.drift_to, e)
+	local shift = K.mix(Art.drift_x[1], Art.drift_x[2], e) / ui.T.design.w
+	local aspect = L.W / L.H
+	for _, h in ipairs(self.layers) do
+		local a = K.tween_at(h.alpha, now) * (out or 1)
+		if a <= 0 then
+			h.w:SetTextureColor(argb(Art.tint, 0))
+		elseif h.tex then
+			local x1, y1, x2, y2 = K.cover(h.tw, h.th, Art.area, aspect, Art.pos.x, Art.pos.y, z, shift)
+			h.w:SetTextureRect(Frect():set(x1, y1, x2, y2))
+			h.w:SetTextureColor(argb(Art.tint, a))
+		end
+	end
+end

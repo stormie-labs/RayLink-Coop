@@ -391,6 +391,27 @@ TEST(death_body_pose_and_look)
 	CHECK(!look_locked(255));
 }
 
+// Live 2026-10-30 (owner): "monsters keep at you after you go down". Nobody hunts a player out of the run; a monster also
+// leaves a wounded one, a stalker may still finish him. Life numbers are survival::Life.
+TEST(death_who_is_left_alone)
+{
+	CHECK(!out_of_fight(kLifeAlive));
+	CHECK(!out_of_fight(kLifeWounded)); // a stalker may finish him
+	CHECK(out_of_fight(kLifeDead));
+	CHECK(out_of_fight(kLifeSpectating));
+	CHECK(out_of_fight(kLifeRespawning));
+	CHECK(!out_of_fight(5));
+	CHECK(!out_of_fight(255));
+
+	CHECK(!monster_leaves(kLifeAlive));
+	CHECK(monster_leaves(kLifeWounded));
+	CHECK(monster_leaves(kLifeDead));
+	CHECK(monster_leaves(kLifeSpectating));
+	CHECK(monster_leaves(kLifeRespawning));
+	CHECK(!monster_leaves(5));
+	CHECK(!monster_leaves(255));
+}
+
 TEST(death_category_names)
 {
 	const char* names[] = {"materials", "ammo", "consumables", "gear", "artefacts", "tools", "other"};

@@ -10,12 +10,15 @@
 		v = 1                      format version
 		id = "65190f3a-9c41"       "%08x-%04x" of the time and a random number
 		name, created, faction     name of the host's character, "2026-10-23 19:40", the world's faction
+		title = "With Kent" | nil  what the player called the game (the Co-op window); none: the window names it by its date
 		world = { story, routes, difficulty, economy }    creation flags, read only
 		rev = 0                    number of the edits made outside the world (menu); the higher one is right
 		migrated = true | nil      taken from the machine's values at the first load (an old save)
 		values = { ["<source>|<path>"] = raw }    the keys of coop_game_schema; a string for c / o / m, a number or a
 		                           boolean for g / e / s
 		last_save, last_played, machine_snapshot_at     strings, kept in the card
+		at = { level, game_time, real_time, players = { nick, ... } } | nil     in the block of a save only: where and when
+		                           it was made, so that the Co-op window lists saves without opening them
 	}
 
 	new(values, meta, env) -> record
@@ -36,6 +39,8 @@ local tsort = table.sort
 VERSION = 1
 
 local PLAYER_GROUP = "coop/coop_player/" -- the player's own options: never the game's, whatever the classifier says
+local MAX_TITLE = 64
+local MAX_AT_PLAYERS = 16
 
 local function schema()
 	return coop_game_schema
@@ -81,6 +86,26 @@ local function clean_world(w)
 	return out
 end
 
+local function clean_title(v)
+	if type(v) ~= "string" or v == "" then return nil end
+	return v:sub(1, MAX_TITLE)
+end
+
+-- Where and when a save was made: the known fields; nil when nothing of it is usable.
+local function clean_at(a)
+	if type(a) ~= "table" then return nil end
+	local out = { level = string_or(a.level, nil), game_time = string_or(a.game_time, nil), real_time = whole(a.real_time) }
+	if type(a.players) == "table" then
+		local list = {}
+		for _, nick in ipairs(a.players) do
+			if type(nick) == "string" and #list < MAX_AT_PLAYERS then list[#list + 1] = nick end
+		end
+		if #list > 0 then out.players = list end
+	end
+	if out.level == nil and out.game_time == nil and out.real_time == nil and out.players == nil then return nil end
+	return out
+end
+
 -- A record with the known fields only and plain values; nil when it is not a record of this or an older format.
 local function clean(t)
 	if type(t) ~= "table" then return nil, "not a table" end
@@ -91,11 +116,11 @@ local function clean(t)
 	if type(t.values) ~= "table" then return nil, "no values" end
 	local rev = whole(t.rev)
 	local out = {
-		v = v, id = t.id, name = string_or(t.name, ""), created = string_or(t.created, ""),
+		v = v, id = t.id, name = string_or(t.name, ""), title = clean_title(t.title), created = string_or(t.created, ""),
 		faction = string_or(t.faction, nil), world = clean_world(t.world), rev = (rev and rev > 0) and rev or 0,
 		migrated = t.migrated == true and true or nil, values = copy_values(t.values),
 		last_save = string_or(t.last_save, nil), last_played = string_or(t.last_played, nil),
-		machine_snapshot_at = string_or(t.machine_snapshot_at, nil),
+		machine_snapshot_at = string_or(t.machine_snapshot_at, nil), at = clean_at(t.at),
 	}
 	return out
 end
@@ -111,6 +136,8 @@ function clone(record)
 				for k2, v2 in pairs(v) do c[k2] = v2 end
 			end
 			out[k] = c
+		elseif k == "at" then
+			out[k] = clean_at(v)
 		else
 			out[k] = v
 		end
@@ -121,7 +148,7 @@ end
 -------------------------------------------------------------------------------
 -- New record
 -------------------------------------------------------------------------------
--- values = { key = raw }, meta = { name, faction, world = { story, routes, difficulty, economy } },
+-- values = { key = raw }, meta = { name, title, faction, world = { story, routes, difficulty, economy } },
 -- env = { now = fn -> seconds, rand = fn(lo, hi) -> integer, date = fn(format, seconds) -> string } (system ones when absent).
 -- rev is 0. Two records made in the same second differ by the random number.
 function new(values, meta, env)
@@ -143,6 +170,7 @@ function new(values, meta, env)
 		v = VERSION,
 		id = string_format("%08x-%04x", floor(now) % 2147483648, floor(rnd) % 65536),
 		name = string_or(meta.name, ""),
+		title = clean_title(meta.title),
 		created = ok and created or "",
 		faction = string_or(meta.faction, nil),
 		world = {

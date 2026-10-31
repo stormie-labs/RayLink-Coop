@@ -1,19 +1,20 @@
-"""Co-op window assets (scripts/coop_menu.script, configs/ui/ui_coop_menu.xml): the icon atlas DDS is uncompressed BGRA8 without
-mips, its textures_descr parses and every id lies inside the image, every texture id the layout uses is described, the
-committed files are what tools/make_menu_icons.py and tools/make_menu_layout_16.py write."""
+"""Co-op window assets (scripts/coop_menu.script, configs/ui/ui_coop_chronicle.xml): the atlas DDS is uncompressed BGRA8 without
+mips, its textures_descr parses and every id lies inside the image, every texture id the layout, the window and the themes
+use is described, the committed files are what tools/make_menu_icons.py writes. The window is placed by the script, for every
+aspect: no _16 layout, and the old layouts must not come back (the engine would prefer a _16 file)."""
 import re
 import struct
 import xml.etree.ElementTree as ET
 
 import make_menu_icons as icons
-import make_menu_layout_16 as layout16
 from conftest import ROOT
 
 GAMEDATA = ROOT / "gamedata"
 DDS = GAMEDATA / "textures" / "ui" / "coop" / "ui_coop_menu.dds"
 DESCR = GAMEDATA / "configs" / "ui" / "textures_descr" / "ui_coop_menu.xml"
-LAYOUT = GAMEDATA / "configs" / "ui" / "ui_coop_menu.xml"
-LAYOUT_16 = GAMEDATA / "configs" / "ui" / "ui_coop_menu_16.xml"
+LAYOUT = GAMEDATA / "configs" / "ui" / "ui_coop_chronicle.xml"
+THEMES = [GAMEDATA / "scripts" / "coop_menu_theme_base.script", GAMEDATA / "scripts" / "coop_menu_theme.script",
+          ROOT / "gamedata_gamma" / "scripts" / "coop_menu_theme.script"]
 
 
 def dds_header(path):
@@ -43,7 +44,7 @@ def test_atlas_is_uncompressed_bgra8_without_mips():
 def test_atlas_ids_inside_the_image():
     h = dds_header(DDS)
     ids = described()
-    assert len(ids) == 9
+    assert len(ids) == 33
     for tid, t in ids.items():
         x, y, w, hh = (int(t.get(k)) for k in ("x", "y", "width", "height"))
         assert tid.startswith("coop_menu_"), tid
@@ -72,6 +73,28 @@ def test_flat_cells():
     over, pressed = cell("coop_menu_hit_h"), cell("coop_menu_hit_t")
     assert len(over) == 1 and len(pressed) == 1
     assert 0 < next(iter(over))[3] < next(iter(pressed))[3] < 128  # a veil: stronger when pressed, never opaque
+    for state in "edth":
+        assert {p[3] for p in cell("coop_menu_none_" + state)} == {0}  # a button never seen
+
+
+def test_shades_follow_the_prototype():
+    h = dds_header(DDS)
+    ids = described()
+
+    def alpha_h(tid, t):
+        e = ids[tid]
+        x, y, w = (int(e.get(k)) for k in ("x", "y", "width"))
+        return pixel(h, x + round(t * (w - 1)), y)[3] / 255
+
+    def alpha_v(tid, t):
+        e = ids[tid]
+        x, y, hh = (int(e.get(k)) for k in ("x", "y", "height"))
+        return pixel(h, x, y + round(t * (hh - 1)))[3] / 255
+
+    assert abs(alpha_h("coop_menu_shade_base_h", 0) - .97) < .01 and alpha_h("coop_menu_shade_base_h", .7) == 0
+    assert abs(alpha_v("coop_menu_shade_base_v", 1) - .97) < .01 and alpha_v("coop_menu_shade_base_v", .46) < .01
+    assert alpha_h("coop_menu_shade_open_h", .45) < .05 and alpha_h("coop_menu_shade_open_h", .8) > .9  # the map shows in the middle
+    assert alpha_v("coop_menu_strip_cap", 0) == 0 and alpha_v("coop_menu_strip_cap", 1) > .9
 
 
 def test_layout_texture_ids_are_described():
@@ -84,6 +107,22 @@ def test_layout_texture_ids_are_described():
         assert tid in ids or all(tid + s in ids for s in ("_e", "_d", "_t", "_h")), tid  # a 3-state button has the four
 
 
+def test_theme_texture_ids_are_described():
+    ids = set(described())
+    for path in THEMES + [GAMEDATA / "scripts" / "coop_menu.script", GAMEDATA / "scripts" / "coop_ui_kit.script"]:
+        text = path.read_text(encoding="cp1251")
+        for tid in re.findall(r'"(coop_menu_[a-z0-9_]+)"', text):
+            if not tid.startswith("coop_menu_theme"):  # the name of the script itself
+                assert tid in ids, (path.name, tid)
+
+
+def test_no_old_layouts():
+    """A stale ui_coop_menu_16.xml would be preferred by nothing now: the window loads another name, and these are gone."""
+    ui = GAMEDATA / "configs" / "ui"
+    assert not (ui / "ui_coop_menu.xml").exists() and not (ui / "ui_coop_menu_16.xml").exists()
+    assert not (ui / "ui_coop_chronicle_16.xml").exists() and not (ui / "ui_coop_chronicle_21.xml").exists()
+
+
 def test_description_is_what_the_tool_writes(work):
     """The atlas is deterministic where it matters: the same ids and rectangles, the same flat cells and header."""
     atlas, ids = icons.build()
@@ -94,14 +133,7 @@ def test_description_is_what_the_tool_writes(work):
     icons.write_dds_argb(atlas, dds)
     fresh, committed = dds.read_bytes(), DDS.read_bytes()
     assert fresh[:128] == committed[:128] and len(fresh) == len(committed)
-    # the flat cells (row 32..39) are exact; the glyphs (rows 0..31) are antialiased by Pillow and may differ in the last bit
-    row = 128 + 32 * 128 * 4
-    assert fresh[row:row + 8 * 128 * 4] == committed[row:row + 8 * 128 * 4]
-
-
-def test_wide_layout_is_up_to_date():
-    """ui_coop_menu_16.xml is made from the 4:3 file: run tools/make_menu_layout_16.py after editing it."""
-    want = layout16.build(LAYOUT.read_text(encoding="utf-8", newline=""))
-    assert LAYOUT_16.read_text(encoding="utf-8", newline="") == want
-    a, b = ET.fromstring(LAYOUT.read_bytes()), ET.fromstring(LAYOUT_16.read_bytes())
-    assert [e.tag for e in a.iter()] == [e.tag for e in b.iter()]
+    # the flat cells (row 32..39) are exact; the glyphs are antialiased by Pillow and may differ in the last bit
+    w = icons.ATLAS_W * 4
+    row = 128 + 32 * w
+    assert fresh[row:row + 8 * w] == committed[row:row + 8 * w]

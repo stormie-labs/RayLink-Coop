@@ -7,44 +7,8 @@
 	<string id="st_coop_menu_title">
 		<text>CO-OP</text>
 	</string>
-	<string id="st_coop_menu_tab_host">
-		<text>Host a game</text>
-	</string>
-	<string id="st_coop_menu_tab_join">
-		<text>Join a game</text>
-	</string>
-	<string id="st_coop_menu_tab_steam">
-		<text>Steam - soon</text>
-	</string>
-	<string id="st_coop_menu_nick">
-		<text>Your nickname</text>
-	</string>
-	<string id="st_coop_menu_port">
-		<text>Port UDP</text>
-	</string>
-	<string id="st_coop_menu_address">
-		<text>Host address</text>
-	</string>
-	<string id="st_coop_menu_address_hint">
-		<text>IP or IP:port, e.g. 192.168.1.10 or 203.0.113.5:27960</text>
-	</string>
-	<string id="st_coop_menu_recent">
-		<text>Recent</text>
-	</string>
 	<string id="st_coop_menu_btn_host_now">
-		<text>Open it to partners</text>
-	</string>
-	<string id="st_coop_menu_btn_host_load">
-		<text>Load...</text>
-	</string>
-	<string id="st_coop_menu_btn_host_last">
-		<text>Continue</text>
-	</string>
-	<string id="st_coop_menu_btn_host_new">
-		<text>New game</text>
-	</string>
-	<string id="st_coop_menu_btn_connect">
-		<text>Connect</text>
+		<text>Open to partners</text>
 	</string>
 	<string id="st_coop_menu_btn_disconnect">
 		<text>Disconnect</text>
@@ -110,10 +74,10 @@
 		<text>Session closed.</text>
 	</string>
 	<string id="st_coop_menu_err_nick">
-		<text>Enter a nickname: 1-32 characters, no quotes or ;</text>
+		<text>Set your nickname in the options: Co-op. 1-32 characters, no quotes or ;</text>
 	</string>
 	<string id="st_coop_menu_err_port">
-		<text>The port is a number from 1 to 65535.</text>
+		<text>Set the port in the options: Co-op. A number from 1 to 65535.</text>
 	</string>
 	<string id="st_coop_menu_err_address">
 		<text>Enter the host address: IP or IP:port.</text>
@@ -154,68 +118,137 @@
 	<string id="st_coop_menu_reason_start">
 		<text>could not start</text>
 	</string>
-	<string id="st_coop_menu_subtitle">
-		<text>The Zone for two - and more: up to %s players</text>
-	</string>
-	<string id="st_coop_menu_nick_hint">
-		<text>this is how partners see you</text>
-	</string>
-	<string id="st_coop_menu_port_more">
-		<text>+ Advanced: port %s</text>
-	</string>
-	<string id="st_coop_menu_port_less">
-		<text>- Advanced</text>
-	</string>
-	<string id="st_coop_menu_start">
-		<text>How to start</text>
-	</string>
-	<string id="st_coop_menu_tile_badge">
-		<text>recommended</text>
-	</string>
-	<string id="st_coop_menu_tile_new">
-		<text>Pick a faction and gear for a fresh world.\nPartners choose their character when they join.</text>
-	</string>
-	<string id="st_coop_menu_tile_load">
-		<text>Any save from the list.\nPartners enter that world.</text>
-	</string>
-	<string id="st_coop_menu_tile_last_none">
-		<text>No saves yet.\nStart a new game.</text>
-	</string>
-	<string id="st_coop_menu_tile_last_bad">
-		<text>The newest save is damaged.\nPick another one with Load...</text>
-	</string>
-	<string id="st_coop_menu_open_hint">
-		<text>Is a game loaded right now?</text>
-	</string>
-	<string id="st_coop_menu_next_title">
-		<text>What happens next</text>
-	</string>
-	<string id="st_coop_menu_next_host_1">
-		<text>The world loads and the session opens by itself - you are the host.</text>
-	</string>
-	<string id="st_coop_menu_next_host_2">
-		<text>Partners press Join, enter your address, pick a character. Online: open UDP port %s on the router.</text>
-	</string>
-	<string id="st_coop_menu_next_host_3">
-		<text>Only the host saves; everyone rests on their own.</text>
-	</string>
-	<string id="st_coop_menu_next_join_1">
-		<text>You connect to the host's address.</text>
-	</string>
-	<string id="st_coop_menu_next_join_2">
-		<text>You pick a character: faction and gear.</text>
-	</string>
-	<string id="st_coop_menu_next_join_3">
-		<text>You enter the host's world and play with the others.</text>
-	</string>
 	<string id="st_coop_menu_pending_title">
 		<text>Waiting for the world to load</text>
 	</string>
 	<string id="st_coop_menu_addr_host">
 		<text>Partner's address: your IP, port %s (UDP)</text>
 	</string>
-	<string id="st_coop_menu_addr_wait">
-		<text>the partner's address appears here</text>
+	<string id="st_coop_menu_new_game">
+		<text>New game</text>
+	</string>
+	<string id="st_coop_menu_play">
+		<text>PLAY</text>
+	</string>
+	<string id="st_coop_menu_saves_n">
+		<text>Saves: %s</text>
+	</string>
+	<string id="st_coop_menu_chronicle">
+		<text>Chronicle</text>
+	</string>
+	<string id="st_coop_menu_fold">
+		<text>Fold</text>
+	</string>
+	<string id="st_coop_menu_sub">
+		<text>%s, saves: %s</text>
+	</string>
+	<string id="st_coop_menu_latest">
+		<text>latest</text>
+	</string>
+	<string id="st_coop_menu_damaged">
+		<text>damaged</text>
+	</string>
+	<string id="st_coop_menu_note_last">
+		<text>The newest save: Play continues from it.</text>
+	</string>
+	<string id="st_coop_menu_note_back">
+		<text>The world goes back to %s. Newer saves stay.</text>
+	</string>
+	<string id="st_coop_menu_note_damaged">
+		<text>This file is damaged and cannot be loaded.</text>
+	</string>
+	<string id="st_coop_menu_note_guest">
+		<text>Only the host can go back.</text>
+	</string>
+	<string id="st_coop_menu_roll">
+		<text>Go back here</text>
+	</string>
+	<string id="st_coop_menu_more_rows">
+		<text>%s more, scroll with the wheel</text>
+	</string>
+	<string id="st_coop_menu_no_saves">
+		<text>No saves yet</text>
+	</string>
+	<string id="st_coop_menu_join_label">
+		<text>Connect to a friend</text>
+	</string>
+	<string id="st_coop_menu_join_hint">
+		<text>address:port</text>
+	</string>
+	<string id="st_coop_menu_go">
+		<text>Enter</text>
+	</string>
+	<string id="st_coop_menu_steam_hint">
+		<text>Through Steam: lobby in the RayLink launcher</text>
+	</string>
+	<string id="st_coop_menu_empty_title">
+		<text>No games yet</text>
+	</string>
+	<string id="st_coop_menu_empty_text">
+		<text>Create your first game. Its saves gather here, and the map shows where you have been.</text>
+	</string>
+	<string id="st_coop_menu_empty_btn">
+		<text>CREATE A GAME</text>
+	</string>
+	<string id="st_coop_menu_new_title">
+		<text>New game</text>
+	</string>
+	<string id="st_coop_menu_new_text">
+		<text>What is this game called? You can leave it empty.</text>
+	</string>
+	<string id="st_coop_menu_new_ok">
+		<text>Next</text>
+	</string>
+	<string id="st_coop_menu_confirm_title">
+		<text>Go back?</text>
+	</string>
+	<string id="st_coop_menu_confirm_text">
+		<text>Everyone returns to %s, %s. Newer saves stay.</text>
+	</string>
+	<string id="st_coop_menu_game_from">
+		<text>Game of %s</text>
+	</string>
+	<string id="st_coop_menu_game_unnamed">
+		<text>Game without a name</text>
+	</string>
+	<string id="st_coop_menu_err_no_save">
+		<text>This game has no save that can be loaded.</text>
+	</string>
+	<string id="st_coop_menu_month_1">
+		<text>Jan</text>
+	</string>
+	<string id="st_coop_menu_month_2">
+		<text>Feb</text>
+	</string>
+	<string id="st_coop_menu_month_3">
+		<text>Mar</text>
+	</string>
+	<string id="st_coop_menu_month_4">
+		<text>Apr</text>
+	</string>
+	<string id="st_coop_menu_month_5">
+		<text>May</text>
+	</string>
+	<string id="st_coop_menu_month_6">
+		<text>Jun</text>
+	</string>
+	<string id="st_coop_menu_month_7">
+		<text>Jul</text>
+	</string>
+	<string id="st_coop_menu_month_8">
+		<text>Aug</text>
+	</string>
+	<string id="st_coop_menu_month_9">
+		<text>Sep</text>
+	</string>
+	<string id="st_coop_menu_month_10">
+		<text>Oct</text>
+	</string>
+	<string id="st_coop_menu_month_11">
+		<text>Nov</text>
+	</string>
+	<string id="st_coop_menu_month_12">
+		<text>Dec</text>
 	</string>
 	<string id="st_coop_char_title">
 		<text>New character</text>
@@ -603,5 +636,47 @@
 	</string>
 	<string id="st_coop_opt_locked_note">
 		<text>Co-op: the host sets the locked options of this page while you are connected. Your own values come back when you leave.</text>
+	</string>
+	<string id="st_coop_mm_continue">
+		<text>Continue</text>
+	</string>
+	<string id="st_coop_mm_sub_ret">
+		<text>Back to the Zone</text>
+	</string>
+	<string id="st_coop_mm_sub_new">
+		<text>A single-player game from the start</text>
+	</string>
+	<string id="st_coop_mm_sub_load">
+		<text>Single-player saves</text>
+	</string>
+	<string id="st_coop_mm_sub_save">
+		<text>Write the game down</text>
+	</string>
+	<string id="st_coop_mm_sub_options">
+		<text>Graphics, sound, controls</text>
+	</string>
+	<string id="st_coop_mm_sub_mcm">
+		<text>Settings of the mods</text>
+	</string>
+	<string id="st_coop_mm_sub_originals">
+		<text>The original games of the series</text>
+	</string>
+	<string id="st_coop_mm_sub_quit">
+		<text>To the desktop</text>
+	</string>
+	<string id="st_coop_mm_sub_quit_mm">
+		<text>To the main menu</text>
+	</string>
+	<string id="st_coop_mm_sub_coop">
+		<text>Games: %s, up to %s players</text>
+	</string>
+	<string id="st_coop_mm_sub_coop_none">
+		<text>Up to %s players</text>
+	</string>
+	<string id="st_coop_menu_gap_min">
+		<text>%s min without saves</text>
+	</string>
+	<string id="st_coop_menu_gap_hours">
+		<text>%s h %s min without saves</text>
 	</string>
 </string_table>

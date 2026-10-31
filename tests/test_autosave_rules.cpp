@@ -378,3 +378,418 @@ TEST(autosave_pause_clock_back)
 	CHECK(!pause_holds(p, 1000));
 	CHECK(pause_lapsed(p, 1000));
 }
+
+// ---------------------------------------------------------------- one ring per game (menu Task 1)
+//
+// The host's ring used to be one for every game on the machine: two games rotated over the same coop_auto_1..N and
+// overwrote each other. A game id (lower case [0-9a-z-], 1..32) puts its slots in a namespace of their own:
+// coop_auto_<id>_<N>. No id keeps the old coop_auto_<N>. coop_auto_tmp / coop_auto_bak stay shared and are no slot anywhere.
+
+namespace
+{
+const char* const kNamespaces[] = {"", "a", "abc", "ab", "5", "51", "1", "tmp", "bak", "a-1", "1-2", "5-1", "-", "0"};
+
+bool parses(const std::string& stem, const std::string& game, uint32_t* out = nullptr)
+{
+	uint32_t index = 0;
+	const bool ok = parse_slot(stem, index, game);
+	if (ok && out)
+		*out = index;
+	return ok;
+}
+} // namespace
+
+TEST(autosave_game_id_valid)
+{
+	const char* good[] = {"a", "0", "-", "tmp", "bak", "5", "abc-def-123", "a-1", "--", "9z", "z9"};
+	for (const char* id : good)
+		if (!valid_game_id(id))
+			t::report_failure(__FILE__, __LINE__, std::string("valid_game_id refused \"") + id + "\"");
+	CHECK(valid_game_id(std::string(32, 'a')));
+	CHECK(valid_game_id(std::string(32, '7')));
+	CHECK(valid_game_id(std::string(31, 'a') + "-"));
+
+	CHECK(!valid_game_id(""));
+	CHECK(!valid_game_id(std::string(33, 'a')));
+	CHECK(!valid_game_id(std::string(100, 'a')));
+	const char* bad[] = {"A", "aB", "a_b", "_", "a b", " a", "a ", "a.b", ".", "..", "a/b", "a\\b", "../x", "a:b", "a*",
+	                     "a?", "a\n", "a\t", "a\"", "a<", "a|", "\xC3\xA9", "\xD0\xB8\xD0\xB3\xD1\x80\xD0\xB0", "a%41",
+	                     "con.", "a+b", "a=b", "a~1"};
+	for (const char* id : bad)
+		if (valid_game_id(id))
+			t::report_failure(__FILE__, __LINE__, std::string("valid_game_id accepted \"") + id + "\"");
+	CHECK(!valid_game_id(std::string("a\0b", 3)));
+	CHECK(!valid_game_id(std::string("\0", 1)));
+	CHECK(!valid_game_id(std::string("abc\0", 4)));
+}
+
+TEST(autosave_game_slot_names)
+{
+	CHECK_EQ(slot_name(3, "abc"), std::string("coop_auto_abc_3"));
+	CHECK_EQ(slot_name(1, "abc"), std::string("coop_auto_abc_1"));
+	CHECK_EQ(slot_name(12, "a-b-1"), std::string("coop_auto_a-b-1_12"));
+	CHECK_EQ(slot_name(7, "5"), std::string("coop_auto_5_7"));
+	CHECK_EQ(slot_name(2, "tmp"), std::string("coop_auto_tmp_2"));
+	// No id, or an id that is none: the old name.
+	CHECK_EQ(slot_name(3, ""), std::string("coop_auto_3"));
+	CHECK_EQ(slot_name(3), std::string("coop_auto_3"));
+	CHECK_EQ(slot_name(3, "ABC"), std::string("coop_auto_3"));
+	CHECK_EQ(slot_name(3, "a_b"), std::string("coop_auto_3"));
+	CHECK_EQ(slot_name(3, "../x"), std::string("coop_auto_3"));
+	CHECK_EQ(slot_name(3, std::string(33, 'a')), std::string("coop_auto_3"));
+}
+
+TEST(autosave_game_parse_own_slots)
+{
+	uint32_t i = 0;
+	REQUIRE(parse_slot("coop_auto_abc_3", i, "abc"));
+	CHECK_EQ(i, uint32_t(3));
+	REQUIRE(parse_slot("coop_auto_abc_10", i, "abc"));
+	CHECK_EQ(i, uint32_t(10));
+	REQUIRE(parse_slot("coop_auto_abc_123456789", i, "abc"));
+	CHECK_EQ(i, uint32_t(123456789));
+	REQUIRE(parse_slot("coop_auto_a-b-1_12", i, "a-b-1"));
+	CHECK_EQ(i, uint32_t(12));
+	const std::string longest = std::string(32, 'z');
+	REQUIRE(parse_slot("coop_auto_" + longest + "_4", i, longest));
+	CHECK_EQ(i, uint32_t(4));
+
+	// What slot_name makes, parse_slot reads back, in the same namespace, for every id.
+	for (const char* game : kNamespaces)
+		for (uint32_t k = 1; k <= 25; ++k)
+		{
+			uint32_t back = 0;
+			const std::string stem = slot_name(k, game);
+			if (!parse_slot(stem, back, game) || back != k)
+				t::report_failure(__FILE__, __LINE__, "slot \"" + stem + "\" does not come back in namespace \"" + game + "\"");
+		}
+}
+
+TEST(autosave_game_parse_rejects_malformed)
+{
+	const char* bad[] = {
+		"coop_auto_abc_0", "coop_auto_abc_", "coop_auto_abc", "coop_auto_abc_3a", "coop_auto_abc_03", "coop_auto_abc__3",
+		"coop_auto_abc_3_4", "coop_auto_abc3", "coop_auto_abc_-3", "coop_auto_abc_+3", "coop_auto_abc_3.sav",
+		"coop_auto_abc_1234567890", "coop_auto_abc_99999999999999999999", "Coop_Auto_abc_3", "coop_auto_ABC_3",
+		" coop_auto_abc_3", "coop_auto_abc_3 ", "xcoop_auto_abc_3", "coop_autosave_abc_3", "coop_auto__3", "coop_auto_abc _3",
+		"coop_auto_abc_3.scop",
+	};
+	for (const char* name : bad)
+	{
+		uint32_t keep = 4242;
+		if (parse_slot(name, keep, "abc"))
+			t::report_failure(__FILE__, __LINE__, std::string("parse_slot accepted \"") + name + "\"");
+		if (keep != 4242)
+			t::report_failure(__FILE__, __LINE__, std::string("parse_slot changed the index on \"") + name + "\"");
+	}
+	uint32_t i = 4242;
+	CHECK(!parse_slot(std::string("coop_auto_abc_1\0", 16), i, "abc"));
+	CHECK(!parse_slot(std::string("coop_auto_abc_\0" "1", 16), i, "abc"));
+	CHECK_EQ(i, uint32_t(4242));
+}
+
+TEST(autosave_game_namespaces_are_apart)
+{
+	// Every slot a namespace makes is a slot of that namespace and of no other (including the old one with no id): the
+	// matrix over ids that are prefixes of each other ("a"/"ab"/"abc", "5"/"51", "1"/"1-2"), digits only ("5", "51", "0"),
+	// dashes, and the names of the shared files ("tmp", "bak").
+	for (const char* maker : kNamespaces)
+		for (uint32_t k : {1u, 2u, 5u, 9u, 10u, 51u, 100u})
+		{
+			const std::string stem = slot_name(k, maker);
+			for (const char* reader : kNamespaces)
+			{
+				uint32_t got = 0;
+				const bool ok = parses(stem, reader, &got);
+				const bool mine = std::string(reader) == maker;
+				if (ok != mine || (ok && got != k))
+					t::report_failure(__FILE__, __LINE__,
+					    "\"" + stem + "\" read in namespace \"" + reader + "\": " + (ok ? "a slot" : "not a slot"));
+			}
+		}
+}
+
+TEST(autosave_game_digit_ids_do_not_leak_into_the_old_ring)
+{
+	// id "5": coop_auto_5_1 must not read as slot 5 (or anything) of the old ring, and the old coop_auto_5 is not a slot of
+	// game "5". The old rule rejects everything but digits after the prefix; it must keep doing it.
+	CHECK(!parses("coop_auto_5_1", ""));
+	CHECK(!parses("coop_auto_51", "5"));
+	CHECK(!parses("coop_auto_5", "5"));
+	CHECK(!parses("coop_auto_5_", "5"));
+	CHECK(!parses("coop_auto_12_3", ""));
+	uint32_t i = 0;
+	REQUIRE(parses("coop_auto_5", "", &i));
+	CHECK_EQ(i, uint32_t(5));
+	REQUIRE(parses("coop_auto_5_1", "5", &i));
+	CHECK_EQ(i, uint32_t(1));
+	// "5" is a prefix of "51" and of "5-1": a game's slots are not read in the shorter id's namespace.
+	CHECK(!parses("coop_auto_51_2", "5"));
+	CHECK(!parses("coop_auto_5-1_2", "5"));
+	CHECK(!parses("coop_auto_5_12", "51"));
+	REQUIRE(parses("coop_auto_5_12", "5", &i));
+	CHECK_EQ(i, uint32_t(12));
+}
+
+TEST(autosave_game_shared_names_are_no_slot_anywhere)
+{
+	// coop_auto_tmp / coop_auto_bak (kTempStem, kBackupStem) are shared by every game and never a slot. That includes the
+	// namespaces named "tmp" and "bak": their slots are coop_auto_tmp_<N>, a different name.
+	for (const char* game : kNamespaces)
+		for (const char* shared : {"coop_auto_tmp", "coop_auto_bak", "coop_auto_tmp.scop", "coop_auto_bak.scoc", "coop_auto_tmp_",
+		                           "coop_auto_bak_", "coop_auto_tmp_0", "coop_auto_bak_0"})
+			if (parses(shared, game))
+				t::report_failure(__FILE__, __LINE__, std::string("\"") + shared + "\" is a slot in namespace \"" + game + "\"");
+
+	uint32_t i = 0;
+	REQUIRE(parses("coop_auto_tmp_1", "tmp", &i));
+	CHECK_EQ(i, uint32_t(1));
+	REQUIRE(parses("coop_auto_bak_2", "bak", &i));
+	CHECK_EQ(i, uint32_t(2));
+	// A game "tmp" still does not own the shared temporary pair, and the shared pair is not in its ring.
+	CHECK(slot_name(1, "tmp") != "coop_auto_tmp");
+	CHECK(slot_name(1, "bak") != "coop_auto_bak");
+	CHECK(!parses("coop_auto_tmp", "tmp"));
+}
+
+TEST(autosave_game_invalid_id_is_no_id)
+{
+	// An id that is not valid is no id: the old names, whatever the caller had in mind. (The engine logs it.)
+	const char* bad[] = {"ABC", "a_b", "a b", "../x", "a.b", "\xC3\xA9"};
+	for (const char* id : bad)
+	{
+		uint32_t i = 0;
+		if (!parse_slot("coop_auto_4", i, id) || i != 4)
+			t::report_failure(__FILE__, __LINE__, std::string("the old slot is not read for the invalid id \"") + id + "\"");
+		if (parse_slot("coop_auto_abc_4", i, id))
+			t::report_failure(__FILE__, __LINE__, std::string("a game slot is read for the invalid id \"") + id + "\"");
+		if (slot_name(4, id) != "coop_auto_4")
+			t::report_failure(__FILE__, __LINE__, std::string("slot_name made a game name for the invalid id \"") + id + "\"");
+	}
+	uint32_t i = 0;
+	CHECK(parse_slot("coop_auto_4", i, std::string(33, 'a')));
+	// ... but a valid id keeps the old ring out.
+	CHECK(!parse_slot("coop_auto_4", i, "abc"));
+}
+
+namespace
+{
+// A saves folder with the old ring, three games and the shared files. Times grow with the index inside a ring.
+std::vector<NamedFile> mixed_folder()
+{
+	std::vector<NamedFile> f;
+	for (uint32_t k = 1; k <= 10; ++k)
+		f.push_back({"coop_auto_" + std::to_string(k), 100 + k}); // the old ring: full
+	for (uint32_t k = 1; k <= 3; ++k)
+		f.push_back({"coop_auto_alpha_" + std::to_string(k), 500 + k});
+	for (uint32_t k = 1; k <= 10; ++k)
+		f.push_back({"coop_auto_beta_" + std::to_string(k), 900 + k});
+	f.push_back({"coop_auto_5_1", 700});
+	f.push_back({"coop_auto_5_2", 701});
+	f.push_back({"coop_auto_tmp", 999});
+	f.push_back({"coop_auto_bak", 998});
+	f.push_back({"quicksave", 1000});
+	f.push_back({"vasya - autosave", 1001});
+	f.push_back({"coop_auto_alpha_07", 1}); // not a slot
+	f.push_back({"coop_auto_gamma_1", 3}); // a game that is not asked for
+	return f;
+}
+
+std::vector<uint32_t> indices_of(const std::vector<SlotInfo>& v)
+{
+	std::vector<uint32_t> r;
+	for (const SlotInfo& s : v)
+		r.push_back(s.index);
+	std::sort(r.begin(), r.end());
+	return r;
+}
+} // namespace
+
+TEST(autosave_game_listing_sees_only_its_ring)
+{
+	const std::vector<NamedFile> folder = mixed_folder();
+
+	const std::vector<SlotInfo> alpha = slots_of_game(folder, "alpha");
+	CHECK(indices_of(alpha) == (std::vector<uint32_t>{1, 2, 3}));
+	for (const SlotInfo& s : alpha)
+		CHECK_EQ(s.file_time, uint64_t(500 + s.index));
+
+	CHECK(indices_of(slots_of_game(folder, "beta")).size() == size_t(10));
+	CHECK(indices_of(slots_of_game(folder, "5")) == (std::vector<uint32_t>{1, 2}));
+	CHECK(indices_of(slots_of_game(folder, "gamma")) == (std::vector<uint32_t>{1}));
+	CHECK(indices_of(slots_of_game(folder, "nobody")).empty());
+
+	// The old ring: only coop_auto_<N>; the game slots with digits in the id do not spill into it.
+	const std::vector<SlotInfo> old = slots_of_game(folder, "");
+	CHECK(old.size() == size_t(10));
+	for (const SlotInfo& s : old)
+		CHECK_EQ(s.file_time, uint64_t(100 + s.index));
+	// An invalid id is no id.
+	CHECK(slots_of_game(folder, "BAD").size() == size_t(10));
+	CHECK(slots_of_game({}, "alpha").empty());
+}
+
+TEST(autosave_game_rotation_in_its_own_ring)
+{
+	const std::vector<NamedFile> folder = mixed_folder();
+
+	// alpha has three of ten: the next save takes the free slot 4, although the old ring and beta are full.
+	CHECK_EQ(next_slot(slots_of_game(folder, "alpha"), 10), uint32_t(4));
+	// beta is full: the oldest of beta, 1 (not the older files of the old ring or of another game).
+	CHECK_EQ(next_slot(slots_of_game(folder, "beta"), 10), uint32_t(1));
+	// The old ring is full as well, and its oldest is its own 1.
+	CHECK_EQ(next_slot(slots_of_game(folder, ""), 10), uint32_t(1));
+	// A game with nothing yet starts at 1 whatever the others hold.
+	CHECK_EQ(next_slot(slots_of_game(folder, "nobody"), 10), uint32_t(1));
+	// Slots that failed are skipped inside the ring only.
+	CHECK_EQ(next_slot_skipping(slots_of_game(folder, "alpha"), 10, {4}), uint32_t(5));
+
+	// Pruning down to 2 after a save to alpha 3: alpha 1 goes, no file of another game or of the old ring is named.
+	const std::vector<uint32_t> gone = slots_to_prune(slots_of_game(folder, "alpha"), 2, 3);
+	REQUIRE(gone.size() == size_t(1));
+	CHECK_EQ(gone[0], uint32_t(1));
+	CHECK_EQ(slot_name(gone[0], "alpha"), std::string("coop_auto_alpha_1"));
+	// Pruning beta (full, count 3, the save went to 1) names beta files only.
+	const std::vector<uint32_t> beta_gone = slots_to_prune(slots_of_game(folder, "beta"), 3, 1);
+	CHECK(beta_gone.size() == size_t(7));
+	for (const uint32_t k : beta_gone)
+	{
+		const std::string name = slot_name(k, "beta");
+		bool found = false;
+		for (const NamedFile& f : folder)
+			found = found || f.stem == name;
+		if (!found || name.find("beta") == std::string::npos)
+			t::report_failure(__FILE__, __LINE__, "pruning beta named " + name);
+	}
+}
+
+TEST(autosave_game_legacy_files_stay_while_a_game_is_set)
+{
+	// With a game set, every file name the ring can touch (next_slot, slots_to_prune, slot_name) is a game name; a file of
+	// the old ring is never one of them.
+	const std::vector<NamedFile> folder = mixed_folder();
+	for (const char* game : {"alpha", "beta", "5", "gamma"})
+	{
+		const std::vector<SlotInfo> mine = slots_of_game(folder, game);
+		const uint32_t next = next_slot(mine, 10);
+		std::vector<uint32_t> touched = slots_to_prune(mine, 1, next);
+		touched.push_back(next);
+		REQUIRE(touched.size() >= size_t(1));
+		for (const uint32_t k : touched)
+		{
+			uint32_t back = 0;
+			const std::string name = slot_name(k, game);
+			if (parse_slot(name, back, ""))
+				t::report_failure(__FILE__, __LINE__, "the old ring owns \"" + name + "\"");
+			const std::string prefix = std::string("coop_auto_") + game + "_";
+			if (name.compare(0, prefix.size(), prefix) != 0)
+				t::report_failure(__FILE__, __LINE__, "\"" + name + "\" is not a slot of game " + game);
+		}
+	}
+}
+
+TEST(autosave_ring_set_game)
+{
+	Ring r;
+	CHECK(r.game.empty());
+	CHECK(r.bad_slots.empty());
+
+	// The first game: a change.
+	SetGameResult s = ring_set_game(r, "alpha");
+	CHECK(s.accepted);
+	CHECK(s.changed);
+	CHECK_EQ(r.game, std::string("alpha"));
+
+	// The same game again, as often as wanted: nothing changes, the memory of bad slots stays.
+	ring_mark_bad(r, "alpha", 3);
+	ring_mark_bad(r, "alpha", 5);
+	for (int i = 0; i < 3; ++i)
+	{
+		s = ring_set_game(r, "alpha");
+		CHECK(s.accepted);
+		CHECK(!s.changed);
+	}
+	CHECK(ring_bad(r, "alpha") == (std::vector<uint32_t>{3, 5}));
+
+	// Another game: the bad slots of the first are not the second's.
+	s = ring_set_game(r, "beta");
+	CHECK(s.accepted);
+	CHECK(s.changed);
+	CHECK_EQ(r.game, std::string("beta"));
+	CHECK(ring_bad(r, "beta").empty());
+	CHECK(r.bad_slots.empty());
+
+	// Back to the first one: it starts clean (the files may have been fixed meanwhile).
+	ring_mark_bad(r, "beta", 2);
+	s = ring_set_game(r, "alpha");
+	CHECK(s.changed);
+	CHECK(ring_bad(r, "alpha").empty());
+}
+
+TEST(autosave_ring_set_game_none)
+{
+	Ring r;
+	// "" is a valid way to say "no game": the old ring.
+	SetGameResult s = ring_set_game(r, "");
+	CHECK(s.accepted);
+	CHECK(!s.changed);
+	ring_mark_bad(r, "", 4);
+	s = ring_set_game(r, "");
+	CHECK(!s.changed);
+	CHECK(ring_bad(r, "") == (std::vector<uint32_t>{4}));
+
+	s = ring_set_game(r, "alpha");
+	CHECK(s.changed);
+	ring_mark_bad(r, "alpha", 1);
+	s = ring_set_game(r, "");
+	CHECK(s.accepted);
+	CHECK(s.changed);
+	CHECK(r.game.empty());
+	CHECK(r.bad_slots.empty());
+}
+
+TEST(autosave_ring_set_game_invalid)
+{
+	// An id that is not valid is no id: the old ring, and the caller is told (accepted = false) so the engine can log it.
+	Ring r;
+	ring_set_game(r, "alpha");
+	ring_mark_bad(r, "alpha", 2);
+	SetGameResult s = ring_set_game(r, "Bad_Id");
+	CHECK(!s.accepted);
+	CHECK(s.changed); // from "alpha" to the old ring
+	CHECK(r.game.empty());
+	CHECK(r.bad_slots.empty());
+
+	// Already in the old ring: nothing changes, the memory of its bad slots stays, the answer is still "not accepted".
+	ring_mark_bad(r, "", 7);
+	s = ring_set_game(r, std::string(40, 'x'));
+	CHECK(!s.accepted);
+	CHECK(!s.changed);
+	CHECK(ring_bad(r, "") == (std::vector<uint32_t>{7}));
+
+	s = ring_set_game(r, std::string("a\0b", 3));
+	CHECK(!s.accepted);
+	CHECK(r.game.empty());
+}
+
+TEST(autosave_ring_bad_slots_belong_to_a_game)
+{
+	Ring r;
+	ring_set_game(r, "alpha");
+	ring_mark_bad(r, "alpha", 4);
+	ring_mark_bad(r, "alpha", 4); // once
+	ring_mark_bad(r, "alpha", 2);
+	CHECK(ring_bad(r, "alpha") == (std::vector<uint32_t>{4, 2}));
+
+	// A save that began in another game (the namespace changed under it) neither reads nor writes this ring's memory.
+	CHECK(ring_bad(r, "beta").empty());
+	CHECK(ring_bad(r, "").empty());
+	ring_mark_bad(r, "beta", 9);
+	ring_mark_bad(r, "", 8);
+	CHECK(ring_bad(r, "alpha") == (std::vector<uint32_t>{4, 2}));
+	CHECK(ring_bad(r, "beta").empty());
+
+	// Index 0 is not a slot.
+	ring_mark_bad(r, "alpha", 0);
+	CHECK(ring_bad(r, "alpha").size() == size_t(2));
+}

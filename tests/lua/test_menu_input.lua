@@ -93,35 +93,33 @@ function window(path)
 	return w
 end
 
--- Read attributes from the actual selected layout rather than inventing positions or input flags.
-local layouts = {}
-for _, file in ipairs({ "ui_coop_menu.xml", "ui_coop_menu_16.xml" }) do
-	XML_FILES[file] = xml_paths(ROOT .. "configs/ui/" .. file)
-	local fh = assert(io.open(ROOT .. "configs/ui/" .. file, "r"))
+-- The input flags come from the real templates; the rectangles from what the script places (SetWndRect / SetWndPos).
+local XML = "ui_coop_chronicle.xml"
+XML_FILES[XML] = xml_paths(ROOT .. "configs/ui/" .. XML)
+local nodes = {}
+do
+	local fh = assert(io.open(ROOT .. "configs/ui/" .. XML, "r"))
 	local src = fh:read("*a"):gsub("<!%-%-.-%-%->", "")
 	fh:close()
-	local nodes = {}
 	for tag, attrs in src:gmatch("<([%w_]+)%s+([^>]+)>") do
 		local a = {}
 		for k, v in attrs:gmatch('([%w_]+)="([^"]*)"') do a[k] = v end
 		nodes[tag] = a
 	end
-	layouts[file] = nodes
 end
-local LAYOUT = "ui_coop_menu.xml"
 function CScriptXmlInit()
 	local x = {}
-	function x:ParseFile() self.file = LAYOUT end
+	function x:ParseFile(f) self.file = f end
 	for method, kind in pairs({ InitFrame = "static", InitStatic = "static", InitTextWnd = "static",
 		Init3tButton = "button", InitEditBox = "edit", InitScrollView = "static" }) do
 		local control_kind = kind
 		x[method] = function(self, path, parent)
 			assert(XML_FILES[self.file][path], path)
 			local w = window(path)
-			local a = assert(layouts[self.file][path:match("[^:]+$")])
+			local a = assert(nodes[path])
 			w.kind, w.parent, w.target = control_kind, parent, parent
-			w.pos = { x = tonumber(a.x) or 0, y = tonumber(a.y) or 0 }
-			w.w, w.h = tonumber(a.width) or 0, tonumber(a.height) or 0
+			w.pos = { x = 0, y = 0 }
+			w.w, w.h = 8, 8
 			w.num_only, w.read_only = a.num_only == "1", a.read_only == "1"
 			w.max_count = tonumber(a.max_symb_count) or 32
 			if parent then parent.children[#parent.children + 1] = w end
@@ -135,6 +133,7 @@ function CUIScriptWnd.OnKeyboard(self, text, action)
 	if not self.enabled or (PAUSED and not IGNORE_PAUSE) then return false end
 	return keyboard(self, text, action)
 end
+function CUIScriptWnd.OnMouse(self, x, y, action) return mouse(self, x, y, action) end
 function class(name)
 	local env = getfenv(2)
 	return function(base)
@@ -142,7 +141,7 @@ function class(name)
 		setmetatable(cls, { __index = base, __call = function(c, ...)
 			local o = setmetatable(window(name), c)
 			o.pos = { x = 0, y = 0 }
-			o.OnKeyboard = nil -- let the real script override run
+			o.OnKeyboard, o.OnMouse = nil, nil -- let the real script overrides run
 			o.callbacks, o.registered = {}, {}
 			function o:SetWndRect() end
 			function o:Register(w, n) w.name, w.target = n, self; self.registered[n] = w end
@@ -192,41 +191,42 @@ local function mouse_click(dlg, w)
 end
 local function poll(dlg) NOW = NOW + 300; dlg:Update() end
 
-for _, file in ipairs({ "ui_coop_menu.xml", "ui_coop_menu_16.xml" }) do
-	LAYOUT = file
+for _, screen in ipairs({ { 1920, 1080 }, { 1024, 768 } }) do
+	SCREEN = { w = screen[1], h = screen[2] }
 	for _, loaded in ipairs({ false, true }) do
 		LOADED, PAUSED = loaded, loaded
-		local label = file .. (loaded and " paused: " or " cold: ")
+		local label = screen[1] .. "x" .. screen[2] .. (loaded and " paused: " or " cold: ")
 		INFO, CONNECTED = { active = false, phase = "off", players = {} }, nil
 		local dlg = m.UICoopMenu({})
 		dlg:Reset(); dlg:ShowDialog(true)
-		mouse_click(dlg, dlg.tabs.join)
-		check(dlg.tab == "join", label .. "real rectangle click selects Join")
+		dlg:Refresh()
 		mouse_click(dlg, dlg.edit_address)
 		dlg.edit_address:SetText("") -- isolate from addresses remembered by earlier scenarios
 		press(dlg, "10.")
 		poll(dlg)
 		press(dlg, "0.0.7:28001")
-		check(dlg.edit_address:GetText() == "10.0.0.7:28001", label .. "typing survives polling the hidden port")
+		check(dlg.edit_address:GetText() == "10.0.0.7:28001", label .. "a real rectangle click focuses the field, typing survives polling")
 		-- Paste is a decoded text event, not an OS clipboard assertion.
 		dlg.edit_address:SetText(""); mouse_click(dlg, dlg.edit_address); poll(dlg)
 		press(dlg, "192.168.1.2:27960")
 		check(dlg.edit_address:GetText() == "192.168.1.2:27960", label .. "decoded pasted endpoint after poll")
-		mouse_click(dlg, dlg.edit_nick); press(dlg, "-" .. string.char(0xD1, 0xF2))
-		poll(dlg); press(dlg, "1")
-		check(dlg.edit_nick:GetText() == "Strelok-" .. string.char(0xD1, 0xF2) .. "1", label .. "translated CP1251 nickname survives polling")
+
+		-- the dialog of a new game: its field takes the keys, its backdrop the clicks
+		mouse_click(dlg, dlg.btn_add)
+		check(dlg.modal == "new" and dlg.edit_title.input_focus == true, label .. "the dialog's field has the keyboard at once")
+		press(dlg, "My game "); poll(dlg); press(dlg, string.char(0xD1, 0xF2))
+		check(dlg.edit_title:GetText() == "My game " .. string.char(0xD1, 0xF2), label .. "translated CP1251 title survives polling")
+		check(dlg.edit_address:GetText() == "192.168.1.2:27960", label .. "the field behind the dialog gets nothing")
 		mouse_click(dlg, dlg.edit_address)
-		mouse_click(dlg, dlg.tabs.host); press(dlg, "9")
-		check(dlg.edit_address:GetText() == "192.168.1.2:27960", label .. "hidden address cannot keep keyboard capture")
-		mouse_click(dlg, dlg.btn_port_toggle); mouse_click(dlg, dlg.edit_port)
-		dlg.edit_port:SetText(""); press(dlg, "2800"); poll(dlg); press(dlg, "1"); press(dlg, "2")
-		check(dlg.edit_port:GetText() == "28001", label .. "visible port stays numeric and keeps max length")
-		dlg.edit_port:SetText("2800"); mouse_click(dlg, dlg.btn_port_toggle); press(dlg, "9")
-		check(dlg.edit_port:GetText() == "2800", label .. "folded port cannot keep keyboard capture")
-		mouse_click(dlg, dlg.tabs.join); mouse_click(dlg, dlg.edit_address)
+		check(dlg.edit_address.input_focus ~= true, label .. "a click on the field behind the dialog does not reach it")
+		mouse_click(dlg, dlg.btn_modal_no)
+		press(dlg, "9")
+		check(dlg.edit_title:GetText():sub(-1) ~= "9" and not dlg.modal, label .. "a closed dialog cannot keep keyboard capture")
+
 		-- A pending host is not an active session: l_connect deliberately cancels it.
+		mouse_click(dlg, dlg.edit_address)
 		INFO.pending_host = 27960; poll(dlg); press(dlg, "0")
-		check(dlg.edit_address:GetText() == "192.168.1.2:279600", label .. "pending host still permits switching to Join")
+		check(dlg.edit_address:GetText() == "192.168.1.2:279600", label .. "pending host still permits typing the address")
 		INFO.pending_host = nil
 		for _, phase in ipairs({ "connecting", "handshaked", "receiving-world", "loading-world", "live", "hosting" }) do
 			INFO = { active = false, phase = "off", players = {} }; dlg:Refresh()
@@ -239,9 +239,10 @@ for _, file in ipairs({ "ui_coop_menu.xml", "ui_coop_menu_16.xml" }) do
 		end
 		INFO = { active = false, phase = "off", players = {} }; poll(dlg)
 		mouse_click(dlg, dlg.edit_address); dlg.edit_address:SetText(""); poll(dlg); press(dlg, "10.0.0.7:28001")
-		dlg.edit_nick:SetText("Strelok"); mouse_click(dlg, dlg.btn_connect)
+		mouse_click(dlg, dlg.btn_connect)
 		check(CONNECTED == "10.0.0.7:28001", label .. "typed endpoint reaches Connect after returning idle")
 	end
 end
+SCREEN = { w = 1920, h = 1080 }
 
 print(string.format("%d passed, %d failed", PASSES, FAILS))
