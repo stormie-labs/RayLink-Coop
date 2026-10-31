@@ -12,5 +12,6 @@ z_taskboard_overrides            = view
 ; Dynamic Anomalies Overhaul: its anomaly lifecycle spawns / releases world objects. The flash mine's per-player part
 ; runs on clients through coop_quests_story (the time jump is the host's).
 drx_da_main                      = host
+grok_artefacts_random_spawner    = host   ; reads drx_da_main's tables, which are the host's: an error a client on every run
 drx_da_main_artefacts            = host
 drx_da_main_artefacts_movement   = host
