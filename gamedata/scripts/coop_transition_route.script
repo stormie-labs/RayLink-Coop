@@ -38,9 +38,10 @@ LIST_MS = 5000 -- the route restrictors of the level, listed again (they come on
 
 local ini -- the route sections, read once
 local orig_ok -- ui_sr_teleport.msg_box_ui.OnMsgOk as it was
-local routes = {} -- restrictor id -> { obj, name } of the level now
+local routes = {} -- restrictor id -> its name, on the level now. No objects: see scan
 local inside = {} -- restrictor id -> true: the actor was in it at the last scan
 local listed_at, scanned_at = nil, nil
+local listed_on = nil -- the level of that list
 local stats = { taken = 0, stock = 0, entries = 0, unknown = 0, errors = 0, listed = 0 }
 
 local function log(fmt, ...)
@@ -153,12 +154,12 @@ end
 -- 2. The player's own entry
 -------------------------------------------------------------------------------
 local function list(now)
-	listed_at = now
+	listed_at, listed_on = now, level.name()
 	routes = {}
 	local i = sections()
 	for _, obj in pairs(db.zone_by_name or {}) do
 		local ok, id, name = pcall(function() return obj:id(), section_of(obj) end)
-		if ok and id and name and i:section_exist(name) then routes[id] = { obj = obj, name = name } end
+		if ok and id and name and i:section_exist(name) then routes[id] = name end
 	end
 	stats.listed = 0
 	for _ in pairs(routes) do stats.listed = stats.listed + 1 end
@@ -170,18 +171,21 @@ local function scan(now)
 		inside = {}
 		return
 	end
-	if not listed_at or now - listed_at >= LIST_MS or now < listed_at then list(now) end
+	if not listed_at or now - listed_at >= LIST_MS or now < listed_at or listed_on ~= level.name() then list(now) end
 	local pos = db.actor:position()
-	for id, r in pairs(routes) do
-		-- live 2026-10-25 (Busy Hands at a level change): r.obj.inside was read outside the pcall, and a route object
-		-- released with the old level threw there. The whole call is protected now.
-		local ok, yes = pcall(function() return r.obj:inside(pos) end)
+	for id, name in pairs(routes) do
+		-- Busy Hands on a client after a level change (live 2026-10-25, 2026-10-31): a route object goes with the old level,
+		-- and a method of a dead object is no Lua error. The engine's guard (SafeWrap) raises its window past any pcall, and
+		-- the scripts stop working. So no object is kept between scans, the id is asked anew.
+		local obj = level.object_by_id(id)
+		local ok, yes = false, false
+		if obj then ok, yes = pcall(function() return obj:inside(pos) end) end
 		if ok and yes then
 			if not inside[id] then
 				inside[id] = true
 				stats.entries = stats.entries + 1
-				if known(r.name) then
-					take(r.obj, r.name)
+				if known(name) then
+					take(obj, name)
 				else
 					stats.unknown = stats.unknown + 1
 				end

@@ -71,6 +71,17 @@ local function machine(opts)
 	-- the restrictors of the level, and where the actor is
 	M.actor_at = { x = 0, y = 0, z = 0 }
 	env.db = { actor = { position = function() return M.actor_at end }, zone_by_name = {} }
+	-- the objects of the level as the engine knows them, and the level itself
+	M.objects, M.level_name = {}, "l01_escape"
+	env.level = {
+		object_by_id = function(id) return M.objects[id] end,
+		name = function() return M.level_name end,
+	}
+	-- the binder's net_destroy: gone from db and from the level
+	function M.gone(id, name)
+		M.objects[id] = nil
+		env.db.zone_by_name[name] = nil
+	end
 	function M.zone(id, name, box)
 		local z = { box = box }
 		function z:id() return id end
@@ -81,6 +92,7 @@ local function machine(opts)
 			return p.x >= b[1] and p.x <= b[2] and p.z >= b[3] and p.z <= b[4]
 		end
 		env.db.zone_by_name[name] = z
+		M.objects[id] = z
 		return z
 	end
 	env.get_object_story_id = function(id) return (opts.story or {})[id] end
@@ -280,6 +292,39 @@ frames(MP, 16 * 400)
 local per_frame = (os.clock() - t0) * 1000 / 400
 print(("  info %.4f ms per frame with 200 restrictors"):format(per_frame))
 check(per_frame < 0.2, "a frame costs well under a fifth of a millisecond in the stubs (" .. string.format("%.4f", per_frame) .. " ms)")
+
+-- ================================================================ a route object gone with the old level
+print("== a route object that is gone")
+-- Live 2026-10-25 and 2026-10-31, a client after a level change: a method of a dead object is no Lua error. The engine's guard
+-- (SafeWrap, Busy Hands) raises its window past any pcall, and that client's scripts stop working. So a dead object is never
+-- touched: here a call on it only counts, as the engine would not throw either.
+local MG = machine({ known = { mar_space_restrictor_to_agroprom_1 = true } })
+local kept = MG.zone(812, "mar_space_restrictor_to_agroprom_1", { 160, 180, 590, 605 })
+frames(MG, 600)
+local touched = 0
+kept.inside = function() touched = touched + 1; return false end
+MG.gone(812, "mar_space_restrictor_to_agroprom_1")
+frames(MG, 1000)
+check(touched == 0, "a route object gone before the next list is not touched")
+check(#MG.asked == 0, "... and nothing is asked for it")
+-- the id comes back on the new level as something else
+local MN = machine({ known = { mar_space_restrictor_to_agroprom_1 = true } })
+MN.zone(812, "mar_space_restrictor_to_agroprom_1", { 160, 180, 590, 605 })
+frames(MN, 600)
+MN.gone(812, "mar_space_restrictor_to_agroprom_1")
+local other = 0
+MN.objects[812] = { inside = function() other = other + 1; return false end, id = function() return 812 end }
+MN.level_name = "k00_marsh"
+frames(MN, 1000)
+check(other == 0, "a new level lists its routes at once: an id of the old list is not asked of what holds it now")
+-- a route of the new level works from the first scan
+local MW = machine({ known = { mar_space_restrictor_to_agroprom_1 = true } })
+frames(MW, 600)
+MW.level_name = "k00_marsh"
+MW.zone(812, "mar_space_restrictor_to_agroprom_1", { 160, 180, 590, 605 })
+MW.actor_at = { x = 170, y = 7, z = 600 }
+frames(MW, 600)
+check(#MW.asked == 1, "a route of the new level is seen without waiting for the next list")
 
 -- ================================================================
 local unk = {}
