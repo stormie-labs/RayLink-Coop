@@ -410,6 +410,41 @@ end
 -------------------------------------------------------------------------------
 local ency = { orig_note = nil, orig_article = nil, applying = false, mutes = {} }
 
+-- VAR's voice decorator requires create_interaction's temporary key/section, which a
+-- replicated article does not have. Keep its saved unlock and all other decorators;
+-- only remote application skips the local interaction's speech (VAR lines 4-8, 13-15).
+local function adapt_article_voice(fn, seen)
+	if type(fn) ~= "function" then return fn end
+	if seen[fn] then return seen[fn] end
+	seen[fn] = fn
+	local source = debug.getinfo(fn, "S").source
+	if source:match("ui_pda_encyclopedia_tab_varefined%.script$") then
+		for i = 1, 255 do
+			local name, original = debug.getupvalue(fn, i)
+			if name == nil then break end
+			if name == "ui_pda_encyclopedia_tab_unlock_article" and type(original) == "function" then
+				local adapted = function(...)
+					if ency.applying then return original(...) end
+					return fn(...)
+				end
+				seen[fn] = adapted
+				return adapted
+			end
+		end
+	end
+	-- Another mod may have wrapped VAR first. Adapt that captured function in place
+	-- so its outer wrapper still runs for local and replicated unlocks alike.
+	for i = 1, 255 do
+		local name, value = debug.getupvalue(fn, i)
+		if name == nil then break end
+		if type(value) == "function" then
+			local adapted = adapt_article_voice(value, seen)
+			if adapted ~= value then debug.setupvalue(fn, i, adapted) end
+		end
+	end
+	return fn
+end
+
 local function is_note(s) return s:find("encyclopedia__notes", 1, true) ~= nil end
 
 local function unlocked(s)
@@ -529,6 +564,7 @@ local function patch_encyclopedia()
 		if type(m) == "table" and type(m.set_article) == "function" then mute_during_apply(m, "set_article") end
 	end
 	ency.orig_note, ency.orig_article = enc.unlock_note, enc.unlock_article
+	ency.orig_article = adapt_article_voice(ency.orig_article, {})
 	-- the tab's own calls resolve through its module table, so they hit these too
 	enc.unlock_note = function(s, ...)
 		local before = type(s) == "string" and unlocked(s)

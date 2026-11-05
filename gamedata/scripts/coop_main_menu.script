@@ -84,13 +84,26 @@ local function coop_sub()
 	return tr("st_coop_mm_sub_coop", games, most)
 end
 
+-- Both stock and MCM list btn_lastsave even without saves; their handler indexes
+-- file 0 before checking it. Check the same file mask, including again at a press.
+local function last_save_available()
+	local ok, available = pcall(function()
+		local files = getFS():file_list_open_ex("$game_saves$", bit_or(FS.FS_ListFiles, FS.FS_RootOnly), "*.scop")
+		return files:Size() > 0
+	end)
+	if not ok then log("! cannot check the last save: %s", tostring(available)) end
+	return ok and available
+end
+
 -- The buttons of the page the widget shows: names and captions are the widget's, the rest is the theme's.
 function View:read_items()
 	local sh, M = self.menu.shniaga, self.M
 	local all, taken, out = {}, {}, {}
 	for i = 0, sh:GetButtonCount() - 1 do
 		local name = sh:GetButtonName(i)
-		if name then all[#all + 1] = { name = name, caption = sh:GetButtonCaption(i) or "" } end
+		if name and (name ~= "btn_lastsave" or last_save_available()) then
+			all[#all + 1] = { name = name, caption = sh:GetButtonCaption(i) or "" }
+		end
 	end
 	for _, want in ipairs(M.first) do
 		for _, it in ipairs(all) do
@@ -299,6 +312,10 @@ end
 function View:press(i)
 	local it = self.items[i]
 	if not it then return end
+	if it.name == "btn_lastsave" and not last_save_available() then
+		self:bind_list(self.now)
+		return
+	end
 	self:select(i, self.now)
 	local ok, err = pcall(function() return self.menu.shniaga:PressButton(it.name) end)
 	if not ok then log("! the button %s: %s", tostring(it.name), tostring(err)) end
@@ -443,6 +460,26 @@ end
 -- The seams of the stock class
 -------------------------------------------------------------------------------
 local hooked = false
+local live_menu
+local known_menus = setmetatable({}, { __mode = "k" })
+local options_hooked = false
+
+local function hook_options()
+	if options_hooked then return end
+	local cls = ui_options and ui_options.UIOptions
+	if not (cls and cls.On_Cancel) then return end
+	local cancel = cls.On_Cancel
+	cls.On_Cancel = function(self, ...)
+		-- ReloadUI constructs the next menu before deleting the old one. Options
+		-- keeps its original owner; rebind before stock ShowDialog/Show/SetMsg can
+		-- reach a deleted native window. Other owners and the live path stay stock.
+		if live_menu and self.owner ~= live_menu and known_menus[self.owner] then
+			self.owner = live_menu
+		end
+		return cancel(self, ...)
+	end
+	options_hooked = true
+end
 
 function on_keyboard(dik, action, menu)
 	if action ~= ui_events.WINDOW_KEY_PRESSED then return end
@@ -473,6 +510,9 @@ local function hook()
 end
 
 function attach(menu)
+	live_menu = menu
+	known_menus[menu] = true
+	hook_options()
 	local T = coop_menu_theme_base.load()
 	if not T.main_menu.enabled then return false end
 	if not has_widget_api(menu.shniaga) then

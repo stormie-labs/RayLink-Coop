@@ -370,4 +370,129 @@ local y0 = v13.embers[1].w.pos.y
 step(v13, 500)
 check(v13.embers[1].w.pos.y < y0, "they rise")
 
+print("== stock handlers: empty saves and an options owner replaced by ReloadUI")
+do
+	-- Load the reference scripts themselves; only native windows/filesystem are stand-ins.
+	function ini_file() return {} end
+	function ini_file_ex() return {} end
+	utils_xml = { get_color = function() end, is_widescreen = function() return true end }
+	function Unregister_UI(name) UNREGISTERED = name end
+	function alife() return nil end
+	local commands = {}
+	function exec_console_cmd(cmd) commands[#commands + 1] = cmd end
+	local stock = load_module("ui_main_menu", REF .. "scripts/")
+	local options = load_module("ui_options", REF .. "scripts/")
+	local fs = getFS
+	local reads = 0
+	function getFS()
+		local f = fs()
+		local open = f.file_list_open_ex
+		function f:file_list_open_ex(...)
+			local list = open(self, ...)
+			local get = list.GetAt
+			function list:GetAt(i)
+				reads = reads + 1
+				assert(i < self:Size(), "GetAt index out of range")
+				return get(self, i)
+			end
+			return list
+		end
+		return f
+	end
+	mm = load_module("coop_main_menu") -- install against the real stock classes
+	local function reference_menu()
+		local m = new_menu(COLD)
+		m.shown = true
+		function m:ShowDialog() self.shown = true end
+		function m:HideDialog() self.shown = false end
+		m.Show = stock.main_menu.Show
+		function m.shniaga:SetVisibleMagnifier(f)
+			assert(not self.destroyed, "SetVisibleMagnifier on destroyed widget")
+			self.magnifier = f
+		end
+		function m.shniaga:PressButton(name)
+			self.pressed = name
+			if name == "btn_lastsave" then return stock.main_menu.OnButton_last_save(m) end
+			return true
+		end
+		mm.attach(m)
+		return m
+	end
+	SAVES = {}
+	local empty = reference_menu()
+	local installed_cancel = options.UIOptions.On_Cancel
+	local ok, err = pcall(stock.main_menu.OnButton_last_save, empty)
+	local stock_raises = not ok and tostring(err):find("GetAt index out of range", 1, true)
+	local mcm_dir = "E:/GAMMA/mods/109- MCM Mod Configuration Menu - RavenAscendant/gamedata/scripts/"
+	local mcm_file = io.open(mcm_dir .. "ui_main_menu.script", "r")
+	if mcm_file then
+		mcm_file:close()
+		local mcm = load_module("ui_main_menu", mcm_dir)
+		local mcm_ok, mcm_err = pcall(mcm.main_menu.OnButton_last_save, empty)
+		stock_raises = stock_raises and not mcm_ok and tostring(mcm_err):find("GetAt index out of range", 1, true)
+		_G.ui_main_menu = stock
+	else
+		print("  note: GAMMA MCM reference absent; only vanilla handler checked")
+	end
+	check(stock_raises, "real stock and installed MCM last-save handlers raise on an empty list")
+	check(not names(empty.coop_view):find("btn_lastsave", 1, true), "view removes the stock dead last-save button")
+	check(names(empty.coop_view):find("btn_mcm", 1, true), "mod buttons remain available with no saves")
+
+	SAVES = { { name = "resume", stamp = "05/11/2026 12:00" } }
+	local saved = reference_menu()
+	commands = {}
+	saved.coop_view:press(1)
+	check(commands[2] == "start server(resume/single/alife/load) client(localhost)", "available last save still goes through the real stock handler")
+	SAVES = {}
+	reads, commands = 0, {}
+	saved.shniaga.pressed = nil
+	saved.coop_view:press(1)
+	check(reads == 0 and saved.shniaga.pressed == nil, "save removed after binding never reaches stock GetAt")
+	check(not names(saved.coop_view):find("btn_lastsave", 1, true), "removed save's row disappears on activation")
+
+	local function dialog(owner)
+		local d = { owner = owner }
+		function d:HideDialog() self.hidden = true end
+		return setmetatable(d, { __index = options.UIOptions })
+	end
+	-- Stock assigns owner once in OnButton_options_clicked; exercise that exact method.
+	local old = reference_menu()
+	local make_options = options.UIOptions
+	local resets = 0
+	local d = dialog(old)
+	function d:ShowDialog() self.hidden = false end
+	function d:Reset_last_opt() resets = resets + 1 end
+	options.UIOptions = function() return d end
+	stock.main_menu.OnButton_options_clicked(old)
+	options.UIOptions = make_options
+	check(d.owner == old and old.shown == false and resets == 1, "stock opening stores the menu owner and hides it")
+	local show = old.Show
+	local shown = 0
+	old.Show = function(self, f) shown = shown + 1; return show(self, f) end
+	local ok_live = pcall(d.On_Cancel, d)
+	check(ok_live and shown == 1 and old.shniaga.magnifier == true and d.hidden, "valid owner follows stock cancel unchanged")
+
+	local live = reference_menu() -- NEW_INSTANCE runs main_menu_on_init before xr_delete(old)
+	old.shniaga.destroyed = true
+	local stale_calls = 0
+	function old:ShowDialog() stale_calls = stale_calls + 1 end
+	d.hidden, live.shown, UNREGISTERED = false, false, nil
+	d.Change_Done, d.Need_VidRestart, d.Save_CFG = true, true, true
+	function live:SetMsg(text, seconds) self.message = { text, seconds } end
+	commands = {}
+	local ok_cancel, cancel_err = pcall(d.On_Cancel, d)
+	check(ok_cancel, "cancel after replacement avoids the destroyed widget: " .. tostring(cancel_err))
+	check(d.owner == live and live.shown and live.shniaga.magnifier == true and d.hidden and stale_calls == 0,
+		"cancel returns to the live menu before touching the old owner")
+	check(commands[1] == "vid_restart" and live.message and live.message[2] == 5 and UNREGISTERED == "UIOptions"
+		and d.Change_Done == false and d.Need_VidRestart == false and d.Save_CFG == false,
+		"stock restart, message, cleanup and unregister still run")
+	local other = { ShowDialog = function(self) self.shown = true end, Show = function(self) self.visible = true end }
+	local outside = dialog(other)
+	check(pcall(outside.On_Cancel, outside) and outside.owner == other and other.shown and other.visible,
+		"options with an unrelated owner are untouched")
+	check(options.UIOptions.On_Cancel == installed_cancel, "replacement menus do not wrap cancel repeatedly")
+	getFS = fs
+end
+
 print(string.format("%d passed, %d failed", PASSES, FAILS))

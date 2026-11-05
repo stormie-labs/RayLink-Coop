@@ -176,42 +176,48 @@ local function valid_id(id)
 	return type(id) == "string" and #id >= 1 and #id <= 64 and id:find("^[%w_%-]+$") ~= nil
 end
 
+-- Lua's I/O errors include the full local path. Keep the reason, never the player's folders.
+local function io_call(step, path, fn, ...)
+	local ok, value, err = pcall(fn, ...)
+	if ok and value then return value end
+	local why = tostring((ok and err or value) or "operation failed")
+	why = why:gsub(path:gsub("(%W)", "%%%1"), "<save-file>")
+	return nil, step .. ": " .. why
+end
+
 local function read_file(path)
-	local ok, data = pcall(function()
-		local f = io.open(path, "rb")
-		if not f then return nil end
-		local d = f:read("*all")
-		f:close()
-		return d
-	end)
-	if ok and type(data) == "string" and data ~= "" then return data end
-	return nil
+	local f, why = io_call("read open", path, io.open, path, "rb")
+	if not f then return nil, why end
+	local data, read_why = io_call("read", path, f.read, f, "*all")
+	pcall(f.close, f)
+	if type(data) == "string" and data ~= "" then return data end
+	return nil, read_why or "read: empty file"
 end
 
 -- Writes beside the target and moves it in, so that a card is whole or the old one; where the move fails (a folder that
 -- will not rename over a file), the file is written in place.
 local function write_file(path, data)
 	local tmp = path .. ".tmp"
-	local wrote = pcall(function()
-		local f = assert(io.open(tmp, "wb"))
-		local w = f:write(data)
-		f:close()
-		assert(w, "write failed")
-	end)
+	local function write_to(target, step)
+		local f, why = io_call(step .. " open", target, io.open, target, "wb")
+		if not f then return false, why end
+		local wrote, write_why = io_call(step .. " write", target, f.write, f, data)
+		local closed, close_why = io_call(step .. " close", target, f.close, f)
+		if not wrote then return false, write_why end
+		if not closed then return false, close_why end
+		return true
+	end
+	local wrote, why = write_to(tmp, "tmp")
 	if wrote then
-		local moved = pcall(function()
-			pcall(os.remove, path)
-			assert(os.rename(tmp, path))
-		end)
+		pcall(os.remove, path)
+		local moved, move_why = io_call("rename", tmp, os.rename, tmp, path)
 		if moved then return true end
+		why = move_why:gsub(path:gsub("(%W)", "%%%1"), "<save-file>")
 	end
 	pcall(os.remove, tmp)
-	return (pcall(function()
-		local f = assert(io.open(path, "wb"))
-		local w = f:write(data)
-		f:close()
-		assert(w, "write failed")
-	end))
+	local ok, fallback_why = write_to(path, "in-place")
+	if ok then return true end
+	return false, why .. "; " .. fallback_why
 end
 
 -- "<name> | time | size" of one file of the saves folder, nil when it is not there. The folder listing gives it without a read.
@@ -250,20 +256,24 @@ end
 -- The m_data of <stem>.scoc, nil when it is not there or cannot be read.
 local function read_scoc(stem)
 	local dir = saves_dir()
-	if not (dir and valid_stem(stem)) then return nil end
-	local data = read_file(dir .. stem:lower() .. BLOCK_EXT)
+	if not dir then return nil, "saves directory unavailable" end
+	if not valid_stem(stem) then return nil, "invalid save stem" end
+	local data, why = read_file(dir .. stem:lower() .. BLOCK_EXT)
+	if not data then return nil, why end
 	local c = codec()
-	if not (data and c) then return nil end
+	if not c then return nil, "marshal unavailable" end
 	local ok, t = pcall(c.decode, data)
 	if ok and type(t) == "table" then return t end
-	return nil
+	return nil, "marshal decode failed"
 end
 
 -- The game record in the save's block, nil when there is none.
 local function block_of_save(stem)
-	local m = read_scoc(stem)
-	if m and type(m.coop_game) == "table" then return sanitize(m.coop_game) end
-	return nil
+	local m, why = read_scoc(stem)
+	if not m then return nil, why end
+	if type(m.coop_game) ~= "table" then return nil, "no game record in sidecar" end
+	local block = sanitize(m.coop_game)
+	return block, not block and "game record validation failed" or nil
 end
 
 -- The card of a game (decoded, validated), nil when there is none.
@@ -283,12 +293,15 @@ local function write_card(card)
 	if not (c and r and dir and type(card) == "table" and valid_id(card.id)) then return false end
 	local s = r.encode(card, c)
 	if not s then return false end
-	local ok = write_file(dir .. card.id .. CARD_EXT, s)
+	-- Stock alife_storage_manager calls save_state before its own lfs.mkdir (first save).
+	local fs = rawget(_G, "lfs")
+	if type(fs) == "table" and type(fs.mkdir) == "function" then pcall(fs.mkdir, dir) end
+	local ok, why = write_file(dir .. card.id .. CARD_EXT, s)
 	if ok then
 		stats.cards = stats.cards + 1
 	else
 		stats.card_fails = stats.card_fails + 1
-		log("! the card of game %s cannot be written", card.id)
+		log("! the card of game %s cannot be written: %s", card.id, why)
 	end
 	return ok
 end
@@ -514,12 +527,12 @@ local function before_world_start_impl(mode, save)
 			end
 		end
 	elseif mode == "load" then
-		local block = block_of_save(save)
+		local block, why = block_of_save(save)
 		if block then
 			local chosen, from = r.merge(block, load_card(block.id))
 			activate(chosen, from == "card" and "card" or "save")
 		else
-			log("load '%s': no record of a game in the save (yet)", tostring(save))
+			log("load: no record of a game in the save (yet): %s", why)
 		end
 	end
 end

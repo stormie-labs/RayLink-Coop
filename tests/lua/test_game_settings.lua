@@ -36,6 +36,7 @@ io.open = function(path, mode)
 	function f.close()
 		clock = clock + 1
 		VFS[path], MTIME[path] = table.concat(buf), clock
+		return true
 	end
 	return f
 end
@@ -1052,6 +1053,82 @@ gs.before_world_start("load", "atsave")
 local m2 = {}
 check(pcall(gs.save_state, m2) and m2.coop_game and m2.coop_game.at == nil or (m2.coop_game and m2.coop_game.at.level == nil), "no level name: the save is still written")
 SESSION = keep_session
+
+-------------------------------------------------------------------------------
+section("first_save_directory_and_io_diagnostics")
+local saved_open, saved_lfs = io.open, rawget(_G, "lfs")
+local directory_exists, mkdir_calls, mkdir_path = false, 0, nil
+lfs = { mkdir = function(path)
+	mkdir_path = path
+	mkdir_calls = mkdir_calls + 1
+	directory_exists = true
+	return true
+end }
+io.open = function(path, mode)
+	if virtual(path) and mode == "wb" and not directory_exists then
+		return nil, path .. ": No such file or directory"
+	end
+	return saved_open(path, mode)
+end
+local fresh_record = make_record({})
+GAME.staged = { payload = assert(rc.encode(fresh_record, marshal)), faction = "dolg" }
+gs.before_world_start("new", "")
+gs.save_state({}) -- stock creates the directory only after this callback returns
+check(mkdir_calls == 1 and mkdir_path == SAVES and card_of(fresh_record.id) ~= nil,
+	"first save creates its card before stock mkdir")
+io.open, lfs = saved_open, saved_lfs
+
+local function card_failure(mode)
+	local saved_rename, saved_remove = os.rename, os.remove
+	LOG = {}
+	io.open = function(path, access)
+		if virtual(path) and access == "wb" then
+			if mode == "open" or path:sub(-4) ~= ".tmp" then return nil, path .. ": Permission denied" end
+			if mode == "write" then
+				return { write = function() return nil, "No space left on device" end, close = function() return true end }
+			end
+			if mode == "close" then
+				return { write = function(self) return self end, close = function() return nil, "No space left on device" end }
+			end
+		end
+		return saved_open(path, access)
+	end
+	os.rename = function() return nil, "Permission denied" end
+	gs.save_state({})
+	io.open, os.rename, os.remove = saved_open, saved_rename, saved_remove
+	return table.concat(LOG, "\n")
+end
+local denied = card_failure("open")
+check(denied:find("tmp open", 1, true) and denied:find("in-place open", 1, true)
+	and denied:find("Permission denied", 1, true), "card failure retains both open stages and the OS reason")
+check(not denied:find(SAVES, 1, true) and denied:find("<save-file>", 1, true), "card error redacts the filesystem path")
+local full = card_failure("write")
+check(full:find("tmp write", 1, true) and full:find("No space left on device", 1, true), "write failure retains the OS reason")
+local close_failed = card_failure("close")
+check(close_failed:find("tmp close", 1, true) and close_failed:find("No space left on device", 1, true),
+	"buffered close failure retains the OS reason")
+local rename_denied = card_failure("rename")
+check(rename_denied:find("rename", 1, true) and rename_denied:find("in-place open", 1, true), "rename and fallback errors are both retained")
+
+section("early_read_io_diagnostics")
+local early_record = make_record({})
+put_save("early_io", early_record)
+LOG = {}
+io.open = function(path, mode)
+	if path == SAVES .. "early_io.scoc" and mode == "rb" then return nil, path .. ": Permission denied" end
+	return saved_open(path, mode)
+end
+gs.before_world_start("load", "early_io")
+io.open = saved_open
+local early_error = table.concat(LOG, "\n")
+check(early_error:find("read open", 1, true) and early_error:find("Permission denied", 1, true)
+	and not early_error:find(SAVES, 1, true), "early read reports the failed operation without a filesystem path")
+gs.before_world_start("load", "early_io")
+OPTION_CHANGES = 0
+gs.load_state({ coop_game = early_record })
+gs.actor_on_first_update()
+check(gs.active() and gs.active().id == early_record.id and OPTION_CHANGES == 0,
+	"a readable sidecar activates early and never sends the late option-change callback")
 
 print(string.format("%d passed, %d failed", PASSES, FAILS))
 os.exit(FAILS == 0 and 0 or 1)
