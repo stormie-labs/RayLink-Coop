@@ -482,7 +482,14 @@ local GUARDS = {
 		end) },
 	{ label = "utils_item.detach_addon", tbl = module_of("utils_item"), key = "detach_addon",
 		make = swap_guard(function(wpn, addon, typ)
-			if typ == "scope" and wpn ~= nil and scoped_variant(wpn) then return wpn end
+			if typ == "scope" and wpn ~= nil and scoped_variant(wpn) then
+				-- a gun in a box or a body: coop_mods_items takes it into the bag first and runs the detach there, through
+				-- the guard's inner copies (the swap is checked on the taken gun)
+				local it = C().mod("coop_mods_items")
+				local ok, takes = pcall(function() return it and it.takes_first and it.takes_first(wpn) end)
+				if ok and takes == true then return nil end
+				return wpn
+			end
 		end) },
 	{ label = "QScopeWheelOption.Attach", tbl = class_of("haru_quick_action_wheel_mcm", "QScopeWheelOption"),
 		key = "Attach",

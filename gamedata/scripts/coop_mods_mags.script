@@ -16,7 +16,8 @@
 	Weapon Parts Overhaul (zzzz_arti_jamming_repairs, arti_jamming)
 	  Part conditions (item_parts, se_save_var "parts") are mirrored by coop_economy_mdata. Field-stripping a
 	  weapon in a box, a corpse or on the ground runs on the host (mods.wpo_strip), the parts go into the
-	  requester's inventory; swapping a part into such a weapon is checked by the host against the slot the
+	  requester's inventory (a gun the player is taking into the bag meanwhile, coop_mods_items take first, is stripped there
+	  with its other calls); swapping a part into such a weapon is checked by the host against the slot the
 	  client saw (mods.wpo_swap) and finished on the client when the host's new part state has arrived.
 --]]
 
@@ -336,7 +337,17 @@ local function wpo_queue_strip(id, part)
 		CreateTimeEvent("coop_mods_wpo", "strip_" .. id, 0, function()
 			local q = WPO.strips[id]
 			WPO.strips[id] = nil
-			if q then
+			if not q then return true end
+			-- a gun the player is taking into the bag meanwhile (an addon detach of the Autolooter, coop_mods_items take
+			-- first): the host would refuse to strip a carried gun, so the strip runs on the taken gun with the others
+			local it = C().mod("coop_mods_items")
+			local ok, joined = pcall(function()
+				return it and it.take_join and it.take_join(id, function(gun)
+					if q.all then return WPO.orig_strip(gun:id(), nil) end
+					for _, n in ipairs(q.names) do WPO.orig_strip(gun:id(), n) end
+				end)
+			end)
+			if not (ok and joined == true) then
 				C().to_host("wpo_strip", { w = C().hid(id), p = q.all and "" or table.concat(q.names, ",") })
 			end
 			return true

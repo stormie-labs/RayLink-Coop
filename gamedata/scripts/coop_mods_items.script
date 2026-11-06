@@ -358,6 +358,7 @@ end
 -- Autolooter
 -------------------------------------------------------------------------------
 local al = { pending = {} }
+local take_busy -- below: items of a container are being taken or given back (take first)
 
 local function al_contents_key(lm, cont)
 	local ok, items = pcall(lm.collect_items, cont)
@@ -389,7 +390,10 @@ local function al_request_when_settled(lm, cont)
 		end
 		local key = al_contents_key(lm, c)
 		if key ~= last then last, quiet = key, now end
-		if now - t0 < 6000 and (now - t0 < 1000 or now - quiet < 500) then
+		-- a gun stripped by take first is in the player's bag meanwhile: not quiet until it is back
+		local busy = take_busy ~= nil and take_busy(cid)
+		if busy then quiet = now end
+		if now - t0 < (busy and 15000 or 6000) and (now - t0 < 1000 or now - quiet < 500) then
 			ResetTimeEvent("coop_mods_al", "del_" .. cid, 0.25)
 			return false
 		end
@@ -892,10 +896,16 @@ end
 -- The wrappers sit outermost, also over the wrappers addons put in at their first update (3DSS keeps a silencer's condition
 -- in its own detach wrapper), so the deferred call runs the whole chain; inner copies of ours see the player's own item and
 -- pass it on.
-local TK = { mine = {}, jobs = {}, taken = 0, failed = 0, back = 0, refused = 0, outer = 0 }
+local TK = { mine = {}, jobs = {}, backs = {}, spent = {}, taken = 0, failed = 0, back = 0, refused = 0, outer = 0, no_tool = 0 }
 local TAKE_MS = 5000 -- the host answers a move in a round trip; a refusal says nothing to Lua
 local BACK_S = 0.5 -- the gun's new state goes out with the next scan of the bag before the move back
 local BACK_WAIT_MS = 5000
+-- The engine's owner scan (coop_items.cpp scan_local) takes an item that has just come into the bag as the host's state
+-- and sends nothing; a change made before that first scan (a detach right at the arrival) would never reach the host and
+-- the addon would be on the host's gun and in the bag at once. The calls run once the item has been in the bag longer
+-- than the periodic scan (500 ms).
+local IN_BAG_MS = 600
+local RETURN_MS = 3000 -- the gun given back counts as out of the box until the host has put it there (the Autolooter waits)
 
 local function own(id)
 	return type(id) == "number" and id ~= 0 and C().root_of(id) == 0
@@ -917,6 +927,34 @@ local function holder_of(obj)
 	return nil
 end
 
+-- What a disassembly takes off its tool (GetItemList "disassemble"), 0 if unknown.
+local function tool_wear(d)
+	local ok, v = pcall(function() return GetItemList("disassemble")[d:section()] end)
+	return ok and type(v) == "number" and v or 0
+end
+
+-- utils_item.degrade releases a tool whose condition is not above what the use takes off.
+local function wears_out(d)
+	local ok, c = pcall(function() return d:condition() end)
+	local v = tool_wear(d)
+	return ok and v > 0 and c <= v
+end
+
+-- The tool by id while it is the player's and no deferred disassembly has used it up (its release is on its way to the
+-- host, the copy here is still in the bag), or nil. Tools are picked when the player asks; the uses come later.
+local function usable_tool(id)
+	if type(id) ~= "number" or TK.spent[id] then return nil end
+	local d = level.object_by_id(id)
+	if d and own(id) and in_bag(d) then return d end
+	return nil
+end
+
+-- Another suitable tool in the bag (item_parts.get_suitable_dtool, GAMMA's best-tool pick), its id or nil.
+local function item_tool(item)
+	local ok, d = pcall(function() return item_parts.get_suitable_dtool(item) end)
+	return ok and d and d:id() or nil
+end
+
 local function take_tip(id, fallback)
 	local msg = C().text(id, fallback)
 	if db.actor and news_manager and news_manager.send_tip then
@@ -928,9 +966,17 @@ end
 local function give_back(ids, cid)
 	local key = "back_" .. tostring(ids[1])
 	local deadline = time_global() + BACK_WAIT_MS
+	TK.backs[key] = cid
+	local sent_id, sent_at = nil, nil
 	CreateTimeEvent("coop_mods_take", key, BACK_S, function()
+		local function done() TK.backs[key] = nil return true end
+		if sent_id then -- asked: busy until the host has put it back (or it went elsewhere)
+			if C().root_of(sent_id) == cid or not alife_object(sent_id) or time_global() - sent_at > RETURN_MS then return done() end
+			ResetTimeEvent("coop_mods_take", key, 0.25)
+			return false
+		end
 		local cont = level.object_by_id(cid)
-		if not (cont and db.actor) then return true end -- the body is gone: the gun stays in the bag
+		if not (cont and db.actor) then return done() end -- the body is gone: the gun stays in the bag
 		for _, wid in ipairs(ids) do
 			local w = type(wid) == "number" and level.object_by_id(wid)
 			if w and own(wid) and in_bag(w) then
@@ -942,10 +988,12 @@ local function give_back(ids, cid)
 				end
 				db.actor:transfer_item(w, cont)
 				TK.back = TK.back + 1
-				return true
+				sent_id, sent_at = wid, time_global()
+				ResetTimeEvent("coop_mods_take", key, 0.25)
+				return false
 			end
 		end
-		return true
+		return done()
 	end)
 end
 
@@ -957,13 +1005,19 @@ local function take_wait(id)
 		if not job then return true end
 		local obj = level.object_by_id(id)
 		if obj and own(id) and in_bag(obj) then
+			local now = time_global()
+			job.in_bag = job.in_bag or now
+			if now - job.in_bag < IN_BAG_MS then -- the owner scan has not seen it yet
+				ResetTimeEvent("coop_mods_take", "take_" .. id, 0.1)
+				return false
+			end
 			TK.jobs[id] = nil
 			TK.taken = TK.taken + 1
 			local back = { id }
 			for _, f in ipairs(job.calls) do
 				local cur = level.object_by_id(back[1])
 				if not cur then break end
-				local ok, e, clone = pcall(f, cur)
+				local ok, e, clone = pcall(f, cur, job)
 				if not ok then
 					C().report("items", "take first " .. job.what, e)
 					break
@@ -973,6 +1027,7 @@ local function take_wait(id)
 			if job.back and not job.final then give_back(back, job.cid) end -- a gun taken apart is not given back
 			return true
 		end
+		job.in_bag = nil
 		if not obj or time_global() > deadline then
 			TK.jobs[id] = nil
 			TK.failed = TK.failed + 1
@@ -1010,6 +1065,28 @@ local function take_first(what, obj, back, call, final)
 	take_wait(id)
 end
 
+-- coop_mods_guard: a scope variant's detach of a gun in a box or a body goes through take first (the guard checks the
+-- swap again on the taken gun, inside the deferred call). True when this file takes that item first.
+function takes_first(obj)
+	return TK.mine["utils_item.detach_addon"] ~= nil and C().is_client() and obj ~= nil and not own(obj:id())
+		and holder_of(obj) ~= nil
+end
+
+-- coop_mods_mags: a field strip of a gun that is being taken joins its calls (the host would refuse the strip of a gun
+-- in the player's bag). `call(gun)` runs on the taken gun. True when it joined (or the gun is taken apart: dropped).
+function take_join(id, call)
+	local job = type(id) == "number" and TK.jobs[id]
+	if not job then return false end
+	if not job.final then job.calls[#job.calls + 1] = call end
+	return true
+end
+
+take_busy = function(cid)
+	for _, job in pairs(TK.jobs) do if job.cid == cid then return true end end
+	for _, c in pairs(TK.backs) do if c == cid then return true end end
+	return false
+end
+
 local function on_client(obj)
 	return C().is_client() and db.actor ~= nil and obj ~= nil and type(obj) ~= "number" and obj.id ~= nil
 end
@@ -1020,9 +1097,16 @@ local function disassembly_wrapper(what)
 			if not on_client(obj) or own(obj:id()) then return orig(obj, obj_d, ...) end
 			local tool = obj_d and obj_d:id()
 			local n, extra = select("#", ...), { ... }
-			return take_first(what, obj, false, function(item)
-				local d = tool and level.object_by_id(tool)
-				if tool and not (d and own(tool)) then return end -- the tool went meanwhile
+			return take_first(what, obj, false, function(item, job)
+				local d = tool and usable_tool(tool)
+				if tool and not d then d = usable_tool(item_tool(item)) end -- worn out or gone meanwhile: the next one
+				if tool and not d then
+					TK.no_tool = TK.no_tool + 1
+					give_back({ item:id() }, job.cid)
+					take_tip("st_news_dis_items", "You need a tool to take this apart.")
+					return
+				end
+				if d and wears_out(d) then TK.spent[d:id()] = true end -- released by this use (utils_item.degrade)
 				orig(item, d, unpack(extra, 1, n))
 			end, true)
 		end
@@ -1127,6 +1211,6 @@ function on_game_start()
 	C().status_line("items", function()
 		return string.format("%s | glowsticks thrown %d picked %d | drops %d cleaned %d | autoloot deletes %d | corpse stashes %d | stashes %d freed %d | campfires %d | refused %d | taken first %d (not taken %d, given back %d, not a box %d, wrapped %d)",
 			table.concat(installed, ", "), st.gs_throw, st.gs_pick, st.md, st.md_clean, st.al, st.gso, st.stash, st.stash_freed, st.cf, st.refused,
-			TK.taken, TK.failed, TK.back, TK.refused, TK.outer)
+			TK.taken, TK.failed, TK.back, TK.refused, TK.outer) .. string.format(", no tool %d", TK.no_tool)
 	end)
 end
