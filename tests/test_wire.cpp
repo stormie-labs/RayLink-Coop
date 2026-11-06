@@ -395,6 +395,12 @@ TEST(manifest_leaves_out_what_the_game_writes)
 	CHECK(manifest_game_written("logs\\session.log"));
 	CHECK(manifest_game_written("awr_table.txt"));
 	CHECK(manifest_game_written("cache\\a.tmp"));
+	// live 2026-11-06 (b40.2): a client was refused for caches his own game had written: Experience Framework's
+	// `cached\` folder (configs.ltx missing on his side, options.ltx different) and 3DSS's settings cache
+	CHECK(manifest_game_written("configs\\experience_framework\\cached\\configs.ltx"));
+	CHECK(manifest_game_written("Configs/Experience_Framework/Cached/options.ltx"));
+	CHECK(manifest_game_written("configs\\ubgl_no_3db_settings_cache.ltx"));
+	CHECK(manifest_game_written("configs\\some_mod_cache.ltx"));
 	// content, even when the name looks close
 	CHECK(!manifest_game_written("configs\\system.ltx"));
 	CHECK(!manifest_game_written("configs\\items\\axr_options.ltx"));
@@ -403,6 +409,9 @@ TEST(manifest_leaves_out_what_the_game_writes)
 	CHECK(!manifest_game_written("scripts\\flag_carrier.script"));
 	CHECK(!manifest_game_written("scripts\\medik.flag.script"));
 	CHECK(!manifest_game_written("configs\\mod_system_flag.ltx"));
+	CHECK(!manifest_game_written("configs\\experience_framework\\experience.ltx"));
+	CHECK(!manifest_game_written("scripts\\cached_items.script"));
+	CHECK(!manifest_game_written("configs\\cache_settings.ltx"));
 }
 
 TEST(manifest_fingerprint_order_independent)
