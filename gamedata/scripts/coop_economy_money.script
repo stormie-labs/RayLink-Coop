@@ -5,7 +5,10 @@
 	Items: the inventory context menu (ui_inventory) gets "Give to <player>" for every player whose character
 	stands within give_radius. The action is the engine's own transfer to that character
 	(db.actor:transfer_item); on a client it becomes one ownership request that the host checks and applies
-	(coop_requests: never out of another player's pockets, within reach), so nothing new is needed on the wire.
+	(coop_requests: never out of another player's pockets, within reach). Right after it the giver sends
+	economy.gift { i = host id of the item } to the receiver, so that the receiver can be told "<nick> gave you: <item>."
+	The receiver keeps the gift pending and tells it only once the item is in his own inventory (the host may refuse
+	the transfer; event and item come in either order); see "Items given to this player" below.
 
 	Money: "Give money to <player>" opens a choice of amounts. The transfer itself is the engine's (F2 T1, the host
 	ledger): coop.money_give(peer, amount) takes the money from the giver at once, on a client as a pending change,
@@ -31,13 +34,15 @@
 
 local core = coop_economy_core
 
-local tostring, type, ipairs, pcall = tostring, type, ipairs, pcall
+local tostring, type, ipairs, pairs, next, pcall = tostring, type, ipairs, pairs, next, pcall
 local math_floor, math_huge, math_abs = math.floor, math.huge, math.abs
+local table_concat = table.concat
 
 local MAX_SLOTS = 8
 local AMOUNTS = { 100, 500, 1000, 5000, 10000, 50000 }
 
-local stats = { sent = 0, refused = 0, items_given = 0, host_refused = 0 }
+local stats = { sent = 0, refused = 0, items_given = 0, host_refused = 0, gifts_got = 0, gift_lines = 0, gifts_lost = 0,
+	gifts_bad = 0 }
 
 local function money_text(amount)
 	return tostring(amount) .. " " .. core.tr("st_coop_eco_currency", "RU")
@@ -160,11 +165,15 @@ local function push_rules()
 	if not (called and ok) then core.log("! money rules not pushed: %s", tostring(called and why or ok)) end
 end
 
-local flush_gifts -- below
+local flush_gifts, items_pending, update_items -- below
 
 local function actor_on_update()
 	local t = core.now()
 	flush_gifts(t)
+	if items_pending() then
+		local ok, err = pcall(update_items, t)
+		if not ok then core.log("! gifts update: %s", tostring(err)) end
+	end
 	if t < rules.next_at then return end
 	rules.next_at = t + RULES_EVERY_MS
 	push_rules()
@@ -258,6 +267,161 @@ local function on_money_note(kind, peer, amount, why, cause)
 end
 
 -------------------------------------------------------------------------------
+-- Items given to this player: "<nick> gave you: <items>."
+-------------------------------------------------------------------------------
+-- The giver's menu action sends economy.gift { i = host id of the item } to the receiver; the host relays a client's
+-- event with the true sender as `from`, and an event to 0 is the host player's. The host may refuse the transfer, and
+-- the event and the item come in either order: the gift waits here and is told only once the item is in this actor's
+-- own inventory, looked at when the event comes, in actor_on_item_take and at updates. The name is this machine's own
+-- of that item, never the packet's. A gift whose item does not come within GIFT_WAIT_MS (refused) is dropped without a
+-- word. Items of one giver that come within ITEM_LINE_MS are one line, and that is also the most a giver gets: one line
+-- per ITEM_LINE_MS, so that another client cannot fill this player's news with gifts.
+local GIFT_WAIT_MS = 15000
+local MAX_WAITING = 32 -- gifts waiting for their item; a new one pushes the oldest out
+local ITEM_LINE_MS = 1500
+local ITEM_NAMES = 3 -- names in a line, the rest are counted ("A, B, C and 2 more")
+local ITEM_CHECK_MS = 250
+local MAX_ID = 65534
+
+local waiting = {} -- local item id -> { from = giver peer, nick, at = ms, seq }
+local items = { n = 0, seq = 0, check_at = 0, lines = {} } -- lines: giver peer -> { nick, at, names = {}, more }
+
+function items_pending()
+	return items.n > 0 or next(items.lines) ~= nil
+end
+
+-- The game object of item `id` when it is in this actor's inventory, else nil. Id 0 is the actor himself.
+local function own_item(id)
+	if id == 0 or not (db and db.actor) then return nil end
+	local obj = level.object_by_id(id)
+	if not obj or core.root_of(id) ~= 0 then return nil end
+	return obj
+end
+
+local function item_name(obj)
+	local sec = obj:section()
+	local ok, name = pcall(function() return ui_item.get_sec_name(sec) end)
+	if ok and type(name) == "string" and name ~= "" then return name end
+	return tostring(sec)
+end
+
+local function forget(id)
+	if waiting[id] then
+		waiting[id] = nil
+		items.n = items.n - 1
+	end
+end
+
+-- The item of gift `g` is here: into the line of its giver (a new line starts its ITEM_LINE_MS now).
+local function arrived(id, g, obj, t)
+	forget(id)
+	local line = items.lines[g.from]
+	if not line then
+		line = { nick = g.nick, at = t, names = {}, more = 0 }
+		items.lines[g.from] = line
+	end
+	if #line.names < ITEM_NAMES then
+		line.names[#line.names + 1] = item_name(obj)
+	else
+		line.more = line.more + 1
+	end
+	stats.gifts_got = stats.gifts_got + 1
+end
+
+-- The same item again only renews its entry (giver, time).
+local function wait_for(id, from, nick, t)
+	local g = waiting[id]
+	if not g then
+		if items.n >= MAX_WAITING then
+			local oldest, seq = nil, nil
+			for k, v in pairs(waiting) do
+				if seq == nil or v.seq < seq then oldest, seq = k, v.seq end
+			end
+			if oldest ~= nil then
+				forget(oldest)
+				stats.gifts_lost = stats.gifts_lost + 1
+			end
+		end
+		g = {}
+		waiting[id] = g
+		items.n = items.n + 1
+	end
+	items.seq = items.seq + 1
+	g.from, g.nick, g.at, g.seq = from, nick, t, items.seq
+end
+
+local function tell_items(line)
+	local count = #line.names + line.more
+	if count < 1 then return end
+	local list = table_concat(line.names, ", ")
+	if line.more > 0 then list = core.fmt("st_coop_eco_item_in_more", "%s and %d more", list, line.more) end
+	stats.gift_lines = stats.gift_lines + 1
+	core.log("gift: %d item(s) from %s", count, tostring(line.nick))
+	core.tip(core.fmt("st_coop_eco_item_in", "%s gave you: %s.", tostring(line.nick), list))
+end
+
+-- economy.gift { i = host id of the item } from the giver (coop_main runs it inside pcall).
+local function on_gift(t, from)
+	if not (core.live() and db and db.actor) or type(t) ~= "table" then return end
+	if type(from) ~= "number" or from < 0 or from == core.self_id() then return end
+	local hid = core.int(t.i, 1, MAX_ID)
+	local id = hid and core.int(core.local_id(hid), 1, MAX_ID)
+	if not id then
+		stats.gifts_bad = stats.gifts_bad + 1
+		return
+	end
+	local p = core.player(from)
+	if not (p and not p.is_self) then
+		stats.gifts_bad = stats.gifts_bad + 1
+		return
+	end
+	local now = core.now()
+	local obj = own_item(id)
+	if obj then
+		arrived(id, { from = from, nick = p.nick }, obj, now) -- the item came first
+	else
+		wait_for(id, from, p.nick, now)
+	end
+end
+
+-- The engine calls this through SendScriptCallback: nothing may throw.
+local function on_item_take(obj)
+	if items.n == 0 or obj == nil then return end
+	local ok, err = pcall(function()
+		local id = obj:id()
+		local g = waiting[id]
+		local mine = g and own_item(id)
+		if mine then arrived(id, g, mine, core.now()) end
+	end)
+	if not ok then core.log("! gift take: %s", tostring(err)) end
+end
+
+function update_items(t)
+	if not core.live() then -- the session is over: nothing to tell any more
+		waiting, items.n, items.lines = {}, 0, {}
+		return
+	end
+	if items.n > 0 and t >= items.check_at then
+		items.check_at = t + ITEM_CHECK_MS
+		for id, g in pairs(waiting) do
+			if t - g.at > GIFT_WAIT_MS then
+				forget(id) -- refused: the item never came
+				stats.gifts_lost = stats.gifts_lost + 1
+			else
+				local obj = own_item(id)
+				if obj then arrived(id, g, obj, t) end
+			end
+		end
+	end
+	for from, line in pairs(items.lines) do
+		if t - line.at >= ITEM_LINE_MS then
+			items.lines[from] = nil
+			tell_items(line)
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
 -- Inventory menu (ui_inventory.UIInventory)
 -------------------------------------------------------------------------------
 local slots = {} -- index -> { peer, nick, avatar_id } (players near enough for an item)
@@ -305,6 +469,11 @@ local function patch_inventory()
 		pcall(function() name = ui_item.get_sec_name(item:section()) or name end)
 		db.actor:transfer_item(item, who) -- a client: one ownership request, the host decides (coop_requests)
 		stats.items_given = stats.items_given + 1
+		-- the receiver is told once the item is his (on_gift); a failed send costs only that line
+		if core.live() and type(s.peer) == "number" and s.peer >= 0 and s.peer ~= core.self_id() then
+			local sent, err = pcall(core.send, "gift", { i = core.host_id(id) }, s.peer)
+			if not sent then core.log("! economy.gift not sent: %s", tostring(err)) end
+		end
 		core.tip(core.fmt("st_coop_eco_item_given", "%s given to %s.", tostring(name), s.nick))
 	end
 	function cls:coop_eco_CondMoney(obj, bag, fname, i)
@@ -376,8 +545,9 @@ end
 -- Status, start
 -------------------------------------------------------------------------------
 function print_status()
-	core.log("money: transfers %d, refused %d (by the host %d) | items given %d", stats.sent, stats.refused,
-		stats.host_refused, stats.items_given)
+	core.log("money: transfers %d, refused %d (by the host %d) | items given %d | gifts got %d in %d line(s), waiting %d,"
+		.. " lost %d, bad %d", stats.sent, stats.refused, stats.host_refused, stats.items_given, stats.gifts_got,
+		stats.gift_lines, items.n, stats.gifts_lost, stats.gifts_bad)
 end
 
 -- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
@@ -394,6 +564,8 @@ local function hook_engine()
 	AddScriptCallback("coop_money_note") -- fired by the engine on the machine of the player it is about (coop_money.cpp)
 	RegisterScriptCallback("coop_money_note", on_money_note)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("actor_on_item_take", on_item_take)
+	core.on("gift", on_gift)
 	RegisterScriptCallback("on_option_change", on_option_change)
 end
 

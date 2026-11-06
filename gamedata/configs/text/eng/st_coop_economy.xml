@@ -55,6 +55,12 @@
 	<string id="st_coop_eco_item_given">
 		<text>%s given to %s.</text>
 	</string>
+	<string id="st_coop_eco_item_in">
+		<text>%s gave you: %s.</text>
+	</string>
+	<string id="st_coop_eco_item_in_more">
+		<text>%s and %d more</text>
+	</string>
 	<string id="st_coop_eco_give_money_to">
 		<text>Give money to %s...</text>
 	</string>

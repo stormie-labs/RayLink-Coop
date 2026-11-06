@@ -55,6 +55,12 @@
 	<string id="st_coop_eco_item_given">
 		<text>%s передано игроку %s.</text>
 	</string>
+	<string id="st_coop_eco_item_in">
+		<text>%s передал вам: %s.</text>
+	</string>
+	<string id="st_coop_eco_item_in_more">
+		<text>%s и ещё %d</text>
+	</string>
 	<string id="st_coop_eco_give_money_to">
 		<text>Дать денег: %s...</text>
 	</string>
