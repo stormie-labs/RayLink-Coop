@@ -25,4 +25,10 @@
 	<string id="st_coop_guard_stash">
 		<text>Co-op: on a client crafting, cooking and repair take items from your backpack only (stashes are not available yet).</text>
 	</string>
+	<string id="st_coop_mods_take_failed">
+		<text>Co-op: could not take the item from the body or the box.</text>
+	</string>
+	<string id="st_coop_mods_take_none">
+		<text>Co-op: only an item in your bag, a box or a body can be taken apart or stripped here.</text>
+	</string>
 </string_table>

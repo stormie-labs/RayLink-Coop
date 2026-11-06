@@ -25,4 +25,10 @@
 	<string id="st_coop_guard_stash">
 		<text>Кооп: у клиента крафт, готовка и ремонт берут предметы только из рюкзака (тайники пока недоступны).</text>
 	</string>
+	<string id="st_coop_mods_take_failed">
+		<text>Кооп: не удалось взять предмет из тела или ящика.</text>
+	</string>
+	<string id="st_coop_mods_take_none">
+		<text>Кооп: разобрать или снять обвес можно только у предмета из своего рюкзака, ящика или тела.</text>
+	</string>
 </string_table>

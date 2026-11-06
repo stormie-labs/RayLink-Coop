@@ -32,6 +32,9 @@
 	  mods.cf_place    client -> host { i item }  the stock's own place_campfire with the client's character as the actor; the item is
 	                   spent when the campfire stands, a refusal loses nothing.
 	Deployable gun (itms_manager): there is no [deployable_mgun] in Anomaly or GAMMA, the use burns the item on any machine. It comes back.
+	Disassembly and addon detach in a box or a body (item_parts.disassembly_*, utils_item.detach_addon; by hand or the Autolooter)
+	  a client takes the item into its own bag first (the host arbitrates the move), then the whole call runs on its own item:
+	  parts and addons go into its bag, a detached gun goes back where it was. No events of their own.
 	A window on a box: Anomaly searches in a Lua dialog, the engine's window that told the host (ReqContainer) never opens, so this file tells the
 	engine what the dialog shows (coop.search_window). The host then sends the contents, keeps a bag open and fires coop_on_container_opened:
 	Zone Customization Project's roll stays one roll a box, PBA's "less artefacts" runs for a client's box as well.
@@ -875,6 +878,215 @@ local function install_box_rolls()
 end
 
 -------------------------------------------------------------------------------
+-- Disassembly and addon detach of an item in a box or a body (item_parts, utils_item)
+-------------------------------------------------------------------------------
+-- An item in a box or a dead body is the host's; a client's copy of it is a copy. The stock disassembly released the item
+-- (refused on a client), gave the parts to its holder (a world spawn, refused) and cleared its parts table here, so the same
+-- gun stood there again with new parts each time; a detach took the addon off the client's copy only (the addon's spawn into
+-- the body was refused) and the host kept it on the gun (reports 2026-11-06, also armour of dead enemies and the
+-- Autolooter's strip). A client takes such an item first, the ordinary move the host arbitrates for any loot, and then runs
+-- the whole call on it as on an item of its own bag, the path that works: the parts and the addon go into its bag (as a
+-- field strip's parts do, coop_mods_mags), the tool it holds wears, the release and the creates go through the host. A gun
+-- that had its addons taken off goes back where it was (the clone, when a scope variant was swapped). An item that is
+-- neither the player's nor in a box or a body (a living NPC's) is left alone and the player is told.
+-- The wrappers sit outermost, also over the wrappers addons put in at their first update (3DSS keeps a silencer's condition
+-- in its own detach wrapper), so the deferred call runs the whole chain; inner copies of ours see the player's own item and
+-- pass it on.
+local TK = { mine = {}, jobs = {}, taken = 0, failed = 0, back = 0, refused = 0, outer = 0 }
+local TAKE_MS = 5000 -- the host answers a move in a round trip; a refusal says nothing to Lua
+local BACK_S = 0.5 -- the gun's new state goes out with the next scan of the bag before the move back
+local BACK_WAIT_MS = 5000
+
+local function own(id)
+	return type(id) == "number" and id ~= 0 and C().root_of(id) == 0
+end
+
+-- The game object is in the actor's own inventory too: the host's move reaches the ALife copy a frame before the game
+-- object, and the stock gives the parts to obj:parent().
+local function in_bag(obj)
+	local ok, p = pcall(function() return obj:parent() end)
+	return ok and p ~= nil and p:id() == 0
+end
+
+-- The box or dead body that holds the item (not a player's body), or nil.
+local function holder_of(obj)
+	local ok, p = pcall(function() return obj:parent() end)
+	if not (ok and p) or p:id() == 0 then return nil end
+	if IsInvbox(p) then return p end
+	if (IsStalker(p) or IsMonster(p)) and not p:alive() and not C().is_player(p:id()) then return p end
+	return nil
+end
+
+local function take_tip(id, fallback)
+	local msg = C().text(id, fallback)
+	if db.actor and news_manager and news_manager.send_tip then
+		pcall(news_manager.send_tip, db.actor, msg, nil, "swiss_knife", 6000)
+	end
+end
+
+-- The detached gun (or the clone that replaced it) goes back to the box or body once the host made it.
+local function give_back(ids, cid)
+	local key = "back_" .. tostring(ids[1])
+	local deadline = time_global() + BACK_WAIT_MS
+	CreateTimeEvent("coop_mods_take", key, BACK_S, function()
+		local cont = level.object_by_id(cid)
+		if not (cont and db.actor) then return true end -- the body is gone: the gun stays in the bag
+		for _, wid in ipairs(ids) do
+			local w = type(wid) == "number" and level.object_by_id(wid)
+			if w and own(wid) and in_bag(w) then
+				local lw = api and api.lease_waiting
+				local ok, waiting = pcall(function() return lw and lw(wid) end)
+				if ok and waiting == true and time_global() < deadline then -- the host has not made the clone yet
+					ResetTimeEvent("coop_mods_take", key, 0.25)
+					return false
+				end
+				db.actor:transfer_item(w, cont)
+				TK.back = TK.back + 1
+				return true
+			end
+		end
+		return true
+	end)
+end
+
+-- Runs the item's queued calls once it is in the own bag; gives up after TAKE_MS.
+local function take_wait(id)
+	local deadline = time_global() + TAKE_MS
+	CreateTimeEvent("coop_mods_take", "take_" .. id, 0.1, function()
+		local job = TK.jobs[id]
+		if not job then return true end
+		local obj = level.object_by_id(id)
+		if obj and own(id) and in_bag(obj) then
+			TK.jobs[id] = nil
+			TK.taken = TK.taken + 1
+			local back = { id }
+			for _, f in ipairs(job.calls) do
+				local cur = level.object_by_id(back[1])
+				if not cur then break end
+				local ok, e, clone = pcall(f, cur)
+				if not ok then
+					C().report("items", "take first " .. job.what, e)
+					break
+				end
+				if clone then table.insert(back, 1, clone) end
+			end
+			if job.back and not job.final then give_back(back, job.cid) end -- a gun taken apart is not given back
+			return true
+		end
+		if not obj or time_global() > deadline then
+			TK.jobs[id] = nil
+			TK.failed = TK.failed + 1
+			log("take first: %s %s was not taken (refused or gone)", job.what, tostring(id))
+			if obj then take_tip("st_coop_mods_take_failed", "Co-op: could not take the item from the body or the box.") end
+			return true
+		end
+		ResetTimeEvent("coop_mods_take", "take_" .. id, 0.1)
+		return false
+	end)
+end
+
+-- Client: `call(obj)` runs now on an own item, after the take on an item of a box or a body; nothing else is touched.
+-- Returns the call's results when it ran now. `final`: the call ends the item (disassembly), nothing is queued after it.
+local function take_first(what, obj, back, call, final)
+	local id = obj:id()
+	if own(id) then return call(obj) end
+	local job = TK.jobs[id]
+	if job then -- asked for already (the Autolooter strips two addons in one go): runs with it
+		-- after a disassembly nothing: the Autolooter strips the guns it has just taken apart (in single player they are gone)
+		if job.final then return end
+		job.calls[#job.calls + 1] = call
+		job.final = final
+		job.back = job.back or back
+		return
+	end
+	local cont = holder_of(obj)
+	if not cont then
+		TK.refused = TK.refused + 1
+		take_tip("st_coop_mods_take_none", "Co-op: only an item in your bag, a box or a body can be taken apart or stripped here.")
+		return
+	end
+	TK.jobs[id] = { what = what, cid = cont:id(), calls = { call }, back = back, final = final }
+	cont:transfer_item(obj, db.actor)
+	take_wait(id)
+end
+
+local function on_client(obj)
+	return C().is_client() and db.actor ~= nil and obj ~= nil and type(obj) ~= "number" and obj.id ~= nil
+end
+
+local function disassembly_wrapper(what)
+	return function(orig)
+		return function(obj, obj_d, ...)
+			if not on_client(obj) or own(obj:id()) then return orig(obj, obj_d, ...) end
+			local tool = obj_d and obj_d:id()
+			local n, extra = select("#", ...), { ... }
+			return take_first(what, obj, false, function(item)
+				local d = tool and level.object_by_id(tool)
+				if tool and not (d and own(tool)) then return end -- the tool went meanwhile
+				orig(item, d, unpack(extra, 1, n))
+			end, true)
+		end
+	end
+end
+
+local function detach_wrapper(orig)
+	return function(wpn, addon, typ, ignore, ...)
+		if not on_client(wpn) or own(wpn:id()) then return orig(wpn, addon, typ, ignore, ...) end
+		local n, extra = select("#", ...), { ... }
+		return take_first("detach", wpn, true, function(gun)
+			-- a scope variant is swapped for a clone (item_weapon.detach_scope): that one goes back
+			local clone, g = nil, rawget(_G, "alife_clone_weapon")
+			local spy = nil
+			if type(g) == "function" then
+				spy = function(...)
+					local se = g(...)
+					if se ~= nil and clone == nil then pcall(function() clone = se.id end) end
+					return se
+				end
+				_G.alife_clone_weapon = spy
+			end
+			local ok, e = pcall(orig, gun, addon, typ, ignore, unpack(extra, 1, n))
+			if spy and rawget(_G, "alife_clone_weapon") == spy then _G.alife_clone_weapon = g end
+			if not ok then error(e, 0) end
+			return nil, clone
+		end)
+	end
+end
+
+local TAKE_HOOKS = {
+	{ mod = "item_parts", key = "disassembly_weapon", make = disassembly_wrapper("disassembly") },
+	{ mod = "item_parts", key = "disassembly_outfit", make = disassembly_wrapper("disassembly") },
+	{ mod = "item_parts", key = "disassembly_item", make = disassembly_wrapper("disassembly") },
+	{ mod = "utils_item", key = "detach_addon", make = detach_wrapper },
+}
+
+-- Puts each wrapper outermost again when an addon wrapped the function after it.
+local function take_outer()
+	for _, h in ipairs(TAKE_HOOKS) do
+		local tbl = C().mod(h.mod)
+		local cur = C().fn(tbl, h.key)
+		if cur and cur ~= TK.mine[h.mod .. "." .. h.key] then
+			local done, _ = C().wrap(tbl, h.key, h.mod .. "." .. h.key, h.make)
+			if done then
+				TK.mine[h.mod .. "." .. h.key] = tbl[h.key]
+				TK.outer = TK.outer + 1
+			end
+		end
+	end
+end
+
+local function install_take()
+	if not (C().fn(C().mod("item_parts"), "disassembly_weapon") or C().fn(C().mod("utils_item"), "detach_addon")) then return end
+	installed[#installed + 1] = "take first"
+	take_outer()
+	-- Addons wrap these at their first update too (3DSS): after every first update, and once more a moment later.
+	RegisterScriptCallback("actor_on_first_update", function()
+		CreateTimeEvent("coop_mods_take", "outer", 0, function() take_outer() return true end)
+		CreateTimeEvent("coop_mods_take", "outer_late", 3, function() take_outer() return true end)
+	end)
+end
+
+-------------------------------------------------------------------------------
 -- Start
 -------------------------------------------------------------------------------
 local first_done = false
@@ -908,11 +1120,13 @@ function on_game_start()
 	start_step("install_campfire", install_campfire)
 	start_step("install_gun", install_gun)
 	start_step("install_box_rolls", install_box_rolls)
+	start_step("install_take", install_take)
 	if #installed == 0 then return end
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("load_state", function() spent = {} end)
 	C().status_line("items", function()
-		return string.format("%s | glowsticks thrown %d picked %d | drops %d cleaned %d | autoloot deletes %d | corpse stashes %d | stashes %d freed %d | campfires %d | refused %d",
-			table.concat(installed, ", "), st.gs_throw, st.gs_pick, st.md, st.md_clean, st.al, st.gso, st.stash, st.stash_freed, st.cf, st.refused)
+		return string.format("%s | glowsticks thrown %d picked %d | drops %d cleaned %d | autoloot deletes %d | corpse stashes %d | stashes %d freed %d | campfires %d | refused %d | taken first %d (not taken %d, given back %d, not a box %d, wrapped %d)",
+			table.concat(installed, ", "), st.gs_throw, st.gs_pick, st.md, st.md_clean, st.al, st.gso, st.stash, st.stash_freed, st.cf, st.refused,
+			TK.taken, TK.failed, TK.back, TK.refused, TK.outer)
 	end)
 end
