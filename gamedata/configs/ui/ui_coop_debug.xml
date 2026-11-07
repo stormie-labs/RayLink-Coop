@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop: templates of the co-op debug window (scripts\coop_debug_ui.script, docs\DEBUG_DESIGN.md D, B.8). The window is
+     built and placed by the script in the 1024x768 UI space scaled per axis (coop_menu_kit.layout), like the co-op window, so it
+     needs no _16 file. The look is the co-op window's theme (coop_menu_theme.script): sizes, colours and fonts are set from Lua; a
+     <text> names a stock font only because the engine asserts on a <text> without one. Textures: the co-op window's atlas
+     (coop_menu_white, coop_menu_none, coop_menu_notch), no new ones.
+       tpl_box     a stretched flat rectangle (the solid white cell of the atlas); the script tints it
+       tpl_image   a stretched static for a texture file
+       tpl_free    an empty window, a parent
+       tpl_text_*  text: left / centred / right on one line, m = several lines from the top
+       tpl_none    a button that is never seen: the look and the hover are statics of the script
+       tpl_edit_line  an edit box without a frame: a section, an info portion (64 characters, the server's limit) -->
+<w>
+	<tpl_box x="0" y="0" width="8" height="8" stretch="1"><texture>coop_menu_white</texture></tpl_box>
+	<tpl_image x="0" y="0" width="8" height="8" stretch="1"/>
+	<tpl_free x="0" y="0" width="8" height="8"/>
+
+	<tpl_text_l x="0" y="0" width="8" height="8"><text complex_mode="0" align="l" vert_align="c" font="letterica16"></text></tpl_text_l>
+	<tpl_text_c x="0" y="0" width="8" height="8"><text complex_mode="0" align="c" vert_align="c" font="letterica16"></text></tpl_text_c>
+	<tpl_text_r x="0" y="0" width="8" height="8"><text complex_mode="0" align="r" vert_align="c" font="letterica16"></text></tpl_text_r>
+	<tpl_text_m x="0" y="0" width="8" height="8"><text complex_mode="1" align="l" vert_align="t" font="letterica16"></text></tpl_text_m>
+
+	<tpl_none x="0" y="0" width="8" height="8" stretch="1"><texture>coop_menu_none</texture></tpl_none>
+
+	<tpl_edit_line x="0" y="0" width="8" height="8" max_symb_count="64"><text x="0" vert_align="c" font="letterica18"></text></tpl_edit_line>
+</w>

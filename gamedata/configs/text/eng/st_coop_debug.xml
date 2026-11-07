@@ -1,0 +1,619 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop: the co-op debug window, F7 in a session (docs\DEBUG_DESIGN.md B.8, D; scripts\coop_debug_ui.script, coop_debug_client.script). windows-1251, CRLF. -->
+<string_table>
+	<string id="st_coop_dbg_title">
+		<text>CO-OP DEBUG</text>
+	</string>
+	<string id="st_coop_dbg_sub">
+		<text>Every action goes to the server and is done there  ·  %s, node %s</text>
+	</string>
+	<string id="st_coop_dbg_state_off">
+		<text>Server debug: off</text>
+	</string>
+	<string id="st_coop_dbg_state_on">
+		<text>Server debug: on</text>
+	</string>
+	<string id="st_coop_dbg_state_pending">
+		<text>Waiting for the server...</text>
+	</string>
+	<string id="st_coop_dbg_src_key">
+		<text>turned on by the -dbg launch key</text>
+	</string>
+	<string id="st_coop_dbg_src_console">
+		<text>turned on from the server console</text>
+	</string>
+	<string id="st_coop_dbg_src_off">
+		<text>the host turns it on (F7) or the server console: coop_debug on</text>
+	</string>
+	<string id="st_coop_dbg_src_off_operator">
+		<text>you hold the server: the button turns it on for everyone</text>
+	</string>
+	<string id="st_coop_dbg_src_wait">
+		<text>the console command is sent</text>
+	</string>
+	<string id="st_coop_dbg_src_none">
+		<text>this game build has no server debug</text>
+	</string>
+	<string id="st_coop_dbg_btn_on">
+		<text>Turn on</text>
+	</string>
+	<string id="st_coop_dbg_btn_off">
+		<text>Turn off</text>
+	</string>
+	<string id="st_coop_dbg_btn_wait">
+		<text>Wait...</text>
+	</string>
+	<string id="st_coop_dbg_page_overview">
+		<text>Overview</text>
+	</string>
+	<string id="st_coop_dbg_page_overview_sub">
+		<text>target, place, players, world</text>
+	</string>
+	<string id="st_coop_dbg_page_target">
+		<text>Target</text>
+	</string>
+	<string id="st_coop_dbg_page_target_sub">
+		<text>the object under the crosshair</text>
+	</string>
+	<string id="st_coop_dbg_page_spawn">
+		<text>Spawn</text>
+	</string>
+	<string id="st_coop_dbg_page_spawn_sub">
+		<text>items, squads, anomalies</text>
+	</string>
+	<string id="st_coop_dbg_page_me">
+		<text>Me</text>
+	</string>
+	<string id="st_coop_dbg_page_me_sub">
+		<text>god mode, money, teleport</text>
+	</string>
+	<string id="st_coop_dbg_page_world">
+		<text>World</text>
+	</string>
+	<string id="st_coop_dbg_page_world_sub">
+		<text>time, weather, emission</text>
+	</string>
+	<string id="st_coop_dbg_page_help">
+		<text>Help</text>
+	</string>
+	<string id="st_coop_dbg_page_help_sub">
+		<text>what is where, the console</text>
+	</string>
+	<string id="st_coop_dbg_card_target">
+		<text>Target</text>
+	</string>
+	<string id="st_coop_dbg_card_items">
+		<text>Target's items</text>
+	</string>
+	<string id="st_coop_dbg_card_place">
+		<text>My place</text>
+	</string>
+	<string id="st_coop_dbg_card_nearest">
+		<text>Nearest object</text>
+	</string>
+	<string id="st_coop_dbg_card_players">
+		<text>Players</text>
+	</string>
+	<string id="st_coop_dbg_card_world">
+		<text>World</text>
+	</string>
+	<string id="st_coop_dbg_k_name">
+		<text>Name</text>
+	</string>
+	<string id="st_coop_dbg_k_id">
+		<text>Id</text>
+	</string>
+	<string id="st_coop_dbg_k_section">
+		<text>Section</text>
+	</string>
+	<string id="st_coop_dbg_k_faction">
+		<text>Faction</text>
+	</string>
+	<string id="st_coop_dbg_k_rank">
+		<text>Rank</text>
+	</string>
+	<string id="st_coop_dbg_k_relation">
+		<text>To me</text>
+	</string>
+	<string id="st_coop_dbg_k_squad">
+		<text>Squad</text>
+	</string>
+	<string id="st_coop_dbg_k_story">
+		<text>Story id</text>
+	</string>
+	<string id="st_coop_dbg_k_level">
+		<text>Level</text>
+	</string>
+	<string id="st_coop_dbg_k_pos">
+		<text>Position</text>
+	</string>
+	<string id="st_coop_dbg_k_lvid">
+		<text>Level vertex</text>
+	</string>
+	<string id="st_coop_dbg_k_gvid">
+		<text>Game vertex</text>
+	</string>
+	<string id="st_coop_dbg_k_dir">
+		<text>Heading</text>
+	</string>
+	<string id="st_coop_dbg_k_dist">
+		<text>Distance</text>
+	</string>
+	<string id="st_coop_dbg_k_time">
+		<text>Time</text>
+	</string>
+	<string id="st_coop_dbg_k_factor">
+		<text>Time speed</text>
+	</string>
+	<string id="st_coop_dbg_k_weather">
+		<text>Weather</text>
+	</string>
+	<string id="st_coop_dbg_k_emission">
+		<text>Emission</text>
+	</string>
+	<string id="st_coop_dbg_k_psi">
+		<text>Psi-storm</text>
+	</string>
+	<string id="st_coop_dbg_v_none">
+		<text>—</text>
+	</string>
+	<string id="st_coop_dbg_v_ids">
+		<text>%s here  ·  %s on the host</text>
+	</string>
+	<string id="st_coop_dbg_v_standing">
+		<text>on his feet</text>
+	</string>
+	<string id="st_coop_dbg_v_down">
+		<text>down</text>
+	</string>
+	<string id="st_coop_dbg_v_active">
+		<text>under way</text>
+	</string>
+	<string id="st_coop_dbg_v_calm">
+		<text>none</text>
+	</string>
+	<string id="st_coop_dbg_rel_friend">
+		<text>friend</text>
+	</string>
+	<string id="st_coop_dbg_rel_neutral">
+		<text>neutral</text>
+	</string>
+	<string id="st_coop_dbg_rel_enemy">
+		<text>enemy</text>
+	</string>
+	<string id="st_coop_dbg_items_none">
+		<text>nothing (or not a character or a box)</text>
+	</string>
+	<string id="st_coop_dbg_more">
+		<text>and %d more</text>
+	</string>
+	<string id="st_coop_dbg_player_line">
+		<text>%s  ·  #%s  ·  %s  ·  %s  ·  %s ms</text>
+	</string>
+	<string id="st_coop_dbg_record">
+		<text>Write to positional_info.txt</text>
+	</string>
+	<string id="st_coop_dbg_recorded">
+		<text>written on this machine</text>
+	</string>
+	<string id="st_coop_dbg_no_target">
+		<text>No target</text>
+	</string>
+	<string id="st_coop_dbg_no_target_hint">
+		<text>Aim at an object and press F7: it becomes the target</text>
+	</string>
+	<string id="st_coop_dbg_target_meta">
+		<text>id %s here  ·  %s on the host  ·  %s</text>
+	</string>
+	<string id="st_coop_dbg_g_object">
+		<text>The object</text>
+	</string>
+	<string id="st_coop_dbg_g_me">
+		<text>Toward me</text>
+	</string>
+	<string id="st_coop_dbg_g_goodwill">
+		<text>Goodwill toward me</text>
+	</string>
+	<string id="st_coop_dbg_g_squad">
+		<text>Its squad toward me</text>
+	</string>
+	<string id="st_coop_dbg_g_section">
+		<text>Section</text>
+	</string>
+	<string id="st_coop_dbg_g_count">
+		<text>Count</text>
+	</string>
+	<string id="st_coop_dbg_g_where">
+		<text>Where</text>
+	</string>
+	<string id="st_coop_dbg_g_quick">
+		<text>Quick</text>
+	</string>
+	<string id="st_coop_dbg_g_flags">
+		<text>Personal flags</text>
+	</string>
+	<string id="st_coop_dbg_g_money">
+		<text>Money</text>
+	</string>
+	<string id="st_coop_dbg_g_tp">
+		<text>Teleport</text>
+	</string>
+	<string id="st_coop_dbg_g_time">
+		<text>Time: skip forward, set the hour, speed</text>
+	</string>
+	<string id="st_coop_dbg_g_weather">
+		<text>Weather</text>
+	</string>
+	<string id="st_coop_dbg_g_storms">
+		<text>Emission and psi-storm</text>
+	</string>
+	<string id="st_coop_dbg_g_sim">
+		<text>Simulation and the PDA</text>
+	</string>
+	<string id="st_coop_dbg_g_info">
+		<text>Info portion</text>
+	</string>
+	<string id="st_coop_dbg_sec_hint">
+		<text>a part of the section, e.g. ak74, medkit, bandit</text>
+	</string>
+	<string id="st_coop_dbg_at_inv">
+		<text>In the inventory</text>
+	</string>
+	<string id="st_coop_dbg_at_point">
+		<text>At the crosshair</text>
+	</string>
+	<string id="st_coop_dbg_at_near">
+		<text>Near me</text>
+	</string>
+	<string id="st_coop_dbg_kind_item">
+		<text>an item: %s</text>
+	</string>
+	<string id="st_coop_dbg_kind_object">
+		<text>an object (squad, NPC, anomaly): %s</text>
+	</string>
+	<string id="st_coop_dbg_spawn_pick">
+		<text>Type a part of the name and pick a section</text>
+	</string>
+	<string id="st_coop_dbg_spawn_none">
+		<text>No such section, or the spawners do not spawn it</text>
+	</string>
+	<string id="st_coop_dbg_spawn_go">
+		<text>Spawn</text>
+	</string>
+	<string id="st_coop_dbg_flag_on">
+		<text>ON</text>
+	</string>
+	<string id="st_coop_dbg_flag_off">
+		<text>OFF</text>
+	</string>
+	<string id="st_coop_dbg_tp_to">
+		<text>To %s</text>
+	</string>
+	<string id="st_coop_dbg_tp_alone">
+		<text>nobody else is in the session</text>
+	</string>
+	<string id="st_coop_dbg_w_w_clear1">
+		<text>Clear</text>
+	</string>
+	<string id="st_coop_dbg_w_w_partly1">
+		<text>Partly cloudy</text>
+	</string>
+	<string id="st_coop_dbg_w_w_cloudy1">
+		<text>Cloudy</text>
+	</string>
+	<string id="st_coop_dbg_w_w_rain1">
+		<text>Rain</text>
+	</string>
+	<string id="st_coop_dbg_w_w_storm1">
+		<text>Storm</text>
+	</string>
+	<string id="st_coop_dbg_w_w_foggy1">
+		<text>Fog</text>
+	</string>
+	<string id="st_coop_dbg_info_hint">
+		<text>info portion id</text>
+	</string>
+	<string id="st_coop_dbg_help_on_title">
+		<text>With the server debug on</text>
+	</string>
+	<string id="st_coop_dbg_help_off_title">
+		<text>What the server debug gives</text>
+	</string>
+	<string id="st_coop_dbg_help_off">
+		<text>The server debug is off: this window only shows. The host turns it on (F7) or the server console: coop_debug on. Then everyone in the session has these actions, the server carries them out and the chat tells everyone who did what.</text>
+	</string>
+	<string id="st_coop_dbg_help_off_operator">
+		<text>The server debug is off: this window only shows. You hold the server: the button at the top turns it on for everyone in the session, the same as coop_debug on in the console. The chat tells everyone who did what.</text>
+	</string>
+	<string id="st_coop_dbg_help_console_title">
+		<text>The server console</text>
+	</string>
+	<string id="st_coop_dbg_help_console">
+		<text>In the host's game console or the dedicated server's window:\n coop_debug on | off\n coop_dbg &lt;command&gt; @player key=value\n coop_dbg help [command]\n \nExamples:\n coop_dbg spawn_item @Bob sec=wpn_ak74 at=inv\n coop_dbg spawn_item @2 sec=medkit n=5 at=near\n coop_dbg time_to h=6\n coop_dbg weather w=w_storm1\n coop_dbg god @Bob on=1\n \nArbitrary Lua (coop_dbg lua) is for the server console only.</text>
+	</string>
+	<string id="st_coop_dbg_say_prefix">
+		<text>[debug]</text>
+	</string>
+	<string id="st_coop_dbg_level_go">
+		<text>moving to %s: the server's rules of moving decide</text>
+	</string>
+	<string id="st_coop_dbg_level_bad">
+		<text>no way to %s from here</text>
+	</string>
+	<string id="st_coop_dbg_feed">
+		<text>Server answers</text>
+	</string>
+	<string id="st_coop_dbg_feed_empty">
+		<text>Nothing sent yet</text>
+	</string>
+	<string id="st_coop_dbg_keys">
+		<text>Esc or F7 - close</text>
+	</string>
+	<string id="st_coop_dbg_sent">
+		<text>sent</text>
+	</string>
+	<string id="st_coop_dbg_forwarded">
+		<text>sent on to the map server, its result follows</text>
+	</string>
+	<string id="st_coop_dbg_ok">
+		<text>done</text>
+	</string>
+	<string id="st_coop_dbg_now_on">
+		<text>The server debug is on</text>
+	</string>
+	<string id="st_coop_dbg_now_off">
+		<text>The server debug is off</text>
+	</string>
+	<string id="st_coop_dbg_confirm_title">
+		<text>%s?</text>
+	</string>
+	<string id="st_coop_dbg_confirm_ok">
+		<text>Do it</text>
+	</string>
+	<string id="st_coop_dbg_cancel">
+		<text>Cancel</text>
+	</string>
+	<string id="st_coop_dbg_confirm_release">
+		<text>%s goes from the world for everyone. This cannot be undone.</text>
+	</string>
+	<string id="st_coop_dbg_confirm_inv_clear">
+		<text>Everything %s carries goes, for everyone. This cannot be undone.</text>
+	</string>
+	<string id="st_coop_dbg_confirm_release_common_squads">
+		<text>Every common squad of the world goes (story squads and companions stay). This cannot be undone.</text>
+	</string>
+	<string id="st_coop_dbg_confirm_info_give">
+		<text>The world gets the info portion %s: quests and dialogs of every player may change.</text>
+	</string>
+	<string id="st_coop_dbg_confirm_info_take">
+		<text>The world loses the info portion %s: quests and dialogs of every player may change.</text>
+	</string>
+	<string id="st_coop_dbg_a_can_see">
+		<text>Can it see me?</text>
+	</string>
+	<string id="st_coop_dbg_a_obj_info">
+		<text>Server info</text>
+	</string>
+	<string id="st_coop_dbg_a_kill">
+		<text>Kill</text>
+	</string>
+	<string id="st_coop_dbg_a_wound">
+		<text>Wound</text>
+	</string>
+	<string id="st_coop_dbg_a_trade_refresh">
+		<text>Refresh trade</text>
+	</string>
+	<string id="st_coop_dbg_a_release">
+		<text>Delete</text>
+	</string>
+	<string id="st_coop_dbg_a_inv_clear">
+		<text>Clear inventory</text>
+	</string>
+	<string id="st_coop_dbg_a_companion">
+		<text>Companion</text>
+	</string>
+	<string id="st_coop_dbg_a_rel_friend">
+		<text>Friend</text>
+	</string>
+	<string id="st_coop_dbg_a_rel_neutral">
+		<text>Neutral</text>
+	</string>
+	<string id="st_coop_dbg_a_rel_enemy">
+		<text>Enemy</text>
+	</string>
+	<string id="st_coop_dbg_a_gw_plus">
+		<text>+5000</text>
+	</string>
+	<string id="st_coop_dbg_a_gw_zero">
+		<text>Set to 0</text>
+	</string>
+	<string id="st_coop_dbg_a_gw_minus">
+		<text>-5000</text>
+	</string>
+	<string id="st_coop_dbg_a_sq_plus">
+		<text>Squad +5000</text>
+	</string>
+	<string id="st_coop_dbg_a_sq_zero">
+		<text>Squad: 0</text>
+	</string>
+	<string id="st_coop_dbg_a_sq_minus">
+		<text>Squad -5000</text>
+	</string>
+	<string id="st_coop_dbg_a_spawn_item">
+		<text>Spawn an item</text>
+	</string>
+	<string id="st_coop_dbg_a_spawn_object">
+		<text>Spawn an object</text>
+	</string>
+	<string id="st_coop_dbg_a_test_squad">
+		<text>Test squad nearby</text>
+	</string>
+	<string id="st_coop_dbg_a_god">
+		<text>God mode</text>
+	</string>
+	<string id="st_coop_dbg_a_ammo">
+		<text>Unlimited ammo</text>
+	</string>
+	<string id="st_coop_dbg_a_invis">
+		<text>Invisible to AI</text>
+	</string>
+	<string id="st_coop_dbg_a_money_10k">
+		<text>+10 000 RU</text>
+	</string>
+	<string id="st_coop_dbg_a_money_100k">
+		<text>+100 000 RU</text>
+	</string>
+	<string id="st_coop_dbg_a_money_1m">
+		<text>+1 000 000 RU</text>
+	</string>
+	<string id="st_coop_dbg_a_basic_kit">
+		<text>Basic kit</text>
+	</string>
+	<string id="st_coop_dbg_a_tp_point">
+		<text>To the crosshair point</text>
+	</string>
+	<string id="st_coop_dbg_a_tp_peer">
+		<text>To a player</text>
+	</string>
+	<string id="st_coop_dbg_a_time_add_1">
+		<text>+1 h</text>
+	</string>
+	<string id="st_coop_dbg_a_time_add_3">
+		<text>+3 h</text>
+	</string>
+	<string id="st_coop_dbg_a_time_add_6">
+		<text>+6 h</text>
+	</string>
+	<string id="st_coop_dbg_a_time_add_12">
+		<text>+12 h</text>
+	</string>
+	<string id="st_coop_dbg_a_time_to">
+		<text>Set the hour</text>
+	</string>
+	<string id="st_coop_dbg_a_time_factor">
+		<text>Set the speed</text>
+	</string>
+	<string id="st_coop_dbg_a_weather">
+		<text>Weather</text>
+	</string>
+	<string id="st_coop_dbg_a_surge_on">
+		<text>Start emission</text>
+	</string>
+	<string id="st_coop_dbg_a_surge_off">
+		<text>Stop emission</text>
+	</string>
+	<string id="st_coop_dbg_a_psi_on">
+		<text>Start psi-storm</text>
+	</string>
+	<string id="st_coop_dbg_a_psi_off">
+		<text>Stop psi-storm</text>
+	</string>
+	<string id="st_coop_dbg_a_respawns_on">
+		<text>Respawns on</text>
+	</string>
+	<string id="st_coop_dbg_a_respawns_off">
+		<text>Respawns off</text>
+	</string>
+	<string id="st_coop_dbg_a_release_common_squads">
+		<text>Delete common squads</text>
+	</string>
+	<string id="st_coop_dbg_a_unlock_routes">
+		<text>Open all routes</text>
+	</string>
+	<string id="st_coop_dbg_a_ency_articles">
+		<text>Open all articles</text>
+	</string>
+	<string id="st_coop_dbg_a_ency_notes">
+		<text>Open all notes</text>
+	</string>
+	<string id="st_coop_dbg_a_faction">
+		<text>Set the faction</text>
+	</string>
+	<string id="st_coop_dbg_a_level">
+		<text>Go to the level</text>
+	</string>
+	<string id="st_coop_dbg_g_level">
+		<text>Level change: the server's rules of moving decide</text>
+	</string>
+	<string id="st_coop_dbg_faction_hint">
+		<text>community, e.g. bandit</text>
+	</string>
+	<string id="st_coop_dbg_level_hint">
+		<text>level, e.g. l02_garbage</text>
+	</string>
+	<string id="st_coop_dbg_a_info_give">
+		<text>Give</text>
+	</string>
+	<string id="st_coop_dbg_a_info_take">
+		<text>Take away</text>
+	</string>
+	<string id="st_coop_dbg_err_debug_off">
+		<text>the server debug is off</text>
+	</string>
+	<string id="st_coop_dbg_err_old_client">
+		<text>your co-op scripts are older than the server's</text>
+	</string>
+	<string id="st_coop_dbg_err_unknown_cmd">
+		<text>the server does not know this command</text>
+	</string>
+	<string id="st_coop_dbg_err_bad_args">
+		<text>wrong arguments</text>
+	</string>
+	<string id="st_coop_dbg_err_no_player">
+		<text>the server does not see you as a player</text>
+	</string>
+	<string id="st_coop_dbg_err_not_standing">
+		<text>not while you are down</text>
+	</string>
+	<string id="st_coop_dbg_err_bad_target">
+		<text>the target is gone or does not fit</text>
+	</string>
+	<string id="st_coop_dbg_err_player_target">
+		<text>not on a player</text>
+	</string>
+	<string id="st_coop_dbg_err_too_far">
+		<text>the point is too far from you</text>
+	</string>
+	<string id="st_coop_dbg_err_bad_vertex">
+		<text>no ground there</text>
+	</string>
+	<string id="st_coop_dbg_err_other_level">
+		<text>the point is on another level</text>
+	</string>
+	<string id="st_coop_dbg_err_cap">
+		<text>too many at once</text>
+	</string>
+	<string id="st_coop_dbg_err_failed">
+		<text>the server could not do it</text>
+	</string>
+	<string id="st_coop_dbg_err_rate_limited">
+		<text>too often, wait a moment</text>
+	</string>
+	<string id="st_coop_dbg_err_busy">
+		<text>the server is busy, try again</text>
+	</string>
+	<string id="st_coop_dbg_err_not_in_world">
+		<text>you are not in the world yet</text>
+	</string>
+	<string id="st_coop_dbg_err_timeout">
+		<text>no answer from the server</text>
+	</string>
+	<string id="st_coop_dbg_err_no_target">
+		<text>no target: aim at an object and press F7</text>
+	</string>
+	<string id="st_coop_dbg_err_no_section">
+		<text>no such section</text>
+	</string>
+	<string id="st_coop_dbg_err_no_point">
+		<text>no point under the crosshair</text>
+	</string>
+	<string id="st_coop_dbg_err_no_session">
+		<text>not in a co-op session</text>
+	</string>
+	<string id="st_coop_dbg_err_no_engine">
+		<text>this game build has no server debug</text>
+	</string>
+	<string id="st_coop_dbg_err_unknown">
+		<text>refused: %s</text>
+	</string>
+</string_table>

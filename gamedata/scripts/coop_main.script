@@ -985,7 +985,18 @@ local function none_functions()
 	return ok and type(list) == "table" and list or {}
 end
 
+local function session_on()
+	if not api then return false end
+	local ok, on = pcall(api.is_active)
+	return ok and on == true
+end
+
+-- DEBUG_DESIGN B.8: in any session, the host's too, the stock debug tools never run: every debug action goes through the
+-- server (F7 is the co-op window, coop_debug_ui). Outside a session the stock function runs. Installed once per Lua state.
+local stubs_installed = false
 local function stub_blocked_functions()
+	if stubs_installed then return end
+	stubs_installed = true
 	local n = 0
 	for _, full in ipairs(none_functions()) do
 		local modname, fname = full:match("^([%w_]+)%.([%w_]+)$")
@@ -994,8 +1005,8 @@ local function stub_blocked_functions()
 			if ok and type(mod) == "table" and type(mod[fname]) == "function" then
 				local orig = mod[fname]
 				mod[fname] = function(...)
-					if client_mode then
-						hud_msg("Co-op: debug tools are disabled on a client")
+					if session_on() then
+						hud_msg("Co-op: in a session the debug window is F7, the server carries out its actions")
 						return
 					end
 					return orig(...)
@@ -1004,7 +1015,32 @@ local function stub_blocked_functions()
 			end
 		end
 	end
-	if n > 0 then log("%d debug tool entry point(s) disabled on this client", n) end
+	if n > 0 then log("%d stock debug tool entry point(s) disabled while a session is on", n) end
+end
+
+-- R-6.6 on every machine (DEBUG_DESIGN B.8): while a session is on, DEV_DEBUG and DEV_DEBUG_DEV are off, the host's too: under
+-- them stock code acts locally (fast travel to any mark, debug map marks, debug_mode_flag_on). The values before the session
+-- come back when it ends. Checked at load and on every update tick: a session can start or end in this Lua state.
+local dev_debug_kept = nil -- { d, dd } while a session holds them off
+
+function debug_gate_tick()
+	local on = session_on()
+	if on and not dev_debug_kept then
+		dev_debug_kept = { d = rawget(_G, "DEV_DEBUG"), dd = rawget(_G, "DEV_DEBUG_DEV") }
+		if dev_debug_kept.d or dev_debug_kept.dd then
+			_G.DEV_DEBUG = false
+			_G.DEV_DEBUG_DEV = false
+			log("debug mode (-dbg) is off while a co-op session is on; the server decides debugging (F7)")
+		end
+	elseif not on and dev_debug_kept then
+		local kept = dev_debug_kept
+		dev_debug_kept = nil
+		if kept.d or kept.dd then
+			_G.DEV_DEBUG = kept.d
+			_G.DEV_DEBUG_DEV = kept.dd
+			log("the co-op session is over: debug mode is back as it was")
+		end
+	end
 end
 
 -- Smart terrains: the online binder runs the server object's update every tick (jobs, respawn ->
@@ -1106,6 +1142,7 @@ local function actor_on_update()
 	context_tick(tg)
 	if tg < next_tick then return end
 	next_tick = tg + 250
+	debug_gate_tick()
 	if api.is_host() then
 		if not host_hooks then install_host_hooks() end
 		host_env_tick()
@@ -1171,6 +1208,9 @@ function on_game_start()
 	RegisterScriptCallback("on_before_save_input", on_before_save_input)
 	RegisterScriptCallback("on_before_load_input", on_before_load_input)
 	if client_mode then install_client_patches() end
+	-- every machine: the stubs check the session when they are called (single player keeps the stock tools)
+	local ok, err = pcall(stub_blocked_functions)
+	if not ok then report_error("coop_main", "debug tools patch", err) end
 end
 
 -- Loaded by axr_main.on_game_start() before any script's on_game_start runs, so the router shim sees
@@ -1208,10 +1248,7 @@ end
 
 if api and api.is_client() then
 	client_mode = true
-	-- Debug mode is a cheat menu in Anomaly (spawner, teleports): off on clients (R-6.6).
-	if rawget(_G, "DEV_DEBUG") or rawget(_G, "DEV_DEBUG_DEV") then
-		_G.DEV_DEBUG = false
-		_G.DEV_DEBUG_DEV = false
-		log("debug mode (-dbg) is disabled while connected as a co-op client")
-	end
 end
+-- Debug mode is a cheat menu in Anomaly (spawner, teleports): off in a session on every machine, the host's too (R-6.6,
+-- DEBUG_DESIGN B.8). Now, before the stock scripts' on_game_start reads it, and on every update after.
+debug_gate_tick()

@@ -1,0 +1,619 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop: the co-op debug window, F7 in a session (docs\DEBUG_DESIGN.md B.8, D; scripts\coop_debug_ui.script, coop_debug_client.script). windows-1251, CRLF. -->
+<string_table>
+	<string id="st_coop_dbg_title">
+		<text>ОТЛАДКА КООПА</text>
+	</string>
+	<string id="st_coop_dbg_sub">
+		<text>Каждое действие уходит серверу и выполняется там  ·  %s, узел %s</text>
+	</string>
+	<string id="st_coop_dbg_state_off">
+		<text>Отладка сервера: выключена</text>
+	</string>
+	<string id="st_coop_dbg_state_on">
+		<text>Отладка сервера: включена</text>
+	</string>
+	<string id="st_coop_dbg_state_pending">
+		<text>Ждём ответа сервера...</text>
+	</string>
+	<string id="st_coop_dbg_src_key">
+		<text>включена ключом запуска -dbg</text>
+	</string>
+	<string id="st_coop_dbg_src_console">
+		<text>включена из консоли сервера</text>
+	</string>
+	<string id="st_coop_dbg_src_off">
+		<text>включает хост (F7) или консоль сервера: coop_debug on</text>
+	</string>
+	<string id="st_coop_dbg_src_off_operator">
+		<text>сервер у вас: кнопка включает её для всех</text>
+	</string>
+	<string id="st_coop_dbg_src_wait">
+		<text>команда консоли отправлена</text>
+	</string>
+	<string id="st_coop_dbg_src_none">
+		<text>в этой сборке игры нет серверной отладки</text>
+	</string>
+	<string id="st_coop_dbg_btn_on">
+		<text>Включить</text>
+	</string>
+	<string id="st_coop_dbg_btn_off">
+		<text>Выключить</text>
+	</string>
+	<string id="st_coop_dbg_btn_wait">
+		<text>Ждём...</text>
+	</string>
+	<string id="st_coop_dbg_page_overview">
+		<text>Обзор</text>
+	</string>
+	<string id="st_coop_dbg_page_overview_sub">
+		<text>цель, место, игроки, мир</text>
+	</string>
+	<string id="st_coop_dbg_page_target">
+		<text>Цель</text>
+	</string>
+	<string id="st_coop_dbg_page_target_sub">
+		<text>объект под прицелом</text>
+	</string>
+	<string id="st_coop_dbg_page_spawn">
+		<text>Спавн</text>
+	</string>
+	<string id="st_coop_dbg_page_spawn_sub">
+		<text>предметы, отряды, аномалии</text>
+	</string>
+	<string id="st_coop_dbg_page_me">
+		<text>Я</text>
+	</string>
+	<string id="st_coop_dbg_page_me_sub">
+		<text>бессмертие, деньги, телепорт</text>
+	</string>
+	<string id="st_coop_dbg_page_world">
+		<text>Мир</text>
+	</string>
+	<string id="st_coop_dbg_page_world_sub">
+		<text>время, погода, выброс</text>
+	</string>
+	<string id="st_coop_dbg_page_help">
+		<text>Справка</text>
+	</string>
+	<string id="st_coop_dbg_page_help_sub">
+		<text>что где, консоль сервера</text>
+	</string>
+	<string id="st_coop_dbg_card_target">
+		<text>Цель</text>
+	</string>
+	<string id="st_coop_dbg_card_items">
+		<text>Предметы цели</text>
+	</string>
+	<string id="st_coop_dbg_card_place">
+		<text>Моё место</text>
+	</string>
+	<string id="st_coop_dbg_card_nearest">
+		<text>Ближайший объект</text>
+	</string>
+	<string id="st_coop_dbg_card_players">
+		<text>Игроки</text>
+	</string>
+	<string id="st_coop_dbg_card_world">
+		<text>Мир</text>
+	</string>
+	<string id="st_coop_dbg_k_name">
+		<text>Имя</text>
+	</string>
+	<string id="st_coop_dbg_k_id">
+		<text>Id</text>
+	</string>
+	<string id="st_coop_dbg_k_section">
+		<text>Секция</text>
+	</string>
+	<string id="st_coop_dbg_k_faction">
+		<text>Фракция</text>
+	</string>
+	<string id="st_coop_dbg_k_rank">
+		<text>Ранг</text>
+	</string>
+	<string id="st_coop_dbg_k_relation">
+		<text>Ко мне</text>
+	</string>
+	<string id="st_coop_dbg_k_squad">
+		<text>Отряд</text>
+	</string>
+	<string id="st_coop_dbg_k_story">
+		<text>Story id</text>
+	</string>
+	<string id="st_coop_dbg_k_level">
+		<text>Карта</text>
+	</string>
+	<string id="st_coop_dbg_k_pos">
+		<text>Позиция</text>
+	</string>
+	<string id="st_coop_dbg_k_lvid">
+		<text>Вершина</text>
+	</string>
+	<string id="st_coop_dbg_k_gvid">
+		<text>Вершина графа</text>
+	</string>
+	<string id="st_coop_dbg_k_dir">
+		<text>Направление</text>
+	</string>
+	<string id="st_coop_dbg_k_dist">
+		<text>Дистанция</text>
+	</string>
+	<string id="st_coop_dbg_k_time">
+		<text>Время</text>
+	</string>
+	<string id="st_coop_dbg_k_factor">
+		<text>Скорость</text>
+	</string>
+	<string id="st_coop_dbg_k_weather">
+		<text>Погода</text>
+	</string>
+	<string id="st_coop_dbg_k_emission">
+		<text>Выброс</text>
+	</string>
+	<string id="st_coop_dbg_k_psi">
+		<text>Пси-шторм</text>
+	</string>
+	<string id="st_coop_dbg_v_none">
+		<text>—</text>
+	</string>
+	<string id="st_coop_dbg_v_ids">
+		<text>%s здесь  ·  %s у хоста</text>
+	</string>
+	<string id="st_coop_dbg_v_standing">
+		<text>на ногах</text>
+	</string>
+	<string id="st_coop_dbg_v_down">
+		<text>лежит</text>
+	</string>
+	<string id="st_coop_dbg_v_active">
+		<text>идёт</text>
+	</string>
+	<string id="st_coop_dbg_v_calm">
+		<text>нет</text>
+	</string>
+	<string id="st_coop_dbg_rel_friend">
+		<text>друг</text>
+	</string>
+	<string id="st_coop_dbg_rel_neutral">
+		<text>нейтрал</text>
+	</string>
+	<string id="st_coop_dbg_rel_enemy">
+		<text>враг</text>
+	</string>
+	<string id="st_coop_dbg_items_none">
+		<text>ничего (или это не персонаж и не ящик)</text>
+	</string>
+	<string id="st_coop_dbg_more">
+		<text>и ещё %d</text>
+	</string>
+	<string id="st_coop_dbg_player_line">
+		<text>%s  ·  #%s  ·  %s  ·  %s  ·  %s мс</text>
+	</string>
+	<string id="st_coop_dbg_record">
+		<text>Записать в positional_info.txt</text>
+	</string>
+	<string id="st_coop_dbg_recorded">
+		<text>записано на этой машине</text>
+	</string>
+	<string id="st_coop_dbg_no_target">
+		<text>Цели нет</text>
+	</string>
+	<string id="st_coop_dbg_no_target_hint">
+		<text>Наведите прицел на объект и нажмите F7: он станет целью</text>
+	</string>
+	<string id="st_coop_dbg_target_meta">
+		<text>id %s здесь  ·  %s у хоста  ·  %s</text>
+	</string>
+	<string id="st_coop_dbg_g_object">
+		<text>Объект</text>
+	</string>
+	<string id="st_coop_dbg_g_me">
+		<text>Ко мне</text>
+	</string>
+	<string id="st_coop_dbg_g_goodwill">
+		<text>Отношение ко мне</text>
+	</string>
+	<string id="st_coop_dbg_g_squad">
+		<text>Его отряд ко мне</text>
+	</string>
+	<string id="st_coop_dbg_g_section">
+		<text>Секция</text>
+	</string>
+	<string id="st_coop_dbg_g_count">
+		<text>Количество</text>
+	</string>
+	<string id="st_coop_dbg_g_where">
+		<text>Куда</text>
+	</string>
+	<string id="st_coop_dbg_g_quick">
+		<text>Быстро</text>
+	</string>
+	<string id="st_coop_dbg_g_flags">
+		<text>Личные флаги</text>
+	</string>
+	<string id="st_coop_dbg_g_money">
+		<text>Деньги</text>
+	</string>
+	<string id="st_coop_dbg_g_tp">
+		<text>Телепорт</text>
+	</string>
+	<string id="st_coop_dbg_g_time">
+		<text>Время: вперёд, час, скорость</text>
+	</string>
+	<string id="st_coop_dbg_g_weather">
+		<text>Погода</text>
+	</string>
+	<string id="st_coop_dbg_g_storms">
+		<text>Выброс и пси-шторм</text>
+	</string>
+	<string id="st_coop_dbg_g_sim">
+		<text>Симуляция и КПК</text>
+	</string>
+	<string id="st_coop_dbg_g_info">
+		<text>Инфопорция</text>
+	</string>
+	<string id="st_coop_dbg_sec_hint">
+		<text>часть секции, например ak74, medkit, bandit</text>
+	</string>
+	<string id="st_coop_dbg_at_inv">
+		<text>В инвентарь</text>
+	</string>
+	<string id="st_coop_dbg_at_point">
+		<text>В прицел</text>
+	</string>
+	<string id="st_coop_dbg_at_near">
+		<text>Рядом</text>
+	</string>
+	<string id="st_coop_dbg_kind_item">
+		<text>предмет: %s</text>
+	</string>
+	<string id="st_coop_dbg_kind_object">
+		<text>объект (отряд, NPC, аномалия): %s</text>
+	</string>
+	<string id="st_coop_dbg_spawn_pick">
+		<text>Наберите часть имени и выберите секцию</text>
+	</string>
+	<string id="st_coop_dbg_spawn_none">
+		<text>Такой секции нет, или спавнеры её не создают</text>
+	</string>
+	<string id="st_coop_dbg_spawn_go">
+		<text>Создать</text>
+	</string>
+	<string id="st_coop_dbg_flag_on">
+		<text>ВКЛ</text>
+	</string>
+	<string id="st_coop_dbg_flag_off">
+		<text>ВЫКЛ</text>
+	</string>
+	<string id="st_coop_dbg_tp_to">
+		<text>К %s</text>
+	</string>
+	<string id="st_coop_dbg_tp_alone">
+		<text>в сессии больше никого</text>
+	</string>
+	<string id="st_coop_dbg_w_w_clear1">
+		<text>Ясно</text>
+	</string>
+	<string id="st_coop_dbg_w_w_partly1">
+		<text>Переменно</text>
+	</string>
+	<string id="st_coop_dbg_w_w_cloudy1">
+		<text>Облачно</text>
+	</string>
+	<string id="st_coop_dbg_w_w_rain1">
+		<text>Дождь</text>
+	</string>
+	<string id="st_coop_dbg_w_w_storm1">
+		<text>Гроза</text>
+	</string>
+	<string id="st_coop_dbg_w_w_foggy1">
+		<text>Туман</text>
+	</string>
+	<string id="st_coop_dbg_info_hint">
+		<text>id инфопорции</text>
+	</string>
+	<string id="st_coop_dbg_help_on_title">
+		<text>При включённой отладке сервера</text>
+	</string>
+	<string id="st_coop_dbg_help_off_title">
+		<text>Что даёт отладка сервера</text>
+	</string>
+	<string id="st_coop_dbg_help_off">
+		<text>Отладка сервера выключена: окно только показывает. Включает её хост (F7) или консоль сервера: coop_debug on. Тогда у всех в сессии появятся эти действия, сервер их выполняет, а чат сообщает всем, кто что сделал.</text>
+	</string>
+	<string id="st_coop_dbg_help_off_operator">
+		<text>Отладка сервера выключена: окно только показывает. Сервер у вас: кнопка вверху включает её для всех в сессии, как coop_debug on в консоли. Чат сообщает всем, кто что сделал.</text>
+	</string>
+	<string id="st_coop_dbg_help_console_title">
+		<text>Консоль сервера</text>
+	</string>
+	<string id="st_coop_dbg_help_console">
+		<text>В консоли игры хоста или в окне выделенного сервера:\n coop_debug on | off\n coop_dbg &lt;команда&gt; @игрок ключ=значение\n coop_dbg help [команда]\n \nПримеры:\n coop_dbg spawn_item @Bob sec=wpn_ak74 at=inv\n coop_dbg spawn_item @2 sec=medkit n=5 at=near\n coop_dbg time_to h=6\n coop_dbg weather w=w_storm1\n coop_dbg god @Bob on=1\n \nПроизвольный Lua (coop_dbg lua) — только из консоли сервера.</text>
+	</string>
+	<string id="st_coop_dbg_say_prefix">
+		<text>[отладка]</text>
+	</string>
+	<string id="st_coop_dbg_level_go">
+		<text>переход на %s: решают правила переходов сервера</text>
+	</string>
+	<string id="st_coop_dbg_level_bad">
+		<text>на %s отсюда не перейти</text>
+	</string>
+	<string id="st_coop_dbg_feed">
+		<text>Ответы сервера</text>
+	</string>
+	<string id="st_coop_dbg_feed_empty">
+		<text>Пока ничего не отправлено</text>
+	</string>
+	<string id="st_coop_dbg_keys">
+		<text>Esc или F7 - закрыть</text>
+	</string>
+	<string id="st_coop_dbg_sent">
+		<text>отправлено</text>
+	</string>
+	<string id="st_coop_dbg_forwarded">
+		<text>передано серверу карты, итог придёт следом</text>
+	</string>
+	<string id="st_coop_dbg_ok">
+		<text>готово</text>
+	</string>
+	<string id="st_coop_dbg_now_on">
+		<text>Отладка сервера включена</text>
+	</string>
+	<string id="st_coop_dbg_now_off">
+		<text>Отладка сервера выключена</text>
+	</string>
+	<string id="st_coop_dbg_confirm_title">
+		<text>%s?</text>
+	</string>
+	<string id="st_coop_dbg_confirm_ok">
+		<text>Выполнить</text>
+	</string>
+	<string id="st_coop_dbg_cancel">
+		<text>Отмена</text>
+	</string>
+	<string id="st_coop_dbg_confirm_release">
+		<text>%s исчезнет из мира у всех. Отменить нельзя.</text>
+	</string>
+	<string id="st_coop_dbg_confirm_inv_clear">
+		<text>Всё, что несёт %s, исчезнет у всех. Отменить нельзя.</text>
+	</string>
+	<string id="st_coop_dbg_confirm_release_common_squads">
+		<text>Исчезнут все обычные отряды мира (сюжетные и спутники останутся). Отменить нельзя.</text>
+	</string>
+	<string id="st_coop_dbg_confirm_info_give">
+		<text>Мир получит инфопорцию %s: задания и диалоги всех игроков могут измениться.</text>
+	</string>
+	<string id="st_coop_dbg_confirm_info_take">
+		<text>Мир потеряет инфопорцию %s: задания и диалоги всех игроков могут измениться.</text>
+	</string>
+	<string id="st_coop_dbg_a_can_see">
+		<text>Видит ли меня?</text>
+	</string>
+	<string id="st_coop_dbg_a_obj_info">
+		<text>Данные сервера</text>
+	</string>
+	<string id="st_coop_dbg_a_kill">
+		<text>Убить</text>
+	</string>
+	<string id="st_coop_dbg_a_wound">
+		<text>Ранить</text>
+	</string>
+	<string id="st_coop_dbg_a_trade_refresh">
+		<text>Обновить товар</text>
+	</string>
+	<string id="st_coop_dbg_a_release">
+		<text>Удалить</text>
+	</string>
+	<string id="st_coop_dbg_a_inv_clear">
+		<text>Очистить инвентарь</text>
+	</string>
+	<string id="st_coop_dbg_a_companion">
+		<text>Компаньон</text>
+	</string>
+	<string id="st_coop_dbg_a_rel_friend">
+		<text>Друг</text>
+	</string>
+	<string id="st_coop_dbg_a_rel_neutral">
+		<text>Нейтрал</text>
+	</string>
+	<string id="st_coop_dbg_a_rel_enemy">
+		<text>Враг</text>
+	</string>
+	<string id="st_coop_dbg_a_gw_plus">
+		<text>+5000</text>
+	</string>
+	<string id="st_coop_dbg_a_gw_zero">
+		<text>Поставить 0</text>
+	</string>
+	<string id="st_coop_dbg_a_gw_minus">
+		<text>-5000</text>
+	</string>
+	<string id="st_coop_dbg_a_sq_plus">
+		<text>Отряд +5000</text>
+	</string>
+	<string id="st_coop_dbg_a_sq_zero">
+		<text>Отряд: 0</text>
+	</string>
+	<string id="st_coop_dbg_a_sq_minus">
+		<text>Отряд -5000</text>
+	</string>
+	<string id="st_coop_dbg_a_spawn_item">
+		<text>Создать предмет</text>
+	</string>
+	<string id="st_coop_dbg_a_spawn_object">
+		<text>Создать объект</text>
+	</string>
+	<string id="st_coop_dbg_a_test_squad">
+		<text>Тестовый отряд рядом</text>
+	</string>
+	<string id="st_coop_dbg_a_god">
+		<text>Бессмертие</text>
+	</string>
+	<string id="st_coop_dbg_a_ammo">
+		<text>Бесконечные патроны</text>
+	</string>
+	<string id="st_coop_dbg_a_invis">
+		<text>Невидимость для ИИ</text>
+	</string>
+	<string id="st_coop_dbg_a_money_10k">
+		<text>+10 000 RU</text>
+	</string>
+	<string id="st_coop_dbg_a_money_100k">
+		<text>+100 000 RU</text>
+	</string>
+	<string id="st_coop_dbg_a_money_1m">
+		<text>+1 000 000 RU</text>
+	</string>
+	<string id="st_coop_dbg_a_basic_kit">
+		<text>Базовый набор</text>
+	</string>
+	<string id="st_coop_dbg_a_tp_point">
+		<text>В точку прицела</text>
+	</string>
+	<string id="st_coop_dbg_a_tp_peer">
+		<text>К игроку</text>
+	</string>
+	<string id="st_coop_dbg_a_time_add_1">
+		<text>+1 ч</text>
+	</string>
+	<string id="st_coop_dbg_a_time_add_3">
+		<text>+3 ч</text>
+	</string>
+	<string id="st_coop_dbg_a_time_add_6">
+		<text>+6 ч</text>
+	</string>
+	<string id="st_coop_dbg_a_time_add_12">
+		<text>+12 ч</text>
+	</string>
+	<string id="st_coop_dbg_a_time_to">
+		<text>Поставить час</text>
+	</string>
+	<string id="st_coop_dbg_a_time_factor">
+		<text>Задать скорость</text>
+	</string>
+	<string id="st_coop_dbg_a_weather">
+		<text>Погода</text>
+	</string>
+	<string id="st_coop_dbg_a_surge_on">
+		<text>Начать выброс</text>
+	</string>
+	<string id="st_coop_dbg_a_surge_off">
+		<text>Остановить выброс</text>
+	</string>
+	<string id="st_coop_dbg_a_psi_on">
+		<text>Начать пси-шторм</text>
+	</string>
+	<string id="st_coop_dbg_a_psi_off">
+		<text>Остановить пси-шторм</text>
+	</string>
+	<string id="st_coop_dbg_a_respawns_on">
+		<text>Респаун вкл.</text>
+	</string>
+	<string id="st_coop_dbg_a_respawns_off">
+		<text>Респаун выкл.</text>
+	</string>
+	<string id="st_coop_dbg_a_release_common_squads">
+		<text>Удалить обычные отряды</text>
+	</string>
+	<string id="st_coop_dbg_a_unlock_routes">
+		<text>Открыть маршруты</text>
+	</string>
+	<string id="st_coop_dbg_a_ency_articles">
+		<text>Открыть статьи</text>
+	</string>
+	<string id="st_coop_dbg_a_ency_notes">
+		<text>Открыть записи</text>
+	</string>
+	<string id="st_coop_dbg_a_faction">
+		<text>Сменить фракцию</text>
+	</string>
+	<string id="st_coop_dbg_a_level">
+		<text>Перейти на карту</text>
+	</string>
+	<string id="st_coop_dbg_g_level">
+		<text>Переход на карту: решают правила переходов сервера</text>
+	</string>
+	<string id="st_coop_dbg_faction_hint">
+		<text>группировка, например bandit</text>
+	</string>
+	<string id="st_coop_dbg_level_hint">
+		<text>карта, например l02_garbage</text>
+	</string>
+	<string id="st_coop_dbg_a_info_give">
+		<text>Выдать</text>
+	</string>
+	<string id="st_coop_dbg_a_info_take">
+		<text>Забрать</text>
+	</string>
+	<string id="st_coop_dbg_err_debug_off">
+		<text>отладка сервера выключена</text>
+	</string>
+	<string id="st_coop_dbg_err_old_client">
+		<text>ваши скрипты коопа старее серверных</text>
+	</string>
+	<string id="st_coop_dbg_err_unknown_cmd">
+		<text>сервер не знает такой команды</text>
+	</string>
+	<string id="st_coop_dbg_err_bad_args">
+		<text>неверные аргументы</text>
+	</string>
+	<string id="st_coop_dbg_err_no_player">
+		<text>сервер не видит вас игроком</text>
+	</string>
+	<string id="st_coop_dbg_err_not_standing">
+		<text>пока вы лежите, нельзя</text>
+	</string>
+	<string id="st_coop_dbg_err_bad_target">
+		<text>цели нет или она не подходит</text>
+	</string>
+	<string id="st_coop_dbg_err_player_target">
+		<text>не над игроком</text>
+	</string>
+	<string id="st_coop_dbg_err_too_far">
+		<text>точка слишком далеко от вас</text>
+	</string>
+	<string id="st_coop_dbg_err_bad_vertex">
+		<text>там нет земли</text>
+	</string>
+	<string id="st_coop_dbg_err_other_level">
+		<text>точка на другой карте</text>
+	</string>
+	<string id="st_coop_dbg_err_cap">
+		<text>слишком много за раз</text>
+	</string>
+	<string id="st_coop_dbg_err_failed">
+		<text>серверу не удалось</text>
+	</string>
+	<string id="st_coop_dbg_err_rate_limited">
+		<text>слишком часто, подождите</text>
+	</string>
+	<string id="st_coop_dbg_err_busy">
+		<text>сервер занят, повторите</text>
+	</string>
+	<string id="st_coop_dbg_err_not_in_world">
+		<text>вы ещё не в мире</text>
+	</string>
+	<string id="st_coop_dbg_err_timeout">
+		<text>сервер не ответил</text>
+	</string>
+	<string id="st_coop_dbg_err_no_target">
+		<text>нет цели: наведите прицел и нажмите F7</text>
+	</string>
+	<string id="st_coop_dbg_err_no_section">
+		<text>такой секции нет</text>
+	</string>
+	<string id="st_coop_dbg_err_no_point">
+		<text>нет точки под прицелом</text>
+	</string>
+	<string id="st_coop_dbg_err_no_session">
+		<text>не в сессии коопа</text>
+	</string>
+	<string id="st_coop_dbg_err_no_engine">
+		<text>в этой сборке игры нет серверной отладки</text>
+	</string>
+	<string id="st_coop_dbg_err_unknown">
+		<text>отказ: %s</text>
+	</string>
+</string_table>

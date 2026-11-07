@@ -133,18 +133,21 @@ treasure_manager             = host
 death_manager                = host
 axr_task_manager             = host
 axr_companions               = host
-; --- debug and cheat tools: never on a client, the host keeps them (was [blocked]; "none" would take them from the
-; host too)
-ui_debug_*                   = host
-ui_map_debug_ex              = host
-xrs_debug_tools              = host
-debug_cmd_list               = host
-imgui_lua_debug              = host
-lua_help_imgui               = host
-zz_ui_debug_inputs           = host
+; --- debug and cheat tools: nowhere in a session, the host's included (docs\DEBUG_DESIGN.md B.8). Every debug action goes
+; through the server: F7 is the co-op window (coop_debug_ui), the server decides and carries it out. Single player keeps
+; the stock tools (outside a session every handler runs).
+ui_debug_*                   = none
+ui_map_debug_ex              = none
+xrs_debug_tools              = none
+debug_cmd_list               = none
+imgui_lua_debug              = none
+lua_help_imgui               = none
+zz_ui_debug_inputs           = none
+coop_debug_client            = view   ; F7 in a session, every machine: gathers arguments, asks the server
+coop_debug_ui                = view   ; the co-op debug window
 
-; Module functions replaced by a "disabled on a co-op client" message on clients (debug spawner etc., R-6.6;
-; coop_main.script). The host keeps them.
+; Module functions replaced by an "F7 in a session" message in any session, the host's too (debug spawner etc., R-6.6;
+; coop_main.script). Single player keeps them.
 [route_none_functions]
 ui_debug_launcher.start_debug_main
 ui_debug_launcher.start_item_spawner

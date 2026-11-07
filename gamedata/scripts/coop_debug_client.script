@@ -1,0 +1,651 @@
+--[[
+	Anomaly Coop - the client of the co-op debug (gamedata\scripts\coop_debug_client.script), docs\DEBUG_DESIGN.md B.5, B.8, C, D
+
+	In a session F7 opens the co-op debug window (coop_debug_ui) on every machine, the host player's too. Outside a session this
+	script does nothing: the stock F7 (ui_debug_launcher, DEV_DEBUG) works as in single player.
+	Nothing here changes the world. Every action gathers its arguments the way the stock does (the target under the crosshair at
+	the moment F7 was pressed, the point along the camera ray: ui_debug_launcher.script:1461-1474) and sends one request:
+
+		coop.sync.request("coop.dbg.<class>", { v = 1, cmd = <id>, ...flat args }, function(ok, result) ... end)
+
+	class: view (read only, passes while the server debug is off) | world | self | spawn | target. The server answers ok with
+	{ msg = ..., id = ... } or "forwarded" (a map server carries it out, its result comes as the event coop.dbg.note), or a refusal
+	code (st_coop_dbg_err_<code>). Ids of objects are in the host's numbering (coop.to_host_id), players are nodes.
+
+	Engine API used (DEBUG_DESIGN E, package 1), every call guarded: coop.debug.state() -> { on, source } (or on, source),
+	coop.debug.flags(peer) -> bits 1 god, 2 ammo, 4 invisible (or a table), coop.debug.is_operator(); the callback
+	coop_debug_changed(on, source). The operator's on/off button runs the server console command coop_debug on|off.
+--]]
+
+local api = rawget(_G, "coop")
+local type, pairs, ipairs, pcall, tostring, tonumber = type, pairs, ipairs, pcall, tostring, tonumber
+local floor, min, max = math.floor, math.min, math.max
+
+SCHEMA = 1 -- `v` of a request (B.5)
+MAX_N = 20 -- the most items of one request (B.5)
+FEED_SIZE = 40
+PENDING_TOGGLE_MS = 6000 -- the operator's button waits this long for the new state
+
+local function log(fmt, ...)
+	local pf = rawget(_G, "printf")
+	if not pf then return end
+	local ok, line = pcall(string.format, fmt, ...)
+	pcall(pf, "%s", "[coop-dbg] " .. (ok and line or tostring(fmt)))
+end
+
+function tr(id)
+	local g = rawget(_G, "game")
+	if g and type(g.translate_string) == "function" then
+		local ok, s = pcall(g.translate_string, id)
+		if ok and type(s) == "string" then return s end
+	end
+	return id
+end
+
+-- a translated line with arguments; a broken format shows the id's text as it is
+function trf(id, ...)
+	local s = tr(id)
+	local ok, out = pcall(string.format, s, ...)
+	return ok and out or s
+end
+
+local function has_text(id)
+	return tr(id) ~= id
+end
+
+local function now()
+	local ok, t = pcall(time_global)
+	return ok and t or 0
+end
+
+-------------------------------------------------------------------------------
+-- Session, state of the server debug, flags
+-------------------------------------------------------------------------------
+function active()
+	if not api then return false end
+	local ok, on = pcall(api.is_active)
+	return ok and on == true
+end
+
+local function dbg_api()
+	local d = api and api.debug
+	return type(d) == "table" and d or nil
+end
+
+local SOURCES = { [0] = "off", [1] = "key", [2] = "console", off = "off", key = "key", console = "console",
+	launch_key = "key", LaunchKey = "key", Console = "console", Off = "off" }
+
+-- { on, source = off | key | console | none, known = the engine has coop.debug }
+function state()
+	local d = dbg_api()
+	if not (d and type(d.state) == "function") then return { on = false, source = "none", known = false } end
+	local ok, a, b = pcall(d.state)
+	if not ok then return { on = false, source = "none", known = false } end
+	local on, src = a, b
+	if type(a) == "table" then on, src = a.on, a.source end
+	on = on == true or on == 1
+	return { on = on, source = SOURCES[src] or (on and "console" or "off"), known = true }
+end
+
+function is_operator()
+	local d = dbg_api()
+	if not (d and type(d.is_operator) == "function") then return false end
+	local ok, yes = pcall(d.is_operator)
+	return ok and yes == true
+end
+
+function self_peer()
+	if not api then return nil end
+	local ok, id = pcall(api.self_id)
+	return ok and id or nil
+end
+
+local FLAG_BITS = { god = 1, ammo = 2, invis = 4 }
+
+-- this player's personal flag, as the server's last DebugState says
+function flag_on(name)
+	local d = dbg_api()
+	if not (d and type(d.flags) == "function") then return false end
+	local ok, f = pcall(d.flags, self_peer())
+	if not ok then return false end
+	if type(f) == "number" then
+		local bit = FLAG_BITS[name] or 0
+		return bit > 0 and floor(f / bit) % 2 == 1
+	end
+	if type(f) == "table" then
+		if name == "invis" and f.invisible ~= nil then return f.invisible == true end
+		return f[name] == true
+	end
+	return false
+end
+
+-------------------------------------------------------------------------------
+-- The stock formulas
+-------------------------------------------------------------------------------
+-- The point of the stock spawner "at cursor" (ui_debug_launcher.script:1461-1467): the actor's position plus the camera
+-- direction times the distance to the object under the crosshair (3 m without one), at the actor's height; lv is the level
+-- vertex of that point. -> { x, y, z, lv } or nil
+function aim_point()
+	local ok, p = pcall(function()
+		local actor = db.actor
+		if not actor then return nil end
+		local r = level.get_target_dist and level.get_target_dist() or 3
+		local pos = vector():set(actor:position())
+		pos:add(device().cam_dir:mul(r))
+		pos = vector():set(pos.x, actor:position().y, pos.z)
+		return { x = pos.x, y = pos.y, z = pos.z, lv = level.vertex_id(pos) }
+	end)
+	return ok and p or nil
+end
+
+-- The object under the crosshair when F7 was pressed (o1 of the stock), and the one before (o2).
+target, previous = nil, nil
+
+function capture_target()
+	local ok, obj = pcall(function() return level.get_target_obj and level.get_target_obj() or nil end)
+	obj = ok and obj or nil
+	local same = false
+	if obj and target then
+		local ok2, eq = pcall(function() return obj:id() == target:id() end)
+		same = ok2 and eq
+	end
+	if not same then previous = target end
+	target = obj
+	return target
+end
+
+function object_id(obj)
+	local ok, id = pcall(function() return obj:id() end)
+	return ok and id or nil
+end
+
+-- the id of an object in the host's numbering (the request names objects so)
+function host_id(obj)
+	local id = obj and object_id(obj)
+	if id == nil then return nil end
+	if not (api and type(api.to_host_id) == "function") then return id end
+	local ok, h = pcall(api.to_host_id, id)
+	return ok and h or nil
+end
+
+-- The command registry shared with the server (coop_debug_cmds, package 2): its class tables say what the stock spawners spawn.
+local function registry()
+	local r = rawget(_G, "coop_debug_cmds")
+	if r == nil then
+		local ok, m = pcall(function() return coop_debug_cmds end)
+		r = ok and m or nil
+	end
+	return type(r) == "table" and r or nil
+end
+
+-- item | object | nil (no such section, or nothing the spawners spawn). The registry's classes when it is there (the server
+-- checks with the same ones), else an inventory weight makes an item.
+function section_kind(sec)
+	if type(sec) ~= "string" or sec == "" or #sec > 64 then return nil end
+	local ok, kind = pcall(function()
+		if not ini_sys:section_exist(sec) then return nil end
+		local R = registry()
+		if R and type(R.section_class) == "function" and type(R.object_group) == "function" and type(R.ITEM_CLASSES) == "table" then
+			if R.object_group(sec) then return "object" end
+			local c = R.section_class(sec)
+			return c and R.ITEM_CLASSES[c] and "item" or nil
+		end
+		if ini_sys:line_exist(sec, "inv_weight") then return "item" end
+		return "object"
+	end)
+	return ok and kind or nil
+end
+
+-- Sections of the system ini that have a class, built once.
+local section_index = nil
+
+local function sections()
+	if section_index then return section_index end
+	section_index = {}
+	pcall(function()
+		ini_sys:section_for_each(function(s)
+			if ini_sys:line_exist(s, "class") and section_kind(s) then section_index[#section_index + 1] = s end
+		end)
+	end)
+	table.sort(section_index)
+	return section_index
+end
+
+-- Up to `limit` sections whose name has `text` in it: where it is found first, then the shorter name, then by name.
+function find_sections(text, limit)
+	local q = type(text) == "string" and text:lower():gsub("^%s+", ""):gsub("%s+$", "") or ""
+	if #q < 2 then return {} end
+	local hits = {}
+	for _, s in ipairs(sections()) do
+		local at = s:lower():find(q, 1, true)
+		if at then hits[#hits + 1] = { s = s, at = at } end
+	end
+	table.sort(hits, function(a, b)
+		if a.at ~= b.at then return a.at < b.at end
+		if #a.s ~= #b.s then return #a.s < #b.s end
+		return a.s < b.s
+	end)
+	local out = {}
+	for i = 1, min(limit or 8, #hits) do out[i] = hits[i].s end
+	return out
+end
+
+-------------------------------------------------------------------------------
+-- The actions of the window (DEBUG_DESIGN C, v1). id: the button; cmd: the registry id the server knows; build(ctx) -> the
+-- arguments or nil, a refusal code. ctx: what the window holds (target, sec, n, at, h, m, f, w, p, on, info).
+-------------------------------------------------------------------------------
+local function need_target(ctx, extra)
+	local t = ctx and ctx.target and host_id(ctx.target)
+	if t == nil then return nil, "no_target" end
+	local args = { t = t }
+	for k, v in pairs(extra or {}) do args[k] = v end
+	return args
+end
+
+local function fixed(extra)
+	return function() local a = {}; for k, v in pairs(extra or {}) do a[k] = v end; return a end
+end
+
+local function with_target(extra)
+	return function(ctx) return need_target(ctx, extra) end
+end
+
+local function toggle_flag(name)
+	return function(ctx)
+		local on = ctx and ctx.on
+		if on == nil then on = not flag_on(name) end
+		return { on = on == true }
+	end
+end
+
+local function point_args(args)
+	local p = aim_point()
+	if not p then return nil, "no_point" end
+	args.x, args.y, args.z, args.lv = p.x, p.y, p.z, p.lv
+	return args
+end
+
+local WHERE = { inv = true, point = true, near = true }
+
+local function spawn_item(ctx)
+	local sec = ctx and ctx.sec
+	if section_kind(sec) == nil then return nil, "no_section" end
+	local at = WHERE[ctx.at] and ctx.at or "inv"
+	local args = { sec = sec, n = max(1, min(MAX_N, floor(tonumber(ctx.n) or 1))), at = at }
+	if at == "point" then return point_args(args) end
+	return args
+end
+
+local function spawn_object(ctx)
+	local sec = ctx and ctx.sec
+	if section_kind(sec) == nil then return nil, "no_section" end
+	local at = ctx.at == "point" and "point" or "near" -- an object never goes into an inventory
+	local args = { sec = sec, at = at }
+	if at == "point" then return point_args(args) end
+	return args
+end
+
+local function hour_args(ctx)
+	local h = floor(tonumber(ctx and ctx.h) or -1)
+	local m = floor(tonumber(ctx and ctx.m) or 0)
+	if h < 0 or h > 23 or m < 0 or m > 59 then return nil, "bad_args" end
+	return { h = h, m = m }
+end
+
+local function factor_args(ctx)
+	local f = tonumber(ctx and ctx.f)
+	if not f or f < 1 or f > 1000 then return nil, "bad_args" end
+	return { f = floor(f) }
+end
+
+local function weather_args(ctx)
+	local w = ctx and ctx.w
+	if type(w) ~= "string" or w == "" or #w > 64 then return nil, "bad_args" end
+	return { w = w }
+end
+
+local function peer_args(ctx)
+	local p = tonumber(ctx and ctx.p)
+	if p == nil then return nil, "bad_args" end
+	return { p = p }
+end
+
+-- info k=give|take i=<id> (the registry's K43)
+local function info_args(k)
+	return function(ctx)
+		local id = ctx and ctx.info
+		if type(id) ~= "string" then return nil, "bad_args" end
+		id = id:gsub("^%s+", ""):gsub("%s+$", "")
+		if id == "" or #id > 64 or id:find("[^%w_%.%-]") then return nil, "bad_args" end
+		return { k = k, i = id }
+	end
+end
+
+-- a name typed into the window: a community, a level (the registry's "name" kind: letters, digits, _ . -)
+local function typed_name(v)
+	if type(v) ~= "string" then return nil end
+	v = v:gsub("^%s+", ""):gsub("%s+$", "")
+	if v == "" or #v > 64 or v:find("[^%w_%.%-]") or v:find("..", 1, true) then return nil end
+	return v
+end
+
+local function faction_args(ctx)
+	local c = typed_name(ctx and ctx.c)
+	if not c then return nil, "bad_args" end
+	return need_target(ctx, { c = c })
+end
+
+local function level_args(ctx)
+	local name = typed_name(ctx and ctx.level)
+	if not name then return nil, "bad_args" end
+	return { name = name }
+end
+
+-- tp x= y= z=: the stock teleport moves the actor to a point; the vertex is the server's to find
+local function tp_point()
+	local p = aim_point()
+	if not p then return nil, "no_point" end
+	return { x = p.x, y = p.y, z = p.z }
+end
+
+-- page: where the window shows it (help lists them by page); danger: red text; confirm: asked first, sent with ok = true
+ACTIONS = {
+	-- view: read only, also with the server debug off (D)
+	{ id = "can_see", cls = "view", cmd = "can_see", page = "overview", build = with_target() },
+	{ id = "obj_info", cls = "view", cmd = "obj_info", page = "overview", build = with_target() },
+	-- target (C.1 T*, K24, K44)
+	{ id = "kill", cls = "target", cmd = "kill", page = "target", group = "object", build = with_target() },
+	{ id = "wound", cls = "target", cmd = "wound", page = "target", group = "object", build = with_target() },
+	{ id = "trade_refresh", cls = "target", cmd = "trade_refresh", page = "target", group = "object", build = with_target() },
+	{ id = "release", cls = "target", cmd = "release", page = "target", group = "object", build = with_target(), danger = true, confirm = true },
+	{ id = "inv_clear", cls = "target", cmd = "inv_clear", page = "target", group = "object", build = with_target(), danger = true, confirm = true },
+	{ id = "companion", cls = "target", cmd = "companion", page = "target", group = "me", build = with_target() },
+	{ id = "rel_friend", cls = "target", cmd = "relation", page = "target", group = "me", build = with_target({ r = "friend" }) },
+	{ id = "rel_neutral", cls = "target", cmd = "relation", page = "target", group = "me", build = with_target({ r = "neutral" }) },
+	{ id = "rel_enemy", cls = "target", cmd = "relation", page = "target", group = "me", build = with_target({ r = "enemy" }) },
+	{ id = "gw_plus", cls = "target", cmd = "goodwill", page = "target", group = "goodwill", build = with_target({ g = 5000 }) },
+	{ id = "gw_zero", cls = "target", cmd = "goodwill", page = "target", group = "goodwill", build = with_target({ g = 0 }) },
+	{ id = "gw_minus", cls = "target", cmd = "goodwill", page = "target", group = "goodwill", build = with_target({ g = -5000 }) },
+	{ id = "sq_plus", cls = "target", cmd = "squad_goodwill", page = "target", group = "squad", build = with_target({ g = 5000 }) },
+	{ id = "sq_zero", cls = "target", cmd = "squad_goodwill", page = "target", group = "squad", build = with_target({ g = 0 }) },
+	{ id = "sq_minus", cls = "target", cmd = "squad_goodwill", page = "target", group = "squad", build = with_target({ g = -5000 }) },
+	{ id = "faction", cls = "target", cmd = "faction", page = "target", group = "faction", build = faction_args },
+	-- spawn (I*, O*, K71)
+	{ id = "spawn_item", cls = "spawn", cmd = "spawn_item", page = "spawn", build = spawn_item },
+	{ id = "spawn_object", cls = "spawn", cmd = "spawn_object", page = "spawn", build = spawn_object },
+	{ id = "test_squad", cls = "spawn", cmd = "test_squad", page = "spawn", group = "quick", build = fixed() },
+	-- self (G1-2, A1-2, A10, K23)
+	{ id = "god", cls = "self", cmd = "god", page = "me", group = "flags", build = toggle_flag("god") },
+	{ id = "ammo", cls = "self", cmd = "ammo", page = "me", group = "flags", build = toggle_flag("ammo") },
+	{ id = "invis", cls = "self", cmd = "invis", page = "me", group = "flags", build = toggle_flag("invis") },
+	{ id = "money_10k", cls = "self", cmd = "money", page = "me", group = "money", build = fixed({ a = 10000 }) },
+	{ id = "money_100k", cls = "self", cmd = "money", page = "me", group = "money", build = fixed({ a = 100000 }) },
+	{ id = "money_1m", cls = "self", cmd = "money", page = "me", group = "money", build = fixed({ a = 1000000 }) },
+	{ id = "basic_kit", cls = "self", cmd = "basic_kit", page = "spawn", group = "quick", build = fixed() },
+	{ id = "tp_point", cls = "self", cmd = "tp", page = "me", group = "tp", build = tp_point },
+	{ id = "tp_peer", cls = "self", cmd = "tp_to_player", page = "me", group = "tp", build = peer_args },
+	{ id = "level", cls = "self", cmd = "level", page = "me", group = "level", build = level_args },
+	-- world (A12-A19, G6, K35, K43, new: time_to, time_factor)
+	{ id = "time_add_1", cls = "world", cmd = "time_add", page = "world", group = "time", build = fixed({ h = 1 }) },
+	{ id = "time_add_3", cls = "world", cmd = "time_add", page = "world", group = "time", build = fixed({ h = 3 }) },
+	{ id = "time_add_6", cls = "world", cmd = "time_add", page = "world", group = "time", build = fixed({ h = 6 }) },
+	{ id = "time_add_12", cls = "world", cmd = "time_add", page = "world", group = "time", build = fixed({ h = 12 }) },
+	{ id = "time_to", cls = "world", cmd = "time_to", page = "world", group = "time", build = hour_args },
+	{ id = "time_factor", cls = "world", cmd = "time_factor", page = "world", group = "speed", build = factor_args },
+	{ id = "weather", cls = "world", cmd = "weather", page = "world", group = "weather", build = weather_args },
+	{ id = "surge_on", cls = "world", cmd = "surge", page = "world", group = "storms", build = fixed({ on = true }) },
+	{ id = "surge_off", cls = "world", cmd = "surge", page = "world", group = "storms", build = fixed({ on = false }) },
+	{ id = "psi_on", cls = "world", cmd = "psi", page = "world", group = "storms", build = fixed({ on = true }) },
+	{ id = "psi_off", cls = "world", cmd = "psi", page = "world", group = "storms", build = fixed({ on = false }) },
+	{ id = "respawns_on", cls = "world", cmd = "respawns", page = "world", group = "sim", build = fixed({ on = true }) },
+	{ id = "respawns_off", cls = "world", cmd = "respawns", page = "world", group = "sim", build = fixed({ on = false }) },
+	{ id = "release_common_squads", cls = "world", cmd = "release_common_squads", page = "world", group = "sim", build = fixed(), danger = true, confirm = true },
+	{ id = "unlock_routes", cls = "world", cmd = "unlock_routes", page = "world", group = "sim", build = fixed() },
+	{ id = "ency_articles", cls = "world", cmd = "unlock_ency", page = "world", group = "sim", build = fixed({ what = "articles" }) },
+	{ id = "ency_notes", cls = "world", cmd = "unlock_ency", page = "world", group = "sim", build = fixed({ what = "notes" }) },
+	{ id = "info_give", cls = "world", cmd = "info", page = "world", group = "info", build = info_args("give"), confirm = true },
+	{ id = "info_take", cls = "world", cmd = "info", page = "world", group = "info", build = info_args("take"), danger = true, confirm = true },
+}
+
+local by_id, by_cmd = {}, {}
+for _, a in ipairs(ACTIONS) do
+	by_id[a.id] = a
+	if not by_cmd[a.cmd] then by_cmd[a.cmd] = a end
+end
+
+-- an action by its id, or the first one that sends that registry command
+function action(id)
+	return by_id[id] or by_cmd[id]
+end
+
+function actions_of(page, group)
+	local out = {}
+	for _, a in ipairs(ACTIONS) do
+		if a.page == page and (group == nil or a.group == group) then out[#out + 1] = a end
+	end
+	return out
+end
+
+-- What the window may offer now: view only while the server debug is off.
+function allowed(a, st)
+	if not a then return false end
+	if a.cls == "view" then return true end
+	return (st or state()).on == true
+end
+
+-------------------------------------------------------------------------------
+-- Answers and the feed of the window
+-------------------------------------------------------------------------------
+-- Refusal codes with a line of their own (B.5 and the engine's texts); anything else is "unknown" with the raw text.
+ERROR_CODES = { "debug_off", "old_client", "unknown_cmd", "bad_args", "no_player", "not_standing", "bad_target", "player_target",
+	"too_far", "bad_vertex", "other_level", "cap", "failed", "rate_limited", "busy", "not_in_world", "timeout",
+	"no_target", "no_section", "no_point", "no_session", "no_engine", "unknown" }
+
+local ENGINE_CODES = { ["rate limited"] = "rate_limited", ["not in the world"] = "not_in_world", ["debug is off"] = "debug_off",
+	["too many requests waiting"] = "busy" }
+
+function error_text(raw)
+	local s = tostring(raw or "")
+	local code = ENGINE_CODES[s:lower()] or s:lower():gsub("[%s%-]+", "_")
+	local id = "st_coop_dbg_err_" .. code
+	if code ~= "" and has_text(id) then return tr(id) end
+	return trf("st_coop_dbg_err_unknown", s)
+end
+
+-- -> text, kind (ok | err | pending)
+function answer(ok, res)
+	if ok then
+		local msg = type(res) == "table" and res.msg or res
+		if msg == "forwarded" then return tr("st_coop_dbg_forwarded"), "pending" end
+		if type(msg) == "string" and msg ~= "" then return tr(msg), "ok" end
+		return tr("st_coop_dbg_ok"), "ok"
+	end
+	local raw = res
+	if type(res) == "table" then raw = res.code or res.msg end
+	return error_text(raw), "err"
+end
+
+local feed_list = {}
+
+local function clock()
+	local ok, s = pcall(os.date, "%H:%M:%S")
+	return ok and s or ""
+end
+
+local function notify_window()
+	local ui = rawget(_G, "coop_debug_ui")
+	if type(ui) == "table" and type(ui.on_feed) == "function" then pcall(ui.on_feed) end
+end
+
+-- newest first
+function feed()
+	return feed_list
+end
+
+function reset_feed()
+	feed_list = {}
+end
+
+function add_line(text, kind, label)
+	local e = { text = label and (label .. " - " .. text) or text, kind = kind or "info", at = clock(), label = label }
+	table.insert(feed_list, 1, e)
+	while #feed_list > FEED_SIZE do table.remove(feed_list) end
+	notify_window()
+	return e
+end
+
+local function set_line(e, text, kind)
+	e.text = e.label and (e.label .. " - " .. text) or text
+	e.kind = kind
+	e.at = clock()
+	-- the latest news goes to the top
+	for i, x in ipairs(feed_list) do
+		if x == e then table.remove(feed_list, i) break end
+	end
+	table.insert(feed_list, 1, e)
+	notify_window()
+end
+
+function label_of(a)
+	return tr("st_coop_dbg_a_" .. a.id)
+end
+
+-------------------------------------------------------------------------------
+-- Sending
+-------------------------------------------------------------------------------
+-- run(id, ctx, cb, confirmed) -> true | false, code. A refusal here is a line of the feed too.
+function run(id, ctx, cb, confirmed)
+	local a = action(id)
+	if not a then return false, "unknown_cmd" end
+	local label = label_of(a)
+	local function refuse(code)
+		add_line(error_text(code), "err", label)
+		if cb then pcall(cb, false, code) end
+		return false, code
+	end
+	if not active() then return refuse("no_session") end
+	local st = state()
+	if not st.known and a.cls ~= "view" then return refuse("no_engine") end
+	if not allowed(a, st) then return refuse("debug_off") end
+	if a.confirm and not confirmed then return false, "confirm" end
+	local args, why = a.build(ctx or {})
+	if not args then return refuse(why or "bad_args") end
+	args.v, args.cmd = SCHEMA, a.cmd
+	if a.confirm then args.ok = true end
+	local sync = api and api.sync
+	if not (type(sync) == "table" and type(sync.request) == "function") then return refuse("no_engine") end
+	local e = add_line(tr("st_coop_dbg_sent"), "pending", label)
+	local ok, sent, err = pcall(sync.request, "coop.dbg." .. a.cls, args, function(ok2, res)
+		local text, kind = answer(ok2, res)
+		set_line(e, text, kind)
+		if cb then pcall(cb, ok2, res) end
+	end)
+	if not ok then
+		set_line(e, error_text(sent), "err")
+		return false, "failed"
+	end
+	if sent == false then
+		set_line(e, error_text(err), "err")
+		return false, tostring(err)
+	end
+	return true
+end
+
+-------------------------------------------------------------------------------
+-- The server's switch: the operator's button is the console of his own process (B.1 p.3)
+-------------------------------------------------------------------------------
+local toggle_wait = nil -- { want, at }
+
+function set_server_debug(on)
+	if not is_operator() then return false end
+	local line = on and "coop_debug on" or "coop_debug off"
+	local ok = pcall(function()
+		local c = rawget(_G, "get_console")
+		if type(c) == "function" then c():execute(line) else exec_console_cmd(line) end
+	end)
+	if ok then toggle_wait = { want = on == true, at = now() } end
+	return ok
+end
+
+-- true while the operator's switch waits for the server's new state
+function toggle_pending()
+	if not toggle_wait then return false end
+	if state().on == toggle_wait.want or now() - toggle_wait.at > PENDING_TOGGLE_MS then
+		toggle_wait = nil
+		return false
+	end
+	return true
+end
+
+-------------------------------------------------------------------------------
+-- Engine and network callbacks
+-------------------------------------------------------------------------------
+-- coop_debug_changed(on, source): a new DebugState on this machine
+function on_debug_changed(on, source)
+	toggle_wait = nil
+	if not active() then return end
+	add_line(tr(state().on and "st_coop_dbg_now_on" or "st_coop_dbg_now_off"), "info")
+	local ui = rawget(_G, "coop_debug_ui")
+	if type(ui) == "table" and type(ui.on_state_changed) == "function" then pcall(ui.on_state_changed) end
+end
+
+-- coop.dbg.note from the world server: the result of an action a map server carried out (B.6)
+function on_note(payload, from)
+	if from ~= 0 then return end -- the world server's address on this machine; a player cannot send it
+	local t = payload
+	if type(payload) == "string" then
+		local ok, d = pcall(coop_main.decode, payload)
+		t = ok and d or {}
+	end
+	if type(t) ~= "table" then return end
+	local good = t.ok == true or t.ok == 1 or t.ok == "1" or t.ok == "true"
+	if good then
+		add_line(type(t.msg) == "string" and t.msg ~= "" and tr(t.msg) or tr("st_coop_dbg_ok"), "ok")
+	else
+		add_line(error_text(t.code or t.msg), "err")
+	end
+end
+
+-- coop.dbg.order from the world server: { k = "level", name } - the registry's `level` (K38) is carried out here, on the player's
+-- machine, the way the stock debug does it (JumpToLevel -> ChangeLevel). In a session the engine turns that ChangeLevel into a
+-- request to move, and the server's rules of moving decide (story levels together, DEBUG_DESIGN B.6). Only the server orders.
+function on_order(payload, from)
+	if from ~= 0 then return end
+	local t = payload
+	if type(payload) == "string" then
+		local ok, d = pcall(coop_main.decode, payload)
+		t = ok and d or {}
+	end
+	if type(t) ~= "table" or t.k ~= "level" then return end
+	local name = typed_name(t.name)
+	if not name then return end
+	local label = label_of(by_id.level)
+	local ok, went = pcall(function() return JumpToLevel(name) end)
+	if ok and went then
+		add_line(trf("st_coop_dbg_level_go", name), "ok", label)
+	else
+		add_line(trf("st_coop_dbg_level_bad", name), "err", label)
+		if not ok then log("! level %s: %s", name, tostring(went)) end
+	end
+end
+
+-- F7 (kCUSTOM17) in a session, alive: the co-op window. Outside a session the key is the stock's.
+function on_key_release(key)
+	if not active() then return end
+	local ok, bind = pcall(dik_to_bind, key)
+	if not (ok and bind == key_bindings.kCUSTOM17) then return end
+	local ok2, alive = pcall(function() return db.actor ~= nil and db.actor:alive() end)
+	if not (ok2 and alive == true) then return end
+	local ui = rawget(_G, "coop_debug_ui") or coop_debug_ui
+	ui.toggle()
+end
+
+function on_game_start()
+	RegisterScriptCallback("on_key_release", on_key_release)
+	pcall(RegisterScriptCallback, "coop_debug_changed", on_debug_changed) -- coop_main adds it; an old layer may not
+	local cm = rawget(_G, "coop_main") or coop_main
+	if cm and type(cm.add_event_handler) == "function" then
+		cm.add_event_handler("coop.dbg.note", on_note)
+		cm.add_event_handler("coop.dbg.order", on_order)
+	end
+end

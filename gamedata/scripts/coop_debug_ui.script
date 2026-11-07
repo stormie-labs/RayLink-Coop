@@ -1,0 +1,1035 @@
+--[[
+	Anomaly Coop - the co-op debug window (gamedata\scripts\coop_debug_ui.script), docs\DEBUG_DESIGN.md B.8 and D
+
+	F7 in a session, on every machine (coop_debug_client.on_key_release). One panel over the dimmed game, in the look of the co-op
+	window (its theme coop_menu_theme and its widgets coop_ui_kit; a pack's theme applies here too):
+
+		header   title, who I am, the state of the server debug (a dot: green on, grey off, amber waiting), the operator's switch
+		rail     the pages; with the server debug off only Overview and Help, nothing that changes the world is built at all
+		page     Overview (target, its items, my place, the nearest object, players, world: read on this machine; "can it see me"
+		         and the server's info are view requests) | Target | Spawn | Me | World (the v1 actions of section C) | Help
+		answers  the last lines of the server's answers: waiting, done, refused in the player's words (st_coop_dbg_err_<code>)
+		confirm  a small dialog before anything destructive (delete, clear an inventory, common squads, info portions)
+
+	The window never changes the world itself: every button is coop_debug_client.run -> coop.sync.request("coop.dbg.<class>").
+	A new state of the server debug (coop_debug_changed) rebuilds the open window on the same page.
+--]]
+
+local type, ipairs, pairs, pcall, tostring, tonumber = type, ipairs, pairs, pcall, tostring, tonumber
+local floor, min, max, sqrt, atan2, deg = math.floor, math.min, math.max, math.sqrt, math.atan2, math.deg
+local UI_W, UI_H = 1024, 768
+local XML_FILE = "ui_coop_debug.xml"
+
+-- design pixels of a 1920 x 1080 stage (coop_menu_kit.layout): the panel and its parts
+local P = { x = 200, y = 92, w = 1520, h = 896 }
+local HEAD_H, RAIL_W, FEED_H = 100, 300, 196
+local CX, CY = RAIL_W + 32, HEAD_H + 24
+local CW, CH = P.w - CX - 40, P.h - FEED_H - CY - 20
+local BTN_H, BTN_W, GAP = 44, 172, 12
+local ROW_MAX = 240 -- a row of buttons fills the page, each at most this wide
+-- the simulation row: widths by the length of the labels (the longest is "delete common squads"), CW in all
+local SIM_W = { respawns_on = 140, respawns_off = 140, release_common_squads = 240, unlock_routes = 196, ency_articles = 186, ency_notes = 186 }
+local FEED_ROWS = 5
+local REFRESH_MS = 500
+local KEY_GUARD_MS = 300
+
+PAGES_ON = { "overview", "target", "spawn", "me", "world", "help" }
+PAGES_OFF = { "overview", "help" }
+WEATHERS = { "w_clear1", "w_partly1", "w_cloudy1", "w_rain1", "w_storm1", "w_foggy1" }
+TIME_FACTORS = { 1, 2, 5, 10, 20, 50 }
+
+local C -- coop_debug_client, resolved at the first window
+local win, last_page, key_closed_at = nil, "overview", -1e9
+
+local function log(fmt, ...)
+	local pf = rawget(_G, "printf")
+	if not pf then return end
+	local ok, line = pcall(string.format, fmt, ...)
+	pcall(pf, "%s", "[coop-dbg] " .. (ok and line or tostring(fmt)))
+end
+
+local function client()
+	if not C then C = rawget(_G, "coop_debug_client") or coop_debug_client end
+	return C
+end
+
+local function tr(id) return client().tr(id) end
+local function trf(id, ...) return client().trf(id, ...) end
+
+local function now()
+	local ok, t = pcall(time_global)
+	return ok and t or 0
+end
+
+-- a value read from the game, or nil: the window never fails on an object that went away
+local function safe(f, ...)
+	local ok, v = pcall(f, ...)
+	if ok then return v end
+	return nil
+end
+
+local function text_or_none(v)
+	if v == nil or v == "" then return tr("st_coop_dbg_v_none") end
+	return tostring(v)
+end
+
+local function num(v, digits)
+	if type(v) ~= "number" then return text_or_none(v) end
+	return string.format("%." .. (digits or 1) .. "f", v)
+end
+
+-------------------------------------------------------------------------------
+-- Window
+-------------------------------------------------------------------------------
+class "UICoopDebug" (CUIScriptWnd)
+
+function UICoopDebug:__init(page) super()
+	self.st = client().state()
+	self.on = self.st.on == true
+	self.operator = client().is_operator()
+	self.page_list = self.on and PAGES_ON or PAGES_OFF
+	self.pages, self.rail, self.flag_rows, self.actions = {}, {}, {}, {}
+	self.found, self.found_rows, self.tp_peers = {}, {}, {}
+	self.spawn_n, self.spawn_at, self.spawn_sec, self.spawn_text = 1, "inv", nil, nil
+	self.hour, self.factor_i = 6, 4
+	self.next_refresh = 0
+	self.modal, self.modal_ctx = nil, nil
+	self:InitControls()
+	self:select_page(self:has_page(page) and page or "overview")
+	self:Refresh()
+end
+
+function UICoopDebug:__finalize()
+end
+
+function UICoopDebug:has_page(id)
+	for _, p in ipairs(self.page_list) do if p == id then return true end end
+	return false
+end
+
+function UICoopDebug:page_ids()
+	local out = {}
+	for i, p in ipairs(self.page_list) do out[i] = p end
+	return out
+end
+
+function UICoopDebug:InitControls()
+	self:SetWndRect(Frect():set(0, 0, UI_W, UI_H))
+	self:Enable(true)
+	self.T = coop_menu_theme_base.load()
+	self.ui = coop_ui_kit.new(self, XML_FILE, self.T)
+	local ui = self.ui
+
+	-- the game stays visible under a dim, the panel lies in the middle of the stage
+	ui:full_box("modal_dim")
+	local g = ui:block("coop_debug", P.x, P.y, P.w, P.h)
+	self.g = g
+	ui:flush_text(g)
+	ui:box(g, 0, 0, P.w, P.h, "panel")
+	ui:outline(g, 0, 0, P.w, P.h, "line")
+	local corners = ui:corners(g, "accent")
+	ui:place_corners(corners, 0, 0, P.w, P.h, self.T.corners.len, self.T.corners.thick)
+
+	self:BuildHeader()
+	self:BuildRail()
+	self:BuildPages()
+	self:BuildFeed()
+	self:BuildModal()
+end
+
+-------------------------------------------------------------------------------
+-- Pieces
+-------------------------------------------------------------------------------
+-- A button: kind ghost (a frame), danger (a frame, red text), primary (a filled notched shape, the co-op window's Play).
+function UICoopDebug:Button(parent, x, y, w, h, name, text, kind, fn)
+	local ui = self.ui
+	local b = { kind = kind or "ghost", parts = {} }
+	if b.kind == "primary" then
+		b.parts = ui:notched(parent, x, y, w, h, 10, "accent")
+		b.style = h >= 52 and "play" or "modal_ok"
+	else
+		b.parts = ui:outline(parent, x, y, w, h, "tile_line")
+		b.style = b.kind == "danger" and "status_err" or "ghost"
+	end
+	b.text = ui:label(parent, x + 8, y, w - 16, h, b.style, "c")
+	b.text:SetText(text or "")
+	b.btn = ui:hit(parent, x, y, w, h, name)
+	self:AddCallback(name, ui_events.BUTTON_CLICKED, fn, self)
+	return b
+end
+
+function UICoopDebug:EnableButton(b, on)
+	on = on and true or false
+	b.btn:Enable(on)
+	if on then
+		self.ui:style(b.text, b.style)
+	else
+		b.text:SetTextColor(self.ui:color("faint"))
+	end
+end
+
+-- the small capitals over a group of buttons, with a hairline to the end of the page
+function UICoopDebug:Heading(parent, x, y, w, id)
+	local t = self.ui:label(parent, x, y, w, 22, "tl_sub")
+	t:SetText(tr(id))
+	self.ui:box(parent, x, y + 24, w, 1, "line")
+	return t
+end
+
+-- a row of action buttons; returns the y under it. w: one width for all, a table: by id, nil: the row fills the page
+function UICoopDebug:ActionRow(parent, x, y, list, w)
+	local n = #list
+	local fill = n > 0 and min(ROW_MAX, floor((CW - x - (n - 1) * GAP) / n)) or BTN_W
+	local bx = x
+	for _, a in ipairs(list) do
+		local bw = type(w) == "table" and (w[a.id] or BTN_W) or w or fill
+		local b = self:Button(parent, bx, y, bw, BTN_H, "btn_act_" .. a.id, client().label_of(a), a.danger and "danger" or "ghost",
+			function() self:OnAction(a.id) end)
+		self.actions[a.id] = b
+		bx = bx + bw + GAP
+	end
+	return y + BTN_H
+end
+
+-- an outlined card with a title and rows of key and value
+function UICoopDebug:Card(parent, x, y, w, h, title_id, keys)
+	local ui = self.ui
+	local c = { vals = {} }
+	ui:outline(parent, x, y, w, h, "line")
+	local t = ui:label(parent, x + 18, y + 12, w - 36, 30, "cap")
+	t:SetText(tr(title_id))
+	ui:box(parent, x + 18, y + 46, 28, 2, "accent")
+	local ry = y + 58
+	for _, k in ipairs(keys or {}) do
+		local kl = ui:label(parent, x + 18, ry, 116, 24, "tl_tag")
+		kl:SetText(tr("st_coop_dbg_k_" .. k))
+		local v = ui:label(parent, x + 138, ry, w - 156, 24, "meta_on")
+		pcall(function() v:SetEllipsis(true) end)
+		c.vals[k] = v
+		ry = ry + 25
+	end
+	c.next_y = ry
+	return c
+end
+
+-- free lines of a card (lists: items, players)
+function UICoopDebug:CardLines(parent, x, y, w, n)
+	local out = {}
+	for i = 1, n do
+		local l = self.ui:label(parent, x + 18, y + (i - 1) * 25, w - 36, 24, "meta_on")
+		pcall(function() l:SetEllipsis(true) end)
+		out[i] = l
+	end
+	return out
+end
+
+-------------------------------------------------------------------------------
+-- Header: title, who, the state of the server debug, the operator's switch
+-------------------------------------------------------------------------------
+function UICoopDebug:BuildHeader()
+	local ui, g = self.ui, self.g
+	local title = ui:label(g, 40, 22, 640, 36, "mark")
+	title:SetText(tr("st_coop_dbg_title"))
+	self.who = ui:label(g, 40, 60, 700, 24, "who")
+
+	local sx, sw = P.w - 64 - 460, 460
+	self.state_dot = ui:box(g, P.w - 40 - 12, 33, 12, 12, "idle")
+	self.state_text = ui:label(g, sx, 22, sw, 32, "meta_on", "r")
+	self.state_sub = ui:label(g, sx, 56, sw, 24, "status_sub", "r")
+
+	if self.operator then
+		self.toggle = self:Button(g, sx - 24 - 220, 26, 220, 52, "btn_server_toggle", "", "primary", self.OnServerToggle)
+	end
+	ui:box(g, 0, HEAD_H, P.w, 1, "line")
+end
+
+function UICoopDebug:BindHeader()
+	local cl = client()
+	local st = cl.state()
+	local pending = cl.toggle_pending()
+	local role, text, sub
+	if pending then
+		role, text, sub = "wait", tr("st_coop_dbg_state_pending"), tr("st_coop_dbg_src_wait")
+	elseif not st.known then
+		role, text, sub = "error", tr("st_coop_dbg_state_off"), tr("st_coop_dbg_src_none")
+	elseif st.on then
+		role, text = "live", tr("st_coop_dbg_state_on")
+		sub = tr(st.source == "key" and "st_coop_dbg_src_key" or "st_coop_dbg_src_console")
+	else
+		role, text = "idle", tr("st_coop_dbg_state_off")
+		sub = tr(self.operator and "st_coop_dbg_src_off_operator" or "st_coop_dbg_src_off")
+	end
+	self.state_dot:SetTextureColor(self.ui:color(role))
+	self.state_text:SetText(text)
+	self.state_sub:SetText(sub)
+	if self.toggle then
+		self.toggle.text:SetText(tr(pending and "st_coop_dbg_btn_wait" or (st.on and "st_coop_dbg_btn_off" or "st_coop_dbg_btn_on")))
+		self.ui:tint(self.toggle.parts, pending and "accent_soft" or "accent")
+		self.toggle.btn:Enable(not pending)
+	end
+	local nick, peer = "?", cl.self_peer()
+	pcall(function()
+		for _, p in ipairs(coop.players() or {}) do
+			if p.is_self then nick = p.nick end
+		end
+	end)
+	self.who:SetText(trf("st_coop_dbg_sub", tostring(nick), tostring(peer)))
+end
+
+function UICoopDebug:OnServerToggle()
+	if self.modal then return end
+	local st = client().state()
+	if client().set_server_debug(not st.on) then self:BindHeader() end
+end
+
+-------------------------------------------------------------------------------
+-- Rail: the pages
+-------------------------------------------------------------------------------
+function UICoopDebug:BuildRail()
+	local ui, g = self.ui, self.g
+	ui:box(g, RAIL_W, HEAD_H + 1, 1, P.h - HEAD_H - FEED_H - 1, "line")
+	for i, id in ipairs(self.page_list) do
+		local y = HEAD_H + 24 + (i - 1) * 76
+		local r = { id = id }
+		r.pick = ui:box(g, 12, y, RAIL_W - 24, 68, "pick")
+		r.bar = ui:box(g, 12, y, 3, 68, "accent")
+		r.title = ui:label(g, 34, y + 8, RAIL_W - 58, 30, "game_title")
+		r.title:SetText(tr("st_coop_dbg_page_" .. id))
+		r.sub = ui:label(g, 34, y + 38, RAIL_W - 58, 22, "game_sub")
+		r.sub:SetText(tr("st_coop_dbg_page_" .. id .. "_sub"))
+		ui:hit(g, 12, y, RAIL_W - 24, 68, "btn_page_" .. id)
+		self:AddCallback("btn_page_" .. id, ui_events.BUTTON_CLICKED, function() self:select_page(id) end, self)
+		self.rail[#self.rail + 1] = r
+	end
+end
+
+function UICoopDebug:select_page(id)
+	if not self:has_page(id) then return end
+	self.page = id
+	last_page = id
+	for _, r in ipairs(self.rail) do
+		local on = r.id == id
+		r.pick:Show(on)
+		r.bar:Show(on)
+		self.ui:style(r.title, on and "game_title_on" or "game_title")
+		self.ui:style(r.sub, on and "game_sub_on" or "game_sub")
+	end
+	for pid, p in pairs(self.pages) do p:Show(pid == id) end
+	self.next_refresh = 0
+end
+
+-------------------------------------------------------------------------------
+-- Pages
+-------------------------------------------------------------------------------
+function UICoopDebug:BuildPages()
+	for _, id in ipairs(self.page_list) do
+		local p = self.ui:free(self.g, CX, CY, CW, CH)
+		self.pages[id] = p
+		local build = self["Page_" .. id]
+		build(self, p)
+	end
+end
+
+-- Overview (D): what this machine knows, read only. Two view requests ask the server.
+function UICoopDebug:Page_overview(p)
+	local w = floor((CW - 2 * 16) / 3)
+	local x1, x2, x3 = 0, w + 16, 2 * (w + 16)
+	local h1 = 330
+	local h2 = CH - h1 - 16
+	self.c_target = self:Card(p, x1, 0, w, h1, "st_coop_dbg_card_target", { "name", "id", "section", "faction", "rank", "relation", "squad", "story" })
+	local by = h1 - 18 - 38
+	local bw = floor((w - 36 - GAP) / 2)
+	for i, id in ipairs({ "can_see", "obj_info" }) do
+		local a = client().action(id)
+		local b = self:Button(p, x1 + 18 + (i - 1) * (bw + GAP), by, bw, 38, "btn_act_" .. id, client().label_of(a), "ghost",
+			function() self:OnAction(id) end)
+		self.actions = self.actions or {}
+		self.actions[id] = b
+	end
+	self.c_items = self:Card(p, x2, 0, w, h1, "st_coop_dbg_card_items", {})
+	self.c_items.lines = self:CardLines(p, x2, 58, w, 9)
+	self.c_place = self:Card(p, x3, 0, w, h1, "st_coop_dbg_card_place", { "level", "pos", "lvid", "gvid", "dir" })
+	self:Button(p, x3 + 18, by, w - 36, 38, "btn_record_pos", tr("st_coop_dbg_record"), "ghost", self.OnRecordPosition)
+
+	self.c_near = self:Card(p, x1, h1 + 16, w, h2, "st_coop_dbg_card_nearest", { "name", "section", "id", "dist" })
+	self.c_players = self:Card(p, x2, h1 + 16, w, h2, "st_coop_dbg_card_players", {})
+	self.c_players.lines = self:CardLines(p, x2, h1 + 16 + 58, w, 5)
+	self.c_world = self:Card(p, x3, h1 + 16, w, h2, "st_coop_dbg_card_world", { "time", "factor", "weather", "emission", "psi" })
+end
+
+-- Target: the object under the crosshair when F7 was pressed
+function UICoopDebug:Page_target(p)
+	local ui = self.ui
+	self.t_name = ui:label(p, 0, 0, CW, 34, "cap")
+	self.t_meta = ui:label(p, 0, 34, CW, 26, "meta")
+	local y = 76
+	local groups = { "object", "me", "goodwill", "squad" }
+	self.target_buttons = {}
+	for _, gname in ipairs(groups) do
+		self:Heading(p, 0, y, CW, "st_coop_dbg_g_" .. gname)
+		local list = client().actions_of("target", gname)
+		self:ActionRow(p, 0, y + 34, list, gname == "squad" and BTN_W or nil)
+		for _, a in ipairs(list) do self.target_buttons[#self.target_buttons + 1] = self.actions[a.id] end
+		if gname == "squad" then
+			-- F1: the squad's faction, a community typed beside the squad's goodwill
+			local fx = #list * (BTN_W + GAP) + 24
+			self.ui:box(p, fx, y + 34, 300, BTN_H, "field")
+			self.faction_hint = self.ui:label(p, fx + 14, y + 34, 272, BTN_H, "field_hint")
+			self.faction_hint:SetText(tr("st_coop_dbg_faction_hint"))
+			self.faction_edit = self:xml_edit(p, fx + 14, y + 34, 272, BTN_H)
+			local fa = client().action("faction")
+			self.actions.faction = self:Button(p, fx + 312, y + 34, BTN_W + 40, BTN_H, "btn_act_faction", client().label_of(fa), "ghost",
+				function() self:OnAction("faction") end)
+			self.target_buttons[#self.target_buttons + 1] = self.actions.faction
+		end
+		y = y + 34 + BTN_H + 26
+	end
+end
+
+-- Spawn: a section by a part of its name, a count, where; then one button. Quick kits on the right.
+function UICoopDebug:Page_spawn(p)
+	local ui = self.ui
+	local lw = 560
+	self:Heading(p, 0, 0, lw, "st_coop_dbg_g_section")
+	ui:box(p, 0, 34, lw, 48, "field")
+	self.spawn_hint = ui:label(p, 16, 34, lw - 32, 48, "field_hint")
+	self.spawn_hint:SetText(tr("st_coop_dbg_sec_hint"))
+	self.spawn_edit = self:xml_edit(p, 16, 34, lw - 32, 48)
+	for i = 1, 8 do
+		local y = 92 + (i - 1) * 40
+		local r = {}
+		r.pick = ui:box(p, 0, y, lw, 38, "pick")
+		r.text = ui:label(p, 16, y, lw - 32, 38, "recent")
+		r.btn = ui:hit(p, 0, y, lw, 38, "btn_found_" .. i)
+		self:AddCallback("btn_found_" .. i, ui_events.BUTTON_CLICKED, function() self:OnFound(i) end, self)
+		self.found_rows[i] = r
+	end
+
+	local rx, rw = lw + 40, CW - lw - 40
+	self:Heading(p, rx, 0, rw, "st_coop_dbg_g_count")
+	self:Button(p, rx, 34, 48, 48, "btn_n_minus", "-", "ghost", function() self:OnCount(-1) end)
+	self.n_text = ui:label(p, rx + 56, 34, 80, 48, "cap", "c")
+	self:Button(p, rx + 144, 34, 48, 48, "btn_n_plus", "+", "ghost", function() self:OnCount(1) end)
+
+	self:Heading(p, rx, 100, rw, "st_coop_dbg_g_where")
+	self.where = {}
+	local cw = floor((rw - 2 * GAP) / 3)
+	for i, at in ipairs({ "inv", "point", "near" }) do
+		local x = rx + (i - 1) * (cw + GAP)
+		local b = self:Button(p, x, 134, cw, BTN_H, "btn_where_" .. at, tr("st_coop_dbg_at_" .. at), "ghost", function() self:OnWhere(at) end)
+		b.mark = ui:box(p, x, 134 + BTN_H - 3, cw, 3, "accent")
+		self.where[at] = b
+	end
+	self.spawn_pick = ui:label(p, rx, 194, rw, 30, "meta_on")
+	self.spawn_kind = ui:label(p, rx, 224, rw, 24, "hint")
+	self.spawn_go = self:Button(p, rx, 258, 280, 56, "btn_spawn_go", tr("st_coop_dbg_spawn_go"), "primary", self.OnSpawn)
+
+	self:Heading(p, rx, 344, rw, "st_coop_dbg_g_quick")
+	self:ActionRow(p, rx, 378, client().actions_of("spawn", "quick"), floor((rw - GAP) / 2))
+end
+
+function UICoopDebug:xml_edit(parent, x, y, w, h)
+	local e = self.ui.xml:InitEditBox("tpl_edit_line", parent)
+	self.ui:place(e, x, y, w, h)
+	self.ui:style_edit(e, "text")
+	return e
+end
+
+-- Me: personal flags, money, teleport
+function UICoopDebug:Page_me(p)
+	local ui = self.ui
+	self:Heading(p, 0, 0, CW, "st_coop_dbg_g_flags")
+	for i, a in ipairs(client().actions_of("me", "flags")) do
+		local y = 34 + (i - 1) * (BTN_H + 10)
+		local r = { id = a.id }
+		r.name = ui:label(p, 0, y, 360, BTN_H, "meta_on")
+		r.name:SetText(client().label_of(a))
+		r.dot = ui:box(p, 380, y + 18, 8, 8, "idle")
+		r.state = ui:label(p, 398, y, 140, BTN_H, "status")
+		r.btn = self:Button(p, 560, y, 200, BTN_H, "btn_act_" .. a.id, "", "ghost", function() self:OnAction(a.id) end)
+		self.actions = self.actions or {}
+		self.actions[a.id] = r.btn
+		self.flag_rows[#self.flag_rows + 1] = r
+	end
+	local y = 34 + 3 * (BTN_H + 10) + 16
+	self:Heading(p, 0, y, CW, "st_coop_dbg_g_money")
+	y = self:ActionRow(p, 0, y + 34, client().actions_of("me", "money")) + 26
+	self:Heading(p, 0, y, CW, "st_coop_dbg_g_tp")
+	local ty = y + 34
+	local tp = client().action("tp_point")
+	local b = self:Button(p, 0, ty, 2 * BTN_W + GAP, BTN_H, "btn_act_tp_point", client().label_of(tp), "ghost", function() self:OnAction("tp_point") end)
+	self.actions.tp_point = b
+	-- the other players, by node (the host's numbering of players is the node)
+	local x = 2 * BTN_W + 2 * GAP
+	local n = 0
+	pcall(function()
+		for _, pl in ipairs(coop.players() or {}) do
+			if not pl.is_self and n < 5 then
+				n = n + 1
+				local i = n
+				self.tp_peers[i] = pl.id
+				self:Button(p, x + (i - 1) * (BTN_W + GAP), ty, BTN_W, BTN_H, "btn_tp_peer_" .. i, trf("st_coop_dbg_tp_to", tostring(pl.nick)), "ghost",
+					function() self:OnTeleportPeer(i) end)
+			end
+		end
+	end)
+	if n == 0 then
+		local l = ui:label(p, x, ty, CW - x, BTN_H, "hint")
+		l:SetText(tr("st_coop_dbg_tp_alone"))
+	end
+	-- K38: the stock level change on this machine; the server's rules for moving decide (story levels together)
+	local ly = ty + BTN_H + 26
+	self:Heading(p, 0, ly, CW, "st_coop_dbg_g_level")
+	ui:box(p, 0, ly + 34, 420, BTN_H, "field")
+	self.level_hint = ui:label(p, 14, ly + 34, 392, BTN_H, "field_hint")
+	self.level_hint:SetText(tr("st_coop_dbg_level_hint"))
+	self.level_edit = self:xml_edit(p, 14, ly + 34, 392, BTN_H)
+	local la = client().action("level")
+	self.actions.level = self:Button(p, 432, ly + 34, BTN_W + 40, BTN_H, "btn_act_level", client().label_of(la), "ghost",
+		function() self:OnAction("level") end)
+end
+
+-- World: time, speed, weather, storms, simulation, info portions
+function UICoopDebug:Page_world(p)
+	local ui = self.ui
+	local y = 0
+	self:Heading(p, 0, y, CW, "st_coop_dbg_g_time")
+	local list = client().actions_of("world", "time")
+	local adds = {}
+	for _, a in ipairs(list) do if a.cmd == "time_add" then adds[#adds + 1] = a end end
+	local bw = 96
+	self:ActionRow(p, 0, y + 34, adds, bw)
+	local sx = 4 * (bw + GAP) + 12 -- 444
+	self:Button(p, sx, y + 34, BTN_H, BTN_H, "btn_hour_minus", "-", "ghost", function() self:OnHour(-1) end)
+	self.hour_text = ui:label(p, sx + BTN_H + 4, y + 34, 80, BTN_H, "cap", "c")
+	self:Button(p, sx + BTN_H + 88, y + 34, BTN_H, BTN_H, "btn_hour_plus", "+", "ghost", function() self:OnHour(1) end)
+	local tt = client().action("time_to")
+	local tx = sx + 2 * BTN_H + 100 -- 632
+	self.actions.time_to = self:Button(p, tx, y + 34, 152, BTN_H, "btn_act_time_to", client().label_of(tt), "ghost",
+		function() self:OnAction("time_to") end)
+	local fx = tx + 152 + 28 -- 812
+	self:Button(p, fx, y + 34, BTN_H, BTN_H, "btn_factor_minus", "-", "ghost", function() self:OnFactor(-1) end)
+	self.factor_text = ui:label(p, fx + BTN_H + 4, y + 34, 64, BTN_H, "cap", "c")
+	self:Button(p, fx + BTN_H + 72, y + 34, BTN_H, BTN_H, "btn_factor_plus", "+", "ghost", function() self:OnFactor(1) end)
+	local tf = client().action("time_factor")
+	local fbx = fx + 2 * BTN_H + 84 -- 984
+	self.actions.time_factor = self:Button(p, fbx, y + 34, CW - fbx, BTN_H, "btn_act_time_factor",
+		client().label_of(tf), "ghost", function() self:OnAction("time_factor") end)
+	y = y + 34 + BTN_H + 26
+
+	self:Heading(p, 0, y, CW, "st_coop_dbg_g_weather")
+	for i, wname in ipairs(WEATHERS) do
+		self:Button(p, (i - 1) * (BTN_W + GAP), y + 34, BTN_W, BTN_H, "btn_weather_" .. i, tr("st_coop_dbg_w_" .. wname), "ghost",
+			function() self:OnWeather(i) end)
+	end
+	y = y + 34 + BTN_H + 26
+
+	self:Heading(p, 0, y, CW, "st_coop_dbg_g_storms")
+	y = self:ActionRow(p, 0, y + 34, client().actions_of("world", "storms")) + 26
+	self:Heading(p, 0, y, CW, "st_coop_dbg_g_sim")
+	y = self:ActionRow(p, 0, y + 34, client().actions_of("world", "sim"), SIM_W) + 26
+
+	self:Heading(p, 0, y, CW, "st_coop_dbg_g_info")
+	ui:box(p, 0, y + 34, 420, BTN_H, "field")
+	self.info_hint = ui:label(p, 14, y + 34, 392, BTN_H, "field_hint")
+	self.info_hint:SetText(tr("st_coop_dbg_info_hint"))
+	self.info_edit = self:xml_edit(p, 14, y + 34, 392, BTN_H)
+	local infos = client().actions_of("world", "info")
+	for i, a in ipairs(infos) do
+		self.actions[a.id] = self:Button(p, 432 + (i - 1) * (BTN_W + GAP), y + 34, BTN_W, BTN_H, "btn_act_" .. a.id, client().label_of(a),
+			a.danger and "danger" or "ghost", function() self:OnAction(a.id) end)
+	end
+end
+
+-- Help: what the server debug gives, and the console
+function UICoopDebug:Page_help(p)
+	local ui = self.ui
+	local half = floor((CW - 40) / 2)
+	self:Heading(p, 0, 0, half, self.on and "st_coop_dbg_help_on_title" or "st_coop_dbg_help_off_title")
+	local lines = {}
+	if not self.on then lines[#lines + 1] = tr(self.operator and "st_coop_dbg_help_off_operator" or "st_coop_dbg_help_off") end
+	for _, page in ipairs({ "target", "spawn", "me", "world" }) do
+		local names = {}
+		local seen = {}
+		for _, a in ipairs(client().ACTIONS) do
+			if a.page == page and not seen[a.id] and a.id ~= "tp_peer" then
+				seen[a.id] = true
+				names[#names + 1] = client().label_of(a)
+			end
+		end
+		lines[#lines + 1] = tr("st_coop_dbg_page_" .. page) .. ": " .. table.concat(names, ", ")
+	end
+	local left = ui:label(p, 0, 36, half, CH - 36, "modal_text", "m")
+	left:SetText(table.concat(lines, " \\n \\n"))
+	self:Heading(p, half + 40, 0, half, "st_coop_dbg_help_console_title")
+	local right = ui:label(p, half + 40, 36, half, CH - 36, "modal_text", "m")
+	right:SetText(tr("st_coop_dbg_help_console"))
+end
+
+-------------------------------------------------------------------------------
+-- Answers of the server
+-------------------------------------------------------------------------------
+function UICoopDebug:BuildFeed()
+	local ui, g = self.ui, self.g
+	local y0 = P.h - FEED_H
+	ui:box(g, 1, y0, P.w - 2, FEED_H - 1, "bar")
+	ui:box(g, 0, y0, P.w, 1, "line")
+	local head = ui:label(g, 40, y0 + 14, 500, 24, "tl_sub")
+	head:SetText(tr("st_coop_dbg_feed"))
+	local keys = ui:label(g, P.w - 40 - 640, y0 + 14, 640, 24, "hint", "r")
+	keys:SetText(tr("st_coop_dbg_keys"))
+	self.feed_rows = {}
+	for i = 1, FEED_ROWS do
+		local y = y0 + 46 + (i - 1) * 28
+		local r = {}
+		r.dot = ui:box(g, 42, y + 10, 8, 8, "idle")
+		r.at = ui:label(g, 62, y, 96, 28, "hist_count")
+		r.text = ui:label(g, 160, y, P.w - 200, 28, "status")
+		pcall(function() r.text:SetEllipsis(true) end)
+		self.feed_rows[i] = r
+	end
+	self.feed_empty = ui:label(g, 62, y0 + 46, 600, 28, "status_sub")
+	self.feed_empty:SetText(tr("st_coop_dbg_feed_empty"))
+end
+
+local KIND_ROLE = { ok = "live", err = "error", pending = "wait", info = "idle" }
+
+function UICoopDebug:BindFeed()
+	local list = client().feed()
+	self.feed_empty:Show(#list == 0)
+	for i, r in ipairs(self.feed_rows) do
+		local e = list[i]
+		local shown = e ~= nil
+		r.dot:Show(shown)
+		r.at:Show(shown)
+		r.text:Show(shown)
+		if e then
+			r.dot:SetTextureColor(self.ui:color(KIND_ROLE[e.kind] or "idle"))
+			r.at:SetText(e.at or "")
+			r.text:SetText(e.text or "")
+			self.ui:style(r.text, e.kind == "err" and "status_err" or (i == 1 and "meta_on" or "status"))
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- The question before a destructive action
+-------------------------------------------------------------------------------
+function UICoopDebug:BuildModal()
+	local ui, g = self.ui, self.g
+	local mw, mh = 660, 270
+	local mx, my = floor((P.w - mw) / 2), floor((P.h - mh) / 2)
+	self.modal_parts = {}
+	local dim = ui:box(g, 0, 0, P.w, P.h, "modal_dim")
+	local root = ui:free(g, mx, my, mw, mh)
+	ui:box(root, 0, 0, mw, mh, "panel")
+	ui:outline(root, 0, 0, mw, mh, "tile_line")
+	local c = ui:corners(root, "error")
+	ui:place_corners(c, 0, 0, mw, mh, self.T.corners.len, self.T.corners.thick)
+	self.modal_title = ui:label(root, 32, 26, mw - 64, 40, "modal_title")
+	self.modal_text = ui:label(root, 32, 76, mw - 64, 96, "modal_text", "m")
+	self:Button(root, 32, mh - 32 - 48, 220, 48, "btn_modal_ok", tr("st_coop_dbg_confirm_ok"), "primary", self.OnModalOk)
+	self:Button(root, 264, mh - 32 - 48, 180, 48, "btn_modal_no", tr("st_coop_dbg_cancel"), "ghost", self.CloseModal)
+	self.modal_root, self.modal_dim = root, dim
+	self:ShowModalParts(false)
+end
+
+function UICoopDebug:ShowModalParts(on)
+	self.modal_dim:Show(on)
+	self.modal_root:Show(on)
+end
+
+function UICoopDebug:ShowConfirm(id, ctx)
+	local a = client().action(id)
+	self.modal, self.modal_ctx = id, ctx
+	self.modal_title:SetText(trf("st_coop_dbg_confirm_title", client().label_of(a)))
+	local what = tr("st_coop_dbg_confirm_" .. id)
+	if id == "release" or id == "inv_clear" then
+		local name = safe(function() return client().target:name() end)
+		what = trf("st_coop_dbg_confirm_" .. id, text_or_none(name))
+	elseif id == "info_give" or id == "info_take" then
+		what = trf("st_coop_dbg_confirm_" .. id, tostring(ctx.info or ""))
+	end
+	self.modal_text:SetText(what)
+	self:ShowModalParts(true)
+end
+
+function UICoopDebug:CloseModal()
+	self.modal, self.modal_ctx = nil, nil
+	self:ShowModalParts(false)
+end
+
+function UICoopDebug:OnModalOk()
+	local id, ctx = self.modal, self.modal_ctx
+	self:CloseModal()
+	if id then client().run(id, ctx, nil, true) end
+end
+
+-------------------------------------------------------------------------------
+-- Actions
+-------------------------------------------------------------------------------
+function UICoopDebug:Context()
+	local cl = client()
+	local function typed(e) return e and safe(function() return e:GetText() end) or nil end
+	return { target = cl.target, sec = self.spawn_sec, n = self.spawn_n, at = self.spawn_at, h = self.hour, m = 0,
+		f = TIME_FACTORS[self.factor_i], info = typed(self.info_edit), c = typed(self.faction_edit), level = typed(self.level_edit) }
+end
+
+function UICoopDebug:OnAction(id)
+	if self.modal then return end
+	local a = client().action(id)
+	if not a then return end
+	local ctx = self:Context()
+	if a.confirm then
+		self:ShowConfirm(id, ctx)
+		return
+	end
+	client().run(id, ctx)
+end
+
+function UICoopDebug:OnFound(i)
+	local s = self.found[i]
+	if not s then return end
+	self.spawn_sec = s
+	self.spawn_edit:SetText(s)
+	self:BindSpawn()
+end
+
+function UICoopDebug:OnCount(d)
+	self.spawn_n = max(1, min(client().MAX_N, self.spawn_n + d))
+	self:BindSpawn()
+end
+
+function UICoopDebug:OnWhere(at)
+	self.spawn_at = at
+	self:BindSpawn()
+end
+
+function UICoopDebug:OnSpawn()
+	if self.modal then return end
+	local kind = client().section_kind(self.spawn_sec)
+	local id = kind == "object" and "spawn_object" or "spawn_item"
+	client().run(id, self:Context())
+end
+
+function UICoopDebug:OnTeleportPeer(i)
+	if self.modal then return end
+	local peer = self.tp_peers[i]
+	if peer ~= nil then client().run("tp_peer", { p = peer }) end
+end
+
+function UICoopDebug:OnHour(d)
+	self.hour = (self.hour + d) % 24
+	self:BindWorld()
+end
+
+function UICoopDebug:OnFactor(d)
+	self.factor_i = max(1, min(#TIME_FACTORS, self.factor_i + d))
+	self:BindWorld()
+end
+
+function UICoopDebug:OnWeather(i)
+	if self.modal then return end
+	client().run("weather", { w = WEATHERS[i] })
+end
+
+-- A7 of the stock: the place into positional_info.txt next to the game, on this machine only
+function UICoopDebug:OnRecordPosition()
+	local ok = pcall(function()
+		local a = db.actor
+		local p = a:position()
+		local f = io.open("positional_info.txt", "a+")
+		if not f then error("no file") end
+		f:write(string.format("%s pos=%.3f,%.3f,%.3f lvid=%s gvid=%s\n", tostring(level.name()), p.x, p.y, p.z,
+			tostring(a:level_vertex_id()), tostring(a:game_vertex_id())))
+		f:close()
+	end)
+	client().add_line(tr(ok and "st_coop_dbg_recorded" or "st_coop_dbg_err_failed"), ok and "ok" or "err", tr("st_coop_dbg_record"))
+end
+
+-------------------------------------------------------------------------------
+-- Binding what the pages show
+-------------------------------------------------------------------------------
+function UICoopDebug:BindSpawn()
+	if not self.n_text then return end
+	local kind = client().section_kind(self.spawn_sec)
+	self.n_text:SetText(tostring(kind == "object" and 1 or self.spawn_n))
+	for at, b in pairs(self.where) do b.mark:Show(at == self.spawn_at) end
+	self.spawn_hint:Show((self.spawn_text or "") == "")
+	for i, r in ipairs(self.found_rows) do
+		local s = self.found[i]
+		r.text:SetText(s or "")
+		r.pick:Show(s ~= nil and s == self.spawn_sec)
+		r.btn:Enable(s ~= nil)
+	end
+	if kind then
+		self.spawn_pick:SetText(self.spawn_sec)
+		local at = self.spawn_at
+		if kind == "object" and at == "inv" then at = "near" end
+		self.spawn_kind:SetText(trf("st_coop_dbg_kind_" .. kind, tr("st_coop_dbg_at_" .. at)))
+	else
+		self.spawn_pick:SetText(tr(((self.spawn_text or "") == "") and "st_coop_dbg_spawn_pick" or "st_coop_dbg_spawn_none"))
+		self.spawn_kind:SetText("")
+	end
+	self:EnableButton(self.spawn_go, kind ~= nil)
+end
+
+-- the edit box is read every frame: the engine has no "text changed" event for a script window
+function UICoopDebug:PollSpawnEdit()
+	if not self.spawn_edit then return end
+	local text = safe(function() return self.spawn_edit:GetText() end) or ""
+	if text == self.spawn_text then return end
+	self.spawn_text = text
+	self.found = client().find_sections(text, #self.found_rows)
+	self.spawn_sec = client().section_kind(text) and text or nil
+	self:BindSpawn()
+end
+
+-- a placeholder shows while its field is empty
+local function bind_hint(hint, edit)
+	if not (hint and edit) then return end
+	local t = safe(function() return edit:GetText() end) or ""
+	hint:Show(t == "")
+end
+
+function UICoopDebug:BindWorld()
+	if self.hour_text then self.hour_text:SetText(string.format("%02d:00", self.hour)) end
+	if self.factor_text then self.factor_text:SetText("x" .. tostring(TIME_FACTORS[self.factor_i])) end
+	bind_hint(self.info_hint, self.info_edit)
+	bind_hint(self.faction_hint, self.faction_edit)
+	bind_hint(self.level_hint, self.level_edit)
+end
+
+function UICoopDebug:BindMe()
+	for _, r in ipairs(self.flag_rows) do
+		local on = client().flag_on(r.id)
+		r.dot:SetTextureColor(self.ui:color(on and "live" or "idle"))
+		r.state:SetText(tr(on and "st_coop_dbg_flag_on" or "st_coop_dbg_flag_off"))
+		r.btn.text:SetText(tr(on and "st_coop_dbg_btn_off" or "st_coop_dbg_btn_on"))
+	end
+end
+
+function UICoopDebug:BindTarget()
+	local o = client().target
+	local has = o ~= nil and safe(function() return o:id() end) ~= nil
+	if self.t_name then
+		if has then
+			self.t_name:SetText(text_or_none(safe(function() return o:character_name() end) or safe(function() return o:name() end)))
+			self.t_meta:SetText(trf("st_coop_dbg_target_meta", text_or_none(safe(function() return o:id() end)),
+				text_or_none(client().host_id(o)), text_or_none(safe(function() return o:section() end))))
+		else
+			self.t_name:SetText(tr("st_coop_dbg_no_target"))
+			self.t_meta:SetText(tr("st_coop_dbg_no_target_hint"))
+		end
+		for _, b in ipairs(self.target_buttons or {}) do self:EnableButton(b, has) end
+	end
+	for _, id in ipairs({ "can_see", "obj_info" }) do
+		local b = self.actions and self.actions[id]
+		if b then self:EnableButton(b, has) end
+	end
+end
+
+local RELATIONS = { [0] = "st_coop_dbg_rel_friend", [1] = "st_coop_dbg_rel_neutral", [2] = "st_coop_dbg_rel_enemy" }
+
+function UICoopDebug:BindOverview()
+	local o = client().target
+	local v = self.c_target.vals
+	if o and safe(function() return o:id() end) ~= nil then
+		local id = safe(function() return o:id() end)
+		v.name:SetText(text_or_none(safe(function() return o:character_name() end) or safe(function() return o:name() end)))
+		v.id:SetText(trf("st_coop_dbg_v_ids", text_or_none(id), text_or_none(client().host_id(o))))
+		v.section:SetText(text_or_none(safe(function() return o:section() end)))
+		v.faction:SetText(text_or_none(safe(function() return o:character_community() end)))
+		v.rank:SetText(text_or_none(safe(function() return o:character_rank() end)))
+		local rel = safe(function() return o:relation(db.actor) end)
+		v.relation:SetText(RELATIONS[rel] and tr(RELATIONS[rel]) or text_or_none(nil))
+		v.squad:SetText(text_or_none(safe(function()
+			local sq = get_object_squad(o)
+			if not sq then return nil end
+			local smart = sq.smart_id and alife():object(sq.smart_id)
+			return sq:section_name() .. (smart and (" @ " .. smart:name()) or "")
+		end)))
+		v.story:SetText(text_or_none(safe(function() return get_object_story_id(id) end)))
+	else
+		for _, l in pairs(v) do l:SetText(text_or_none(nil)) end
+		v.name:SetText(tr("st_coop_dbg_no_target"))
+	end
+
+	-- T10: the target's things, counted by section (own mirror)
+	local counts, order = {}, {}
+	if o then
+		pcall(function()
+			o:iterate_inventory(function(_, item)
+				local s = item:section()
+				if not counts[s] then counts[s] = 0; order[#order + 1] = s end
+				counts[s] = counts[s] + 1
+			end)
+		end)
+	end
+	table.sort(order)
+	for i, l in ipairs(self.c_items.lines) do
+		local s = order[i]
+		if i == #self.c_items.lines and #order > i then
+			l:SetText(trf("st_coop_dbg_more", #order - i + 1))
+		elseif s then
+			l:SetText(s .. "  x" .. counts[s])
+		else
+			l:SetText(i == 1 and tr("st_coop_dbg_items_none") or "")
+		end
+	end
+
+	-- my place (A7 / the stock's record)
+	local pv = self.c_place.vals
+	local a = db.actor
+	pv.level:SetText(text_or_none(safe(function() return level.name() end)))
+	local pos = a and safe(function() return a:position() end)
+	pv.pos:SetText(pos and (num(pos.x, 2) .. "  " .. num(pos.y, 2) .. "  " .. num(pos.z, 2)) or text_or_none(nil))
+	pv.lvid:SetText(text_or_none(a and safe(function() return a:level_vertex_id() end)))
+	pv.gvid:SetText(text_or_none(a and safe(function() return a:game_vertex_id() end)))
+	local dir = safe(function() return device().cam_dir end)
+	pv.dir:SetText(dir and (num((deg(atan2(dir.x, dir.z)) + 360) % 360, 0) .. "\176") or text_or_none(nil))
+
+	-- the nearest object (A11): the closest online object with a binder, the actor aside
+	local nv = self.c_near.vals
+	local best, bd = nil, nil
+	if pos then
+		pcall(function()
+			for id, st in pairs(db.storage or {}) do
+				local obj = st and st.object
+				if obj and id ~= 0 then
+					local d = safe(function() return obj:position():distance_to(pos) end)
+					if d and (not bd or d < bd) then best, bd = obj, d end
+				end
+			end
+		end)
+	end
+	nv.name:SetText(text_or_none(best and safe(function() return best:name() end)))
+	nv.section:SetText(text_or_none(best and safe(function() return best:section() end)))
+	nv.id:SetText(text_or_none(best and safe(function() return best:id() end)))
+	nv.dist:SetText(bd and (num(bd, 1) .. " m") or text_or_none(nil))
+
+	-- players: nick, node, level, on feet, RTT
+	local lines = self.c_players.lines
+	local list = safe(function() return coop.players() end) or {}
+	for i, l in ipairs(lines) do
+		local pl = list[i]
+		if pl then
+			local lvl = safe(function() return coop.levels.level_of_player(pl.id) end)
+			local life = safe(function() return coop.life_of(pl.id) end)
+			local standing = life == nil or life == "alive" or life == 0
+			l:SetText(trf("st_coop_dbg_player_line", tostring(pl.nick), tostring(pl.id), text_or_none(lvl),
+				tr(standing and "st_coop_dbg_v_standing" or "st_coop_dbg_v_down"), tostring(pl.rtt or 0)))
+		else
+			l:SetText(i == 1 and tr("st_coop_dbg_v_none") or "")
+		end
+	end
+
+	-- world: what this machine has from the server's sync
+	local wv = self.c_world.vals
+	local h, m = safe(function() return level.get_time_hours() end), safe(function() return level.get_time_minutes() end)
+	wv.time:SetText(h and string.format("%02d:%02d", h, m or 0) or text_or_none(nil))
+	local f = safe(function() return level.get_time_factor() end)
+	wv.factor:SetText(f and ("x" .. num(f, 0)) or text_or_none(nil))
+	wv.weather:SetText(text_or_none(safe(function() return level.get_weather() end)))
+	local surge = safe(function() return surge_manager.get_surge_manager().started end)
+	local psi = safe(function() return psi_storm_manager.get_psi_storm_manager().started end)
+	wv.emission:SetText(tr(surge and "st_coop_dbg_v_active" or "st_coop_dbg_v_calm"))
+	wv.psi:SetText(tr(psi and "st_coop_dbg_v_active" or "st_coop_dbg_v_calm"))
+end
+
+function UICoopDebug:Refresh()
+	self:BindHeader()
+	self:BindFeed()
+	if self.page == "overview" then pcall(self.BindOverview, self) end
+	self:BindTarget()
+	self:BindSpawn()
+	self:BindWorld()
+	self:BindMe()
+end
+
+function UICoopDebug:Update()
+	CUIScriptWnd.Update(self)
+	self.ui:hover()
+	self:PollSpawnEdit()
+	bind_hint(self.info_hint, self.info_edit)
+	bind_hint(self.faction_hint, self.faction_edit)
+	bind_hint(self.level_hint, self.level_edit)
+	local t = now()
+	if t >= self.next_refresh then
+		self.next_refresh = t + REFRESH_MS
+		self:Refresh()
+	end
+end
+
+local function is_f7(dik)
+	local ok, hit = pcall(function() return dik_to_bind(dik) == key_bindings.kCUSTOM17 end)
+	return ok and hit == true
+end
+
+function UICoopDebug:OnKeyboard(dik, keyboard_action)
+	local res = CUIScriptWnd.OnKeyboard(self, dik, keyboard_action)
+	local pressed = keyboard_action == ui_events.WINDOW_KEY_PRESSED
+	if pressed and dik == DIK_keys.DIK_ESCAPE then
+		if self.modal then self:CloseModal() else close() end
+		return true
+	end
+	-- F7 closes the window on its release (the press opened it in the level): the level never sees this release
+	if keyboard_action == ui_events.WINDOW_KEY_RELEASED and is_f7(dik) then
+		key_closed_at = now()
+		close()
+		return true
+	end
+	return res
+end
+
+-------------------------------------------------------------------------------
+-- Module
+-------------------------------------------------------------------------------
+function window()
+	return win
+end
+
+function open(page)
+	if win then return win end
+	if not client().active() then return nil end
+	local ok, err = pcall(function()
+		local w = UICoopDebug(page or last_page)
+		w:ShowDialog(true)
+		win = w
+	end)
+	if not ok then
+		log("! the debug window failed: %s", tostring(err))
+		win = nil
+	end
+	return win
+end
+
+function close()
+	local w = win
+	win = nil
+	if w then pcall(function() if w:IsShown() then w:HideDialog() end end) end
+end
+
+-- F7 in the level: the target is the object under the crosshair now (the stock's o1)
+function toggle()
+	if win then
+		close()
+		return
+	end
+	if now() - key_closed_at < KEY_GUARD_MS then return end -- the release that closed it from the window
+	client().capture_target()
+	open()
+end
+
+-- coop_debug_changed: the open window is built again for the new state, on the same page
+function on_state_changed()
+	if not win then return end
+	local page = win.page
+	close()
+	open(page)
+end
+
+-- a new line of the answers
+function on_feed()
+	if win then pcall(win.BindFeed, win) end
+end

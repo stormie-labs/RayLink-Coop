@@ -324,9 +324,10 @@ for _, mode in ipairs({ "client", "host" }) do
 	if mode == "client" then
 		check(RAN.squad == nil and RAN.save == nil, "client: squad_on_update / save_state of coop_* are skipped (forced host)")
 		check(RAN.load == true, "client: load_state of a host script runs (forced view)")
-		check(RAN.debug == nil, "client: a debug tool (old [blocked] = host, not none) is skipped")
+		check(RAN.debug == nil, "client: a debug tool (none, DEBUG_DESIGN B.8) is skipped")
 	else
-		check(RAN.squad and RAN.save and RAN.load and RAN.debug, "host: all of them run")
+		check(RAN.squad and RAN.save and RAN.load, "host: the forced ones run")
+		check(RAN.debug == nil, "host: a debug tool is none in a session too (DEBUG_DESIGN B.8)")
 	end
 end
 

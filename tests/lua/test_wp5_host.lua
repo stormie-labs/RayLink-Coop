@@ -5,7 +5,7 @@ print("== host")
 C = {}
 _G.bump = function(k) C[k] = (C[k] or 0) + 1 end
 load_coop_main()
-check(DEV_DEBUG == true, "host keeps debug mode")
+check(DEV_DEBUG == false, "host in a session: debug mode is off too (R-6.6 on every machine, DEBUG_DESIGN B.8)")
 local host_fn = from_script("sim_board", "return function() bump('host') end")
 RegisterScriptCallback("actor_on_update", host_fn)
 coop_main.on_game_start()
