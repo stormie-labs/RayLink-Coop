@@ -86,7 +86,7 @@ TEST(world_gate_the_join_lifecycle_and_world_free_handlers_run_without_a_world)
 	// kept by their own modules: the newest value, a deferred queue, a Lua queue for a frame that checks the world
 	for (Msg m : {Msg::TimeSync, Msg::WeatherSync, Msg::InfoPortion, Msg::TaskList, Msg::MapSpot, Msg::Relation,
 	         Msg::StoryHash, Msg::SyncFull, Msg::SyncSet, Msg::ScriptEvent, Msg::CheckpointState, Msg::RestState,
-	         Msg::PlayerRules})
+	         Msg::PlayerRules, Msg::DebugState})
 		CHECK(decide(need_of(m), World::Absent) == Act::Run);
 }
 

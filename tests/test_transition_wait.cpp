@@ -679,7 +679,7 @@ TEST(transition_message_numbers_and_directions)
 	CHECK(msg_sender(Msg::TransitionVote) == MsgSender::ClientOnly);
 	CHECK(msg_sender(Msg::TransitionState) == MsgSender::HostOnly);
 	CHECK_EQ(std::string(msg_name(Msg::TransitionState)), std::string("TransitionState"));
-	CHECK_EQ(kProtocolVersion, 28u); // 16 attachment snapshots, 17 EntityVisual; older peers are refused by the handshake
+	CHECK_EQ(kProtocolVersion, 29u); // 29 DebugState; 16 attachment snapshots, 17 EntityVisual; older peers are refused by the handshake
 }
 
 // F3a, the host went alone and every player loads where he stands (plan §1.5): nobody waits for a level that is not his.

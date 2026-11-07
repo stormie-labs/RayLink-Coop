@@ -323,7 +323,8 @@ TEST(msg_name_known_and_unknown)
 		Msg::DialogLockResult, Msg::DialogUnlock, Msg::DialogPhrases, Msg::DialogSelect, Msg::TradeOp,
 		Msg::ScriptEvent, Msg::StateDumpRequest, Msg::StateDump, Msg::EntitySound, Msg::AvatarList,
 		Msg::MoneyBalance, Msg::CharOffer, Msg::CharChoice, Msg::TransitionState,
-		Msg::SyncSet, Msg::SyncFull, Msg::SyncRequest, Msg::SyncResult, Msg::SyncCast}; // F2 T14
+		Msg::SyncSet, Msg::SyncFull, Msg::SyncRequest, Msg::SyncResult, Msg::SyncCast, // F2 T14
+		Msg::DebugState}; // protocol 29
 	for (Msg m : all)
 		CHECK(std::strncmp(msg_name(m), "Msg_0x", 6) != 0);
 }

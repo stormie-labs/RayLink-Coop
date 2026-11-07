@@ -139,6 +139,7 @@ constexpr Row kExpected[] = {
 	{Msg::NewCharacter, kWorld},
 	// scripting and diagnostics
 	{Msg::ScriptEvent, kWorld},
+	{Msg::DebugState, kWorld}, // protocol 29: the server's debug
 	{Msg::StateDumpRequest, kMap},
 	{Msg::StateDump, kMap},
 	// F3a: the world server and the players

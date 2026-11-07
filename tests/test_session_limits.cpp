@@ -1259,6 +1259,7 @@ constexpr Direction kDirections[] = {
 	{Msg::LoadReady, kClient},
 	// scripting and diagnostics
 	{Msg::ScriptEvent, kBoth},
+	{Msg::DebugState, kHost}, // protocol 29: the server's debug (test_debug_rules.cpp)
 	{Msg::StateDumpRequest, kClient},
 	{Msg::StateDump, kHost},
 };
