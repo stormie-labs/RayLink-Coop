@@ -37,8 +37,22 @@
 	   is closed by dream_end, never by that state. GAMMA's get_immersive_sleep_hours is not called: its random early
 	   wake-up would give this machine other hours than the world skipped.
 
-	4. Prompts: an ally lies down -> "<nick> is tired, rest too" (once per rest; not while I rest myself: my window names
-	   who is awake). The party panel line is coop_allies.rest_mark.
+	4. The offer (owner 2026-11-07, live report from vanilla: "there was no window to accept the time skip"): an ally lies
+	   down -> every other awake player gets the window UICoopInvite "<nick> is going to sleep for N h. Lie down too?" with
+	   Lie down too / Not now (ESC = Not now). Once per rest of an ally; not while I rest myself (my doze window names who is
+	   awake); one window for all who rest (when the one it names gets up, it names another who still rests, else it
+	   closes). Lie down too = the lie-down of the sleep dialog for his hours: the same local checks (bleeding, radiation:
+	   the stock texts; one word a second) and coop.rest.lie_down, then the doze window; the host judges the rest place.
+	   A refusal - local in the window at once, the host's (coop_rest_refused, or no answer in 6 s) after the doze closed -
+	   brings the offer back with the reason. Get up after accepting is the player's answer: no offer again.
+	   The window never steals the input in a fight or over another window: while coop.rest.block() says "combat" (somebody
+	   of the group fights; the sleep cannot begin anyway), I was hit or shot within INVITE_QUIET_MS, the HUD is not free
+	   (actor_menu.is_hud_free: inventory, a dialogue, a registered window) or the PDA is open, there is only a tip "... the
+	   offer opens when the fight is over and the menus are closed" and the window opens at the first free second (a hit
+	   while it is up puts it back to waiting). No hotkey: G.A.M.M.A. hands keys to on_before_key_press first and a mod may
+	   take them there (coop_hud_transition HOLD_GAP_MS), and the offer must not wait for a key the player may not know.
+	   A window that cannot be made falls back to the old tip "<nick> is tired, rest too". The party panel line is
+	   coop_allies.rest_mark.
 
 	5. The world server tells the engine once a second whether the world holds the sleep (an emission or a psi-storm:
 	   coop.rest.set_world_block("emission") / ("")): a level, not an edge - the block outlives a session and a missed
@@ -46,6 +60,7 @@
 
 	API for other scripts:
 		coop_rest.window() -> the open doze window | nil
+		coop_rest.invite_window() -> the open offer window | nil
 		coop_rest.dream_mid() / coop_rest.dream_end()   the camera effector callbacks (the engine calls them by name)
 --]]
 
@@ -62,6 +77,7 @@ local BAG_REACH = 6 -- m: the sleeping bag the player sleeps at is this near at 
 local MAX_HOURS = 24
 local MAX_REASON = 32
 local TIP_SECONDS = 4
+local INVITE_QUIET_MS = 10000 -- a hit or a shot of mine within this time is a fight: the offer window waits
 local SLEEP_ANM = "camera_effects\\sleep.anm"
 local FAINT_IN_ANM = "camera_effects\\surge_02.anm"
 local FAINT_OUT_ANM = "camera_effects\\surge_01.anm"
@@ -226,12 +242,18 @@ end
 local win = nil -- the doze window
 local win_open = false
 local dream = nil -- { hours, forced, at, mid, in_bag, music, eff } while the sleep effects run
-local st = { hours = 0, forced = false, asked = 0, seen = false, last_ask = nil, bag = nil, bag_at = nil }
-local prompted = {} -- local id of an ally -> true while his rest was announced
+-- invited: { id, hours } while my rest is the answer to an offer (a refusal brings the offer back)
+local st = { hours = 0, forced = false, asked = 0, seen = false, last_ask = nil, bag = nil, bag_at = nil, invited = nil }
+local prompted = {} -- local id of an ally -> true while his rest was offered (one window per rest)
+local answered = {} -- local id of an ally -> true while his rest got "Not now": the window never comes back to it
+local inv = nil -- the offer: { id, hours, reason, told } while an ally's rest is offered to me
+local inv_win, inv_open = nil, false -- its window
+local last_fight = nil -- time_global() of my last hit or shot
 local next_tick = 0
 local ours = {} -- the wrappers this script made: never wrapped again
 
 local tick, get_up, fold -- below (the window calls them)
+local accept_invite, drop_invite, offer_invite, invite_poll, reoffer -- the offer (below)
 
 local function busy()
 	return win_open or dream ~= nil
@@ -250,6 +272,11 @@ local function nick_of(id)
 		end
 	end
 	return "?"
+end
+
+local function hours_of(id)
+	local ok, h = rest_call("hours_of", id)
+	return ok and normalize_hours(h) or nil
 end
 
 local function waiting_nicks()
@@ -413,6 +440,7 @@ local function fold_target()
 end
 
 local function open_doze(hours, forced)
+	drop_invite() -- I lie down: an offer has nothing left to ask
 	st.hours, st.forced, st.asked, st.seen = hours, forced == true, time_global(), false
 	info_off("sleep_active") -- it freezes every time event of the machine (_g.script, ProcessEventQueue)
 	info_on("actor_is_sleeping")
@@ -426,6 +454,7 @@ local function open_doze(hours, forced)
 	if not ok then
 		log("! the doze window failed: %s", tostring(err))
 		rest_call("get_up") -- a rest nobody sees must not go on
+		st.invited = nil
 		close_doze()
 		tell("refused")
 		return false
@@ -450,6 +479,7 @@ local function poll(now)
 		rest_call("get_up") -- T14 review I-2: a lie-down that reaches the host late must not leave us resting unseen
 		close_doze() -- the engine never took the lie-down
 		tell("refused_lost")
+		reoffer("refused_lost")
 		return
 	end
 	local w = win
@@ -457,6 +487,7 @@ local function poll(now)
 end
 
 get_up = function()
+	st.invited = nil -- getting up after accepting an offer is the player's answer
 	rest_call("get_up")
 	close_doze()
 end
@@ -495,6 +526,8 @@ end
 
 local function start_dream(hours, forced)
 	dream = { hours = hours, forced = forced == true, at = time_global(), mid = false, in_bag = st.bag ~= nil }
+	st.invited = nil
+	drop_invite()
 	close_doze() -- the window gives way; actor_is_sleeping stays (a dream is on)
 	try("heli flag", function() save_var(db.actor, "heli_enemy_flag", nil) end)
 	try("disable_ui", function() xr_effects.disable_ui(db.actor, nil) end)
@@ -565,6 +598,7 @@ local function on_refused(reason)
 	end
 	close_doze()
 	tell(key)
+	reoffer(key) -- an accepted offer comes back with the reason
 end
 
 -- coop_rest_changed(local_id, state, hours): the engine's list changed for a player (0 = me). A hint; the state is read again.
@@ -576,14 +610,18 @@ local function on_changed(id, state, hours)
 		return
 	end
 	if state == "awake" then
-		prompted[id] = nil
+		prompted[id], answered[id] = nil, nil
+		invite_poll(time_global()) -- his rest was the offer's: it names another who rests or goes
 		return
 	end
 	if state ~= "resting" or prompted[id] then return end
+	if not rest_session() then return end
 	if busy() or state_of(0) ~= "awake" then return end -- I rest myself: my window says who is awake
 	if state_of(id) ~= "resting" then return end -- a rest the queue replays after it is over
 	prompted[id] = true
-	tell("prompt", nick_of(id), normalize_hours(hours) or 0)
+	if inv then return end -- one window: the open offer already asks me to lie down
+	inv = { id = id, hours = normalize_hours(hours) or hours_of(id) or 1, reason = nil, told = false }
+	offer_invite(time_global())
 end
 
 -- A world is entered (a load, a level change): what was open belongs to the old one.
@@ -596,8 +634,10 @@ local function on_first_update()
 	if dream then
 		dream_end()
 	end
-	prompted = {}
-	st.bag, st.bag_at, st.forced = nil, nil, false
+	drop_invite()
+	prompted, answered = {}, {}
+	last_fight = nil
+	st.bag, st.bag_at, st.forced, st.invited = nil, nil, false, nil
 	info_off("actor_is_sleeping") -- a save written while a window was open carries these
 	info_off("sleep_active")
 end
@@ -608,6 +648,7 @@ tick = function()
 	next_tick = now + TICK_MS
 	feed_world_block()
 	poll(now)
+	invite_poll(now)
 	local d = dream
 	if d and now - d.at > DREAM_MAX_MS then
 		log("the dream did not end in %d s, ending it", DREAM_MAX_MS / 1000)
@@ -627,14 +668,33 @@ end
 
 -- Asks the engine to let the player rest; the window opens when it took the word. A rest on a sleeping bag names the bag
 -- (protocol 14): the host lets one sleeper on it.
-local function ask_lie_down(hours, forced)
+local function send_lie_down(hours, forced)
 	local ok, sent = rest_call("lie_down", hours, forced == true, (not forced) and st.bag or nil)
-	if not (ok and sent == true) then
+	if not (ok and sent == true) then return false end
+	st.last_ask = time_global()
+	return true
+end
+
+local function ask_lie_down(hours, forced)
+	st.invited = nil -- a lie-down of my own (a bed, a faint) is not an answer to an offer
+	if not send_lie_down(hours, forced) then
 		tell("refused")
 		return false
 	end
-	st.last_ask = time_global()
 	return open_doze(hours, forced)
+end
+
+-- What the stock dialog forbids and the co-op keeps (bleeding, radiation): its own text, nil when he may lie down.
+local function local_refusal()
+	local bleeding, radiation = false, false
+	pcall(function()
+		bleeding = (tonumber(db.actor.bleeding) or 0) > 0
+		radiation = (tonumber(db.actor.radiation) or 0) > 0
+	end)
+	if bleeding and radiation then return translate("st_sleep_bleeding_irradiated") end
+	if bleeding then return translate("st_sleep_bleeding") end
+	if radiation then return translate("st_sleep_irradiated") end
+	return nil
 end
 
 local function hide_stock(self)
@@ -651,20 +711,10 @@ local function wrap_test_and_show(orig)
 		if force == true or not rest_session() then return orig(self, force, ...) end
 		if st.bag_dialog then st.bag_dialog = false else st.bag = nil end -- a dialog not opened by sleep_bag has no bag
 		if busy() then return end -- a doze or a dream is on: no second dialog
-		local bleeding, radiation = false, false
-		pcall(function()
-			bleeding = (tonumber(db.actor.bleeding) or 0) > 0
-			radiation = (tonumber(db.actor.radiation) or 0) > 0
-		end)
+		local why = local_refusal()
 		info_off("sleep_active")
-		if bleeding or radiation then
-			if bleeding and radiation then
-				put_tip(translate("st_sleep_bleeding_irradiated"))
-			elseif bleeding then
-				put_tip(translate("st_sleep_bleeding"))
-			else
-				put_tip(translate("st_sleep_irradiated"))
-			end
+		if why then
+			put_tip(why)
 			return
 		end
 		-- the shelter is the host's business now (it looks at the rest place when the player lies down); the rest of the stock
@@ -760,6 +810,238 @@ local function install_wrappers()
 end
 
 -------------------------------------------------------------------------------
+-- The offer to lie down too (header, 4)
+-------------------------------------------------------------------------------
+class "UICoopInvite" (CUIScriptWnd)
+
+function UICoopInvite:__init() super()
+	self:InitControls()
+	self:InitCallbacks()
+end
+
+function UICoopInvite:__finalize()
+end
+
+function UICoopInvite:InitControls()
+	self:SetWndRect(Frect():set(0, 0, 1024, 768))
+	self:Enable(true)
+
+	local xml = CScriptXmlInit()
+	xml:ParseFile("ui_coop_rest.xml")
+
+	local d = xml:InitStatic("invite", self)
+	xml:InitFrame("invite:frame", d)
+	xml:InitStatic("invite:cap", d)
+	self.question = xml:InitTextWnd("invite:question", d)
+	xml:InitTextWnd("invite:note", d)
+	self.reason = xml:InitTextWnd("invite:reason", d)
+	xml:InitTextWnd("invite:hint", d)
+	self.btn_yes = xml:Init3tButton("invite:btn_yes", d)
+	self:Register(self.btn_yes, "btn_yes")
+	self.btn_no = xml:Init3tButton("invite:btn_no", d)
+	self:Register(self.btn_no, "btn_no")
+end
+
+function UICoopInvite:InitCallbacks()
+	local E = ui_events.BUTTON_CLICKED
+	self:AddCallback("btn_yes", E, self.OnYes, self)
+	self:AddCallback("btn_no", E, self.OnNo, self)
+end
+
+-- the question for this nick and hours; reason: why the last "Lie down too" was refused ("" / nil: none)
+function UICoopInvite:Fill(nick, hours, reason)
+	self.question:SetText(text("invite", nick, hours))
+	self.reason:SetText(reason or "")
+end
+
+function UICoopInvite:OnYes()
+	accept_invite()
+end
+
+-- "Not now": every rest this window stood for is answered; a rest that starts later is a new offer
+local function decline_invite()
+	for id in pairs(prompted) do answered[id] = true end
+	drop_invite()
+end
+
+function UICoopInvite:OnNo()
+	decline_invite()
+end
+
+function UICoopInvite:OnKeyboard(dik, keyboard_action)
+	local res = CUIScriptWnd.OnKeyboard(self, dik, keyboard_action)
+	if res == false and keyboard_action == ui_events.WINDOW_KEY_PRESSED and dik == DIK_keys.DIK_ESCAPE then
+		decline_invite()
+		return true
+	end
+	return res
+end
+
+function invite_window()
+	return inv_open and inv_win or nil
+end
+
+-- The window goes; the offer itself stays (waiting for a free moment) unless drop_invite follows.
+local function hide_invite()
+	local w, was_open = inv_win, inv_open
+	inv_win, inv_open = nil, false
+	if w then pcall(function() if w:IsShown() then w:HideDialog() end end) end
+	if was_open then unregister_ui("UICoopInvite") end
+end
+
+drop_invite = function()
+	hide_invite()
+	inv = nil
+end
+
+local function hud_free()
+	local am = rawget(_G, "actor_menu")
+	if am and type(am.is_hud_free) == "function" then
+		local ok, free = pcall(am.is_hud_free)
+		if ok and not free then return false end
+	end
+	local menu = rawget(_G, "ActorMenu")
+	if menu and type(menu.get_pda_menu) == "function" then
+		local ok, shown = pcall(function() return menu.get_pda_menu():IsShown() end)
+		if ok and shown then return false end
+	end
+	local ax = rawget(_G, "axr_main")
+	if type(ax) == "table" and (ax.binoc_is_zoomed or ax.scoped_weapon_is_zoomed) then return false end -- aiming
+	return true
+end
+
+-- In a fight: the group's (the host judges it: block "combat" while somebody rests), or I was hit or shot a moment ago.
+local function fighting(now)
+	if last_fight and now - last_fight >= 0 and now - last_fight < INVITE_QUIET_MS then return true end
+	local ok, b = rest_call("block")
+	return ok and b == "combat"
+end
+
+local function free_now(now)
+	local alive = false
+	pcall(function()
+		local a = db.actor
+		alive = a and a:alive() == true or false
+	end)
+	return alive and not fighting(now) and hud_free()
+end
+
+local function show_invite()
+	local o = inv
+	local ok, err = pcall(function()
+		local w = UICoopInvite()
+		w:Fill(nick_of(o.id), o.hours, o.reason)
+		w:ShowDialog(true)
+		inv_win, inv_open = w, true
+	end)
+	if not ok then
+		log("! the offer window failed: %s", tostring(err))
+		hide_invite()
+		inv = nil
+		tell("prompt", nick_of(o.id), o.hours) -- the old tip says it at least
+		return false
+	end
+	register_ui("UICoopInvite", "coop_rest")
+	return true
+end
+
+-- The window now when the player is free, else a tip (once) and the window at the first free second (invite_poll).
+offer_invite = function(now)
+	local o = inv
+	if not o or inv_open then return end
+	if free_now(now) then
+		show_invite()
+	elseif not o.told then
+		o.told = true
+		tell("invite_later", nick_of(o.id), o.hours)
+	end
+end
+
+-- Every second and when a rest ends: is the offer still an offer?
+invite_poll = function(now)
+	local o = inv
+	if not o then return end
+	if not rest_session() or busy() or state_of(0) ~= "awake" then
+		drop_invite() -- the session is over, or I lie down already
+		return
+	end
+	if state_of(o.id) ~= "resting" then
+		local other = nil
+		for id in pairs(prompted) do
+			if id ~= o.id and not answered[id] and state_of(id) == "resting" then
+				other = id
+				break
+			end
+		end
+		if not other then
+			drop_invite() -- nobody rests any more: the window closes by itself
+			return
+		end
+		o.id, o.hours, o.reason = other, hours_of(other) or 1, nil
+		local w = inv_open and inv_win or nil
+		if w then pcall(w.Fill, w, nick_of(o.id), o.hours, nil) end
+	end
+	if not inv_open then offer_invite(now) end
+end
+
+-- "Lie down too": the lie-down of the sleep dialog for his hours, with its checks; a refusal stays in the window.
+accept_invite = function()
+	local o = inv
+	if not o then return end
+	if not rest_session() or busy() or state_of(0) ~= "awake" then
+		drop_invite()
+		return
+	end
+	local function say(why)
+		o.reason = why
+		local w = inv_open and inv_win or nil
+		if w then pcall(w.Fill, w, nick_of(o.id), o.hours, why) end
+	end
+	if paced() then
+		say(text("slow"))
+		return
+	end
+	local why = local_refusal()
+	if why then
+		say(why)
+		return
+	end
+	st.bag, st.bag_dialog = nil, false -- no sleeping bag is named: the host finds his place where he stands
+	if not send_lie_down(o.hours, false) then
+		say(text("refused"))
+		return
+	end
+	local id, hours = o.id, o.hours
+	drop_invite()
+	if open_doze(hours, false) then st.invited = { id = id, hours = hours } end
+end
+
+-- After the doze of an accepted offer closed with a refusal (st_coop_rest_<key>): the offer comes back with the reason
+-- while the ally still rests; in a fight it waits like a new one (no second tip: the refusal tip was just said).
+reoffer = function(key)
+	local was = st.invited
+	st.invited = nil
+	if not was or inv or busy() or state_of(0) ~= "awake" or state_of(was.id) ~= "resting" then return end
+	inv = { id = was.id, hours = was.hours, reason = text(key), told = true }
+	offer_invite(time_global())
+end
+
+-- actor_on_hit_callback / actor_on_weapon_fired: my fight. A window that is up gives way at once.
+local function on_hit()
+	last_fight = time_global()
+	local o = inv
+	if o and inv_open then
+		hide_invite()
+		o.told = true
+		tell("invite_later", nick_of(o.id), o.hours)
+	end
+end
+
+local function on_fired()
+	last_fight = time_global()
+end
+
+-------------------------------------------------------------------------------
 -- Start
 -------------------------------------------------------------------------------
 -- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an error here would
@@ -781,5 +1063,7 @@ function on_game_start()
 		RegisterScriptCallback("coop_rest_refused", on_refused)
 		RegisterScriptCallback("actor_on_update", tick)
 		RegisterScriptCallback("actor_on_first_update", on_first_update)
+		RegisterScriptCallback("actor_on_hit_callback", on_hit) -- the offer window waits out my fight
+		RegisterScriptCallback("actor_on_weapon_fired", on_fired)
 	end)
 end

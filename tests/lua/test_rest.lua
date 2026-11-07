@@ -221,6 +221,7 @@ end
 
 local function rest() return rawget(_G, "coop_rest") end
 local function win() return rest().window() end
+local function inv() local f = rest().invite_window; return f and f() or nil end
 
 -- a clean world, the script loaded the way axr_main loads it (load, then on_game_start)
 local function fresh(mode, opts)
@@ -239,6 +240,10 @@ local function fresh(mode, opts)
 	if opts.no_api then coop.rest = nil end
 	dress_actor(make_actor(vec3(0, 0, 0)))
 	stock_sleep()
+	-- is the player free for a window (the offer to lie down too): actor_menu.is_hud_free, the PDA
+	HUD_FREE, PDA_SHOWN = true, false
+	actor_menu.is_hud_free = function() return HUD_FREE end
+	ActorMenu = { get_pda_menu = function() return { IsShown = function() return PDA_SHOWN end } end }
 	RATES = {}
 	actor_status_sleep = { set_rest_per_hour = function(r) RATES[#RATES + 1] = r end }
 	coop_rest, coop_checkpoints, coop_allies = nil, nil, nil
@@ -709,44 +714,492 @@ case("refused_after_changed", function()
 	check(win() == nil and last(MSGS) == STR.st_coop_rest_refused_place, "a client: the same")
 end)
 
+-- an ally (local id `id`) lies down for `hours`: the mirror, then the callback
+local function ally_rests(id, hours)
+	REST.states[id], REST.hours[id] = "resting", hours
+	fire("coop_rest_changed", id, "resting", hours)
+end
+
+local function ally_up(id)
+	REST.states[id], REST.hours[id] = "awake", 0
+	fire("coop_rest_changed", id, "awake", 0)
+end
+
+-- Owner 2026-11-07 (live report from vanilla: "there was no window to accept the time skip"): an ally who lies down is an
+-- offer window for every other awake player, not only a tip.
 case("prompt_for_others", function()
 	fresh("host")
-	REST.states[7], REST.hours[7] = "resting", 8
-	fire("coop_rest_changed", 7, "resting", 8)
-	check(#MSGS == 1 and MSGS[1] == fmt(STR.st_coop_rest_prompt, "Wolf", 8), "an ally rests: his nick and the hours: " .. tostring(MSGS[1]))
-	check(MSGS[1]:find("Wolf", 1, true) ~= nil and MSGS[1]:find("8", 1, true) ~= nil, "(nick and 8 are in the text)")
+	ally_rests(7, 8)
+	local w = inv()
+	check(w ~= nil and w:IsShown(), "an ally rests: the offer window opens")
+	check(w and w.question.text == fmt(STR.st_coop_rest_invite, "Wolf", 8), "his nick and the hours: " .. tostring(w and w.question.text))
+	check(w and w.question.text:find("Wolf", 1, true) ~= nil and w.question.text:find("8", 1, true) ~= nil, "(nick and 8 are in the text)")
+	check(#MSGS == 0, "the window is the news: no tip under it")
 	fire("coop_rest_changed", 7, "resting", 10)
-	check(#MSGS == 1, "the same rest again (hours changed): no second tip")
+	check(inv() == w and #MSGS == 0, "the same rest again (hours changed): no second window, no tip")
 	fire("coop_rest_changed", 7, "sleeping", 10)
-	check(#MSGS == 1, "sleeping is no news")
-	REST.states[7] = "awake"
-	fire("coop_rest_changed", 7, "awake", 0)
-	REST.states[7], REST.hours[7] = "resting", 4
-	fire("coop_rest_changed", 7, "resting", 4)
-	check(#MSGS == 2 and MSGS[2] == fmt(STR.st_coop_rest_prompt, "Wolf", 4), "he got up and lay down again: a new tip")
-	-- the queue replays a rest that is over (a load): the state is read again, no tip for it
+	check(inv() == w, "sleeping is no news")
+	click(w, "btn_no")
+	ally_up(7)
+	ally_rests(7, 4)
+	check(inv() ~= nil and inv() ~= w and inv().question.text == fmt(STR.st_coop_rest_invite, "Wolf", 4), "he got up and lay down again: a new offer")
+	-- the queue replays a rest that is over (a load): the state is read again, no offer for it
 	fresh("host")
 	REST.states[7] = "awake"
 	fire("coop_rest_changed", 7, "resting", 8)
-	check(#MSGS == 0, "a stale 'resting' (the state says awake): nothing")
-	-- I rest myself: the window says who is awake, no tip over it
+	check(inv() == nil and #MSGS == 0, "a stale 'resting' (the state says awake): nothing")
+	-- I rest myself: the doze window says who is awake, no offer over it
 	fresh("host")
 	stock_ui(6):OnButtonSleep()
 	engine_says(0, "resting", 6)
-	REST.states[7], REST.hours[7] = "resting", 8
-	fire("coop_rest_changed", 7, "resting", 8)
-	check(#MSGS == 0, "while I rest the ally's rest is not announced")
-	-- my own rest is nobody's prompt, an unknown id has a placeholder
+	ally_rests(7, 8)
+	check(inv() == nil and #MSGS == 0, "while I rest the ally's rest is not offered")
+	-- my own rest is nobody's offer, an unknown id has a placeholder
 	fresh("host")
 	engine_says(0, "resting", 6)
-	check(#MSGS == 0, "my own change is not announced to me")
+	check(inv() == nil and #MSGS == 0, "my own change is not offered to me")
 	engine_says(0, "awake", 0)
-	REST.states[9], REST.hours[9] = "resting", 2
-	fire("coop_rest_changed", 9, "resting", 2)
-	check(#MSGS == 1 and MSGS[1] == fmt(STR.st_coop_rest_prompt, "?", 2), "a player the list does not know: '?'")
+	ally_rests(9, 2)
+	check(inv() ~= nil and inv().question.text == fmt(STR.st_coop_rest_invite, "?", 2), "a player the list does not know: '?'")
 	fire("coop_rest_changed", "x", "resting", 2)
 	fire("coop_rest_changed", 7, nil, nil)
 	check(not log_has("failed"), "garbage arguments do not raise")
+	-- no session: nothing
+	fresh("sp")
+	REST.states[7] = "resting"
+	fire("coop_rest_changed", 7, "resting", 8)
+	check(inv() == nil, "no session: no offer")
+	-- the window cannot be made (a broken layout): the old tip says it
+	fresh("client")
+	coop_rest.UICoopInvite = function() error("boom") end
+	ally_rests(7, 8)
+	check(inv() == nil and last(MSGS) == fmt(STR.st_coop_rest_prompt, "Wolf", 8), "no window: the tip '<nick> is tired, rest too' (" .. tostring(last(MSGS)) .. ")")
+	check(GUIREG.UICoopInvite == nil, "and nothing is registered")
+end)
+
+case("invite_window", function()
+	for _, mode in ipairs({ "client", "host" }) do
+		fresh(mode)
+		ally_rests(7, 8)
+		local w = inv()
+		check(w ~= nil and w:IsShown(), mode .. ": every awake player gets the offer")
+		check(GUIREG.UICoopInvite == true, mode .. ": a registered UI (the stock HUD knows a window is up)")
+		check(#MISSING_PATHS == 0, "every element the offer asks for is in ui_coop_rest.xml (" .. table.concat(MISSING_PATHS, ",") .. ")")
+		check(#REST.lie == 0 and win() == nil, mode .. ": nothing is asked before the answer")
+		check(w and w.reason.text == "", "no refusal yet: an empty reason line")
+	end
+end)
+
+case("invite_accept", function()
+	fresh("client")
+	ally_rests(7, 8)
+	click(inv(), "btn_yes")
+	check(#REST.lie == 1 and REST.lie[1].hours == 8 and REST.lie[1].forced == false and REST.lie[1].bag == nil,
+		"'Lie down too' -> coop.rest.lie_down(8, false) (his hours, no bag)")
+	check(inv() == nil and GUIREG.UICoopInvite == nil, "the offer closes")
+	local w = win()
+	check(w ~= nil and w:IsShown() and w.hours_txt.text == fmt(STR.st_coop_rest_hours, 8), "the doze window opens for 8 h")
+	check(INFOS.actor_is_sleeping == true and GUIREG.UICoopDoze == true, "the body dozes as after the stock dialog")
+	-- from here it is the usual rest
+	engine_says(0, "resting", 8)
+	engine_says(0, "sleeping", 8)
+	fire("coop_rest_sleep", 8)
+	coop_rest.dream_end()
+	check(last(MSGS) == fmt(STR.st_coop_rest_woke, 8) and CGT == 0, "the group sleep: the usual dream, no clock call")
+	check(inv() == nil, "and no offer comes back")
+end)
+
+case("invite_accept_checks", function()
+	-- the checks of the stock dialog the co-op keeps: bleeding, radiation (the stock texts); the window stays and says why
+	local cases = {
+		{ bleeding = 0.5, radiation = 0, key = "st_sleep_bleeding" },
+		{ bleeding = 0, radiation = 1, key = "st_sleep_irradiated" },
+		{ bleeding = 0.5, radiation = 1, key = "st_sleep_bleeding_irradiated" },
+	}
+	for _, c in ipairs(cases) do
+		fresh("client")
+		db.actor.bleeding, db.actor.radiation = c.bleeding, c.radiation
+		ally_rests(7, 6)
+		click(inv(), "btn_yes")
+		check(#REST.lie == 0, c.key .. ": nothing is asked")
+		check(inv() ~= nil and inv().reason.text == c.key, c.key .. ": the window says why (" .. tostring(inv() and inv().reason.text) .. ")")
+		check(win() == nil and not INFOS.actor_is_sleeping, c.key .. ": no doze")
+	end
+	-- bandaged: the second press goes
+	db.actor.bleeding, db.actor.radiation = 0, 0
+	click(inv(), "btn_yes")
+	check(#REST.lie == 1 and inv() == nil and win() ~= nil, "the reason is gone: 'Lie down too' lies down")
+	-- the engine does not take the word
+	fresh("client")
+	REST.lie_ok = false
+	ally_rests(7, 6)
+	click(inv(), "btn_yes")
+	check(inv() ~= nil and inv().reason.text == STR.st_coop_rest_refused and win() == nil, "lie_down said false: the generic refusal in the window")
+	-- the session takes one word a second
+	fresh("client")
+	stock_ui(3):OnButtonSleep()
+	click(win(), "btn_getup")
+	ally_rests(7, 6)
+	click(inv(), "btn_yes")
+	check(#REST.lie == 1 and inv() ~= nil and inv().reason.text == STR.st_coop_rest_slow, "within a second of the last word: 'not so fast' in the window")
+	NOW = NOW + 1100
+	click(inv(), "btn_yes")
+	check(#REST.lie == 2 and REST.lie[2].hours == 6 and inv() == nil and win() ~= nil, "a second later it goes")
+end)
+
+case("invite_host_refusal", function()
+	-- the host judges the rest place: the refusal comes back to the offer with the stock-of-ours text
+	for _, mode in ipairs({ "client", "host" }) do
+		fresh(mode)
+		ally_rests(7, 8)
+		click(inv(), "btn_yes")
+		fire("coop_rest_changed", 0, "awake", 0)
+		fire("coop_rest_refused", "place")
+		check(win() == nil and not INFOS.actor_is_sleeping, mode .. ": the refusal ends the doze")
+		check(last(MSGS) == STR.st_coop_rest_refused_place, mode .. ": the tip as for any lie-down")
+		local w = inv()
+		check(w ~= nil and w:IsShown() and w.reason.text == STR.st_coop_rest_refused_place,
+			mode .. ": the offer is back and says why (" .. tostring(w and w.reason.text) .. ")")
+		check(w and w.question.text == fmt(STR.st_coop_rest_invite, "Wolf", 8), mode .. ": the same offer")
+		NOW = NOW + 1100
+		click(w, "btn_yes")
+		check(#REST.lie == 2 and inv() == nil and win() ~= nil, mode .. ": he moved to a bed and tries again")
+	end
+	-- every reason of the engine has its text in the window
+	for _, r in ipairs({ "combat", "dead", "busy", "camp", "occupied" }) do
+		fresh("client")
+		ally_rests(7, 8)
+		click(inv(), "btn_yes")
+		fire("coop_rest_refused", r)
+		advance(1000, 500)
+		check(inv() ~= nil and inv().reason.text == STR["st_coop_rest_refused_" .. r], r .. ": its own text in the offer")
+	end
+	-- the engine never answers: the late word is taken back, the offer comes back
+	fresh("client")
+	ally_rests(7, 8)
+	click(inv(), "btn_yes")
+	advance(7000, 500)
+	check(win() == nil and REST.ups == 1, "7 s with no answer: get_up, the doze closes")
+	check(inv() ~= nil and inv().reason.text == STR.st_coop_rest_refused_lost, "and the offer says the host did not answer")
+	-- the ally got up meanwhile: no offer to come back to
+	fresh("client")
+	ally_rests(7, 8)
+	click(inv(), "btn_yes")
+	REST.states[7] = "awake"
+	fire("coop_rest_refused", "place")
+	check(inv() == nil and last(MSGS) == STR.st_coop_rest_refused_place, "his rest is over: only the tip")
+	-- I got up by my own word: that is my answer
+	fresh("client")
+	ally_rests(7, 8)
+	click(inv(), "btn_yes")
+	engine_says(0, "resting", 8)
+	click(win(), "btn_getup")
+	advance(3000, 500)
+	check(inv() == nil and win() == nil, "'Get up' after accepting: no offer again")
+	-- a refusal of a lie-down of my own (a bed) is not the offer's business
+	fresh("client")
+	ally_rests(7, 8)
+	click(inv(), "btn_no")
+	NOW = NOW + 1100
+	stock_ui(5):OnButtonSleep()
+	fire("coop_rest_refused", "place")
+	advance(2000, 500)
+	check(inv() == nil, "my own bed refused after 'Not now': no offer")
+end)
+
+case("invite_decline", function()
+	fresh("client")
+	ally_rests(7, 8)
+	click(inv(), "btn_no")
+	check(inv() == nil and GUIREG.UICoopInvite == nil and #REST.lie == 0, "'Not now' closes it, nothing is asked")
+	fire("coop_rest_changed", 7, "resting", 9)
+	advance(3000, 500)
+	check(inv() == nil and #MSGS == 0, "one window per rest: no second offer, no tip")
+	-- ESC is 'Not now'
+	fresh("client")
+	ally_rests(7, 8)
+	local w = inv()
+	check(w:OnKeyboard(5, ui_events.WINDOW_KEY_PRESSED) == false and inv() == w, "another key does nothing")
+	check(w:OnKeyboard(DIK_keys.DIK_ESCAPE, ui_events.WINDOW_KEY_PRESSED) == true and inv() == nil and #REST.lie == 0, "ESC: not now")
+	-- a new rest is a new offer
+	ally_up(7)
+	ally_rests(7, 3)
+	check(inv() ~= nil and inv().question.text == fmt(STR.st_coop_rest_invite, "Wolf", 3), "he lies down again later: a new offer")
+	-- after 'Not now' the player may still lie down by himself
+	click(inv(), "btn_no")
+	stock_ui(3):OnButtonSleep()
+	check(#REST.lie == 1 and win() ~= nil, "the bed works as before")
+	-- 'Not now' to Wolf, then another ally lies down: his own offer; when he gets up the window does not go back to Wolf
+	fresh("client")
+	ally_rests(7, 8)
+	click(inv(), "btn_no")
+	ally_rests(9, 2)
+	check(inv() ~= nil and inv().question.text == fmt(STR.st_coop_rest_invite, "?", 2), "a new rest after 'Not now': its own offer")
+	ally_up(9)
+	check(inv() == nil, "he gets up: the window closes, Wolf's rest was answered already")
+end)
+
+case("invite_waits_when_busy", function()
+	-- a fight of the group (the host's word, coop.rest.block): only a tip; the window when it is over
+	fresh("client")
+	REST.block = "combat"
+	ally_rests(7, 8)
+	check(inv() == nil, "a fight: no window steals the input")
+	check(last(MSGS) == fmt(STR.st_coop_rest_invite_later, "Wolf", 8), "a tip says the offer comes later: " .. tostring(last(MSGS)))
+	advance(3000, 500)
+	check(inv() == nil and count_eq(MSGS, fmt(STR.st_coop_rest_invite_later, "Wolf", 8)) == 1, "the tip is said once")
+	REST.block = "none"
+	advance(1000, 500)
+	check(inv() ~= nil and inv():IsShown(), "the fight is over: the window opens")
+	-- an inventory, a dialogue, another window, the PDA
+	fresh("client")
+	HUD_FREE = false
+	ally_rests(7, 8)
+	check(inv() == nil and last(MSGS) == fmt(STR.st_coop_rest_invite_later, "Wolf", 8), "the HUD is not free: the tip")
+	HUD_FREE = true
+	advance(1000, 500)
+	check(inv() ~= nil, "the menu is closed: the window")
+	fresh("client")
+	PDA_SHOWN = true
+	ally_rests(7, 8)
+	check(inv() == nil, "the PDA is open: no window")
+	PDA_SHOWN = false
+	advance(1000, 500)
+	check(inv() ~= nil, "the PDA is closed: the window")
+	-- my own fight: I was hit or I shot a moment ago
+	fresh("client")
+	fire("actor_on_hit_callback", db.actor, 0.2, nil, nil, 0)
+	ally_rests(7, 8)
+	check(inv() == nil, "hit a moment ago: no window")
+	advance(5000, 500)
+	check(inv() == nil, "5 s later: still waiting")
+	advance(6000, 500)
+	check(inv() ~= nil, "10 s quiet: the window")
+	fresh("client")
+	fire("actor_on_weapon_fired", db.actor, nil, 10, 0, 0, 0)
+	ally_rests(7, 8)
+	check(inv() == nil, "a shot a moment ago: no window")
+	advance(11000, 500)
+	check(inv() ~= nil, "10 s quiet: the window")
+	-- hit while the window is up: it gives way and comes back when it is quiet
+	fresh("client")
+	ally_rests(7, 8)
+	fire("actor_on_hit_callback", db.actor, 0.3, nil, nil, 0)
+	check(inv() == nil and GUIREG.UICoopInvite == nil, "a hit: the window goes at once")
+	check(last(MSGS) == fmt(STR.st_coop_rest_invite_later, "Wolf", 8), "with the tip")
+	advance(11000, 500)
+	check(inv() ~= nil and #REST.lie == 0, "quiet again: the same offer, nothing was answered for him")
+	-- dead: no window
+	fresh("client")
+	db.actor._alive = false
+	ally_rests(7, 8)
+	advance(2000, 500)
+	check(inv() == nil, "a dead body gets no window")
+end)
+
+case("invite_closes_when_rest_ends", function()
+	fresh("client")
+	ally_rests(7, 8)
+	REST.states[7] = "awake" -- the callback was lost: the poll closes it
+	advance(1000, 500)
+	check(inv() == nil and GUIREG.UICoopInvite == nil, "his rest is over: the window closes by itself")
+	fresh("client")
+	ally_rests(7, 8)
+	ally_up(7)
+	check(inv() == nil, "by the callback: at once")
+	-- a waiting offer goes too
+	fresh("client")
+	REST.block = "combat"
+	ally_rests(7, 8)
+	ally_up(7)
+	REST.block = "none"
+	advance(2000, 500)
+	check(inv() == nil, "an offer that waited for the fight to end is gone with his rest")
+	-- two allies rest: one window; the first gets up, the window names the other
+	fresh("client")
+	ally_rests(7, 8)
+	ally_rests(9, 2)
+	check(inv() ~= nil and inv().question.text == fmt(STR.st_coop_rest_invite, "Wolf", 8), "one window for the first")
+	ally_up(7)
+	check(inv() ~= nil and inv().question.text == fmt(STR.st_coop_rest_invite, "?", 2), "Wolf got up: the window names the one who still rests")
+	ally_up(9)
+	check(inv() == nil, "nobody rests: closed")
+	-- I lie down another way (a faint): the offer goes, the doze opens
+	fresh("client")
+	ally_rests(7, 8)
+	ui_sleep_dialog.sleep_forced(4)
+	check(inv() == nil and GUIREG.UICoopInvite == nil and win() ~= nil, "a faint: the doze replaces the offer")
+	-- the session ends, a new world
+	fresh("client")
+	ally_rests(7, 8)
+	MODE = "sp"
+	advance(1000, 500)
+	check(inv() == nil, "the session ended: closed")
+	fresh("client")
+	ally_rests(7, 8)
+	fire("actor_on_first_update")
+	check(inv() == nil and GUIREG.UICoopInvite == nil, "a new world: closed")
+end)
+
+-- Task 1 of 2026-11-07: every stock sleep entry of VANILLA Anomaly (the real ui_sleep_dialog.script of anomaly-ref) in a session
+-- goes to coop.rest.lie_down, never to the stock sleep and its level.change_game_time
+local function real_stock_sleep()
+	local path = REF .. "scripts/ui_sleep_dialog.script"
+	local fh = io.open(path, "r")
+	if not fh then return nil end
+	fh:close()
+	XML_FILES["ui_sleep_dialog.xml"] = xml_paths(REF .. "configs/ui/ui_sleep_dialog.xml")
+	if not REAL_XML then
+		REAL_XML = CScriptXmlInit
+		CScriptXmlInit = function()
+			local x = REAL_XML()
+			function x:InitTrackBar(p)
+				local w = window(p)
+				w.value = 1
+				function w:GetIValue() return self.value end
+				function w:SetCurrentValue() self.value = 1 end
+				return w
+			end
+			return x
+		end
+	end
+	CUIScriptWnd.SetAutoDelete = CUIScriptWnd.SetAutoDelete or function() end
+	if not SAVED_GLOBALS then -- put back by restore_globals(): the cases after this one see the harness as it was
+		SAVED_GLOBALS = { getFS = getFS, utils_obj = rawget(_G, "utils_obj"), ui_load_dialog = rawget(_G, "ui_load_dialog"),
+			ui_options = rawget(_G, "ui_options"), disable_info = rawget(_G, "disable_info"), give_info = rawget(_G, "give_info") }
+	end
+	level.get_time_hours = function() return 13 end
+	function disable_info(id) INFOS[id] = nil end
+	function give_info(id) INFOS[id] = true end
+	IN_ZONE = nil
+	utils_obj = { npc_in_zone = function(_, zone) return zone == IN_ZONE end }
+	getFS = function() return { file_list_open_ex = function() return nil end } end
+	ui_load_dialog = { saved_game_extension = ".scop" }
+	ui_options = { get = function() return 3 end }
+	ui_sleep_dialog = nil
+	local m = load_module("ui_sleep_dialog", REF .. "scripts/")
+	coop_rest.on_game_start() -- the wrappers on the real module (the stand-in of fresh() is gone)
+	return m
+end
+
+local function restore_globals()
+	local s = SAVED_GLOBALS
+	if not s then return end
+	for k, v in pairs({ "getFS", "utils_obj", "ui_load_dialog", "ui_options", "disable_info", "give_info" }) do
+		rawset(_G, v, s[v])
+	end
+	SAVED_GLOBALS = nil
+end
+
+-- the stock sleep ran: its camera callback, or the clock
+local function stock_slept()
+	for _, c in ipairs(CAMS) do
+		if c.cb == "ui_sleep_dialog.dream_callback" then return true end
+	end
+	return CGT > 0
+end
+
+case("vanilla_sleep_entries", function()
+	fresh("client")
+	if not real_stock_sleep() then
+		check(false, "the stock ui_sleep_dialog.script is in " .. REF .. "scripts (anomaly-ref)")
+		return
+	end
+	-- control: outside a session the real stock sleep runs and skips the time (the harness sees it)
+	MODE = "sp"
+	EVENTS.current_safe_cover = true -- the stock shelter check passes
+	ui_sleep_dialog.sleep()
+	check(ui_sleep_dialog.GUI:IsShown(), "control, no session: the stock slider opens in a shelter")
+	ui_sleep_dialog.GUI.time_track.value = 5
+	click(ui_sleep_dialog.GUI, "btn_sleep")
+	check(stock_slept(), "control, no session: the stock sleep starts its dream (camera callback ui_sleep_dialog.dream_callback)")
+	ui_sleep_dialog.dream_callback()
+	check(CGT == 1, "control: and its dream skips the clock")
+	for _, mode in ipairs({ "client", "host" }) do
+		-- a bed: the restrictor's tutorial calls sleep_in_zone -> sleep() -> GUI:TestAndShow(); the slider; the button
+		fresh(mode)
+		real_stock_sleep()
+		IN_ZONE = "bar_actor_sleep_zone"
+		INFOS.sleep_active = nil
+		ui_sleep_dialog.sleep_in_zone(db.actor, nil)
+		local g = ui_sleep_dialog.GUI
+		check(g ~= nil and g:IsShown(), mode .. ": a bed opens the stock slider")
+		check(not INFOS.sleep_active, mode .. ": sleep_active is taken off (it freezes every time event)")
+		g.time_track.value = 7
+		click(g, "btn_sleep")
+		check(#REST.lie == 1 and REST.lie[1].hours == 7 and REST.lie[1].forced == false, mode .. ": the button -> lie_down(7, false)")
+		check(not stock_slept() and win() ~= nil, mode .. ": no stock sleep, no time skip: the doze window")
+		click(win(), "btn_getup")
+		-- the slider of the second sleep: the same instance (stock keeps GUI)
+		NOW = NOW + 1100
+		ui_sleep_dialog.sleep()
+		check(ui_sleep_dialog.GUI == g and g:IsShown(), mode .. ": sleep() again: the same stock window")
+		g.time_track.value = 2
+		click(g, "btn_sleep")
+		check(#REST.lie == 2 and REST.lie[2].hours == 2 and not stock_slept(), mode .. ": the second button press too")
+		click(win(), "btn_getup")
+		-- the slider's Cancel / ESC: nothing
+		NOW = NOW + 1100
+		ui_sleep_dialog.sleep()
+		click(g, "btn_cancel")
+		check(#REST.lie == 2 and not g:IsShown() and not stock_slept(), mode .. ": Cancel closes the stock window, nothing more")
+		-- the faint of actor_status_sleep.force_sleep / actor_status_thirst: ui_sleep_dialog.sleep_forced()
+		NOW = NOW + 1100
+		ui_sleep_dialog.sleep_forced()
+		check(#REST.lie == 3 and REST.lie[3].forced == true and REST.lie[3].hours >= 3 and REST.lie[3].hours <= 9,
+			mode .. ": the stock faint -> lie_down(3..9, true)")
+		check(not stock_slept(), mode .. ": the faint does not skip the time either")
+		click(win(), "btn_getup")
+		-- a sleeping bag on the ground (item_tent physic_object_on_use_callback) and an unplaced one (actor_on_item_use)
+		NOW = NOW + 1100
+		local _, bag = spawn("ph_sleepbag", vec3(1, 0, 0), nil, { id = 790 })
+		ui_sleep_dialog.sleep_bag(bag:id(), "itm_sleepbag")
+		check(ui_sleep_dialog.GUI:IsShown(), mode .. ": a sleeping bag opens the slider")
+		click(ui_sleep_dialog.GUI, "btn_sleep")
+		check(#REST.lie == 4 and REST.lie[4].bag == 790 and not stock_slept(), mode .. ": its button lies down on that bag")
+		click(win(), "btn_getup")
+		NOW = NOW + 1100
+		local se = spawn("itm_sleepbag", vec3(0, 0, 0), 0, { id = 791 })
+		ui_sleep_dialog.sleep_bag(se, "itm_sleepbag")
+		click(ui_sleep_dialog.GUI, "btn_sleep")
+		check(#REST.lie == 5 and REST.lie[5].bag == nil and not stock_slept(), mode .. ": an unplaced bag (a server object) lies down without a bag")
+		click(win(), "btn_getup")
+		-- the debug command (DEV_DEBUG) forces the slider without checks; its button is still ours
+		NOW = NOW + 1100
+		db.actor.bleeding = 1
+		ui_sleep_dialog.sleep(true)
+		click(ui_sleep_dialog.GUI, "btn_sleep")
+		check(#REST.lie == 6 and not stock_slept(), mode .. ": sleep(true) of the debug menu: lie_down, no stock sleep")
+		click(win(), "btn_getup")
+		db.actor.bleeding = 0
+		check(CGT == 0, mode .. ": level.change_game_time was never called")
+		check(count_of(EXEC, function(c) return c:find("^save") ~= nil end) == 0, mode .. ": no stock sleep save")
+		check(not log_has("failed"), mode .. ": no error")
+	end
+	restore_globals()
+end)
+
+-- The "rest too" news reaches every machine: the engine's callbacks of coop_rest are owner (every machine, the own player) by
+-- the real router rules (configs\coop_route*.ltx), not host-only
+case("callbacks_routed_everywhere", function()
+	fresh("client")
+	if not (coop.route and type(coop.route.of) == "function") then
+		check(false, "coop.route.of is in the harness")
+		return
+	end
+	local f = from_script("coop_rest", "return function() end")
+	for _, cb in ipairs({ "coop_rest_changed", "coop_rest_sleep", "coop_rest_refused", "actor_on_update", "actor_on_first_update",
+		"actor_on_hit_callback", "actor_on_weapon_fired" }) do
+		local dom = coop.route.of(cb, f)
+		check(dom == "owner", cb .. "@coop_rest runs on every machine (" .. tostring(dom) .. ")")
+	end
+	-- the strings of the news exist in both languages (strings_and_layout checks the twins)
+	for _, id in ipairs({ "st_coop_rest_prompt", "st_coop_rest_invite", "st_coop_rest_invite_later", "st_coop_rest_invite_title",
+		"st_coop_rest_invite_yes", "st_coop_rest_invite_no", "st_coop_rest_invite_hint", "st_coop_rest_invite_note" }) do
+		check(STR[id] ~= nil, id .. " exists")
+	end
+	check((STR.st_coop_rest_invite or ""):find("%%s") ~= nil and (STR.st_coop_rest_invite or ""):find("%%d") ~= nil, "the offer takes a nick and the hours")
+	check((STR.st_coop_rest_invite_later or ""):find("%%s") ~= nil and (STR.st_coop_rest_invite_later or ""):find("%%d") ~= nil, "the later tip too")
 end)
 
 case("world_block_reports_emission", function()
@@ -963,7 +1416,9 @@ case("strings_and_layout", function()
 	-- the layout parts the script initialises
 	local paths = xml_paths(UI_XML)
 	for _, p in ipairs({ "doze_shade", "doze", "doze:frame", "doze:cap", "doze:hours", "doze:waiting", "doze:reason", "doze:hint",
-		"doze:btn_getup", "doze:btn_fold" }) do
+		"doze:btn_getup", "doze:btn_fold",
+		"invite", "invite:frame", "invite:cap", "invite:question", "invite:note", "invite:reason", "invite:hint",
+		"invite:btn_yes", "invite:btn_no" }) do
 		check(paths[p] == true, "ui_coop_rest.xml has <" .. p .. ">")
 	end
 	-- the routing files already name the script

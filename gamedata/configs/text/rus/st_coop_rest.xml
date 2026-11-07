@@ -67,4 +67,25 @@
 	<string id="st_coop_rest_woke">
 		<text>Вы проспали %d ч.</text>
 	</string>
+	<string id="st_coop_rest_invite_title">
+		<text>Общий сон</text>
+	</string>
+	<string id="st_coop_rest_invite">
+		<text>%s ложится спать на %d ч. Лечь тоже?</text>
+	</string>
+	<string id="st_coop_rest_invite_note">
+		<text>Время пойдёт, только когда отдыхают все.</text>
+	</string>
+	<string id="st_coop_rest_invite_yes">
+		<text>Лечь тоже</text>
+	</string>
+	<string id="st_coop_rest_invite_no">
+		<text>Не сейчас</text>
+	</string>
+	<string id="st_coop_rest_invite_hint">
+		<text>Esc — не сейчас</text>
+	</string>
+	<string id="st_coop_rest_invite_later">
+		<text>%s ложится спать на %d ч. Предложение лечь тоже откроется, когда закончится бой и закроются меню.</text>
+	</string>
 </string_table>

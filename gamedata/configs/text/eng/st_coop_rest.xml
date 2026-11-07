@@ -67,4 +67,25 @@
 	<string id="st_coop_rest_woke">
 		<text>You slept for %d h.</text>
 	</string>
+	<string id="st_coop_rest_invite_title">
+		<text>Shared sleep</text>
+	</string>
+	<string id="st_coop_rest_invite">
+		<text>%s is going to sleep for %d h. Lie down too?</text>
+	</string>
+	<string id="st_coop_rest_invite_note">
+		<text>Time passes only when everyone rests.</text>
+	</string>
+	<string id="st_coop_rest_invite_yes">
+		<text>Lie down too</text>
+	</string>
+	<string id="st_coop_rest_invite_no">
+		<text>Not now</text>
+	</string>
+	<string id="st_coop_rest_invite_hint">
+		<text>Esc: not now</text>
+	</string>
+	<string id="st_coop_rest_invite_later">
+		<text>%s is going to sleep for %d h. You will be asked to lie down too once the fight is over and the menus are closed.</text>
+	</string>
 </string_table>
