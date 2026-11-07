@@ -736,13 +736,73 @@ local function skip_stages_over(m, over, game_sec)
 	end
 end
 
+-- Live 2026-11-08 (Banan4ik, client): after a psi storm the client kept the storm's HUD for good (G.A.M.M.A.'s cover bar).
+-- The stock writes its "running" flags only inside update(): psi_storm_manager.script L278 SetEvent("psi_storm", "state",
+-- self.started), L351 / L367 "vortex"; surge_manager.script L571 SetEvent("surge", "state", self.started) (G.A.M.M.A.: L297,
+-- L370 / L386, L606). finish() and end_surge() never write them. The host and single player call update() every second after
+-- the end as well (surge_manager main_loop), so their next call writes "state" false. A client calls update() only in the mirror
+-- while the host's phase runs (the stock loop is host, coop_route.ltx), so the flags stayed as its last update left them: on.
+-- Their readers run on a client: dynamic_emission_cover_mcm (the cover bar), item_device (NVG / PDA glitch), item_radio,
+-- ui_dosimeter, level_environment (light flicker). So the local state follows the host's phase as a level, every tick: "not
+-- running here" (the host's end, or a level the world's emission does not reach) ends whatever of it is on and writes the flags
+-- as the stock's next update would. A flag left on with nothing running (a load or a level change mid-storm, an end that
+-- raised) is a disagreement with the host: corrected, one log line.
+local ENV_LOCAL = {
+	surge = { name = "emission", stop = function(m) m:end_surge() end },
+	psi_storm = { name = "psi-storm", stop = function(m) m:finish() end, vortex = true },
+}
+
+local function have_events()
+	return type(rawget(_G, "GetEvent")) == "function" and type(rawget(_G, "SetEvent")) == "function"
+end
+
+-- What of a stock manager's run is on here; nil: nothing.
+local function env_left_on(m, key)
+	local on = {}
+	if m.started == true then on[#on + 1] = "running" end
+	if have_events() then
+		if GetEvent(key, "state") then on[#on + 1] = "hud flag" end
+		if ENV_LOCAL[key].vortex and GetEvent(key, "vortex") then on[#on + 1] = "vortex flag" end
+	end
+	return on[1] and table.concat(on, ", ") or nil
+end
+
+-- Client: the host's phase is "not running" here. `why`: nil for the host's end, else why it is not running here.
+local function env_off_here(m, key, why)
+	if not m then return end
+	local e = ENV_LOCAL[key]
+	if key == "surge" then quake_stop() end
+	local left = env_left_on(m, key)
+	if not left then return end
+	if m.started == true then
+		with_cover(true, function() e.stop(m) end, e.name .. " end")
+		if why then log("%s ended here: %s", e.name, why) else log("%s ended by the host", e.name) end
+	else
+		log("%s: my local state (%s) disagrees with the host's (not running%s), corrected", e.name, left,
+			why and (", " .. why) or "")
+	end
+	if not have_events() then return end
+	SetEvent(key, "state", false) -- the stock's next update after its end
+	if e.vortex then
+		SetEvent(key, "vortex", false)
+		-- the vortex hit's psi_fade.ppe / electro_fade.ppe (psi_storm_manager vortex_actor_hit)
+		pcall(level.remove_pp_effector, 666)
+		pcall(level.remove_pp_effector, 667)
+	end
+end
+
 local function client_env_tick()
 	if not env_cl.have or not db.actor then return end
 	local tg = time_global()
 	if tg < env_cl.next_tick then return end
 	env_cl.next_tick = tg + 1000
 	if tg - env_cl.at > 15000 then return end -- the host is silent: hold the current phase
-	if split_on() and not level_open(level.name()) then return end -- under ground the emission of the world is not felt
+	if split_on() and not level_open(level.name()) then
+		-- under ground the emission of the world is not felt: nothing of it stays on here either
+		env_off_here(surge_mgr(), "surge", "this level is not reached by the world's emission")
+		env_off_here(psi_mgr(), "psi_storm", "this level is not reached by the world's emission")
+		return
+	end
 	local dt = (tg - env_cl.at) / 1000 * (env_cl.tf or level.get_time_factor())
 	if env_cl.own then
 		local ok, c = pcall(env_own_cover)
@@ -759,10 +819,8 @@ local function client_env_tick()
 			end
 			mirror_update(sm, env_cl.sg + dt, "emission mirror", "surge_time")
 			if not ghost then quake_step((env_cl.sg + dt) / (env_cl.tf or level.get_time_factor())) end
-		elseif sm.started then
-			quake_stop()
-			with_cover(true, function() sm:end_surge() end, "emission end")
-			log("emission ended by the host")
+		else
+			env_off_here(sm, "surge")
 		end
 	end
 	local pm = psi_mgr()
@@ -773,9 +831,8 @@ local function client_env_tick()
 				skip_stages_over(pm, PSI_STAGES_OVER, env_cl.pg + dt)
 			end
 			mirror_update(pm, env_cl.pg + dt, "psi-storm mirror", "psi_storm_duration")
-		elseif pm.started then
-			with_cover(true, function() pm:finish() end, "psi-storm end")
-			log("psi-storm ended by the host")
+		else
+			env_off_here(pm, "psi_storm")
 		end
 	end
 

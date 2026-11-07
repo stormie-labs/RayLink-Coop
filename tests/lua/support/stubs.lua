@@ -135,8 +135,23 @@ end
 
 -- world
 _EVENT = {}
-function GetEvent(k) return _EVENT[k] end
-function SetEvent(k, v) _EVENT[k] = v end
+-- _g.script L2738-2771: GetEvent(k[, field]), SetEvent(k, v) / SetEvent(k, field, v) (a field goes into a table under k)
+function GetEvent(k, v)
+	if v then
+		local t = _EVENT[k]
+		if type(t) ~= "table" then return nil end
+		return t[v]
+	end
+	return _EVENT[k]
+end
+function SetEvent(k, v1, v2)
+	if v2 ~= nil then
+		if type(_EVENT[k]) ~= "table" then _EVENT[k] = {} end
+		_EVENT[k][v1] = v2
+	else
+		_EVENT[k] = v1
+	end
+end
 VARS = {}
 function load_var(obj, k, def) local v = VARS[k]; if v == nil then return def end return v end
 AC_ID = 0
