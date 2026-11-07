@@ -973,11 +973,19 @@ function UICoopDebug:OnKeyboard(dik, keyboard_action)
 		if self.modal then self:CloseModal() else close() end
 		return true
 	end
-	-- F7 closes the window on its release (the press opened it in the level): the level never sees this release
-	if keyboard_action == ui_events.WINDOW_KEY_RELEASED and is_f7(dik) then
-		key_closed_at = now()
-		close()
-		return true
+	-- F7 belongs to the level: coop_debug_client toggles the window on its release, and the engine calls the level's
+	-- callback before the dialogs (Level_input.cpp), so the release that opened this window comes here right after.
+	-- Only a release whose press this window saw closes it (then the level's toggle finds it shut, under the guard).
+	local released = keyboard_action == ui_events.WINDOW_KEY_RELEASED
+	if (pressed or released) and is_f7(dik) then
+		if pressed then
+			self.f7_down = true
+		elseif self.f7_down then
+			self.f7_down = nil
+			key_closed_at = now()
+			close()
+			return true
+		end
 	end
 	return res
 end

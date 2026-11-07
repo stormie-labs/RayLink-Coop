@@ -210,6 +210,41 @@ SESSION = true
 ROLE = "client"
 
 -------------------------------------------------------------------------------
+print("== F7 the way the engine delivers it: the level's callback, then the dialog on top (Level_input.cpp)")
+ui_events.WINDOW_KEY_RELEASED = ui_events.WINDOW_KEY_RELEASED or 2
+-- One press and release of F7. CLevel::IR_OnKeyboardPress / IR_OnKeyboardRelease call the actor's script callback
+-- first (on_key_press / on_key_release), then CurrentGameUI()->IR_UIOnKeyboard*, which reaches the dialog shown right
+-- now: a window shown from the level's release callback gets that same release. ui_first: the other order.
+local function keystroke_f7(ui_first)
+	NOW = NOW + 400 -- a person's keystrokes are this far apart at least
+	local function to_dialog(action)
+		local top = dui.window()
+		if top and top.shown then top:OnKeyboard(DIK_F7, action) end
+	end
+	if ui_first then to_dialog(ui_events.WINDOW_KEY_PRESSED) end
+	fire("on_key_press", DIK_F7)
+	if not ui_first then to_dialog(ui_events.WINDOW_KEY_PRESSED) end
+	if ui_first then to_dialog(ui_events.WINDOW_KEY_RELEASED) end
+	fire("on_key_release", DIK_F7)
+	if not ui_first then to_dialog(ui_events.WINDOW_KEY_RELEASED) end
+	return dui.window()
+end
+for _, order in ipairs({ { "engine order", false }, { "dialog first", true } }) do
+	for _, role in ipairs({ "client", "host" }) do
+		reset()
+		ROLE = role
+		local tag = role .. ", " .. order[1]
+		local w = keystroke_f7(order[2])
+		check(w ~= nil and w.shown == true, tag .. ": one F7 keystroke leaves the window open (its own release does not shut it)")
+		check(keystroke_f7(order[2]) == nil and (w == nil or w.shown == false), tag .. ": the next F7 keystroke closes it")
+		local w2 = keystroke_f7(order[2])
+		check(w2 ~= nil and w2.shown == true, tag .. ": a third F7 keystroke opens it again")
+	end
+end
+reset()
+ROLE = "client"
+
+-------------------------------------------------------------------------------
 print("== server debug off: view only")
 reset()
 DEBUG.on = false
