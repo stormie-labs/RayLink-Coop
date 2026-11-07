@@ -107,7 +107,8 @@ do
 	fake_sync.pump()
 	check(answers.op and answers.op.ok == true and answers.op.result.got == 5 and answers.op.result.from == client.peer,
 		"the handler's ok, result reach the client")
-	check(answers.err and answers.err.ok == false and answers.err.result == "handler error", "a handler error: ok = false")
+	check(answers.err and answers.err.ok == false and answers.err.result == "handler error: test_sync_shim.lua:94: boom",
+		"a handler error: ok = false, and the first line of the error (coop_lua_fn.h first_line)")
 	check(client.stats.lua_errors == 0, "no Lua error on the client")
 	check(host.stats.lua_errors == 1 and host.stats.handler_errors == 1, "the host counts the handler's error")
 	check(answers.none and answers.none.ok == false and answers.none.result == "no handler", "no handler: ok = false")

@@ -359,7 +359,9 @@ function serve(class, from, args)
 	if not ok then return false, a end
 	local by = pl.nick or ("#" .. tostring(from))
 	local res_ok, r, code = dispatch(c, id, a, from, from, by)
-	finish(id, by, res_ok, r, code)
+	-- the command ran (or was refused) already: a broken log or announcement must not turn its answer into "handler error"
+	local fin_ok, fin_err = pcall(finish, id, by, res_ok, r, code)
+	if not fin_ok then P().report("debug", "announce " .. tostring(id), fin_err) end
 	if not res_ok then return false, tostring(r) end
 	return true, r
 end

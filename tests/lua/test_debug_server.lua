@@ -406,5 +406,19 @@ do
 	check(H.infos.debug_mode_flag_on == true, "debug_mode_flag_on given when debug goes on")
 end
 
+print("== a command that ran answers so even when its announcement breaks (2026-11-07 handler error sweep)")
+do
+	local H, S = world()
+	local enc = H.env.coop_main.encode
+	H.env.coop_main.encode = function(t)
+		if type(t) == "table" and t.text ~= nil then error("encode broke") end
+		return enc(t)
+	end
+	local ok, r = ask(H, "coop.dbg.self", 0, { v = 1, cmd = "god", on = 1 })
+	check(ok == true and type(r) == "table" and r.msg == "god on", "the host player's god: ok though the announcement broke", tostring(r))
+	check(H.dbg.set and H.dbg.set[1] and H.dbg.set[1].peer == 0 and H.dbg.set[1].t.god == true, "the flag was set for peer 0")
+	H.env.coop_main.encode = enc
+end
+
 print(string.format("%d passed, %d failed", PASSES, FAILS))
 os.exit(FAILS == 0 and 0 or 1)

@@ -14,9 +14,18 @@
 //   coop_native.latest_new_skips(n)            -> { "callback@script", ... } the latest first-time skips first
 //   coop_native.reset_counts()                 -> zeroes the counters
 // Each Lua state gets its own route table and counters (a userdata upvalue freed by __gc).
+// Kept Lua functions (coop_lua_fn.h, as coop_sync_api.cpp keeps coop.sync handlers, watches, effects and request callbacks):
+//   coop_native.fn_keep(f)                     -> reference | nil (not a function)
+//   coop_native.fn_call(ref, ...)              -> true, first result | false, fail kind, reason (luafn::reason), error
+//                                                 kinds: "no_state" | "no_reference" | "stack_full" | "not_function" | "lua_error"
+//   coop_native.fn_drop(ref), coop_native.fn_same(ref, f) -> boolean
+// luabind's own registry references beside them, as the engine makes them for every luabind::object and functor (a model of
+// 3rd party/luabind/luabind/src/ref.cpp ref / unref: free list in registry[1], count in sizes[registry] at registry[2]):
+//   coop_native.lb_ref(v) -> reference, coop_native.lb_unref(ref), coop_native.lb_get(ref) -> what the registry slot holds
 #include "lua.hpp"
 
 #include "coop_routes.h"
+#include "coop_lua_fn.h"
 
 #include <new>
 #include <string>
@@ -191,6 +200,176 @@ int l_reset_counts(lua_State* L)
 	state_of(L)->counters.clear();
 	return 0;
 }
+
+// ---- kept functions (coop_lua_fn.h)
+
+int l_fn_keep(lua_State* L)
+{
+	const int ref = coop::luafn::keep(L, 1);
+	if (ref == LUA_NOREF)
+		lua_pushnil(L);
+	else
+		lua_pushinteger(L, ref);
+	return 1;
+}
+
+const char* fail_kind(coop::luafn::Fail f)
+{
+	using coop::luafn::Fail;
+	switch (f)
+	{
+	case Fail::None: return "none";
+	case Fail::NoState: return "no_state";
+	case Fail::NoReference: return "no_reference";
+	case Fail::StackFull: return "stack_full";
+	case Fail::NotFunction: return "not_function";
+	case Fail::LuaError: return "lua_error";
+	}
+	return "?";
+}
+
+int l_fn_call(lua_State* L)
+{
+	const int ref = static_cast<int>(luaL_checkinteger(L, 1));
+	const int nargs = lua_gettop(L) - 1;
+	lua_pushnil(L); // the first result goes here
+	const int slot = lua_gettop(L);
+	std::string error;
+	const coop::luafn::Fail f = coop::luafn::call(
+	    L, ref, nullptr,
+	    [&](lua_State* S) {
+		    for (int i = 0; i < nargs; ++i)
+			    lua_pushvalue(S, 2 + i);
+		    return nargs;
+	    },
+	    1, [&](lua_State* S) { lua_replace(S, slot); }, error);
+	if (f == coop::luafn::Fail::None)
+	{
+		lua_pushboolean(L, 1);
+		lua_pushvalue(L, slot);
+		return 2;
+	}
+	const std::string why = coop::luafn::reason(f, error);
+	lua_pushboolean(L, 0);
+	lua_pushstring(L, fail_kind(f));
+	lua_pushlstring(L, why.data(), why.size());
+	lua_pushlstring(L, error.data(), error.size());
+	return 4;
+}
+
+int l_fn_drop(lua_State* L)
+{
+	coop::luafn::drop(L, static_cast<int>(luaL_checkinteger(L, 1)));
+	return 0;
+}
+
+int l_fn_same(lua_State* L)
+{
+	lua_pushboolean(L, coop::luafn::same(L, static_cast<int>(luaL_checkinteger(L, 1)), 2) ? 1 : 0);
+	return 1;
+}
+
+// ---- luabind's registry references (a model of 3rd party/luabind/luabind/src/ref.cpp, the engine's luabind)
+
+constexpr int kLbFreeList = 1; // registry[1]: luabind's first free slot
+constexpr int kLbSizes = 2; // registry[2]: a weak-keyed table, sizes[registry] = luabind's count of slots
+
+// luabind's count of the registry's slots: registry.n, else sizes[registry], else the slots from 1 up to the first nil
+int lb_count(lua_State* L)
+{
+	lua_getfield(L, LUA_REGISTRYINDEX, "n");
+	if (lua_isnumber(L, -1))
+	{
+		const int n = static_cast<int>(lua_tonumber(L, -1));
+		lua_pop(L, 1);
+		if (n >= 0)
+			return n;
+	}
+	else
+		lua_pop(L, 1);
+	lua_rawgeti(L, LUA_REGISTRYINDEX, kLbSizes);
+	if (lua_isnil(L, -1))
+	{
+		lua_pop(L, 1);
+		lua_newtable(L);
+		lua_pushvalue(L, -1);
+		lua_setmetatable(L, -2);
+		lua_pushstring(L, "k");
+		lua_setfield(L, -2, "__mode");
+		lua_pushvalue(L, -1);
+		lua_rawseti(L, LUA_REGISTRYINDEX, kLbSizes);
+	}
+	lua_pushvalue(L, LUA_REGISTRYINDEX);
+	lua_rawget(L, -2);
+	const bool known = lua_isnumber(L, -1) != 0;
+	const int n = known ? static_cast<int>(lua_tonumber(L, -1)) : -1;
+	lua_pop(L, 2);
+	if (known && n >= 0)
+		return n;
+	int i = 1;
+	for (;; ++i)
+	{
+		lua_rawgeti(L, LUA_REGISTRYINDEX, i);
+		const bool nil = lua_isnil(L, -1) != 0;
+		lua_pop(L, 1);
+		if (nil)
+			break;
+	}
+	return i - 1;
+}
+
+void lb_set_count(lua_State* L, int n)
+{
+	lua_rawgeti(L, LUA_REGISTRYINDEX, kLbSizes); // made by lb_count
+	lua_pushvalue(L, LUA_REGISTRYINDEX);
+	lua_pushnumber(L, n);
+	lua_rawset(L, -3);
+	lua_pop(L, 1);
+}
+
+int l_lb_ref(lua_State* L)
+{
+	luaL_checkany(L, 1);
+	lua_settop(L, 1);
+	lua_rawgeti(L, LUA_REGISTRYINDEX, kLbFreeList);
+	int ref = static_cast<int>(lua_tonumber(L, -1));
+	lua_pop(L, 1);
+	if (ref != 0)
+	{
+		lua_rawgeti(L, LUA_REGISTRYINDEX, ref); // the next free one
+		lua_rawseti(L, LUA_REGISTRYINDEX, kLbFreeList);
+	}
+	else
+	{
+		ref = lb_count(L);
+		if (ref < 2)
+			ref = 2; // registry[1] and [2] are luabind's own
+		++ref;
+		lb_set_count(L, ref);
+	}
+	lua_rawseti(L, LUA_REGISTRYINDEX, ref); // the value
+	lua_pushinteger(L, ref);
+	return 1;
+}
+
+int l_lb_unref(lua_State* L)
+{
+	const int ref = static_cast<int>(luaL_checkinteger(L, 1));
+	if (ref >= 0)
+	{
+		lua_rawgeti(L, LUA_REGISTRYINDEX, kLbFreeList);
+		lua_rawseti(L, LUA_REGISTRYINDEX, ref);
+		lua_pushnumber(L, ref);
+		lua_rawseti(L, LUA_REGISTRYINDEX, kLbFreeList);
+	}
+	return 0;
+}
+
+int l_lb_get(lua_State* L)
+{
+	lua_rawgeti(L, LUA_REGISTRYINDEX, static_cast<int>(luaL_checkinteger(L, 1)));
+	return 1;
+}
 } // namespace
 
 extern "C" int luaopen_coop_native(lua_State* L)
@@ -206,6 +385,13 @@ extern "C" int luaopen_coop_native(lua_State* L)
 		{"top_skipped", l_top_skipped},
 		{"latest_new_skips", l_latest_new_skips},
 		{"reset_counts", l_reset_counts},
+		{"fn_keep", l_fn_keep},
+		{"fn_call", l_fn_call},
+		{"fn_drop", l_fn_drop},
+		{"fn_same", l_fn_same},
+		{"lb_ref", l_lb_ref},
+		{"lb_unref", l_lb_unref},
+		{"lb_get", l_lb_get},
 	};
 
 	lua_newtable(L); // the module table

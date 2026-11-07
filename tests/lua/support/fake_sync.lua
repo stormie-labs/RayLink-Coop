@@ -555,6 +555,21 @@ local function allow(h, peer, name)
 	return true
 end
 
+-- xrCoop/coop_lua_fn.h first_line: the first line of a Lua error without the folders of its script, at most 160 bytes; the answer
+-- of a handler that fails is "handler error: <it>" (coop_sync_api.cpp run_host_calls)
+local function first_line(e)
+	local s = tostring(e):match("^[^\r\n]*")
+	local colon = s:find(": ", 1, true)
+	if colon then
+		local sep = s:sub(1, colon):match(".*()[/\\]")
+		if sep then s = s:sub(sep + 1) end
+	end
+	s = s:gsub("[ \t]+$", "")
+	if #s > 160 then s = s:sub(1, 157) .. "..." end
+	return s == "" and "?" or s
+end
+F.first_line = first_line
+
 local function run_host_call(h, c)
 	local fn = h.handlers[c.name]
 	local ok, result
@@ -566,7 +581,7 @@ local function run_host_call(h, c)
 			h.stats.lua_errors = h.stats.lua_errors + 1
 			h.stats.handler_errors = h.stats.handler_errors + 1
 			print("  (fake_sync: lua error in coop.sync handler '" .. c.name .. "': " .. tostring(r[2]) .. ")")
-			ok, result = false, "handler error"
+			ok, result = false, "handler error: " .. first_line(r[2])
 		else
 			ok = r[2] and true or false
 			local vok, v = F.to_value(r[3])
