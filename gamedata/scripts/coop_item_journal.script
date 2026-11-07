@@ -1,0 +1,656 @@
+--[[
+	Anomaly Coop - the item journal (gamedata\scripts\coop_item_journal.script). Diagnostics only: it changes nothing in the game.
+	Live 2026-11-07: the host (vanilla Anomaly) lost 2 of his 3 artefacts from the backpack and nobody could tell when or why.
+
+	Every machine journals its own player; the host (and a map server) also the characters of the clients, which are stalkers
+	with the stock binder there (npc_on_item_drop). One line in the game log whenever an item of a watched kind leaves:
+	  [coop-items] <nick>: -<section> (id <id>, cond <c>) -> <cause>
+	The cause is read a moment after the drop (actor_on_item_drop fires while the item still has its old parent):
+	  given to <nick>                  the new parent is a player's character (coop_economy_money / _give: transfer_item)
+	  sold to <name> for <n> RU        actor_on_trade came for it (the new parent is the trader)
+	  put into box <id> (<name>)       an inventory box (a stash, a container); the inventory window's box when the item is not
+	                                   seen here afterwards (ActorMenu_on_item_after_move)
+	  arena box <id> (<name>)          bar_arena_inventory_box / _2: coop_arena moved the gear
+	  death: <...>                     the owner was not "alive" (coop.life_of) when it left, or it went into a coop_death_stash:
+	                                   "death: into the death stash <id>", "death: destroyed" (the lose share), "death: dropped
+	                                   at the body"; the host logs "[coop] death losses" and "[coop] death of ..." beside it
+	  to npc <name> (id <id>)          another NPC
+	  used                             actor_on_item_use came for it
+	  released by a script (<name>)    gone, and alife_release_id / alife_release was called for it from that script
+	  destroyed or released            gone, nothing else known
+	  dropped on the ground            no parent RESOLVE_MS after the drop (a transfer may still be on its way before that)
+	  unresolved: the world was left   the actor left the world (level change, load, quit) before it was known
+	Watched kinds: WATCH (artefacts by default; outfit, helmet, weapon, device can be turned on). At most LINES_PER_WINDOW lines
+	per WINDOW_MS, the rest are counted ("<n> line(s) suppressed").
+
+	Carried lines (compact: section#id@condition, by section):
+	  [coop-items] <nick>: at save carries <n>: af_medusa#1234@0.95 ...     every save_state: the co-op autosave is the host's
+	      only save in a session, and the host writes one line for himself and one for every client character online here
+	  [coop-items] <nick>: on world entry carries <n>: ...                    ENTRY_SETTLE_MS after actor_on_first_update
+	  [coop-items] <nick>: since the last world: -af_soul x1, +af_new x1      the watched sections of the last world (kept in
+	      coop.stash_set "item_journal", which outlives a load and a rollback in the session; a module value without a session)
+	      against the ones of this world
+
+	Cost: event-driven. actor_on_update returns at once while no drop waits for its cause. Nothing scans per frame; the inventory
+	is walked at world entry and at a save. Every handler runs under pcall.
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local tostring, tonumber, type, pairs, ipairs, pcall, next = tostring, tonumber, type, pairs, ipairs, pcall, next
+local string_format, table_concat, table_sort = string.format, table.concat, table.sort
+
+-- Which kinds are watched (keys of KINDS). Kept small: a GAMMA backpack holds hundreds of items.
+WATCH = { artefact = true }
+
+SETTLE_MS = 300 -- a drop is looked at after this (the new parent is set in the same or the next event)
+RESOLVE_MS = 2500 -- a parentless item is "on the ground" only after this
+ENTRY_SETTLE_MS = 5000 -- world entry: the inventory may still be arriving (a client joining)
+LINES_PER_WINDOW = 30
+WINDOW_MS = 10000
+GIVE_UP_MS = 30000 -- a drop whose item cannot be read for this long is written as unknown (nothing waits forever)
+
+local HINT_MS = 10000 -- a hint (trade, use, release, inventory window) is good for this long
+local MAX_HINTS = 64
+local MAX_PENDING = 256
+local MAX_LISTED = 40 -- items in one carried line
+local NO_PARENT = 65535
+local STASH_KEY = "item_journal"
+local DEATH_STASH = "coop_death_stash"
+
+local KINDS = {
+	artefact = function(o) return IsArtefact and IsArtefact(o) end,
+	outfit = function(o) return IsOutfit and IsOutfit(o) end,
+	helmet = function(o) return IsHeadgear and IsHeadgear(o) end,
+	weapon = function(o) return IsWeapon and IsWeapon(o) end,
+	device = function(o) return IsItem and IsItem("device", nil, o) end,
+}
+
+local pending = {} -- id -> { id, sec, cond, at, owner, nick, death }
+local pending_count = 0
+local hints = {} -- id -> { kind = "use" | "trade" | "box" | "release", at, money, box, src }
+local hint_count = 0
+local carried = {} -- id -> section: the watched items of this machine's actor (world entry scan, then take / drop)
+local entered = false -- actor_on_first_update came for this world
+local settle_at = nil -- when the world entry line is due
+local last_snapshot = nil -- the kept sections without a session
+local window_start, window_lines, suppressed = 0, 0, 0
+local stats = { lines = 0, suppressed = 0, errors = 0 }
+
+-------------------------------------------------------------------------------
+-- Helpers
+-------------------------------------------------------------------------------
+local function now() return time_global() end
+
+local function in_session()
+	if not api then return false end
+	local ok, active = pcall(api.is_active)
+	return ok and active == true
+end
+
+local function call_api(name, ...)
+	if not api or type(api[name]) ~= "function" then return nil end
+	local ok, r = pcall(api[name], ...)
+	if ok then return r end
+	return nil
+end
+
+-- The host's process or a map server: the clients' characters are stalkers here.
+local function leads_level()
+	if not in_session() then return false end
+	return call_api("is_host") == true or call_api("is_map_server") == true
+end
+
+local function raw_log(line)
+	stats.lines = stats.lines + 1
+	printf("%s", line)
+end
+
+-- Rate limited: at most LINES_PER_WINDOW lines per WINDOW_MS; the rest are counted and reported when a window opens.
+local function flush_suppressed(t)
+	if suppressed > 0 and t - window_start >= WINDOW_MS then
+		local n = suppressed
+		suppressed = 0
+		window_start, window_lines = t, 1
+		raw_log(string_format("[coop-items] %d line(s) suppressed (rate limit %d per %d s)", n, LINES_PER_WINDOW,
+			WINDOW_MS / 1000))
+	end
+end
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	if not ok then line = tostring(fmt) end
+	local t = now()
+	flush_suppressed(t)
+	if t - window_start >= WINDOW_MS then window_start, window_lines = t, 0 end
+	if window_lines >= LINES_PER_WINDOW then
+		suppressed = suppressed + 1
+		stats.suppressed = stats.suppressed + 1
+		return
+	end
+	window_lines = window_lines + 1
+	raw_log("[coop-items] " .. line)
+end
+
+local function field(o, method, ...)
+	if o == nil then return nil end
+	local ok, v = pcall(function(...) return o[method](o, ...) end, ...)
+	if ok then return v end
+	return nil
+end
+
+local function watched(o)
+	if o == nil then return nil end
+	for kind, on in pairs(WATCH) do
+		local test = on and KINDS[kind]
+		if test then
+			local ok, yes = pcall(test, o)
+			if ok and yes then return kind end
+		end
+	end
+	return nil
+end
+
+-- The nick of the player whose character has local id `id` (0 = this machine's actor); nil for anybody else.
+local function nick_of(id)
+	if in_session() then
+		local list = call_api("players")
+		if type(list) == "table" then
+			if id == 0 then
+				for _, p in ipairs(list) do
+					if p.is_self then return tostring(p.nick or "?") end
+				end
+			end
+			local peer = call_api("peer_of_avatar", id)
+			for _, p in ipairs(list) do
+				if (peer ~= nil and p.id == peer and not (id ~= 0 and p.is_self)) or (peer == nil and p.avatar_id == id and id ~= 0) then
+					return tostring(p.nick or "?")
+				end
+			end
+		end
+		return nil
+	end
+	if id == 0 then
+		local name = db.actor and field(db.actor, "character_name")
+		return type(name) == "string" and name ~= "" and name or "actor"
+	end
+	return nil
+end
+
+local function life_of(id)
+	if not in_session() then return "alive" end
+	local life = call_api("life_of", id)
+	return type(life) == "string" and life or "alive"
+end
+
+local function hint(id, h)
+	if type(id) ~= "number" then return end
+	if not hints[id] then
+		if hint_count >= MAX_HINTS then
+			local t = now()
+			for k, v in pairs(hints) do
+				if t - v.at > HINT_MS then hints[k] = nil; hint_count = hint_count - 1 end
+			end
+			if hint_count >= MAX_HINTS then hints, hint_count = {}, 0 end
+		end
+		hint_count = hint_count + 1
+	end
+	h.at = now()
+	hints[id] = h
+end
+
+local function take_hint(id)
+	local h = hints[id]
+	if not h then return nil end
+	hints[id] = nil
+	hint_count = hint_count - 1
+	if now() - h.at > HINT_MS then return nil end
+	return h
+end
+
+-------------------------------------------------------------------------------
+-- What is carried
+-------------------------------------------------------------------------------
+local function snapshot_text(list)
+	local secs = {}
+	for _, sec in pairs(list) do secs[#secs + 1] = sec end
+	table_sort(secs)
+	return table_concat(secs, ",")
+end
+
+local function keep_snapshot()
+	local s = snapshot_text(carried)
+	last_snapshot = s
+	if in_session() then call_api("stash_set", STASH_KEY, s) end
+end
+
+local function kept_snapshot()
+	if in_session() then
+		local s = call_api("stash_get", STASH_KEY)
+		if type(s) == "string" then return s end
+		return nil
+	end
+	return last_snapshot
+end
+
+-- The watched items of object `o`: { { id, sec, cond }, ... } by section, then id.
+local function watched_of(o)
+	local out = {}
+	if not o then return out end
+	pcall(function()
+		o:iterate_inventory(function(_, item)
+			if watched(item) then
+				out[#out + 1] = { id = field(item, "id"), sec = tostring(field(item, "section")), cond = tonumber(field(item, "condition")) or 0 }
+			end
+		end, o)
+	end)
+	table_sort(out, function(a, b)
+		if a.sec ~= b.sec then return a.sec < b.sec end
+		return (a.id or 0) < (b.id or 0)
+	end)
+	return out
+end
+
+local function carry_line(nick, what, list)
+	local parts = {}
+	for i, it in ipairs(list) do
+		if i > MAX_LISTED then
+			parts[#parts + 1] = string_format("+%d more", #list - MAX_LISTED)
+			break
+		end
+		parts[#parts + 1] = string_format("%s#%s@%.2f", it.sec, tostring(it.id), it.cond)
+	end
+	log("%s: %s carries %d: %s", nick, what, #list, table_concat(parts, " "))
+end
+
+local function counts(text)
+	local t = {}
+	if type(text) ~= "string" then return t end
+	for sec in text:gmatch("[^,]+") do t[sec] = (t[sec] or 0) + 1 end
+	return t
+end
+
+-- "-af_soul x1, +af_new x1" (by section), "" when nothing differs
+local function difference(before, after)
+	local a, b = counts(before), counts(after)
+	local secs, seen = {}, {}
+	for sec in pairs(a) do if not seen[sec] then seen[sec] = true; secs[#secs + 1] = sec end end
+	for sec in pairs(b) do if not seen[sec] then seen[sec] = true; secs[#secs + 1] = sec end end
+	table_sort(secs)
+	local lost, gained = {}, {}
+	for _, sec in ipairs(secs) do
+		local d = (b[sec] or 0) - (a[sec] or 0)
+		if d < 0 then lost[#lost + 1] = string_format("-%s x%d", sec, -d) end
+		if d > 0 then gained[#gained + 1] = string_format("+%s x%d", sec, d) end
+	end
+	for _, s in ipairs(gained) do lost[#lost + 1] = s end
+	return table_concat(lost, ", ")
+end
+
+-- World entry: what is carried now, against what the last world had.
+local function settle_world()
+	settle_at = nil
+	local actor = db.actor
+	if not actor then return end
+	local list = watched_of(actor)
+	carried = {}
+	for _, it in ipairs(list) do
+		if it.id then carried[it.id] = it.sec end
+	end
+	local nick = nick_of(0) or "actor"
+	carry_line(nick, "on world entry", list)
+	local before = kept_snapshot()
+	local after = snapshot_text(carried)
+	if before ~= nil then
+		local diff = difference(before, after)
+		if diff ~= "" then log("%s: since the last world: %s", nick, diff) end
+	end
+	keep_snapshot()
+end
+
+-------------------------------------------------------------------------------
+-- Causes
+-------------------------------------------------------------------------------
+local function online(id)
+	local ok, o = pcall(level.object_by_id, id)
+	if ok then return o end
+	return nil
+end
+
+local function server(id)
+	local ok, sim = pcall(alife)
+	if not (ok and sim) then return nil end
+	local ok_o, se = pcall(sim.object, sim, id)
+	if ok_o then return se end
+	return nil
+end
+
+local function parent_of(obj, se)
+	if obj then
+		local p = field(obj, "parent")
+		if p then return field(p, "id"), p end
+		if not se then return NO_PARENT, nil end
+	end
+	if se and type(se.parent_id) == "number" then return se.parent_id, nil end
+	return nil, nil
+end
+
+local function name_of(id, o)
+	o = o or online(id)
+	local name = o and field(o, "name")
+	if type(name) == "string" and name ~= "" then return name end
+	local se = server(id)
+	if se then
+		local n = field(se, "name")
+		if type(n) == "string" and n ~= "" then return n end
+		local sec = field(se, "section_name")
+		if type(sec) == "string" then return sec end
+	end
+	return o and tostring(field(o, "section")) or "?"
+end
+
+local function section_of(id, o)
+	local sec = o and field(o, "section")
+	if type(sec) == "string" then return sec end
+	local se = server(id)
+	sec = se and field(se, "section_name")
+	return type(sec) == "string" and sec or nil
+end
+
+local function is_box(o, se)
+	if o and IsInvbox then
+		local ok, yes = pcall(IsInvbox, o)
+		if ok and yes then return true end
+	end
+	if se and IsInvbox then
+		local cls = field(se, "clsid")
+		if cls then
+			local ok, yes = pcall(IsInvbox, nil, cls)
+			if ok and yes then return true end
+		end
+	end
+	return false
+end
+
+-- The story boxes of the Bar arena (coop_arena moves a fighter's gear into them): by story id, else by name.
+local ARENA_BOXES = { bar_arena_inventory_box = true, bar_arena_inventory_box_2 = true }
+local function arena_box(id, name)
+	local f = rawget(_G, "get_object_story_id")
+	if type(f) == "function" then
+		local ok, sid = pcall(f, id)
+		if ok and sid and ARENA_BOXES[sid] then return true end
+	end
+	return type(name) == "string" and name:find("bar_arena_inventory_box", 1, true) ~= nil
+end
+
+local function is_npc(o)
+	if not (o and IsStalker) then return false end
+	local ok, yes = pcall(IsStalker, o)
+	return ok and yes and true or false
+end
+
+-- The cause of drop p, or nil while it is not known yet; false: the item is still with its owner (nothing to write).
+local function cause_of(p, t)
+	local h = hints[p.id]
+	if h and t - h.at > HINT_MS then h = nil end
+	local dead = p.death and "death: " or ""
+	if h and h.kind == "use" then return "used" end
+	if t - p.at >= GIVE_UP_MS then return dead .. "unknown (its parent could not be read)" end
+	local obj, se = online(p.id), server(p.id)
+	if not obj and not se then
+		if h and h.kind == "release" then return "released by a script (" .. tostring(h.src) .. ")" end
+		if h and h.kind == "box" then return dead .. string_format("put into box %d (%s)", h.box, name_of(h.box)) end
+		if h and h.kind == "trade" then return string_format("sold for %d RU", h.money or 0) end
+		return dead .. (p.death and "destroyed" or "destroyed or released")
+	end
+	local pid, pobj = parent_of(obj, se)
+	if pid == p.owner then
+		if t - p.at >= RESOLVE_MS then return false end -- still with its owner: it never left (a refused move)
+		return nil
+	end
+	if pid and pid ~= NO_PARENT then
+		pobj = pobj or online(pid)
+		local nick = nick_of(pid)
+		if nick then return dead .. "given to " .. nick end
+		local pse = server(pid)
+		local sec = section_of(pid, pobj)
+		if sec == DEATH_STASH then return string_format("death: into the death stash %d", pid) end
+		local name = name_of(pid, pobj)
+		if arena_box(pid, name) then return dead .. string_format("arena box %d (%s)", pid, name) end
+		if is_box(pobj, pse) then return dead .. string_format("put into box %d (%s)", pid, name) end
+		if h and h.kind == "trade" then
+			local who = pobj and field(pobj, "character_name") or name
+			return string_format("sold to %s for %d RU", tostring(who), h.money or 0)
+		end
+		if is_npc(pobj) then
+			local who = field(pobj, "character_name") or name
+			return dead .. string_format("to npc %s (id %d)", tostring(who), pid)
+		end
+		return dead .. string_format("into %s %d", tostring(sec or name), pid)
+	end
+	if pid == nil then return nil end
+	if h and h.kind == "trade" then return string_format("sold for %d RU", h.money or 0) end
+	if t - p.at < RESOLVE_MS then
+		p.parentless = true
+		return nil
+	end
+	if h and h.kind == "box" then return dead .. string_format("put into box %d (%s)", h.box, name_of(h.box)) end
+	if p.death then return "death: dropped at the body" end
+	return "dropped on the ground"
+end
+
+local function write(p, cause)
+	log("%s: -%s (id %d, cond %.2f) -> %s", p.nick, p.sec, p.id, p.cond, cause)
+end
+
+-- final: the world goes (its objects may be half torn down already), nothing is looked at any more.
+local function resolve(t, final)
+	local done = {}
+	for id, p in pairs(pending) do
+		if final or t - p.at >= SETTLE_MS then
+			local ok, cause
+			if final then
+				ok, cause = true, p.parentless and "dropped on the ground" or "unresolved: the world was left"
+			else
+				ok, cause = pcall(cause_of, p, t)
+			end
+			if not ok then
+				stats.errors = stats.errors + 1
+				cause = "unknown (" .. tostring(cause) .. ")"
+			end
+			if cause ~= nil then
+				done[#done + 1] = id
+				if cause then write(p, cause) end
+			end
+		end
+	end
+	for _, id in ipairs(done) do
+		pending[id] = nil
+		pending_count = pending_count - 1
+		if hints[id] then take_hint(id) end
+	end
+end
+
+-- An item left the inventory of `owner` (local id: 0 for this machine's actor).
+local function on_left(owner, item)
+	if not entered then return end
+	if not watched(item) then return end
+	local id = field(item, "id")
+	if type(id) ~= "number" then return end
+	local nick = nick_of(owner) or (owner == 0 and "actor" or nil)
+	if not nick then return end
+	if owner == 0 and carried[id] then
+		carried[id] = nil
+		if not settle_at then keep_snapshot() end
+	end
+	if pending[id] then return end
+	if pending_count >= MAX_PENDING then
+		suppressed = suppressed + 1
+		return
+	end
+	pending[id] = {
+		id = id, sec = tostring(field(item, "section")), cond = tonumber(field(item, "condition")) or 0, at = now(),
+		owner = owner, nick = nick, death = life_of(owner) ~= "alive",
+	}
+	pending_count = pending_count + 1
+end
+
+-------------------------------------------------------------------------------
+-- Callbacks
+-------------------------------------------------------------------------------
+local function guarded(f)
+	return function(...)
+		local ok, err = pcall(f, ...)
+		if not ok then
+			stats.errors = stats.errors + 1
+			if stats.errors <= 5 then printf("[coop-items] ! %s", tostring(err)) end
+		end
+	end
+end
+
+local on_item_drop = guarded(function(item) on_left(0, item) end)
+
+local on_npc_item_drop = guarded(function(npc, item)
+	if not leads_level() then return end
+	local id = field(npc, "id")
+	if type(id) ~= "number" or id == 0 then return end
+	if call_api("peer_of_avatar", id) == nil then return end -- not a player's character
+	on_left(id, item)
+end)
+
+local on_item_take = guarded(function(item)
+	if not entered or not watched(item) then return end
+	local id = field(item, "id")
+	if type(id) ~= "number" then return end
+	if pending[id] and pending[id].owner == 0 then -- it came back before its cause was known
+		pending[id] = nil
+		pending_count = pending_count - 1
+	end
+	carried[id] = tostring(field(item, "section"))
+	if not settle_at then keep_snapshot() end
+end)
+
+local on_item_use = guarded(function(item)
+	if watched(item) then hint(field(item, "id"), { kind = "use" }) end
+end)
+
+local on_trade = guarded(function(item, _, money)
+	if watched(item) then hint(field(item, "id"), { kind = "trade", money = tonumber(money) or 0 }) end
+end)
+
+local on_after_move = guarded(function(npc_id, item, mode)
+	if mode == "loot" and type(npc_id) == "number" and watched(item) then hint(field(item, "id"), { kind = "box", box = npc_id }) end
+end)
+
+local update_work = guarded(function()
+	local t = now()
+	if settle_at and t >= settle_at then settle_world() end
+	if pending_count > 0 then resolve(t, false) end
+	flush_suppressed(t)
+end)
+
+-- Every frame: three comparisons while nothing waits.
+local function on_update()
+	if pending_count == 0 and not settle_at and suppressed == 0 then return end
+	update_work()
+end
+
+local on_first_update = guarded(function()
+	entered = true
+	settle_at = now() + ENTRY_SETTLE_MS
+end)
+
+local on_net_destroy = guarded(function()
+	if pending_count > 0 then resolve(now(), true) end
+	pending, pending_count = {}, 0
+	hints, hint_count = {}, 0
+	entered, settle_at = false, nil
+end)
+
+-- Every save (in a session the host's autosave): one line per player whose character is online here.
+local on_save = guarded(function()
+	if not db.actor then return end
+	local mine = watched_of(db.actor)
+	carry_line(nick_of(0) or "actor", "at save", mine)
+	if entered and not settle_at then
+		carried = {}
+		for _, it in ipairs(mine) do if it.id then carried[it.id] = it.sec end end
+		keep_snapshot()
+	end
+	if not leads_level() then return end
+	local list = call_api("players")
+	if type(list) ~= "table" then return end
+	for _, p in ipairs(list) do
+		if not p.is_self and type(p.avatar_id) == "number" and p.avatar_id ~= 0 then
+			local o = online(p.avatar_id)
+			if o then carry_line(tostring(p.nick or "?"), "at save", watched_of(o)) end
+		end
+	end
+end)
+
+-------------------------------------------------------------------------------
+-- Scripts that release items: the name of the caller of alife_release_id / alife_release, for watched items carried here
+-------------------------------------------------------------------------------
+local own_source = (function()
+	local ok, src = pcall(function() return debug.getinfo(1, "S").source end)
+	return ok and src or ""
+end)()
+
+-- The first Lua frame up the stack that is not this script: the script that asked for the release.
+local function caller_script()
+	for level = 2, 12 do
+		local ok, info = pcall(debug.getinfo, level, "S")
+		if not (ok and info) then break end
+		local src = info.source
+		if type(src) == "string" and info.what ~= "C" and src ~= own_source and src:sub(1, 1) == "@" then
+			return src:match("([^\\/]+)%.script$") or src:match("([^\\/]+)$") or src
+		end
+	end
+	return "?"
+end
+
+-- Before the drop (a release reaches the inventory a frame later) or after it (the same frame, a script of the host).
+local function note_release(id)
+	if type(id) == "number" and (carried[id] or pending[id]) then hint(id, { kind = "release", src = caller_script() }) end
+end
+
+local function wrap_releases()
+	local orig_id = rawget(_G, "alife_release_id")
+	if type(orig_id) == "function" then
+		_G.alife_release_id = function(id, ...)
+			pcall(note_release, id)
+			return orig_id(id, ...)
+		end
+	end
+	local orig = rawget(_G, "alife_release")
+	if type(orig) == "function" then
+		_G.alife_release = function(se, ...)
+			pcall(function()
+				local id = se and (type(se.id) == "function" and se:id() or se.id)
+				note_release(id)
+			end)
+			return orig(se, ...)
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- For other scripts and coop_status
+-------------------------------------------------------------------------------
+function counters()
+	return { lines = stats.lines, suppressed = stats.suppressed, errors = stats.errors, pending = pending_count }
+end
+
+function on_game_start()
+	wrap_releases()
+	RegisterScriptCallback("actor_on_item_drop", on_item_drop)
+	RegisterScriptCallback("npc_on_item_drop", on_npc_item_drop)
+	RegisterScriptCallback("actor_on_item_take", on_item_take)
+	RegisterScriptCallback("actor_on_item_use", on_item_use)
+	RegisterScriptCallback("actor_on_trade", on_trade)
+	RegisterScriptCallback("ActorMenu_on_item_after_move", on_after_move)
+	RegisterScriptCallback("actor_on_update", on_update)
+	RegisterScriptCallback("actor_on_first_update", on_first_update)
+	RegisterScriptCallback("actor_on_net_destroy", on_net_destroy)
+	RegisterScriptCallback("save_state", on_save)
+end
