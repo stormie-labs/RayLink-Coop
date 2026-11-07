@@ -36,7 +36,7 @@
 
 ## How to start
 
-1. **Install [RayLink Launcher](https://github.com/stormie-labs/RayLink-Launcher/releases/latest/download/RayLinkSetup.exe)** and add your Anomaly 1.5.3 (and, for G.A.M.M.A., your Mod Organizer folder).
+1. **Install [RayLink Launcher](https://github.com/stormie-labs/RayLink-Launcher/releases/latest/download/RayLinkSetup.exe)** and add your Anomaly 1.5.3 (and, for G.A.M.M.A., your Mod Organizer folder) — or pick **Download**, and the launcher installs Anomaly or the whole G.A.M.M.A. for you.
 2. **Press Play.** The launcher downloads this co-op build and prepares a separate game folder.
 3. **Host or join in the game:** Main menu → Co-op. Everyone in the group needs the same build.
 
