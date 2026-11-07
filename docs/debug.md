@@ -4,7 +4,7 @@
 
 Debug works like `sv_cheats 1` in CS: the server (the host) turns it on, and then every player gets the debug menu. The server carries out every action from the menu, so the world stays the same for everyone.
 
-**You need a build with debug:** currently the **Dev** channel, build 41.1 or newer. The whole group must be on the same build.
+**You need a build with debug:** build 41.4 or newer (Stable), or Dev 41.1 or newer. The whole group must be on the same build.
 
 ## How to turn it on
 
