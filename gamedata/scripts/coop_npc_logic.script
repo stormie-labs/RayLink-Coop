@@ -47,7 +47,8 @@
 	  npc.pad_code   client -> host  { i = pad, t = digits }
 	  npc.vise       host -> one     { i = vise }  (open the workshop)
 	API: deliver(name, npc, p), audience_of(npc), is_replicated(id), register_actor_effect(name, always), user_of(npc),
-	press_spares_host(npc), relay_to_all(name, args, except_peer)
+	press_spares_host(npc), relay_to_all(name, args, except_peer), add_audience_rule(rule) (rule(npc, st) -> audience or nil:
+	coop_arena gives the arena trigger's effects to its fighter alone)
 	Stock functions wrapped: xr_logic.try_switch_to_another_section, determine_section_to_activate,
 	initialize_obj, switch_to_section, pick_section_from_condlist, save_obj; sr_timer.action_timer.update;
 	sr_crow_spawner.crowkiller.update; sr_monster.fake_monster.update; xr_conditions.dist_to_actor_le,
@@ -93,10 +94,12 @@ local GATHERS = { disable_ui = true, disable_ui_only = true, teleport_actor = tr
 -- on_actor_inside = %=sr_teleport%) moves db.actor 3 s later: for the player who walked in only. Left out, it ran on the
 -- host for ANY player's arrival and put the host's character at the exit's drop point (live 2026-10-24: "I walk up to the
 -- exit mark and the others are teleported to it"). It is no scene (GATHERS): the others stay where they are and walk up.
+-- The Bar arena's effects (bar_arena_teleport, _2, bar_arena_weapon_slot) are not here: they are one fighter's, coop_arena
+-- routes them; its audience rule gives the trigger's disable_ui / enable_ui to him alone.
 local ACTOR_FX = {
 	disable_ui = true, disable_ui_only = true, run_tutorial = true, kill_actor = true, hit_actor = true,
 	save_actor_position = true, restore_actor_position = true, teleport_actor = true, sr_teleport = true,
-	bar_arena_teleport = true, bar_arena_teleport_2 = true, bar_arena_weapon_slot = true, jup_teleport_actor = true,
+	jup_teleport_actor = true,
 	enable_ui = "always", enable_imput = "always", stop_tutorial = "always",
 }
 -- The host sees a moved player late and repeats the effect: on a client it counts only while he still stands in this zone.
@@ -266,7 +269,18 @@ local function restart_audience(npc, st, c)
 	if st.coop_scene then add_nearby(zone or npc, aud) end
 end
 
+-- Other scripts may name the audience of a restrictor themselves: rule(npc, st) -> { [player id] = true } or nil (no say).
+local audience_rules = {}
+
+function add_audience_rule(rule)
+	if type(rule) == "function" then audience_rules[#audience_rules + 1] = rule end
+end
+
 local function audience(npc, st)
+	for _, rule in ipairs(audience_rules) do
+		local ok, aud = pcall(rule, npc, st)
+		if not ok then report("audience rule", aud) elseif type(aud) == "table" then return aud end
+	end
 	if st.coop_arrival then
 		restart_audience(npc, st, st.coop_arrival)
 		st.coop_arrival = nil

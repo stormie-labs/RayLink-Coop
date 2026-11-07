@@ -411,6 +411,8 @@ do
 	E.xr_zones = { purge_arena_items = function(n) PURGED = n end }
 	E.xr_logic = { switch_to_section = function(_, _, s) SWITCHED = s end }
 	E.db.zone_by_name.trigger = make_obj(310, 0, 0, 0)
+	local OVER = false
+	E.coop_arena = { fight_over = function() OVER = true end }
 	E.db.storage[310] = { active_section = "sr_idle@wait_finish", ini = { section_exist = function(_, s) return s == "sr_cutscene@fight_1" end } }
 	E.db.actor._pos = vec(5, 0, 5)
 	run_for(M, 40)
@@ -422,6 +424,7 @@ do
 	check(PURGED == "bar_arena" and SWITCHED == "sr_idle@idle", "the items are purged, the trigger is at its start")
 	check(E.INFOS.bar_arena_fight_3_done == nil, "not a win: no reward, the fight can be asked for again")
 	check(E.INFOS.bar_arena_fight_3_stalker_1_die == nil, "the deaths of this try are forgotten")
+	check(OVER == true, "coop_arena forgets the fighter of the fight: his gear waits for him")
 end
 
 print("== split levels: the Bar is a map server's, the world server stands at Agroprom")
@@ -535,128 +538,6 @@ do
 	body.position = vec(2000, 0, 5)
 	both(25)
 	check(through == 801 and stand_in._hp == 1, "the target of a hunt on another level is healed on its level")
-end
-
-print("== the Bar arena: the gear comes back on the fighter's respawn")
-do
-	local M, E, enc = make_world()
-	local RAN = {}
-	E.LEVEL = "l05_bar"
-	E.xr_effects = {
-		bar_arena_teleport = function() RAN[#RAN + 1] = "in" end,
-		bar_arena_teleport_2 = function() RAN[#RAN + 1] = "out" end,
-	}
-	enc.on_game_start()
-	M.fire("coop_respawned", "camp")
-	check(#RAN == 0, "a player who was not in the arena: nothing is taken from him")
-	E.xr_effects.bar_arena_teleport()
-	M.fire("coop_respawned", "camp")
-	check(RAN[2] == "out", "a fighter: the stock way out, his gear back")
-	M.fire("coop_respawned", "camp")
-	check(#RAN == 2, "once")
-end
-
-print("== the Bar arena: a client's flag outlives his Lua state")
-do
-	local M, E, enc = make_world("client")
-	local RAN, KEYS, SENT = {}, {}, 0
-	E.LEVEL = "l05_bar"
-	E.xr_effects = {
-		bar_arena_teleport = function() RAN[#RAN + 1] = "in" end,
-		bar_arena_teleport_2 = function() RAN[#RAN + 1] = "out" end,
-	}
-	E.coop_economy_mdata = {
-		register_player_key = function(k, f) KEYS[k] = f end,
-		send_player_keys = function() SENT = SENT + 1 end,
-	}
-	enc.on_game_start()
-	local value = KEYS.coop_arena_gear
-	check(type(value) == "function", "a per-player key: the host keeps it for his character")
-	check(value and value() == nil, "not a fighter: nothing to keep")
-	E.xr_effects.bar_arena_teleport()
-	check(value and value() == true and SENT == 1, "a fighter: the host hears at once, not at the next poll")
-	E.xr_effects.bar_arena_teleport_2()
-	check(value and value() == nil and SENT == 2, "his gear came back: the key goes")
-
-	-- his Lua state is gone: the world he loads gives the key back (coop_economy_mdata.apply_surrogate, before load_state)
-	M, E, enc = make_world("client")
-	RAN = {}
-	E.LEVEL = "l05_bar"
-	E.xr_effects = {
-		bar_arena_teleport = function() RAN[#RAN + 1] = "in" end,
-		bar_arena_teleport_2 = function() RAN[#RAN + 1] = "out" end,
-	}
-	enc.on_game_start()
-	E.INFOS.bar_arena_fight_begin, E.INFOS.bar_arena_fight_3 = true, true
-	M.fire("load_state", { coop_arena_gear = true })
-	M.fire("actor_on_first_update")
-	check(#RAN == 0, "back in a fight that runs: he stays in it")
-	M.fire("coop_respawned", "camp")
-	check(RAN[1] == "out" and #RAN == 1, "falls after the rejoin: his gear comes back")
-
-	M, E, enc = make_world("client")
-	RAN = {}
-	E.xr_effects = {
-		bar_arena_teleport = function() RAN[#RAN + 1] = "in" end,
-		bar_arena_teleport_2 = function() RAN[#RAN + 1] = "out" end,
-	}
-	enc.on_game_start()
-	M.fire("load_state", { coop_arena_gear = true })
-	M.fire("actor_on_first_update")
-	M.fire("coop_respawned", "camp")
-	check(#RAN == 0, "on another map: the stock function needs the arena's paths, the gear waits")
-	E.LEVEL = "l05_bar"
-	M.fire("actor_on_first_update")
-	check(RAN[1] == "out" and #RAN == 1, "the fight ended without him, he is at the Bar: the stock way out")
-end
-
-print("== the totalizator: the way back is the bettor's, whoever's machine runs the restrictor")
-do
-	local function bet_world(role)
-		local M, E, enc = make_world(role)
-		local RAN, RELAYED, FX = {}, {}, {}
-		E.LEVEL = "l05_bar"
-		E.xr_effects = {
-			bar_arena_teleport = function() RAN[#RAN + 1] = "in" end,
-			bar_arena_teleport_2 = function() RAN[#RAN + 1] = "out" end,
-			teleport_for_totaliz_out = function() RAN[#RAN + 1] = "bet out" end,
-		}
-		E.dialogs_mlr = { teleport_for_totaliz = function() RAN[#RAN + 1] = "bet in" end }
-		E.coop_economy_mdata = { register_player_key = function() end, send_player_keys = function() end }
-		E.coop_npc_logic = {
-			register_actor_effect = function(name, always) FX[name] = always end,
-			relay_to_all = function(name) RELAYED[#RELAYED + 1] = name end,
-		}
-		E.PURGED = 0
-		E.xr_zones = { purge_arena_items = function() E.PURGED = E.PURGED + 1 end }
-		enc.on_game_start()
-		return M, E, enc, RAN, RELAYED, FX
-	end
-	local M, E, enc, RAN, RELAYED, FX = bet_world("host")
-	check(FX.teleport_for_totaliz_out == true, "the effect reaches this machine whatever the audience of the restrictor")
-	E.xr_effects.teleport_for_totaliz_out()
-	check(#RAN == 0, "a client bet, the host did not: the host's inventory stays his, the client's gear does not come to him")
-	check(RELAYED[1] == "teleport_for_totaliz_out", "the host passes the effect on to the players")
-	check(E.PURGED == 1, "the arena's leftovers still go: the host owns the world")
-
-	M, E, enc, RAN, RELAYED = bet_world("client")
-	E.xr_effects.teleport_for_totaliz_out()
-	check(#RAN == 0 and #RELAYED == 0 and E.PURGED == 0, "a client who did not bet: nothing")
-	E.dialogs_mlr.teleport_for_totaliz()
-	check(RAN[1] == "bet in", "the bet: the stock call")
-	E.xr_effects.teleport_for_totaliz_out()
-	check(RAN[2] == "bet out" and #RAN == 2, "the bettor: the stock way back")
-	E.xr_effects.teleport_for_totaliz_out()
-	check(#RAN == 2, "once")
-
-	M, E, enc, RAN = bet_world("client")
-	E.xr_effects.bar_arena_teleport()
-	E.xr_effects.teleport_for_totaliz_out()
-	check(#RAN == 1, "a fighter does not leave with another player's bet")
-	M, E, enc, RAN = bet_world("host")
-	E.dialogs_mlr.teleport_for_totaliz()
-	E.xr_effects.teleport_for_totaliz_out()
-	check(RAN[2] == "bet out", "the host's own bet: stock")
 end
 
 print("== Hidden Threat: Degtyarev is not hurt while nobody is near")

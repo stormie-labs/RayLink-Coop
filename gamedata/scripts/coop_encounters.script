@@ -18,9 +18,8 @@
 	Scene rules outside the table: the Pripyat evacuation helis wait for a standing player in the zone they wait at (the timers
 	that make them leave stand still); the Impending Doom deadline does not run while no player stands; the Hidden Threat's
 	Degtyarev is not hurt while nobody is near him (his death ends the storyline; offline the mod itself leaves him alone).
-	The Bar arena takes a fighter's whole inventory into a box and has no way out but winning: a fighter who falls gets his gear
-	back when he respawns, through the stock end of a fight, at the arena's door; the fight ends by the rule. A bet at the
-	totalizator takes the gear the same way, and its way back is the bettor's alone, whoever's machine runs the restrictor.
+	The Bar arena takes a fighter's whole inventory into a box and has no way out but winning: the fight ends by the rule
+	(its fighter's gear, the bets and the way out are coop_arena's).
 	A level the group left answers "nobody there".
 
 	Split levels: the rules are the world server's. What stands on a map server's level is done there: the target of a heal through the far
@@ -355,6 +354,8 @@ local function arena_clear()
 	end
 	local xz = C().mod("xr_zones")
 	if xz and xz.purge_arena_items then xz.purge_arena_items("bar_arena") end
+	local ar = C().mod("coop_arena") -- the fight is off: its fighter record goes, his gear waits for him (coop_arena)
+	if ar and ar.fight_over then ar.fight_over() end
 end
 
 local function arena_to_start()
@@ -512,61 +513,6 @@ local function npc_on_before_hit(npc, s_hit)
 	stats.guarded_hits = stats.guarded_hits + 1
 end
 
--- The arena's gear. The flag is set under coop_npc_logic's audience wrapper of these effects (this file starts before it):
--- only a player the stock function really ran for was in the fight. A client never saves: his flag is a per-player key, so
--- it comes back with the world he loads after a rejoin (coop_economy_mdata, before load_state).
-local arena_gear = false -- false | true (a fighter) | "bet" (a spectator of the totalizator)
-
-local function install_arena_gear()
-	local em = C().mod("coop_economy_mdata")
-	if em then em.register_player_key("coop_arena_gear", function() return arena_gear or nil, true end) end
-	local function marks(tbl, name, taken)
-		C().wrap(tbl, name, name, function(stock)
-			return function(...)
-				arena_gear = taken
-				if em then em.send_player_keys() end
-				return stock(...)
-			end
-		end)
-	end
-	local xe = C().mod("xr_effects")
-	marks(xe, "bar_arena_teleport", true)
-	marks(xe, "bar_arena_teleport_2", false)
-	marks(C().mod("dialogs_mlr"), "teleport_for_totaliz", "bet")
-	-- The way back of a bet is the totalizator restrictor's: on the host it would take the host's inventory and hand him the box
-	-- with the bettor's gear. It goes to every player, and only the one who bet takes it.
-	marks(xe, "teleport_for_totaliz_out", false)
-	local logic = C().mod("coop_npc_logic")
-	C().wrap(xe, "teleport_for_totaliz_out", "teleport_for_totaliz_out", function(stock)
-		return function(...)
-			if not P.active() then return stock(...) end
-			if P.is_host() and logic then logic.relay_to_all("teleport_for_totaliz_out") end
-			if arena_gear == "bet" then return stock(...) end
-			if P.is_host() then xr_zones.purge_arena_items("bar_arena") end
-		end
-	end)
-	if logic then logic.register_actor_effect("teleport_for_totaliz_out", true) end
-end
-
--- The stock way out reads the arena's paths: on another map the gear waits for the player to come to the Bar.
-local function on_respawned()
-	if not (arena_gear and P.active() and db.actor and level.name() == ARENA_LEVEL) then return end
-	xr_effects.bar_arena_teleport_2(db.actor)
-end
-
--- A rejoin, or a walk back to the Bar: the fight ended without him, nothing else opens the box.
-local function on_first_update()
-	if not arena_on() then on_respawned() end
-end
-
-local function save_state(m_data)
-	m_data.coop_arena_gear = arena_gear or nil
-end
-
-local function load_state(m_data)
-	arena_gear = m_data.coop_arena_gear or false
-end
-
 -------------------------------------------------------------------------------
 -- Tick
 -------------------------------------------------------------------------------
@@ -627,8 +573,6 @@ function on_game_start()
 	P = coop_npc_players
 	if not rawget(_G, "coop") then return end
 	install_entries()
-	local ok, err = pcall(install_arena_gear) -- axr_main runs every on_game_start in one unprotected loop
-	if not ok then report("arena", err) end
 	-- the squad a task keeps alive stands on a level a map server may lead: who is held off is the world server's to say
 	local share = rawget(_G, "coop_levels_share") or coop_levels_share
 	if share then
@@ -646,9 +590,5 @@ function on_game_start()
 	C().on("enc_arena", on_arena_rolled, "client")
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("npc_on_before_hit", npc_on_before_hit)
-	RegisterScriptCallback("coop_respawned", on_respawned)
-	RegisterScriptCallback("actor_on_first_update", on_first_update)
-	RegisterScriptCallback("save_state", save_state)
-	RegisterScriptCallback("load_state", load_state)
 	C().status_line(TAG, print_status)
 end

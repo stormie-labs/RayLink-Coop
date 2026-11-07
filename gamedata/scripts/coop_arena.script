@@ -1,0 +1,812 @@
+--[[
+	Anomaly Coop - the Bar arena and the totalizator in a session (gamedata\scripts\coop_arena.script).
+
+	Stock knows one actor (xr_effects.bar_arena_teleport, bar_arena_teleport_2, bar_arena_weapon_slot,
+	teleport_for_totaliz_out, dialogs_mlr.teleport_for_totaliz; the trigger bar_arena_triger.ltx and its
+	sr_cutscene@fight_N): his whole inventory goes into the story box bar_arena_inventory_box, he gets the fight's kit; on the
+	way out what he has goes into bar_arena_inventory_box_2 and the first box comes back to him.
+	In a session that broke three ways (a player's report of 2026-11-07, vanilla Anomaly: "one player loses his weapons,
+	armour and helmet, the other drops out of sync and walks the map naked and unseen"):
+	  - the trigger is a world restrictor nobody walks into: its actor effects went to every player, and its cutscene (a section
+	    scheme, run by every machine that takes the host's section) took everybody on the Bar into the arena;
+	  - a client's own moves into and out of a story box are requests the host checks for reach (15 m) while the cutscene
+	    carries him away, rate limited item by item; the host's own way back took the whole box, other players' gear with it;
+	  - the arena zone counts a client's character (a stalker on the host) as an arena item: its purge took him out of the world.
+	Here the arena is one player's fight:
+	  - The fighter: the player who talked to the arena manager (story id bar_arena_manager) last (the engine's talk locks,
+	    coop.talk_recent), else the one nearest to him; picked by the authority of the Bar (the host, or the map server of the
+	    Bar) when the fight starts. The trigger's actor effects (disable_ui, enable_ui) go to him alone (coop_npc_logic audience
+	    rule). Its cutscene plays on his machine alone: anywhere else the section stands still, and on the authority it ends when
+	    his ends (arena.cut), or after CUT_WAIT_MS.
+	  - His gear: the authority moves it, and keeps a ledger per player (the ids; the ids of the kit his machine made; saved with
+	    the host's world, and with split levels carried through the world server, coop_levels_share "arena_ledger"):
+	      in   his whole inventory into box 1;
+	      out  into box 2 what the arena gave him: everything he holds when the fight or the bet just ended or he stands in the
+	           arena (stock), else (a respawn elsewhere, a rejoin, a late answer) only his kit; the arena's purge (not while
+	           another player's fight runs); the ids of his ledger from box 1 back to him. No box 1 here: the ledger waits.
+	    Then his own machine runs the stock call for the rest (the kit, the screen, the way in or out), with both story boxes
+	    hidden (get_story_object answers nil for them) and the purge left out: the boxes are the authority's. The way in waits
+	    until the moved gear has left his machine (IN_WAIT_MS). Mods that wrap these functions (GAMMA: kits, magazines, Powered
+	    Exos) run there as in single player; what they make is the kit (arena.kit). Our wrappers are kept the outermost (a mod
+	    that wraps later is wrapped again).
+	  - A bet at the totalizator is the same: in from the dialog (the bettor asks, arena.bet; refused while his gear is in a box
+	    already), out from the totalizator's restrictor, for every bettor of the ledger. Stock moves the bettor inside its box
+	    branch: that move is made here.
+	  - A fighter who falls gets his gear back when he respawns (coop_respawned), or when he is back on the Bar after a rejoin
+	    and no fight runs (actor_on_first_update): he asks (arena.out), the authority gives it back and answers with the way out.
+	    An ask that never came (sent before his game was live, lost with a crash): the authority gives back by itself a ledger
+	    older than HEAL_GRACE_MS whose player stands on the Bar with nothing of his running (his fight, a totalizator battle).
+	    His flag (coop_arena_gear) is a per-player key: the host keeps it for his character, a client never saves.
+	  - The arena zone never counts a player: xr_zones.arena_zone_binder:purge_items leaves players out.
+	Single player and an exe without co-op: stock, untouched.
+
+	Events (coop_npc_players):
+	  arena.go   authority -> player   { f = "in" | "out" | "slot" | "bet_in" | "bet_out" | "none", a = argument }
+	  arena.bet  bettor -> authority   { }
+	  arena.out  player -> authority   { }  his gear back
+	  arena.cut  fighter -> authority  { }  his cutscene ended
+	  arena.kit  player -> authority   { i = "id,id,..." }  what his stock call made (the kit)
+	Status: coop_status line "arena".
+--]]
+
+local tostring, tonumber, type, pairs, ipairs, pcall, next = tostring, tonumber, type, pairs, ipairs, pcall, next
+
+local TAG = "arena"
+local ARENA_LEVEL = "l05_bar"
+local BOX_IN, BOX_OUT = "bar_arena_inventory_box", "bar_arena_inventory_box_2"
+local MANAGER = "bar_arena_manager"
+local TRIGGER = "bar_arena_triger"
+local ZONE = "bar_arena"
+local FIGHTS = 8
+local CUT_WAIT_MS = 30000
+local IN_WAIT_MS = 3000
+local HEAL_GRACE_MS = 15000 -- a ledger older than this whose player stands here with nothing of his running: given back
+local TICK_MS = 1000
+local TALK_WINDOWS = { 2000, 5000, 15000, 60000 } -- coop.talk_recent takes up to 60 s
+-- dialogs_mlr.teleport_for_totaliz moves the bettor inside its box branch (stock dialogs_mlr.script:1438-1439, GAMMA's
+-- Lottery Rebalance the same): with the box hidden that move is ours.
+local BET_POS = { 139.61517333984, -13.390427589417, 100.86038208008 }
+local BET_LV, BET_GV = 37564, 1710
+
+local P -- coop_npc_players
+local function C() return coop_mods_core end
+
+local ledger = {} -- authority: avatar id -> { kind = "fight" | "bet", items = { id, ... }, kit = { id, ... }, at = time }
+local fight = nil -- authority: { id = the fighter's avatar id, n = the fight }
+local cut_done = false -- authority: the fighter's cutscene ended
+local mine = false -- this player: false | "fight" | "bet" - his gear waits in the box
+local fighting = false -- this player fights the running fight: its cutscene plays here
+local passing = false -- the stock chain runs for this machine's own player: our wrappers let it through
+local arena_zone = nil -- the binder of the arena zone here (xr_zones.arena_zone_binder): its object answers inside()
+local got_down = false -- the map server of the Bar: the world server's copy of the ledger came (split levels)
+local world_copy = nil -- the world server: the ledger of the Bar's map server, kept in its save (split levels)
+local OURS = {} -- our wrapper functions
+local stats = { stowed = 0, returned = 0, to_box2 = 0, missing = 0, players_kept = 0, still_cuts = 0, rewrapped = 0, errors = 0 }
+
+local function log(fmt, ...) P.log(TAG, fmt, ...) end
+local function report(what, err)
+	stats.errors = stats.errors + 1
+	P.report(TAG, what, err)
+end
+
+local function session() return P ~= nil and P.active() end
+-- The process whose world holds the arena: the host, or the map server of the Bar (what a player asks goes to the one
+-- that leads his level).
+local function authority() return P.is_host() end
+
+-------------------------------------------------------------------------------
+-- The fight and its fighter (authority)
+-------------------------------------------------------------------------------
+local function fight_running()
+	for n = 1, FIGHTS do
+		if has_alife_info("bar_arena_fight_" .. n) and not has_alife_info("bar_arena_fight_" .. n .. "_done") then return n end
+	end
+	return nil
+end
+
+local function id_of(o)
+	local ok, id = pcall(o.id, o)
+	return ok and id or nil
+end
+
+local function own_id() return db.actor and id_of(db.actor) or nil end
+
+local function obj_of(id)
+	if id == nil then return nil end
+	if id == own_id() then return db.actor end
+	return level.object_by_id(id)
+end
+
+local function manager()
+	local id = get_story_object_id and get_story_object_id(MANAGER)
+	return id and level.object_by_id(id) or nil
+end
+
+-- The player who talked to the arena manager last; with no talk to go by (an exe without it, two at once), the nearest.
+local function pick(near)
+	local list = P.everyone()
+	if #list == 0 then return nil end
+	local man = manager()
+	local api = rawget(_G, "coop")
+	local recent = man and api and api.talk_recent
+	if recent then
+		local man_id = id_of(man)
+		for _, ms in ipairs(TALK_WINDOWS) do
+			local found, n = nil, 0
+			for _, o in ipairs(list) do
+				local peer = P.peer_of(o)
+				local ok, r = pcall(recent, peer, man_id, ms)
+				if peer ~= nil and ok and r == true then found, n = o, n + 1 end
+			end
+			if n == 1 then return found end
+			if n > 1 then break end
+		end
+	end
+	local pos = man and man:position() or (near and near:position())
+	if not pos then return list[1] end
+	local best, bd = nil, math.huge
+	for _, o in ipairs(list) do
+		local d = o:position():distance_to_sqr(pos)
+		if d < bd then best, bd = o, d end
+	end
+	return best
+end
+
+-- The running fight's record; a fight that starts gets its fighter now.
+local function current(near)
+	local n = fight_running()
+	if n and not (fight and fight.n == n) then
+		local o = pick(near)
+		if not o then return fight end
+		fight = { id = id_of(o), n = n }
+		cut_done = false
+		log("fight %d: the fighter is %s (peer %s)", n, tostring(o:name()), tostring(P.peer_of(o)))
+	end
+	return fight
+end
+
+function fight_over()
+	fight, cut_done = nil, false
+end
+
+local function is_trigger(obj)
+	if not obj then return false end
+	local ok, name = pcall(obj.name, obj)
+	if ok and name == TRIGGER then return true end
+	local id = id_of(obj)
+	local st = id and db.storage[id]
+	if not (st and st.ini) then return false end
+	local okx, has = pcall(st.ini.section_exist, st.ini, "sr_cutscene@fight_1")
+	return okx and has == true
+end
+
+-- coop_npc_logic: the trigger's actor effects are the fighter's.
+local function audience_rule(npc)
+	if not (session() and authority() and is_trigger(npc)) then return nil end
+	local f = current(npc)
+	if not f then return nil end
+	return { [f.id] = true }
+end
+
+-------------------------------------------------------------------------------
+-- The gear (authority)
+-------------------------------------------------------------------------------
+local function parent_id(item)
+	local ok, p = pcall(item.parent, item)
+	return ok and p and id_of(p) or nil
+end
+
+local function items_of(o)
+	local list = {}
+	o:inventory_for_each(function(item) list[#list + 1] = item end)
+	return list
+end
+
+-- His whole inventory into box 1, the ids into his ledger. -> the ids moved now ("1,2,3"), nil: there is no box here, he
+-- keeps his gear.
+local function stow(o, kind)
+	local box = get_story_object(BOX_IN)
+	if not box then
+		log("! %s is not here: %s keeps his gear", BOX_IN, tostring(o:name()))
+		return nil
+	end
+	local id = id_of(o)
+	local rec = ledger[id] or { items = {}, kit = {} }
+	rec.kind, rec.at = kind, time_global()
+	local moved = {}
+	for _, item in ipairs(items_of(o)) do
+		o:transfer_item(item, box)
+		moved[#moved + 1] = id_of(item)
+		rec.items[#rec.items + 1] = moved[#moved]
+		stats.stowed = stats.stowed + 1
+	end
+	ledger[id] = rec
+	return table.concat(moved, ",")
+end
+
+-- The arena's leftovers go, unless another player's fight runs there now (its opponents are in the zone too).
+local function purge(for_id)
+	if fight and fight.id ~= for_id and fight_running() then return end
+	local xz = C().mod("xr_zones")
+	if xz and xz.purge_arena_items then
+		local ok, err = pcall(xz.purge_arena_items, ZONE)
+		if not ok then report("purge", err) end
+	end
+end
+
+-- Stands in the arena zone; nil: the zone is not known here.
+local function in_arena(o)
+	local z = arena_zone and arena_zone.object
+	if not z then return nil end
+	local ok, r = pcall(z.inside, z, o:position())
+	return ok and r == true
+end
+
+-- What the arena gave him into box 2, the purge, his ledger back to him. `all`: the fight or the bet just ended, or he stands in
+-- the arena: everything he holds is the arena's (stock); else (after a respawn elsewhere, a rejoin, a late answer) only the kit
+-- his own machine made for him: what he found since stays his. Nothing of his is moved without a ledger: a player whose gear
+-- never went in keeps what he has. False: he is not in this world now.
+local function give_back(id, all)
+	local o = obj_of(id)
+	if not o then return false end
+	local rec = ledger[id]
+	if not rec then return true end
+	local box = get_story_object(BOX_IN)
+	if not box then return false end -- box 1 is not online here: his ledger waits
+	if not all and in_arena(o) then all = true end
+	local kit = {}
+	for _, k in ipairs(rec.kit or {}) do kit[k] = true end
+	local box2 = get_story_object(BOX_OUT)
+	if box2 then
+		for _, item in ipairs(items_of(o)) do
+			if all or kit[id_of(item)] then
+				o:transfer_item(item, box2)
+				stats.to_box2 = stats.to_box2 + 1
+			end
+		end
+	end
+	purge(id)
+	local box_id = id_of(box)
+	for _, iid in ipairs(rec.items) do
+		local item = level.object_by_id(iid)
+		local at = item and parent_id(item)
+		if item and box_id and at == box_id then
+			box:transfer_item(item, o)
+			stats.returned = stats.returned + 1
+		elseif not (item and at == id) then
+			stats.missing = stats.missing + 1
+			log("! item %s of %s is not in %s: not given back", tostring(iid), tostring(o:name()), BOX_IN)
+		end
+	end
+	ledger[id] = nil
+	return true
+end
+
+-------------------------------------------------------------------------------
+-- The player's own machine
+-------------------------------------------------------------------------------
+local function set_mine(v)
+	mine = v
+	local em = C().mod("coop_economy_mdata")
+	if em and em.send_player_keys then em.send_player_keys() end
+end
+
+-- The current chain (our wrapper outermost) for this machine's own player: both story boxes hidden, the purge left out.
+-- -> ok, the ids of what it made (the kit, a mod's magazines, the binoculars of a bet)
+local function run_local(tbl, key, ...)
+	local f = tbl and tbl[key]
+	if type(f) ~= "function" then return false, {} end
+	local made, seen = {}, {}
+	local function catch(g)
+		if type(g) ~= "function" then return g end
+		return function(...)
+			local se = g(...)
+			local ok, id = pcall(function() return se and se.id end)
+			if ok and type(id) == "number" and not seen[id] then
+				seen[id] = true
+				made[#made + 1] = P.to_host(id)
+			end
+			return se
+		end
+	end
+	local ac, aci = _G.alife_create, _G.alife_create_item
+	local w_ac, w_aci = catch(ac), catch(aci)
+	_G.alife_create, _G.alife_create_item = w_ac, w_aci
+	local gso = _G.get_story_object
+	local function hidden(sid, ...)
+		if sid == BOX_IN or sid == BOX_OUT then return nil end
+		if type(gso) == "function" then return gso(sid, ...) end
+		return nil
+	end
+	local xz = C().mod("xr_zones")
+	local purge_f = xz and xz.purge_arena_items
+	_G.get_story_object = hidden
+	if purge_f then xz.purge_arena_items = function() end end
+	passing = true
+	local ok, err = pcall(f, ...)
+	passing = false
+	if _G.get_story_object == hidden then _G.get_story_object = gso end
+	if _G.alife_create == w_ac then _G.alife_create = ac end
+	if _G.alife_create_item == w_aci then _G.alife_create_item = aci end
+	if purge_f and xz.purge_arena_items ~= purge_f then xz.purge_arena_items = purge_f end
+	if not ok then report("stock " .. key, err) end
+	return ok, made
+end
+
+-- The authority learns what the arena gave this player (the kit goes back to box 2 even when he comes out elsewhere).
+local add_kit -- defined with the authority's functions below
+
+local function report_kit(made)
+	if #made == 0 then return end
+	if authority() and not P.is_map_server() then return add_kit(own_id(), made) end
+	P.send("arena.kit", { i = table.concat(made, ",") }, 0)
+end
+
+local function bet_teleport()
+	if not db.actor or level.name() ~= ARENA_LEVEL then return end
+	level.add_pp_effector("fade_in.ppe", 200, false)
+	db.actor:set_actor_position(vector():set(BET_POS[1], BET_POS[2], BET_POS[3]), BET_LV, BET_GV)
+end
+
+-- The way in waits until the gear the authority moved has left this machine's inventory (its moves come by another road than
+-- arena.go): a mod's follow-up (GAMMA's magazines equip "the" outfit a frame later, Powered Exos charge "the" exo) must see
+-- the kit alone, as in single player.
+local waiting_in = nil -- { ids = { id, ... }, since = time }
+
+local function still_mine(ids)
+	local me = own_id()
+	for _, id in ipairs(ids) do
+		local item = level.object_by_id(P.to_local(id))
+		if item and parent_id(item) == me then return true end
+	end
+	return false
+end
+
+local function way_in()
+	waiting_in = nil
+	local _, made = run_local(C().mod("xr_effects"), "bar_arena_teleport", db.actor, nil)
+	report_kit(made)
+end
+
+local function wait_tick()
+	if not waiting_in then return end
+	if not still_mine(waiting_in.ids) then return way_in() end
+	if time_global() - waiting_in.since >= IN_WAIT_MS then
+		log("! the way in after %d ms: %d moved item(s) still here", IN_WAIT_MS, #waiting_in.ids)
+		way_in()
+	end
+end
+
+local function id_list(s)
+	local ids = {}
+	for v in tostring(s or ""):gmatch("%d+") do ids[#ids + 1] = tonumber(v) end
+	return ids
+end
+
+local PLAY = {
+	["in"] = function(a)
+		fighting = true
+		set_mine("fight")
+		waiting_in = { ids = id_list(a), since = time_global() }
+		wait_tick()
+	end,
+	out = function()
+		fighting, waiting_in = false, nil
+		set_mine(false)
+		-- the way out reads the arena's paths: on another map he only has his gear back
+		if level.name() == ARENA_LEVEL then run_local(C().mod("xr_effects"), "bar_arena_teleport_2", db.actor, nil) end
+	end,
+	slot = function(a) run_local(C().mod("xr_effects"), "bar_arena_weapon_slot", db.actor, nil, { a }) end,
+	bet_in = function(a)
+		set_mine("bet")
+		local _, made = run_local(C().mod("dialogs_mlr"), "teleport_for_totaliz", db.actor, nil)
+		report_kit(made)
+		if tostring(a) ~= "0" then bet_teleport() end
+	end,
+	bet_out = function()
+		set_mine(false)
+		if level.name() == ARENA_LEVEL then run_local(C().mod("xr_effects"), "teleport_for_totaliz_out", db.actor, nil) end
+	end,
+	none = function()
+		fighting, waiting_in = false, nil
+		set_mine(false)
+	end,
+}
+
+local function play(what, a)
+	local f = PLAY[what]
+	if not (f and db.actor) then return end
+	local ok, err = pcall(f, a)
+	if not ok then report("play " .. tostring(what), err) end
+end
+
+-- To the player whose character is `id` here: his own machine plays it.
+local function go(id, what, a)
+	if id == own_id() and not P.is_map_server() then return play(what, a) end
+	local peer = P.peer_of(id)
+	if peer == nil then
+		log("! %s for character %s: he is not in the session", what, tostring(id))
+		return
+	end
+	P.send("arena.go", { f = what, a = a }, peer)
+end
+
+-- The authority: this player's gear back, and his way out (after a respawn, a rejoin, a lost answer: not the fight's end).
+local function out_of(id)
+	local rec = ledger[id]
+	if fight and fight.id == id then fight_over() end
+	if not rec then return go(id, "none") end
+	local what = rec.kind == "bet" and "bet_out" or "out"
+	if give_back(id) then go(id, what) end
+end
+
+add_kit = function(id, made)
+	local rec = ledger[id]
+	if not (rec and type(made) == "table") then return end
+	rec.kit = rec.kit or {}
+	for _, k in ipairs(made) do rec.kit[#rec.kit + 1] = k end
+end
+
+-- The authority, every tick: a ledger whose player stands here and has nothing of his running (his fight, a totalizator
+-- battle) is given back even when his own ask never came (sent before his game was live, lost with a crash).
+local function heal_tick(now)
+	if level.name() ~= ARENA_LEVEL then return end
+	for id, rec in pairs(ledger) do
+		if now - (rec.at or 0) >= HEAL_GRACE_MS then
+			local busy = (rec.kind == "fight" and fight ~= nil and fight.id == id)
+				or (rec.kind == "bet" and has_alife_info("begin_the_battle"))
+			if not busy and obj_of(id) and P.standing(id) then
+				log("the gear of character %s waited: given back", tostring(id))
+				return out_of(id) -- one a tick: out_of changes the ledger
+			end
+		end
+	end
+end
+
+-- This player: his gear waits in the box and no fight holds him.
+local function ask_out()
+	if not (mine and session() and db.actor and level.name() == ARENA_LEVEL) then return end
+	if authority() and not P.is_map_server() then return out_of(own_id()) end
+	P.send("arena.out", {}, 0)
+end
+
+-------------------------------------------------------------------------------
+-- The stock functions
+-------------------------------------------------------------------------------
+-- The trigger's way in (sr_idle@wait_N): the authority.
+local function route_in(_, npc)
+	if not authority() then return end
+	local f = current(npc)
+	local o = f and obj_of(f.id)
+	if not o then
+		log("! fight %s starts with no fighter here", tostring(fight_running()))
+		return
+	end
+	go(f.id, "in", stow(o, "fight") or "")
+end
+
+-- The trigger's weapon slot (sr_idle@fight): the fighter's.
+local function route_slot(_, _, p)
+	if not (authority() and fight) then return end
+	go(fight.id, "slot", type(p) == "table" and p[1] or nil)
+end
+
+-- The commentator's way out (a won fight): the fighter's. With no record of the fight (it was lost: a world whose record did not
+-- come back), every fighter of the ledger who is here.
+local function route_out()
+	if not authority() then return end
+	local ids = {}
+	if fight then
+		ids[1] = fight.id
+	else
+		for id, rec in pairs(ledger) do
+			if rec.kind == "fight" then ids[#ids + 1] = id end
+		end
+	end
+	fight_over()
+	for _, id in ipairs(ids) do
+		if give_back(id, true) then go(id, "out") end
+	end
+end
+
+-- A bet takes the gear of a player whose gear is in no box already and who fights no fight.
+local function bet_of(id, o)
+	if ledger[id] or (fight and fight.id == id) then
+		log("! a bet of character %s refused: his gear is in the box already", tostring(id))
+		return
+	end
+	go(id, "bet_in", stow(o, "bet") and 1 or 0)
+end
+
+-- The bet (a dialog action on the bettor's machine).
+local function route_bet()
+	if P.is_client() then
+		P.send("arena.bet", {}, 0)
+		return
+	end
+	local id = own_id()
+	if id ~= nil then bet_of(id, db.actor) end
+end
+
+-- The totalizator's end (its restrictor): every bettor who is here.
+local function route_bet_out()
+	if not authority() then return end
+	local ids = {}
+	for id, rec in pairs(ledger) do
+		if rec.kind == "bet" and obj_of(id) then ids[#ids + 1] = id end
+	end
+	if #ids == 0 then purge() end -- stock: the arena's leftovers go
+	for _, id in ipairs(ids) do
+		if give_back(id, true) then go(id, "bet_out") end
+	end
+end
+
+local ROUTES = {
+	{ "xr_effects", "bar_arena_teleport", route_in },
+	{ "xr_effects", "bar_arena_teleport_2", route_out },
+	{ "xr_effects", "bar_arena_weapon_slot", route_slot },
+	{ "xr_effects", "teleport_for_totaliz_out", route_bet_out },
+	{ "dialogs_mlr", "teleport_for_totaliz", route_bet },
+}
+
+-- Our wrapper outermost: a mod that wrapped after us is wrapped again. In a session the outermost one routes; under it
+-- (passing: this machine's own player) every layer, ours and the mods', runs on.
+local function ensure_outer()
+	for _, r in ipairs(ROUTES) do
+		local tbl = C().mod(r[1])
+		local cur = tbl and C().fn(tbl, r[2])
+		if cur and not OURS[cur] then
+			local route = r[3]
+			local w = function(...)
+				if passing or not session() then return cur(...) end
+				return route(...)
+			end
+			OURS[w] = true
+			tbl[r[2]] = w
+			stats.rewrapped = stats.rewrapped + 1
+		end
+	end
+end
+
+-- The cutscene of the trigger plays on the fighter's machine alone.
+local function patch_cutscene()
+	local sc = C().mod("sr_cutscene")
+	local cls = sc and sc.action_cutscene
+	if not cls then return end
+	local zone_enter, update, callback = cls.zone_enter, cls.update, cls.cutscene_callback
+	if type(zone_enter) ~= "function" or OURS[zone_enter] or type(update) ~= "function" or type(callback) ~= "function" then return end
+	local function enter(self, ...)
+		self.coop_still, self.coop_tell = nil, nil
+		if session() and is_trigger(self.object) then
+			if authority() then current(self.object) end
+			local me = fighting
+			if authority() and fight then me = fight.id == own_id() and not P.is_map_server() end
+			if not me then
+				self.state = "run"
+				self.coop_still = time_global()
+				stats.still_cuts = stats.still_cuts + 1
+				return
+			end
+			self.coop_tell = P.is_client() or nil
+		end
+		return zone_enter(self, ...)
+	end
+	local function upd(self, ...)
+		if self.coop_still then
+			if authority() and (cut_done or time_global() - self.coop_still >= CUT_WAIT_MS) then
+				self.st.signals = self.st.signals or {}
+				self.st.signals["cameff_end"] = true
+			end
+			xr_logic.try_switch_to_another_section(self.object, self.st, db.actor)
+			return
+		end
+		return update(self, ...)
+	end
+	local function cb(self, ...)
+		local r = callback(self, ...)
+		local sig = self.coop_tell and self.st and self.st.signals
+		if sig and sig["cameff_end"] then
+			self.coop_tell = nil
+			P.send("arena.cut", {}, 0)
+		end
+		return r
+	end
+	OURS[enter] = true
+	cls.zone_enter, cls.update, cls.cutscene_callback = enter, upd, cb
+end
+
+-- The arena zone counts what walks into it, a client's character too (a stalker on the host): a player is never purged. Its
+-- binder is kept (net_spawn) to tell who stands in the arena.
+local function patch_zone()
+	local xz = C().mod("xr_zones")
+	local cls = xz and xz.arena_zone_binder
+	local f = cls and cls.purge_items
+	if type(f) ~= "function" or OURS[f] then return end
+	local ns = cls.net_spawn
+	if type(ns) == "function" then
+		local wn = function(self, ...)
+			arena_zone = self
+			return ns(self, ...)
+		end
+		OURS[wn] = true
+		cls.net_spawn = wn
+	end
+	local w = function(self, ...)
+		arena_zone = arena_zone or self
+		if session() and type(self.saved_obj) == "table" then
+			for id in pairs(self.saved_obj) do
+				if P.is_player_id(id) then
+					self.saved_obj[id] = nil
+					stats.players_kept = stats.players_kept + 1
+				end
+			end
+		end
+		return f(self, ...)
+	end
+	OURS[w] = true
+	cls.purge_items = w
+end
+
+-------------------------------------------------------------------------------
+-- Events, saves, ticks
+-------------------------------------------------------------------------------
+local function avatar_of(from)
+	local id = P.avatar_of_peer(from)
+	return id ~= nil and obj_of(id) and id or nil
+end
+
+local function register_events()
+	P.on("arena.go", function(t)
+		if type(t.f) == "string" then play(t.f, t.a) end
+	end, "client", TAG)
+	P.on("arena.bet", function(_, from)
+		local id = avatar_of(from)
+		if id then bet_of(id, obj_of(id)) end
+	end, "host", TAG)
+	P.on("arena.kit", function(t, from)
+		local id = P.avatar_of_peer(from)
+		local made = {}
+		for v in tostring(t.i or ""):gmatch("%d+") do made[#made + 1] = tonumber(v) end
+		if id ~= nil then add_kit(id, made) end
+	end, "host", TAG)
+	P.on("arena.out", function(_, from)
+		local id = P.avatar_of_peer(from)
+		if id ~= nil then out_of(id) end
+	end, "host", TAG)
+	P.on("arena.cut", function(_, from)
+		if fight and P.avatar_of_peer(from) == fight.id then cut_done = true end
+	end, "host", TAG)
+end
+
+local function ledger_list()
+	local list = {}
+	for id, rec in pairs(ledger) do list[#list + 1] = { id = id, kind = rec.kind, items = rec.items, kit = rec.kit or {} } end
+	return list
+end
+
+local function numbers(t)
+	local out = {}
+	if type(t) == "table" then
+		for _, v in ipairs(t) do
+			if type(v) == "number" then out[#out + 1] = v end
+		end
+	end
+	return out
+end
+
+-- Records from a save or from another process; `only_new`: what is here already stays.
+local function take_list(list, only_new)
+	for _, r in ipairs(type(list) == "table" and list or {}) do
+		if type(r) == "table" and type(r.id) == "number" and type(r.items) == "table" and not (only_new and ledger[r.id]) then
+			ledger[r.id] = { kind = r.kind == "bet" and "bet" or "fight", items = numbers(r.items), kit = numbers(r.kit), at = time_global() }
+		end
+	end
+end
+
+local function save_state(m_data)
+	m_data.coop_arena_gear = (mine == "fight" and true) or mine or nil
+	if P.is_client() then return end
+	local keep = next(ledger) or fight or (world_copy and #world_copy > 0)
+	m_data.coop_arena = keep and { ledger = ledger_list(), fight = fight, split = world_copy } or nil
+end
+
+local function load_state(m_data)
+	local g = m_data.coop_arena_gear
+	mine = (g == true and "fight") or (g == "bet" and "bet") or false
+	local a = m_data.coop_arena
+	ledger, fight, cut_done, world_copy = {}, nil, false, nil
+	-- the ledger is the world's: a client loads the host's world, it is not his
+	if type(a) ~= "table" or P.is_client() then return end
+	take_list(a.ledger)
+	if type(a.fight) == "table" and type(a.fight.id) == "number" then fight = { id = a.fight.id, n = a.fight.n } end
+	if type(a.split) == "table" then world_copy = a.split end
+end
+
+-- Split levels: a map server leads the Bar, writes nothing into the save and stops when its level is empty. Its ledger goes up to
+-- the world server (kept in its save) and comes down to the next map server of the Bar, which takes the records it has none of.
+local function share_ledger()
+	local share = C().mod("coop_levels_share")
+	if not (share and share.up and share.down) then return end
+	share.up("arena_ledger", function()
+		if level.name() ~= ARENA_LEVEL or not (got_down or next(ledger)) then return nil end
+		return { list = ledger_list(), based = got_down }
+	end, function(t)
+		if type(t) ~= "table" or type(t.list) ~= "table" then return end
+		if t.based then
+			world_copy = t.list
+			return
+		end
+		-- a map server that has not heard the world's copy yet: its records join it
+		local by, list = {}, {}
+		for _, r in ipairs(world_copy or {}) do if type(r) == "table" and r.id then by[r.id] = r end end
+		for _, r in ipairs(t.list) do if type(r) == "table" and r.id then by[r.id] = r end end
+		for _, r in pairs(by) do list[#list + 1] = r end
+		world_copy = list
+	end)
+	share.down("arena_ledger", function()
+		return world_copy and { list = world_copy } or nil
+	end, function(t)
+		if got_down or level.name() ~= ARENA_LEVEL or type(t) ~= "table" then return end
+		got_down = true
+		take_list(t.list, true)
+	end)
+end
+
+local next_tick = 0
+
+local function actor_on_update()
+	if waiting_in then wait_tick() end
+	local now = time_global()
+	if now < next_tick then return end
+	next_tick = now + TICK_MS
+	ensure_outer()
+	if fighting and not fight_running() then fighting = false end
+	if session() and authority() then
+		local ok, err = pcall(heal_tick, now)
+		if not ok then report("heal", err) end
+	end
+end
+
+-- A rejoin, or a walk back to the Bar: the fight ended without him, nothing else gives his gear back.
+local function actor_on_first_update()
+	ensure_outer()
+	if not fight_running() then ask_out() end
+end
+
+function print_status()
+	local n = 0
+	for _ in pairs(ledger) do n = n + 1 end
+	return string.format("ledger %d, fight %s, stowed %d, returned %d, to box 2 %d, missing %d, players kept %d, still cutscenes %d, rewrapped %d, errors %d",
+		n, fight and tostring(fight.n) or "-", stats.stowed, stats.returned, stats.to_box2, stats.missing, stats.players_kept,
+		stats.still_cuts, stats.rewrapped, stats.errors)
+end
+
+-- Tests and diagnostics.
+function _state()
+	return { ledger = ledger, fight = fight, mine = mine, fighting = fighting, stats = stats, cut_done = cut_done, world_copy = world_copy,
+		got_down = got_down }
+end
+
+function on_game_start()
+	P = coop_npc_players
+	if not rawget(_G, "coop") then return end -- exe without co-op: stock
+	local em = C().mod("coop_economy_mdata")
+	if em and em.register_player_key then
+		em.register_player_key("coop_arena_gear", function() return (mine == "fight" and true) or mine or nil, true end)
+	end
+	for _, s in ipairs({ { "routes", ensure_outer }, { "cutscene", patch_cutscene }, { "zone", patch_zone } }) do
+		local ok, err = pcall(s[2])
+		if not ok then report("install " .. s[1], err) end
+	end
+	local logic = C().mod("coop_npc_logic")
+	if logic and logic.add_audience_rule then logic.add_audience_rule(audience_rule) end
+	local ok, err = pcall(share_ledger)
+	if not ok then report("share", err) end
+	register_events()
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
+	RegisterScriptCallback("coop_respawned", ask_out)
+	RegisterScriptCallback("save_state", save_state)
+	RegisterScriptCallback("load_state", load_state)
+	C().status_line(TAG, print_status)
+end

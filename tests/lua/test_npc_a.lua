@@ -223,6 +223,35 @@ H.env.xr_logic.try_switch_to_another_section(R, st_e, H.env.db.actor)
 check(#H.fx_runs == 1 and H.fx_runs[1] == "enable_ui", "enable_ui always runs on the host")
 check(#sent_named(H, "npc.fx") == 1, "enable_ui relayed to the audience")
 
+print("== coop_npc_logic: an audience rule names a story trigger's audience (the Bar arena's fighter)")
+do
+	-- a world trigger nobody walks into (bar_arena_triger): without a rule its effects go to every player
+	local STORY_INI = {
+		logic = { { "active", "sr_idle@s" } },
+		["sr_idle@s"] = { { "on_info", "{+fight} sr_idle@s2 %=disable_ui =spawn_object(x)%" } },
+		["sr_idle@s2"] = { { "on_info", "sr_idle@s %=enable_ui%" } },
+	}
+	local S = restrictor(H, 102, 300, STORY_INI, "sr_idle@s")
+	H.env.xr_logic.initialize_obj(S, H.env.db.storage[102], true, H.env.db.actor, 4)
+	local function fire(section, fx)
+		local st = { ini = S._ini, logic = { { name = "on_info", condlist = { { section = section, fx = { { fx, {} } } } } } } }
+		H.fx_runs, H.sent, QUEUE = {}, {}, {}
+		H.env.xr_logic.try_switch_to_another_section(S, st, H.env.db.actor)
+	end
+	fire("sr_idle@s2", "disable_ui")
+	check(#H.fx_runs == 1 and #sent_named(H, "npc.fx") == 1, "no rule: the story trigger's effect reaches every player")
+	H.env.db.storage[102].active_section, H.env.db.storage[102].coop_aud = "sr_idle@s", nil
+	local asked
+	L.add_audience_rule(function(npc) asked = npc:id(); if npc:id() == 102 then return { [500] = true } end end)
+	fire("sr_idle@s2", "disable_ui")
+	local fx = sent_named(H, "npc.fx")
+	check(asked == 102 and #H.fx_runs == 0, "the rule names the client's player: the host's screen stays his")
+	check(#fx == 1 and fx[1].target == 1, "the effect goes to that client alone")
+	fire("sr_idle@s", "enable_ui")
+	check(#H.fx_runs == 1 and #sent_named(H, "npc.fx") == 1, "enable_ui still runs on the host too (an unlock never hurts)")
+	-- the rule stays registered: every check below runs other restrictors past it (it has no say there)
+end
+
 print("== coop_npc_logic: actor conditions answer for any player")
 local npc = H.add(make_obj(200, 100, 0, 0))
 proxy._pos = vec(102, 0, 0)
