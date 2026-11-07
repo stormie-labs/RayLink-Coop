@@ -21,6 +21,8 @@
 	  when they inspect the corpse and see the killer).
 	Wounded: an NPC that sees no host actor but sees a client asks that client for help (hp_state_see);
 	  a wounded monolith's last grenade goes off at any player standing next to it.
+	Debug (protocol 29, DEBUG_DESIGN B.9): a player with the server's flag "invisible" is nobody's enemy here (coop.debug.unseen), the
+	  host player's actor too; the engine keeps him out of the NPCs' and monsters' memory (coop_ai.cpp debug_unseen).
 
 	Stock functions wrapped: xr_conditions.check_enemy_name, is_enemy_actor, is_enemy_actor_or_companion,
 	is_enemy_fighting_actor, fighting_actor, hit_by_actor, killed_by_actor, has_actor_enemy;
@@ -48,7 +50,8 @@ local installed, host_on = false, false
 local orig = {}
 local attacked = {} -- npc id -> { [player id] = true }: this player hit the NPC's squad, fight him
 local fighting = {} -- npc id -> { [player id] = true }: the NPC fights this player (stock fighting_with_actor_npcs)
-local stats = { names = 0, judged = 0, hostile = 0, attacked = 0, alarms = 0, witnesses = 0, help = 0, team = 0 }
+local stats = { names = 0, judged = 0, hostile = 0, attacked = 0, alarms = 0, witnesses = 0, help = 0, team = 0, unseen = 0 }
+local coop_api = rawget(_G, "coop") -- engine namespace (nil on an exe without co-op)
 
 -- Ids of the living clients' characters, rebuilt once per frame: the checks below run for every enemy
 -- candidate of every NPC, so a non-player must cost one table lookup.
@@ -144,7 +147,28 @@ local function player_is_enemy(obj, enemy, no_memory)
 	return true
 end
 
+-- Protocol 29, the server's debug (docs\DEBUG_DESIGN.md B.9): a player with the personal flag "invisible" is nobody's enemy on the
+-- authority of his level, the host player's actor and a client's proxy alike, as the stock xrs_debug_tools.debug_invis makes the actor
+-- under DEV_DEBUG. The engine answers (coop.debug.unseen: debug on, flag 4, this process runs his level's AI) and keeps him out of the
+-- AI's memory as well (coop_ai.cpp npc_ai::debug_unseen, the stock ai_ignore_actor per player).
+local function debug_unseen(enemy)
+	local d = coop_api and coop_api.debug
+	local f = d and d.unseen
+	if not f then return false end
+	local ok, v = pcall(f, enemy:id())
+	return ok and v == true
+end
+
 local function is_enemy(obj, enemy, no_memory)
+	if obj and enemy and debug_unseen(enemy) then
+		stats.unseen = stats.unseen + 1
+		if player_char(enemy, true) then -- a client's character: what the NPC kept against him goes, as for a lost enemy below
+			local hit = attacked[obj:id()]
+			if hit then hit[enemy:id()] = nil end
+			set_fighting(obj:id(), enemy:id(), false)
+		end
+		return false -- the host player's actor: the stock enemy_callback forgets its fight with the actor itself
+	end
 	if not (obj and enemy and obj:id() ~= 0 and player_char(enemy)) then
 		return orig.is_enemy(obj, enemy, no_memory)
 	end
@@ -399,9 +423,9 @@ function print_status()
 	local na, nf = 0, 0
 	for _ in pairs(attacked) do na = na + 1 end
 	for _ in pairs(fighting) do nf = nf + 1 end
-	log("installed %s | clients judged %d (hostile %d), named actor %d | squads hit by clients %d, NPCs holding a grudge %d, fighting %d | alarms %d, witnesses %d, wounded calls %d, story checks %d | errors %d",
+	log("installed %s | clients judged %d (hostile %d), named actor %d | squads hit by clients %d, NPCs holding a grudge %d, fighting %d | alarms %d, witnesses %d, wounded calls %d, story checks %d | debug invisible: no enemy %d | errors %d",
 		tostring(installed), stats.judged, stats.hostile, stats.names, stats.attacked, na, nf, stats.alarms,
-		stats.witnesses, stats.help, stats.team, P.error_count(TAG))
+		stats.witnesses, stats.help, stats.team, stats.unseen, P.error_count(TAG))
 end
 
 function on_game_start()

@@ -105,8 +105,24 @@ SENT = {}
 C.teleport(1, vec3(1, 2, 3))
 local tp = sent("mods.tp")
 check(tp and tp.x == 1 and tp.z == 3 and SENT[1].target == 1, "teleport of a client goes to that client")
-C.teleport(0, vec3(4, 5, 6))
-check(db.actor._tp and db.actor._tp.x == 4, "teleport of the host moves its own actor")
+-- the host player goes the way of a client (docs\DEBUG_DESIGN.md A.2 p. 3, C.2): an order to his machine, which is this Lua (an
+-- event to 0 comes back to the host's Lua from 0); nothing moves his actor directly
+SENT = {}
+db.actor._tp = nil
+check(C.teleport(0, vec3(4, 5, 6)) == true, "teleport of the host player is sent")
+local tp0, s0 = sent("mods.tp")
+check(tp0 and tp0.x == 4 and s0.target == 0 and db.actor._tp == nil, "teleport of the host player: an order to peer 0, no direct move")
+deliver(s0, 0)
+check(db.actor._tp and db.actor._tp.x == 4 and db.actor._tp.z == 6, "the order back from 0: the host player's machine moves his actor")
+db.actor._tp = nil
+deliver(s0, 1)
+check(db.actor._tp == nil, "an order from a client moves nobody")
+coop.is_dedicated = function() return true end
+deliver(s0, 0)
+check(db.actor._tp == nil, "the dedicated host's actor is a ghost: no order moves it")
+coop.is_dedicated = nil
+SENT = {}
+check(C.teleport(nil, vec3(1, 1, 1)) == false and #SENT == 0, "no peer: nothing sent (not a broadcast)")
 C.fx_sound("ambient\\boom")
 check(sent("mods.fx") ~= nil, "fx sound broadcast")
 SENT = {}

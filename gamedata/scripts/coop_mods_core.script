@@ -24,6 +24,8 @@
 	                                 passes it to the map server of his level and f gets it there as if it came from him
 	                                 "world": a player's request to the world server's data, wherever he stands
 	                                 "client": from the world server, on a machine with a copy of the world; nil: anywhere, anyone
+	                                 "player": from the world server, on a machine with a player of its own: a client, or the host's
+	                                 process (its event to 0 comes back to its own Lua from 0); an order to the player himself
 	           on_big(verb, f, side) f(str, from): reassembled chunked string
 	           send(verb, t, target) to_host(verb, t) to_all(verb, t) send_big(verb, str, target)
 	           publish(verb, t): world data a map server changed goes through the world server (its verb takes it from a bridge)
@@ -394,10 +396,18 @@ local function rate_ok(from, verb)
 	return true
 end
 
+-- This process has a player of its own: a client's machine, or the host's process (the host player). A map server's and the dedicated
+-- host's actor is a ghost.
+local function own_player()
+	if is_client() then return true end
+	return is_world_server() and not (api.is_dedicated ~= nil and api.is_dedicated() == true)
+end
+
 local function side_ok(side, from)
 	if side == "host" then return is_host() and type(from) == "number" and from ~= 0 end
 	if side == "world" then return is_world_server() and type(from) == "number" and from ~= 0 end
 	if side == "client" then return world_client() and from == 0 end
+	if side == "player" then return from == 0 and own_player() end
 	return true
 end
 
@@ -556,13 +566,11 @@ local function vec(x, y, z)
 end
 _vec = vec
 
--- Moves a player's own actor (the owner moves its character; the host only asks).
+-- Moves a player's own actor: the server orders, his machine moves its character (the owner moves it; the host only asks). The host
+-- player is no exception (docs\DEBUG_DESIGN.md A.2 p. 3, C.2): the order to peer 0 comes back to the Lua of the host's process from 0,
+-- the way a client's machine gets it, and moves the actor there a frame later.
 function teleport(peer, pos)
-	if not (pos and is_host()) then return false end
-	if peer == self_peer() then
-		if db.actor then db.actor:set_actor_position(pos) end
-		return true
-	end
+	if not (pos and is_host() and type(peer) == "number") then return false end
 	return to_peer(peer, "tp", { x = pos.x, y = pos.y, z = pos.z })
 end
 
@@ -828,7 +836,7 @@ end
 function on_game_start()
 	if not api then return end
 	on("fx", on_fx, "client")
-	on("tp", on_tp, "client")
+	on("tp", on_tp, "player") -- a client's machine and the host player's half of the host's process alike
 	-- coop_status: coop_main.print_status calls print_status above (W5)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	-- engine notifications (W5); coop_main creates the callback names at load
