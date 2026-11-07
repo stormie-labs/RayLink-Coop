@@ -211,6 +211,123 @@ TEST(item_tags_upgrades_compared_only_when_the_owner_has_them)
 	CHECK_EQ(calls, 1);
 }
 
+// Live report 2026-11-08 (GAMMA): a client loots a corpse's M4. The host moves it into his character, his take callback
+// (grok_gun_condition_fixed) pins it at 0.83, then the host's push of its own copy (the corpse's 0.15, the NPC's 12
+// rounds) arrives. Before the fix the push replaced everything: the gun went red in his hands until the next shot pinned
+// it again ("repaired itself"), and the host and the others kept the red copy meanwhile.
+namespace
+{
+std::uint16_t q(double c) { return std::uint16_t(c * 65535.0 + 0.5); }
+
+struct Take
+{
+	Item base; // the client's copy right before the take (stale: spawn values)
+	Item now; // after its own take callbacks
+	Item host; // the host's push
+};
+
+Take looted_m4()
+{
+	Take t;
+	t.base = weapon_without_scopes();
+	t.base.cond = q(0.60);
+	t.base.main_count = 30;
+	t.now = t.base;
+	t.now.cond = q(0.83); // GAMMA pins a taken gun
+	t.host = weapon_without_scopes();
+	t.host.cond = q(0.15); // death_manager's condition of the corpse's gun
+	t.host.main_count = 12; // the NPC fired 18 rounds on the host
+	return t;
+}
+} // namespace
+
+TEST(item_tags_owner_take_change_survives_the_host_push)
+{
+	const Take t = looted_m4();
+	const std::uint32_t mine = itemtags::changed_since(t.now, t.base, same_upgrades);
+	CHECK_EQ(mine, std::uint32_t(itemtags::Cond));
+	const Item merged = itemtags::take_push(t.host, t.now, mine);
+	CHECK_EQ(merged.cond, q(0.83)); // the owner's condition stays
+	CHECK_EQ(merged.main_count, 12); // the host's magazine is fresher than the stale copy
+	CHECK(merged.has_cond && merged.has_main && merged.has_addons);
+	CHECK_EQ(diff(merged, t.host), std::uint32_t(itemtags::Cond)); // differs from the host only where the owner acted
+}
+
+TEST(item_tags_untouched_take_takes_the_whole_host_state)
+{
+	Take t = looted_m4();
+	t.now = t.base;
+	const std::uint32_t mine = itemtags::changed_since(t.now, t.base, same_upgrades);
+	CHECK_EQ(mine, 0u);
+	const Item merged = itemtags::take_push(t.host, t.now, mine);
+	CHECK_EQ(diff(merged, t.host), 0u);
+	CHECK_EQ(diff(t.host, merged), 0u);
+}
+
+TEST(item_tags_changed_since_sees_every_tag_either_way)
+{
+	Item base = food();
+	Item now = base;
+	now.uses = 3; // ate a portion
+	CHECK_EQ(itemtags::changed_since(now, base, same_upgrades), std::uint32_t(itemtags::Uses));
+	now = base;
+	now.has_uses = false; // a tag only the base carries
+	CHECK_EQ(itemtags::changed_since(now, base, same_upgrades), std::uint32_t(itemtags::Uses));
+	CHECK_EQ(itemtags::changed_since(base, now, same_upgrades), std::uint32_t(itemtags::Uses));
+	now = base;
+	now.cond = q(0.5);
+	now.has_box = true; // a new tag
+	CHECK_EQ(itemtags::changed_since(now, base, same_upgrades), std::uint32_t(itemtags::Cond | itemtags::Box));
+}
+
+TEST(item_tags_take_push_never_keeps_the_owners_upgrades)
+{
+	Take t = looted_m4();
+	t.now.upgrades = {"up_a"};
+	t.host.upgrades = {"up_b"};
+	const std::uint32_t mine = itemtags::changed_since(t.now, t.base, same_upgrades);
+	CHECK_EQ(mine, std::uint32_t(itemtags::Cond | itemtags::Upgrades));
+	const Item merged = itemtags::take_push(t.host, t.now, mine);
+	CHECK(merged.upgrades == UpgradeList{"up_b"}); // the host's list (coop_ledger.h)
+	CHECK_EQ(merged.cond, q(0.83));
+}
+
+TEST(item_tags_take_push_keeps_every_owner_tag)
+{
+	Take t = looted_m4();
+	t.now.addons = 2;
+	t.now.has_scope = true;
+	t.now.scope = 1;
+	t.now.main_count = 0; // unloaded right after the take
+	t.now.main_type = 2;
+	t.now.has_launcher = true;
+	t.now.gl_count = 1;
+	t.now.has_uses = true;
+	t.now.uses = 2;
+	t.now.has_box = true;
+	t.now.box = 5;
+	const std::uint32_t mine = itemtags::changed_since(t.now, t.base, same_upgrades);
+	const Item merged = itemtags::take_push(t.host, t.now, mine);
+	CHECK_EQ(diff(merged, t.now) & itemtags::kOwnerTakeTags, 0u);
+	CHECK_EQ(diff(t.now, merged) & itemtags::kOwnerTakeTags, 0u);
+}
+
+// The owner tells the host only what it changed itself since the take: the rest of its copy may be stale.
+TEST(item_tags_only_tags_makes_a_partial_state)
+{
+	const Take t = looted_m4();
+	const Item part = itemtags::only_tags(t.now, itemtags::Cond);
+	CHECK(part.has_cond);
+	CHECK_EQ(part.cond, q(0.83));
+	CHECK(!part.has_upgrades && !part.has_box && !part.has_addons && !part.has_scope);
+	CHECK(!part.has_main && !part.has_launcher && !part.has_uses);
+	// the host enforces only what the partial state carries: its fresher magazine is not "diverged"
+	CHECK_EQ(diff(t.host, part), std::uint32_t(itemtags::Cond));
+	const Item all = itemtags::only_tags(t.now, itemtags::kAll);
+	CHECK_EQ(diff(all, t.now), 0u);
+	CHECK_EQ(diff(t.now, all), 0u);
+}
+
 TEST(item_tags_names)
 {
 	for (std::uint32_t bit = 1; bit <= itemtags::Uses; bit <<= 1)
