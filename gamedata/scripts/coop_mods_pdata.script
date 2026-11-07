@@ -183,6 +183,12 @@ local function client_report(force)
 	pcall(api.stash_set, STASH, (st.token or "") .. "|" .. s)
 end
 
+-- Client: report now, when a mod's values just changed and must survive a level change in the next seconds (Body Health
+-- System, coop_mods_misc). The same report as every 15 s: sent only when it differs, into the session stash too.
+function report_now()
+	client_report(true)
+end
+
 local function on_ack(t, from)
 	if type(t.t) ~= "string" or #t.t > 64 then return end
 	st.token = t.t

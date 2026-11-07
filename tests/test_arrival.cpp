@@ -13,6 +13,8 @@
 #include "coop_arrival.h"
 
 #include <cmath>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <string>
 #include <utility>
@@ -229,4 +231,57 @@ TEST(arrival_journal_keeps_its_notes_bounded)
 	const std::string line = j.finish(Vitals4());
 	CHECK(line.size() < 1200);
 	CHECK(line.find("+") != std::string::npos); // "... +N more"
+}
+
+// ---------------------------------------------------------------- round 2: the host's wounds (live 2026-11-07, cause 4)
+// The actor's client data in the save is the host's, wounds included. client_restore_vitals cleared them only when the
+// player's own bleeding was zero: a bleeding client went on bleeding with the HOST's wounds after every level change.
+namespace
+{
+// engine/src/xrGame/coop/<name>, next to this source file (tests\ -> ..\engine\src\xrGame\coop)
+std::string arrival_coop_source(const char* name)
+{
+	std::string here = __FILE__;
+	const size_t slash = here.find_last_of("\\/");
+	here.resize(slash == std::string::npos ? 0 : slash);
+	std::ifstream f(here + "/../engine/src/xrGame/coop/" + name, std::ios::binary);
+	return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+std::string arrival_body_of(const std::string& src, const std::string& head)
+{
+	for (size_t at = src.find(head); at != std::string::npos; at = src.find(head, at + 1))
+	{
+		const size_t close = src.find(')', at);
+		const size_t next = close == std::string::npos ? std::string::npos : src.find_first_not_of(" \t\r\n", close + 1);
+		if (next == std::string::npos || src[next] != '{')
+			continue; // a declaration
+		const size_t end = src.find("\n}", at);
+		return src.substr(at, end == std::string::npos ? std::string::npos : end - at);
+	}
+	return std::string();
+}
+} // namespace
+
+TEST(arrival_own_bleeding_becomes_one_wound_of_its_size)
+{
+	// BleedingSpeed = sum of the wounds' sizes * bleed_speed_k (CEntityCondition::BleedingSpeed)
+	CHECK(near(restore_wounds(0.f, 1.f), 0.f)); // not bleeding: no wound at all
+	CHECK(near(restore_wounds(0.3f, 1.f), 0.3f));
+	CHECK(near(restore_wounds(0.3f, 0.5f), 0.6f));
+	CHECK(near(restore_wounds(50.f, 1.f), kWoundMax)); // CWound::AddHit clamps there anyway
+	CHECK(near(restore_wounds(-1.f, 1.f), 0.f));
+	CHECK(near(restore_wounds(std::nanf(""), 1.f), 0.f));
+	CHECK(near(restore_wounds(0.3f, 0.f), 0.f)); // no coefficient measured: nothing made up
+}
+
+TEST(arrival_restore_vitals_always_drops_the_hosts_wounds)
+{
+	const std::string body = arrival_body_of(arrival_coop_source("coop_equip.cpp"), "void client_restore_vitals(");
+	REQUIRE(!body.empty());
+	CHECK(body.find("if (v.bleeding <= 0.f)") == std::string::npos); // the old condition kept the host's wounds
+	const size_t clear = body.find("c.ClearWounds();\r\n\tconst float wound = arrival::restore_wounds(");
+	const size_t clear_lf = body.find("c.ClearWounds();\n\tconst float wound = arrival::restore_wounds(");
+	CHECK(clear != std::string::npos || clear_lf != std::string::npos); // always cleared, then his own bleeding
+	CHECK(body.find("AddWound(") != std::string::npos);
 }

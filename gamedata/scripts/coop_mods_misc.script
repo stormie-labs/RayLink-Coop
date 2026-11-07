@@ -23,7 +23,8 @@
 	                                           named by the nick.
 	Body Health System (zzz_player_injuries)   after a co-op revive head/torso get back above zero and the medkit
 	                                           heals the limbs (the mod's own heal never runs on a revive);
-	                                           head_tbl is per player. Its concussion waits until the player stands:
+	                                           head_tbl and the body parts are per player (the parts live in the
+	                                           actor's pstor, which comes with the host's save: live 2026-11-07). Its concussion waits until the player stands:
 	                                           hits on a body turned the volume down and up again and again.
 	Grok's actor damage balancer               the armour, the body part and the limb of Body Health System are its work,
 	                                           and it leaves a bullet alone when the weapon of the hit is not on this
@@ -431,10 +432,96 @@ local function bhs_on_respawned()
 	log("bhs", "respawned: every part back")
 end
 
+-- The body parts are each player's own (live 2026-11-07: a GAMMA client broke a leg at a level change). The mod keeps them in
+-- the actor's pstor ("health.<part>", "timedhp.<part>", utils_obj.save_var), and the pstor comes with the host's save: a client
+-- got the HOST's parts at every load. A client's own parts are per-player data (coop_mods_pdata, BHS_KEY: the host keeps them
+-- in its save, the session stash carries them over a level change; a change is reported within BHS_TICK_MS). At the actor's
+-- first update, before the mod's own load (its first actor_on_update: LoadHealthStatus), they go into the mod and into the
+-- pstor; a player the host has no record of starts whole. The host and single player keep the mod's own pstor.
+local BHS_KEY = "coop_bhs_parts"
+local BHS_TICK_MS = 1000
+local bhs_st = { pending = false, own = nil, last = nil, next = 0, applied = 0, reports = 0 }
+
+local function bhs_snapshot()
+	local b = C().mod("zzz_player_injuries")
+	if not bhs_tables(b) then return nil end
+	local h, t = {}, {}
+	for _, k in ipairs(PARTS) do
+		h[k] = tonumber(b.health[k])
+		t[k] = tonumber(b.timedhp[k])
+	end
+	return { h = h, t = t }
+end
+
+-- Order-stable text of the parts (what tells a change).
+local function bhs_text(s)
+	if type(s) ~= "table" then return "" end
+	local out = {}
+	for _, k in ipairs(PARTS) do
+		out[#out + 1] = tostring(s.h and s.h[k]) .. "/" .. tostring(s.t and s.t[k])
+	end
+	return table.concat(out, " ")
+end
+
+local function bhs_clamp(v, lo, hi, default)
+	v = tonumber(v)
+	if v == nil or v ~= v then return default end
+	if v < lo then return lo end
+	if v > hi then return hi end
+	return v
+end
+
+-- load_state: what coop_mods_pdata restored for this player (nil: none), applied at the actor's first update.
+local function bhs_on_load(m)
+	bhs_st.pending = true
+	local own = type(m) == "table" and m[BHS_KEY] or nil
+	bhs_st.own = type(own) == "table" and own or nil
+end
+
+local function bhs_apply_own()
+	if not bhs_st.pending then return end
+	bhs_st.pending = false
+	if not C().is_client() then return end
+	local b = C().mod("zzz_player_injuries")
+	if not (bhs_tables(b) and db.actor) then return end
+	local own = bhs_st.own
+	local h = own and type(own.h) == "table" and own.h or {}
+	local t = own and type(own.t) == "table" and own.t or {}
+	for _, k in ipairs(PARTS) do
+		local max = tonumber(b.maxhp[k]) or 0
+		local hp = bhs_clamp(h[k], 0, max, max)
+		b.health[k] = hp
+		b.timedhp[k] = bhs_clamp(t[k], 0, hp, 0)
+	end
+	bhs_save(b)
+	bhs_st.last = bhs_text(bhs_snapshot())
+	bhs_st.applied = bhs_st.applied + 1
+	log("bhs", "my body parts (%s): head %s, torso %s, arms %s/%s, legs %s/%s", own and "mine" or "no record: whole",
+		tostring(b.health.head), tostring(b.health.torso), tostring(b.health.leftarm), tostring(b.health.rightarm),
+		tostring(b.health.leftleg), tostring(b.health.rightleg))
+end
+
+local function bhs_tick()
+	if bhs_st.pending or not C().live_client() then return end
+	local now = time_global()
+	if now < bhs_st.next then return end
+	bhs_st.next = now + BHS_TICK_MS
+	local text = bhs_text(bhs_snapshot())
+	if text == "" or text == bhs_st.last then return end
+	bhs_st.last = text
+	local ok, e = pcall(P().report_now)
+	if not ok then C().report("bhs", "report_now", e) end
+	bhs_st.reports = bhs_st.reports + 1
+end
+
 local function install_bhs()
 	local b = C().mod("zzz_player_injuries")
 	if not bhs_tables(b) then return end
 	P().register("head_tbl", { prime = { "zzz_player_injuries" } })
+	P().register(BHS_KEY, { get = bhs_snapshot })
+	RegisterScriptCallback("load_state", bhs_on_load)
+	RegisterScriptCallback("actor_on_first_update", bhs_apply_own)
+	RegisterScriptCallback("actor_on_update", bhs_tick)
 	local concussion = b.bhs_concussion
 	if type(concussion) == "function" then
 		b.bhs_concussion = function(...)
