@@ -617,6 +617,15 @@ function on_note(payload, from)
 	end
 end
 
+-- No Lua window may live through a level change: its script object dies with the old Lua state while the UI still holds it.
+-- Live 2026-11-08 (RL-AMY4-AZXY): the window stayed open through a debug level change to the Bar, and the game died of heap
+-- corruption (0xC0000374) on the new level's script start. Closed before the order's jump and on both stock level-change callbacks
+-- (a level changer walked with the window open, a story teleport).
+function close_window()
+	local ui = rawget(_G, "coop_debug_ui")
+	if ui and type(ui.close) == "function" then pcall(ui.close) end
+end
+
 -- coop.dbg.order from the world server: { k = "level", name } - the registry's `level` (K38) is carried out here, on the player's
 -- machine, the way the stock debug does it (JumpToLevel -> ChangeLevel). In a session the engine turns that ChangeLevel into a
 -- request to move, and the server's rules of moving decide (story levels together, DEBUG_DESIGN B.6). Only the server orders.
@@ -631,6 +640,7 @@ function on_order(payload, from)
 	local name = typed_name(t.name)
 	if not name then return end
 	local label = label_of(by_id.level)
+	close_window() -- as the stock debug does before its jump (ui_debug_main debug_ui:JumpLevel -> OnQuit)
 	local ok, went = pcall(function() return JumpToLevel(name) end)
 	if ok and went then
 		add_line(trf("st_coop_dbg_level_go", name), "ok", label)
@@ -653,6 +663,9 @@ end
 
 function on_game_start()
 	RegisterScriptCallback("on_key_release", on_key_release)
+	RegisterScriptCallback("on_before_level_changing", close_window)
+	RegisterScriptCallback("on_level_changing", close_window)
+	RegisterScriptCallback("actor_on_net_destroy", close_window) -- a client's level goes without the stock callbacks
 	pcall(RegisterScriptCallback, "coop_debug_changed", on_debug_changed) -- coop_main adds it; an old layer may not
 	local cm = rawget(_G, "coop_main") or coop_main
 	if cm and type(cm.add_event_handler) == "function" then

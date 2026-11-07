@@ -452,6 +452,13 @@ function window()
 	return win and win:IsShown() and win or nil
 end
 
+-- No Lua window lives through a level change (live 2026-11-08, RL-AMY4-AZXY: heap corruption on the new level's script start).
+function close_window()
+	local w = win
+	if w then pcall(function() w:Close() end) end
+	win = nil
+end
+
 -- A whole number within 1..max (nearest), or nil for what is no number.
 function clamp_amount(v, max)
 	v = core.num(v)
@@ -622,6 +629,9 @@ function on_game_start()
 		core.on_level("give_part", on_part) -- what the giver asks stands on his level
 		core.on("give_ans", on_answer)
 		RegisterScriptCallback("actor_on_update", actor_on_update)
+		RegisterScriptCallback("on_before_level_changing", close_window)
+		RegisterScriptCallback("on_level_changing", close_window)
+		RegisterScriptCallback("actor_on_net_destroy", close_window)
 	end)
 	if not ok then printf("! [coop_economy_give] start failed: %s", tostring(err)) end
 end

@@ -882,7 +882,15 @@ function invite_window()
 end
 
 -- The window goes; the offer itself stays (waiting for a free moment) unless drop_invite follows.
-local function hide_invite()
+-- No Lua window lives through a level change (live 2026-11-08, RL-AMY4-AZXY: a window open through a level change, heap corruption
+-- on the new level's script start): both windows go when the level is left; the engine ends the rest itself.
+local hide_invite
+local function on_level_leave()
+	pcall(hide_invite)
+	if win_open then pcall(close_doze) end
+end
+
+function hide_invite()
 	local w, was_open = inv_win, inv_open
 	inv_win, inv_open = nil, false
 	if w then pcall(function() if w:IsShown() then w:HideDialog() end end) end
@@ -1065,5 +1073,8 @@ function on_game_start()
 		RegisterScriptCallback("actor_on_first_update", on_first_update)
 		RegisterScriptCallback("actor_on_hit_callback", on_hit) -- the offer window waits out my fight
 		RegisterScriptCallback("actor_on_weapon_fired", on_fired)
+		RegisterScriptCallback("on_before_level_changing", on_level_leave)
+		RegisterScriptCallback("on_level_changing", on_level_leave)
+		RegisterScriptCallback("actor_on_net_destroy", on_level_leave)
 	end)
 end

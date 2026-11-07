@@ -997,6 +997,23 @@ case("invite_waits_when_busy", function()
 	check(inv() == nil, "a dead body gets no window")
 end)
 
+-- Live 2026-11-08 (RL-AMY4-AZXY): a Lua window open through a level change -> heap corruption on the new level's script start.
+case("windows_close_on_level_change", function()
+	for _, cb in ipairs({ "on_before_level_changing", "on_level_changing", "actor_on_net_destroy" }) do
+		fresh("client")
+		ally_rests(7, 8)
+		check(inv() ~= nil, cb .. ": the offer window is open")
+		fire(cb)
+		check(inv() == nil and GUIREG.UICoopInvite == nil, cb .. " closes the offer window")
+		fresh("host")
+		stock_ui(6):OnButtonSleep()
+		local w = win()
+		check(w ~= nil, cb .. ": the doze window is open")
+		fire(cb)
+		check(win() == nil and not w:IsShown(), cb .. " closes the doze window")
+	end
+end)
+
 case("invite_closes_when_rest_ends", function()
 	fresh("client")
 	ally_rests(7, 8)

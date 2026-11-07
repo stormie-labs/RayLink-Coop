@@ -571,6 +571,23 @@ check(JUMPS[1] == "l02_garbage" and client.feed()[1].kind == "ok", "the server's
 EVENT["coop.dbg.order"]("k=level;name=l01_escape", 0)
 check(client.feed()[1].kind == "err", "the same level: the stock refuses, the player reads why")
 
+-- Live 2026-11-08 (RL-AMY4-AZXY, heap corruption 0xC0000374 on the new level's script start): the window stayed open
+-- through the level change. The stock debug closes its window first (ui_debug_main.script debug_ui:JumpLevel -> OnQuit).
+print("== a level change never happens with the co-op window open")
+reset()
+local open_at_jump
+function JumpToLevel(name) open_at_jump = dui.window() ~= nil; JUMPS[#JUMPS + 1] = name; return true end
+check(press_f7() ~= nil, "the window is open")
+EVENT["coop.dbg.order"]("k=level;name=l05_bar", 0)
+check(open_at_jump == false, "the server's level order closes the window before JumpToLevel")
+for _, cb in ipairs({ "on_before_level_changing", "on_level_changing" }) do
+	reset()
+	check(press_f7() ~= nil, cb .. ": the window is open")
+	fire(cb)
+	check(dui.window() == nil, cb .. " closes the window (a walk through a level changer, a story teleport)")
+end
+reset()
+
 -------------------------------------------------------------------------------
 -------------------------------------------------------------------------------
 print("== the panel: drag and resize math, clamped to the screen")
