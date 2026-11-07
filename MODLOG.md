@@ -509,3 +509,23 @@
   несколько секунд» по коду с этими флагами не связана (ни один читатель флагов не бьёт актёра, удары вихрей идут только из
   зеркала, пока хост говорит «идёт»); возможная причина — раны хоста у клиента после загрузки в b40.x (исправлено в движке
   записью 00:10). В игре не проверено.
+- 2026-11-08 02:17 — Порча кучи 0xC0000374 при смене/загрузке уровня: поток SPAWN_ANTIFREEZE переживал свой CLevel
+  (стоковый код alpet/demonized в `Level.cpp`, есть и в одиночке; 9 отчётов, хост и одиночка, b40 и 41.x). `~CLevel`
+  удалял `spawn_events` / `spawn_events_data` / `prefetch_events` / `prefetched_models`, потом ставил `closeSignal` и
+  SetEvent, не дожидаясь потока: пачка в полёте (её часто запускает `remove_objects` при ещё поднятом `g_bootComplete`)
+  продолжала `prefetched_models->insert`, `spawn_events->insert`, `spawn_events_data->emplace` в освобождённое
+  (`prefetch_event` несёт NET_Packet с буфером 16 КБ, это NT heap); `closeSignal` и `prefetch_lock` были членами уже
+  освобождённого CLevel; `prefetch_thread_signal` был одним static HANDLE, следующий CLevel его перезаписывал; стоп,
+  пришедший перед ResetEvent потока, терялся. Исправлено: протокол в `xrCoop/coop_prefetch_life.h` (header-only, Lock и
+  Event подставляются). У каждого уровня своя `LevelPrefetchLife` на куче: замок, signal, exited, closing. `closing`
+  пишется под эксклюзивным замком; поток сбрасывает signal только при `!closing` под тем же замком, проверяет `closing`
+  перед каждой моделью и каждой записью, `exited` ставит последним действием. `~CLevel` (`coop::prefetch::shutdown`,
+  30 с) ставит стоп, ждёт `exited` и только потом удаляет контейнеры и life (она закрывает события). По таймауту пишет одну
+  строку `! [~CLevel] the spawn prefetch thread did not stop in 30000 ms ...` и утекает всё, чего может коснуться поток.
+  `CLevel::prefetch_lock` стал указателем на замок в life (вызовы `xrSRWLockGuard g(prefetch_lock)` прежние),
+  `closeSignal` убран. Новые строки при `spawn_antifreeze_debug 1`: `[ProcessPrefetchEvents] level closing: a batch of
+  N spawn events in flight dropped`, `[~CLevel] prefetch thread stopped in N ms`. Тесты: C++ `prefetch_life` 8 (RED на
+  заглушке со стоковым протоколом: 0 passed, 8 failed — запись после стопа и после освобождения, стоп без ожидания,
+  зависание при стопе перед ResetEvent, поток трогает событие чужого уровня, освобождение по таймауту), GREEN 8/8,
+  9 повторов (3 под полной загрузкой CPU); полный C++ 1487/1487; `compile_files.sh Level.cpp Level_network.cpp
+  Level_network_messages.cpp Level_secure_messaging.cpp` exit 0. В игре не проверено.
