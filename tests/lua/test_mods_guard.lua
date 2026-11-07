@@ -777,7 +777,144 @@ rq = clone_of(se_a.id)
 check(okl and rq ~= nil and SE[rq.lease] ~= nil and not destroyed(se_a.id) and HUD == nil and all_leased(),
 	"attach a scope: the scoped variant is created at once under a leased id and replaces the weapon (its release goes "
 	.. "with the clone), every create carries an id")
-check(destroyed(scope_l:id()), "the attached scope is used up (released)")
+-- C6 (2026-11-08): the addon's release waits for the host's answer to the clone (a refusal would lose it)
+check(not destroyed(scope_l:id()), "the scope's release waits for the host's answer to the clone")
+REQ = {}
+host_ok(rq.lease)
+SendScriptCallback("actor_on_update")
+check(destroyed(scope_l:id()) and #REQ == 1, "the host's Ok: the attached scope is used up (released) once")
+
+-------------------------------------------------------------------------------
+-- 2026-11-08 live report (GAMMA, stable 41.4): a client could not fit an upgrade kit (PP Vityaz), the host could. A kit
+-- is a scope-style addon (mod_system_weapon_addons_upg_kits.ltx, 3DSS weapon_kit) whose variant names itself in
+-- parent_section: wpn_vityaz + vitup = wpn_vityaz_vitup. The engine refused that clone (coop_requests.cpp lua_clone /
+-- clone_variant, tests\test_id_lease.cpp lease_addon_variant); here: what the kit's way does once the clone goes.
+-------------------------------------------------------------------------------
+print("-- C6: an upgrade kit on a client - used up once, after the host's Ok; kept on a refusal")
+INI.wpn_vk = { parent_section = "wpn_vk", scopes = "scope_a, vitup", class = "WP_AK74" }
+INI.wpn_vk_vitup = { parent_section = "wpn_vk_vitup", scopes = "scope_a", class = "WP_AK74" }
+INI.wpn_vk_scope_a = { parent_section = "wpn_vk", scopes = "scope_a, vitup", class = "WP_AK74" }
+INI.vitup = {}
+local FIT_WAIT = "being fitted"
+local FIT_REFUSED = "did not accept"
+-- the host refuses the clone `id`: the engine takes it back here (rollback_leased), the weapon it replaced stays
+local function host_refused(id)
+	PENDING[id] = nil
+	for src, cl in pairs(CLONE_SOURCE) do
+		if cl == id then CLONE_SOURCE[src] = nil end
+	end
+	SE[id], OBJ[id] = nil, nil
+end
+local se_k1, wpn_k1 = spawn("wpn_vk", nil, 0, { kind = "weapon" })
+local se_k2, wpn_k2 = spawn("wpn_vk", nil, 0, { kind = "weapon" })
+local _, kit1 = spawn("vitup", nil, 0)
+NOW = NOW + 3000
+okl = act(item_weapon.attach_scope, kit1, wpn_k1)
+local k1 = clone_of(se_k1.id)
+check(okl and k1 ~= nil and k1.sec == "wpn_vk_vitup" and PENDING[k1.lease] and SE[k1.lease] ~= nil and HUD == nil
+	and all_leased(), "a kit on a client: the kit's variant is here at once under a leased id, its create waits for the host")
+check(not destroyed(kit1:id()) and count("destroy") == 0 and count("with_clone") == 1,
+	"the kit's release waits for the host's answer (no release request; the old weapon's release goes with the clone)")
+NOW = NOW + 3000
+local okw = act(item_weapon.attach_scope, kit1, wpn_k2)
+check(okw and #REQ == 0 and clone_of(se_k2.id) == nil and HUD ~= nil and HUD:find(FIT_WAIT, 1, true) ~= nil,
+	"the same kit onto another weapon while it waits: refused before any world call, a message (one kit, two weapons)")
+REQ = {}
+SendScriptCallback("actor_on_update")
+check(#REQ == 0 and not destroyed(kit1:id()), "no answer yet: the kit stays")
+host_ok(k1.lease)
+SendScriptCallback("actor_on_update")
+check(destroyed(kit1:id()) and #REQ == 1 and SE[se_k1.id] == nil and SE[k1.lease] ~= nil,
+	"the host's Ok (the old weapon went with the clone): the kit is used up, one release")
+SendScriptCallback("actor_on_update")
+check(#REQ == 1, "and only once")
+
+-- the host refuses the clone: the weapon stays as it was, so does the kit, and the player is told
+local _, kit2 = spawn("vitup", nil, 0)
+NOW = NOW + 3000
+okl = act(item_weapon.attach_scope, kit2, wpn_k2)
+local k2 = clone_of(se_k2.id)
+check(okl and k2 ~= nil and PENDING[k2.lease] and not destroyed(kit2:id()), "a second kit: its variant waits for the host")
+REQ, HUD = {}, nil
+host_refused(k2.lease)
+NOW = NOW + 3000
+SendScriptCallback("actor_on_update")
+check(#REQ == 0 and SE[kit2:id()] ~= nil and SE[se_k2.id] ~= nil and HUD ~= nil and HUD:find(FIT_REFUSED, 1, true) ~= nil,
+	"the host refused the clone: the weapon is as it was, the kit stays (not released), the player is told")
+HUD = nil
+NOW = NOW + 3000
+SendScriptCallback("actor_on_update")
+check(#REQ == 0 and HUD == nil, "the refusal is told once, nothing is released later")
+NOW = NOW + 3000
+okl = act(item_weapon.attach_scope, kit2, wpn_k2)
+local k3 = clone_of(se_k2.id)
+check(okl and k3 ~= nil and k3.lease ~= k2.lease and HUD == nil, "the kept kit can be fitted again")
+host_ok(k3.lease)
+SendScriptCallback("actor_on_update")
+check(destroyed(kit2:id()), "and is used up after the host's Ok")
+
+-- the host's Ok without the old weapon's destroy here (its destroy failed on the host): the kit goes after the wait
+local se_k4, wpn_k4 = spawn("wpn_vk", nil, 0, { kind = "weapon" })
+local _, kit4 = spawn("vitup", nil, 0)
+NOW = NOW + 3000
+okl = act(item_weapon.attach_scope, kit4, wpn_k4)
+local k4 = clone_of(se_k4.id)
+check(okl and k4 ~= nil, "a third kit: its variant waits for the host")
+PENDING[k4.lease], CLONE_SOURCE[se_k4.id] = nil, nil -- answered Ok, the old weapon still here
+REQ = {}
+NOW = NOW + 3000
+SendScriptCallback("actor_on_update")
+check(#REQ == 0 and not destroyed(kit4:id()), "answered, the clone and the old weapon both here: the kit waits a while")
+NOW = NOW + 60000
+SendScriptCallback("actor_on_update")
+check(destroyed(kit4:id()) and #REQ == 1, "after the wait the clone is still here: the kit is used up (never two)")
+
+-- a clone the host has not answered for long (its budget queue): the engine's own book decides, the kit waits for it
+local se_k5, wpn_k5 = spawn("wpn_vk", nil, 0, { kind = "weapon" })
+local _, kit5 = spawn("vitup", nil, 0)
+NOW = NOW + 3000
+okl = act(item_weapon.attach_scope, kit5, wpn_k5)
+local k5 = clone_of(se_k5.id)
+REQ, HUD = {}, nil
+NOW = NOW + 120000
+SendScriptCallback("actor_on_update")
+check(okl and k5 ~= nil and #REQ == 0 and not destroyed(kit5:id()) and HUD == nil,
+	"unanswered after two minutes: the kit is neither used up nor given up")
+host_refused(k5.lease) -- the engine took the create back (no answer after its resends)
+SendScriptCallback("actor_on_update")
+check(#REQ == 0 and SE[kit5:id()] ~= nil and HUD ~= nil and HUD:find(FIT_REFUSED, 1, true) ~= nil,
+	"then taken back: the kit stays, the player is told")
+
+-- the host's Ok, and a sight put on the new variant at once: that variant is replaced by its own clone too before this
+-- machine looks - the old weapon gone says the host made the kit's clone
+local se_k6, wpn_k6 = spawn("wpn_vk", nil, 0, { kind = "weapon" })
+local _, kit6 = spawn("vitup", nil, 0)
+NOW = NOW + 3000
+okl = act(item_weapon.attach_scope, kit6, wpn_k6)
+local k6 = clone_of(se_k6.id)
+check(okl and k6 ~= nil, "a kit whose variant gets a sight at once")
+host_ok(k6.lease)
+SE[k6.lease], OBJ[k6.lease] = nil, nil -- released with the sight's clone
+REQ, HUD = {}, nil
+SendScriptCallback("actor_on_update")
+check(destroyed(kit6:id()) and HUD == nil, "the old weapon is gone: the kit is used up, no refusal told")
+
+-- no ALife on this machine for a moment (a level change): nothing is decided, then it is
+local _, kit7 = spawn("vitup", nil, 0)
+local se_k7, wpn_k7 = spawn("wpn_vk", nil, 0, { kind = "weapon" })
+NOW = NOW + 3000
+okl = act(item_weapon.attach_scope, kit7, wpn_k7)
+local k7 = clone_of(se_k7.id)
+host_refused(k7.lease)
+local with_alife = alife
+alife = function() error("no ALife") end
+REQ, HUD = {}, nil
+SendScriptCallback("actor_on_update")
+alife = with_alife
+check(okl and k7 ~= nil and #REQ == 0 and HUD == nil, "no ALife: the kit waits, nothing told")
+SendScriptCallback("actor_on_update")
+check(#REQ == 0 and SE[kit7:id()] ~= nil and HUD ~= nil and HUD:find(FIT_REFUSED, 1, true) ~= nil,
+	"the ALife back: the refusal is seen, the kit stays")
 
 -- detach (aaaa_script_fixes_mp's detach): the scope comes back, the bare weapon replaces the scoped one
 local se_d, wpn_d = spawn("wpn_test_scope_a", nil, 0, { kind = "weapon" })
@@ -931,7 +1068,7 @@ end
 local src = read_raw("gamedata/scripts/coop_mods_guard.script") or ""
 local ids = {}
 for id in src:gmatch('{%s*"(st_coop_guard_[%w_]+)"') do ids[#ids + 1] = id end
-check(#ids == 4, "the guard asks for 4 texts")
+check(#ids == 6, "the guard asks for 6 texts")
 local HEADER = '<?xml version="1.0" encoding="windows-1251"?>'
 for _, lang in ipairs({ "eng", "rus" }) do
 	local raw = read_raw("gamedata/configs/text/" .. lang .. "/st_coop_mods.xml") or ""

@@ -814,3 +814,33 @@ TEST(lease_clone_family)
 	CHECK(!lease::clone_family("wpn_ak74_pso", "wpn_ak74", "wpn_svd_pso", "wpn_svd"));
 	CHECK(!lease::clone_family("wpn_ak74", "wpn_ak74", "wpn_vintorez", "wpn_vintorez"));
 }
+
+TEST(lease_addon_variant)
+{
+	// 2026-11-08 live report (GAMMA): a client could not fit the PP Vityaz upgrade kit, the host could. A weapon kit is a
+	// scope-style addon whose variant names itself in parent_section (wpn_vityaz_vitup: its sights are its own variants),
+	// so clone_family refused the attach (lua_clone: "not a variant of its weapon") and the kit stayed, nothing happened.
+	const char* vityaz = "ac10632, acog, eot, c-more, vitup"; // wpn_vityaz `scopes` with GAMMA's >scopes = vitup
+	CHECK(!lease::clone_family("wpn_vityaz", "wpn_vityaz", "wpn_vityaz_vitup", "wpn_vityaz_vitup")); // the bug
+	CHECK(lease::addon_variant("wpn_vityaz", "wpn_vityaz", vityaz, "wpn_vityaz_vitup")); // the kit, last in the list
+	CHECK(lease::addon_variant("wpn_vityaz", "wpn_vityaz", vityaz, "wpn_vityaz_ac10632")); // first in the list
+	CHECK(lease::addon_variant("wpn_vityaz", "wpn_vityaz", vityaz, "wpn_vityaz_c-more")); // in the middle
+	CHECK(lease::addon_variant("wpn_xm4", "wpn_xm4", "eotech,admin,bd", "wpn_xm4_admin")); // no blanks
+	CHECK(lease::addon_variant("wpn_pm", "wpn_pm", " pm_upgr_kit\t", "wpn_pm_pm_upgr_kit")); // blanks and a tab
+	CHECK(lease::addon_variant("wpn_remington700", "wpn_remington700", "archangel, lapua700, magpul_pro, mod_x_gen3",
+	    "wpn_remington700_lapua700")); // a kit with another calibre: as single player clones it
+	// what stock item_weapon.attach_scope refuses stays refused
+	CHECK(!lease::addon_variant("wpn_vityaz", "wpn_vityaz", "ac10632, acog, eot, c-more", "wpn_vityaz_vitup")); // not listed
+	CHECK(!lease::addon_variant("wpn_vityaz", "wpn_vityaz", vityaz, "wpn_vityaz_vit")); // a part of a name only
+	CHECK(!lease::addon_variant("wpn_vityaz", "wpn_vityaz", vityaz, "wpn_vityaz_vitup_eot")); // two addons at once
+	CHECK(!lease::addon_variant("wpn_vityaz", "wpn_vityaz", vityaz, "wpn_vityazvitup")); // no separator
+	CHECK(!lease::addon_variant("wpn_vityaz", "wpn_vityaz", vityaz, "wpn_vityaz-vitup")); // another separator
+	CHECK(!lease::addon_variant("wpn_vityaz", "wpn_vityaz", vityaz, "wpn_vityaz_")); // no addon
+	CHECK(!lease::addon_variant("wpn_vityaz", "wpn_vityaz", vityaz, "wpn_vityaz")); // the same (clone_family's)
+	CHECK(!lease::addon_variant("wpn_vityaz", "wpn_vityaz", "", "wpn_vityaz_vitup")); // no `scopes` line
+	CHECK(!lease::addon_variant("wpn_vityaz", "wpn_vityaz", ", ,", "wpn_vityaz_")); // empty entries name nothing
+	CHECK(!lease::addon_variant("wpn_vityaz_eot", "wpn_vityaz", vityaz, "wpn_vityaz_eot_vitup")); // a scoped variant
+	CHECK(!lease::addon_variant("wpn_toz34", "", "obrez", "wpn_toz34_obrez")); // no parent_section: stock fits nothing
+	CHECK(!lease::addon_variant("wpn_ak74", "wpn_ak74", "pso, m1", "wpn_svd_pso")); // another weapon
+	CHECK(!lease::addon_variant("wpn_ak", "wpn_ak", "74", "wpn_ak74")); // a longer name, not an addon of it
+}

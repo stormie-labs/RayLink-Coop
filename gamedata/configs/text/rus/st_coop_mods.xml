@@ -25,6 +25,12 @@
 	<string id="st_coop_guard_stash">
 		<text>Кооп: у клиента крафт, готовка и ремонт берут предметы только из рюкзака (тайники пока недоступны).</text>
 	</string>
+	<string id="st_coop_guard_fit_wait">
+		<text>Кооп: этот обвес ещё устанавливается, дождитесь ответа хоста.</text>
+	</string>
+	<string id="st_coop_guard_fit_refused">
+		<text>Кооп: хост не принял изменение, оружие осталось прежним, обвес остался у вас.</text>
+	</string>
 	<string id="st_coop_mods_take_failed">
 		<text>Кооп: не удалось взять предмет из тела или ящика.</text>
 	</string>

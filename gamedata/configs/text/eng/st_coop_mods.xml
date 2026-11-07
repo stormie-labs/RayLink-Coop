@@ -25,6 +25,12 @@
 	<string id="st_coop_guard_stash">
 		<text>Co-op: on a client crafting, cooking and repair take items from your backpack only (stashes are not available yet).</text>
 	</string>
+	<string id="st_coop_guard_fit_wait">
+		<text>Co-op: this addon is being fitted, wait for the host's answer.</text>
+	</string>
+	<string id="st_coop_guard_fit_refused">
+		<text>Co-op: the host did not accept the change, the weapon is as it was and the addon stays with you.</text>
+	</string>
 	<string id="st_coop_mods_take_failed">
 		<text>Co-op: could not take the item from the body or the box.</text>
 	</string>

@@ -56,6 +56,8 @@
 	C5  item_weapon.ammo_aggregation of a box or a corpse (item_weapon's move, after an ammo pack is put there): the move waits for
 	    the host, so a damaged pack is still ours here and its release goes out, the host allows it in the box, and the new pack
 	    into the box is refused: the pack is gone. Merging packs there would change copies. A client sorts its own inventory only.
+	C6  (2026-11-08, upgrade kits) the addon item_weapon.attach_scope uses up (a scope, a GAMMA upgrade kit) is released after
+	    the host's Ok to the clone, kept and the player told on a refusal, and not fitted again while it waits.
 	death_manager.decide_items_to_keep (xr_motivator, every dying NPC) stays on a client: its releases are refused, but its wear is
 	all the weapon of the client's copy gets, it spawned whole and nothing else lowers it.
 --]]
@@ -216,16 +218,18 @@ local function holder_id(obj)
 	return ok and type(pid) == "number" and pid or nil
 end
 
--- F2 T12b round 1 (review C1): the weapon waits for the host - its create is not answered yet (the host's budget queue,
--- a retry), or a clone of ours replaces it already. The engine refuses its clone (nil), but the mods create the scope
--- before the clone (detach): refused here first, before any world call.
-local function lease_waiting(wpn)
+-- the item `id` waits for the host: its create is not answered yet, or a clone of ours replaces it (coop.lease_waiting)
+local function id_waiting(id)
 	local f = api and api.lease_waiting
-	local id = id_of(wpn)
 	if type(f) ~= "function" or id == nil then return false end
 	local ok, w = pcall(f, id)
 	return ok and w == true
 end
+
+-- F2 T12b round 1 (review C1): the weapon waits for the host - its create is not answered yet (the host's budget queue,
+-- a retry), or a clone of ours replaces it already. The engine refuses its clone (nil), but the mods create the scope
+-- before the clone (detach): refused here first, before any world call.
+local function lease_waiting(wpn) return id_waiting(id_of(wpn)) end
 
 -- A client clones its own weapon at once under a leased id: the weapon in its own bag (the clone goes where the weapon
 -- is), ids enough for the swap, and a weapon the host has made already.
@@ -252,6 +256,105 @@ local function swap_guard(when)
 			end
 			return orig(...)
 		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- C6: the addon an attach uses up waits for the host's answer to the clone (2026-11-08)
+-------------------------------------------------------------------------------
+-- Live report (GAMMA, stable 41.4): a client could not fit an upgrade kit (PP Vityaz), the host could. A kit is a
+-- scope-style addon (mod_system_weapon_addons_upg_kits.ltx, 3DSS weapon_kit): item_weapon.attach_scope clones the weapon
+-- into its variant (wpn_vityaz + vitup = wpn_vityaz_vitup) and then releases the kit. The engine refused that clone on a
+-- client (fixed there: coop_id_lease.h addon_variant). Here: with leased ids the clone is made at once and its create
+-- waits for the host, while the addon's release went out at once, so a clone the host refused (its budget queue full,
+-- the weapon not his there) left the weapon as it was and took the addon - a kit costs up to 88 000. Now the addon's
+-- release waits for that answer: the host's Ok (the weapon the clone replaces is gone here) releases it, a refusal (the
+-- clone taken back here) keeps it and tells the player. Until then that addon cannot be fitted again (one kit, two
+-- weapons). Scopes go the same way.
+local NO_ID = 65535
+-- an answered clone whose old weapon stays here (its destroy failed on the host) uses the addon up after this: the
+-- clone is ours, a kept addon would be a second one
+local FIT_WAIT_MS = 60000
+local TXT_FIT_WAIT = { "st_coop_guard_fit_wait", "Co-op: this addon is being fitted, wait for the host's answer." }
+local TXT_FIT_REFUSED = { "st_coop_guard_fit_refused",
+	"Co-op: the host did not accept the change, the weapon is as it was and the addon stays with you." }
+stats.fits, stats.fits_done, stats.fits_refused, stats.fit_waits = 0, 0, 0, 0
+local fits = {} -- addon id -> { clone = id, source = id, at = ms, sec = the addon's section }
+
+-- true / false; nil when this machine cannot tell (no ALife now)
+local function in_world(id)
+	local ok, se = pcall(function() return alife():object(id) end)
+	if not ok then return nil end
+	return se ~= nil
+end
+
+local function release_fitted(id, f)
+	local ok, e = pcall(function()
+		local se = alife():object(id)
+		if se then alife_release(se) end
+	end)
+	if not ok then C().report("guard", "release of the fitted " .. f.sec, e) end
+end
+
+local function fit_tick(now)
+	if next(fits) == nil then return end
+	for id, f in pairs(fits) do
+		if not id_waiting(f.clone) then
+			-- the old weapon first: the host releases it only with the clone it made, which may be gone already (a sight
+			-- on it at once: replaced by its own clone)
+			local source_here, clone_here = in_world(f.source), in_world(f.clone)
+			if source_here == false or (clone_here == true and now - f.at >= FIT_WAIT_MS) then
+				fits[id] = nil
+				stats.fits_done = stats.fits_done + 1
+				release_fitted(id, f)
+			elseif source_here == true and clone_here == false then
+				fits[id] = nil
+				stats.fits_refused = stats.fits_refused + 1
+				log("%s %d stays: the host refused the weapon's new variant %d (the engine took it back)", f.sec, id, f.clone)
+				tell(TXT_FIT_REFUSED)
+			end
+		end
+	end
+end
+
+-- attach_scope with the addon's release held when the call made a clone of ours (a client: the clone has its leased id)
+local function fit_after_answer(orig)
+	return function(item, weapon, ...)
+		if not C().is_client() then return orig(item, weapon, ...) end
+		local addon = id_of(item)
+		if addon ~= nil and fits[addon] then
+			stats.fit_waits = stats.fit_waits + 1
+			tell(TXT_FIT_WAIT)
+			return nil
+		end
+		local real_clone, real_release = rawget(_G, "alife_clone_weapon"), rawget(_G, "alife_release")
+		if not (C().live_client() and addon ~= nil and type(real_clone) == "function" and type(real_release) == "function") then
+			return orig(item, weapon, ...)
+		end
+		local made, held
+		rawset(_G, "alife_clone_weapon", function(se, ...)
+			local new = real_clone(se, ...)
+			local id = new ~= nil and id_of(new) or nil
+			local source = id_of(se)
+			if made == nil and id ~= nil and id ~= NO_ID and source ~= nil then made = { clone = id, source = source } end
+			return new
+		end)
+		rawset(_G, "alife_release", function(obj, ...)
+			if made ~= nil and not held and id_of(obj) == addon then
+				held = true -- released by fit_tick after the host's answer
+				return
+			end
+			return real_release(obj, ...)
+		end)
+		local res = pack(pcall(orig, item, weapon, ...))
+		rawset(_G, "alife_clone_weapon", real_clone)
+		rawset(_G, "alife_release", real_release)
+		if held then
+			fits[addon] = { clone = made.clone, source = made.source, at = time_global(), sec = section_of(item) or "addon" }
+			stats.fits = stats.fits + 1
+		end
+		if not res[1] then error(res[2], 0) end
+		return unpack(res, 2, res.n)
 	end
 end
 
@@ -468,9 +571,11 @@ local GUARDS = {
 	{ label = "_G.alife_clone_weapon", tbl = function() return _G end, key = "alife_clone_weapon",
 		make = swap_guard(function(se, section, parent_id) return se, parent_id end) },
 	{ label = "item_weapon.attach_scope", tbl = module_of("item_weapon"), key = "attach_scope",
-		make = swap_guard(function(item, weapon)
-			if item ~= nil and weapon ~= nil and variant_weapon(weapon) then return weapon end
-		end) },
+		make = function(orig)
+			return fit_after_answer(swap_guard(function(item, weapon)
+				if item ~= nil and weapon ~= nil and variant_weapon(weapon) then return weapon end
+			end)(orig))
+		end },
 	{ label = "item_weapon.detach_scope", tbl = module_of("item_weapon"), key = "detach_scope",
 		make = swap_guard(function(weapon)
 			if weapon ~= nil and scoped_variant(weapon) then return weapon end
@@ -628,6 +733,7 @@ local function actor_on_update()
 	if not C().is_client() then return end
 	local now = time_global()
 	inspect_tick(now)
+	fit_tick(now)
 	if now < next_check then return end
 	next_check = now + CHECK_MS
 	for _, g in ipairs(GUARDS) do ensure(g) end
@@ -638,10 +744,12 @@ local function status()
 	for _, g in ipairs(GUARDS) do
 		if g.n > 0 then on[#on + 1] = g.label .. (g.n > 1 and ("x" .. g.n) or "") end
 	end
-	return string.format("scope swaps refused %d, done with leased ids %d (%d ids now), conditions carried %d, "
+	return string.format("scope swaps refused %d, done with leased ids %d (%d ids now), addons used up after the host's "
+		.. "answer %d (used up %d, kept on a refusal %d, refits refused %d), conditions carried %d, "
 		.. "container creates deferred %d (failed %d), crafting windows closed %d, af_inspect timeouts %d (late items "
 		.. "released %d) | guarding: %s",
-		stats.refused, stats.swaps, lease_ids(), stats.cond, stats.deferred, stats.failed, stats.closed, stats.inspect_timeouts,
+		stats.refused, stats.swaps, lease_ids(), stats.fits, stats.fits_done, stats.fits_refused, stats.fit_waits, stats.cond,
+		stats.deferred, stats.failed, stats.closed, stats.inspect_timeouts,
 		stats.late_released, #on > 0 and table.concat(on, ", ") or "nothing yet (a client installs at its first update)")
 end
 
