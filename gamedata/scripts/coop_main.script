@@ -1195,6 +1195,9 @@ ensure_callback("coop_events_lost")
 -- server is away, the world server is back. On the world server: _back, its new Lua is up and its connections open again.
 ensure_callback("coop_world_away")
 ensure_callback("coop_world_back")
+-- Fired by the engine (coop::debug, docs\DEBUG_DESIGN.md B.2) on every machine when the server's debug state changes:
+-- coop_debug_changed(on, source). Subscribers: coop_debug_server (marks the world), the F7 window.
+ensure_callback("coop_debug_changed")
 
 -- The callback router's Lua half on every machine with the engine API, the host and single player too: a session
 -- can start in this Lua state, and none holds on the host as well (F2 T10).

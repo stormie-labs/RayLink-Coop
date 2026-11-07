@@ -18,6 +18,11 @@
 	  peer_of(obj_or_id)      -> peer id of the player that object stands for, or nil
 	  object_of_peer(peer)    -> that player's character on this machine (db.actor for self), or nil
 	  avatar_of_peer(peer)    -> the id of his character, also of one standing on another level; nil if he is not in the session
+	  player(peer)            -> nil | { peer, nick, character (his id here), level, here (this process leads his level),
+	                             link ("local" | "net"), standing, object() }: one player for every command (DEBUG_DESIGN B.4);
+	                             nil for nobody, so a dedicated host's ghost is never a player
+	  player_by_name("@Bob" | "@2" | "@#2") -> player(peer) | nil (nick in any case)
+	  is_dedicated()          -> a dedicated host: its actor is a ghost, left out of everyone() and nearest()
 	  is_player_id(id)        -> true for the local actor and for any player avatar
 	  nearest(pos)            -> nearest player object, squared distance (math.huge if nobody)
 	  nearest_dist_sqr(pos)   -> squared distance to the nearest player
@@ -90,6 +95,16 @@ function is_map_server()
 	return active() and api.is_map_server ~= nil and api.is_map_server() == true
 end
 
+-- A dedicated host (-coop_dedicated): its actor is a ghost on fake_start, nobody's character (docs\DEBUG_DESIGN.md A.2 p. 9).
+function is_dedicated()
+	return active() and api.is_dedicated ~= nil and api.is_dedicated() == true
+end
+
+-- This process's own actor is no player: a map server's and a dedicated host's actor is a ghost.
+local function actor_is_ghost()
+	return is_map_server() or is_dedicated()
+end
+
 function self_peer()
 	if not api then return 0 end
 	local ok, v = pcall(api.self_id)
@@ -148,7 +163,7 @@ local function refresh()
 	cache_everyone = {}
 	cache_peer_by_id = {}
 	local a = real_actor()
-	if a and a:alive() and not is_map_server() then cache_everyone[1] = a end -- a map server's actor is its ghost, nobody
+	if a and a:alive() and not actor_is_ghost() then cache_everyone[1] = a end -- a map server's / dedicated host's ghost is nobody
 	if not active() then return end
 	for _, p in ipairs(players()) do
 		if not p.is_self and type(p.avatar_id) == "number" then
@@ -242,6 +257,73 @@ function standing(obj_or_id)
 	return true
 end
 
+-------------------------------------------------------------------------------
+-- One player for everybody (docs\DEBUG_DESIGN.md B.4): what a command for a player needs, by his peer. Nothing here branches on
+-- peer 0: the host player differs only in object() (this process's actor) and link.
+-------------------------------------------------------------------------------
+local function levels_api()
+	local l = api and api.levels
+	return type(l) == "table" and l or nil
+end
+
+local function lcall(f, ...)
+	if type(f) ~= "function" then return nil end
+	local ok, v = pcall(f, ...)
+	if ok then return v end
+	return nil
+end
+
+-- Does this process lead the level `lid`? World server: the host's process leads it (led_by_host_process); a map server: its own
+-- level; without split levels one process leads everything.
+local function leads(lid)
+	local l = levels_api()
+	if not (l and lcall(l.split) == true) then return true end
+	if lid == nil then return false end
+	if is_map_server() then return lcall(l.my_level) == lid end
+	return lcall(l.led_by_host_process, lid) == true
+end
+
+-- -> nil | { peer, nick, character, level, here, link, standing, object() }
+function player(peer)
+	if type(peer) ~= "number" or not active() then return nil end
+	for _, p in ipairs(players()) do
+		if p.id == peer then
+			local character = p.avatar_id
+			if type(character) ~= "number" and api.avatar_of then
+				local ok, id = pcall(api.avatar_of, peer)
+				character = ok and type(id) == "number" and id or nil
+			end
+			local l = levels_api()
+			local lid = l and lcall(l.level_of_player, peer) or nil
+			return {
+				peer = peer,
+				nick = p.nick,
+				character = character,
+				level = lid,
+				here = leads(lid),
+				link = p.is_self and "local" or "net",
+				standing = character ~= nil and standing(character) or false,
+				object = function() return object_of_peer(peer) end,
+			}
+		end
+	end
+	return nil
+end
+
+-- "@Bob" (nick, any case), "@2" or "@#2" (peer) -> player(peer) | nil
+function player_by_name(name)
+	if type(name) ~= "string" then return nil end
+	local s = name:gsub("^@", ""):gsub("^#", "")
+	if s == "" then return nil end
+	local n = tonumber(s)
+	if n then return player(n) end
+	s = s:lower()
+	for _, p in ipairs(players()) do
+		if type(p.nick) == "string" and p.nick:lower() == s then return player(p.id) end
+	end
+	return nil
+end
+
 local function pos_of(x)
 	if x and type(x.position) == "function" then return x:position() end
 	return x
@@ -252,7 +334,7 @@ function nearest(pos)
 	local best, best_d = nil, math.huge
 	if not pos then return nil, best_d end
 	local a = real_actor()
-	if a and a:alive() and not is_map_server() then -- a map server's actor is its ghost, nobody
+	if a and a:alive() and not actor_is_ghost() then -- a map server's / dedicated host's actor is its ghost, nobody
 		best, best_d = a, a:position():distance_to_sqr(pos)
 	end
 	for _, o in ipairs(others()) do

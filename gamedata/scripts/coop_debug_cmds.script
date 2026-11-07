@@ -1,0 +1,882 @@
+--[[
+	Anomaly Coop - co-op debug: the command registry (gamedata\scripts\coop_debug_cmds.script), docs\DEBUG_DESIGN.md B.5, C.
+
+	One table for the world server (coop_debug_server: requests of the players and the server console coop_dbg) and the F7 window
+	(package 3: names, classes, keys, help). Loading it changes nothing: the executors run only where coop_debug_server calls them,
+	on the world server or on the map server that leads the level (B.6).
+
+	A command: { class, where, args, run, help, stock, [player], [target], [confirm] }
+		class    view | world | self | spawn | target: the handler coop.dbg.<class> takes it; operator: the server console only
+		where    ws            the world server runs it
+		         player_level  the authority of the level of the player it is for (the world server, or his level's map server)
+		         target_level  the authority of the level the target object stands on
+		args     key -> { kind, [req], [def], [min], [max], [of] }: the flat request table (B.5), checked by validate
+		player   the command is for a player: the requester, or @player at the console
+		target   kind of the target t: "npc" (stalker or mutant), "stalker", "object" (anything but a player)
+		confirm  the window asks before it sends (release, info, release_common_squads, inv_clear)
+		run(ctx) -> true, msg[, id] | false, code
+			ctx.a       the checked arguments
+			ctx.peer    the player it is for (nil: none, a world command from the console)
+			ctx.pl      P.player(ctx.peer) on this process (coop_npc_players)
+			ctx.obj     the target t as a game object of this process (target commands)
+			ctx.obj2    the second party t2 as a game object, else the player's character (relation, goodwill)
+			ctx.by      the requester's name, for the log
+	Refusal codes (B.5): debug_off old_client unknown_cmd bad_args no_player not_standing bad_target player_target too_far bad_vertex
+	other_level cap failed.
+
+	API:
+		VERSION                        the schema version of a request (args.v)
+		CLASSES                        class -> true
+		get(id) -> command | nil
+		list([class]) -> { id, ... }   sorted
+		validate(id, args) -> true, clean | false, code, why    clean: only the schema's keys, converted (console strings too)
+		help(id) -> "id key=... : what"
+	Every action keeps the stock arguments and semantics (sources in .stock: S/ = anomaly scripts).
+--]]
+
+VERSION = 1
+CLASSES = { view = true, world = true, self = true, spawn = true, target = true, operator = true }
+
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+local math_floor, math_huge = math.floor, math.huge
+local string_format = string.format
+
+local MAX_STR = 64
+local MAX_COORD = 100000
+local MAX_ID = 65534
+local MAX_PEER = 7 -- kMaxPlayers - 1
+local MAX_ITEMS = 20 -- n without confirmation
+local MAX_ITEMS_ALL = 100 -- n with ok = true (a whole category, confirmed in the window)
+local MAX_MONEY = 1000000
+
+-------------------------------------------------------------------------------
+-- The stock spawner's class tables (S/ui_debug_launcher.script 1077-1194, 1646-1706). A section spawns as an item or an object
+-- only when its class (or its kind) is listed, as in the stock "spawn by name" (1526-1547).
+-------------------------------------------------------------------------------
+ITEM_CLASSES = {
+	i_arty_junk = true, i_arty = true, ARTEFACT = true, SCRPTART = true, i_arty_cont = true,
+	i_mutant_cooked = true, i_mutant_raw = true, i_food = true, II_FOOD = true, S_FOOD = true,
+	i_drink = true, II_BOTTL = true,
+	i_medical = true, II_BANDG = true, II_MEDKI = true, II_ANTIR = true,
+	i_device = true, DET_SIMP = true, DET_ADVA = true, DET_ELIT = true, DET_SCIE = true,
+	i_kit = true, i_tool = true, i_repair = true, i_part = true,
+	i_mutant_part = true, i_misc = true, II_DOC = true, EQ_PATCH = true, II_ATTCH = true, II_BTTCH = true, D_FLALIT = true,
+	S_PDA = true, D_PDA = true,
+	i_letter = true, i_quest = true, i_upgrade = true,
+	o_helmet = true, E_HLMET = true, EQU_HLMET = true,
+	i_mutant_belt = true, i_attach = true, i_backpack = true, EQ_BAKPK = true,
+	o_light = true, E_STLK = true, EQU_STLK = true, o_medium = true, o_sci = true, o_heavy = true,
+	w_ammo = true, AMMO = true, AMMO_S = true, S_OG7B = true, S_VOG25 = true, S_M209 = true,
+	w_melee = true, WP_KNIFE = true,
+	w_pistol = true, WP_HPSA = true, WP_PM = true, WP_USP45 = true,
+	w_shotgun = true, WP_ASHTG = true, WP_BM16 = true,
+	w_smg = true,
+	w_rifle = true, WP_AK74 = true, WP_GROZA = true, WP_LR300 = true, WP_VAL = true,
+	w_sniper = true, WP_SVD = true, WP_SVU = true,
+	w_explosive = true, WP_RG6 = true, WP_RPG7 = true, G_F1_S = true, G_RGD5_S = true, G_F1 = true, G_RGD5 = true,
+	w_base = true, w_misc = true, WP_SCOPE = true, WP_SILEN = true, WP_GLAUN = true, S_WPN_MISC = true, WP_BINOC = true,
+	II_BOLT = true,
+}
+
+-- group of the object spawner; "Phantom" (AI_PHANT) is out of v1: level.spawn_item makes no ALife object, nothing replicates it
+OBJECT_CLASSES = {
+	AI_STL_S = "npc", AI_TRD_S = "npc",
+	SM_KAR = "npc", SM_BLOOD = "npc", SM_BOARW = "npc", SM_BURER = "npc", SM_CAT_S = "npc", SM_CHIMS = "npc", SM_CONTR = "npc",
+	SM_DOG_S = "npc", SM_FLESH = "npc", SM_IZLOM = "npc", SM_GIANT = "npc", SM_POLTR = "npc", SM_P_DOG = "npc", SM_DOG_P = "npc",
+	SM_DOG_F = "npc", SM_SNORK = "npc", SM_TUSHK = "npc", SM_ZOMBI = "npc", SM_RAT = "npc", SM_KARLIK = "npc", SM_LURKER = "npc",
+	SM_PSYSUCKER = "npc",
+	C_HLCP_S = "vehicle", C_NIVA = "vehicle", SCRPTCAR = "vehicle",
+	ON_OFF_S = "squad",
+	O_PHYSIC = "physic", O_DSTRBL = "physic", P_DSTRBL = "physic", O_PHYS_S = "physic", O_DSTR_S = "physic", S_INVBOX = "physic",
+	O_INVBOX = "physic", S_EXPLO = "physic", II_EXPLO = "physic",
+	ZS_MBALD = "anomaly", ZS_GALAN = "anomaly", ZS_MINCE = "anomaly", ZS_RADIO = "anomaly", ZS_TORRD = "anomaly",
+	ZS_NGRAV = "anomaly", Z_MBALD = "anomaly", Z_RADIO = "anomaly", Z_CFIRE = "anomaly", Z_NOGRAV = "anomaly", Z_TORRID = "anomaly",
+	Z_RUSTYH = "anomaly", ZS_BFUZZ = "anomaly", ZS_AMEBA = "anomaly",
+}
+
+-- S/ui_debug_launcher.script 415-437
+BASIC_KIT = {
+	"device_pda_1", "itm_backpack", "vodka", "bread", "batteries_dead", "detector_radio", "detector_geiger", "lead_box",
+	"detector_simple", "medkit", "helm_resp", "wpn_pm", "wpn_knife", "bolt", "device_torch_nv_3",
+}
+
+-- the class of a section as the stock spawner reads it: kind wins over class
+function section_class(sec)
+	local ini = rawget(_G, "ini_sys") or ini_sys
+	if not (ini and type(sec) == "string" and ini:section_exist(sec)) then return nil end
+	local read = ini.r_string_ex or ini.r_string
+	local ok, class = pcall(read, ini, sec, "class")
+	local ok2, kind = pcall(read, ini, sec, "kind")
+	if ok2 and type(kind) == "string" and kind ~= "" then return kind end
+	return ok and class or nil
+end
+
+function object_group(sec)
+	local c = section_class(sec)
+	return c and OBJECT_CLASSES[c] or nil
+end
+
+-------------------------------------------------------------------------------
+-- Argument kinds
+-------------------------------------------------------------------------------
+local function finite(n) return type(n) == "number" and n == n and n ~= math_huge and n ~= -math_huge end
+
+local function number_of(v)
+	if type(v) == "string" then v = tonumber(v) end
+	return finite(v) and v or nil
+end
+
+local function whole_of(v)
+	local n = number_of(v)
+	return n and n == math_floor(n) and n or nil
+end
+
+local BOOL_WORDS = {
+	["1"] = true, ["true"] = true, on = true, yes = true, start = true,
+	["0"] = false, ["false"] = false, off = false, no = false, stop = false,
+}
+
+local function bool_of(v)
+	if type(v) == "boolean" then return v end
+	if type(v) == "number" then
+		if v == 1 then return true elseif v == 0 then return false end
+		return nil
+	end
+	if type(v) == "string" then return BOOL_WORDS[v:lower()] end
+	return nil
+end
+
+local function name_of(v)
+	if type(v) == "number" and v == math_floor(v) then v = tostring(v) end
+	if type(v) ~= "string" or #v == 0 or #v > MAX_STR then return nil end
+	if not v:match("^[%w_%.%-]+$") or v:find("..", 1, true) then return nil end
+	return v
+end
+
+-- kind -> converter(v, spec) -> value | nil
+local KINDS = {
+	id = function(v) local n = whole_of(v) return n and n >= 0 and n <= MAX_ID and n or nil end,
+	peer = function(v) local n = whole_of(v) return n and n >= 0 and n <= MAX_PEER and n or nil end,
+	int = function(v, s)
+		local n = whole_of(v)
+		if not n or (s.min and n < s.min) or (s.max and n > s.max) then return nil end
+		return n
+	end,
+	num = function(v, s)
+		local n = number_of(v)
+		if not n or (s.min and n < s.min) or (s.max and n > s.max) then return nil end
+		return n
+	end,
+	coord = function(v) local n = number_of(v) return n and n >= -MAX_COORD and n <= MAX_COORD and n or nil end,
+	vertex = function(v) local n = whole_of(v) return n and n >= 0 and n < 4294967295 and n or nil end,
+	bool = function(v) return bool_of(v) end,
+	name = function(v) return name_of(v) end,
+	enum = function(v, s)
+		if type(v) ~= "string" then return nil end
+		for _, w in ipairs(s.of) do if w == v then return v end end
+		return nil
+	end,
+	item = function(v)
+		local sec = name_of(v)
+		local c = sec and section_class(sec)
+		return c and ITEM_CLASSES[c] and sec or nil
+	end,
+	object = function(v)
+		local sec = name_of(v)
+		return sec and object_group(sec) and sec or nil
+	end,
+	code = function(v) return type(v) == "string" and #v > 0 and #v <= 4096 and v or nil end,
+}
+
+-------------------------------------------------------------------------------
+-- Helpers of the executors
+-------------------------------------------------------------------------------
+local function P() return rawget(_G, "coop_npc_players") or coop_npc_players end
+
+local function fmt(f, ...)
+	local ok, s = pcall(string_format, f, ...)
+	return ok and s or tostring(f)
+end
+
+local function name_of_obj(o)
+	if not o then return "?" end
+	local ok, n = pcall(o.name, o)
+	return ok and tostring(n) or "?"
+end
+
+local function npc_ok(o) return o and ((IsStalker and IsStalker(o)) or (IsMonster and IsMonster(o))) and true or false end
+local function stalker_ok(o) return o and IsStalker and IsStalker(o) and true or false end
+
+-- the stock {pos, lvid, gvid} of an object
+local function place_of(o)
+	return o:position(), o:level_vertex_id(), o:game_vertex_id()
+end
+
+-- the point of a request, checked by the authority of the level: { pos, lvid, gvid } or nil, code
+local function point_of(ctx)
+	local a, me = ctx.a, ctx.pl and ctx.pl.object and ctx.pl.object()
+	if not me then return nil, "no_player" end
+	if a.at == "inv" or a.at == "near" then
+		local pos, lv, gv = place_of(me)
+		return { pos, lv, gv }
+	end
+	-- at = point: the client's stock formula (S/ui_debug_launcher.script 1461-1467), the server's checks (B.5 step 7)
+	local vp = level.vertex_position(a.lv)
+	local pos = vector():set(a.x, a.y, a.z)
+	local dx, dz = (vp.x or 0) - a.x, (vp.z or 0) - a.z
+	if dx * dx + dz * dz > 4 or math.abs((vp.y or 0) - a.y) > 10 then return nil, "bad_vertex" end
+	if me:position():distance_to(pos) > 200 then return nil, "too_far" end
+	local _, _, gv = place_of(me)
+	return { pos, a.lv, gv }
+end
+
+local function on_off(v) return v and "on" or "off" end
+
+-------------------------------------------------------------------------------
+-- The commands (C.1)
+-------------------------------------------------------------------------------
+local cmds = {}
+
+local function T(t, extra)
+	local out = { t = { kind = "id", req = true } }
+	for k, v in pairs(extra or {}) do out[k] = v end
+	return out
+end
+
+local POINT = {
+	x = { kind = "coord" }, y = { kind = "coord" }, z = { kind = "coord" }, lv = { kind = "vertex" },
+}
+local function with_point(t)
+	for k, v in pairs(POINT) do t[k] = v end
+	return t
+end
+
+---------------------------------------------------------------- view
+cmds.obj_info = {
+	class = "view", where = "ws", args = T(), stock = "S/ui_debug_launcher.script 115-155 get_info",
+	help = "t=<id>: what the server knows of an object (T1)",
+	run = function(ctx)
+		local id, o = ctx.a.t, ctx.obj
+		local se = alife_object(id)
+		if not (se or o) then return false, "bad_target" end
+		local r = { id = id, msg = fmt("object %s", id) }
+		if se then
+			r.section = se.section_name and se:section_name() or nil
+			r.name = se.name and se:name() or nil
+			if se.parent_id and se.parent_id ~= 65535 then r.parent = se.parent_id end
+			if se.group_id and se.group_id ~= 65535 then r.squad = se.group_id end
+		end
+		if o then
+			r.section = r.section or o:section()
+			r.name = r.name or o:name()
+			r.alive = o.alive and o:alive() or false
+			if stalker_ok(o) then
+				r.community = o:character_community()
+				r.rank = o.character_rank and o:character_rank() or nil
+				r.reputation = o.character_reputation and o:character_reputation() or nil
+				local me = ctx.pl and ctx.pl.object and ctx.pl.object()
+				if me and o.general_goodwill then r.goodwill = o:general_goodwill(me) end
+				if me and o.relation then r.relation = o:relation(me) end
+			end
+		end
+		r.msg = fmt("%s [%s] (%s)", tostring(r.name), tostring(r.section), id)
+		return true, r
+	end,
+}
+
+cmds.can_see = {
+	class = "view", where = "target_level", target = "stalker", player = true, args = T(),
+	stock = "S/ui_debug_launcher.script 210-219", help = "t=<id>: can the NPC see me (T8)",
+	run = function(ctx)
+		local me = ctx.pl.object()
+		if not me then return false, "no_player" end
+		local sees = ctx.obj:see(me) and true or false
+		return true, { msg = fmt("%s %s", name_of_obj(ctx.obj), sees and "sees you" or "does not see you"), sees = sees }
+	end,
+}
+
+---------------------------------------------------------------- world
+cmds.time_add = {
+	class = "world", where = "ws",
+	args = { d = { kind = "int", min = 0, max = 30, def = 0 }, h = { kind = "int", min = 0, max = 240, def = 0 },
+		m = { kind = "int", min = 0, max = 1440, def = 0 } },
+	check = function(a) return a.d + a.h + a.m > 0 end,
+	stock = "S/debug_cmd_list.script 1463-1474 time; S/ui_sleep_dialog.script 342 sleep",
+	help = "d= h= m=: move the clock forward (K35, A16)",
+	run = function(ctx)
+		local a = ctx.a
+		level.change_game_time(a.d, a.h, a.m)
+		level_weathers.get_weather_manager():forced_weather_change()
+		return true, fmt("time +%dd %dh %dm", a.d, a.h, a.m)
+	end,
+}
+
+cmds.time_to = {
+	class = "world", where = "ws",
+	args = { h = { kind = "int", min = 0, max = 23, req = true }, m = { kind = "int", min = 0, max = 59, def = 0 } },
+	stock = "coop_dedicated.cpp CCC_CoopTime (forward only)", help = "h= [m=]: forward to that hour (coop_time hh:mm)",
+	run = function(ctx)
+		local a = ctx.a
+		local now = level.get_time_hours() * 60 + level.get_time_minutes()
+		local target = a.h * 60 + a.m
+		local delta = target > now and target - now or target + 24 * 60 - now
+		level.change_game_time(0, math_floor(delta / 60), delta % 60)
+		level_weathers.get_weather_manager():forced_weather_change()
+		return true, fmt("time to %02d:%02d", a.h, a.m)
+	end,
+}
+
+cmds.time_factor = {
+	class = "world", where = "ws", args = { f = { kind = "num", min = 0.1, max = 1000, req = true } },
+	stock = "level.set_time_factor (TimeSync carries it)", help = "f=: game time speed",
+	run = function(ctx)
+		level.set_time_factor(ctx.a.f)
+		return true, fmt("time factor %s", ctx.a.f)
+	end,
+}
+
+cmds.weather = {
+	class = "world", where = "ws", args = { w = { kind = "name", req = true } },
+	stock = "S/debug_cmd_list.script 1449-1451 weather set; ui_debug_weather/lighting presets", help = "w=<weather>: set the weather (K34, W1, LE1)",
+	run = function(ctx)
+		level.set_weather(ctx.a.w, true)
+		return true, fmt("weather %s", ctx.a.w)
+	end,
+}
+
+cmds.surge = {
+	class = "world", where = "ws", args = { on = { kind = "bool", req = true } },
+	stock = "S/debug_cmd_list.script 2591-2599", help = "start | stop (on=1|0): the emission (A12-13, K14)",
+	run = function(ctx)
+		if ctx.a.on then
+			if not surge_manager.is_finished() then return false, "failed" end
+			surge_manager.start_surge()
+			return true, "emission started"
+		end
+		if not surge_manager.is_started() then return false, "failed" end
+		surge_manager.stop_surge()
+		return true, "emission stopped"
+	end,
+}
+
+cmds.psi = {
+	class = "world", where = "ws", args = { on = { kind = "bool", req = true } },
+	stock = "S/debug_cmd_list.script 2601-2609", help = "start | stop (on=1|0): the psi-storm (A14-15, K15)",
+	run = function(ctx)
+		if ctx.a.on then
+			if not psi_storm_manager.is_finished() then return false, "failed" end
+			psi_storm_manager.start_psi_storm()
+			return true, "psi-storm started"
+		end
+		if not psi_storm_manager.is_started() then return false, "failed" end
+		psi_storm_manager.stop_psi_storm()
+		return true, "psi-storm stopped"
+	end,
+}
+
+cmds.unlock_routes = {
+	class = "world", where = "ws", args = {}, stock = "S/txr_routes.script 1537-1549", help = "unlock every route (A17)",
+	run = function()
+		if not txr_routes.is_route_left() then return false, "failed" end
+		local maps = txr_routes.maps
+		for i = 1, #maps do
+			for j = 1, #maps do
+				txr_routes.open_route(maps[i], maps[j], true)
+			end
+		end
+		return true, "all routes unlocked"
+	end,
+}
+
+cmds.unlock_ency = {
+	class = "world", where = "ws", args = { what = { kind = "enum", of = { "articles", "notes" }, req = true } },
+	stock = "S/ui_pda_encyclopedia_tab.script CMD.unlock_all_articles / unlock_all_notes", help = "what=articles|notes (A18-19)",
+	run = function(ctx)
+		local tab = ui_pda_encyclopedia_tab
+		local n = ctx.a.what == "articles" and tab.unlock_all_articles() or tab.unlock_all_notes()
+		if not n then return false, "failed" end
+		return true, fmt("%s %s unlocked", tostring(n), ctx.a.what)
+	end,
+}
+
+cmds.release_common_squads = {
+	class = "world", where = "ws", args = {}, confirm = true,
+	stock = "S/debug_cmd_list.script 2146-2172 alife_release common", help = "remove the common squads (A4, K49 common)",
+	run = function()
+		local sim, c = alife(), 0
+		for id in pairs(SIMBOARD.squads) do
+			local se_squad = sim:object(id)
+			if se_squad and se_squad.common then
+				se_squad:remove_squad()
+				c = c + 1
+			end
+		end
+		if c == 0 then return false, "failed" end
+		return true, fmt("%d common squads released", c)
+	end,
+}
+
+-- The stock toggle overrides try_respawn until Lua restarts; the server keeps its own switch and the override reads it.
+local respawn_hooked = false
+function respawns_hook()
+	if respawn_hooked then return end
+	local st = smart_terrain and smart_terrain.se_smart_terrain
+	if not (st and st.try_respawn) then return end
+	local stock = st.try_respawn
+	st.try_respawn = function(self, ...)
+		local s = alife_storage_manager.get_state()
+		if s and s.stop_respawns then return end
+		return stock(self, ...)
+	end
+	respawn_hooked = true
+end
+
+cmds.respawns = {
+	class = "world", where = "ws", args = { on = { kind = "bool", req = true } },
+	stock = "S/ui_debug_launcher.script 385-402 toggle_respawn", help = "on=1|0: A-Life respawns of the smarts (G6)",
+	run = function(ctx)
+		alife_storage_manager.get_state().stop_respawns = not ctx.a.on
+		respawns_hook()
+		return true, fmt("respawns %s", on_off(ctx.a.on))
+	end,
+}
+
+cmds.info = {
+	class = "world", where = "ws", confirm = true,
+	args = { k = { kind = "enum", of = { "give", "take" }, req = true }, i = { kind = "name", req = true } },
+	stock = "S/debug_cmd_list.script 1859-1866 info give|take", help = "k=give|take i=<info>: an infoportion of the world (K43)",
+	run = function(ctx)
+		if ctx.a.k == "give" then give_info(ctx.a.i) else disable_info(ctx.a.i) end
+		return true, fmt("info %s %s", ctx.a.k, ctx.a.i)
+	end,
+}
+
+---------------------------------------------------------------- self
+local function flag_cmd(key, stock, help)
+	return {
+		class = "self", where = "ws", player = true, args = { on = { kind = "bool", req = true } }, stock = stock, help = help,
+		run = function(ctx)
+			local d = coop and coop.debug
+			if not (d and d.set_flags) then return false, "failed" end
+			local ok = d.set_flags(ctx.peer, { [key] = ctx.a.on })
+			if ok == false then return false, "failed" end
+			return true, fmt("%s %s", key, on_off(ctx.a.on))
+		end,
+	}
+end
+cmds.god = flag_cmd("god", "S/ui_debug_launcher.script 71 g_god", "on=1|0: immortal (G1)")
+cmds.ammo = flag_cmd("ammo", "S/ui_debug_launcher.script 72 g_unlimitedammo", "on=1|0: unlimited ammo (G2)")
+cmds.invis = flag_cmd("invis", "S/debug_cmd_list.script 1314-1329 invisible", "on=1|0: AI does not see you (A1, K31)")
+
+cmds.money = {
+	class = "self", where = "ws", player = true, args = { a = { kind = "int", min = -MAX_MONEY, max = MAX_MONEY, req = true } },
+	check = function(a) return a.a ~= 0 end,
+	stock = "S/debug_cmd_list.script 1476-1482 money", help = "a=<RU>: money, +-1 000 000 at once (A2, K36)",
+	run = function(ctx)
+		local a = ctx.a.a
+		if a < 0 and coop.money_of then
+			local have = tonumber(coop.money_of(ctx.peer)) or 0
+			if have <= 0 then return false, "failed" end
+			if -a > have then a = -have end
+		end
+		local ok = coop.money_grant(ctx.peer, a)
+		if ok == false then return false, "failed" end
+		return true, fmt("money %+d", a)
+	end,
+}
+
+cmds.basic_kit = {
+	class = "self", where = "player_level", player = true, standing = true, args = {},
+	stock = "S/ui_debug_launcher.script 415-437", help = "the 15 basic items to yourself (A10)",
+	run = function(ctx)
+		local me = ctx.pl.object()
+		if not me then return false, "no_player" end
+		for i = 1, #BASIC_KIT do alife_create_item(BASIC_KIT[i], me) end
+		return true, "basic items"
+	end,
+}
+
+cmds.tp = {
+	class = "self", where = "ws", player = true, standing = true,
+	args = { x = { kind = "coord", req = true }, y = { kind = "coord", req = true }, z = { kind = "coord", req = true } },
+	stock = "S/debug_cmd_list.script 931-1016 teleport (who = actor)", help = "x= y= z=: move yourself on your level (K23)",
+	run = function(ctx)
+		local a = ctx.a
+		local ok = coop_mods_core.teleport(ctx.peer, vector():set(a.x, a.y, a.z))
+		if not ok then return false, "failed" end
+		return true, fmt("teleported to %.1f %.1f %.1f", a.x, a.y, a.z)
+	end,
+}
+
+cmds.tp_to_player = {
+	class = "self", where = "player_level", player = true, standing = true, args = { p = { kind = "peer", req = true } },
+	stock = "S/debug_cmd_list.script 931-1016 teleport to:<id>", help = "p=<peer|@nick>: move yourself to that player (K23)",
+	run = function(ctx)
+		local other = P().player(ctx.a.p)
+		local o = other and other.object()
+		if not o or other.peer == ctx.peer then return false, "bad_target" end
+		local ok = coop_mods_core.teleport(ctx.peer, o:position())
+		if not ok then return false, "failed" end
+		return true, fmt("teleported to %s", tostring(other.nick))
+	end,
+}
+
+cmds.level = {
+	class = "self", where = "ws", player = true, standing = true, args = { name = { kind = "name", req = true } },
+	stock = "S/debug_cmd_list.script 1574-1610 level (JumpToLevel)",
+	help = "name=<level>: your machine does the stock level change, the server rules decide (K38)",
+	run = function(ctx)
+		-- the player's machine runs the stock JumpToLevel; its ChangeLevel becomes a request the server judges (coop_events.cpp)
+		local sent = P().send("coop.dbg.order", { k = "level", name = ctx.a.name }, ctx.peer)
+		if not sent then return false, "failed" end
+		return true, fmt("level %s asked", ctx.a.name)
+	end,
+}
+
+---------------------------------------------------------------- spawn
+cmds.spawn_item = {
+	class = "spawn", where = "player_level", player = true, standing = true,
+	args = with_point({ sec = { kind = "item", req = true }, n = { kind = "int", min = 1, def = 1 },
+		at = { kind = "enum", of = { "inv", "point", "near" }, def = "inv" }, ok = { kind = "bool", def = false } }),
+	stock = "S/ui_debug_launcher.script 1447-1485 UIDebug_ItemSpawn:Spawn; S/debug_cmd_list.script 319-421 spawn",
+	help = "sec=<section> [n=1..20] [at=inv|point|near] [x= y= z= lv=]: items (I2-I4, I6, K9)",
+	run = function(ctx)
+		local a = ctx.a
+		local where, why = point_of(ctx)
+		if not where then return false, why end
+		local t = where
+		if a.at == "inv" then
+			local me = ctx.pl.object()
+			t = { where[1], where[2], where[3], me:id() }
+		end
+		local last
+		for _ = 1, a.n do
+			local se = alife_create_item(a.sec, { t[1], t[2], t[3], t[4] })
+			if se then last = se end
+		end
+		if not last then return false, "failed" end
+		return true, fmt("%s x%d (%s)", a.sec, a.n, a.at), last.id
+	end,
+}
+
+-- a squad's members as the stock spawner sets them up (S/ui_debug_launcher.script 2024-2042)
+local function setup_squad(se_obj, smrt, pos, lv, gv)
+	if smrt then se_obj:create_npc(smrt) else se_obj:create_npc(nil, pos, lv, gv) end
+	local sim = alife()
+	for k in se_obj:squad_members() do
+		local se_npc = k.object or k.id and sim:object(k.id)
+		if se_npc then
+			SIMBOARD:setup_squad_and_group(se_npc)
+			SendScriptCallback("squad_on_npc_creation", se_obj, se_npc, smrt)
+		end
+	end
+end
+
+-- S/ui_debug_launcher.script 2045-2057
+local function setup_anomaly(se_obj)
+	local data = utils_stpk.get_object_data(se_obj)
+	if data then
+		data.object_flags = 31
+		data.restrictor_type = 0
+		data.shapes = {}
+		data.shapes[1] = {}
+		data.shapes[1].shtype = 0
+		data.shapes[1].offset = VEC_ZERO
+		data.shapes[1].radius = 10
+		utils_stpk.set_object_data(data, se_obj)
+	end
+end
+
+function smart_by_name(name)
+	local board = rawget(_G, "SIMBOARD")
+	local smrt = board and board.smarts_by_names and board.smarts_by_names[name]
+	return smrt
+end
+
+cmds.spawn_object = {
+	class = "spawn", where = "player_level", player = true, standing = true,
+	args = with_point({ sec = { kind = "object", req = true }, at = { kind = "enum", of = { "point", "near", "smart" }, def = "point" },
+		sm = { kind = "name" } }),
+	stock = "S/ui_debug_launcher.script 1940-2068 UIDebug_ObjSpawn:Spawn",
+	help = "sec=<section> [at=point|near|smart] [x= y= z= lv=] [sm=<smart>]: NPC, squad, vehicle, anomaly, physic (O2, O5)",
+	run = function(ctx)
+		local a = ctx.a
+		local pos, lv, gv, smrt
+		if a.at == "smart" then
+			smrt = smart_by_name(a.sm)
+			local se_smart = smrt and alife_object(smrt.id)
+			if not se_smart then return false, "bad_args" end
+			pos, lv, gv = se_smart.position, se_smart.m_level_vertex_id, se_smart.m_game_vertex_id
+		else
+			local where, why = point_of(ctx)
+			if not where then return false, why end
+			pos, lv, gv = where[1], where[2], where[3]
+		end
+		local se_obj = alife_create(a.sec, pos, lv, gv)
+		if not se_obj then return false, "failed" end
+		local group = object_group(a.sec)
+		if group == "squad" then
+			setup_squad(se_obj, smrt, pos, lv, gv)
+		elseif group == "anomaly" then
+			setup_anomaly(se_obj)
+		end
+		return true, fmt("%s (%s)", a.sec, a.at == "smart" and a.sm or a.at), se_obj.id
+	end,
+}
+
+-- the smart nearest to the player on his level (the stock uses smart_terrain.nearest_to_actor_smart: one actor)
+local function nearest_smart(me)
+	local board = rawget(_G, "SIMBOARD")
+	if not (board and board.smarts) then return nil end
+	local gg = game_graph()
+	local my_level = gg:vertex(me:game_vertex_id()):level_id()
+	local best, best_d = nil, math_huge
+	for _, s in pairs(board.smarts) do
+		local se = s.smrt
+		if se and gg:vertex(se.m_game_vertex_id):level_id() == my_level then
+			local d = se.position:distance_to_sqr(me:position())
+			if d < best_d then best, best_d = se, d end
+		end
+	end
+	return best
+end
+
+cmds.test_squad = {
+	class = "spawn", where = "player_level", player = true, standing = true,
+	args = { n = { kind = "int", min = 1, max = MAX_ITEMS, def = 3 } },
+	stock = "S/debug_cmd_list.script 3434-3471 test_squad", help = "[n=3]: a squad of your faction at the nearest smart (K71)",
+	run = function(ctx)
+		local me = ctx.pl.object()
+		local smart = me and nearest_smart(me)
+		if not smart then return false, "failed" end
+		local sim = alife()
+		local se_me = alife_object(me:id())
+		local comm = se_me and se_me.community and se_me:community() or "stalker"
+		comm = comm:sub(1, 6) == "actor_" and comm:sub(7) or comm
+		comm = comm == "dolg" and "duty" or comm
+		comm = comm == "army" and "military" or comm
+		local npc_sec = fmt("sim_default_%s_0", comm)
+		local squad = sim:create("online_offline_group", smart.position, smart.m_level_vertex_id, smart.m_game_vertex_id)
+		for _ = 1, ctx.a.n do
+			squad:add_squad_member(npc_sec, smart.position, smart.m_level_vertex_id, smart.m_game_vertex_id)
+		end
+		squad:set_squad_relation()
+		squad:refresh()
+		SIMBOARD:assign_squad_to_smart(squad, smart.id)
+		for k in squad:squad_members() do
+			local se_obj = k.object or k.id and sim:object(k.id)
+			if se_obj then SIMBOARD:setup_squad_and_group(se_obj) end
+		end
+		squad.scripted_target = smart:name()
+		return true, fmt("%d x %s at %s", ctx.a.n, npc_sec, smart:name()), squad.id
+	end,
+}
+
+---------------------------------------------------------------- target
+cmds.kill = {
+	class = "target", where = "target_level", target = "npc", args = T(), far = "kill",
+	stock = "S/ui_debug_launcher.script 186-192", help = "t=<id>: kill an NPC (T2)",
+	run = function(ctx)
+		ctx.obj:kill(ctx.obj)
+		return true, fmt("%s killed", name_of_obj(ctx.obj))
+	end,
+}
+
+cmds.release = {
+	class = "target", where = "target_level", target = "object", args = T(), far = "release", confirm = true,
+	stock = "S/ui_debug_launcher.script 202-208; S/debug_cmd_list.script 3154-3179", help = "t=<id>: delete an object (T3, K65-66)",
+	run = function(ctx)
+		local name = ctx.obj and name_of_obj(ctx.obj) or tostring(ctx.a.t)
+		alife_release_id(ctx.a.t)
+		return true, fmt("%s deleted", name)
+	end,
+}
+
+cmds.trade_refresh = {
+	class = "target", where = "target_level", target = "npc", args = T(),
+	stock = "S/ui_debug_launcher.script 194-200", help = "t=<id>: refresh a trader's goods (T6)",
+	run = function(ctx)
+		trade_manager.update(ctx.obj, true)
+		return true, fmt("%s trade inventory refreshed", name_of_obj(ctx.obj))
+	end,
+}
+
+cmds.companion = {
+	class = "target", where = "target_level", target = "stalker", player = true, standing = true, args = T(),
+	stock = "S/ui_debug_launcher.script 157-184; S/debug_cmd_list.script 2642-2671", help = "t=<id>: his squad becomes your companions (T7, K58)",
+	run = function(ctx)
+		local me, o = ctx.pl.object(), ctx.obj
+		if not me then return false, "no_player" end
+		local dac = dialogs_axr_companion
+		local result, why = P().with_identity(me, function()
+			if not dac.is_non_story(nil, o) then return false, "story" end
+			if not dac.is_not_actor_companion(nil, o) then return false, "already" end
+			if not dac.is_not_hostage_task_giver(db.actor, o) then return false, "hostage" end
+			dac.become_actor_companion(db.actor, o)
+			return true
+		end)
+		if not result then return false, "bad_target" end
+		return true, fmt("%s squad become companions", name_of_obj(o))
+	end,
+}
+
+local RELATIONS = { "friend", "neutral", "enemy" }
+
+cmds.relation = {
+	class = "target", where = "target_level", target = "stalker", player = true,
+	args = T(nil, { t2 = { kind = "id" }, r = { kind = "enum", of = RELATIONS, req = true } }),
+	stock = "S/ui_debug_launcher.script 239-248", help = "t=<id> [t2=<id>] r=friend|neutral|enemy: relation to t2 or you (T11-13)",
+	run = function(ctx)
+		local two = ctx.obj2
+		if not stalker_ok(two) then return false, "bad_target" end
+		ctx.obj:set_relation(game_object[ctx.a.r], two)
+		return true, fmt("%s relation to %s: %s", name_of_obj(ctx.obj), name_of_obj(two), ctx.a.r)
+	end,
+}
+
+cmds.goodwill = {
+	class = "target", where = "target_level", target = "stalker", player = true,
+	args = T(nil, { t2 = { kind = "id" }, g = { kind = "int", min = -5000, max = 5000, req = true } }),
+	stock = "S/ui_debug_launcher.script 250-260", help = "t=<id> [t2=<id>] g=-5000..5000: goodwill to t2 or you (T14-16)",
+	run = function(ctx)
+		local two = ctx.obj2
+		if not stalker_ok(two) then return false, "bad_target" end
+		ctx.obj:force_set_goodwill(ctx.a.g, two)
+		return true, fmt("%s goodwill to %s: %d", name_of_obj(ctx.obj), name_of_obj(two), ctx.a.g)
+	end,
+}
+
+cmds.squad_goodwill = {
+	class = "target", where = "target_level", target = "stalker", player = true,
+	args = T(nil, { t2 = { kind = "id" }, g = { kind = "int", min = -5000, max = 5000, req = true } }),
+	stock = "S/ui_debug_launcher.script 262-280", help = "t=<id> [t2=<id>] g=: goodwill of his whole squad (T17-19)",
+	run = function(ctx)
+		local two = ctx.obj2
+		if not stalker_ok(two) then return false, "bad_target" end
+		local squad = get_object_squad(ctx.obj)
+		if not squad then return false, "bad_target" end -- the stock fails here (270)
+		local sim, c = alife(), 0
+		for k in squad:squad_members() do
+			local se_obj = k.object or k.id and sim:object(k.id)
+			if se_obj then
+				se_obj:force_set_goodwill(ctx.a.g, two)
+				c = c + 1
+			end
+		end
+		return true, fmt("%s squad (%d) goodwill to %s: %d", name_of_obj(ctx.obj), c, name_of_obj(two), ctx.a.g)
+	end,
+}
+
+cmds.wound = {
+	class = "target", where = "target_level", target = "npc", args = T(),
+	stock = "S/debug_cmd_list.script 1018-1050", help = "t=<id>: wound an NPC (K24)",
+	run = function(ctx)
+		ctx.obj:set_health_ex(0.05)
+		return true, fmt("%s has been wounded", name_of_obj(ctx.obj))
+	end,
+}
+
+cmds.inv_clear = {
+	class = "target", where = "target_level", target = "object", args = T(), confirm = true,
+	stock = "S/debug_cmd_list.script 1959-1991 inventory_owner removeall", help = "t=<id>: delete everything an NPC or a box holds (K44)",
+	run = function(ctx)
+		local sim, id, count = alife(), ctx.a.t, 0
+		for i = 1, 65534 do
+			local se_obj = sim:object(i)
+			if se_obj and se_obj.parent_id == id then
+				sim:release(se_obj, true)
+				count = count + 1
+			end
+		end
+		if count == 0 then return false, "failed" end
+		return true, fmt("removed %d children of %s", count, name_of_obj(ctx.obj))
+	end,
+}
+
+cmds.faction = {
+	class = "target", where = "target_level", target = "stalker", args = T(nil, { c = { kind = "name", req = true } }),
+	stock = "S/ui_debug_launcher.script 2505-2524 OnButton_Faction (target)", help = "t=<id> c=<community>: his squad's faction (F1)",
+	run = function(ctx)
+		local communities = utils_obj.get_communities_list()
+		local known = false
+		for _, c in pairs(communities) do if c == ctx.a.c then known = true end end
+		if not known then return false, "bad_args" end
+		local squad = get_object_squad(ctx.obj)
+		if not squad then return false, "bad_target" end
+		local c = 0
+		for k in squad:squad_members() do
+			local member = db.storage[k.id] and db.storage[k.id].object
+			if member and member:alive() then
+				member:set_character_community(ctx.a.c, 0, 0)
+				for _, community in pairs(communities) do member:set_community_goodwill(community, 0) end
+				c = c + 1
+			end
+		end
+		return true, fmt("%d of %s's squad are %s now", c, name_of_obj(ctx.obj), ctx.a.c)
+	end,
+}
+
+---------------------------------------------------------------- operator (the server console only)
+cmds.lua = {
+	class = "operator", where = "ws", args = { code = { kind = "code", req = true } },
+	stock = "S/debug_cmd_list.script 793 execute; ui_debug_launcher Executer (X3)",
+	help = "<code>: run Lua on the world server (the server console only: it runs on the host's PC)",
+	run = function(ctx)
+		local f, err = loadstring(ctx.a.code)
+		if not f then return false, "bad_args", tostring(err) end
+		local ok, r = pcall(f)
+		if not ok then return false, "failed", tostring(r) end
+		return true, fmt("lua: %s", tostring(r))
+	end,
+}
+
+-------------------------------------------------------------------------------
+-- API
+-------------------------------------------------------------------------------
+function get(id)
+	return type(id) == "string" and cmds[id] or nil
+end
+
+function list(class)
+	local out = {}
+	for id, c in pairs(cmds) do
+		if class == nil or c.class == class then out[#out + 1] = id end
+	end
+	table.sort(out)
+	return out
+end
+
+-- -> true, clean | false, code, why
+function validate(id, args)
+	local c = get(id)
+	if not c then return false, "unknown_cmd", tostring(id) end
+	if type(args) ~= "table" then args = {} end
+	local clean = {}
+	for key, spec in pairs(c.args) do
+		local raw = args[key]
+		if raw == nil then
+			if spec.req then return false, "bad_args", key .. " is missing" end
+			clean[key] = spec.def
+		else
+			local conv = KINDS[spec.kind]
+			local v = conv and conv(raw, spec)
+			if v == nil then return false, "bad_args", key .. " is not a " .. spec.kind end
+			clean[key] = v
+		end
+	end
+	-- items: n <= 20, a whole category (ok, confirmed in the window) <= 100
+	if clean.n and (id == "spawn_item") then
+		if clean.n > MAX_ITEMS_ALL or (clean.n > MAX_ITEMS and not clean.ok) then return false, "cap", "n" end
+	end
+	local at = clean.at
+	if at == "point" and not (clean.x and clean.y and clean.z and clean.lv) then return false, "bad_args", "at=point needs x y z lv" end
+	if at == "smart" and not clean.sm then return false, "bad_args", "at=smart needs sm" end
+	if c.check and not c.check(clean) then return false, "bad_args", "nothing to do" end
+	return true, clean
+end
+
+function help(id)
+	local c = get(id)
+	if not c then return nil end
+	return fmt("%s [%s] %s", id, c.class, c.help)
+end

@@ -1,0 +1,536 @@
+--[[
+	Anomaly Coop - co-op debug: the world server's side (gamedata\scripts\coop_debug_server.script), docs\DEBUG_DESIGN.md B.5-B.7.
+
+	Debug is a right of the server (like sv_cheats): the world server (WS) keeps it on or off (the engine, coop.debug). Every player
+	asks through coop.sync.request("coop.dbg.<class>", {v = 1, cmd = <id>, ...}), the host player too (over the local link, peer 0):
+	one path for all, no permission ever depends on peer 0. The server decides and runs; the result reaches everybody by the usual
+	synchronisation (EntitySpawn, TimeSync, WeatherSync, InfoPortion, MoneyBalance).
+
+	Handlers (WS): coop.dbg.view | world | self | spawn | target, each with its own coop.sync.limit (B.5). The checks, in order:
+		debug on (view passes while off) -> v -> cmd known and of this class -> P.player(from) -> the schema (coop_debug_cmds) ->
+		the player stands (personal spawn and teleport) -> the target exists and is no player -> where it runs (B.6) -> the
+		authority checks the point (lv, 2 m from its vertex, 200 m from the player, gvid from his character) -> run, log, announce.
+	Answers: true, {msg = "...", id = ...} | false, "<code>" | true, "forwarded" (a map server runs it; the end comes as coop.dbg.note).
+
+	Where (coop_debug_cmds .where): ws - here. player_level - the authority of the player's level: here when this process leads it
+	(P.player(peer).here), else coop.dbg.run to the bridge of his level. target_level - the authority of the object's level: here, or
+	for kill / release the far order of coop_quests_far (quests.far_do, it retries and falls back to the record), else coop.dbg.run.
+	A squad or an object at a smart: the authority of the smart's level when players stand there, else the WS makes it offline.
+
+	Events (flat tables, coop_main.encode):
+		coop.dbg.run   WS -> bridge   { _c = cmd, _peer = player, _rid = number, <checked args> }; a map server takes it from 0 only
+		coop.dbg.done  bridge -> WS   { rid, ok, msg, code, id }
+		coop.dbg.note  WS -> player   { ok, msg, code, cmd, rid }: how a forwarded request ended (the F7 window shows it)
+		coop.dbg.say   WS -> all      { nick, cmd, text }: the announcement "[debug] <nick>: <text>" in the chat feed (B.5), shown here
+		                              too when this process has a player; a machine takes it from 0 only
+		coop.dbg.order WS -> player   { k = "level", name }: the player's machine runs the stock level change (package 3 handles it)
+
+	Server console (B.7): coop_dbg <cmd> [@player] [key=value ...] -> console(line): the same registry and checks, the requester is
+	the console; a personal command needs @player (nick in any case, @2 or @#2). It needs coop_debug on, like sv_cheats; help works
+	always. Lua (coop_dbg lua <code>) only here, never from a player. Answers go to coop.debug.say (log and the dedicated window).
+
+	Debug on marks the world with the stock infoportion debug_mode_flag_on (S/game_statistics.script 248), owner decision 1.
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+local string_format = string.format
+
+local HANDLERS = {
+	view = { name = "coop.dbg.view", burst = 30, per_sec = 10 },
+	world = { name = "coop.dbg.world", burst = 5, per_sec = 0.5 },
+	self = { name = "coop.dbg.self", burst = 10, per_sec = 2 },
+	spawn = { name = "coop.dbg.spawn", burst = 10, per_sec = 2 },
+	target = { name = "coop.dbg.target", burst = 10, per_sec = 2 },
+}
+EV_RUN, EV_DONE, EV_NOTE, EV_SAY = "coop.dbg.run", "coop.dbg.done", "coop.dbg.note", "coop.dbg.say"
+local PENDING_MS = 60000
+local DEBUG_INFO = "debug_mode_flag_on"
+
+local function fmt(f, ...)
+	local ok, s = pcall(string_format, f, ...)
+	return ok and s or tostring(f)
+end
+
+local function log(f, ...)
+	printf("[coop-dbg] %s", fmt(f, ...))
+end
+
+local function R() return rawget(_G, "coop_debug_cmds") or coop_debug_cmds end
+local function P() return rawget(_G, "coop_npc_players") or coop_npc_players end
+local function cmain() return rawget(_G, "coop_main") or coop_main end
+
+-------------------------------------------------------------------------------
+-- Roles and state
+-------------------------------------------------------------------------------
+local function call(f, ...)
+	if type(f) ~= "function" then return nil end
+	local ok, v = pcall(f, ...)
+	return ok and v or nil
+end
+
+local function is_world_server()
+	if not api then return false end
+	if type(api.is_world_server) == "function" then return call(api.is_world_server) == true end
+	return call(api.is_host) == true and call(api.is_map_server) ~= true
+end
+
+local function is_map_server() return api ~= nil and call(api.is_map_server) == true end
+
+local function has_player()
+	if not api then return false end
+	if type(api.is_player) == "function" then return call(api.is_player) == true end
+	return true
+end
+
+-- coop.debug.state() of the contract: a table {on, source, serial} (or a bare boolean)
+function debug_on()
+	local d = api and api.debug
+	if not (d and d.state) then return false end
+	local ok, s = pcall(d.state)
+	if not ok then return false end
+	if type(s) == "table" then return s.on == true or s.on == 1 end
+	return s == true
+end
+
+local function say(line)
+	log("%s", line)
+	local d = api and api.debug
+	if d and d.say then pcall(d.say, line) end
+end
+
+local function levels() return api and type(api.levels) == "table" and api.levels or nil end
+
+local function split()
+	local l = levels()
+	return l ~= nil and call(l.split) == true
+end
+
+local function led_here(lid)
+	if not split() then return true end
+	local l = levels()
+	return lid ~= nil and call(l.led_by_host_process, lid) == true
+end
+
+local function bridge_of_level(lid)
+	local l = levels()
+	local list = l and call(l.map_servers)
+	if type(list) ~= "table" then return nil end
+	for _, ms in ipairs(list) do
+		if ms.level == lid then return ms.bridge end
+	end
+	return nil
+end
+
+local function level_of_object(id)
+	local far = rawget(_G, "coop_quests_far") or coop_quests_far
+	if far and far.level_of_id then return call(far.level_of_id, id) end
+	return nil
+end
+
+-------------------------------------------------------------------------------
+-- Announcements (B.5): everybody sees who did what, like sv_cheats
+-------------------------------------------------------------------------------
+local function tr(id, fallback)
+	local ok, s = pcall(game.translate_string, id)
+	if not ok or type(s) ~= "string" or s == id then return fallback end
+	return s
+end
+
+local function show(nick, text)
+	local line = fmt("%s %s: %s", tr("st_coop_dbg_say_prefix", "[debug]"), tostring(nick), tostring(text))
+	local chat = rawget(_G, "coop_core_chat") or coop_core_chat
+	if chat and chat.system then
+		pcall(chat.system, line)
+	end
+end
+
+function announce(by, id, text)
+	say(fmt("[debug] %s: %s", tostring(by), tostring(text)))
+	P().send(EV_SAY, { nick = by, cmd = id, text = text }, -1)
+	-- the WS's own Lua gets no copy of its broadcast: its player (the host player) is shown here
+	if has_player() then show(by, text) end
+end
+
+local function on_say(payload, from)
+	if from ~= 0 then return end
+	local t = P().decode(payload)
+	show(t.nick or "?", t.text or "")
+end
+
+-------------------------------------------------------------------------------
+-- Running a command here (the WS, or a map server for its level)
+-------------------------------------------------------------------------------
+local function result_of(ok, r, x)
+	if not ok then return false, r, x end
+	if type(r) == "table" then return true, r end
+	return true, { msg = tostring(r), id = x }
+end
+
+-- target kind checks on the authority, where the object is online
+local function kind_ok(kind, obj)
+	if kind == "npc" then return obj ~= nil and ((IsStalker and IsStalker(obj)) or (IsMonster and IsMonster(obj))) and true or false end
+	if kind == "stalker" then return obj ~= nil and IsStalker and IsStalker(obj) and true or false end
+	return true
+end
+
+local function object_here(id)
+	if type(id) ~= "number" then return nil end
+	return level.object_by_id(P().to_local(id))
+end
+
+-- -> ok, result | false, code[, why]
+local function execute(c, id, a, peer, by)
+	local pl = peer ~= nil and P().player(peer) or nil
+	local ctx = { a = a, peer = peer, pl = pl, by = by }
+	if c.args.t then
+		ctx.obj = object_here(a.t)
+		if c.target then
+			if c.target ~= "object" and not ctx.obj then return false, "bad_target" end
+			if not kind_ok(c.target, ctx.obj) then return false, "bad_target" end
+		end
+	end
+	if c.args.t2 then
+		ctx.obj2 = a.t2 and object_here(a.t2) or (pl and pl.object())
+	end
+	local ok, r1, r2, r3 = pcall(c.run, ctx)
+	if not ok then
+		P().report("debug", "command " .. id, r1)
+		return false, "failed"
+	end
+	return result_of(r1, r2, r3)
+end
+
+local function line_of(r)
+	if type(r) == "table" then return tostring(r.msg or "") end
+	return tostring(r)
+end
+
+-------------------------------------------------------------------------------
+-- Forwarding to a map server (B.6, B.10)
+-------------------------------------------------------------------------------
+local pending = {} -- rid -> { requester = peer | nil (console), by, id, at }
+local next_rid = 0
+
+local function forward(bridge, id, a, peer, requester, by)
+	if not bridge then return false, "other_level" end
+	for rid, p in pairs(pending) do
+		if time_global() - p.at > PENDING_MS then pending[rid] = nil end
+	end
+	next_rid = next_rid + 1
+	local t = {}
+	for k, v in pairs(a) do t[k] = v end
+	t._c, t._peer, t._rid = id, peer, next_rid
+	if not P().send(EV_RUN, t, bridge) then return false, "failed" end
+	pending[next_rid] = { requester = requester, by = by, id = id, at = time_global() }
+	log("%s from %s forwarded to #%s (rid %d)", id, tostring(by), tostring(bridge), next_rid)
+	return true, "forwarded"
+end
+
+-- a map server: the WS passes a player's request of its level
+local function on_run(payload, from)
+	if from ~= 0 or not is_map_server() then return end
+	local t = P().decode(payload)
+	local id, peer, rid = t._c, tonumber(t._peer), tonumber(t._rid)
+	t._c, t._peer, t._rid = nil, nil, nil
+	local c = R().get(id)
+	if not (c and rid) then return end
+	local ok, a, why = R().validate(id, t)
+	local res_ok, r, code
+	if ok then
+		res_ok, r, code = execute(c, id, a, peer, "#" .. tostring(peer))
+	else
+		res_ok, r = false, a
+	end
+	local done = { rid = rid, ok = res_ok == true }
+	if res_ok then
+		done.msg = line_of(r)
+		if type(r) == "table" and type(r.id) == "number" then done.id = r.id end
+	else
+		done.code = tostring(r)
+		done.msg = tostring(r)
+	end
+	P().send(EV_DONE, done, 0)
+end
+
+-- the WS: a map server says how it ended
+local function on_done(payload, from)
+	if not is_world_server() or type(from) ~= "number" or from < 0x100 then return end
+	local t = P().decode(payload)
+	local rid = tonumber(t.rid)
+	local p = rid and pending[rid]
+	if not p then return end
+	pending[rid] = nil
+	local ok = t.ok == true
+	if ok then announce(p.by, p.id, t.msg or p.id) end
+	if p.requester ~= nil then
+		P().send(EV_NOTE, { ok = ok, msg = t.msg or "", code = not ok and (t.code or "failed") or nil, cmd = p.id, rid = rid }, p.requester)
+	else
+		say(fmt("coop_dbg %s: %s", p.id, ok and tostring(t.msg) or tostring(t.code or "failed")))
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Where a command runs (B.6) and the checks before (B.5 steps 4-6)
+-------------------------------------------------------------------------------
+local function smart_level(se_smart)
+	local ok, lid = pcall(function() return game_graph():vertex(se_smart.m_game_vertex_id):level_id() end)
+	return ok and lid or nil
+end
+
+-- -> ok, result | false, code
+-- peer: the player it is for (nil: none); requester: who asked (peer, or nil for the console); by: his name for the log
+local function dispatch(c, id, a, peer, requester, by)
+	local pl = peer ~= nil and P().player(peer) or nil
+	local at_smart = a.at == "smart"
+	if c.player and not at_smart and not pl then return false, "no_player" end
+	if c.standing and pl and not pl.standing then return false, "not_standing" end
+
+	-- the target: it exists, it is no player, no ghost, not id 0
+	if c.target then
+		local t = a.t
+		local P_ = P()
+		if t == 0 or P_.is_player_id(P_.to_local(t)) then return false, "player_target" end
+		if not (object_here(t) or alife_object(t)) then return false, "bad_target" end
+	end
+
+	local where = c.where
+	if where == "ws" then return execute(c, id, a, peer, by) end
+
+	if where == "target_level" then
+		local lid = level_of_object(a.t)
+		if lid == nil or led_here(lid) then return execute(c, id, a, peer, by) end
+		local bridge = bridge_of_level(lid)
+		if c.far then
+			-- a map server's object: kill and release go as the far order (quests.far_do); it falls back to the record
+			local far = rawget(_G, "coop_quests_far") or coop_quests_far
+			if not (far and far.order and far.order(a.t, c.far)) then return false, "failed" end
+			return true, { msg = fmt("%s %s ordered", id, tostring(a.t)) }
+		end
+		return forward(bridge, id, a, peer, requester, by)
+	end
+
+	-- player_level
+	if at_smart then
+		local smrt = R().smart_by_name(a.sm)
+		local se_smart = smrt and alife_object(smrt.id)
+		if not se_smart then return false, "bad_args" end
+		local lid = smart_level(se_smart)
+		local l = levels()
+		local players = l and call(l.players_on, lid) or 0
+		if lid == nil or led_here(lid) or (tonumber(players) or 0) == 0 then return execute(c, id, a, peer, by) end
+		return forward(bridge_of_level(lid), id, a, peer, requester, by)
+	end
+	if id == "tp_to_player" then
+		local other = P().player(a.p)
+		if not other then return false, "no_player" end
+		if other.level ~= pl.level then return false, "other_level" end
+	end
+	if pl.here then return execute(c, id, a, peer, by) end
+	local l = levels()
+	return forward(l and call(l.bridge_of_player, peer), id, a, peer, requester, by)
+end
+
+-- the end of a request: log and the announcement
+local function finish(id, by, ok, r, code)
+	if ok and r ~= "forwarded" then
+		local c = R().get(id)
+		if c and c.class ~= "view" then announce(by, id, line_of(r)) end
+	elseif not ok then
+		log("%s from %s refused: %s%s", id, tostring(by), tostring(r), code and (" (" .. tostring(code) .. ")") or "")
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Requests of the players (B.5)
+-------------------------------------------------------------------------------
+-- -> ok, result (coop.sync answer)
+function serve(class, from, args)
+	if type(args) ~= "table" then return false, "bad_args" end
+	if class ~= "view" and not debug_on() then return false, "debug_off" end
+	if tonumber(args.v) ~= R().VERSION then return false, "old_client" end
+	local id = args.cmd
+	local c = R().get(id)
+	if not c or c.class ~= class then return false, "unknown_cmd" end
+	local pl = P().player(from)
+	if not pl then return false, "no_player" end
+	local ok, a = R().validate(id, args)
+	if not ok then return false, a end
+	local by = pl.nick or ("#" .. tostring(from))
+	local res_ok, r, code = dispatch(c, id, a, from, from, by)
+	finish(id, by, res_ok, r, code)
+	if not res_ok then return false, tostring(r) end
+	return true, r
+end
+
+local function install_handlers()
+	local sync = api and api.sync
+	if not (sync and sync.handler) then return end
+	if call(api.is_client) == true or is_map_server() then return end
+	for class, h in pairs(HANDLERS) do
+		local ok, why = sync.handler(h.name, function(peer, args) return serve(class, peer, args) end)
+		if ok == false then log("! %s: no handler (%s)", h.name, tostring(why)) end
+		if sync.limit then sync.limit(h.name, h.burst, h.per_sec) end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- The server console: coop_dbg <cmd> [@player] [key=value ...] (B.7)
+-------------------------------------------------------------------------------
+-- bare words of a command, in order (the stock's "surge start", "info give x")
+local POSITIONAL = {
+	surge = { "on" }, psi = { "on" }, respawns = { "on" }, god = { "on" }, ammo = { "on" }, invis = { "on" },
+	info = { "k", "i" }, unlock_ency = { "what" }, weather = { "w" }, level = { "name" }, money = { "a" }, help = { "cmd" },
+	time_factor = { "f" }, test_squad = { "n" }, kill = { "t" }, release = { "t" }, wound = { "t" }, obj_info = { "t" },
+}
+
+local function tokens(s)
+	local out, i, n = {}, 1, #s
+	while i <= n do
+		local ch = s:sub(i, i)
+		if ch:match("%s") then
+			i = i + 1
+		else
+			local buf = {}
+			while i <= n and not s:sub(i, i):match("%s") do
+				local c = s:sub(i, i)
+				if c == '"' then
+					local j = s:find('"', i + 1, true)
+					if not j then return nil, "an open quote" end
+					buf[#buf + 1] = s:sub(i + 1, j - 1)
+					i = j + 1
+				else
+					buf[#buf + 1] = c
+					i = i + 1
+				end
+			end
+			out[#out + 1] = table.concat(buf)
+		end
+	end
+	return out
+end
+
+-- -> { cmd, player = "@x" | nil, args = { key = string } } | nil, why
+function parse(line)
+	if type(line) ~= "string" then return nil, "no command" end
+	line = line:gsub("^%s+", ""):gsub("%s+$", "")
+	local cmd, rest = line:match("^(%S+)%s*(.*)$")
+	if not cmd then return nil, "no command" end
+	cmd = cmd:lower()
+	if cmd == "lua" then return { cmd = cmd, args = { code = rest } } end
+	local list, why = tokens(rest)
+	if not list then return nil, why end
+	local out = { cmd = cmd, args = {} }
+	local pos, next_pos = POSITIONAL[cmd] or {}, 1
+	for _, tok in ipairs(list) do
+		local k, v = tok:match("^([%w_]+)=(.*)$")
+		if k then
+			out.args[k:lower()] = v
+		elseif tok:sub(1, 1) == "@" then
+			out.player = tok
+		elseif pos[next_pos] then
+			out.args[pos[next_pos]] = tok
+			next_pos = next_pos + 1
+		else
+			return nil, "what is '" .. tok .. "'?"
+		end
+	end
+	return out
+end
+
+local function help_text(which)
+	local reg = R()
+	if which and which ~= "" then
+		return reg.help(which) or ("coop_dbg: unknown_cmd " .. tostring(which))
+	end
+	local lines = { "coop_dbg <command> [@player] [key=value ...]; coop_dbg help <command>" }
+	for _, class in ipairs({ "world", "self", "spawn", "target", "view", "operator" }) do
+		lines[#lines + 1] = class .. ": " .. table.concat(reg.list(class), " ")
+	end
+	return table.concat(lines, "\n")
+end
+
+local function run_console(line)
+	local p, why = parse(line)
+	if not p then return "coop_dbg: " .. tostring(why) end
+	if p.cmd == "help" then return help_text(p.args.cmd) end
+	if not is_world_server() then return "coop_dbg: the world server's console only" end
+	if not debug_on() then return "coop_dbg: debug_off (coop_debug on first)" end
+	local c = R().get(p.cmd)
+	if not c then return "coop_dbg: unknown_cmd " .. p.cmd end
+	local peer
+	if p.player then
+		local pl = P().player_by_name(p.player)
+		if not pl then return fmt("coop_dbg %s: no_player %s", p.cmd, p.player) end
+		peer = pl.peer
+	end
+	-- @nick as a value of a player key (tp_to_player p=@Alice)
+	for k, v in pairs(p.args) do
+		if c.args[k] and c.args[k].kind == "peer" and type(v) == "string" and v:sub(1, 1) == "@" then
+			local other = P().player_by_name(v)
+			if not other then return fmt("coop_dbg %s: no_player %s", p.cmd, v) end
+			p.args[k] = other.peer
+		end
+	end
+	local ok, a, bad = R().validate(p.cmd, p.args)
+	if not ok then return fmt("coop_dbg %s: %s%s", p.cmd, tostring(a), bad and (" (" .. tostring(bad) .. ")") or "") end
+	local res_ok, r, code = dispatch(c, p.cmd, a, peer, nil, "console")
+	finish(p.cmd, "console", res_ok, r, code)
+	if not res_ok then
+		return fmt("coop_dbg %s: %s%s", p.cmd, tostring(r), code and (" (" .. tostring(code) .. ")") or "")
+	end
+	if r == "forwarded" then return fmt("coop_dbg %s: forwarded to a map server", p.cmd) end
+	return fmt("coop_dbg %s: %s", p.cmd, line_of(r))
+end
+
+-- the engine's coop_dbg console command (call_module): the answer goes to the log and the dedicated window
+function console(line)
+	local ok, out = pcall(run_console, line)
+	if not ok then out = "coop_dbg: error " .. tostring(out) end
+	for l in tostring(out):gmatch("[^\n]+") do say(l) end
+	return out
+end
+
+-------------------------------------------------------------------------------
+-- Debug on marks the world (owner decision 1, as the stock -dbg does: S/game_statistics.script 248)
+-------------------------------------------------------------------------------
+local function mark_world(on)
+	if not (is_world_server() and (on or debug_on())) then return end
+	local ok, err = pcall(function()
+		if not has_alife_info(DEBUG_INFO) then
+			give_info(DEBUG_INFO)
+			log("the world is marked %s: server debug is on", DEBUG_INFO)
+		end
+	end)
+	if not ok then P().report("debug", "mark the world", err) end
+end
+
+local function on_debug_changed(on, source)
+	if on == true or on == 1 then mark_world(true) end
+end
+
+local function on_first_update()
+	mark_world()
+	-- respawns switched off by debug stay off in this save (alife_storage_manager state); the override is gone with the old Lua
+	if is_world_server() then
+		pcall(function()
+			local s = alife_storage_manager.get_state()
+			if s and s.stop_respawns then R().respawns_hook() end
+		end)
+	end
+end
+
+-------------------------------------------------------------------------------
+function on_game_start()
+	if not api then return end
+	local m = cmain()
+	if m and m.add_event_handler then
+		m.add_event_handler(EV_RUN, on_run)
+		m.add_event_handler(EV_DONE, on_done)
+		m.add_event_handler(EV_SAY, on_say)
+	end
+	RegisterScriptCallback("coop_debug_changed", on_debug_changed)
+	RegisterScriptCallback("actor_on_first_update", on_first_update)
+	install_handlers()
+end
