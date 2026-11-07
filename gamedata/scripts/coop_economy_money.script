@@ -9,6 +9,9 @@
 	economy.gift { i = host id of the item } to the receiver, so that the receiver can be told "<nick> gave you: <item>."
 	The receiver keeps the gift pending and tells it only once the item is in his own inventory (the host may refuse
 	the transfer; event and item come in either order); see "Items given to this player" below.
+	An item of more than one unit (rounds of ammo, a stack of items) goes through coop_economy_give instead: the amount
+	window, whole boxes / items as above with u = units in economy.gift, and a split box made by the host, which then
+	tells the receiver itself (economy.gift { i, u, g = giver } from 0). Units of one name add up: "<nick> gave you: X x45."
 
 	Money: "Give money to <player>" opens a choice of amounts. The transfer itself is the engine's (F2 T1, the host
 	ledger): coop.money_give(peer, amount) takes the money from the giver at once, on a client as a pending change,
@@ -283,8 +286,8 @@ local ITEM_NAMES = 3 -- names in a line, the rest are counted ("A, B, C and 2 mo
 local ITEM_CHECK_MS = 250
 local MAX_ID = 65534
 
-local waiting = {} -- local item id -> { from = giver peer, nick, at = ms, seq }
-local items = { n = 0, seq = 0, check_at = 0, lines = {} } -- lines: giver peer -> { nick, at, names = {}, more }
+local waiting = {} -- local item id -> { from = giver peer, nick, at = ms, seq, u = units or nil }
+local items = { n = 0, seq = 0, check_at = 0, lines = {} } -- lines: giver peer -> { nick, at, names = {}, units = {}, more }
 
 function items_pending()
 	return items.n > 0 or next(items.lines) ~= nil
@@ -317,19 +320,31 @@ local function arrived(id, g, obj, t)
 	forget(id)
 	local line = items.lines[g.from]
 	if not line then
-		line = { nick = g.nick, at = t, names = {}, more = 0 }
+		line = { nick = g.nick, at = t, names = {}, units = {}, more = 0 }
 		items.lines[g.from] = line
 	end
+	local name = item_name(obj)
+	-- Gifts counted in units (an amount from coop_economy_give: rounds, items of a stack) of one name add up: "Bandage x3".
+	if g.u then
+		for i, n in ipairs(line.names) do
+			if n == name and line.units[i] then
+				line.units[i] = line.units[i] + g.u
+				stats.gifts_got = stats.gifts_got + 1
+				return
+			end
+		end
+	end
 	if #line.names < ITEM_NAMES then
-		line.names[#line.names + 1] = item_name(obj)
+		line.names[#line.names + 1] = name
+		line.units[#line.names] = g.u
 	else
 		line.more = line.more + 1
 	end
 	stats.gifts_got = stats.gifts_got + 1
 end
 
--- The same item again only renews its entry (giver, time).
-local function wait_for(id, from, nick, t)
+-- The same item again only renews its entry (giver, time, units).
+local function wait_for(id, from, nick, t, u)
 	local g = waiting[id]
 	if not g then
 		if items.n >= MAX_WAITING then
@@ -347,30 +362,28 @@ local function wait_for(id, from, nick, t)
 		items.n = items.n + 1
 	end
 	items.seq = items.seq + 1
-	g.from, g.nick, g.at, g.seq = from, nick, t, items.seq
+	g.from, g.nick, g.at, g.seq, g.u = from, nick, t, items.seq, u
 end
 
 local function tell_items(line)
 	local count = #line.names + line.more
 	if count < 1 then return end
-	local list = table_concat(line.names, ", ")
+	local shown = {}
+	for i, name in ipairs(line.names) do
+		local u = line.units and line.units[i]
+		shown[i] = (u and u > 1) and core.fmt("st_coop_eco_item_count", "%s x%d", name, u) or name
+	end
+	local list = table_concat(shown, ", ")
 	if line.more > 0 then list = core.fmt("st_coop_eco_item_in_more", "%s and %d more", list, line.more) end
 	stats.gift_lines = stats.gift_lines + 1
 	core.log("gift: %d item(s) from %s", count, tostring(line.nick))
 	core.tip(core.fmt("st_coop_eco_item_in", "%s gave you: %s.", tostring(line.nick), list))
 end
 
--- economy.gift { i = host id of the item } from the giver (coop_main runs it inside pcall).
-local function on_gift(t, from)
-	if not (core.live() and db and db.actor) or type(t) ~= "table" then return end
-	if type(from) ~= "number" or from < 0 or from == core.self_id() then return end
-	local hid = core.int(t.i, 1, MAX_ID)
-	local id = hid and core.int(core.local_id(hid), 1, MAX_ID)
-	if not id then
-		stats.gifts_bad = stats.gifts_bad + 1
-		return
-	end
-	local p = core.player(from)
+-- Item `id` (local) given by player `giver` is coming (or is here): told once it is in this actor's inventory. units: an
+-- amount (rounds, items of a stack) or nil.
+local function expect(id, giver, units)
+	local p = core.player(giver)
 	if not (p and not p.is_self) then
 		stats.gifts_bad = stats.gifts_bad + 1
 		return
@@ -378,10 +391,34 @@ local function on_gift(t, from)
 	local now = core.now()
 	local obj = own_item(id)
 	if obj then
-		arrived(id, { from = from, nick = p.nick }, obj, now) -- the item came first
+		arrived(id, { from = giver, nick = p.nick, u = units }, obj, now) -- the item came first
 	else
-		wait_for(id, from, p.nick, now)
+		wait_for(id, giver, p.nick, now, units)
 	end
+end
+
+-- economy.gift { i = host id of the item, u = units } from the giver (coop_main runs it inside pcall). From the host
+-- (from = 0) it may name the giver: g, a box of rounds the host made for this player out of the giver's (coop_economy_give).
+local function on_gift(t, from)
+	if not (core.live() and db and db.actor) or type(t) ~= "table" then return end
+	if type(from) ~= "number" or from < 0 or from == core.self_id() then return end
+	local hid = core.int(t.i, 1, MAX_ID)
+	local id = hid and core.int(core.local_id(hid), 1, MAX_ID)
+	local giver = from
+	if from == 0 and t.g ~= nil then giver = core.int(t.g, 0, 255) end
+	if not id or giver == nil or giver == core.self_id() then
+		stats.gifts_bad = stats.gifts_bad + 1
+		return
+	end
+	expect(id, giver, core.int(t.u, 1, 65535))
+end
+
+-- coop_economy_give on the host player's own machine: a box the host made for him (local id; nothing went over the net).
+function expect_gift(id, giver, units)
+	if not (core.live() and db and db.actor) then return end
+	id = core.int(id, 1, MAX_ID)
+	if not id or type(giver) ~= "number" or giver == core.self_id() then return end
+	expect(id, giver, core.int(units, 1, 65535))
 end
 
 -- The engine calls this through SendScriptCallback: nothing may throw.
@@ -465,6 +502,13 @@ local function patch_inventory()
 		end
 		local p = item:parent()
 		if not (p and p:id() == 0) then return end
+		-- More than one unit (rounds of ammo, a stack of items): the amount window of coop_economy_give gives them.
+		local give = core.mod("coop_economy_give")
+		if give and type(give.offer) == "function" then
+			local ok, taken = pcall(give.offer, self, id, bag, s)
+			if ok and taken then return end
+			if not ok then core.log("! give offer: %s", tostring(taken)) end
+		end
 		local name = item:section()
 		pcall(function() name = ui_item.get_sec_name(item:section()) or name end)
 		db.actor:transfer_item(item, who) -- a client: one ownership request, the host decides (coop_requests)

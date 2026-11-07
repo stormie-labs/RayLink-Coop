@@ -50,7 +50,7 @@
 		<text>руб.</text>
 	</string>
 	<string id="st_coop_eco_give_to">
-		<text>Отдать: %s</text>
+		<text>Передать %s</text>
 	</string>
 	<string id="st_coop_eco_item_given">
 		<text>%s передано игроку %s.</text>
@@ -60,6 +60,45 @@
 	</string>
 	<string id="st_coop_eco_item_in_more">
 		<text>%s и ещё %d</text>
+	</string>
+	<string id="st_coop_eco_give_btn">
+		<text>Передать</text>
+	</string>
+	<string id="st_coop_eco_give_whom">
+		<text>Кому: %s</text>
+	</string>
+	<string id="st_coop_eco_item_count">
+		<text>%s x%d</text>
+	</string>
+	<string id="st_coop_eco_give_nothing">
+		<text>Отдавать уже нечего.</text>
+	</string>
+	<string id="st_coop_eco_give_far">
+		<text>%s слишком далеко.</text>
+	</string>
+	<string id="st_coop_eco_part_refused">
+		<text>%s x%d не дошло до %s: %s. Патроны вернулись.</text>
+	</string>
+	<string id="st_coop_eco_part_why_far">
+		<text>слишком далеко</text>
+	</string>
+	<string id="st_coop_eco_part_why_gone">
+		<text>игрока нет в игре</text>
+	</string>
+	<string id="st_coop_eco_part_why_rate">
+		<text>слишком много передач сразу</text>
+	</string>
+	<string id="st_coop_eco_part_why_box">
+		<text>пачка у хоста уже не ваша</text>
+	</string>
+	<string id="st_coop_eco_part_why_count">
+		<text>в пачку столько не помещается</text>
+	</string>
+	<string id="st_coop_eco_part_why_spawn">
+		<text>хост не смог создать пачку</text>
+	</string>
+	<string id="st_coop_eco_part_why_bad">
+		<text>неверный запрос</text>
 	</string>
 	<string id="st_coop_eco_give_money_to">
 		<text>Дать денег: %s...</text>

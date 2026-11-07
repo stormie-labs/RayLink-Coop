@@ -1,0 +1,627 @@
+--[[
+	Anomaly Coop - "give how many" (gamedata\scripts\coop_economy_give.script)
+	Owner 2026-11-07: an item of more than one unit is given by an amount the player sets with a slider.
+
+	The menu entry stays "Give to <player>" (coop_economy_money, one per player within give_radius). On an item of one unit
+	it gives at once as before. Otherwise it opens the amount window (ui_coop_give.xml): the item's icon and name, the
+	receiver, a slider 1..max with the number "N / max", and one button, Give. Esc or a click outside closes it without
+	giving; Enter gives, Left/Right move the slider by one. It starts at what the old menu entry gave: the clicked box's
+	rounds, or one item of a stack.
+
+	Units:
+		rounds   ammo: the clicked box and the boxes stacked with it in the inventory cell (same section); max = their
+		         rounds. Giving N moves whole boxes first (largest first, each that still fits) and splits at most one
+		         box for the rest; N = all moves every box. An emptied box (0 rounds, the host destroys it) is never used.
+		items    anything else of the cell: N items, each an existing object moved by a plain transfer. Multi-use items
+		         (portions, remaining_uses) are given whole: a portion is never split off.
+	A whole box or an item goes as before: db.actor:transfer_item (on a client one ReqTransfer, the host checks the reach)
+	and economy.gift { i, u = units } to the receiver.
+
+	A split box (owner-authoritative counts, coop_items.h: the host cannot change the count of a client's box, the owner's
+	state wins): the giver takes N rounds out of his own box at once (ammo_set_count, his ItemState carries it) and asks the
+	authority of his level (coop_main.add_level_handler: the host, a map server in split levels; the host player asks
+	himself at once)
+		economy.give_part { q = request id, i = host id of the box, n = N, k = rounds left in it, p = receiver peer }
+	The authority checks and either creates a box of N rounds in the receiver's inventory (alife():create_ammo, the host's
+	own spawn: no client budget) and tells the receiver economy.gift { i = new box, u = N, g = giver }, or refuses. It
+	answers the giver once per request: economy.give_ans { q, o = 1 | 0, w = why }. On a refusal the giver's machine puts
+	the rounds back into his own boxes (the request's box first, only boxes that still hold rounds; what does not fit is a
+	new box of his: alife_create_item). Exactly one of the two happens per request: the authority makes the box only on
+	"yes", the giver gives back only on "no", each request id is handled once on both sides, and an answer never comes on
+	a timer (a late "yes" after a timed-out give-back would double the rounds).
+	Checks of the authority: the giver and the receiver are players here (not the same), the receiver stands within
+	give_radius + RADIUS_SLACK of the giver, the box is ammo and in the giver's inventory, 1 <= n, 1 <= k and n + k is not
+	more than its box_size, at most RATE_MAX requests per RATE_MS per giver. Why (w): bad, rate, gone, far, box, count, spawn.
+	A modified client could claim rounds it did not take out; it can raise the count of its own boxes by ItemState anyway
+	(owner-authoritative), so this path gives it nothing new.
+
+	For other scripts:
+		coop_economy_give.offer(ui, id, bag, slot) -> true when the item has more than one unit (the window opens)
+		coop_economy_give.window()                 -> the open amount window or nil
+		coop_economy_give.pending_count()          -> the giver's requests waiting for an answer
+--]]
+
+local core = coop_economy_core
+
+local tostring, type, ipairs, pairs, pcall, next = tostring, type, ipairs, pairs, pcall, next
+local math_floor, math_max, math_min = math.floor, math.max, math.min
+local table_sort = table.sort
+
+local MAX_ID = 65534
+local MAX_UNITS = 65535
+local RATE_MS, RATE_MAX = 2000, 4 -- the authority: requests per giver
+local SEEN_MS = 120000 -- the authority remembers handled request ids this long
+local RADIUS_SLACK = 1.5 -- m: the authority sees the players a moment later than the giver did
+local PENDING_MS = 600000 -- the giver forgets a request nobody answered (logged, nothing given back)
+local WHY = { bad = true, rate = true, gone = true, far = true, box = true, count = true, spawn = true }
+
+local stats = { windows = 0, given = 0, parts = 0, parts_ok = 0, parts_back = 0, made = 0, refused = 0, lost = 0 }
+
+-------------------------------------------------------------------------------
+-- Items and units (the giver)
+-------------------------------------------------------------------------------
+local function item_name(sec)
+	local ok, name = pcall(function() return ui_item.get_sec_name(sec) end)
+	if ok and type(name) == "string" and name ~= "" then return name end
+	return tostring(sec)
+end
+
+-- "Bandage x3"; one unit is just the name
+local function count_name(name, n)
+	if n and n > 1 then return core.fmt("st_coop_eco_item_count", "%s x%d", name, n) end
+	return name
+end
+
+local function is_ammo_sec(sec)
+	local ok, yes = pcall(IsItem, "ammo", sec)
+	return ok and yes and true or false
+end
+
+local function rounds(obj)
+	local ok, n = pcall(function() return obj:ammo_get_count() end)
+	n = ok and core.int(n, 0, MAX_UNITS) or nil
+	return n
+end
+
+local function box_size(obj, sec)
+	if obj then
+		local ok, n = pcall(function() return obj:ammo_box_size() end)
+		n = ok and core.int(n, 1, MAX_UNITS) or nil
+		if n then return n end
+	end
+	local ok, n = pcall(function()
+		if ini_sys:line_exist(sec, "box_size") then return ini_sys:r_u32(sec, "box_size") end
+	end)
+	return ok and core.int(n, 1, MAX_UNITS) or nil
+end
+
+-- An item of this actor's own inventory (parent: the actor).
+local function mine(id)
+	if type(id) ~= "number" or id <= 0 or id > MAX_ID then return nil end
+	local obj = level.object_by_id(id)
+	if not obj then return nil end
+	local p = obj:parent()
+	if not (p and p:id() == 0) then return nil end
+	return obj
+end
+
+-- The ids of the inventory cell of `id` (the clicked item first, then the stacked ones by id).
+local function cell_ids(ui, id, bag)
+	local ids, rest = { id }, {}
+	pcall(function()
+		local ci = ui.CC[bag]:GetCell_ID(id)
+		for cid in pairs(ci and ci.childs or {}) do
+			if type(cid) == "number" and cid ~= id then rest[#rest + 1] = cid end
+		end
+	end)
+	table_sort(rest)
+	for _, cid in ipairs(rest) do ids[#ids + 1] = cid end
+	return ids
+end
+
+-- What can be given of these ids now: { kind = "rounds" | "items", sec, max, first, objs = {...}, boxes = {...} } or nil.
+local function measure(ids)
+	local first = mine(ids[1])
+	if not first then return nil end
+	local sec = first:section()
+	local m = { sec = sec, objs = {}, boxes = {}, max = 0, first = 0 }
+	if is_ammo_sec(sec) and rounds(first) then
+		m.kind = "rounds"
+		for _, id in ipairs(ids) do
+			local o = mine(id)
+			local n = o and o:section() == sec and rounds(o)
+			if n and n > 0 then
+				m.boxes[#m.boxes + 1] = { obj = o, id = id, n = n }
+				m.max = m.max + n
+				if id == ids[1] then m.first = n end
+			end
+		end
+	else
+		m.kind = "items"
+		for _, id in ipairs(ids) do
+			local o = mine(id)
+			if o and o:section() == sec then m.objs[#m.objs + 1] = o end
+		end
+		m.max, m.first = #m.objs, 1
+	end
+	if m.first < 1 then m.first = 1 end
+	return m
+end
+
+-- Rounds n out of boxes: the whole boxes to move and the one box to split (with its rounds), or nil when n is more than
+-- they hold. Largest first, each that still fits: every box left over then holds more than what is still missing, so one
+-- split is enough.
+function plan_rounds(boxes, n)
+	local order = {}
+	for i, b in ipairs(boxes) do order[i] = b end
+	table_sort(order, function(a, b)
+		if a.n ~= b.n then return a.n > b.n end
+		return a.id < b.id
+	end)
+	local whole, taken, left = {}, {}, n
+	for _, b in ipairs(order) do
+		if b.n <= left then
+			whole[#whole + 1] = b
+			taken[b] = true
+			left = left - b.n
+		end
+	end
+	if left == 0 then return whole, nil, 0 end
+	local part = nil
+	for _, b in ipairs(order) do
+		if not taken[b] and b.n > left and (part == nil or b.n < part.n) then part = b end
+	end
+	if not part then return nil end
+	return whole, part, left
+end
+
+-------------------------------------------------------------------------------
+-- The giver's requests and the answers
+-------------------------------------------------------------------------------
+local pending = {} -- q -> { sec, n, box, nick, at }
+local npending = 0
+local next_q = nil
+
+local function new_q()
+	if not next_q then
+		-- unique across restarts of the giver's game within one session of the host (the host remembers handled ids)
+		local ok, t = pcall(function() return os.time() end)
+		next_q = ((ok and type(t) == "number") and (t % 100000) or 0) * 1000 + (time_global() % 1000) + 1
+	end
+	next_q = next_q + 1
+	if next_q > 2000000000 then next_q = 1 end
+	return next_q
+end
+
+function pending_count() return npending end
+
+local function why_text(why)
+	why = WHY[why] and why or "bad"
+	local en = {
+		bad = "a broken request", rate = "too many gifts at once", gone = "the player is not in the game", far = "too far away",
+		box = "the box is no longer yours on the host", count = "more rounds than a box holds",
+		spawn = "the host could not make the box",
+	}
+	return core.tr("st_coop_eco_part_why_" .. why, en[why])
+end
+
+-- The rounds of a refused request go back into this actor's boxes of that section: its own box first, then the others
+-- with room (only boxes that still hold rounds: an emptied one is destroyed by the host), the rest as a new box of his.
+local function give_back(p)
+	local left = p.n
+	local boxes = {}
+	local own = mine(p.box)
+	if own and own:section() == p.sec and (rounds(own) or 0) > 0 then boxes[1] = own end
+	pcall(function()
+		db.actor:iterate_inventory(function(_, o)
+			if o and o:id() ~= p.box and o:section() == p.sec and (rounds(o) or 0) > 0 then boxes[#boxes + 1] = o end
+		end)
+	end)
+	for _, o in ipairs(boxes) do
+		if left <= 0 then break end
+		local have = rounds(o) or 0
+		local cap = box_size(o, p.sec) or have
+		local add = math_min(left, cap - have)
+		if add > 0 then
+			o:ammo_set_count(have + add)
+			left = left - add
+		end
+	end
+	if left > 0 then
+		local ok, err = pcall(alife_create_item, p.sec, db.actor, { ammo = left })
+		if not ok then core.log("! %d round(s) of %s not given back: %s", left, tostring(p.sec), tostring(err)) end
+	end
+	stats.parts_back = stats.parts_back + 1
+end
+
+-- The authority's answer to request q (from the host, or the host player's own decision).
+local function answered(q, ok, why)
+	local p = pending[q]
+	if not p then return end
+	pending[q] = nil
+	npending = npending - 1
+	if ok then
+		stats.parts_ok = stats.parts_ok + 1
+		return
+	end
+	give_back(p)
+	core.log("give: %d of %s to %s refused (%s), given back", p.n, tostring(p.sec), tostring(p.nick), tostring(why))
+	core.tip(core.fmt("st_coop_eco_part_refused", "%s x%d did not reach %s: %s. The rounds are back.", item_name(p.sec), p.n,
+		tostring(p.nick), why_text(why)))
+end
+
+local function on_answer(t, from)
+	if from ~= 0 or from == core.self_id() or type(t) ~= "table" then return end
+	local q = core.int(t.q, 1, 2000000000)
+	if not q then return end
+	answered(q, t.o == 1, type(t.w) == "string" and WHY[t.w] and t.w or "bad")
+end
+
+local authority -- below
+
+-- Takes n rounds out of box obj (this actor's) for the player of slot s and asks the authority.
+local function split(obj, n, s)
+	local have = rounds(obj)
+	if not (have and n >= 1 and n < have) then return false end
+	local q = new_q()
+	obj:ammo_set_count(have - n)
+	pending[q] = { sec = obj:section(), n = n, box = obj:id(), nick = s.nick, at = core.now() }
+	npending = npending + 1
+	stats.parts = stats.parts + 1
+	local req = { q = q, i = core.host_id(obj:id()), n = n, k = have - n, p = s.peer }
+	if core.is_host() then
+		local ok, why = authority(req, core.self_id())
+		answered(q, ok == true, why)
+	elseif not core.send("give_part", req, 0) then
+		answered(q, false, "bad")
+	end
+	return true
+end
+
+local function forget_old(t)
+	for q, p in pairs(pending) do
+		if t - p.at > PENDING_MS then
+			pending[q] = nil
+			npending = npending - 1
+			stats.lost = stats.lost + 1
+			core.log("! give: no answer to %d of %s for %s: nothing given back", p.n, tostring(p.sec), tostring(p.nick))
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- The authority (host, map server): economy.give_part
+-------------------------------------------------------------------------------
+local rate = {} -- giver peer -> { at, n }
+local seen = {} -- giver peer -> { [q] = at }
+
+local function remember(from, q, t)
+	local s = seen[from]
+	if not s then
+		s = {}
+		seen[from] = s
+	end
+	for k, at in pairs(s) do
+		if t - at > SEEN_MS then s[k] = nil end
+	end
+	if s[q] then return false end
+	s[q] = t
+	return true
+end
+
+local function over_rate(from, t)
+	local r = rate[from]
+	if not r or t - r.at >= RATE_MS then
+		r = { at = t, n = 0 }
+		rate[from] = r
+	end
+	r.n = r.n + 1
+	return r.n > RATE_MAX
+end
+
+-- A player's character here: id (0 = this machine's actor) and position, or nil.
+local function character(peer)
+	if peer == core.self_id() then
+		if not db.actor then return nil end
+		return 0, core.position_of_id(0)
+	end
+	local p = core.player(peer)
+	if not (p and not p.is_self and type(p.avatar_id) == "number") then return nil end
+	if not alife_object(p.avatar_id) then return nil end
+	return p.avatar_id, p.pos or core.position_of_id(p.avatar_id)
+end
+
+-- The receiver is told by the authority (from = 0); the host player hears it here.
+local function tell_receiver(to, id, n, giver)
+	if to == core.self_id() then
+		local money = core.mod("coop_economy_money")
+		if money and type(money.expect_gift) == "function" then pcall(money.expect_gift, id, giver, n) end
+		return
+	end
+	core.send("gift", { i = core.host_id(id), u = n, g = giver }, to)
+end
+
+-- true, or false and why. Makes the box of the receiver on "true".
+function authority(t, from)
+	local now = core.now()
+	if over_rate(from, now) then return false, "rate" end
+	local n, k = core.int(t.n, 1, MAX_UNITS), core.int(t.k, 1, MAX_UNITS)
+	local id, to = core.int(t.i, 1, MAX_ID), core.int(t.p, 0, 255)
+	if not (n and k and id and to) or to == from then return false, "bad" end
+	local giver, gpos = character(from)
+	if giver == nil then return false, "bad" end
+	local receiver, rpos = character(to)
+	if receiver == nil then return false, "gone" end
+	local radius = (core.rule("give_radius") or 5) + RADIUS_SLACK
+	if not (gpos and rpos and core.dist(gpos, rpos) <= radius) then return false, "far" end
+	local se = alife_object(id)
+	local sec = se and se:section_name()
+	if not (sec and se.parent_id == giver and is_ammo_sec(sec)) then return false, "box" end
+	local size = box_size(level.object_by_id(id), sec)
+	if not size or n + k > size then return false, "count" end
+	local ok, made = pcall(function()
+		local sim = alife()
+		local holder = sim:object(receiver)
+		return sim:create_ammo(sec, holder.position, holder.m_level_vertex_id, holder.m_game_vertex_id, receiver, n)
+	end)
+	if not (ok and made and type(made.id) == "number") then
+		core.log("! give: no box of %d %s for %s: %s", n, sec, core.nick_of(to), tostring(ok and made or made))
+		return false, "spawn"
+	end
+	stats.made = stats.made + 1
+	core.log("give: %s made %d of %s for %s (box %d)", core.nick_of(from), n, sec, core.nick_of(to), made.id)
+	tell_receiver(to, made.id, n, from)
+	return true
+end
+
+local function on_part(t, from)
+	if not (core.is_host() or core.is_map_server()) then return end
+	if type(from) ~= "number" or from <= 0 or from == core.self_id() or type(t) ~= "table" then return end
+	if not core.player(from) then return end -- not a player of the session: nobody to answer
+	local q = core.int(t.q, 1, 2000000000)
+	if not q or not remember(from, q, core.now()) then return end
+	local ok, res, why = pcall(authority, t, from)
+	if not ok then
+		core.log("! give_part: %s", tostring(res))
+		res, why = false, "bad"
+	end
+	if res ~= true then stats.refused = stats.refused + 1 end
+	core.send("give_ans", { q = q, o = res == true and 1 or 0, w = res == true and nil or why }, from)
+end
+
+-------------------------------------------------------------------------------
+-- Giving (the window's button)
+-------------------------------------------------------------------------------
+-- The player of slot s, still here and within give_radius: his character (local id) or nil, why text.
+local function receiver_here(s)
+	local p = core.player(s.peer)
+	if not (p and not p.is_self and p.obj and p.pos) then
+		return nil, core.tr("st_coop_eco_money_no_target", "That player is not here.")
+	end
+	local me = core.position_of_id(0)
+	if not (me and core.dist(me, p.pos) <= (core.rule("give_radius") or 5)) then
+		return nil, core.fmt("st_coop_eco_give_far", "%s is too far away.", s.nick)
+	end
+	return p.avatar_id
+end
+
+-- Moves a whole item to the receiver and tells him (units: rounds of a box, 1 for an item of a stack).
+local function transfer(obj, who, s, units)
+	db.actor:transfer_item(obj, who)
+	stats.given = stats.given + 1
+	if core.live() and type(s.peer) == "number" and s.peer >= 0 and s.peer ~= core.self_id() then
+		local sent, err = pcall(core.send, "gift", { i = core.host_id(obj:id()), u = units }, s.peer)
+		if not sent then core.log("! economy.gift not sent: %s", tostring(err)) end
+	end
+end
+
+-- Gives n units of the cell `ids` to slot s. Returns the units given.
+function give(ids, s, n)
+	if not (core.live() and db.actor) then return 0 end
+	local m = measure(ids)
+	if not m or m.max < 1 then
+		core.tip(core.tr("st_coop_eco_give_nothing", "There is nothing left to give."))
+		return 0
+	end
+	local avatar, why = receiver_here(s)
+	local who = avatar and level.object_by_id(avatar)
+	if not who then
+		core.tip(why or core.tr("st_coop_eco_money_no_target", "That player is not here."))
+		return 0
+	end
+	n = core.int(n, 1, MAX_UNITS) or 1
+	if n > m.max then n = m.max end
+	if m.kind == "items" then
+		for i = 1, n do transfer(m.objs[i], who, s, 1) end
+	else
+		local whole, part, left = plan_rounds(m.boxes, n)
+		if not whole then return 0 end
+		for _, b in ipairs(whole) do transfer(b.obj, who, s, b.n) end
+		if part and not split(part.obj, left, s) then n = n - left end
+	end
+	core.tip(core.fmt("st_coop_eco_item_given", "%s given to %s.", count_name(item_name(m.sec), n), s.nick))
+	return n
+end
+
+-------------------------------------------------------------------------------
+-- The amount window
+-------------------------------------------------------------------------------
+local win = nil
+
+function window()
+	return win and win:IsShown() and win or nil
+end
+
+-- A whole number within 1..max (nearest), or nil for what is no number.
+function clamp_amount(v, max)
+	v = core.num(v)
+	if not v then return nil end
+	v = math_floor(v + 0.5)
+	return math_max(1, math_min(max, v))
+end
+
+class "UICoopGive" (CUIScriptWnd)
+
+function UICoopGive:__init() super()
+	self:InitControls()
+	self:InitCallbacks()
+end
+
+function UICoopGive:__finalize()
+end
+
+function UICoopGive:InitControls()
+	self:SetWndRect(Frect():set(0, 0, 1024, 768)) -- the whole screen: a click outside the form reaches OnKeyboard
+	self:Enable(true)
+	local xml = CScriptXmlInit()
+	xml:ParseFile("ui_coop_give.xml")
+	self.form = xml:InitStatic("coop_give", self)
+	xml:InitFrame("coop_give:frame", self.form)
+	self.icon_box = xml:InitStatic("coop_give:icon_box", self.form)
+	self.icon = xml:InitStatic("coop_give:icon", self.form)
+	self.name = xml:InitTextWnd("coop_give:name", self.form)
+	self.whom = xml:InitTextWnd("coop_give:whom", self.form)
+	self.track = xml:InitTrackBar("coop_give:track", self.form)
+	self:Register(self.track, "track")
+	self.num = xml:InitTextWnd("coop_give:num", self.form)
+	self.btn_give = xml:Init3tButton("coop_give:btn_give", self.form)
+	self:Register(self.btn_give, "btn_give")
+end
+
+function UICoopGive:InitCallbacks()
+	self:AddCallback("btn_give", ui_events.BUTTON_CLICKED, self.OnGive, self)
+end
+
+-- The item's icon fitted into the icon box, its proportions kept.
+function UICoopGive:SetIcon(sec)
+	pcall(function()
+		local ico = utils_xml.get_item_axis(sec)
+		self.icon:InitTexture(utils_xml.get_icons_texture(sec))
+		self.icon:SetTextureRect(Frect():set(ico.x1, ico.y1, ico.x2, ico.y2))
+		self.icon:SetStretchTexture(true)
+		local bw, bh = self.icon_box:GetWidth(), self.icon_box:GetHeight()
+		local scale = math_min(bw / math_max(ico.w, 1), bh / math_max(ico.h, 1), 1)
+		local w, h = ico.w * scale, ico.h * scale
+		local pos = self.icon_box:GetWndPos()
+		self.icon:SetWndSize(vector2():set(w, h))
+		self.icon:SetWndPos(vector2():set(pos.x + (bw - w) / 2, pos.y + (bh - h) / 2))
+	end)
+end
+
+function UICoopGive:Setup(ids, slot, m)
+	self.ids, self.slot, self.max = ids, slot, m.max
+	self:SetIcon(m.sec)
+	self.name:SetText(item_name(m.sec))
+	self.whom:SetText(core.fmt("st_coop_eco_give_whom", "To: %s", slot.nick))
+	self.track:SetStep(1)
+	self.track:SetOptFBounds(1, m.max)
+	self:SetAmount(m.kind == "rounds" and m.first or 1)
+end
+
+function UICoopGive:SetAmount(v)
+	local n = clamp_amount(v, self.max)
+	if not n then return end
+	self.amount = n
+	self.track:SetFValue(n)
+	self.num:SetText(tostring(n) .. " / " .. tostring(self.max))
+end
+
+function UICoopGive:Update()
+	CUIScriptWnd.Update(self)
+	local ok, v = pcall(function() return self.track:GetFValue() end)
+	if ok and v ~= self.amount then self:SetAmount(v) end
+end
+
+function UICoopGive:Close()
+	if self:IsShown() then self:HideDialog() end
+	if win == self then win = nil end
+end
+
+function UICoopGive:OnGive()
+	local ids, slot, n = self.ids, self.slot, self.amount
+	self:Close()
+	local ok, err = pcall(give, ids, slot, n)
+	if not ok then core.log("! give: %s", tostring(err)) end
+end
+
+function UICoopGive:OnKeyboard(dik, keyboard_action)
+	local res = CUIScriptWnd.OnKeyboard(self, dik, keyboard_action)
+	if keyboard_action ~= ui_events.WINDOW_KEY_PRESSED then return res end
+	local K = DIK_keys
+	if dik == K.DIK_ESCAPE then
+		self:Close()
+		return true
+	elseif dik == K.MOUSE_1 or dik == K.MOUSE_2 then
+		if not self.form:IsCursorOverWindow() then
+			self:Close()
+			return true
+		end
+	elseif dik == K.DIK_RETURN or dik == K.DIK_NUMPADENTER then
+		self:OnGive()
+		return true
+	elseif dik == K.DIK_LEFT then
+		self:SetAmount((self.amount or 1) - 1)
+		return true
+	elseif dik == K.DIK_RIGHT then
+		self:SetAmount((self.amount or 1) + 1)
+		return true
+	end
+	return res
+end
+
+local function open(ids, slot)
+	local m = measure(ids)
+	if not m or m.max < 1 then return end
+	if win then pcall(function() win:Close() end) end
+	local ok, err = pcall(function()
+		local w = UICoopGive()
+		w:Setup(ids, { peer = slot.peer, nick = slot.nick }, m)
+		w:ShowDialog(true)
+		win = w
+	end)
+	if ok then
+		stats.windows = stats.windows + 1
+	else
+		core.log("! the amount window failed: %s", tostring(err))
+	end
+end
+
+-- The menu's "Give to <player>" on item `id` of cell `bag`: true when it has more than one unit (the window opens on the
+-- next update: the menu closes itself after the action), false to give it at once the old way.
+function offer(ui, id, bag, slot)
+	if not (core.live() and db.actor and type(slot) == "table") then return false end
+	local ids = cell_ids(ui, id, bag)
+	local m = measure(ids)
+	if not (m and m.max > 1) then return false end
+	CreateTimeEvent("coop_economy_give", "open", 0, function()
+		open(ids, slot)
+		return true
+	end)
+	return true
+end
+
+-------------------------------------------------------------------------------
+-- Status, start
+-------------------------------------------------------------------------------
+local function actor_on_update()
+	if npending > 0 then forget_old(core.now()) end
+end
+
+function print_status()
+	core.log("give: windows %d, whole %d, splits %d (yes %d, back %d, unanswered %d, waiting %d) | host: made %d, refused %d",
+		stats.windows, stats.given, stats.parts, stats.parts_ok, stats.parts_back, stats.lost, npending, stats.made,
+		stats.refused)
+end
+
+-- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop (W5).
+local hooked = false
+function on_game_start()
+	if not core.engine() or hooked then return end
+	hooked = true
+	local ok, err = pcall(function()
+		core.on_level("give_part", on_part) -- what the giver asks stands on his level
+		core.on("give_ans", on_answer)
+		RegisterScriptCallback("actor_on_update", actor_on_update)
+	end)
+	if not ok then printf("! [coop_economy_give] start failed: %s", tostring(err)) end
+end

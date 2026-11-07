@@ -61,6 +61,45 @@
 	<string id="st_coop_eco_item_in_more">
 		<text>%s and %d more</text>
 	</string>
+	<string id="st_coop_eco_give_btn">
+		<text>Give</text>
+	</string>
+	<string id="st_coop_eco_give_whom">
+		<text>To: %s</text>
+	</string>
+	<string id="st_coop_eco_item_count">
+		<text>%s x%d</text>
+	</string>
+	<string id="st_coop_eco_give_nothing">
+		<text>There is nothing left to give.</text>
+	</string>
+	<string id="st_coop_eco_give_far">
+		<text>%s is too far away.</text>
+	</string>
+	<string id="st_coop_eco_part_refused">
+		<text>%s x%d did not reach %s: %s. The rounds are back.</text>
+	</string>
+	<string id="st_coop_eco_part_why_far">
+		<text>too far away</text>
+	</string>
+	<string id="st_coop_eco_part_why_gone">
+		<text>the player is not in the game</text>
+	</string>
+	<string id="st_coop_eco_part_why_rate">
+		<text>too many gifts at once</text>
+	</string>
+	<string id="st_coop_eco_part_why_box">
+		<text>the box is no longer yours on the host</text>
+	</string>
+	<string id="st_coop_eco_part_why_count">
+		<text>more rounds than a box holds</text>
+	</string>
+	<string id="st_coop_eco_part_why_spawn">
+		<text>the host could not make the box</text>
+	</string>
+	<string id="st_coop_eco_part_why_bad">
+		<text>a broken request</text>
+	</string>
 	<string id="st_coop_eco_give_money_to">
 		<text>Give money to %s...</text>
 	</string>

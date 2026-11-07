@@ -5,6 +5,7 @@ COOP_FILES = {
 	"coop_core_player",
 	"coop_core_world",
 	"coop_economy_core",
+	"coop_economy_give", -- "give how many": the amount window and the split of a box (owner 2026-11-07)
 	"coop_economy_group",
 	"coop_economy_intent",
 	"coop_economy_mdata",

@@ -49,7 +49,7 @@ Bold in the "Values" column marks the default. Personal options (graphics, sound
 | Longest time skip | How many hours can be skipped at once: by waiting or by travelling. | 12 / 24 / **48** / 72 / 168 h | between sessions |
 | Money transfers between players | Whether players can give each other money. | **on** / off | between sessions |
 | Largest transfer | How much money can be given at once. | 10k / 100k / **1M** / 10M / 100M | between sessions |
-| Giving items: within | The "Give to &lt;player&gt;" item in the inventory menu appears for players closer than this. Money can be given at any distance. | 2 / **5** / 10 / 20 m | between sessions |
+| Giving items: within | The "Give to &lt;player&gt;" item in the inventory menu appears for players closer than this. An item of more than one unit (rounds in an ammo box or in a stack of boxes, a stack of identical items) opens a window with a slider: set how many and press Give (Esc or a click outside: nothing is given). A box is split by the host: the receiver gets a box of that many rounds, you keep the rest; if the host refuses (the player walked away or left), the rounds come back to you. Multi-use items go whole. Money can be given at any distance. | 2 / **5** / 10 / 20 m | between sessions |
 | Foreign loot | On — a body is guarded by the living stalker who killed that NPC: come closer than 25 m and he threatens you. The body opens once the killer is dead or gone. Bodies killed by players, mutants or companions are always free. Off — any body can be searched at once. | **on** / off | between sessions |
 
 ## World
