@@ -418,20 +418,6 @@ local function bhs_on_revived(reviver, section)
 	log("bhs", "revived (%s): head %s, torso %s", tostring(section), tostring(b.health.head), tostring(b.health.torso))
 end
 
--- The engine's respawn knows only its own health. With a head or a torso still at zero the mod sets health to -1 on its next
--- update: the fresh body fell at once, again and again (live 2026-10-31). A respawn gives every part back.
-local function bhs_on_respawned()
-	local b = C().mod("zzz_player_injuries")
-	if not (bhs_tables(b) and db.actor) then return end
-	for _, k in ipairs(PARTS) do
-		b.health[k] = b.maxhp[k]
-		b.timedhp[k] = 0
-	end
-	bhs_clear_concussion(b)
-	bhs_save(b)
-	log("bhs", "respawned: every part back")
-end
-
 -- The body parts are each player's own (live 2026-11-07: a GAMMA client broke a leg at a level change). The mod keeps them in
 -- the actor's pstor ("health.<part>", "timedhp.<part>", utils_obj.save_var), and the pstor comes with the host's save: a client
 -- got the HOST's parts at every load. A client's own parts are per-player data (coop_mods_pdata, BHS_KEY: the host keeps them
@@ -514,6 +500,82 @@ local function bhs_tick()
 	bhs_st.reports = bhs_st.reports + 1
 end
 
+-------------------------------------------------------------------------------
+-- A co-op respawn is a fresh body
+-------------------------------------------------------------------------------
+-- The engine's respawn knows only its own condition (health, wounds, radiation). The stock never respawns, so the mods never
+-- reset what killed the player: with a head or a torso still at zero BHS sets health to -1 on its next update (live
+-- 2026-10-31), with arszi_psy's psy health at or below 0.001 that mod sets it to 0 every in-game second (live 2026-11-08: psi
+-- killed a player, he stood up at his respawn point with the head and torso red and died again and again). Every respawn
+-- (coop_mods_core "actor_respawned": a camp, a hardcore run's new character) gives them back, as G.A.M.M.A.'s own Soulslike
+-- respawn does (soulslike_scenarios HealActor: psy 1), and at once into the per-player records: a level change right after
+-- must not bring the dead values back. A teammate's revive is not a respawn: the damage stays (bhs_on_revived lifts only
+-- head and torso off zero, coop_npc_effects lifts only a lethal psy health).
+local fresh = { count = 0 }
+
+local function bhs_fresh()
+	local b = C().mod("zzz_player_injuries")
+	if not (bhs_tables(b) and db.actor) then return end
+	for _, k in ipairs(PARTS) do
+		b.health[k] = b.maxhp[k]
+		b.timedhp[k] = 0
+	end
+	bhs_clear_concussion(b)
+	bhs_save(b)
+	-- The respawn came before the first update of a new world: the record that load brought is from before the death.
+	if bhs_st.pending then bhs_st.own = nil end
+	bhs_st.last = bhs_text(bhs_snapshot())
+	if C().live_client() then
+		local ok, e = pcall(P().report_now)
+		if not ok then C().report("bhs", "report_now", e) end
+	end
+end
+
+local function psy_fresh()
+	local ap = C().mod("arszi_psy")
+	if not (ap and C().fn(ap, "set_psy_health")) then return end
+	ap.set_psy_health(1)
+	if C().fn(ap, "on_game_load") then pcall(ap.on_game_load) end -- its stage and death-scene counter
+	if C().fn(ap, "remove_all_psy_ppe_effects") then pcall(ap.remove_all_psy_ppe_effects) end
+	-- the psy table is a per-player key of coop_economy_mdata (polled every 15 s): to the host now
+	local em = rawget(_G, "coop_economy_mdata")
+	if C().live_client() and em and type(em.send_player_keys) == "function" then pcall(em.send_player_keys) end
+end
+
+local function vitals_text()
+	local a = db.actor
+	local function field(name)
+		local ok, v = pcall(function() return a[name] end)
+		v = ok and tonumber(v) or nil
+		return v and string.format("%.3f", v) or "?"
+	end
+	local ap = C().mod("arszi_psy")
+	local ok_psy, psy = pcall(function() return ap and ap.get_psy_health and ap.get_psy_health() end)
+	local b = C().mod("zzz_player_injuries")
+	local parts = bhs_tables(b) and string.format("%s/%s", tostring(b.health.head), tostring(b.health.torso)) or "-"
+	return string.format("health %s, psy %s (arszi %s), radiation %s, bleeding %s, head/torso %s", field("health"),
+		field("psy_health"), ok_psy and type(psy) == "number" and string.format("%.3f", psy) or "-", field("radiation"),
+		field("bleeding"), parts)
+end
+
+local function on_respawned_fresh()
+	if not db.actor then return end
+	local before = vitals_text()
+	local ok, e = pcall(bhs_fresh)
+	if not ok then C().report("respawn", "bhs", e) end
+	ok, e = pcall(psy_fresh)
+	if not ok then C().report("respawn", "psy", e) end
+	fresh.count = fresh.count + 1
+	log("respawn", "fresh body: before %s | after %s", before, vitals_text())
+end
+
+local function install_respawn()
+	C().listen("actor_respawned", on_respawned_fresh) -- always: its log line says what a respawn stood up with
+	if bhs_tables(C().mod("zzz_player_injuries")) or C().mod("arszi_psy") then installed[#installed + 1] = "respawn" end
+end
+
+function _fresh_count() return fresh.count end
+
 local function install_bhs()
 	local b = C().mod("zzz_player_injuries")
 	if not bhs_tables(b) then return end
@@ -530,7 +592,6 @@ local function install_bhs()
 		end
 	end
 	C().listen("actor_revived", bhs_on_revived)
-	C().listen("actor_respawned", bhs_on_respawned)
 	installed[#installed + 1] = "bhs"
 end
 
@@ -646,6 +707,7 @@ function on_game_start()
 	start_step("install_zcp", install_zcp)
 	start_step("install_paw", install_paw)
 	start_step("install_bhs", install_bhs)
+	start_step("install_respawn", install_respawn)
 	start_step("install_adb", install_adb)
 	start_step("install_voiced", install_voiced)
 	start_step("install_oleh", install_oleh)
