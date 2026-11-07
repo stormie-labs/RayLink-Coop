@@ -38,10 +38,16 @@
 	    older than HEAL_GRACE_MS whose player stands on the Bar with nothing of his running (his fight, a totalizator battle).
 	    His flag (coop_arena_gear) is a per-player key: the host keeps it for his character, a client never saves.
 	  - The arena zone never counts a player: xr_zones.arena_zone_binder:purge_items leaves players out.
+	  - Arnie's monster fight (the old arena: bar_arena_start, restrictors bar_arena_sr and bar_arena_spam; the player walks in,
+	    no gear moves) speaks through effects the host runs: the introduction, "the fight begins", the countdown 10-90 s, "time
+	    is up", "victory", "you are afraid", "dead". Their lines (news_manager.send_tip) go to its fighter alone (arena.go "tip"),
+	    the infos they give stay the world's. The fighter: of a running fight (bar_arena_fight_N) its fighter; else the one
+	    picked when he walks into bar_arena_waiter (among those who walked in), kept until "victory", "dead" or "you are afraid".
 	Single player and an exe without co-op: stock, untouched.
 
 	Events (coop_npc_players):
-	  arena.go   authority -> player   { f = "in" | "out" | "slot" | "bet_in" | "bet_out" | "none", a = argument }
+	  arena.go   authority -> player   { f = "in" | "out" | "slot" | "bet_in" | "bet_out" | "none" | "tip", a = argument }
+	             (tip: a = the line's string id; to, s, st, sid = the rest of news_manager.send_tip)
 	  arena.bet  bettor -> authority   { }
 	  arena.out  player -> authority   { }  his gear back
 	  arena.cut  fighter -> authority  { }  his cutscene ended
@@ -73,6 +79,7 @@ local function C() return coop_mods_core end
 
 local ledger = {} -- authority: avatar id -> { kind = "fight" | "bet", items = { id, ... }, kit = { id, ... }, at = time }
 local fight = nil -- authority: { id = the fighter's avatar id, n = the fight }
+local pit = nil -- authority: { id = the fighter's avatar id } of Arnie's monster fight (the old arena: its lines are his)
 local cut_done = false -- authority: the fighter's cutscene ended
 local mine = false -- this player: false | "fight" | "bet" - his gear waits in the box
 local fighting = false -- this player fights the running fight: its cutscene plays here
@@ -81,7 +88,8 @@ local arena_zone = nil -- the binder of the arena zone here (xr_zones.arena_zone
 local got_down = false -- the map server of the Bar: the world server's copy of the ledger came (split levels)
 local world_copy = nil -- the world server: the ledger of the Bar's map server, kept in its save (split levels)
 local OURS = {} -- our wrapper functions
-local stats = { stowed = 0, returned = 0, to_box2 = 0, missing = 0, players_kept = 0, still_cuts = 0, rewrapped = 0, errors = 0 }
+local stats = { stowed = 0, returned = 0, to_box2 = 0, missing = 0, players_kept = 0, still_cuts = 0, rewrapped = 0, errors = 0,
+	tips = 0, tip_wraps = 0 }
 
 local function log(fmt, ...) P.log(TAG, fmt, ...) end
 local function report(what, err)
@@ -123,8 +131,16 @@ local function manager()
 end
 
 -- The player who talked to the arena manager last; with no talk to go by (an exe without it, two at once), the nearest.
-local function pick(near)
+-- `among` ({ [id] = true }, optional): only these players, when any of them is here.
+local function pick(near, among)
 	local list = P.everyone()
+	if among then
+		local only = {}
+		for _, o in ipairs(list) do
+			if among[id_of(o)] then only[#only + 1] = o end
+		end
+		if #only > 0 then list = only end
+	end
 	if #list == 0 then return nil end
 	local man = manager()
 	local api = rawget(_G, "coop")
@@ -411,24 +427,37 @@ local PLAY = {
 		fighting, waiting_in = false, nil
 		set_mine(false)
 	end,
+	-- a line of the monster fight (a = its string id): on this screen, with the stock sender (sound, icon, PDA)
+	tip = function(a, t)
+		if type(a) ~= "string" or a:sub(1, 10) ~= "bar_arena_" then return end
+		local nm = C().mod("news_manager")
+		local send = nm and C().fn(nm, "send_tip")
+		if not send then return end
+		t = t or {}
+		send(db.actor, a, tonumber(t.to), type(t.s) == "string" and t.s or nil, tonumber(t.st),
+			type(t.sid) == "string" and t.sid or nil)
+	end,
 }
 
-local function play(what, a)
+-- `t`: the whole message (what a play needs besides `a`).
+local function play(what, a, t)
 	local f = PLAY[what]
 	if not (f and db.actor) then return end
-	local ok, err = pcall(f, a)
+	local ok, err = pcall(f, a, t)
 	if not ok then report("play " .. tostring(what), err) end
 end
 
--- To the player whose character is `id` here: his own machine plays it.
-local function go(id, what, a)
-	if id == own_id() and not P.is_map_server() then return play(what, a) end
+-- To the player whose character is `id` here: his own machine plays it. `more`: fields besides f and a.
+local function go(id, what, a, more)
+	if id == own_id() and not P.is_map_server() then return play(what, a, more) end
 	local peer = P.peer_of(id)
 	if peer == nil then
 		log("! %s for character %s: he is not in the session", what, tostring(id))
 		return
 	end
-	P.send("arena.go", { f = what, a = a }, peer)
+	local t = { f = what, a = a }
+	for k, v in pairs(more or {}) do t[k] = v end
+	P.send("arena.go", t, peer)
 end
 
 -- The authority: this player's gear back, and his way out (after a respawn, a rejoin, a lost answer: not the fight's end).
@@ -541,6 +570,121 @@ local function route_bet_out()
 	end
 end
 
+-------------------------------------------------------------------------------
+-- Arnie's monster fight: its lines are the fighter's (authority)
+-------------------------------------------------------------------------------
+-- The old arena (dialog bar_arena_manager_game gives bar_arena_start; restrictor bar_arena_sr lets the fighter in through the
+-- zone bar_arena_waiter, bar_arena_spam counts the time) shows its lines with news_manager.send_tip from these effects
+-- (xr_effects.script:5888-5975), run by the host's restrictors. The infos they give (bar_arena_actor_lose, _victory,
+-- bar_arena_start_introduce) are the world's: the stock call runs here, only its lines go to the fighter (arena.go "tip").
+-- The host's own fight shows them here, and coop_core_world keeps "bar_arena_*" lines off the others (PERSONAL_IDS).
+local TIPS = { "bar_arena_introduce", "bar_arena_fight_begin", "bar_arena_check_lose", "bar_arena_after_fight",
+	"bar_arena_actor_afraid", "bar_arena_actor_dead" }
+for n = 10, 90, 10 do TIPS[#TIPS + 1] = "bar_arena_fight_" .. n end
+-- These end a fight: its fighter is forgotten after them.
+local TIP_ENDS = { bar_arena_after_fight = true, bar_arena_actor_dead = true, bar_arena_actor_afraid = true }
+
+local function plain(v)
+	local tv = type(v)
+	return (tv == "string" or tv == "number" or tv == "boolean") and v or nil
+end
+
+-- The players a restrictor's condlist is for (coop_npc_logic), nil: it names none.
+local function logic_audience(npc)
+	local L = C().mod("coop_npc_logic")
+	local f = L and C().fn(L, "audience_of")
+	if not (f and npc) then return nil end
+	local ok, aud = pcall(f, npc)
+	return ok and type(aud) == "table" and next(aud) ~= nil and aud or nil
+end
+
+-- The players standing in the arena zone, nil: none, or the zone is not known here.
+local function in_arena_set()
+	local set = nil
+	for _, o in ipairs(P.everyone()) do
+		if in_arena(o) then
+			set = set or {}
+			set[id_of(o)] = true
+		end
+	end
+	return set
+end
+
+-- Whose line it is: the fighter of a running fight (bar_arena_fight_N), else the monster fight's. That one is picked when he
+-- walks in (bar_arena_introduce: among the players who walked in), else when a line finds none (a load in the middle: among the
+-- players in the arena). "You are afraid" ends a fight nobody walked into: the one who talked to Arnie last.
+local function tip_fighter(name, npc)
+	if fight_running() then
+		local f = current(npc)
+		if f then return f.id end
+	end
+	if name == "bar_arena_introduce" or name == "bar_arena_actor_afraid" or not pit then
+		local among = nil
+		if name == "bar_arena_introduce" then
+			among = logic_audience(npc)
+		elseif name ~= "bar_arena_actor_afraid" then
+			among = in_arena_set()
+		end
+		local o = pick(npc, among)
+		pit = o and { id = id_of(o) } or nil
+		if o then log("monster fight: the fighter is %s (peer %s)", tostring(o:name()), tostring(P.peer_of(o))) end
+	end
+	return pit and pit.id or nil
+end
+
+-- The stock call with its arena lines going to the player whose character is `id` (his own machine shows them); any other
+-- line goes on as it would.
+local function lines_to(id, cur, ...)
+	local nm = C().mod("news_manager")
+	local send = nm and C().fn(nm, "send_tip")
+	if not send then return cur(...) end
+	local function catch(actor, news_id, timeout, sender, showtime, sender_id, ...)
+		if type(news_id) ~= "string" or news_id:sub(1, 10) ~= "bar_arena_" then
+			return send(actor, news_id, timeout, sender, showtime, sender_id, ...)
+		end
+		go(id, "tip", news_id, { to = plain(timeout), s = type(sender) == "string" and sender or nil, st = plain(showtime),
+			sid = plain(sender_id) })
+		stats.tips = stats.tips + 1
+		return true
+	end
+	nm.send_tip = catch
+	local ok, r = pcall(cur, ...)
+	if nm.send_tip == catch then nm.send_tip = send end
+	if not ok then error(r, 0) end
+	return r
+end
+
+local function route_tip(name, cur, actor, npc, ...)
+	if not authority() then return cur(actor, npc, ...) end
+	local id = tip_fighter(name, npc)
+	local r
+	if id == nil or (id == own_id() and not P.is_map_server()) then
+		r = cur(actor, npc, ...)
+	else
+		r = lines_to(id, cur, actor, npc, ...)
+	end
+	if TIP_ENDS[name] then pit = nil end
+	return r
+end
+
+-- Our wrappers outermost, as ensure_outer does for the gear.
+local function ensure_tips()
+	local xe = C().mod("xr_effects")
+	if not xe then return end
+	for _, name in ipairs(TIPS) do
+		local cur = C().fn(xe, name)
+		if cur and not OURS[cur] then
+			local w = function(...)
+				if passing or not session() then return cur(...) end
+				return route_tip(name, cur, ...)
+			end
+			OURS[w] = true
+			xe[name] = w
+			stats.tip_wraps = stats.tip_wraps + 1
+		end
+	end
+end
+
 local ROUTES = {
 	{ "xr_effects", "bar_arena_teleport", route_in },
 	{ "xr_effects", "bar_arena_teleport_2", route_out },
@@ -566,6 +710,7 @@ local function ensure_outer()
 			stats.rewrapped = stats.rewrapped + 1
 		end
 	end
+	ensure_tips()
 end
 
 -- The cutscene of the trigger plays on the fighter's machine alone.
@@ -657,7 +802,7 @@ end
 
 local function register_events()
 	P.on("arena.go", function(t)
-		if type(t.f) == "string" then play(t.f, t.a) end
+		if type(t.f) == "string" then play(t.f, t.a, t) end
 	end, "client", TAG)
 	P.on("arena.bet", function(_, from)
 		local id = avatar_of(from)
@@ -714,7 +859,7 @@ local function load_state(m_data)
 	local g = m_data.coop_arena_gear
 	mine = (g == true and "fight") or (g == "bet" and "bet") or false
 	local a = m_data.coop_arena
-	ledger, fight, cut_done, world_copy = {}, nil, false, nil
+	ledger, fight, cut_done, world_copy, pit = {}, nil, false, nil, nil
 	-- the ledger is the world's: a client loads the host's world, it is not his
 	if type(a) ~= "table" or P.is_client() then return end
 	take_list(a.ledger)
@@ -776,15 +921,15 @@ end
 function print_status()
 	local n = 0
 	for _ in pairs(ledger) do n = n + 1 end
-	return string.format("ledger %d, fight %s, stowed %d, returned %d, to box 2 %d, missing %d, players kept %d, still cutscenes %d, rewrapped %d, errors %d",
+	return string.format("ledger %d, fight %s, stowed %d, returned %d, to box 2 %d, missing %d, players kept %d, still cutscenes %d, rewrapped %d, lines to a fighter %d, errors %d",
 		n, fight and tostring(fight.n) or "-", stats.stowed, stats.returned, stats.to_box2, stats.missing, stats.players_kept,
-		stats.still_cuts, stats.rewrapped, stats.errors)
+		stats.still_cuts, stats.rewrapped, stats.tips, stats.errors)
 end
 
 -- Tests and diagnostics.
 function _state()
 	return { ledger = ledger, fight = fight, mine = mine, fighting = fighting, stats = stats, cut_done = cut_done, world_copy = world_copy,
-		got_down = got_down }
+		got_down = got_down, pit = pit }
 end
 
 function on_game_start()

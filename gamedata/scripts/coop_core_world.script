@@ -168,7 +168,9 @@ local PERSONAL_SCRIPTS = {
 	dph_debug_log = true, visual_memory_manager = true, xcv_phantoms = true,
 }
 local PERSONAL_PREFIXES = { "dialogs", "gamemode_", "soulslike", "ui_debug_", "xrs_debug" }
-local PERSONAL_IDS = { "^bar_arena_" } -- string ids: the arena is one player's fight
+-- String ids: the arena is one player's fight. The host's own fight shows its lines here; a client's never reach this sender
+-- (coop_arena hands them to him).
+local PERSONAL_IDS = { "^bar_arena_" }
 -- Effects of a script that also makes world lines. xr_effects.send_tip: npc.cfx takes it to its audience.
 local PERSONAL_FUNCS = { { "xr_effects", "send_tip" }, { "xr_effects", "drx_sl_change_factions" },
 	{ "xr_effects", "awr_timer_msg_on" }, { "xr_effects", "awr_timer_msg_off" } }

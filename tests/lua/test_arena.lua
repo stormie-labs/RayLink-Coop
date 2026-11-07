@@ -7,6 +7,7 @@ dofile("tests/lua/support/harness_npc.lua")
 
 local PROXY = 500
 local BOX1, BOX2, TRIG, MANAGER, COMMENT, TOTAL, OPPONENT, BODY = 900, 901, 910, 920, 911, 912, 300, 777
+local SR, SPAM = 913, 914 -- Arnie's monster fight (the old arena): restrictors bar_arena_sr and bar_arena_spam
 local ARENA = "l05_bar"
 local IN_ARENA = vec(153, -19, 103) -- where the cutscene puts the fighter
 local DOOR = vec(150, 0.4, 75) -- t_walk_2
@@ -151,6 +152,74 @@ local function stock(M)
 		end
 		if E.has_alife_info("totaliz_money_has_gone") then E.alife_create_item("wpn_binoc", E.db.actor) end
 	end
+	-- news_manager.script:39: the line shows on this machine's screen
+	M.tips, M.stock_tips = {}, 0
+	E.news_manager = {
+		send_tip = function(actor, news_id, timeout, sender, showtime, sender_id)
+			if news_id == nil then return false end
+			M.tips[#M.tips + 1] = { id = news_id, to = timeout, s = sender, st = showtime, sid = sender_id }
+			return true
+		end,
+	}
+	-- xr_effects.script:5888-5975, the old arena (Arnie's monster fights): its lines, and the infos it gives
+	local function counted(f) return function(...) M.stock_tips = M.stock_tips + 1 return f(...) end end
+	xe.bar_arena_introduce = counted(function(actor, npc)
+		local a = E.db.actor
+		if a:has_info("bar_arena_pseudodog_choosen") then
+			E.news_manager.send_tip(a, "bar_arena_fight_pseudodog", nil, "arena", 24000, nil)
+		elseif a:has_info("bar_arena_snork_choosen") then
+			E.news_manager.send_tip(a, "bar_arena_fight_snork", nil, "arena", 30000, nil)
+		elseif a:has_info("bar_arena_bloodsucker_choosen") then
+			E.news_manager.send_tip(a, "bar_arena_fight_bloodsucker", nil, "arena", 30000, nil)
+		elseif a:has_info("bar_arena_burer_choosen") then
+			E.news_manager.send_tip(a, "bar_arena_fight_burer", nil, "arena", 52000, nil)
+		elseif a:has_info("bar_arena_savage_choosen") then
+			E.news_manager.send_tip(a, "bar_arena_fight_savage", nil, "arena", 34000, nil)
+		end
+	end)
+	xe.bar_arena_fight_begin = counted(function(actor, npc)
+		if E.db.actor:has_info("bar_arena_actor_lose") or E.db.actor:has_info("bar_arena_actor_victory") then return end
+		E.news_manager.send_tip(E.db.actor, "bar_arena_fight_begin", nil, "arena")
+	end)
+	for n = 10, 90, 10 do
+		xe["bar_arena_fight_" .. n] = counted(function(actor, npc)
+			E.news_manager.send_tip(E.db.actor, "bar_arena_fight_" .. n, nil, "arena")
+		end)
+	end
+	xe.bar_arena_check_lose = counted(function(actor, npc)
+		local a = E.db.actor
+		if a:has_info("bar_arena_100_p") then
+			if a:has_info("bar_arena_fight_30") then
+				a:give_info_portion("bar_arena_actor_lose")
+				E.news_manager.send_tip(actor, "bar_arena_fight_timeout", nil, "arena")
+			end
+			return
+		end
+		if a:has_info("bar_arena_50_p") then
+			if a:has_info("bar_arena_fight_90") then
+				a:give_info_portion("bar_arena_actor_lose")
+				E.news_manager.send_tip(actor, "bar_arena_fight_timeout", nil, "arena")
+			end
+			return
+		end
+	end)
+	xe.bar_arena_after_fight = counted(function(actor, npc)
+		local a = E.db.actor
+		if a:has_info("bar_arena_actor_lose") or a:has_info("bar_arena_actor_victory") then return end
+		if not a:has_info("bar_arena_actor_lose") then
+			a:give_info_portion("bar_arena_actor_victory")
+			E.news_manager.send_tip(actor, "bar_arena_fight_victory", nil, "arena")
+		else
+			E.news_manager.send_tip(actor, "bar_arena_fight_lose", nil, "arena")
+		end
+		a:give_info_portion("bar_arena_start_introduce")
+	end)
+	xe.bar_arena_actor_afraid = counted(function(actor, npc)
+		E.news_manager.send_tip(E.db.actor, "bar_arena_actor_afraid", nil, "arena")
+	end)
+	xe.bar_arena_actor_dead = counted(function(actor, npc)
+		E.news_manager.send_tip(E.db.actor, "bar_arena_fight_dead", nil, "arena")
+	end)
 	-- xr_zones.arena_zone_binder: what walked into the zone is released by the purge
 	local cls = {}
 	function cls.purge_items(self) for id in pairs(self.saved_obj) do M.released[#M.released + 1] = id end end
@@ -209,7 +278,9 @@ local function env(M, level_name)
 		register_player_key = function(k, f) M.keys[k] = f end,
 		send_player_keys = function() M.key_sends = M.key_sends + 1 end,
 	}
-	E.coop_npc_logic = { add_audience_rule = function(f) M.rule = f end }
+	-- audience_of: the players a restrictor's condlist is for (M.logic_aud: who walked into bar_arena_waiter; bar_arena_spam
+	-- names no player, so everybody)
+	E.coop_npc_logic = { add_audience_rule = function(f) M.rule = f end, audience_of = function() return M.logic_aud end }
 	E.coop_npc_players = load_script(M, "coop_npc_players")
 	E.coop_mods_core = load_script(M, "coop_mods_core")
 	stock(M)
@@ -280,6 +351,8 @@ local function setup(opts)
 	H.add(make_obj(MANAGER, 149, 1, 74, { _name = "arnie" }))
 	H.add(make_obj(COMMENT, 150, 0, 70, { _name = "bar_arena_comment_fight_1" }))
 	H.add(make_obj(TOTAL, 150, 0, 70, { _name = "bar_arena_totalizator" }))
+	H.add(make_obj(SR, 150, -13, 95, { _name = "bar_arena_sr" }))
+	H.add(make_obj(SPAM, 150, 0, 70, { _name = "bar_arena_spam" }))
 	H.add(make_obj(OPPONENT, 153, -19, 104, { _section = "bar_arena_stalker_3_1" }))
 	holder(H, H.add(make_obj(BOX1, 149, 1, 72, { _name = "box1" })), BOX1)
 	holder(H, H.add(make_obj(BOX2, 139, -13.4, 90.2, { _name = "box2" })), BOX2)
@@ -825,6 +898,140 @@ do
 	check(#WA._state().world_copy == 0, "the world server's copy is empty again")
 end
 
+-------------------------------------------------------------------------------
+-- Arnie's monster fight (the old arena: dialog bar_arena_manager_game gives bar_arena_start; bar_arena_sr lets the fighter in
+-- through bar_arena_waiter, bar_arena_spam counts). Its effects run on the host and show lines (news_manager.send_tip):
+-- they are the fighter's alone; the infos they give stay the host's world's.
+-------------------------------------------------------------------------------
+local function tip_ids(M)
+	local list = {}
+	for _, t in ipairs(M.tips) do list[#list + 1] = t.id end
+	return table.concat(list, ",")
+end
+
+local function countdown(xe, A, from, to)
+	for n = from, to, 10 do xe["bar_arena_fight_" .. n](A, H.objects[SPAM]) end
+end
+
+print("== Arnie's monster fight: a client fights, the arena's lines are his alone")
+do
+	setup()
+	local A, xe = H.env.db.actor, H.env.xr_effects
+	A:give_info_portion("bar_arena_snork_choosen")
+	A:give_info_portion("bar_arena_50_p")
+	W.talked[1] = NOW
+	H.logic_aud = { [PROXY] = true } -- he walked into bar_arena_waiter
+	xe.bar_arena_introduce(A, H.objects[SR])
+	H.logic_aud = { [0] = true, [PROXY] = true }
+	xe.bar_arena_fight_begin(A, H.objects[SPAM])
+	countdown(xe, A, 10, 50)
+	pump()
+	check(tip_ids(Cm) == "bar_arena_fight_snork,bar_arena_fight_begin,bar_arena_fight_10,bar_arena_fight_20,bar_arena_fight_30,bar_arena_fight_40,bar_arena_fight_50",
+		"the fighter gets every line: the introduction, \"the fight begins\", the countdown")
+	check((Cm.tips[1] or {}).s == "arena" and (Cm.tips[1] or {}).st == 30000 and (Cm.tips[2] or {}).s == "arena", "with the stock icon and time")
+	check(#H.tips == 0, "the host's screen shows none of them")
+	check(H.stock_tips == 7 and Cm.stock_tips == 0, "the stock effects run on the host alone")
+	xe.bar_arena_after_fight(A, H.objects[SPAM])
+	pump()
+	check((Cm.tips[#Cm.tips] or {}).id == "bar_arena_fight_victory" and #H.tips == 0, "\"victory\" is his too")
+	check(A:has_info("bar_arena_actor_victory") and A:has_info("bar_arena_start_introduce"), "the infos are the host's world's")
+	check(next(Cm.env.db.actor._info) == nil, "the client's own actor is given none")
+	check(HA._state().pit == nil, "the fight is over: its fighter is forgotten")
+end
+
+print("== Arnie's monster fight: time is up for the client")
+do
+	setup()
+	local A, xe = H.env.db.actor, H.env.xr_effects
+	A:give_info_portion("bar_arena_bloodsucker_choosen")
+	A:give_info_portion("bar_arena_50_p")
+	W.talked[1] = NOW
+	H.logic_aud = { [PROXY] = true }
+	xe.bar_arena_introduce(A, H.objects[SR])
+	H.logic_aud = { [0] = true, [PROXY] = true }
+	xe.bar_arena_fight_begin(A, H.objects[SPAM])
+	countdown(xe, A, 10, 90)
+	A:give_info_portion("bar_arena_fight_90") -- the ltx's +bar_arena_fight_90 before =bar_arena_check_lose
+	xe.bar_arena_check_lose(A, H.objects[SPAM])
+	pump()
+	check((Cm.tips[#Cm.tips] or {}).id == "bar_arena_fight_timeout" and #Cm.tips == 12, "\"time is up\" is the fighter's, after the whole countdown")
+	check(#H.tips == 0, "the host sees none")
+	check(A:has_info("bar_arena_actor_lose") and next(Cm.env.db.actor._info) == nil, "the loss is the host's world's info")
+	xe.bar_arena_after_fight(A, H.objects[SPAM]) -- the monster dies later: lost, stock says nothing
+	pump()
+	check(#Cm.tips == 12 and #H.tips == 0 and HA._state().pit == nil, "nothing more is said, the fighter is forgotten")
+end
+
+print("== Arnie's monster fight: the host fights, the client sees none of it")
+do
+	setup()
+	local A, xe = H.env.db.actor, H.env.xr_effects
+	-- a client's fight that never ended (he fell, no end came): its fighter must not stick
+	W.talked[1] = NOW
+	H.logic_aud = { [PROXY] = true }
+	xe.bar_arena_introduce(A, H.objects[SR])
+	pump()
+	check(HA._state().pit and HA._state().pit.id == PROXY, "the client walked in: he is the fighter")
+	NOW = NOW + 120000
+	A:give_info_portion("bar_arena_pseudodog_choosen")
+	H.logic_aud = { [0] = true }
+	xe.bar_arena_introduce(A, H.objects[SR])
+	H.logic_aud = { [0] = true, [PROXY] = true }
+	xe.bar_arena_fight_begin(A, H.objects[SPAM])
+	countdown(xe, A, 10, 10)
+	xe.bar_arena_actor_dead(A, H.objects[SR])
+	pump()
+	check(tip_ids(H) == "bar_arena_fight_pseudodog,bar_arena_fight_begin,bar_arena_fight_10,bar_arena_fight_dead",
+		"the host walked in: every line is on his screen, \"dead\" too")
+	check(#Cm.tips == 0, "the client sees none of them")
+	check(#sent_named(H, "arena.go") == 0, "nothing is sent for the host's own fight")
+	check(HA._state().pit == nil, "he is dead: the fight forgets him")
+end
+
+print("== nobody walked in: \"you are afraid\" goes to the one who talked to Arnie")
+do
+	setup()
+	local A, xe = H.env.db.actor, H.env.xr_effects
+	H.env.db.actor._pos = vec(149, 1, 75) -- the host stands at Arnie, the client talked to him
+	W.talked[1] = NOW
+	H.logic_aud = {} -- bar_arena_sr's 60 s timer: nobody is inside
+	xe.bar_arena_actor_afraid(A, H.objects[SR])
+	pump()
+	check(tip_ids(Cm) == "bar_arena_actor_afraid" and #H.tips == 0, "the client who asked for the fight hears it, the host does not")
+end
+
+print("== a line with no fighter known (a load in the middle): the player in the arena")
+do
+	setup()
+	local A, xe = H.env.db.actor, H.env.xr_effects
+	H.env.db.actor._pos = vec(149, 1, 75) -- the host is the nearest to Arnie
+	H.objects[PROXY]._pos = vec(IN_ARENA.x, IN_ARENA.y, IN_ARENA.z) -- the client fights in the arena
+	H.logic_aud = { [0] = true, [PROXY] = true }
+	xe.bar_arena_fight_30(A, H.objects[SPAM])
+	pump()
+	check(tip_ids(Cm) == "bar_arena_fight_30" and #H.tips == 0, "the player standing in the arena gets it")
+end
+
+print("== a mod replaces a line's effect after coop: the line still goes to the fighter")
+do
+	setup()
+	local A = H.env.db.actor
+	-- its own version, loaded after coop (no call to the one before)
+	H.env.xr_effects.bar_arena_fight_begin = function(actor, npc)
+		H.modded = true
+		H.env.news_manager.send_tip(H.env.db.actor, "st_mod_odds", nil, "arena") -- a line of the mod's own
+		H.env.news_manager.send_tip(H.env.db.actor, "bar_arena_fight_begin", nil, "arena")
+	end
+	tick(H)
+	W.talked[1] = NOW
+	H.logic_aud = { [PROXY] = true }
+	H.env.xr_effects.bar_arena_introduce(A, H.objects[SR])
+	H.env.xr_effects.bar_arena_fight_begin(A, H.objects[SPAM])
+	pump()
+	check(H.modded and tip_ids(Cm) == "bar_arena_fight_begin", "the mod runs, the arena's line is the client's")
+	check(tip_ids(H) == "st_mod_odds", "a line that is not the arena's goes on as it would (the news relay judges it)")
+end
+
 print("== single player: stock, untouched")
 do
 	reset_world()
@@ -845,6 +1052,14 @@ do
 	check(H.ran[1] == "in" and same(owned(BOX1), gear) and #owned(0) == 4, "the way in is stock: gear in box 1, the kit on him")
 	H.env.xr_effects.bar_arena_teleport_2(H.env.db.actor, nil)
 	check(same(owned(0), gear) and #owned(BOX2) == 4 and H.purges == 1, "the way out is stock")
+	local A = H.env.db.actor
+	A:give_info_portion("bar_arena_snork_choosen")
+	H.env.xr_effects.bar_arena_introduce(A, nil)
+	H.env.xr_effects.bar_arena_fight_begin(A, nil)
+	H.env.xr_effects.bar_arena_after_fight(A, nil)
+	check(tip_ids(H) == "bar_arena_fight_snork,bar_arena_fight_begin,bar_arena_fight_victory" and #H.sent == 0,
+		"the monster fight's lines are stock, on his screen")
+	check(A:has_info("bar_arena_actor_victory"), "and its infos")
 end
 
 print("== split levels: the Bar's map server is the authority")
@@ -880,6 +1095,18 @@ do
 	QUEUE = {}
 	for _, f in ipairs(H.handlers["arena.out"] or {}) do f(H.env.coop_main.encode({ _peer = 1 }), 0) end
 	check(same(owned(PROXY), gear), "his request through the world server: his gear back on the Bar's map server")
+	-- Arnie's monster fight on the map server: its lines go to the player, never to the ghost's screen
+	H.add(make_obj(SR, 150, -13, 95, { _name = "bar_arena_sr" }))
+	H.env.db.actor:give_info_portion("bar_arena_snork_choosen")
+	H.logic_aud = { [PROXY] = true }
+	QUEUE = {}
+	H.sent = {}
+	H.env.xr_effects.bar_arena_introduce(H.env.db.actor, H.objects[SR])
+	local tips = sent_named(H, "arena.go")
+	local t = tips[1] and H.env.coop_main.decode(tips[1].payload) or {}
+	check(#tips == 1 and tips[1].target == 1 and t.f == "tip" and t.a == "bar_arena_fight_snork" and t.st == 30000,
+		"the line goes to the fighter's peer")
+	check(#H.tips == 0, "the map server's ghost shows nothing")
 end
 
 print(string.format("%d passed, %d failed", PASSES, FAILS))
