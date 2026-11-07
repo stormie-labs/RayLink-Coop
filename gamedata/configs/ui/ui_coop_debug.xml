@@ -1,15 +1,35 @@
 <?xml version="1.0" encoding="windows-1251"?>
 <!-- Anomaly Coop: templates of the co-op debug window (scripts\coop_debug_ui.script, docs\DEBUG_DESIGN.md D, B.8). The window is
      built and placed by the script in the 1024x768 UI space scaled per axis (coop_menu_kit.layout), like the co-op window, so it
-     needs no _16 file. The look is the co-op window's theme (coop_menu_theme.script): sizes, colours and fonts are set from Lua; a
+     needs no _16 file. The look is the co-op window's theme (coop_menu_theme.script) plus a few glass roles of the script; a
      <text> names a stock font only because the engine asserts on a <text> without one. Textures: the co-op window's atlas
-     (coop_menu_white, coop_menu_none, coop_menu_notch), no new ones.
+     (coop_menu_white, coop_menu_none), the inventory icons (ui\ui_icon_equipment) and, for the blur, the renderer's own
+     $user$blur_2/4/8; no new texture files.
        tpl_box     a stretched flat rectangle (the solid white cell of the atlas); the script tints it
-       tpl_image   a stretched static for a texture file
+       tpl_image   a stretched static for a texture file (icons, the blurred frame under the panel)
        tpl_free    an empty window, a parent
        tpl_text_*  text: left / centred / right on one line, m = several lines from the top
        tpl_none    a button that is never seen: the look and the hover are statics of the script
-       tpl_edit_line  an edit box without a frame: a section, an info portion (64 characters, the server's limit) -->
+       tpl_edit_line  an edit box without a frame: the search, an info portion (64 characters, the server's limit)
+
+     DESIGN (2026-11-07, the redesign after "debug is not pretty"): a compact glass tool panel in the manner of a docked ImGui
+     window / a modern launcher overlay, not a screen. Numbers are design pixels of 1920 x 1080 (they scale with the screen).
+       palette   glass tint rgb(10,12,11) at the opacity setting (default 80%, 60-100; x0.78 over the blur); title bar
+                 rgb(18,20,17); hairlines text@14%, a top highlight white@7%; a 3-ring shadow black 30/14/6%; text rgb(236,230,216)
+                 at 100 / 68 (dim) / 42% (faint); accent gold rgb(217,171,91), hover rgb(239,199,124); live green rgb(134,210,111),
+                 wait amber rgb(224,164,88), error rgb(240,120,100), idle grey rgb(108,108,102)
+       type      Onest 15 (menu_small): labels, buttons, feed, tabs; Onest 18 (menu_body): list rows (normal / large), the
+                 details name, the hour; the title CO-OP DEBUG is menu_small spaced in accent capitals. No Tektur display face
+                 inside the panel: a tool, not a menu
+       grid      4 px base: GAP 6 between controls, PAD 12 inside regions, GROUP_GAP 12 between groups, heading 22
+       sizes     title bar 34; tabs column 140, tab 28; button and chip 26 (compact 22, large 30), width = text + 22, least 40;
+                 list row 28 (22 / 34) with an icon box 56 x 24; details pane 36% of the content, 210-300; feed rows 20, 2-6 of
+                 them by the height; window default 872 x 640 at (1000, 150) - right of the crosshair; least 600 x 420;
+                 edge grip 6, corner grip 16
+       states    button: fill text@7%, hover text@14%, selected (chip, tab) accent@22% + accent-hi text, primary solid accent
+                 + dark text (hover accent-hi), danger error@12% + error text, disabled fill text@7% + faint text and no input;
+                 list row: hover text@10% veil, selected accent@16%; favourites: an accent 5 px square at the row's end
+       motion    none: drags and resizes follow the cursor 1:1, a resize lays the content out at most every 33 ms -->
 <w>
 	<tpl_box x="0" y="0" width="8" height="8" stretch="1"><texture>coop_menu_white</texture></tpl_box>
 	<tpl_image x="0" y="0" width="8" height="8" stretch="1"/>

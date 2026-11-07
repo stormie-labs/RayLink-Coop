@@ -2,7 +2,7 @@
 <!-- Anomaly Coop: the co-op debug window, F7 in a session (docs\DEBUG_DESIGN.md B.8, D; scripts\coop_debug_ui.script, coop_debug_client.script). windows-1251, CRLF. -->
 <string_table>
 	<string id="st_coop_dbg_title">
-		<text>ОТЛАДКА КООПА</text>
+		<text>Отладка</text>
 	</string>
 	<string id="st_coop_dbg_sub">
 		<text>Каждое действие уходит серверу и выполняется там  ·  %s, узел %s</text>
@@ -15,6 +15,18 @@
 	</string>
 	<string id="st_coop_dbg_state_pending">
 		<text>Ждём ответа сервера...</text>
+	</string>
+	<string id="st_coop_dbg_head_on">
+		<text>включена</text>
+	</string>
+	<string id="st_coop_dbg_head_off">
+		<text>выключена</text>
+	</string>
+	<string id="st_coop_dbg_head_wait">
+		<text>ждём сервер...</text>
+	</string>
+	<string id="st_coop_dbg_head_none">
+		<text>нет в этой сборке</text>
 	</string>
 	<string id="st_coop_dbg_src_key">
 		<text>включена ключом запуска -dbg</text>
@@ -56,7 +68,7 @@
 		<text>объект под прицелом</text>
 	</string>
 	<string id="st_coop_dbg_page_spawn">
-		<text>Спавн</text>
+		<text>Предметы</text>
 	</string>
 	<string id="st_coop_dbg_page_spawn_sub">
 		<text>предметы, отряды, аномалии</text>
@@ -257,7 +269,7 @@
 		<text>часть секции, например ak74, medkit, bandit</text>
 	</string>
 	<string id="st_coop_dbg_at_inv">
-		<text>В инвентарь</text>
+		<text>В рюкзак</text>
 	</string>
 	<string id="st_coop_dbg_at_point">
 		<text>В прицел</text>
@@ -347,7 +359,7 @@
 		<text>Пока ничего не отправлено</text>
 	</string>
 	<string id="st_coop_dbg_keys">
-		<text>Esc или F7 - закрыть</text>
+		<text>Esc / F7 — закрыть  ·  заголовок — двигать  ·  края — размер</text>
 	</string>
 	<string id="st_coop_dbg_sent">
 		<text>отправлено</text>
@@ -615,5 +627,146 @@
 	</string>
 	<string id="st_coop_dbg_err_unknown">
 		<text>отказ: %s</text>
+	</string>
+	<string id="st_coop_dbg_page_npc">
+		<text>NPC</text>
+	</string>
+	<string id="st_coop_dbg_page_levels">
+		<text>Уровни</text>
+	</string>
+	<string id="st_coop_dbg_page_favs">
+		<text>Избранное</text>
+	</string>
+	<string id="st_coop_dbg_set_btn">
+		<text>Вид</text>
+	</string>
+	<string id="st_coop_dbg_search_hint">
+		<text>Поиск: имя или секция</text>
+	</string>
+	<string id="st_coop_dbg_sort_name">
+		<text>А-Я</text>
+	</string>
+	<string id="st_coop_dbg_sort_section">
+		<text>Секция</text>
+	</string>
+	<string id="st_coop_dbg_empty_list">
+		<text>Ничего не найдено</text>
+	</string>
+	<string id="st_coop_dbg_empty_favs">
+		<text>Пока пусто: выберите предмет, NPC или уровень и нажмите «В избранное»</text>
+	</string>
+	<string id="st_coop_dbg_det_pick">
+		<text>Выберите строку слева</text>
+	</string>
+	<string id="st_coop_dbg_level_go_btn">
+		<text>Перейти на уровень</text>
+	</string>
+	<string id="st_coop_dbg_fav_add">
+		<text>В избранное</text>
+	</string>
+	<string id="st_coop_dbg_fav_on">
+		<text>В избранном</text>
+	</string>
+	<string id="st_coop_dbg_cat_all">
+		<text>Все</text>
+	</string>
+	<string id="st_coop_dbg_cat_fav">
+		<text>Избранное</text>
+	</string>
+	<string id="st_coop_dbg_cat_weapons">
+		<text>Оружие</text>
+	</string>
+	<string id="st_coop_dbg_cat_ammo">
+		<text>Патроны</text>
+	</string>
+	<string id="st_coop_dbg_cat_outfits">
+		<text>Броня</text>
+	</string>
+	<string id="st_coop_dbg_cat_artefacts">
+		<text>Артефакты</text>
+	</string>
+	<string id="st_coop_dbg_cat_consumables">
+		<text>Медицина и еда</text>
+	</string>
+	<string id="st_coop_dbg_cat_addons">
+		<text>Обвесы</text>
+	</string>
+	<string id="st_coop_dbg_cat_other">
+		<text>Прочее</text>
+	</string>
+	<string id="st_coop_dbg_cat_squads_stalker">
+		<text>Отряды сталкеров</text>
+	</string>
+	<string id="st_coop_dbg_cat_squads_mutant">
+		<text>Отряды мутантов</text>
+	</string>
+	<string id="st_coop_dbg_cat_stalkers">
+		<text>Сталкеры</text>
+	</string>
+	<string id="st_coop_dbg_cat_mutants">
+		<text>Мутанты</text>
+	</string>
+	<string id="st_coop_dbg_cat_anomalies">
+		<text>Аномалии</text>
+	</string>
+	<string id="st_coop_dbg_cat_objects">
+		<text>Объекты</text>
+	</string>
+	<string id="st_coop_dbg_cat_levels">
+		<text>Уровень</text>
+	</string>
+	<string id="st_coop_dbg_g_faction">
+		<text>Фракция отряда</text>
+	</string>
+	<string id="st_coop_dbg_g_speed">
+		<text>Скорость времени</text>
+	</string>
+	<string id="st_coop_dbg_set_opacity">
+		<text>Прозрачность</text>
+	</string>
+	<string id="st_coop_dbg_set_blur">
+		<text>Размытие</text>
+	</string>
+	<string id="st_coop_dbg_set_blur_1">
+		<text>Слабое</text>
+	</string>
+	<string id="st_coop_dbg_set_blur_2">
+		<text>Среднее</text>
+	</string>
+	<string id="st_coop_dbg_set_blur_3">
+		<text>Сильное</text>
+	</string>
+	<string id="st_coop_dbg_set_blur_na">
+		<text>недоступно на этом рендере</text>
+	</string>
+	<string id="st_coop_dbg_set_density">
+		<text>Плотность</text>
+	</string>
+	<string id="st_coop_dbg_set_dens_compact">
+		<text>Плотно</text>
+	</string>
+	<string id="st_coop_dbg_set_dens_normal">
+		<text>Обычно</text>
+	</string>
+	<string id="st_coop_dbg_set_dens_large">
+		<text>Крупно</text>
+	</string>
+	<string id="st_coop_dbg_set_move">
+		<text>Ходить с окном</text>
+	</string>
+	<string id="st_coop_dbg_set_confirm">
+		<text>Спрашивать</text>
+	</string>
+	<string id="st_coop_dbg_set_on">
+		<text>Вкл</text>
+	</string>
+	<string id="st_coop_dbg_set_off">
+		<text>Выкл</text>
+	</string>
+	<string id="st_coop_dbg_set_reset">
+		<text>Сбросить место и размер</text>
+	</string>
+	<string id="st_coop_dbg_help_window">
+		<text>Окно: двигается за заголовок, размер меняется за края и угол; «Вид» справа вверху: прозрачность, размытие, плотность, ходьба с открытым окном и вопросы перед разрушительным. Всё хранится только на этом компьютере.</text>
 	</string>
 </string_table>

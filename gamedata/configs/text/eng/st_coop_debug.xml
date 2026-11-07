@@ -2,7 +2,7 @@
 <!-- Anomaly Coop: the co-op debug window, F7 in a session (docs\DEBUG_DESIGN.md B.8, D; scripts\coop_debug_ui.script, coop_debug_client.script). windows-1251, CRLF. -->
 <string_table>
 	<string id="st_coop_dbg_title">
-		<text>CO-OP DEBUG</text>
+		<text>Debug</text>
 	</string>
 	<string id="st_coop_dbg_sub">
 		<text>Every action goes to the server and is done there  ·  %s, node %s</text>
@@ -15,6 +15,18 @@
 	</string>
 	<string id="st_coop_dbg_state_pending">
 		<text>Waiting for the server...</text>
+	</string>
+	<string id="st_coop_dbg_head_on">
+		<text>on</text>
+	</string>
+	<string id="st_coop_dbg_head_off">
+		<text>off</text>
+	</string>
+	<string id="st_coop_dbg_head_wait">
+		<text>waiting for the server...</text>
+	</string>
+	<string id="st_coop_dbg_head_none">
+		<text>not in this build</text>
 	</string>
 	<string id="st_coop_dbg_src_key">
 		<text>turned on by the -dbg launch key</text>
@@ -56,7 +68,7 @@
 		<text>the object under the crosshair</text>
 	</string>
 	<string id="st_coop_dbg_page_spawn">
-		<text>Spawn</text>
+		<text>Items</text>
 	</string>
 	<string id="st_coop_dbg_page_spawn_sub">
 		<text>items, squads, anomalies</text>
@@ -257,10 +269,10 @@
 		<text>a part of the section, e.g. ak74, medkit, bandit</text>
 	</string>
 	<string id="st_coop_dbg_at_inv">
-		<text>In the inventory</text>
+		<text>Inventory</text>
 	</string>
 	<string id="st_coop_dbg_at_point">
-		<text>At the crosshair</text>
+		<text>Crosshair</text>
 	</string>
 	<string id="st_coop_dbg_at_near">
 		<text>Near me</text>
@@ -347,7 +359,7 @@
 		<text>Nothing sent yet</text>
 	</string>
 	<string id="st_coop_dbg_keys">
-		<text>Esc or F7 - close</text>
+		<text>Esc / F7 — close  ·  title bar — move  ·  edges — resize</text>
 	</string>
 	<string id="st_coop_dbg_sent">
 		<text>sent</text>
@@ -615,5 +627,146 @@
 	</string>
 	<string id="st_coop_dbg_err_unknown">
 		<text>refused: %s</text>
+	</string>
+	<string id="st_coop_dbg_page_npc">
+		<text>NPC</text>
+	</string>
+	<string id="st_coop_dbg_page_levels">
+		<text>Levels</text>
+	</string>
+	<string id="st_coop_dbg_page_favs">
+		<text>Favourites</text>
+	</string>
+	<string id="st_coop_dbg_set_btn">
+		<text>View</text>
+	</string>
+	<string id="st_coop_dbg_search_hint">
+		<text>Search: name or section</text>
+	</string>
+	<string id="st_coop_dbg_sort_name">
+		<text>A-Z</text>
+	</string>
+	<string id="st_coop_dbg_sort_section">
+		<text>Section</text>
+	</string>
+	<string id="st_coop_dbg_empty_list">
+		<text>Nothing found</text>
+	</string>
+	<string id="st_coop_dbg_empty_favs">
+		<text>Nothing starred yet: pick an item, NPC or level and press Favourite</text>
+	</string>
+	<string id="st_coop_dbg_det_pick">
+		<text>Pick a line on the left</text>
+	</string>
+	<string id="st_coop_dbg_level_go_btn">
+		<text>Go to the level</text>
+	</string>
+	<string id="st_coop_dbg_fav_add">
+		<text>Favourite</text>
+	</string>
+	<string id="st_coop_dbg_fav_on">
+		<text>In favourites</text>
+	</string>
+	<string id="st_coop_dbg_cat_all">
+		<text>All</text>
+	</string>
+	<string id="st_coop_dbg_cat_fav">
+		<text>Starred</text>
+	</string>
+	<string id="st_coop_dbg_cat_weapons">
+		<text>Weapons</text>
+	</string>
+	<string id="st_coop_dbg_cat_ammo">
+		<text>Ammo</text>
+	</string>
+	<string id="st_coop_dbg_cat_outfits">
+		<text>Outfits</text>
+	</string>
+	<string id="st_coop_dbg_cat_artefacts">
+		<text>Artefacts</text>
+	</string>
+	<string id="st_coop_dbg_cat_consumables">
+		<text>Meds &amp; food</text>
+	</string>
+	<string id="st_coop_dbg_cat_addons">
+		<text>Addons</text>
+	</string>
+	<string id="st_coop_dbg_cat_other">
+		<text>Other</text>
+	</string>
+	<string id="st_coop_dbg_cat_squads_stalker">
+		<text>Stalker squads</text>
+	</string>
+	<string id="st_coop_dbg_cat_squads_mutant">
+		<text>Mutant squads</text>
+	</string>
+	<string id="st_coop_dbg_cat_stalkers">
+		<text>Stalkers</text>
+	</string>
+	<string id="st_coop_dbg_cat_mutants">
+		<text>Mutants</text>
+	</string>
+	<string id="st_coop_dbg_cat_anomalies">
+		<text>Anomalies</text>
+	</string>
+	<string id="st_coop_dbg_cat_objects">
+		<text>Objects</text>
+	</string>
+	<string id="st_coop_dbg_cat_levels">
+		<text>Level</text>
+	</string>
+	<string id="st_coop_dbg_g_faction">
+		<text>Squad faction</text>
+	</string>
+	<string id="st_coop_dbg_g_speed">
+		<text>Time speed</text>
+	</string>
+	<string id="st_coop_dbg_set_opacity">
+		<text>Opacity</text>
+	</string>
+	<string id="st_coop_dbg_set_blur">
+		<text>Blur</text>
+	</string>
+	<string id="st_coop_dbg_set_blur_1">
+		<text>Light</text>
+	</string>
+	<string id="st_coop_dbg_set_blur_2">
+		<text>Medium</text>
+	</string>
+	<string id="st_coop_dbg_set_blur_3">
+		<text>Strong</text>
+	</string>
+	<string id="st_coop_dbg_set_blur_na">
+		<text>not available on this renderer</text>
+	</string>
+	<string id="st_coop_dbg_set_density">
+		<text>Density</text>
+	</string>
+	<string id="st_coop_dbg_set_dens_compact">
+		<text>Compact</text>
+	</string>
+	<string id="st_coop_dbg_set_dens_normal">
+		<text>Normal</text>
+	</string>
+	<string id="st_coop_dbg_set_dens_large">
+		<text>Large</text>
+	</string>
+	<string id="st_coop_dbg_set_move">
+		<text>Walk while open</text>
+	</string>
+	<string id="st_coop_dbg_set_confirm">
+		<text>Ask first</text>
+	</string>
+	<string id="st_coop_dbg_set_on">
+		<text>On</text>
+	</string>
+	<string id="st_coop_dbg_set_off">
+		<text>Off</text>
+	</string>
+	<string id="st_coop_dbg_set_reset">
+		<text>Reset place and size</text>
+	</string>
+	<string id="st_coop_dbg_help_window">
+		<text>The window: drag it by the title bar, resize it by the edges or the corner; View (top right) sets opacity, blur, density, walking while open and the questions before destructive actions. It is kept on this computer only.</text>
 	</string>
 </string_table>

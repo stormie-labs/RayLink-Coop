@@ -24,21 +24,33 @@ Turning debug on marks the world's save as made with debug, as in plain Anomaly.
 
 ## The F7 menu
 
-Press **F7** in a co-op game. The window opens for every player, the host included.
+Press **F7** in a co-op game. A glass panel opens for every player, the host included, to the right of the crosshair: the game,
+the crosshair and the target stay in sight, the mouse cursor is free, and you can keep walking (a setting).
 
-- **Debug off** — only "Overview" and "Help": you can look, you cannot change anything.
-- **Debug on** — all pages open.
+- **Move** it by the title bar, **resize** it by any edge or the corner (least 640 x 420); everything inside lays itself out
+  again, on 4:3, 16:10, 16:9 and 21:9. It never leaves the screen.
+- **View** (top right): opacity 60-100 %, blur under the panel (light / medium / strong; on DX9 R2, DX10 and DX11 renderers,
+  the static-light renderer shows tinted glass only), density (compact / normal / large), walking while the window is open,
+  questions before destructive actions, reset place and size. Kept on this computer only (`axr_options.ltx`, section
+  `[coop_debug_ui]`), together with the last page, filters and favourites.
+- **Debug off** - only "Overview" and "Help": you can look, you cannot change anything.
+- **Debug on** - all pages open. The host (or the dedicated server's owner) has the On / Off button in the title bar.
 
 | Page | What is there |
 |---|---|
-| Overview | The target under your crosshair (name, id, faction, rank, attitude to you, squad, smart terrain) and its items; your position (level, coordinates, vertices); the nearest object; players (nick, level, up or down, ping); time, time speed, weather, emission and psi-storm. Buttons "Can it see me?" and "Server info". |
-| Target | For the object under the crosshair: kill, wound, refresh a trader's goods, delete, clear the inventory; attitude to you (friend / neutral / enemy); goodwill (+5000 / 0 / −5000) to you or to its squad; its squad's faction; make its squad your companions. |
-| Spawn | Section search (e.g. `wpn_ak74`), count 1–20, where: to the inventory, at the crosshair point or next to you. Quick buttons: basic kit, test squad. |
-| Me | God mode, unlimited ammo, invisible to AI; money +10k / +100k / +1M; teleport to the crosshair point or to any player; level change. |
-| World | +1 / 3 / 6 / 12 hours, set the hour, time speed, 6 weather presets, emission and psi-storm (start / stop), respawns on/off, delete common squads, open routes, articles and notes, give or take an info portion. |
-| Help | What every page offers and the console syntax. |
+| Overview | Cards: the target under your crosshair (name, id, faction, rank, attitude to you, squad, smart terrain) and its items; your position (level, coordinates, vertices) and "record"; the nearest object; players (nick, level, up or down, ping); time, time speed, weather, emission and psi-storm. Buttons "Can it see me?" and "Server info". |
+| Items | Every spawnable item, already listed with its inventory icon: All, Starred, Weapons, Ammo, Outfits, Artefacts, Meds & food, Addons, Other. Search by name or section (several words, Russian too), sort A-Z or by section. Pick a line, then count (1 / 2 / 5 / 10 / 20), where (inventory / crosshair / near me), Spawn. |
+| NPC | Stalker squads, mutant squads, stalkers, mutants, anomalies, objects; spawned at the crosshair or near you. |
+| Levels | Every level by its name; "Go to the level" (the server's rules of moving decide, story levels together). |
+| Favourites | What you starred in Items, NPC and Levels ("Favourite" in the details pane). |
+| Target | For the object under the crosshair: kill, wound, refresh a trader's goods, delete, clear the inventory; attitude to you; goodwill to you or to its squad; its squad's faction (picked from the list); make its squad your companions. |
+| Me | God mode, unlimited ammo, invisible to AI; money +10k / +100k / +1M; teleport to the crosshair point or to any player; basic kit, test squad. |
+| World | +1 / 3 / 6 / 12 hours, set the hour, time speed x1-x50, 6 weather presets, emission and psi-storm, respawns on/off, delete common squads, open routes, articles and notes, give or take an info portion. |
+| Help | What every page offers, the window and the console syntax. |
 
-At the bottom is the feed of the server's answers: what was done or why it was refused. Dangerous actions (delete, clear inventory, delete squads, info portions) ask for confirmation first.
+At the bottom is the feed of the server's answers with the time: green done, amber waiting, red refused; the newest refusal is
+shown in full with the server's reason. Dangerous actions (delete, clear inventory, delete squads, info portions) ask first
+(unless you turned that off in View).
 
 ## Who gets what
 

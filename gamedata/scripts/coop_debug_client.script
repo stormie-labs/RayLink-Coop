@@ -444,11 +444,19 @@ ERROR_CODES = { "debug_off", "old_client", "unknown_cmd", "bad_args", "no_player
 local ENGINE_CODES = { ["rate limited"] = "rate_limited", ["not in the world"] = "not_in_world", ["debug is off"] = "debug_off",
 	["too many requests waiting"] = "busy" }
 
-function error_text(raw)
+-- detail: the server's own words beside its code; they are shown in full after the player's line. A refusal "code: why" is read
+-- the same way.
+function error_text(raw, detail)
 	local s = tostring(raw or "")
+	local c2, why = s:match("^([%w_]+)%s*:%s*(.+)$")
+	if c2 and has_text("st_coop_dbg_err_" .. c2:lower()) then return tr("st_coop_dbg_err_" .. c2:lower()) .. ": " .. why end
 	local code = ENGINE_CODES[s:lower()] or s:lower():gsub("[%s%-]+", "_")
 	local id = "st_coop_dbg_err_" .. code
-	if code ~= "" and has_text(id) then return tr(id) end
+	if code ~= "" and has_text(id) then
+		local t = tr(id)
+		if type(detail) == "string" and detail ~= "" and detail ~= s then t = t .. ": " .. detail end
+		return t
+	end
 	return trf("st_coop_dbg_err_unknown", s)
 end
 
@@ -460,9 +468,12 @@ function answer(ok, res)
 		if type(msg) == "string" and msg ~= "" then return tr(msg), "ok" end
 		return tr("st_coop_dbg_ok"), "ok"
 	end
-	local raw = res
-	if type(res) == "table" then raw = res.code or res.msg end
-	return error_text(raw), "err"
+	local raw, detail = res, nil
+	if type(res) == "table" then
+		raw = res.code or res.msg
+		if res.code then detail = res.msg or res.why end
+	end
+	return error_text(raw, detail), "err"
 end
 
 local feed_list = {}

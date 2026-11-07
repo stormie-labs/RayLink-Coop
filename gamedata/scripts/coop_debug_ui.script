@@ -1,45 +1,78 @@
 --[[
 	Anomaly Coop - the co-op debug window (gamedata\scripts\coop_debug_ui.script), docs\DEBUG_DESIGN.md B.8 and D
 
-	F7 in a session, on every machine (coop_debug_client.on_key_release). One panel over the dimmed game, in the look of the co-op
-	window (its theme coop_menu_theme and its widgets coop_ui_kit; a pack's theme applies here too):
+	F7 in a session, on every machine (coop_debug_client.on_key_release). A glass panel over the game, not a screen: the crosshair
+	and the world stay in sight, the cursor is free, the player may walk (a setting). The panel can be dragged by its title bar and
+	resized by its edges and the corner grip, anywhere on the screen and on any aspect; everything inside lays itself out again.
 
-		header   title, who I am, the state of the server debug (a dot: green on, grey off, amber waiting), the operator's switch
-		rail     the pages; with the server debug off only Overview and Help, nothing that changes the world is built at all
-		page     Overview (target, its items, my place, the nearest object, players, world: read on this machine; "can it see me"
-		         and the server's info are view requests) | Target | Spawn | Me | World (the v1 actions of section C) | Help
-		answers  the last lines of the server's answers: waiting, done, refused in the player's words (st_coop_dbg_err_<code>)
-		confirm  a small dialog before anything destructive (delete, clear an inventory, common squads, info portions)
+		title    grip, CO-OP DEBUG, the state of the server debug (dot: green on, grey off, amber waiting), the operator's switch,
+		         the settings popover, close
+		tabs     the pages; with the server debug off only Overview and Help, nothing that changes the world is built at all
+		page     Overview (cards) | Items, NPC, Levels, Favourites (filled catalogs: icons, categories, search, sort, a details
+		         pane: count, where, spawn / go) | Target | Me | World (the v1 actions of section C) | Help
+		feed     the server's answers: time, ok / waiting / refused; the newest refusal is shown in full
+		confirm  a small question before anything destructive (a setting can turn it off)
 
-	The window never changes the world itself: every button is coop_debug_client.run -> coop.sync.request("coop.dbg.<class>").
-	A new state of the server debug (coop_debug_changed) rebuilds the open window on the same page.
+	The window never changes the world itself: every control ends in coop_debug_client.run -> coop.sync.request("coop.dbg.<class>"),
+	with the same arguments the actions always had. The look and every size are in design pixels of a 1920 x 1080 stage
+	(coop_menu_kit.layout), so it is the same at any resolution; the design tokens are listed in configs\ui\ui_coop_debug.xml.
+	Settings live on this machine only: axr_options, section [coop_debug_ui] (never the world's save, never the host's record).
+
+	Blur: the renderers R2-R4 blur the frame every frame anyway ($user$blur_2/4/8, rendertarget_phase_blur.cpp). The panel shows
+	the part of that picture that lies under it, when the engine says the texture is there (its size is the screen's / n);
+	otherwise the panel is tinted glass only. Never the whole screen.
 --]]
 
-local type, ipairs, pairs, pcall, tostring, tonumber = type, ipairs, pairs, pcall, tostring, tonumber
-local floor, min, max, sqrt, atan2, deg = math.floor, math.min, math.max, math.sqrt, math.atan2, math.deg
-local UI_W, UI_H = 1024, 768
+local type, ipairs, pairs, pcall, tostring, tonumber, rawget = type, ipairs, pairs, pcall, tostring, tonumber, rawget
+local floor, ceil, min, max, abs, atan2, deg = math.floor, math.ceil, math.min, math.max, math.abs, math.atan2, math.deg
 local XML_FILE = "ui_coop_debug.xml"
+local CFG_SECTION = "coop_debug_ui"
 
--- design pixels of a 1920 x 1080 stage (coop_menu_kit.layout): the panel and its parts
-local P = { x = 200, y = 92, w = 1520, h = 896 }
-local HEAD_H, RAIL_W, FEED_H = 100, 300, 196
-local CX, CY = RAIL_W + 32, HEAD_H + 24
-local CW, CH = P.w - CX - 40, P.h - FEED_H - CY - 20
-local BTN_H, BTN_W, GAP = 44, 172, 12
-local ROW_MAX = 240 -- a row of buttons fills the page, each at most this wide
--- the simulation row: widths by the length of the labels (the longest is "delete common squads"), CW in all
-local SIM_W = { respawns_on = 140, respawns_off = 140, release_common_squads = 240, unlock_routes = 196, ency_articles = 186, ency_notes = 186 }
-local FEED_ROWS = 5
-local REFRESH_MS = 500
-local KEY_GUARD_MS = 300
+-------------------------------------------------------------------------------
+-- Design tokens (design pixels of 1920 x 1080; ui_coop_debug.xml repeats them for people)
+-------------------------------------------------------------------------------
+TITLE_H = 34 -- the title bar
+TAB_W = 140 -- the page tabs
+PAD = 12 -- inner margin of a region
+GAP = 6 -- between two controls
+HEAD_H = 22 -- a group heading
+GROUP_GAP = 12 -- between two groups
+GRIP = 6 -- the edges that resize
+CORNER = 16 -- the corner grip
+MIN_W, MIN_H = 640, 420
+CARD_W = 270 -- the least width of an overview card
+DETAIL_W = { 190, 300 } -- the details pane of a catalog: least and most
+FEED_ROW = 20
+FONT_PX = { small = 15, body = 18 }
+CHAR_K = .56 -- an average glyph of the menu fonts (Onest) is this part of its size
 
-PAGES_ON = { "overview", "target", "spawn", "me", "world", "help" }
+DENSITY = {
+	compact = { row = 22, btn = 22, font = "small", list = "small", icon = 44 },
+	normal = { row = 28, btn = 26, font = "small", list = "body", icon = 56 },
+	large = { row = 34, btn = 30, font = "body", list = "body", icon = 68 },
+}
+
+DEFAULTS = { x = 1000, y = 150, w = 872, h = 640, opacity = 80, blur = 2, density = "normal", move = true, confirm = true,
+	page = "overview", cat_spawn = "all", cat_npc = "all", sort = "name", favs = "" }
+OPACITY_STEPS = { 60, 70, 80, 90, 100 }
+BLUR_TEX = { "$user$blur_2", "$user$blur_4", "$user$blur_8" }
+BLUR_DIV = { 2, 4, 8 }
+
+PAGES_ON = { "overview", "spawn", "npc", "levels", "favs", "target", "me", "world", "help" }
 PAGES_OFF = { "overview", "help" }
+CATALOG_OF = { spawn = "items", npc = "npc", levels = "levels", favs = "favs" }
 WEATHERS = { "w_clear1", "w_partly1", "w_cloudy1", "w_rain1", "w_storm1", "w_foggy1" }
 TIME_FACTORS = { 1, 2, 5, 10, 20, 50 }
+COUNTS = { 1, 2, 5, 10, 20 }
+FACTIONS = { "stalker", "bandit", "csky", "dolg", "freedom", "killer", "army", "ecolog", "monolith", "greh", "renegade", "isg" }
+REFRESH_MS = 500
+POLL_MS = 100
+RELAYOUT_MS = 33
+KEY_GUARD_MS = 300
+SCROLL_ROWS = 3
 
 local C -- coop_debug_client, resolved at the first window
-local win, last_page, key_closed_at = nil, "overview", -1e9
+local win, key_closed_at = nil, -1e9
 
 local function log(fmt, ...)
 	local pf = rawget(_G, "printf")
@@ -79,21 +112,393 @@ local function num(v, digits)
 end
 
 -------------------------------------------------------------------------------
+-- Geometry: pure, in design pixels. A rect is { x, y, w, h }; the view is the screen { left, top, right, bottom }.
+-------------------------------------------------------------------------------
+function clamp_rect(r, view)
+	local vw, vh = view.right - view.left, view.bottom - view.top
+	local w = max(min(r.w, vw), min(MIN_W, vw))
+	local h = max(min(r.h, vh), min(MIN_H, vh))
+	local x = max(view.left, min(r.x, view.right - w))
+	local y = max(view.top, min(r.y, view.bottom - h))
+	return { x = x, y = y, w = w, h = h }
+end
+
+function drag_rect(r0, dx, dy, view)
+	return clamp_rect({ x = r0.x + dx, y = r0.y + dy, w = r0.w, h = r0.h }, view)
+end
+
+-- zone: the edges being dragged, letters of l r t b; the other edges stay where they are
+function resize_rect(r0, zone, dx, dy, view)
+	local x1, y1, x2, y2 = r0.x, r0.y, r0.x + r0.w, r0.y + r0.h
+	local mw, mh = min(MIN_W, view.right - view.left), min(MIN_H, view.bottom - view.top)
+	if zone:find("l", 1, true) then x1 = max(view.left, min(x1 + dx, x2 - mw)) end
+	if zone:find("r", 1, true) then x2 = min(view.right, max(x2 + dx, x1 + mw)) end
+	if zone:find("t", 1, true) then y1 = max(view.top, min(y1 + dy, y2 - mh)) end
+	if zone:find("b", 1, true) then y2 = min(view.bottom, max(y2 + dy, y1 + mh)) end
+	return { x = x1, y = y1, w = x2 - x1, h = y2 - y1 }
+end
+
+-- what the cursor is over: "move" (the title bar left of its buttons), an edge ("l", "rb", ...), "inside" or nil
+function hit_zone(r, px, py, title_w)
+	if px < r.x - GRIP or px > r.x + r.w + GRIP or py < r.y - GRIP or py > r.y + r.h + GRIP then return nil end
+	if px >= r.x + r.w - CORNER and py >= r.y + r.h - CORNER then return "rb" end
+	local z = ""
+	if px <= r.x + GRIP then z = "l" elseif px >= r.x + r.w - GRIP then z = "r" end
+	if py <= r.y + 3 then z = z .. "t" elseif py >= r.y + r.h - GRIP then z = z .. "b" end
+	if z ~= "" then return z end
+	if py < r.y + TITLE_H and px < r.x + (title_w or r.w) then return "move" end
+	return "inside"
+end
+
+-- the regions of the panel for its size
+function frame_layout(w, h)
+	local rows = max(2, min(6, floor((h - 360) / 70) + 2))
+	local feed_h = 28 + rows * FEED_ROW + 8
+	return {
+		title = { x = 0, y = 0, w = w, h = TITLE_H },
+		tabs = { x = 0, y = TITLE_H, w = TAB_W, h = h - TITLE_H },
+		body = { x = TAB_W, y = TITLE_H, w = w - TAB_W, h = h - TITLE_H - feed_h },
+		feed = { x = TAB_W, y = h - feed_h, w = w - TAB_W, h = feed_h },
+		feed_rows = rows,
+	}
+end
+
+function text_w(s, font)
+	return #tostring(s or "") * (FONT_PX[font] or 15) * CHAR_K
+end
+
+function button_w(s, font, least, pad)
+	return max(least or 0, ceil(text_w(s, font) + (pad or 22)))
+end
+
+-- items { w, h? } laid out in rows that wrap at `width`: sets it.x, it.y, it.fw; -> the height used
+function flow(items, width, gap, row_h)
+	local x, y, line_h = 0, 0, 0
+	for _, it in ipairs(items) do
+		local w = min(it.w, width)
+		local h = it.h or row_h
+		if x > 0 and x + w > width then x, y, line_h = 0, y + line_h + gap, 0 end
+		it.x, it.y, it.fw = x, y, w
+		x = x + w + gap
+		line_h = max(line_h, h)
+	end
+	return #items > 0 and y + line_h or 0
+end
+
+-------------------------------------------------------------------------------
+-- Settings of this machine (axr_options [coop_debug_ui])
+-------------------------------------------------------------------------------
+local function cfg()
+	local am = rawget(_G, "axr_main")
+	if am == nil then
+		local ok, m = pcall(function() return axr_main end)
+		am = ok and m or nil
+	end
+	return type(am) == "table" and am.config or nil
+end
+
+local settings = nil
+
+function load_settings()
+	local s = {}
+	for k, v in pairs(DEFAULTS) do s[k] = v end
+	local c = cfg()
+	if c then
+		for k, def in pairs(DEFAULTS) do
+			local typ = type(def) == "number" and 2 or (type(def) == "boolean" and 1 or 0)
+			local ok, v = pcall(function() return c:r_value(CFG_SECTION, k, typ, def) end)
+			if ok and v ~= nil and type(v) == type(def) then s[k] = v end
+		end
+	end
+	if not DENSITY[s.density] then s.density = DEFAULTS.density end
+	s.opacity = max(40, min(100, floor(s.opacity)))
+	s.blur = max(0, min(3, floor(s.blur)))
+	return s
+end
+
+function get_settings()
+	if not settings then settings = load_settings() end
+	return settings
+end
+
+function save_settings()
+	local c = cfg()
+	if not (c and settings) then return false end
+	return (pcall(function()
+		for k in pairs(DEFAULTS) do
+			local v = settings[k]
+			c:w_value(CFG_SECTION, k, type(v) == "boolean" and (v and "true" or "false") or v)
+		end
+		c:save()
+	end))
+end
+
+function reset_settings_cache() settings = nil end
+
+-- favourites: "i:<section>", "o:<section>", "l:<level>", kept as one line
+function fav_set()
+	local s = get_settings()
+	if not s.fav_cache or s.fav_cache_src ~= s.favs then
+		local set = {}
+		for k in tostring(s.favs or ""):gmatch("[^|]+") do set[k] = true end
+		s.fav_cache, s.fav_cache_src = set, s.favs
+	end
+	return s.fav_cache
+end
+
+function toggle_fav(key)
+	local s = get_settings()
+	local set = fav_set()
+	if set[key] then set[key] = nil else set[key] = true end
+	local list = {}
+	for k in pairs(set) do list[#list + 1] = k end
+	table.sort(list)
+	while #list > 200 do table.remove(list) end
+	s.favs = table.concat(list, "|")
+	s.fav_cache, s.fav_cache_src = nil, nil
+	save_settings()
+	return fav_set()[key] == true
+end
+
+-------------------------------------------------------------------------------
+-- Catalogs: built once per game, on the first look at their page
+-------------------------------------------------------------------------------
+local ITEM_CAT_OF = {}
+local function cats(cat, list) for _, c in ipairs(list) do ITEM_CAT_OF[c] = cat end end
+cats("weapons", { "w_pistol", "w_smg", "w_rifle", "w_sniper", "w_shotgun", "w_melee", "w_explosive", "WP_KNIFE", "WP_HPSA", "WP_PM",
+	"WP_USP45", "WP_ASHTG", "WP_BM16", "WP_AK74", "WP_GROZA", "WP_LR300", "WP_VAL", "WP_SVD", "WP_SVU", "WP_RG6", "WP_RPG7", "G_F1_S",
+	"G_RGD5_S", "G_F1", "G_RGD5" })
+cats("ammo", { "w_ammo", "AMMO", "AMMO_S", "S_OG7B", "S_VOG25", "S_M209" })
+cats("outfits", { "o_light", "o_medium", "o_heavy", "o_sci", "E_STLK", "EQU_STLK", "o_helmet", "E_HLMET", "EQU_HLMET", "i_backpack",
+	"EQ_BAKPK", "i_attach", "i_mutant_belt" })
+cats("artefacts", { "i_arty", "i_arty_junk", "ARTEFACT", "SCRPTART", "i_arty_cont" })
+cats("consumables", { "i_medical", "II_BANDG", "II_MEDKI", "II_ANTIR", "i_food", "II_FOOD", "S_FOOD", "i_drink", "II_BOTTL",
+	"i_mutant_cooked", "i_mutant_raw" })
+cats("addons", { "w_misc", "WP_SCOPE", "WP_SILEN", "WP_GLAUN", "S_WPN_MISC", "i_upgrade" })
+
+-- the object groups of the stock spawner, when the server's registry (coop_debug_cmds.OBJECT_CLASSES) cannot be read
+OBJECT_GROUP_OF = { AI_STL_S = "npc", AI_TRD_S = "npc", ON_OFF_S = "squad", C_HLCP_S = "vehicle", C_NIVA = "vehicle", SCRPTCAR = "vehicle",
+	O_PHYSIC = "physic", O_DSTRBL = "physic", O_PHYS_S = "physic", O_DSTR_S = "physic", S_INVBOX = "physic", O_INVBOX = "physic",
+	S_EXPLO = "physic", II_EXPLO = "physic" }
+for _, c in ipairs({ "SM_KAR", "SM_BLOOD", "SM_BOARW", "SM_BURER", "SM_CAT_S", "SM_CHIMS", "SM_CONTR", "SM_DOG_S", "SM_FLESH", "SM_IZLOM",
+	"SM_GIANT", "SM_POLTR", "SM_P_DOG", "SM_DOG_P", "SM_DOG_F", "SM_SNORK", "SM_TUSHK", "SM_ZOMBI", "SM_RAT", "SM_KARLIK", "SM_LURKER",
+	"SM_PSYSUCKER" }) do OBJECT_GROUP_OF[c] = "npc" end
+for _, c in ipairs({ "ZS_MBALD", "ZS_GALAN", "ZS_MINCE", "ZS_RADIO", "ZS_TORRD", "ZS_NGRAV", "Z_MBALD", "Z_RADIO", "Z_CFIRE", "Z_NOGRAV",
+	"Z_TORRID", "Z_RUSTYH", "ZS_BFUZZ", "ZS_AMEBA" }) do OBJECT_GROUP_OF[c] = "anomaly" end
+
+CATS = {
+	items = { "all", "fav", "weapons", "ammo", "outfits", "artefacts", "consumables", "addons", "other" },
+	npc = { "all", "fav", "squads_stalker", "squads_mutant", "stalkers", "mutants", "anomalies", "objects" },
+	levels = { "all", "fav" },
+	favs = { "all" },
+}
+
+-- cp1251 lower case: string.lower knows only Latin
+local LOWER = {}
+for c = 192, 223 do LOWER[string.char(c)] = string.char(c + 32) end
+LOWER["\168"] = "\184"
+local function lower(s) return (tostring(s or ""):lower():gsub("[\192-\223\168]", LOWER)) end
+
+local catalog_cache = {}
+
+function reset_catalogs() catalog_cache = {} end
+
+local function registry()
+	local r = rawget(_G, "coop_debug_cmds")
+	if r == nil then
+		local ok, m = pcall(function() return coop_debug_cmds end)
+		r = ok and m or nil
+	end
+	return type(r) == "table" and r or nil
+end
+
+local function ini_str(sec, key)
+	local ok, v = pcall(function() return ini_sys:r_string_ex(sec, key) end)
+	if ok and type(v) == "string" and v ~= "" then return v end
+	return nil
+end
+
+local function ini_num(sec, key)
+	local v = ini_str(sec, key)
+	return v and tonumber(v) or nil
+end
+
+local function section_class(sec)
+	return ini_str(sec, "kind") or ini_str(sec, "class")
+end
+
+local function blacklisted()
+	local ok, ltx = pcall(function() return ini_file("plugins\\spawner_blacklist.ltx") end)
+	if not ok or not ltx then return function() return false end end
+	return function(sec)
+		local ok2, yes = pcall(function() return ltx:line_exist("ignore_sections", sec) end)
+		return ok2 and yes == true
+	end
+end
+
+local function entry(kind, sec, name, cat)
+	local key = (kind == "item" and "i:" or (kind == "object" and "o:" or "l:")) .. sec
+	return { key = key, kind = kind, sec = sec, name = name, cat = cat, low = lower(name .. " " .. sec), lname = lower(name) }
+end
+
+local function build_world_catalogs()
+	local items, npc = {}, {}
+	local R = registry()
+	local item_ok = R and type(R.ITEM_CLASSES) == "table" and R.ITEM_CLASSES or ITEM_CAT_OF
+	local obj_group = R and type(R.OBJECT_CLASSES) == "table" and R.OBJECT_CLASSES or OBJECT_GROUP_OF
+	local banned = blacklisted()
+	local sfind = string.find
+	pcall(function()
+		ini_sys:section_for_each(function(sec)
+			if sfind(sec, "tch_", 1, true) or sfind(sec, "mp_", 1, true) or sfind(sec, "_base", 1, true) or banned(sec) then return false end
+			local class = section_class(sec)
+			if not class then return false end
+			if item_ok[class] then
+				local cat = ITEM_CAT_OF[class] or "other"
+				if cat == "weapons" and (ini_str(sec, "parent_section") or sec) ~= sec then return false end
+				local desc = ini_str(sec, "description")
+				if desc and desc:find("st_dxr_addon_scope_", 1, true) then cat = "addons" end
+				local nid = ini_str(sec, "inv_name_short") or ini_str(sec, "inv_name")
+				local name = nid and tr(nid) or sec
+				local e = entry("item", sec, name, cat)
+				local gw, gh = ini_num(sec, "inv_grid_width"), ini_num(sec, "inv_grid_height")
+				if gw and gh and gw > 0 and gh > 0 then
+					e.icon = { tex = ini_str(sec, "icons_texture") or "ui\\ui_icon_equipment", x = (ini_num(sec, "inv_grid_x") or 0) * 50,
+						y = (ini_num(sec, "inv_grid_y") or 0) * 50, w = gw * 50, h = gh * 50 }
+				end
+				items[#items + 1] = e
+			elseif obj_group[class] then
+				local group = obj_group[class]
+				if ini_str(sec, "story_id") then return false end
+				local cat
+				if group == "squad" then
+					if (ini_str(sec, "faction") or ""):find("monster", 1, true) then cat = "squads_mutant"
+					elseif sfind(sec, "sim_squad_", 1, true) then cat = "squads_stalker" end
+				elseif group == "npc" then
+					if class:find("^SM_") then cat = "mutants"
+					elseif (ini_str(sec, "character_profile") or ""):find("sim_default_", 1, true) or ini_str(sec, "species") ~= "human" then cat = "stalkers" end
+				elseif group == "anomaly" then cat = "anomalies"
+				elseif group == "physic" or group == "vehicle" then cat = "objects" end
+				if cat then npc[#npc + 1] = entry("object", sec, sec, cat) end
+			end
+			return false
+		end)
+	end)
+	catalog_cache.items, catalog_cache.npc = items, npc
+end
+
+local function build_levels()
+	local out = {}
+	pcall(function()
+		local ini = game_ini()
+		local names = nil
+		local ud = rawget(_G, "utils_data")
+		if type(ud) == "table" and type(ud.collect_section) == "function" then names = ud.collect_section(ini, "level_maps_single") end
+		if not names then
+			names = {}
+			for i = 0, ini:line_count("level_maps_single") - 1 do
+				local _, k = ini:r_line("level_maps_single", i, "", "")
+				names[#names + 1] = k
+			end
+		end
+		for _, lv in ipairs(names) do
+			if type(lv) == "string" and lv ~= "" then
+				local ok, s = pcall(function() return game.translate_string(lv) end)
+				out[#out + 1] = entry("level", lv, ok and type(s) == "string" and s or lv, "levels")
+			end
+		end
+	end)
+	catalog_cache.levels = out
+end
+
+-- -> the list of a catalog: items | npc | levels | favs (the starred ones of the other three)
+function catalog(kind)
+	if kind == "favs" then
+		local set, out = fav_set(), {}
+		for _, k in ipairs({ "items", "npc", "levels" }) do
+			for _, e in ipairs(catalog(k)) do if set[e.key] then out[#out + 1] = e end end
+		end
+		return out
+	end
+	if not catalog_cache[kind] then
+		if kind == "levels" then build_levels() else build_world_catalogs() end
+	end
+	return catalog_cache[kind] or {}
+end
+
+-- the entries of a catalog for a category, a query (words, in any order, in the name or the section) and a sort (name | section)
+function filter(kind, cat, query, sort)
+	local q = {}
+	for w in lower(query):gmatch("%S+") do q[#q + 1] = w end
+	local set = (cat == "fav") and fav_set() or nil
+	local out = {}
+	for _, e in ipairs(catalog(kind)) do
+		if (cat == nil or cat == "all" or e.cat == cat or (set and set[e.key])) then
+			local hit = true
+			for _, w in ipairs(q) do
+				if not e.low:find(w, 1, true) then hit = false break end
+			end
+			if hit then out[#out + 1] = e end
+		end
+	end
+	if sort == "section" then
+		table.sort(out, function(a, b) return a.sec < b.sec end)
+	else
+		table.sort(out, function(a, b) if a.lname ~= b.lname then return a.lname < b.lname end return a.sec < b.sec end)
+	end
+	return out
+end
+
+-------------------------------------------------------------------------------
+-- Blur under the panel: available when the renderer keeps the blurred frame ($user$blur_N, R2-R4) and the engine says so
+-------------------------------------------------------------------------------
+local blur_ok = nil
+
+function reset_blur_probe() blur_ok = nil end
+
+local function renderer()
+	local ok, r = pcall(function()
+		local g = rawget(_G, "get_console_cmd")
+		if type(g) == "function" then return g(0, "renderer") end
+		return get_console():get_token("renderer")
+	end)
+	return ok and type(r) == "string" and r or nil
+end
+
+-- the probe: the texture must have the size of the screen divided by n (a missing one would be a stand-in of another size)
+function blur_available(img)
+	if blur_ok ~= nil then return blur_ok end
+	blur_ok = false
+	local r = renderer()
+	if not (r and r:find("^renderer_r") and r ~= "renderer_r1") or not img then return false end
+	local ok = pcall(function() img:InitTexture(BLUR_TEX[2]) end)
+	local ok2, sz = pcall(function() return img:GetTextureSize() end)
+	local d = device()
+	if ok and ok2 and sz and type(sz.x) == "number" and sz.x > 0 then
+		blur_ok = abs(sz.x - d.width / 4) <= 2 and abs(sz.y - d.height / 4) <= 2
+	end
+	if not blur_ok then log("blur under the panel is not available (%s): tinted glass", tostring(r)) end
+	return blur_ok
+end
+
+-------------------------------------------------------------------------------
 -- Window
 -------------------------------------------------------------------------------
 class "UICoopDebug" (CUIScriptWnd)
 
 function UICoopDebug:__init(page) super()
+	self.S = get_settings()
+	self.D = DENSITY[self.S.density] or DENSITY.normal
 	self.st = client().state()
 	self.on = self.st.on == true
 	self.operator = client().is_operator()
 	self.page_list = self.on and PAGES_ON or PAGES_OFF
-	self.pages, self.rail, self.flag_rows, self.actions = {}, {}, {}, {}
-	self.found, self.found_rows, self.tp_peers = {}, {}, {}
-	self.spawn_n, self.spawn_at, self.spawn_sec, self.spawn_text = 1, "inv", nil, nil
-	self.hour, self.factor_i = 6, 4
-	self.next_refresh = 0
-	self.modal, self.modal_ctx = nil, nil
+	self.pages, self.tabs, self.actions, self.page_layout, self.page_hot, self.placed = {}, {}, {}, {}, {}, {}
+	self.flag_rows, self.tp_rows = {}, {}
+	self.lists = {}
+	self.spawn_n, self.spawn_at, self.hour, self.factor_i, self.faction = 1, "inv", 6, 4, nil
+	self.next_refresh, self.next_poll, self.next_relayout = 0, 0, 0
+	self.modal, self.modal_ctx, self.popover = nil, nil, false
 	self:InitControls()
 	self:select_page(self:has_page(page) and page or "overview")
 	self:Refresh()
@@ -113,167 +518,273 @@ function UICoopDebug:page_ids()
 	return out
 end
 
+-- a text style of a font role and a colour role, made on first use
+function UICoopDebug:St(font, color)
+	local name = "dbg_" .. font .. "_" .. color
+	if not self.T.text[name] then self.T.text[name] = { font = font, color = color } end
+	return name
+end
+
+function UICoopDebug:col(role, a)
+	local c = self.T.colors[role] or self.T.colors.text
+	return coop_ui_kit.argb({ c[1], c[2], c[3], a ~= nil and a or (c[4] or 1) })
+end
+
 function UICoopDebug:InitControls()
-	self:SetWndRect(Frect():set(0, 0, UI_W, UI_H))
+	self:SetWndRect(Frect():set(0, 0, 1024, 768))
 	self:Enable(true)
+	pcall(function() self:AllowMovement(self.S.move == true) end)
+	pcall(function() self:AllowCursor(true) end)
 	self.T = coop_menu_theme_base.load()
+	local cl = self.T.colors
+	cl.glass = { 10, 12, 11 } -- the tint, its alpha is the opacity setting
+	cl.glass_top = { 18, 20, 17 } -- the title bar
+	cl.edge = { 236, 230, 216, .14 }
+	cl.edge_hi = { 255, 255, 255, .07 }
+	cl.shadow = { 0, 0, 0, 1 }
+	cl.btn = { 236, 230, 216, .07 }
+	cl.btn_hot = { 236, 230, 216, .14 }
+	cl.btn_on = { 217, 171, 91, .22 }
+	cl.btn_danger = { 240, 120, 100, .12 }
+	cl.row_pick = { 217, 171, 91, .16 }
 	self.ui = coop_ui_kit.new(self, XML_FILE, self.T)
+	self.view = self.ui.L:view()
+	self.rect = clamp_rect({ x = self.S.x, y = self.S.y, w = self.S.w, h = self.S.h }, self.view)
+	self.hot = {}
+
 	local ui = self.ui
-
-	-- the game stays visible under a dim, the panel lies in the middle of the stage
-	ui:full_box("modal_dim")
-	local g = ui:block("coop_debug", P.x, P.y, P.w, P.h)
-	self.g = g
-	ui:flush_text(g)
-	ui:box(g, 0, 0, P.w, P.h, "panel")
-	ui:outline(g, 0, 0, P.w, P.h, "line")
-	local corners = ui:corners(g, "accent")
-	ui:place_corners(corners, 0, 0, P.w, P.h, self.T.corners.len, self.T.corners.thick)
-
-	self:BuildHeader()
-	self:BuildRail()
-	self:BuildPages()
+	local r = self.rect
+	self.g = ui:block("coop_debug", r.x, r.y, r.w, r.h)
+	ui:flush_text(self.g)
+	self:BuildGlass()
+	self:BuildTitle()
+	self:BuildTabs()
+	self.body = ui:free(self.g, 0, 0, 8, 8)
+	ui:clip(self.body)
+	for _, id in ipairs(self.page_list) do
+		local p = ui:free(self.body, 0, 0, 8, 8)
+		self.pages[id] = p
+		self.page_hot[id] = {}
+		self.cur_build = id
+		self["Page_" .. id](self, p)
+	end
+	self.cur_build = nil
 	self:BuildFeed()
+	self:BuildPopover()
 	self:BuildModal()
+	self:Relayout()
 end
 
 -------------------------------------------------------------------------------
 -- Pieces
 -------------------------------------------------------------------------------
--- A button: kind ghost (a frame), danger (a frame, red text), primary (a filled notched shape, the co-op window's Play).
-function UICoopDebug:Button(parent, x, y, w, h, name, text, kind, fn)
+-- A button: a soft filled pill (ImGui-like), the text in the middle. kind: ghost | chip | primary | danger.
+function UICoopDebug:Btn(parent, name, text, kind, fn, align)
 	local ui = self.ui
-	local b = { kind = kind or "ghost", parts = {} }
-	if b.kind == "primary" then
-		b.parts = ui:notched(parent, x, y, w, h, 10, "accent")
-		b.style = h >= 52 and "play" or "modal_ok"
-	else
-		b.parts = ui:outline(parent, x, y, w, h, "tile_line")
-		b.style = b.kind == "danger" and "status_err" or "ghost"
-	end
-	b.text = ui:label(parent, x + 8, y, w - 16, h, b.style, "c")
-	b.text:SetText(text or "")
-	b.btn = ui:hit(parent, x, y, w, h, name)
+	local b = { kind = kind or "ghost", name = name, label = text or "", on = false, enabled = true, align = align }
+	b.fill = ui:box(parent, 0, 0, 8, 8, "btn")
+	b.text = ui:label(parent, 0, 0, 8, 8, self:St(self.D.font, "text"), align or "c")
+	b.text:SetText(b.label)
+	b.btn = ui:hit(parent, 0, 0, 8, 8, name, false)
 	self:AddCallback(name, ui_events.BUTTON_CLICKED, fn, self)
+	local list = self.cur_build and self.page_hot[self.cur_build] or self.hot
+	list[#list + 1] = b
+	self:PaintBtn(b)
 	return b
 end
 
-function UICoopDebug:EnableButton(b, on)
-	on = on and true or false
-	b.btn:Enable(on)
-	if on then
-		self.ui:style(b.text, b.style)
+function UICoopDebug:SetBtnText(b, text)
+	b.label = text or ""
+	b.text:SetText(b.label)
+end
+
+function UICoopDebug:PaintBtn(b)
+	local k = b.kind
+	local fill, a, tc
+	if not b.enabled then
+		fill, tc = "btn", "faint"
+	elseif k == "primary" then
+		fill, tc = b.hot and "accent_hi" or "accent", "on_accent"
+	elseif b.on then
+		fill, tc = "btn_on", "accent_hi"
+	elseif k == "danger" then
+		fill, tc = b.hot and "btn_hot" or "btn_danger", "error"
 	else
-		b.text:SetTextColor(self.ui:color("faint"))
+		fill, tc = b.hot and "btn_hot" or "btn", k == "chip" and "dim" or "text"
+	end
+	b.fill:SetTextureColor(self:col(fill, a))
+	self.ui:style(b.text, self:St(self.D.font, tc))
+end
+
+function UICoopDebug:EnableBtn(b, on)
+	on = on and true or false
+	if b.enabled == on then return end
+	b.enabled = on
+	b.btn:Enable(on)
+	self:PaintBtn(b)
+end
+
+function UICoopDebug:SelectBtn(b, on)
+	on = on and true or false
+	if b.on == on then return end
+	b.on = on
+	self:PaintBtn(b)
+end
+
+function UICoopDebug:PlaceBtn(b, x, y, w, h, page)
+	local ui = self.ui
+	ui:place(b.fill, x, y, w, h)
+	if b.align == "l" then ui:place(b.text, x + 10, y, w - 14, h) else ui:place(b.text, x + 4, y, w - 8, h) end
+	ui:place(b.btn, x, y, w, h)
+	b.x, b.y, b.w, b.h = x, y, w, h
+	if page then
+		local list = self.placed[page]
+		list[#list + 1] = { name = b.name, x = x, y = y, w = w, h = h }
 	end
 end
 
--- the small capitals over a group of buttons, with a hairline to the end of the page
-function UICoopDebug:Heading(parent, x, y, w, id)
-	local t = self.ui:label(parent, x, y, w, 22, "tl_sub")
-	t:SetText(tr(id))
-	self.ui:box(parent, x, y + 24, w, 1, "line")
+function UICoopDebug:ShowBtn(b, on)
+	b.fill:Show(on)
+	b.text:Show(on)
+	b.btn:Show(on) -- Show enables a window too: a disabled button stays disabled
+	if on and not b.enabled then b.btn:Enable(false) end
+	b.shown = on
+end
+
+-- the width a button wants for its text
+function UICoopDebug:BtnW(b, least)
+	return button_w(b.label, self.D.font, least or 40, b.kind == "chip" and 14 or 22)
+end
+
+function UICoopDebug:Label(parent, style_font, style_color, align)
+	local t = self.ui:label(parent, 0, 0, 8, 8, self:St(style_font, style_color), align)
+	pcall(function() t:SetEllipsis(true) end)
 	return t
 end
 
--- a row of action buttons; returns the y under it. w: one width for all, a table: by id, nil: the row fills the page
-function UICoopDebug:ActionRow(parent, x, y, list, w)
-	local n = #list
-	local fill = n > 0 and min(ROW_MAX, floor((CW - x - (n - 1) * GAP) / n)) or BTN_W
-	local bx = x
-	for _, a in ipairs(list) do
-		local bw = type(w) == "table" and (w[a.id] or BTN_W) or w or fill
-		local b = self:Button(parent, bx, y, bw, BTN_H, "btn_act_" .. a.id, client().label_of(a), a.danger and "danger" or "ghost",
-			function() self:OnAction(a.id) end)
-		self.actions[a.id] = b
-		bx = bx + bw + GAP
+-- hover: only the buttons of the frame and of the page in sight, every frame (no allocation)
+function UICoopDebug:HoverList(list)
+	for i = 1, #list do
+		local b = list[i]
+		local on = b.shown ~= false and b.enabled and b.btn:IsCursorOverWindow() or false
+		if on ~= (b.hot or false) then
+			b.hot = on
+			if b.on_hot then b.on_hot(on) else self:PaintBtn(b) end
+		end
 	end
-	return y + BTN_H
-end
-
--- an outlined card with a title and rows of key and value
-function UICoopDebug:Card(parent, x, y, w, h, title_id, keys)
-	local ui = self.ui
-	local c = { vals = {} }
-	ui:outline(parent, x, y, w, h, "line")
-	local t = ui:label(parent, x + 18, y + 12, w - 36, 30, "cap")
-	t:SetText(tr(title_id))
-	ui:box(parent, x + 18, y + 46, 28, 2, "accent")
-	local ry = y + 58
-	for _, k in ipairs(keys or {}) do
-		local kl = ui:label(parent, x + 18, ry, 116, 24, "tl_tag")
-		kl:SetText(tr("st_coop_dbg_k_" .. k))
-		local v = ui:label(parent, x + 138, ry, w - 156, 24, "meta_on")
-		pcall(function() v:SetEllipsis(true) end)
-		c.vals[k] = v
-		ry = ry + 25
-	end
-	c.next_y = ry
-	return c
-end
-
--- free lines of a card (lists: items, players)
-function UICoopDebug:CardLines(parent, x, y, w, n)
-	local out = {}
-	for i = 1, n do
-		local l = self.ui:label(parent, x + 18, y + (i - 1) * 25, w - 36, 24, "meta_on")
-		pcall(function() l:SetEllipsis(true) end)
-		out[i] = l
-	end
-	return out
 end
 
 -------------------------------------------------------------------------------
--- Header: title, who, the state of the server debug, the operator's switch
+-- The glass: a soft shadow, the blurred frame under the panel (when there is one), the tint, a hairline and a top highlight
 -------------------------------------------------------------------------------
-function UICoopDebug:BuildHeader()
+function UICoopDebug:BuildGlass()
 	local ui, g = self.ui, self.g
-	local title = ui:label(g, 40, 22, 640, 36, "mark")
-	title:SetText(tr("st_coop_dbg_title"))
-	self.who = ui:label(g, 40, 60, 700, 24, "who")
+	self.shadow = {}
+	for i = 1, 3 do self.shadow[i] = ui:box(g, 0, 0, 8, 8, "shadow") end
+	self.blur_img = ui:image(g)
+	self.blur_img:Show(false)
+	self.tint = ui:box(g, 0, 0, 8, 8, "glass")
+	self.title_bg = ui:box(g, 0, 0, 8, 8, "glass_top")
+	self.tabs_bg = ui:box(g, 0, 0, 8, 8, "btn")
+	self.edge = ui:outline(g, 0, 0, 8, 8, "edge")
+	self.edge_hi = ui:box(g, 0, 0, 8, 1, "edge_hi")
+	self.lines = { ui:box(g, 0, 0, 8, 1, "line"), ui:box(g, 0, 0, 1, 8, "line"), ui:box(g, 0, 0, 8, 1, "line") }
+end
 
-	local sx, sw = P.w - 64 - 460, 460
-	self.state_dot = ui:box(g, P.w - 40 - 12, 33, 12, 12, "idle")
-	self.state_text = ui:label(g, sx, 22, sw, 32, "meta_on", "r")
-	self.state_sub = ui:label(g, sx, 56, sw, 24, "status_sub", "r")
-
-	if self.operator then
-		self.toggle = self:Button(g, sx - 24 - 220, 26, 220, 52, "btn_server_toggle", "", "primary", self.OnServerToggle)
+function UICoopDebug:ApplyGlass()
+	local S = self.S
+	local blur = S.blur > 0 and blur_available(self.blur_img)
+	self.blur_on = blur
+	local a = S.opacity / 100
+	if blur then
+		if self.blur_tex ~= BLUR_TEX[S.blur] then
+			self.blur_tex = BLUR_TEX[S.blur]
+			pcall(function()
+				self.blur_img:InitTexture(self.blur_tex)
+				self.blur_img:SetStretchTexture(true)
+			end)
+			self.blur_img:SetTextureColor(self:col("white", 1))
+		end
+		a = a * .78 -- the blur carries part of the legibility
 	end
-	ui:box(g, 0, HEAD_H, P.w, 1, "line")
+	self.blur_img:Show(blur)
+	self.tint:SetTextureColor(self:col("glass", a))
+	self.title_bg:SetTextureColor(self:col("glass_top", min(1, a + .08)))
+	local sa = { .30, .14, .06 }
+	for i, s in ipairs(self.shadow) do s:SetTextureColor(self:col("shadow", sa[i] * (.5 + a / 2))) end
+	self:PlaceBlur()
+end
+
+-- the part of the blurred frame that lies under the panel: its screen pixels divided by the size step of that texture
+function UICoopDebug:PlaceBlur()
+	if not self.blur_on then return end
+	local L, r = self.ui.L, self.rect
+	local d = device()
+	local k = BLUR_DIV[self.S.blur] or 4
+	local sx, sy = d.width / 1024, d.height / 768
+	local x1, y1, x2, y2 = L:rect(r.x, r.y, r.w, r.h)
+	pcall(function() self.blur_img:SetTextureRect(Frect():set(x1 * sx / k, y1 * sy / k, x2 * sx / k, y2 * sy / k)) end)
+end
+
+-------------------------------------------------------------------------------
+-- Title bar
+-------------------------------------------------------------------------------
+function UICoopDebug:BuildTitle()
+	local ui, g = self.ui, self.g
+	self.title = self:Label(g, "small", "text")
+	self.title:SetText(tr("st_coop_dbg_title"))
+	self.state_dot = ui:box(g, 0, 0, 8, 8, "idle")
+	self.state_text = self:Label(g, "small", "dim")
+	if self.operator then
+		self.toggle = self:Btn(g, "btn_server_toggle", "", "ghost", self.OnServerToggle)
+	end
+	self.gear = self:Btn(g, "btn_settings", tr("st_coop_dbg_set_btn"), "ghost", self.OnSettings)
+	self.close_btn = self:Btn(g, "btn_close", "X", "ghost", function() close() end)
+end
+
+function UICoopDebug:LayoutTitle(w)
+	local ui, D = self.ui, self.D
+	local h = D.btn
+	local y = floor((TITLE_H - h) / 2)
+	local x = w - 8 - h
+	self:PlaceBtn(self.close_btn, x, y, h, h)
+	local gw = self:BtnW(self.gear, 60)
+	x = x - GAP - gw
+	self:PlaceBtn(self.gear, x, y, gw, h)
+	if self.toggle then
+		local tw = max(button_w(tr("st_coop_dbg_btn_off"), D.font), button_w(tr("st_coop_dbg_btn_on"), D.font), button_w(tr("st_coop_dbg_btn_wait"), D.font))
+		x = x - GAP - tw
+		self:PlaceBtn(self.toggle, x, y, tw, h)
+	end
+	self.title_drag_w = x - 4
+	-- the title, then a short state with its dot: no long line to cut (the owner, 2026-11-07); how to turn debug on is in Help
+	local tw = min(text_w(self.title:GetText(), "small") + 8, max(60, x - 200))
+	ui:place(self.title, 14, 0, tw, TITLE_H)
+	ui:place(self.state_dot, 14 + tw + 10, floor(TITLE_H / 2) - 3, 6, 6)
+	ui:place(self.state_text, 14 + tw + 22, 0, max(20, x - (14 + tw + 22) - 8), TITLE_H)
 end
 
 function UICoopDebug:BindHeader()
 	local cl = client()
 	local st = cl.state()
 	local pending = cl.toggle_pending()
-	local role, text, sub
+	local role, text, short
 	if pending then
-		role, text, sub = "wait", tr("st_coop_dbg_state_pending"), tr("st_coop_dbg_src_wait")
+		role, text, short = "wait", tr("st_coop_dbg_state_pending"), tr("st_coop_dbg_head_wait")
 	elseif not st.known then
-		role, text, sub = "error", tr("st_coop_dbg_state_off"), tr("st_coop_dbg_src_none")
+		role, text, short = "error", tr("st_coop_dbg_state_off"), tr("st_coop_dbg_head_none")
 	elseif st.on then
-		role, text = "live", tr("st_coop_dbg_state_on")
-		sub = tr(st.source == "key" and "st_coop_dbg_src_key" or "st_coop_dbg_src_console")
+		role, text, short = "live", tr("st_coop_dbg_state_on"), tr("st_coop_dbg_head_on")
 	else
-		role, text = "idle", tr("st_coop_dbg_state_off")
-		sub = tr(self.operator and "st_coop_dbg_src_off_operator" or "st_coop_dbg_src_off")
+		role, text, short = "idle", tr("st_coop_dbg_state_off"), tr("st_coop_dbg_head_off")
 	end
 	self.state_dot:SetTextureColor(self.ui:color(role))
-	self.state_text:SetText(text)
-	self.state_sub:SetText(sub)
+	self.state_word = text
+	self.state_text:SetText(short)
 	if self.toggle then
-		self.toggle.text:SetText(tr(pending and "st_coop_dbg_btn_wait" or (st.on and "st_coop_dbg_btn_off" or "st_coop_dbg_btn_on")))
-		self.ui:tint(self.toggle.parts, pending and "accent_soft" or "accent")
-		self.toggle.btn:Enable(not pending)
+		self:SetBtnText(self.toggle, tr(pending and "st_coop_dbg_btn_wait" or (st.on and "st_coop_dbg_btn_off" or "st_coop_dbg_btn_on")))
+		self:EnableBtn(self.toggle, not pending)
 	end
-	local nick, peer = "?", cl.self_peer()
-	pcall(function()
-		for _, p in ipairs(coop.players() or {}) do
-			if p.is_self then nick = p.nick end
-		end
-	end)
-	self.who:SetText(trf("st_coop_dbg_sub", tostring(nick), tostring(peer)))
 end
 
 function UICoopDebug:OnServerToggle()
@@ -283,274 +794,777 @@ function UICoopDebug:OnServerToggle()
 end
 
 -------------------------------------------------------------------------------
--- Rail: the pages
+-- Tabs
 -------------------------------------------------------------------------------
-function UICoopDebug:BuildRail()
-	local ui, g = self.ui, self.g
-	ui:box(g, RAIL_W, HEAD_H + 1, 1, P.h - HEAD_H - FEED_H - 1, "line")
-	for i, id in ipairs(self.page_list) do
-		local y = HEAD_H + 24 + (i - 1) * 76
-		local r = { id = id }
-		r.pick = ui:box(g, 12, y, RAIL_W - 24, 68, "pick")
-		r.bar = ui:box(g, 12, y, 3, 68, "accent")
-		r.title = ui:label(g, 34, y + 8, RAIL_W - 58, 30, "game_title")
-		r.title:SetText(tr("st_coop_dbg_page_" .. id))
-		r.sub = ui:label(g, 34, y + 38, RAIL_W - 58, 22, "game_sub")
-		r.sub:SetText(tr("st_coop_dbg_page_" .. id .. "_sub"))
-		ui:hit(g, 12, y, RAIL_W - 24, 68, "btn_page_" .. id)
-		self:AddCallback("btn_page_" .. id, ui_events.BUTTON_CLICKED, function() self:select_page(id) end, self)
-		self.rail[#self.rail + 1] = r
+function UICoopDebug:BuildTabs()
+	local g = self.g
+	for _, id in ipairs(self.page_list) do
+		local t = { id = id }
+		t.bar = self.ui:box(g, 0, 0, 2, 8, "accent")
+		t.b = self:Btn(g, "btn_page_" .. id, tr("st_coop_dbg_page_" .. id), "ghost", function() self:select_page(id) end, "l")
+		self.tabs[#self.tabs + 1] = t
+	end
+end
+
+function UICoopDebug:LayoutTabs()
+	local h = self.D.row
+	local y = TITLE_H + 8
+	for _, t in ipairs(self.tabs) do
+		self:PlaceBtn(t.b, 8, y, TAB_W - 16, h)
+		self.ui:place(t.bar, 8, y + 4, 2, h - 8)
+		y = y + h + 2
 	end
 end
 
 function UICoopDebug:select_page(id)
 	if not self:has_page(id) then return end
 	self.page = id
-	last_page = id
-	for _, r in ipairs(self.rail) do
-		local on = r.id == id
-		r.pick:Show(on)
-		r.bar:Show(on)
-		self.ui:style(r.title, on and "game_title_on" or "game_title")
-		self.ui:style(r.sub, on and "game_sub_on" or "game_sub")
+	self.S.page = id
+	for _, t in ipairs(self.tabs) do
+		local on = t.id == id
+		t.bar:Show(on)
+		self:SelectBtn(t.b, on)
 	end
 	for pid, p in pairs(self.pages) do p:Show(pid == id) end
+	if self.page_layout[id] and self.body_rect then self:LayoutPage(id) end
 	self.next_refresh = 0
 end
 
 -------------------------------------------------------------------------------
--- Pages
+-- Layout of the whole panel for its rect; pages place their own controls
 -------------------------------------------------------------------------------
-function UICoopDebug:BuildPages()
-	for _, id in ipairs(self.page_list) do
-		local p = self.ui:free(self.g, CX, CY, CW, CH)
-		self.pages[id] = p
-		local build = self["Page_" .. id]
-		build(self, p)
+function UICoopDebug:Relayout()
+	local ui, r = self.ui, self.rect
+	local w, h = r.w, r.h
+	self.g:SetWndRect(Frect():set(ui.L:rect(r.x, r.y, w, h)))
+	local F = frame_layout(w, h)
+	self.F = F
+	local spread = { 2, 5, 10 }
+	for i, s in ipairs(self.shadow) do ui:place(s, -spread[i], -spread[i] + 2, w + 2 * spread[i], h + 2 * spread[i]) end
+	ui:place(self.blur_img, 0, 0, w, h)
+	ui:place(self.tint, 0, 0, w, h)
+	ui:place(self.title_bg, 0, 0, w, TITLE_H)
+	ui:place(self.tabs_bg, 0, TITLE_H, TAB_W, h - TITLE_H)
+	ui:place(self.edge[1], 0, 0, w, 1)
+	ui:place(self.edge[2], 0, h - 1, w, 1)
+	ui:place(self.edge[3], 0, 0, 1, h)
+	ui:place(self.edge[4], w - 1, 0, 1, h)
+	ui:place(self.edge_hi, 1, 1, w - 2, 1)
+	ui:place(self.lines[1], 0, TITLE_H, w, 1)
+	ui:place(self.lines[2], TAB_W, TITLE_H, 1, h - TITLE_H)
+	ui:place(self.lines[3], TAB_W, F.feed.y, w - TAB_W, 1)
+	self:LayoutTitle(w)
+	self:LayoutTabs()
+	local b = F.body
+	ui:place(self.body, b.x, b.y, b.w, b.h)
+	self.body_rect = { x = 0, y = 0, w = b.w - 2 * PAD, h = b.h - 2 * PAD }
+	for _, p in pairs(self.pages) do ui:place(p, PAD, PAD, self.body_rect.w, self.body_rect.h) end
+	self:LayoutFeed()
+	self:LayoutPopover()
+	self:LayoutModal()
+	if self.page then self:LayoutPage(self.page) end
+	self:ApplyGlass()
+end
+
+function UICoopDebug:LayoutPage(id)
+	self.placed[id] = {}
+	local f = self.page_layout[id]
+	if f then f(self.body_rect.w, self.body_rect.h) end
+end
+
+-- the panel moved or changed size (drag, resize, reset)
+function UICoopDebug:SetRect(r, full)
+	self.rect = clamp_rect(r, self.view)
+	if full then
+		self:Relayout()
+	else
+		self.g:SetWndRect(Frect():set(self.ui.L:rect(self.rect.x, self.rect.y, self.rect.w, self.rect.h)))
+		self:PlaceBlur()
 	end
 end
 
--- Overview (D): what this machine knows, read only. Two view requests ask the server.
-function UICoopDebug:Page_overview(p)
-	local w = floor((CW - 2 * 16) / 3)
-	local x1, x2, x3 = 0, w + 16, 2 * (w + 16)
-	local h1 = 330
-	local h2 = CH - h1 - 16
-	self.c_target = self:Card(p, x1, 0, w, h1, "st_coop_dbg_card_target", { "name", "id", "section", "faction", "rank", "relation", "squad", "story" })
-	local by = h1 - 18 - 38
-	local bw = floor((w - 36 - GAP) / 2)
-	for i, id in ipairs({ "can_see", "obj_info" }) do
-		local a = client().action(id)
-		local b = self:Button(p, x1 + 18 + (i - 1) * (bw + GAP), by, bw, 38, "btn_act_" .. id, client().label_of(a), "ghost",
-			function() self:OnAction(id) end)
-		self.actions = self.actions or {}
-		self.actions[id] = b
-	end
-	self.c_items = self:Card(p, x2, 0, w, h1, "st_coop_dbg_card_items", {})
-	self.c_items.lines = self:CardLines(p, x2, 58, w, 9)
-	self.c_place = self:Card(p, x3, 0, w, h1, "st_coop_dbg_card_place", { "level", "pos", "lvid", "gvid", "dir" })
-	self:Button(p, x3 + 18, by, w - 36, 38, "btn_record_pos", tr("st_coop_dbg_record"), "ghost", self.OnRecordPosition)
-
-	self.c_near = self:Card(p, x1, h1 + 16, w, h2, "st_coop_dbg_card_nearest", { "name", "section", "id", "dist" })
-	self.c_players = self:Card(p, x2, h1 + 16, w, h2, "st_coop_dbg_card_players", {})
-	self.c_players.lines = self:CardLines(p, x2, h1 + 16 + 58, w, 5)
-	self.c_world = self:Card(p, x3, h1 + 16, w, h2, "st_coop_dbg_card_world", { "time", "factor", "weather", "emission", "psi" })
-end
-
--- Target: the object under the crosshair when F7 was pressed
-function UICoopDebug:Page_target(p)
-	local ui = self.ui
-	self.t_name = ui:label(p, 0, 0, CW, 34, "cap")
-	self.t_meta = ui:label(p, 0, 34, CW, 26, "meta")
-	local y = 76
-	local groups = { "object", "me", "goodwill", "squad" }
-	self.target_buttons = {}
-	for _, gname in ipairs(groups) do
-		self:Heading(p, 0, y, CW, "st_coop_dbg_g_" .. gname)
-		local list = client().actions_of("target", gname)
-		self:ActionRow(p, 0, y + 34, list, gname == "squad" and BTN_W or nil)
-		for _, a in ipairs(list) do self.target_buttons[#self.target_buttons + 1] = self.actions[a.id] end
-		if gname == "squad" then
-			-- F1: the squad's faction, a community typed beside the squad's goodwill
-			local fx = #list * (BTN_W + GAP) + 24
-			self.ui:box(p, fx, y + 34, 300, BTN_H, "field")
-			self.faction_hint = self.ui:label(p, fx + 14, y + 34, 272, BTN_H, "field_hint")
-			self.faction_hint:SetText(tr("st_coop_dbg_faction_hint"))
-			self.faction_edit = self:xml_edit(p, fx + 14, y + 34, 272, BTN_H)
-			local fa = client().action("faction")
-			self.actions.faction = self:Button(p, fx + 312, y + 34, BTN_W + 40, BTN_H, "btn_act_faction", client().label_of(fa), "ghost",
-				function() self:OnAction("faction") end)
-			self.target_buttons[#self.target_buttons + 1] = self.actions.faction
+-------------------------------------------------------------------------------
+-- Flow pages: groups of a heading and controls that wrap; the page scrolls with the wheel when it is taller than the body
+-------------------------------------------------------------------------------
+-- groups: { { head = string id or nil, items = { { b = button, least = w } | { w = n, h = n, place = function(x, y, w, h) } } } }
+function UICoopDebug:FlowPage(id, groups, top)
+	local heads = {}
+	for i, gr in ipairs(groups) do
+		if gr.head then
+			heads[i] = self:Label(self.pages[id], "small", "faint")
+			heads[i]:SetText(tr(gr.head))
+			heads[i].rule = self.ui:box(self.pages[id], 0, 0, 8, 1, "line")
 		end
-		y = y + 34 + BTN_H + 26
+	end
+	self.scroll_y = self.scroll_y or {}
+	self.page_layout[id] = function(w, h)
+		local y = 0
+		if top then y = top(w, h) end
+		local sy = self.scroll_y[id] or 0
+		local D = self.D
+		for i, gr in ipairs(groups) do
+			if heads[i] then
+				self.ui:place(heads[i], 0, y - sy, w, HEAD_H)
+				self.ui:place(heads[i].rule, 0, y - sy + HEAD_H - 2, w, 1)
+				y = y + HEAD_H + 4
+			end
+			local list = {}
+			for _, it in ipairs(gr.items) do
+				if it.b then
+					list[#list + 1] = { w = it.fill and w or self:BtnW(it.b, it.least), it = it }
+				elseif it.visible == nil or it.visible() then
+					list[#list + 1] = { w = type(it.w) == "function" and it.w(w) or it.w, h = type(it.h) == "function" and it.h(w) or it.h, it = it }
+				end
+			end
+			local used = flow(list, w, GAP, D.btn)
+			for _, l in ipairs(list) do
+				local top_y = y + l.y - sy
+				if l.it.b then
+					local vis = top_y >= 0 and top_y + D.btn <= h
+					self:ShowBtn(l.it.b, vis)
+					self:PlaceBtn(l.it.b, l.x, top_y, l.fw, D.btn, vis and id or nil)
+				else
+					l.it.place(l.x, top_y, l.fw, l.h or D.btn, top_y >= -1 and top_y + (l.h or D.btn) <= h + 1)
+				end
+			end
+			y = y + used + GROUP_GAP
+		end
+		self.content_h = self.content_h or {}
+		self.content_h[id] = y
 	end
 end
 
--- Spawn: a section by a part of its name, a count, where; then one button. Quick kits on the right.
-function UICoopDebug:Page_spawn(p)
+function UICoopDebug:ActionBtn(parent, id)
+	local a = client().action(id)
+	local b = self:Btn(parent, "btn_act_" .. id, client().label_of(a), a.danger and "danger" or "ghost", function() self:OnAction(id) end)
+	self.actions[id] = b
+	return b
+end
+
+function UICoopDebug:ActionItems(parent, page, group)
+	local out = {}
+	for _, a in ipairs(client().actions_of(page, group)) do out[#out + 1] = { b = self:ActionBtn(parent, a.id) } end
+	return out
+end
+
+-- a labelled value: "key  value" on one line, the label takes `kw`
+function UICoopDebug:KeyValue(parent, key_id, kw)
+	local kv = { k = self:Label(parent, "small", "faint"), v = self:Label(parent, "small", "text") }
+	kv.k:SetText(tr(key_id))
+	kv.place = function(x, y, w, h)
+		self.ui:place(kv.k, x, y, kw, h)
+		self.ui:place(kv.v, x + kw, y, max(10, w - kw), h)
+	end
+	return kv
+end
+
+-------------------------------------------------------------------------------
+-- Overview (D): what this machine knows, read only; cards that flow into as many columns as fit
+-------------------------------------------------------------------------------
+function UICoopDebug:Card(p, title_id, keys, lines)
 	local ui = self.ui
-	local lw = 560
-	self:Heading(p, 0, 0, lw, "st_coop_dbg_g_section")
-	ui:box(p, 0, 34, lw, 48, "field")
-	self.spawn_hint = ui:label(p, 16, 34, lw - 32, 48, "field_hint")
-	self.spawn_hint:SetText(tr("st_coop_dbg_sec_hint"))
-	self.spawn_edit = self:xml_edit(p, 16, 34, lw - 32, 48)
-	for i = 1, 8 do
-		local y = 92 + (i - 1) * 40
-		local r = {}
-		r.pick = ui:box(p, 0, y, lw, 38, "pick")
-		r.text = ui:label(p, 16, y, lw - 32, 38, "recent")
-		r.btn = ui:hit(p, 0, y, lw, 38, "btn_found_" .. i)
-		self:AddCallback("btn_found_" .. i, ui_events.BUTTON_CLICKED, function() self:OnFound(i) end, self)
-		self.found_rows[i] = r
+	local c = { vals = {}, kv = {}, lines = {} }
+	c.bg = ui:box(p, 0, 0, 8, 8, "btn")
+	c.title = self:Label(p, "small", "accent")
+	c.title:SetText(coop_menu_kit.spaced(tr(title_id)))
+	for i, k in ipairs(keys or {}) do
+		local kv = self:KeyValue(p, "st_coop_dbg_k_" .. k, 92)
+		c.kv[i] = kv
+		c.vals[k] = kv.v
 	end
-
-	local rx, rw = lw + 40, CW - lw - 40
-	self:Heading(p, rx, 0, rw, "st_coop_dbg_g_count")
-	self:Button(p, rx, 34, 48, 48, "btn_n_minus", "-", "ghost", function() self:OnCount(-1) end)
-	self.n_text = ui:label(p, rx + 56, 34, 80, 48, "cap", "c")
-	self:Button(p, rx + 144, 34, 48, 48, "btn_n_plus", "+", "ghost", function() self:OnCount(1) end)
-
-	self:Heading(p, rx, 100, rw, "st_coop_dbg_g_where")
-	self.where = {}
-	local cw = floor((rw - 2 * GAP) / 3)
-	for i, at in ipairs({ "inv", "point", "near" }) do
-		local x = rx + (i - 1) * (cw + GAP)
-		local b = self:Button(p, x, 134, cw, BTN_H, "btn_where_" .. at, tr("st_coop_dbg_at_" .. at), "ghost", function() self:OnWhere(at) end)
-		b.mark = ui:box(p, x, 134 + BTN_H - 3, cw, 3, "accent")
-		self.where[at] = b
+	for i = 1, lines or 0 do c.lines[i] = self:Label(p, "small", "text") end
+	c.n = #c.kv + #c.lines
+	c.extra = {}
+	c.h = 34 + c.n * 20 + 10
+	c.place = function(x, y, w, h, vis)
+		ui:place(c.bg, x, y, w, h)
+		ui:place(c.title, x + 12, y + 6, w - 24, 22)
+		local ry = y + 32
+		for _, kv in ipairs(c.kv) do kv.place(x + 12, ry, w - 24, 20); ry = ry + 20 end
+		for _, l in ipairs(c.lines) do ui:place(l, x + 12, ry, w - 24, 20); ry = ry + 20 end
+		for _, e in ipairs(c.extra) do e(x, y, w, h, vis) end
 	end
-	self.spawn_pick = ui:label(p, rx, 194, rw, 30, "meta_on")
-	self.spawn_kind = ui:label(p, rx, 224, rw, 24, "hint")
-	self.spawn_go = self:Button(p, rx, 258, 280, 56, "btn_spawn_go", tr("st_coop_dbg_spawn_go"), "primary", self.OnSpawn)
-
-	self:Heading(p, rx, 344, rw, "st_coop_dbg_g_quick")
-	self:ActionRow(p, rx, 378, client().actions_of("spawn", "quick"), floor((rw - GAP) / 2))
+	return c
 end
 
-function UICoopDebug:xml_edit(parent, x, y, w, h)
+function UICoopDebug:Page_overview(p)
+	self.c_target = self:Card(p, "st_coop_dbg_card_target", { "name", "id", "section", "faction", "rank", "relation", "squad", "story" })
+	self.c_items = self:Card(p, "st_coop_dbg_card_items", {}, 9)
+	self.c_place = self:Card(p, "st_coop_dbg_card_place", { "level", "pos", "lvid", "gvid", "dir" })
+	self.c_near = self:Card(p, "st_coop_dbg_card_nearest", { "name", "section", "id", "dist" })
+	self.c_players = self:Card(p, "st_coop_dbg_card_players", {}, 5)
+	self.c_world = self:Card(p, "st_coop_dbg_card_world", { "time", "factor", "weather", "emission", "psi" })
+	-- the two view requests under the target card, the record button under the place card
+	local view_btns = { self:ActionBtn(p, "can_see"), self:ActionBtn(p, "obj_info") }
+	self.c_target.h = self.c_target.h + self.D.btn + 6
+	self.c_target.extra[1] = function(x, y, w, h, vis)
+		local bx = x + 12
+		for _, b in ipairs(view_btns) do
+			local bw = self:BtnW(b, 80)
+			self:ShowBtn(b, vis)
+			self:PlaceBtn(b, bx, y + h - self.D.btn - 10, bw, self.D.btn, vis and "overview" or nil)
+			bx = bx + bw + GAP
+		end
+	end
+	local rec = self:Btn(p, "btn_record_pos", tr("st_coop_dbg_record"), "ghost", self.OnRecordPosition)
+	self.c_place.h = self.c_place.h + self.D.btn + 6
+	self.c_place.extra[1] = function(x, y, w, h, vis)
+		self:ShowBtn(rec, vis)
+		self:PlaceBtn(rec, x + 12, y + h - self.D.btn - 10, min(w - 24, self:BtnW(rec, 80)), self.D.btn, vis and "overview" or nil)
+	end
+	local cards = { self.c_target, self.c_items, self.c_place, self.c_near, self.c_players, self.c_world }
+	local items = {}
+	for _, c in ipairs(cards) do
+		items[#items + 1] = { w = function(w)
+			local cols = max(1, floor((w + GAP) / (CARD_W + GAP)))
+			return floor((w - (cols - 1) * GAP) / cols)
+		end, h = c.h, place = c.place }
+	end
+	self:FlowPage("overview", { { items = items } })
+end
+
+-------------------------------------------------------------------------------
+-- Catalog pages: a search, the categories, a list (virtual: a pool of rows, the visible part only) and a details pane
+-------------------------------------------------------------------------------
+function UICoopDebug:Page_spawn(p) self:CatalogPage(p, "spawn", "items") end
+function UICoopDebug:Page_npc(p) self:CatalogPage(p, "npc", "npc") end
+function UICoopDebug:Page_levels(p) self:CatalogPage(p, "levels", "levels") end
+function UICoopDebug:Page_favs(p) self:CatalogPage(p, "favs", "favs") end
+
+function UICoopDebug:CatalogPage(p, pid, kind)
+	local ui = self.ui
+	local L = { pid = pid, kind = kind, rows = {}, scroll = 0, sel = nil, query = "", list = nil, dirty = true }
+	L.cat = (pid == "spawn" and self.S.cat_spawn) or (pid == "npc" and self.S.cat_npc) or "all"
+	self.lists[pid] = L
+	-- search
+	L.field = ui:box(p, 0, 0, 8, 8, "field")
+	L.hint = self:Label(p, "small", "faint")
+	L.hint:SetText(tr("st_coop_dbg_search_hint"))
+	L.edit = self:xml_edit(p)
+	L.sort = self:Btn(p, "btn_sort_" .. pid, "", "chip", function() self:OnSort() end)
+	L.count = self:Label(p, "small", "faint", "r")
+	-- categories
+	L.cats = {}
+	for _, c in ipairs(CATS[kind]) do
+		local b = self:Btn(p, "btn_cat_" .. pid .. "_" .. c, tr("st_coop_dbg_cat_" .. c), "chip", function() self:OnCategory(pid, c) end)
+		b.cat = c
+		L.cats[#L.cats + 1] = b
+	end
+	-- list
+	L.list_bg = ui:box(p, 0, 0, 8, 8, "btn")
+	L.thumb = ui:box(p, 0, 0, 3, 8, "tile_line")
+	L.empty = self:Label(p, "small", "faint")
+	L.parent = p
+	-- details
+	L.d_bg = ui:box(p, 0, 0, 8, 8, "btn")
+	L.d_icon = ui:image(p)
+	L.d_icon_tex = nil
+	L.d_name = self:Label(p, "body", "text")
+	L.d_sec = self:Label(p, "small", "faint")
+	L.d_cat = self:Label(p, "small", "dim")
+	L.d_count_h = self:Label(p, "small", "faint")
+	L.d_count_h:SetText(tr("st_coop_dbg_g_count"))
+	L.d_where_h = self:Label(p, "small", "faint")
+	L.d_where_h:SetText(tr("st_coop_dbg_g_where"))
+	L.counts = {}
+	for i, n in ipairs(COUNTS) do
+		L.counts[i] = self:Btn(p, "btn_n_" .. pid .. "_" .. n, tostring(n), "chip", function() self:OnCount(n) end)
+		L.counts[i].n = n
+	end
+	L.where = {}
+	for _, at in ipairs({ "inv", "point", "near" }) do
+		local b = self:Btn(p, "btn_where_" .. pid .. "_" .. at, tr("st_coop_dbg_at_" .. at), "chip", function() self:OnWhere(at) end)
+		b.at = at
+		L.where[#L.where + 1] = b
+	end
+	L.go = self:Btn(p, "btn_go_" .. pid, "", "primary", function() self:OnCatalogGo(pid) end)
+	L.fav = self:Btn(p, "btn_fav_" .. pid, "", "ghost", function() self:OnFav(pid) end)
+	L.pick_hint = self:Label(p, "small", "faint")
+	L.pick_hint:SetText(tr("st_coop_dbg_det_pick"))
+	self.page_layout[pid] = function(w, h) self:LayoutCatalog(L, w, h) end
+end
+
+function UICoopDebug:xml_edit(parent)
 	local e = self.ui.xml:InitEditBox("tpl_edit_line", parent)
-	self.ui:place(e, x, y, w, h)
 	self.ui:style_edit(e, "text")
 	return e
 end
 
--- Me: personal flags, money, teleport
+-- a row of the list pool: made when the list first needs that many
+function UICoopDebug:CatalogRow(L, i)
+	local r = L.rows[i]
+	if r then return r end
+	local ui, p = self.ui, L.parent
+	r = { i = i, enabled = true, shown = false }
+	r.veil = ui:box(p, 0, 0, 8, 8, "btn_hot")
+	r.veil:SetTextureColor(self:col("btn_hot", 0))
+	r.on_hot = function(on) r.veil:SetTextureColor(self:col("btn_hot", on and .1 or 0)) end
+	r.pick = ui:box(p, 0, 0, 8, 8, "row_pick")
+	r.icon = ui:image(p)
+	r.tex = nil
+	r.name = self:Label(p, self.D.list, "text")
+	r.sub = self:Label(p, "small", "faint", "r")
+	r.star = ui:box(p, 0, 0, 5, 5, "accent")
+	local name = "btn_row_" .. L.pid .. "_" .. i
+	r.btn = ui:hit(p, 0, 0, 8, 8, name, false)
+	self:AddCallback(name, ui_events.BUTTON_CLICKED, function() self:OnRow(L.pid, i) end, self)
+	local hot = self.page_hot[L.pid]
+	hot[#hot + 1] = r
+	L.rows[i] = r
+	return r
+end
+
+-- the size of an icon of g x h cells fitted into a box, the aspect kept
+local function fit(iw, ih, bw, bh)
+	if not (iw and ih and iw > 0 and ih > 0) then return 0, 0 end
+	local k = min(bw / iw, bh / ih)
+	return iw * k, ih * k
+end
+
+function UICoopDebug:SetIcon(img, holder, key, icon, x, y, bw, bh)
+	if not icon then img:Show(false) return end
+	if holder[key] ~= icon.tex then
+		pcall(function()
+			img:SetTextureRect(Frect():set(0, 0, 0, 0))
+			img:InitTexture(icon.tex)
+			img:SetStretchTexture(true)
+		end)
+		holder[key] = icon.tex
+	end
+	pcall(function() img:SetTextureRect(Frect():set(icon.x, icon.y, icon.x + icon.w, icon.y + icon.h)) end)
+	local w, h = fit(icon.w, icon.h, bw, bh)
+	self.ui:place(img, x + (bw - w) / 2, y + (bh - h) / 2, w, h)
+	img:Show(true)
+end
+
+function UICoopDebug:CatalogList(L)
+	if L.dirty or not L.list then
+		L.list = filter(L.kind, L.cat, L.query, self.S.sort)
+		L.dirty = false
+		L.scroll = max(0, min(L.scroll, #L.list - 1))
+		if L.sel then
+			local still = false
+			for _, e in ipairs(L.list) do if e == L.sel then still = true break end end
+			if not still and L.kind == "favs" then L.sel = nil end
+		end
+	end
+	return L.list
+end
+
+function UICoopDebug:LayoutCatalog(L, w, h)
+	local ui, D = self.ui, self.D
+	local pid = L.pid
+	-- details pane width
+	local dw = max(DETAIL_W[1], min(DETAIL_W[2], floor(w * .36)))
+	local lw = w - dw - GAP * 2
+	-- the toolbar: search, count, sort
+	local sw = self:BtnW(L.sort, 70)
+	self:SetBtnText(L.sort, tr(self.S.sort == "section" and "st_coop_dbg_sort_section" or "st_coop_dbg_sort_name"))
+	sw = max(sw, button_w(tr("st_coop_dbg_sort_section"), D.font), button_w(tr("st_coop_dbg_sort_name"), D.font))
+	ui:place(L.field, 0, 0, lw - sw - GAP, D.btn)
+	ui:place(L.hint, 10, 0, lw - sw - GAP - 90, D.btn)
+	ui:place(L.edit, 10, 0, lw - sw - GAP - 90, D.btn)
+	ui:place(L.count, lw - sw - GAP - 86, 0, 80, D.btn)
+	self:PlaceBtn(L.sort, lw - sw, 0, sw, D.btn, pid)
+	self:ShowBtn(L.sort, L.kind ~= "levels" and L.kind ~= "favs")
+	-- categories wrap
+	local chips = {}
+	for _, b in ipairs(L.cats) do chips[#chips + 1] = { w = self:BtnW(b, 36), b = b } end
+	local y = D.btn + GAP
+	local ch = 0
+	local many = #L.cats > 1
+	if many then ch = flow(chips, lw, 4, D.btn) end
+	for _, c in ipairs(chips) do
+		self:ShowBtn(c.b, many)
+		if many then self:PlaceBtn(c.b, c.x, y + c.y, c.fw, D.btn, pid) end
+		self:SelectBtn(c.b, c.b.cat == L.cat)
+	end
+	if ch > 0 then y = y + ch + GAP end
+	-- the list
+	L.box = { x = 0, y = y, w = lw, h = max(D.row, h - y) }
+	ui:place(L.list_bg, 0, y, lw, L.box.h)
+	L.vis = max(1, floor((L.box.h - 4) / D.row))
+	for i = 1, L.vis do self:CatalogRow(L, i) end
+	ui:place(L.empty, 10, y + 6, lw - 20, D.row)
+	-- the details pane
+	local dx = lw + GAP * 2
+	L.dbox = { x = dx, y = 0, w = dw, h = h }
+	ui:place(L.d_bg, dx, 0, dw, h)
+	self:BindCatalog(L)
+end
+
+function UICoopDebug:BindCatalog(L)
+	local ui, D = self.ui, self.D
+	local pid = L.pid
+	local list = self:CatalogList(L)
+	local favs = fav_set()
+	L.count:SetText(tostring(#list))
+	L.empty:SetText(tr(L.kind == "favs" and "st_coop_dbg_empty_favs" or "st_coop_dbg_empty_list"))
+	L.empty:Show(#list == 0)
+	L.scroll = max(0, min(L.scroll, max(0, #list - L.vis)))
+	local b = L.box
+	local iw = D.icon
+	for i, r in ipairs(L.rows) do
+		local e = i <= L.vis and list[L.scroll + i] or nil
+		local shown = e ~= nil
+		r.e = e
+		r.pick:Show(shown and e == L.sel)
+		r.name:Show(shown)
+		r.sub:Show(shown)
+		r.btn:Show(shown)
+		r.veil:Show(shown)
+		r.shown = shown
+		r.star:Show(shown and favs[e.key] == true)
+		if shown then
+			local y = b.y + 2 + (i - 1) * D.row
+			ui:place(r.pick, 2, y, b.w - 10, D.row)
+			ui:place(r.veil, 2, y, b.w - 10, D.row)
+			ui:place(r.btn, 2, y, b.w - 10, D.row)
+			local tx = 10
+			if e.icon then
+				self:SetIcon(r.icon, r, "tex", e.icon, 8, y + 2, iw, D.row - 4)
+				tx = 8 + iw + 8
+			else
+				r.icon:Show(false)
+				if L.kind == "items" or L.kind == "favs" then tx = 8 + iw + 8 end
+			end
+			local subw = min(floor(b.w * .38), 220)
+			ui:place(r.name, tx, y, b.w - tx - subw - 22, D.row)
+			ui:place(r.sub, b.w - subw - 22, y, subw, D.row)
+			ui:place(r.star, b.w - 16, y + floor(D.row / 2) - 2, 5, 5)
+			r.name:SetText(e.name)
+			r.sub:SetText(e.kind == "level" and e.sec or (L.kind == "favs" and tr("st_coop_dbg_cat_" .. e.cat) or e.sec))
+		else
+			r.icon:Show(false)
+		end
+	end
+	-- the scroll thumb
+	local total = #list
+	if total > L.vis then
+		local th = max(16, floor(b.h * L.vis / total))
+		local ty = b.y + floor((b.h - th) * L.scroll / max(1, total - L.vis))
+		ui:place(L.thumb, b.w - 5, ty, 3, th)
+		L.thumb:Show(true)
+	else
+		L.thumb:Show(false)
+	end
+	self:BindDetails(L)
+end
+
+function UICoopDebug:BindDetails(L)
+	local ui, D = self.ui, self.D
+	local pid = L.pid
+	local d = L.dbox
+	local e = L.sel
+	local has = e ~= nil
+	L.pick_hint:Show(not has)
+	ui:place(L.pick_hint, d.x + 12, d.y + 12, d.w - 24, 40)
+	for _, w in ipairs({ L.d_name, L.d_sec, L.d_cat, L.d_count_h, L.d_where_h }) do w:Show(has) end
+	local show_n = has and e.kind == "item"
+	local show_at = has and e.kind ~= "level"
+	for _, b in ipairs(L.counts) do self:ShowBtn(b, show_n) end
+	for _, b in ipairs(L.where) do self:ShowBtn(b, show_at and not (e.kind == "object" and b.at == "inv")) end
+	self:ShowBtn(L.go, has)
+	self:ShowBtn(L.fav, has)
+	L.d_count_h:Show(show_n)
+	L.d_where_h:Show(show_at)
+	if not has then L.d_icon:Show(false) return end
+	local x, y, w = d.x + 12, d.y + 12, d.w - 24
+	local ih = e.icon and min(120, floor(w * e.icon.h / max(1, e.icon.w))) or 0
+	if e.icon then
+		self:SetIcon(L.d_icon, L, "d_icon_tex", e.icon, x, y, w, max(40, ih))
+		y = y + max(40, ih) + 10
+	else
+		L.d_icon:Show(false)
+	end
+	ui:place(L.d_name, x, y, w, 24)
+	L.d_name:SetText(e.name)
+	ui:place(L.d_sec, x, y + 24, w, 20)
+	L.d_sec:SetText(e.sec)
+	ui:place(L.d_cat, x, y + 44, w, 20)
+	L.d_cat:SetText(tr("st_coop_dbg_cat_" .. e.cat))
+	y = y + 72
+	if show_n then
+		ui:place(L.d_count_h, x, y, w, 20)
+		y = y + 22
+		local items = {}
+		for _, b in ipairs(L.counts) do items[#items + 1] = { w = self:BtnW(b, 34), b = b } end
+		local used = flow(items, w, 4, D.btn)
+		for _, it in ipairs(items) do
+			self:PlaceBtn(it.b, x + it.x, y + it.y, it.fw, D.btn, L.pid)
+			self:SelectBtn(it.b, it.b.n == self.spawn_n)
+		end
+		y = y + used + 10
+	end
+	if show_at then
+		ui:place(L.d_where_h, x, y, w, 20)
+		y = y + 22
+		local items = {}
+		local at = self.spawn_at
+		if e.kind == "object" and at == "inv" then at = "near" end
+		for _, b in ipairs(L.where) do
+			if not (e.kind == "object" and b.at == "inv") then items[#items + 1] = { w = self:BtnW(b, 50), b = b } end
+		end
+		local used = flow(items, w, 4, D.btn)
+		for _, it in ipairs(items) do
+			self:PlaceBtn(it.b, x + it.x, y + it.y, it.fw, D.btn, L.pid)
+			self:SelectBtn(it.b, it.b.at == at)
+		end
+		y = y + used + 14
+	end
+	local go_text = e.kind == "level" and tr("st_coop_dbg_level_go_btn") or tr("st_coop_dbg_spawn_go")
+	self:SetBtnText(L.go, go_text)
+	self:SetBtnText(L.fav, tr(fav_set()[e.key] and "st_coop_dbg_fav_on" or "st_coop_dbg_fav_add"))
+	self:SelectBtn(L.fav, fav_set()[e.key] == true)
+	local gh = D.btn + 4
+	local by = max(y, d.y + d.h - 12 - gh - GAP - D.btn)
+	self:PlaceBtn(L.go, x, by, w, gh, L.pid)
+	self:PlaceBtn(L.fav, x, by + gh + GAP, w, D.btn, L.pid)
+end
+
+function UICoopDebug:CurrentList()
+	return self.lists[self.page]
+end
+
+function UICoopDebug:OnRow(pid, i)
+	if self.modal then return end
+	local L = self.lists[pid]
+	local r = L and L.rows[i]
+	if not (r and r.e) then return end
+	L.sel = r.e
+	if r.e.kind == "item" or r.e.kind == "object" then self.spawn_sec = r.e.sec end
+	self:BindCatalog(L)
+end
+
+function UICoopDebug:OnCategory(pid, c)
+	local L = self.lists[pid]
+	L.cat, L.dirty, L.scroll = c, true, 0
+	if pid == "spawn" then self.S.cat_spawn = c elseif pid == "npc" then self.S.cat_npc = c end
+	self:LayoutPage(pid)
+end
+
+function UICoopDebug:OnSort()
+	self.S.sort = self.S.sort == "section" and "name" or "section"
+	for _, L in pairs(self.lists) do L.dirty = true end
+	if self.lists[self.page] then self:LayoutPage(self.page) end
+end
+
+function UICoopDebug:OnCount(n)
+	self.spawn_n = max(1, min(client().MAX_N, n))
+	local L = self:CurrentList()
+	if L then self:BindDetails(L) end
+end
+
+function UICoopDebug:OnWhere(at)
+	self.spawn_at = at
+	local L = self:CurrentList()
+	if L then self:BindDetails(L) end
+end
+
+function UICoopDebug:OnFav(pid)
+	local L = self.lists[pid]
+	if not (L and L.sel) then return end
+	toggle_fav(L.sel.key)
+	for _, l in pairs(self.lists) do if l.kind == "favs" or l.cat == "fav" then l.dirty = true end end
+	self:BindCatalog(L)
+end
+
+-- the details pane's main button: spawn an item or an object, or go to a level (the same requests as always)
+function UICoopDebug:OnCatalogGo(pid)
+	if self.modal then return end
+	local L = self.lists[pid]
+	local e = L and L.sel
+	if not e then return end
+	if e.kind == "level" then
+		client().run("level", { level = e.sec })
+		return
+	end
+	self.spawn_sec = e.sec
+	local ctx = self:Context()
+	if e.kind == "object" then
+		if ctx.at == "inv" then ctx.at = "near" end
+		client().run("spawn_object", ctx)
+	else
+		client().run("spawn_item", ctx)
+	end
+end
+
+function UICoopDebug:ScrollList(L, d)
+	local list = self:CatalogList(L)
+	local s = max(0, min(L.scroll + d, max(0, #list - (L.vis or 1))))
+	if s ~= L.scroll then
+		L.scroll = s
+		self:BindCatalog(L)
+	end
+end
+
+-- the search field is read on a cadence: the engine has no "text changed" event for a script window
+function UICoopDebug:PollSearch()
+	local L = self:CurrentList()
+	if not (L and L.edit) then return end
+	local text = safe(function() return L.edit:GetText() end) or ""
+	L.hint:Show(text == "")
+	if text == L.query then return end
+	L.query, L.dirty, L.scroll = text, true, 0
+	self:BindCatalog(L)
+end
+
+-------------------------------------------------------------------------------
+-- Target: the object under the crosshair when F7 was pressed
+-------------------------------------------------------------------------------
+function UICoopDebug:Page_target(p)
+	local ui = self.ui
+	self.t_name = self:Label(p, "body", "text")
+	self.t_meta = self:Label(p, "small", "dim")
+	self.target_buttons = {}
+	local groups = {}
+	for _, gname in ipairs({ "object", "me", "goodwill", "squad" }) do
+		local items = self:ActionItems(p, "target", gname)
+		for _, it in ipairs(items) do self.target_buttons[#self.target_buttons + 1] = it.b end
+		groups[#groups + 1] = { head = "st_coop_dbg_g_" .. gname, items = items }
+	end
+	-- F1: the squad's faction, picked from the communities
+	local fitems = {}
+	self.faction_btns = {}
+	for _, f in ipairs(FACTIONS) do
+		local b = self:Btn(p, "btn_faction_" .. f, tr(f), "chip", function() self:OnFaction(f) end)
+		b.faction = f
+		self.faction_btns[#self.faction_btns + 1] = b
+		self.target_buttons[#self.target_buttons + 1] = b
+		fitems[#fitems + 1] = { b = b }
+	end
+	fitems[#fitems + 1] = { b = self:ActionBtn(p, "faction") }
+	self.target_buttons[#self.target_buttons + 1] = self.actions.faction
+	groups[#groups + 1] = { head = "st_coop_dbg_g_faction", items = fitems }
+	self:FlowPage("target", groups, function(w)
+		ui:place(self.t_name, 0, 0 - (self.scroll_y.target or 0), w, 24)
+		ui:place(self.t_meta, 0, 24 - (self.scroll_y.target or 0), w, 20)
+		return 52
+	end)
+end
+
+function UICoopDebug:OnFaction(f)
+	self.faction = f
+	for _, b in ipairs(self.faction_btns or {}) do self:SelectBtn(b, b.faction == f) end
+end
+
+-------------------------------------------------------------------------------
+-- Me: personal flags, money, teleport to the crosshair or to a player
+-------------------------------------------------------------------------------
 function UICoopDebug:Page_me(p)
 	local ui = self.ui
-	self:Heading(p, 0, 0, CW, "st_coop_dbg_g_flags")
-	for i, a in ipairs(client().actions_of("me", "flags")) do
-		local y = 34 + (i - 1) * (BTN_H + 10)
+	local flags = {}
+	for _, a in ipairs(client().actions_of("me", "flags")) do
 		local r = { id = a.id }
-		r.name = ui:label(p, 0, y, 360, BTN_H, "meta_on")
+		r.name = self:Label(p, "small", "text")
 		r.name:SetText(client().label_of(a))
-		r.dot = ui:box(p, 380, y + 18, 8, 8, "idle")
-		r.state = ui:label(p, 398, y, 140, BTN_H, "status")
-		r.btn = self:Button(p, 560, y, 200, BTN_H, "btn_act_" .. a.id, "", "ghost", function() self:OnAction(a.id) end)
-		self.actions = self.actions or {}
+		r.dot = ui:box(p, 0, 0, 6, 6, "idle")
+		r.state = self:Label(p, "small", "dim")
+		r.btn = self:Btn(p, "btn_act_" .. a.id, "", "ghost", function() self:OnAction(a.id) end)
 		self.actions[a.id] = r.btn
 		self.flag_rows[#self.flag_rows + 1] = r
+		flags[#flags + 1] = { w = 260, place = function(x, y, w, h, vis)
+			ui:place(r.name, x, y, w - 150, h)
+			ui:place(r.dot, x + w - 146, y + floor(h / 2) - 3, 6, 6)
+			ui:place(r.state, x + w - 134, y, 54, h)
+			self:ShowBtn(r.btn, vis)
+			self:PlaceBtn(r.btn, x + w - 76, y, 76, h, vis and "me" or nil)
+		end }
 	end
-	local y = 34 + 3 * (BTN_H + 10) + 16
-	self:Heading(p, 0, y, CW, "st_coop_dbg_g_money")
-	y = self:ActionRow(p, 0, y + 34, client().actions_of("me", "money")) + 26
-	self:Heading(p, 0, y, CW, "st_coop_dbg_g_tp")
-	local ty = y + 34
-	local tp = client().action("tp_point")
-	local b = self:Button(p, 0, ty, 2 * BTN_W + GAP, BTN_H, "btn_act_tp_point", client().label_of(tp), "ghost", function() self:OnAction("tp_point") end)
-	self.actions.tp_point = b
+	local tp = { { b = self:ActionBtn(p, "tp_point") } }
 	-- the other players, by node (the host's numbering of players is the node)
-	local x = 2 * BTN_W + 2 * GAP
 	local n = 0
 	pcall(function()
 		for _, pl in ipairs(coop.players() or {}) do
-			if not pl.is_self and n < 5 then
+			if not pl.is_self and n < 8 then
 				n = n + 1
 				local i = n
-				self.tp_peers[i] = pl.id
-				self:Button(p, x + (i - 1) * (BTN_W + GAP), ty, BTN_W, BTN_H, "btn_tp_peer_" .. i, trf("st_coop_dbg_tp_to", tostring(pl.nick)), "ghost",
-					function() self:OnTeleportPeer(i) end)
+				self.tp_rows[i] = pl.id
+				tp[#tp + 1] = { b = self:Btn(p, "btn_tp_peer_" .. i, trf("st_coop_dbg_tp_to", tostring(pl.nick)), "ghost",
+					function() self:OnTeleportPeer(i) end) }
 			end
 		end
 	end)
 	if n == 0 then
-		local l = ui:label(p, x, ty, CW - x, BTN_H, "hint")
+		local l = self:Label(p, "small", "faint")
 		l:SetText(tr("st_coop_dbg_tp_alone"))
+		tp[#tp + 1] = { w = 240, place = function(x, y, w, h) ui:place(l, x, y, w, h) end }
 	end
-	-- K38: the stock level change on this machine; the server's rules for moving decide (story levels together)
-	local ly = ty + BTN_H + 26
-	self:Heading(p, 0, ly, CW, "st_coop_dbg_g_level")
-	ui:box(p, 0, ly + 34, 420, BTN_H, "field")
-	self.level_hint = ui:label(p, 14, ly + 34, 392, BTN_H, "field_hint")
-	self.level_hint:SetText(tr("st_coop_dbg_level_hint"))
-	self.level_edit = self:xml_edit(p, 14, ly + 34, 392, BTN_H)
-	local la = client().action("level")
-	self.actions.level = self:Button(p, 432, ly + 34, BTN_W + 40, BTN_H, "btn_act_level", client().label_of(la), "ghost",
-		function() self:OnAction("level") end)
+	self:FlowPage("me", {
+		{ head = "st_coop_dbg_g_flags", items = flags },
+		{ head = "st_coop_dbg_g_money", items = self:ActionItems(p, "me", "money") },
+		{ head = "st_coop_dbg_g_tp", items = tp },
+		{ head = "st_coop_dbg_g_quick", items = self:ActionItems(p, "spawn", "quick") },
+	})
 end
 
+-------------------------------------------------------------------------------
 -- World: time, speed, weather, storms, simulation, info portions
+-------------------------------------------------------------------------------
 function UICoopDebug:Page_world(p)
 	local ui = self.ui
-	local y = 0
-	self:Heading(p, 0, y, CW, "st_coop_dbg_g_time")
-	local list = client().actions_of("world", "time")
 	local adds = {}
-	for _, a in ipairs(list) do if a.cmd == "time_add" then adds[#adds + 1] = a end end
-	local bw = 96
-	self:ActionRow(p, 0, y + 34, adds, bw)
-	local sx = 4 * (bw + GAP) + 12 -- 444
-	self:Button(p, sx, y + 34, BTN_H, BTN_H, "btn_hour_minus", "-", "ghost", function() self:OnHour(-1) end)
-	self.hour_text = ui:label(p, sx + BTN_H + 4, y + 34, 80, BTN_H, "cap", "c")
-	self:Button(p, sx + BTN_H + 88, y + 34, BTN_H, BTN_H, "btn_hour_plus", "+", "ghost", function() self:OnHour(1) end)
-	local tt = client().action("time_to")
-	local tx = sx + 2 * BTN_H + 100 -- 632
-	self.actions.time_to = self:Button(p, tx, y + 34, 152, BTN_H, "btn_act_time_to", client().label_of(tt), "ghost",
-		function() self:OnAction("time_to") end)
-	local fx = tx + 152 + 28 -- 812
-	self:Button(p, fx, y + 34, BTN_H, BTN_H, "btn_factor_minus", "-", "ghost", function() self:OnFactor(-1) end)
-	self.factor_text = ui:label(p, fx + BTN_H + 4, y + 34, 64, BTN_H, "cap", "c")
-	self:Button(p, fx + BTN_H + 72, y + 34, BTN_H, BTN_H, "btn_factor_plus", "+", "ghost", function() self:OnFactor(1) end)
-	local tf = client().action("time_factor")
-	local fbx = fx + 2 * BTN_H + 84 -- 984
-	self.actions.time_factor = self:Button(p, fbx, y + 34, CW - fbx, BTN_H, "btn_act_time_factor",
-		client().label_of(tf), "ghost", function() self:OnAction("time_factor") end)
-	y = y + 34 + BTN_H + 26
-
-	self:Heading(p, 0, y, CW, "st_coop_dbg_g_weather")
+	for _, a in ipairs(client().actions_of("world", "time")) do
+		if a.cmd == "time_add" then adds[#adds + 1] = { b = self:ActionBtn(p, a.id) } end
+	end
+	local hm = self:Btn(p, "btn_hour_minus", "-", "ghost", function() self:OnHour(-1) end)
+	self.hour_text = self:Label(p, "body", "text", "c")
+	local hp = self:Btn(p, "btn_hour_plus", "+", "ghost", function() self:OnHour(1) end)
+	local tt = self:ActionBtn(p, "time_to")
+	local time_items = adds
+	time_items[#time_items + 1] = { w = 2 * 30 + 70 + 2 * GAP, place = function(x, y, w, h, vis)
+		self:ShowBtn(hm, vis)
+		self:ShowBtn(hp, vis)
+		self:PlaceBtn(hm, x, y, 30, h, vis and "world" or nil)
+		ui:place(self.hour_text, x + 30 + GAP, y, 70, h)
+		self:PlaceBtn(hp, x + 100 + 2 * GAP, y, 30, h, vis and "world" or nil)
+	end }
+	time_items[#time_items + 1] = { b = tt }
+	local speed = {}
+	self.factor_btns = {}
+	for i, f in ipairs(TIME_FACTORS) do
+		local b = self:Btn(p, "btn_factor_" .. i, "x" .. f, "chip", function() self:OnFactor(i) end)
+		b.i = i
+		self.factor_btns[i] = b
+		speed[#speed + 1] = { b = b }
+	end
+	speed[#speed + 1] = { b = self:ActionBtn(p, "time_factor") }
+	local weather = {}
 	for i, wname in ipairs(WEATHERS) do
-		self:Button(p, (i - 1) * (BTN_W + GAP), y + 34, BTN_W, BTN_H, "btn_weather_" .. i, tr("st_coop_dbg_w_" .. wname), "ghost",
-			function() self:OnWeather(i) end)
+		weather[#weather + 1] = { b = self:Btn(p, "btn_weather_" .. i, tr("st_coop_dbg_w_" .. wname), "ghost", function() self:OnWeather(i) end) }
 	end
-	y = y + 34 + BTN_H + 26
-
-	self:Heading(p, 0, y, CW, "st_coop_dbg_g_storms")
-	y = self:ActionRow(p, 0, y + 34, client().actions_of("world", "storms")) + 26
-	self:Heading(p, 0, y, CW, "st_coop_dbg_g_sim")
-	y = self:ActionRow(p, 0, y + 34, client().actions_of("world", "sim"), SIM_W) + 26
-
-	self:Heading(p, 0, y, CW, "st_coop_dbg_g_info")
-	ui:box(p, 0, y + 34, 420, BTN_H, "field")
-	self.info_hint = ui:label(p, 14, y + 34, 392, BTN_H, "field_hint")
+	-- info portion: typed, the server's limit 64 characters
+	local field = ui:box(p, 0, 0, 8, 8, "field")
+	self.info_hint = self:Label(p, "small", "faint")
 	self.info_hint:SetText(tr("st_coop_dbg_info_hint"))
-	self.info_edit = self:xml_edit(p, 14, y + 34, 392, BTN_H)
-	local infos = client().actions_of("world", "info")
-	for i, a in ipairs(infos) do
-		self.actions[a.id] = self:Button(p, 432 + (i - 1) * (BTN_W + GAP), y + 34, BTN_W, BTN_H, "btn_act_" .. a.id, client().label_of(a),
-			a.danger and "danger" or "ghost", function() self:OnAction(a.id) end)
-	end
+	self.info_edit = self:xml_edit(p)
+	local info = { { w = function(w) return min(w, 320) end, place = function(x, y, w, h)
+		ui:place(field, x, y, w, h)
+		ui:place(self.info_hint, x + 10, y, w - 20, h)
+		ui:place(self.info_edit, x + 10, y, w - 20, h)
+	end } }
+	for _, it in ipairs(self:ActionItems(p, "world", "info")) do info[#info + 1] = it end
+	self:FlowPage("world", {
+		{ head = "st_coop_dbg_g_time", items = time_items },
+		{ head = "st_coop_dbg_g_speed", items = speed },
+		{ head = "st_coop_dbg_g_weather", items = weather },
+		{ head = "st_coop_dbg_g_storms", items = self:ActionItems(p, "world", "storms") },
+		{ head = "st_coop_dbg_g_sim", items = self:ActionItems(p, "world", "sim") },
+		{ head = "st_coop_dbg_g_info", items = info },
+	})
 end
 
+-------------------------------------------------------------------------------
 -- Help: what the server debug gives, and the console
+-------------------------------------------------------------------------------
 function UICoopDebug:Page_help(p)
 	local ui = self.ui
-	local half = floor((CW - 40) / 2)
-	self:Heading(p, 0, 0, half, self.on and "st_coop_dbg_help_on_title" or "st_coop_dbg_help_off_title")
+	local h1 = self:Label(p, "small", "faint")
+	h1:SetText(tr(self.on and "st_coop_dbg_help_on_title" or "st_coop_dbg_help_off_title"))
 	local lines = {}
 	if not self.on then lines[#lines + 1] = tr(self.operator and "st_coop_dbg_help_off_operator" or "st_coop_dbg_help_off") end
 	for _, page in ipairs({ "target", "spawn", "me", "world" }) do
-		local names = {}
-		local seen = {}
+		local names, seen = {}, {}
 		for _, a in ipairs(client().ACTIONS) do
 			if a.page == page and not seen[a.id] and a.id ~= "tp_peer" then
 				seen[a.id] = true
@@ -559,57 +1573,198 @@ function UICoopDebug:Page_help(p)
 		end
 		lines[#lines + 1] = tr("st_coop_dbg_page_" .. page) .. ": " .. table.concat(names, ", ")
 	end
-	local left = ui:label(p, 0, 36, half, CH - 36, "modal_text", "m")
+	lines[#lines + 1] = tr("st_coop_dbg_help_window")
+	local left = ui:label(p, 0, 0, 8, 8, self:St("small", "dim"), "m")
 	left:SetText(table.concat(lines, " \\n \\n"))
-	self:Heading(p, half + 40, 0, half, "st_coop_dbg_help_console_title")
-	local right = ui:label(p, half + 40, 36, half, CH - 36, "modal_text", "m")
+	local h2 = self:Label(p, "small", "faint")
+	h2:SetText(tr("st_coop_dbg_help_console_title"))
+	local right = ui:label(p, 0, 0, 8, 8, self:St("small", "dim"), "m")
 	right:SetText(tr("st_coop_dbg_help_console"))
+	self.page_layout.help = function(w, h)
+		local two = w >= 560
+		local cw = two and floor((w - 24) / 2) or w
+		ui:place(h1, 0, 0, cw, HEAD_H)
+		ui:place(left, 0, HEAD_H + 4, cw, two and h - HEAD_H - 4 or floor(h / 2) - HEAD_H - 8)
+		local rx, ry = two and cw + 24 or 0, two and 0 or floor(h / 2)
+		ui:place(h2, rx, ry, cw, HEAD_H)
+		ui:place(right, rx, ry + HEAD_H + 4, cw, h - ry - HEAD_H - 4)
+	end
 end
 
 -------------------------------------------------------------------------------
 -- Answers of the server
 -------------------------------------------------------------------------------
 function UICoopDebug:BuildFeed()
-	local ui, g = self.ui, self.g
-	local y0 = P.h - FEED_H
-	ui:box(g, 1, y0, P.w - 2, FEED_H - 1, "bar")
-	ui:box(g, 0, y0, P.w, 1, "line")
-	local head = ui:label(g, 40, y0 + 14, 500, 24, "tl_sub")
-	head:SetText(tr("st_coop_dbg_feed"))
-	local keys = ui:label(g, P.w - 40 - 640, y0 + 14, 640, 24, "hint", "r")
-	keys:SetText(tr("st_coop_dbg_keys"))
+	local g = self.g
+	self.feed_head = self:Label(g, "small", "faint")
+	self.feed_head:SetText(tr("st_coop_dbg_feed"))
+	self.feed_keys = self:Label(g, "small", "faint", "r")
+	self.feed_keys:SetText(tr("st_coop_dbg_keys"))
 	self.feed_rows = {}
-	for i = 1, FEED_ROWS do
-		local y = y0 + 46 + (i - 1) * 28
+	for i = 1, 6 do
 		local r = {}
-		r.dot = ui:box(g, 42, y + 10, 8, 8, "idle")
-		r.at = ui:label(g, 62, y, 96, 28, "hist_count")
-		r.text = ui:label(g, 160, y, P.w - 200, 28, "status")
-		pcall(function() r.text:SetEllipsis(true) end)
+		r.dot = self.ui:box(g, 0, 0, 6, 6, "idle")
+		r.at = self:Label(g, "small", "faint")
+		r.text = self:Label(g, "small", "dim")
+		r.full = self.ui:label(g, 0, 0, 8, 8, self:St("small", "error"), "m") -- the newest refusal, whole
 		self.feed_rows[i] = r
 	end
-	self.feed_empty = ui:label(g, 62, y0 + 46, 600, 28, "status_sub")
+	self.feed_empty = self:Label(g, "small", "faint")
 	self.feed_empty:SetText(tr("st_coop_dbg_feed_empty"))
+end
+
+function UICoopDebug:LayoutFeed()
+	local f = self.F.feed
+	local ui = self.ui
+	ui:place(self.feed_head, f.x + PAD, f.y + 6, 200, 20)
+	ui:place(self.feed_keys, f.x + f.w - PAD - 300, f.y + 6, 300, 20)
+	ui:place(self.feed_empty, f.x + PAD, f.y + 28, f.w - 2 * PAD, FEED_ROW)
+	self:BindFeed()
 end
 
 local KIND_ROLE = { ok = "live", err = "error", pending = "wait", info = "idle" }
 
 function UICoopDebug:BindFeed()
 	local list = client().feed()
+	local f, ui = self.F and self.F.feed, self.ui
+	if not f then return end
 	self.feed_empty:Show(#list == 0)
+	local y, bottom = f.y + 28, f.y + f.h - 4
+	local tw = f.w - 2 * PAD - 80
 	for i, r in ipairs(self.feed_rows) do
-		local e = list[i]
-		local shown = e ~= nil
+		local e = i <= self.F.feed_rows and list[i] or nil
+		-- the newest refusal gets two lines when one is not enough: the server's reason is never cut
+		local tall = e and i == 1 and e.kind == "err" and text_w(e.text, "small") > tw
+		local h = tall and 2 * FEED_ROW or FEED_ROW
+		local shown = e ~= nil and y + h <= bottom + 1
 		r.dot:Show(shown)
 		r.at:Show(shown)
-		r.text:Show(shown)
-		if e then
-			r.dot:SetTextureColor(self.ui:color(KIND_ROLE[e.kind] or "idle"))
+		r.text:Show(shown and not tall)
+		r.full:Show(shown and tall and true or false)
+		if shown then
+			ui:place(r.dot, f.x + PAD, y + 7, 6, 6)
+			ui:place(r.at, f.x + PAD + 12, y, 64, FEED_ROW)
+			ui:place(r.text, f.x + PAD + 80, y, tw, FEED_ROW)
+			ui:place(r.full, f.x + PAD + 80, y + 2, tw, h)
+			r.dot:SetTextureColor(ui:color(KIND_ROLE[e.kind] or "idle"))
 			r.at:SetText(e.at or "")
 			r.text:SetText(e.text or "")
-			self.ui:style(r.text, e.kind == "err" and "status_err" or (i == 1 and "meta_on" or "status"))
+			r.full:SetText(e.text or "")
+			ui:style(r.text, self:St("small", e.kind == "err" and "error" or (i == 1 and "text" or "dim")))
+			y = y + h
 		end
 	end
+end
+
+-------------------------------------------------------------------------------
+-- Settings popover (title bar): opacity, blur, density, walking while open, confirmations, reset
+-------------------------------------------------------------------------------
+function UICoopDebug:BuildPopover()
+	local ui, g = self.ui, self.g
+	local P = { rows = {} }
+	self.pop = P
+	P.root = ui:free(g, 0, 0, 8, 8)
+	P.bg = ui:box(P.root, 0, 0, 8, 8, "glass_top")
+	P.edge = ui:outline(P.root, 0, 0, 8, 8, "edge")
+	local function row(label_id, choices, get, set, note)
+		local r = { label = self:Label(P.root, "small", "dim"), btns = {}, get = get }
+		r.label:SetText(tr(label_id))
+		for _, c in ipairs(choices) do
+			local b = self:Btn(P.root, "btn_set_" .. c.id, c.text, "chip", function()
+				set(c.v)
+				self:BindPopover()
+			end)
+			b.v = c.v
+			r.btns[#r.btns + 1] = b
+		end
+		if note then
+			r.note = self:Label(P.root, "small", "faint")
+			r.note:SetText(tr(note))
+		end
+		P.rows[#P.rows + 1] = r
+		return r
+	end
+	local op = {}
+	for _, v in ipairs(OPACITY_STEPS) do op[#op + 1] = { id = "op_" .. v, text = v .. "%", v = v } end
+	row("st_coop_dbg_set_opacity", op, function() return self.S.opacity end, function(v) self.S.opacity = v; save_settings(); self:ApplyGlass() end)
+	local bl = { { id = "blur_0", text = tr("st_coop_dbg_set_off"), v = 0 } }
+	for i = 1, 3 do bl[#bl + 1] = { id = "blur_" .. i, text = tr("st_coop_dbg_set_blur_" .. i), v = i } end
+	P.blur = row("st_coop_dbg_set_blur", bl, function() return self.S.blur end, function(v) self.S.blur = v; save_settings(); self:ApplyGlass() end,
+		"st_coop_dbg_set_blur_na")
+	local dn = {}
+	for _, d in ipairs({ "compact", "normal", "large" }) do dn[#dn + 1] = { id = "dens_" .. d, text = tr("st_coop_dbg_set_dens_" .. d), v = d } end
+	row("st_coop_dbg_set_density", dn, function() return self.S.density end, function(v)
+		if self.S.density == v then return end
+		self.S.density = v
+		save_settings()
+		self.reopen = true -- every size changes: the window is built again after this click
+	end)
+	local onoff = function(id) return { { id = id .. "_1", text = tr("st_coop_dbg_set_on"), v = true }, { id = id .. "_0", text = tr("st_coop_dbg_set_off"), v = false } } end
+	row("st_coop_dbg_set_move", onoff("move"), function() return self.S.move end, function(v)
+		self.S.move = v
+		save_settings()
+		pcall(function() self:AllowMovement(v == true) end)
+	end)
+	row("st_coop_dbg_set_confirm", onoff("confirm"), function() return self.S.confirm end, function(v) self.S.confirm = v; save_settings() end)
+	P.reset = self:Btn(P.root, "btn_set_reset", tr("st_coop_dbg_set_reset"), "ghost", self.OnResetWindow)
+	P.root:Show(false)
+end
+
+function UICoopDebug:LayoutPopover()
+	local P, ui, D = self.pop, self.ui, self.D
+	local w = 360
+	local x = max(8, (self.gear.x or self.rect.w - 200) + (self.gear.w or 60) - w)
+	local y = TITLE_H + 4
+	local ry = 10
+	for _, r in ipairs(P.rows) do
+		ui:place(r.label, 12, ry, 110, D.btn)
+		local items = {}
+		for _, b in ipairs(r.btns) do items[#items + 1] = { w = self:BtnW(b, 34), b = b } end
+		local used = flow(items, w - 134, 4, D.btn)
+		for _, it in ipairs(items) do self:PlaceBtn(it.b, 122 + it.x, ry + it.y, it.fw, D.btn) end
+		ry = ry + used + 6
+		if r.note then
+			ui:place(r.note, 122, ry, w - 134, 18)
+			r.note_h = 18
+			ry = ry + 20
+		end
+	end
+	self:PlaceBtn(P.reset, 12, ry + 4, w - 24, D.btn)
+	local h = ry + 4 + D.btn + 12
+	ui:place(P.root, x, y, w, h)
+	ui:place(P.bg, 0, 0, w, h)
+	ui:place(P.edge[1], 0, 0, w, 1)
+	ui:place(P.edge[2], 0, h - 1, w, 1)
+	ui:place(P.edge[3], 0, 0, 1, h)
+	ui:place(P.edge[4], w - 1, 0, 1, h)
+	P.rect = { x = x, y = y, w = w, h = h }
+end
+
+function UICoopDebug:BindPopover()
+	local P = self.pop
+	local can_blur = blur_available(self.blur_img)
+	for _, r in ipairs(P.rows) do
+		local v = r.get()
+		for _, b in ipairs(r.btns) do
+			self:SelectBtn(b, b.v == v)
+			if r == P.blur and b.v ~= 0 then self:EnableBtn(b, can_blur) end
+		end
+		if r.note then r.note:Show(r == P.blur and not can_blur) end
+	end
+end
+
+function UICoopDebug:OnSettings()
+	if self.modal then return end
+	self.popover = not self.popover
+	self.pop.root:Show(self.popover)
+	self:SelectBtn(self.gear, self.popover)
+	if self.popover then self:BindPopover() end
+end
+
+function UICoopDebug:OnResetWindow()
+	self.S.x, self.S.y, self.S.w, self.S.h = DEFAULTS.x, DEFAULTS.y, DEFAULTS.w, DEFAULTS.h
+	save_settings()
+	self:SetRect({ x = DEFAULTS.x, y = DEFAULTS.y, w = DEFAULTS.w, h = DEFAULTS.h }, true)
 end
 
 -------------------------------------------------------------------------------
@@ -617,21 +1772,34 @@ end
 -------------------------------------------------------------------------------
 function UICoopDebug:BuildModal()
 	local ui, g = self.ui, self.g
-	local mw, mh = 660, 270
-	local mx, my = floor((P.w - mw) / 2), floor((P.h - mh) / 2)
-	self.modal_parts = {}
-	local dim = ui:box(g, 0, 0, P.w, P.h, "modal_dim")
-	local root = ui:free(g, mx, my, mw, mh)
-	ui:box(root, 0, 0, mw, mh, "panel")
-	ui:outline(root, 0, 0, mw, mh, "tile_line")
-	local c = ui:corners(root, "error")
-	ui:place_corners(c, 0, 0, mw, mh, self.T.corners.len, self.T.corners.thick)
-	self.modal_title = ui:label(root, 32, 26, mw - 64, 40, "modal_title")
-	self.modal_text = ui:label(root, 32, 76, mw - 64, 96, "modal_text", "m")
-	self:Button(root, 32, mh - 32 - 48, 220, 48, "btn_modal_ok", tr("st_coop_dbg_confirm_ok"), "primary", self.OnModalOk)
-	self:Button(root, 264, mh - 32 - 48, 180, 48, "btn_modal_no", tr("st_coop_dbg_cancel"), "ghost", self.CloseModal)
-	self.modal_root, self.modal_dim = root, dim
+	self.modal_dim = ui:box(g, 0, 0, 8, 8, "modal_dim")
+	local root = ui:free(g, 0, 0, 8, 8)
+	self.modal_root = root
+	self.modal_bg = ui:box(root, 0, 0, 8, 8, "glass_top")
+	self.modal_edge = ui:outline(root, 0, 0, 8, 8, "error")
+	self.modal_title = self:Label(root, "body", "text")
+	self.modal_text = ui:label(root, 0, 0, 8, 8, self:St("small", "dim"), "m")
+	self.modal_ok = self:Btn(root, "btn_modal_ok", tr("st_coop_dbg_confirm_ok"), "primary", self.OnModalOk)
+	self.modal_no = self:Btn(root, "btn_modal_no", tr("st_coop_dbg_cancel"), "ghost", self.CloseModal)
 	self:ShowModalParts(false)
+end
+
+function UICoopDebug:LayoutModal()
+	local ui, D = self.ui, self.D
+	local mw, mh = min(420, self.rect.w - 40), 170
+	local mx, my = floor((self.rect.w - mw) / 2), floor((self.rect.h - mh) / 2)
+	ui:place(self.modal_dim, 0, 0, self.rect.w, self.rect.h)
+	ui:place(self.modal_root, mx, my, mw, mh)
+	ui:place(self.modal_bg, 0, 0, mw, mh)
+	ui:place(self.modal_edge[1], 0, 0, mw, 1)
+	ui:place(self.modal_edge[2], 0, mh - 1, mw, 1)
+	ui:place(self.modal_edge[3], 0, 0, 1, mh)
+	ui:place(self.modal_edge[4], mw - 1, 0, 1, mh)
+	ui:place(self.modal_title, 16, 12, mw - 32, 26)
+	ui:place(self.modal_text, 16, 42, mw - 32, 70)
+	local ow = self:BtnW(self.modal_ok, 120)
+	self:PlaceBtn(self.modal_ok, 16, mh - 16 - D.btn - 4, ow, D.btn + 4)
+	self:PlaceBtn(self.modal_no, 16 + ow + GAP, mh - 16 - D.btn - 4, self:BtnW(self.modal_no, 90), D.btn + 4)
 end
 
 function UICoopDebug:ShowModalParts(on)
@@ -672,7 +1840,7 @@ function UICoopDebug:Context()
 	local cl = client()
 	local function typed(e) return e and safe(function() return e:GetText() end) or nil end
 	return { target = cl.target, sec = self.spawn_sec, n = self.spawn_n, at = self.spawn_at, h = self.hour, m = 0,
-		f = TIME_FACTORS[self.factor_i], info = typed(self.info_edit), c = typed(self.faction_edit), level = typed(self.level_edit) }
+		f = TIME_FACTORS[self.factor_i], info = typed(self.info_edit), c = self.faction }
 end
 
 function UICoopDebug:OnAction(id)
@@ -681,40 +1849,19 @@ function UICoopDebug:OnAction(id)
 	if not a then return end
 	local ctx = self:Context()
 	if a.confirm then
-		self:ShowConfirm(id, ctx)
+		if self.S.confirm == false then
+			client().run(id, ctx, nil, true)
+		else
+			self:ShowConfirm(id, ctx)
+		end
 		return
 	end
 	client().run(id, ctx)
 end
 
-function UICoopDebug:OnFound(i)
-	local s = self.found[i]
-	if not s then return end
-	self.spawn_sec = s
-	self.spawn_edit:SetText(s)
-	self:BindSpawn()
-end
-
-function UICoopDebug:OnCount(d)
-	self.spawn_n = max(1, min(client().MAX_N, self.spawn_n + d))
-	self:BindSpawn()
-end
-
-function UICoopDebug:OnWhere(at)
-	self.spawn_at = at
-	self:BindSpawn()
-end
-
-function UICoopDebug:OnSpawn()
-	if self.modal then return end
-	local kind = client().section_kind(self.spawn_sec)
-	local id = kind == "object" and "spawn_object" or "spawn_item"
-	client().run(id, self:Context())
-end
-
 function UICoopDebug:OnTeleportPeer(i)
 	if self.modal then return end
-	local peer = self.tp_peers[i]
+	local peer = self.tp_rows[i]
 	if peer ~= nil then client().run("tp_peer", { p = peer }) end
 end
 
@@ -723,8 +1870,8 @@ function UICoopDebug:OnHour(d)
 	self:BindWorld()
 end
 
-function UICoopDebug:OnFactor(d)
-	self.factor_i = max(1, min(#TIME_FACTORS, self.factor_i + d))
+function UICoopDebug:OnFactor(i)
+	self.factor_i = max(1, min(#TIME_FACTORS, i))
 	self:BindWorld()
 end
 
@@ -748,43 +1895,8 @@ function UICoopDebug:OnRecordPosition()
 end
 
 -------------------------------------------------------------------------------
--- Binding what the pages show
+-- Binding what the pages show (only the page in sight, on the refresh cadence)
 -------------------------------------------------------------------------------
-function UICoopDebug:BindSpawn()
-	if not self.n_text then return end
-	local kind = client().section_kind(self.spawn_sec)
-	self.n_text:SetText(tostring(kind == "object" and 1 or self.spawn_n))
-	for at, b in pairs(self.where) do b.mark:Show(at == self.spawn_at) end
-	self.spawn_hint:Show((self.spawn_text or "") == "")
-	for i, r in ipairs(self.found_rows) do
-		local s = self.found[i]
-		r.text:SetText(s or "")
-		r.pick:Show(s ~= nil and s == self.spawn_sec)
-		r.btn:Enable(s ~= nil)
-	end
-	if kind then
-		self.spawn_pick:SetText(self.spawn_sec)
-		local at = self.spawn_at
-		if kind == "object" and at == "inv" then at = "near" end
-		self.spawn_kind:SetText(trf("st_coop_dbg_kind_" .. kind, tr("st_coop_dbg_at_" .. at)))
-	else
-		self.spawn_pick:SetText(tr(((self.spawn_text or "") == "") and "st_coop_dbg_spawn_pick" or "st_coop_dbg_spawn_none"))
-		self.spawn_kind:SetText("")
-	end
-	self:EnableButton(self.spawn_go, kind ~= nil)
-end
-
--- the edit box is read every frame: the engine has no "text changed" event for a script window
-function UICoopDebug:PollSpawnEdit()
-	if not self.spawn_edit then return end
-	local text = safe(function() return self.spawn_edit:GetText() end) or ""
-	if text == self.spawn_text then return end
-	self.spawn_text = text
-	self.found = client().find_sections(text, #self.found_rows)
-	self.spawn_sec = client().section_kind(text) and text or nil
-	self:BindSpawn()
-end
-
 -- a placeholder shows while its field is empty
 local function bind_hint(hint, edit)
 	if not (hint and edit) then return end
@@ -794,10 +1906,8 @@ end
 
 function UICoopDebug:BindWorld()
 	if self.hour_text then self.hour_text:SetText(string.format("%02d:00", self.hour)) end
-	if self.factor_text then self.factor_text:SetText("x" .. tostring(TIME_FACTORS[self.factor_i])) end
+	for i, b in ipairs(self.factor_btns or {}) do self:SelectBtn(b, i == self.factor_i) end
 	bind_hint(self.info_hint, self.info_edit)
-	bind_hint(self.faction_hint, self.faction_edit)
-	bind_hint(self.level_hint, self.level_edit)
 end
 
 function UICoopDebug:BindMe()
@@ -805,7 +1915,7 @@ function UICoopDebug:BindMe()
 		local on = client().flag_on(r.id)
 		r.dot:SetTextureColor(self.ui:color(on and "live" or "idle"))
 		r.state:SetText(tr(on and "st_coop_dbg_flag_on" or "st_coop_dbg_flag_off"))
-		r.btn.text:SetText(tr(on and "st_coop_dbg_btn_off" or "st_coop_dbg_btn_on"))
+		self:SetBtnText(r.btn, tr(on and "st_coop_dbg_btn_off" or "st_coop_dbg_btn_on"))
 	end
 end
 
@@ -821,11 +1931,12 @@ function UICoopDebug:BindTarget()
 			self.t_name:SetText(tr("st_coop_dbg_no_target"))
 			self.t_meta:SetText(tr("st_coop_dbg_no_target_hint"))
 		end
-		for _, b in ipairs(self.target_buttons or {}) do self:EnableButton(b, has) end
+		for _, b in ipairs(self.target_buttons or {}) do self:EnableBtn(b, has) end
+		if self.actions.faction then self:EnableBtn(self.actions.faction, has and self.faction ~= nil) end
 	end
 	for _, id in ipairs({ "can_see", "obj_info" }) do
-		local b = self.actions and self.actions[id]
-		if b then self:EnableButton(b, has) end
+		local b = self.actions[id]
+		if b then self:EnableBtn(b, has) end
 	end
 end
 
@@ -940,24 +2051,127 @@ end
 function UICoopDebug:Refresh()
 	self:BindHeader()
 	self:BindFeed()
-	if self.page == "overview" then pcall(self.BindOverview, self) end
+	local p = self.page
+	if p == "overview" then pcall(self.BindOverview, self) end
 	self:BindTarget()
-	self:BindSpawn()
-	self:BindWorld()
-	self:BindMe()
+	if p == "world" then self:BindWorld() end
+	if p == "me" then self:BindMe() end
+end
+
+-------------------------------------------------------------------------------
+-- Mouse: drag by the title bar, resize by the edges and the corner, the wheel over a list or a tall page
+-------------------------------------------------------------------------------
+-- the cursor in design pixels of the stage: the engine's cursor, else the x, y of the event (the dialog is the whole screen)
+function UICoopDebug:CursorDesign(x, y)
+	local cx, cy = x, y
+	local f = rawget(_G, "GetCursorPosition")
+	if type(f) == "function" then
+		local ok, v = pcall(f)
+		if ok and v and type(v.x) == "number" then cx, cy = v.x, v.y end
+	end
+	if type(cx) ~= "number" or type(cy) ~= "number" then return nil end
+	local L = self.ui.L
+	return (cx / L.kx - L.ox) / L.s, (cy / L.ky - L.oy) / L.s
+end
+
+function UICoopDebug:StartDrag(zone, px, py)
+	self.drag = { zone = zone, x0 = px, y0 = py, r0 = { x = self.rect.x, y = self.rect.y, w = self.rect.w, h = self.rect.h } }
+end
+
+function UICoopDebug:DragTo(px, py)
+	local d = self.drag
+	if not d then return end
+	local dx, dy = px - d.x0, py - d.y0
+	if d.zone == "move" then
+		self:SetRect(drag_rect(d.r0, dx, dy, self.view), false)
+	else
+		local r = resize_rect(d.r0, d.zone, dx, dy, self.view)
+		local t = now()
+		local full = t >= self.next_relayout
+		if full then self.next_relayout = t + RELAYOUT_MS end
+		self:SetRect(r, full)
+		d.stale = not full
+	end
+end
+
+function UICoopDebug:EndDrag()
+	local d = self.drag
+	self.drag = nil
+	if not d then return end
+	if d.zone ~= "move" then self:Relayout() end
+	local S, r = self.S, self.rect
+	S.x, S.y, S.w, S.h = r.x, r.y, r.w, r.h
+	save_settings()
+end
+
+function UICoopDebug:OnMouse(x, y, action)
+	local E = ui_events
+	if action == E.WINDOW_LBUTTON_DOWN or action == E.WINDOW_LBUTTON_DB_CLICK then
+		local px, py = self:CursorDesign(x, y)
+		if not px then return CUIScriptWnd.OnMouse(self, x, y, action) end
+		if self.popover and self.pop.rect then
+			local pr = self.pop.rect
+			local lx, ly = px - self.rect.x, py - self.rect.y
+			local over_gear = self.gear.x and lx >= self.gear.x and lx <= self.gear.x + self.gear.w and ly >= self.gear.y and ly <= self.gear.y + self.gear.h
+			if not over_gear and not (lx >= pr.x and lx <= pr.x + pr.w and ly >= pr.y and ly <= pr.y + pr.h) then
+				self:OnSettings()
+			end
+		end
+		local z = not self.modal and hit_zone(self.rect, px, py, self.title_drag_w) or nil
+		if z and z ~= "inside" then
+			self:StartDrag(z, px, py)
+			return true
+		end
+	elseif action == E.WINDOW_LBUTTON_UP then
+		if self.drag then
+			self:EndDrag()
+			return true
+		end
+	elseif action == E.WINDOW_MOUSE_MOVE then
+		if self.drag then
+			local px, py = self:CursorDesign(x, y)
+			if px then self:DragTo(px, py) end
+			return true
+		end
+	elseif action == E.WINDOW_MOUSE_WHEEL_UP or action == E.WINDOW_MOUSE_WHEEL_DOWN then
+		local d = action == E.WINDOW_MOUSE_WHEEL_UP and -1 or 1
+		local L = self:CurrentList()
+		if L then
+			self:ScrollList(L, d * SCROLL_ROWS)
+			return true
+		end
+		local id = self.page
+		local ch = self.content_h and self.content_h[id]
+		if ch and self.body_rect and ch > self.body_rect.h then
+			self.scroll_y[id] = max(0, min(ch - self.body_rect.h, (self.scroll_y[id] or 0) + d * 40))
+			self:LayoutPage(id)
+			return true
+		end
+	end
+	return CUIScriptWnd.OnMouse(self, x, y, action)
 end
 
 function UICoopDebug:Update()
 	CUIScriptWnd.Update(self)
-	self.ui:hover()
-	self:PollSpawnEdit()
-	bind_hint(self.info_hint, self.info_edit)
-	bind_hint(self.faction_hint, self.faction_edit)
-	bind_hint(self.level_hint, self.level_edit)
+	self:HoverList(self.hot)
+	if self.page then self:HoverList(self.page_hot[self.page]) end
+	if self.drag then
+		local px, py = self:CursorDesign(nil, nil)
+		if px then self:DragTo(px, py) end
+	end
 	local t = now()
+	if t >= self.next_poll then
+		self.next_poll = t + POLL_MS
+		self:PollSearch()
+		if self.page == "world" then bind_hint(self.info_hint, self.info_edit) end
+	end
 	if t >= self.next_refresh then
 		self.next_refresh = t + REFRESH_MS
 		self:Refresh()
+	end
+	if self.reopen then
+		self.reopen = nil
+		reopen(self.page)
 	end
 end
 
@@ -970,7 +2184,9 @@ function UICoopDebug:OnKeyboard(dik, keyboard_action)
 	local res = CUIScriptWnd.OnKeyboard(self, dik, keyboard_action)
 	local pressed = keyboard_action == ui_events.WINDOW_KEY_PRESSED
 	if pressed and dik == DIK_keys.DIK_ESCAPE then
-		if self.modal then self:CloseModal() else close() end
+		if self.modal then self:CloseModal()
+		elseif self.popover then self:OnSettings()
+		else close() end
 		return true
 	end
 	-- F7 belongs to the level: coop_debug_client toggles the window on its release, and the engine calls the level's
@@ -987,6 +2203,7 @@ function UICoopDebug:OnKeyboard(dik, keyboard_action)
 			return true
 		end
 	end
+	if pressed then self.next_poll = 0 end -- a key in the search field: read it on this frame
 	return res
 end
 
@@ -1001,7 +2218,7 @@ function open(page)
 	if win then return win end
 	if not client().active() then return nil end
 	local ok, err = pcall(function()
-		local w = UICoopDebug(page or last_page)
+		local w = UICoopDebug(page or get_settings().page)
 		w:ShowDialog(true)
 		win = w
 	end)
@@ -1015,7 +2232,20 @@ end
 function close()
 	local w = win
 	win = nil
-	if w then pcall(function() if w:IsShown() then w:HideDialog() end end) end
+	if w then
+		pcall(function()
+			local S, r = w.S, w.rect
+			S.x, S.y, S.w, S.h = r.x, r.y, r.w, r.h
+			save_settings()
+		end)
+		pcall(function() if w:IsShown() then w:HideDialog() end end)
+	end
+end
+
+-- the window built again (a new density), on the same page
+function reopen(page)
+	close()
+	open(page)
 end
 
 -- F7 in the level: the target is the object under the crosshair now (the stock's o1)
@@ -1032,9 +2262,7 @@ end
 -- coop_debug_changed: the open window is built again for the new state, on the same page
 function on_state_changed()
 	if not win then return end
-	local page = win.page
-	close()
-	open(page)
+	reopen(win.page)
 end
 
 -- a new line of the answers
