@@ -24,12 +24,19 @@
 		coop_economy_group.veto_if_ungathered(radius, msg_id, fallback) -> true = blocked, tip shown
 		coop_economy_group.request_skip(kind, minutes, cont) -> true = proposal sent, cont() runs on approval
 		coop_economy_group.with_arm(kind, fn, ...)   run fn; a level.change_game_time inside goes to the host
+		coop_economy_group.subject(name, texts)   every machine: the lines of a vote about `name` (not a time skip):
+			texts = { ask = { id, fallback }, no = ..., timeout = ..., left = ... }; ask is formatted with the asker's
+			nick and the vote's argument, the others with the nick that decided it
+		coop_economy_group.propose(name, from, voters, on_result, arg) -> true, nil when this is not the host
+			host: the same vote as a time skip's (its box, the "Time to vote" setting, silence = no, a voter who leaves has
+			no veto) among `voters` ({ [peer] = true }; `from` and players who are not here are left out); on_result(ok,
+			reason, nick) runs on the host ("no" | "timeout" | "left"). With nobody to ask it is true at once.
 
 	Events (payload coop_main.encode, sender checked on receipt):
 		economy.propose  initiator -> host     { t = initiator ticket, k = kind, m = minutes }
-		economy.vote     host -> voter         { t = host ticket, k, m, n = initiator nick, s = shelter counts }
+		economy.vote     host -> voter         { t = host ticket, k, m, n = initiator nick, s = shelter counts; g = subject, a = its argument }
 		economy.ballot   voter -> host         { t = host ticket, y = accepted }
-		economy.verdict  host -> initiator     { t = initiator ticket, ok, r = reason, n = nick that blocked }
+		economy.verdict  host -> initiator     { t = initiator ticket, ok, r = reason, n = nick that blocked; t < 0: a vote ended, g = subject }
 		economy.skip     initiator -> host     { k, t = initiator ticket (0 for travel), m = minutes }
 		economy.fade     host -> other players { k, m, n = nick }
 --]]
@@ -184,8 +191,15 @@ local REASONS = {
 	bad = { "st_coop_eco_deny_bad", "The host refused the time skip." },
 }
 
-local function verdict_text(r, nick)
-	local e = REASONS[r] or REASONS.bad
+local SUBJECTS = {} -- name -> { ask = { id, fallback }, no = ..., timeout = ..., left = ... }
+
+function subject(name, texts)
+	if type(name) == "string" and type(texts) == "table" then SUBJECTS[name] = texts end
+end
+
+local function verdict_text(r, nick, g)
+	local s = g and SUBJECTS[g]
+	local e = s and (s[r] or s.no) or REASONS[r] or REASONS.bad
 	return core.fmt(e[1], e[2], tostring(nick or "?"))
 end
 
@@ -251,10 +265,36 @@ local function grant(peer, ticket, kind, minutes)
 	st.grants[tostring(peer) .. "/" .. tostring(ticket)] = { kind = kind, minutes = minutes, until_ms = core.now() + GRANT_MS }
 end
 
+-- A vote about a subject ended: the result to its caller, the end in the subject's words to everybody it asked and to the asker.
+local function close_subject(ht, p, ok, reason, nick)
+	if p.voters[core.self_id()] and st.ballot_for == ht then close_ballot() end
+	if not ok then
+		local msg = { t = -ht, ok = false, r = reason or "", n = nick or "", g = p.subject }
+		local told = {}
+		for peer in pairs(p.voters) do told[peer] = true end
+		if p.from ~= nil then told[p.from] = true end
+		for peer in pairs(told) do
+			if peer == core.self_id() then
+				core.tip(verdict_text(reason, nick, p.subject))
+			else
+				core.send("verdict", msg, peer)
+			end
+		end
+	end
+	local okc, err = pcall(p.cb, ok == true, reason, nick)
+	if not okc then
+		stats.errors = stats.errors + 1
+		core.log("! vote '%s': its result failed: %s", tostring(p.subject), tostring(err))
+	end
+	core.log("vote '%s' of %s: %s%s", tostring(p.subject), core.nick_of(p.from), ok and "yes" or "no",
+		ok and "" or (" (" .. tostring(reason) .. ")"))
+end
+
 local function close_prop(ht, ok, reason, nick)
 	local p = st.props[ht]
 	if not p then return end
 	st.props[ht] = nil
+	if p.cb then return close_subject(ht, p, ok, reason, nick) end
 	if ok then grant(p.from, p.ticket, p.kind, p.minutes) end
 	send_verdict(p.from, p.ticket, ok, reason, nick)
 	if not ok then
@@ -319,6 +359,40 @@ host_open = function(from, ticket, kind, minutes)
 	end
 end
 
+function propose(name, from, voters, on_result, arg)
+	if not (core.live() and core.is_host() and type(on_result) == "function") then return nil end
+	local here = {}
+	for _, p in ipairs(core.players()) do
+		if p.avatar_id then here[p.id] = true end -- a player still loading the world has no say yet
+	end
+	local asked, n = {}, 0
+	for peer in pairs(type(voters) == "table" and voters or {}) do
+		if peer ~= from and here[peer] then
+			asked[peer] = true
+			n = n + 1
+		end
+	end
+	if n == 0 then
+		local ok, err = pcall(on_result, true)
+		if not ok then core.log("! vote '%s': its result failed: %s", tostring(name), tostring(err)) end
+		return true
+	end
+	st.hseq = st.hseq + 1
+	local ht = st.hseq
+	st.props[ht] = { from = from, subject = name, cb = on_result, voters = asked, yes = {}, kind = tostring(name), minutes = 0,
+		deadline = core.now() + (core.rule("vote_timeout") or 30) * 1000 }
+	stats.proposals = stats.proposals + 1
+	local msg = { t = ht, g = tostring(name), a = arg ~= nil and tostring(arg) or "", n = core.nick_of(from) }
+	for peer in pairs(asked) do
+		if peer == core.self_id() then
+			show_ballot(msg)
+		else
+			core.send("vote", msg, peer)
+		end
+	end
+	return true
+end
+
 local function host_ballot(from, ht, yes)
 	local p = st.props[ht]
 	if not (p and p.voters[from]) then return end
@@ -333,7 +407,7 @@ end
 local function host_tick()
 	local t = core.now()
 	for ht, p in pairs(st.props) do
-		local initiator_here = core.player(p.from) ~= nil
+		local initiator_here = (p.cb and p.from == nil) or core.player(p.from) ~= nil
 		if not initiator_here then
 			close_prop(ht, false, "left", core.nick_of(p.from))
 		elseif t > p.deadline then
@@ -414,7 +488,13 @@ show_ballot = function(t)
 	local ht = core.int(t.t, 1)
 	if not ht then return end
 	if t.s and in_shelter() then return answer(ht, true) end
-	local text = core.fmt("st_coop_eco_vote_wait", "%s wants to pass time. Agree?", tostring(t.n))
+	local s = type(t.g) == "string" and t.g ~= "" and SUBJECTS[t.g]
+	local text
+	if s and s.ask then
+		text = core.fmt(s.ask[1], s.ask[2], tostring(t.n), tostring(t.a or ""))
+	else
+		text = core.fmt("st_coop_eco_vote_wait", "%s wants to pass time. Agree?", tostring(t.n))
+	end
 	st.ballot_for = ht
 	local box = rawget(_G, "ui_dyn_msg_box") or core.mod("ui_dyn_msg_box")
 	local shown = false
@@ -491,7 +571,7 @@ local function register_events()
 		if not ticket then return end
 		if ticket < 0 then -- a vote I was asked about ended
 			if st.ballot_for == -ticket then close_ballot() end
-			core.tip(verdict_text(t.r, t.n ~= "" and t.n or nil))
+			core.tip(verdict_text(t.r, t.n ~= "" and t.n or nil, type(t.g) == "string" and t.g ~= "" and t.g or nil))
 			return
 		end
 		on_verdict_local(ticket, t.ok == true, t.r, t.n ~= "" and t.n or nil)

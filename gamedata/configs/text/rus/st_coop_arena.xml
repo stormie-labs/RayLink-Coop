@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop - арена Бара в сессии: сбор группы у Арни (приглашение, метка на карте, кнопки «Запуститься одному» / «Начать без остальных») и голосование coop_economy_group о нём (scripts\coop_arena.script). Идентификаторы st_coop_arena_<имя>. -->
+<string_table>
+	<string id="st_coop_arena_invite">
+		<text>%s зовёт на арену, бой %s. Подойдите к Арни.</text>
+	</string>
+	<string id="st_coop_arena_spot">
+		<text>Арни: бой на арене</text>
+	</string>
+	<string id="st_coop_arena_solo">
+		<text>Бой %s на арене. Остальных на Баре позвали. Запуститься одному?</text>
+	</string>
+	<string id="st_coop_arena_without">
+		<text>Бой %s на арене: у Арни %s из %s игроков. Начать без остальных?</text>
+	</string>
+	<string id="st_coop_arena_vote_ask">
+		<text>%s хочет начать бой %s на арене без остальных. Согласны?</text>
+	</string>
+	<string id="st_coop_arena_vote_no">
+		<text>%s пока не хочет начинать бой на арене.</text>
+	</string>
+	<string id="st_coop_arena_vote_timeout">
+		<text>Бой на арене ждёт: нет ответа от %s.</text>
+	</string>
+	<string id="st_coop_arena_vote_left">
+		<text>Голосование об арене отменено (%s вышел).</text>
+	</string>
+</string_table>

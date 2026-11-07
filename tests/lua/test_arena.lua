@@ -8,6 +8,7 @@ dofile("tests/lua/support/harness_npc.lua")
 local PROXY = 500
 local BOX1, BOX2, TRIG, MANAGER, COMMENT, TOTAL, OPPONENT, BODY = 900, 901, 910, 920, 911, 912, 300, 777
 local SR, SPAM = 913, 914 -- Arnie's monster fight (the old arena): restrictors bar_arena_sr and bar_arena_spam
+local THIRD = 501 -- a third player's character (group entry)
 local ARENA = "l05_bar"
 local IN_ARENA = vec(153, -19, 103) -- where the cutscene puts the fighter
 local DOOR = vec(150, 0.4, 75) -- t_walk_2
@@ -18,6 +19,7 @@ local KITS = {
 }
 
 local W -- the world: items (host ids; a client sees the same ids, his own character swapped 0 <-> 500)
+START_AS_IS = false
 local H, Cm, HA, CA -- machines and their coop_arena
 
 local function new_item(section, parent, by)
@@ -97,6 +99,10 @@ local function stock(M)
 	E.patrol = function() return { point = function() return DOOR end } end
 	E.xr_effects = {}
 	local xe = E.xr_effects
+	-- xr_effects.disable_ui: this machine's UI off (the trigger's sr_idle@wait_N; the group's start)
+	function xe.disable_ui() M.ui_off = (M.ui_off or 0) + 1 end
+	-- sr_idle.action_idle:update: the trigger's on_timer 1000 runs here
+	E.sr_idle = { action_idle = { update = function(self) M.idle_updates = (M.idle_updates or 0) + 1 end } }
 	-- xr_effects.script:5984
 	function xe.bar_arena_teleport(actor, npc)
 		note("in")
@@ -283,6 +289,17 @@ local function env(M, level_name)
 	E.coop_npc_logic = { add_audience_rule = function(f) M.rule = f end, audience_of = function() return M.logic_aud end }
 	E.coop_npc_players = load_script(M, "coop_npc_players")
 	E.coop_mods_core = load_script(M, "coop_mods_core")
+	-- ui_dyn_msg_box.msg_box_ui: the box (yes = ok, no = cancel)
+	E.ui_dyn_msg_box = { msg_box_ui = function(typ, show, text, ok, cancel)
+		local b = { txt = text, typ = typ }
+		b.ok = function() ok(b) end
+		b.cancel = function() if cancel then cancel(b) end end
+		b.message_box = { HideDialog = function() if M.BOX == b then M.BOX = nil end end }
+		M.BOX = b
+		return b
+	end }
+	E.level.map_add_object_spot = function(id, typ, hint) M.spot = { id = id, typ = typ, hint = hint } end
+	E.level.map_remove_object_spot = function(id, typ) if M.spot and M.spot.id == id then M.spot = nil end end
 	stock(M)
 end
 
@@ -342,11 +359,16 @@ local function setup(opts)
 	reset_world()
 	NOW = NOW + 1000000
 	W = { items = {}, holders = {}, next_id = 2000, moves = 0, infos = {}, talked = {}, created = {}, client_seen = {} }
-	H = machine("host", 0, { [0] = 0, [1] = PROXY })
+	local avatars = { [0] = 0, [1] = PROXY }
+	if opts.third then avatars[2] = THIRD end
+	H = machine("host", 0, avatars)
 	Cm = nil
 	holder(H, H.env.db.actor, 0)
 	H.env.db.actor._pos = vec(100, 0, 100)
-	holder(H, H.add(make_obj(PROXY, 148, 1, 72, { _name = "proxy1" })), PROXY)
+	-- the client's character on the Bar, 25 m from Arnie (outside GATHER_RADIUS; nearer than the host)
+	holder(H, H.add(make_obj(PROXY, 130, 0, 90, { _name = "proxy1" })), PROXY)
+	if opts.third then holder(H, H.add(make_obj(THIRD, 120, 0, 100, { _name = "proxy2" })), THIRD) end
+	START_AS_IS = opts.start_as_is == true
 	H.add(make_obj(TRIG, 152.9, 0.5, 70.5, { _name = "bar_arena_triger" }))
 	H.add(make_obj(MANAGER, 149, 1, 74, { _name = "arnie" }))
 	H.add(make_obj(COMMENT, 150, 0, 70, { _name = "bar_arena_comment_fight_1" }))
@@ -381,9 +403,21 @@ end
 
 -- The host's trigger: the dialog gave fight n; sr_idle@idle -> sr_idle@wait_n (%=disable_ui%: the audience rule), on_timer
 -- 1000 -> sr_cutscene@fight_n (%=bar_arena_teleport%), whose section reaches every machine (its cutscene).
+-- START_AS_IS: only the trigger's sr_idle@wait_N (its audience); else a held fight is started by its taker alone ("start alone").
 local function start(n)
 	W.infos["bar_arena_fight_" .. n], W.infos.bar_arena_fight = true, true
 	local aud = H.rule(H.objects[TRIG])
+	pump()
+	if START_AS_IS then return aud end
+	local f = HA._state().fight
+	if f and f.hold then
+		local M = f.id == 0 and H or Cm
+		local b = M.BOX
+		M.BOX = nil
+		if b then b.ok() end
+		pump()
+		aud = H.rule(H.objects[TRIG])
+	end
 	H.env.xr_effects.bar_arena_teleport(H.env.db.actor, H.objects[TRIG])
 	pump()
 	H.cut, Cm.cut = H.new_cut(), Cm.new_cut()
@@ -472,7 +506,11 @@ do
 	check(created_by("host", 0) == 4 and created_by("client") == 0, "his kit is his own stock call's")
 	check(H.cut_in == 1 and at(H.env.db.actor, IN_ARENA), "his cutscene takes him into the arena")
 	check((Cm.cut_in or 0) == 0 and at(Cm.env.db.actor, client_pos), "the client's cutscene stands still: he stays where he is")
-	check(same(owned(PROXY), client_gear) and #sent_named(H, "arena.go") == 0, "the client is not touched")
+	local touched = 0
+	for _, s in ipairs(sent_named(H, "arena.go")) do
+		if H.env.coop_main.decode(s.payload).f ~= "gather" then touched = touched + 1 end
+	end
+	check(same(owned(PROXY), client_gear) and touched == 0, "the client is not touched (but invited, and the invitation taken back)")
 	H.cut.ended = true
 	H.cut:update()
 	check(H.switched == 1 and #sent_named(Cm, "arena.cut") == 0, "the host's own cutscene ends the stock way")
@@ -1305,6 +1343,606 @@ do
 	check(#tips == 1 and tips[1].target == 1 and t.f == "tip" and t.a == "bar_arena_fight_snork" and t.st == 30000,
 		"the line goes to the fighter's peer")
 	check(#H.tips == 0, "the map server's ghost shows nothing")
+end
+
+-------------------------------------------------------------------------------
+-- Live 2026-11-07 (host + one client): "the host took the fight, the client was sent in". The fighter is the one who talked
+-- to Arnie last (coop.talk_recent, coop_dialog.cpp); the host's own talk was never remembered when it ended (its window
+-- closed, dialogs.break_dialog right after the fight was taken), so a client who talked to Arnie in the last 60 s won.
+print("== the host's own talk with Arnie is remembered like a client's (engine: coop_dialog.cpp)")
+do
+	local f = io.open("engine/src/xrGame/coop/coop_dialog.cpp", "rb")
+	local src = f and f:read("*a")
+	if f then f:close() end
+	if not src then
+		print("  note: engine/src/xrGame/coop/coop_dialog.cpp not found, the talk memory is not cross-checked")
+	else
+		src = src:gsub("\r\n", "\n")
+		local function body(name) return src:match("\n[%w_:]+ " .. name .. "%([^)]*%)\n(%b{})") end
+		local _, left_from = src:find("\nvoid on_peer_left%([^)]*%)\n")
+		local left = body("on_peer_left") or ""
+		local left_to = left_from and left_from + #left or -1
+		-- every lock that ends goes to the memory (note_ended) in the block that drops it; a player who leaves takes his
+		-- memory with him (on_peer_left)
+		local drops, silent = 0, {}
+		for pos in src:gmatch("()g_locks%.erase%(") do
+			if not (left_from and pos > left_from and pos < left_to) then
+				drops = drops + 1
+				local head = src:sub(1, pos)
+				local open = head:match(".*(){") or 1
+				if not head:sub(open):find("note_ended(", 1, true) then
+					local line = select(2, head:gsub("\n", "")) + 1
+					silent[#silent + 1] = "line " .. line
+				end
+			end
+		end
+		check(drops >= 5, "coop_dialog.cpp drops locks in five places at least (" .. drops .. ")")
+		check(#silent == 0, "every dropped talk lock is remembered (note_ended), the host's own too; silent: " .. table.concat(silent, ", "))
+		check((body("on_talk_window_closed") or ""):find("note_ended(kHostPeer", 1, true) ~= nil,
+			"the host's talk window closes: his talk is remembered (kHostPeer)")
+		check((body("host_frame") or ""):find("note_ended(kHostPeer", 1, true) ~= nil,
+			"the host's talk ends without the window: remembered as well")
+		check(left:find("g_recent.erase(id)", 1, true) ~= nil, "a player who leaves takes his talks with him")
+	end
+end
+
+print("== the host took the fight from Arnie; the client is nearer and talked to him 30 s ago: the host fights")
+do
+	-- the engine before the fix: the host's ended talk was not there; the client's was -> the client (the live report)
+	setup()
+	W.talked[0], W.talked[1] = nil, NOW - 30000
+	local aud = start(1)
+	check(aud and aud[PROXY] == true and aud[0] == nil, "model of the old engine: the client goes in (the report)")
+	-- the engine now: the host's talk ended half a second ago, the client's 30 s ago
+	setup()
+	local client_gear = owned(PROXY)
+	W.talked[0], W.talked[1] = NOW - 500, NOW - 30000
+	check(H.env.db.actor._pos:distance_to(H.objects[MANAGER]._pos) > H.objects[PROXY]._pos:distance_to(H.objects[MANAGER]._pos),
+		"the client stands nearer to Arnie")
+	aud = start(1)
+	check(aud and aud[0] == true and aud[PROXY] == nil, "the host talked last: he fights, not the nearer client")
+	check(H.cut_in == 1 and (Cm.cut_in or 0) == 0 and same(owned(PROXY), client_gear), "the host goes in, the client keeps his gear")
+	-- and the swap: the client talked last, the host stands nearer
+	setup()
+	H.env.db.actor._pos = vec(149, 1, 73)
+	W.talked[0], W.talked[1] = NOW - 30000, NOW - 500
+	aud = start(1)
+	-- the host stands at Arnie and the taker is in: everybody on the Bar is there, both go in (group entry); the taker is the client
+	check(aud and aud[PROXY] == true and HA._state().fight.id == PROXY, "the client talked last: he takes the fight, not the nearer host")
+end
+
+-------------------------------------------------------------------------------
+-- Live 2026-11-07: a client fighter lost reputation for killing his arena opponent (attempt 2: the host took fight 2, the
+-- client fought it), and did not in attempt 5 (he took the fight himself). A player's kill is counted by his own machine:
+-- its actor killed the NPC there (coop_remote.cpp on_host_death: KillEntity with the local killer), so stock runs the actor
+-- branch there, game_statistics.increment_reputation, which spares him while that machine has bar_arena_fight (the world's
+-- info, the host's copy synced). Stock takes bar_arena_fight off when Arnie's prize is collected
+-- (dialogs_bar.new_arena_give_reward), in single player always after the fight; in a session anybody may collect a waiting
+-- prize while another player fights. The host's NPC branch for the client's character (increment_npc_reputation on the
+-- proxy) never reaches the client: coop_story.cpp progress_frame puts the client's own value back on the proxy.
+-- game_statistics.script:194-219, 284-345, dialogs.script:1823, dialogs_bar.script:48-120, 166-199 of Anomaly 1.5.3, ported
+-- (the faction pick of a kill fixed to neutral: actor_stalker -> arena_enemy is 0 in game_relations.ltx; the elseif chains
+-- of the prizes as loops).
+local function stock_statistics(M)
+	local E = M.env
+	local gs = {
+		actor_statistics = {
+			killed_stalkers = { count = 0, rank = 0, rept = 0 },
+			killed_stalkers_n = { count = 0, rank = 0, rept = -75 },
+			arena_battles = { count = 0, rank = 0, rept = 0 },
+		},
+		npc_statistics = {
+			killed_stalkers = { save = true, rank = 0, rept = 0 },
+			killed_stalkers_n = { save = false, rank = 0, rept = -75 },
+		},
+	}
+	E.game_statistics = gs
+	E.IsStalker = function() return true end
+	E.alife_object = function() return nil end
+	function gs.increment_rank(value)
+		local a = E.db.actor
+		a:set_character_rank(a:character_rank() + (value or 0))
+	end
+	function gs.increment_npc_rank(npc, value)
+		if (not npc) then return end
+		npc:set_character_rank(npc:character_rank() + (value or 0))
+	end
+	function gs.increment_reputation(value)
+		-- Fix for arena causing reputation changes
+		if E.has_alife_info("bar_arena_fight") then
+			return
+		end
+		local a = E.db.actor
+		a:set_character_reputation(a:character_reputation() + (value or 0))
+		if (a:character_reputation() < -4000) then a:set_character_reputation(-4000) end
+		if (a:character_reputation() > 4000) then a:set_character_reputation(4000) end
+	end
+	function gs.increment_npc_reputation(npc, value)
+		if (not npc) then return end
+		npc:set_character_reputation(npc:character_reputation() + (value or 0))
+	end
+	function gs.increment_statistic(value, custom_rank, custom_rept)
+		local statistic = value and gs.actor_statistics[value] or nil
+		if (statistic and statistic.count and statistic.rank and statistic.rept) then
+			statistic.count = statistic.count + 1
+			gs.increment_rank(custom_rank or statistic.rank)
+			gs.increment_reputation(custom_rept or statistic.rept)
+		end
+	end
+	function gs.increment_npc_statistic(npc, value, custom_rank, custom_rept)
+		local statistic = value and gs.npc_statistics[value] or nil
+		if (npc and E.IsStalker(npc) and npc:alive() and statistic and statistic.rank and statistic.rept) then
+			gs.increment_npc_rank(npc, custom_rank or statistic.rank)
+			gs.increment_npc_reputation(npc, custom_rept or statistic.rept)
+		end
+	end
+	function gs.npc_on_death_callback(victim, killer)
+		if not (killer and victim) then return end
+		local id = killer:id()
+		local stat = "killed_stalkers_n"
+		if (id == E.AC_ID) then
+			gs.increment_statistic("killed_stalkers")
+			gs.increment_statistic(stat)
+		else
+			gs.increment_npc_statistic(killer, "killed_stalkers")
+			gs.increment_npc_statistic(killer, stat)
+		end
+	end
+	return gs
+end
+
+local PRIZE = { 1000, 2000, 3000, 4000, 6000, 8000, 10000, 10000 }
+
+local function stock_prizes(M)
+	local E = M.env
+	local A = E.db.actor
+	A._money = A._money or 0
+	-- the actor's infos are the world's (W.infos: the sync is not what is tested here)
+	function A:give_info_portion(i) W.infos[i] = true end
+	function A:disable_info_portion(i) W.infos[i] = nil end
+	E.give_info = function(i) W.infos[i] = true end
+	E.disable_info = function(i) W.infos[i] = nil end
+	E.dialogs = {
+		relocate_money_to_actor = function(first_speaker, second_speaker, num)
+			E.db.actor._money = E.db.actor._money + num
+		end,
+	}
+	E.dialogs_bar = {}
+	function E.dialogs_bar.new_arena_give_reward(first_speaker, second_speaker)
+		local m = 0
+		for n = 1, 8 do
+			if E.has_alife_info("bar_arena_fight_" .. n .. "_reward") then m = PRIZE[n] break end
+		end
+		E.dialogs.relocate_money_to_actor(first_speaker, second_speaker, m)
+		E.db.actor:give_info_portion("bar_arena_reset")
+		for n = 1, 8 do E.db.actor:disable_info_portion("bar_arena_fight_" .. n .. "_reward") end
+		E.db.actor:disable_info_portion("bar_arena_fight")
+		E.db.actor:disable_info_portion("bar_arena_fight_begin")
+		E.game_statistics.increment_statistic("arena_battles")
+	end
+	function E.dialogs_bar.arena_give_reward(first_speaker, second_speaker)
+		local m = 0
+		for _, mon in ipairs({ "pseudodog", "snork", "bloodsucker", "burer", "savage" }) do
+			if E.has_alife_info("bar_arena_" .. mon .. "_defeated") then m = m + 1000 end
+		end
+		local p = 0
+		if E.has_alife_info("bar_arena_20_p") then p = 1.5 elseif E.has_alife_info("bar_arena_50_p") then p = 2
+		elseif E.has_alife_info("bar_arena_100_p") then p = 3 end
+		E.dialogs.relocate_money_to_actor(first_speaker, second_speaker, m * p)
+		E.db.actor:give_info_portion("bar_old_arena_reset")
+		for _, i in ipairs({ "bar_arena_start", "bar_arena_20_p", "bar_arena_50_p", "bar_arena_100_p", "bar_arena_actor_victory" }) do
+			E.db.actor:disable_info_portion(i)
+		end
+		E.game_statistics.increment_statistic("arena_battles")
+	end
+end
+
+-- reputation and rank on an object of the test world
+local function traits(o, rep)
+	o._rep, o._rank = rep or 0, o._rank or 0
+	function o:character_reputation() return self._rep end
+	function o:set_character_reputation(v) self._rep = v end
+	function o:character_rank() return self._rank end
+	function o:set_character_rank(v) self._rank = v end
+	return o
+end
+
+-- the host ledger's money for a client's character (coop.money_grant): what it got
+local function grants(M)
+	M.granted = {}
+	M.env.coop.money_grant = function(peer, n)
+		M.granted[#M.granted + 1] = { peer = peer, n = n }
+		return true
+	end
+	M.env.get_console = function() return { get_integer = function(_, k) if k == "coop_share_rewards" then return M.share or 0 end end } end
+end
+
+local function granted_to(M, peer)
+	local n = 0
+	for _, g in ipairs(M.granted) do if g.peer == peer then n = n + g.n end end
+	return n
+end
+
+local function stats_setup()
+	local gs, cgs
+	setup({ before_start = function()
+		gs = stock_statistics(H)
+		cgs = stock_statistics(Cm)
+		stock_prizes(H)
+		stock_prizes(Cm)
+		grants(H)
+	end })
+	traits(H.env.db.actor, 100)
+	traits(H.objects[PROXY], 200)
+	traits(H.objects[OPPONENT], 0)
+	traits(Cm.env.db.actor, 200)
+	return gs, cgs
+end
+
+-- fight n, its fighter the host (0) or the client (1); won: the trigger gave its prize
+local function fought(n, who)
+	W.talked[0], W.talked[1] = nil, nil
+	W.talked[who] = NOW
+	start(n)
+	W.infos["bar_arena_fight_" .. n .. "_done"] = true
+	H.env.xr_effects.bar_arena_teleport_2(H.env.db.actor, H.objects[COMMENT])
+	pump()
+	W.infos["bar_arena_fight_" .. n .. "_reward"] = true
+end
+
+print("== live attempt 2: the host took fight 2, the client fights it, fight 1's prize is collected meanwhile")
+do
+	local _, cgs = stats_setup()
+	fought(1, 0) -- attempt 1: the host won fight 1, its prize waits
+	W.talked[0], W.talked[1] = NOW - 30000, NOW
+	start(2) -- the client fights fight 2
+	W.infos.bar_arena_fight_begin = true -- his cutscene ended (sr_cutscene@fight_2: +bar_arena_fight_begin)
+	check(W.infos.bar_arena_fight == true, "fight 2 runs: bar_arena_fight is on")
+	local host_money = H.env.db.actor._money
+	H.env.dialogs_bar.new_arena_give_reward(H.env.db.actor, H.objects[MANAGER]) -- the host, free at Arnie, collects
+	pump()
+	check(W.infos.bar_arena_fight == true and W.infos.bar_arena_fight_begin == true,
+		"a prize collected during another player's fight keeps that fight's bar_arena_fight and bar_arena_fight_begin")
+	check(W.infos.bar_arena_fight_1_reward == nil, "fight 1's prize is gone")
+	check(H.env.db.actor._money == host_money + 1000, "fight 1 was the host's: its 1000 are his")
+	cgs.npc_on_death_callback(H.objects[OPPONENT], Cm.env.db.actor) -- his own machine counts his kill
+	check(Cm.env.db.actor._rep == 200, "the client's kill in fight 2 costs him nothing (" .. Cm.env.db.actor._rep .. ")")
+end
+
+print("== live attempt 5: the client took the fight himself, no prize collected meanwhile: no loss (control)")
+do
+	local _, cgs = stats_setup()
+	fought(4, 0)
+	H.env.dialogs_bar.new_arena_give_reward(H.env.db.actor, H.objects[MANAGER]) -- fight 4's prize before fight 5
+	pump()
+	W.talked[0], W.talked[1] = nil, NOW
+	start(5)
+	cgs.npc_on_death_callback(H.objects[OPPONENT], Cm.env.db.actor)
+	check(Cm.env.db.actor._rep == 200, "no reputation change (" .. Cm.env.db.actor._rep .. ")")
+	-- after the fight and its prize the exemption is off, as in stock: a kill costs again
+	W.infos.bar_arena_fight_5_done, W.infos.bar_arena_fight_5_reward = true, true
+	H.env.dialogs_bar.new_arena_give_reward(H.env.db.actor, H.objects[MANAGER])
+	pump()
+	check(W.infos.bar_arena_fight == nil, "no fight runs: the prize takes bar_arena_fight off (stock)")
+	cgs.npc_on_death_callback(H.objects[OPPONENT], Cm.env.db.actor)
+	check(Cm.env.db.actor._rep == 125, "outside the arena fight his kill is stock: -75 (" .. Cm.env.db.actor._rep .. ")")
+end
+
+print("== the prize is the fighter's: the host collects a client's prize")
+do
+	local gs, cgs = stats_setup()
+	fought(1, 1)
+	local host_money = H.env.db.actor._money
+	H.env.dialogs_bar.new_arena_give_reward(H.env.db.actor, H.objects[MANAGER])
+	pump()
+	check(H.env.db.actor._money == host_money, "the host gets nothing of it")
+	check(granted_to(H, 1) == 1000, "the client's character gets 1000 through the host ledger (" .. granted_to(H, 1) .. ")")
+	check(cgs.actor_statistics.arena_battles.count == 1 and gs.actor_statistics.arena_battles.count == 0,
+		"the arena battle counts for the fighter, on his machine")
+	check(W.infos.bar_arena_fight_1_reward == nil and W.infos.bar_arena_fight == nil, "the prize is gone, the next fight is open")
+end
+
+print("== the prize is the fighter's: a client collects the host's prize")
+do
+	local gs, cgs = stats_setup()
+	fought(2, 0)
+	local host_money, client_money = H.env.db.actor._money, Cm.env.db.actor._money
+	Cm.env.dialogs_bar.new_arena_give_reward(Cm.env.db.actor, nil) -- his dialog runs on his machine
+	pump()
+	check(Cm.env.db.actor._money == client_money and granted_to(H, 1) == 0, "the client gets nothing of it")
+	check(H.env.db.actor._money == host_money + 2000, "the host gets his 2000")
+	check(gs.actor_statistics.arena_battles.count == 1 and cgs.actor_statistics.arena_battles.count == 0,
+		"the arena battle counts for the host")
+	check(W.infos.bar_arena_fight_2_reward == nil, "the prize is gone: the next fight is open")
+end
+
+print("== a prize of two fighters goes by the setting coop_share_rewards")
+for _, c in ipairs({ { 0, 3000, 0 }, { 1, 1500, 1500 }, { 2, 1500, 1500 }, { 3, 3000, 3000 } }) do
+	stats_setup()
+	H.share = c[1]
+	fought(3, 0)
+	HA._state().prizes[3] = { 0, PROXY } -- a fight both went into
+	local host_money = H.env.db.actor._money
+	H.env.dialogs_bar.new_arena_give_reward(H.env.db.actor, H.objects[MANAGER])
+	pump()
+	check(H.env.db.actor._money - host_money == c[2] and granted_to(H, 1) == c[3],
+		string.format("coop_share_rewards %d: the host (who collects) %d, the client %d (%d, %d)", c[1], c[2], c[3],
+			H.env.db.actor._money - host_money, granted_to(H, 1)))
+end
+
+print("== Arnie's monster fight: its bet prize is the fighter's")
+do
+	stats_setup()
+	W.talked[1] = NOW
+	H.env.db.actor:give_info_portion("bar_arena_snork_choosen")
+	H.logic_aud = { [PROXY] = true }
+	H.env.xr_effects.bar_arena_introduce(H.env.db.actor, H.objects[SR])
+	W.infos.bar_arena_snork_defeated, W.infos.bar_arena_50_p = true, true
+	H.env.xr_effects.bar_arena_after_fight(H.env.db.actor, H.objects[SR])
+	pump()
+	local host_money = H.env.db.actor._money
+	H.env.dialogs_bar.arena_give_reward(H.env.db.actor, H.objects[MANAGER])
+	pump()
+	check(H.env.db.actor._money == host_money and granted_to(H, 1) == 2000,
+		"the client fought the snork: his 1000 x 2 (" .. granted_to(H, 1) .. ")")
+end
+
+print("== a reputation change of a player during an arena fight goes into his log with its source")
+do
+	local _, cgs = stats_setup()
+	W.talked[1] = NOW
+	start(3)
+	W.infos.bar_arena_fight = nil -- whatever took it off: the line says so
+	Cm.log = {}
+	cgs.npc_on_death_callback(H.objects[OPPONENT], Cm.env.db.actor)
+	local line
+	for _, l in ipairs(Cm.log) do if l:find("increment_reputation(-75)", 1, true) then line = l end end
+	check(line ~= nil and line:find("bar_arena_fight off", 1, true) ~= nil and line:find("200 -> 125", 1, true) ~= nil,
+		"the client's log: increment_reputation(-75), bar_arena_fight off, 200 -> 125")
+	-- a change by the engine (an attack counted by the host, RelReputationDelta), not by game_statistics
+	Cm.log = {}
+	Cm.env.db.actor._rep = 175
+	tick(Cm)
+	line = nil
+	for _, l in ipairs(Cm.log) do if l:find("125 -> 175", 1, true) then line = l end end
+	check(line ~= nil and line:find("not game_statistics", 1, true) ~= nil, "a change from elsewhere: the log says it was not game_statistics")
+	Cm.log = {}
+	tick(Cm)
+	local any = false
+	for _, l in ipairs(Cm.log) do if l:find("reputation", 1, true) then any = true end end
+	check(not any, "no change: no line")
+end
+
+print("== the arena's prizes and reputation lines: single player is stock")
+do
+	reset_world()
+	W = { items = {}, holders = {}, next_id = 2000, moves = 0, infos = { bar_arena_fight = true, bar_arena_fight_1_reward = true },
+		talked = {}, created = {} }
+	H = machine("single", 9, {})
+	Cm = nil
+	holder(H, H.env.db.actor, 0)
+	env(H)
+	local gs = stock_statistics(H)
+	stock_prizes(H)
+	traits(H.env.db.actor, 0)
+	HA = load_script(H, "coop_arena")
+	HA.on_game_start()
+	H.env.dialogs_bar.new_arena_give_reward(H.env.db.actor, nil)
+	check(H.env.db.actor._money == 1000 and W.infos.bar_arena_fight == nil and gs.actor_statistics.arena_battles.count == 1,
+		"single player: the prize is stock")
+	H.log = {}
+	gs.increment_reputation(-75)
+	check(H.env.db.actor._rep == -75 and #H.log == 0, "single player: reputation is stock, no line")
+end
+
+-------------------------------------------------------------------------------
+-- Group entry (owner 2026-11-07): a fight taken from Arnie waits for the other players on the Bar. They are invited (a tip and
+-- a map spot on Arnie); whoever stands within GATHER_RADIUS of Arnie has one button: alone "start alone", with others but not
+-- everybody "start without the others" (a vote among those at Arnie: coop_economy_group.propose). Everybody at Arnie: it
+-- starts by itself; nobody else on the Bar: at once (stock's 1 s). Everyone at Arnie at the start goes in, each with his kit
+-- and his ledger, at a spot of his own.
+local function box_of(M) return M.BOX end
+local function press(M, yes)
+	local b = M.BOX
+	M.BOX = nil
+	if b then if yes then b.ok() else b.cancel() end end
+	pump()
+end
+
+print("== group entry: nobody else on the Bar: the fight starts at once, as in single player")
+do
+	setup({ start_as_is = true })
+	H.objects[PROXY]._pos = vec(300, 0, 300)
+	H.objects[PROXY]._level_away = true
+	local proxy = H.objects[PROXY]
+	H.objects[PROXY] = nil -- his character is on another map
+	W.talked[0] = NOW
+	local aud = start(1)
+	check(aud and aud[0] == true and not HA._state().fight.hold, "no hold: the host's trigger effects are his at once")
+	H.idle_updates = 0
+	H.env.sr_idle.action_idle.update({ object = H.objects[TRIG], st = {} })
+	check(H.idle_updates == 1, "the trigger's sr_idle@wait runs its timer (stock 1 s)")
+	check(box_of(H) == nil, "no button")
+	H.objects[PROXY] = proxy
+end
+
+print("== group entry: the host takes the fight, the client is on the Bar: the game waits and invites him")
+do
+	setup({ start_as_is = true })
+	W.talked[0] = NOW
+	local aud = start(1)
+	local f = HA._state().fight
+	check(f and f.hold == true and aud and next(aud) == nil, "held: the trigger's disable_ui goes to nobody (the taker can move and press)")
+	H.idle_updates = 0
+	H.env.sr_idle.action_idle.update({ object = H.objects[TRIG], st = {} })
+	check(H.idle_updates == 0, "the trigger's sr_idle@wait does not run its timer while the group gathers")
+	H.env.sr_idle.action_idle.update({ object = H.objects[COMMENT], st = {} })
+	check(H.idle_updates == 1, "another sr_idle runs as stock")
+	tick(H)
+	pump()
+	check(box_of(H) and box_of(H).txt:find("alone", 1, true) ~= nil, "the host at Arnie: the button 'start alone' (" .. tostring(box_of(H) and box_of(H).txt) .. ")")
+	check(box_of(Cm) == nil and Cm.spot ~= nil and #Cm.tips > 0 and Cm.tips[#Cm.tips].id:find("p0", 1, true) ~= nil,
+		"the client is invited: a tip with the host's nick and a map spot on Arnie")
+	check((H.cut_in or 0) == 0 and #owned(BOX1) == 0, "nobody went in yet")
+	press(H, true)
+	f = HA._state().fight
+	check(not f.hold and #f.ids == 1 and f.ids[1] == 0, "started alone: the host is the one fighter")
+	check(Cm.spot == nil, "the client's spot on Arnie is gone")
+	H.idle_updates = 0
+	H.env.sr_idle.action_idle.update({ object = H.objects[TRIG], st = {} })
+	check(H.idle_updates == 1, "the trigger goes on (its 1 s timer is long over: the cutscene at once)")
+	aud = H.rule(H.objects[TRIG])
+	check(aud and aud[0] == true and aud[PROXY] == nil, "the trigger's effects are his")
+	H.env.xr_effects.bar_arena_teleport(H.env.db.actor, H.objects[TRIG])
+	pump()
+	check(created_by("host", 0) == 4 and created_by("client") == 0, "only the host gets a kit")
+end
+
+print("== group entry: the client walks up to Arnie: everybody on the Bar is there, both go in")
+do
+	setup({ start_as_is = true })
+	local host_gear, client_gear = owned(0), owned(PROXY)
+	H.env.db.actor._pos = vec(149, 1, 76)
+	W.talked[0] = NOW
+	start(1)
+	tick(H)
+	pump()
+	check(HA._state().fight.hold == true and Cm.spot ~= nil, "held, the client invited")
+	H.objects[PROXY]._pos = vec(146, 1, 70) -- he comes
+	tick(H)
+	pump()
+	local f = HA._state().fight
+	check(not f.hold and #f.ids == 2 and f.ids[1] == 0 and f.ids[2] == PROXY, "everybody at Arnie: it starts by itself, the taker first")
+	check(Cm.spot == nil and box_of(H) == nil, "no spot, no button")
+	check(Cm.ui_off == 1 and H.ui_off == 1, "both lose the UI at the start (stock disable_ui)")
+	local aud = H.rule(H.objects[TRIG])
+	check(aud[0] == true and aud[PROXY] == true, "the trigger's effects (enable_ui) are both fighters'")
+	H.env.xr_effects.bar_arena_teleport(H.env.db.actor, H.objects[TRIG])
+	pump()
+	H.cut, Cm.cut = H.new_cut(), Cm.new_cut()
+	H.cut:zone_enter()
+	Cm.cut:zone_enter()
+	check(#owned(BOX1) == #host_gear + #client_gear, "both gears are in box 1")
+	check(created_by("host", 0) == 4 and created_by("client", PROXY) == 4, "each his own kit, made by his own machine")
+	check(H.cut_in == 1 and Cm.cut_in == 1, "both cutscenes play")
+	check(at(H.env.db.actor, IN_ARENA) and not at(Cm.env.db.actor, IN_ARENA) and Cm.env.db.actor._pos:distance_to(IN_ARENA) < 4,
+		"each at a spot of his own in the pit")
+	check(HA._state().prizes[1] and #HA._state().prizes[1] == 2, "the fight's prize is both fighters'")
+	-- the host's cutscene ends: his trigger goes on; the client's slot and the way out are both fighters'
+	H.env.xr_effects.bar_arena_weapon_slot(H.env.db.actor, H.objects[TRIG], { "2" })
+	pump()
+	check(H.env.db.actor._slot == 2 and Cm.env.db.actor._slot == 2, "the weapon slot is both fighters'")
+	H.zone.saved_obj = { [OPPONENT] = true, [PROXY] = true }
+	win(1)
+	check(same(owned(0), host_gear) and same(owned(PROXY), client_gear), "won: each has exactly his own gear back")
+	check(at(H.env.db.actor, DOOR) and at(Cm.env.db.actor, DOOR), "both at the door")
+end
+
+print("== group entry: one falls, the fight goes on; it is over when no fighter is left")
+do
+	setup({ start_as_is = true })
+	H.env.db.actor._pos = vec(149, 1, 76)
+	H.objects[PROXY]._pos = vec(146, 1, 70)
+	W.talked[0] = NOW
+	start(1)
+	tick(H)
+	pump()
+	H.env.xr_effects.bar_arena_teleport(H.env.db.actor, H.objects[TRIG])
+	pump()
+	check(#HA._state().fight.ids == 2, "two fighters")
+	-- the client falls and respawns: his gear back, the host fights on
+	for _, f in ipairs(H.handlers["arena.out"] or {}) do f(H.env.coop_main.encode({}), 1) end
+	pump()
+	local f = HA._state().fight
+	check(f and #f.ids == 1 and f.ids[1] == 0, "the fight goes on with the host")
+	HA.fight_over()
+	check(HA._state().fight == nil, "over")
+end
+
+print("== group entry: three players, two at Arnie: 'start without the others' asks the other one at Arnie")
+do
+	setup({ start_as_is = true, third = true })
+	H.env.db.actor._pos = vec(149, 1, 76)
+	H.objects[PROXY]._pos = vec(146, 1, 70)
+	H.objects[THIRD]._pos = vec(120, 0, 100) -- on the Bar, far from Arnie
+	local asked
+	H.env.coop_economy_group = { propose = function(name, from, voters, cb, arg)
+		asked = { name = name, from = from, voters = voters, cb = cb, arg = arg }
+		return true
+	end }
+	W.talked[0] = NOW
+	start(1)
+	tick(H)
+	pump()
+	check(box_of(H) and box_of(H).txt:find("without", 1, true) ~= nil, "two of three at Arnie: the button 'start without the others'")
+	check(box_of(Cm) and box_of(Cm).txt:find("without", 1, true) ~= nil, "the client at Arnie has it too")
+	press(H, true)
+	check(asked and asked.name == "arena" and asked.from == 0 and asked.voters[1] == true and asked.voters[0] == nil and asked.voters[2] == nil and asked.arg == "1",
+		"the host pressed: a vote of the client (the one at Arnie), not of the third player")
+	check(HA._state().fight.hold == true, "the vote runs: still waiting")
+	asked.cb(false, "no", "p1")
+	check(HA._state().fight.hold == true, "a no: the group still waits")
+	press(Cm, true)
+	check(asked.from == 1 and asked.voters[0] == true, "the client presses: the host is asked")
+	asked.cb(true)
+	local f = HA._state().fight
+	check(not f.hold and #f.ids == 2 and f.ids[1] == 0 and f.ids[2] == PROXY, "yes: the two at Arnie go in, the third stays")
+end
+
+print("== group entry: the vote is the economy's (coop_economy_group.subject 'arena' with its lines)")
+do
+	local subj
+	setup({ start_as_is = true, before_start = function()
+		H.env.coop_economy_group = { subject = function(name, texts) subj = { name = name, texts = texts } end }
+	end })
+	check(subj and subj.name == "arena" and subj.texts.ask and subj.texts.no and subj.texts.timeout, "the arena's vote lines are registered")
+end
+
+print("== the arena's strings: eng and rus, every id coop_arena uses")
+do
+	local function read(path)
+		local f = io.open(path, "rb")
+		local s = f and f:read("*a")
+		if f then f:close() end
+		return s
+	end
+	local src = read("gamedata/scripts/coop_arena.script") or ""
+	local eng = read("gamedata/configs/text/eng/st_coop_arena.xml") or ""
+	local rus = read("gamedata/configs/text/rus/st_coop_arena.xml") or ""
+	local ids, n = {}, 0
+	for id in src:gmatch('"(st_coop_arena_[%w_]+)"') do
+		if not ids[id] then ids[id] = true n = n + 1 end
+	end
+	check(n >= 6, "coop_arena names its strings (" .. n .. ")")
+	local missing = {}
+	for id in pairs(ids) do
+		if not (eng:find('id="' .. id .. '"', 1, true) and rus:find('id="' .. id .. '"', 1, true)) then missing[#missing + 1] = id end
+	end
+	check(#missing == 0, "each is in st_coop_arena.xml, eng and rus: missing " .. table.concat(missing, ", "))
+	check(rus:find('encoding="windows-1251"', 1, true) ~= nil and eng:find("\r\n", 1, true) ~= nil and rus:find("\r\n", 1, true) ~= nil,
+		"rus is windows-1251, both CRLF")
+end
+
+print("== the rank gate after fights 3 and 6 reads the player who talks to Arnie (else the one nearest to him)")
+do
+	local xc = {}
+	setup({ before_start = function()
+		xc.bar_actor_rank_stalker = function() return H.env.db.actor:character_rank() > 1499 end
+		xc.bar_actor_rank_veteran = function() return H.env.db.actor:character_rank() > 2999 end
+		H.env.xr_conditions = xc
+	end })
+	H.env.db.actor.character_rank = function() return 100 end
+	H.objects[PROXY].character_rank = function() return 2000 end
+	H.env.coop.talk_holder = function(id) return id == MANAGER and 1 or nil end
+	check(xc.bar_actor_rank_stalker(H.env.db.actor, H.objects[SR]) == true, "the client talks to Arnie: his rank 2000 is a stalker's")
+	check(xc.bar_actor_rank_veteran(H.env.db.actor, H.objects[SR]) == false, "and not a veteran's")
+	H.env.coop.talk_holder = function() return nil end
+	H.env.db.actor._pos = vec(149, 1, 75)
+	H.objects[PROXY]._pos = vec(130, 0, 90)
+	check(xc.bar_actor_rank_stalker(H.env.db.actor, H.objects[SR]) == false, "nobody talks: the one nearest to Arnie (the host, 100)")
+	H.objects[PROXY]._pos = vec(149, 1, 74)
+	H.env.db.actor._pos = vec(120, 0, 100)
+	check(xc.bar_actor_rank_stalker(H.env.db.actor, H.objects[SR]) == true, "the client nearest: his rank")
 end
 
 print(string.format("%d passed, %d failed", PASSES, FAILS))

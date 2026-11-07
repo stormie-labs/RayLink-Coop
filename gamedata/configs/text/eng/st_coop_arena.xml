@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<!-- Anomaly Coop - the Bar arena in a session: the group's gathering at Arnie (the invitation, its map spot, the buttons "start alone" / "start without the others") and the vote of coop_economy_group about it (scripts\coop_arena.script). Ids st_coop_arena_<name>. -->
+<string_table>
+	<string id="st_coop_arena_invite">
+		<text>%s invites you to the arena, fight %s. Come to Arnie.</text>
+	</string>
+	<string id="st_coop_arena_spot">
+		<text>Arnie: the arena fight</text>
+	</string>
+	<string id="st_coop_arena_solo">
+		<text>Arena fight %s. The others on the Bar are invited. Start alone?</text>
+	</string>
+	<string id="st_coop_arena_without">
+		<text>Arena fight %s: %s of %s players at Arnie. Start without the others?</text>
+	</string>
+	<string id="st_coop_arena_vote_ask">
+		<text>%s wants to start arena fight %s without the others. Agree?</text>
+	</string>
+	<string id="st_coop_arena_vote_no">
+		<text>%s does not want to start the arena fight yet.</text>
+	</string>
+	<string id="st_coop_arena_vote_timeout">
+		<text>The arena fight waits: no answer from %s.</text>
+	</string>
+	<string id="st_coop_arena_vote_left">
+		<text>The arena vote was cancelled (%s left).</text>
+	</string>
+</string_table>

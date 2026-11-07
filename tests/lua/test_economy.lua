@@ -292,6 +292,61 @@ do
 	check(A.WAITED == 2 and H.CLOCK == 540, "a voter who left does not block the vote")
 end
 
+section("group: a vote about something else (propose / subject)")
+do
+	local H, A, B = setup(2)
+	local TEXTS = {
+		ask = { "st_test_vote_ask", "%s asks to start fight %s. Agree?" },
+		no = { "st_test_vote_no", "%s does not want to start yet." },
+		timeout = { "st_test_vote_timeout", "No answer from %s." },
+		left = { "st_test_vote_left", "The vote was cancelled (%s left)." },
+	}
+	for _, W in ipairs({ H, A, B }) do W.coop_economy_group.subject("test", TEXTS) end
+	local got = {}
+	local function cb(ok, reason, nick) got[#got + 1] = { ok = ok, r = reason, n = nick } end
+	-- anna (1) asks host (0) and boris (2)
+	check(H.coop_economy_group.propose("test", 1, { [0] = true, [2] = true }, cb, "3") == true, "the host opens the vote")
+	deliver_all()
+	check(H.BOX and H.BOX.txt:find("anna asks to start fight 3", 1, true) ~= nil, "the host's box: the subject's text with the asker and the argument")
+	check(B.BOX and B.BOX.txt:find("anna asks to start fight 3", 1, true) ~= nil, "boris's box too")
+	check(A.BOX == nil, "the asker is not asked")
+	H.BOX.ok() deliver_all()
+	check(#got == 0, "one yes is not enough")
+	B.BOX.ok() deliver_all()
+	check(#got == 1 and got[1].ok == true, "all yes: on_result(true) on the host")
+	check(H.CLOCK == 0 and A.WAITED == nil, "no time skip, no grant")
+
+	-- a no: the result, and everybody involved learns it in the subject's words
+	got = {}
+	A.TIPS, B.TIPS = {}, {}
+	H.coop_economy_group.propose("test", 1, { [0] = true, [2] = true }, cb, "3")
+	deliver_all()
+	B.BOX.cancel() deliver_all()
+	check(#got == 1 and got[1].ok == false and got[1].r == "no" and got[1].n == "boris", "boris says no: on_result(false, 'no', 'boris')")
+	check(has(A.TIPS, "boris does not want to start yet"), "the asker reads the subject's no line (" .. tostring(last(A.TIPS)) .. ")")
+	check(has(H.TIPS, "boris does not want to start yet"), "the other voter reads it too")
+
+	-- silence is a no (the "Time to vote" setting)
+	got = {}
+	H.coop_economy_group.propose("test", 1, { [0] = true, [2] = true }, cb, "3")
+	deliver_all()
+	H.BOX.ok() deliver_all()
+	for i = 1, 70 do tick(H, 600) end
+	deliver_all()
+	check(#got == 1 and got[1].ok == false and got[1].r == "timeout" and tostring(got[1].n):find("boris") ~= nil,
+		"no answer within the vote time: on_result(false, 'timeout')")
+
+	-- nobody to ask: decided at once
+	got = {}
+	check(H.coop_economy_group.propose("test", 1, {}, cb, "3") == true and #got == 1 and got[1].ok == true, "no voters: on_result(true) at once")
+	-- not the host: nothing opens
+	check(A.coop_economy_group.propose("test", 1, { [0] = true }, cb, "3") == nil, "a client cannot open a vote")
+	-- the time-skip votes still run beside it
+	wait_item(A, 2)
+	deliver_all()
+	check(H.BOX and H.BOX.txt:find("anna") ~= nil and H.BOX.txt:find("fight") == nil, "a wait is still the time-skip vote")
+end
+
 -------------------------------------------------------------------------------
 section("travel: fast travel as a group")
 do

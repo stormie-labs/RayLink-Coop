@@ -13,11 +13,17 @@
 	    carries him away, rate limited item by item; the host's own way back took the whole box, other players' gear with it;
 	  - the arena zone counts a client's character (a stalker on the host) as an arena item: its purge took him out of the world.
 	Here the arena is one player's fight:
-	  - The fighter: the player who talked to the arena manager (story id bar_arena_manager) last (the engine's talk locks,
+	  - The taker: the player who talked to the arena manager (story id bar_arena_manager) last (the engine's talk locks,
 	    coop.talk_recent), else the one nearest to him; picked by the authority of the Bar (the host, or the map server of the
-	    Bar) when the fight starts. The trigger's actor effects (disable_ui, enable_ui) go to him alone (coop_npc_logic audience
-	    rule). Its cutscene plays on his machine alone: anywhere else the section stands still, and on the authority it ends when
-	    his ends (arena.cut), or after CUT_WAIT_MS.
+	    Bar) when the fight is taken. Group entry (owner 2026-11-07): with other players on the Bar the trigger waits in
+	    sr_idle@wait_N (its 1 s timer held, nobody's UI taken) while they gather at Arnie (GATHER_RADIUS): they are invited (a tip
+	    and a map spot on Arnie); whoever stands at Arnie has one button: alone "start alone", with others but not everybody
+	    "start without the others" (a vote among those at Arnie: coop_economy_group.propose, its box and "Time to vote", silence
+	    = no). Everybody on the Bar at Arnie: it starts by itself; nobody else on the Bar: at once, as stock. Everyone at Arnie at
+	    the start fights (the taker first). The trigger's actor effects (disable_ui, enable_ui) go to the fighters (coop_npc_logic
+	    audience rule). Its cutscene plays on the fighters' machines alone, each put at a spot of his own; anywhere else the
+	    section stands still, and on the authority it ends when theirs end (arena.cut), or after CUT_WAIT_MS. One who falls is out;
+	    the fight goes on while a fighter is left.
 	  - His gear: the authority moves it, and keeps a ledger per player (the ids; the ids of the kit his machine made; saved with
 	    the host's world, and with split levels carried through the world server, coop_levels_share "arena_ledger"):
 	      in   his whole inventory into box 1;
@@ -38,6 +44,13 @@
 	    older than HEAL_GRACE_MS whose player stands on the Bar with nothing of his running (his fight, a totalizator battle).
 	    His flag (coop_arena_gear) is a per-player key: the host keeps it for his character, a client never saves.
 	  - The arena zone never counts a player: xr_zones.arena_zone_binder:purge_items leaves players out.
+	  - Arnie's prizes (dialogs_bar.new_arena_give_reward, and arena_give_reward of the monster fight) are the authority's: anybody
+	    may collect one (it opens the next fight), the money goes to the fight's fighters (split by the setting
+	    coop_share_rewards), the arena battle counts on each fighter's machine, and a fight that runs meanwhile keeps
+	    bar_arena_fight and bar_arena_fight_begin (stock takes them off: in single player the prize always comes after the fight).
+	    A player's kill is counted by his own machine, whose stock game_statistics.increment_reputation spares him while
+	    bar_arena_fight is on: a prize collected during his fight cost him the reputation (live 2026-11-07). A reputation change
+	    during a fight goes into the player's log with its source.
 	  - Arnie's monster fight (the old arena: bar_arena_start, restrictors bar_arena_sr and bar_arena_spam; the player walks in,
 	    no gear moves) speaks through effects the host runs: the introduction, "the fight begins", the countdown 10-90 s, "time
 	    is up", "victory", "you are afraid", "dead". Their lines (news_manager.send_tip) go to its fighter alone (arena.go "tip"),
@@ -49,12 +62,16 @@
 	Single player and an exe without co-op: stock, untouched.
 
 	Events (coop_npc_players):
-	  arena.go   authority -> player   { f = "in" | "out" | "slot" | "bet_in" | "bet_out" | "none" | "tip", a = argument }
+	  arena.go   authority -> player   { f = "in" | "out" | "slot" | "bet_in" | "bet_out" | "none" | "tip" | "stat", a = argument }
 	             (tip: a = the line's string id; to, s, st, sid = the rest of news_manager.send_tip)
 	  arena.bet  bettor -> authority   { }
 	  arena.out  player -> authority   { }  his gear back
 	  arena.cut  fighter -> authority  { }  his cutscene ended
 	  arena.kit  player -> authority   { i = "id,id,..." }  what his stock call made (the kit)
+	  arena.prize player -> authority  { k = "new" | "old" }  he collects a prize at Arnie
+	  arena.start player -> authority  { }  his button at Arnie ("start alone" / "start without the others")
+	  arena.go "gather": a = "invite" | "solo" | "vote" | "off" (n = the fight, w = the taker's nick, c / t = at Arnie / on the Bar);
+	           "ui_off": stock disable_ui on his machine (the group's start); "in": k = his spot in the pit
 	Status: coop_status line "arena".
 --]]
 
@@ -64,6 +81,9 @@ local TAG = "arena"
 local ARENA_LEVEL = "l05_bar"
 local BOX_IN, BOX_OUT = "bar_arena_inventory_box", "bar_arena_inventory_box_2"
 local MANAGER = "bar_arena_manager"
+local GATHER_RADIUS = 12 -- m around Arnie: the players there at the start go into the fight
+local SPOT_STEP = 1.5 -- m between the fighters' spots in the pit (sideways from the cutscene's point)
+local SPOT_TYPE = "secondary_task_location" -- the invitation's map spot on Arnie (stock map_spots.xml)
 local TRIGGER = "bar_arena_triger"
 local ZONE = "bar_arena"
 local FIGHTS = 8
@@ -81,18 +101,25 @@ local P -- coop_npc_players
 local function C() return coop_mods_core end
 
 local ledger = {} -- authority: avatar id -> { kind = "fight" | "bet", items = { id, ... }, kit = { id, ... }, at = time }
-local fight = nil -- authority: { id = the fighter's avatar id, n = the fight }
+local fight = nil -- authority: { id = the taker's avatar id, n = the fight, ids = the fighters (the taker first; nil while held),
+--   hold = the group gathers at Arnie, modes = { [id] = the last gather mode sent }, vote = a vote runs, cuts = { [id] = his cutscene ended } }
 local pit = nil -- authority: { id = the fighter's avatar id } of Arnie's monster fight (the old arena: its lines are his)
 local cut_done = false -- authority: the fighter's cutscene ended
+local fighters_of = {} -- authority: fight n -> { avatar id, ... } of its fighters (its prize is theirs)
+local pit_won = nil -- authority: the avatar id of the fighter of the last won monster fight (its bet prize is his)
+local paying = false -- authority: a prize's stock call runs (wrappers under ours let it through)
 local mine = false -- this player: false | "fight" | "bet" - his gear waits in the box
 local fighting = false -- this player fights the running fight: its cutscene plays here
+local spot_k = 0 -- this player: his place among the fighters (0: the cutscene's point, then sideways)
+local invite_spot = nil -- this player: the id of Arnie with the invitation's map spot
+local gather_box = nil -- this player: the open button box at Arnie
 local passing = false -- the stock chain runs for this machine's own player: our wrappers let it through
 local arena_zone = nil -- the binder of the arena zone here (xr_zones.arena_zone_binder): its object answers inside()
 local got_down = false -- the map server of the Bar: the world server's copy of the ledger came (split levels)
 local world_copy = nil -- the world server: the ledger of the Bar's map server, kept in its save (split levels)
 local OURS = {} -- our wrapper functions
 local stats = { stowed = 0, returned = 0, to_box2 = 0, missing = 0, players_kept = 0, still_cuts = 0, rewrapped = 0, errors = 0,
-	tips = 0, tip_wraps = 0 }
+	tips = 0, tip_wraps = 0, prizes = 0, prize_asks = 0, rep_lines = 0 }
 
 local function log(fmt, ...) P.log(TAG, fmt, ...) end
 local function report(what, err)
@@ -119,6 +146,8 @@ local function id_of(o)
 	local ok, id = pcall(o.id, o)
 	return ok and id or nil
 end
+
+local go -- to the player whose character is `id` (below)
 
 local function own_id() return db.actor and id_of(db.actor) or nil end
 
@@ -172,6 +201,40 @@ local function pick(near, among)
 end
 
 -- The running fight's record; a fight that starts gets its fighter now.
+-- The running fight's fighters, the taker first ({ taker } while the group gathers).
+local function fighters()
+	if not fight then return {} end
+	return fight.ids or { fight.id }
+end
+
+local function is_fighter(id)
+	if id == nil then return false end
+	for _, f in ipairs(fighters()) do
+		if f == id then return true end
+	end
+	return false
+end
+
+-- The players on the Bar (ids): `at` those within GATHER_RADIUS of Arnie, the taker first (he took it: he is in), `all` everybody.
+local function gathered(taker)
+	local man = manager()
+	local mp = man and man:position()
+	local at, all = { taker }, {}
+	for _, o in ipairs(P.everyone()) do
+		local id = id_of(o)
+		if id ~= nil then
+			all[#all + 1] = id
+			if id ~= taker and mp and o:position():distance_to_sqr(mp) <= GATHER_RADIUS * GATHER_RADIUS then at[#at + 1] = id end
+		end
+	end
+	local taker_here = false
+	for _, id in ipairs(all) do if id == taker then taker_here = true end end
+	if not taker_here then all[#all + 1] = taker end
+	return at, all
+end
+
+local gather_tick -- the group gathers (below)
+
 local function current(near)
 	local n = fight_running()
 	if n and not (fight and fight.n == n) then
@@ -179,12 +242,24 @@ local function current(near)
 		if not o then return fight end
 		fight = { id = id_of(o), n = n }
 		cut_done = false
-		log("fight %d: the fighter is %s (peer %s)", n, tostring(o:name()), tostring(P.peer_of(o)))
+		local at, all = gathered(fight.id)
+		if #all <= 1 or #at >= #all then
+			fight.ids = at -- nobody else on the Bar, or everybody at Arnie: at once, as stock
+		else
+			fight.hold, fight.modes = true, {}
+		end
+		fighters_of[n] = fight.ids or { fight.id }
+		log("fight %d: taken by %s (peer %s), %s", n, tostring(o:name()), tostring(P.peer_of(o)),
+			fight.hold and string.format("the group gathers (%d of %d at Arnie)", #at, #all) or (#at .. " fighter(s)"))
+		if fight.hold then gather_tick() end
 	end
 	return fight
 end
 
 function fight_over()
+	if fight and fight.modes then
+		for id in pairs(fight.modes) do go(id, "gather", "off") end
+	end
 	fight, cut_done = nil, false
 end
 
@@ -204,7 +279,10 @@ local function audience_rule(npc)
 	if not (session() and authority() and is_trigger(npc)) then return nil end
 	local f = current(npc)
 	if not f then return nil end
-	return { [f.id] = true }
+	local set = {}
+	if f.hold then return set end -- the group gathers: nobody's UI goes (the taker presses and walks)
+	for _, id in ipairs(fighters()) do set[id] = true end
+	return set
 end
 
 -------------------------------------------------------------------------------
@@ -245,7 +323,7 @@ end
 
 -- The arena's leftovers go, unless another player's fight runs there now (its opponents are in the zone too).
 local function purge(for_id)
-	if fight and fight.id ~= for_id and fight_running() then return end
+	if fight and not is_fighter(for_id) and fight_running() then return end
 	local xz = C().mod("xr_zones")
 	if xz and xz.purge_arena_items then
 		local ok, err = pcall(xz.purge_arena_items, ZONE)
@@ -403,14 +481,15 @@ local function id_list(s)
 end
 
 local PLAY = {
-	["in"] = function(a)
+	["in"] = function(a, t)
 		fighting = true
+		spot_k = tonumber(t and t.k) or 0
 		set_mine("fight")
 		waiting_in = { ids = id_list(a), since = time_global() }
 		wait_tick()
 	end,
 	out = function()
-		fighting, waiting_in = false, nil
+		fighting, waiting_in, spot_k = false, nil, 0
 		set_mine(false)
 		-- the way out reads the arena's paths: on another map he only has his gear back
 		if level.name() == ARENA_LEVEL then run_local(C().mod("xr_effects"), "bar_arena_teleport_2", db.actor, nil) end
@@ -427,7 +506,7 @@ local PLAY = {
 		if level.name() == ARENA_LEVEL then run_local(C().mod("xr_effects"), "teleport_for_totaliz_out", db.actor, nil) end
 	end,
 	none = function()
-		fighting, waiting_in = false, nil
+		fighting, waiting_in, spot_k = false, nil, 0
 		set_mine(false)
 	end,
 	-- a line of the monster fight (a = its string id): on this screen, with the stock sender (sound, icon, PDA)
@@ -440,6 +519,13 @@ local PLAY = {
 		send(db.actor, a, tonumber(t.to), type(t.s) == "string" and t.s or nil, tonumber(t.st),
 			type(t.sid) == "string" and t.sid or nil)
 	end,
+	-- a won fight's battle counts here (stock: game_statistics.increment_statistic in the prize's dialog)
+	stat = function(a)
+		if a ~= "arena_battles" then return end
+		local gs = C().mod("game_statistics")
+		local f = gs and C().fn(gs, "increment_statistic")
+		if f then f(a) end
+	end,
 }
 
 -- `t`: the whole message (what a play needs besides `a`).
@@ -451,7 +537,7 @@ local function play(what, a, t)
 end
 
 -- To the player whose character is `id` here: his own machine plays it. `more`: fields besides f and a.
-local function go(id, what, a, more)
+go = function(id, what, a, more)
 	if id == own_id() and not P.is_map_server() then return play(what, a, more) end
 	local peer = P.peer_of(id)
 	if peer == nil then
@@ -466,7 +552,16 @@ end
 -- The authority: this player's gear back, and his way out (after a respawn, a rejoin, a lost answer: not the fight's end).
 local function out_of(id)
 	local rec = ledger[id]
-	if fight and fight.id == id then fight_over() end
+	if fight and is_fighter(id) then
+		local left = {}
+		for _, f in ipairs(fighters()) do if f ~= id then left[#left + 1] = f end end
+		if #left == 0 then
+			fight_over()
+		else
+			fight.ids, fight.id = left, left[1] -- the others fight on
+			log("fight %d: character %s is out, %d fighter(s) left", fight.n, tostring(id), #left)
+		end
+	end
 	if not rec then return go(id, "none") end
 	local what = rec.kind == "bet" and "bet_out" or "out"
 	if give_back(id) then go(id, what) end
@@ -485,7 +580,7 @@ local function heal_tick(now)
 	if level.name() ~= ARENA_LEVEL then return end
 	for id, rec in pairs(ledger) do
 		if now - (rec.at or 0) >= HEAL_GRACE_MS then
-			local busy = (rec.kind == "fight" and fight ~= nil and fight.id == id)
+			local busy = (rec.kind == "fight" and is_fighter(id))
 				or (rec.kind == "bet" and has_alife_info("begin_the_battle"))
 			if not busy and obj_of(id) and P.standing(id) then
 				log("the gear of character %s waited: given back", tostring(id))
@@ -509,18 +604,24 @@ end
 local function route_in(_, npc)
 	if not authority() then return end
 	local f = current(npc)
-	local o = f and obj_of(f.id)
-	if not o then
-		log("! fight %s starts with no fighter here", tostring(fight_running()))
-		return
+	if f and f.hold then -- the trigger went on by another road: the taker alone
+		gather_tick(true)
 	end
-	go(f.id, "in", stow(o, "fight") or "")
+	local any = false
+	for k, id in ipairs(fighters()) do
+		local o = obj_of(id)
+		if o then
+			any = true
+			go(id, "in", stow(o, "fight") or "", { k = k - 1 })
+		end
+	end
+	if not any then log("! fight %s starts with no fighter here", tostring(fight_running())) end
 end
 
 -- The trigger's weapon slot (sr_idle@fight): the fighter's.
 local function route_slot(_, _, p)
 	if not (authority() and fight) then return end
-	go(fight.id, "slot", type(p) == "table" and p[1] or nil)
+	for _, id in ipairs(fighters()) do go(id, "slot", type(p) == "table" and p[1] or nil) end
 end
 
 -- The commentator's way out (a won fight): the fighter's. With no record of the fight (it was lost: a world whose record did not
@@ -529,7 +630,7 @@ local function route_out()
 	if not authority() then return end
 	local ids = {}
 	if fight then
-		ids[1] = fight.id
+		ids = fighters()
 	else
 		for id, rec in pairs(ledger) do
 			if rec.kind == "fight" then ids[#ids + 1] = id end
@@ -543,7 +644,7 @@ end
 
 -- A bet takes the gear of a player whose gear is in no box already and who fights no fight.
 local function bet_of(id, o)
-	if ledger[id] or (fight and fight.id == id) then
+	if ledger[id] or is_fighter(id) then
 		log("! a bet of character %s refused: his gear is in the box already", tostring(id))
 		return
 	end
@@ -666,6 +767,7 @@ local function route_tip(name, cur, actor, npc, ...)
 	else
 		r = lines_to(id, cur, actor, npc, ...)
 	end
+	if name == "bar_arena_after_fight" and id ~= nil and has_alife_info("bar_arena_actor_victory") then pit_won = id end
 	if TIP_ENDS[name] then pit = nil end
 	return r
 end
@@ -812,6 +914,423 @@ local function ensure_pit()
 	end
 end
 
+-------------------------------------------------------------------------------
+-- Group entry: the players gather at Arnie (authority), the button and the invitation (every player's machine)
+-------------------------------------------------------------------------------
+-- The fight starts: the gathering ends, everyone at Arnie (`ids`, the taker first) fights. The invitations and buttons go,
+-- the fighters lose their UI (stock disable_ui of sr_idle@wait_N, which nobody got while the group gathered), and the trigger
+-- goes on (its 1 s timer is long over: the cutscene at once).
+local function begin(ids, why)
+	if not fight then return end
+	local modes = fight.modes
+	fight.hold, fight.modes, fight.vote = nil, nil, nil
+	fight.ids, fight.id = ids, ids[1]
+	fighters_of[fight.n] = ids
+	for id in pairs(modes or {}) do go(id, "gather", "off") end
+	if modes then
+		for _, id in ipairs(ids) do go(id, "ui_off") end
+	end
+	log("fight %d: %d fighter(s) go in (%s)", fight.n, #ids, tostring(why))
+end
+
+local function nick_of(id)
+	local peer = P.peer_of(id)
+	local p = peer ~= nil and P.player(peer)
+	return p and p.nick or "?"
+end
+
+-- The authority, every tick while the group gathers (and when a fight is taken): everybody on the Bar at Arnie starts it, the
+-- others are told what they can do (only when that changes). `force`: the taker alone, now.
+gather_tick = function(force)
+	if not (fight and fight.hold) then return end
+	if force then return begin({ fight.id }, "the trigger went on") end
+	if not fight_running() then return fight_over() end
+	local at, all = gathered(fight.id)
+	if #all <= 1 or #at >= #all then return begin(at, #all <= 1 and "nobody else on the Bar" or "everybody at Arnie") end
+	local near = {}
+	for _, id in ipairs(at) do near[id] = true end
+	local by = nick_of(fight.id)
+	for _, id in ipairs(all) do
+		local mode = near[id] and (#at == 1 and "solo" or "vote") or "invite"
+		if fight.modes[id] ~= mode then
+			fight.modes[id] = mode
+			go(id, "gather", mode, { n = fight.n, w = by, c = #at, t = #all })
+		end
+	end
+end
+
+-- The authority: the button of the player whose character is `id`. Alone at Arnie: he starts; with others: a vote of those at
+-- Arnie (coop_economy_group.propose), whose yes starts it with whoever is at Arnie then. Not the host (a map server of the
+-- Bar has no vote): it starts.
+local function start_ask(id)
+	if not (fight and fight.hold) then return end
+	local at = gathered(fight.id)
+	local here = false
+	for _, v in ipairs(at) do
+		if v == id then here = true end
+	end
+	if not here then return end
+	if #at == 1 then return begin(at, "alone") end
+	if fight.vote then return end
+	local voters = {}
+	for _, v in ipairs(at) do
+		local peer = v ~= id and P.peer_of(v)
+		if peer ~= nil and peer ~= false then voters[peer] = true end
+	end
+	local eg = C().mod("coop_economy_group")
+	local propose = eg and C().fn(eg, "propose")
+	local n = fight.n
+	fight.vote = true
+	local asked = propose and propose("arena", P.peer_of(id), voters, function(ok)
+		if not (fight and fight.n == n and fight.hold) then return end
+		fight.vote = nil
+		if ok then begin((gathered(fight.id)), "the vote") end
+	end, tostring(n))
+	if not asked then
+		fight.vote = nil
+		begin(at, "no vote here")
+	end
+end
+
+-- This player's button: to the authority.
+local function ask_start()
+	if authority() and not P.is_map_server() then return start_ask(own_id()) end
+	P.send("arena.start", {}, 0)
+end
+
+local function tr(id, fallback)
+	local g = rawget(_G, "game")
+	if g and g.translate_string then
+		local ok, s = pcall(g.translate_string, id)
+		if ok and type(s) == "string" and s ~= id then return s end
+	end
+	return fallback
+end
+
+local function fmt(id, fallback, ...)
+	local ok, s = pcall(string.format, tr(id, fallback), ...)
+	return ok and s or fallback
+end
+
+local function close_box()
+	local b = gather_box
+	gather_box = nil
+	if b then pcall(function() b.message_box:HideDialog() end) end
+end
+
+local function drop_invite()
+	if invite_spot and level.map_remove_object_spot then pcall(level.map_remove_object_spot, invite_spot, SPOT_TYPE) end
+	invite_spot = nil
+end
+
+-- What the authority says to this player while the group gathers.
+PLAY.gather = function(a, t)
+	t = t or {}
+	close_box()
+	if a ~= "invite" then drop_invite() end
+	local n = tostring(t.n or "?")
+	if a == "invite" then
+		local man_id = get_story_object_id and get_story_object_id(MANAGER)
+		if man_id and not invite_spot and level.map_add_object_spot then
+			if pcall(level.map_add_object_spot, man_id, SPOT_TYPE, tr("st_coop_arena_spot", "Arnie: the arena fight")) then invite_spot = man_id end
+		end
+		local nm = C().mod("news_manager")
+		local send = nm and C().fn(nm, "send_tip")
+		local text = fmt("st_coop_arena_invite", "%s invites you to the arena: fight %s. Come to Arnie.", tostring(t.w or "?"), n)
+		if send then pcall(send, db.actor, text, nil, "arena", 10000) end
+		return
+	end
+	if a ~= "solo" and a ~= "vote" then return end
+	local text = a == "solo"
+		and fmt("st_coop_arena_solo", "Arena fight %s: the others on the Bar are invited. Start alone?", n)
+		or fmt("st_coop_arena_without", "Arena fight %s: %s of %s players at Arnie. Start without the others?", n, tostring(t.c or "?"),
+			tostring(t.t or "?"))
+	local box = C().mod("ui_dyn_msg_box")
+	local f = box and C().fn(box, "msg_box_ui")
+	if not f then return end
+	local ok, b = pcall(f, "message_box_yes_no", true, text, function()
+		gather_box = nil
+		ask_start()
+	end, function() gather_box = nil end)
+	if ok then gather_box = b end
+end
+
+-- The group's start: this player's UI off, as the trigger's sr_idle@wait_N does in stock.
+PLAY.ui_off = function()
+	local xe = C().mod("xr_effects")
+	local f = xe and C().fn(xe, "disable_ui")
+	if f then f(db.actor, nil) end
+end
+
+-- This player's spot in the pit: the cutscene's point, the others sideways from it (1, -1, 2, -2 ... steps).
+local function own_spot()
+	if spot_k <= 0 or not db.actor then return end
+	local pos = db.actor:position()
+	local side = (spot_k % 2 == 1) and 1 or -1
+	local step = math.ceil(spot_k / 2) * SPOT_STEP * side
+	db.actor:set_actor_position(vector():set(pos.x + step, pos.y, pos.z))
+end
+
+-- The trigger's sr_idle@wait_N holds while the group gathers: its on_timer 1000 is not looked at.
+local function patch_idle()
+	local si = C().mod("sr_idle")
+	local cls = si and si.action_idle
+	local upd = cls and cls.update
+	if type(upd) ~= "function" or OURS[upd] then return end
+	local w = function(self, ...)
+		if fight and fight.hold and session() and authority() and self and is_trigger(self.object) then return end
+		return upd(self, ...)
+	end
+	OURS[w] = true
+	cls.update = w
+end
+
+-- The vote's lines (coop_economy_group: its box, on every machine).
+local function vote_lines()
+	local eg = C().mod("coop_economy_group")
+	local f = eg and C().fn(eg, "subject")
+	if not f then return end
+	f("arena", {
+		ask = { "st_coop_arena_vote_ask", "%s wants to start arena fight %s without the others. Agree?" },
+		no = { "st_coop_arena_vote_no", "%s does not want to start the arena fight yet." },
+		timeout = { "st_coop_arena_vote_timeout", "The arena fight waits: no answer from %s." },
+		left = { "st_coop_arena_vote_left", "The arena vote was cancelled (%s left)." },
+	})
+end
+
+-------------------------------------------------------------------------------
+-- The rank gate after fights 3 and 6 (authority)
+-------------------------------------------------------------------------------
+-- Stock: restrictor bar_arena_rank_checker gives bar_arena_rank_false (Arnie offers no next fight) with
+-- {!bar_actor_rank_stalker ... +bar_arena_fight_3_done} and {!bar_actor_rank_veteran ... +bar_arena_fight_6_done};
+-- xr_conditions.bar_actor_rank_stalker / _veteran read db.actor, the host's character (> 1499, > 2999). In a session they read
+-- the player who takes the fight: the one who talks to Arnie now (coop.talk_holder), else the one nearest to him.
+local RANKS = { bar_actor_rank_stalker = 1499, bar_actor_rank_veteran = 2999 }
+
+local function rank_player()
+	local man = manager()
+	local api = rawget(_G, "coop")
+	if man and api and type(api.talk_holder) == "function" then
+		local ok, peer = pcall(api.talk_holder, id_of(man))
+		local o = ok and type(peer) == "number" and P.object_of_peer(peer)
+		if o then return o end
+	end
+	local mp = man and man:position()
+	if not mp then return nil end
+	local best, bd = nil, math.huge
+	for _, o in ipairs(P.everyone()) do
+		local d = o:position():distance_to_sqr(mp)
+		if d < bd then best, bd = o, d end
+	end
+	return best
+end
+
+local function route_rank(cur, need, actor, npc, ...)
+	if not (session() and authority()) then return cur(actor, npc, ...) end
+	local o = rank_player()
+	if not o or id_of(o) == own_id() and not P.is_map_server() then return cur(actor, npc, ...) end -- the host himself: stock
+	local ok, r = pcall(o.character_rank, o)
+	if not (ok and tonumber(r)) then return cur(actor, npc, ...) end
+	return tonumber(r) > need
+end
+
+local function ensure_rank()
+	local xc = C().mod("xr_conditions")
+	if not xc then return end
+	for name, need in pairs(RANKS) do
+		local cur = C().fn(xc, name)
+		if cur and not OURS[cur] then
+			local w = function(...) return route_rank(cur, need, ...) end
+			OURS[w] = true
+			xc[name] = w
+			stats.rewrapped = stats.rewrapped + 1
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Arnie's prizes (authority) and the reputation of a fight (every player's machine)
+-------------------------------------------------------------------------------
+-- The prize of fight n (bar_arena_fight_n_reward, given by the trigger after a win) is collected in a dialog with Arnie on the
+-- machine of whoever talks: stock pays the talker (dialogs.relocate_money_to_actor), counts his arena battle and takes off
+-- bar_arena_fight and bar_arena_fight_begin. Here the talker's machine asks the authority (arena.prize), which runs the stock
+-- call (a mod's version with it) with the money and the battle going to the fight's fighters; a fight that runs meanwhile
+-- keeps its two infos (they spare its fighters' reputation, game_statistics.increment_reputation, on their own machines).
+local PRIZES = { new = "new_arena_give_reward", old = "arena_give_reward" }
+local prize_cur = {} -- kind -> the function our wrapper wraps (the stock call, a mod's version)
+
+local function share_mode()
+	local ok, v = pcall(function() return get_console():get_integer("coop_share_rewards") end)
+	return ok and tonumber(v) or 0
+end
+
+-- { { id, amount }, ... }: n RU of a prize won by `fighters`, collected by `taker` (coop_share_rewards, coop_reward_group):
+-- 0 to the one who collects it if he fought, else to the first fighter; 1 and 2 split among the fighters, the remainder to
+-- that one; 3 to each in full.
+local function prize_plan(n, fighters, taker)
+	local main = fighters[1]
+	for _, id in ipairs(fighters) do
+		if id == taker then main = id end
+	end
+	local mode = share_mode()
+	if #fighters <= 1 or mode == 0 then return { { main, n } } end
+	local plan = {}
+	if mode == 3 then
+		for _, id in ipairs(fighters) do plan[#plan + 1] = { id, n } end
+		return plan
+	end
+	local part = math.floor(n / #fighters)
+	local rest = n - part * #fighters
+	for _, id in ipairs(fighters) do
+		local m = part + (id == main and rest or 0)
+		if m > 0 then plan[#plan + 1] = { id, m } end
+	end
+	return plan
+end
+
+-- n RU for the player whose character is `id`: this machine's own player the stock way (`reloc`: the money line too), a client
+-- through the host ledger (coop.money_grant) with his money line (coop_tasks.money_line).
+local function pay(id, n, reloc, first, second)
+	if not (n and n > 0) then return end
+	if id == own_id() and not P.is_map_server() then return reloc(first, second, n) end
+	local peer = P.peer_of(id)
+	local api = rawget(_G, "coop")
+	local grant = api and api.money_grant
+	if peer == nil or type(grant) ~= "function" then
+		log("! a prize of %d RU for character %s: %s", n, tostring(id), peer == nil and "he is not in the session" or "no coop.money_grant")
+		return
+	end
+	local ok, granted = pcall(grant, peer, math.floor(n))
+	if not (ok and granted) then
+		log("! a prize of %d RU for peer %s refused: %s", n, tostring(peer), tostring(granted))
+		return
+	end
+	local tasks = C().mod("coop_tasks")
+	local line = tasks and C().fn(tasks, "money_line")
+	if line then pcall(line, peer, math.floor(n)) end
+end
+
+-- The prize of the first waiting fight (stock picks it the same way), nil: none.
+local function waiting_prize()
+	for n = 1, FIGHTS do
+		if has_alife_info("bar_arena_fight_" .. n .. "_reward") then return n end
+	end
+	return nil
+end
+
+-- The authority: the stock call of the prize `kind`, collected by the player whose character is `taker`.
+local function prize(kind, taker, first, second)
+	local cur = prize_cur[kind]
+	if not cur then return end
+	local n = kind == "new" and waiting_prize() or nil
+	local fighters = (kind == "new" and n and fighters_of[n]) or (kind == "old" and pit_won and { pit_won }) or nil
+	if not (fighters and #fighters > 0) then fighters = { taker } end -- no record (a fight from before): stock, the talker
+	local running = fight_running() ~= nil
+	local had = { bar_arena_fight = has_alife_info("bar_arena_fight"), bar_arena_fight_begin = has_alife_info("bar_arena_fight_begin") }
+	local d, gs = C().mod("dialogs"), C().mod("game_statistics")
+	local reloc = d and C().fn(d, "relocate_money_to_actor")
+	local count = gs and C().fn(gs, "increment_statistic")
+	local function money(f, s, m)
+		for _, e in ipairs(prize_plan(tonumber(m) or 0, fighters, taker)) do pay(e[1], e[2], reloc, f, s) end
+	end
+	local function battle(name, ...)
+		if name ~= "arena_battles" then return count(name, ...) end
+		for _, id in ipairs(fighters) do
+			if id == own_id() and not P.is_map_server() then count(name, ...) else go(id, "stat", name) end
+		end
+	end
+	if reloc then d.relocate_money_to_actor = money end
+	if count then gs.increment_statistic = battle end
+	paying = true
+	local ok, err = pcall(cur, first, second)
+	paying = false
+	if reloc and d.relocate_money_to_actor == money then d.relocate_money_to_actor = reloc end
+	if count and gs.increment_statistic == battle then gs.increment_statistic = count end
+	if running then
+		for info, on in pairs(had) do
+			if on and not has_alife_info(info) then give_info(info) end
+		end
+	end
+	if kind == "new" and n then fighters_of[n] = nil elseif kind == "old" then pit_won = nil end
+	stats.prizes = stats.prizes + 1
+	log("prize %s%s collected by %s: for %d fighter(s)%s", kind, n and (" of fight " .. n) or "", tostring(taker), #fighters,
+		running and ", the running fight keeps bar_arena_fight" or "")
+	if not ok then report("prize " .. kind, err) end
+end
+
+local function route_prize(kind, cur, first, second, ...)
+	if paying or not session() then return cur(first, second, ...) end
+	if not authority() or P.is_map_server() then
+		stats.prize_asks = stats.prize_asks + 1
+		P.send("arena.prize", { k = kind }, 0)
+		return
+	end
+	return prize(kind, own_id(), first, second)
+end
+
+local function ensure_prizes()
+	local tbl = C().mod("dialogs_bar")
+	if not tbl then return end
+	for _, kind in ipairs({ "new", "old" }) do
+		local cur = C().fn(tbl, PRIZES[kind])
+		if cur and not OURS[cur] then
+			prize_cur[kind] = cur
+			local w = function(...) return route_prize(kind, cur, ...) end
+			OURS[w] = true
+			tbl[PRIZES[kind]] = w
+			stats.rewrapped = stats.rewrapped + 1
+		end
+	end
+end
+
+-- Every player's machine: his own reputation while a fight of the new arena runs or his gear waits for one (one line each
+-- change, with its source), so a live run tells where a change came from.
+local rep_seen = nil
+
+local function watching() return session() and db.actor ~= nil and (fight_running() ~= nil or mine == "fight") end
+
+local function reputation()
+	local ok, v = pcall(db.actor.character_reputation, db.actor)
+	return ok and tonumber(v) or nil
+end
+
+local function route_rep_line(cur, value, ...)
+	if not (watching() and tonumber(value) and tonumber(value) ~= 0) then return cur(value, ...) end
+	local before = reputation()
+	local r = cur(value, ...)
+	local after = reputation()
+	stats.rep_lines = stats.rep_lines + 1
+	log("reputation in fight %s: game_statistics.increment_reputation(%s), bar_arena_fight %s: %s -> %s", tostring(fight_running()),
+		tostring(value), has_alife_info("bar_arena_fight") and "on" or "off", tostring(before), tostring(after))
+	rep_seen = after
+	return r
+end
+
+local function rep_tick()
+	if not watching() then
+		rep_seen = nil
+		return
+	end
+	local v = reputation()
+	if v and rep_seen and v ~= rep_seen then
+		stats.rep_lines = stats.rep_lines + 1
+		log("reputation in fight %s: %d -> %d (%+d), not game_statistics (the engine: an attack counted by the host, RelReputationDelta)",
+			tostring(fight_running()), rep_seen, v, v - rep_seen)
+	end
+	rep_seen = v
+end
+
+local function ensure_rep_line()
+	local gs = C().mod("game_statistics")
+	local cur = gs and C().fn(gs, "increment_reputation")
+	if cur and not OURS[cur] then
+		local w = function(...) return route_rep_line(cur, ...) end
+		OURS[w] = true
+		gs.increment_reputation = w
+		stats.rewrapped = stats.rewrapped + 1
+	end
+end
+
 -- Our wrapper outermost: a mod that wrapped after us is wrapped again. In a session the outermost one routes; under it
 -- (passing: this machine's own player) every layer, ours and the mods', runs on.
 local function ensure_outer()
@@ -831,6 +1350,9 @@ local function ensure_outer()
 	end
 	ensure_tips()
 	ensure_pit()
+	ensure_prizes()
+	ensure_rep_line()
+	ensure_rank()
 end
 
 -- The cutscene of the trigger plays on the fighter's machine alone.
@@ -845,7 +1367,7 @@ local function patch_cutscene()
 		if session() and is_trigger(self.object) then
 			if authority() then current(self.object) end
 			local me = fighting
-			if authority() and fight then me = fight.id == own_id() and not P.is_map_server() end
+			if authority() and fight then me = is_fighter(own_id()) and not P.is_map_server() end
 			if not me then
 				self.state = "run"
 				self.coop_still = time_global()
@@ -853,6 +1375,9 @@ local function patch_cutscene()
 				return
 			end
 			self.coop_tell = P.is_client() or nil
+			local r = zone_enter(self, ...)
+			own_spot()
+			return r
 		end
 		return zone_enter(self, ...)
 	end
@@ -939,7 +1464,22 @@ local function register_events()
 		if id ~= nil then out_of(id) end
 	end, "host", TAG)
 	P.on("arena.cut", function(_, from)
-		if fight and P.avatar_of_peer(from) == fight.id then cut_done = true end
+		local id = P.avatar_of_peer(from)
+		if not (fight and is_fighter(id)) then return end
+		fight.cuts = fight.cuts or {}
+		fight.cuts[id] = true
+		for _, f in ipairs(fighters()) do
+			if not fight.cuts[f] and not (f == own_id() and not P.is_map_server()) then return end
+		end
+		cut_done = true
+	end, "host", TAG)
+	P.on("arena.start", function(_, from)
+		local id = P.avatar_of_peer(from)
+		if id ~= nil then start_ask(id) end
+	end, "host", TAG)
+	P.on("arena.prize", function(t, from)
+		local id = avatar_of(from)
+		if id and PRIZES[t.k] then prize(t.k, id, db.actor, manager()) end
 	end, "host", TAG)
 end
 
@@ -971,22 +1511,34 @@ end
 local function save_state(m_data)
 	m_data.coop_arena_gear = (mine == "fight" and true) or mine or nil
 	if P.is_client() then return end
-	local keep = next(ledger) or fight or pit or (world_copy and #world_copy > 0)
-	m_data.coop_arena = keep and { ledger = ledger_list(), fight = fight, split = world_copy, pit = pit } or nil
+	local prizes = {}
+	for n, ids in pairs(fighters_of) do prizes[#prizes + 1] = { n = n, ids = ids } end
+	local keep = next(ledger) or fight or pit or (world_copy and #world_copy > 0) or #prizes > 0 or pit_won
+	local fsave = fight and { id = fight.id, n = fight.n, ids = fight.ids } or nil
+	m_data.coop_arena = keep and { ledger = ledger_list(), fight = fsave, split = world_copy, pit = pit, prizes = prizes,
+		pit_won = pit_won } or nil
 end
 
 local function load_state(m_data)
 	local g = m_data.coop_arena_gear
 	mine = (g == true and "fight") or (g == "bet" and "bet") or false
 	local a = m_data.coop_arena
-	ledger, fight, cut_done, world_copy, pit = {}, nil, false, nil, nil
+	ledger, fight, cut_done, world_copy, pit, fighters_of, pit_won = {}, nil, false, nil, nil, {}, nil
 	pit_fresh = true
 	-- the ledger is the world's: a client loads the host's world, it is not his
 	if type(a) ~= "table" or P.is_client() then return end
 	take_list(a.ledger)
-	if type(a.fight) == "table" and type(a.fight.id) == "number" then fight = { id = a.fight.id, n = a.fight.n } end
+	if type(a.fight) == "table" and type(a.fight.id) == "number" then
+		fight = { id = a.fight.id, n = a.fight.n }
+		local ids = numbers(a.fight.ids)
+		if #ids > 0 then fight.ids = ids end -- a fight held at load starts with its taker alone
+	end
 	if type(a.split) == "table" then world_copy = a.split end
 	if type(a.pit) == "table" and type(a.pit.id) == "number" then pit = { id = a.pit.id } end
+	for _, r in ipairs(type(a.prizes) == "table" and a.prizes or {}) do
+		if type(r) == "table" and type(r.n) == "number" then fighters_of[r.n] = numbers(r.ids) end
+	end
+	if type(a.pit_won) == "number" then pit_won = a.pit_won end
 end
 
 -- Split levels: a map server leads the Bar, writes nothing into the save and stops when its level is empty. Its ledger goes up to
@@ -1027,8 +1579,13 @@ local function actor_on_update()
 	if now < next_tick then return end
 	next_tick = now + TICK_MS
 	ensure_outer()
+	rep_tick()
 	if fighting and not fight_running() then fighting = false end
 	if session() and authority() then
+		if fight and fight.hold then
+			local okg, errg = pcall(gather_tick)
+			if not okg then report("gather", errg) end
+		end
 		local ok, err = pcall(heal_tick, now)
 		if not ok then report("heal", err) end
 		ok, err = pcall(pit_reset_tick)
@@ -1045,15 +1602,15 @@ end
 function print_status()
 	local n = 0
 	for _ in pairs(ledger) do n = n + 1 end
-	return string.format("ledger %d, fight %s, stowed %d, returned %d, to box 2 %d, missing %d, players kept %d, still cutscenes %d, rewrapped %d, lines to a fighter %d, errors %d",
+	return string.format("ledger %d, fight %s, stowed %d, returned %d, to box 2 %d, missing %d, players kept %d, still cutscenes %d, rewrapped %d, lines to a fighter %d, prizes %d (asked %d), reputation lines %d, errors %d",
 		n, fight and tostring(fight.n) or "-", stats.stowed, stats.returned, stats.to_box2, stats.missing, stats.players_kept,
-		stats.still_cuts, stats.rewrapped, stats.tips, stats.errors)
+		stats.still_cuts, stats.rewrapped, stats.tips, stats.prizes, stats.prize_asks, stats.rep_lines, stats.errors)
 end
 
 -- Tests and diagnostics.
 function _state()
 	return { ledger = ledger, fight = fight, mine = mine, fighting = fighting, stats = stats, cut_done = cut_done, world_copy = world_copy,
-		got_down = got_down, pit = pit }
+		got_down = got_down, pit = pit, prizes = fighters_of, pit_won = pit_won }
 end
 
 function on_game_start()
@@ -1063,7 +1620,8 @@ function on_game_start()
 	if em and em.register_player_key then
 		em.register_player_key("coop_arena_gear", function() return (mine == "fight" and true) or mine or nil, true end)
 	end
-	for _, s in ipairs({ { "routes", ensure_outer }, { "cutscene", patch_cutscene }, { "zone", patch_zone } }) do
+	for _, s in ipairs({ { "routes", ensure_outer }, { "cutscene", patch_cutscene }, { "zone", patch_zone }, { "idle", patch_idle },
+		{ "vote", vote_lines } }) do
 		local ok, err = pcall(s[2])
 		if not ok then report("install " .. s[1], err) end
 	end
