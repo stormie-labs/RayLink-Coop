@@ -201,6 +201,120 @@ end
 function _rerun(name, m, src, path) return rerun(name, m, src, path) end
 function _rewrites() return REWRITES end
 
+-- A method rewrite: one function of a class module, compiled alone in the module's environment (at its own line numbers) and
+-- put in the place of the original - on the class and in every wrapper that kept the original in an upvalue (Useful
+-- Idiots keeps get_script_target as PATCH_get_script_target before any on_game_start). The whole module is not run again:
+-- that would declare its luabind class anew and drop every other mod's patch of it. Like the rewrites above it applies
+-- in and outside a session (on_game_start of a RayLink exe); outside one the fixed line answers what the author meant.
+local METHOD_REWRITES = {
+	-- G.A.M.M.A. sim_squad_scripted.script:139: the branch for a numeric target indexes the global `obj` (nil) instead of
+	-- se_target. A numeric scripted_target (emission_guard_patch turns "123" into 123 at actor_on_first_update) ended
+	-- the game: client reports RL-PMQ3-QJ23, RL-XK6N-8U4U, RL-M68Z-RV5K, RL-PVY5-ERKS (b40, split levels, l05_bar).
+	{ module = "sim_squad_scripted", class = "sim_squad_scripted", method = "get_script_target",
+		header = "function sim_squad_scripted:get_script_target()",
+		{ "if se_target and (obj:clsid() == clsid.online_offline_group_s or obj:clsid() == clsid.smart_terrain) then",
+		"if se_target and (se_target:clsid() == clsid.online_offline_group_s or se_target:clsid() == clsid.smart_terrain) then" },
+	},
+}
+
+local function line_of(s, at)
+	local n = 1
+	for _ in s:sub(1, at - 1):gmatch("\n") do n = n + 1 end
+	return n
+end
+
+-- Pure part, testable: the text of the function that starts with `header` (once in src) and ends at the first `end` at
+-- the start of a line, and the line it starts at.
+function method_text(src, header)
+	if count_plain(src, header) ~= 1 then return nil, "header found " .. count_plain(src, header) .. " times" end
+	local from = src:find(header, 1, true)
+	local _, to = src:find("\nend[ \t]*\r?\n", from)
+	if not to then _, to = src:find("\nend[ \t]*$", from) end
+	if not to then return nil, "no end of the function" end
+	return src:sub(from, to), line_of(src, from)
+end
+
+-- `file` is the script's file name: the engine's chunk name is its path (slashes of either kind), compared by the name.
+local function is_original(f, file, line)
+	if type(f) ~= "function" then return false end
+	local info = debug.getinfo(f, "S")
+	if not (info and info.linedefined == line and type(info.source) == "string") then return false end
+	local s = info.source:lower():gsub("/", "\\")
+	file = file:lower()
+	return s == "@" .. file or s:sub(-(#file + 1)) == "\\" .. file
+end
+
+-- Every reference to the original reachable from `f` through upvalues (a wrapper of a wrapper ...) gets `fixed`.
+local function swap_upvalues(f, file, line, fixed, seen, depth)
+	if seen[f] or depth > 4 then return 0 end
+	seen[f] = true
+	local n, i = 0, 1
+	while true do
+		local name, v = debug.getupvalue(f, i)
+		if not name then break end
+		if is_original(v, file, line) then
+			debug.setupvalue(f, i, fixed)
+			n = n + 1
+		elseif type(v) == "function" then
+			n = n + swap_upvalues(v, file, line, fixed, seen, depth + 1)
+		end
+		i = i + 1
+	end
+	return n
+end
+
+local function apply_method_rewrite(r)
+	local tag = r.module .. "." .. r.method
+	local m = mod(r.module)
+	local cls = m and m[r.class]
+	if not cls then return end -- mod absent
+	local src, path = read_script(r.module)
+	if not src then
+		log("rewrite %s skipped: not a loose file", tag)
+		return
+	end
+	local text, line = method_text(src, r.header)
+	local out, why = text and rewrite_text(text, r)
+	if not out then
+		log("rewrite %s skipped (another version of the script): %s", tag, why or line)
+		return
+	end
+	local current = cls[r.method]
+	local chunk, err = loadstring(string.rep("\n", line - 1) .. "local " .. r.class .. " = {} " .. out ..
+		" return " .. r.class .. "." .. r.method, "@" .. path)
+	if not chunk then
+		report("rewrite " .. tag, err)
+		return
+	end
+	setfenv(chunk, m)
+	local ok, fixed = pcall(chunk)
+	if not (ok and type(fixed) == "function") then
+		report("rewrite " .. tag, fixed)
+		return
+	end
+	-- the original must have no upvalues: compiled alone, its free names are the module's globals as in the file
+	local up = debug.getinfo(fixed, "u")
+	if up and up.nups ~= 0 then
+		log("rewrite %s skipped: the method keeps %d upvalue(s)", tag, up.nups)
+		return
+	end
+	local file, swapped = r.module .. ".script", 0
+	if is_original(current, file, line) then
+		cls[r.method] = fixed
+		swapped = 1
+	elseif type(current) == "function" then
+		swapped = swap_upvalues(current, file, line, fixed, {}, 0)
+	end
+	if swapped == 0 then
+		log("rewrite %s skipped: the original method is not reachable from the class", tag)
+		return
+	end
+	applied[#applied + 1] = "rewrite:" .. tag
+	log("rewrite %s applied (%d change(s), %d place(s))", tag, #r, swapped)
+end
+
+function _method_rewrites() return METHOD_REWRITES end
+
 -------------------------------------------------------------------------------
 -- Wrappers
 -------------------------------------------------------------------------------
@@ -630,6 +744,10 @@ function on_game_start()
 		for name, list in pairs(REWRITES) do
 			local ok, err = pcall(apply_rewrite, name, list)
 			if not ok then report("rewrite " .. name, err) end
+		end
+		for _, r in ipairs(METHOD_REWRITES) do
+			local ok, err = pcall(apply_method_rewrite, r)
+			if not ok then report("rewrite " .. r.module .. "." .. r.method, err) end
 		end
 		local adapters = mod("coop_npc_adapters")
 		if adapters then adapters.install(P, function() return host_on and P.host_with_clients() end, applied) end

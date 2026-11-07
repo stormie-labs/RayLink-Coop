@@ -473,7 +473,8 @@ local function hook_options()
 		-- ReloadUI constructs the next menu before deleting the old one. Options
 		-- keeps its original owner; rebind before stock ShowDialog/Show/SetMsg can
 		-- reach a deleted native window. Other owners and the live path stay stock.
-		if live_menu and self.owner ~= live_menu and known_menus[self.owner] then
+		-- rawequal: two luabind main_menu objects have no __eq, `~=` was a FATAL (RL-88VM-WY54, RL-846N-SYTR, ...)
+		if live_menu and not rawequal(self.owner, live_menu) and known_menus[self.owner] then
 			self.owner = live_menu
 		end
 		return cancel(self, ...)
