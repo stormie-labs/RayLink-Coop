@@ -35,7 +35,13 @@
 	   the UI on, the sound back, the infos off. dream_end alone does everything dream_mid has not done yet. A dream whose
 	   effector callbacks never come ends by itself after 60 s. The engine says "awake" about 12 s after the start: the dream
 	   is closed by dream_end, never by that state. GAMMA's get_immersive_sleep_hours is not called: its random early
-	   wake-up would give this machine other hours than the world skipped.
+	   wake-up would give this machine other hours than the world skipped. At dream_end one line "slept N h: health a -> b,
+	   satiety, thirst, sleepiness, radiation, bleeding" (before = the last second he only rested). While he only rests a
+	   bleeding or a radiation ends the rest (the stock checks them seconds before its skip; here the skip may come minutes
+	   after the lie-down, and the engine puts all its hours on the body in one step).
+	   The world server hears coop_rest_skipped(hours) right after the skip: what surge_manager's actor_on_sleep does for the
+	   world (emission / psi-storm time_forwarded, level_weathers' forced weather change) is done then, before their next
+	   update, as the stock does it in the call that moves the clock.
 
 	4. The offer (owner 2026-11-07, live report from vanilla: "there was no window to accept the time skip"): an ally lies
 	   down -> every other awake player gets the window UICoopInvite "<nick> is going to sleep for N h. Lie down too?" with
@@ -439,9 +445,61 @@ local function fold_target()
 	return ok and at or nil
 end
 
+-- What the stock dialog forbids and the co-op keeps (bleeding, radiation): its own text, nil when he may lie down.
+local function local_refusal()
+	local bleeding, radiation = false, false
+	pcall(function()
+		bleeding = (tonumber(db.actor.bleeding) or 0) > 0
+		radiation = (tonumber(db.actor.radiation) or 0) > 0
+	end)
+	if bleeding and radiation then return translate("st_sleep_bleeding_irradiated") end
+	if bleeding then return translate("st_sleep_bleeding") end
+	if radiation then return translate("st_sleep_irradiated") end
+	return nil
+end
+
+-- The player's needs around a sleep (owner 2026-11-08: "can HP drop after a sleep?"): the engine's health, satiety, radiation and
+-- bleeding, GAMMA's thirst (actor_status_thirst) and sleepiness (actor_status_sleep) when those modules are on; nil fields are
+-- not known here.
+local function module_value(name, fn)
+	local m = mod(name)
+	local f = m and m[fn]
+	if type(f) ~= "function" then return nil end
+	local ok, v = pcall(f)
+	return ok and tonumber(v) or nil
+end
+
+local function needs()
+	local a = db.actor
+	if not a then return nil end
+	local n = {}
+	pcall(function() n.health = tonumber(a.health) end)
+	pcall(function() n.satiety = tonumber(a.satiety) end)
+	pcall(function() n.radiation = tonumber(a.radiation) end)
+	pcall(function() n.bleeding = tonumber(a.bleeding) end)
+	n.thirst = module_value("actor_status_thirst", "get_last_drink")
+	n.sleepiness = module_value("actor_status_sleep", "get_last_sleep")
+	return n
+end
+
+local function num(v, digits)
+	if type(v) ~= "number" then return "-" end
+	return string_format("%." .. tostring(digits) .. "f", v)
+end
+
+-- One line on every sleeper's machine when his sleep is over: what the skipped hours did to him.
+local function log_needs(hours, before, after)
+	before, after = before or {}, after or {}
+	log("slept %s h: health %s -> %s, satiety %s -> %s, thirst %s -> %s, sleepiness %s -> %s, radiation %s -> %s, bleeding %s -> %s",
+		tostring(hours), num(before.health, 3), num(after.health, 3), num(before.satiety, 3), num(after.satiety, 3),
+		num(before.thirst, 0), num(after.thirst, 0), num(before.sleepiness, 0), num(after.sleepiness, 0),
+		num(before.radiation, 3), num(after.radiation, 3), num(before.bleeding, 3), num(after.bleeding, 3))
+end
+
 local function open_doze(hours, forced)
 	drop_invite() -- I lie down: an offer has nothing left to ask
 	st.hours, st.forced, st.asked, st.seen = hours, forced == true, time_global(), false
+	st.needs = needs() -- before the sleep (renewed every second while he rests)
 	info_off("sleep_active") -- it freezes every time event of the machine (_g.script, ProcessEventQueue)
 	info_on("actor_is_sleeping")
 	st.bag_at = fold_target()
@@ -470,7 +528,8 @@ local function poll(now)
 		close_doze() -- the session is over: state_of(0) would only say 'awake'
 		return
 	end
-	if state_of(0) ~= "awake" then
+	local state = state_of(0)
+	if state ~= "awake" then
 		st.seen = true
 	elseif st.seen then
 		close_doze() -- got up, woken (a fight, a wound), the group woke
@@ -482,6 +541,21 @@ local function poll(now)
 		reoffer("refused_lost")
 		return
 	end
+	-- The stock looks at bleeding and radiation seconds before its time skip (TestAndShow, then the dream). Here the skip comes
+	-- when the whole group rests, minutes after this lie-down may be, and the engine puts all its hours on the body in one step
+	-- (CEntityCondition::UpdateConditionTime): GAMMA's radiation_health_v_sleep 0.0012 x radiation x 32400 s of a 9 h sleep is
+	-- 0.4 of the health at radiation 0.01. So a rest that is not a faint ends as soon as he bleeds or is irradiated, while he
+	-- only rests ("sleeping": the group's skip has come, he sleeps it through like the stock).
+	if state ~= "sleeping" and not st.forced then
+		local why = local_refusal()
+		if why then
+			log("the rest ends: %s", why)
+			get_up()
+			put_tip(why)
+			return
+		end
+	end
+	if state ~= "sleeping" then st.needs = needs() end
 	local w = win
 	if w then pcall(w.Refresh, w) end
 end
@@ -525,7 +599,10 @@ local function apply_sleep(hours, in_bag)
 end
 
 local function start_dream(hours, forced)
-	dream = { hours = hours, forced = forced == true, at = time_global(), mid = false, in_bag = st.bag ~= nil }
+	-- before: the last look while he only rested (the skip may have reached the body already: it comes in the same frame)
+	dream = { hours = hours, forced = forced == true, at = time_global(), mid = false, in_bag = st.bag ~= nil,
+		before = st.needs or needs() }
+	st.needs = nil
 	st.invited = nil
 	drop_invite()
 	close_doze() -- the window gives way; actor_is_sleeping stays (a dream is on)
@@ -577,11 +654,39 @@ function dream_end()
 	info_off("sleep_active")
 	close_doze() -- (the window gave way at the start; this also takes actor_is_sleeping off)
 	tell("woke", d.hours)
+	try("needs line", function() log_needs(d.hours, d.before, needs()) end)
 end
 
 -------------------------------------------------------------------------------
 -- Engine callbacks
 -------------------------------------------------------------------------------
+-- coop_rest_skipped(hours): the world server, right after it skipped the time for the group (coop_rest.cpp skip_time). The stock
+-- sleep moves the clock and sends actor_on_sleep in one call (ui_sleep_dialog.dream_callback), so the world's listeners of a
+-- skip hear it before their next update: surge_manager's actor_on_sleep marks the emission and the psi-storm time_forwarded
+-- (one due within an hour of the wake-up is put 3 h on) and asks level_weathers for a forced weather change. Here actor_on_sleep
+-- comes at dream_mid, seconds after the skip: the managers' update (every second) could start the emission the stock puts off,
+-- and level_weathers' hour tick (3 s) had chosen the weather without force (the sky stayed at night until the next hour). So
+-- the world's part is done now; the needs (thirst, sleepiness, limbs, psy) stay on every sleeper's actor_on_sleep.
+local function on_skipped(hours)
+	if not is_world_server() then return end
+	try("surge time_forwarded", function()
+		local m = mod("surge_manager")
+		local s = m and type(m.get_surge_manager) == "function" and m.get_surge_manager() or nil
+		if s then s.time_forwarded = true end
+	end)
+	try("psi-storm time_forwarded", function()
+		local m = mod("psi_storm_manager")
+		local s = m and type(m.get_psi_storm_manager) == "function" and m.get_psi_storm_manager() or nil
+		if s then s.time_forwarded = true end
+	end)
+	try("forced weather change", function()
+		local m = mod("level_weathers")
+		local wm = m and type(m.get_weather_manager) == "function" and m.get_weather_manager() or nil
+		if wm and type(wm.forced_weather_change) == "function" then wm:forced_weather_change() end
+	end)
+	log("the world skipped %s h: the emission, the psi-storm and the weather are told at once", tostring(hours))
+end
+
 -- coop_rest_sleep(hours): the group sleeps, the time is skipped. Only the sleepers get it.
 local function on_sleep(hours)
 	local h = normalize_hours(hours)
@@ -682,19 +787,6 @@ local function ask_lie_down(hours, forced)
 		return false
 	end
 	return open_doze(hours, forced)
-end
-
--- What the stock dialog forbids and the co-op keeps (bleeding, radiation): its own text, nil when he may lie down.
-local function local_refusal()
-	local bleeding, radiation = false, false
-	pcall(function()
-		bleeding = (tonumber(db.actor.bleeding) or 0) > 0
-		radiation = (tonumber(db.actor.radiation) or 0) > 0
-	end)
-	if bleeding and radiation then return translate("st_sleep_bleeding_irradiated") end
-	if bleeding then return translate("st_sleep_bleeding") end
-	if radiation then return translate("st_sleep_irradiated") end
-	return nil
 end
 
 local function hide_stock(self)
@@ -1066,9 +1158,11 @@ function on_game_start()
 		AddScriptCallback("coop_rest_changed") -- fired by the engine (coop_rest.cpp)
 		AddScriptCallback("coop_rest_sleep")
 		AddScriptCallback("coop_rest_refused")
+		AddScriptCallback("coop_rest_skipped")
 		RegisterScriptCallback("coop_rest_changed", on_changed)
 		RegisterScriptCallback("coop_rest_sleep", on_sleep)
 		RegisterScriptCallback("coop_rest_refused", on_refused)
+		RegisterScriptCallback("coop_rest_skipped", on_skipped)
 		RegisterScriptCallback("actor_on_update", tick)
 		RegisterScriptCallback("actor_on_first_update", on_first_update)
 		RegisterScriptCallback("actor_on_hit_callback", on_hit) -- the offer window waits out my fight

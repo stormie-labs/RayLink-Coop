@@ -1442,4 +1442,122 @@ case("strings_and_layout", function()
 	check((read("gamedata/configs/coop_route_f3.ltx") or ""):find("coop_rest%s*=%s*owner") ~= nil, "the route of coop_rest is 'owner' (every machine, own player)")
 end)
 
+-- ------------------------------------------------------------------ owner 2026-11-08: "can HP drop after a sleep?"
+-- GAMMA's needs as the script reads them: actor_status_thirst.get_last_drink, actor_status_sleep.get_last_sleep
+local function needs_modules(drink, sleepy)
+	THIRST, SLEEPY = drink, sleepy
+	actor_status_thirst = { get_last_drink = function() return THIRST end }
+	actor_status_sleep.get_last_sleep = function() return SLEEPY end
+end
+
+local function needs_line()
+	for i = #LOG, 1, -1 do
+		if LOG[i]:find("slept ", 1, true) then return LOG[i] end
+	end
+	return nil
+end
+
+case("needs_line_after_a_shared_sleep", function()
+	for _, mode in ipairs({ "client", "host" }) do
+		fresh(mode)
+		needs_modules(1000, 6000)
+		db.actor.health, db.actor.satiety = 0.9, 0.6
+		stock_ui(9):OnButtonSleep()
+		engine_says(0, "resting", 9)
+		advance(1000, 500) -- the rest polls: the look before the sleep
+		engine_says(0, "sleeping", 9)
+		-- the host's skip reaches the body in the frame it comes, before the Lua hears coop_rest_sleep
+		db.actor.health, db.actor.satiety = 0.7, 0.4
+		advance(1000, 500)
+		fire("coop_rest_sleep", 9)
+		coop_rest.dream_mid()
+		needs_modules(3700, 0) -- actor_on_sleep of GAMMA: thirst up, sleepiness down
+		check(needs_line() == nil, mode .. ": no line before the sleep is over")
+		coop_rest.dream_end()
+		local line = needs_line()
+		check(line ~= nil and line:find("slept 9 h: health 0.900 -> 0.700, satiety 0.600 -> 0.400, thirst 1000 -> 3700, "
+			.. "sleepiness 6000 -> 0, radiation 0.000 -> 0.000, bleeding 0.000 -> 0.000", 1, true) ~= nil,
+			mode .. ": one line with the needs before and after: " .. tostring(line))
+		local n = 0
+		for _, l in ipairs(LOG) do if l:find("slept ", 1, true) then n = n + 1 end end
+		check(n == 1, mode .. ": once (" .. n .. ")")
+	end
+	-- without GAMMA's modules: the engine's part, the rest as "-"
+	fresh("client")
+	actor_status_thirst = nil
+	db.actor.health, db.actor.satiety = 1, 1
+	stock_ui(3):OnButtonSleep()
+	engine_says(0, "resting", 3)
+	fire("coop_rest_sleep", 3)
+	coop_rest.dream_end()
+	local line = needs_line()
+	check(line ~= nil and line:find("slept 3 h: health 1.000 -> 1.000, satiety 1.000 -> 1.000, thirst - -> -, sleepiness - -> -", 1, true) ~= nil,
+		"no thirst / sleepiness module: '-' (" .. tostring(line) .. ")")
+end)
+
+case("rest_ends_on_bleeding_or_radiation_while_only_resting", function()
+	local cases = {
+		{ bleeding = 0.2, radiation = 0, key = "st_sleep_bleeding" },
+		{ bleeding = 0, radiation = 0.01, key = "st_sleep_irradiated" },
+		{ bleeding = 0.2, radiation = 0.01, key = "st_sleep_bleeding_irradiated" },
+	}
+	for _, c in ipairs(cases) do
+		fresh("client")
+		stock_ui(9):OnButtonSleep()
+		engine_says(0, "resting", 9)
+		advance(2000, 500)
+		check(win() ~= nil and REST.ups == 0, c.key .. ": resting, clean: the window stays")
+		db.actor.bleeding, db.actor.radiation = c.bleeding, c.radiation -- an artefact on the belt, a wound
+		advance(1000, 500)
+		check(REST.ups == 1, c.key .. ": the rest ends, coop.rest.get_up() (" .. REST.ups .. ")")
+		check(win() == nil and not INFOS.actor_is_sleeping, c.key .. ": the window is closed, the body awake")
+		check(last(MSGS) == c.key, c.key .. ": with the stock text (" .. tostring(last(MSGS)) .. ")")
+	end
+	-- the group's skip has come ("sleeping"): he sleeps it through, as the stock does after its check
+	fresh("client")
+	stock_ui(9):OnButtonSleep()
+	engine_says(0, "resting", 9)
+	engine_says(0, "sleeping", 9)
+	db.actor.radiation = 0.01
+	advance(3000, 500)
+	check(REST.ups == 0 and win() ~= nil and INFOS.actor_is_sleeping == true, "sleeping: no get-up")
+	-- a faint is no choice: the stock's sleep_forced looks at nothing either
+	fresh("client")
+	ui_sleep_dialog.sleep_forced(5)
+	engine_says(0, "resting", 5)
+	db.actor.bleeding = 0.2
+	advance(3000, 500)
+	check(REST.ups == 0 and win() ~= nil, "a faint is not ended by bleeding")
+end)
+
+case("world_hears_the_skip_at_once", function()
+	local function managers()
+		local m = { surge = { time_forwarded = false }, psi = { time_forwarded = false }, forced = 0 }
+		surge_manager.get_surge_manager = function() return m.surge end
+		psi_storm_manager.get_psi_storm_manager = function() return m.psi end
+		level_weathers = { get_weather_manager = function()
+			return { forced_weather_change = function() m.forced = m.forced + 1 end }
+		end }
+		return m
+	end
+	fresh("host")
+	check(ADDED.coop_rest_skipped and registered("coop_rest_skipped") == 1, "the engine callback is declared and taken once")
+	local m = managers()
+	fire("coop_rest_skipped", 9)
+	check(m.surge.time_forwarded == true and m.psi.time_forwarded == true,
+		"the world server: the emission and the psi-storm are time_forwarded at the skip")
+	check(m.forced == 1, "and level_weathers is asked for a forced weather change once (" .. m.forced .. ")")
+	-- a client's managers mirror the host's: nothing
+	fresh("client")
+	m = managers()
+	fire("coop_rest_skipped", 9)
+	check(not m.surge.time_forwarded and not m.psi.time_forwarded and m.forced == 0, "a client: nothing")
+	-- the modules missing: no error
+	fresh("host")
+	level_weathers, surge_manager.get_surge_manager = nil, nil
+	fire("coop_rest_skipped", 4)
+	check(true, "no managers: nothing breaks")
+	level_weathers = nil
+end)
+
 done("REST")
