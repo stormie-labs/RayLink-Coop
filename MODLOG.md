@@ -529,3 +529,106 @@
   зависание при стопе перед ResetEvent, поток трогает событие чужого уровня, освобождение по таймауту), GREEN 8/8,
   9 повторов (3 под полной загрузкой CPU); полный C++ 1487/1487; `compile_files.sh Level.cpp Level_network.cpp
   Level_network_messages.cpp Level_secure_messaging.cpp` exit 0. В игре не проверено.
+- 2026-11-08 03:08 — Ночь после общего сна (живой отчёт 41.4: часы 10:30, небо ночное, само стало днём около 11:00) и
+  проверка «HP падает после сна». Небо: `CEnvironment::SelectEnvs(gt)` (`xrEngine/Environment.cpp:468-499`) с уже
+  выбранными секциями шагает только вперёд, когда время дня прошло `Current[1]`; `TimeWeight` (`:260-277`) вне окна даёт 0,
+  небо = `Current[0]`. Скачок за полночь (22:30 + 12 ч = 10:30, секции 22:00/23:00) оставляет ночную секцию. Сток лечит это
+  принудительной сменой погоды: `ui_sleep_dialog.dream_callback` (GAMMA `:343-347`) двигает часы и в том же вызове шлёт
+  `actor_on_sleep` → `surge_manager.actor_on_sleep` (`:84-92`) → `forced_weather_change` → часовой тик `level_weathers`
+  (`:209-225`, 3 с) делает `set_weather(file, true)`. В коопе хост пропускает время в начале сна (`coop_rest.cpp`
+  `skip_time`), а `actor_on_sleep` приходит на `dream_mid` через секунды: тик уже выбрал погоду без force, флаг ждал 11:00.
+  Клиент зеркалит секции хоста (`client_apply_weather`) и сам не форсирует (`client_select` сбрасывает флаг,
+  `set_weather` отклонён). Исправлено в движке: `xrCoop/coop_sky_jump.h` (новый, чистый: `JumpNote`, `reselect_after_jump`
+  ≥ 30 игровых мин и не во время fx / паузы погоды, `pick_pair` = первый выбор `SelectEnvs`, `day_time`);
+  `coop_worldstate.cpp` `sky_frame()` в `frame()` выбирает обе секции заново, строка
+  `[coop] sky: the clock jumped ... env sections A -> B are now C -> D (HH:MM)`, в `coop_status` счётчик. Скачки
+  отмечают: `client_apply_time`, `host_clock_ahead_now`, новое `worldstate::note_time_jump` из `level.change_game_time`
+  (`level_script.cpp`), `skip_time` (`coop_rest.cpp`), `coop_time` (`coop_dedicated.cpp`); вне сессии ничего.
+  Lua `coop_rest`: движок шлёт `coop_rest_skipped(hours)` серверу мира сразу после пропуска — `time_forwarded` выброса и
+  пси-шторма и `forced_weather_change` в момент скачка, как сток (раньше их `update` раз в секунду мог начать выброс,
+  который сток отложил бы на 3 ч). HP: двойного применения нет — движок кладёт все часы одним шагом
+  (`CEntityCondition::UpdateConditionTime`, игровое время) один раз на машине спящего со ставками сна (`actor_is_sleeping`
+  даёт окно отдыха), Lua-потребности (жажда +300/ч, сонливость, конечности, пси) один раз через `actor_on_sleep`;
+  жажда/сонливость GAMMA не считают прошедшее время. Кооп-специфично: кровь и радиация проверялись только при укладке, а
+  пропуск приходит, когда легла вся группа (минуты); `radiation_health_v_sleep` 0.0012 × рад × 32400 с — 0.4 здоровья при
+  0.01. Теперь, пока игрок только отдыхает (не «sleeping»), кровь/радиация заканчивают отдых стоковым текстом (обморок — нет).
+  Строка на каждой машине спящего: `[coop-rest] slept N h: health a -> b, satiety, thirst, sleepiness, radiation,
+  bleeding` (до = последняя секунда отдыха). Тесты: C++ `sky_` 10 (RED на заглушке 0/10), 8 мутантов убиты; Lua `rest`
+  397/0 (+3 случая; RED без исправлений 17 провалов), 9 мутантов убиты; полный Lua 147 файлов 13514/0 (повтор 03:20, с правками других); полный C++
+  1506/1506; `compile_files.sh coop/coop_worldstate.cpp coop/coop_rest.cpp coop/coop_dedicated.cpp level_script.cpp` exit 0. В игре не проверено.
+- 2026-11-08 03:07 — Клиент не мог поставить набор модернизации на оружие (живой отчёт, stable 41.4, GAMMA: ПП «Витязь»
+  у клиента не ставился, у хоста ставился). Наборы GAMMA (`mod_system_weapon_addons_upg_kits.ltx` и флаг 3DSS `weapon_kit`:
+  vitup, admin, bd, pm/tt/pb/m9_upgr_kit, ots2_upgr_kit, cut_kit, kurtz, obrez, sup, swamp, shakal, lapua700 и др.: 36
+  наборов, 47 переделок, клиенту отказывали все) — это обвесы-«прицелы»: `item_weapon.attach_scope` клонирует оружие в `<база>_<набор>` и освобождает набор
+  (перетаскивание, меню «Присоединить», «Использовать», колесо). У переделки свой `parent_section` (wpn_vityaz_vitup
+  указывает на себя), поэтому движок клиента отказывал в клоне (`coop_requests.cpp` lua_clone → clone_variant →
+  `lease::clone_family` = false, лог `[coop] calls: alife:clone_weapon refused on a client: not a variant of its weapon`),
+  `attach_scope` получал nil и ничего не делал; хост в `host_lease_checks` отказал бы так же. Исправлено (движок):
+  `xrCoop/coop_id_lease.h addon_variant` — клон, который делает стоковый attach_scope: источник сам себе база
+  (parent_section = секция), клон `<источник>_<обвес>`, обвес — элемент его `scopes`; `clone_variant` = clone_family или
+  addon_variant (оба пути: клиент и проверка хоста). Lua (`coop_mods_guard.script`, C6): обвес, который тратит attach_scope
+  (набор или прицел), освобождается только после ответа хоста на клон: Ok (старое оружие исчезло) — один release; отказ
+  (клон забран обратно, старое оружие на месте) — набор остаётся, сообщение `st_coop_guard_fit_refused`; пока ждём, этот же
+  набор на другое оружие не ставится (`st_coop_guard_fit_wait`); ответ есть, старое оружие не ушло — набор тратится через
+  60 с; без ALife решение откладывается. Состояние оружия (состояние, апгрейды, патроны, флаги аддонов, m_data/детали Mags
+  Redux) переносит существующий путь клона по арендованному id, как у прицелов. Тесты: C++ `lease_addon_variant` (RED на
+  заглушке: 6 проверок упали), полный C++ 1506/1506; 6 мутантов `addon_variant` убиты (на копии заголовка). Lua
+  `mods_guard` 157/0 (RED: 6 провалов и падение — набор освобождался сразу, повторная установка того же набора проходила),
+  9 мутантов убиты; полный Lua 144 файла, 13436/0. `compile_files.sh coop/coop_requests.cpp` exit 0. В игре не проверено.
+- 2026-11-08 03:07 — Миникарта слева вверху поверх панели группы у игроков G.A.M.M.A. (живой отчёт: ультраширокий
+  монитор). Причина: `ui_core::get_xml_name` (`ui_base.cpp`) выбирает вариант `zone_map` по соотношению сторон устройства
+  в момент сборки интерфейса: до 1.343 `zone_map.xml`, больше 1.8 `zone_map_21.xml`, между ними `_16`. GAMMA перенесла карту
+  вправо вниз только в `zone_map_16.xml` (Minimalist HUD / 306 Modular Compass Minimap), а `zone_map.xml` и
+  `zone_map_21.xml` (SquareDOV) остались стоковыми: центр рамки на 0.107 W от левого края. Кому это достаётся: 4:3 и 5:4,
+  21:9 и 32:9, и 16:9 в оконном режиме: окно берёт клиентскую область (`CHW::selectResolution`), у окна 1920x1080 она
+  1904x1041, аспект 1.829 > 1.8, значит `_21`. Alt-Tab интерфейс не пересобирает ни в одном режиме (чтением: HUD
+  пересобирается только из `CRenderDevice::Reset` по смене размера через `seqResolutionChanged`; Reset зовут только
+  `vid_restart`, `vid_mode`, `rs_screenmode` и `DXGI_ERROR_DEVICE_RESET`; на активации окна вызывается только
+  `CHW::OnAppActivate` с прежним размером). Вырожденный путь есть один: Reset при свёрнутом окне в оконном режиме
+  берёт клиентскую область 0x0, устройство становится 0x0, HUD собирается с `zone_map.xml`, и при разворачивании
+  его никто не пересобирает. Сделано: (1) слой GAMMA `gamedata_gamma/configs/ui/zone_map.xml` и `zone_map_21.xml`: копии
+  `zone_map_16.xml` GAMMA, отличается только `level_frame x`. Центр рамки = (x, y) * 768 в единицах 1024x768, растянутых на
+  экран: px = 0.75 * x * W, py = y * H. Карта и подложка масштабируются от высоты (круг диаметром 0.152 H, подложка 0.38 H).
+  На 16:9 правый отступ центра 0.1218 H, нижний 0.1327 H; x = 4/3 - 0.16237 / аспект: 4:3 -> 1.2116 (5:4 даёт
+  0.114 H), 2560x1080 и 3440x1440 -> 1.265 (0.1215 и 0.1224 H), 32:9 с тем же 1.265 -> 0.182 H (на 87 px левее при
+  1440, всё ещё справа внизу), окно 16:9 -> 0.094 H. y = 0.8673 для всех. Слой GAMMA последний и в MO2 (Highest
+  priority), и на стенде лаунчера (`stand/mod.rs` `layers()`, тест `gamma.script` == "gamma"). (2) Движок:
+  `xrEngine/ui_size_policy.h` (чистые правила); `CRenderDevice::Reset` в оконном режиме при свёрнутом окне или клиентской
+  области меньше 320x240 откладывается (`DeferResetWithoutWindowSize`), а `on_idle` выполняет его, когда окно вернулось
+  (`ResumeDeferredReset`); `Begin()` на `dsNeedReset` при отложенном сбросе не рисует; `CHUDManager::OnScreenResolutionChanged`
+  не пересобирает UI на вырожденном размере; `ui_core::screenmode()` зовёт `layout_family`, пороги стоковые. (3) Лог: каждая
+  сборка интерфейса пишет строку `* [coop ui] game UI built: device WxH (aspect), screenmode N (4:3/16:9/21:9),
+  rs_screenmode, client WxH, zone_map: ui\zone_map_21.xml` (`UIZoneMap.cpp`). Строки отложенного сброса:
+  `* [coop ui] device reset deferred ...` и `... running the deferred device reset`. Тесты: C++ `ui_size` 8 (RED на
+  заглушке со стоковым поведением: 2 passed, 6 failed), GREEN 8/8, полный C++ 1506/1506; pytest
+  `tests/tools/test_gamma_minimap.py` 5 (отступы для 4:3, 21:9, 32:9 и окна, совпадение с `zone_map_16.xml` GAMMA кроме x,
+  CRLF), весь `tests/tools` 148/148. `compile_files.sh ui_base.cpp HUDManager.cpp UIZoneMap.cpp` exit 0 (с новым
+  `device.h`, PCH пересобран). `Device_destroy.cpp` и `device.cpp` (xrEngine) не компилировались: одиночная компиляция
+  проекта xrEngine в ReleaseR4-AVX падает на ссылках (MSB8013), проверит полная сборка. В игре не проверено.
+
+- 2026-11-08 — **Вылет клиента `sim_squad_scripted.script:139 PATCH_get_script_target` (G.A.M.M.A.).** Отчёты RL-PMQ3-QJ23,
+  RL-XK6N-8U4U, RL-M68Z-RV5K, RL-PVY5-ERKS (#20, b40, установка `odanljcilddnjaam`, клиент, раздельные карты, `l05_bar`,
+  2–14 мин). Баг GAMMA: в ветке числовой цели `obj:clsid()` вместо `se_target:clsid()`; числовой `scripted_target` делает
+  `emission_guard_patch.actor_on_first_update` (строку "123" → 123), у хоста его чистит `squad_on_update` перед
+  `get_script_target`, у клиента `squad_on_update` маршрутизирован на хост. Правка: `coop_npc_compat` — новый вид переписи
+  `METHOD_REWRITES`: метод компилируется отдельно в окружении модуля на своих строках и ставится вместо оригинала в класс
+  и в upvalue обёрток (Useful Idiots держит его как `PATCH_get_script_target` до `on_game_start`); весь модуль не
+  перезапускается (иначе luabind-класс объявится заново). Применяется при `on_game_start` exe RayLink, в сессии и вне её,
+  как и прежние переписи; другая версия скрипта — пропуск с причиной в логе. Кто зовёт метод у клиента — не доказано
+  (обновление ALife и биндеры марионеток у клиента выключены движком). Тест `squad_target_rewrite` 40/0 (RED: 9 провалов
+  + RUNTIME ERROR `attempt to index global 'obj'`), проба на настоящем файле GAMMA: заголовок на строке 102, замена
+  совпала, 0 upvalue. В игре не проверено.
+- 2026-11-08 03:14 — **Смертельный цикл после респавна (живой отчёт: пси убило игрока G.A.M.M.A., он встал на точке респавна с красными
+  головой/торсом BHS, здоровье падало, смерть снова и снова).** Движок при респавне чинит только своё (здоровье, раны,
+  радиация); сток не респавнит, поэтому моды не сбрасывали то, что убило: части тела BHS (голова/торс 0 -> здоровье -1) и
+  пси-здоровье `arszi_psy` (<= 0.001 -> здоровье 0 каждую игровую секунду; респавн его не трогал вовсе, поднимал только
+  revive). Теперь каждый респавн — свежее тело, как Soulslike самой G.A.M.M.A. (`HealActor`: psy 1): `coop_mods_misc`
+  `on_respawned_fresh` — части BHS целые, timedhp 0, в моде, в pstor и сразу в пер-игроковой записи (`report_now`),
+  пси 1 + сброс стадии/эффектов и сразу `coop_economy_mdata.send_player_keys`; строка лога `[respawn] fresh body: before
+  ... | after ...` (health, psy движка и arszi, radiation, bleeding, голова/торс). `coop_mods_core.on_actor_respawned`: один
+  раз на респавн из `coop_respawned` ИЛИ опроса `coop.life_of(0)` respawning/dead/spectating -> alive (новый персонаж
+  hardcore у хоста без колбэка, потерянный колбэк очереди). Респавн до первого апдейта нового мира больше не
+  перезаписывается записью «до смерти». Revive тимейта — не респавн: урон остаётся (голова/торс только с нуля — как было).
+  Тест `mods_respawn` (client 20/0, host 18/0; RED: пси не сбрасывалось, порядок «запись после респавна» — провал без
+  правки). Весь Lua 147 файлов, 13514/0. В игре не проверено. Жажда/сон/сытость не трогаются (сытость/жажда на нуле тоже
+  тянут здоровье — проверить в игре).

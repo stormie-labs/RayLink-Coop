@@ -3,8 +3,8 @@
 
 RU
   Это третий мод MO2 из архива Anomaly Coop: патчи под моды G.A.M.M.A. и наши дополнения интерфейса для неё.
-  В этой версии патчей ещё нет: папка gamedata пуста. Часть всё равно ставится, чтобы место было готово, когда
-  появятся патчи под моды GAMMA.
+  Например: миникарта в правом нижнем углу на экранах 4:3, 5:4 и ультрашироких (21:9, 32:9). Сама GAMMA перенесла
+  её туда только для 16:9, на остальных экранах она оставалась слева вверху, поверх панели игроков.
   Нужна только на G.A.M.M.A.; на обычной Anomaly 1.5.3 её не ставят.
   Имя мода: Anomaly Coop - GAMMA. Место в списке MO2: правый клик - Send to... - Highest priority. Ставьте её
   последней, после Core: тогда она самая нижняя строка левого списка, а Core стоит прямо над ней. Anomaly Coop -
@@ -14,8 +14,8 @@ RU
 
 EN
   This is the third MO2 mod of the Anomaly Coop archive: patches for G.A.M.M.A. mods and our interface extras for it.
-  This version has no patches yet: the gamedata folder is empty. Install the part anyway, so the place is ready when
-  patches for GAMMA mods appear.
+  For example: the minimap in the bottom-right corner on 4:3, 5:4 and ultrawide (21:9, 32:9) screens. GAMMA itself
+  moved it there for 16:9 only; on other screens it stayed top-left, over the party panel.
   It is for G.A.M.M.A. only; do not install it on plain Anomaly 1.5.3.
   Mod name: Anomaly Coop - GAMMA. Place in the MO2 list: right-click - Send to... - Highest priority. Install it last,
   after Core: it is then the very bottom row of the left list and Core sits right above it. Anomaly Coop - Engine is
