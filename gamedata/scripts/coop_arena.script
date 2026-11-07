@@ -43,6 +43,9 @@
 	    is up", "victory", "you are afraid", "dead". Their lines (news_manager.send_tip) go to its fighter alone (arena.go "tip"),
 	    the infos they give stay the world's. The fighter: of a running fight (bar_arena_fight_N) its fighter; else the one
 	    picked when he walks into bar_arena_waiter (among those who walked in), kept until "victory", "dead" or "you are afraid".
+	    Its death: in a session nobody dies for the engine and bar_arena_sr's {=actor_dead} read the host; asked by bar_arena_sr it
+	    now means "no player alive or down in its zone for PIT_GONE_MS" (the fighter seen there is the fight's, also after a load,
+	    and kept in the host's save), and the branch's dead end sr_idle@nil is put back to the arena's start (pit_reset_tick).
 	Single player and an exe without co-op: stock, untouched.
 
 	Events (coop_npc_players):
@@ -693,6 +696,122 @@ local ROUTES = {
 	{ "dialogs_mlr", "teleport_for_totaliz", route_bet },
 }
 
+-------------------------------------------------------------------------------
+-- Arnie's monster fight: its fighter's death (authority)
+-------------------------------------------------------------------------------
+-- bar_arena_sr in sr_idle@fight: on_info2 = {=actor_dead} sr_idle@nil %=bar_arena_actor_dead +bar_arena_actor_dead
+-- +bar_arena_start_introduce%. xr_conditions.actor_dead reads db.actor, the host's own character, and in a session nobody dies
+-- for the engine (a fallen player stays alive at 1 % health, coop_survival): no fighter's death ever ended the fight, and the
+-- branch would end in sr_idle@nil for good (single player reloads after a death). Asked by bar_arena_sr in a session: dead =
+-- no player alive or down has stood in the zone bar_arena_sr (where the fight starts, on_actor_in_zone) for PIT_GONE_MS: a
+-- death, leaving the session, a respawn elsewhere (a teleport or a load is shorter). The host falling anywhere else is nobody's
+-- business. The player seen there is the fight's (its lines are his, after a load too). After the branch the arena is back at
+-- its start: the monster released, bar_old_arena_reset given and the fight's infos taken off (PIT_INFOS), bar_arena_sr at
+-- sr_idle@idle and bar_arena_spam's logic at sr_idle@introduce (it waits in sr_idle@notiming for a monster's death that will
+-- not come). A world saved with the arena stuck that way (before this) is put back the same way.
+local PIT_ZONE = "bar_arena_sr"
+local PIT_GONE_MS = 5000
+local PIT_MONSTERS = { "pseudodog", "snork", "bloodsucker", "burer", "savage" }
+-- The infos of a fight, as info_portions.script's bar_old_arena_reset lists them (dialogs_bar.arena_give_reward takes them off
+-- one by one too: "doesn't seem to be working"), with bar_arena_4000_r (a bet stock never takes back) and bar_arena_state_1.
+local PIT_INFOS = { "bar_arena_start", "bar_arena_1000_r", "bar_arena_2000_r", "bar_arena_3000_r", "bar_arena_4000_r",
+	"bar_arena_5000_r", "bar_arena_20_p", "bar_arena_50_p", "bar_arena_100_p", "bar_arena_start_introduce",
+	"bar_arena_spawn_monstr", "bar_arena_monstr_ready", "bar_arena_monstr_dead", "bar_arena_actor_victory", "bar_arena_actor_lose",
+	"bar_arena_actor_afraid", "bar_arena_actor_dead", "bar_arena_state_1" }
+for n = 10, 90, 10 do PIT_INFOS[#PIT_INFOS + 1] = "bar_arena_fight_" .. n end
+for _, m in ipairs(PIT_MONSTERS) do PIT_INFOS[#PIT_INFOS + 1] = "bar_arena_" .. m .. "_choosen" end
+-- when a fighter was last seen in the zone; the section's activation it counts for; true: count from the next ask (a load, a reset)
+local pit_seen, pit_act, pit_fresh = 0, nil, true
+
+local function has_section(obj, section)
+	local id = obj and id_of(obj)
+	local st = id and db.storage[id]
+	if not (st and st.ini) then return false end
+	local ok, has = pcall(st.ini.section_exist, st.ini, section)
+	return ok and has == true
+end
+
+local function is_pit_logic(npc)
+	if not npc then return false end
+	local ok, name = pcall(npc.name, npc)
+	return (ok and name == PIT_ZONE) or has_section(npc, "sr_idle@wait_actor")
+end
+
+-- In the fight: alive or down (a teammate may still lift him). Without the engine's answer: alive.
+local function fighting_life(id)
+	local api = rawget(_G, "coop")
+	if not (api and api.life_of) then return true end
+	local ok, l = pcall(api.life_of, id)
+	if not (ok and type(l) == "string") then return true end
+	return l == "alive" or l == "wounded"
+end
+
+local function pit_fighter(zone)
+	for _, o in ipairs(P.everyone()) do
+		local ok, inside = pcall(zone.inside, zone, o:position())
+		if ok and inside and fighting_life(id_of(o)) then return o end
+	end
+	return nil
+end
+
+local function pit_dead(npc)
+	local zone = db.zone_by_name and db.zone_by_name[PIT_ZONE] or npc
+	local now = time_global()
+	local st = db.storage[id_of(npc)]
+	local act = st and st.activation_time
+	if pit_fresh or act ~= pit_act then pit_seen, pit_act, pit_fresh = now, act, false end -- a new entry into sr_idle@fight
+	local o = pit_fighter(zone)
+	if o then
+		pit_seen = now
+		if not pit then pit = { id = id_of(o) } end
+		return false
+	end
+	return now - pit_seen >= PIT_GONE_MS
+end
+
+-- The monster fight's logics: bar_arena_sr and the one of bar_arena_spam.ltx (on another restrictor: found by its section).
+local function pit_logics()
+	local sr, spam = nil, nil
+	for name, z in pairs(db.zone_by_name or {}) do
+		if name == PIT_ZONE then sr = z elseif has_section(z, "sr_idle@notiming") then spam = z end
+	end
+	return sr, spam
+end
+
+local function pit_reset_tick()
+	if not has_alife_info("bar_arena_actor_dead") then return end
+	local sr, spam = pit_logics()
+	local st = sr and db.storage[id_of(sr)]
+	if not (st and st.active_section == "sr_idle@nil") then return end
+	for _, m in ipairs(PIT_MONSTERS) do
+		local id = get_story_object_id("bar_arena_" .. m)
+		if id and alife_object(id) then alife_release_id(id) end
+	end
+	give_info("bar_old_arena_reset")
+	for _, info in ipairs(PIT_INFOS) do disable_info(info) end
+	xr_logic.switch_to_section(sr, st.ini, "sr_idle@idle")
+	local sp = spam and db.storage[id_of(spam)]
+	if sp and sp.ini then xr_logic.switch_to_section(spam, sp.ini, "sr_idle@introduce") end
+	pit, pit_fresh = nil, true
+	log("monster fight: its fighter died, the arena is back at its start")
+end
+
+local function route_dead(cur, actor, npc, ...)
+	if session() and authority() and is_pit_logic(npc) then return pit_dead(npc) end
+	return cur(actor, npc, ...)
+end
+
+local function ensure_pit()
+	local xc = C().mod("xr_conditions")
+	local cur = xc and C().fn(xc, "actor_dead")
+	if cur and not OURS[cur] then
+		local w = function(...) return route_dead(cur, ...) end
+		OURS[w] = true
+		xc.actor_dead = w
+		stats.rewrapped = stats.rewrapped + 1
+	end
+end
+
 -- Our wrapper outermost: a mod that wrapped after us is wrapped again. In a session the outermost one routes; under it
 -- (passing: this machine's own player) every layer, ours and the mods', runs on.
 local function ensure_outer()
@@ -711,6 +830,7 @@ local function ensure_outer()
 		end
 	end
 	ensure_tips()
+	ensure_pit()
 end
 
 -- The cutscene of the trigger plays on the fighter's machine alone.
@@ -851,8 +971,8 @@ end
 local function save_state(m_data)
 	m_data.coop_arena_gear = (mine == "fight" and true) or mine or nil
 	if P.is_client() then return end
-	local keep = next(ledger) or fight or (world_copy and #world_copy > 0)
-	m_data.coop_arena = keep and { ledger = ledger_list(), fight = fight, split = world_copy } or nil
+	local keep = next(ledger) or fight or pit or (world_copy and #world_copy > 0)
+	m_data.coop_arena = keep and { ledger = ledger_list(), fight = fight, split = world_copy, pit = pit } or nil
 end
 
 local function load_state(m_data)
@@ -860,11 +980,13 @@ local function load_state(m_data)
 	mine = (g == true and "fight") or (g == "bet" and "bet") or false
 	local a = m_data.coop_arena
 	ledger, fight, cut_done, world_copy, pit = {}, nil, false, nil, nil
+	pit_fresh = true
 	-- the ledger is the world's: a client loads the host's world, it is not his
 	if type(a) ~= "table" or P.is_client() then return end
 	take_list(a.ledger)
 	if type(a.fight) == "table" and type(a.fight.id) == "number" then fight = { id = a.fight.id, n = a.fight.n } end
 	if type(a.split) == "table" then world_copy = a.split end
+	if type(a.pit) == "table" and type(a.pit.id) == "number" then pit = { id = a.pit.id } end
 end
 
 -- Split levels: a map server leads the Bar, writes nothing into the save and stops when its level is empty. Its ledger goes up to
@@ -909,6 +1031,8 @@ local function actor_on_update()
 	if session() and authority() then
 		local ok, err = pcall(heal_tick, now)
 		if not ok then report("heal", err) end
+		ok, err = pcall(pit_reset_tick)
+		if not ok then report("monster fight reset", err) end
 	end
 end
 

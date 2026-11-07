@@ -1032,6 +1032,192 @@ do
 	check(tip_ids(H) == "st_mod_odds", "a line that is not the arena's goes on as it would (the news relay judges it)")
 end
 
+-------------------------------------------------------------------------------
+-- Arnie's monster fight: the fighter's death. bar_arena_sr in sr_idle@fight: on_info2 = {=actor_dead} sr_idle@nil
+-- %=bar_arena_actor_dead +bar_arena_actor_dead +bar_arena_start_introduce%. xr_conditions.actor_dead reads db.actor, the
+-- host's own character, and in a session nobody dies for the engine (a fallen player stays alive at 1 % health): no
+-- fighter's death ever ended the fight, and the branch it would take ends in sr_idle@nil, for good (single player reloads).
+-------------------------------------------------------------------------------
+local MONSTER = 941
+local IN_PIT = vec(150, -13, 95) -- bar_arena_sr's zone in this world
+
+local function pit_setup()
+	setup({ before_start = function()
+		for _, M in ipairs({ H, Cm }) do
+			M.cond_stock = 0
+			M.env.xr_conditions = {
+				actor_dead = function() M.cond_stock = M.cond_stock + 1; return not M.env.db.actor:alive() end,
+			}
+		end
+		H.env.LIFE = {}
+		H.env.coop.life_of = function(id) return H.env.LIFE[id] or "alive" end
+		H.objects[SR]._radius = 8
+		H.env.db.zone_by_name.bar_arena_sr = H.objects[SR]
+		H.env.db.zone_by_name.bar_arena_spam = H.objects[SPAM]
+		H.env.db.storage[SR] = { active_section = "sr_idle@fight",
+			ini = make_ini({ ["sr_idle@idle"] = {}, ["sr_idle@wait_actor"] = {}, ["sr_idle@fight"] = {}, ["sr_idle@nil"] = {} }) }
+		H.env.db.storage[SPAM] = { active_section = "sr_idle@notiming",
+			ini = make_ini({ ["sr_idle@introduce"] = {}, ["sr_idle@notiming"] = {}, ["sr_idle@reset"] = {} }) }
+		H.switched = {}
+		H.env.xr_logic.switch_to_section = function(obj, _, s)
+			H.switched[obj:id()] = s
+			H.env.db.storage[obj:id()].active_section = s
+			return true
+		end
+		H.given = {}
+		H.env.give_info = function(i) W.infos[i] = true; H.given[#H.given + 1] = i end
+		H.env.disable_info = function(i) W.infos[i] = nil end
+		H.env.get_story_object_id = function(s)
+			if s == "bar_arena_manager" then return MANAGER end
+			if s == "bar_arena_snork" and H.monster then return MONSTER end
+		end
+		H.env.alife_object = function(id) return id == MONSTER and H.monster and { id = id } or nil end
+		H.env.alife_release_id = function(id) H.monster_released = id; H.monster = nil end
+	end })
+	H.monster = true
+	W.infos.bar_arena_start, W.infos.bar_arena_snork_choosen, W.infos.bar_arena_state_1 = true, true, true
+	W.infos.bar_arena_50_p = true
+end
+
+-- The stock branch of bar_arena_sr's death, as the host runs it.
+local function death_branch()
+	H.env.xr_effects.bar_arena_actor_dead(H.env.db.actor, H.objects[SR])
+	W.infos.bar_arena_actor_dead, W.infos.bar_arena_start_introduce = true, true
+	H.env.db.storage[SR].active_section = "sr_idle@nil"
+	pump()
+end
+
+local function pit_dead()
+	return H.env.xr_conditions.actor_dead(H.env.db.actor, H.objects[SR])
+end
+
+print("== Arnie's monster fight: the host falls elsewhere while a client fights: the fight goes on")
+do
+	pit_setup()
+	H.objects[PROXY]._pos = vec(IN_PIT.x, IN_PIT.y, IN_PIT.z)
+	check(pit_dead() == false, "the client fights in the arena")
+	H.env.LIFE[0] = "dead"
+	H.env.db.actor._alive = false -- the host's own character dead even for the engine
+	NOW = NOW + 10000
+	H.env.coop_npc_players.invalidate()
+	check(pit_dead() == false and H.cond_stock == 0, "the host is dead elsewhere: not the fighter, the fight goes on")
+	check(HA._state().pit and HA._state().pit.id == PROXY, "the player seen fighting in the arena is the fight's")
+	H.env.db.actor._alive = true
+	tick(H)
+	check(H.switched[SR] == nil, "nothing to reset")
+end
+
+print("== a client fighter falls in the arena: down is not dead; his death ends the fight; the arena is back at its start")
+do
+	pit_setup()
+	H.objects[PROXY]._pos = vec(IN_PIT.x, IN_PIT.y, IN_PIT.z)
+	check(pit_dead() == false, "he fights")
+	H.env.LIFE[PROXY] = "wounded"
+	NOW = NOW + 10000
+	check(pit_dead() == false, "down: not dead yet")
+	H.env.LIFE[PROXY] = "dead"
+	NOW = NOW + 1000
+	check(pit_dead() == false, "dead a moment ago: not yet (a teleport, a load)")
+	NOW = NOW + 5000
+	check(pit_dead() == true, "dead for 5 s: his death ends the fight, as in single player")
+	death_branch()
+	check(tip_ids(Cm) == "bar_arena_fight_dead" and #H.tips == 0, "\"dead\" is his line, not the host's")
+	tick(H)
+	check(H.switched[SR] == "sr_idle@idle" and H.switched[SPAM] == "sr_idle@introduce", "the arena is back at its start, not stuck in sr_idle@nil")
+	check(H.monster_released == MONSTER, "the monster of that fight goes")
+	check(H.given[1] == "bar_old_arena_reset" and W.infos.bar_arena_state_1 == nil, "the fight's infos are reset the stock way (bar_old_arena_reset)")
+	check(not (W.infos.bar_arena_start or W.infos.bar_arena_snork_choosen or W.infos.bar_arena_actor_dead or W.infos.bar_arena_50_p),
+		"and taken off one by one too, as dialogs_bar's arena_give_reward does (its cascade is known not to fire)")
+	check(HA._state().pit == nil, "the fight forgets its fighter")
+	H.switched = {}
+	tick(H)
+	check(next(H.switched) == nil and #H.given == 1, "once")
+end
+
+print("== a client fighter leaves the session in the middle: the fight ends")
+do
+	pit_setup()
+	H.objects[PROXY]._pos = vec(IN_PIT.x, IN_PIT.y, IN_PIT.z)
+	check(pit_dead() == false, "he fights")
+	H.objects[PROXY] = nil
+	H.env.coop_npc_players.invalidate()
+	NOW = NOW + 2000
+	check(pit_dead() == false, "gone a moment ago: not yet")
+	NOW = NOW + 4000
+	check(pit_dead() == true, "gone for 5 s: the fight ends")
+end
+
+print("== the host fights and dies in the arena: the same")
+do
+	pit_setup()
+	H.env.db.actor._pos = vec(IN_PIT.x, IN_PIT.y, IN_PIT.z)
+	check(pit_dead() == false, "the host fights")
+	H.env.LIFE[0] = "dead"
+	NOW = NOW + 6000
+	check(pit_dead() == true, "his death ends it")
+	death_branch()
+	check(tip_ids(H) == "bar_arena_fight_dead" and #Cm.tips == 0, "\"dead\" on the host's screen")
+	tick(H)
+	check(H.switched[SR] == "sr_idle@idle", "the arena is back at its start")
+end
+
+print("== a load in the middle of the fight: the fighter is found in the arena, his death still ends it")
+do
+	pit_setup()
+	H.objects[PROXY]._pos = vec(IN_PIT.x, IN_PIT.y, IN_PIT.z)
+	H.env.db.actor._pos = vec(149, 1, 75) -- the host stands at Arnie
+	H.fire("load_state", {})
+	check(HA._state().pit == nil, "after a load nothing is known")
+	check(pit_dead() == false and HA._state().pit and HA._state().pit.id == PROXY, "the player in the arena is the fighter again")
+	H.env.xr_effects.bar_arena_fight_30(H.env.db.actor, H.objects[SPAM])
+	pump()
+	check(tip_ids(Cm) == "bar_arena_fight_30" and #H.tips == 0, "the countdown is his")
+	local md = {}
+	H.fire("save_state", md)
+	H.fire("load_state", md)
+	check(HA._state().pit and HA._state().pit.id == PROXY, "the fighter is kept in the host's save")
+	H.env.LIFE[PROXY] = "dead"
+	pit_dead()
+	NOW = NOW + 6000
+	check(pit_dead() == true, "his death ends the fight")
+end
+
+print("== a new fight counts from its own start")
+do
+	pit_setup()
+	H.objects[PROXY]._pos = vec(IN_PIT.x, IN_PIT.y, IN_PIT.z)
+	H.env.db.storage[SR].activation_time = NOW
+	check(pit_dead() == false, "the first fight: he is there")
+	-- it ends (the monster dies); minutes later a new one starts, and its first look finds nobody in the zone yet
+	NOW = NOW + 180000
+	H.env.db.storage[SR].activation_time = NOW
+	H.objects[PROXY]._pos = vec(152, 0, 80)
+	H.env.coop_npc_players.invalidate()
+	check(pit_dead() == false, "the old fight's last look does not count for the new one")
+	NOW = NOW + 6000
+	check(pit_dead() == true, "nobody for 5 s in the new one: over")
+end
+
+print("== a world saved with the old arena broken (sr_idle@nil after a death, before this fix) is repaired")
+do
+	pit_setup()
+	H.env.db.storage[SR].active_section = "sr_idle@nil"
+	tick(H)
+	check(next(H.switched) == nil and #H.given == 0, "sr_idle@nil that no death led to: not ours, left alone")
+	W.infos.bar_arena_actor_dead = true
+	tick(H)
+	check(H.switched[SR] == "sr_idle@idle" and H.switched[SPAM] == "sr_idle@introduce" and H.given[1] == "bar_old_arena_reset", "the arena is back at its start")
+end
+
+print("== another restrictor asking actor_dead: stock")
+do
+	pit_setup()
+	H.env.db.actor._alive = false
+	check(H.env.xr_conditions.actor_dead(H.env.db.actor, H.objects[TRIG]) == true and H.cond_stock == 1, "stock answers")
+	H.env.db.actor._alive = true
+	check(H.env.xr_conditions.actor_dead(H.env.db.actor, nil) == false and H.cond_stock == 2, "no restrictor: stock")
+end
+
 print("== single player: stock, untouched")
 do
 	reset_world()
@@ -1045,8 +1231,20 @@ do
 	host_alife(H)
 	for _, s in ipairs({ "exo_outfit", "wpn_ak74" }) do new_item(s, 0, "start") end
 	local gear = owned(0)
+	H.env.xr_conditions = { actor_dead = function() return not H.env.db.actor:alive() end }
+	local sr = H.add(make_obj(SR, 150, -13, 95, { _name = "bar_arena_sr", _radius = 8 }))
+	H.env.db.zone_by_name.bar_arena_sr = sr
+	H.env.db.storage[SR] = { active_section = "sr_idle@nil", ini = make_ini({ ["sr_idle@fight"] = {}, ["sr_idle@nil"] = {} }) }
+	H.env.xr_logic.switch_to_section = function() H.sp_switched = true end
 	HA = load_script(H, "coop_arena")
 	HA.on_game_start()
+	H.env.db.actor._alive = false
+	check(H.env.xr_conditions.actor_dead(H.env.db.actor, sr) == true, "the old arena's death condition is stock")
+	H.env.db.actor._alive = true
+	W.infos.bar_arena_actor_dead = true
+	H.fire("actor_on_update")
+	check(H.sp_switched == nil, "and its sr_idle@nil stays: single player reloads")
+	W.infos.bar_arena_actor_dead = nil
 	W.infos.bar_arena_fight_1 = true
 	H.env.xr_effects.bar_arena_teleport(H.env.db.actor, nil)
 	check(H.ran[1] == "in" and same(owned(BOX1), gear) and #owned(0) == 4, "the way in is stock: gear in box 1, the kit on him")
