@@ -654,6 +654,10 @@ local function install_respawn()
 	C().listen("actor_respawned", on_respawned_fresh) -- always: its log line says what a respawn stood up with
 	RegisterScriptCallback("actor_on_update", drain_tick)
 	RegisterScriptCallback("actor_on_hit_callback", drain_on_hit)
+	-- live 2026-11-08 (Agroprom, a client: two hits in the log, both [drain] lines said "no hit"): G.A.M.M.A.'s damage
+	-- balancer (grok_actor_damage_balancer.shit_booster) takes every hit in actor_on_before_hit, sets its power to 0 and
+	-- lowers the health itself (set_health_ex), so actor_on_hit_callback does not count it; actor_on_before_hit runs for every hit
+	RegisterScriptCallback("actor_on_before_hit", drain_on_hit)
 	if bhs_tables(C().mod("zzz_player_injuries")) or C().mod("arszi_psy") then installed[#installed + 1] = "respawn" end
 end
 

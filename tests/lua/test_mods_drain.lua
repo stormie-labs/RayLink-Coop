@@ -47,6 +47,7 @@ local actor = make_actor()
 actor.health, actor.psy_health, actor.satiety, actor.radiation, actor.bleeding = 0.9, 1, 0.31, 0.12, 0
 db.storage[0] = db.storage[0] or {}
 axr_main.callback_add("actor_on_hit_callback") -- a stock callback (axr_main intercepts); the stub knows only a few
+axr_main.callback_add("actor_on_before_hit")
 start_all()
 SendScriptCallback("actor_on_first_update")
 
@@ -84,6 +85,15 @@ check(drain_lines() == 0, "a hit in the window: no drain line")
 LOGS = {}
 for _ = 1, 16 do tick(1000, 0) end
 check(drain_lines() == 0, "steady health: no line")
+
+-- 4. live 2026-11-08 (Agroprom, a client): G.A.M.M.A.'s damage balancer takes the hit in actor_on_before_hit (power 0,
+-- set_health_ex), actor_on_hit_callback does not count it; the line said "no hit" twice right after two logged hits
+LOGS = {}
+for i = 1, 15 do
+	if i == 5 then SendScriptCallback("actor_on_before_hit", { power = 0.15, type = 6 }, 65535, {}) end
+	tick(1000, 0.002)
+end
+check(drain_lines() == 0, "a hit seen only by actor_on_before_hit: no drain line")
 
 check(coop_mods_core.stats.errors == 0, "no Lua errors (" .. coop_mods_core.stats.errors .. ")")
 done("DRAIN " .. which:upper())
