@@ -110,3 +110,30 @@ TEST(hits_own_weapon)
 	CHECK(!names_own_weapon(kNoObject, 500));
 	CHECK(!names_own_weapon(kHostActor, 500)); // Lua hit() with the default weapon_id
 }
+
+// Live 2026-11-08: the damage a map server passed on to a client is journaled; a steady drain must not flood the log.
+TEST(hits_journal_first_hits_then_one_summary_per_window)
+{
+	coop::hits::Journal j;
+	for (int i = 0; i < 3; ++i)
+	{
+		const coop::hits::JournalLine l = coop::hits::journal_note(j, 1000 + i * 100, 0.01f);
+		CHECK(l.single);
+		CHECK(!l.summary);
+	}
+	for (int i = 0; i < 10; ++i)
+	{
+		const coop::hits::JournalLine l = coop::hits::journal_note(j, 2000 + i * 1000, 0.02f);
+		CHECK(!l.single);
+		CHECK(!l.summary);
+	}
+	const coop::hits::JournalLine l = coop::hits::journal_note(j, 1000 + coop::hits::kJournalWindowMs, 0.05f);
+	CHECK(l.summary);
+	CHECK_EQ(l.quiet_hits, 10u);
+	CHECK(l.quiet_power > 0.199f && l.quiet_power < 0.201f);
+	CHECK(l.single); // the first hit of the new window has its own line
+	const coop::hits::JournalLine q = coop::hits::journal_note(j, 1000 + 2 * coop::hits::kJournalWindowMs + 1, 0.05f);
+	CHECK(!q.summary); // the second window had no quiet hits
+	CHECK(q.single);
+	CHECK(std::string(coop::hits::source_name(coop::hits::Source::Creature)) == "a creature");
+}
