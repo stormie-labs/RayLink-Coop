@@ -705,6 +705,90 @@ do
 	check(H.MDATA.exo_devices[850].power == 0.5, "rider of an item the sender does not hold is refused")
 end
 
+section("mdata: a client's new weapon the host has not made yet (a scope's clone)")
+do
+	-- Live report 2026-11-08 (G.A.M.M.A.): a client fits a scope to his SR-3M. GAMMA's alife_clone_weapon makes the
+	-- scoped weapon at once on his machine (leased id 861, the same number everywhere) and moves the parts onto it; the
+	-- host makes 861 only when it answers the request (its budget queue may hold it). His parts came while 861 was not on
+	-- the host yet: refused, the host (its save, the others) had none - the tooltip showed other parts later.
+	local H, A, B = setup(2)
+	for _, W in pairs(WORLDS) do add_item(W, 860, "wpn_sr3m", W.PEER == 1 and 0 or 501) end
+	add_item(A, 861, "wpn_sr3m_scope", 0)
+	A.se_save_var(861, nil, "parts", { wpn_sr3m = 83, prt_w_trigger = 71 })
+	A.se_save_var(860, nil, "parts", nil)
+	tick(A, 400) deliver_all()
+	check(H.se_load_var(861, nil, "parts") == nil, "not on the host before it made the clone")
+	add_item(H, 861, "wpn_sr3m_scope", 501) -- the host makes the clone in anna's character
+	add_item(B, 861, "wpn_sr3m_scope", 501)
+	tick(H, 400) deliver_all() tick(B, 400)
+	local hp, bp = H.se_load_var(861, nil, "parts"), B.se_load_var(861, nil, "parts")
+	check(hp and hp.prt_w_trigger == 71 and bp and bp.prt_w_trigger == 71,
+		"anna's parts of her clone reach the host and boris once the host made it")
+	-- the permission is checked when the item is there: a var of an item that turns up in boris's hands stays refused
+	add_entity(A, 862, "wpn_ak", 0)
+	A.se_save_var(862, nil, "strapped_item_x", 0.5)
+	tick(A, 400) deliver_all()
+	add_item(H, 862, "wpn_ak", 502)
+	tick(H, 400) deliver_all()
+	check(H.se_load_var(862, nil, "strapped_item_x") == nil, "a held var is still checked against its holder")
+	-- an id that never turns up is dropped
+	add_entity(A, 863, "wpn_x", 0)
+	A.se_save_var(863, nil, "parts", { a = 1 })
+	tick(A, 400) deliver_all()
+	tick(H, 61000) -- HOLD_MS
+	add_item(H, 863, "wpn_x", 501)
+	tick(H, 400)
+	check(H.se_load_var(863, nil, "parts") == nil, "a held var expires")
+	-- item riders of a new weapon (3DSS marks ...) come from anna's inventory poll: held the same way
+	for _, W in pairs(WORLDS) do W.coop_economy_mdata.declare_item_key("mark_switch_current_marks") end
+	A.INV = { 860 }
+	tick(A, 1100) -- seeding pass
+	add_item(A, 864, "wpn_sr3m_scope", 0)
+	A.INV = { 864 }
+	A.MDATA.mark_switch_current_marks = { [864] = { m = "red" } }
+	tick(A, 1100) deliver_all()
+	check(not (H.MDATA.mark_switch_current_marks and H.MDATA.mark_switch_current_marks[864]), "rider waits for the host's item")
+	add_item(H, 864, "wpn_sr3m_scope", 501)
+	add_item(B, 864, "wpn_sr3m_scope", 501)
+	tick(H, 1100) deliver_all()
+	check(H.MDATA.mark_switch_current_marks and H.MDATA.mark_switch_current_marks[864]
+		and H.MDATA.mark_switch_current_marks[864].m == "red"
+		and B.MDATA.mark_switch_current_marks and B.MDATA.mark_switch_current_marks[864]
+		and B.MDATA.mark_switch_current_marks[864].m == "red", "anna's rider of her new weapon reaches the host and boris")
+end
+
+section("mdata: a clone's vars go with it")
+do
+	-- GAMMA's alife_clone_weapon (_g.script) copies the old id's se_object table to the clone directly; only "parts" goes
+	-- through se_save_var. The clone's other vars (a strapped weapon, an addon's flag) never left the machine.
+	local H, A = setup(1)
+	for _, W in pairs(WORLDS) do add_item(W, 870, "wpn_sr3m", W.PEER == 1 and 0 or 501) end
+	A.se_save_var(870, nil, "parts", { wpn_sr3m = 83 })
+	A.se_save_var(870, nil, "strapped_item", 1)
+	tick(A, 400) deliver_all()
+	A.alife_clone_weapon = function(se_obj, section)
+		local new_id = se_obj.id + 1
+		add_item(A, new_id, section, 0)
+		local m = A.MDATA.se_object
+		m[new_id] = {}
+		for k, v in pairs(m[se_obj.id]) do m[new_id][k] = v end
+		m[new_id].name = section .. new_id
+		A.se_save_var(new_id, nil, "parts", m[se_obj.id].parts) -- item_parts.copy_parts_con
+		A.se_save_var(se_obj.id, nil, "parts", nil) -- item_parts.clear_parts_con
+		return A.SE[new_id]
+	end
+	A.coop_economy_mdata.install_clone_hook()
+	A.coop_economy_mdata.install_clone_hook() -- once
+	local new = A.alife_clone_weapon(A.SE[870], "wpn_sr3m_scope")
+	check(new and new.id == 871, "the hook returns the clone")
+	add_item(H, 871, "wpn_sr3m_scope", 501)
+	tick(A, 400) deliver_all() tick(H, 400)
+	check(H.se_load_var(871, nil, "strapped_item") == 1 and H.se_load_var(871, nil, "parts")
+		and H.se_load_var(871, nil, "parts").wpn_sr3m == 83, "the clone's copied vars reach the host")
+	check(H.se_load_var(871, nil, "name") == nil or H.se_load_var(871, nil, "name") == H.SE[871]:name(),
+		"the table's own name is not sent as a var")
+end
+
 section("mdata: per-player data")
 do
 	local H, A = setup(1)

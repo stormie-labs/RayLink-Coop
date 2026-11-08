@@ -10,6 +10,12 @@
 	   write it (the item is in his inventory, or the var is a world flag players set), stores it and sends
 	   it to everybody else. Host changes go to all clients. Companion / death-drop / release flags are the
 	   host's (refused from clients). "pathpoint*" (companion walking) is not sent.
+	   Live 2026-11-08 (G.A.M.M.A., a scope on a client's SR-3M): a client makes its new weapons at once under ids the
+	   host lent it (a scope's or kit's clone, a detach), the host makes them when it answers - later, or after its
+	   budget queue. A client's change of such an id is held on the host (HOLD_MS) and checked and stored once the
+	   item is there, not refused: the parts GAMMA moved onto the clone were lost on the host, its save and the
+	   others. GAMMA's alife_clone_weapon copies the old id's table to the clone directly (only "parts" goes through
+	   se_save_var): after a clone its other vars go out too (after_clone). Item riders are held the same way.
 	2. Item riders (m_data[key][item_id]) of addons that keep per-item state in their own m_data table
 	   (Powered Exos, 3DSS marks, Meat Spoiling, GAMMA pouches ...): the machine that holds the item polls its
 	   inventory and sends changed entries; the host stores and relays them. Addons declare keys with
@@ -45,6 +51,8 @@ local WORLD_POLL_MS = 2000
 local MAX_VALUE = 12000 -- bytes of one packed value
 local MAX_BATCH = 12000 -- bytes of one batch payload (the engine limit is 16 KiB)
 local PENDING_MS = 30000 -- a change for an entity that does not exist here yet waits this long
+local HOLD_MS = 60000 -- host: a client's change of an item the host has not made yet (a leased create) waits this long
+local HOLD_MAX = 512 -- host: at most this many held changes (the oldest go first)
 local PEER_STORE = "coop_peer_mdata"
 
 local installed = false
@@ -53,8 +61,8 @@ local orig_save_var = nil
 
 local pmd_next_poll = 0 -- time of the next look at the per-player keys
 local stats = {
-	se_out = 0, se_in = 0, se_refused = 0, se_pending = 0,
-	imd_out = 0, imd_in = 0, imd_refused = 0,
+	se_out = 0, se_in = 0, se_refused = 0, se_pending = 0, se_held = 0,
+	imd_out = 0, imd_in = 0, imd_refused = 0, imd_held = 0, clones = 0,
 	pmd_out = 0, pmd_in = 0, pmd_applied = 0,
 	wmd_out = 0, wmd_in = 0, errors = 0, oversize = 0,
 }
@@ -131,8 +139,8 @@ local function not_sent(var)
 	return type(var) ~= "string" or var:sub(1, 9) == "pathpoint"
 end
 
-local function se_wrapper(id, name, varname, val, ...)
-	orig_save_var(id, name, varname, val, ...)
+-- queues entity `id`'s var for the next flush unless the others have this value already
+local function se_queue(id, varname, val)
 	if applying or type(id) ~= "number" or not core.live() or not_sent(varname) or core.others_count() == 0 then return end
 	local packed = core.pack(val)
 	local hid = core.host_id(id)
@@ -140,6 +148,11 @@ local function se_wrapper(id, name, varname, val, ...)
 	if se_sig[key] == packed then return end
 	se_sig[key] = packed
 	se_out[key] = { hid, varname, packed }
+end
+
+local function se_wrapper(id, name, varname, val, ...)
+	orig_save_var(id, name, varname, val, ...)
+	se_queue(id, varname, val)
 end
 
 local function se_flush()
@@ -174,6 +187,21 @@ local function client_may_write(from, hid, var)
 	return p ~= nil and p.avatar_id ~= nil and core.root_of(hid) == p.avatar_id
 end
 
+-- Host: a client's changes of items the host has not made yet (live 2026-11-08: a client's new weapon under a leased id
+-- is made on the host when its request is answered). { from, e = entry, until_ms }, oldest first.
+local se_hold = {}
+local imd_hold = {}
+
+local function hold(list, from, e)
+	if #list >= HOLD_MAX then table.remove(list, 1) end
+	list[#list + 1] = { from = from, e = e, until_ms = core.now() + HOLD_MS }
+end
+
+-- a client's change waits on the host while its item is not in the host's world (yet)
+local function host_holds(host, from, id)
+	return host and from > 0 and from < 0x100 and alife_object(id) == nil
+end
+
 local function on_se(t, from)
 	local host = core.is_host()
 	if host and from <= 0 then return end
@@ -182,6 +210,9 @@ local function on_se(t, from)
 	for _, e in ipairs(read_batch(t)) do
 		if not_sent(e.key) then
 			-- ignore
+		elseif host_holds(host, from, e.id) then
+			stats.se_held = stats.se_held + 1
+			hold(se_hold, from, e)
 		elseif host and from < 0x100 and not client_may_write(from, e.id, e.key) then -- 0x100 up: a map server, an authority of its level
 			stats.se_refused = stats.se_refused + 1
 		else
@@ -198,7 +229,35 @@ local function on_se(t, from)
 	if host and #relay > 0 then send_batches("se", relay, nil, from) end
 end
 
+-- Host: held changes whose item is here now are checked like a fresh one, stored and sent to the others.
+local function se_release_held()
+	if #se_hold == 0 then return end
+	local keep, relay, t = {}, {}, core.now()
+	for _, h in ipairs(se_hold) do
+		local e = h.e
+		if alife_object(e.id) ~= nil then
+			if client_may_write(h.from, e.id, e.key) then
+				se_sig[tostring(e.id) .. "\0" .. e.key] = e.packed
+				stats.se_in = stats.se_in + 1
+				se_store(e.id, e.key, e.value)
+				relay[h.from] = relay[h.from] or {}
+				local r = relay[h.from]
+				r[#r + 1] = { e.id, e.key, e.packed }
+			else
+				stats.se_refused = stats.se_refused + 1
+			end
+		elseif t < h.until_ms then
+			keep[#keep + 1] = h
+		else
+			stats.se_refused = stats.se_refused + 1
+		end
+	end
+	se_hold = keep
+	for from, r in pairs(relay) do send_batches("se", r, nil, from) end
+end
+
 local function se_retry()
+	if core.is_host() then se_release_held() end
 	if #se_wait == 0 then return end
 	local keep, t = {}, core.now()
 	for _, w in ipairs(se_wait) do
@@ -286,6 +345,9 @@ local function on_imd(t, from)
 		local d = item_decl(e.key)
 		if not d then
 			-- an addon this machine does not have
+		elseif host_holds(host, from, e.id) then
+			stats.imd_held = stats.imd_held + 1
+			hold(imd_hold, from, e)
 		elseif host and not (p and p.avatar_id and core.root_of(e.id) == p.avatar_id) then
 			stats.imd_refused = stats.imd_refused + 1
 		else
@@ -298,6 +360,38 @@ local function on_imd(t, from)
 		end
 	end
 	if host and #relay > 0 then send_batches("imd", relay, nil, from) end
+end
+
+-- Host: held riders whose item is here now go to their holder's check, the store and the others.
+local function imd_release_held()
+	if #imd_hold == 0 then return end
+	local m = m_data()
+	if not m then return end
+	local keep, relay, t = {}, {}, core.now()
+	for _, h in ipairs(imd_hold) do
+		local e = h.e
+		local d = item_decl(e.key)
+		if d and alife_object(e.id) ~= nil then
+			local p = core.player(h.from)
+			if p and p.avatar_id and core.root_of(e.id) == p.avatar_id then
+				item_store(m, d, e.id, e.value)
+				item_base[e.id] = item_base[e.id] or {}
+				item_base[e.id][e.key] = e.packed
+				stats.imd_in = stats.imd_in + 1
+				relay[h.from] = relay[h.from] or {}
+				local r = relay[h.from]
+				r[#r + 1] = { e.id, e.key, e.packed }
+			else
+				stats.imd_refused = stats.imd_refused + 1
+			end
+		elseif d and t < h.until_ms then
+			keep[#keep + 1] = h
+		else
+			stats.imd_refused = stats.imd_refused + 1
+		end
+	end
+	imd_hold = keep
+	for from, r in pairs(relay) do send_batches("imd", r, nil, from) end
 end
 
 local function declare_builtin_item_keys()
@@ -525,6 +619,41 @@ local function on_wmd(t, from)
 end
 
 -------------------------------------------------------------------------------
+-- 5. A weapon's clone (scope, kit, detach): its vars go with it
+-------------------------------------------------------------------------------
+-- GAMMA's alife_clone_weapon (_g.script) copies m_data.se_object[old] to the clone directly; only item_parts.copy_parts_con
+-- goes through se_save_var. Every var of the clone the others do not have yet goes out with the next flush.
+function after_clone(old_id, new_id)
+	local m = m_data()
+	local tbl = m and type(m.se_object) == "table" and type(new_id) == "number" and m.se_object[new_id]
+	if type(tbl) ~= "table" then return end
+	stats.clones = stats.clones + 1
+	for var, val in pairs(tbl) do
+		if var ~= "name" then se_queue(new_id, var, val) end
+	end
+end
+
+local clone_hooked = false
+-- once: at install (after _g.script) or at the first update (a mod that defines it later); other wrappers may go
+-- around it, after_clone only reads the result
+function install_clone_hook()
+	if clone_hooked then return end
+	local orig = rawget(_G, "alife_clone_weapon")
+	if type(orig) ~= "function" then return end
+	clone_hooked = true
+	_G.alife_clone_weapon = function(se_obj, ...)
+		local old_id = se_obj and se_obj.id
+		local new = orig(se_obj, ...)
+		local new_id = new and new.id
+		if type(new_id) == "number" and new_id ~= 65535 then
+			local ok, err = pcall(after_clone, old_id, new_id)
+			if not ok then core.log("! clone vars: %s", tostring(err)) end
+		end
+		return new
+	end
+end
+
+-------------------------------------------------------------------------------
 -- Install, update, status
 -------------------------------------------------------------------------------
 local function install()
@@ -538,6 +667,7 @@ local function install()
 	end
 	declare_builtin_item_keys()
 	patch_load_state()
+	install_clone_hook()
 end
 
 local function server_entity_on_unregister(se_obj)
@@ -563,6 +693,10 @@ local function actor_on_update()
 		item_next_poll = t + ITEM_POLL_MS
 		local ok, err = pcall(item_poll)
 		if not ok then core.log("! item riders: %s", tostring(err)) end
+		if core.is_host() then
+			ok, err = pcall(imd_release_held)
+			if not ok then core.log("! held riders: %s", tostring(err)) end
+		end
 	end
 	if core.is_client() and t >= pmd_next_poll then
 		pmd_next_poll = t + PLAYER_POLL_MS
@@ -577,10 +711,10 @@ local function actor_on_update()
 end
 
 function print_status()
-	core.log("mdata: se vars out %d, in %d, refused %d, waited %d | item riders [%d keys] out %d, in %d, refused %d | player data out %d, in %d, applied at load %d | world keys out %d, in %d | oversize %d, errors %d",
-		stats.se_out, stats.se_in, stats.se_refused, stats.se_pending, #item_keys, stats.imd_out, stats.imd_in,
-		stats.imd_refused, stats.pmd_out, stats.pmd_in, stats.pmd_applied, stats.wmd_out, stats.wmd_in, stats.oversize,
-		stats.errors)
+	core.log("mdata: se vars out %d, in %d, refused %d, waited %d, held for the host's item %d (%d now) | item riders [%d keys] out %d, in %d, refused %d, held %d (%d now) | clones %d | player data out %d, in %d, applied at load %d | world keys out %d, in %d | oversize %d, errors %d",
+		stats.se_out, stats.se_in, stats.se_refused, stats.se_pending, stats.se_held, #se_hold, #item_keys,
+		stats.imd_out, stats.imd_in, stats.imd_refused, stats.imd_held, #imd_hold, stats.clones, stats.pmd_out,
+		stats.pmd_in, stats.pmd_applied, stats.wmd_out, stats.wmd_in, stats.oversize, stats.errors)
 end
 
 -- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
@@ -599,4 +733,5 @@ function on_game_start()
 	core.on("wmd", on_wmd)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("server_entity_on_unregister", server_entity_on_unregister)
+	RegisterScriptCallback("actor_on_first_update", function() start_step("clone hook", install_clone_hook) end)
 end

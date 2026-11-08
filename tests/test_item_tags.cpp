@@ -337,3 +337,48 @@ TEST(item_tags_names)
 	}
 	CHECK_EQ(std::string(itemtags::name(itemtags::Scope)), std::string("scope"));
 }
+
+// Live report 2026-11-08 (stable 41.6, G.A.M.M.A.): a client fits a scope to his SR-3M. The clone is his own item, made at
+// once on his machine from his live weapon (0.83, GAMMA's pin); the host builds its copy from its own view of the source
+// and pushes it into his hands (host_push) - it showed 7 %. An item the owner made itself keeps all of the owner's tags
+// over that push; only the upgrade list is the host's, as for a take.
+namespace
+{
+Take scoped_sr3m()
+{
+	Take t;
+	t.now = weapon_without_scopes();
+	t.now.cond = q(0.83);
+	t.now.main_count = 20;
+	t.now.has_scope = true;
+	t.now.scope = 1;
+	t.base = Item(); // a made item has no copy from before a take
+	t.host = t.now;
+	t.host.cond = q(0.07); // the host's stale view of the source
+	t.host.main_count = 15;
+	t.host.has_upgrades = true;
+	t.host.upgrades = {"up_sr3m_a"};
+	return t;
+}
+} // namespace
+
+TEST(item_tags_made_here_item_keeps_all_owner_tags_over_the_push)
+{
+	const Take t = scoped_sr3m();
+	const std::uint32_t mine = itemtags::push_keeps(true, 0u);
+	CHECK_EQ(mine, itemtags::kOwnerTakeTags);
+	const Item merged = itemtags::take_push(t.host, t.now, mine);
+	CHECK_EQ(merged.cond, q(0.83)); // not the host's 7 %
+	CHECK_EQ(merged.main_count, 20);
+	CHECK(merged.has_scope && merged.scope == 1);
+	CHECK(merged.has_upgrades && merged.upgrades == UpgradeList{"up_sr3m_a"}); // the list stays the host's
+}
+
+TEST(item_tags_taken_item_keeps_only_what_its_take_changed)
+{
+	const Take t = looted_m4();
+	const std::uint32_t changed = itemtags::changed_since(t.now, t.base, same_upgrades);
+	CHECK_EQ(itemtags::push_keeps(false, changed), std::uint32_t(itemtags::Cond));
+	CHECK_EQ(itemtags::push_keeps(false, itemtags::kAll), itemtags::kOwnerTakeTags); // never the upgrade list
+	CHECK_EQ(itemtags::push_keeps(false, 0u), 0u);
+}
