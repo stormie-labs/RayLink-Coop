@@ -585,7 +585,23 @@ end
 -- Live 2026-11-08: a G.A.M.M.A. client's health ran down after a level change with no hit (Yadulin outpaced it while it acted).
 -- Until the source is proven, one line per DRAIN_MS while his health fell at least DRAIN_MIN with no hit in that time: what
 -- G.A.M.M.A. drains health from (thirst above 4000, satiety, radiation, bleeding, psy, the BHS head and torso) and the last co-op
--- apply that touched his state. Only a client: the host's state is its own save's.
+-- apply that touched his state. Every player in a session, the host's too (owner 2026-11-08: maybe it starts when a player dies),
+-- with each player's life (alive / wounded / dead ...) at that moment.
+local function players_life()
+	local out = {}
+	local ok, list = pcall(function() return C().players() end)
+	if not (ok and type(list) == "table") then return "-" end
+	for _, p in ipairs(list) do
+		local life = "?"
+		if api and api.life_of and p.id ~= nil then
+			local okl, l = pcall(api.life_of, p.id)
+			if okl and l ~= nil then life = tostring(l) end
+		end
+		out[#out + 1] = string.format("%s %s", tostring(p.nick or p.id), life)
+	end
+	return #out > 0 and table.concat(out, ", ") or "-"
+end
+
 local function drain_line(fell)
 	local a = db.actor
 	local function num(v)
@@ -609,10 +625,10 @@ local function drain_line(fell)
 	local ok_psy, psy = pcall(function() return ap and ap.get_psy_health and ap.get_psy_health() end)
 	drain.lines = drain.lines + 1
 	log("drain", "health %s fell %.3f in %d s with no hit: psy %s (arszi %s), BHS h/t %s, satiety %s, thirst %s, sleepiness %s, "
-		.. "radiation %s, bleeding %s; last co-op apply: %s%s", field("health"), fell, DRAIN_MS / 1000, field("psy_health"),
+		.. "radiation %s, bleeding %s; players: %s; last co-op apply: %s%s", field("health"), fell, DRAIN_MS / 1000, field("psy_health"),
 		ok_psy and type(psy) == "number" and string.format("%.3f", psy) or "-", parts, field("satiety"),
 		call("actor_status_thirst", "get_last_drink"), call("actor_status_sleep", "get_last_sleep"), field("radiation"),
-		field("bleeding"), drain.apply, drain.apply_at and string.format(" %d s ago", math.floor((time_global() - drain.apply_at) / 1000)) or "")
+		field("bleeding"), players_life(), drain.apply, drain.apply_at and string.format(" %d s ago", math.floor((time_global() - drain.apply_at) / 1000)) or "")
 end
 
 local function drain_on_hit()
@@ -620,7 +636,7 @@ local function drain_on_hit()
 end
 
 local function drain_tick()
-	if not (db.actor and C().live_client()) then return end
+	if not (db.actor and C().active()) then return end
 	local now = time_global()
 	local ok, h = pcall(function() return tonumber(db.actor.health) end)
 	if not (ok and h) then return end

@@ -61,15 +61,15 @@ end
 tick(100)
 for _ = 1, 15 do tick(1000, 0.002) end
 local n, line = drain_lines()
+-- Owner 2026-11-08: maybe it starts when a player dies, on any machine: the host writes the line too, with every player's life
+check(n == 1, which .. ": one diagnostic line for a 15 s drain without hits (" .. n .. ")")
+check(line and line:find("players: ", 1, true) ~= nil, which .. ": the line lists the players and their life (" .. tostring(line) .. ")")
 if which == "client" then
-	check(n == 1, "client: one diagnostic line for a 15 s drain without hits (" .. n .. ")")
 	check(line and line:find("arszi 0.420", 1, true) and line:find("satiety 0.310", 1, true) and line:find("thirst 5300", 1, true)
 		and line:find("sleepiness 1200", 1, true) and line:find("radiation 0.120", 1, true) and line:find("bleeding 0.000", 1, true)
 		and line:find("head 11/0, torso 11/0", 1, true) and line:find("last co-op apply", 1, true),
 		"the line names health, psy, BHS head/torso, satiety, thirst, sleepiness, radiation, bleeding, the last apply ("
 		.. tostring(line) .. ")")
-else
-	check(n == 0, "host: no diagnostic line")
 end
 
 -- 2. the same drop with a hit in the window: that is damage, not a drain
