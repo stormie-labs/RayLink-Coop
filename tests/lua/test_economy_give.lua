@@ -475,10 +475,22 @@ do
 	local g = events(A, "gift")
 	check(#g == 3 and g[1].t.u == 1, "one economy.gift per item, u = 1")
 	check(has(A.TIPS, "Bandage x3 given to boris"), "anna: 'Bandage x3 given to boris.'")
+	-- live 2026-11-08 ("I give 2, 4 are given"): the giver logs the ids he moved and what the cell held
+	local function logged(W, pat)
+		for i = #W.LOG, 1, -1 do if W.LOG[i]:find(pat) then return W.LOG[i] end end
+		return nil
+	end
+	local gl = logged(A, "give: 3 item%(s%) of bandage to boris")
+	check(gl ~= nil and gl:find("moved 770%-772") ~= nil and gl:find("the cell held 5: 770%-774") ~= nil,
+		"the giver's log: N, the section, the ids moved, the cell", tostring(gl))
 	deliver_all()
 	for id in pairs(ids) do move(id, 2, true) end
+	B.INV = { 770, 771, 772 }
 	wait(B, 1500)
 	check(told(B)[1] == "anna gave you: Bandage x3.", "boris: 'anna gave you: Bandage x3.' (" .. tostring(told(B)[1]) .. ")")
+	local rl = logged(B, "gift: item 771 %[bandage%] from anna")
+	check(rl ~= nil and rl:find("units 1") ~= nil and rl:find("3 of bandage here: 770%-772") ~= nil,
+		"the receiver's log: each gift that came, and what he has of it", tostring(rl))
 	-- multi-use items: whole items only
 	put(780, "cigarettes", 1) put(781, "cigarettes", 1)
 	A.OBJ[780].uses, A.OBJ[781].uses = 2, 3

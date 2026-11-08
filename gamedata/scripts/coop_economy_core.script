@@ -89,6 +89,35 @@ function log(fmt, ...)
 	printf("[coop-eco] %s", ok and line or tostring(fmt))
 end
 
+-- Ids for the log: sorted, runs as ranges ("770-772,780"), the first 40 runs at most
+function ids_text(ids)
+	local list = {}
+	for _, id in ipairs(ids or {}) do
+		if type(id) == "number" then list[#list + 1] = id end
+	end
+	table.sort(list)
+	local out, i, n = {}, 1, #list
+	while i <= n and #out < 40 do
+		local j = i
+		while j < n and list[j + 1] == list[j] + 1 do j = j + 1 end
+		out[#out + 1] = j > i and (list[i] .. "-" .. list[j]) or tostring(list[i])
+		i = j + 1
+	end
+	if i <= n then out[#out + 1] = "..." end
+	return #out > 0 and table.concat(out, ",") or "none"
+end
+
+-- Ids of this actor's items of a section (the log of gifts)
+function own_ids_of(sec)
+	local ids = {}
+	pcall(function()
+		db.actor:iterate_inventory(function(_, o)
+			if o and o:section() == sec then ids[#ids + 1] = o:id() end
+		end, db.actor)
+	end)
+	return ids
+end
+
 -- Script module by name, or nil (a missing addon is not an error).
 function mod(name)
 	local m = rawget(_G, name)

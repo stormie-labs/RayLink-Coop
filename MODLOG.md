@@ -678,3 +678,27 @@
   `alife_clone_weapon` шлёт все переменные клона. Тесты: `item_tags` +2, `clone_slot` 7 (новый файл), Lua `economy` +2 секции
   (RED: 2 FAIL + нет `install_clone_hook`); Lua 149 файлов 13534/0. Причина исходных 7 % в копии хоста (почему она
   отстала от клиента) не доказана — после правки она не влияет на клиента.
+- 2026-11-08 22:44 — **F7 «10 аптечек в инвентарь» дало 20, «отдать 2» отдало 4 (живой отчёт, 41.6, раздельные карты, X-18 на Mk,
+  репортёр клиент) — диагностика, причина не доказана, кода не меняли.** Чтением снято: (1) СМ сам не спавнит —
+  `coop_debug_server.script:330-332` пересылает `coop.dbg.run` на мост один раз, без Mk игрок на СМ не стоит (`point_of` -> `no_player`);
+  клиент шлёт один `SyncRequest` без повторов (`coop_sync_api.cpp:1590-1600`), обработчик берётся из очереди один раз (`:1236-1239`);
+  на Mk `on_run` один (`coop_main.add_event_handler` ключом функции), цикл `n` раз, `alife_create_item` -> `spawn_item2` -> стоковый
+  `Process_spawn` (gate на Mk `Run`, `alife_simulator_script.cpp:52-61`), одна сущность на вызов. (2) Эхо СМ есть, но с тем же id:
+  `LevelEntity Spawn` идёт в `host_spawn_from_leader` под тем же номером (`coop_levels_xfer.cpp:618-637`), очередь `Registered` уходит
+  после конца `EchoOf` (`coop_entities.cpp:152-188, 1599-1605`), `EntitySpawn` проходит на все карты (`coop_scope.h:226-244`), и клиент,
+  и Mk отбрасывают знакомый id (`coop_entities.cpp:1061-1065`). (3) Окно «отдать» считает разные живые id (`coop_economy_give.script:109-146`,
+  ключи `childs` — id): у клиента правда 20 объектов. Патроны при разгрузке уже защищены (`coop_items.cpp:1758`). Что снять в игре:
+  строки `[coop-dbg]` у СМ и в логе Mk (`appdata_ms<k>`), `coop_status` клиента (счётчик зеркальных спавнов) и id
+  20 аптечек (диапазон среза Mk или нет) — это делит гипотезы «два исполнения» и «чужой источник id».
+- 2026-11-08 22:54 — **Диагностика к «10 аптечек -> 20, отдать 2 -> 4» (только логи, поведение не менялось).** Исполнитель отладочного
+  спавна (СМ или Mk) пишет `[coop-dbg] spawn_item rid <N|-> for <кто> (peer, character): <sec> x<n> at <где>, <k> made by <the world
+  server|a map server>: ids <диапазоны>` (`coop_debug_server.execute`, ids собирает `coop_debug_cmds` spawn_item/spawn_object/basic_kit);
+  Mk — `rid N for peer P taken from the world server`; СМ — переслано с peer, sec, n, at и rid, конец `rid N done by #мост` или
+  `! coop.dbg.done rid … no such request`. Клиент на `spawn_item at=inv` пишет, сколько секции было до запроса (ids), и после ответа
+  (прямой или `coop.dbg.note` той же секции) и ещё через 3 с: `asked n, had a, have b (+d); new ids … (world | map server k)`, строка с
+  `!`, если прибавилось не n. Источник EntitySpawn (СМ или Mk) движок дёшево не различает (оба приходят от хоста), поэтому метка — диапазон
+  id по `coop_levels_keeper.h` (0x9000 + (k-1)*4095). «Отдать»: дающий — `give: N item(s)|round(s) of <sec> to <ник> (peer): moved <ids>;
+  the cell held M: <ids>`, получатель — `gift: item <id> [<sec>] from <ник> arrived, units u; K of <sec> here: <ids>`. Расширение `EchoOf`
+  не делалось: внутри области `EchoOf` СМ регистрирует и свои объекты (например, при `host_apply_death`), их Mk не знает — общая метка
+  уронила бы их у игроков этой карты. Тесты: `debug_server` +7 (RED 4 без строк), `debug_client` +9 (RED 7), `economy_give` +2 (RED 2);
+  Lua 149 файлов 13555/0. В игре не проверено: повторить F7 10 аптечек на карте Mk и прислать лог клиента, СМ и `appdata_ms<k>`.

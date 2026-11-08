@@ -524,6 +524,110 @@ end
 -------------------------------------------------------------------------------
 -- Sending
 -------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+-- A spawn into my inventory, counted (live 2026-11-08: 10 medkits asked on a map server's level, 20 in the inventory, the
+-- window "give" counted 20): what this machine had and has of the section, with the ids, when the answer comes and a few
+-- seconds later (the world server's copy of a map server's spawn reaches every player after it). Only the log; nothing
+-- changes. The id ranges are those of xrCoop/coop_levels_keeper.h (kLeaderIdFirst 0x9000, kLeaderIdsEach 4095, 7 slices).
+-------------------------------------------------------------------------------
+local LEADER_FIRST, LEADER_EACH, LEADER_SLOTS = 0x9000, 4095, 7
+local SECOND_LOOK_S = 3
+local watches = {} -- spawn_item requests into my inventory waiting for their answer, oldest first
+
+local function own_ids(sec)
+	local ids = {}
+	pcall(function()
+		db.actor:iterate_inventory(function(_, o)
+			if o and o:section() == sec then ids[#ids + 1] = o:id() end
+		end, db.actor)
+	end)
+	table.sort(ids)
+	return ids
+end
+
+local function range_of(id)
+	if id >= LEADER_FIRST then
+		local k = floor((id - LEADER_FIRST) / LEADER_EACH) + 1
+		if k <= LEADER_SLOTS then return "map server " .. k end
+	end
+	return "world"
+end
+
+-- "1-3, 7" of sorted ids
+local function ranges(ids)
+	local out, i, n = {}, 1, #ids
+	while i <= n and #out < 40 do
+		local j = i
+		while j < n and ids[j + 1] == ids[j] + 1 do j = j + 1 end
+		out[#out + 1] = j > i and (ids[i] .. "-" .. ids[j]) or tostring(ids[i])
+		i = j + 1
+	end
+	if i <= n then out[#out + 1] = "..." end
+	return #out > 0 and table.concat(out, ",") or "none"
+end
+
+-- the new ids, grouped by the range they are in: "1500 (world), 36870-36871 (map server 1)"
+local function new_ids_text(ids)
+	if #ids == 0 then return "none" end
+	local groups, order = {}, {}
+	for _, id in ipairs(ids) do
+		local r = range_of(id)
+		if not groups[r] then
+			groups[r] = {}
+			order[#order + 1] = r
+		end
+		local g = groups[r]
+		g[#g + 1] = id
+	end
+	local out = {}
+	for _, r in ipairs(order) do out[#out + 1] = ranges(groups[r]) .. " (" .. r .. ")" end
+	return table.concat(out, ", ")
+end
+
+local function watch_line(w, rid, when)
+	local now_ids = own_ids(w.sec)
+	local had = {}
+	for _, id in ipairs(w.before) do had[id] = true end
+	local fresh = {}
+	for _, id in ipairs(now_ids) do
+		if not had[id] then fresh[#fresh + 1] = id end
+	end
+	local delta = #now_ids - #w.before
+	log("%sspawn_item %s rid %s%s: asked %d, had %d, have %d (%s%d); new ids %s", delta ~= w.n and "! " or "", w.sec,
+		tostring(rid or "-"), when or "", w.n, #w.before, #now_ids, delta >= 0 and "+" or "", delta, new_ids_text(fresh))
+end
+
+local function watch_answered(w, rid)
+	watch_line(w, rid, nil)
+	local te = rawget(_G, "CreateTimeEvent")
+	if type(te) ~= "function" then return end
+	pcall(te, "coop_debug_client", "spawn_count_" .. tostring(w.seq), SECOND_LOOK_S, function()
+		pcall(watch_line, w, rid, ", " .. SECOND_LOOK_S .. " s later")
+		return true
+	end)
+end
+
+local watch_seq = 0
+local function watch_start(args)
+	if args.cmd ~= "spawn_item" or args.at ~= "inv" or type(args.sec) ~= "string" then return nil end
+	watch_seq = watch_seq + 1
+	local w = { sec = args.sec, n = tonumber(args.n) or 1, before = own_ids(args.sec), seq = watch_seq }
+	log("spawn_item %s x%d asked (inv): %d of it here before: ids %s", w.sec, w.n, #w.before, ranges(w.before))
+	watches[#watches + 1] = w
+	while #watches > 8 do table.remove(watches, 1) end -- notes that never came (the world server waits 60 s at most)
+	return w
+end
+
+local function watch_take(w)
+	for i, x in ipairs(watches) do
+		if x == w then
+			table.remove(watches, i)
+			return x
+		end
+	end
+	return nil
+end
+
 -- run(id, ctx, cb, confirmed) -> true | false, code. A refusal here is a line of the feed too.
 function run(id, ctx, cb, confirmed)
 	local a = action(id)
@@ -546,16 +650,24 @@ function run(id, ctx, cb, confirmed)
 	local sync = api and api.sync
 	if not (type(sync) == "table" and type(sync.request) == "function") then return refuse("no_engine") end
 	local e = add_line(tr("st_coop_dbg_sent"), "pending", label)
+	local w = watch_start(args)
 	local ok, sent, err = pcall(sync.request, "coop.dbg." .. a.cls, args, function(ok2, res)
 		local text, kind = answer(ok2, res)
 		set_line(e, text, kind)
+		-- a map server carries it out ("forwarded"): its count waits for coop.dbg.note
+		if w and not (ok2 and res == "forwarded") then
+			watch_take(w)
+			if ok2 then pcall(watch_answered, w, nil) end
+		end
 		if cb then pcall(cb, ok2, res) end
 	end)
 	if not ok then
+		if w then watch_take(w) end
 		set_line(e, error_text(sent), "err")
 		return false, "failed"
 	end
 	if sent == false then
+		if w then watch_take(w) end
 		set_line(e, error_text(err), "err")
 		return false, tostring(err)
 	end
@@ -614,6 +726,20 @@ function on_note(payload, from)
 		add_line(type(t.msg) == "string" and t.msg ~= "" and tr(t.msg) or tr("st_coop_dbg_ok"), "ok")
 	else
 		add_line(error_text(t.code or t.msg), "err")
+	end
+	-- a spawn into my inventory a map server carried out: counted now. Its line is "<sec> x<n> (inv)" (coop_debug_cmds
+	-- spawn_item): the oldest watch of that section; a refusal names no section and ends the oldest one
+	if t.cmd == "spawn_item" then
+		local msg = tostring(t.msg or "")
+		local pick
+		for i, w in ipairs(watches) do
+			if not good or msg:sub(1, #w.sec + 2) == w.sec .. " x" then
+				pick = i
+				break
+			end
+		end
+		local w = pick and table.remove(watches, pick)
+		if w and good then pcall(watch_answered, w, t.rid) end
 	end
 end
 

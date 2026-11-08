@@ -557,6 +557,61 @@ end
 T = EN
 
 -------------------------------------------------------------------------------
+print("== a spawn into my inventory: what I had and have of it, with the ids (live 2026-11-08: 10 asked, 20 came)")
+do
+	reset()
+	local INV = {}
+	local function item(id, sec) return { id = function() return id end, section = function() return sec end } end
+	actor.iterate_inventory = function(_, f, o) for _, it in ipairs(INV) do f(o, it) end end
+	local TE = {}
+	CreateTimeEvent = function(ev, id, delay, f, ...) TE[#TE + 1] = { ev = ev, id = id, delay = delay, f = f, args = { ... } } end
+	local function logged(pat)
+		for i = #LOG, 1, -1 do if LOG[i]:find(pat) then return LOG[i] end end
+		return nil
+	end
+	INV[1] = item(1200, "medkit")
+	INV[2] = item(1201, "bandage")
+	client.run("spawn_item", { sec = "medkit", n = 2, at = "inv" })
+	check(logged("spawn_item medkit x2 asked %(inv%): 1 of it here before: ids 1200") ~= nil, "the request: what I have of it before")
+	REQUESTS[#REQUESTS].cb(true, "forwarded")
+	check(logged("spawn_item medkit .*now") == nil, "forwarded: nothing counted yet")
+	-- two from the map server's slice (0x9000.. is map server 1) and one more under a world id came meanwhile
+	INV[3] = item(36870, "medkit")
+	INV[4] = item(36871, "medkit")
+	INV[5] = item(1500, "medkit")
+	EVENT["coop.dbg.note"]("ok=1;msg=medkit x2;cmd=spawn_item;rid=7", 0)
+	local l = logged("spawn_item medkit rid 7")
+	check(l ~= nil and l:find("asked 2, had 1, have 4 %(%+3%)") ~= nil, "the note: asked, had, have", tostring(l))
+	check(l ~= nil and l:find("%] ! spawn_item") ~= nil, "more than asked: the line starts with '!'", tostring(l))
+	check(l ~= nil and l:find("new ids 1500 %(world%), 36870%-36871 %(map server 1%)") ~= nil, "the new ids and whose range they are in",
+		tostring(l))
+	check(#TE == 1 and TE[1].delay >= 2, "and a second look a few seconds later (the world server's copy comes after)")
+	INV[6] = item(36872, "medkit")
+	if TE[1] then TE[1].f(unpack(TE[1].args)) end
+	l = logged("spawn_item medkit rid 7, .*later")
+	check(l ~= nil and l:find("have 5 %(%+4%)") ~= nil, "the second look counts again", tostring(l))
+	-- a spawn the server ran itself (the host's level): the answer is the result, no rid
+	TE = {}
+	INV[7] = item(1601, "wpn_ak74")
+	client.run("spawn_item", { sec = "wpn_ak74", n = 1, at = "inv" })
+	INV[8] = item(1600, "wpn_ak74")
+	REQUESTS[#REQUESTS].cb(true, { msg = "wpn_ak74 x1 (inv)", id = 1600 })
+	l = logged("spawn_item wpn_ak74 rid %-")
+	check(l ~= nil and l:find("asked 1, had 1, have 2 %(%+1%)") ~= nil and l:find("%] ! ") == nil, "a direct answer: counted, as asked",
+		tostring(l))
+	-- a note of another section does not end this watch; a refusal ends the oldest
+	client.run("spawn_item", { sec = "medkit", n = 1, at = "inv" })
+	REQUESTS[#REQUESTS].cb(true, "forwarded")
+	EVENT["coop.dbg.note"]("ok=1;msg=wpn_ak74 x3 (inv);cmd=spawn_item;rid=9", 0)
+	check(logged("spawn_item medkit rid 9") == nil, "a note of another section is not this one's")
+	-- near / point: nothing goes into the inventory, nothing is counted
+	local n_log = #LOG
+	client.run("spawn_item", { sec = "medkit", n = 1, at = "near" })
+	check(#LOG == n_log, "at=near: no inventory count")
+	actor.iterate_inventory, CreateTimeEvent = nil, nil
+end
+
+-------------------------------------------------------------------------------
 print("== the server's order: a level change on this machine (registry `level`, K38)")
 JUMPS = {}
 function JumpToLevel(name) JUMPS[#JUMPS + 1] = name; return name ~= level.name() end

@@ -431,14 +431,27 @@ function give(ids, s, n)
 	end
 	n = core.int(n, 1, MAX_UNITS) or 1
 	if n > m.max then n = m.max end
+	-- live 2026-11-08 ("I give 2, 4 are given"; the window counted 20 of 10 spawned): the ids moved and what the cell held
+	local moved, cell = {}, {}
+	for _, o in ipairs(m.kind == "items" and m.objs or {}) do cell[#cell + 1] = o:id() end
+	for _, b in ipairs(m.boxes) do cell[#cell + 1] = b.id end
 	if m.kind == "items" then
-		for i = 1, n do transfer(m.objs[i], who, s, 1) end
+		for i = 1, n do
+			moved[#moved + 1] = m.objs[i]:id()
+			transfer(m.objs[i], who, s, 1)
+		end
 	else
 		local whole, part, left = plan_rounds(m.boxes, n)
 		if not whole then return 0 end
-		for _, b in ipairs(whole) do transfer(b.obj, who, s, b.n) end
+		for _, b in ipairs(whole) do
+			transfer(b.obj, who, s, b.n)
+			moved[#moved + 1] = b.id
+		end
 		if part and not split(part.obj, left, s) then n = n - left end
+		if part then core.log("give: box %d split for %s: %d round(s) asked of the host", part.id, tostring(s.nick), left) end
 	end
+	core.log("give: %d %s of %s to %s (peer %s): moved %s; the cell held %d: %s", n, m.kind == "items" and "item(s)" or "round(s)",
+		tostring(m.sec), tostring(s.nick), tostring(s.peer), core.ids_text(moved), #cell, core.ids_text(cell))
 	core.tip(core.fmt("st_coop_eco_item_given", "%s given to %s.", count_name(item_name(m.sec), n), s.nick))
 	return n
 end

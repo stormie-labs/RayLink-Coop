@@ -180,8 +180,39 @@ local function object_here(id)
 	return level.object_by_id(P().to_local(id))
 end
 
+-- Ids as one short text: "36870-36879", "36870,36872" (the first 40 at most)
+function ids_text(ids)
+	if type(ids) ~= "table" or #ids == 0 then return "none" end
+	local out, i, n = {}, 1, #ids
+	while i <= n and #out < 40 do
+		local j = i
+		while j < n and ids[j + 1] == ids[j] + 1 do j = j + 1 end
+		out[#out + 1] = j > i and (tostring(ids[i]) .. "-" .. tostring(ids[j])) or tostring(ids[i])
+		i = j + 1
+	end
+	if i <= n then out[#out + 1] = "..." end
+	return table.concat(out, ",")
+end
+
+local function role_name()
+	if is_world_server() then return "the world server" end
+	if is_map_server() then return "a map server" end
+	return "this process"
+end
+
+-- Live 2026-11-08 (10 medkits asked on a map server's level, 20 in the client's inventory): what a spawn made, on the machine
+-- that made it, with the request's number on the world server (rid) - one line per run, so a repeat shows who made how many.
+local function log_made(ctx, id, rid)
+	local made = ctx.made
+	if type(made) ~= "table" then return end
+	local a = ctx.a or {}
+	log("%s rid %s for %s (peer %s, character %s): %s x%s at %s, %d made by %s: ids %s", tostring(id), tostring(rid or "-"),
+		tostring(ctx.by), tostring(ctx.peer), tostring(ctx.pl and ctx.pl.character), tostring(a.sec), tostring(a.n or 1),
+		tostring(a.at), #made, role_name(), ids_text(made))
+end
+
 -- -> ok, result | false, code[, why]
-local function execute(c, id, a, peer, by)
+local function execute(c, id, a, peer, by, rid)
 	local pl = peer ~= nil and P().player(peer) or nil
 	local ctx = { a = a, peer = peer, pl = pl, by = by }
 	if c.args.t then
@@ -195,6 +226,7 @@ local function execute(c, id, a, peer, by)
 		ctx.obj2 = a.t2 and object_here(a.t2) or (pl and pl.object())
 	end
 	local ok, r1, r2, r3 = pcall(c.run, ctx)
+	pcall(log_made, ctx, id, rid) -- what a spawn made goes to the log even when it failed later
 	if not ok then
 		P().report("debug", "command " .. id, r1)
 		return false, "failed"
@@ -224,7 +256,8 @@ local function forward(bridge, id, a, peer, requester, by)
 	t._c, t._peer, t._rid = id, peer, next_rid
 	if not P().send(EV_RUN, t, bridge) then return false, "failed" end
 	pending[next_rid] = { requester = requester, by = by, id = id, at = time_global() }
-	log("%s from %s forwarded to #%s (rid %d)", id, tostring(by), tostring(bridge), next_rid)
+	log("%s from %s (peer %s) forwarded to #%s (rid %d): sec %s n %s at %s", id, tostring(by), tostring(peer), tostring(bridge),
+		next_rid, tostring(a.sec), tostring(a.n), tostring(a.at))
 	return true, "forwarded"
 end
 
@@ -238,8 +271,9 @@ local function on_run(payload, from)
 	if not (c and rid) then return end
 	local ok, a, why = R().validate(id, t)
 	local res_ok, r, code
+	log("%s rid %d for peer %s taken from the world server", tostring(id), rid, tostring(peer))
 	if ok then
-		res_ok, r, code = execute(c, id, a, peer, "#" .. tostring(peer))
+		res_ok, r, code = execute(c, id, a, peer, "#" .. tostring(peer), rid)
 	else
 		res_ok, r = false, a
 	end
@@ -260,9 +294,15 @@ local function on_done(payload, from)
 	local t = P().decode(payload)
 	local rid = tonumber(t.rid)
 	local p = rid and pending[rid]
-	if not p then return end
+	if not p then
+		log("! coop.dbg.done rid %s from #%s: no such request waits (answered already, or older than %d s)", tostring(t.rid),
+			tostring(from), PENDING_MS / 1000)
+		return
+	end
 	pending[rid] = nil
 	local ok = t.ok == true
+	log("%s rid %d done by #%s: %s %s (id %s)", tostring(p.id), rid, tostring(from), ok and "ok" or "refused",
+		tostring(ok and t.msg or t.code), tostring(t.id))
 	if ok then announce(p.by, p.id, t.msg or p.id) end
 	if p.requester ~= nil then
 		P().send(EV_NOTE, { ok = ok, msg = t.msg or "", code = not ok and (t.code or "failed") or nil, cmd = p.id, rid = rid }, p.requester)

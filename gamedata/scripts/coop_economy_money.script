@@ -318,6 +318,13 @@ end
 -- The item of gift `g` is here: into the line of its giver (a new line starts its ITEM_LINE_MS now).
 local function arrived(id, g, obj, t)
 	forget(id)
+	-- live 2026-11-08 ("I give 2, 4 are given"): each gift that came, and what this actor has of its section now
+	pcall(function()
+		local sec = obj:section()
+		local have = core.own_ids_of(sec)
+		core.log("gift: item %d [%s] from %s arrived, units %s; %d of %s here: %s", id, sec, tostring(g.nick), tostring(g.u or 1),
+			#have, sec, core.ids_text(have))
+	end)
 	local line = items.lines[g.from]
 	if not line then
 		line = { nick = g.nick, at = t, names = {}, units = {}, more = 0 }

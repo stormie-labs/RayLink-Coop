@@ -276,11 +276,37 @@ do
 	check(#notes == 1 and notes[1].target == 3 and notes[1].t.ok == true, "the world server tells him how it ended (coop.dbg.note)")
 	check(#sent(H, "coop.dbg.say") == 1, "and announces it to everybody")
 
+	-- live 2026-11-08 (10 medkits asked, 20 in the client's inventory): every machine says what it did with the request number
+	local function logged(M, pat)
+		for _, l in ipairs(M.log) do if l:find(pat) then return l end end
+		return nil
+	end
+	local fwd = logged(H, "spawn_item from p3 %(peer 3%) forwarded to #257 %(rid %d+%): sec wpn_ak74 n 1 at inv")
+	check(fwd ~= nil, "the world server logs the forward: requester, bridge, rid, section, n", tostring(fwd))
+	local rid = runs[1] and runs[1].t._rid
+	check(logged(K, "spawn_item rid " .. tostring(rid) .. " for peer 3 taken from the world server") ~= nil,
+		"the map server logs the request it took, with its rid")
+	local made = logged(K, "spawn_item rid " .. tostring(rid) .. " for #3 %(peer 3, character 900%): wpn_ak74 x1 at inv, 1 made by a map server: ids 9001")
+	check(made ~= nil, "the map server logs what it made: rid, requester, section, n, the ids", tostring(made))
+	check(logged(H, "spawn_item rid " .. tostring(rid) .. " done by #257: ok") ~= nil, "the world server logs the end with the rid")
+	-- n = 3 on the map server: one line with the three ids
+	QUEUE[#QUEUE + 1] = { from = 0, target = MK, name = "coop.dbg.run",
+		payload = H.env.coop_main.encode({ _c = "spawn_item", _peer = 3, _rid = 41, sec = "medkit", at = "inv", n = 3 }) }
+	pump()
+	check(#K.created == 4 and logged(K, "spawn_item rid 41 for #3 .*medkit x3 at inv, 3 made by a map server: ids 9002%-9004") ~= nil,
+		"n = 3: three ids in one line (9002-9004)")
+	-- a world server's own run: no rid, the same line
+	local ok3 = ask(H, "coop.dbg.spawn", 0, { v = 1, cmd = "spawn_item", sec = "medkit", n = 2, at = "inv" })
+	check(ok3 == true and logged(H, "spawn_item rid %- for p0 %(peer 0, character 0%): medkit x2 at inv, 2 made by the world server: ids") ~= nil,
+		"the world server's own spawn: 'rid -', the ids it made")
+	check(K.env.coop_debug_server.ids_text({ 1, 2, 3, 7, 9, 10 }) == "1-3,7,9-10", "ids as ranges")
+
 	-- a coop.dbg.run that does not come from the world server is not taken
+	local before = #K.created
 	QUEUE[#QUEUE + 1] = { from = 3, target = MK, name = "coop.dbg.run",
 		payload = H.env.coop_main.encode({ _c = "spawn_item", _peer = 3, _rid = 99, sec = "wpn_ak74", at = "inv", n = 1 }) }
 	pump()
-	check(#K.created == 1, "a map server takes coop.dbg.run only from the world (from 0)")
+	check(#K.created == before, "a map server takes coop.dbg.run only from the world (from 0)")
 end
 
 print("== world commands run once, on the world server (C.1 A16, K35)")
