@@ -25,6 +25,7 @@ local B = { maxhp = { head = 11, torso = 11, leftarm = 5, rightarm = 5, leftleg 
 for _, k in ipairs(PARTS) do B.health[k], B.timedhp[k] = B.maxhp[k], 0 end
 zzz_player_injuries = B
 arszi_psy = { get_psy_health = function() return 0.42 end, set_psy_health = function() end }
+IsMoveState = function() return false end -- the engine's global; walking, not sprinting
 actor_status_thirst = { get_last_drink = function() return 5300 end }
 actor_status_sleep = { get_last_sleep = function() return 1200 end }
 
@@ -71,6 +72,9 @@ if which == "client" then
 		and line:find("head 11/0, torso 11/0", 1, true) and line:find("last co-op apply", 1, true),
 		"the line names health, psy, BHS head/torso, satiety, thirst, sleepiness, radiation, bleeding, the last apply ("
 		.. tostring(line) .. ")")
+	-- G.A.M.M.A.'s BHS takes 0.029 health on a sprint step when a leg is at 3 HP or less (no hit): the legs, arms and sprint too
+	check(line and line:find("leftleg 5/0, rightleg 5/0, leftarm 5/0, rightarm 5/0", 1, true) and line:find("sprint no", 1, true),
+		"the line names the legs, the arms and whether he sprints (" .. tostring(line) .. ")")
 end
 
 -- 2. the same drop with a hit in the window: that is damage, not a drain

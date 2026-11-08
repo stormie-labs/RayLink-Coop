@@ -619,14 +619,27 @@ local function drain_line(fell)
 		return ok and v ~= nil and tostring(v) or "-"
 	end
 	local b = C().mod("zzz_player_injuries")
-	local parts = bhs_tables(b) and string.format("head %s/%s, torso %s/%s", tostring(b.health.head), tostring(b.timedhp.head),
-		tostring(b.health.torso), tostring(b.timedhp.torso)) or "-"
+	-- every part: BHS takes 0.029 health on a sprint step (13 %, once per 2.5 s) while a leg is at 3 HP or less, with no hit
+	local parts = "-"
+	if bhs_tables(b) then
+		local out = {}
+		for _, k in ipairs({ "head", "torso", "leftleg", "rightleg", "leftarm", "rightarm" }) do
+			out[#out + 1] = string.format("%s %s/%s", k, tostring(b.health[k]), tostring(b.timedhp[k]))
+		end
+		parts = table.concat(out, ", ")
+	end
+	local sprint = "-"
+	local ims = rawget(_G, "IsMoveState")
+	if type(ims) == "function" then
+		local ok_s, s = pcall(ims, "mcSprint")
+		if ok_s then sprint = s and "yes" or "no" end
+	end
 	local ap = C().mod("arszi_psy")
 	local ok_psy, psy = pcall(function() return ap and ap.get_psy_health and ap.get_psy_health() end)
 	drain.lines = drain.lines + 1
-	log("drain", "health %s fell %.3f in %d s with no hit: psy %s (arszi %s), BHS h/t %s, satiety %s, thirst %s, sleepiness %s, "
-		.. "radiation %s, bleeding %s; players: %s; last co-op apply: %s%s", field("health"), fell, DRAIN_MS / 1000, field("psy_health"),
-		ok_psy and type(psy) == "number" and string.format("%.3f", psy) or "-", parts, field("satiety"),
+	log("drain", "health %s fell %.3f in %d s with no hit: psy %s (arszi %s), BHS hp/timed %s, sprint %s, satiety %s, thirst %s, "
+		.. "sleepiness %s, radiation %s, bleeding %s; players: %s; last co-op apply: %s%s", field("health"), fell, DRAIN_MS / 1000,
+		field("psy_health"), ok_psy and type(psy) == "number" and string.format("%.3f", psy) or "-", parts, sprint, field("satiety"),
 		call("actor_status_thirst", "get_last_drink"), call("actor_status_sleep", "get_last_sleep"), field("radiation"),
 		field("bleeding"), players_life(), drain.apply, drain.apply_at and string.format(" %d s ago", math.floor((time_global() - drain.apply_at) / 1000)) or "")
 end
