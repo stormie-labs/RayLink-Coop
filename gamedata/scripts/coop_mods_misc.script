@@ -634,12 +634,16 @@ local function drain_line(fell)
 		local ok_s, s = pcall(ims, "mcSprint")
 		if ok_s then sprint = s and "yes" or "no" end
 	end
+	-- db.actor.satiety is the base condition's (1.000 always); the actor's own is CActorCondition::GetSatiety (live 2026-11-09)
+	local satiety = field("satiety")
+	local ok_sat, sat = pcall(function() return a:cast_Actor():conditions():GetSatiety() end)
+	if ok_sat and type(sat) == "number" then satiety = string.format("%.3f", sat) end
 	local ap = C().mod("arszi_psy")
 	local ok_psy, psy = pcall(function() return ap and ap.get_psy_health and ap.get_psy_health() end)
 	drain.lines = drain.lines + 1
 	log("drain", "health %s fell %.3f in %d s with no hit: psy %s (arszi %s), BHS hp/timed %s, sprint %s, satiety %s, thirst %s, "
 		.. "sleepiness %s, radiation %s, bleeding %s; players: %s; last co-op apply: %s%s", field("health"), fell, DRAIN_MS / 1000,
-		field("psy_health"), ok_psy and type(psy) == "number" and string.format("%.3f", psy) or "-", parts, sprint, field("satiety"),
+		field("psy_health"), ok_psy and type(psy) == "number" and string.format("%.3f", psy) or "-", parts, sprint, satiety,
 		call("actor_status_thirst", "get_last_drink"), call("actor_status_sleep", "get_last_sleep"), field("radiation"),
 		field("bleeding"), players_life(), drain.apply, drain.apply_at and string.format(" %d s ago", math.floor((time_global() - drain.apply_at) / 1000)) or "")
 end

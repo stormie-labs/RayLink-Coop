@@ -77,6 +77,15 @@ if which == "client" then
 		"the line names the legs, the arms and whether he sprints (" .. tostring(line) .. ")")
 end
 
+-- 1b. live 2026-11-09: db.actor.satiety is the base condition's (always 1.000 in every line); the actor's own satiety comes
+-- from cast_Actor():conditions():GetSatiety() (0.611 on the host's arrival line at the same time)
+LOGS = {}
+actor.cast_Actor = function() return { conditions = function() return { GetSatiety = function() return 0.611 end } end } end
+for _ = 1, 16 do tick(1000, 0.002) end
+local _, line_s = drain_lines()
+check(line_s and line_s:find("satiety 0.611", 1, true) ~= nil, "the actor condition's satiety (" .. tostring(line_s) .. ")")
+actor.cast_Actor = nil
+
 -- 2. the same drop with a hit in the window: that is damage, not a drain
 LOGS = {}
 for i = 1, 15 do
