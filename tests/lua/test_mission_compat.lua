@@ -173,6 +173,49 @@ if have_gamma then
 	end
 end
 
+-- Live 2026-11-09 (Agroprom underground, 6 players): Reefer (agr_u_bandit_boss) died only to the host. G.A.M.M.A.'s
+-- grok_additional_storyline_npc_invincible lets story NPCs take 10 % (enemy faction) / 1 % of a hit from db.actor and 0 from
+-- anyone else, and on the host a client's hit comes from his proxy.
+print("== story NPCs of G.A.M.M.A.'s invincible list: a client's hit counts like the host's")
+local INV = "grok_additional_storyline_npc_invincible"
+if have_file(gamma(INV)) then
+	-- the stock globals of _g.script, which coop_npc_player_community asks
+	E.get_actor_true_community = function() return "stalker" end
+	E.character_community = function(o) return o:character_community() end
+	local src, why = K.rewrite_text(read_all(gamma(INV)), K._rewrites()[INV] or {})
+	check(K._rewrites()[INV] ~= nil and src ~= nil, INV .. ": rewritten, every pair is found in the real file (" .. tostring(why) .. ")")
+	check(src == nil or not src:find("== db.actor:id()", 1, true), INV .. ": no db.actor comparison is left")
+	local f = src and loadstring(src, "@" .. INV)
+	check(f ~= nil, INV .. ": the rewritten text compiles")
+	if f then
+		local env = setmetatable({
+			db = { actor = E.db.actor },
+			coop_npc_is_player_id = E.coop_npc_is_player_id,
+			coop_npc_player_community = E.coop_npc_player_community,
+			get_actor_true_community = function() return "stalker" end,
+			character_community = function(o) return o:character_community() end,
+			game_relations = { is_factions_enemies = function(a, b)
+				return (a == "stalker" and b == "bandit") or (a == "bandit" and b == "stalker")
+			end },
+			RegisterScriptCallback = function() end,
+		}, { __index = _G })
+		setfenv(f, env)
+		f()
+		local boss = H.add(make_obj(19066, 60, 0, 0, { _name = "reefer", _section = "agr_u_bandit_boss", _comm = "bandit" }))
+		local function hit_by(who)
+			local s = { power = 1, draftsman = who }
+			env.npc_on_before_hit(boss, s, 11, {})
+			return s.power
+		end
+		check(math.abs(hit_by(E.db.actor) - 0.10) < 1e-6, "the host (an enemy faction) does 10 %")
+		check(math.abs(hit_by(proxy) - 0.10) < 1e-6, "a client of an enemy faction does 10 % too (" .. hit_by(proxy) .. ")")
+		proxy._comm = "bandit"
+		check(math.abs(hit_by(proxy) - 0.01) < 1e-6, "a client of a friendly faction does 1 %, like the host would")
+		proxy._comm = nil
+		check(hit_by(stalker(604)) == 0, "an NPC still does nothing")
+	end
+end
+
 print("== Gunslinger controller: the drain needs no enemy on a client's puppet")
 if have_gamma then
 	local src = K.rewrite_text(read_all(gamma("gunslinger_controller")), K._rewrites().gunslinger_controller)

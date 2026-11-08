@@ -475,6 +475,19 @@ end
 -------------------------------------------------------------------------------
 _G.coop_npc_is_player_id = function(id) return is_player_id(id) end
 _G.coop_npc_multi = function() return #others() > 0 end
+-- A player's faction the way game_relations names it ("stalker", not "actor_stalker"): the host's actor through
+-- get_actor_true_community (as the stock code asks), a client by his proxy, which carries his faction (coop_join set_faction).
+_G.coop_npc_player_community = function(obj)
+	local id = id_of(obj)
+	if id == nil then return nil end
+	if id == 0 and type(get_actor_true_community) == "function" then
+		local ok, c = pcall(get_actor_true_community)
+		if ok and type(c) == "string" then return c end
+	end
+	local ok, comm = pcall(character_community, obj)
+	if not (ok and type(comm) == "string") then return nil end
+	return (comm:gsub("^actor_", ""))
+end
 _G.coop_npc_any_player_within = function(obj, r)
 	local p = pos_of(obj)
 	if not p then return false end

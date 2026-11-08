@@ -59,6 +59,14 @@ local REWRITES = {
 	hxf_tough_important_npcs = {
 		{ "if shit.draftsman:id() == AC_ID then", "if coop_npc_is_player_id(shit.draftsman:id()) then", all = true },
 	},
+	-- live 2026-11-09 (Agroprom underground): Reefer (agr_u_bandit_boss) died only to the host. G.A.M.M.A.'s story NPCs take 10 %
+	-- (enemy faction) / 1 % of a hit from db.actor and nothing from anyone else; on the host a client's hit comes from his proxy.
+	-- Every player now counts, with his own faction.
+	grok_additional_storyline_npc_invincible = {
+		{ "if shit.draftsman:id() == db.actor:id() and game_relations.is_factions_enemies(get_actor_true_community(), character_community(npc)) then",
+		"if coop_npc_is_player_id(shit.draftsman:id()) and game_relations.is_factions_enemies(coop_npc_player_community(shit.draftsman), character_community(npc)) then" },
+		{ "elseif shit.draftsman:id() == db.actor:id() then", "elseif coop_npc_is_player_id(shit.draftsman:id()) then" },
+	},
 	grok_killing_friends_reduces_goodwill = {
 		{ "shit.draftsman:id() == 0 or", "coop_npc_is_player_id(shit.draftsman:id()) or" },
 		{ "if killer:id() == db.actor:id() or", "if coop_npc_is_player_id(killer:id()) or" },
