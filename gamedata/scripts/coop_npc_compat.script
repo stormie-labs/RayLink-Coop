@@ -115,6 +115,51 @@ local REWRITES = {
 	gunslinger_controller = {
 		{ "elseif obj:get_enemy() and obj:position()", "elseif (coop_npc_on_client() or obj:get_enemy()) and obj:position()" },
 	},
+	-- A scoped conversion kit inherits its converted base. Looking up the full scoped section leaves the source
+	-- weapon's condition marker in the parts view, so WPO disassembly creates that weapon as another recovered part.
+	z_3dss_weapon_kits = {
+		{ "local source_section = source_weapon_for_section(obj:section())",
+		'local source_section = source_weapon_for_section(ini_sys:r_string_ex(obj:section(), "parent_section") or obj:section())' },
+	},
+	-- The clone hook already migrates canted state to the returned id, with a matching-base check. These later
+	-- inventory scans also assign that same entry to unrelated weapons of the same section, even on a refused clone.
+	-- Both modules install their hooks after this startup rewrite, preserving the existing clone wrapper chain.
+	scripted_canted_irons = {
+		{ [[			local entry = (not blocked_by_scope) and current_entry
+			local new_sec = entry and ((get_wpn_base(weapon) or weapon:section()) .. "_" .. item:section())
+]], "" },
+		{ [[			if entry and new_sec then
+				CreateTimeEvent("scripted_canted_irons", "attach_scope_" .. old_id, 0, function()
+					db.actor:iterate_inventory(function(_, inv_item)
+						if inv_item:section() == new_sec and not irons_by_weapon[inv_item:id()] then
+							migrate_entry(old_id, inv_item:id(), entry)
+						end
+					end, db.actor)
+					return true
+				end)
+			end
+]], "" },
+		{ [[	local original_detach_scope = item_weapon.detach_scope
+	if original_detach_scope then
+		item_weapon.detach_scope = function(weapon)
+			local old_id = weapon and weapon:id()
+			local entry = old_id and irons_by_weapon[old_id]
+			local base_sec = entry and get_wpn_base(weapon)
+			original_detach_scope(weapon)
+			if entry and base_sec then
+				CreateTimeEvent("scripted_canted_irons", "detach_scope_" .. old_id, 0, function()
+					db.actor:iterate_inventory(function(_, inv_item)
+						if inv_item:section() == base_sec and not irons_by_weapon[inv_item:id()] then
+							migrate_entry(old_id, inv_item:id(), entry)
+						end
+					end, db.actor)
+					return true
+				end)
+			end
+		end
+	end
+]], "" },
+	},
 }
 
 local function count_plain(s, needle)
@@ -135,10 +180,12 @@ end
 -- Pure part, testable: applies every pair once, in order; nil + reason if any `from` is not there exactly once. A pair
 -- with all = true replaces every occurrence (at least one).
 function rewrite_text(src, pairs_list)
+	local newline = src:find("\r\n", 1, true) and "\r\n" or "\n"
 	for i, pr in ipairs(pairs_list) do
-		local n = count_plain(src, pr[1])
+		local from, to = pr[1]:gsub("\r?\n", newline), pr[2]:gsub("\r?\n", newline)
+		local n = count_plain(src, from)
 		if n ~= 1 and not (pr.all and n > 0) then return nil, string.format("pair %d found %d times", i, n) end
-		for _ = 1, n do src = replace_plain(src, pr[1], pr[2]) end
+		for _ = 1, n do src = replace_plain(src, from, to) end
 	end
 	return src
 end

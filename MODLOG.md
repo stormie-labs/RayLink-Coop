@@ -702,3 +702,8 @@
   не делалось: внутри области `EchoOf` СМ регистрирует и свои объекты (например, при `host_apply_death`), их Mk не знает — общая метка
   уронила бы их у игроков этой карты. Тесты: `debug_server` +7 (RED 4 без строк), `debug_client` +9 (RED 7), `economy_give` +2 (RED 2);
   Lua 149 файлов 13555/0. В игре не проверено: повторить F7 10 аптечек на карте Mk и прислать лог клиента, СМ и `appdata_ms<k>`.
+
+## 2026-11-10 — b41.9
+
+Client ammunition authority and shotgun empty packs, campfire damage phases, WPO maintenance publication, scoped kit disassembly and canted-state migration. HUD inventory-detachment guards. Release isolated from the ongoing atomic replacement and trader changes. Protocol 29.
+

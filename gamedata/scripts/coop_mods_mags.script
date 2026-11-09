@@ -431,6 +431,18 @@ local function install_wpo()
 	WPO.w, WPO.j = w, j
 	installed[#installed + 1] = "wpo"
 
+	-- GAMMA's maintenance menu edits the loaded parts table in place. Publish the result
+	-- through its normal setter so the host's save and the next holder receive the repair.
+	C().wrap(w, "replace_part", "zzzz_arti_jamming_repairs.replace_part", function(orig)
+		return function(id, ...)
+			orig(id, ...)
+			if C().active() then
+				local parts = item_parts.get_parts_con(nil, id)
+				if parts then item_parts.set_parts_con(id, parts) end
+			end
+		end
+	end)
+
 	C().wrap(w, "act_fieldstrip", "zzzz_arti_jamming_repairs.act_fieldstrip", function(orig)
 		WPO.orig_strip = orig
 		return function(id, part, ...)
