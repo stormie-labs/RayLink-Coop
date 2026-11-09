@@ -702,8 +702,18 @@
   не делалось: внутри области `EchoOf` СМ регистрирует и свои объекты (например, при `host_apply_death`), их Mk не знает — общая метка
   уронила бы их у игроков этой карты. Тесты: `debug_server` +7 (RED 4 без строк), `debug_client` +9 (RED 7), `economy_give` +2 (RED 2);
   Lua 149 файлов 13555/0. В игре не проверено: повторить F7 10 аптечек на карте Mk и прислать лог клиента, СМ и `appdata_ms<k>`.
+- 2026-11-09 22:49 — Weapon jam/parts, Pelican. GAMMA `replace_part`, включая Repair Notifications, меняет
+  `se_load_var(..., "parts")` на месте. Хост и следующий владелец сохраняли старую часть после ремонта клиента.
+  `coop_mods_mags` проводит результат через штатный setter. Новый `test_pelican_weapon_jam`: RED 12, GREEN 39/39
+  (реальное меню, 4 repair_type, 8 наборов, чистка/замена, износ, unjam, данные delayed clone); economy/mods 1895/1895
+  в 34 файлах. Шесть исходных C++-патчей сохранены побайтово. Статический каталог с наследованием/DLTX дал 27
+  физических repair-секций + `tch_repair`, из них 10 workshop_tool. Полная проверка базовых item_repair/utils_item
+  ждёт stock-скриптов общего VFS. Причина attach/detach АК-74М остаётся на отдельном ревью. В игре не проверено.
 
-## 2026-11-10 — b41.9
+## 2026-11-10 — stable b41.9
 
-Client ammunition authority and shotgun empty packs, campfire damage phases, WPO maintenance publication, scoped kit disassembly and canted-state migration. HUD inventory-detachment guards. Release isolated from the ongoing atomic replacement and trader changes. Protocol 29.
+Published ammunition authority, shotgun empty packs, campfire damage, WPO maintenance, scoped-kit disassembly and canted-state fixes, with HUD inventory-detachment guards. Protocol 29.
 
+## 2026-11-10 — b42
+
+Atomic weapon replacement with initial metadata, complete magazines and fire modes, guarded pending actions and compensating rollback. Group trader goodwill averages use 72 real hours and show beside personal PDA values. Stable identity API uses existing SHA256 player scopes. Protocol 30.

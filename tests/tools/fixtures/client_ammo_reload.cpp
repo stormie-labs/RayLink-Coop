@@ -17,7 +17,8 @@ using u16 = uint16_t;
 using u32 = uint32_t;
 using u64 = uint64_t;
 using PeerId = u16;
-namespace requests { bool client_lease_waiting(u16) { return false; } }
+extern bool replacement_pending;
+namespace requests { bool client_lease_waiting(u16) { return replacement_pending; } }
 using LPCSTR = const char*;
 constexpr u16 kNoId = 65535, kInvalidPeer = 65535;
 using Blob = std::vector<u8>;
@@ -223,6 +224,7 @@ std::set<u32> g_logged_tags;
 struct Left { u64 time; };
 std::map<u16, Left> g_left;
 void drain_made_here() {}
+void drain_forgotten() {}
 void install_upgrades(PIItem item, const UpgradeList& list) { item->upgrades = list; }
 UpgradeList spawn_upgrade_list(const shared_str&, const UpgradeList& list, bool) { return list; }
 void reject(Reason, PeerId, u16, const char*) { assert(false && "unexpected rejected owner state"); }
@@ -329,6 +331,25 @@ int main(int argc, char** argv) {
     host_entities = {{1, &host_weapon_entity}, {2, &host_box_entity}, {3, &host_second_entity}};
     select_host(false);
     const Blob old_box = state(&box), old_gun = state(gun), old_second = state(&second);
+    if (mode == "pending-clone-push") {
+        gun->SetAmmoElapsed(3);
+        replacement_pending = true;
+        push(gun, old_gun);
+        expect(gun->GetAmmoElapsed() == 3 && g_pending.empty(), "native push cannot cross a replacement fence or wait for its reused id");
+        return 0;
+    }
+    if (mode == "pending-reload") {
+        replacement_pending = true;
+        shotgun.id = 4;
+        shotgun.m_pInventory = &actor.inv;
+        shotgun.SetAmmoElapsed(0);
+        gun->m_needReload = true;
+        gun->ReloadMagazine();
+        shotgun.bMisfire = true;
+        expect(shotgun.AddCartridge(2) == 2 && shotgun.bMisfire, "pending shotgun cannot consume or clear state");
+        expect(gun->m_needReload && state(gun) == old_gun && state(&box) == old_box, "pending replacement cannot reload or debit reserve");
+        return 0;
+    }
     if (mode == "take-baseline" || mode == "take-changed") {
         coop::items::client_before_take(box.ID());
         expect(g_take_base.count(box.ID()) == 1, "take must capture a real owner baseline");

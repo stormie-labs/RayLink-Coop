@@ -567,7 +567,19 @@ local function class_of(name, cls)
 	end
 end
 
+local function pending_mutation(orig)
+	return function(obj, ...)
+		local id = type(obj) == "number" and obj or id_of(obj)
+		if C().is_client() and id ~= nil and id_waiting(id) then refuse_swap() return nil end
+		return orig(obj, ...)
+	end
+end
+
 local GUARDS = {
+	{ label = "zzzz_arti_jamming_repairs.replace_part", tbl = module_of("zzzz_arti_jamming_repairs"), key = "replace_part", make = pending_mutation },
+	{ label = "zzzz_arti_jamming_repairs.act_fieldstrip", tbl = module_of("zzzz_arti_jamming_repairs"), key = "act_fieldstrip", make = pending_mutation },
+	{ label = "item_parts.func_disassembly", tbl = module_of("item_parts"), key = "func_disassembly", make = pending_mutation },
+	{ label = "item_parts.disassembly_weapon", tbl = module_of("item_parts"), key = "disassembly_weapon", make = pending_mutation },
 	{ label = "_G.alife_clone_weapon", tbl = function() return _G end, key = "alife_clone_weapon",
 		make = swap_guard(function(se, section, parent_id) return se, parent_id end) },
 	{ label = "item_weapon.attach_scope", tbl = module_of("item_weapon"), key = "attach_scope",

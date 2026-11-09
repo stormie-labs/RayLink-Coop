@@ -88,7 +88,7 @@ def ammo_runner():
     "take-baseline", "take-changed", "world-item", "shotgun-empty",
     "offline-push", "two-boxes", "three-magazines", "mixed-magazine",
     "owner-relay", "ownership-return",
-    "fallback-type", "partial-reload", "shot-only", "launcher-shot-only",
+    "fallback-type", "partial-reload", "shot-only", "launcher-shot-only", "pending-reload", "pending-clone-push",
 ])
 def test_client_ammo_round_trip(ammo_runner, mode):
     result = subprocess.run([str(ammo_runner), mode], capture_output=True, text=True, timeout=10)

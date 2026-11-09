@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<string_table>
+    <string id="st_coop_trader_pda_value">
+        <text>You %d\nGrp. %s (%d)</text>
+    </string>
+</string_table>

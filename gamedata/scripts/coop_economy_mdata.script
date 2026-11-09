@@ -73,6 +73,31 @@ local function m_data()
 	return ok and type(m) == "table" and m or nil
 end
 
+local clone_busy, clone_transactions, clone_retired = {}, {}, {}
+local clone_storage = nil
+
+local function item_instance(id)
+	for _, player in ipairs(core.players()) do
+		if player.avatar_id == id then return "player/" .. tostring(core.host_id(id)) end
+	end
+	local m = m_data()
+	local se = m and m.se_object and m.se_object[id]
+	if se and se._coop_instance then return se._coop_instance end
+	local object = alife_object(id)
+	return object and object:name() or ""
+end
+
+local function clone_is_retired(id)
+	local retired = clone_retired[id]
+	if not retired then return false end
+	local object = alife_object(id)
+	if object and object:name() ~= retired.name then
+		clone_retired[id] = nil
+		return false
+	end
+	return true
+end
+
 -- Sends `entries` ({ {id, key, packed}, ... }) as batches of `name`.
 local function send_batches(name, entries, target, except)
 	local batch, size, n = {}, 0, 0
@@ -87,7 +112,8 @@ local function send_batches(name, entries, target, except)
 		batch, size, n = {}, 0, 0
 	end
 	for _, e in ipairs(entries) do
-		local len = #e[3] + #tostring(e[2]) + 16
+		local instance = e[4] or item_instance(core.local_id(e[1]))
+		local len = #e[3] + #tostring(e[2]) + #instance + 24
 		if len > MAX_VALUE then
 			stats.oversize = stats.oversize + 1
 			core.log("! %s %s/%s not sent: %d bytes", name, tostring(e[1]), tostring(e[2]), len)
@@ -95,6 +121,7 @@ local function send_batches(name, entries, target, except)
 			if size + len > MAX_BATCH then flush() end
 			n = n + 1
 			batch["i" .. n], batch["k" .. n], batch["d" .. n] = e[1], e[2], e[3]
+			batch["x" .. n] = instance
 			size = size + len
 		end
 	end
@@ -110,7 +137,7 @@ local function read_batch(t)
 		local d = t["d" .. i]
 		if id and key and type(d) == "string" and #d <= MAX_VALUE then
 			local v, err = core.unpack(d)
-			if err == nil or d == "_" then out[#out + 1] = { id = id, key = key, value = v, packed = d } end
+			if err == nil or d == "_" then out[#out + 1] = { id = id, key = key, value = v, packed = d, instance = t["x" .. i] } end
 		end
 	end
 	return out
@@ -121,6 +148,7 @@ end
 -------------------------------------------------------------------------------
 -- Never accepted from a client (NPC state the host's world logic owns).
 local SE_HOST_ONLY = {
+	_coop_instance = true,
 	companion = true, companion_cannot_dismiss = true, companion_cannot_teleport = true, death_dropped = true,
 	dont_release = true, do_not_deactivate = true, healing_charge = true,
 }
@@ -136,18 +164,19 @@ local se_wait = {} -- changes for entities not here yet: { id (local), var, valu
 local se_next_flush = 0
 
 local function not_sent(var)
-	return type(var) ~= "string" or var:sub(1, 9) == "pathpoint"
+	return type(var) ~= "string" or var == "_coop_instance" or var:sub(1, 9) == "pathpoint"
 end
 
 -- queues entity `id`'s var for the next flush unless the others have this value already
 local function se_queue(id, varname, val)
 	if applying or type(id) ~= "number" or not core.live() or not_sent(varname) or core.others_count() == 0 then return end
+	if clone_busy[id] then return end
 	local packed = core.pack(val)
 	local hid = core.host_id(id)
 	local key = tostring(hid) .. "\0" .. varname
 	if se_sig[key] == packed then return end
 	se_sig[key] = packed
-	se_out[key] = { hid, varname, packed }
+	se_out[key] = { hid, varname, packed, item_instance(id) }
 end
 
 local function se_wrapper(id, name, varname, val, ...)
@@ -181,7 +210,17 @@ local function se_store(local_id, var, value)
 end
 
 local function client_may_write(from, hid, var)
+	if clone_busy[hid] or clone_is_retired(hid) then return false end
 	if SE_HOST_ONLY[var] then return false end
+	if var == "parts" then
+		local root = core.root_of(hid)
+		for _, owner in ipairs(core.players()) do
+			if owner.avatar_id == root then
+				local sender = core.player(from)
+				return sender and sender.avatar_id == root
+			end
+		end
+	end
 	if SE_WORLD_VARS[var] then return alife_object(hid) ~= nil end
 	local p = core.player(from)
 	return p ~= nil and p.avatar_id ~= nil and core.root_of(hid) == p.avatar_id
@@ -208,7 +247,13 @@ local function on_se(t, from)
 	if not host and from ~= 0 then return end
 	local relay = {}
 	for _, e in ipairs(read_batch(t)) do
-		if not_sent(e.key) then
+		local lid = host and e.id or core.local_id(e.id)
+		local mismatch = alife_object(lid) and e.instance and e.instance ~= item_instance(lid)
+		local m = m_data()
+		local stamped = m and m.se_object and m.se_object[lid] and m.se_object[lid]._coop_instance
+		if clone_is_retired(lid) or clone_busy[lid] or mismatch or (stamped and not e.instance) then
+			stats.se_refused = stats.se_refused + 1
+		elseif not_sent(e.key) then
 			-- ignore
 		elseif host_holds(host, from, e.id) then
 			stats.se_held = stats.se_held + 1
@@ -221,7 +266,7 @@ local function on_se(t, from)
 			stats.se_in = stats.se_in + 1
 			if not se_store(lid, e.key, e.value) then
 				stats.se_pending = stats.se_pending + 1
-				se_wait[#se_wait + 1] = { lid, e.key, e.value, until_ms = core.now() + PENDING_MS }
+				se_wait[#se_wait + 1] = { lid, e.key, e.value, instance = e.instance, until_ms = core.now() + PENDING_MS }
 			end
 			if host then relay[#relay + 1] = { e.id, e.key, e.packed } end
 		end
@@ -236,7 +281,7 @@ local function se_release_held()
 	for _, h in ipairs(se_hold) do
 		local e = h.e
 		if alife_object(e.id) ~= nil then
-			if client_may_write(h.from, e.id, e.key) then
+			if client_may_write(h.from, e.id, e.key) and (not e.instance or e.instance == item_instance(e.id)) then
 				se_sig[tostring(e.id) .. "\0" .. e.key] = e.packed
 				stats.se_in = stats.se_in + 1
 				se_store(e.id, e.key, e.value)
@@ -261,7 +306,10 @@ local function se_retry()
 	if #se_wait == 0 then return end
 	local keep, t = {}, core.now()
 	for _, w in ipairs(se_wait) do
-		if not se_store(w[1], w[2], w[3]) and t < w.until_ms then keep[#keep + 1] = w end
+		if not clone_busy[w[1]] and not clone_is_retired(w[1]) and
+			(not alife_object(w[1]) or not w.instance or w.instance == item_instance(w[1])) then
+			if not se_store(w[1], w[2], w[3]) and t < w.until_ms then keep[#keep + 1] = w end
+		end
 	end
 	se_wait = keep
 end
@@ -271,6 +319,7 @@ end
 -------------------------------------------------------------------------------
 local item_keys = {} -- { {key, apply}, ... }
 local item_base = {} -- item id (local) -> { key -> packed }
+local item_retry = {} -- restored source riders must be sent even before the first inventory poll
 local item_seeded = false
 local item_next_poll = 0
 
@@ -311,6 +360,7 @@ local function item_poll()
 	local out = {}
 	db.actor:iterate_inventory(function(_, item)
 		local id = item:id()
+		if clone_busy[id] then return end
 		local b = item_base[id]
 		if not b then
 			b = {}
@@ -321,11 +371,12 @@ local function item_poll()
 			local value
 			if type(tbl) == "table" then value = tbl[id] end -- preserve false; nil means removal
 			local packed = core.pack(value)
-			if b[d.key] ~= packed then
+			if b[d.key] ~= packed or item_retry[id] then
 				b[d.key] = packed
-				if not silent then out[#out + 1] = { core.host_id(id), d.key, packed } end
+				if not silent or item_retry[id] then out[#out + 1] = { core.host_id(id), d.key, packed, item_instance(id) } end
 			end
 		end
+		item_retry[id] = nil
 	end, db.actor)
 	if #out > 0 then
 		stats.imd_out = stats.imd_out + #out
@@ -343,7 +394,10 @@ local function on_imd(t, from)
 	local p = host and core.player(from)
 	for _, e in ipairs(read_batch(t)) do
 		local d = item_decl(e.key)
-		if not d then
+		local lid = host and e.id or core.local_id(e.id)
+		if clone_busy[lid] or clone_is_retired(lid) or (alife_object(lid) and e.instance and e.instance ~= item_instance(lid)) then
+			stats.imd_refused = stats.imd_refused + 1
+		elseif not d then
 			-- an addon this machine does not have
 		elseif host_holds(host, from, e.id) then
 			stats.imd_held = stats.imd_held + 1
@@ -373,7 +427,8 @@ local function imd_release_held()
 		local d = item_decl(e.key)
 		if d and alife_object(e.id) ~= nil then
 			local p = core.player(h.from)
-			if p and p.avatar_id and core.root_of(e.id) == p.avatar_id then
+			if not clone_busy[e.id] and not clone_is_retired(e.id) and p and p.avatar_id and core.root_of(e.id) == p.avatar_id
+				and (not e.instance or e.instance == item_instance(e.id)) then
 				item_store(m, d, e.id, e.value)
 				item_base[e.id] = item_base[e.id] or {}
 				item_base[e.id][e.key] = e.packed
@@ -621,9 +676,223 @@ end
 -------------------------------------------------------------------------------
 -- 5. A weapon's clone (scope, kit, detach): its vars go with it
 -------------------------------------------------------------------------------
+
+-- Native replacement callbacks run synchronously around registration and its script callbacks.
+-- Validate before pack(): pack deliberately turns unsupported values and excessive depth into nil.
+local function clone_value_ok(value, depth, seen, count)
+	count.n = count.n + 1
+	if count.n > 2048 or depth > 8 then return false end
+	local kind = type(value)
+	if kind == "nil" or kind == "boolean" then return true end
+	if kind == "number" then return value == value and value ~= math.huge and value ~= -math.huge end
+	if kind == "string" then return #value <= 4096 end
+	if kind == "userdata" then
+		local ok, fields = pcall(function()
+			if value.diffSec == nil or value.dateToString == nil then return nil end
+			return utils_data.CTime_to_table(value)
+		end)
+		if not ok or type(fields) ~= "table" then return false end
+		for _, field in pairs(fields) do
+			local field_type = type(field)
+			if field_type ~= "string" and field_type ~= "number" and field_type ~= "boolean" then return false end
+		end
+		return clone_value_ok(fields, depth + 1, seen, count)
+	end
+	if kind ~= "table" or seen[value] or getmetatable(value) ~= nil then return false end
+	seen[value] = true
+	for key, child in pairs(value) do
+		if type(key) ~= "string" and type(key) ~= "number" then return false end
+		if not clone_value_ok(key, depth + 1, seen, count) or not clone_value_ok(child, depth + 1, seen, count) then return false end
+	end
+	seen[value] = nil
+	return true
+end
+
+local function clone_decode(packed)
+	if type(packed) ~= "string" or #packed > 4096 then return nil end
+	local value, why = core.unpack(packed)
+	if why or type(value) ~= "table" or type(value.se) ~= "table" or type(value.riders) ~= "table" or type(value.se_present) ~= "boolean" then return nil end
+	if not clone_value_ok(value, 0, {}, { n = 0 }) then return nil end
+	for key in pairs(value.riders) do if not item_decl(key) then return nil end end
+	if core.pack(value) ~= packed then return nil end -- detects any parser/CTime conversion that silently lost a value
+	return value
+end
+
+function clone_export(id, stamp)
+	local m = m_data()
+	if not (m and type(m.se_object) == "table") then return nil end
+	local snapshot = { se = {}, riders = {}, se_present = m.se_object[id] ~= nil or stamp ~= nil }
+	for key, value in pairs(m.se_object[id] or {}) do
+		if key ~= "name" then snapshot.se[key] = value end
+	end
+	for _, d in ipairs(item_keys) do
+		if type(m[d.key]) == "table" then snapshot.riders[d.key] = m[d.key][id] end
+	end
+	if stamp and not snapshot.se._coop_instance then snapshot.se._coop_instance = stamp end
+	if not clone_value_ok(snapshot, 0, {}, { n = 0 }) then return nil end
+	local packed = core.pack(snapshot)
+	if #packed > 4096 or not clone_decode(packed) then return nil end
+	if stamp and not (m.se_object[id] and m.se_object[id]._coop_instance) then
+		local object = alife_object(id)
+		if not object then return nil end
+		m.se_object[id] = m.se_object[id] or { name = object:name() }
+		m.se_object[id]._coop_instance = snapshot.se._coop_instance
+		clone_retired[id] = nil
+	end
+	return packed
+end
+
+local function clone_purge(id)
+	local hid = core.host_id(id)
+	local prefix = tostring(hid) .. "\0"
+	for key in pairs(se_out) do if key:sub(1, #prefix) == prefix then se_out[key] = nil end end
+	for key in pairs(se_sig) do if key:sub(1, #prefix) == prefix then se_sig[key] = nil end end
+	for i = #se_wait, 1, -1 do if se_wait[i][1] == id then table.remove(se_wait, i) end end
+	for _, list in ipairs({ se_hold, imd_hold }) do
+		for i = #list, 1, -1 do if list[i].e.id == hid then table.remove(list, i) end end
+	end
+	item_base[id] = nil
+	item_retry[id] = nil
+end
+
+local function clone_restore(id, snapshot, name)
+	local m = m_data()
+	m.se_object[id] = snapshot and snapshot.se_present and snapshot.se or nil
+	if m.se_object[id] then m.se_object[id].name = name end
+	for _, d in ipairs(item_keys) do
+		if type(m[d.key]) == "table" then m[d.key][id] = nil end
+		if snapshot and snapshot.riders[d.key] ~= nil then
+			m[d.key] = m[d.key] or {}
+			m[d.key][id] = snapshot.riders[d.key]
+		end
+	end
+end
+
+function clone_stage(source, target, name, packed, trust, token)
+	local snapshot = clone_decode(packed)
+	local m = m_data()
+	if not snapshot or not m or type(name) ~= "string" or type(token) ~= "string" then return false end
+	if clone_storage ~= m then clone_reset() end
+	if clone_transactions[target] then
+		local tx = clone_transactions[target]
+		if trust == 2 and snapshot.se._coop_instance == tx.token then
+			tx.staged = core.pack(snapshot)
+			tx.activated = false
+			clone_restore(target, snapshot, name)
+			return true
+		end
+		if tx.token ~= token then return false end
+		clone_restore(target, clone_decode(tx.staged), name)
+		return true
+	end
+	if clone_busy[source] or clone_busy[target] then return false end
+	local previous = m.se_object[target] and clone_decode(clone_export(target)) or nil
+	if m.se_object[target] and not previous then return false end
+	local original = source ~= 65535 and clone_export(source) or nil
+	if source ~= 65535 and not original then return false end
+	if trust == 1 then
+		local host = m.se_object[source] or {}
+		if snapshot.se._coop_instance ~= host._coop_instance then return false end
+		for key in pairs(SE_HOST_ONLY) do snapshot.se[key] = nil end
+		for key in pairs(SE_HOST_ONLY) do snapshot.se[key] = host[key] end
+		snapshot.se_present = snapshot.se_present or m.se_object[source] ~= nil
+		original = core.pack(snapshot) -- the owner's permitted source state survives a rejected replacement
+	end
+	local rollback = original and clone_decode(original)
+	if original and not rollback then return false end
+	snapshot.se_present = true
+	if trust ~= 2 or not snapshot.se._coop_instance then snapshot.se._coop_instance = token end
+	local staged = core.pack(snapshot)
+	if not clone_decode(staged) then return false end
+	local source_updates = {}
+	for _, entry in pairs(se_out) do
+		if entry[1] == core.host_id(source) then source_updates[#source_updates + 1] = entry end
+	end
+	local original_name = m.se_object[source] and m.se_object[source].name
+	clone_transactions[target] = { source = source, original = rollback, original_name = original_name,
+		previous = previous, previous_name = m.se_object[target] and m.se_object[target].name, token = token, name = name,
+		source_updates = source_updates, staged = staged }
+	clone_busy[target] = true
+	if source ~= 65535 then clone_busy[source] = true end
+	clone_retired[target] = nil
+	clone_purge(source)
+	clone_purge(target)
+	clone_restore(target, snapshot, name)
+	return true
+end
+
+function clone_activate(target)
+	local tx = clone_transactions[target]
+	if tx and tx.activated then return true end
+	local m = m_data()
+	for _, d in ipairs(item_keys) do
+		if d.apply and type(m[d.key]) == "table" then
+			local ok = pcall(d.apply, target, m[d.key][target])
+			if not ok then return false end
+		end
+	end
+	if tx then tx.activated = true end
+	return true
+end
+
+function clone_finish(target, accepted)
+	local tx = clone_transactions[target]
+	if not tx then return true end
+	clone_purge(target)
+	clone_purge(tx.source)
+	if not accepted then
+		if tx.source ~= 65535 then clone_restore(tx.source, tx.original, tx.original_name) end
+		clone_restore(target, tx.previous, tx.previous_name)
+		clone_retired[target] = { token = tx.token, name = tx.name }
+	else
+		if tx.source ~= 65535 and not alife_object(tx.source) then
+			clone_retired[tx.source] = { token = tx.token, name = tx.original_name }
+		end
+	end
+	clone_busy[target], clone_busy[tx.source], clone_transactions[target] = nil, nil, nil
+	if not accepted and tx.source ~= 65535 then
+		for key, value in pairs(tx.original.se) do
+			if core.is_host() or not SE_HOST_ONLY[key] then se_queue(tx.source, key, value) end
+		end
+		for _, entry in ipairs(tx.source_updates) do
+			if core.is_host() or not SE_HOST_ONLY[entry[2]] then
+				local packed = core.pack(tx.original.se[entry[2]])
+				local key = tostring(entry[1]) .. "\0" .. entry[2]
+				se_out[key], se_sig[key] = { entry[1], entry[2], packed, entry[4] }, packed
+			end -- retain tombstones and the source stamp, with the restored snapshot's authoritative value
+		end
+		item_retry[tx.source] = true
+	end
+	return true
+end
+
+function clone_pending(id) return clone_busy[id] == true end
+
+function clone_adopt(id, packed)
+	local snapshot = clone_decode(packed)
+	local m = m_data()
+	if not snapshot or not m or type(snapshot.se._coop_instance) ~= "string" then return false end
+	local current = m.se_object[id] and m.se_object[id]._coop_instance
+	if current and current ~= snapshot.se._coop_instance then return false end
+	m.se_object[id] = m.se_object[id] or {}
+	for key in pairs(SE_HOST_ONLY) do m.se_object[id][key] = snapshot.se[key] end
+	clone_retired[id] = nil
+	clone_purge(id)
+	for key, value in pairs(m.se_object[id]) do
+		if key ~= "name" and not SE_HOST_ONLY[key] then se_queue(id, key, value) end
+	end
+	return true
+end
+
+function clone_reset()
+	clone_busy, clone_transactions, clone_retired = {}, {}, {}
+	item_retry = {}
+	clone_storage = m_data()
+end
 -- GAMMA's alife_clone_weapon (_g.script) copies m_data.se_object[old] to the clone directly; only item_parts.copy_parts_con
 -- goes through se_save_var. Every var of the clone the others do not have yet goes out with the next flush.
 function after_clone(old_id, new_id)
+	if clone_busy[new_id] then return end
 	local m = m_data()
 	local tbl = m and type(m.se_object) == "table" and type(new_id) == "number" and m.se_object[new_id]
 	if type(tbl) ~= "table" then return end
@@ -677,6 +946,7 @@ end
 
 local function actor_on_update()
 	if not core.live() then return end
+	if clone_storage ~= m_data() then clone_reset() end
 	local t = core.now()
 	if t >= se_next_flush then
 		se_next_flush = t + FLUSH_MS

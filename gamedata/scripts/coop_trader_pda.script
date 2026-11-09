@@ -1,0 +1,46 @@
+-- Personal and group numbers in the existing faction-goodwill cells.
+local api = rawget(_G, "coop")
+local installed = false
+
+function apply(window)
+	if not (api and api.is_active()) then return end
+	local reputation = coop_trader_reputation
+	reputation.refresh()
+	for i, faction in ipairs(window.list or {}) do
+		local cell = window.relations and window.relations[i] and window.relations[i][0]
+		if cell then
+			local position = cell:GetWndPos()
+			cell:SetWndPos(vector2():set(position.x, position.y + (cell:GetHeight() - 34) / 2))
+			cell:SetWndSize(vector2():set(75, 34))
+			cell:SetTextComplexMode(true)
+			cell:SetFont(GetFontSmall())
+			local personal = relation_registry.community_goodwill(faction, AC_ID)
+			local value, count = reputation.average(faction)
+			local average = "-"
+			if type(value) == "number" and value == value and math.abs(value) < math.huge then
+				average = string.format("%.2f", math.floor(value * 100) / 100)
+				average = average:gsub("0+$", ""):gsub("%.$", "")
+			end
+			local text = game.translate_string("st_coop_trader_pda_value")
+			if text == "st_coop_trader_pda_value" then text = "You %d\\nGrp. %s (%d)" end
+			cell:SetText(string.format(text, personal, average, count))
+		end
+	end
+end
+
+function on_game_start()
+	if not api or installed then return end
+	local ok, module = pcall(function() return ui_pda_relations_tab end)
+	local class = ok and module and module.pda_relations_tab
+	if not class then return end
+	installed = true
+	for _, name in ipairs({ "Reset", "autoupdate" }) do
+		local original = class[name]
+		if type(original) == "function" then
+			class[name] = function(self, ...)
+				original(self, ...)
+				apply(self)
+			end
+		end
+	end
+end

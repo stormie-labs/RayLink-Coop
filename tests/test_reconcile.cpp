@@ -812,7 +812,9 @@ TEST(reconcile_a_skipped_spawn_is_tried_again)
 	size_t adds = 0;
 	for (size_t at = body.find("g_id_retry.add"); at != npos; at = body.find("g_id_retry.add", at + 1))
 		++adds;
-	CHECK_EQ(adds, size_t(2)); // a local object holds the id, the generator has it taken
+	CHECK_EQ(adds, size_t(3)); // deferred initial metadata, a local object, or a reserved generator id
+	const std::string staged = between(body, "!requests::stage_clone_initial", "g_id_retry.done");
+	CHECK(staged.find("g_id_retry.add") != npos);
 	CHECK(body.find("g_id_retry.done") != npos);
 }
 

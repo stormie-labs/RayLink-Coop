@@ -1,0 +1,172 @@
+-- One host-owned snapshot source for trader supplies and the PDA. Restock stays with trade_manager.
+local api = rawget(_G, "coop")
+local STORE = "coop_trader_reputation"
+local VIEW = "coop_trader_goodwill"
+local book = nil
+local next_poll = 0
+local installed = false
+local personal_goodwill = nil
+
+local function state() return coop_trader_state end
+local function active() return api and api.is_active() == true end
+local function host() return active() and api.is_host() == true end
+
+local function storage()
+	local asm = rawget(_G, "alife_storage_manager")
+	return asm and asm.get_state and asm.get_state()
+end
+
+local function clock()
+	local ok, value = pcall(os.time)
+	if ok and type(value) == "number" and value > 0 and value < math.huge and value == math.floor(value) then return value end
+end
+
+local function key_of(id, player)
+	local ok, key = pcall(function()
+		-- Native actor 0 has no key line. Resolve its actual player identity through the public API.
+		if player.is_self then
+			local sync = api.sync
+			if sync and type(sync.player_digest) == "function" then return sync.player_digest(player.id) end
+			return nil
+		end
+		local entity = alife_object(id)
+		local ini = entity and entity:spawn_ini()
+		if ini and ini:section_exist("coop") and ini:line_exist("coop", "key") then return ini:r_string("coop", "key") end
+	end)
+	return ok and state().valid_key(key) and key or nil
+end
+
+function refresh()
+	if not host() then return end
+	local m, now = storage(), clock()
+	if not m then return end
+	book = book or state().restore(m[STORE])
+	local view = { count = 0, means = {}, observed = now }
+	if now then
+		local online, incomplete = {}, false
+		local factions = game_relations.factions_table
+		for _, player in ipairs(api.players()) do
+			local id = player.is_self and 0 or player.avatar_id
+			local key = id and key_of(id, player)
+			if key then
+				local values = {}
+				for _, faction in ipairs(factions) do
+					local ok, value = pcall(relation_registry.community_goodwill, faction, id)
+					if ok then values[faction] = value end
+				end
+				state().observe(book, key, now, values)
+				online[key] = true
+			elseif id then
+				incomplete = true
+			end
+		end
+		if not incomplete then
+			for _, faction in ipairs(factions) do
+				local value, count = state().average(book, faction, now, online)
+				view.means[faction], view.count = value, count
+			end
+		end
+	end
+	m[VIEW] = view
+end
+
+function average(faction)
+	if not active() then return nil, 0 end
+	local m = storage()
+	local view = m and m[VIEW]
+	if type(view) ~= "table" or type(view.means) ~= "table" then return nil, 0 end
+	local count = view.count
+	if type(count) ~= "number" or count < 0 or count ~= math.floor(count) or count == math.huge then return nil, 0 end
+	return view.means[faction], count
+end
+
+function goodwill_ge(actor, npc, params)
+	if not active() then return personal_goodwill(actor, npc, params) end
+	local threshold = params and tonumber(params[2])
+	if not threshold or threshold ~= threshold or math.abs(threshold) == math.huge then return false end
+	local value, count = average(params[1])
+	return count > 0 and type(value) == "number" and value == value and math.abs(value) < math.huge and value >= threshold
+end
+
+function tier_ge(actor, npc, params)
+	if not active() then return true end
+	for i = 1, #(params or {}), 2 do
+		if goodwill_ge(actor, npc, { params[i], params[i + 1] }) then return true end
+	end
+	return false
+end
+
+-- A wealth branch in a reputation-gated profile must also have the same tier's group access.
+-- Keep the original achievement call and every toolkit/quest condition in the selected clause.
+function rewrite_supplies(source)
+	local tiers = {}
+	for condition, result in source:gmatch("(%b{})([^,]+)") do
+		local section = result:match("^%s*([^%s%%]+)")
+		for faction, threshold in condition:gmatch("=actor_goodwill_ge%(([%w_]+):([^%)]+)%)") do
+			tiers[section] = tiers[section] or {}
+			table.insert(tiers[section], faction .. ":" .. threshold)
+		end
+	end
+	if next(tiers) then
+		source = source:gsub("(%b{})([^,]+)", function(condition, result)
+			if condition:find("=heavy_pockets_functor%(") then
+				local section = result:match("^%s*([^%s%%]+)")
+				local args = table.concat(tiers[section] or {}, ":")
+				condition = condition:sub(1, -2) .. " =coop_trader_tier_ge(" .. args .. ")}"
+			end
+			return condition .. result
+		end)
+	end
+	return source:gsub("%f[%w_]actor_goodwill_ge%f[^%w_]", "coop_trader_goodwill_ge")
+end
+
+function save_state(m)
+	if api and api.is_client() then return end
+	refresh()
+	if api and api.saving_for_join and api.saving_for_join() then
+		m[STORE] = nil
+	else
+		m[STORE] = state().restore(book)
+	end
+end
+
+function load_state(m)
+	if api and api.is_client() then return end
+	book = state().restore(m[STORE])
+end
+
+local function update()
+	if not active() then return end
+	local now = time_global()
+	if now >= next_poll then
+		next_poll = now + 1000
+		refresh()
+	end
+end
+
+function install()
+	if installed then return end
+	installed = true
+	personal_goodwill = xr_conditions.actor_goodwill_ge
+	xr_conditions.coop_trader_goodwill_ge = goodwill_ge
+	xr_conditions.coop_trader_tier_ge = tier_ge
+	local parse = xr_logic.parse_condlist
+	xr_logic.parse_condlist = function(npc, section, field, source, ...)
+		if field == "buy_supplies" and type(source) == "string" then
+			refresh()
+			source = rewrite_supplies(source)
+		end
+		return parse(npc, section, field, source, ...)
+	end
+	coop_economy_mdata.register_world_key(VIEW)
+end
+
+function on_game_start()
+	if not api then return end
+	book = nil
+	next_poll = 0
+	install()
+	RegisterScriptCallback("save_state", save_state)
+	RegisterScriptCallback("load_state", load_state)
+	RegisterScriptCallback("actor_on_update", update)
+end

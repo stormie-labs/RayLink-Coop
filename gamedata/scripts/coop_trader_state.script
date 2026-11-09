@@ -1,0 +1,51 @@
+-- Persistent faction goodwill snapshots, keyed by stable player digests.
+WINDOW = 72 * 60 * 60
+
+local function number(value)
+	return type(value) == "number" and value == value and value > -math.huge and value < math.huge
+end
+
+local function timestamp(value)
+	return number(value) and value > 0 and value == math.floor(value)
+end
+
+function valid_key(key)
+	return type(key) == "string" and #key == 64 and key:match("^[0-9a-f]+$") ~= nil
+end
+
+function observe(book, key, seen, goodwill)
+	if not valid_key(key) or not timestamp(seen) or type(goodwill) ~= "table" then return false end
+	local values = {}
+	for faction, value in pairs(goodwill) do
+		if type(faction) == "string" and number(value) and value >= -2147483648 and value <= 2147483647 then
+			values[faction] = value
+		end
+	end
+	book.players[key] = { last_seen = seen, goodwill = values }
+	return true
+end
+
+function restore(saved)
+	local book = { v = 1, players = {} }
+	if type(saved) == "table" and (saved.v == nil or saved.v == 1) and type(saved.players) == "table" then
+		for key, row in pairs(saved.players) do
+			if type(row) == "table" then observe(book, key, row.last_seen, row.goodwill) end
+		end
+	end
+	return book
+end
+
+function average(book, faction, now, online)
+	if not timestamp(now) or type(faction) ~= "string" then return nil, 0 end
+	local sum, count, incomplete = 0, 0, false
+	for key, row in pairs(book.players) do
+		local age = now - row.last_seen
+		if (online and online[key]) or (age >= 0 and age < WINDOW) then
+			count = count + 1
+			local value = row.goodwill[faction]
+			if number(value) then sum = sum + value else incomplete = true end
+		end
+	end
+	if count == 0 or incomplete then return nil, count end
+	return sum / count, count
+end

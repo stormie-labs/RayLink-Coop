@@ -157,7 +157,7 @@ TEST(debug_state_is_a_message_of_the_world_server_to_everybody)
 	CHECK(level_passes(Msg::DebugState, true, false)); // and every player, whatever level he is on
 	CHECK(link_enabled(Msg::DebugState)); // the host player gets it over the internal channel, as every client
 	CHECK(wgate::need_of(Msg::DebugState) == wgate::Need::Free); // kept, applied without a world
-	CHECK_EQ(kProtocolVersion, 29u); // 29: DebugState
+	CHECK_EQ(kProtocolVersion, 30u); // 30: atomic weapon replacement and initial spawn metadata
 }
 
 // ============================================================================ the receiver
