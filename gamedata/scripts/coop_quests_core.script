@@ -326,6 +326,13 @@ function far_body(peer, avatar_id)
 	return setmetatable({ se.position, se.m_level_vertex_id, se.m_game_vertex_id, avatar_id, far = true }, far_body_class)
 end
 
+-- A saved character still owns its rewards and goodwill when its player is disconnected.
+function body_for_character(id)
+	local se = alife_object(id)
+	if not se then return nil end
+	return setmetatable({ se.position, se.m_level_vertex_id, se.m_game_vertex_id, id, far = true }, far_body_class)
+end
+
 -- Every player's character wherever he stands: characters(), and a far_body for those on other levels.
 function bodies()
 	local out = characters()

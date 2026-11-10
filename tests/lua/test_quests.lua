@@ -7,6 +7,13 @@ local SCRIPTS = { "coop_quests_core", "coop_tasks", "coop_quests_offer", "coop_q
 -- ---------------------------------------------------------------- world setup (same on both machines)
 local function setup_world(M)
 	local e = M.env
+	M.reputation = 0
+	e.game_statistics = { increment_reputation = function(n) M.reputation = M.reputation + n end }
+	e.xr_effects.decrease_rep = function(a, n, p) e.game_statistics.increment_reputation(-tonumber(p[1])) end
+	M.goodwill = {}
+	e.xr_effects.dec_faction_goodwill_to_actor = function(a, n, p)
+		M.goodwill[a:id()] = (M.goodwill[a:id()] or 0) - tonumber(p[2])
+	end
 	-- task ini
 	M.ini.bounty_t = { on_job_descr = "%=setup_bounty_task(bounty_t)%", job_descr = "bounty_t_descr" }
 	M.ini.fetch_t = { fetch_descr = "fetch_t_fetch_descr", fetch_func = "%=setup_fetch_task(fetch_t_fetch:x:1:2)%", job_descr = "fetch_t_job" }
@@ -337,6 +344,32 @@ gr = grants(Hm)
 check(Hm.actor._money == hm0 and Cm.actor._money == cm0 and #gr == 2 and gr[2][1] == 1 and gr[2][2] == 100,
 	"task reward only to the player who turned it in (coop.money_grant(1, 100))")
 -- world spawns
+local hr, cr = Hm.reputation, Cm.reputation
+Hm.env.xr_logic.pick_section_from_condlist(nil, nil, { src = "%=decrease_rep(100)%" })
+pump()
+check(Hm.reputation == hr - 100 and Cm.reputation == cr - 100, "story decision reputation belongs to the group")
+local saw_reliable = false
+for _, message in ipairs(Hm.sent) do
+	if message.name == "coop_trw" and message.payload:find("f=srept", 1, true) and message.payload:find("q=n", 1, true) then saw_reliable = true end
+end
+check(saw_reliable, "story decision uses acknowledged effects rather than an untracked relay")
+do
+	local map = machine("client", 0x102)
+	setup_world(map)
+	map.env.coop.is_map_server = function() return true end
+	map.players = {{id=0,avatar_id=10},{id=1,avatar_id=500}}
+	boot(map); pump()
+	map.env.xr_logic.pick_section_from_condlist(nil, nil, {src="%=dec_faction_goodwill_to_actor(dolg:50)%"})
+	pump()
+	check(Hm.goodwill[0] == -50 and Hm.goodwill[500] == -50,
+		"story faction penalty on another level reaches every participant through world host")
+	local before = Cm.reputation
+	map.env.coop_tasks.with_character(500, function()
+		map.env.xr_logic.pick_section_from_condlist(nil, nil, {src="%=decrease_rep(20)%"})
+	end)
+	pump()
+	check(Cm.reputation == before - 20, "personal map-server effect is not swallowed by shared story relay")
+end
 print("== story world spawns")
 local spawned = {}
 Hm.env.xr_effects.spawn_strelok_notes = function() spawned.host = (spawned.host or 0) + 1 end

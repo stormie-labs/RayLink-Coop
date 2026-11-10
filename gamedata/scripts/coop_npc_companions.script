@@ -649,7 +649,13 @@ local function host_on_cmd(t, from)
 	if not squad then push_info(npc, nil) end
 end
 
--- The proxy leading this NPC's squad, or nil (no leader, the host leads, or the proxy is gone).
+-- Persistent character identity: a disconnected leader's peer slot may already be reused.
+function owner_character(npc)
+	local squad = npc and squad_of(npc)
+	if not squad or not is_companion_squad(squad) then return nil end
+	return leaders[squad.id] or 0
+end
+
 function leader_of(npc)
 	local squad = squad_of(npc)
 	local id = squad and leaders[squad.id]

@@ -164,6 +164,8 @@ end
 -- Condlist rewards: client skip, host share
 -------------------------------------------------------------------------------
 local in_reward = false
+local PERSONAL_STORY = { increase_rep = true, decrease_rep = true,
+	inc_faction_goodwill_to_actor = true, dec_faction_goodwill_to_actor = true }
 
 local function share_reward(name, p)
 	local rule = SHARE[name]
@@ -198,14 +200,29 @@ local function patch_condlist_effects()
 					end
 					return orig(actor, npc, p, ...)
 				end
-				if qc.is_map_server() and SHARE[name] ~= nil then
+				if qc.is_map_server() and (SHARE[name] ~= nil or PERSONAL_STORY[name]) then
 					-- its actor is a ghost: the reward of the group is the world server's to hand out
-					if qc.in_condlist() and story_scope() then qc.send("share", params_flat(p, { f = name }), 0) end
-					return
+					if qc.in_condlist() and story_scope() then
+						qc.send("share", params_flat(p, { f = name }), 0)
+						return
+					end
+					-- Explicit personal scopes use their own authority/acknowledged delivery.
+					if not PERSONAL_STORY[name] then return end
 				end
 				-- host: the outermost reward of a story condlist goes to everybody
-				local share = not in_reward and qc.in_condlist() and SHARE[name] ~= nil
+				local share = not in_reward and qc.in_condlist() and (SHARE[name] ~= nil or PERSONAL_STORY[name])
 					and qc.host_party() and story_scope()
+				if share and PERSONAL_STORY[name] then
+					-- Only these numeric personal effects repeat. The surrounding story/world logic runs once.
+					local ids, args = ct().participant_ids(), { ... }
+					for _, id in ipairs(ids) do
+						ct().with_character(id, function()
+							local body = ct().recipient_body(ct().reward_peer() or 0)
+							if body then return orig(body, npc, p, unpack(args)) end
+						end)
+					end
+					return
+				end
 				local prev = in_reward
 				in_reward = true
 				local res = { pcall(orig, actor, npc, p, ...) }
@@ -223,10 +240,20 @@ end
 
 -- World server: a condlist on a map server's level gave a story reward.
 local function host_on_share(t, from)
-	if not qc.is_host() or type(from) ~= "number" or from < 0x100 or type(t.f) ~= "string" or SHARE[t.f] == nil then return end
+	if not qc.is_host() or type(from) ~= "number" or from < 0x100 or type(t.f) ~= "string"
+		or (SHARE[t.f] == nil and not PERSONAL_STORY[t.f]) then return end
 	local f = qc.mod("xr_effects") and xr_effects[t.f]
 	if type(f) ~= "function" then return end
 	local p = params_of(t)
+	if PERSONAL_STORY[t.f] then
+		for _, id in ipairs(ct().participant_ids()) do
+			ct().with_character(id, function()
+				local body = ct().recipient_body(ct().reward_peer() or 0)
+				if body then f(body, nil, p) end
+			end)
+		end
+		return
+	end
 	f(db.actor, nil, p)
 	share_reward(t.f, p)
 end

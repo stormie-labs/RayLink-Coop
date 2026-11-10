@@ -106,7 +106,6 @@ local SYNC_RETRY_MS = 10000
 local PENDING_MS = 15000 -- provisional give / optimistic turn-in without an answer from the host
 local MAX_STATE = 12000 -- characters of one state message (event payload limit is 16 KiB)
 local LIST_IDS = 200 -- tasks in one part of the digest list
-local MAX_WAITING_FX = 64 -- effects kept for one player until his machine answers
 local DEAD_UPDATE_MS = 500 -- task_manager:update while the actor is dead (the stock binder: every frame)
 
 local CONTAINERS = { "lead_box", "af_aam", "af_aac", "af_iam" } -- artefact containers (stock suffixes)
@@ -479,6 +478,13 @@ local host = {
 	fx_seq = 0,
 	fx_wait = {}, -- effect_key(peer) -> { { q, s }, ... } effects his machine has not answered yet
 	char_of = {}, -- peer -> his character (it outlives the peer: a player who left, a reconnect)
+	taker_char = {}, -- task -> persistent character; a reconnect can reuse the peer slot
+	participants = {}, -- task -> character ids captured when the task is accepted
+	failure_participants = {}, -- a missed deadline is a group consequence even with individual item rewards
+	map_seen = {},
+	fines = {}, -- character -> pending guide fine; never a reusable peer slot
+	map_epoch = tostring(os.time()) .. ":" .. tostring(time_global()) .. ":" .. tostring({}),
+	map_retry = 0,
 	give_near = nil, -- object of the condlist effect that is giving a task
 	next_dead_update = 0,
 }
@@ -505,6 +511,45 @@ local function avatar_obj(peer)
 	if peer == 0 or peer == self_peer() then return db.actor end
 	local ok, id = pcall(api.avatar_of, peer)
 	return ok and id and (level.object_by_id(id) or far_of(peer, id)) or nil
+end
+
+function character_of(peer)
+	if ctx and ctx.rcpt == peer and ctx.character ~= nil then return ctx.character end
+	if peer == 0 then return 0 end
+	local rg = reward_group()
+	local id = rg and rg.id_of(peer)
+	if id == nil and api.avatar_of then id = api.avatar_of(peer) end
+	if id ~= nil then host.char_of[peer] = id end
+	return id or host.char_of[peer]
+end
+
+function peer_for_character(id)
+	if id == 0 then return 0 end
+	for _, p in ipairs(players()) do if p.avatar_id == id then return p.id end end
+	local rg = reward_group()
+	for _, m in ipairs(rg and rg.list() or {}) do if m.id == id then return m.peer end end
+end
+
+function recipient_body(peer)
+	local id = character_of(peer)
+	if id == 0 then
+		local p = rawget(_G, "coop_npc_players")
+		return p and p.own_actor and p.own_actor() or db.actor
+	end
+	if id == nil then return nil end
+	local o = level.object_by_id(id)
+	if o then return o end
+	local qc = _G.coop_quests_core
+	return qc and qc.body_for_character and qc.body_for_character(id)
+end
+
+function participant_ids()
+	local ids, seen = {}, {}
+	for _, p in ipairs(players()) do
+		local id = p.is_self and self_peer() == 0 and 0 or p.avatar_id
+		if id ~= nil and not seen[id] then ids[#ids + 1], seen[id] = id, true end
+	end
+	return ids
 end
 
 function peer_in_session(peer) -- not local: the chunk is at Lua's limit of 200 with the engine's two (test_engine_header)
@@ -970,32 +1015,32 @@ local function send_reward(peer, t)
 	if send(EV_REWARD, pack(t), peer) then stats.rewards_routed = stats.rewards_routed + 1 end
 end
 
--- The key of a player's waiting effects: his character (it outlives a reconnect), else the peer.
+-- The key of a player's waiting effects is his character, never a reusable peer slot.
 local function effect_key(peer)
-	local rg = reward_group()
-	return rg and rg.id_of(peer) or host.char_of[peer] or peer
+	return character_of(peer)
 end
 
 -- Host: an effect on a player's own character, run by his machine. It waits for his answer and goes out again on his next
 -- sync: a level change or a reconnect right after the turn-in would lose it (client_on_reward needs an actor), and money
 -- may already have been taken for it. The host's save keeps what waits (save_effects).
 local function send_effect(peer, t)
+	local key = effect_key(peer)
+	if key == nil then report("effect", "recipient character is unknown"); return end
 	host.fx_seq = host.fx_seq + 1
 	t.q = host.fx_seq
 	if t.t == nil and ctx then t.t = ctx.task end
+	local map_server = api.is_map_server and api.is_map_server() == true
+	if map_server then t.i, t.e = key, host.map_epoch end
 	local s = pack(t)
-	local key = effect_key(peer)
 	local wait = host.fx_wait[key]
 	if not wait then
 		wait = {}
 		host.fx_wait[key] = wait
 	end
-	if #wait >= MAX_WAITING_FX then
-		log("! #%s does not answer: effect %s dropped", tostring(peer), tostring(wait[1].s))
-		table.remove(wait, 1)
-	end
 	wait[#wait + 1] = { q = t.q, s = s }
-	if send(EV_REWARD, s, peer) then stats.rewards_routed = stats.rewards_routed + 1 end
+	if map_server then send("coop_rep_map", s, 0); return end
+	local online = peer_for_character(key)
+	if online and online ~= 0 and send(EV_REWARD, s, online) then stats.rewards_routed = stats.rewards_routed + 1 end
 end
 
 local function host_on_effect_ack(payload, from)
@@ -1035,6 +1080,27 @@ local function grant_money(peer, n)
 		return false
 	end
 	send_reward(peer, { k = "mn", n = whole })
+	return true
+end
+
+function flush_fines()
+	if not is_host() then return end
+	for id, owed in pairs(host.fines) do
+		local peer = peer_for_character(id)
+		local balance = peer ~= nil and api.money_of and api.money_of(peer)
+		if type(balance) == "number" then
+			local amount = math.min(owed, math.max(0, balance))
+			if amount == 0 or grant_money(peer, -amount) then host.fines[id] = nil end
+		end
+	end
+end
+
+-- Offline guide fines wait for that character; another player reusing his peer pays nothing.
+function fine_character(id, amount)
+	if not is_host() or type(id) ~= "number" or id < 0 or id >= 65535 or id % 1 ~= 0
+		or type(amount) ~= "number" or amount ~= amount or amount <= 0 or amount == math.huge then return false end
+	host.fines[id] = (host.fines[id] or 0) + math_floor(amount)
+	flush_fines()
 	return true
 end
 
@@ -1177,7 +1243,6 @@ local function host_task_callback(orig, tsk, state)
 	local rtask = tm and tm.task_info and tm.task_info[id]
 	local cancelled = is_task(rtask) and rtask.cancelled_by_actor == true
 	host.finisher[id] = nil
-	if rcpt ~= 0 and not avatar_obj(rcpt) then rcpt = 0 end -- left the game: the host takes it
 	local mode = state == task.completed and reward_mode() or 0
 	local share = mode ~= 0
 	local everyone = mode == EVERYONE_SHARED or mode == EVERYONE_FULL
@@ -1185,6 +1250,11 @@ local function host_task_callback(orig, tsk, state)
 	-- (coop_quests_story) took its on_complete rewards for a story condlist and paid every client too
 	local prev = ctx
 	ctx = { task = id, rcpt = rcpt, share = share, by = by, cancelled = cancelled, owner = owner }
+	ctx.character = by == nil and host.taker_char[id] or character_of(rcpt)
+	if not cancelled then
+		ctx.personal = state == task.fail and host.failure_participants[id] or host.participants[id]
+		if ctx.personal == nil and host.taker_char[id] ~= nil then ctx.personal = { host.taker_char[id] } end
+	end
 	if everyone then
 		ctx.group, ctx.full = reward_group().list(), mode == EVERYONE_FULL
 		ctx.given, ctx.counted = {}, {}
@@ -1200,6 +1270,13 @@ end
 
 -- The client whose character the rank and reputation being changed now belong to, or nil: the host's.
 local function stat_peer()
+	-- Peer zero on a map server is the real host player, not this process's ghost actor.
+	if ctx and ctx.character == 0 and api.is_map_server and api.is_map_server() then return 0 end
+	local p = rawget(_G, "coop_npc_players")
+	if ctx == nil and p and p.in_identity and p.in_identity() then
+		local peer = p.peer_of(db.actor)
+		if peer ~= nil then return peer ~= 0 and peer or nil end
+	end
 	if ctx == nil then return nil end
 	if ctx.owner ~= nil and ctx.owner ~= 0 then return ctx.owner end
 	return rcpt_client()
@@ -1208,6 +1285,10 @@ end
 -- Client peer the effects being run now are keyed to (items into its character, news to it), or nil.
 function reward_peer()
 	return ctx ~= nil and ctx.rcpt ~= 0 and ctx.rcpt or nil
+end
+
+function personal_character()
+	return ctx and ctx.character
 end
 
 function active_of(peer)
@@ -1222,12 +1303,53 @@ end
 -- Host: runs fn with the effects keyed to the actor (items, news, money, goodwill) going to `peer`.
 function with_recipient(peer, fn, ...)
 	peer = tonumber(peer)
-	if ctx ~= nil or not is_host() or not peer or peer == 0 or not avatar_obj(peer) then return fn(...) end
-	ctx = { task = "", rcpt = peer, share = false, status = true }
+	if not is_host() and not (active() and api.is_map_server and api.is_map_server()) then return fn(...) end
+	if not peer or peer < 0 or peer % 1 ~= 0 then
+		report("recipient", "missing or invalid player; personal effects were not applied")
+		return
+	end
+	-- A player can be loading or disconnected while a timer fires. Keep his address:
+	-- send_effect persists statistics until he acknowledges them. Never substitute the host.
+	-- An explicit nested scope (including peer 0) must temporarily replace the outer recipient.
+	local id, previous = character_of(peer), ctx
+	ctx = { task = previous and previous.task or "", rcpt = peer, owner = peer, character = id, share = false, status = true }
 	local res = { pcall(fn, ...) }
-	ctx = nil
+	ctx = previous
 	if not res[1] then error(res[2], 0) end
 	return unpack(res, 2)
+end
+
+function with_character(id, fn, ...)
+	if type(id) ~= "number" or id < 0 then return end
+	local peer, previous = peer_for_character(id), ctx
+	ctx = { task = previous and previous.task or "", rcpt = peer or -1, owner = peer or -1,
+		character = id, share = false, status = true }
+	local p = rawget(_G, "coop_npc_players")
+	local result
+	if id == 0 and p and p.in_identity and p.in_identity() then
+		result = { pcall(p.with_identity, p.own_actor(), fn, ...) }
+	else result = { pcall(fn, ...) } end
+	ctx = previous
+	if not result[1] then error(result[2], 0) end
+	return unpack(result, 2)
+end
+
+function each_personal(fn, ...)
+	if not (ctx and ctx.personal and #ctx.personal > 0) then return false end
+	for _, id in ipairs(ctx.personal) do with_character(id, fn, ...) end
+	return true
+end
+
+-- Execute world logic once, distributing only its personal reputation/statistic/goodwill effects.
+function with_participants(ids, peer, fn, ...)
+	if not is_host() and not (active() and api.is_map_server and api.is_map_server()) then return fn(...) end
+	local previous = ctx
+	ctx = { task = previous and previous.task or "", rcpt = peer or 0, owner = peer or 0,
+		character = character_of(peer or 0), personal = ids, share = false, status = true }
+	local result = { pcall(fn, ...) }
+	ctx = previous
+	if not result[1] then error(result[2], 0) end
+	return unpack(result, 2)
 end
 
 -- Host: a task's status / target functors run with the actor's effects going to the player who took it
@@ -1235,8 +1357,9 @@ end
 function with_task_owner(id, fn, ...)
 	if ctx ~= nil or not is_host() or type(id) ~= "string" then return fn(...) end
 	local t = host.taker[id]
-	if not t or t == 0 or not avatar_obj(t) then return fn(...) end
-	ctx = { task = id, rcpt = t, share = false, status = true }
+	if t == nil then return fn(...) end
+	ctx = { task = id, rcpt = t, owner = t, character = host.taker_char[id] or character_of(t), share = false, status = true,
+		personal = host.participants[id] }
 	-- a functor can make a companion by writing the stock table itself (tasks_agent_rescue): what it added is the taker's
 	local comp = rawget(_G, "coop_npc_companions")
 	local before = comp and comp.squads_now and comp.squads_now()
@@ -1258,8 +1381,9 @@ local function patch_statistics()
 	local count = gs.increment_statistic
 	if type(count) == "function" then
 		gs.increment_statistic = function(name, custom_rank, custom_rept)
+			if TASK_STATS[name] and each_personal(gs.increment_statistic, name, custom_rank, custom_rept) then return end
 			local peer = stat_peer()
-			if not (peer and TASK_STATS[name]) then return count(name, custom_rank, custom_rept) end
+			if not peer then return count(name, custom_rank, custom_rept) end
 			send_effect(peer, { k = "stat", f = name, r = tonumber(custom_rank), p = tonumber(custom_rept) })
 		end
 	end
@@ -1267,6 +1391,7 @@ local function patch_statistics()
 		local orig = gs[fname]
 		if type(orig) == "function" then
 			gs[fname] = function(value)
+				if what == "rept" and each_personal(gs[fname], value) then return end
 				local peer = stat_peer()
 				if not peer then return orig(value) end
 				send_effect(peer, { k = "stat", f = what, n = tonumber(value) or 0 })
@@ -1346,8 +1471,10 @@ local function patch_rewards()
 			end
 			local peer = rcpt_client()
 			if peer and is_my_actor(obj) then
-				local o = avatar_obj(peer)
+				local o = recipient_body(peer)
 				if o then return create(section, o, t) end
+				report("item reward", "recipient character unavailable: " .. tostring(character_of(peer)))
+				return -- never create a client's item in the host's inventory
 			end
 			return create(section, obj, t)
 		end
@@ -1386,9 +1513,10 @@ local function patch_rewards()
 			local orig = xe[fname]
 			if type(orig) == "function" then
 				xe[fname] = function(actor, npc, p)
+					if is_my_actor(actor) and each_personal(xe[fname], actor, npc, p) then return end
 					local peer = rcpt_client()
 					if peer and type(p) == "table" and is_my_actor(actor) then
-						local o = avatar_obj(peer)
+						local o = recipient_body(peer)
 						if o then
 							local r = orig(o, npc, { p[1], p[2] }) -- no message on the host
 							if p[3] and p[1] then
@@ -1397,6 +1525,8 @@ local function patch_rewards()
 							end
 							return r
 						end
+						report("goodwill", "recipient character unavailable: " .. tostring(character_of(peer)))
+						return
 					end
 					return orig(actor, npc, p)
 				end
@@ -1447,6 +1577,7 @@ local function patch_rewards()
 			if type(orig) == "function" then
 				xe[fname] = function(actor, npc, p)
 					local peer = rcpt_client()
+					if ctx and ctx.character == 0 and api.is_map_server and api.is_map_server() then peer = 0 end
 					if peer and ctx.unpaid then
 						log("'%s': %s skipped, the task was not paid", tostring(ctx.task), fname)
 						return
@@ -2254,7 +2385,7 @@ local function apply_stat(t)
 		gs.increment_rank(tonumber(t.n) or 0)
 	elseif t.f == "rept" then
 		gs.increment_reputation(tonumber(t.n) or 0)
-	elseif TASK_STATS[t.f] then
+	elseif type(t.f) == "string" then
 		gs.increment_statistic(t.f, tonumber(t.r), tonumber(t.p))
 	end
 end
@@ -2583,6 +2714,9 @@ local function patch_task_manager()
 				if who == nil and ctx == nil and has_clients() then host.taker[id] = nearest_taker(giver) end
 				host.taker_note[id] = nil
 				host.finisher[id] = nil
+				host.taker_char[id] = character_of(host.taker[id])
+				host.participants[id] = reward_mode() >= EVERYONE_SHARED and participant_ids() or nil
+				host.failure_participants[id] = participant_ids()
 				-- the engine makes every new task the active one: a task another player took leaves the host's alone
 				local keep = nil
 				if host.taker[id] ~= 0 then keep = select(2, active_task(self)) end
@@ -2590,8 +2724,7 @@ local function patch_task_manager()
 				if ctx == nil then
 					-- W5: on_init (start items, PDAs) is the taker's, not a story reward for the whole group
 					local t = host.taker[id]
-					if t ~= 0 and not avatar_obj(t) then t = 0 end
-					ctx = { task = id, rcpt = t, share = false }
+					ctx = { task = id, rcpt = t, character = host.taker_char[id], share = false }
 				end
 				local res = { pcall(orig, self, id, giver, ...) }
 				ctx = prev_ctx
@@ -2755,8 +2888,15 @@ local next_tick = 0
 local function actor_on_update()
 	if not api then return end
 	local t = now()
+	if api.is_map_server and api.is_map_server() == true and t >= host.map_retry then
+		host.map_retry = t + 1000
+		for _, wait in pairs(host.fx_wait) do
+			for _, e in ipairs(wait) do send("coop_rep_map", e.s, 0) end
+		end
+	end
 	if t < next_tick then return end
 	next_tick = t + 250
+	if is_host() and next(host.fines) ~= nil then flush_fines() end
 	if is_host() then
 		if not has_clients() then return end
 		if t >= host.next_scan then
@@ -2840,6 +2980,38 @@ local function register_events()
 	cm.add_event_handler(EV_NEWS, guarded("task news", client_on_news))
 	cm.add_event_handler(EV_VAR, guarded("shared var", host_on_var))
 	cm.add_event_handler(EV_ACK, guarded("effect answer", host_on_effect_ack))
+	cm.add_event_handler("coop_rep_map_ack", guarded("map effect answer", function(payload, from)
+		if from ~= 0 or not (api.is_map_server and api.is_map_server() == true) then return end
+		local q = tonumber(payload)
+		for _, wait in pairs(host.fx_wait) do
+			for i, e in ipairs(wait) do if e.q == q then table.remove(wait, i); return end end
+		end
+	end))
+	cm.add_event_handler("coop_rep_map", guarded("map personal effect", function(payload, from)
+		if not is_host() or type(from) ~= "number" or from < 0x100 then return end
+		local effect = unpack_payload(payload)
+		if (effect.k ~= "stat" and not (effect.k == "fx" and FORWARD_EFFECTS[effect.f]))
+			or type(effect.f) ~= "string" or #effect.f > 80
+			or type(effect.e) ~= "string" or #effect.e > 100 or type(effect.q) ~= "number" or effect.q < 1 or effect.q % 1 ~= 0
+			or type(effect.i) ~= "number" then return end
+		local member = effect.i == 0
+		for _, p in ipairs(players()) do if p.avatar_id == effect.i then member = true end end
+		local group = reward_group()
+		for _, m in ipairs(group and group.list() or {}) do if m.id == effect.i then member = true end end
+		if not member then return end
+		local q = effect.q
+		local key = tostring(from) .. ":" .. effect.e .. ":" .. tostring(q)
+		if not host.map_seen[key] then
+			with_character(effect.i, function()
+				if effect.i == 0 then
+					if effect.k == "stat" then apply_stat(effect)
+					else xr_effects[effect.f](db.actor, nil, {effect.p1, effect.p2, effect.p3, effect.p4}) end
+				else effect.q, effect.e, effect.i = nil, nil, nil; send_effect(ctx.rcpt, effect) end
+			end)
+			host.map_seen[key] = true
+		end
+		send("coop_rep_map_ack", tostring(q), from)
+	end))
 	cm.add_event_handler(EV_VARS, guarded("shared vars", function(payload, from)
 		if from == 0 and is_client() then client_apply_shared(payload) end
 	end))
@@ -2847,6 +3019,7 @@ end
 
 -- Host: effects nobody answered yet, in the save: a restart of the host must not lose what was already paid for.
 function save_effects(m_data)
+	if is_client() then m_data.coop_task_fx_done = cl.fx_done; return end
 	local wait
 	for key, list in pairs(host.fx_wait) do
 		if #list > 0 then
@@ -2854,13 +3027,23 @@ function save_effects(m_data)
 			wait[key] = list
 		end
 	end
-	m_data.coop_task_fx = wait and { seq = host.fx_seq, wait = wait } or nil
+	m_data.coop_task_fx = { seq = host.fx_seq, wait = wait, characters = host.char_of,
+		takers = host.taker, taker_char = host.taker_char, participants = host.participants,
+		failure_participants = host.failure_participants, map_seen = host.map_seen, fines = host.fines }
 end
 
 function load_effects(m_data)
+	if is_client() then cl.fx_done = m_data.coop_task_fx_done or {}; return end
 	local saved = m_data.coop_task_fx
 	host.fx_seq = saved and saved.seq or 0
 	host.fx_wait = saved and saved.wait or {}
+	host.char_of = saved and saved.characters or {}
+	host.taker = saved and saved.takers or {}
+	host.taker_char = saved and saved.taker_char or {}
+	host.participants = saved and saved.participants or {}
+	host.failure_participants = saved and saved.failure_participants or {}
+	host.map_seen = saved and saved.map_seen or {}
+	host.fines = saved and saved.fines or {}
 	m_data.coop_task_fx = nil
 end
 
@@ -2895,6 +3078,8 @@ end
 
 function on_game_start()
 	if not api then return end
+	local md = _G.coop_economy_mdata
+	if md and md.register_player_key then md.register_player_key("coop_task_fx_done", function() return cl.fx_done end) end
 	if not patched then
 		patched = true
 		local steps = {

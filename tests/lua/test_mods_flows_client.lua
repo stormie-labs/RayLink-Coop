@@ -258,7 +258,11 @@ guitar_anim.play_guitar()
 local song, sraw = sent("mods.song")
 check(song and song.s == "guitar_track_7" and sraw.target == -1, "guitar: the song is announced to everybody")
 check(type(_G.sound_object) == "table" and getmetatable(_G.sound_object).__call ~= nil and sound_object.s3d == 2, "guitar: sound_object restored")
+local removed_rad_effects = {}
+level.remove_pp_effector = function(id) removed_rad_effects[id] = true end
+grok_progressive_rad_damages = { grok_rads = 1, coughing = true, coughing_time = 12345, tg = 100 }
 coop_mods_core.on_actor_revived(0, "medkit")
+check(grok_progressive_rad_damages.grok_rads == 1, "radiation: revive preserves the irradiated body's state")
 local b = zzz_player_injuries
 check(b.health.head == 4 and b.health.torso == 11 and SAVED and SAVED["health.head"] == 4, "BHS: revive lifts head/torso and applies the medkit")
 -- A respawn stands up a fresh body. The engine knows only its own health: the mod's parts stayed, and with a torso or a
@@ -267,6 +271,11 @@ b.health.head, b.health.torso, b.health.leftarm, b.health.rightleg = 0, 0, 0, 2
 b.timedhp.torso, b.timedhp.leftleg = 4, 3
 SAVED = {}
 SendScriptCallback("coop_respawned", "campfire", 600, 10, 0, 7)
+check(grok_progressive_rad_damages.grok_rads == 0 and not grok_progressive_rad_damages.coughing
+	and grok_progressive_rad_damages.coughing_time == 0 and grok_progressive_rad_damages.tg == nil,
+	"radiation: fresh respawn clears the old cough and the flag that blocks BHS damage")
+check(removed_rad_effects[645808] and removed_rad_effects[645820] and not removed_rad_effects[39570],
+	"radiation: clear cough blur, preserve the separate coop contusion")
 local whole = true
 for _, k in ipairs({ "head", "torso", "leftarm", "rightarm", "leftleg", "rightleg" }) do
 	whole = whole and b.health[k] == b.maxhp[k] and b.timedhp[k] == 0 and SAVED["health." .. k] == b.maxhp[k]

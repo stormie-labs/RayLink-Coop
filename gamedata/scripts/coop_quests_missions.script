@@ -195,7 +195,10 @@ end
 local AFTER_RELAY = {
 	["tasks_guide.activate"] = function(from)
 		local job = guide_table("curr_guid")
-		if job then job.coop_taker = from end
+		if job then
+			job.coop_taker = from
+			job.coop_character = ct().character_of(from)
+		end
 	end,
 }
 
@@ -674,24 +677,51 @@ local function patch_guide_offer()
 	end
 end
 
--- The late job's reputation and fine are the taker's: his ledger stands in for the host's money.
+-- Reputation is shared with the job's participants; its money fine belongs to the taker.
 local function patch_guide_timers()
 	local m = qc.mod("tasks_guide")
-	for _, name in ipairs({ "fail_partial_late", "fail_complete_late" }) do
+	local activate = m and m.activate
+	if type(activate) == "function" then
+		m.activate = function(...)
+			local result = { activate(...) }
+			if qc.is_host() then
+				local job = guide_table("curr_guid")
+				if job then
+					job.coop_taker = ct().reward_peer() or 0
+					job.coop_character = ct().character_of(job.coop_taker)
+					job.coop_participants = ct().participant_ids()
+				end
+			end
+			return unpack(result)
+		end
+	end
+	for _, name in ipairs({ "fail_partial_late", "fail_complete_late", "squad_on_npc_death", "complete" }) do
 		local f = m and m[name]
 		if type(f) == "function" then
 			m[name] = function(...)
 				local job = guide_table("curr_guid")
 				local peer = job and job.coop_taker
-				if not (qc.is_host() and peer and ct().peer_in_session(peer)) then return f(...) end -- on a map server's level he has no object here
+				if not (qc.is_host() and job) then return f(...) end
+				peer = peer or 0
+				job.coop_character = job.coop_character or ct().character_of(peer)
+				local character = job.coop_character
+				peer = character and ct().peer_for_character(character) or nil
+				job.coop_participants = job.coop_participants or ct().participant_ids()
+				local group = job.coop_participants
+				if peer == 0 or name == "squad_on_npc_death" or name == "complete" then
+					return ct().with_participants(group, peer, f, ...)
+				end
 				local dl = qc.mod("dialogs")
 				local relocate = dl.relocate_money
 				dl.relocate_money = function(who, n, typ, ...)
 					if typ ~= "out" then return relocate(who, n, typ, ...) end
-					ct().give_to_peer(peer, -n)
+					if not ct().fine_character(character, n) then qc.report(TAG, name, "missing fine recipient") end
 				end
-				local ok, err = qc.with_actor({ money = function() return qc.engine().money_of(peer) or 0 end },
-					ct().with_recipient, peer, f, ...)
+				local ok, err = qc.with_actor({ money = function()
+					-- The ledger is read on reconnect if the taker is offline. Stock still resolves the job now.
+					return peer ~= nil and qc.engine().money_of(peer) or job.neustoika or 0
+				end },
+					ct().with_participants, group, peer, f, ...)
 				dl.relocate_money = relocate
 				if not ok then qc.report(TAG, name, err) end
 			end

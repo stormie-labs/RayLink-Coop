@@ -190,5 +190,21 @@ for _, resolution in ipairs({ {1024,768,8}, {1280,720,8}, {1920,1080,8}, {2560,1
 			"measured Letterica labels fit the row " .. lang .. " " .. resolution[1] .. "x" .. resolution[2])
 	end
 end
+section("live relationship updates refresh numbers, labels and colors together")
+R.relation_registry.community_goodwill = function() return -100 end
+R.relation_registry.community_relation = function() return -1200 end
+real.to_text = true
+real:autoupdate()
+check(real.relations[1][0].color == "red" and real.relations[1][0].text:find("-100", 1, true),
+	"personal value cannot keep the previous positive relationship color")
+check(real.relations[1][1].color == "red" and real.relations[1][1].text == "st_goodwill_enemy",
+	"changed world relationship is refreshed while PDA remains open")
+real.to_text = false
+real:autoupdate()
+check(real.relations[1][1].text == "-1200", "numeric mode reflects current faction relationships")
+R.coop_reputation = {goodwill_of = R.relation_registry.community_goodwill}
+R.relation_registry.community_goodwill = function() return 2200 end -- another player's active reward scope
+real:autoupdate()
+check(real.relations[1][0].text:find("-100", 1, true), "PDA reads its actual owner even during another player's reward scope")
 print(string.format("%d passed, %d failed", CHECKS - FAILS, FAILS))
 if FAILS > 0 then os.exit(1) end

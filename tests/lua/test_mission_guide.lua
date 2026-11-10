@@ -8,6 +8,8 @@ local SCRIPTS = { "coop_quests_core", "coop_tasks", "coop_quests_offer", "coop_q
 -- the stock module's shape: two table locals, read and rebound by its functions (GAMMA tasks_guide.script)
 local function stock_guide(M)
 	local e = M.env
+	M.reputation = 0
+	e.game_statistics = { increment_reputation = function(n) M.reputation = M.reputation + n end }
 	local guid, curr_guid = {}, {}
 	e.coop_mods_core = {
 		find_local = function(_, name) return name == "guid" and guid or name == "curr_guid" and curr_guid or nil end,
@@ -35,7 +37,11 @@ local function stock_guide(M)
 			curr_guid = {}
 			M.failed = (M.failed or 0) + 1
 		end,
-		fail_partial_late = function() curr_guid.zarplata = curr_guid.zarplata / 2 end,
+		fail_partial_late = function() curr_guid.zarplata = curr_guid.zarplata / 2; e.game_statistics.increment_reputation(-100) end,
+		squad_on_npc_death = function()
+			e.game_statistics.increment_reputation(-1000)
+			M.escort_deaths = (M.escort_deaths or 0) + 1
+		end,
 	}
 end
 
@@ -137,6 +143,16 @@ pump()
 check(Hm.activated == 1, "the second take: the guard refuses it")
 
 print("== a late job's fine comes from the taker")
+local before_h, before_c = Hm.reputation, Cm.reputation
+local salary = Hm.guide.job().zarplata
+Hm.env.tasks_guide.fail_partial_late(); pump()
+check(Hm.reputation == before_h - 100 and Cm.reputation == before_c - 100,
+	"escort deadline reputation penalty is shared by the participants")
+check(Hm.guide.job().zarplata == salary / 2, "shared penalty runs world/job state changes once")
+before_h, before_c = Hm.reputation, Cm.reputation
+Hm.env.tasks_guide.squad_on_npc_death(); pump()
+check(Hm.reputation == before_h - 1000 and Cm.reputation == before_c - 1000 and Hm.escort_deaths == 1,
+	"escort death penalty reaches both participants while the death handler runs once")
 local grants = {}
 Hm.env.coop.money_grant = function(peer, n) grants[#grants + 1] = { peer, n } return true end
 Hm.env.coop.money_of = function(peer) return peer == 1 and 2000 or nil end
@@ -151,6 +167,7 @@ guid_h = Hm.guide.offer()
 Hm.env.tasks_guide.activate()
 local far_job = Hm.guide.job()
 far_job.squad_id, far_job.neustoika, far_job.coop_taker = 903, 1500, 1
+far_job.coop_character = 500
 local far_body = Hm.objects[500]
 Hm.objects[500] = nil
 Hm.actor._money = 5000
@@ -175,6 +192,7 @@ print("== the client's turn-in pays him")
 Hm.env.tasks_guide.activate()
 job = Hm.guide.job()
 job.squad_id, job.zarplata, job.coop_taker = 902, 1000, 1
+job.coop_character = 500
 host_tick()
 Hm.money_moves = {}
 grants = {}

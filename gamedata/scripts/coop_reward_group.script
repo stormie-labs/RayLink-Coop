@@ -12,8 +12,8 @@
 	in the host's save, so its money (coop.money_grant_to) and items go straight onto it. A character out of a hardcore
 	run is no member, the host's own too (coop.out_of_run). What came meanwhile is noted per character, in the host's save, and shown to its player once, when
 	he is back: the money and every item in his PDA feed (coop_tasks, event k = "away"; coop_quests_news.show_rewards).
-	Quest items stay single: the story needs one of them, and a group check counts the whole party anyway. Reputation,
-	rank and goodwill stay with the player who turned the task in.
+	Quest items stay single: the story needs one of them, and a group check counts the whole party anyway. Personal
+	reputation/statistics/goodwill are routed separately by coop_tasks, using the task's captured participant roster.
 
 		coop_reward_group.list() -> the group of one reward, the host first unless he is out of the run: { id, peer | nil, in_world }
 		coop_reward_group.shareable(section) -> bool

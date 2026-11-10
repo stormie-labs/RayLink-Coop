@@ -18,6 +18,11 @@ function apply(window)
 		window.coop_goodwill_note = note
 	end
 	local participants = 0
+	local players = rawget(_G, "coop_npc_players")
+	local actor = players and players.own_actor and players.own_actor() or db.actor
+	local actor_id = actor and actor:id() or AC_ID
+	local routing = rawget(_G, "coop_reputation")
+	local goodwill = routing and routing.goodwill_of or relation_registry.community_goodwill
 	for i, faction in ipairs(window.list or {}) do
 		local cell = window.relations and window.relations[i] and window.relations[i][0]
 		if cell then
@@ -26,7 +31,9 @@ function apply(window)
 			cell:SetWndSize(vector2():set(75, 34))
 			cell:SetTextComplexMode(true)
 			cell:SetFont(GetFontLetterica16Russian())
-			local personal = relation_registry.community_goodwill(faction, AC_ID)
+			local personal = goodwill(faction, actor_id)
+			local color = personal >= 2000 and window.clr_green or personal >= 500 and window.clr_yellow or window.clr_red
+			if color then cell:SetTextColor(color) end
 			local value, count = reputation.average(faction)
 			participants = count
 			local average = "-"
@@ -37,6 +44,19 @@ function apply(window)
 			local text = game.translate_string("st_coop_trader_pda_value")
 			if text == "st_coop_trader_pda_value" then text = "You %d\\nGrp %s" end
 			cell:SetText(string.format(text, personal, average, count))
+		end
+		-- Stock autoupdate refreshes companions only. World relations can change while
+		-- the matrix is open; refresh its text and color from the same current value.
+		for k, community in ipairs(window.list or {}) do
+			local world_cell = window.relations and window.relations[i] and window.relations[i][k]
+			if world_cell and game_relations and relation_registry.community_relation then
+				local value = relation_registry.community_relation(community, faction)
+				local label, color = "st_goodwill_indifferent", window.clr_yellow
+				if value >= game_relations.FRIENDS then label, color = "st_goodwill_friendly", window.clr_green
+				elseif value <= game_relations.ENEMIES then label, color = "st_goodwill_enemy", window.clr_red end
+				if color then world_cell:SetTextColor(color) end
+				world_cell:SetText(window.to_text and game.translate_string(label) or tostring(value))
+			end
 		end
 	end
 	if window.coop_goodwill_note then

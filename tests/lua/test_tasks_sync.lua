@@ -249,7 +249,7 @@ do
 		pump()
 		engine_check(Hm)
 		pump()
-		check(#Hm.stats == hs, "mode " .. share .. ": nothing counted on the host's actor")
+		check(#Hm.stats == hs + (share >= 2 and 1 or 0), "mode " .. share .. ": shared tasks count for the participating host too")
 		check(#Cm.stats == cs + 1 and Cm.stats[#Cm.stats] == "tasks_completed", "mode " .. share .. ": counted on the finisher's machine")
 		Hm.tm.task_info.t_a = nil
 		Hm.engine_tasks.t_a = nil
@@ -679,6 +679,141 @@ do
 	end
 	check(asked, "he asks for the whole list: that also tells the new Lua who he is")
 	pump()
+end
+
+print("== recipient scopes: absent avatars, nested recipients, error unwinding")
+do
+	local before_host, before_client = Hm.rept, Cm.rept
+	local avatar_of = Hm.env.coop.avatar_of
+	Hm.env.coop.avatar_of = function(peer) if peer ~= 1 then return avatar_of(peer) end end
+	Hm.env.coop_tasks.with_recipient(1, function() Hm.env.game_statistics.increment_reputation(-140) end)
+	check(Hm.rept == before_host, "missing client avatar must not redirect a personal penalty to the host")
+	local saved = {}
+	Hm.env.coop_tasks.save_effects(saved)
+	check(saved.coop_task_fx ~= nil, "an absent client's personal effect is retained for acknowledgement")
+	Hm.env.coop.avatar_of = avatar_of
+	pump()
+	check(Cm.rept == before_client - 140, "the queued personal penalty reaches the intended client")
+	before_host, before_client = Hm.rept, Cm.rept
+	Hm.env.coop_tasks.with_recipient(1, function()
+		Hm.env.game_statistics.increment_reputation(10)
+		Hm.env.coop_tasks.with_recipient(0, function() Hm.env.game_statistics.increment_reputation(20) end)
+		Hm.env.game_statistics.increment_reputation(30)
+	end)
+	pump()
+	check(Hm.rept == before_host + 20 and Cm.rept == before_client + 40,
+		"nested host/client scopes restore their recipient instead of crediting the outer player")
+	local ok = pcall(Hm.env.coop_tasks.with_recipient, 1, function() error("scope unwind probe") end)
+	before_host = Hm.rept
+	Hm.env.game_statistics.increment_reputation(7)
+	pump()
+	check(not ok and Hm.rept == before_host + 7, "an error cannot leave subsequent host events addressed to a client")
+end
+
+print("== disconnected recipient cannot become host")
+do
+	local T, E = Hm.env.coop_tasks, Hm.env
+	local before = Hm.rept
+	local avatar = E.coop.avatar_of
+	T.with_recipient(1, function() end) -- remember the character while it is online
+	E.coop.avatar_of = function() return nil end
+	if T.recipient_body then
+		local body = T.recipient_body(1)
+		check(body and body:id() == 500, "recipient identity survives an absent avatar")
+	else check(false, "recipient identity survives an absent avatar") end
+	T.with_task_owner("t_f", function() E.game_statistics.increment_reputation(-99) end)
+	check(Hm.rept == before, "timer of a client's task cannot fall back to host")
+	E.coop.avatar_of = avatar
+	local saved = {}; T.save_effects(saved)
+	check(saved.coop_task_fx and saved.coop_task_fx.characters and saved.coop_task_fx.characters[1] == 500,
+		"persistent effect queue stores character addresses, not reusable peer slots")
+end
+
+print("== shared task roster survives disconnect and peer reuse")
+do
+	local T, E = Hm.env.coop_tasks, Hm.env
+	Hm.ini.rep_roster = {}; Hm.share = 3
+	T.run_as(1, function() Hm.tm:give_task("rep_roster", 9) end)
+	pump()
+	local old_players, old_members = Hm.players, E.coop.members
+	Hm.new_obj(501, "coop_player_avatar", vec())
+	Hm.players = { {id=0,is_self=true,avatar_id=0}, {id=1,avatar_id=501} }
+	E.coop.members = function() return {{id=500}, {id=501,peer=1,in_world=true}} end
+	local hs, cs = #Hm.stats, #Cm.stats
+	E.task_manager.task_callback({get_id=function() return "rep_roster" end}, E.task.fail)
+	pump()
+	check(#Hm.stats == hs + 1, "shared failure counts for the participating host")
+	check(#Cm.stats == cs, "the new occupant of a peer slot receives no old participant's penalty")
+	local saved={}; T.save_effects(saved)
+	check(saved.coop_task_fx.wait and saved.coop_task_fx.wait[500] and not saved.coop_task_fx.wait[501],
+		"offline participant's penalty waits under the original character")
+	T.load_effects(saved)
+	Hm.players, E.coop.members = old_players, old_members
+	Cm.env.coop.send_event("coop_tl_req", "", 0); pump()
+	check(#Cm.stats == cs + 1 and Cm.stats[#Cm.stats] == "tasks_failed", "original participant receives the saved penalty on return")
+	Cm.env.coop.send_event("coop_tl_req", "", 0); pump()
+	check(#Cm.stats == cs + 1, "repeated sync cannot duplicate the penalty")
+	Hm.share = 0
+end
+
+print("== map-server personal effects pass through the world authority")
+do
+	local map = machine("client", 0x101)
+	setup_world(map)
+	map.env.coop.is_map_server = function() return true end
+	map.players = {{id=0,avatar_id=10}, {id=1,avatar_id=500}}
+	boot(map); pump()
+	local before = Cm.rept
+	map.env.coop_tasks.with_character(500, function() map.env.game_statistics.increment_reputation(-25) end)
+	pump()
+	check(Cm.rept == before - 25, "map-server penalty reaches the player once through host")
+	local packet
+	for _, message in ipairs(map.sent) do if message.name == "coop_rep_map" then packet = message.payload end end
+	if packet then Hm.handlers.coop_rep_map(packet, 0x101); pump() end
+	check(packet and Cm.rept == before - 25, "duplicate map-server penalty is acknowledged without a second application")
+	if packet then Hm.handlers.coop_rep_map(packet, 1); pump() end
+	check(Cm.rept == before - 25, "ordinary client cannot impersonate a map authority")
+	local saved = {}; Hm.env.coop_tasks.save_effects(saved); Hm.env.coop_tasks.load_effects(saved)
+	if packet then Hm.handlers.coop_rep_map(packet, 0x101); pump() end
+	check(Cm.rept == before - 25, "map effect deduplication survives host save/load")
+	local host_before, ghost_before = Hm.rept, map.rept
+	map.env.coop_tasks.with_character(0, function() map.env.game_statistics.increment_reputation(-15) end)
+	pump()
+	check(Hm.rept == host_before - 15 and map.rept == ghost_before,
+		"host player on another level receives his penalty, not the map server's ghost actor")
+	map.env.coop_tasks.with_character(500, function()
+		map.env.xr_effects.drx_sl_change_factions(map.actor, nil, {"freedom"})
+	end)
+	map.env.coop_tasks.with_character(0, function()
+		map.env.xr_effects.drx_sl_change_factions(map.actor, nil, {"dolg"})
+	end)
+	pump()
+	check(Cm.faction == "freedom" and Hm.faction == "dolg" and map.faction == nil,
+		"personal faction changes on map server reach their real host/client characters")
+end
+
+print("== deferred guide fine follows the original character")
+do
+	local T, E = Hm.env.coop_tasks, Hm.env
+	local original_players, original_members = Hm.players, E.coop.members
+	local original_grant, original_money = E.coop.money_grant, E.coop.money_of
+	local charged = {}
+	E.coop.money_grant = function(peer, delta) charged[#charged+1] = {peer, delta}; return true end
+	E.coop.money_of = function() return 700 end
+	Hm.players = {{id=0,is_self=true,avatar_id=0}, {id=1,avatar_id=501}}
+	E.coop.members = function() return {{id=500}, {id=501,peer=1,in_world=true}} end
+	if T.fine_character then
+		T.fine_character(500, 1500)
+		check(#charged == 0, "offline fine is not charged to a reused peer slot")
+		local saved={}; T.save_effects(saved); T.load_effects(saved)
+		Hm.players = {{id=0,is_self=true,avatar_id=0}, {id=2,avatar_id=500}}
+		E.coop.members = function() return {{id=500,peer=2,in_world=true}} end
+		T.flush_fines(); T.flush_fines()
+		check(#charged == 1 and charged[1][1] == 2 and charged[1][2] == -700,
+			"saved fine follows character to new peer, capped by balance and charged once")
+	else check(false, "offline guide fine requires a persistent character recipient") end
+	Hm.players, E.coop.members = original_players, original_members
+	E.coop.money_grant, E.coop.money_of = original_grant, original_money
 end
 
 print(string.format("== %d passed, %d failed", PASSES, FAILS))

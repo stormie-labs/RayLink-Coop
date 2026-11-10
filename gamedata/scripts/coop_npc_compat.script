@@ -70,6 +70,10 @@ local REWRITES = {
 	grok_killing_friends_reduces_goodwill = {
 		{ "shit.draftsman:id() == 0 or", "coop_npc_is_player_id(shit.draftsman:id()) or" },
 		{ "if killer:id() == db.actor:id() or", "if coop_npc_is_player_id(killer:id()) or" },
+		{ "aggressive_npcs[npc:id()] = true", "aggressive_npcs[coop_reputation.aggressor_key(npc, shit.draftsman)] = true" },
+		{ "aggressive_npcs[victim:id()]", "aggressive_npcs[coop_reputation.aggressor_key(victim, killer)]", all = true },
+		{ "function relation_kill_check(victim, killer)", "local function personal_kill_check(victim, killer)" },
+		{ "function on_game_start()", "function relation_kill_check(victim, killer)\n\treturn coop_reputation.for_actor(killer, personal_kill_check, victim, killer)\nend\n\nfunction on_game_start()" },
 	},
 	smr_civil_war = {
 		{ "(not (killer.id == AC_ID) and", "(not coop_npc_is_player_id(killer.id) and" },

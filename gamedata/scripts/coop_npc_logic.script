@@ -815,6 +815,8 @@ end
 -------------------------------------------------------------------------------
 -- Only when asked about the host's own actor: combat condlists pass the enemy as `actor`.
 local function team_actor(actor, npc)
+	local rep = rawget(_G, "coop_reputation")
+	if rep and rep.in_personal_check() then return false end
 	return host_on and actor ~= nil and actor:id() == 0 and not is_local_restrictor(npc)
 end
 
@@ -938,6 +940,11 @@ local function pick_for_leader(obj, npc, condlist)
 end
 
 local function pick_section(obj, npc, condlist)
+	local rep = rawget(_G, "coop_reputation")
+	if rep and host_on then
+		local handled, section = rep.pick_offence(obj, npc, condlist, pick_for_leader)
+		if handled then return section end
+	end
 	if leading and condlist and P.in_identity() then return pick_for_leader(obj, npc, condlist) end
 	if not host_on or npc == nil then return orig.pick(obj, npc, condlist) end
 	local ok_id, id = pcall(id_of, npc) -- npc can be a game object, a server object or a squad

@@ -44,6 +44,8 @@ function refresh()
 	if not m then return end
 	book = state().restore(book or m[STORE], now)
 	local view = { count = 0, means = {}, observed = now }
+	local routing = rawget(_G, "coop_reputation")
+	local goodwill = routing and routing.goodwill_of or relation_registry.community_goodwill
 	if now then
 		local online, incomplete = {}, false
 		local factions = game_relations.factions_table
@@ -53,7 +55,7 @@ function refresh()
 			if key then
 				local values = {}
 				for _, faction in ipairs(factions) do
-					local ok, value = pcall(relation_registry.community_goodwill, faction, id)
+					local ok, value = pcall(goodwill, faction, id)
 					if ok then values[faction] = value end
 				end
 				state().observe(book, key, now, values)

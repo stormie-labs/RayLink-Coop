@@ -353,6 +353,11 @@ for _, row in ipairs({ { "before", 700 }, { "changed", 800 }, { "set", 900 }, { 
 end
 check(native.changed[0] == 1200 and native.changed[501] == 900 and native.changed[502] == 300,
 	"fresh client faction goodwill stays separate from host and default proxy values")
+H.coop_reputation = {goodwill_of = H.relation_registry.community_goodwill}
+H.relation_registry.community_goodwill = function(f, id) return H.GOODWILL[f][id == 0 and 501 or id] end
+H.coop_trader_reputation.refresh()
+check(H.coop_trader_reputation.average("stalker") == 900,
+	"trader averaging is independent of the current personal reward scope")
 
 print(string.format("%d passed, %d failed", CHECKS - FAILS, FAILS))
 if FAILS > 0 then os.exit(1) end

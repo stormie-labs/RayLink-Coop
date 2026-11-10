@@ -551,6 +551,17 @@ local function psy_fresh()
 	if C().live_client() and em and type(em.send_player_keys) == "function" then pcall(em.send_player_keys) end
 end
 
+local function radiation_fresh()
+	local r = C().mod("grok_progressive_rad_damages")
+	if not r then return end
+	-- The engine clears the dose, but GAMMA leaves grok_rads at 1 until another
+	-- radiation cough roll. BHS reads it to skip injury damage, even with zero dose.
+	r.grok_rads, r.coughing, r.coughing_time, r.tg = 0, false, 0, nil
+	-- This mod picks one of these IDs for its cough blur. Do not remove the
+	-- separate coop contusion: its stamina penalty is part of respawning.
+	for id = 645808, 645820 do pcall(level.remove_pp_effector, id) end
+end
+
 local function vitals_text()
 	local a = db.actor
 	local function field(name)
@@ -574,6 +585,8 @@ local function on_respawned_fresh()
 	if not ok then C().report("respawn", "bhs", e) end
 	ok, e = pcall(psy_fresh)
 	if not ok then C().report("respawn", "psy", e) end
+	ok, e = pcall(radiation_fresh)
+	if not ok then C().report("respawn", "radiation", e) end
 	fresh.count = fresh.count + 1
 	note_apply("respawn: a fresh body")
 	log("respawn", "fresh body: before %s | after %s", before, vitals_text())

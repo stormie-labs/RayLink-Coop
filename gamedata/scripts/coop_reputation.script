@@ -1,0 +1,211 @@
+-- Personal effects use the responsible player; world faction relations stay in the host's world.
+-- Keep the installed mod's amounts/conditions and the existing acknowledged reward transport.
+local installed = false
+local checking_personal = false
+local raw_goodwill
+
+-- World snapshots/PDA name a character explicitly and must not inherit a reward recipient.
+function goodwill_of(faction, id)
+	return (raw_goodwill or relation_registry.community_goodwill)(faction, id)
+end
+
+function responsible_character(actor)
+	local peer = coop_npc_players.peer_of(actor)
+	if peer ~= nil then return coop_tasks.character_of(peer) end
+	local companions = coop_npc_companions
+	return companions and companions.owner_character and companions.owner_character(actor) or nil
+end
+
+local function body(id)
+	if id == 0 then return coop_npc_players.own_actor() end
+	if id == nil then return nil end
+	return level.object_by_id(id) or coop_quests_core.body_for_character(id)
+end
+
+function for_actor(actor, fn, ...)
+	local players = coop_npc_players
+	if not players.active() then return fn(...) end
+	if not players.is_host() then return end -- mirrors must not run a second authoritative penalty
+	local id = responsible_character(actor)
+	if id == nil then return end -- an NPC without a player owner is not the host
+	local recipient = body(id)
+	local tasks = coop_tasks
+	if not recipient then return end
+	return tasks.with_character(id, players.with_identity, recipient, fn, ...)
+end
+
+function aggressor_key(victim, attacker)
+	if not coop_npc_players.active() then return victim:id() end
+	return tostring(victim:id()) .. ":" .. tostring(responsible_character(attacker) or "unknown")
+end
+
+local function death_penalty(victim, killer)
+	local players = coop_npc_players
+	if victim:has_info("npcx_is_companion") then
+		if _G.WARFARE then return end
+		local id = coop_npc_companions.owner_character(victim)
+		local actor = body(id)
+		if actor and game_relations.is_factions_friends(character_community(actor), character_community(victim)) then
+			return id, "killed_companions"
+		end
+	elseif killer and players.peer_of(killer) ~= nil and load_var(victim, "victim_surrender", false) == true
+		and tostring(load_var(victim, "wounded_state")) ~= "nil" then
+		return responsible_character(killer), "killed_prisoners"
+	end
+end
+
+function in_personal_check() return checking_personal end
+
+-- Guard-zone offences have a concrete set of trespassers. Do not use the scene's
+-- expanded audience (which also contains nearby innocent players).
+function pick_offence(obj, npc, condlist, evaluate)
+	local players = coop_npc_players
+	if checking_personal or not players.is_host() or type(condlist) ~= "table" then return false end
+	local offences = {}
+	for i, cond in ipairs(condlist) do
+		local zone, penalty = false, false
+		for _, c in ipairs(cond[2] or {}) do if c[1] == "actor_in_zone" then zone = true end end
+		for _, e in ipairs(cond[3] or {}) do
+			if e[1] == "actor_enemy" or e[1] == "set_speaker_as_enemy" or e[1] == "dec_faction_goodwill_to_actor" then penalty = true end
+		end
+		if zone and penalty then offences[i] = true end
+	end
+	if next(offences) == nil then return false end
+	for i, cond in ipairs(condlist) do
+		if offences[i] then
+			local ids = {}
+			for _, actor in ipairs(players.everyone()) do
+				checking_personal = true
+				local result = { pcall(players.with_identity, actor, evaluate, actor, npc, {{cond[1], cond[2], {}}}) }
+				checking_personal = false
+				if not result[1] then error(result[2], 0) end
+				if result[2] ~= nil then ids[#ids + 1] = responsible_character(actor) end
+			end
+			if #ids > 0 then
+				return true, coop_tasks.with_participants(ids, 0, evaluate, obj, npc, {{cond[1], {}, cond[3]}})
+			end
+		else
+			local result = evaluate(obj, npc, {cond})
+			if result ~= nil then return true, result end
+		end
+	end
+	return true
+end
+
+local function install_relations()
+	local registry = relation_registry
+	if registry then
+		raw_goodwill = registry.community_goodwill
+		for _, name in ipairs({"community_goodwill", "set_community_goodwill", "change_community_goodwill"}) do
+			local original = registry[name]
+			if type(original) == "function" then
+				registry[name] = function(faction, id, ...)
+					local tasks = coop_tasks
+					if coop_npc_players.is_host() and id == 0 then
+						if name ~= "community_goodwill" and tasks.each_personal(registry[name], faction, id, ...) then return end
+						id = tasks.personal_character() or id
+					end
+					return original(faction, id, ...)
+				end
+			end
+		end
+	end
+	local effects = xr_effects
+	for _, name in ipairs({"actor_friend", "actor_neutral", "actor_enemy", "set_speaker_as_enemy"}) do
+		local original = effects and effects[name]
+		if type(original) == "function" then
+			effects[name] = function(actor, npc, ...)
+				local tasks = coop_tasks
+				if coop_npc_players.is_host() and tasks.personal_character() ~= nil then
+					if tasks.each_personal(effects[name], actor, npc, ...) then return end
+					actor = body(tasks.personal_character())
+					if not actor then return end
+					if type(actor) == "table" and rawget(actor, "far") then
+						-- The online setter accepts a game_object; offline characters only have an ALife ID.
+						-- Let the original effect choose its value, then use the server entity's ID overload.
+						local source, se = npc, npc and alife_object(npc:id())
+						if not (se and se.force_set_goodwill) then return end
+						npc = setmetatable({ force_set_goodwill = function(_, value, recipient)
+							return se:force_set_goodwill(value, recipient:id())
+						end }, { __index = function(_, key)
+							local value = source[key]
+							if type(value) ~= "function" then return value end
+							return function(_, ...) return value(source, ...) end
+						end })
+					end
+				end
+				return original(actor, npc, ...)
+			end
+		end
+	end
+end
+
+local function install_death()
+	local m = xr_motivator
+	local class = m and m.motivator_binder
+	local original = class and class.death_callback
+	if type(original) ~= "function" then return end
+	local active_count
+	class.death_callback = function(self, victim, killer, ...)
+		if not (coop_npc_players.active() and victim) then
+			return original(self, victim, killer, ...)
+		end
+		-- Resolve the leader before stock removes the dead member from its squad.
+		local character, name
+		if coop_npc_players.is_host() then character, name = death_penalty(victim, killer) end
+		local previous, outer_count = game_statistics.increment_statistic, active_count
+		local count = active_count or previous
+		active_count = count -- nested deaths must not award through the outer suppression wrapper
+		game_statistics.increment_statistic = function(stat, ...)
+			if stat ~= "killed_companions" and stat ~= "killed_prisoners" then return count(stat, ...) end
+		end
+		local result = { pcall(original, self, victim, killer, ...) }
+		game_statistics.increment_statistic, active_count = previous, outer_count
+		if not result[1] then error(result[2], 0) end
+		if character ~= nil then coop_tasks.with_character(character, count, name) end
+		return unpack(result, 2)
+	end
+end
+
+local function install_heli()
+	local heli = bind_heli
+	local class = heli and heli.heli_binder
+	local original = class and class.on_hit
+	if type(original) ~= "function" then return end
+	class.on_hit = function(self, ...)
+		if not coop_npc_players.active() or coop_npc_players.is_host() then return original(self, ...) end
+		-- Mirrored hit callbacks still play sounds and visuals; the level authority owns the award.
+		local gs = game_statistics
+		local count, npc_count = gs.increment_statistic, gs.increment_npc_statistic
+		local function award(name) return name == "helicopters_downed" or name == "helicopters_downed2" end
+		gs.increment_statistic = function(name, ...)
+			if not award(name) then return count(name, ...) end
+		end
+		gs.increment_npc_statistic = function(actor, name, ...)
+			if not award(name) then return npc_count(actor, name, ...) end
+		end
+		local result = { pcall(original, self, ...) }
+		gs.increment_statistic, gs.increment_npc_statistic = count, npc_count
+		if not result[1] then error(result[2], 0) end
+		return unpack(result, 2)
+	end
+end
+
+function on_game_start()
+	if installed then return end
+	installed = true
+	install_death()
+	install_relations()
+	install_heli()
+	local gs = game_statistics
+	local original = gs and gs.increment_npc_statistic
+	if type(original) == "function" then
+		gs.increment_npc_statistic = function(actor, name, ...)
+			local players = coop_npc_players
+			if players.active() and players.is_host() and players.peer_of(actor) ~= nil then
+				return for_actor(actor, gs.increment_statistic, name, ...)
+			end
+			return original(actor, name, ...)
+		end
+	end
+end
