@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="windows-1251"?>
 <string_table>
     <string id="st_coop_trader_pda_value">
-        <text>Вы %d\nГр. %s (%d)</text>
+        <text>Вы %d\nГр %s</text>
+    </string>
+    <string id="st_coop_trader_pda_legend">
+        <text>Личная / средняя группы. Учтено игроков: %d</text>
     </string>
 </string_table>

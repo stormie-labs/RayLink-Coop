@@ -32,26 +32,51 @@ do
 		check(a.coop_economy_mdata.clone_stage(source, target, "wpn_ak74m" .. target, snapshot, 0, token), "owner stages complete source")
 		check(h.coop_economy_mdata.clone_stage(source, target, "wpn_ak74m" .. target, snapshot, 1, token), "host stages complete source")
 		add_item(h, target, "wpn_ak74m", 501)
+		clone_register_cleanup(h, target)
 		clone_evaluate_parts(h, target)
 		local canonical = assert(h.coop_economy_mdata.clone_export(target))
 		check(b.coop_economy_mdata.clone_stage(65535, target, "wpn_ak74m" .. target, canonical, 2, token), "mirror receives initial metadata")
 		add_item(b, target, "wpn_ak74m", 501)
+		clone_register_cleanup(b, target)
 		clone_evaluate_parts(b, target)
 		check(a.coop_economy_mdata.clone_stage(source, target, "wpn_ak74m" .. target, canonical, 2, token), "owner installs host canonical snapshot")
 		add_item(a, target, "wpn_ak74m", 0)
+		clone_register_cleanup(a, target)
+		clone_evaluate_parts(a, target)
 		for _, w in ipairs({h,a,b}) do
 			w.SE[source], w.OBJ[source], w.MDATA.se_object[source] = nil,nil,nil
 			w.coop_economy_mdata.clone_finish(target, true)
 			local parts = w.MDATA.se_object[target].parts
 			check(parts.barrel==97 and parts.trigger==41 and parts.bolt==13, "disassembly input retains each asymmetric part")
 		end
-		check(h.RANDOM_CALLS==0 and b.RANDOM_CALLS==0, "attach/detach performs zero random generation")
+		check(h.RANDOM_CALLS==0 and a.RANDOM_CALLS==0 and b.RANDOM_CALLS==0, "attach/detach performs zero random generation")
 		source = target
 	end
 	-- A stale observer cannot replace the owner's initialized parts after the commit.
 	b.se_save_var(901,nil,"parts",{wpn_ak74m=83,barrel=2,trigger=3,bolt=4})
 	tick(b,400) deliver_all()
 	check(h.MDATA.se_object[901].parts.barrel==97 and a.MDATA.se_object[901].parts.barrel==97, "late observer garbage is refused before relay to owner")
+	a.se_save_var(901, nil, "parts", {wpn_ak74m=83,barrel=66,trigger=41,bolt=13})
+	tick(a,400) deliver_all()
+	check(h.MDATA.se_object[901].parts.barrel==66 and b.MDATA.se_object[901].parts.barrel==66,
+		"after replacement the host relays the owner's part wear with its instance stamp to observers")
+end
+
+section("registration cleanup still clears ordinary/reused ids and completed weapons")
+do
+	local _, a = worlds()
+	clone_register_cleanup(a, 800)
+	check(a.MDATA.se_object[800].parts == nil, "ordinary registration can remove stale parts")
+	a.se_save_var(800,nil,"parts",{wpn_ak74m=83,barrel=97,trigger=41,bolt=13})
+	local m = a.coop_economy_mdata
+	check(m.clone_stage(800,900,"wpn_ak74m900",assert(m.clone_export(800)),0,"cleanup"), "replacement prepared")
+	clone_register_cleanup(a, 900)
+	check(a.MDATA.se_object[900].parts.barrel == 97, "pending target keeps its initialized parts")
+	a.se_save_var(800,nil,"parts",nil)
+	check(a.MDATA.se_object[800].parts == nil, "source cleanup remains available to the clone wrapper")
+	m.clone_finish(900,true)
+	a.se_save_var(900,nil,"parts",nil)
+	check(a.MDATA.se_object[900].parts == nil, "completed weapon permits explicit parts removal")
 end
 
 section("successful clone: real evaluate_parts runs before the owner's 300 ms flush")

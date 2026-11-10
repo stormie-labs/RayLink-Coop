@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="windows-1251"?>
 <string_table>
     <string id="st_coop_trader_pda_value">
-        <text>You %d\nGrp. %s (%d)</text>
+        <text>You %d\nGrp %s</text>
+    </string>
+    <string id="st_coop_trader_pda_legend">
+        <text>Personal / group average. Players counted: %d</text>
     </string>
 </string_table>

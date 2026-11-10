@@ -17,8 +17,10 @@ local function storage()
 end
 
 local function clock()
-	local ok, value = pcall(os.time)
-	if ok and type(value) == "number" and value > 0 and value < math.huge and value == math.floor(value) then return value end
+	local ok, value = pcall(function()
+		return state().calendar_seconds(game.get_game_time():get())
+	end)
+	if ok then return value end
 end
 
 local function key_of(id, player)
@@ -40,7 +42,7 @@ function refresh()
 	if not host() then return end
 	local m, now = storage(), clock()
 	if not m then return end
-	book = book or state().restore(m[STORE])
+	book = state().restore(book or m[STORE], now)
 	local view = { count = 0, means = {}, observed = now }
 	if now then
 		local online, incomplete = {}, false
@@ -126,7 +128,7 @@ function save_state(m)
 	if api and api.saving_for_join and api.saving_for_join() then
 		m[STORE] = nil
 	else
-		m[STORE] = state().restore(book)
+		m[STORE] = state().restore(book or m[STORE])
 	end
 end
 

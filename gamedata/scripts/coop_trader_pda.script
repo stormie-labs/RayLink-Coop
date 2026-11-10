@@ -3,9 +3,21 @@ local api = rawget(_G, "coop")
 local installed = false
 
 function apply(window)
-	if not (api and api.is_active()) then return end
+	local active = api and api.is_active()
+	if window.coop_goodwill_note then window.coop_goodwill_note:Show(active == true) end
+	if not active then return end
 	local reputation = coop_trader_reputation
 	reputation.refresh()
+	if window.tab and not window.coop_goodwill_note then
+		local note = CUITextWnd()
+		note:SetWndPos(vector2():set(115, 437))
+		note:SetWndSize(vector2():set(530, 18))
+		note:SetFont(GetFontLetterica16Russian())
+		note:SetTextColor(GetARGB(255, 170, 170, 170))
+		window.tab:AttachChild(note)
+		window.coop_goodwill_note = note
+	end
+	local participants = 0
 	for i, faction in ipairs(window.list or {}) do
 		local cell = window.relations and window.relations[i] and window.relations[i][0]
 		if cell then
@@ -13,18 +25,24 @@ function apply(window)
 			cell:SetWndPos(vector2():set(position.x, position.y + (cell:GetHeight() - 34) / 2))
 			cell:SetWndSize(vector2():set(75, 34))
 			cell:SetTextComplexMode(true)
-			cell:SetFont(GetFontSmall())
+			cell:SetFont(GetFontLetterica16Russian())
 			local personal = relation_registry.community_goodwill(faction, AC_ID)
 			local value, count = reputation.average(faction)
+			participants = count
 			local average = "-"
 			if type(value) == "number" and value == value and math.abs(value) < math.huge then
-				average = string.format("%.2f", math.floor(value * 100) / 100)
-				average = average:gsub("0+$", ""):gsub("%.$", "")
+				-- The same integer units as personal goodwill; do not round up across a trader tier.
+				average = string.format("%d", math.floor(value))
 			end
 			local text = game.translate_string("st_coop_trader_pda_value")
-			if text == "st_coop_trader_pda_value" then text = "You %d\\nGrp. %s (%d)" end
+			if text == "st_coop_trader_pda_value" then text = "You %d\\nGrp %s" end
 			cell:SetText(string.format(text, personal, average, count))
 		end
+	end
+	if window.coop_goodwill_note then
+		local text = game.translate_string("st_coop_trader_pda_legend")
+		if text == "st_coop_trader_pda_legend" then text = "Personal / group average. Players counted: %d" end
+		window.coop_goodwill_note:SetText(string.format(text, participants))
 	end
 end
 

@@ -1,12 +1,33 @@
 -- Persistent faction goodwill snapshots, keyed by stable player digests.
 WINDOW = 72 * 60 * 60
+CLOCK = "game_calendar_seconds"
+local MAX_TIME = 315537897599 -- 9999-12-31 23:59:59, engine calendar epoch (year 1).
 
 local function number(value)
 	return type(value) == "number" and value == value and value > -math.huge and value < math.huge
 end
 
 local function timestamp(value)
-	return number(value) and value > 0 and value == math.floor(value)
+	return number(value) and value >= 0 and value <= MAX_TIME and value == math.floor(value)
+end
+
+-- Same Gregorian calendar arithmetic as xrGame/date_time.cpp::generate_time.
+-- CTime:diffSec(CTime()) would round a huge epoch through native float32.
+function calendar_seconds(y, mo, d, h, mi, sec, ms)
+	local fields = { y, mo, d, h, mi, sec, ms }
+	for index = 1, 7 do
+		local value = fields[index]
+		if not number(value) or value ~= math.floor(value) then return nil end
+	end
+	if y < 1 or y > 9999 or mo < 1 or mo > 12 or h < 0 or h > 23
+		or mi < 0 or mi > 59 or sec < 0 or sec > 59 or ms < 0 or ms > 999 then return nil end
+	local leap = y % 400 == 0 or (y % 4 == 0 and y % 100 ~= 0)
+	local months = { 31, leap and 29 or 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 }
+	if d < 1 or d > months[mo] then return nil end
+	local years = y - 1
+	local days = years * 365 + math.floor(years / 4) - math.floor(years / 100) + math.floor(years / 400) + d - 1
+	for month = 1, mo - 1 do days = days + months[month] end
+	return ((days * 24 + h) * 60 + mi) * 60 + sec
 end
 
 function valid_key(key)
@@ -25,18 +46,26 @@ function observe(book, key, seen, goodwill)
 	return true
 end
 
-function restore(saved)
-	local book = { v = 1, players = {} }
-	if type(saved) == "table" and (saved.v == nil or saved.v == 1) and type(saved.players) == "table" then
-		for key, row in pairs(saved.players) do
-			if type(row) == "table" then observe(book, key, row.last_seen, row.goodwill) end
+function restore(saved, now)
+	local book = { v = 2, clock = CLOCK, players = {} }
+	if type(saved) ~= "table" or type(saved.players) ~= "table" then return book end
+	local legacy = saved.v == nil or saved.v == 1
+	if not legacy and (saved.v ~= 2 or saved.clock ~= CLOCK) then return book end
+	if legacy and saved.clock ~= nil then return book end
+	local ready = timestamp(now)
+	if legacy and not ready then book.v, book.clock = 1, nil end
+	for key, row in pairs(saved.players) do
+		if type(row) == "table" and timestamp(row.last_seen) and (not legacy or row.last_seen > 0) then
+			-- Unix last_seen has no mapping to this world's timeline. Grant one fresh window.
+			local seen = legacy and ready and now or row.last_seen
+			if legacy or not ready or seen <= now then observe(book, key, seen, row.goodwill) end
 		end
 	end
 	return book
 end
 
 function average(book, faction, now, online)
-	if not timestamp(now) or type(faction) ~= "string" then return nil, 0 end
+	if book.v ~= 2 or book.clock ~= CLOCK or not timestamp(now) or type(faction) ~= "string" then return nil, 0 end
 	local sum, count, incomplete = 0, 0, false
 	for key, row in pairs(book.players) do
 		local age = now - row.last_seen

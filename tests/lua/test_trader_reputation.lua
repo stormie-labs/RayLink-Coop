@@ -1,7 +1,12 @@
--- Group goodwill uses real time and stable character keys. Native APIs are stood in at the boundary.
+-- Group goodwill uses world game time and stable character keys. Native APIs are stood in at the boundary.
 dofile("tests/lua/support/harness_economy.lua")
 
-local NOW = 1800000000
+local NOW = 5 * 86400
+local REAL_NOW = 1800000000
+local function game_clock()
+	return { get = function() return 2026, 1, 1 + math.floor(NOW / 86400),
+		math.floor(NOW / 3600) % 24, math.floor(NOW / 60) % 60, NOW % 60, 0 end }
+end
 local KEY = { [0] = string.rep("0", 64), [1] = string.rep("a", 64), [2] = string.rep("b", 64) }
 local function boot()
 	PLAYERS = { [0] = { nick = "host", proxy = 0 }, [1] = { nick = "one", proxy = 501 }, [2] = { nick = "two", proxy = 502 } }
@@ -9,7 +14,8 @@ local function boot()
 	QUEUE, WORLDS = {}, {}
 	for peer = 0, 2 do
 		local W = make_world(peer)
-		W.os = { time = function() return NOW end }
+		W.os = { time = function() return REAL_NOW end }
+		W.game.get_game_time = game_clock
 		-- Public native identity hook. Host can resolve joined peers, clients resolve only themselves.
 		W.coop.sync = { player_digest = function(id)
 			if peer == 0 or id == peer then return KEY[id] end
@@ -123,9 +129,10 @@ A.GOODWILL.stalker[0] = 4321 -- this client's personal standing differs from the
 A.game = { translate_string = function(id) return id end }
 A.vector2 = function() return { set = function(self) return self end } end
 A.GetFontSmall = function() end
+A.GetFontLetterica16Russian = function() end
 local pda = load_script(A, "coop_trader_pda")
 pda.apply({ list = { "stalker" }, relations = { { [0] = pda_cell } } })
-local group_text = string.format("%.2f (%d)", math.floor(hv * 100) / 100, hc)
+local group_text = string.format("%d", math.floor(hv))
 check(pda_cell.text:find("4321", 1, true) and pda_cell.text:find(group_text, 1, true),
 	"actual client PDA hook renders the received view beside that client's personal goodwill")
 local save = {}
@@ -143,7 +150,7 @@ H.coop_trader_reputation.refresh()
 check(select(2, H.coop_trader_reputation.average("stalker")) == 2, "only the absent player expires while the online players remain")
 fire(H, "load_state", save)
 H.coop_trader_reputation.refresh()
-check(select(2, H.coop_trader_reputation.average("stalker")) == 2, "save/load preserves real last-seen timestamps")
+check(select(2, H.coop_trader_reputation.average("stalker")) == 2, "save/load preserves game last-seen timestamps")
 PLAYERS[1] = { nick = "renamed", proxy = 501 }
 H.coop_trader_reputation.refresh()
 check(select(2, H.coop_trader_reputation.average("stalker")) == 3, "rejoin with a changed nick restores one stable record")
@@ -213,12 +220,12 @@ local normal_save = {}
 fire(H, "save_state", normal_save)
 check(normal_save.coop_trader_reputation and normal_save.coop_trader_reputation.players[KEY[1]],
 	"normal host save still contains history after making a join save")
-H.os.time = function() error("clock unavailable") end
+H.game.get_game_time = function() error("clock unavailable") end
 H.coop_trader_reputation.refresh()
-check(H.coop_trader_reputation.average("stalker") == nil, "failed real clock publishes no stock access")
+check(H.coop_trader_reputation.average("stalker") == nil, "failed game clock publishes no stock access")
 
 section("group goodwill: a new world's startup resets cached history and polling")
-H.os.time = function() return NOW end
+H.game.get_game_time = game_clock
 PLAYERS[1] = nil
 H.MDATA = { se_object = {}, game_object = {} }
 H.NOW = 0
@@ -229,6 +236,109 @@ check(select(2, H.coop_trader_reputation.average("stalker")) == 1,
 H.coop_trader_reputation.refresh()
 check(select(2, H.coop_trader_reputation.average("stalker")) == 1,
 	"new world cannot inherit an offline participant from the previous cached book")
+
+section("world clock expiry, checkpoint rollback and frozen real time")
+H, A, B = boot()
+H.coop_trader_reputation.refresh()
+local checkpoint = {}
+fire(H, "save_state", checkpoint)
+check(checkpoint.coop_trader_reputation.v == 2 and checkpoint.coop_trader_reputation.clock == "game_calendar_seconds",
+    "new saves declare the game-clock namespace")
+PLAYERS[1] = nil
+REAL_NOW = REAL_NOW + 30 * 86400
+H.coop_trader_reputation.refresh()
+check(select(2, H.coop_trader_reputation.average("stalker")) == 3, "paused and offline real time cannot age history")
+local checkpoint_time = NOW
+NOW = NOW + 72 * 3600 - 1
+H.coop_trader_reputation.refresh()
+check(select(2, H.coop_trader_reputation.average("stalker")) == 3, "sleep and travel count up to the final game second")
+NOW = NOW + 1
+H.coop_trader_reputation.refresh()
+check(select(2, H.coop_trader_reputation.average("stalker")) == 2, "exact 72 game hours expire the absent player")
+NOW = checkpoint_time
+fire(H, "load_state", checkpoint)
+H.coop_trader_reputation.refresh()
+check(select(2, H.coop_trader_reputation.average("stalker")) == 3, "same-world rollback restores the saved game-clock checkpoint")
+
+section("calendar rollover uses precise seconds from native CTime get")
+local function at(y, mo, d, h, mi, sec)
+    H.game.get_game_time = function() return { get = function() return y, mo, d, h, mi, sec, 0 end,
+        diffSec = function() error("float32 epoch must never be used") end } end
+end
+for _, dates in ipairs({
+    {{2026,1,31,23,59,59}, {2026,2,3,23,59,58}, {2026,2,3,23,59,59}},
+    {{2026,12,31,23,59,59}, {2027,1,3,23,59,58}, {2027,1,3,23,59,59}},
+    {{2024,2,28,12,0,0}, {2024,3,2,11,59,59}, {2024,3,2,12,0,0}},
+    {{2100,2,28,12,0,0}, {2100,3,3,11,59,59}, {2100,3,3,12,0,0}},
+    {{2000,2,28,12,0,0}, {2000,3,2,11,59,59}, {2000,3,2,12,0,0}},
+}) do
+    PLAYERS[1] = { nick = "one", proxy = 501 }
+    at(unpack(dates[1]))
+    fire(H, "load_state", {})
+    H.coop_trader_reputation.refresh()
+    PLAYERS[1] = nil
+    at(unpack(dates[2]))
+    H.coop_trader_reputation.refresh()
+    check(select(2, H.coop_trader_reputation.average("stalker")) == 3, "calendar rollover preserves the final second")
+    at(unpack(dates[3]))
+    H.coop_trader_reputation.refresh()
+    check(select(2, H.coop_trader_reputation.average("stalker")) == 2, "calendar rollover expires exactly at 72 hours")
+end
+at(2026, 2, 30, 0, 0, 0)
+H.coop_trader_reputation.refresh()
+check(H.coop_trader_reputation.average("stalker") == nil, "malformed calendar fails closed")
+
+section("v1 migration waits for the first world clock and grants fresh game-time grace")
+local legacy = { v = 1, players = { [KEY[1]] = { last_seen = 1800000000, goodwill = { stalker = 600, dolg = 300 } } } }
+H.game.get_game_time = function() error("loading world has no clock") end
+fire(H, "load_state", { coop_trader_reputation = legacy })
+local deferred = {}
+fire(H, "save_state", deferred)
+local row = deferred.coop_trader_reputation.players[KEY[1]]
+check(deferred.coop_trader_reputation.v == 1 and row and row.last_seen == 1800000000 and row.goodwill.stalker == 600,
+    "no-clock load-save preserves v1 history without fake epoch conversion")
+fire(H, "load_state", deferred)
+H.game.get_game_time = game_clock
+H.coop_trader_reputation.refresh()
+check(select(2, H.coop_trader_reputation.average("stalker")) == 3, "valid legacy offline goodwill gets a fresh grace window")
+local migrated = {}
+fire(H, "save_state", migrated)
+check(migrated.coop_trader_reputation.v == 2, "first available world clock migrates the saved schema")
+H.game.get_game_time = function() return nil end
+fire(H, "load_state", migrated)
+local preserved = {}
+fire(H, "save_state", preserved)
+check(preserved.coop_trader_reputation.players[KEY[1]].last_seen == migrated.coop_trader_reputation.players[KEY[1]].last_seen,
+    "v2 load-save without clock preserves the original game anchor")
+H.game.get_game_time = game_clock
+NOW = NOW + G.WINDOW - 1
+H.coop_trader_reputation.refresh()
+check(select(2, H.coop_trader_reputation.average("stalker")) == 3, "migration grace lasts until the last game second")
+NOW = NOW + 1
+H.coop_trader_reputation.refresh()
+check(select(2, H.coop_trader_reputation.average("stalker")) == 2, "migration grace expires at exactly 72 game hours")
+local bad = G.restore({ v = 3, clock = "game_calendar_seconds", players = legacy.players }, NOW)
+check(next(bad.players) == nil, "unknown version is rejected")
+local future = G.restore({ v = 2, clock = "game_calendar_seconds", players = { [KEY[1]] = { last_seen = NOW + 1, goodwill = { stalker = 9999 } } } }, NOW)
+check(next(future.players) == nil, "future v2 rows are rejected at restore")
+
+section("clock schema validation and pending migration")
+check(G.calendar_seconds(1, 1, 1, 0, 0, 0, 0) == 0, "engine calendar epoch zero is valid")
+check(G.calendar_seconds(9999, 12, 31, 23, 59, 59, 999) == 315537897599, "calendar conversion stays exact across the supported range")
+check(G.calendar_seconds(2026, 2, 29, 0, 0, 0, 0) == nil, "non-leap February is rejected")
+local valid_call, invalid_date = pcall(G.calendar_seconds, 2026, nil, 1, 0, 0, 0, 0)
+check(valid_call and invalid_date == nil, "missing calendar fields safely fail validation")
+for _, schema in ipairs({ {v=2, clock="unix_seconds"}, {v=1, clock="game_calendar_seconds"}, {v="2", clock="game_calendar_seconds"} }) do
+    schema.players = legacy.players
+    check(next(G.restore(schema, NOW).players) == nil, "incompatible clock/version pair is rejected")
+end
+for _, seen in ipairs({0, -1, 1.5, math.huge}) do
+    local malformed = {v=1, players={ [KEY[1]]={last_seen=seen, goodwill={stalker=9999}} }}
+    check(next(G.restore(malformed, NOW).players) == nil, "malformed v1 timestamp cannot obtain migration grace")
+end
+H.os.time = function() error("real clock must not be read") end
+H.coop_trader_reputation.refresh()
+check(select(2, H.coop_trader_reputation.average("stalker")) == 2, "world sampling succeeds with unavailable real clock")
 
 section("production client relations reach the host's faction-goodwill readpoint")
 local native_code = os.execute("python -B tests/lua/support/trader_goodwill_native.py temp/trader_reputation/native-goodwill.lua")

@@ -103,6 +103,7 @@ int main(int argc, char** argv) {
         local data={}
         alife_storage_manager={get_state=function() return data end}
         game_relations={factions_table={"stalker"}}
+        game={get_game_time=function() return {get=function() return 2026,11,10,12,0,0,0 end} end}
         relation_registry={community_goodwill=function(_,id) return ({[0]=1200,[501]=600,[502]=300})[id] end}
         function alife_object(id)
             return {spawn_ini=function() return {

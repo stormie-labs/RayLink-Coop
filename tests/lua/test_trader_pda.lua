@@ -5,6 +5,7 @@ W.game = { translate_string = function(id) return id end }
 W.relation_registry = { community_goodwill = function() return 1700 end }
 W.vector2 = function() return { set = function(self, x, y) self.x, self.y = x, y return self end } end
 W.GetFontSmall = function() return "small" end
+W.GetFontLetterica16Russian = function() return "letterica16" end
 W.coop_trader_reputation = { refresh = function() end, average = function() return 699.999, 3 end }
 local function cell()
 	return {
@@ -18,6 +19,7 @@ local function cell()
 		SetTextComplexMode = function(self, on) self.complex = on end,
 		SetTextColor = function(self, color) self.color = color end,
 		Show = function(self, show) self.shown = show end,
+		AttachChild = function(self, child) self.child = child end,
 	}
 end
 local original = function(self) self.relations[1][0]:SetText("personal") self.resets = (self.resets or 0) + 1 end
@@ -27,7 +29,8 @@ local window = setmetatable({ list = { "stalker" }, relations = { { [0] = cell()
 	{ __index = W.ui_pda_relations_tab.pda_relations_tab })
 window:Reset()
 local c = window.relations[1][0]
-check(c.text:find("You 1700", 1, true) and c.text:find("Grp. 699.99 (3)", 1, true), "PDA labels personal and group numbers with an explicit participant count")
+check(c.font == "letterica16", "goodwill labels use a font with Cyrillic glyphs, not the statistics atlas")
+check(c.text:find("You 1700", 1, true) and c.text:find("Grp 699", 1, true), "PDA labels personal and group numbers using compact legible labels")
 check(c.size and c.size.x == 75 and c.size.y <= 35 and c.complex, "two lines fit the existing faction row spacing")
 -- CUILine::ProcessNewLines and CUILines::ParseText both recognize the two-byte token, not an LF byte.
 check(c.text:find("\\n", 1, true) and not c.text:find("\n", 1, true),
@@ -35,7 +38,7 @@ check(c.text:find("\\n", 1, true) and not c.text:find("\n", 1, true),
 check(window.reputation == 100 and window.rank == 500 and window.resets == 1, "PDA preserves actor reputation/rank and stock Reset")
 W.coop_trader_reputation.average = function() return nil, 0 end
 window:autoupdate()
-check(c.text:find("- (0)", 1, true), "no data is displayed explicitly")
+check(c.text:find("Grp -", 1, true), "no data is displayed explicitly")
 W.ACTIVE = false
 window:Reset()
 check(c.text == "personal", "single-player PDA keeps its stock display")
@@ -44,6 +47,7 @@ section("lazy PDA module loads through the normal global loader")
 local L = make_world(0)
 L.AC_ID, L.game, L.relation_registry = 0, W.game, W.relation_registry
 L.vector2, L.GetFontSmall, L.coop_trader_reputation = W.vector2, W.GetFontSmall, W.coop_trader_reputation
+L.GetFontLetterica16Russian = W.GetFontLetterica16Russian
 L.coop_trader_reputation.average = function() return 700, 3 end
 local lazy_module = { pda_relations_tab = { Reset = original, autoupdate = function() end } }
 local loader_calls = 0
@@ -60,7 +64,7 @@ load_script(L, "coop_trader_pda").on_game_start()
 local late = setmetatable({ list = { "stalker" }, relations = { { [0] = cell() } } },
 	{ __index = L.ui_pda_relations_tab.pda_relations_tab })
 late:Reset()
-check(loader_calls == 1 and late.relations[1][0].text:find("700 (3)", 1, true),
+check(loader_calls == 1 and late.relations[1][0].text:find("700", 1, true),
 	"first late PDA open has the group wrapper without requiring another game startup")
 
 section("actual stock PDA Reset, autoupdate, buttons and localized native text")
@@ -69,6 +73,9 @@ local R = make_world(0)
 local group = 700
 R.AC_ID = 0
 R.vector2, R.GetFontSmall = W.vector2, W.GetFontSmall
+R.GetFontLetterica16Russian = W.GetFontLetterica16Russian
+R.CUITextWnd = cell
+R.GetARGB = function() return "gray" end
 R.db.actor.character_community = function() return "stalker" end
 R.relation_registry = { community_goodwill = function() return 1700 end, community_relation = function() return 1200 end }
 R.game_relations = { FRIENDS = 1000, ENEMIES = -1000 }
@@ -110,18 +117,18 @@ end
 check(real.relations[1][1].text == "st_goodwill_friendly" and real.relations[1][1].color == "green",
 	"stock faction-to-faction relation cells retain their original text and color")
 real:btn_to_text()
-check(not real.to_text and real.relations[1][1].text == "1200" and real.relations[1][0].text:find("700 (3)", 1, true),
+check(not real.to_text and real.relations[1][1].text == "1200" and real.relations[1][0].text:find("700", 1, true),
 	"actual numeric-display button keeps group values beside personal goodwill")
 real:btn_to_text()
 check(real.to_text and real.relations[1][1].text == "st_goodwill_friendly",
 	"actual text-display button preserves the faction relation matrix")
 group = nil
 real:Update()
-check(real.relations[1][0].text:find("- (0)", 1, true), "actual scheduled Update displays the authoritative empty view")
+check(real.relations[1][0].text:find("-", 1, true), "actual scheduled Update displays the authoritative empty view")
 group = 1000
 R.NOW = R.NOW + 2001
 real:Update()
-check(real.relations[1][0].text:find("1000 (3)", 1, true), "actual scheduled Update refreshes the group view")
+check(real.relations[1][0].text:find("1000", 1, true), "actual scheduled Update refreshes the group view")
 
 section("source/XML row geometry and actual packed small-font metrics")
 local xml_file = assert(io.open("../anomaly-ref/unpacked/configs/ui/pda_relations_16.xml", "rb"))
@@ -151,6 +158,8 @@ local geometry = setmetatable({ list = real.list, companion_info = real.companio
 	{ __index = TRADER_REAL_PDA.pda_relations_tab })
 geometry:InitControls()
 geometry:Reset()
+check(geometry.coop_goodwill_note and geometry.coop_goodwill_note.text:find("Players counted: 3", 1, true),
+	"participant count is legible below the matrix, not squeezed into each cell")
 local first, next_row, next_column = geometry.relations[1][0], geometry.relations[1][1], geometry.relations[2][0]
 check(first.position.y >= row_lines[1] + 1 and first.position.y + first.size.y <= row_lines[2],
 	"34-high resized cell stays inside the actual XML row dividers")
@@ -160,18 +169,16 @@ local first_y = first.position.y
 geometry:Reset()
 check(first.position.y == first_y, "repeated Reset/autoupdate never drifts the centered cell")
 
--- Read-only extraction of current GAMMA db/textures/textures_ui.db0, ui/ui_font_hud_01.ini.
--- The actual atlas is fixed 8x8, stat_font interval is 0.75. The 2160 atlas is 16x16.
--- GameFont::SizeOf_ multiplies width by interval. UILines reserves one 'o' glyph when wrapping.
+-- Actual GAMMA Letterica glyph widths, including Cyrillic. Native wrapping reserves one o glyph.
 local font = dofile("tests/lua/support/font_letterica.lua")
 for _, resolution in ipairs({ {1024,768,8}, {1280,720,8}, {1920,1080,8}, {2560,1440,16}, {3840,2160,16} }) do
-	local glyph, pixels = resolution[3] * 0.75, 75 * resolution[1] / 1024
-	local mono = {}
-	for byte = 0, 255 do mono[byte] = glyph end
+	local pixels = 75 / 0.75
+	local glyph = font.W16[111]
+	local mono = font.W16
 	for _, lang in ipairs({ "eng", "rus" }) do
 		local file = assert(io.open("gamedata/configs/text/" .. lang .. "/st_coop_traders.xml", "rb"))
 		local template = file:read("*a"):match("<text>(.-)</text>") file:close()
-		local text = string.format(template, -3000, "-2999.67", 64)
+		local text = string.format(template, -3000, "-3000", 64)
 		local separator = assert(text:find("\\n", 1, true))
 		local lines = { text:sub(1, separator - 1), text:sub(separator + 2) }
 		local wrapped, word_fits = 0, true
@@ -179,8 +186,8 @@ for _, resolution in ipairs({ {1024,768,8}, {1280,720,8}, {1920,1080,8}, {2560,1
 			wrapped = wrapped + font.lines(mono, line, pixels - glyph)
 			for word in line:gmatch("%S+") do word_fits = word_fits and font.width(mono, word) <= pixels - glyph end
 		end
-		check(word_fits and wrapped * resolution[3] * 768 / resolution[2] <= 34,
-			"measured small-font labels fit the row " .. lang .. " " .. resolution[1] .. "x" .. resolution[2])
+		check(word_fits and wrapped <= 2,
+			"measured Letterica labels fit the row " .. lang .. " " .. resolution[1] .. "x" .. resolution[2])
 	end
 end
 print(string.format("%d passed, %d failed", CHECKS - FAILS, FAILS))

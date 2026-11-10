@@ -180,6 +180,14 @@ local function se_queue(id, varname, val)
 end
 
 local function se_wrapper(id, name, varname, val, ...)
+	-- GAMMA's server_object_on_register cleanup clears parts for every new entity.
+	-- A replacement already has the source's parts before that callback. They belong
+	-- to this transaction, not a previous object which happened to reuse the id.
+	-- Only protect the pending target; normal creations and source cleanup stay unchanged.
+	if varname == "parts" and val == nil and clone_transactions[id] then
+		local m = m_data()
+		if m and m.se_object and m.se_object[id] and m.se_object[id].parts ~= nil then return end
+	end
 	orig_save_var(id, name, varname, val, ...)
 	se_queue(id, varname, val)
 end
