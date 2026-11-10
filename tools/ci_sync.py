@@ -10,6 +10,7 @@ the CI xrGame.vcxproj. Usage: python tools/ci_sync.py [--dry] [--committed] [--b
                "RayLink Engine dev". Only src/xrCore/raylink_build.h of the CI tree changes (the main tree keeps 0), and
                only when the number changes, so MSBuild recompiles just the few files that name the engine.
 """
+import argparse
 import fnmatch
 import re
 import shutil
@@ -116,8 +117,13 @@ def write_build_number(build: int, dry: bool, committed: bool) -> str:
 
 
 def main():
-    dry = "--dry" in sys.argv
-    committed = "--committed" in sys.argv
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dry", action="store_true", help="List changes without writing files")
+    parser.add_argument("--committed", action="store_true", help="Copy committed sources only")
+    parser.add_argument("--build", type=int, help="Positive release build number; omitted for a dev build")
+    args = parser.parse_args()  # Help and invalid options exit before inspecting or changing either tree.
+    dry = args.dry
+    committed = args.committed
     build = build_number_arg(sys.argv)
     copied, skipped, new_coop = [], [], []
     for rel, untracked in changed_files():

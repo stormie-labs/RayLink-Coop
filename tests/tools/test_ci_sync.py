@@ -1,5 +1,7 @@
 """Committed sound changes must reach the isolated engine build, even with a clean main checkout."""
 import importlib.util
+import contextlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +15,18 @@ SPEC.loader.exec_module(ci_sync)
 
 
 class CiSyncSourceTests(unittest.TestCase):
+    def test_help_and_unknown_options_never_start_copying(self):
+        for option, expected in (("--help", 0), ("--unknown-option", 2)):
+            with self.subTest(option=option), patch.object(ci_sync.sys, "argv", ["ci_sync.py", option]), \
+                    patch.object(ci_sync, "changed_files", return_value=[]) as changes, \
+                    patch.object(ci_sync, "write_build_number") as number, \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as result:
+                    ci_sync.main()
+                self.assertEqual(result.exception.code, expected)
+                changes.assert_not_called()
+                number.assert_not_called()
+
     def test_sound_source_and_interface_are_found_after_commit(self):
         (ROOT / "temp").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="ci-sync-test-", dir=ROOT / "temp") as directory:
