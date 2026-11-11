@@ -160,7 +160,7 @@ struct CSE_Abstract {
 struct CSE_ALifeInventoryItem : CSE_Abstract { float m_fCondition = 1.f; UpgradeList m_upgrades; };
 struct CSE_ALifeItemAmmo : CSE_ALifeInventoryItem { u16 a_elapsed = 45, m_boxSize = 45; };
 struct CSE_ALifeItemWeapon : CSE_ALifeInventoryItem {
-    enum { eWeaponAddonScope = 1 };
+    enum { eWeaponAddonScope = 1, eWeaponAddonSilencer = 2 };
     u16 a_elapsed = 0;
     u8 ammo_type = 0;
     Flags m_addon_flags;
@@ -218,6 +218,7 @@ bool g_scan_now = false;
 std::map<u16, TakeBase> g_take_base;
 std::map<u16, Pending> g_pending;
 std::map<u16, Owned> g_owned;
+std::map<u16, PeerId> g_detached_silencers;
 std::map<u16, int> g_unload_used;
 std::set<u16> g_releasing;
 std::set<u32> g_logged_tags;

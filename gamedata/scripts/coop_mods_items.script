@@ -1113,6 +1113,21 @@ local function disassembly_wrapper(what)
 	end
 end
 
+-- Native detach keeps the addon mounted until the host creates the loose item.
+-- The original 3DSS wrapper returns before that answer, so its delayed condition
+-- search cannot run. Carry its condition in the native transaction instead.
+function native_silencer_state(weapon, committed)
+	if committed then
+		se_save_var(weapon:id(), nil, "3dss_silencer_condition", nil)
+		return 1
+	end
+	local mod = C().mod("z_3dss_silencer_condition")
+	if mod and type(mod.get_attached_silencer_condition) == "function" then
+		return mod.get_attached_silencer_condition(weapon) or 1
+	end
+	return 1
+end
+
 local function detach_wrapper(orig)
 	return function(wpn, addon, typ, ignore, ...)
 		if not on_client(wpn) or own(wpn:id()) then return orig(wpn, addon, typ, ignore, ...) end

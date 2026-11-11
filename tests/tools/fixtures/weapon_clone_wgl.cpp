@@ -135,6 +135,7 @@ namespace items {
 std::mutex g_lock;
 std::map<u16, Blob> g_spawn_states;
 std::map<u16,int> g_sent, g_pending, g_take_base, g_owned, g_left, g_unload_used;
+std::map<u16,int> g_detached_silencers;
 std::set<u16> g_releasing;
 std::set<u32> g_logged_tags;
 std::map<u16,std::vector<u16>> g_proxy_items;

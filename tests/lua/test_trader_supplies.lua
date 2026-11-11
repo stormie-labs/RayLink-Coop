@@ -133,7 +133,8 @@ mod_chunk("../anomaly-ref/unpacked/scripts/trade_manager.script", {
 W.trade_manager = TRADER_MANAGER
 npc.buy_supplies = function(_, _, section) restocks = restocks + 1 npc.last_section = section end
 W.disable_info = function() end
-local file = assert(io.open("E:/RayLink2/gamma/gamedata/scripts/trader_autoinject.script", "r"))
+local gamma_scripts = os.getenv("GAMMA_SCRIPTS") or "E:/RayLink2/gamma/gamedata/scripts"
+local file = assert(io.open(gamma_scripts .. "/trader_autoinject.script", "r"))
 local source = file:read("*a") file:close()
 local auto = setmetatable({}, { __index = W })
 W.trader_autoinject = auto
@@ -146,7 +147,7 @@ check(auto.supply_level(npc) == npc.last_section, "GAMMA injector helper uses th
 check(auto.supply_level(npc, true) == tonumber(npc.last_section:match("_(%d+)$")),
 	"numeric supply-level callers receive the same selected tier")
 TRADER_INVENTORY = setmetatable({}, { __index = W })
-mod_chunk("E:/RayLink2/gamma/gamedata/scripts/ui_inventory.script", { "function supply_level(" }, "TRADER_INVENTORY")
+mod_chunk(gamma_scripts .. "/ui_inventory.script", { "function supply_level(" }, "TRADER_INVENTORY")
 check(TRADER_INVENTORY.supply_level(npc) == npc.last_section,
 	"GAMMA inventory's own supply helper follows the shared selection")
 check(TRADER_INVENTORY.supply_level(npc, true) == auto.supply_level(npc, true),

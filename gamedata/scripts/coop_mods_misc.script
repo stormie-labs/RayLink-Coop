@@ -53,6 +53,13 @@ local function log(tag, fmt, ...) C().log(tag, fmt, ...) end
 local EF_SUBS = { "XP", "skills_savedata", "traits_savedata", "tasks_manager", "potion_xp_buff" }
 
 local function install_pdata()
+	local inspect = C().mod("grok_doom_weapons_inspect")
+	if inspect then
+		-- Its save_state is local: collect the live table directly. Otherwise every
+		-- world load gives the client the host's history and repeats first-equip animations.
+		P().register("inspected_weapons", { get = function() return inspect.inspected_weapons end })
+		installed[#installed + 1] = "weapon_inspection"
+	end
 	if C().mod("experience_core") then
 		P().register("experience_framework_savedata", { subs = EF_SUBS, prime = { "experience_core" } })
 		installed[#installed + 1] = "experience_framework"

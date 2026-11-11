@@ -23,7 +23,7 @@ methods = "\n".join(definition(source, name) for name in (
     "void set_current(", "void set_other(", "void apply_object(", "void apply_entity(",
     "void write_state(", "void send_state(", "u32 take_changes(", "u32 push_keeps(",
     "void scan_local(", "bool client_apply(", "void client_on_state(",
-    "void process_pending(", "void host_on_state(", "void host_enforce("))
+    "void process_pending(", "void filter_detached_silencer(", "void host_on_state(", "void host_enforce("))
 harness = (ROOT / "tests/tools/fixtures/client_ammo_reload.cpp").read_text(encoding="utf-8")
 harness = harness[:harness.index("int main(")]
 harness = harness.replace("// ITEM_TYPES", types).replace("// ENGINE_METHODS", methods)

@@ -40,7 +40,7 @@ def ammo_runner():
         "void set_current(", "void set_other(", "void apply_object(", "void apply_entity(",
         "void write_state(", "void send_state(", "u32 take_changes(", "u32 push_keeps(",
         "void scan_local(", "bool client_apply(", "void client_on_state(",
-        "void process_pending(", "void host_on_state(", "void host_enforce(",
+        "void process_pending(", "void filter_detached_silencer(", "void host_on_state(", "void host_enforce(",
     )
     methods = "\n".join(definition(source, signature) for signature in signatures)
     methods += "\n" + definition((game / "WeaponAmmo.cpp").read_text(encoding="utf-8-sig"),
