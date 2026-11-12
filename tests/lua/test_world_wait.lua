@@ -314,6 +314,21 @@ w.on_menu_frame(MENU)
 check(#WS.calls == 0 and HOSTED and HOSTED.id == "g_old" and HOSTED.stem == "coop_auto_g_old_1" and type(HOSTED.port) == "number",
 	"an old split world: hosted in this game, no world server")
 check(has_log("[coop-world-wait] auto: hosting coop_auto_g_old_1 in this game on port " .. tostring(HOSTED and HOSTED.port)), "and a log line with the port")
+-- while the main menu is being built the load must wait: loading closes the menu, and there is none yet (live 2026-11-13: the
+-- engine fell in CMainMenu::ReloadUI)
+HOSTED = nil
+ws_reset(); CALLS = {}; LOG = {}
+w.state_of().auto_done = false
+w.on_menu_frame(MENU, true)
+check(HOSTED == nil and has_log("[coop-world-wait] auto: coop_auto_g_old_1 is hosted in this game once the main menu is up"),
+	"from the menu's own construction: nothing is loaded yet, a log line")
+w.on_menu_frame(MENU, true)
+check(HOSTED == nil, "still not while the menu is being built")
+w.on_menu_frame(MENU)
+check(HOSTED and HOSTED.stem == "coop_auto_g_old_1" and HOSTED.id == "g_old", "the first frame of the finished menu: hosted")
+HOSTED = nil
+w.on_menu_frame(MENU)
+check(HOSTED == nil, "once")
 coop_menu = { host_save = function() return false, "a session is running" end }
 ws_reset(); CALLS = {}; LOG = {}
 w.state_of().auto_done = false

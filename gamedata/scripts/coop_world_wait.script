@@ -672,21 +672,34 @@ local function auto_new(menu, faction)
 	open(menu, { kind = "new", name = "tester", port = port })
 end
 
-local function auto_load(menu, stem)
+-- A world its host plays in (the old split mode too), hosted in this game as "Play" of the Co-op window does it.
+local function auto_host(id, stem)
+	local cm = module_of("coop_menu")
+	if not (cm and type(cm.host_save) == "function") then
+		log("auto: ! %s is not a world-server world and coop_menu.host_save is not there: nothing is done", stem)
+		return
+	end
+	local port = host_port()
+	local ok, why = cm.host_save(id, stem, port)
+	if ok then log("auto: hosting %s in this game on port %d", stem, port) else log("auto: ! %s is not hosted: %s", stem, tostring(why)) end
+end
+
+-- `from_init`: called while the main menu is being built (attach, from on_main_menu_init).
+local function auto_load(menu, stem, from_init)
 	local gs = module_of("coop_game_settings")
 	local id = gs and gs.game_of_save and gs.game_of_save(stem) or nil
 	local plan, card = plan_for_game(id)
 	log("auto: continue %s (game %s, %s)", stem, tostring(id), plan)
 	if plan ~= "server" then
-		-- a world its host plays in (the old split mode too): hosted in this game, as "Play" of the Co-op window does it
-		local cm = module_of("coop_menu")
-		if not (cm and type(cm.host_save) == "function") then
-			log("auto: ! %s is not a world-server world and coop_menu.host_save is not there: nothing is done", stem)
+		-- Loading a save closes the main menu ("main_menu off"). While the menu is being built the engine has no menu to close
+		-- and falls on it (live 2026-11-13: CMainMenu::ReloadUI, the first run of the launcher's "Play" of a host's world): the
+		-- load waits for the first frame of the finished menu (on_menu_frame).
+		if from_init then
+			S.auto_host = { id = id, stem = stem }
+			log("auto: %s is hosted in this game once the main menu is up", stem)
 			return
 		end
-		local port = host_port()
-		local ok, why = cm.host_save(id, stem, port)
-		if ok then log("auto: hosting %s in this game on port %d", stem, port) else log("auto: ! %s is not hosted: %s", stem, tostring(why)) end
+		auto_host(id, stem)
 		return
 	end
 	local port, name = host_port(), card_name(card)
@@ -698,7 +711,7 @@ local function auto_load(menu, stem)
 	open(menu, { kind = "load", name = name, save = stem, port = port })
 end
 
-function run_auto(menu)
+function run_auto(menu, from_init)
 	if S.auto_done then return end
 	S.auto_done = true
 	local f = rawget(_G, "command_line")
@@ -710,12 +723,17 @@ function run_auto(menu)
 		log("auto: ! a game or a session is already running: nothing is done")
 		return
 	end
-	if a.what == "new" then auto_new(menu, a.faction) else auto_load(menu, a.what) end
+	if a.what == "new" then auto_new(menu, a.faction) else auto_load(menu, a.what, from_init) end
 end
 
--- Every frame of the main menu (and once from attach).
-function on_menu_frame(menu)
-	run_auto(menu)
+-- Every frame of the main menu, and once from attach while the menu is being built (`from_init`).
+function on_menu_frame(menu, from_init)
+	run_auto(menu, from_init)
+	if S.auto_host and not from_init then
+		local h = S.auto_host
+		S.auto_host = nil
+		auto_host(h.id, h.stem)
+	end
 	local a = api()
 	if S.joined and a and not a.is_active() then leave(menu) end
 end
@@ -741,7 +759,7 @@ function attach(menu)
 			log("! no main menu Update to hook: -coop_world_auto and the end of a session wait for the next menu")
 		end
 	end
-	on_menu_frame(menu)
+	on_menu_frame(menu, true)
 end
 
 function on_game_start()
