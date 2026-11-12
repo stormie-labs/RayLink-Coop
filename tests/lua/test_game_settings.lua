@@ -288,6 +288,7 @@ local rc = load_script_file("coop_game_record")
 local cs = load_script_file("coop_settings")
 local gs = load_script_file("coop_game_settings")
 load_script_file("coop_economy_core")
+load_script_file("coop_json_card")
 check(gs ~= nil and cs ~= nil and sc ~= nil and rc ~= nil, "the scripts load")
 if not gs then
 	print(string.format("%d passed, %d failed", PASSES, FAILS))
@@ -1038,6 +1039,28 @@ check(gid == RT.id and grec.at and grec.at.level == "k00_marsh" and grec.title =
 local found
 for _, g in ipairs(gs.list_games()) do if g.id == RT.id then found = g end end
 check(found and found.title == "With Kent", "list_games has the title")
+-- the launcher's card (coop_json_card): the launcher cannot read the marshal of <id>.cgame
+local jtext = VFS[SAVES .. RT.id .. ".cgame.json"]
+check(type(jtext) == "string" and jtext:find("\"id\":\"" .. RT.id .. "\"", 1, true) ~= nil, "every card has a readable twin for the launcher")
+check(type(jtext) == "string" and jtext:find("\"title\":\"With Kent\"", 1, true) ~= nil and jtext:find("\"faction\":\"stalker\"", 1, true) ~= nil,
+	"with the title and the faction")
+check(type(jtext) == "string" and jtext:find("\"players\":[\"stormie\",\"kent\"]", 1, true) ~= nil, "and who played at the last save")
+check(type(jtext) == "string" and jtext:find("\"split\":false", 1, true) ~= nil and jtext:find("\"last_played\":\"", 1, true) ~= nil,
+	"whether the world is a process of its own, and when it was played")
+-- a world server alone: its own seat plays no character, nobody was there
+coop.is_dedicated = function() return true end
+SESSION = { nick = "server", players = {} }
+local alone = {}
+gs.save_state(alone)
+check(alone.coop_game.at.players == nil, "a save of a world server with nobody in has no players (its own seat is none)")
+local jalone = VFS[SAVES .. RT.id .. ".cgame.json"]
+check(type(jalone) == "string" and jalone:find("players", 1, true) == nil and jalone:find("server", 1, true) == nil,
+	"and the launcher's card names nobody")
+coop.is_dedicated = nil
+SESSION = { nick = "stormie", players = {} }
+local solo = {}
+gs.save_state(solo)
+check(solo.coop_game.at.players and solo.coop_game.at.players[1] == "stormie", "an ordinary host alone is the one player, as before")
 gs.before_world_start("load", "atsave")
 check(gs.active() and gs.active().id == RT.id and gs.active().at == nil and SET_GAME[#SET_GAME] == RT.id, "a load: the same game, `at` stays in the save")
 local n_set = #SET_GAME

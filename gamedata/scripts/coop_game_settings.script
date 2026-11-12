@@ -288,6 +288,20 @@ function load_card(id)
 	return nil
 end
 
+-- The readable twin of a card for the launcher, <id>.cgame.json (coop_json_card.script: the launcher cannot read the marshal of the
+-- card). Written with every card and never read back by the game; a failure is a line of the log, the card itself is written.
+-- The players are those of the running game's last save (the card does not keep them): a card of another game, or one written
+-- before the first save, has none.
+local function write_json_card(dir, card)
+	local j = mod("coop_json_card")
+	if not (j and type(j.encode) == "function") then return end
+	local players = S.rec and S.rec.id == card.id and S.last_players or nil
+	local text = j.encode(card, players or {})
+	if not text then return end
+	local ok, why = write_file(dir .. card.id .. j.FILE_EXT, text)
+	if not ok then log("! the launcher's card of game %s cannot be written: %s", card.id, why) end
+end
+
 local function write_card(card)
 	local c, r, dir = codec(), records(), saves_dir()
 	if not (c and r and dir and type(card) == "table" and valid_id(card.id)) then return false end
@@ -299,6 +313,7 @@ local function write_card(card)
 	local ok, why = write_file(dir .. card.id .. CARD_EXT, s)
 	if ok then
 		stats.cards = stats.cards + 1
+		write_json_card(dir, card)
 	else
 		stats.card_fails = stats.card_fails + 1
 		log("! the card of game %s cannot be written: %s", card.id, why)
@@ -651,7 +666,10 @@ local function at_now()
 			for _, p in ipairs(type(info.players) == "table" and info.players or {}) do
 				if type(p) == "table" and type(p.nick) == "string" then players[#players + 1] = p.nick end
 			end
-			if #players == 0 and type(info.nick) == "string" and info.nick ~= "" then players[1] = info.nick end
+			-- alone: this machine's own player. Not a world server: its own seat plays no character and is in no list of players
+			-- (docs\plans\2026-11-12-split-levels-native.md section 1), nobody was there
+			local world_server = type(api.is_dedicated) == "function" and api.is_dedicated() == true
+			if #players == 0 and not world_server and type(info.nick) == "string" and info.nick ~= "" then players[1] = info.nick end
 		end
 	end
 	if #players > 0 then at.players = players end
@@ -668,6 +686,7 @@ local function save_state_impl(m_data)
 		return
 	end
 	block.at = at_now()
+	S.last_players = block.at.players or {} -- for the launcher's card (write_json_card)
 	m_data.coop_game = block
 	stats.saves = stats.saves + 1
 	write_running_card()

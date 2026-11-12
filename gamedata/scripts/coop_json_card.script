@@ -1,0 +1,88 @@
+--[[
+	Anomaly Coop: the readable twin of a game's card, $game_saves$\<id>.cgame.json, for the launcher
+	(docs\plans\2026-11-12-split-levels-native.md section 6.3). The card itself (<id>.cgame) is marshal, which only the game
+	reads; coop_game_settings writes this file next to it at every card it writes. The game never reads it back.
+
+	The file is one JSON object in UTF-8 (the game's strings are cp1251), keys in this order, a missing value left out:
+		format       1
+		id           the game's id, the card's file name
+		name         the creator's character name ("" if none)
+		title        what the player called the game
+		faction      the creator's faction (a section name: "stalker", "dolg", ...)
+		created      "YYYY-MM-DD HH:MM", local time
+		last_played  "YYYY-MM-DD HH:MM", local time
+		last_save    the stem of the last save of this game
+		split        true | false: the game's value c|coop_split_levels (the world runs as its own process)
+		rev          the record's revision, a whole number
+		players      [nick, ...]: the players of the last save, without the world server's own seat
+
+	Pure logic, no engine calls: tests\lua\test_json_card.lua.
+]]
+
+FILE_EXT = ".cgame.json"
+
+local SPLIT_KEY = "c|coop_split_levels"
+
+-- cp1251 0x80..0xBF as Unicode code points (0xC0..0xFF are U+0410..U+044F in order); 0x98 is not defined in cp1251
+local HIGH = {
+	0x0402, 0x0403, 0x201A, 0x0453, 0x201E, 0x2026, 0x2020, 0x2021, 0x20AC, 0x2030, 0x0409, 0x2039, 0x040A, 0x040C, 0x040B, 0x040F,
+	0x0452, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0xFFFD, 0x2122, 0x0459, 0x203A, 0x045A, 0x045C, 0x045B, 0x045F,
+	0x00A0, 0x040E, 0x045E, 0x0408, 0x00A4, 0x0490, 0x00A6, 0x00A7, 0x0401, 0x00A9, 0x0404, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x0407,
+	0x00B0, 0x00B1, 0x0406, 0x0456, 0x0491, 0x00B5, 0x00B6, 0x00B7, 0x0451, 0x2116, 0x0454, 0x00BB, 0x0458, 0x0405, 0x0455, 0x0457,
+}
+
+local char, byte, floor = string.char, string.byte, math.floor
+
+local function utf8_of_code(cp)
+	if cp < 0x80 then return char(cp) end
+	if cp < 0x800 then return char(0xC0 + floor(cp / 0x40), 0x80 + cp % 0x40) end
+	return char(0xE0 + floor(cp / 0x1000), 0x80 + floor(cp / 0x40) % 0x40, 0x80 + cp % 0x40)
+end
+
+local UTF8 = {} -- byte -> its UTF-8 text, for the bytes above ASCII
+for b = 0x80, 0xBF do UTF8[b] = utf8_of_code(HIGH[b - 0x7F]) end
+for b = 0xC0, 0xFF do UTF8[b] = utf8_of_code(0x0410 + b - 0xC0) end
+
+-- A cp1251 string as UTF-8. Anything that is not a string is "".
+function utf8(s)
+	if type(s) ~= "string" then return "" end
+	return (s:gsub("[\128-\255]", function(c) return UTF8[byte(c)] end))
+end
+
+local NAMED = { ["\""] = "\\\"", ["\\"] = "\\\\", ["\n"] = "\\n", ["\r"] = "\\r", ["\t"] = "\\t" }
+
+-- A cp1251 string as a JSON string in UTF-8.
+function str(s)
+	local out = (type(s) == "string" and s or ""):gsub("[%z\1-\31\"\\\127]", function(c)
+		return NAMED[c] or string.format("\\u%04x", byte(c))
+	end)
+	return "\"" .. utf8(out) .. "\""
+end
+
+local function split_of(values)
+	local v = type(values) == "table" and values[SPLIT_KEY] or nil
+	return v == true or tonumber(v) == 1
+end
+
+-- The card as the text of its .cgame.json; nil for something that is not a card with an id. `players`: the nicks of the last save
+-- (the card itself does not keep them); without it, card.players.
+function encode(card, players)
+	if type(card) ~= "table" or type(card.id) ~= "string" or card.id == "" then return nil end
+	if type(players) ~= "table" then players = card.players end
+	local parts = { "\"format\":1", "\"id\":" .. str(card.id), "\"name\":" .. str(card.name) }
+	for _, key in ipairs({ "title", "faction", "created", "last_played", "last_save" }) do
+		local v = card[key]
+		if type(v) == "string" and v ~= "" then parts[#parts + 1] = "\"" .. key .. "\":" .. str(v) end
+	end
+	parts[#parts + 1] = "\"split\":" .. (split_of(card.values) and "true" or "false")
+	local rev = tonumber(card.rev)
+	if rev and rev == floor(rev) and rev >= 0 then parts[#parts + 1] = string.format("\"rev\":%d", rev) end
+	if type(players) == "table" then
+		local names = {}
+		for _, nick in ipairs(players) do
+			if type(nick) == "string" and nick ~= "" then names[#names + 1] = str(nick) end
+		end
+		if #names > 0 then parts[#parts + 1] = "\"players\":[" .. table.concat(names, ",") .. "]" end
+	end
+	return "{" .. table.concat(parts, ",") .. "}"
+end
