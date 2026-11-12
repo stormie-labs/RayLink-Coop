@@ -127,6 +127,13 @@ do
 	check(r and r.values["s|junk"] == nil and logged("s|junk"), "a factor that is no number is dropped with a log line")
 	check(r and r.creator and r.creator.used == false and #r.creator.loadout == 3 and r.creator.money == 5000
 		and r.creator.map == "esc_m_trader" and r.creator.bare == false, "the creator is in the record, not used yet")
+	-- live 2026-11-13: the launcher's card of a world made by a world server said "split": false (the file had no [values])
+	local sv = r and r.values["c|coop_split_levels"]
+	check(sv == true or tonumber(sv) == 1, "a world a world server stages is a world of split levels (" .. tostring(sv) .. ")")
+	STAGED = nil
+	ok = d.stage_new_world("x", { world = { faction = "stalker" }, values = { ["c|coop_split_levels"] = "0" } })
+	sv = STAGED and STAGED.values["c|coop_split_levels"]
+	check(ok == true and (sv == true or tonumber(sv) == 1), "also when the file says 0 (" .. tostring(sv) .. ")")
 
 	STAGED = nil
 	ok = d.stage_new_world("x", { world = { faction = "stalker", name = "" }, creator = { name = "Mark", loadout = {} } })

@@ -624,6 +624,14 @@ local function block_of(r)
 	return b
 end
 
+-- A stem that is a save of the world somebody can load: not the autosave's temporary pair, not the snapshot the host sends to a
+-- joining player or to a map server (coop_join_<n>, coop_join_ms<k>: a .scoc with no .scop), not a service save of the launcher.
+-- coop_rollback.script names the same stems. Live 2026-11-13: the launcher's card named coop_join_1 as the world's last save.
+local function saved_world(stem)
+	local s = stem:lower()
+	return not TEMP_STEMS[s] and s:find("^coop_join_") == nil and s:find("^__raylink") == nil
+end
+
 -- The card after a save: the running record, but an edit made in the menu while the game runs (a higher rev) stays.
 local function write_running_card()
 	local r = S.rec
@@ -638,7 +646,7 @@ local function write_running_card()
 	end
 	card.last_played = now_text()
 	local stem = S.save_stem
-	if stem and not TEMP_STEMS[stem:lower()] then card.last_save = stem end
+	if stem and saved_world(stem) then card.last_save = stem end
 	return write_card(card)
 end
 
