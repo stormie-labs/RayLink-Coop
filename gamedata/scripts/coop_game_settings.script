@@ -207,6 +207,9 @@ local function write_file(path, data)
 		if not closed then return false, close_why end
 		return true
 	end
+	-- The engine's Lua has no os.rename and no os.remove (xrServerEntities/script_storage.cpp disable_os_funcs): a temporary file
+	-- could not be moved in, and "<file>.tmp" stayed next to every card for good (live 2026-11-13). In place then.
+	if type(os.rename) ~= "function" then return write_to(path, "in-place") end
 	local wrote, why = write_to(tmp, "tmp")
 	if wrote then
 		pcall(os.remove, path)

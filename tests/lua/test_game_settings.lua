@@ -1108,6 +1108,20 @@ check(mkdir_calls == 1 and mkdir_path == SAVES and card_of(fresh_record.id) ~= n
 	"first save creates its card before stock mkdir")
 io.open, lfs = saved_open, saved_lfs
 
+-- The engine's Lua has no os.rename and no os.remove (xrServerEntities/script_storage.cpp disable_os_funcs): a card written through a
+-- temporary file could not be moved, and "<id>.cgame.tmp" stayed next to every card for good (live 2026-11-13).
+do
+	local saved_rename, saved_remove = os.rename, os.remove
+	os.rename, os.remove = nil, nil
+	for path in pairs(VFS) do if path:sub(-4) == ".tmp" then VFS[path] = nil end end
+	gs.save_state({})
+	local left = 0
+	for path in pairs(VFS) do if path:sub(-4) == ".tmp" then left = left + 1 end end
+	os.rename, os.remove = saved_rename, saved_remove
+	check(left == 0, "no os.rename (the engine's Lua): the card is written in place and leaves no .tmp twin (" .. left .. " left)")
+	check(card_of(fresh_record.id) ~= nil, "and the card is there")
+end
+
 local function card_failure(mode)
 	local saved_rename, saved_remove = os.rename, os.remove
 	LOG = {}
