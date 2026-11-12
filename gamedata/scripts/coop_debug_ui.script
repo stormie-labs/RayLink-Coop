@@ -89,6 +89,15 @@ end
 local function tr(id) return client().tr(id) end
 local function trf(id, ...) return client().trf(id, ...) end
 
+-- A client that holds the host's rights on a world server (plan 2026-11-12 s.2.3, the operator): the server's debug is switched by
+-- an operator command, not this machine's console (coop.debug.is_operator is the world server's own process only).
+local function remote_operator()
+	local api = rawget(_G, "coop")
+	if not (api and type(api.has_host_rights) == "function" and type(api.operator_command) == "function") then return false end
+	local ok, yes = pcall(function() return not api.is_host() and api.has_host_rights() == true end)
+	return ok and yes == true
+end
+
 local function now()
 	local ok, t = pcall(time_global)
 	return ok and t or 0
@@ -491,7 +500,7 @@ function UICoopDebug:__init(page) super()
 	self.D = DENSITY[self.S.density] or DENSITY.normal
 	self.st = client().state()
 	self.on = self.st.on == true
-	self.operator = client().is_operator()
+	self.operator = client().is_operator() or remote_operator()
 	self.page_list = self.on and PAGES_ON or PAGES_OFF
 	self.pages, self.tabs, self.actions, self.page_layout, self.page_hot, self.placed = {}, {}, {}, {}, {}, {}
 	self.flag_rows, self.tp_rows = {}, {}
@@ -790,7 +799,14 @@ end
 function UICoopDebug:OnServerToggle()
 	if self.modal then return end
 	local st = client().state()
-	if client().set_server_debug(not st.on) then self:BindHeader() end
+	if client().is_operator() then
+		if client().set_server_debug(not st.on) then self:BindHeader() end
+	elseif remote_operator() then
+		-- the server answers with coop.op.answer (coop_core_chat puts it in this window's feed) and a new DebugState
+		local ok, why = rawget(_G, "coop").operator_command(st.on and "coop_debug off" or "coop_debug on")
+		if ok ~= true then client().add_line(tostring(why or "failed"), "err") end
+		self:BindHeader()
+	end
 end
 
 -------------------------------------------------------------------------------

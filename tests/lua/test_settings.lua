@@ -278,6 +278,28 @@ check(Cl.FIRED == 1, "on_option_change fired on the client after the delta")
 tick(H, 4000)
 check(#H.SENT == 0, "no delta when nothing changed")
 
+-- plan 2026-11-12 s.1.2 #35: a world server is in no row of coop.players(): one client is somebody to tell; an ordinary host
+-- alone (only its own row) still tells nobody
+do
+	local players0, dedicated0 = H.coop.players, H.coop.is_dedicated
+	H.coop.players = function() return { { id = 0, nick = "host", is_self = true, is_host = true } } end
+	H.axr_main.config:w_value("options", "gameplay/general/max_tasks", 6)
+	H.SendScriptCallback("on_option_change")
+	tick(H, 4000)
+	check(#H.SENT == 0, "an ordinary host alone: no delta (nobody to tell)")
+	H.coop.players = function() return { { id = 1, nick = "cl", is_self = false, is_host = true } } end
+	H.coop.is_dedicated = function() return true end
+	H.SendScriptCallback("on_option_change")
+	tick(H, 4000)
+	check(#H.SENT == 1 and H.SENT[1].target == -1, "a world server with one client (no row of its own): the delta goes")
+	H.coop.players, H.coop.is_dedicated = players0, dedicated0
+	H.axr_main.config:w_value("options", "gameplay/general/max_tasks", 8)
+	H.SendScriptCallback("on_option_change")
+	tick(H, 4000)
+	H.SENT = {}
+	for _, w in ipairs({ H, Cl }) do w.SENT = {} end
+end
+
 -- Free Zoom and LAM keep the console's fov and hud_fov from on_option_change as the player's values. The stock game sends it
 -- from a menu; the host's settings come in the middle of a talk, and a talk has those two lowered (live 2026-11-01).
 do

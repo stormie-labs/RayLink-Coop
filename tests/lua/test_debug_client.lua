@@ -319,6 +319,34 @@ check(CONSOLE[#CONSOLE] == "coop_debug off", "operator: the button now turns it 
 ROLE, OPERATOR = "client", false
 
 -------------------------------------------------------------------------------
+print("== the operator of a world server (plan 2026-11-12 s.2.3): his switch is an operator command")
+reset()
+DEBUG.on = false
+RIGHTS, OPS = true, {}
+coop.has_host_rights = function() return ROLE == "host" or RIGHTS end
+coop.operator_command = function(line)
+	if not RIGHTS then return false, "not_operator" end
+	OPS[#OPS + 1] = line
+	return true
+end
+w = press_f7()
+check(w.registered.btn_server_toggle ~= nil, "a client with the host's rights: the on/off button is there")
+click(w, "btn_server_toggle")
+check(OPS[1] == "coop_debug on" and #CONSOLE == 0, "the button sends the operator command coop_debug on (" .. tostring(OPS[1]) .. ")")
+DEBUG.on, DEBUG.source = true, 2
+fire("coop_debug_changed", true, 2)
+w = dui.window()
+click(w, "btn_server_toggle")
+check(OPS[#OPS] == "coop_debug off", "and coop_debug off when it is on")
+reset()
+RIGHTS = false
+DEBUG.on = false
+w = press_f7()
+check(w.registered.btn_server_toggle == nil, "a client without the host's rights: no on/off button")
+coop.has_host_rights, coop.operator_command = nil, nil
+DEBUG.on = false
+
+-------------------------------------------------------------------------------
 print("== server debug on: requests")
 reset()
 DEBUG.on = true

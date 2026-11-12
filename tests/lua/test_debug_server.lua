@@ -425,6 +425,47 @@ do
 	check(p and p.cmd == "lua" and p.args.code == 'printf("a b")', "parse: lua keeps the rest of the line")
 end
 
+print("== the operator's coop_dbg (plan 2026-11-12 §2.3): operator_console(line, parsed, peer)")
+do
+	local D, S = world({ dedicated = true })
+	check(type(S.operator_console) == "function", "coop_debug_server.operator_console exists (the engine refuses every coop_dbg without it)")
+	if type(S.operator_console) == "function" then
+		-- the class "operator" (Lua on the server's PC) is refused in any case, before anything runs
+		local said0 = #D.dbg.said
+		local out = S.operator_console("lua coop_dbg_op_value = 7", { cmd = "lua", rest = "coop_dbg_op_value = 7" }, 3)
+		check(D.env.coop_dbg_op_value == nil and rawget(_G, "coop_dbg_op_value") == nil, "lua from the operator: nothing ran")
+		check(type(out) == "string" and out:find("lua", 1, true) ~= nil and out:find("refused", 1, true) ~= nil,
+			"lua from the operator: refused, said so", tostring(out))
+		check(#D.dbg.said > said0, "the refusal goes through coop.debug.say (the engine sends it to the operator)")
+		S.operator_console("LUA coop_dbg_op_value = 8", { cmd = "LUA" }, 3)
+		S.operator_console("Lua coop_dbg_op_value = 9", { cmd = "lua" }, 3)
+		S.operator_console("lua coop_dbg_op_value = 10", { cmd = "LuA" }, 3)
+		check(D.env.coop_dbg_op_value == nil and rawget(_G, "coop_dbg_op_value") == nil, "LUA / Lua / any letter case: refused")
+		S.operator_console("lua coop_dbg_op_value = 11", nil, 3)
+		check(D.env.coop_dbg_op_value == nil and rawget(_G, "coop_dbg_op_value") == nil, "lua without the parsed table: refused")
+
+		-- an ordinary command runs as a request of the operator's peer: his own character by default
+		out = S.operator_console("money a=500", { cmd = "money", keys = { a = "500" } }, 3)
+		check(D.grants and D.grants[1] and D.grants[1][1] == 3 and D.grants[1][2] == 500, "money a=500: granted to the operator's peer 3",
+			tostring(out))
+		local by_op = false
+		for _, l in ipairs(D.dbg.said) do if l:find("p3", 1, true) and l:find("[debug]", 1, true) then by_op = true end end
+		check(by_op, "the announcement names the operator, not the console")
+		local by_console = false
+		for _, l in ipairs(D.dbg.said) do if l:find("[debug] console", 1, true) then by_console = true end end
+		check(not by_console, "nothing said as 'console'")
+		out = S.operator_console("spawn_item sec=medkit n=2 at=near", { cmd = "spawn_item" }, 3)
+		check(#D.created == 2 and D.created[1].t[1].x == 10, "spawn_item at=near: by the operator's character", tostring(out))
+		out = S.operator_console("help", { cmd = "help" }, 3)
+		check(type(out) == "string" and out:find("spawn_item", 1, true) ~= nil, "help works for the operator")
+		out = S.operator_console("money a=1", { cmd = "money" }, 99)
+		check(type(out) == "string" and out:find("no_player", 1, true) ~= nil, "a requester who is no player: no_player", tostring(out))
+		D.dbg.on = false
+		out = S.operator_console("money a=1", { cmd = "money" }, 3)
+		check(type(out) == "string" and out:find("debug_off", 1, true) ~= nil and #D.grants == 1, "debug off: refused")
+	end
+end
+
 print("== debug on marks the world as stock does (owner decision 1)")
 do
 	local H = world({ debug = false })

@@ -63,6 +63,30 @@ local function my_nick()
 	end
 end
 
+local function call(name, ...)
+	local f = api and api[name]
+	if type(f) ~= "function" then return nil end
+	local ok, a, b = pcall(f, ...)
+	if not ok then return nil end
+	return a, b
+end
+
+-- the host's badge of a row (plan 2026-11-12 s.1.3): the engine's is_host; an older engine has no field: peer 0, as before
+local function host_badge(p)
+	if p.is_host ~= nil then return p.is_host == true end
+	return p.id == 0
+end
+
+-- A line of the world server's own seat (peer 0, which plays no character: the operator's `say`, the server console's chat) is
+-- shown from "World", never from the server's nick. The engine gives a chat line by nick only: the nick of coop.server_link().
+local function sender_of(nick)
+	local link = call("server_link")
+	if type(link) == "table" and link.plays == false and nick == tostring(link.nick) then
+		return tr("st_coop_core_chat_world", "World")
+	end
+	return nick
+end
+
 -- Text from the network or the player: one line, no UI colour codes, capped.
 local function clean(s)
 	s = tostring(s or "")
@@ -171,6 +195,7 @@ function on_line(nick, text)
 	nick = clean(nick)
 	local me = my_nick()
 	local kind = (me and nick == me) and "self" or "other"
+	if kind == "other" then nick = sender_of(nick) end
 	add(kind, nick, text)
 	stats.shown = stats.shown + 1
 	if kind == "other" then
@@ -195,7 +220,7 @@ local function cmd_players()
 	system(string_format("%s %d", tr("st_coop_core_players", "Players:"), #list))
 	for _, p in ipairs(list) do
 		local parts = { tostring(p.nick) }
-		if p.id == 0 then parts[#parts + 1] = tr("st_coop_core_tag_host", "(host)") end
+		if host_badge(p) then parts[#parts + 1] = tr("st_coop_core_tag_host", "(host)") end
 		if p.is_self then
 			parts[#parts + 1] = tr("st_coop_core_tag_you", "(you)")
 		else
@@ -210,8 +235,19 @@ local function cmd_players()
 end
 
 local function cmd_go()
-	if not (api and api.is_host()) then
+	if not api then return end
+	-- the host's right (plan 2026-11-12 s.2.3): the host here, or the operator of a world server, who asks the server
+	local rights = api.is_host() or call("has_host_rights") == true
+	if not rights then
 		system(tr("st_coop_core_go_host_only", "Only the host can move the group."))
+		return
+	end
+	if not api.is_host() then
+		local ok, why = call("operator_command", "/go")
+		if ok ~= true then
+			log("! /go: the operator's command was not sent (%s)", tostring(why))
+			system(tr("st_coop_core_go_host_only", "Only the host can move the group."))
+		end
 		return
 	end
 	local pl = rawget(_G, "coop_core_player")
@@ -234,6 +270,40 @@ local function command(text)
 	else
 		system(tr("st_coop_core_chat_unknown", "Unknown command. /help lists them."))
 	end
+end
+
+-- coop.op.answer (plan 2026-11-12 s.2.3): the world server's answer to a command of its operator, { cmd, ok, text } (coop_main
+-- decodes it; text = lines joined by "\n"). coop_dbg / coop_debug go where the debug results go (the F7 window's feed), the rest
+-- of the console commands (kick, time, restore, players, status, /go, say) to the chat as local lines.
+local ANSWER_LINES = 24 -- an answer of up to 8 KiB: the chat keeps the first lines
+function on_op_answer(payload, from)
+	if from ~= 0 then return end -- the world server's address on this machine; a player cannot send it
+	local t = payload
+	if type(t) == "string" then
+		local cm = rawget(_G, "coop_main") or coop_main
+		local ok, d = pcall(cm.decode, t)
+		t = ok and d or nil
+	end
+	if type(t) ~= "table" then return end
+	local cmd = tostring(t.cmd or "?")
+	local good = t.ok == true or t.ok == 1 or t.ok == "1" or t.ok == "true"
+	local list = {}
+	for l in tostring(t.text or ""):gmatch("[^\n]+") do
+		if #list >= ANSWER_LINES then break end
+		list[#list + 1] = clean(l) -- plain text: no control characters, no UI colour codes (the feed and the chat draw %c[...])
+	end
+	if #list == 0 then list[1] = cmd .. (good and ": ok" or ": refused") end
+	local dbg = rawget(_G, "coop_debug_client")
+	if (cmd == "coop_dbg" or cmd == "coop_debug") and type(dbg) == "table" and type(dbg.add_line) == "function" then
+		for i = #list, 1, -1 do pcall(dbg.add_line, list[i], good and "ok" or "err") end -- the feed puts the newest on top
+		return
+	end
+	for _, l in ipairs(list) do system(l) end
+end
+
+-- A chat command ("/players"), as if typed (also the tests' way in).
+function run_command(text)
+	command(trim(text))
 end
 
 local function submit(text)
@@ -559,4 +629,8 @@ function on_game_start()
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("actor_on_net_destroy", actor_on_net_destroy)
 	start_step("load_history", load_history)
+	start_step("coop.op.answer", function()
+		local cm = rawget(_G, "coop_main") or coop_main
+		if cm and type(cm.add_event_handler) == "function" then cm.add_event_handler("coop.op.answer", on_op_answer) end
+	end)
 end

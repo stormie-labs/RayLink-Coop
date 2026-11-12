@@ -135,13 +135,21 @@ end
 -- What the net graph shows of a coop.players() list: { players = count of everybody, ping = ms | nil, loss = percent | nil }.
 -- The host: the worst of its clients. A client: the host's entry only. An entry without `loss` (an older exe) counts as 0 %;
 -- garbage (no number, NaN, negative) is skipped.
-function summarize(list, host)
+-- link: a client's coop.server_link() (plan 2026-11-12: a world server's seat is in no row): its ping and loss are the numbers of
+-- that link; without it (an older engine) the host's row (HOST_PEER), as before.
+function summarize(list, host, link)
 	local out = { players = 0 }
+	if not host and type(link) == "table" then
+		out.ping = number(link.rtt)
+		local loss = link.loss == nil and 0 or number(link.loss)
+		if loss then out.loss = math_min(loss * 100, 100) end
+	end
 	if type(list) ~= "table" then return out end
+	local by_row = host or type(link) ~= "table"
 	for _, p in ipairs(list) do
 		if type(p) == "table" then
 			out.players = out.players + 1
-			if not p.is_self and (host or p.id == HOST_PEER) then
+			if by_row and not p.is_self and (host or p.id == HOST_PEER) then
 				local rtt = number(p.rtt)
 				if rtt and (out.ping == nil or rtt > out.ping) then out.ping = rtt end
 				local loss = p.loss == nil and 0 or number(p.loss)
@@ -191,6 +199,13 @@ local function players_list()
 	local ok, list = pcall(api.players)
 	if ok and type(list) == "table" then return list end
 	return nil
+end
+
+-- a client's link to the host / the world server (coop.server_link), nil on a host or an older engine
+local function server_link()
+	if type(api.server_link) ~= "function" then return nil end
+	local ok, link = pcall(api.server_link)
+	return ok and type(link) == "table" and link or nil
 end
 
 local function hud_visible()
@@ -341,7 +356,7 @@ function UICoopNetgraph:Refresh(tg)
 
 	local host = is_host()
 	local list = players_list()
-	local sum = summarize(list, host)
+	local sum = summarize(list, host, not host and server_link() or nil)
 	local none = tr(STR_NONE, "-")
 	local ids = host and ROWS_HOST or ROWS_CLIENT
 	self:ShowRows(#ids)

@@ -535,6 +535,18 @@ local function level_nick()
 	return nil
 end
 
+-- The name of what the host's own logic earned: the host player's nick (peer 0); a world server's seat plays no character and is
+-- in no row (plan 2026-11-12): "World"
+local function host_nick()
+	local api = qc.engine()
+	local ok, dedicated = pcall(function() return api and api.is_dedicated and api.is_dedicated() == true end)
+	if ok and dedicated then
+		local okt, s = pcall(function() return game.translate_string("st_coop_core_chat_world") end)
+		return okt and type(s) == "string" and s ~= "st_coop_core_chat_world" and s or "World"
+	end
+	return qc.nick_of(0)
+end
+
 -- The name a world server takes for what `from` says: a player's own, a map server's word for one of its level.
 local function nick_from(from, t)
 	if from >= 0x100 then return type(t.n) == "string" and t.n or nil end
@@ -548,7 +560,7 @@ local function announce_ency(s)
 	elseif qc.is_map_server() then
 		qc.send("ency", { s = s, n = level_nick() }, 0)
 	elseif qc.host_party() then
-		qc.send("ency", { s = s, n = qc.nick_of(0) }, -1)
+		qc.send("ency", { s = s, n = host_nick() }, -1)
 	end
 	stats.ency_out = stats.ency_out + 1
 end
@@ -686,7 +698,12 @@ end
 
 -- Who the claims are for (T6b review M3): the host (its nick) and our own peer id. A claim made in one session is not sent to
 -- the host of another one, which would pay it for an achievement this client never earned in its world.
+-- plan 2026-11-12: the host is the client's link (coop.server_link: a world server's seat is in no row); its nick is the nick of row 0
+-- of an ordinary session, so the key is the same there. An older engine: row 0.
 local function session_key()
+	local api = qc.engine()
+	local ok, link = pcall(function() return api and api.server_link and api.server_link() end)
+	if ok and type(link) == "table" then return tostring(link.nick) .. "|" .. tostring(qc.self_peer()) end
 	for _, p in ipairs(qc.players()) do
 		if p.id == 0 then return tostring(p.nick) .. "|" .. tostring(qc.self_peer()) end
 	end
@@ -775,7 +792,7 @@ local function on_earned(name)
 	elseif qc.is_map_server() then
 		qc.send("achv", { a = name, n = level_nick() }, 0)
 	elseif qc.host_party() then
-		qc.send("achv", { a = name, n = qc.nick_of(0) }, -1)
+		qc.send("achv", { a = name, n = host_nick() }, -1)
 	end
 	stats.achv_out = stats.achv_out + 1
 end

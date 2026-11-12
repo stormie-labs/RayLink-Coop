@@ -217,6 +217,16 @@ do
 	step(H, C)
 	step(H, C)
 	check(C.console.ssfx_wetness_multiplier:find("^%(1"), "and the player's numbers come back when the host leaves")
+	-- plan 2026-11-12: a world server's seat is in no level map (level_of_player(0) is nil) and plays nowhere: the client keeps his
+	-- own wetness, as when its seat stood on "fake_start"
+	C.env.coop.levels.level_of_player = function(p) if p ~= 0 then return 2 end end
+	C.env.coop.server_link = function() return { id = 0, nick = "server", rtt = 40, loss = 0, plays = false, operator = false } end
+	H.wet = 0.5
+	step(H, C)
+	step(H, C)
+	check(C.console.ssfx_wetness_multiplier == mine, "a world server's client: his own wetness (the server's seat stands nowhere) ("
+		.. tostring(C.console.ssfx_wetness_multiplier) .. ")")
+	C.env.coop.server_link = nil
 end
 
 print(string.format("%d passed, %d failed", PASSES, FAILS))

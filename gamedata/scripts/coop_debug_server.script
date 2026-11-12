@@ -493,7 +493,16 @@ local function help_text(which)
 	return table.concat(lines, "\n")
 end
 
-local function run_console(line)
+-- the class of a command word in any letter case ("LUA" is "lua"), nil for no such command
+local function class_of(word)
+	if type(word) ~= "string" then return nil end
+	local c = R().get(word:lower())
+	return c and c.class or nil
+end
+
+-- op: nil for the server's console; { peer, nick } for the operator of a world server (plan 2026-11-12 §2.3): his peer is the
+-- requester and, without @player, the player a personal command is for
+local function run_console(line, op)
 	local p, why = parse(line)
 	if not p then return "coop_dbg: " .. tostring(why) end
 	if p.cmd == "help" then return help_text(p.args.cmd) end
@@ -501,7 +510,14 @@ local function run_console(line)
 	if not debug_on() then return "coop_dbg: debug_off (coop_debug on first)" end
 	local c = R().get(p.cmd)
 	if not c then return "coop_dbg: unknown_cmd " .. p.cmd end
+	-- The operator of a world server never runs the server console's own commands (class "operator": Lua on the server's PC). Checked
+	-- here too, on the parse that dispatches: whatever the engine's parse and the line's first word made of it (run_operator).
+	if op and c.class == "operator" then
+		log("! operator #%s: coop_dbg %s refused (the server's console only)", tostring(op.peer), tostring(p.cmd))
+		return fmt("coop_dbg %s: refused, the world server's own console only", tostring(p.cmd))
+	end
 	local peer
+	if op then peer = op.peer end
 	if p.player then
 		local pl = P().player_by_name(p.player)
 		if not pl then return fmt("coop_dbg %s: no_player %s", p.cmd, p.player) end
@@ -517,8 +533,9 @@ local function run_console(line)
 	end
 	local ok, a, bad = R().validate(p.cmd, p.args)
 	if not ok then return fmt("coop_dbg %s: %s%s", p.cmd, tostring(a), bad and (" (" .. tostring(bad) .. ")") or "") end
-	local res_ok, r, code = dispatch(c, p.cmd, a, peer, nil, "console")
-	finish(p.cmd, "console", res_ok, r, code)
+	local by = op and op.nick or "console"
+	local res_ok, r, code = dispatch(c, p.cmd, a, peer, op and op.peer or nil, by)
+	finish(p.cmd, by, res_ok, r, code)
 	if not res_ok then
 		return fmt("coop_dbg %s: %s%s", p.cmd, tostring(r), code and (" (" .. tostring(code) .. ")") or "")
 	end
@@ -529,6 +546,31 @@ end
 -- the engine's coop_dbg console command (call_module): the answer goes to the log and the dedicated window
 function console(line)
 	local ok, out = pcall(run_console, line)
+	if not ok then out = "coop_dbg: error " .. tostring(out) end
+	for l in tostring(out):gmatch("[^\n]+") do say(l) end
+	return out
+end
+
+local function run_operator(line, parsed, peer)
+	-- the class "operator" (Lua on the server's PC) is the server console's own: refused before anything is parsed or run, by the
+	-- engine's parse and by the line's own first word, in any letter case
+	local first = type(line) == "string" and line:match("^%s*(%S+)") or nil
+	local word = type(parsed) == "table" and parsed.cmd or nil
+	if class_of(word) == "operator" or class_of(first) == "operator" then
+		local cmd = tostring(word or first):lower()
+		log("! operator #%s: coop_dbg %s refused (the server's console only)", tostring(peer), cmd)
+		return fmt("coop_dbg %s: refused, the world server's own console only", cmd)
+	end
+	peer = tonumber(peer)
+	local pl = peer and P().player(peer)
+	if not pl then return fmt("coop_dbg: no_player #%s (the operator is no player of this world)", tostring(peer)) end
+	return run_console(line, { peer = peer, nick = pl.nick or ("#" .. tostring(peer)) })
+end
+
+-- the engine's coop_dbg of the operator of a world server (coop_debug.cpp operator_dbg; plan 2026-11-12 §2.3): line and parsed as
+-- console() gets them, peer the operator's. What is said here goes back to him (the engine catches coop.debug.say of this call).
+function operator_console(line, parsed, peer)
+	local ok, out = pcall(run_operator, line, parsed, peer)
 	if not ok then out = "coop_dbg: error " .. tostring(out) end
 	for l in tostring(out):gmatch("[^\n]+") do say(l) end
 	return out

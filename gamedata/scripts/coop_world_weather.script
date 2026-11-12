@@ -169,6 +169,10 @@ end
 local function on_host_level()
 	local l = api.levels
 	if not (l and l.split and l.split() == true) then return true end
+	-- a world server's seat plays no character and is in no level map (plan 2026-11-12): its process stands on no player's level,
+	-- the player keeps his own wetness (as when that seat stood on "fake_start")
+	local link = type(api.server_link) == "function" and api.server_link() or nil
+	if type(link) == "table" and link.plays == false then return false end
 	local mine, his = l.my_level(), l.level_of_player(0)
 	return mine == nil or his == nil or mine == his
 end

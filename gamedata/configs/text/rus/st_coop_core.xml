@@ -33,6 +33,9 @@
 	<string id="st_coop_core_players">
 		<text>Игроки:</text>
 	</string>
+	<string id="st_coop_core_chat_world">
+		<text>Мир</text>
+	</string>
 	<string id="st_coop_core_tag_host">
 		<text>(хост)</text>
 	</string>

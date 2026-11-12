@@ -499,7 +499,10 @@ local function host_tick(t)
 	if t < host.next_poll and not host.dirty then return end
 	host.next_poll = t + cfg.poll_ms
 	host.dirty = false
-	if players_count() < 2 then return end -- nobody to tell; the baseline is refreshed when asked
+	-- nobody to tell; the baseline is refreshed when asked. A world server is in no row of coop.players() (plan 2026-11-12
+	-- s.1.2 #35): one client is somebody; an ordinary host counts its own row
+	local dedicated = type(api.is_dedicated) == "function" and api.is_dedicated() == true
+	if players_count() < (dedicated and 1 or 2) then return end
 	host_flush_delta()
 end
 

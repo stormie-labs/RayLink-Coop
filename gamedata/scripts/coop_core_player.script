@@ -89,6 +89,21 @@ local function nick_of(peer)
 	return "#" .. tostring(peer)
 end
 
+-- Whose session this client joined (plan 2026-11-12 s.1.2 #3): the playing host (peer 0); on a world server, whose seat plays no
+-- character, the player with the host's badge (the operator) when that is somebody else, else "World".
+local function session_owner()
+	local link
+	if type(api.server_link) == "function" then
+		local ok, l = pcall(api.server_link)
+		link = ok and type(l) == "table" and l or nil
+	end
+	if not (link and link.plays == false) then return nick_of(0) end
+	for _, p in ipairs(players()) do
+		if p.is_host == true and not p.is_self then return tostring(p.nick) end
+	end
+	return tr("st_coop_core_chat_world", "World")
+end
+
 -- PDA tip + a chat line.
 local function notice(text, icon)
 	local chat = rawget(_G, "coop_core_chat")
@@ -228,7 +243,7 @@ local function roster_tick()
 				notice(tr("st_coop_core_session_host", "You are hosting a co-op session."))
 			else
 				notice(string_format(tr("st_coop_core_session_client", "Connected to the co-op session of %s."),
-					nick_of(0)))
+					session_owner()))
 			end
 		end
 		return

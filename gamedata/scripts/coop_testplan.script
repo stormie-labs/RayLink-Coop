@@ -44,10 +44,13 @@ local function host_peer()
 	local a = api()
 	local ok, list = pcall(function() return a and a.players and a.players() end)
 	if not (ok and type(list) == "table") then return nil end
+	-- plan 2026-11-12: the row with the host's badge (the playing host, or the operator of a world server); an older engine has no
+	-- is_host: peer 0. Without such a row a client's link to the world server stands for the host (rtt, loss).
 	for _, p in ipairs(list) do
-		if p.id == 0 then return p end
+		if p.is_host == true or (p.is_host == nil and p.id == 0) then return p end
 	end
-	return nil
+	local ok2, link = pcall(function() return a.server_link and a.server_link() end)
+	return ok2 and type(link) == "table" and link or nil
 end
 
 -- A step: { name, run = function() -> status, detail [, wait_ms] }; status "pass" | "fail" | "skip" | "wait".

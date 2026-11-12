@@ -610,20 +610,77 @@ function join_terms()
 	return eco, budget(eco), story_mode()
 end
 
+-- Plan 2026-11-12 stage 5: the creator of a world staged from coop_new_world.ltx (coop_dedicated.creator, the record's `creator`), nil.
+local function creator_record()
+	local d = module_of("coop_dedicated")
+	if not (d and type(d.creator) == "function") then return nil end
+	local ok, c = pcall(d.creator)
+	return ok and type(c) == "table" and c or nil
+end
+
+local MAX_EXACT_ITEMS, MAX_EXACT_MONEY = 64, 10000000 -- xrCoop\coop_world_stage.h kMaxLoadout, kMaxMoney
+
+-- The exact plan of the creator's character (the engine's `exact`, coop_join.cpp host_make_creator): what he chose in the new world screen,
+-- not checked against points: the world's faction, his loadout as it is (a section this game does not have is skipped with a log line;
+-- bare: nothing), his money, his start map. { faction, items, money, map } | nil, reason.
+local function exact_plan(peer)
+	local c = creator_record()
+	if not c then
+		log("! player #%s: an exact character, but the world's record has no creator: refused", tostring(peer))
+		return nil, "busy"
+	end
+	local items = {}
+	if c.bare ~= true then
+		for _, sec in ipairs(type(c.loadout) == "table" and c.loadout or {}) do
+			if #items >= MAX_EXACT_ITEMS then
+				log("! player #%s: the creator's loadout has more than %d items: the rest is skipped", tostring(peer), MAX_EXACT_ITEMS)
+				break
+			end
+			if type(sec) == "string" and ini_sys:section_exist(sec) then
+				items[#items + 1] = sec
+			else
+				log("! player #%s: the creator's item '%s' is no section of this game: skipped", tostring(peer), tostring(sec))
+			end
+		end
+	end
+	local money = math.floor(tonumber(c.money) or 0)
+	money = math.max(0, math.min(MAX_EXACT_MONEY, money))
+	return { faction = world_faction(), items = items, money = money, map = type(c.map) == "string" and c.map or "" }
+end
+
+-- The creator's start map (the stock screen's new_game_map): the start of that id in the world faction's list, or nil (a log line says why).
+local function creator_start(peer, faction, map)
+	if map == "" then return nil end
+	for _, s in ipairs(faction_starts(faction, story_mode())) do
+		if s.id == map then
+			s.where = "start:" .. s.id
+			return s
+		end
+	end
+	log("! player #%s: the creator's map '%s' is not a start of %s: the faction's usual start", tostring(peer), map, faction)
+	return nil
+end
+
 -- The engine has a choice of player `peer`: refused, or accepted with the start of the character. Protocol 9: `faction`
 -- (what the engine resolved from the client's choice) is not read; the plan, the kit and the start are the world's.
 -- The start: join_spawn "host" (the default) gives no point, the engine puts him next to the host; "faction_start" the
 -- start of the world's faction (host_start, as before).
-function host_plan_character(peer, faction, buy)
+-- Plan 2026-11-12 stage 5: `exact` true is the creator's character (coop_join.cpp host_make_creator): no points check (plan_kit), the
+-- record's creator gives the money and, when it is a start of the faction, the start (creator.map); `buy` is not read.
+function host_plan_character(peer, faction, buy, exact)
 	if not is_world_server() then return { ok = false, reason = "busy" } end
-	local plan, why = plan_kit(buy)
+	local plan, why
+	if exact == true then plan, why = exact_plan(peer) else plan, why = plan_kit(buy) end
 	if not plan then
 		log("player #%s: choice refused (%s)", tostring(peer), tostring(why))
 		return { ok = false, reason = why }
 	end
 	note_other_faction(string.format("player #%s", tostring(peer)), faction, plan.faction)
 	local t = { ok = true, faction = plan.faction, money = plan.money }
-	if join_spawn() == "faction_start" then
+	local own = exact == true and creator_start(peer, plan.faction, plan.map)
+	if own then
+		t.where, t.x, t.y, t.z, t.lvid, t.gvid = own.where, own.x, own.y, own.z, own.lvid, own.gvid
+	elseif join_spawn() == "faction_start" then
 		local ok, s = pcall(host_start, plan.faction)
 		if not ok then log("! start of %s: %s", plan.faction, tostring(s)) end
 		if ok and s then
@@ -638,10 +695,13 @@ end
 -- releases the character and offers the choice again.
 -- Ruling F3-10: `kit` false (a retired key, coop_hardcore_new_kit off): the faction only - no items, no mods' starter
 -- kit, money 0 on the ledger (not the faction's). nil is an engine before F3-10: the kit.
-function host_make_character(peer, proxy, faction, buy, kit)
+-- Plan 2026-11-12 stage 5: `exact` true, the creator's character: the items, the ammo and the money of exact_plan (the record's creator),
+-- not the faction's kit; `kit` false still wins (a retired key starts with nothing).
+function host_make_character(peer, proxy, faction, buy, kit, exact)
 	if not is_world_server() then return false, "busy" end
 	local bare = kit == false
-	local plan, why = plan_kit(bare and "" or buy)
+	local plan, why
+	if exact == true and not bare then plan, why = exact_plan(peer) else plan, why = plan_kit(bare and "" or buy) end
 	if not plan then return false, why end
 	note_other_faction(string.format("player #%s", tostring(peer)), faction, plan.faction)
 	faction = plan.faction -- protocol 9: the world's, whatever the engine passed
@@ -701,9 +761,20 @@ local LEVEL_PICTURES = {
 local C_LABEL, C_VALUE = "%c[255,150,150,150]", "%c[255,225,225,225]"
 local C_READY, C_WAIT, C_BAD = "%c[255,170,170,170]", "%c[255,240,200,120]", "%c[255,240,120,100]"
 
+-- plan 2026-11-12: the row with the host's badge (the playing host, or the operator of a world server; an older engine without
+-- is_host: peer 0); a world server without an operator is "World"
 local function host_nick()
 	for _, p in ipairs(api and api.players() or {}) do
-		if p.id == 0 then return tostring(p.nick or "?") end
+		if p.is_host == true or (p.is_host == nil and p.id == 0) then return tostring(p.nick or "?") end
+	end
+	local ok, world = pcall(function()
+		if type(api.is_dedicated) == "function" and api.is_dedicated() == true then return true end
+		local link = type(api.server_link) == "function" and api.server_link() or nil
+		return type(link) == "table" and link.plays == false
+	end)
+	if ok and world then
+		local okt, s = pcall(function() return game.translate_string("st_coop_core_chat_world") end)
+		return okt and type(s) == "string" and s ~= "st_coop_core_chat_world" and s or "World"
 	end
 	return "?"
 end

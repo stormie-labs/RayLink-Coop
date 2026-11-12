@@ -11,7 +11,7 @@ local own43 = xml_paths(ROOT .. "configs/ui/ui_coop_menu_char.xml")
 local p43 = xml_paths(REF .. "configs/ui/ui_mm_faction_select.xml")
 
 STRINGS = {}
-for _, file in ipairs({ "st_coop_menu.xml", "st_coop_char_world.xml" }) do -- T7: the world's faction texts have their own table
+for _, file in ipairs({ "st_coop_menu.xml", "st_coop_char_world.xml", "st_coop_core.xml" }) do -- core: "World" (plan 2026-11-12) -- T7: the world's faction texts have their own table
 	local fh = assert(io.open(ROOT .. "configs/text/eng/" .. file, "r"))
 	local src = fh:read("*a")
 	fh:close()
