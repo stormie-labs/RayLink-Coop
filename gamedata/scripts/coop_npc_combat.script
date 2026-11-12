@@ -312,6 +312,10 @@ local function on_npc_death(victim, who)
 		if npc and k.id ~= vid and npc:alive() and npc:relation(who) < ENEMY and npc:see(who) then
 			npc:force_set_goodwill(-1000, who)
 			stats.witnesses = stats.witnesses + 1
+			if stats.witnesses <= 20 then
+				log("witness: %s (%d) saw player character %d kill %s (%d) of its squad: hostile to him now", npc:name(), k.id,
+					who:id(), victim:name(), vid)
+			end
 		end
 	end
 end

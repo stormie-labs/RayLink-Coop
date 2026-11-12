@@ -1,0 +1,106 @@
+--[[
+	Anomaly Coop - NPC group, diagnostics: why does an NPC fight a player or a stalker of its own faction.
+
+	Live 2026-11-12, the first test of the hidden world server (G.A.M.M.A., a new world, a new loner at the Clear Sky
+	base in the Great Swamp): in the first minute the base killed itself (every body was Clear Sky) and shot the
+	player three times, the technician and the barman too. The world's save knew no reason: Clear Sky is neutral to
+	loners, friendly to itself, no faction held a grudge against anybody. The hostility was made on the level's map
+	server, after the load, and no line of any log said by what.
+
+	Where the AI runs (the world server, or the map server of the level) and a client is in the session, once a second
+	the best enemy of every online stalker is looked at. The first time an NPC has a player's character, or a stalker
+	of its own faction, for an enemy, one line says what the attitude is made of:
+
+	  [coop-npc:why] fights a player: <npc> [<section>] (id, faction, squad <section>) -> <enemy> [<section>] (id, faction)
+	      PLAYER: relation R, attitude A = personal P + his faction to him F + faction to faction C (+ rank, reputation)
+
+	relation: 0 friend, 1 neutral, 2 enemy (game_object). attitude below -999 is an enemy (game_relations.ltx).
+	personal -1000 is somebody's force_set_goodwill; the two places of ours that do it say so themselves
+	(coop_npc_combat: witnesses of a kill; coop_npc_adapters: the squad at the body).
+	At most LINES lines per world, one per pair. Reads only.
+--]]
+
+local tostring, type, pcall = tostring, type, pcall
+
+local LINES = 60
+local EVERY_MS = 1000
+
+local P -- coop_npc_players
+local said, lines, next_scan = {}, 0, 0
+
+local function community(obj)
+	local ok, c = pcall(function() return obj:character_community() end)
+	return ok and type(c) == "string" and c or "?"
+end
+
+local function value(f)
+	local ok, v = pcall(f)
+	return ok and tostring(v) or "?"
+end
+
+local function squad_of(npc)
+	local ok, s = pcall(function()
+		local squad = get_object_squad(npc)
+		return squad and squad:section_name()
+	end)
+	return ok and type(s) == "string" and s or "-"
+end
+
+-- One line per pair: what `npc` holds against `enemy`.
+function explain(npc, enemy, how)
+	local key = tostring(npc:id()) .. ">" .. tostring(enemy:id())
+	if said[key] or lines >= LINES then return false end
+	said[key] = true
+	lines = lines + 1
+	local mine, his = community(npc), community(enemy)
+	printf("[coop-npc:why] %s: %s [%s] (%s, %s, squad %s) -> %s [%s] (%s, %s)%s: relation %s, attitude %s = personal %s + "
+		.. "his faction to him %s + faction to faction %s (+ rank, reputation); t %s",
+		tostring(how), value(function() return npc:name() end), value(function() return npc:section() end), tostring(npc:id()), mine,
+		squad_of(npc), value(function() return enemy:name() end), value(function() return enemy:section() end),
+		tostring(enemy:id()), his, P.is_proxy(enemy:id()) and " PLAYER" or "",
+		value(function() return npc:relation(enemy) end), value(function() return npc:general_goodwill(enemy) end),
+		value(function() return npc:goodwill(enemy) end),
+		value(function() return relation_registry.community_goodwill(mine, enemy:id()) end),
+		value(function() return relation_registry.community_relation(mine, his) end), tostring(time_global()))
+	if lines == LINES then printf("[coop-npc:why] %d lines written, no more in this world", LINES) end
+	return true
+end
+
+local function scan()
+	local ids = db and db.OnlineStalkers
+	if type(ids) ~= "table" then return end
+	for i = 1, #ids do
+		if lines >= LINES then return end
+		local npc = level.object_by_id(ids[i])
+		if npc and not P.is_proxy(ids[i]) then
+			local ok, enemy = pcall(function() return npc:alive() and npc:best_enemy() or nil end)
+			if ok and enemy and enemy:id() ~= 0 then
+				if P.is_proxy(enemy:id()) then
+					explain(npc, enemy, "fights a player")
+				elseif IsStalker(enemy) and community(enemy) == community(npc) then
+					explain(npc, enemy, "fights its own faction")
+				end
+			end
+		end
+	end
+end
+
+local function actor_on_update()
+	local now = time_global()
+	if now < next_scan then return end
+	next_scan = now + EVERY_MS
+	if lines >= LINES or not P.host_with_clients() then return end
+	local ok, err = pcall(scan)
+	if not ok then P.report("why", "scan", err) end
+end
+
+function on_game_start()
+	P = coop_npc_players
+	if not rawget(_G, "coop") then return end -- an exe without co-op
+	said, lines, next_scan = {}, 0, 0
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+end
+
+-- Tests.
+function _reset() said, lines, next_scan = {}, 0, 0 end
+function _lines() return lines end

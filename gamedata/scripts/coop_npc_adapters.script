@@ -36,6 +36,8 @@ local function ai(C, P, active)
 	end)
 end
 
+local corpse_said = 0 -- log lines of the rule below
+
 local function corpse(C, P, active)
 	local m = C.mod("xr_danger")
 	local old, holder, index = C.find_local(m, "script_action_danger_corpse")
@@ -50,6 +52,12 @@ local function corpse(C, P, active)
 			-- in old(), with the original stage, path, sound and random-choice behaviour.
 			if killer and P.is_proxy(killer) and killer:alive() then
 				if st.stage >= 2 and npc:relation(killer) >= game_object.neutral and npc:see(killer) then
+					corpse_said = corpse_said + 1
+					if corpse_said <= 20 then
+						printf("[coop-npc:adapters] corpse: %s (%d) at the body %s sees player character %d, named its killer (%s): "
+							.. "the squad is hostile to him now", npc:name(), npc:id(), tostring(body and body:id()), killer:id(),
+							dependent and "the danger's dependent object" or "death_by_id")
+					end
 					local squad = get_object_squad(npc)
 					if squad then
 						for member in squad:squad_members() do
