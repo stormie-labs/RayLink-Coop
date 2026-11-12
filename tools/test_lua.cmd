@@ -23,6 +23,9 @@ set "OUT=%ROOT%\temp\lua"
 set "LUAJIT=%ROOT%\engine\src\3rd party\luajit-2\src"
 set "RUNREL=temp\lua\runlua.exe"
 set "BDIR="
+rem The real G.A.M.M.A. scripts the tests read (2026-11-12: the old stands E:\AnomalyCoopGamma and E:\RayLink2 are gone;
+rem without the variable the G.A.M.M.A.-based tests stop with "real GAMMA ... required")
+if not defined GAMMA_SCRIPTS if exist "E:\RayLinkGames\GAMMA\game-dev\gamedata\scripts\" set "GAMMA_SCRIPTS=E:\RayLinkGames\GAMMA\game-dev\gamedata\scripts"
 
 if not exist "%OUT%\out" mkdir "%OUT%\out"
 
