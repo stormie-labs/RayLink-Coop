@@ -75,7 +75,8 @@ check(share.kind == "list" and #share.options == 4 and share.options[1].raw == "
 	and share.shownIf.any[1] == "drop" and share.shownIf.any[2] == "lose", "a list: raws in the catalog's order, default, shown_if")
 local revive = X.export_item(sc, sc.item("c|coop_revive_health"), tr_all)
 eq(revive.options[1].raw, "0.1", "a fraction's raw is the canonical text")
-eq(revive.hint, "", "no note: the hint is \"\"")
+check(type(revive.hint) == "table" and revive.hint.rus == "" and revive.hint.eng == "",
+	"no note: the hint is { rus = \"\", eng = \"\" }, the same shape as a hint that is there (the launcher reads one type)")
 local emi = X.export_item(sc, sc.item("o|alife/event/emission_frequency"), tr_all)
 check(type(emi.hint) == "table" and emi.hint.eng == "E:st_coop_game_applies_next_emission", "a note is the hint")
 

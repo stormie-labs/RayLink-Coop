@@ -17,7 +17,7 @@
 
 	Format 1 (one JSON object, UTF-8 without BOM, keys in a fixed order, one array element per line):
 	  format, factions [{id, title}], world {difficulty [{raw, label}], economy [...], defaults {story, routes, difficulty, economy}},
-	  tabs [{id, title}], items [{key, tab, kind ("check" | "list"), title, hint ("" or {rus, eng}), default, options [{raw, label}],
+	  tabs [{id, title}], items [{key, tab, kind ("check" | "list"), title, hint ({rus, eng}, both "" when the item has none), default, options [{raw, label}],
 	  shownIf {key, any} when the catalog has one}]; a check has two options, off then on. title / label = {rus, eng}.
 
 	Fails (exit code 1, "export_game_schema: ERROR ...") when a string id has no text in a language, when an item has a kind the
@@ -257,7 +257,7 @@ function M.export_item(sc, it, tr)
 		shown = obj("key", it.shown_if.key, "any", any)
 	end
 	return obj("key", key, "tab", it.tab, "kind", kind, "title", label(tr(it.text)),
-		"hint", it.note and label(tr(it.note)) or "", "default", def, "options", options, "shownIf", shown)
+		"hint", it.note and label(tr(it.note)) or label({ rus = "", eng = "" }), "default", def, "options", options, "shownIf", shown)
 end
 
 -- The screen's tabs and the keys of the stock controls, read from coop_newgame_modes.script (they are locals there).
