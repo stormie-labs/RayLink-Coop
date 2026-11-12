@@ -53,8 +53,11 @@ TEST(game_values_cvar_list_is_the_twenty_rules)
 		"coop_death_wear", "coop_death_rank", "coop_hardcore_new_kit", "coop_checkpoints_group",
 		"coop_autosave_interval", "coop_autosave_count", "coop_death_share", "coop_split_levels", "coop_story_together",
 		"coop_npc_finish_downed",
+		// row 21, owner 2026-11-13: the old split mode stays and the new one is a choice of its own. "The world runs as a process of
+		// its own on this PC" (a world server); only Lua reads it (the new game screen, Continue), the engine keeps the value
+		"coop_world_server",
 	};
-	CHECK_EQ(kGameCvarCount, size_t(20));
+	CHECK_EQ(kGameCvarCount, size_t(21));
 	CHECK_EQ(sizeof(expected) / sizeof(expected[0]), kGameCvarCount);
 	for (size_t i = 0; i < kGameCvarCount; ++i)
 	{
