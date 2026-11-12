@@ -854,13 +854,28 @@ TEST(transition_state_refuses_nonsense)
 	}
 	{
 		StateMsg m = sample_state();
-		for (uint32_t i = 0; i < kMaxPlayers + 1; ++i)
+		m.rows.clear();
+		for (uint32_t i = 0; i < kMaxPeerSlots + 1; ++i)
 			m.rows.push_back({i, Mark::Away, 5});
 		Writer w;
 		m.write(w);
 		Reader r = reader_of(w);
 		StateMsg back;
-		CHECK(!back.read(r)); // more rows than players
+		CHECK(!back.read(r)); // more rows than slots
+	}
+	{
+		// a row per slot id: seat 0 and a world server's 8 clients (owner 2026-11-13)
+		StateMsg m = sample_state();
+		m.rows.clear();
+		for (uint32_t i = 0; i < kMaxPeerSlots; ++i)
+			m.rows.push_back({100 + i, Mark::Away, 5});
+		Writer w;
+		m.write(w);
+		Reader r = reader_of(w);
+		StateMsg back;
+		REQUIRE(back.read(r));
+		REQUIRE(back.rows.size() == 9);
+		CHECK_EQ(back.rows[8].id, uint32_t(108));
 	}
 	{
 		StateMsg m = sample_state();

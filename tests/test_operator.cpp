@@ -8,6 +8,7 @@
 #include "coop_operator.h"
 
 #include <cstring>
+#include <memory>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -440,6 +441,35 @@ TEST(operator_keeps_his_place_in_a_full_session)
 	Node c("C", 38210);
 	CHECK(!join(host, c, 38210, &a.s));
 	CHECK(c.rejected);
+}
+
+// The held place at the full capacity of a world server (owner 2026-11-13: 8 clients): 7 others fill the places that are not his,
+// an 8th other is refused, the token's holder takes the last place (slot 8), then nobody else comes in.
+TEST(operator_keeps_his_place_among_eight_clients)
+{
+	const op::Token tok = token_of(12);
+	Node host("server", 38225);
+	host.cfg.host_plays = false; // max_players: the default kMaxPlayers
+	host.cfg.operator_token = tok;
+	std::string err;
+	REQUIRE(host.host(&err));
+	std::vector<std::unique_ptr<Node>> others;
+	for (int i = 0; i < 8; ++i)
+		others.emplace_back(new Node("P" + std::to_string(i), 38225));
+	for (int i = 0; i < 7; ++i)
+		REQUIRE(join(host, *others[size_t(i)], 38225, i ? &others[0]->s : nullptr));
+	CHECK(!join(host, *others[7], 38225, &others[0]->s));
+	CHECK(others[7]->rejected);
+	Node creator("Creator", 38225);
+	present(creator, tok);
+	REQUIRE(join(host, creator, 38225, &others[0]->s));
+	CHECK_EQ(creator.welcome.slot, PeerId(8));
+	REQUIRE(host_side(host, creator.welcome.slot) != nullptr);
+	CHECK(host_side(host, creator.welcome.slot)->host_rights);
+	CHECK_EQ(host.s.peers().size(), size_t(8));
+	Node late("Late", 38225);
+	CHECK(!join(host, late, 38225, &others[0]->s));
+	CHECK(late.rejected);
 }
 
 TEST(operator_place_is_nobodys_without_a_token)

@@ -3,6 +3,7 @@
 // Real Sessions over 127.0.0.1 in one process. Ports 37100+n (test_net.cpp uses 37000+n).
 #include "test_util.h"
 #include "coop_limits.h"
+#include "coop_mapserver_rules.h"
 
 #include <enet/enet.h>
 
@@ -2102,12 +2103,15 @@ TEST(limits_client_capacity_counts_only_seats_that_play)
 	CHECK_EQ(limits::client_capacity(1, true), uint32_t(0));
 	CHECK_EQ(limits::client_capacity(0, false), uint32_t(0));
 	CHECK_EQ(limits::client_capacity(kMaxPlayers, true), kMaxPlayers - 1);
-	// The slot ids of clients are 1 .. kMaxPlayers - 1: every peer check of the wire layouts and the game is `peer < kMaxPlayers`
-	// (AvatarList, LevelMap, DebugState, the arrays of coop_monster_fx.cpp, the loops of coop_ai.cpp). A world server takes as
-	// many clients as there are ids until that range grows: 7 today, 8 after kMaxSlots (stage report).
-	CHECK_EQ(limits::client_capacity(kMaxPlayers, false), limits::kMaxClientSlots);
-	CHECK_EQ(limits::kMaxClientSlots, kMaxPlayers - 1);
+	// Owner 2026-11-13: 8 players on a world server are 8 clients. The slot ids are 0 .. kMaxPeerSlots - 1: seat 0 and the
+	// client slots 1 .. kMaxPlayers; every peer check of the wire layouts and the game is `peer < kMaxPeerSlots`.
+	CHECK_EQ(kMaxPlayers, uint32_t(8));
+	CHECK_EQ(kMaxPeerSlots, kMaxPlayers + 1);
+	CHECK_EQ(limits::kMaxClientSlots, kMaxPlayers);
+	CHECK_EQ(limits::client_capacity(kMaxPlayers, false), uint32_t(8));
+	CHECK_EQ(limits::client_capacity(kMaxPlayers, true), uint32_t(7)); // an ordinary host stays the host + 7
 	CHECK_EQ(limits::client_capacity(100, false), limits::kMaxClientSlots);
+	CHECK_EQ(limits::client_capacity(100, true), limits::kMaxClientSlots);
 }
 
 namespace
@@ -2175,17 +2179,49 @@ TEST(limits_session_with_a_playing_host_seat_counts_it)
 
 TEST(limits_world_server_full_house)
 {
-	// max_players kMaxPlayers on a world server: as many clients as there are client slot ids (see client_capacity above).
+	// The default max_players (kMaxPlayers = 8) on a world server: 8 playing clients, the 9th is refused (owner 2026-11-13).
 	Node host("server", 38223);
 	host.cfg.host_plays = false;
 	std::vector<std::unique_ptr<Node>> clients;
-	for (uint32_t i = 0; i <= limits::kMaxClientSlots; ++i)
+	for (uint32_t i = 0; i < 9; ++i)
 		clients.emplace_back(new Node("C" + std::to_string(i), 38223));
 	std::string err;
 	REQUIRE(host.host(&err));
-	CHECK_EQ(fill(host, clients, 38223), size_t(limits::kMaxClientSlots));
+	CHECK_EQ(fill(host, clients, 38223), size_t(8));
 	CHECK(clients.back()->rejected);
 	CHECK(clients.back()->reject.reason == RejectReason::SessionFull);
-	for (size_t i = 0; i < limits::kMaxClientSlots; ++i)
+	std::set<PeerId> slots;
+	for (size_t i = 0; i < 8; ++i)
+	{
+		const PeerId s = clients[i]->welcome.slot;
+		CHECK(s >= 1 && s < kMaxPeerSlots);
+		slots.insert(s);
+		// a player slot is no map server's bridge, the 8th one included
+		CHECK(!mapserver::is_bridge(s));
+		for (uint32_t k = 1; k <= mapserver::kMaxBridges; ++k)
+			CHECK(s != mapserver::bridge_peer(k));
+		CHECK_EQ(clients[i]->welcome.max_players, kMaxPlayers);
+	}
+	CHECK_EQ(slots.size(), size_t(8));
+	CHECK(slots.count(PeerId(8)) == 1); // slots 1 .. 8
+	// every client sees the 8 others' rows, seat 0 not playing
+	REQUIRE(t::pump_until({&host.s, &clients[0]->s, &clients[7]->s}, 3000,
+	    [&] { return clients[0]->s.peer(PeerId(8)) != nullptr && clients[7]->s.peer(PeerId(1)) != nullptr; }));
+	CHECK_EQ(host.s.peers().size(), size_t(8));
+}
+
+TEST(limits_ordinary_host_full_house_stays_host_plus_seven)
+{
+	// An ordinary host (its seat plays) with the default max_players: 7 clients, the 8th is refused; no client has slot 8.
+	Node host("Boss", 38224);
+	std::vector<std::unique_ptr<Node>> clients;
+	for (uint32_t i = 0; i < 8; ++i)
+		clients.emplace_back(new Node("C" + std::to_string(i), 38224));
+	std::string err;
+	REQUIRE(host.host(&err));
+	CHECK_EQ(fill(host, clients, 38224), size_t(7));
+	CHECK(clients.back()->rejected);
+	CHECK(clients.back()->reject.reason == RejectReason::SessionFull);
+	for (size_t i = 0; i < 7; ++i)
 		CHECK(clients[i]->welcome.slot >= 1 && clients[i]->welcome.slot < kMaxPlayers);
 }

@@ -92,11 +92,12 @@ TEST(debug_state_round_trip)
 	StateMsg full;
 	full.on = true;
 	full.source = Source::LaunchKey;
-	for (PeerId p = 0; p < kMaxPlayers; ++p)
+	for (PeerId p = 0; p < kMaxPeerSlots; ++p) // seat 0 and the client slots 1 .. 8 (a world server's 8 clients)
 		full.rows.push_back({p, kFlagsAll});
 	StateMsg full_back;
 	REQUIRE(reads(bytes_of(full), full_back));
-	CHECK_EQ(full_back.rows.size(), size_t(kMaxPlayers));
+	CHECK_EQ(full_back.rows.size(), size_t(9));
+	CHECK_EQ(full_back.flags_of(8), kFlagsAll);
 	CHECK(full_back.source == Source::LaunchKey);
 }
 
@@ -127,14 +128,15 @@ TEST(debug_state_refuses_malformed)
 	CHECK(!reads(raw(0, 0, 1, 1, {{1, 1}}), out)); // off clears every flag: no rows
 	CHECK(!reads(raw(1, 1, 1, 1, {{1, 8}}), out)); // flags & ~7
 	CHECK(!reads(raw(1, 1, 1, 1, {{1, 0xFF}}), out));
-	CHECK(!reads(raw(1, 1, 1, 1, {{kMaxPlayers, 1}}), out)); // no player slot
+	CHECK(!reads(raw(1, 1, 1, 1, {{kMaxPeerSlots, 1}}), out)); // no player slot
+	CHECK(reads(raw(1, 1, 1, 1, {{8, 1}}), out)); // slot 8: a world server's 8th client
 	CHECK(!reads(raw(1, 1, 1, 1, {{kInvalidPeer, 1}}), out));
 	CHECK(!reads(raw(1, 1, 1, 2, {{2, 1}, {2, 2}}), out)); // one row per player
-	// n > kMaxPlayers, with the rows there or not
-	std::vector<std::pair<uint32_t, uint8_t>> nine;
-	for (uint32_t p = 0; p < 9; ++p)
-		nine.push_back(std::make_pair(p % kMaxPlayers, uint8_t(1)));
-	CHECK(!reads(raw(1, 1, 1, 9, nine), out));
+	// n > kMaxPeerSlots, with the rows there or not
+	std::vector<std::pair<uint32_t, uint8_t>> ten;
+	for (uint32_t p = 0; p < 10; ++p)
+		ten.push_back(std::make_pair(p % kMaxPeerSlots, uint8_t(1)));
+	CHECK(!reads(raw(1, 1, 1, 10, ten), out));
 	CHECK(!reads(raw(1, 1, 1, uint64_t(1) << 40, {}), out));
 	// what the reader says no to leaves nothing half-read behind for a caller that ignores the answer
 	StateMsg keep;
@@ -213,8 +215,12 @@ TEST(debug_server_state_flags)
 	CHECK(s.set_flags(1, kFlagGod) == ServerState::FlagsResult::Same);
 	CHECK_EQ(s.serial(), at_on + 1);
 	CHECK(s.set_flags(1, 8) == ServerState::FlagsResult::BadFlags);
-	CHECK(s.set_flags(kMaxPlayers, kFlagGod) == ServerState::FlagsResult::BadPeer);
+	CHECK(s.set_flags(kMaxPeerSlots, kFlagGod) == ServerState::FlagsResult::BadPeer);
 	CHECK(s.set_flags(kInvalidPeer, kFlagGod) == ServerState::FlagsResult::BadPeer);
+	// slot 8, a world server's 8th client, is a player slot
+	CHECK(s.set_flags(8, kFlagGod) == ServerState::FlagsResult::Changed);
+	CHECK_EQ(s.flags(8), kFlagGod);
+	CHECK(s.set_flags(8, 0) == ServerState::FlagsResult::Changed);
 	CHECK(s.set_flags(0, uint8_t(kFlagAmmo | kFlagInvisible)) == ServerState::FlagsResult::Changed); // the host player too
 	CHECK_EQ(s.flags(0), uint8_t(kFlagAmmo | kFlagInvisible));
 	CHECK_EQ(s.flags(1), kFlagGod);

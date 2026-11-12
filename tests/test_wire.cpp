@@ -843,17 +843,28 @@ TEST(avatar_list_roundtrip)
 	CHECK(back.owners[1].avatar == 1205 && back.owners[1].peer == PeerId(1));
 	CHECK(back.owners[2].avatar == 7 && back.owners[2].peer == PeerId(3));
 
-	// A full session: the host and kMaxPlayers - 1 clients.
+	// Every slot id: seat 0 and the client slots 1 .. 8 (a world server's 8 clients; owner 2026-11-13).
 	AvatarListMsg full;
-	for (PeerId p = 0; p < kMaxPlayers; ++p)
+	for (PeerId p = 0; p < kMaxPeerSlots; ++p)
 		full.owners.push_back({uint16_t(p == kHostPeer ? 0 : 60000 + p), p});
 	Writer wf;
 	full.write(wf);
 	AvatarListMsg full2;
 	Reader rf(wf.ptr(), wf.size());
 	CHECK(full2.read(rf));
-	CHECK_EQ(full2.owners.size(), size_t(kMaxPlayers));
-	CHECK(uint32_t(full2.owners.back().avatar) == 60000u + kMaxPlayers - 1 && full2.owners.back().peer == kMaxPlayers - 1);
+	CHECK_EQ(full2.owners.size(), size_t(9));
+	CHECK(uint32_t(full2.owners.back().avatar) == 60008u && full2.owners.back().peer == PeerId(8));
+	// A world server's table: its seat plays nothing, 8 clients
+	AvatarListMsg eight;
+	for (PeerId p = 1; p <= 8; ++p)
+		eight.owners.push_back({uint16_t(300 + p), p});
+	Writer we;
+	eight.write(we);
+	AvatarListMsg eight2;
+	Reader re(we.ptr(), we.size());
+	CHECK(eight2.read(re));
+	REQUIRE(eight2.owners.size() == 8);
+	CHECK(eight2.owners[7].peer == PeerId(8) && eight2.owners[7].avatar == 308);
 
 	// The host alone: a table of one; an empty one says nobody plays any character.
 	AvatarListMsg alone;
@@ -879,15 +890,16 @@ TEST(avatar_list_rejects_bad_tables)
 	}
 	AvatarListMsg t;
 	// More rows than a session has players, even when the bytes are there.
-	std::initializer_list<Row> nine = {{0, 0}, {301, 1}, {302, 2}, {303, 3}, {304, 4},
-		{305, 5}, {306, 6}, {307, 7}, {308, 7}};
-	CHECK(!read_table(avatar_table(uint8_t(kMaxPlayers + 1), nine), t));
+	std::initializer_list<Row> ten = {{0, 0}, {301, 1}, {302, 2}, {303, 3}, {304, 4},
+		{305, 5}, {306, 6}, {307, 7}, {308, 8}, {309, 8}};
+	CHECK(!read_table(avatar_table(uint8_t(kMaxPeerSlots + 1), ten), t));
 	CHECK(!read_table(avatar_table(255, {{0, 0}}), t));
 	// No such object id.
 	CHECK(!read_table(avatar_table(2, {{0, 0}, {0xFFFF, 1}}), t));
-	// No such player slot.
+	// No such player slot; slot 8 is one (a world server's 8th client).
 	CHECK(!read_table(avatar_table(1, {{300, kInvalidPeer}}), t));
-	CHECK(!read_table(avatar_table(1, {{300, kMaxPlayers}}), t));
+	CHECK(!read_table(avatar_table(1, {{300, kMaxPeerSlots}}), t));
+	CHECK(read_table(avatar_table(1, {{300, 8}}), t));
 	// One character, two players; one player, two characters.
 	CHECK(!read_table(avatar_table(3, {{0, 0}, {300, 1}, {300, 2}}), t));
 	CHECK(!read_table(avatar_table(3, {{0, 0}, {300, 1}, {301, 1}}), t));

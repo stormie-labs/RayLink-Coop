@@ -42,10 +42,13 @@ TEST(bridge_ids_are_no_player_slots)
 	{
 		CHECK(is_bridge(bridge_peer(k)));
 		CHECK_EQ(bridge_index(bridge_peer(k)), k);
-		CHECK(bridge_peer(k) >= kMaxPlayers);
+		CHECK(bridge_peer(k) >= kMaxPeerSlots);
 	}
-	for (PeerId slot = 0; slot < kMaxPlayers; ++slot)
+	// every player slot, a world server's 8th client (slot 8) included
+	CHECK_EQ(kMaxPeerSlots, uint32_t(9));
+	for (PeerId slot = 0; slot < kMaxPeerSlots; ++slot)
 		CHECK(!is_bridge(slot));
+	CHECK(!is_bridge(PeerId(8)));
 	CHECK(!is_bridge(kBridgeBase));
 	CHECK(!is_bridge(bridge_peer(kMaxBridges + 1)));
 	CHECK(!is_bridge(kInvalidPeer));
