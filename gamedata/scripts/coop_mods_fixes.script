@@ -25,12 +25,20 @@
 	    talk; client RL-WZND-SWZJ, tasks_guide.script:447): get_object_squad(npc).id with no squad. On a client a member of a
 	    squad that came over the wire has m_group_id free (engine coop_entities.cpp, group_bound), so get_object_squad is
 	    nil. With a squad the original answers; without one the guide's squad (curr_guid) is asked whether it lists the NPC.
+	V5  game_relations.reset_all_relations (live 2026-11-12, the first player on the hidden world server: the Clear Sky base
+	    killed itself and him). The stock reset gives the j-th value of a row of [communities_relations] to the j-th name of
+	    its own list factions_table_all, and that list is in another order than the columns of game_relations.ltx (stock
+	    and G.A.M.M.A. alike: "actor, bandit, dolg, ..." against "actor, monster, trader, army_npc, greh_npc, bandit, ..."),
+	    so csky gets monolith's -2000 for itself. It runs once per world, in the first on_game_load. A single player's new
+	    game leaves fake_start at once and the engine reads the table from the config again; a world server stays on
+	    fake_start for good and hands its table to every map server and client (the relation resync). Here the reset
+	    writes every pair by the name of its column. On a co-op client it writes nothing: the table there is the host's.
 --]]
 
 local tostring, type, pairs, ipairs, pcall, rawget = tostring, type, pairs, ipairs, pcall, rawget
 
 local said = {}
-local stats = { vid = 0, ssfx = 0, spairs = 0, guide = 0 }
+local stats = { vid = 0, ssfx = 0, spairs = 0, guide = 0, relations = 0 }
 local installed = {}
 
 local function log(fmt, ...)
@@ -341,6 +349,72 @@ function guard_guide()
 end
 
 -------------------------------------------------------------------------------
+-- V5: game_relations.reset_all_relations
+-------------------------------------------------------------------------------
+-- The columns of [communities_relations], in the order the engine reads them: the names of [game_relations] communities
+-- ("name, id, name, id, ...") as they are listed.
+local function relation_columns(ini)
+	local list = ini:r_string_ex("game_relations", "communities")
+	if type(list) ~= "string" then return nil end
+	local out, i = {}, 0
+	for token in list:gmatch("[^,%s]+") do
+		i = i + 1
+		if i % 2 == 1 then out[#out + 1] = token end
+	end
+	return #out > 0 and out or nil
+end
+
+-- Every pair of the config, by the names of its row and its column. -> the number of pairs written, nil when the config
+-- cannot be read.
+function reset_relations_by_name()
+	local ini = ini_file("creatures\\game_relations.ltx")
+	local columns = ini and relation_columns(ini)
+	if not columns then return nil end
+	local n = 0
+	for _, from in ipairs(columns) do
+		local row = ini:r_string_ex("communities_relations", from)
+		if type(row) == "string" then
+			local j = 0
+			for value in row:gmatch("[^,%s]+") do
+				j = j + 1
+				local to, goodwill = columns[j], tonumber(value)
+				if to and goodwill then
+					relation_registry.set_community_relation(from, to, goodwill)
+					n = n + 1
+				end
+			end
+		end
+	end
+	return n > 0 and n or nil
+end
+
+function guard_relations()
+	if installed.relations then return false end
+	local m = mod("game_relations")
+	if not m then return false end
+	local stock = rawget(m, "reset_all_relations")
+	if type(stock) ~= "function" then return false end
+	m.reset_all_relations = function()
+		if is_client() then
+			once("relations client", "game_relations.reset_all_relations: nothing is written on a client, the table is the host's")
+			return
+		end
+		local ok, n = pcall(reset_relations_by_name)
+		if ok and n then
+			stats.relations = stats.relations + 1
+			once("relations", "game_relations.reset_all_relations: %d pairs written by the names of the columns of "
+				.. "game_relations.ltx (the stock reset writes them by the position in its own list)", n)
+			return
+		end
+		log("! game_relations: the relations could not be reset by name (%s): the stock reset runs", tostring(n))
+		return stock()
+	end
+	installed.relations = true
+	installed[#installed + 1] = "game_relations"
+	return true
+end
+
+-------------------------------------------------------------------------------
 -- Start
 -------------------------------------------------------------------------------
 local function step(what, f)
@@ -358,12 +432,13 @@ function on_game_start()
 	step("ui_options", guard_options)
 	step("spairs", guard_spairs)
 	step("tasks_guide", guard_guide)
+	step("game_relations", guard_relations)
 	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
 end
 
 function print_status()
-	log("installed: %s | vid %d, ssfx %d, spairs %d, guide %d", #installed > 0 and table.concat(installed, ", ") or "none",
-		stats.vid, stats.ssfx, stats.spairs, stats.guide)
+	log("installed: %s | vid %d, ssfx %d, spairs %d, guide %d, relation resets %d", #installed > 0 and table.concat(installed, ", ") or "none",
+		stats.vid, stats.ssfx, stats.spairs, stats.guide, stats.relations)
 end
 
 function _stats() return stats end

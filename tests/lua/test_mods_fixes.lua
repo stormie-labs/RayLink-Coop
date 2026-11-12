@@ -273,6 +273,128 @@ check(tg.is_not_guider_companion(db.actor, npc(501)) == true, "no guide job: not
 check(logged("has no squad here") ~= nil, "said in the log")
 
 -------------------------------------------------------------------------------
+print("== V5 game_relations.reset_all_relations: the table is written by position in a list of another order")
+-------------------------------------------------------------------------------
+-- Live 2026-11-12: on a new world of the dedicated host the Clear Sky base killed itself. The stock reset reads a row of
+-- [communities_relations] and gives its j-th value to the j-th name of factions_table_all, whose order is not the order
+-- of the columns ("actor, bandit, dolg, ..." against "actor, monster, trader, army_npc, greh_npc, bandit, ..."): csky gets
+-- monolith's value for itself, -2000. A single player's new game leaves fake_start at once and the table is read from
+-- the config again; a world server stays there and hands the table to every map server and client.
+local REF = "D:" .. BS .. "Projects" .. BS .. "ForEverything" .. BS .. "anomaly-ref" .. BS .. "unpacked" .. BS
+local function read_ltx(path)
+	local src = assert(read_all(path), "no " .. path)
+	local sections, cur = {}, nil
+	for line in (src .. "\n"):gmatch("([^\r\n]*)\r?\n") do
+		line = line:gsub(";.*$", "")
+		local name = line:match("^%s*%[([^%]]+)%]")
+		if name then
+			cur = { keys = {}, list = {} }
+			sections[name] = cur
+		elseif cur then
+			local k, v = line:match("^%s*([^=%s][^=]-)%s*=%s*(.-)%s*$")
+			if k then
+				cur.keys[k] = v
+				cur.list[#cur.list + 1] = { k, v }
+			else
+				local only = line:match("^%s*(%S.-)%s*$")
+				if only then
+					cur.keys[only] = ""
+					cur.list[#cur.list + 1] = { only, "" }
+				end
+			end
+		end
+	end
+	local ini = {}
+	function ini:r_string_ex(sec, k) return sections[sec] and sections[sec].keys[k] or nil end
+	function ini:r_float_ex(sec, k) return tonumber(self:r_string_ex(sec, k) or "") end
+	function ini:line_count(sec) return sections[sec] and #sections[sec].list or 0 end
+	function ini:r_line(sec, i) local e = sections[sec].list[i + 1]; return true, e[1], e[2] end
+	function ini:section_exist(sec) return sections[sec] ~= nil end
+	return ini
+end
+local ltx_calls = 0
+ini_file = function(name)
+	ltx_calls = ltx_calls + 1
+	return read_ltx(REF .. "configs" .. BS .. name)
+end
+str_explode = function(str, sep)
+	local out = {}
+	for part in (tostring(str) .. sep):gmatch("(.-)" .. sep) do out[#out + 1] = (part:gsub("^%s+", ""):gsub("%s+$", "")) end
+	return out
+end
+local REL = {}
+relation_registry = { set_community_relation = function(a, b, v)
+	REL[a] = REL[a] or {}
+	REL[a][b] = v
+end }
+local gr_src = assert(read_all(REF .. "scripts" .. BS .. "game_relations.script"), "the stock game_relations.script is required")
+local gr = setmetatable({}, { __index = _G })
+game_relations = gr
+setfenv(assert(loadstring(gr_src, "@game_relations.script")), gr)()
+
+-- what the config says, read here by the names of its columns
+local cfg = read_ltx(REF .. "configs" .. BS .. "creatures" .. BS .. "game_relations.ltx")
+local columns = {}
+do
+	local i = 0
+	for token in cfg:r_string_ex("game_relations", "communities"):gmatch("[^,%s]+") do
+		i = i + 1
+		if i % 2 == 1 then columns[#columns + 1] = token end
+	end
+end
+local function config_value(from, to)
+	local j
+	for i, name in ipairs(columns) do if name == to then j = i end end
+	local n = 0
+	for v in cfg:r_string_ex("communities_relations", from):gmatch("[^,%s]+") do
+		n = n + 1
+		if n == j then return tonumber(v) end
+	end
+end
+check(config_value("csky", "csky") == 300 and config_value("stalker", "stalker") == 300 and config_value("csky", "monolith") == -2000,
+	"the config: Clear Sky and the loners are friends of their own, Clear Sky and Monolith are enemies")
+
+gr.reset_all_relations()
+check(REL.csky ~= nil and REL.csky.csky == -2000,
+	"RED (stock): the reset makes Clear Sky an enemy of itself: " .. tostring(REL.csky and REL.csky.csky))
+
+REL = {}
+check(type(F.guard_relations) == "function", "the guard exists")
+if type(F.guard_relations) == "function" then
+	check(F.guard_relations() == true and F.guard_relations() == false, "the guard installs once")
+	gr.reset_all_relations()
+	check(REL.csky ~= nil and REL.csky.csky == 300, "GREEN: Clear Sky is a friend of itself again: " .. tostring(REL.csky and REL.csky.csky))
+	local wrong, pairs_n = 0, 0
+	for from, row in pairs(REL) do
+		for to, v in pairs(row) do
+			pairs_n = pairs_n + 1
+			if v ~= config_value(from, to) then wrong = wrong + 1 end
+		end
+	end
+	check(pairs_n == #columns * #columns and wrong == 0,
+		string.format("every pair is the config's by the name of its column: %d pairs, %d wrong", pairs_n, wrong))
+	check(logged("written by the names of the columns") ~= nil, "said once in the log")
+
+	-- a co-op client's table is the host's: nothing is written there (the stock reset would ask the host for every pair)
+	REL = {}
+	coop_mods_core = { is_client = function() return true end }
+	gr.reset_all_relations()
+	check(next(REL) == nil, "on a co-op client the reset writes nothing")
+	coop_mods_core = nil
+
+	-- a config that cannot be read: the stock reset, as before
+	REL = {}
+	local real_ini = ini_file
+	ini_file = function(name)
+		if name:find("game_relations", 1, true) then return { r_string_ex = function() return nil end } end
+		return real_ini(name)
+	end
+	local ok5 = pcall(gr.reset_all_relations)
+	ini_file = real_ini
+	check(ok5 and logged("could not be reset by name") ~= nil, "an unreadable config falls back to the stock reset and says so")
+end
+
+-------------------------------------------------------------------------------
 print("== on_game_start")
 -------------------------------------------------------------------------------
 local F2 = load_fixes()
