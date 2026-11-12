@@ -1106,4 +1106,23 @@ case("options_page_rules_moved", function()
 	check(#stale == 0, "no strings of the old respawn modes are left (" .. table.concat(stale, ",") .. ")")
 end)
 
+-- Reports b42 (axr_main callback trace, coop_death.script:589): coop_main adds coop_respawned at its load
+-- (ensure_callback, before any on_game_start), so a second AddScriptCallback made axr_main.callback_add print
+-- "callback coop_respawned already exists!" with a stack trace. The callback table is axr_main's intercepts
+-- (coop_route.intercepts() finds it); a callback already in it is not added again.
+case("callbacks_added_once", function()
+	local intercepts, dup = { coop_respawned = {} }, {}
+	local saved_route, saved_add = rawget(_G, "coop_route"), AddScriptCallback
+	coop_route = { intercepts = function() return intercepts end }
+	AddScriptCallback = function(n)
+		if intercepts[n] then dup[#dup + 1] = n else intercepts[n] = {} end
+		ADDED[n] = true
+	end
+	fresh("host")
+	check(#dup == 0, "no callback added twice (" .. table.concat(dup, ",") .. ")")
+	check(intercepts.coop_respawned and intercepts.coop_death_marker, "both engine callbacks exist")
+	check(registered("coop_respawned") == 1 and registered("coop_death_marker") == 1, "one handler each")
+	coop_route, AddScriptCallback = saved_route, saved_add
+end)
+
 done("DEATH")

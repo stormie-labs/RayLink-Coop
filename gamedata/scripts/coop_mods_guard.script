@@ -737,6 +737,60 @@ local function ensure(g)
 end
 
 -------------------------------------------------------------------------------
+-- T1 GAMMA's craft tooltip before the world (every role and single player, inert where the mod is absent)
+-------------------------------------------------------------------------------
+-- zzz_craft_use_in_tooltip_mcm replaces utils_ui.UIInfoItem.Update at its load (:182) with one that reads craft.ltx and
+-- cook.ltx through its file locals ini_craft / ini_cook (:2-3), opened only in its on_game_start (:476-477). A tooltip
+-- shown before that (the main-menu new-game windows: stock ui_mm_faction_select's loadout, the co-op character window)
+-- failed on every hover: ":288: attempt to index upvalue 'ini_craft' (a nil value)" (reports b40-b43). The two locals
+-- are filled with the very files its on_game_start opens, once, when they are still nil; its on_game_start later
+-- assigns its own (the same files).
+local CRAFT_TIP_MOD = "zzz_craft_use_in_tooltip_mcm"
+local CRAFT_TIP_INI = {
+	{ fn = "getCraftableItems", up = "ini_craft", file = "items\\settings\\craft.ltx" },
+	{ fn = "getCookableItems", up = "ini_cook", file = "items\\settings\\cook.ltx" },
+}
+
+local function fill_ini_upvalue(f, name, file)
+	for i = 1, 255 do
+		local n, v = debug.getupvalue(f, i)
+		if n == nil then return end
+		if n == name then
+			if v == nil then debug.setupvalue(f, i, ini_file(file)) end
+			return
+		end
+	end
+end
+
+function craft_tooltip_ready()
+	local m = rawget(_G, CRAFT_TIP_MOD)
+	if type(m) ~= "table" then return end
+	for _, u in ipairs(CRAFT_TIP_INI) do
+		local f = rawget(m, u.fn)
+		if type(f) == "function" then
+			local ok, err = pcall(fill_ini_upvalue, f, u.up, u.file)
+			if not ok then printf("! [coop_mods_guard] craft tooltip %s: %s", u.up, tostring(err)) end
+		end
+	end
+end
+
+-- Wraps UIInfoItem.Update once per Lua state. Either order works: wrapped after the mod, this runs first; wrapped
+-- before it, the mod's Update calls the function it replaced (og_info_item_update, :184) before it reads the files.
+local craft_tip_wrapper = nil
+local function install_craft_tooltip()
+	if craft_tip_wrapper then return end
+	local ok, ui = pcall(function() return utils_ui end)
+	local cls = ok and type(ui) == "table" and ui.UIInfoItem
+	local prev = type(cls) == "table" and cls.Update
+	if type(prev) ~= "function" then return end
+	craft_tip_wrapper = function(self, ...)
+		craft_tooltip_ready()
+		return prev(self, ...)
+	end
+	cls.Update = craft_tip_wrapper
+end
+
+-------------------------------------------------------------------------------
 -- Start, status
 -------------------------------------------------------------------------------
 local next_check = 0
@@ -769,8 +823,12 @@ end
 function on_game_start()
 	if not api then return end
 	local ok, e = pcall(function()
+		install_craft_tooltip()
 		RegisterScriptCallback("actor_on_update", actor_on_update)
 		C().status_line("guard", status)
 	end)
 	if not ok then printf("! [coop_mods_guard] start failed: %s", tostring(e)) end
 end
+
+-- at load as well: a window before the world (main menu) gets no on_game_start
+if api then pcall(install_craft_tooltip) end

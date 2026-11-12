@@ -413,24 +413,32 @@ local ency = { orig_note = nil, orig_article = nil, applying = false, mutes = {}
 -- VAR's voice decorator requires create_interaction's temporary key/section, which a
 -- replicated article does not have. Keep its saved unlock and all other decorators;
 -- only remote application skips the local interaction's speech (VAR lines 4-8, 13-15).
+-- VAR's unlock_article decorator -> the function it wraps (its upvalue), or nil for any other function.
+local function var_wrapped(fn)
+	local info = debug.getinfo(fn, "S")
+	if not (info and type(info.source) == "string" and info.source:match("ui_pda_encyclopedia_tab_varefined%.script$")) then
+		return nil
+	end
+	for i = 1, 255 do
+		local name, original = debug.getupvalue(fn, i)
+		if name == nil then break end
+		if name == "ui_pda_encyclopedia_tab_unlock_article" and type(original) == "function" then return original end
+	end
+	return nil
+end
+
 local function adapt_article_voice(fn, seen)
 	if type(fn) ~= "function" then return fn end
 	if seen[fn] then return seen[fn] end
 	seen[fn] = fn
-	local source = debug.getinfo(fn, "S").source
-	if source:match("ui_pda_encyclopedia_tab_varefined%.script$") then
-		for i = 1, 255 do
-			local name, original = debug.getupvalue(fn, i)
-			if name == nil then break end
-			if name == "ui_pda_encyclopedia_tab_unlock_article" and type(original) == "function" then
-				local adapted = function(...)
-					if ency.applying then return original(...) end
-					return fn(...)
-				end
-				seen[fn] = adapted
-				return adapted
-			end
+	local original = var_wrapped(fn)
+	if original then
+		local adapted = function(...)
+			if ency.applying then return original(...) end
+			return fn(...)
 		end
+		seen[fn] = adapted
+		return adapted
 	end
 	-- Another mod may have wrapped VAR first. Adapt that captured function in place
 	-- so its outer wrapper still runs for local and replicated unlocks alike.
@@ -440,6 +448,18 @@ local function adapt_article_voice(fn, seen)
 		if type(value) == "function" then
 			local adapted = adapt_article_voice(value, seen)
 			if adapted ~= value then debug.setupvalue(fn, i, adapted) end
+		end
+	end
+	-- A wrapper may keep VAR in a global of its own module instead of an upvalue: GAMMA's Encyclopedia Messages
+	-- Restored (zz_Encyclopedia_messages_restored.script:95 `base_unlock_article = ui_pda_encyclopedia_tab.unlock_article`,
+	-- loaded after VAR) calls it as base_unlock_article(section). Replace that field with the adapted VAR.
+	local ok, env = pcall(getfenv, fn)
+	if ok and type(env) == "table" and env ~= _G then
+		for key, value in pairs(env) do
+			if type(value) == "function" and value ~= fn and var_wrapped(value) then
+				local adapted = adapt_article_voice(value, seen)
+				if adapted ~= value then rawset(env, key, adapted) end
+			end
 		end
 	end
 	return fn

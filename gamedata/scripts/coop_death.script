@@ -584,10 +584,18 @@ local function on_first_update()
 	restore_stash_markers(now)
 end
 
+-- axr_main.callback_add prints "callback <name> already exists!" with a stack trace for a second add, and coop_main
+-- adds coop_respawned at its load (ensure_callback). Its callback table is reached through coop_route.intercepts().
+local function add_callback(name)
+	local ok, t = pcall(function() return coop_route.intercepts() end)
+	if ok and type(t) == "table" and t[name] ~= nil then return end
+	AddScriptCallback(name)
+end
+
 function on_game_start()
 	if not api then return end
-	AddScriptCallback("coop_respawned") -- fired by the engine (coop_survival.cpp), on the owner only
-	AddScriptCallback("coop_death_marker") -- fired by the engine (coop_death.cpp), on every machine
+	add_callback("coop_respawned") -- fired by the engine (coop_survival.cpp), on the owner only
+	add_callback("coop_death_marker") -- fired by the engine (coop_death.cpp), on every machine
 	RegisterScriptCallback("coop_respawned", on_respawned)
 	RegisterScriptCallback("coop_death_marker", on_death_marker)
 	RegisterScriptCallback("actor_on_update", on_update)

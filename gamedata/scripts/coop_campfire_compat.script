@@ -1,0 +1,42 @@
+--[[
+	Anomaly Coop - campfire binders that outlive their object (gamedata\scripts\coop_campfire_compat.script)
+
+	bind_campfire (stock Anomaly 1.5.3, G.A.M.M.A. alike) lists every campfire binder in campfires_all at net_spawn
+	(bind_campfire.script:271 in G.A.M.M.A.) and never takes it out at net_destroy (:311-326). In single player a campfire
+	object goes away together with the Lua state (a load, a level change), so the list never holds a dead one. In co-op
+	the state lives on while campfire objects are destroyed under it: a client keeps its state while the host releases
+	placed campfires (campfire_placeable.script actor_on_first_update) or moves to another level. Then every
+	bind_campfire.get_nearby_campfire / use_campfire / actor_on_update and cozy_campfire.get_nearby_lit_campfire (camp_lum
+	polls it twice a second) calls :position() on the dead object: "you are trying to use a destroyed object [id]" and a
+	BusyHandsDebug Lua error (reports b40-b43).
+
+	Here campfire_binder.net_destroy also takes its binder out of campfires_all (only that binder: a new object under the
+	same id has its own). Installed on a co-op exe only (the coop namespace), at on_game_start: before any level object
+	is bound.
+--]]
+
+local api = rawget(_G, "coop")
+local installed = false
+
+local function install()
+	if installed then return end
+	local ok, bc = pcall(function() return bind_campfire end)
+	if not (ok and type(bc) == "table") then return end
+	local cls = bc.campfire_binder
+	local orig = cls and cls.net_destroy
+	if type(orig) ~= "function" then return end
+	installed = true
+	cls.net_destroy = function(self, ...)
+		local all = bc.campfires_all
+		local got, id = pcall(function() return self.object:id() end)
+		if got and type(all) == "table" and id ~= nil and rawequal(all[id], self) then all[id] = nil end
+		return orig(self, ...)
+	end
+end
+
+-- on_game_start must not throw (axr_main runs every script's on_game_start in one unprotected loop)
+function on_game_start()
+	if not api then return end
+	local ok, err = pcall(install)
+	if not ok then printf("! [coop_campfire_compat] install failed: %s", tostring(err)) end
+end
