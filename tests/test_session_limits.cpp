@@ -718,7 +718,9 @@ TEST(limits_client_rate_rules)
 		// F2 T12b: ids a client gives back (busy there, or its create was refused), paced by the client at 4 a second
 		{Msg::IdLeaseAck, 8, 250},
 		// F3a: a player leaves his level (one request per exit he steps into), and says his loading screen is up
-		{Msg::LevelMove, 4, 1000}, {Msg::LoadReady, 4, 1000}};
+		{Msg::LevelMove, 4, 1000}, {Msg::LoadReady, 4, 1000},
+		// protocol 31: the operator's console lines (a core message, Session takes the token itself)
+		{Msg::OperatorCommand, 4, 1000}};
 	for (const Expected& e : expected)
 	{
 		const limits::RateRule* rule = nullptr;
@@ -2086,4 +2088,104 @@ TEST(limits_chat_of_control_characters_only_is_not_passed_on)
 	REQUIRE(rig.bob.chat.size() == 1);
 	CHECK_EQ(rig.bob.chat[0].second, std::string("ok"));
 	CHECK(rig.host.left.empty());
+}
+
+// ============================================================================ protocol 31: the host's seat that does not play
+
+TEST(limits_client_capacity_counts_only_seats_that_play)
+{
+	// An ordinary host's seat is a player; a world server's is not and leaves its place to a client.
+	CHECK_EQ(limits::client_capacity(4, true), uint32_t(3));
+	CHECK_EQ(limits::client_capacity(4, false), uint32_t(4));
+	CHECK_EQ(limits::client_capacity(2, true), uint32_t(1));
+	CHECK_EQ(limits::client_capacity(2, false), uint32_t(2));
+	CHECK_EQ(limits::client_capacity(1, true), uint32_t(0));
+	CHECK_EQ(limits::client_capacity(0, false), uint32_t(0));
+	CHECK_EQ(limits::client_capacity(kMaxPlayers, true), kMaxPlayers - 1);
+	// The slot ids of clients are 1 .. kMaxPlayers - 1: every peer check of the wire layouts and the game is `peer < kMaxPlayers`
+	// (AvatarList, LevelMap, DebugState, the arrays of coop_monster_fx.cpp, the loops of coop_ai.cpp). A world server takes as
+	// many clients as there are ids until that range grows: 7 today, 8 after kMaxSlots (stage report).
+	CHECK_EQ(limits::client_capacity(kMaxPlayers, false), limits::kMaxClientSlots);
+	CHECK_EQ(limits::kMaxClientSlots, kMaxPlayers - 1);
+	CHECK_EQ(limits::client_capacity(100, false), limits::kMaxClientSlots);
+}
+
+namespace
+{
+// Joins clients one after another until one is refused; the number welcomed.
+size_t fill(Node& host, std::vector<std::unique_ptr<Node>>& clients, uint16_t port)
+{
+	size_t welcomed = 0;
+	for (auto& c : clients)
+	{
+		std::string err;
+		REQUIRE(c->connect(port, &err));
+		bool done = false;
+		for (int i = 0; i < 500 && !done; ++i)
+		{
+			host.s.update(t::now_ms());
+			for (auto& o : clients)
+				o->s.update(t::now_ms());
+			done = c->welcomed || c->rejected;
+			std::this_thread::sleep_for(std::chrono::milliseconds(2));
+		}
+		if (!c->welcomed)
+			break;
+		++welcomed;
+	}
+	return welcomed;
+}
+} // namespace
+
+TEST(limits_session_without_a_playing_host_seat_takes_one_more_client)
+{
+	// A world server (host_plays false) with max_players 3: three clients, the fourth is refused SessionFull.
+	Node host("server", 38221);
+	host.cfg.max_players = 3;
+	host.cfg.host_plays = false;
+	std::vector<std::unique_ptr<Node>> clients;
+	for (int i = 0; i < 4; ++i)
+		clients.emplace_back(new Node("C" + std::to_string(i), 38221));
+	std::string err;
+	REQUIRE(host.host(&err));
+	CHECK_EQ(fill(host, clients, 38221), size_t(3));
+	CHECK(clients[3]->rejected);
+	CHECK(clients[3]->reject.reason == RejectReason::SessionFull);
+	CHECK(!(clients[0]->welcome.flags & WelcomeMsg::HostSeatPlays));
+	CHECK_EQ(clients[0]->welcome.max_players, uint32_t(3));
+}
+
+TEST(limits_session_with_a_playing_host_seat_counts_it)
+{
+	Node host("Boss", 38222);
+	host.cfg.max_players = 3;
+	std::vector<std::unique_ptr<Node>> clients;
+	for (int i = 0; i < 3; ++i)
+		clients.emplace_back(new Node("C" + std::to_string(i), 38222));
+	std::string err;
+	REQUIRE(host.host(&err));
+	CHECK_EQ(fill(host, clients, 38222), size_t(2));
+	CHECK(clients[2]->rejected);
+	CHECK(clients[2]->reject.reason == RejectReason::SessionFull);
+	CHECK(clients[0]->welcome.flags & WelcomeMsg::HostSeatPlays);
+	// a client sees seat 0 playing
+	REQUIRE(t::pump_until({&host.s, &clients[0]->s}, 2000, [&] { return clients[0]->s.peer(kHostPeer) != nullptr; }));
+	CHECK(clients[0]->s.peer(kHostPeer)->plays);
+}
+
+TEST(limits_world_server_full_house)
+{
+	// max_players kMaxPlayers on a world server: as many clients as there are client slot ids (see client_capacity above).
+	Node host("server", 38223);
+	host.cfg.host_plays = false;
+	std::vector<std::unique_ptr<Node>> clients;
+	for (uint32_t i = 0; i <= limits::kMaxClientSlots; ++i)
+		clients.emplace_back(new Node("C" + std::to_string(i), 38223));
+	std::string err;
+	REQUIRE(host.host(&err));
+	CHECK_EQ(fill(host, clients, 38223), size_t(limits::kMaxClientSlots));
+	CHECK(clients.back()->rejected);
+	CHECK(clients.back()->reject.reason == RejectReason::SessionFull);
+	for (size_t i = 0; i < limits::kMaxClientSlots; ++i)
+		CHECK(clients[i]->welcome.slot >= 1 && clients[i]->welcome.slot < kMaxPlayers);
 }

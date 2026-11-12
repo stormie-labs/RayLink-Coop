@@ -92,5 +92,111 @@ TEST(protocol_game_protocol_is_11)
 	// 11 (F3a, split levels): Msg 0x01D0..0x01DF, Hello carries a role and a token (test_protocol_f3a.cpp); a protocol 10
 	// peer is refused at the handshake. 10: TransitionVote carries an op, TransitionState (host -> all) is new (the waiting
 	// point of a level change). 9: CharOffer ends with `str faction` (the world's).
-	CHECK_EQ(kProtocolVersion, 30u); // 30 atomic weapon replacement and initial spawn metadata
+	// 31 (split levels native, stage 1): Welcome.flags (HostSeatPlays), PeerList rows end with u8 flags (Operator), core
+	// OperatorCommand.
+	CHECK_EQ(kProtocolVersion, 31u);
+}
+
+// ---------------------------------------------------------------- protocol 31: a seat without a character, the operator
+
+TEST(protocol_31_welcome_flags_roundtrip)
+{
+	WelcomeMsg d;
+	CHECK(d.flags == WelcomeMsg::HostSeatPlays); // an ordinary host's seat plays
+
+	for (const uint8_t flags : {uint8_t(0), uint8_t(WelcomeMsg::HostSeatPlays)})
+	{
+		WelcomeMsg m;
+		m.slot = 3;
+		m.session_token = 0x1122334455667788ull;
+		m.host_nick = "server";
+		m.max_players = 8;
+		m.world_epoch = 5;
+		m.flags = flags;
+		Writer w;
+		m.write(w);
+		// u32 slot, u64 token, str nick, u32 max, u32 epoch, u8 flags
+		CHECK_EQ(w.size(), size_t(4 + 8 + (1 + 6) + 4 + 4 + 1));
+		WelcomeMsg back;
+		back.flags = 0x7F;
+		Reader r(w.ptr(), w.size());
+		CHECK(back.read(r));
+		CHECK_EQ(r.remaining(), size_t(0));
+		CHECK_EQ(back.flags, flags);
+		CHECK_EQ(back.slot, PeerId(3));
+		CHECK_EQ(back.world_epoch, 5u);
+		// cut anywhere: refused (the flags byte is not optional)
+		for (size_t cut = 0; cut < w.size(); ++cut)
+		{
+			WelcomeMsg t;
+			Reader rc(w.ptr(), cut);
+			CHECK(!t.read(rc));
+		}
+	}
+	// an unknown flag: refused
+	WelcomeMsg m;
+	m.flags = 0x80;
+	Writer w;
+	m.write(w);
+	WelcomeMsg back;
+	Reader r(w.ptr(), w.size());
+	CHECK(!back.read(r));
+}
+
+TEST(protocol_31_peer_list_entry_roundtrip)
+{
+	PeerListEntry e;
+	CHECK_EQ(e.flags, uint8_t(0));
+	e.slot = 2;
+	e.nick = "Creator";
+	e.key_hash = 0xA1B2C3D4u;
+	e.flags = PeerListEntry::Operator;
+	Writer w;
+	e.write(w);
+	// u32 slot, str nick, u32 key hash, u8 flags
+	CHECK_EQ(w.size(), size_t(4 + (1 + 7) + 4 + 1));
+	CHECK(PeerListEntry::kMinWire == size_t(4 + 1 + 4 + 1));
+	PeerListEntry back;
+	Reader r(w.ptr(), w.size());
+	CHECK(back.read(r));
+	CHECK_EQ(r.remaining(), size_t(0));
+	CHECK_EQ(back.slot, PeerId(2));
+	CHECK_EQ(back.nick, std::string("Creator"));
+	CHECK_EQ(back.key_hash, 0xA1B2C3D4u);
+	CHECK_EQ(back.flags, uint8_t(PeerListEntry::Operator));
+	for (size_t cut = 0; cut < w.size(); ++cut)
+	{
+		PeerListEntry t;
+		Reader rc(w.ptr(), cut);
+		CHECK(!t.read(rc));
+	}
+	PeerListEntry bad = e;
+	bad.flags = 0x02;
+	Writer wb;
+	bad.write(wb);
+	Reader rb(wb.ptr(), wb.size());
+	PeerListEntry t;
+	CHECK(!t.read(rb));
+}
+
+TEST(protocol_31_operator_command)
+{
+	static_assert(static_cast<uint16_t>(Msg::OperatorCommand) == 0x000B, "core message, append only");
+	static_assert(static_cast<uint16_t>(Msg::OperatorCommand) < static_cast<uint16_t>(Msg::GameBase), "handled by the session");
+	CHECK_EQ(std::string(msg_name(Msg::OperatorCommand)), std::string("OperatorCommand"));
+	OperatorCommandMsg m;
+	m.line = "coop_kick 3";
+	Writer w;
+	m.write(w);
+	CHECK_EQ(w.size(), size_t(1 + 11));
+	OperatorCommandMsg back;
+	Reader r(w.ptr(), w.size());
+	CHECK(back.read(r));
+	CHECK_EQ(back.line, m.line);
+	for (size_t cut = 0; cut < w.size(); ++cut)
+	{
+		OperatorCommandMsg t;
+		Reader rc(w.ptr(), cut);
+		CHECK(!t.read(rc));
+	}
 }
