@@ -34,8 +34,12 @@ BUILD_DEFINE = re.compile(rb"^#define RAYLINK_BUILD[ \t]+\d+[ \t]*$", re.M)
 
 # .rc: the exe's version resource (src/xrEngine/resource.rc names the engine in the file properties)
 SOURCE_EXT = (".cpp", ".h", ".hpp", ".inl", ".c", ".md", ".rc")
+# luabind: its error path is ours since 2026-11-12 (coop_lua_errors); it was not in the list and build 44a failed with
+# "set_error_survive_callback is not a member of luabind". tools/ci_gap.py lists committed sources outside these folders
+# that differ from the CI tree.
 SOURCE_DIRS = ("src/xrGame", "src/xrCoop", "src/xrEngine", "src/xrServerEntities", "src/xrCore", "src/Layers",
-               "src/xrSound")  # Native instrument playback extends the sound interface as well as xrGame.
+               "src/xrSound",  # Native instrument playback extends the sound interface as well as xrGame.
+               "src/3rd party/luabind")
 
 
 def same_text(a: Path, b: Path) -> bool:
