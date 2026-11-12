@@ -63,6 +63,9 @@ check(s.owner_of("options", "coop/coop_session/death_mode") == "host", "session 
 check(s.owner_of("mcm", "drx_da/anomaly_density") == "host", "MCM seed: drx_da is the host's")
 check(s.owner_of("mcm", "drx_da/debug_mode") == "player", "MCM seed: drx_da debug is the player's")
 check(s.owner_of("mcm", "fftd/gen/show_distdur") == "player", "MCM seed: fftd UI key is the player's")
+check(s.owner_of("mcm", "dotmarks/dmarkmain/last_version") == "player" and s.owner_of("mcm", "dotmarks/dmarkmain/last_release") == "player",
+	"DotMarks: the version it has shown its news for is bookkeeping of the machine (it was refused on a client at every start)")
+check(s.owner_of("mcm", "dotmarks/dmarkmain/some_rule") == "host", "the rest of an unclassified addon stays the host's")
 check(s.owner_of("mcm", "fftd/gen/cost_mult") == "host", "MCM seed: fftd rules are the host's")
 check(s.owner_of("mcm", "auto_looter/delete_body") == "host", "auto_looter delete is the host's")
 check(s.owner_of("mcm", "auto_looter/pickup_ammo") == "player", "auto_looter pickup is the player's")
