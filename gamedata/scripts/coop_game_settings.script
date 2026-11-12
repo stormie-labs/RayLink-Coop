@@ -713,7 +713,14 @@ local function journal_add(stem, why)
 	local j, r, dir = mod("coop_saves_journal"), S.rec, saves_dir()
 	if not (j and type(j.entry_line) == "function" and r and dir and valid_id(r.id) and type(stem) == "string" and stem ~= "") then return end
 	local at = S.last_at or {}
-	local line = j.entry_line({ stem = stem, when = now_text(), why = why, game_time = at.game_time, players = S.last_where })
+	-- when the save was written, not when its line is: the save of a level change gets its slot only after the next level has
+	-- loaded, minutes later, and the launcher tells the entry of a file by the file's time
+	local when = now_text()
+	if type(at.real_time) == "number" then
+		local ok, t = pcall(os.date, "%Y-%m-%d %H:%M", at.real_time)
+		if ok and type(t) == "string" then when = t end
+	end
+	local line = j.entry_line({ stem = stem, when = when, why = why, game_time = at.game_time, players = S.last_where })
 	if not line then return end
 	local path = dir .. r.id .. j.FILE_EXT
 	local ok, why_not = write_file(path, j.encode(r.id, j.merge(j.lines_of(read_file(path)), line, j.MAX)))
