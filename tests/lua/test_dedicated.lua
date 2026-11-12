@@ -189,4 +189,34 @@ do
 	check(d.creator_facts().creator == false, "no record at all")
 end
 
+-- A world server never loads a world of a host who plays in it: that save's actor is the host's own character, and a world server
+-- turns the save's actor into its ghost (owner 2026-11-13: the old split mode stays, old worlds are not carried over).
+do
+	local d = staging()
+	local SAVES = {
+		ws_world = { "6af611d5-a8f5", { id = "6af611d5-a8f5", values = { ["c|coop_split_levels"] = "1", ["c|coop_world_server"] = "1" } } },
+		old_split = { "65190f3a-9c41", { id = "65190f3a-9c41", values = { ["c|coop_split_levels"] = "1" } } },
+		plain_host = { "65190f3a-0001", { id = "65190f3a-0001", values = {} } },
+		off_again = { "65190f3a-0002", { id = "65190f3a-0002", values = { ["c|coop_world_server"] = "0" } } },
+	}
+	coop_game_settings.game_of_save = function(stem)
+		if stem == "broken" then error("cannot read it") end
+		local s = SAVES[stem]
+		if s then return s[1], s[2] end
+		return nil
+	end
+	check(type(d.load_allowed) == "function", "coop_dedicated.load_allowed exists")
+	if type(d.load_allowed) == "function" then
+		check(d.load_allowed("ws_world") == true, "a world made for a world server loads")
+		local ok, why = d.load_allowed("old_split")
+		check(ok == false and type(why) == "string" and why:find("old_split", 1, true) ~= nil, "a world of the old split mode is refused, with the save's name")
+		check(d.load_allowed("plain_host") == false and d.load_allowed("off_again") == false, "so is a plain host's world, and one with the value off")
+		check(logged("a world server does not load it"), "and the log says why")
+		check(d.load_allowed("no_record") == true, "a save without a game record passes: nothing says whose it is")
+		check(d.load_allowed("broken") == true, "a save whose record cannot be read passes: the guard never stops a server by its own error")
+		coop_game_settings.game_of_save = nil
+		check(d.load_allowed("old_split") == true, "no way to ask: passes")
+	end
+end
+
 print(string.format("%d passed, %d failed", PASSES, FAILS))

@@ -153,6 +153,23 @@ function stage_new_world(path, stage)
 	return true
 end
 
+-- May a world server load this save? Not a world of a host who plays in it: that save's actor is the host's own character, and a
+-- world server turns the save's actor into its ghost, so he would lose his character without a word (owner 2026-11-13: the old
+-- split mode stays, old worlds are not carried over). A world made for a world server says so in its record
+-- (c|coop_world_server, set by stage_new_world). A save without a game record passes: nothing says whose it is (a server's own
+-- world made without a staging file has none). The guard never stops a server by its own error.
+-- -> true | false, why. Called by the engine before it loads a save (coop_dedicated.cpp start_world).
+function load_allowed(stem)
+	local gs = mod("coop_game_settings")
+	if not (gs and type(gs.game_of_save) == "function") then return true end
+	local ok, id, rec = pcall(gs.game_of_save, stem)
+	if not ok or type(rec) ~= "table" then return true end
+	local v = type(rec.values) == "table" and rec.values["c|coop_world_server"] or nil
+	if v == true or tonumber(v) == 1 then return true end
+	log("! the save '%s' is a world of a host who plays in it (game %s): a world server does not load it", tostring(stem), tostring(id))
+	return false, "the save '" .. tostring(stem) .. "' is a world whose host plays in it: a world server cannot run it (he would lose his character)"
+end
+
 -- The creator of the world in force, as the record keeps it (coop_game_record clean_creator), or nil.
 function creator()
 	local r = record()
