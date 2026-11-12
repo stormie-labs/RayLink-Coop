@@ -910,6 +910,67 @@ local function fire_option_change()
 	end
 end
 
+-------------------------------------------------------------------------------
+-- The operator of a world server (plan 2026-11-12 s.2.4): the creator's game is a client that holds the host's rights. A rule
+-- of the running world he changes is not applied here: it goes to the server as "coop_game_set <key> <raw>" (coop.operator_command,
+-- coop_operator.h op::allowed), the server applies it to the world's record (coop_game_settings.operator_set) and every player gets
+-- it with the host's settings (coop_set). Until they come back the window keeps the value it had; the server's answer
+-- (coop.op.answer, coop_core_chat) is shown here.
+-------------------------------------------------------------------------------
+local op_state = { sent = 0, answers = 0, window = nil }
+
+local function operator_mode()
+	if not (api and type(api.has_host_rights) == "function") then return false end
+	local ok, yes = pcall(function() return not api.is_host() and api.has_host_rights() == true end)
+	return ok and yes == true
+end
+
+function is_operator() return operator_mode() end
+
+-- The catalog key of an option the operator may change on the running world, or nil.
+local function operator_key(src, path)
+	if not (operator_mode() and (src == "o" or src == "m") and type(path) == "string") then return nil end
+	local sc = mod("coop_game_schema")
+	local key = src .. "|" .. path
+	if not (sc and sc.item and sc.item(key) and sc.editable(key, true)) then return nil end
+	return key
+end
+
+-- Sends a change of a rule of the running world: key = the catalog key "<src>|<path>", value = typed or raw. -> true | false, why.
+-- Only a value of the item's own list leaves (the server takes nothing else).
+function operator_set(key, value)
+	if not operator_mode() then return false, "no host's rights" end
+	local sc = mod("coop_game_schema")
+	local it = sc and type(key) == "string" and sc.item(key)
+	if not (it and sc.editable(key, true)) then return false, "not a rule of the running world" end
+	local raw = sc.to_raw(key, value)
+	local listed = false
+	for _, e in ipairs(it.values) do
+		if raw ~= nil and not e.extra and sc.to_raw(key, e[1]) == raw then listed = true end
+	end
+	if not listed then return false, "not a value of the rule" end
+	local ok, sent, why = pcall(api.operator_command, "coop_game_set " .. key .. " " .. raw)
+	if not ok then return false, tostring(sent) end
+	if sent ~= true then return false, why ~= nil and tostring(why) or "not sent" end
+	op_state.sent = op_state.sent + 1
+	hint(string_format("Co-op: %s = %s sent to the server", key, raw))
+	return true
+end
+
+-- The server's answer to coop_game_set (coop_core_chat.on_op_answer hands it here): good, the lines of its text. -> true (taken).
+function on_operator_answer(good, lines)
+	op_state.answers = op_state.answers + 1
+	local text = type(lines) == "table" and type(lines[1]) == "string" and lines[1] or (good and "done" or "refused")
+	text = text:gsub("^!%s*", ""):gsub("^%[coop%]%s*", "")
+	hint(string_format(good and "Co-op: the server set %s" or "Co-op: the server refused: %s", text))
+	local w = op_state.window
+	if w then pcall(function()
+		w.coop_redraw = true
+		w.coop_hint = text
+	end) end
+	return true
+end
+
 -- Is the key locked on this machine now? A client: every host-owned key. A host with the record of its game in a level:
 -- the keys the game owns (Ruling GS-1). Else nothing.
 local function lock_applies(src, key)
@@ -941,6 +1002,17 @@ local function patch_menu_class(cls, src, what)
 	cls.CacheValue = function(self, path, opt, value, v, ...)
 		if value ~= nil and type(path) == "string" and type(opt) == "string" then
 			local id = path .. "/" .. opt
+			local op_key = lock_applies(src, id) and operator_key(src, id)
+			if op_key then
+				-- the operator: the edit goes to the server, the page shows the value in force until the server's settings come back
+				op_state.window = self
+				local sent, why = operator_set(op_key, value)
+				pcall(function()
+					self.coop_redraw = true
+					self.coop_hint = sent and string_format("Co-op: \"%s\" sent to the server", id) or tostring(why)
+				end)
+				return orig_cache(self, path, opt, nil, v, ...)
+			end
 			if lock_applies(src, id) then
 				menu_refused(self, id)
 				return orig_cache(self, path, opt, nil, v, ...)
@@ -997,7 +1069,7 @@ local function locked_keys(src, curr_tree, path, mode)
 			local key = path .. "/" .. v.id
 			local hit
 			if mode == "client" then
-				hit = owner_src(src, key) == "host"
+				hit = owner_src(src, key) == "host" and not operator_key(src, key) -- the operator changes a rule through the server
 			else
 				hit = game_owned(src, key)
 			end
@@ -1147,6 +1219,8 @@ end
 -- New host values in place: factors, caches of other scripts (on_option_change), stash.
 local function after_change(changed, reason)
 	rules_changed()
+	local w = changed and op_state.window -- the operator's window shows what the server has set
+	if w then pcall(function() w.coop_redraw = true end) end
 	save_stash()
 	apply_factors(reason)
 	if changed then fire_option_change() end

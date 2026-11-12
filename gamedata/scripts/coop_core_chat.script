@@ -278,6 +278,8 @@ end
 -- decodes it; text = lines joined by "\n"). coop_dbg / coop_debug go where the debug results go (the F7 window's feed), the rest
 -- of the console commands (kick, time, restore, players, status, /go, say) to the chat as local lines.
 local ANSWER_LINES = 24 -- an answer of up to 8 KiB: the chat keeps the first lines
+-- command -> the script and the function a waiting window takes its answer by (loaded scripts only: rawget)
+local ANSWER_TAKERS = { coop_game_set = { "coop_settings", "on_operator_answer" }, coop_restore = { "coop_menu", "on_restore_answer" } }
 function on_op_answer(payload, from)
 	if from ~= 0 then return end -- the world server's address on this machine; a player cannot send it
 	local t = payload
@@ -295,6 +297,17 @@ function on_op_answer(payload, from)
 		list[#list + 1] = clean(l) -- plain text: no control characters, no UI colour codes (the feed and the chat draw %c[...])
 	end
 	if #list == 0 then list[1] = cmd .. (good and ": ok" or ": refused") end
+	-- a window that waits for this answer takes it (the settings of the operator, the server's autosaves in the Co-op window); the
+	-- list of autosaves is longer than the chat's lines, so it gets every line. true from the window: the chat leaves it out.
+	local waiting = ANSWER_TAKERS[cmd]
+	local taker = waiting and rawget(_G, waiting[1])
+	if type(taker) == "table" and type(taker[waiting[2]]) == "function" then
+		local all = {}
+		for l in tostring(t.text or ""):gmatch("[^\n]+") do all[#all + 1] = clean(l) end
+		local ok, taken = pcall(taker[waiting[2]], good, all)
+		if not ok then log("! the answer to %s: %s", cmd, tostring(taken)) end
+		if ok and taken == true and cmd == "coop_restore" then return end
+	end
 	local dbg = rawget(_G, "coop_debug_client")
 	if (cmd == "coop_dbg" or cmd == "coop_debug") and type(dbg) == "table" and type(dbg.add_line) == "function" then
 		for i = #list, 1, -1 do pcall(dbg.add_line, list[i], good and "ok" or "err") end -- the feed puts the newest on top

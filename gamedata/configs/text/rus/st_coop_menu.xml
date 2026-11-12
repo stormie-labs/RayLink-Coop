@@ -802,4 +802,13 @@
 	<string id="st_coop_world_err_unknown">
 		<text>Сервер завершился без объяснения</text>
 	</string>
+	<string id="st_coop_menu_op_world">
+		<text>Мир на сервере</text>
+	</string>
+	<string id="st_coop_menu_op_loading">
+		<text>Запрашиваем у сервера его автосохранения...</text>
+	</string>
+	<string id="st_coop_menu_op_refused">
+		<text>Автосохранения сервера недоступны: %s</text>
+	</string>
 </string_table>

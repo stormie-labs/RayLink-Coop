@@ -802,4 +802,13 @@
 	<string id="st_coop_world_err_unknown">
 		<text>The server ended without saying why</text>
 	</string>
+	<string id="st_coop_menu_op_world">
+		<text>The world on the server</text>
+	</string>
+	<string id="st_coop_menu_op_loading">
+		<text>Asking the server for its autosaves...</text>
+	</string>
+	<string id="st_coop_menu_op_refused">
+		<text>The server's autosaves are not available: %s</text>
+	</string>
 </string_table>

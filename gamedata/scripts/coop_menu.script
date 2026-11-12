@@ -266,6 +266,75 @@ local function choose_ring(id)
 end
 
 -------------------------------------------------------------------------------
+-- The operator of a world server (plan 2026-11-12 s.2.3): his game is a client that holds the host's rights, the world and its
+-- autosaves are the server's. His window shows the server's autosaves of the running world (coop.operator_command("coop_restore"),
+-- the rows "[coop]   <n> <name> <YYYY-MM-DD HH:MM>" of coop_dedicated.cpp), never this machine's saves, and "go back here" sends
+-- "coop_restore <name>" after the host's question. The answer comes as coop.op.answer: coop_core_chat hands it to on_restore_answer.
+-------------------------------------------------------------------------------
+local OP_GAME_ID = "<world server>"
+local op_list = { state = "idle", saves = {}, why = nil, dlg = nil } -- state: idle | loading | ready | refused
+
+-- The creator's game on a world server: a client with the host's rights.
+local function is_operator(info)
+	if not (api and type(api.has_host_rights) == "function" and type(api.operator_command) == "function") then return false end
+	if not (info and info.client == true) then return false end
+	local ok, yes = pcall(function() return not api.is_host() and api.has_host_rights() == true end)
+	return ok and yes == true
+end
+
+-- The server's rows -> { { n, name, stamp }, ... } newest first. A row that is not one, or a name that is not a plain file name, is
+-- left out: the name goes back to the server in a line.
+function parse_restore_lines(lines)
+	local out = {}
+	for _, l in ipairs(type(lines) == "table" and lines or {}) do
+		if type(l) == "string" then
+			local n, name, stamp = l:match("^%[coop%]%s+(%d+)%s+(%S+)%s+(%d%d%d%d%-%d%d%-%d%d %d%d:%d%d)%s*$")
+			if n and #name <= 64 and not name:find("[^%w_%-%.]") then out[#out + 1] = { n = tonumber(n), name = name, stamp = stamp } end
+		end
+	end
+	table.sort(out, function(a, b)
+		if a.stamp ~= b.stamp then return a.stamp > b.stamp end
+		return a.n < b.n
+	end)
+	return out
+end
+
+-- Asks the server for its list; a line that cannot leave is a refusal at once.
+local function op_ask(dlg)
+	op_list.dlg, op_list.state, op_list.saves, op_list.why = dlg, "loading", {}, nil
+	local ok, sent, why = pcall(api.operator_command, "coop_restore")
+	if not ok then
+		op_list.state, op_list.why = "refused", tostring(sent)
+	elseif sent ~= true then
+		op_list.state, op_list.why = "refused", why ~= nil and tostring(why) or "not sent"
+	end
+end
+
+-- coop.op.answer of coop_restore (coop_core_chat): good, the lines of its text. -> true when a window was waiting for it (the chat
+-- then leaves it out), false otherwise (the operator typed it: the chat shows it).
+function on_restore_answer(good, lines)
+	if op_list.state ~= "loading" then return false end
+	if good then
+		op_list.state, op_list.saves = "ready", parse_restore_lines(lines)
+	else
+		local first = type(lines) == "table" and type(lines[1]) == "string" and lines[1] or "refused"
+		op_list.state, op_list.why = "refused", (first:gsub("^!%s*", ""):gsub("^%[coop%]%s*", ""))
+	end
+	local d = op_list.dlg
+	if d then d.data_dirty = true end
+	return true
+end
+
+-- The timeline's entries of the server's list (the shape of coop_games.saves_of: no level, the server does not say it).
+local function op_saves()
+	local out = {}
+	for i, s in ipairs(op_list.saves) do
+		out[i] = { name = s.name, stamp = s.stamp, t = G.time_text(s.stamp), level_text = "", server = true }
+	end
+	return out
+end
+
+-------------------------------------------------------------------------------
 -- Status line (pure, tested with stubs)
 -------------------------------------------------------------------------------
 -- The phases of a session that is still on its way to the game: the dot is amber.
@@ -915,6 +984,7 @@ function UICoopMenu:Reset()
 	self.games = G.list()
 	self.listed_for = nil
 	local info = api.session_info()
+	self.op_asked = false -- the operator's window asks the server for its autosaves again
 	self:ChooseGame(info)
 	self.rail_first, self.tl_first = 1, 1
 	self.rail_t0 = now
@@ -941,6 +1011,16 @@ end
 -- or none: going back loads a save of the game on the screen, and that must be the game of the session. A client has no game
 -- here at all: the world is the host's.
 function UICoopMenu:ChooseGame(info)
+	if is_operator(info) then
+		-- the operator of a world server: the world is the server's, its saves are the server's autosaves (op_list)
+		self.game = { id = OP_GAME_ID, name = tr("st_coop_menu_op_world"), operator = true }
+		self.guest, self.sel_id, self.session_on = false, OP_GAME_ID, info.active == true
+		if not self.op_asked then -- once per opening of the window (Reset)
+			self.op_asked = true
+			op_ask(self)
+		end
+		return
+	end
 	local running = nil
 	local gs = module_of("coop_game_settings")
 	if gs and gs.running_id then
@@ -974,7 +1054,7 @@ function UICoopMenu:BindData(now)
 	local keep = self.saves[self.pick]
 	for _, g in ipairs(self.games) do G.fill_summary(g) end
 	local g = self.game
-	self.saves = g and G.saves_of(g.id) or {}
+	self.saves = g and (g.operator and op_saves() or G.saves_of(g.id)) or {}
 	self.stops = G.route_of(self.saves)
 	self.pick = 1
 	if keep then
@@ -1455,6 +1535,7 @@ end
 function UICoopMenu:timeline_allowed(info)
 	info = info or api.session_info()
 	if not self.game then return false end
+	if self.game.operator then return op_list.state == "ready" end
 	return info.active ~= true or info.host == true
 end
 
@@ -1484,7 +1565,11 @@ function UICoopMenu:BindTimeline()
 	while first > 1 and first - 2 + self:RowsFrom(first - 1) >= #s do first = first - 1 end -- no empty room under the last row
 	self.tl_first = first
 	self.tl_slots = max(1, self:RowsFrom(first))
-	self.tl_sub:SetText(s[1] and tr("st_coop_menu_sub", G.day_text(s[1].stamp), #s) or tr("st_coop_menu_no_saves"))
+	local sub = s[1] and tr("st_coop_menu_sub", G.day_text(s[1].stamp), #s) or tr("st_coop_menu_no_saves")
+	if self.game and self.game.operator and op_list.state ~= "ready" then
+		sub = op_list.state == "refused" and tr("st_coop_menu_op_refused", plain(op_list.why or "")) or tr("st_coop_menu_op_loading")
+	end
+	self.tl_sub:SetText(sub)
 	for slot, r in ipairs(self.tl_rows) do
 		local i = self.tl_first + slot - 1
 		local e = slot <= self.tl_slots and s[i] or nil
@@ -1733,7 +1818,8 @@ function UICoopMenu:Refresh(info)
 
 	-- the title: Play while there is no session; the game of a session belongs to its host
 	local g = self.game
-	local guest = self.guest or (active and info.host ~= true) or info.client == true
+	local op = g ~= nil and g.operator == true -- the operator of a world server goes back on the server's autosaves
+	local guest = not op and (self.guest or (active and info.host ~= true) or info.client == true)
 	self.guest = guest
 	set_shown({ self.title_block }, not guest)
 	if guest and self.open then self:SetOpen(false) end
@@ -1908,6 +1994,18 @@ function UICoopMenu:OnModalOk()
 		self:HostAfter("new", nil, title)
 	elseif kind == "confirm" then
 		local e = self.confirm_save
+		if e and e.server then
+			-- the operator: the world server goes back to its autosave, everybody follows (coop_restore <name>); nothing loads here
+			self:CloseModal()
+			local ok, sent, why = pcall(api.operator_command, "coop_restore " .. e.name)
+			if ok and sent == true then
+				log("the world server is asked to go back to '%s'", e.name)
+				if self:IsShown() then self:HideDialog() end
+				return
+			end
+			self.local_error = tr("st_coop_menu_op_refused", plain(ok and tostring(why or "not sent") or tostring(sent)))
+			return self:Refresh()
+		end
 		local sv = saves()
 		local ok, why = false, "missing"
 		if e and sv and sv.restore then
@@ -2048,8 +2146,9 @@ function UICoopMenu:OnRoll()
 	self.local_error = nil
 	local e = self.saves[self.pick]
 	if not e or e.damaged then return end
-	if not api.is_active() then return self:HostAfter("save", e.name) end
-	if not api.is_host() then
+	local op = self.game ~= nil and self.game.operator == true and e.server == true -- an autosave of the world server
+	if not api.is_active() and not op then return self:HostAfter("save", e.name) end
+	if not api.is_host() and not op then
 		local sv = saves()
 		self.local_error = sv and sv.text and sv.text("restore_failed_not_host") or tr("st_coop_menu_note_guest")
 		return self:Refresh()

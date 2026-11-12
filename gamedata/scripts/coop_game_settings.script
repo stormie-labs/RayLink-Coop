@@ -944,3 +944,60 @@ function print_status()
 	log("%s", status_line())
 	log("saves %d, cards written %d (failed %d), errors %d", stats.saves, stats.cards, stats.card_fails, stats.errors)
 end
+
+-------------------------------------------------------------------------------
+-- The operator of a world server (plan 2026-11-12 s.2.4)
+-------------------------------------------------------------------------------
+-- The canonical raw text of `raw` when it is one of the item's own values (a list's entry, true / false of a check), else nil.
+-- A number that is only in the item's range is not taken: the operator picks from the list the window shows.
+local function list_value(sc, it, key, raw)
+	local canonical = sc.to_raw(key, raw)
+	if canonical == nil then return nil end
+	for _, e in ipairs(it.values) do
+		if not e.extra and sc.to_raw(key, e[1]) == canonical then return canonical end
+	end
+	return nil
+end
+
+-- A rule of the running world changed by the operator: "coop_game_set <key> <raw>" came over the network, the engine
+-- (coop_dedicated.cpp run_for) checked the sender and calls this in a protected call, never through the console. The key must be an
+-- item of the catalog that may change on an existing game, the value one of the item's values. It is applied as the host's own
+-- values are: the record (rev + 1, the card at once), o| m| over axr_options through the record (coop_settings sends them to the
+-- players), c| in the engine's console layer (set_cvars); the scripts hear on_option_change. -> true, text | false, reason. The
+-- texts carry the key only after it was found in the catalog and the value only in its canonical form.
+function operator_set(key, raw, peer)
+	local sc = schema()
+	if not (S.rec and sc) or client_now() then return false, "no record of the world here" end
+	if type(key) ~= "string" or type(raw) ~= "string" then return false, "no key or no value" end
+	local it = sc.item(key)
+	if not it then return false, "unknown key" end
+	if not sc.editable(key, true) then return false, key .. " is set when the world is created" end
+	local value = list_value(sc, it, key, raw)
+	if value == nil then return false, "not a value of " .. key end
+	local src, path = key:match("^(%a)|(.+)$")
+	local before = S.rec.values[key]
+	if src == "c" then
+		local g = api and api.game
+		if not (type(g) == "table" and type(g.set_cvars) == "function") then return false, "no console rules here" end
+		local name = path
+		local ok, applied, refused = pcall(g.set_cvars, { [name] = value })
+		if not ok or (type(refused) == "table" and refused[name] ~= nil) then
+			log("! the operator's console rule %s is refused by the engine: %s", key,
+				tostring(ok and refused[name] or applied))
+			return false, "the engine refused " .. key
+		end
+		S.rec.values[key] = value
+	elseif src == "o" or src == "m" then
+		if not put(src, path, value) then return false, "the record does not take " .. key end
+	else
+		return false, "unknown key"
+	end
+	if before ~= value then
+		S.rec.rev = (tonumber(S.rec.rev) or 0) + 1
+		local ok, err = pcall(write_running_card)
+		if not ok then log("! the card after the operator's change: %s", tostring(err)) end
+		fire_option_change()
+	end
+	log("the operator #%s set %s = %s", tostring(peer), key, value)
+	return true, key .. " = " .. value
+end
