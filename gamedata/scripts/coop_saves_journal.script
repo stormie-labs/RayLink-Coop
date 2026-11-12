@@ -1,0 +1,96 @@
+--[[
+	Anomaly Coop: the journal of a world's saves, $game_saves$\<id>.csaves.json, for the launcher's chronicle (owner 2026-11-13: the
+	launcher lists the saves of a world and starts from any of them). A save itself says where and when it was made only in its
+	.scoc, which is marshal: the launcher cannot read it. coop_game_settings adds a line here for every save of the running game.
+
+	The file is one JSON object in UTF-8, an entry per line (the game reads its own file back by lines: it has no JSON reader):
+		{"format":1,"id":"<id>","saves":[
+		{"stem":"coop_auto_<id>_3","when":"2026-11-12 22:15","why":"end","game_time":"14/05/2012 21:40","players":[{"nick":"serge","level":"l05_bar"}]},
+		...
+		]}
+	stem       the save's file name without its extension; a slot of the autosave ring is written again and again, so the newest
+	           entry of a stem replaces the older one
+	when       "YYYY-MM-DD HH:MM", local time, when the save was written (the launcher tells the entry of a file by it)
+	why        timer | sleep | level | end | transfer | manual (the engine's autosave reasons, coop_autosave_rules.h Reason, in
+	           that order) | save (a save made under its own name)
+	game_time  the game's own date and time, as the Co-op window shows it; left out when unknown
+	players    who was in the world and on which level (a level's section name); left out when nobody was
+
+	Pure logic, no engine calls: tests\lua\test_saves_journal.lua.
+]]
+
+FILE_EXT = ".csaves.json"
+-- Entries kept: more than the largest ring of autosaves (coop_autosave_count is 50 at most), with room for saves by name.
+MAX = 96
+
+-- The engine's Reason by its number (coop_autosave_rules.h): what `why` says.
+local WHY = { [0] = "timer", [1] = "sleep", [2] = "level", [3] = "end", [4] = "transfer", [5] = "manual" }
+local KNOWN = { timer = true, sleep = true, level = true, ["end"] = true, transfer = true, manual = true, save = true }
+
+local type, ipairs, tostring = type, ipairs, tostring
+
+local function json() return rawget(_G, "coop_json_card") or coop_json_card end
+
+-- `why` as the file says it: the engine's number, or one of the words; anything else is "".
+function why_of(v)
+	if type(v) == "number" then return WHY[v] or "" end
+	if type(v) == "string" and KNOWN[v] then return v end
+	return ""
+end
+
+-- One entry as its line; nil without a stem. e = { stem, when, why, game_time, players = { { nick, level }, ... } }.
+function entry_line(e)
+	local j = json()
+	if type(e) ~= "table" or type(e.stem) ~= "string" or e.stem == "" or not j then return nil end
+	local parts = { "\"stem\":" .. j.str(e.stem), "\"when\":" .. j.str(type(e.when) == "string" and e.when or "") }
+	local why = why_of(e.why)
+	if why ~= "" then parts[#parts + 1] = "\"why\":" .. j.str(why) end
+	if type(e.game_time) == "string" and e.game_time ~= "" then parts[#parts + 1] = "\"game_time\":" .. j.str(e.game_time) end
+	local players = {}
+	for _, p in ipairs(type(e.players) == "table" and e.players or {}) do
+		if type(p) == "table" and type(p.nick) == "string" and p.nick ~= "" then
+			players[#players + 1] = "{\"nick\":" .. j.str(p.nick) .. ",\"level\":" .. j.str(type(p.level) == "string" and p.level or "") .. "}"
+		end
+	end
+	if #players > 0 then parts[#parts + 1] = "\"players\":[" .. table.concat(players, ",") .. "]" end
+	return "{" .. table.concat(parts, ",") .. "}"
+end
+
+-- The stem of an entry's line as the line holds it (JSON, UTF-8), nil for a line that is not an entry.
+function stem_key(line)
+	if type(line) ~= "string" then return nil end
+	return line:match("^{\"stem\":(\"[^\"]*\")")
+end
+
+-- The entries' lines of a journal's text, in its order; a text that is not a journal has none.
+function lines_of(text)
+	local out = {}
+	if type(text) ~= "string" then return out end
+	for line in text:gmatch("[^\r\n]+") do
+		local body = line:gsub(",%s*$", "")
+		if stem_key(body) and body:sub(-1) == "}" then out[#out + 1] = body end
+	end
+	return out
+end
+
+-- `lines` with `line` added last: the older entry of the same stem goes, and so do the oldest beyond `max`.
+function merge(lines, line, max)
+	local key = stem_key(line)
+	if not key then return lines end
+	local out = {}
+	for _, old in ipairs(type(lines) == "table" and lines or {}) do
+		if stem_key(old) ~= key then out[#out + 1] = old end
+	end
+	out[#out + 1] = line
+	max = tonumber(max) or MAX
+	while #out > max do table.remove(out, 1) end
+	return out
+end
+
+-- The journal's text for game `id`.
+function encode(id, lines)
+	local j = json()
+	local head = "{\"format\":1,\"id\":" .. (j and j.str(tostring(id or "")) or "\"\"") .. ",\"saves\":["
+	if type(lines) ~= "table" or #lines == 0 then return head .. "]}\n" end
+	return head .. "\n" .. table.concat(lines, ",\n") .. "\n]}\n"
+end

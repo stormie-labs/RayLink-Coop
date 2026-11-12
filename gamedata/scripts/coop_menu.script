@@ -2085,6 +2085,23 @@ local function load_save(stem)
 	end
 end
 
+-- A save of a world hosted in this game with nobody at the window: -coop_world_auto of a world that is no world-server world
+-- (coop_world_wait.auto_load; the launcher's "Play" of a host's own world, owner 2026-11-13). What the "Play" of the window does
+-- for such a save: the ring of the game, a host pending, the save loaded. -> true | false, why.
+function host_save(id, stem, port)
+	if api.is_active() then return false, "a session is running" end
+	choose_ring(id)
+	local ok, why = api.host_when_ready(port)
+	if not ok then return false, tostring(why) end
+	local loaded, err = pcall(load_save, stem)
+	if not loaded then
+		api.host_when_ready(nil)
+		return false, tostring(err)
+	end
+	log("will host on port %d after %s (no window)", port, tostring(stem))
+	return true
+end
+
 -- A save of a world of the new split mode (stage 6b; "World as a separate process" on in its record, owner 2026-11-13): its
 -- world server is started on this PC and the waiting window joins it (coop_world_wait); nothing is loaded in this game. Every
 -- other world, the old split mode too, loads in this game as always. -> true when the save was handled here.

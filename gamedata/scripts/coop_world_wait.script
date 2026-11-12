@@ -25,6 +25,8 @@
 	entering, connect_failed, failed, crashed, stopping, down); the stand scripts assert on them.
 
 	Unattended runs (lower-cased by the engine): -coop_world_auto new [-coop_world_faction <faction>]  or  -coop_world_auto <save stem>.
+	A stem of a world that is no world-server world is hosted in this game (coop_menu.host_save): the launcher's "Play" of a
+	host's own world.
 --]]
 
 local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
@@ -676,7 +678,15 @@ local function auto_load(menu, stem)
 	local plan, card = plan_for_game(id)
 	log("auto: continue %s (game %s, %s)", stem, tostring(id), plan)
 	if plan ~= "server" then
-		log("auto: ! %s is not a world-server world: nothing is done", stem)
+		-- a world its host plays in (the old split mode too): hosted in this game, as "Play" of the Co-op window does it
+		local cm = module_of("coop_menu")
+		if not (cm and type(cm.host_save) == "function") then
+			log("auto: ! %s is not a world-server world and coop_menu.host_save is not there: nothing is done", stem)
+			return
+		end
+		local port = host_port()
+		local ok, why = cm.host_save(id, stem, port)
+		if ok then log("auto: hosting %s in this game on port %d", stem, port) else log("auto: ! %s is not hosted: %s", stem, tostring(why)) end
 		return
 	end
 	local port, name = host_port(), card_name(card)

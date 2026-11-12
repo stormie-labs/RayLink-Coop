@@ -687,6 +687,47 @@ local function at_now()
 	return at
 end
 
+-- Who is in the world at this save and on which level, for the journal of the world's saves (coop_saves_journal.script):
+-- { { nick, level }, ... }. With split levels each player's own level (coop.players() says it as a game graph level id), else the
+-- level of the save. A world server's own seat plays no character and is in no list.
+local function where_now(at)
+	local out = {}
+	local here = type(at) == "table" and type(at.level) == "string" and at.level or ""
+	local ok, list = pcall(function() return api.players() end)
+	for _, p in ipairs(ok and type(list) == "table" and list or {}) do
+		if type(p) == "table" and type(p.nick) == "string" and p.nick ~= "" then
+			local level = here
+			if type(p.level) == "number" then
+				local okn, name = pcall(function() return alife():level_name(p.level) end)
+				if okn and type(name) == "string" and name ~= "" then level = name end
+			end
+			out[#out + 1] = { nick = p.nick, level = level }
+		end
+	end
+	return out
+end
+
+-- One line of the journal for the save `stem` that was just written (S.last_at is its "where and when"). The journal is the
+-- launcher's: a failure is a line of the log and nothing else.
+local function journal_add(stem, why)
+	local j, r, dir = mod("coop_saves_journal"), S.rec, saves_dir()
+	if not (j and type(j.entry_line) == "function" and r and dir and valid_id(r.id) and type(stem) == "string" and stem ~= "") then return end
+	local at = S.last_at or {}
+	local line = j.entry_line({ stem = stem, when = now_text(), why = why, game_time = at.game_time, players = S.last_where })
+	if not line then return end
+	local path = dir .. r.id .. j.FILE_EXT
+	local ok, why_not = write_file(path, j.encode(r.id, j.merge(j.lines_of(read_file(path)), line, j.MAX)))
+	if not ok then log("! the journal of the saves of game %s cannot be written: %s", r.id, tostring(why_not)) end
+end
+
+-- From the engine (coop_autosave.cpp save): the autosave of the ring was written and is the file `name` now; `why` is the
+-- engine's Reason as a number. The save itself went through a temporary name, so save_state could not name it.
+function on_autosave(name, why)
+	if client_now() or not S.rec then return end
+	local ok, err = pcall(journal_add, name, why)
+	if not ok then log("! on_autosave: %s", tostring(err)) end
+end
+
 local function save_state_impl(m_data)
 	if client_now() or type(m_data) ~= "table" or not S.rec then return end
 	if S.first_done then mirror_factors() end
@@ -698,9 +739,17 @@ local function save_state_impl(m_data)
 	end
 	block.at = at_now()
 	S.last_players = block.at.players or {} -- for the launcher's card (write_json_card)
+	S.last_at, S.last_where = block.at, where_now(block.at) -- for the journal of the world's saves (journal_add)
 	m_data.coop_game = block
 	stats.saves = stats.saves + 1
 	write_running_card()
+	-- A save under its own name is a line of the journal at once; an autosave gets its line when the engine has moved it into
+	-- its slot (on_autosave).
+	local stem = S.save_stem
+	if stem and saved_world(stem) then
+		local ok, err = pcall(journal_add, stem, "save")
+		if not ok then log("! the journal: %s", tostring(err)) end
+	end
 end
 
 function save_state(m_data)

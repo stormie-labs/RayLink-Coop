@@ -398,11 +398,13 @@ do
 	BLOCKS.coop_auto_g_old_2 = { id = "g_old" }
 	coop_game_settings.game_of_save = function(stem) local b = BLOCKS[stem]; return b and b.id, b end
 	function command_line() return "x.exe -coop_world_auto coop_auto_g_old_2" end
-	ws_reset(); LOG = {}
+	ws_reset(); LOG = {}; CALLS = {}
 	ww.state_of().auto_done = false
 	ww.on_menu_frame({ ShowDialog = function() end, HideDialog = function() end, Show = function() end })
-	check(#WS.calls == 0 and log_has("auto: ! coop_auto_g_old_2 is not a world%-server world: nothing is done"),
-		"-coop_world_auto does nothing with an old split world, a log line")
+	-- owner 2026-11-13: the launcher's "Play" of a host's own world: hosted in this game, as "Play" of the window does it
+	check(#WS.calls == 0 and CALLS[1] and CALLS[1]:find("^pending %d+") ~= nil and CALLS[#CALLS]:find("coop_auto_g_old_2", 1, true) ~= nil
+		and log_has("auto: hosting coop_auto_g_old_2 in this game on port"),
+		"-coop_world_auto hosts an old split world in this game: no world server, a host pending, the save loaded")
 end
 
 print(string.format("%d passed, %d failed", PASSES, FAILS))

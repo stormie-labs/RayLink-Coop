@@ -289,6 +289,7 @@ local cs = load_script_file("coop_settings")
 local gs = load_script_file("coop_game_settings")
 load_script_file("coop_economy_core")
 load_script_file("coop_json_card")
+load_script_file("coop_saves_journal")
 check(gs ~= nil and cs ~= nil and sc ~= nil and rc ~= nil, "the scripts load")
 if not gs then
 	print(string.format("%d passed, %d failed", PASSES, FAILS))
@@ -1054,6 +1055,39 @@ check(type(jtext) == "string" and jtext:find("\"title\":\"With Kent\"", 1, true)
 check(type(jtext) == "string" and jtext:find("\"players\":[\"stormie\",\"kent\"]", 1, true) ~= nil, "and who played at the last save")
 check(type(jtext) == "string" and jtext:find("\"split\":false", 1, true) ~= nil and jtext:find("\"last_played\":\"", 1, true) ~= nil,
 	"whether the world is a process of its own, and when it was played")
+-- the journal of the world's saves (coop_saves_journal): the launcher's chronicle of a world
+local JPATH = SAVES .. RT.id .. ".csaves.json"
+check(VFS[JPATH] == nil, "a save that has no name of its own yet writes no line: the engine names an autosave later")
+local stock_players, stock_alife = coop.players, rawget(_G, "alife")
+coop.players = function() return { { nick = "stormie", level = 3 }, { nick = "kent" }, { nick = "" }, "junk" } end
+function alife() return { level_name = function(_, id) return ({ [3] = "l05_bar" })[id] end } end
+gs.save_state({})
+gs.on_autosave("coop_auto_" .. RT.id .. "_2", 3)
+local jr = VFS[JPATH] or ""
+check(jr:find('{"format":1,"id":"' .. RT.id .. '","saves":[', 1, true) == 1, "the engine named the autosave: the journal is written, for this game")
+check(jr:find('{"stem":"coop_auto_' .. RT.id .. '_2","when":"', 1, true) ~= nil
+	and jr:find('_2","when":"%d%d%d%d%-%d%d%-%d%d %d%d:%d%d","why":"end","game_time":"15/03/2012 07:05"') ~= nil,
+	"the slot, when it was written, why (the engine's reason 3) and the game's own time")
+check(jr:find('"players":[{"nick":"stormie","level":"l05_bar"},{"nick":"kent","level":"k00_marsh"}]', 1, true) ~= nil,
+	"who stood where: a player's own level where the engine says it, else the level of the save")
+gs.on_autosave("coop_auto_" .. RT.id .. "_3", 0)
+gs.on_autosave("coop_auto_" .. RT.id .. "_2", 0)
+jr = VFS[JPATH] or ""
+local _, lines_n = jr:gsub('{"stem":', "")
+check(lines_n == 2 and jr:find('_3","when"', 1, true) < jr:find('_2","when"', 1, true) and jr:find('_2","when":"[^"]*","why":"timer"') ~= nil,
+	"a slot written again has one line, the newest, and it is last")
+save_game("byhand.scop")
+jr = VFS[JPATH] or ""
+check(jr:find('"stem":"byhand","when":"[^"]*","why":"save"') ~= nil, "a save under its own name is a line at once")
+save_game("coop_auto_tmp.scop")
+save_game("coop_join_1.scop")
+jr = VFS[JPATH] or ""
+check(jr:find("coop_auto_tmp", 1, true) == nil and jr:find("coop_join_1", 1, true) == nil, "the temporary pair and a snapshot for a joining player are no saves of the world")
+gs.on_autosave("", 0)
+gs.on_autosave(nil, 0)
+check(select(2, (VFS[JPATH] or ""):gsub('{"stem":', "")) == 3, "a call without a name adds nothing")
+coop.players, alife = stock_players, stock_alife
+
 -- a world server alone: its own seat plays no character, nobody was there
 coop.is_dedicated = function() return true end
 SESSION = { nick = "server", players = {} }

@@ -302,9 +302,24 @@ ws_reset(); CALLS = {}; LOG = {}
 w.state_of().auto_done = false
 CMD = "x.exe -coop_world_auto coop_auto_g_old_1"
 w.on_menu_frame(MENU)
-check(#WS.calls == 0 and has_log("[coop-world-wait] auto: ! coop_auto_g_old_1 is not a world-server world: nothing is done"),
-	"an old split world: nothing is done, a log line")
+check(#WS.calls == 0 and has_log("[coop-world-wait] auto: ! coop_auto_g_old_1 is not a world-server world and coop_menu.host_save is not there: nothing is done"),
+	"an old split world without the Co-op window's script: nothing is done, a log line")
 check(not has_log("old split mode"), "no refusal of the old split mode")
+-- owner 2026-11-13: the launcher's "Play" of a host's own world: the game hosts it itself (coop_menu.host_save)
+local HOSTED
+coop_menu = { host_save = function(id, stem, port) HOSTED = { id = id, stem = stem, port = port }; return true end }
+ws_reset(); CALLS = {}; LOG = {}
+w.state_of().auto_done = false
+w.on_menu_frame(MENU)
+check(#WS.calls == 0 and HOSTED and HOSTED.id == "g_old" and HOSTED.stem == "coop_auto_g_old_1" and type(HOSTED.port) == "number",
+	"an old split world: hosted in this game, no world server")
+check(has_log("[coop-world-wait] auto: hosting coop_auto_g_old_1 in this game on port " .. tostring(HOSTED and HOSTED.port)), "and a log line with the port")
+coop_menu = { host_save = function() return false, "a session is running" end }
+ws_reset(); CALLS = {}; LOG = {}
+w.state_of().auto_done = false
+w.on_menu_frame(MENU)
+check(has_log("[coop-world-wait] auto: ! coop_auto_g_old_1 is not hosted: a session is running"), "a refusal is a log line")
+coop_menu = nil
 ws_reset(); CALLS = {}; LOG = {}
 w.state_of().auto_done = false
 CMD = "x.exe -coop_world_auto coop_auto_g_new_1"
