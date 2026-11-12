@@ -22,10 +22,11 @@
 ; repair or upgrade their 0.1 s timer (self.UpdateUi, a function of the patch file) refreshes the window from the
 ; LOCAL inventory, where the ingredients just released stay until the host's EntityDestroy (a release on a client is
 ; a request, coop_requests.cpp client_destroy): the button came back on and a second action was free (the releases
-; found nothing, the product was created again). Host-only, a client gets no refresh timer, and
-; scripts\coop_mods_guard.script closes the window after the action on a client, as the stock windows do (a click on
-; the meal list would otherwise re-enable the cook button from the window's stale item list). The cooking window's
-; Reset timer (kit uses in the title) goes too: cosmetic.
+; found nothing, the product was created again). Host-only, a client gets no refresh timer. Until 2026-11-12
+; scripts\coop_mods_guard.script closed the window after the action on a client (a click on the meal list would
+; otherwise re-enable the cook button from the window's stale item list). Now the window stays open: the guard
+; refuses the next action until the host has taken what this one released, then calls the mod's UpdateUi itself
+; (settle_after / settle_tick there). The cooking window's Reset timer (kit uses in the title) goes too: cosmetic.
 ;
 ; World calls on a client (call router, F2 T12): creating a result in the own inventory (alife_create_item(.., db.actor),
 ; alife_create(.., npc:id(), false) + alife():register for the parts of a disassembly) is a request to the host;

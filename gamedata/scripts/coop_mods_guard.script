@@ -37,9 +37,12 @@
 	    actor answers an unregistered entity the mod can write (its condition), registered only after the function
 	    returned, so its releases go first; a function that fails registers nothing.
 	C3  keep-crafting-window mods (zz_item_cooking_ / zz_ui_workshop_keep_crafting_window_open): their refresh timers
-	    are host-only (coop_compat_crafting.ltx), and on a client the window closes after a cook, craft, repair or
-	    upgrade, as the stock windows do: the ingredients just released are still in the local inventory until the
-	    host confirms, a second action from them would be free.
+	    are host-only (coop_compat_crafting.ltx): the ingredients just released are still in the local inventory until
+	    the host confirms, a second action from them would be free. Until 2026-11-12 the window was closed after every
+	    cook, craft, repair or upgrade on a client ("the workbench closes after every craft"). Now it stays open: the
+	    next action is refused until the host has taken what this one released (or 5 s passed), then the mod's own
+	    UpdateUi refreshes the window from the real inventory. The window still closes when the host does not answer
+	    in 5 s or the refresh fails.
 	I3  af_inspect (FDDA): inspect() locks the input until its temporary item arrives and is in slot 14; on a client
 	    the lock is lifted after INSPECT_TIMEOUT_MS if it has not, the player is told, the item arriving later is
 	    released. Its two level.add_call pairs are registered through a cancel switch: level.remove_call is not
@@ -82,9 +85,11 @@ local TXT_SWAP = { "st_coop_guard_scope_swap",
 local TXT_INSPECT = { "st_coop_guard_inspect_timeout",
 	"Co-op: the item to inspect did not come from the host, the inspection is cancelled." }
 local TXT_FAILED = { "st_coop_guard_failed", "Co-op: this action could not be done on a client." }
+local TXT_SETTLING = { "st_coop_guard_settling",
+	"Co-op: wait a moment, the host is still taking the ingredients of the last action." }
 
-stats = { refused = 0, swaps = 0, cond = 0, deferred = 0, failed = 0, closed = 0, inspect_timeouts = 0,
-	late_released = 0 }
+stats = { refused = 0, swaps = 0, cond = 0, deferred = 0, failed = 0, closed = 0, kept = 0, settling_refused = 0,
+	inspect_timeouts = 0, late_released = 0 }
 
 local next_tell = {}
 local function tell(txt)
@@ -451,22 +456,132 @@ local function deferred(label)
 end
 
 -------------------------------------------------------------------------------
--- C3: crafting windows close after the action on a client
+-- C3: crafting windows on a client stay open and wait for the host
 -------------------------------------------------------------------------------
-local function close_after(window_of)
+-- A release on a client is a request: the ingredient stays in the local inventory until the destroy of the host
+-- comes back. A second action from it found nothing to release and created the product again (free). So while the
+-- items an action released are still here, every guarded action (any window, any tab) is refused and the player is
+-- told; when they are gone, and the products the action asked for have come into the inventory (or PRODUCT_MS
+-- passed: a product made into a stash never comes), the UpdateUi of the mod refreshes the window, which stayed
+-- open. What the action released, created and used up is seen by standing in front of the stock helpers for the
+-- length of the call (the mods call them as globals).
+local SETTLE_MIN_MS = 100  -- the refresh delay of the mods themselves
+local SETTLE_MAX_MS = 5000 -- the host has not taken the ingredients (refused, a dead link): the window closes
+local PRODUCT_MS = 1500    -- the ingredients are gone, the product is waited for this long
+
+local settling = nil -- the one action being settled: { ids, creates, takes0, since, deadline, self, window, gone_at }
+local takes = 0      -- items that came into the own inventory (actor_on_item_take)
+
+local function id_of(x)
+	if type(x) == "number" then return x end
+	local ok, id = pcall(function()
+		if type(x.id) == "number" then return x.id end
+		return x:id()
+	end)
+	return ok and type(id) == "number" and id or nil
+end
+
+local function here(id)
+	local ok, o = pcall(level.object_by_id, id)
+	return ok and o ~= nil
+end
+
+-- Runs f(self, ...) and answers pack(pcall(..)) and what it released (ids), asked to create into the own actor and
+-- discharged.
+local function watched(f, self, ...)
+	local rec = { ids = {}, n = 0, creates = 0, uses = 0 }
+	local function note(x)
+		local id = id_of(x)
+		if id and not rec.ids[id] then rec.ids[id], rec.n = true, rec.n + 1 end
+	end
+	local me = id_of(db.actor)
+	local rel, rel_id, create = rawget(_G, "alife_release"), rawget(_G, "alife_release_id"), rawget(_G, "alife_create_item")
+	local items = rawget(_G, "utils_item")
+	local discharge = type(items) == "table" and items.discharge or nil
+	if type(rel) == "function" then
+		rawset(_G, "alife_release", function(x, ...) note(x); return rel(x, ...) end)
+	end
+	if type(rel_id) == "function" then
+		rawset(_G, "alife_release_id", function(x, ...) note(x); return rel_id(x, ...) end)
+	end
+	if type(create) == "function" then
+		rawset(_G, "alife_create_item", function(sec, parent, ...)
+			if me ~= nil and id_of(parent) == me then rec.creates = rec.creates + 1 end
+			return create(sec, parent, ...)
+		end)
+	end
+	if type(discharge) == "function" then
+		items.discharge = function(...) rec.uses = rec.uses + 1; return discharge(...) end
+	end
+	local res = pack(pcall(f, self, ...))
+	if type(rel) == "function" then rawset(_G, "alife_release", rel) end
+	if type(rel_id) == "function" then rawset(_G, "alife_release_id", rel_id) end
+	if type(create) == "function" then rawset(_G, "alife_create_item", create) end
+	if type(discharge) == "function" then items.discharge = discharge end
+	return res, rec
+end
+
+local function settle_after(window_of)
 	return function(orig)
 		return function(self, ...)
 			if not C().is_client() then return orig(self, ...) end
-			local res = pack(pcall(orig, self, ...))
-			local ok, shown = pcall(function() return window_of(self):IsShown() end)
-			if ok and shown then
-				stats.closed = stats.closed + 1
-				local okc, e = pcall(function() self:Close() end)
-				if not okc then C().report("guard", "close the crafting window", e) end
+			if settling then
+				stats.settling_refused = stats.settling_refused + 1
+				tell(TXT_SETTLING)
+				return
+			end
+			local res, rec = watched(orig, self, ...)
+			if rec.n > 0 or rec.creates > 0 or rec.uses > 0 then -- it did something: an action that returned at once leaves no trace
+				local now = time_global()
+				local okw, win = pcall(window_of, self)
+				settling = { ids = rec.ids, creates = rec.creates, takes0 = takes, since = now, deadline = now + SETTLE_MAX_MS,
+					self = self, window = okw and win or nil }
 			end
 			if not res[1] then error(res[2], 0) end
 			return unpack(res, 2, res.n)
 		end
+	end
+end
+
+local function settling_shown(s)
+	if not s.window then return false end
+	local ok, shown = pcall(function() return s.window:IsShown() end)
+	return ok and shown == true
+end
+
+local function settling_close(s)
+	stats.closed = stats.closed + 1
+	local ok, e = pcall(function() s.self:Close() end)
+	if not ok then C().report("guard", "close the crafting window", e) end
+end
+
+local function settle_tick(now)
+	local s = settling
+	if not s then return end
+	for id in pairs(s.ids) do
+		if not here(id) then s.ids[id] = nil end
+	end
+	if next(s.ids) ~= nil then
+		if now < s.deadline then return end
+		settling = nil -- as before this guard kept the window: it closes, the next action is up to the player
+		log("the host did not take the ingredients of a crafting action in %d ms: the window is closed", SETTLE_MAX_MS)
+		if settling_shown(s) then settling_close(s) end
+		return
+	end
+	if now < s.since + SETTLE_MIN_MS then return end
+	s.gone_at = s.gone_at or now
+	if s.creates > 0 and takes - s.takes0 < s.creates and now < s.gone_at + PRODUCT_MS then return end
+	settling = nil
+	if not settling_shown(s) then return end -- the stock window closed itself, or the player closed it
+	if s.self.last_cont == nil or s.self.last_idx == nil then return end -- the mods refresh only with a selection
+	stats.kept = stats.kept + 1
+	local ok, e = pcall(function()
+		if type(s.self.UpdateUi) ~= "function" then error("the window has no UpdateUi", 0) end
+		return s.self:UpdateUi(s.self.last_cont, s.self.last_idx)
+	end)
+	if not ok then
+		C().report("guard", "refresh the crafting window", e)
+		settling_close(s)
 	end
 end
 
@@ -624,13 +739,13 @@ local GUARDS = {
 	{ label = "itms_manager.use_arty_container", tbl = module_of("itms_manager"), key = "use_arty_container",
 		make = deferred("artefact out of a container") },
 	{ label = "item_cooking.UICook.OnCook", tbl = class_of("item_cooking", "UICook"), key = "OnCook",
-		make = close_after(the_window) },
+		make = settle_after(the_window) },
 	{ label = "ui_workshop.UIWorkshopCraft.Craft", tbl = class_of("ui_workshop", "UIWorkshopCraft"), key = "Craft",
-		make = close_after(its_owner) },
+		make = settle_after(its_owner) },
 	{ label = "ui_workshop.UIWorkshopRepair.Repair", tbl = class_of("ui_workshop", "UIWorkshopRepair"), key = "Repair",
-		make = close_after(its_owner) },
+		make = settle_after(its_owner) },
 	{ label = "ui_workshop.UIWorkshopUpgrade.Upgrade", tbl = class_of("ui_workshop", "UIWorkshopUpgrade"),
-		key = "Upgrade", make = close_after(its_owner) },
+		key = "Upgrade", make = settle_after(its_owner) },
 	{ label = "af_inspect.inspect", tbl = module_of("af_inspect"), key = "inspect", make = inspect_guard },
 	{ label = "item_weapon.ammo_aggregation", tbl = module_of("item_weapon"), key = "ammo_aggregation", make = own_ammo_only },
 }
@@ -800,6 +915,7 @@ local function actor_on_update()
 	local now = time_global()
 	inspect_tick(now)
 	fit_tick(now)
+	settle_tick(now)
 	if now < next_check then return end
 	next_check = now + CHECK_MS
 	for _, g in ipairs(GUARDS) do ensure(g) end
@@ -812,10 +928,11 @@ local function status()
 	end
 	return string.format("scope swaps refused %d, done with leased ids %d (%d ids now), addons used up after the host's "
 		.. "answer %d (used up %d, kept on a refusal %d, refits refused %d), conditions carried %d, "
-		.. "container creates deferred %d (failed %d), crafting windows closed %d, af_inspect timeouts %d (late items "
+		.. "container creates deferred %d (failed %d), crafting windows kept open %d (closed %d, actions refused while "
+		.. "the host was taking the ingredients %d), af_inspect timeouts %d (late items "
 		.. "released %d) | guarding: %s",
 		stats.refused, stats.swaps, lease_ids(), stats.fits, stats.fits_done, stats.fits_refused, stats.fit_waits, stats.cond,
-		stats.deferred, stats.failed, stats.closed, stats.inspect_timeouts,
+		stats.deferred, stats.failed, stats.kept, stats.closed, stats.settling_refused, stats.inspect_timeouts,
 		stats.late_released, #on > 0 and table.concat(on, ", ") or "nothing yet (a client installs at its first update)")
 end
 
@@ -825,6 +942,7 @@ function on_game_start()
 	local ok, e = pcall(function()
 		install_craft_tooltip()
 		RegisterScriptCallback("actor_on_update", actor_on_update)
+		RegisterScriptCallback("actor_on_item_take", function() takes = takes + 1 end) -- C3: the product of a craft came
 		C().status_line("guard", status)
 	end)
 	if not ok then printf("! [coop_mods_guard] start failed: %s", tostring(e)) end

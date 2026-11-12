@@ -370,7 +370,7 @@ local se_m = alife_create_item("part_m", db.actor, loot_props)
 check(se_m ~= nil and COND[se_m.id] == nil, "on the host: the stock path (the processor rolls it itself)")
 MODE = "client"
 
-print("-- C3: keep-crafting-window mods: the window closes after the action on a client")
+print("-- C3: keep-crafting-window mods on a client: the window stays open and refreshes after the host's answer")
 local function domain_of(callback, script)
 	return (coop.route.of(callback, from_script(script, "return function() end")))
 end
@@ -382,38 +382,140 @@ end
 local function window(cls)
 	return setmetatable({ shown = true, IsShown = function(self) return self.shown end }, { __index = cls })
 end
-item_cooking = { UICook = { OnCook = function(self)
-		self.cooked = (self.cooked or 0) + 1
+-- The keep-window mods' shape: the action releases its ingredient, asks for the product, leaves the window open with
+-- the selection remembered; UpdateUi is the mod's own refresh (its 0.1 s timer is host-only on a client).
+INI.c3_bread, INI.c3_meal = {}, {}
+local function ingredient() local se = spawn("c3_bread", nil, 0); return se.id end
+local function action(counter)
+	return function(self)
+		if not self.ing then return end -- nothing selected: the mod returns before it does anything
+		self[counter] = (self[counter] or 0) + 1
+		alife_release_id(self.ing)
+		alife_create_item("c3_meal", db.actor)
 		if self.stock then self:Close() end -- the stock window closes itself
-	end,
+	end
+end
+local function refresh(self, cont, idx)
+	self.refreshed = (self.refreshed or 0) + 1
+	self.refreshed_with = tostring(cont) .. "/" .. tostring(idx)
+	return true
+end
+item_cooking = { UICook = { OnCook = action("cooked"), UpdateUi = refresh,
 	Close = function(self) self.closed = (self.closed or 0) + 1; self.shown = false end } }
 local owner = { shown = true, IsShown = function(self) return self.shown end,
 	Close = function(self) self.closed = (self.closed or 0) + 1; self.shown = false end }
-local function tab(action)
-	local cls = { Close = function(self) self.owner:Close() end }
-	cls[action] = function(self) self.done = (self.done or 0) + 1 end
+local function tab(name)
+	local cls = { Close = function(self) self.owner:Close() end, UpdateUi = refresh }
+	cls[name] = action("done")
 	return cls
 end
 ui_workshop = { UIWorkshopCraft = tab("Craft"), UIWorkshopRepair = tab("Repair"), UIWorkshopUpgrade = tab("Upgrade") }
 NOW = NOW + 3000
 SendScriptCallback("actor_on_update")
+local function tick(ms) NOW = NOW + ms; SendScriptCallback("actor_on_update") end
+local function host_takes(id) release_id(id) end -- the host's answer to the destroy request: the item leaves this client
+local function product_comes()
+	local _, meal = spawn("c3_meal", nil, 0)
+	SendScriptCallback("actor_on_item_take", meal)
+end
+
 local cook = window(item_cooking.UICook)
+cook.ing, cook.last_cont, cook.last_idx = ingredient(), "cc", 3
+HUD = nil
 cook:OnCook()
-check(cook.cooked == 1 and cook.closed == 1, "cooking: the meal is cooked, then the window closes (as stock cooking does)")
+check(cook.cooked == 1 and cook.closed == nil and cook.shown, "cooking: the meal is cooked and the window stays open")
+tick(300)
+check(cook.refreshed == nil, "no refresh while the host has not taken the ingredient (the local lists still show it)")
+local ghost = cook.ing
+HUD = nil
+cook:OnCook()
+check(cook.cooked == 1 and HUD ~= nil and HUD:find("host", 1, true) ~= nil,
+	"a second cook from an ingredient the host has not taken yet is refused, the player is told")
+host_takes(ghost)
+tick(100)
+check(cook.refreshed == nil, "the ingredient is gone, the product is not here yet: the refresh waits for it")
+product_comes()
+tick(50)
+check(cook.refreshed == 1 and cook.refreshed_with == "cc/3" and cook.closed == nil,
+	"the host took the ingredient and the product came: the mod's own refresh runs once, with its selection")
+tick(3000)
+check(cook.refreshed == 1, "one refresh per action")
+cook.ing = ingredient()
+cook:OnCook()
+check(cook.cooked == 2 and cook.closed == nil, "the next cook from real ingredients goes on in the same window")
+host_takes(cook.ing)
+tick(200)
+check(cook.refreshed == 1, "the product is waited for")
+tick(1500)
+check(cook.refreshed == 2, "a product that does not come (made into a stash, refused) does not hold the refresh for more than 1.5 s")
+
+local slow = window(item_cooking.UICook)
+slow.ing, slow.last_cont, slow.last_idx = ingredient(), "cc", 1
+slow:OnCook()
+tick(4000)
+check(slow.closed == nil, "the host is slow: the window waits")
+tick(1200)
+check(slow.closed == 1 and slow.refreshed == nil,
+	"the host did not take the ingredient in 5 s: the window closes without a refresh, as it did after every action before")
+host_takes(slow.ing)
+
 for _, p in ipairs({ { "UIWorkshopCraft", "Craft" }, { "UIWorkshopRepair", "Repair" }, { "UIWorkshopUpgrade", "Upgrade" } }) do
 	owner.shown, owner.closed = true, nil
-	local w = setmetatable({ owner = owner }, { __index = ui_workshop[p[1]] })
+	local w = setmetatable({ owner = owner, ing = ingredient(), last_cont = "list", last_idx = 2 }, { __index = ui_workshop[p[1]] })
 	w[p[2]](w)
-	check(w.done == 1 and owner.closed == 1, "workshop " .. p[2] .. ": done, then the workshop closes (as stock does)")
+	check(w.done == 1 and owner.closed == nil, "workshop " .. p[2] .. ": done, the workshop stays open")
+	local other = setmetatable({ owner = owner, ing = w.ing }, { __index = ui_workshop.UIWorkshopRepair })
+	other:Repair()
+	check(other.done == nil, "workshop " .. p[2] .. ": another tab of the workshop cannot use the same ingredient meanwhile")
+	host_takes(w.ing)
+	product_comes()
+	tick(150)
+	check(w.refreshed == 1 and w.refreshed_with == "list/2" and owner.closed == nil,
+		"workshop " .. p[2] .. ": refreshed by the mod's UpdateUi when the host has answered")
 end
+
 local stock_cook = window(item_cooking.UICook)
-stock_cook.stock = true
+stock_cook.stock, stock_cook.ing = true, ingredient()
 stock_cook:OnCook()
 check(stock_cook.cooked == 1 and stock_cook.closed == 1, "a window that closed itself is not closed twice")
+local again = window(item_cooking.UICook)
+again.ing = stock_cook.ing
+again:OnCook()
+check(again.cooked == nil, "a window opened again at once cannot cook from the ingredient the host has not taken yet")
+host_takes(stock_cook.ing)
+product_comes()
+tick(150)
+check(stock_cook.refreshed == nil and stock_cook.closed == 1, "a closed window is neither refreshed nor closed again")
+again.ing = ingredient()
+again:OnCook()
+check(again.cooked == 1, "after the host's answer cooking goes on")
+host_takes(again.ing)
+product_comes()
+tick(150)
+
+local idle = window(item_cooking.UICook)
+idle.last_cont, idle.last_idx = "cc", 1
+idle:OnCook()
+tick(500)
+check(idle.refreshed == nil and idle.closed == nil, "an action that did nothing (no meal selected) changes nothing")
+local unselected = window(item_cooking.UICook)
+unselected.ing = ingredient()
+unselected:OnCook()
+host_takes(unselected.ing)
+product_comes()
+tick(150)
+check(unselected.refreshed == nil and unselected.closed == nil,
+	"without a remembered selection the mod itself does not refresh: the window is left as it is")
+
 MODE = "host"
 local host_cook = window(item_cooking.UICook)
+host_cook.ing = ingredient()
 host_cook:OnCook()
-check(host_cook.cooked == 1 and host_cook.closed == nil, "on the host the window stays open (the mod's own refresh)")
+host_cook.ing = ingredient()
+host_cook:OnCook()
+tick(500)
+check(host_cook.cooked == 2 and host_cook.closed == nil and host_cook.refreshed == nil,
+	"on the host the guard does nothing: the window stays open, the mod refreshes it itself, nothing is refused")
 MODE = "client"
 
 -------------------------------------------------------------------------------
@@ -1068,7 +1170,7 @@ end
 local src = read_raw("gamedata/scripts/coop_mods_guard.script") or ""
 local ids = {}
 for id in src:gmatch('{%s*"(st_coop_guard_[%w_]+)"') do ids[#ids + 1] = id end
-check(#ids == 6, "the guard asks for 6 texts")
+check(#ids == 7, "the guard asks for 7 texts")
 local HEADER = '<?xml version="1.0" encoding="windows-1251"?>'
 for _, lang in ipairs({ "eng", "rus" }) do
 	local raw = read_raw("gamedata/configs/text/" .. lang .. "/st_coop_mods.xml") or ""
