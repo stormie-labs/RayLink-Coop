@@ -3,7 +3,16 @@
     <string id="st_coop_trader_pda_value">
         <text>You %d\nGrp %s</text>
     </string>
-    <string id="st_coop_trader_pda_legend">
-        <text>Personal / group average. Players counted: %d</text>
+    <string id="st_coop_trader_pda_legend_best">
+        <text>You / Grp: best player in game. Counted %d: %s</text>
+    </string>
+    <string id="st_coop_trader_pda_legend_mean_online">
+        <text>You / Grp: mean of the players in game. Counted %d: %s</text>
+    </string>
+    <string id="st_coop_trader_pda_legend_mean_recent">
+        <text>You / Grp: mean of the last 72 game hours. Counted %d: %s</text>
+    </string>
+    <string id="st_coop_trader_pda_best">
+        <text>Best value: %s</text>
     </string>
 </string_table>

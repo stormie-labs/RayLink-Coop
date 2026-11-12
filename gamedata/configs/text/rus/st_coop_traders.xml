@@ -3,7 +3,16 @@
     <string id="st_coop_trader_pda_value">
         <text>Вы %d\nГр %s</text>
     </string>
-    <string id="st_coop_trader_pda_legend">
-        <text>Личная / средняя группы. Учтено игроков: %d</text>
+    <string id="st_coop_trader_pda_legend_best">
+        <text>Вы / Гр: лучший из игроков в игре. Учтено %d: %s</text>
+    </string>
+    <string id="st_coop_trader_pda_legend_mean_online">
+        <text>Вы / Гр: среднее игроков в игре. Учтено %d: %s</text>
+    </string>
+    <string id="st_coop_trader_pda_legend_mean_recent">
+        <text>Вы / Гр: среднее за 72 игровых часа. Учтено %d: %s</text>
+    </string>
+    <string id="st_coop_trader_pda_best">
+        <text>Лучшее значение: %s</text>
     </string>
 </string_table>

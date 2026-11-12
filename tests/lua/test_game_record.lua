@@ -90,12 +90,12 @@ end
 local EXPECT_TABS = { "death", "party", "world", "difficulty", "saves", "other" }
 check(deep_equal(schema.TABS, EXPECT_TABS), "TABS are death, party, world, difficulty, saves, other")
 
-local EXPECT_COUNT = { death = 13, party = 18, world = 21, difficulty = 2, saves = 2, other = 0 }
+local EXPECT_COUNT = { death = 13, party = 20, world = 21, difficulty = 2, saves = 2, other = 0 }
 for _, tab in ipairs(EXPECT_TABS) do
 	check(#schema.items(tab) == EXPECT_COUNT[tab], "tab " .. tab .. " has " .. EXPECT_COUNT[tab] .. " items (docs 3.6)")
 end
 check(#schema.items("nope") == 0, "an unknown tab has no items")
-check(#schema.keys() == 56, "56 catalog keys in all")
+check(#schema.keys() == 58, "58 catalog keys in all")
 check(schema.item("c|nope") == nil and schema.item(nil) == nil, "an unknown key has no item")
 
 do
@@ -338,7 +338,7 @@ do
 				if (type(def) == "boolean") ~= (it.kind == "check") then bad[#bad + 1] = id .. ": kind" end
 			end
 		end
-		check(n == 11, "coop_economy_core.RULES has the 11 rules of docs 1.3")
+		check(n == 13, "coop_economy_core.RULES has the 13 rules of docs 1.3")
 		check(#bad == 0, "every economy rule is a catalog item with the rule's own default (" .. table.concat(bad, "; ") .. ")")
 		local extra = {}
 		for _, k in ipairs(schema.keys()) do

@@ -544,6 +544,15 @@
 	<string id="st_coop_game_psi_storm_warning_siren">
 		<text>Сирена</text>
 	</string>
+	<string id="st_coop_game_rep_share">
+		<text>Репутация за задания</text>
+	</string>
+	<string id="st_coop_game_rep_share_everyone">
+		<text>Всем, кто в игре</text>
+	</string>
+	<string id="st_coop_game_rep_share_taker">
+		<text>Только взявшему или сдавшему</text>
+	</string>
 	<string id="st_coop_game_respawn_delay">
 		<text>Задержка возрождения</text>
 	</string>
@@ -596,7 +605,7 @@
 		<text>Сохранено. Применится при следующей загрузке этой игры.</text>
 	</string>
 	<string id="st_coop_game_share_rewards">
-		<text>Награды за задания</text>
+		<text>Деньги и вещи за задания</text>
 	</string>
 	<string id="st_coop_game_share_rewards_0">
 		<text>Тому, кто сдал</text>
@@ -696,6 +705,18 @@
 	</string>
 	<string id="st_coop_game_title">
 		<text>Настройки игры</text>
+	</string>
+	<string id="st_coop_game_trader_rep">
+		<text>Репутация группы у торговцев</text>
+	</string>
+	<string id="st_coop_game_trader_rep_best">
+		<text>Лучший из тех, кто в игре</text>
+	</string>
+	<string id="st_coop_game_trader_rep_mean_online">
+		<text>Среднее тех, кто в игре</text>
+	</string>
+	<string id="st_coop_game_trader_rep_mean_recent">
+		<text>Среднее за 72 игровых часа</text>
 	</string>
 	<string id="st_coop_game_travel_time">
 		<text>Путь занимает игровое время</text>

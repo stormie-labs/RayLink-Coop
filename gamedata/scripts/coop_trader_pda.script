@@ -1,6 +1,51 @@
--- Personal and group numbers in the existing faction-goodwill cells.
+-- Personal and group numbers in the existing faction-goodwill cells; below the matrix the formula of the session rule
+-- trader_rep and the nicks of the counted players; with "best", pointing at a group value shows whose value it is.
 local api = rawget(_G, "coop")
 local installed = false
+
+local LEGEND = {
+	best = "You / Grp: best player in game. Counted %d: %s",
+	mean_online = "You / Grp: mean of the players in game. Counted %d: %s",
+	mean_recent = "You / Grp: mean of the last 72 game hours. Counted %d: %s",
+}
+
+local function translated(id, fallback)
+	local text = game.translate_string(id)
+	if text == id then return fallback end
+	return text
+end
+
+-- "a, b, c" within about 48 bytes, the rest as "+N" (the footer is one line of the 600-wide box)
+local function name_list(names)
+	if #names == 0 then return "-" end
+	local out, used = {}, 0
+	for i, name in ipairs(names) do
+		if i > 1 and used + #name + 2 > 48 then
+			return table.concat(out, ", ") .. " +" .. (#names - i + 1)
+		end
+		out[#out + 1] = name
+		used = used + #name + 2
+	end
+	return table.concat(out, ", ")
+end
+
+-- The mark of the best player for the group cell under the cursor (mode best), or nil.
+local function hover_text(window)
+	local info = window.coop_goodwill_info
+	if not (api and api.is_active() and info and info.mode == "best") then return nil end
+	local pos = GetCursorPosition()
+	for i, faction in ipairs(window.list or {}) do
+		local cell = window.relations and window.relations[i] and window.relations[i][0]
+		local who = info.top and info.top[faction]
+		if cell and who then
+			local rect = Frect():set(0, 0, 0, 0)
+			cell:GetAbsoluteRect(rect)
+			if utils_data.pos_in_rect(pos, rect) then
+				return string.format(translated("st_coop_trader_pda_best", "Best value: %s"), who)
+			end
+		end
+	end
+end
 
 function apply(window)
 	local active = api and api.is_active()
@@ -11,7 +56,7 @@ function apply(window)
 	if window.tab and not window.coop_goodwill_note then
 		local note = CUITextWnd()
 		note:SetWndPos(vector2():set(115, 437))
-		note:SetWndSize(vector2():set(530, 18))
+		note:SetWndSize(vector2():set(600, 18))
 		note:SetFont(GetFontLetterica16Russian())
 		note:SetTextColor(GetARGB(255, 170, 170, 170))
 		window.tab:AttachChild(note)
@@ -59,10 +104,12 @@ function apply(window)
 			end
 		end
 	end
+	local info = reputation.info and reputation.info()
+	window.coop_goodwill_info = info
 	if window.coop_goodwill_note then
-		local text = game.translate_string("st_coop_trader_pda_legend")
-		if text == "st_coop_trader_pda_legend" then text = "Personal / group average. Players counted: %d" end
-		window.coop_goodwill_note:SetText(string.format(text, participants))
+		local mode = info and LEGEND[info.mode] and info.mode or "best"
+		local text = translated("st_coop_trader_pda_legend_" .. mode, LEGEND[mode])
+		window.coop_goodwill_note:SetText(string.format(text, participants, name_list(info and info.names or {})))
 	end
 end
 
@@ -72,6 +119,20 @@ function on_game_start()
 	local class = ok and module and module.pda_relations_tab
 	if not class then return end
 	installed = true
+	-- the stock Update hides the hint unless a companion icon is under the cursor: lend it the best player's mark
+	local update = class.Update
+	if type(update) == "function" then
+		class.Update = function(self, ...)
+			local ok, text = pcall(hover_text, self)
+			local hint = self.hint_wnd
+			if not (ok and text and hint) then return update(self, ...) end
+			self.hint_wnd = setmetatable({ Update = function(_, txt) return hint:Update(txt or text) end }, { __index = hint })
+			local result = { pcall(update, self, ...) }
+			self.hint_wnd = hint
+			if not result[1] then error(result[2], 0) end
+			return unpack(result, 2)
+		end
+	end
 	for _, name in ipairs({ "Reset", "autoupdate" }) do
 		local original = class[name]
 		if type(original) == "function" then

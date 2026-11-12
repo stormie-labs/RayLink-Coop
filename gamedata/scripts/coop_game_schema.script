@@ -229,6 +229,12 @@ add("party", RULE .. "max_money_transfer", "list", { v = { 10000, 100000, 100000
 add("party", RULE .. "give_radius", "list", { v = { 2, 5, 10, 20 }, def = 5, range = { 1, 20 }, unit = "m" })
 -- "Foreign loot": a living stalker keeps the body of what he killed (coop_loot_claim.script); off, every body is free
 add("party", RULE .. "loot_claim", "check", { def = true })
+-- Reputation of a completed task (coop_tasks): to every player in game at the accept or the end, or only to the taker.
+-- coop_share_rewards keeps deciding money and items only.
+add("party", RULE .. "rep_share", "list", { v = { "everyone", "taker" }, def = "everyone" })
+-- Group faction goodwill of the trader supplies (coop_trader_reputation): the best player in game, the mean of the players
+-- in game, or the mean of the players in game and seen within 72 game hours
+add("party", RULE .. "trader_rep", "list", { v = { "best", "mean_online", "mean_recent" }, def = "best" })
 
 -- Tab 3. World. faction, story and routes are the stock controls of the new game screen (created, never changed)
 add("world", "faction", "list", { vt = "name", when = "create", applies = "create" })

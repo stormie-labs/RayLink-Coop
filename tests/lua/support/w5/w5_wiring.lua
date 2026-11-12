@@ -57,7 +57,7 @@ do
 		n = n + 1
 		check(cs.rule("economy/" .. k) == v, "option default = RULES." .. k .. " (" .. tostring(v) .. ")")
 	end
-	check(n == 11, "11 economy rules")
+	check(n == 13, "13 economy rules")
 	-- the options page has every key once and only known types
 	local page = host.env.coop_menu_options.build_page()
 	local ids = {}

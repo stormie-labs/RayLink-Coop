@@ -1,5 +1,6 @@
 """Current VFS trader selectors and injector callers for the Lua integration test."""
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -9,7 +10,10 @@ sys.path.insert(0, str(ROOT / "tools"))
 from check_spawn_classes import Game, Ltx, read
 
 report = {}
-for label, folder in (("stock", ROOT.parent / "anomaly-ref/unpacked"), ("gamma", Path("E:/RayLink2/gamma"))):
+# The merged GAMMA tree: GAMMA_SCRIPTS (<root>\gamedata\scripts, as for tools	est_lua.cmd) or GAMMA_ROOT.
+GAMMA = Path(os.environ["GAMMA_ROOT"]) if os.environ.get("GAMMA_ROOT") else (
+    Path(os.environ["GAMMA_SCRIPTS"]).parents[1] if os.environ.get("GAMMA_SCRIPTS") else Path("E:/RayLink2/gamma"))
+for label, folder in (("stock", ROOT.parent / "anomaly-ref/unpacked"), ("gamma", GAMMA)):
     game = Game(folder)
     configs = game.configs()
     candidates = set()

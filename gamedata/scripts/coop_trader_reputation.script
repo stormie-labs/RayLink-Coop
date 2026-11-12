@@ -43,7 +43,8 @@ function refresh()
 	local m, now = storage(), clock()
 	if not m then return end
 	book = state().restore(book or m[STORE], now)
-	local view = { count = 0, means = {}, observed = now }
+	-- the book is observed and saved in every mode: switching the formula needs no history rebuild
+	local view = { count = 0, means = {}, observed = now, mode = mode(), names = {}, top = {} }
 	local routing = rawget(_G, "coop_reputation")
 	local goodwill = routing and routing.goodwill_of or relation_registry.community_goodwill
 	if now then
@@ -58,30 +59,62 @@ function refresh()
 					local ok, value = pcall(goodwill, faction, id)
 					if ok then values[faction] = value end
 				end
-				state().observe(book, key, now, values)
+				state().observe(book, key, now, values, player.nick)
 				online[key] = true
 			elseif id then
 				incomplete = true
 			end
 		end
 		if not incomplete then
+			local keys = state().counted(book, now, online, view.mode) or {}
+			view.count = #keys
+			for _, key in ipairs(keys) do view.names[#view.names + 1] = book.players[key].nick or "?" end
+			table.sort(view.names)
 			for _, faction in ipairs(factions) do
-				local value, count = state().average(book, faction, now, online)
-				view.means[faction], view.count = value, count
+				local value, _, _, top = state().aggregate(book, faction, now, online, view.mode)
+				view.means[faction] = value
+				view.top[faction] = value ~= nil and top and (book.players[top].nick or "?") or nil
 			end
 		end
 	end
 	m[VIEW] = view
 end
 
-function average(faction)
-	if not active() then return nil, 0 end
+-- The host's session rule trader_rep (coop_economy_core.RULES; "best" when never set or unknown).
+function mode()
+	local ok, value = pcall(function() return coop_economy_core.rule("trader_rep") end)
+	return ok and state().MODES[value] and value or state().DEFAULT_MODE
+end
+
+local function view_of()
+	if not active() then return nil end
 	local m = storage()
 	local view = m and m[VIEW]
-	if type(view) ~= "table" or type(view.means) ~= "table" then return nil, 0 end
+	if type(view) ~= "table" or type(view.means) ~= "table" then return nil end
+	return view
+end
+
+function average(faction)
+	local view = view_of()
+	if not view then return nil, 0 end
 	local count = view.count
 	if type(count) ~= "number" or count < 0 or count ~= math.floor(count) or count == math.huge then return nil, 0 end
 	return view.means[faction], count
+end
+
+-- For the PDA: { mode, names = { nick, ... } counted, top = { faction -> nick whose value is the best (mode best) } }
+-- out of the host's published view, or nil outside a session / before the first view.
+function info()
+	local view = view_of()
+	if not view then return nil end
+	local out = { mode = state().MODES[view.mode] and view.mode or state().DEFAULT_MODE, names = {}, top = {} }
+	for _, name in ipairs(type(view.names) == "table" and view.names or {}) do
+		if type(name) == "string" then out.names[#out.names + 1] = name end
+	end
+	for faction, name in pairs(type(view.top) == "table" and view.top or {}) do
+		if type(faction) == "string" and type(name) == "string" then out.top[faction] = name end
+	end
+	return out
 end
 
 function goodwill_ge(actor, npc, params)

@@ -240,6 +240,8 @@ end
 -- ---------------------------------------------------------------- C3
 print("== C3: statistics, rank and reputation go to the player who turned the task in")
 do
+	-- rep_share "taker": the task's personal effects are the finisher's (the default "everyone": see rep_share below)
+	Hm.env.coop_economy_core = { rule = function(k) return k == "rep_share" and "taker" or nil end }
 	local function run(share)
 		Hm.share = share
 		local hs, cs = #Hm.stats, #Cm.stats
@@ -249,7 +251,7 @@ do
 		pump()
 		engine_check(Hm)
 		pump()
-		check(#Hm.stats == hs + (share >= 2 and 1 or 0), "mode " .. share .. ": shared tasks count for the participating host too")
+		check(#Hm.stats == hs, "mode " .. share .. ": rep_share taker keeps the statistics off the host, also with shared money")
 		check(#Cm.stats == cs + 1 and Cm.stats[#Cm.stats] == "tasks_completed", "mode " .. share .. ": counted on the finisher's machine")
 		Hm.tm.task_info.t_a = nil
 		Hm.engine_tasks.t_a = nil
@@ -296,6 +298,7 @@ do
 	Hm.tm:set_task_completed("t_e")
 	engine_check(Hm)
 	check(#Hm.stats == hs + 1 and Hm.stats[#Hm.stats] == "tasks_completed", "the host's own task counts on the host")
+	Hm.env.coop_economy_core = nil
 end
 
 -- ---------------------------------------------------------------- C15
@@ -814,6 +817,101 @@ do
 	else check(false, "offline guide fine requires a persistent character recipient") end
 	Hm.players, E.coop.members = original_players, original_members
 	E.coop.money_grant, E.coop.money_of = original_grant, original_money
+end
+
+print("== rep_share: task reputation goes to everyone in game, apart from the money rule")
+do
+	local T, E = Hm.env.coop_tasks, Hm.env
+	local rules = {}
+	local saved_core = E.coop_economy_core
+	E.coop_economy_core = { rule = function(k) return rules[k] end }
+	local base_players, base_members = Hm.players, E.coop.members
+	Hm.new_obj(502, "coop_player_avatar", vec(50, 0, 0), { _stalker = true })
+	local function waiting(char)
+		local saved = {}
+		T.save_effects(saved)
+		local w = saved.coop_task_fx.wait and saved.coop_task_fx.wait[char]
+		local n = 0
+		for _, e in ipairs(w or {}) do if type(e.s) == "string" and e.s:find("rept", 1, true) then n = n + 1 end end
+		return n
+	end
+	local seq = 0
+	-- accept with `at_accept` players in game, finish with `at_end` players, the client (peer 1) takes it
+	local function run(share, mode, at_accept, at_end)
+		seq = seq + 1
+		local id = "rep_share_" .. seq
+		Hm.ini[id], Cm.ini[id] = {}, {}
+		rules.rep_share, Hm.share = mode, share
+		Hm.players, E.coop.members = at_accept.players, function() return at_accept.members end
+		T.run_as(1, function() Hm.tm:give_task(id, 9) end)
+		pump()
+		Hm.on_complete[id] = function() E.xr_effects.decrease_rep(Hm.actor, nil, { "15" }) end
+		Hm.players, E.coop.members = at_end.players, function() return at_end.members end
+		local r = { host = Hm.rept, client = Cm.rept, hs = #Hm.stats, cs = #Cm.stats, w502 = waiting(502) }
+		E.task_manager.task_callback({ get_id = function() return id end }, E.task.completed)
+		pump()
+		r.host, r.client = Hm.rept - r.host, Cm.rept - r.client
+		r.hs, r.cs, r.w502 = #Hm.stats - r.hs, #Cm.stats - r.cs, waiting(502) - r.w502
+		Hm.players, E.coop.members = base_players, base_members
+		return r
+	end
+	local two = { players = { { id = 0, is_self = true, avatar_id = 0 }, { id = 1, is_self = false, avatar_id = 500 } },
+		members = { { id = 500, peer = 1, in_world = true } } }
+	local three = { players = { two.players[1], two.players[2], { id = 2, is_self = false, avatar_id = 502 } },
+		members = { { id = 500, peer = 1, in_world = true }, { id = 502, peer = 2, in_world = true } } }
+	local gone = { players = two.players, members = { { id = 500, peer = 1, in_world = true }, { id = 502 } } }
+	for _, share in ipairs({ 0, 3 }) do
+		local r = run(share, "everyone", two, two)
+		check(r.host == -15 and r.client == -15, "everyone, money " .. share .. ": the task's reputation reaches every character once")
+		check(r.hs == 1 and r.cs == 1, "everyone, money " .. share .. ": the task statistics count for both characters")
+		r = run(share, "taker", two, two)
+		check(r.host == 0 and r.client == -15, "taker, money " .. share .. ": only the player who turned it in")
+		check(r.hs == 0 and r.cs == 1, "taker, money " .. share .. ": the statistics stay the taker's")
+		r = run(share, "everyone", two, three)
+		check(r.host == -15 and r.client == -15 and r.w502 == 1,
+			"everyone, money " .. share .. ": a player who joined after the accept and is in game at the end gets it")
+		r = run(share, "everyone", three, gone)
+		check(r.host == -15 and r.client == -15 and r.w502 == 1,
+			"everyone, money " .. share .. ": a player who left after the accept gets it on his character")
+		r = run(share, "taker", three, three)
+		check(r.host == 0 and r.client == -15 and r.w502 == 0, "taker, money " .. share .. ": the others get nothing")
+	end
+	local r = run(0, nil, two, two)
+	check(r.host == -15 and r.client == -15, "a world that never set the rule shares the task's reputation (everyone)")
+	r = run(0, "garbage", two, two)
+	check(r.host == -15 and r.client == -15, "an unknown rule value falls back to everyone")
+	-- a task accepted before this rule existed (no captured roster in the save): taker plus who is in game at the end
+	seq = seq + 1
+	local id = "rep_share_" .. seq
+	Hm.ini[id], Cm.ini[id] = {}, {}
+	rules.rep_share, Hm.share = "everyone", 0
+	T.run_as(1, function() Hm.tm:give_task(id, 9) end)
+	pump()
+	local saved = {}
+	T.save_effects(saved)
+	for _, field in ipairs({ "rep_party", "participants" }) do
+		if saved.coop_task_fx[field] then saved.coop_task_fx[field][id] = nil end
+	end
+	T.load_effects(saved)
+	Hm.on_complete[id] = function() E.xr_effects.decrease_rep(Hm.actor, nil, { "15" }) end
+	local h0, c0 = Hm.rept, Cm.rept
+	E.task_manager.task_callback({ get_id = function() return id end }, E.task.completed)
+	pump()
+	check(Hm.rept - h0 == -15 and Cm.rept - c0 == -15, "an old save's task shares its reputation with who is in game")
+	-- failure consequences stay as they are (the players in game at the accept), whatever rep_share says
+	seq = seq + 1
+	id = "rep_share_" .. seq
+	Hm.ini[id], Cm.ini[id] = {}, {}
+	rules.rep_share = "taker"
+	T.run_as(1, function() Hm.tm:give_task(id, 9) end)
+	pump()
+	local hs, cs = #Hm.stats, #Cm.stats
+	E.task_manager.task_callback({ get_id = function() return id end }, E.task.fail)
+	pump()
+	check(#Hm.stats == hs + 1 and #Cm.stats == cs + 1, "a failed task's consequences keep their own roster under taker")
+	rules.rep_share, Hm.share = nil, 0
+	E.coop_economy_core = saved_core
+	Hm.players, E.coop.members = base_players, base_members
 end
 
 print(string.format("== %d passed, %d failed", PASSES, FAILS))

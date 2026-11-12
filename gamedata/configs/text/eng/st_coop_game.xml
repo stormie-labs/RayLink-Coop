@@ -544,6 +544,15 @@
 	<string id="st_coop_game_psi_storm_warning_siren">
 		<text>Siren</text>
 	</string>
+	<string id="st_coop_game_rep_share">
+		<text>Task reputation</text>
+	</string>
+	<string id="st_coop_game_rep_share_everyone">
+		<text>Everyone in game</text>
+	</string>
+	<string id="st_coop_game_rep_share_taker">
+		<text>Only who took or turned it in</text>
+	</string>
 	<string id="st_coop_game_respawn_delay">
 		<text>Respawn delay</text>
 	</string>
@@ -596,7 +605,7 @@
 		<text>Saved. Takes effect the next time this game is loaded.</text>
 	</string>
 	<string id="st_coop_game_share_rewards">
-		<text>Task rewards</text>
+		<text>Task money and items</text>
 	</string>
 	<string id="st_coop_game_share_rewards_0">
 		<text>To whoever turns it in</text>
@@ -696,6 +705,18 @@
 	</string>
 	<string id="st_coop_game_title">
 		<text>Game settings</text>
+	</string>
+	<string id="st_coop_game_trader_rep">
+		<text>Group goodwill at traders</text>
+	</string>
+	<string id="st_coop_game_trader_rep_best">
+		<text>Best player in game</text>
+	</string>
+	<string id="st_coop_game_trader_rep_mean_online">
+		<text>Mean of the players in game</text>
+	</string>
+	<string id="st_coop_game_trader_rep_mean_recent">
+		<text>Mean of the last 72 game hours</text>
 	</string>
 	<string id="st_coop_game_travel_time">
 		<text>Travel takes game time</text>

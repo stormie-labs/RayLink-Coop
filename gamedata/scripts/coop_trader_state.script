@@ -1,6 +1,10 @@
 -- Persistent faction goodwill snapshots, keyed by stable player digests.
 WINDOW = 72 * 60 * 60
 CLOCK = "game_calendar_seconds"
+-- The session rule trader_rep: who counts. best = the highest goodwill among the players in game; mean_online = their
+-- mean; mean_recent = the mean over who is in game or was seen within WINDOW game seconds.
+MODES = { best = true, mean_online = true, mean_recent = true }
+DEFAULT_MODE = "best"
 local MAX_TIME = 315537897599 -- 9999-12-31 23:59:59, engine calendar epoch (year 1).
 
 local function number(value)
@@ -34,7 +38,14 @@ function valid_key(key)
 	return type(key) == "string" and #key == 64 and key:match("^[0-9a-f]+$") ~= nil
 end
 
-function observe(book, key, seen, goodwill)
+-- A nick for the PDA: no control bytes, no backslash (the UI reads \n as a new line), at most 32 bytes; nil if empty.
+function clean_nick(nick)
+	if type(nick) ~= "string" then return nil end
+	nick = nick:gsub("%c", ""):gsub("\\", "/"):sub(1, 32)
+	return nick ~= "" and nick or nil
+end
+
+function observe(book, key, seen, goodwill, nick)
 	if not valid_key(key) or not timestamp(seen) or type(goodwill) ~= "table" then return false end
 	local values = {}
 	for faction, value in pairs(goodwill) do
@@ -42,7 +53,7 @@ function observe(book, key, seen, goodwill)
 			values[faction] = value
 		end
 	end
-	book.players[key] = { last_seen = seen, goodwill = values }
+	book.players[key] = { last_seen = seen, goodwill = values, nick = clean_nick(nick) }
 	return true
 end
 
@@ -58,23 +69,44 @@ function restore(saved, now)
 		if type(row) == "table" and timestamp(row.last_seen) and (not legacy or row.last_seen > 0) then
 			-- Unix last_seen has no mapping to this world's timeline. Grant one fresh window.
 			local seen = legacy and ready and now or row.last_seen
-			if legacy or not ready or seen <= now then observe(book, key, seen, row.goodwill) end
+			if legacy or not ready or seen <= now then observe(book, key, seen, row.goodwill, row.nick) end
 		end
 	end
 	return book
 end
 
-function average(book, faction, now, online)
-	if book.v ~= 2 or book.clock ~= CLOCK or not timestamp(now) or type(faction) ~= "string" then return nil, 0 end
-	local sum, count, incomplete = 0, 0, false
+-- Keys of the players `mode` counts (sorted), or nil: no valid book or clock.
+function counted(book, now, online, mode)
+	if book.v ~= 2 or book.clock ~= CLOCK or not timestamp(now) then return nil end
+	local recent = mode == "mean_recent"
+	local keys = {}
 	for key, row in pairs(book.players) do
 		local age = now - row.last_seen
-		if (online and online[key]) or (age >= 0 and age < WINDOW) then
-			count = count + 1
-			local value = row.goodwill[faction]
-			if number(value) then sum = sum + value else incomplete = true end
-		end
+		if (online and online[key]) or (recent and age >= 0 and age < WINDOW) then keys[#keys + 1] = key end
 	end
-	if count == 0 or incomplete then return nil, count end
-	return sum / count, count
+	table.sort(keys)
+	return keys
+end
+
+-- value, count, keys counted, key whose value is the best (mode best). A counted player without a value for the
+-- faction closes it (nil): an incomplete snapshot never opens a tier.
+function aggregate(book, faction, now, online, mode)
+	if not MODES[mode] then mode = DEFAULT_MODE end
+	local keys = type(faction) == "string" and counted(book, now, online, mode)
+	if not keys then return nil, 0, {} end
+	local sum, top, top_key = 0, nil, nil
+	for _, key in ipairs(keys) do
+		local value = book.players[key].goodwill[faction]
+		if not number(value) then return nil, #keys, keys end
+		sum = sum + value
+		if top == nil or value > top then top, top_key = value, key end
+	end
+	if #keys == 0 then return nil, 0, keys end
+	if mode == "best" then return top, #keys, keys, top_key end
+	return sum / #keys, #keys, keys
+end
+
+function average(book, faction, now, online)
+	local value, count = aggregate(book, faction, now, online, "mean_recent")
+	return value, count
 end

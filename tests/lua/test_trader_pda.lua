@@ -158,7 +158,7 @@ local geometry = setmetatable({ list = real.list, companion_info = real.companio
 	{ __index = TRADER_REAL_PDA.pda_relations_tab })
 geometry:InitControls()
 geometry:Reset()
-check(geometry.coop_goodwill_note and geometry.coop_goodwill_note.text:find("Players counted: 3", 1, true),
+check(geometry.coop_goodwill_note and geometry.coop_goodwill_note.text:find("Counted 3", 1, true),
 	"participant count is legible below the matrix, not squeezed into each cell")
 local first, next_row, next_column = geometry.relations[1][0], geometry.relations[1][1], geometry.relations[2][0]
 check(first.position.y >= row_lines[1] + 1 and first.position.y + first.size.y <= row_lines[2],
@@ -206,5 +206,75 @@ R.coop_reputation = {goodwill_of = R.relation_registry.community_goodwill}
 R.relation_registry.community_goodwill = function() return 2200 end -- another player's active reward scope
 real:autoupdate()
 check(real.relations[1][0].text:find("-100", 1, true), "PDA reads its actual owner even during another player's reward scope")
+section("who is counted and the formula: footer line and the best player's mark, RU and EN")
+local function strings(lang)
+	local file = assert(io.open("gamedata/configs/text/" .. lang .. "/st_coop_traders.xml", "rb"))
+	local xml_text = file:read("*a") file:close()
+	local out = {}
+	for id, text in xml_text:gmatch('<string id="([%w_]+)">%s*<text>(.-)</text>') do out[id] = text end
+	return out
+end
+local view = { mode = "best", names = { "Hostman", "Petya", "Vasya" }, top = { stalker = "Vasya", bandit = "Hostman" } }
+R.coop_trader_reputation = { refresh = function() end, average = function() return 1500, 3 end, info = function() return view end }
+R.coop_reputation = nil -- the PDA owner reads the registry directly here
+local hint_text
+local cursor_on
+R.GetCursorPosition = function() return "cursor" end
+R.Frect = function() return { set = function(self) return self end } end
+R.utils_data = { pos_in_rect = function(_, rect) return rect.on == true end }
+for i = 1, #real.list do
+	for k = 0, #real.list do
+		local c = real.relations[i][k]
+		c.GetAbsoluteRect = function(_, rect) rect.on = (cursor_on == i and k == 0) end
+	end
+end
+real.hint_wnd = { Update = function(self, txt) hint_text = txt end }
+real.tab = cell()
+real.coop_goodwill_note = nil
+local font = dofile("tests/lua/support/font_letterica.lua")
+for _, lang in ipairs({ "eng", "rus" }) do
+	local st = strings(lang)
+	for _, id in ipairs({ "st_coop_trader_pda_legend_best", "st_coop_trader_pda_legend_mean_online",
+		"st_coop_trader_pda_legend_mean_recent", "st_coop_trader_pda_best" }) do
+		check(st[id] ~= nil, lang .. " defines " .. id)
+	end
+	R.game = { translate_string = function(id) return st[id] or id end }
+	for _, mode in ipairs({ "best", "mean_online", "mean_recent" }) do
+		view.mode = mode
+		R.relation_registry.community_goodwill = function() return 150 end
+		real:Reset()
+		local note = real.coop_goodwill_note
+		check(note and note.text == string.format(st["st_coop_trader_pda_legend_" .. mode] or "?", 3, "Hostman, Petya, Vasya"),
+			lang .. " " .. mode .. ": the footer names the formula and the counted players")
+		check(real.relations[1][0].text == string.format(st.st_coop_trader_pda_value, 150, "1500", 3),
+			lang .. " " .. mode .. ": the personal and group numbers of the cell are unchanged")
+		cursor_on, hint_text = 1, nil
+		real:Update()
+		if mode == "best" then
+			check(hint_text == string.format(st.st_coop_trader_pda_best or "?", "Vasya"),
+				lang .. ": pointing at a group value shows whose value it is")
+		else
+			check(hint_text == nil, lang .. " " .. mode .. ": a mean has no single owner, no mark")
+		end
+		cursor_on, hint_text = nil, "stale"
+		real:Update()
+		check(hint_text == nil, lang .. " " .. mode .. ": no mark when the cursor is elsewhere")
+	end
+	-- many players: the list is cut with +N and the line still fits the footer box in the real font
+	view.mode = "mean_recent"
+	view.names = {}
+	for i = 1, 12 do view.names[i] = string.rep("W", 15) .. i end
+	real:Reset()
+	local note = real.coop_goodwill_note
+	check(note and note.text:find("+", 1, true) and font.width(font.W16, note.text) <= note.size.x / 0.75 - font.W16[111],
+		lang .. ": a long list is cut with +N and fits the footer width")
+	view.names = { "Hostman", "Petya", "Vasya" }
+end
+R.ACTIVE = false
+cursor_on, hint_text = 1, nil
+real:Update()
+check(hint_text == nil, "single player: the stock hint only")
+R.ACTIVE = true
+
 print(string.format("%d passed, %d failed", CHECKS - FAILS, FAILS))
 if FAILS > 0 then os.exit(1) end

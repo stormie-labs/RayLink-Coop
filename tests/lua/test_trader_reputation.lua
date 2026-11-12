@@ -21,6 +21,9 @@ local function boot()
 			if peer == 0 or id == peer then return KEY[id] end
 		end }
 		W.game_relations = { factions_table = { "stalker", "dolg" } }
+		-- these sections test the mean over online + recent players: the session rule trader_rep = mean_recent
+		-- (the other formulas: test_trader_rep_modes.lua)
+		W.coop_settings = { rule = function(key) return key == "economy/trader_rep" and "mean_recent" or nil end }
 		W.GOODWILL = { stalker = { [0]=1200, [501]=600, [502]=300 }, dolg = { [0]=-300, [501]=300, [502]=0 } }
 		W.relation_registry = { community_goodwill = function(faction, id) return W.GOODWILL[faction][id] end }
 		W.db.actor.spawn_ini = function()

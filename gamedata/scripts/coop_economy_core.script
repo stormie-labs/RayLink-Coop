@@ -36,6 +36,8 @@ RULES = {
 	money_transfer = true, -- players may give each other money (R-6.7)
 	max_money_transfer = 1000000,
 	give_radius = 5, -- m, "Give to <player>" in the inventory menu
+	rep_share = "everyone", -- everyone | taker: who gets a completed task's reputation, goodwill, statistics (coop_tasks)
+	trader_rep = "best", -- best | mean_online | mean_recent: the group goodwill trader supplies use (coop_trader_reputation)
 }
 
 local RULE_KIND = {}

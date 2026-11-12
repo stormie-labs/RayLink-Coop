@@ -908,7 +908,7 @@ for k, v in pairs(coop_economy_core.RULES) do
 	n = n + 1
 	check(cs.rule("economy/" .. k) == v, "rule economy/" .. k .. " = RULES default (" .. tostring(v) .. ")")
 end
-check(n == 11, "11 economy rules")
+check(n == 13, "13 economy rules")
 check(cs.rule("core/join_spawn") == "faction_start", "core rule join_spawn is at the faction's base (the catalog's default since F3a)")
 check(cs.rule("economy/nope") == nil and cs.rule("core/client_quicksave") == nil and cs.rule("other/gather_radius") == nil and cs.rule(5) == nil,
 	"unknown rules are nil")
