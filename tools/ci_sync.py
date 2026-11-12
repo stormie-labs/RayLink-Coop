@@ -39,7 +39,9 @@ SOURCE_EXT = (".cpp", ".h", ".hpp", ".inl", ".c", ".md", ".rc")
 # that differ from the CI tree.
 SOURCE_DIRS = ("src/xrGame", "src/xrCoop", "src/xrEngine", "src/xrServerEntities", "src/xrCore", "src/Layers",
                "src/xrSound",  # Native instrument playback extends the sound interface as well as xrGame.
-               "src/3rd party/luabind")
+               "src/3rd party/luabind",
+               # LuaJIT's memory: xr_alloc.c is ours since 2026-11-13 (the Lua arena is committed as it is used).
+               "src/3rd party/luajit-2/src")
 
 
 def same_text(a: Path, b: Path) -> bool:
