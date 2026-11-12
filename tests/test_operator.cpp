@@ -369,3 +369,86 @@ TEST(operator_command_needs_a_joined_client)
 	CHECK(!host.s.send_operator_command("coop_status")); // a host has its own console
 	CHECK(!host.s.self_host_rights());
 }
+
+// ============================================================================ security review 2026-11-12
+
+// coop_debug_cmds.script has one command of class "operator": "lua <code>", for the server's own console only. A network
+// message is not that console, and coop_debug_server lowercases the command before it looks it up.
+TEST(operator_dbg_never_runs_lua)
+{
+	for (const char* no : {"coop_dbg lua x", "coop_dbg LUA x", "coop_dbg Lua os.exit()", "coop_dbg lua", "coop_dbg lUa 1",
+	         "coop_dbg lua=1", "coop_dbg l-ua x", "coop_dbg \"lua\" x", "coop_dbg ./lua x"})
+		CHECK_EQ(std::string(no) + (op::allowed(no) ? " allowed" : " refused"), std::string(no) + " refused");
+	for (const char* yes : {"coop_dbg", "coop_dbg god 1", "coop_dbg tp 2", "coop_dbg time_add h=1", "coop_dbg luas", "coop_dbg GOD 1"})
+		CHECK_EQ(std::string(yes) + (op::allowed(yes) ? " allowed" : " refused"), std::string(yes) + " allowed");
+}
+
+// The creator's game presents its token only to this PC. The address is text from an invite, a console line or Lua: only a
+// literal 127.a.b.c is this PC, a host name that begins with "127." is not.
+TEST(operator_loopback_is_a_literal_address)
+{
+	for (const char* yes : {"127.0.0.1", "127.1.2.3", "127.255.255.255", "127.0.0.0"})
+		CHECK_EQ(std::string(yes) + (op::loopback_literal(yes) ? " loopback" : " not"), std::string(yes) + " loopback");
+	for (const char* no : {"", "127", "127.0.0", "127.0.0.1.evil.example", "127.0.0.1.", "127.0.0.1 ", " 127.0.0.1", "127.0.0.256",
+	         "127.0.0.1:27960", "localhost", "128.0.0.1", "0127.0.0.1", "127.0.0.01", "127.0.0.-1", "127..0.1", "127.0.0.1x",
+	         "127.o.0.1", "1270.0.0.1"})
+		CHECK_EQ(std::string(no) + (op::loopback_literal(no) ? " loopback" : " not"), std::string(no) + " not");
+	CHECK(!op::loopback_literal(nullptr));
+}
+
+// The engine logs its command line (x_ray.cpp, Level.cpp, the map server's key), logs go into reports: the value never does.
+TEST(operator_token_is_not_in_a_logged_command_line)
+{
+	CHECK_EQ(op::redact("-fsltx a.ltx -coop_dedicated 27960 -coop_operator 000102030405060708090a0b0c0d0e0f -coop_hidden"),
+		std::string("-fsltx a.ltx -coop_dedicated 27960 -coop_operator <hidden> -coop_hidden"));
+	CHECK_EQ(op::redact("-coop_operator   abc"), std::string("-coop_operator   <hidden>"));
+	CHECK_EQ(op::redact("-coop_operator\tabc def"), std::string("-coop_operator\t<hidden> def"));
+	CHECK_EQ(op::redact("-coop_operator"), std::string("-coop_operator"));
+	CHECK_EQ(op::redact("-coop_operator "), std::string("-coop_operator "));
+	CHECK_EQ(op::redact("-coop_operatorx 1"), std::string("-coop_operatorx 1"));
+	CHECK_EQ(op::redact("x-coop_operator 1"), std::string("x-coop_operator 1"));
+	CHECK_EQ(op::redact("x -coop_operator a -coop_operator b"), std::string("x -coop_operator <hidden> -coop_operator <hidden>"));
+	CHECK_EQ(op::redact(""), std::string(""));
+	CHECK_EQ(op::redact(nullptr), std::string(""));
+	// a map server's one-time token is a word of 32 hex digits, anywhere in the line
+	CHECK_EQ(op::redact("-fsltx fsgame_ms1.ltx -coop_mapserver 1 0 27960 e779604846636dbc9308b4dd7b6ba59b -silent_error_mode"),
+		std::string("-fsltx fsgame_ms1.ltx -coop_mapserver 1 0 27960 <hidden> -silent_error_mode"));
+	CHECK_EQ(op::redact("E779604846636DBC9308B4DD7B6BA59B"), std::string("<hidden>"));
+	CHECK_EQ(op::redact("e779604846636dbc9308b4dd7b6ba59 e779604846636dbc9308b4dd7b6ba59bb coop_auto_6af5e253-256d_1"),
+		std::string("e779604846636dbc9308b4dd7b6ba59 e779604846636dbc9308b4dd7b6ba59bb coop_auto_6af5e253-256d_1"));
+}
+
+// A world server whose places are all taken by other players would have nobody who may kick or restore: while a token is
+// set and its holder is not in, the last place is his.
+TEST(operator_keeps_his_place_in_a_full_session)
+{
+	const op::Token tok = token_of(11);
+	Node host("server", 38210), a("A", 38210), b("B", 38210), creator("Creator", 38210);
+	host.cfg.host_plays = false;
+	host.cfg.max_players = 2; // two seats that play, the server's own is not one of them
+	host.cfg.operator_token = tok;
+	present(creator, tok);
+	std::string err;
+	REQUIRE(host.host(&err));
+	REQUIRE(join(host, a, 38210));
+	CHECK(!join(host, b, 38210, &a.s)); // the last place waits for the token's holder
+	CHECK(b.rejected);
+	REQUIRE(join(host, creator, 38210, &a.s));
+	REQUIRE(host_side(host, creator.welcome.slot) != nullptr);
+	CHECK(host_side(host, creator.welcome.slot)->host_rights);
+	// he is in: the session is full for everybody now, and nobody else is turned away earlier than that
+	Node c("C", 38210);
+	CHECK(!join(host, c, 38210, &a.s));
+	CHECK(c.rejected);
+}
+
+TEST(operator_place_is_nobodys_without_a_token)
+{
+	Node host("server", 38211), a("A", 38211), b("B", 38211);
+	host.cfg.host_plays = false;
+	host.cfg.max_players = 2;
+	std::string err;
+	REQUIRE(host.host(&err));
+	REQUIRE(join(host, a, 38211));
+	REQUIRE(join(host, b, 38211, &a.s)); // no operator to wait for: both places are for players
+}
