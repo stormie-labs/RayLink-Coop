@@ -120,7 +120,16 @@ check(db.actor._tp == nil, "an order from a client moves nobody")
 coop.is_dedicated = function() return true end
 deliver(s0, 0)
 check(db.actor._tp == nil, "the dedicated host's actor is a ghost: no order moves it")
+-- owner 2026-11-13: that ghost is no player for the mods either (a playing host's actor is)
+check(C.actor_is_nobody() == true and C.is_player(0) == false, "the dedicated host's actor is nobody, not a player")
+local ghost_listed = false
+for _, p in ipairs(C.player_objects()) do if rawequal(p.obj, db.actor) then ghost_listed = true end end
+check(not ghost_listed, "and is not among the players' objects")
 coop.is_dedicated = nil
+check(C.actor_is_nobody() == false and C.is_player(0) == true, "a playing host's actor is his player")
+ghost_listed = false
+for _, p in ipairs(C.player_objects()) do if rawequal(p.obj, db.actor) then ghost_listed = true end end
+check(ghost_listed, "and is among the players' objects")
 SENT = {}
 check(C.teleport(nil, vec3(1, 1, 1)) == false and #SENT == 0, "no peer: nothing sent (not a broadcast)")
 C.fx_sound("ambient\\boom")

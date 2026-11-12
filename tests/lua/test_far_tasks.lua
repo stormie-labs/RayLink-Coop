@@ -583,6 +583,40 @@ do
 	check(list and list[1] and list[1].me == true, "the line of his record is marked")
 end
 
+print("== the rating of a world server whose seat plays no character: its ghost actor is nobody (owner 2026-11-13)")
+do
+	local qc = Hm.env.coop_quests_core
+	local ghost = Hm.env.db.actor
+	local rank0, name0 = ghost._rank, ghost._cname
+	ghost._rank, ghost._cname = 99999, "server"
+	Hm.env.pda.get_coc_ranking_list = function() return { 0, 500 } end
+	Hm.env.pda.get_rankings_array_size = function() return 2 end
+	local function ask()
+		Hm.sent = {}
+		Hm.handlers["quests.rank_req"](Hm.env.coop_main.encode({ q = 2, r = 0 }), 1)
+		local got = last_sent(Hm, "quests.rank")
+		return got and Hm.env.coop_quests_core.des(got.d) or {}, got and tonumber(got.w)
+	end
+	-- an ordinary host: its seat plays, its actor is the host player's character and stays in the list
+	Hm.env.coop.is_dedicated = function() return false end
+	check(qc.actor_is_nobody() == false, "an ordinary host's actor is somebody")
+	local list, place = ask()
+	check(#list == 2 and list[1].n == "server", "the playing host's character keeps its line")
+	check(place == 2, "and counts above the player")
+	-- a world server: the ghost has no line, no place above anyone
+	Hm.env.coop.is_dedicated = function() return true end
+	check(qc.actor_is_nobody() == true, "a world server's actor is nobody")
+	list, place = ask()
+	local named = false
+	for _, e in ipairs(list) do if e.n == "server" then named = true end end
+	check(not named and #list == 1 and list[1].me == true, "the ghost is not among the lines a client gets")
+	check(place == 1, "the ghost's rank puts nobody lower")
+	check(Ms.env.coop_quests_core.actor_is_nobody() == true, "a map server's actor is nobody")
+	check(Cm.env.coop_quests_core.actor_is_nobody() == false, "a player's actor is somebody")
+	Hm.env.coop.is_dedicated = nil
+	ghost._rank, ghost._cname = rank0, name0
+end
+
 print("== the encyclopedia and the achievements of a map server's logic are the world's")
 do
 	Ms.players[1].nick = "fighter"

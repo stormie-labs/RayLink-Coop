@@ -210,5 +210,18 @@ local ok = pcall(E.coop_reputation.pick_offence, M.actor, victim,
  {{"alarm", {{"actor_in_zone",3}}, {{"actor_enemy",3}}}}, function() error("condition failed") end)
 check(not ok and not E.coop_reputation.in_personal_check() and E.db.actor == M.actor,
  "failed personal zone check restores identity and condition mode")
+-- owner 2026-11-13: goodwill said of the actor with no player behind it, on a map server or a world server whose seat plays no
+-- character, would be its ghost's: dropped; a player's own and an ordinary host's are unchanged
+E.coop_npc_players.actor_is_nobody = function() return true end
+rr.change_community_goodwill("ecolog", 0, -50)
+rr.set_community_goodwill("ecolog", 0, 70)
+check(values["ecolog:0"] == nil, "the ghost actor of a world/map server gets no goodwill")
+check(rr.community_goodwill("ecolog", 0) == 0, "reading it is still allowed")
+T.with_character(501, function() rr.change_community_goodwill("ecolog", 0, -7) end)
+check(values["ecolog:501"] == -7, "a player's own goodwill still reaches him there")
+E.coop_npc_players.actor_is_nobody = function() return false end
+rr.change_community_goodwill("ecolog", 0, -3)
+check(values["ecolog:0"] == -3, "an ordinary host's own goodwill is unchanged")
+E.coop_npc_players.actor_is_nobody = nil
 print(string.format("== %d passed, %d failed", PASSES, FAILS))
 if FAILS > 0 then error("failures") end

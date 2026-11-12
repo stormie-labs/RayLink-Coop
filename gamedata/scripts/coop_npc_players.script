@@ -23,6 +23,7 @@
 	                             nil for nobody, so a dedicated host's ghost is never a player
 	  player_by_name("@Bob" | "@2" | "@#2") -> player(peer) | nil (nick in any case)
 	  is_dedicated()          -> a dedicated host: its actor is a ghost, left out of everyone() and nearest()
+	  actor_is_nobody()       -> this process's actor is a ghost (a dedicated host or a map server): no rank, goodwill, name
 	  is_player_id(id)        -> true for the local actor and for any player avatar
 	  nearest(pos)            -> nearest player object, squared distance (math.huge if nobody)
 	  nearest_dist_sqr(pos)   -> squared distance to the nearest player
@@ -100,9 +101,13 @@ function is_dedicated()
 	return active() and api.is_dedicated ~= nil and api.is_dedicated() == true
 end
 
--- This process's own actor is no player: a map server's and a dedicated host's actor is a ghost.
+-- This process's own actor is no player: a map server's and a dedicated host's actor is a ghost. Exported as actor_is_nobody (owner
+-- 2026-11-13: not listed, ranked, named or counted, earns nothing); same rule as coop_quests_core.actor_is_nobody.
 local function actor_is_ghost()
 	return is_map_server() or is_dedicated()
+end
+function actor_is_nobody()
+	return actor_is_ghost()
 end
 
 function self_peer()

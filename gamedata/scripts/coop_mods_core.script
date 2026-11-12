@@ -5,6 +5,7 @@
 	helpers, and every helper is inert outside a co-op session (single player behaves like stock).
 
 	Session:   active() is_host() is_client() live_client() is_world_server() is_map_server() world_client() is_bridge(peer)
+	           actor_is_nobody() (a map server's or a dedicated world server's ghost actor: no player)
 	           is_host() is "this process leads a level for its players": the host's process and a map server (docs\SPLIT_LEVELS.md 7b);
 	           is_world_server() is the first alone. is_client() is a mirror: a player's machine. world_client() also a map server: what
 	           it has of the world is a copy, the mod's world spawns and timers are not its own.
@@ -91,6 +92,12 @@ end
 
 function is_host()
 	return is_world_server() or is_map_server()
+end
+
+-- This process's own actor is nobody (owner 2026-11-13): the ghost of a map server or of a world server whose seat plays no character
+-- (-coop_dedicated). Same rule as coop_quests_core.actor_is_nobody / coop_npc_players.actor_is_nobody.
+function actor_is_nobody()
+	return is_map_server() or (is_world_server() and api.is_dedicated ~= nil and api.is_dedicated() == true)
 end
 
 function world_client()
@@ -275,7 +282,7 @@ function nick_of(peer)
 end
 
 function is_player(id)
-	return (id == 0 and not is_map_server()) or (active() and id ~= 0 and peer_of(id) ~= nil)
+	return (id == 0 and not actor_is_nobody()) or (active() and id ~= 0 and peer_of(id) ~= nil)
 end
 
 function is_remote_player(id)
@@ -286,7 +293,7 @@ end
 
 function player_objects()
 	local out = {}
-	if db.actor and not is_map_server() then out[1] = { peer = self_peer(), obj = db.actor } end -- a map server's actor is its ghost
+	if db.actor and not actor_is_nobody() then out[1] = { peer = self_peer(), obj = db.actor } end -- a ghost actor is no player's
 	if not active() then return out end
 	for _, p in ipairs(players()) do
 		if not p.is_self and type(p.avatar_id) == "number" then

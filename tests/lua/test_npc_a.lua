@@ -129,6 +129,17 @@ check(P.is_player_id(500) and P.is_proxy(proxy) and not P.is_player_id(7), "is_p
 local o, d = P.nearest(vec(9, 0, 0))
 check(o == proxy and d == 1, "nearest picks the closer player")
 check(P.any_within(vec(12, 0, 0), 3) and not P.any_within(vec(30, 0, 0), 3), "any_within")
+-- owner 2026-11-13: the actor of a world server whose seat plays no character and of a map server is nobody; a playing host's is his
+do
+	local api = H.env.coop
+	local ded, ms = api.is_dedicated, api.is_map_server
+	check(P.actor_is_nobody() == false, "a playing host's actor is somebody")
+	api.is_dedicated = function() return true end
+	check(P.actor_is_nobody() == true, "a dedicated world server's actor is nobody")
+	api.is_dedicated, api.is_map_server = ded, function() return true end
+	check(P.actor_is_nobody() == true, "a map server's actor is nobody")
+	api.is_map_server = ms
+end
 local inside_actor, inside_story
 P.with_identity(proxy, function()
 	inside_actor = H.env.db.actor

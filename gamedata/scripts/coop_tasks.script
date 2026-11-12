@@ -380,7 +380,8 @@ end
 -- Characters of the group on this machine: own actor first, then the other connected players, those on another level as far_body.
 local function party()
 	local out = {}
-	local ghost = api and api.is_dedicated and api.is_dedicated() -- the actor of a dedicated host is nobody's character
+	-- the actor of a dedicated host or of a map server is nobody's character (owner 2026-11-13)
+	local ghost = api and ((api.is_dedicated and api.is_dedicated()) or (api.is_map_server and api.is_map_server()))
 	if db and db.actor and not ghost then out[1] = { obj = db.actor, peer = self_peer(), self = true } end
 	if not active() then return out end
 	for _, p in ipairs(players()) do
@@ -1404,11 +1405,18 @@ local function patch_statistics()
 		log("! game_statistics not found: a task's rank and reputation stay on the host's actor")
 		return
 	end
+	-- owner 2026-11-13: what is no player's here would land on the ghost actor of a map server or of a world server whose seat plays
+	-- no character (coop_quests_core.actor_is_nobody): dropped. An ordinary host's actor is its player: unchanged.
+	local function nobody()
+		local qc = rawget(_G, "coop_quests_core") or coop_quests_core
+		return qc ~= nil and qc.actor_is_nobody ~= nil and qc.actor_is_nobody() == true
+	end
 	local count = gs.increment_statistic
 	if type(count) == "function" then
 		gs.increment_statistic = function(name, custom_rank, custom_rept)
 			if TASK_STATS[name] and each_personal(gs.increment_statistic, name, custom_rank, custom_rept) then return end
 			local peer = stat_peer()
+			if not peer and nobody() then return end
 			if not peer then return count(name, custom_rank, custom_rept) end
 			send_effect(peer, { k = "stat", f = name, r = tonumber(custom_rank), p = tonumber(custom_rept) })
 		end
@@ -1419,6 +1427,7 @@ local function patch_statistics()
 			gs[fname] = function(value)
 				if what == "rept" and each_personal(gs[fname], value) then return end
 				local peer = stat_peer()
+				if not peer and nobody() then return end
 				if not peer then return orig(value) end
 				send_effect(peer, { k = "stat", f = what, n = tonumber(value) or 0 })
 			end
@@ -3021,7 +3030,8 @@ local function register_events()
 			or type(effect.f) ~= "string" or #effect.f > 80
 			or type(effect.e) ~= "string" or #effect.e > 100 or type(effect.q) ~= "number" or effect.q < 1 or effect.q % 1 ~= 0
 			or type(effect.i) ~= "number" then return end
-		local member = effect.i == 0
+		-- character 0 is the host player's; a world server whose seat plays no character has only its ghost there (owner 2026-11-13)
+		local member = effect.i == 0 and not (api.is_dedicated and api.is_dedicated() == true)
 		for _, p in ipairs(players()) do if p.avatar_id == effect.i then member = true end end
 		local group = reward_group()
 		for _, m in ipairs(group and group.list() or {}) do if m.id == effect.i then member = true end end

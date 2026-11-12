@@ -793,6 +793,21 @@ do
 	pump()
 	check(Cm.faction == "freedom" and Hm.faction == "dolg" and map.faction == nil,
 		"personal faction changes on map server reach their real host/client characters")
+	-- owner 2026-11-13: the ghost actor of a map server / of a world server whose seat plays no character earns nothing
+	local ghost_rept, ghost_rank = map.rept, map.rank
+	map.env.game_statistics.increment_reputation(-33)
+	map.env.game_statistics.increment_rank(12)
+	pump()
+	check(map.rept == ghost_rept and map.rank == ghost_rank, "nobody's reputation and rank on a map server's ghost")
+	local dedicated = Hm.env.coop.is_dedicated
+	Hm.env.coop.is_dedicated = function() return true end
+	local world_rept, world_rank = Hm.rept, Hm.rank
+	Hm.env.game_statistics.increment_reputation(9)
+	Hm.env.game_statistics.increment_rank(4)
+	map.env.coop_tasks.with_character(0, function() map.env.game_statistics.increment_reputation(-15) end)
+	pump()
+	check(Hm.rept == world_rept and Hm.rank == world_rank, "nor on a world server's ghost, from its own logic or a map server's")
+	Hm.env.coop.is_dedicated = dedicated
 end
 
 print("== deferred guide fine follows the original character")

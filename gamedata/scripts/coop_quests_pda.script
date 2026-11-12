@@ -60,12 +60,15 @@ local function host_on_rank_req(t, from)
 	local size = p.get_rankings_array_size and p.get_rankings_array_size() or 100
 	local sim = alife()
 	local mine_id = qc.engine().avatar_of(from) -- on a map server's level he has no object here
+	local nobody = qc.actor_is_nobody() -- a world server's ghost actor: no line, no place (an ordinary host's actor is its player)
 	local entries = {}
 	for i = 1, size do
 		local id = list[i]
 		if id == nil then break end
 		local e
-		if id == 0 then
+		if id == 0 and nobody then
+			e = nil
+		elseif id == 0 then
 			local a = db.actor
 			e = { n = a:character_name(), r = a:character_rank(), c = a:character_community(), p = a:character_reputation(),
 				i = a:character_icon(), rn = ranks.get_obj_rank_name(a) }
@@ -84,7 +87,7 @@ local function host_on_rank_req(t, from)
 	-- the requester's place among all ranked stalkers and players
 	local my_rank = tonumber(t.r) or 0
 	local place = 1
-	if db.actor:character_rank() > my_rank then place = place + 1 end
+	if not nobody and db.actor:character_rank() > my_rank then place = place + 1 end
 	for i = 1, 65534 do
 		local se = sim:object(i)
 		if se and i ~= mine_id and IsStalker(nil, se:clsid()) and se:alive() and se:community() ~= "zombied"
@@ -144,6 +147,15 @@ local function own_entry()
 		rn = ranks.get_obj_rank_name(a), pn = rep_key(a:character_reputation()), me = true }
 end
 
+-- A client of a world server never shows the stock list: its own ALife holds the server's ghost as "the host's avatar" (the role
+-- swap of the join), and the stock list would rank it under the server's name until the server's answer comes (owner 2026-11-13:
+-- the server must exist nowhere). An ordinary host's client shows the stock list meanwhile, as before.
+function stock_ranks_allowed()
+	local api = qc.engine()
+	local ok, link = pcall(function() return api and api.server_link and api.server_link() end)
+	return not (ok and type(link) == "table" and link.plays == false)
+end
+
 local function patch_rankings()
 	local p = qc.mod("pda")
 	if not (type(p) == "table" and type(p.calculate_rankings) == "function") then return end
@@ -163,7 +175,10 @@ local function patch_rankings()
 			rank.seq = rank.seq + 1
 			if qc.send("rank_req", { r = db.actor:character_rank(), q = rank.seq }, 0) then stats.rank_req = stats.rank_req + 1 end
 		end
-		if not rank.cache then return calc(...) end -- the stock list until the host answers
+		if not rank.cache then
+			if stock_ranks_allowed() then return calc(...) end -- the stock list until the host answers
+			return -- a world server's client: nothing until its answer (stock_ranks_allowed)
+		end
 	end
 
 	local can_show = p.coc_rankings_can_show

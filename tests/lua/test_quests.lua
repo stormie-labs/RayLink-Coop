@@ -773,6 +773,7 @@ Cm.env.utils_obj = Hm.env.utils_obj
 Hm.env.story_objects = { story_id_by_object_id = {} }
 for _, M in ipairs({ Hm, Cm }) do
 	local s = load_script(M, "coop_quests_pda")
+	M.pda_script = s
 	s.on_game_start()
 	fire(M, "actor_on_first_update")
 end
@@ -781,6 +782,12 @@ check(Cm.stock_rank == 1, "stock list until the host answers")
 pump()
 check(Cm.env.pda.coc_rankings_set_name(3) == "3. se_710" and Cm.env.pda.coc_rankings_set_name(2):find("name_0", 1, true),
 	"client draws the host's list (its own row by its own name)")
+-- A client of a world server: its own ALife holds the server's ghost as "the host's avatar" (the role swap of the join); the stock
+-- list would rank it under the server's name until the answer comes (owner 2026-11-13: the server must exist nowhere).
+check(Cm.pda_script.stock_ranks_allowed() == true, "a client of an ordinary host may show the stock list until the host answers")
+Cm.env.coop.server_link = function() return { id = 0, nick = "server", plays = false } end
+check(Cm.pda_script.stock_ranks_allowed() == false, "a client of a world server never shows the stock list")
+Cm.env.coop.server_link = nil
 
 -- ---------------------------------------------------------------- coop_tasks additions
 print("== coop_tasks additions")

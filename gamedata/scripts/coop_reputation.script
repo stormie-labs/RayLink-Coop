@@ -104,6 +104,9 @@ local function install_relations()
 					if coop_npc_players.is_host() and id == 0 then
 						if name ~= "community_goodwill" and tasks.each_personal(registry[name], faction, id, ...) then return end
 						id = tasks.personal_character() or id
+						-- no player behind it: the ghost actor of a map server / a dedicated world server earns nothing (owner 2026-11-13)
+						local players = coop_npc_players
+						if id == 0 and name ~= "community_goodwill" and players.actor_is_nobody and players.actor_is_nobody() then return end
 					end
 					return original(faction, id, ...)
 				end

@@ -41,6 +41,15 @@ function is_host() return active() and api.is_host() == true end
 function is_map_server() return active() and api.is_map_server ~= nil and api.is_map_server() == true end
 function is_client() return active() and api.is_client() == true and not is_map_server() end
 function client_live() return is_client() and api.is_live() == true end
+-- This process's own actor is nobody (owner 2026-11-13): a world server whose seat plays no character (-coop_dedicated) and a map
+-- server stand a ghost actor in their ALife. It is not listed, ranked, named or counted, and earns nothing. An ordinary host's actor is
+-- the host player's character. Same rule as coop_npc_players.actor_is_nobody.
+function actor_is_nobody()
+	if not active() then return false end
+	if is_map_server() then return true end
+	local ok, yes = pcall(function() return api.is_dedicated ~= nil and api.is_dedicated() == true end)
+	return ok and yes == true
+end
 
 function self_peer()
 	if not api then return 0 end
