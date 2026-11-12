@@ -1,0 +1,211 @@
+--[[
+	Anomaly Coop - the writer of the new world's staging file, gamedata\scripts\coop_world_stage_file.script
+	(docs\plans\2026-11-12-split-levels-native.md sections 3.1 and 4.2, stage 6b). The game's new world screen with split levels
+	(coop_newgame_modes) writes the file at coop.world_server.stage_file() and starts the world server with stage = true; the
+	server reads it before its world starts (coop_dedicated.stage_new_world). The contract is the header comment of
+	engine\src\xrCoop\coop_world_stage.h: this script writes the same form as its write() (the same order and quoting) and
+	refuses, before anything is written, every file its parse would refuse.
+
+	Pure Lua, no engine call (write_file uses io only):
+	  build(record, values, creator) -> text | nil, why
+	      record   { id, name, title, faction, world = { story, routes, difficulty, economy } } (coop_game_record.new)
+	      values   { ["<src>|<path>"] = raw }   written sorted by key
+	      creator  nil (no [creator]) or { name, icon, loadout = { section, ... } | "a,b,c", money, map, bare }
+	  write_file(path, text) -> true | false, why
+--]]
+
+local tostring, tonumber, type, pairs, ipairs = tostring, tonumber, type, pairs, ipairs
+local floor = math.floor
+local tsort, tconcat = table.sort, table.concat
+
+MAX_FILE = 256 * 1024
+MAX_LINE = 4096
+MAX_VALUES = 2048
+MAX_KEY = 256
+MAX_VALUE = 1024
+MAX_NAME = 64
+MAX_TITLE = 64
+MAX_WORD = 64
+MAX_LOADOUT = 64
+MAX_MONEY = 10000000
+MAX_PRESET = 3
+
+local SOURCES = { o = true, m = true, c = true, g = true, e = true, s = true }
+
+-- 1..64 of a-z A-Z 0-9 _ . -   (no dots: an id is a file's stem)
+local function word(s, dots)
+	if type(s) ~= "string" or s == "" or #s > MAX_WORD then return false end
+	if dots == false then return s:find("[^%w_%-]") == nil end
+	return s:find("[^%w_%.%-]") == nil
+end
+
+-- no byte below 0x20 or 0x7F (the parse refuses them), no quote (there are no escapes)
+local function text_ok(s)
+	return s:find("[%z\1-\31\127\"]") == nil
+end
+
+local function blank(c) return c == " " or c == "\t" end
+
+-- the header's write(): quoted when it starts or ends with a blank (parse trims them otherwise)
+local function val(v)
+	if v ~= "" and (blank(v:sub(1, 1)) or blank(v:sub(-1))) then return "\"" .. v .. "\"" end
+	return v
+end
+
+local function scalar(v)
+	local t = type(v)
+	if t == "string" then return v end
+	if t == "boolean" then return v and "true" or "false" end
+	if t == "number" then
+		if v == floor(v) and v > -1e15 and v < 1e15 then return string.format("%d", v) end
+		return tostring(v)
+	end
+	return nil
+end
+
+local function text_field(where, v, max)
+	v = v == nil and "" or v
+	if type(v) ~= "string" then return nil, where .. " is not text" end
+	if #v > max then return nil, where .. " is longer than " .. max .. " bytes" end
+	if not text_ok(v) then return nil, where .. " has a control character or a quote" end
+	return v
+end
+
+local function flag_text(v, where)
+	if v == nil then return true, nil end
+	if v == true or v == 1 or v == "1" or v == "true" then return true, "1" end
+	if v == false or v == 0 or v == "0" or v == "false" then return true, "0" end
+	return false, where .. " is not 0 or 1"
+end
+
+local function preset_text(v, where)
+	if v == nil then return true, nil end
+	local n = tonumber(v)
+	if not n or n ~= floor(n) or n < 1 or n > MAX_PRESET then return false, where .. " is not 1.." .. MAX_PRESET end
+	return true, tostring(n)
+end
+
+local function loadout_list(v)
+	local out = {}
+	if v == nil then return out end
+	if type(v) == "string" then
+		for e in (v .. ","):gmatch("([^,]*),") do
+			e = e:gsub("^%s+", ""):gsub("%s+$", "")
+			if e ~= "" then out[#out + 1] = e end
+		end
+		return out
+	end
+	if type(v) ~= "table" then return nil end
+	for _, e in ipairs(v) do
+		if e ~= "" then out[#out + 1] = e end
+	end
+	return out
+end
+
+function build(record, values, creator)
+	if type(record) ~= "table" then return nil, "no record" end
+	local w = type(record.world) == "table" and record.world or {}
+	local o = { "[world]" }
+
+	if not word(record.faction) then return nil, "[world] faction '" .. tostring(record.faction) .. "' is not a faction's name" end
+	o[#o + 1] = "faction = " .. record.faction
+	local id = record.id
+	if id ~= nil and id ~= "" then
+		if not word(id, false) then return nil, "[world] id '" .. tostring(id) .. "' is not 1..64 of a-z 0-9 _ -" end
+		o[#o + 1] = "id = " .. id
+	end
+	local name, why = text_field("[world] name", record.name, MAX_NAME)
+	if not name then return nil, why end
+	o[#o + 1] = "name = " .. val(name)
+	local title, why2 = text_field("[world] title", record.title, MAX_TITLE)
+	if not title then return nil, why2 end
+	o[#o + 1] = "title = " .. val(title)
+	for _, k in ipairs({ "story", "routes" }) do
+		local ok, t = flag_text(w[k], "[world] " .. k)
+		if not ok then return nil, t end
+		if t then o[#o + 1] = k .. " = " .. t end
+	end
+	for _, k in ipairs({ "difficulty", "economy" }) do
+		local ok, t = preset_text(w[k], "[world] " .. k)
+		if not ok then return nil, t end
+		if t then o[#o + 1] = k .. " = " .. t end
+	end
+
+	local keys = {}
+	for k in pairs(type(values) == "table" and values or {}) do
+		if type(k) ~= "string" then return nil, "a value key that is not text" end
+		keys[#keys + 1] = k
+	end
+	if #keys > MAX_VALUES then return nil, "more than " .. MAX_VALUES .. " values" end
+	tsort(keys)
+	if #keys > 0 then
+		o[#o + 1] = ""
+		o[#o + 1] = "[values]"
+		for _, k in ipairs(keys) do
+			if #k < 3 or #k > MAX_KEY or k:sub(2, 2) ~= "|" or not SOURCES[k:sub(1, 1)] then
+				return nil, "the key '" .. k:sub(1, 64) .. "' is not <o|m|c|g|e|s>|<path> of at most " .. MAX_KEY .. " bytes"
+			end
+			if not text_ok(k) or k:find("=", 1, true) then return nil, "the key '" .. k:sub(1, 64) .. "' has a control character, a quote or '='" end
+			local v = scalar(values[k])
+			if v == nil then return nil, "the value of " .. k .. " is not a number, text or flag" end
+			if #v > MAX_VALUE then return nil, "the value of " .. k .. " is longer than " .. MAX_VALUE .. " bytes" end
+			if not text_ok(v) then return nil, "the value of " .. k .. " has a control character or a quote" end
+			o[#o + 1] = "\"" .. k .. "\" = " .. val(v)
+		end
+	end
+
+	if creator ~= nil then
+		if type(creator) ~= "table" then return nil, "[creator] is not a table" end
+		o[#o + 1] = ""
+		o[#o + 1] = "[creator]"
+		local cname, why3 = text_field("[creator] name", creator.name, MAX_NAME)
+		if not cname then return nil, why3 end
+		o[#o + 1] = "name = " .. val(cname)
+		for _, k in ipairs({ "icon", "loadout", "money", "map", "bare" }) do
+			local v = creator[k]
+			if k == "icon" or k == "map" then
+				v = v == nil and "" or v
+				if v ~= "" and not word(v) then return nil, "[creator] " .. k .. " '" .. tostring(v):sub(1, 64) .. "' is not a word" end
+				o[#o + 1] = k .. " = " .. v
+			elseif k == "loadout" then
+				local list = loadout_list(v)
+				if not list then return nil, "[creator] loadout is not a list" end
+				if #list > MAX_LOADOUT then return nil, "[creator] loadout has more than " .. MAX_LOADOUT .. " entries" end
+				for _, e in ipairs(list) do
+					if not word(e) then return nil, "[creator] loadout entry '" .. tostring(e):sub(1, 64) .. "' is not a section's name" end
+				end
+				o[#o + 1] = "loadout = " .. tconcat(list, ",")
+			elseif k == "money" then
+				local n = tonumber(v == nil and 0 or v)
+				if not n or n ~= floor(n) or n < 0 or n > MAX_MONEY then return nil, "[creator] money '" .. tostring(v) .. "' is not 0.." .. MAX_MONEY end
+				o[#o + 1] = "money = " .. string.format("%d", n)
+			else
+				if v == nil then v = false end
+				local ok, t = flag_text(v, "[creator] bare")
+				if not ok then return nil, t end
+				o[#o + 1] = "bare = " .. t
+			end
+		end
+	end
+
+	o[#o + 1] = ""
+	local text = tconcat(o, "\n")
+	if #text > MAX_FILE then return nil, "the file would have more than " .. MAX_FILE .. " bytes" end
+	for line in text:gmatch("([^\n]*)\n") do
+		if #line > MAX_LINE then return nil, "a line would be longer than " .. MAX_LINE .. " bytes" end
+	end
+	return text
+end
+
+function write_file(path, text)
+	if type(path) ~= "string" or path == "" then return false, "no path" end
+	local fh, err = io.open(path, "wb")
+	if not fh then return false, tostring(err) end
+	local ok, werr = fh:write(text)
+	fh:close()
+	if not ok then
+		os.remove(path)
+		return false, tostring(werr)
+	end
+	return true
+end

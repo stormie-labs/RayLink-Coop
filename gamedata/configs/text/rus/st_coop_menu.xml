@@ -709,4 +709,100 @@
 	<string id="st_coop_menu_btn_steam_invite">
 		<text>Пригласить через Steam</text>
 	</string>
+	<string id="st_coop_world_creating">
+		<text>Создаём мир…</text>
+	</string>
+	<string id="st_coop_world_opening">
+		<text>Открываем мир «%s»…</text>
+	</string>
+	<string id="st_coop_world_ready">
+		<text>Мир готов. Входим…</text>
+	</string>
+	<string id="st_coop_world_entering">
+		<text>Входим в мир…</text>
+	</string>
+	<string id="st_coop_world_connect_failed">
+		<text>Не удалось войти в мир</text>
+	</string>
+	<string id="st_coop_world_failed">
+		<text>Мир не запустился</text>
+	</string>
+	<string id="st_coop_world_crashed">
+		<text>Мир закрылся с ошибкой</text>
+	</string>
+	<string id="st_coop_world_saving">
+		<text>Сохраняем мир…</text>
+	</string>
+	<string id="st_coop_world_down">
+		<text>Мир закрыт</text>
+	</string>
+	<string id="st_coop_world_wait_default">
+		<text>Запускаем сервер мира</text>
+	</string>
+	<string id="st_coop_world_time">
+		<text>%s</text>
+	</string>
+	<string id="st_coop_world_here">
+		<text>Мир работает на этом ПК. Свободно памяти: %s ГБ</text>
+	</string>
+	<string id="st_coop_world_here_nomem">
+		<text>Мир работает на этом ПК</text>
+	</string>
+	<string id="st_coop_world_mem_note">
+		<text>Раздельные карты: мир работает отдельным процессом на этом ПК, +2–4 ГБ памяти</text>
+	</string>
+	<string id="st_coop_world_mem_low">
+		<text>Памяти мало: свободно %s ГБ. С раздельными картами мир работает отдельным процессом: +2–4 ГБ</text>
+	</string>
+	<string id="st_coop_world_btn_retry">
+		<text>Повторить</text>
+	</string>
+	<string id="st_coop_world_btn_open_again">
+		<text>Открыть снова</text>
+	</string>
+	<string id="st_coop_world_btn_close">
+		<text>Закрыть</text>
+	</string>
+	<string id="st_coop_world_err_no_engine">
+		<text>Эта игра не умеет запускать сервер мира.</text>
+	</string>
+	<string id="st_coop_world_err_no_stage">
+		<text>У сервера мира нет папки данных на этом ПК.</text>
+	</string>
+	<string id="st_coop_world_err_build">
+		<text>Новый мир нельзя записать: %s</text>
+	</string>
+	<string id="st_coop_world_err_write">
+		<text>Файл мира не записывается: %s</text>
+	</string>
+	<string id="st_coop_world_err_start">
+		<text>Сервер мира не запустился: %s</text>
+	</string>
+	<string id="st_coop_world_err_capture">
+		<text>Экран новой игры не закончил работу: %s</text>
+	</string>
+	<string id="st_coop_world_err_gave_up">
+		<text>Сервер не дождался мира</text>
+	</string>
+	<string id="st_coop_world_err_bad_args">
+		<text>Сервер отказался от настроек мира</text>
+	</string>
+	<string id="st_coop_world_err_no_save">
+		<text>Сохранение мира не найдено</text>
+	</string>
+	<string id="st_coop_world_err_ready_timeout">
+		<text>Мир не поднялся за 15 минут</text>
+	</string>
+	<string id="st_coop_world_err_killed">
+		<text>Сервер не остановился вовремя и был закрыт</text>
+	</string>
+	<string id="st_coop_world_err_exit">
+		<text>Сервер завершился с кодом %s</text>
+	</string>
+	<string id="st_coop_world_err_unknown">
+		<text>Сервер завершился без объяснения</text>
+	</string>
+	<string id="st_coop_world_err_old_split">
+		<text>Этот мир создан старым режимом раздельных карт и пока не открывается в новом: ваш персонаж потерялся бы. Перенос будет в одном из следующих обновлений.</text>
+	</string>
 </string_table>

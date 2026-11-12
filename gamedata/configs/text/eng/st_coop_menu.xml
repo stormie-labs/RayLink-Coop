@@ -709,4 +709,100 @@
 	<string id="st_coop_menu_btn_steam_invite">
 		<text>Invite through Steam</text>
 	</string>
+	<string id="st_coop_world_creating">
+		<text>Creating the world...</text>
+	</string>
+	<string id="st_coop_world_opening">
+		<text>Opening the world "%s"...</text>
+	</string>
+	<string id="st_coop_world_ready">
+		<text>The world is ready. Entering...</text>
+	</string>
+	<string id="st_coop_world_entering">
+		<text>Entering the world...</text>
+	</string>
+	<string id="st_coop_world_connect_failed">
+		<text>Could not enter the world</text>
+	</string>
+	<string id="st_coop_world_failed">
+		<text>The world did not start</text>
+	</string>
+	<string id="st_coop_world_crashed">
+		<text>The world closed with an error</text>
+	</string>
+	<string id="st_coop_world_saving">
+		<text>Saving the world...</text>
+	</string>
+	<string id="st_coop_world_down">
+		<text>The world is closed</text>
+	</string>
+	<string id="st_coop_world_wait_default">
+		<text>Starting the world server</text>
+	</string>
+	<string id="st_coop_world_time">
+		<text>%s</text>
+	</string>
+	<string id="st_coop_world_here">
+		<text>The world runs on this PC. Free memory: %s GB</text>
+	</string>
+	<string id="st_coop_world_here_nomem">
+		<text>The world runs on this PC</text>
+	</string>
+	<string id="st_coop_world_mem_note">
+		<text>Split levels: the world runs as a separate process on this PC, +2-4 GB of memory</text>
+	</string>
+	<string id="st_coop_world_mem_low">
+		<text>Low memory: %s GB free. With split levels the world runs as a separate process: +2-4 GB</text>
+	</string>
+	<string id="st_coop_world_btn_retry">
+		<text>Try again</text>
+	</string>
+	<string id="st_coop_world_btn_open_again">
+		<text>Open again</text>
+	</string>
+	<string id="st_coop_world_btn_close">
+		<text>Close</text>
+	</string>
+	<string id="st_coop_world_err_no_engine">
+		<text>This game cannot run a world server.</text>
+	</string>
+	<string id="st_coop_world_err_no_stage">
+		<text>The world server has no data folder on this PC.</text>
+	</string>
+	<string id="st_coop_world_err_build">
+		<text>The new world cannot be written: %s</text>
+	</string>
+	<string id="st_coop_world_err_write">
+		<text>The world's file cannot be written: %s</text>
+	</string>
+	<string id="st_coop_world_err_start">
+		<text>The world server did not start: %s</text>
+	</string>
+	<string id="st_coop_world_err_capture">
+		<text>The new game screen did not finish: %s</text>
+	</string>
+	<string id="st_coop_world_err_gave_up">
+		<text>The server gave up waiting for the world</text>
+	</string>
+	<string id="st_coop_world_err_bad_args">
+		<text>The server refused the world's settings</text>
+	</string>
+	<string id="st_coop_world_err_no_save">
+		<text>The world's save was not found</text>
+	</string>
+	<string id="st_coop_world_err_ready_timeout">
+		<text>The world did not get ready in 15 minutes</text>
+	</string>
+	<string id="st_coop_world_err_killed">
+		<text>The server did not stop in time and was closed</text>
+	</string>
+	<string id="st_coop_world_err_exit">
+		<text>The server ended with code %s</text>
+	</string>
+	<string id="st_coop_world_err_unknown">
+		<text>The server ended without saying why</text>
+	</string>
+	<string id="st_coop_world_err_old_split">
+		<text>This world was created by the old split-levels mode and cannot be opened in the new one yet: your character would be lost. It will be carried over in a coming update.</text>
+	</string>
 </string_table>

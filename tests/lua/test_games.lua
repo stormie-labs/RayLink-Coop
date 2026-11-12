@@ -329,4 +329,78 @@ local found = cg.scan_until_usable("g2")
 check(found and found.name == "coop_auto_g2_1" and #READ == 3 and not cg.scan_done(), "a click reads up to the newest good save of its game (" .. #READ .. ")")
 check(cg.scan_until_usable("nope") == nil and cg.scan_done(), "with no such save the whole folder is read")
 
+print("== Continue / Play of a world with split levels (stage 6b)")
+do
+	dofile("tests/lua/support/world_server_stub.lua")
+	STRINGS_MENU = {}
+	local fh = assert(io.open(ROOT .. "configs/text/eng/st_coop_menu.xml", "r"))
+	for id, text in fh:read("*a"):gmatch('<string id="([^"]+)">%s*<text>(.-)</text>') do STRINGS[id] = STRINGS[id] or text end
+	fh:close()
+	XML_FILES["ui_coop_chronicle.xml"] = xml_paths(ROOT .. "configs/ui/ui_coop_chronicle.xml")
+	CALLS = {}
+	coop.session_info = function() return INFO end
+	coop.is_host = function() return false end
+	coop.host_when_ready = function(p) CALLS[#CALLS + 1] = "pending " .. tostring(p); return true end
+	coop.connect = function(a) CALLS[#CALLS + 1] = "connect " .. a; return true end
+	install_world_server(coop)
+	function exec_console_cmd(c) CALLS[#CALLS + 1] = "exec " .. c end
+	function RegisterScriptCallback() end
+	level = { present = function() return false end }
+	function alife() return nil end
+	CARDS = {
+		g_new = { id = "g_new", name = "Strelok", title = "Split world", values = { ["c|coop_split_levels"] = "1" }, creator = { name = "Strelok" } },
+		g_old = { id = "g_old", name = "Strelok", title = "", values = { ["c|coop_split_levels"] = "1" } },
+		g_plain = { id = "g_plain", name = "Strelok", values = { ["c|coop_split_levels"] = "0" } },
+	}
+	coop_game_settings.load_card = function(id) return CARDS[id] end
+	local ww = load_module("coop_world_wait")
+	check(ww.continue_plan(CARDS.g_new) == "server", "split on, a creator in the record: the world server")
+	check(ww.continue_plan(CARDS.g_old) == "old_split", "split on, no creator: a world of the old split mode")
+	check(ww.continue_plan(CARDS.g_plain) == "local" and ww.continue_plan(nil) == "local", "split off or no card: loaded in this game as today")
+
+	local menu_mod = load_module("coop_menu")
+	local function fake(id)
+		local f = setmetatable({ sel_id = id, owner = { ShowDialog = function() end, HideDialog = function() end, Show = function() end } },
+			{ __index = menu_mod.UICoopMenu })
+		f.PrepareHost = function() return 27960 end
+		f.Refresh = function(self) self.refreshed = true end
+		f.Close = function(self) self.closed = true end
+		return f
+	end
+	ws_reset(); CALLS = {}; LOG = {}
+	local f = fake("g_new")
+	f:HostAfter("save", "coop_auto_g_new_1")
+	check(WS.calls[#WS.calls] == "start world=load save=coop_auto_g_new_1 port=27960 nick=Split world" and f.closed and #CALLS == 0,
+		"a split world: start{ world = load, save = stem }, no pending host, no load in this game")
+	check(ww.window_of() ~= nil, "and the waiting window")
+
+	ws_reset(); CALLS = {}; LOG = {}
+	f = fake("g_old")
+	f:HostAfter("save", "coop_auto_g_old_1")
+	check(#WS.calls == 0 and #CALLS == 0 and not f.closed and f.local_error == STRINGS.st_coop_world_err_old_split and f.refreshed,
+		"an old split world: refused with a text, the player stays in the window, nothing loads")
+	check(log_has("old split"), "a log line of the refusal")
+
+	ws_reset(); CALLS = {}; LOG = {}
+	WS.start_ok, WS.start_why = false, "a world server of this game runs already"
+	f = fake("g_new")
+	f.Failed = function(self, why) self.failed = why end
+	f:HostAfter("save", "coop_auto_g_new_1")
+	check(f.failed and f.failed:find("runs already", 1, true) and not f.closed and #CALLS == 0, "the server refused: said in the window")
+
+	ws_reset(); CALLS = {}; LOG = {}
+	f = fake("g_plain")
+	f:HostAfter("save", "coop_auto_g_plain_1")
+	check(#WS.calls == 0 and CALLS[1] == "pending 27960" and CALLS[#CALLS]:find("coop_auto_g_plain_1", 1, true), "a world without split levels: as today")
+
+	-- -coop_world_auto <stem> follows the same rule
+	BLOCKS.coop_auto_g_old_2 = { id = "g_old" }
+	coop_game_settings.game_of_save = function(stem) local b = BLOCKS[stem]; return b and b.id, b end
+	function command_line() return "x.exe -coop_world_auto coop_auto_g_old_2" end
+	ws_reset(); LOG = {}
+	ww.state_of().auto_done = false
+	ww.on_menu_frame({ ShowDialog = function() end, HideDialog = function() end, Show = function() end })
+	check(#WS.calls == 0 and log_has("auto: ! coop_auto_g_old_2 is a world of the old split mode"), "-coop_world_auto refuses an old split world with a log line")
+end
+
 print(string.format("%d passed, %d failed", PASSES, FAILS))

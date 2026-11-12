@@ -1,0 +1,734 @@
+--[[
+	Anomaly Coop - the world server of this game: its start and the waiting window, gamedata\scripts\coop_world_wait.script
+	(docs\plans\2026-11-12-split-levels-native.md 3.1, 3.2, 3.4, 3.5; stage 6b).
+
+	With "Split levels" (c|coop_split_levels) a world does not run in the player's game: the game starts a hidden world server on
+	this PC (coop.world_server.start, engine stage 6a), waits for it in this window and joins it as its creator
+	(coop.connect("127.0.0.1:<port>"); the engine adds the creator's token, the server makes his character from the staging
+	file's [creator]). One game for the player: no console, no second window.
+
+	  start_new(record, values, creator, port, nick)   the new world screen (coop_newgame_modes) and -coop_world_auto new:
+	                                                   the staging file (coop_world_stage_file) at stage_file(), start{ world =
+	                                                   "new", stage = true }, then the Co-op window's pending host is cancelled
+	  start_load(stem, port, nick)                     Continue / Play of such a world (coop_menu HostAfter) and the auto stem
+	  continue_plan(card)                              "local" (load in this game, as always), "server", or "old_split": a world of
+	                                                   the old split mode (no creator in its record) is refused, its save's actor
+	                                                   is the creator's character and a world server would make him its ghost
+	  open(owner, ctx)                                 the waiting window over the main menu
+	  view(state, now, ctx)                            pure: what the window shows for a state of coop.world_server.state()
+	  leave(owner)                                     the creator left the session: the server saves and quits ("Saving the world")
+	  attach(menu)                                     from coop_menu.on_main_menu_init: a frame hook of the main menu that runs
+	                                                   on_menu_frame (the unattended -coop_world_auto, the end of the session)
+
+	Every phase change of the window writes one line "[coop-world-wait] <key> ..." (keys: none, starting, world, session, ready,
+	entering, connect_failed, failed, crashed, stopping, down); the stand scripts assert on them.
+
+	Unattended runs (lower-cased by the engine): -coop_world_auto new [-coop_world_faction <faction>]  or  -coop_world_auto <save stem>.
+--]]
+
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+local string_format = string.format
+local floor, max = math.floor, math.max
+
+local XML_FILE = "ui_coop_chronicle.xml"
+local UI_W, UI_H = 1024, 768
+local POLL_MS = 250
+local LOW_MB = 4096
+local SPLIT_KEY = "c|coop_split_levels"
+local MAX_LINES = 20
+
+local function api() return rawget(_G, "coop") end
+local function ws()
+	local a = api()
+	return a and a.world_server or nil
+end
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	line = "[coop-world-wait] " .. (ok and line or tostring(fmt))
+	local pf = rawget(_G, "printf")
+	if pf then pcall(pf, "%s", line) end
+end
+
+-- translated string, %s filled in order (the translations may hold other %)
+function tr(id, ...)
+	local s = id
+	local g = rawget(_G, "game")
+	if g and g.translate_string then
+		local ok, r = pcall(g.translate_string, id)
+		if ok and r ~= nil then s = tostring(r) end
+	end
+	local n = select("#", ...)
+	if n > 0 then
+		local args, i = { ... }, 0
+		s = s:gsub("%%s", function()
+			i = i + 1
+			return tostring(args[i] == nil and "" or args[i])
+		end)
+	end
+	return s
+end
+
+local function has_text(id) return tr(id) ~= id end
+
+-- text from outside into a text window: no % or \ (colour codes, line breaks)
+local function plain(s) return (tostring(s or ""):gsub("[%%\\]", "?")) end
+
+local function module_of(name)
+	local m = rawget(_G, name)
+	if m == nil then
+		local ok, r = pcall(function() return _G[name] end)
+		m = ok and r or nil
+	end
+	return type(m) == "table" and m or nil
+end
+
+local function now_ms()
+	local ok, t = pcall(function() return device():time_continual() end)
+	return ok and tonumber(t) or 0
+end
+
+local function level_loaded()
+	local lv = rawget(_G, "level")
+	return lv ~= nil and lv.present ~= nil and lv.present() == true
+end
+
+-- the state of this process: the last world it started, and whether its creator is in it
+local S = { last = nil, connected = false, joined = false, wnd = nil, auto_done = false, hooked = false, actor_hooked = false }
+
+function state_of() return S end
+function window_of() return S.wnd end
+
+-------------------------------------------------------------------------------
+-- Pure parts
+-------------------------------------------------------------------------------
+local function gb(mb) return string_format("%.1f", (tonumber(mb) or 0) / 1024) end
+
+-- The line of the new world screen under the split setting: -> text, low (true: the warning colour). Never blocks the choice.
+function memory_line(mem)
+	local free = type(mem) == "table" and tonumber(mem.commit_free_mb) or nil
+	if free and free < LOW_MB then return tr("st_coop_world_mem_low", gb(free)), true end
+	return tr("st_coop_world_mem_note"), false
+end
+
+-- The small line of the waiting window.
+function here_line(mem)
+	local free = type(mem) == "table" and tonumber(mem.commit_free_mb) or nil
+	if free then return tr("st_coop_world_here", gb(free)) end
+	return tr("st_coop_world_here_nomem")
+end
+
+local function mmss(ms)
+	local s = floor((tonumber(ms) or 0) / 1000)
+	return string_format("%d:%02d", floor(s / 60), s % 60)
+end
+
+local function error_of(st)
+	local code = st.error ~= nil and tostring(st.error) or ""
+	local text = st.error_text ~= nil and tostring(st.error_text) or ""
+	local id = "st_coop_world_err_" .. code
+	if code ~= "" and has_text(id) then
+		return text ~= "" and (tr(id) .. ": " .. plain(text)) or tr(id)
+	end
+	if text ~= "" then return plain(text) end
+	if st.exit_code ~= nil then return tr("st_coop_world_err_exit", tostring(st.exit_code)) end
+	return tr("st_coop_world_err_unknown")
+end
+
+local function last_lines(st)
+	local out = {}
+	local src = type(st.lines) == "table" and st.lines or {}
+	for i = max(1, #src - MAX_LINES + 1), #src do out[#out + 1] = plain(src[i]) end
+	return out
+end
+
+-- view(state, now, ctx) -> { key, title_id, title, detail, lines, can_cancel, action ("connect" | "close" | nil), primary, secondary }
+--   ctx = { kind = "new" | "load", name, connected, connect_failed, stopping, local_error }
+function view(st, now, ctx)
+	ctx = type(ctx) == "table" and ctx or {}
+	local v = { lines = {}, can_cancel = false, detail = "" }
+	local named = ctx.kind == "load" and ctx.name ~= nil and ctx.name ~= ""
+	local function title(id, arg)
+		v.title_id = id
+		v.title = arg ~= nil and tr(id, arg) or tr(id)
+	end
+	local function opening()
+		if named then title("st_coop_world_opening", plain(ctx.name)) else title("st_coop_world_creating") end
+	end
+	local s = type(st) == "table" and st.state or nil
+	if s == nil then
+		v.key = "none"
+		opening()
+	elseif s == "starting" then
+		local ph = tostring(st.phase or "none")
+		v.key = (ph == "world" or ph == "session") and ph or "starting"
+		opening()
+		local wait = st.wait_text ~= nil and tostring(st.wait_text) ~= "" and plain(st.wait_text) or tr("st_coop_world_wait_default")
+		v.detail = wait .. "    " .. tr("st_coop_world_time", mmss(st.elapsed_ms))
+		v.can_cancel = true
+	elseif s == "ready" then
+		if ctx.connect_failed then
+			v.key = "connect_failed"
+			title("st_coop_world_connect_failed")
+			v.detail = plain(ctx.connect_failed)
+			v.primary, v.secondary = "st_coop_world_btn_retry", "st_coop_world_btn_close"
+		elseif ctx.connected then
+			v.key = "entering"
+			title("st_coop_world_entering")
+		else
+			v.key = "ready"
+			title("st_coop_world_ready")
+			v.action = "connect"
+		end
+	elseif s == "failed" or s == "crashed" or (s == "down" and st.error ~= nil and not ctx.stopping) then
+		v.key = s == "crashed" and "crashed" or "failed"
+		title(v.key == "crashed" and "st_coop_world_crashed" or "st_coop_world_failed")
+		v.detail = error_of(st)
+		v.lines = last_lines(st)
+		v.primary = v.key == "crashed" and "st_coop_world_btn_open_again" or "st_coop_world_btn_retry"
+		v.secondary = "st_coop_world_btn_close"
+	elseif s == "stopping" then
+		v.key = "stopping"
+		title("st_coop_world_saving")
+	elseif s == "down" then
+		v.key = "down"
+		title("st_coop_world_down")
+		if ctx.stopping then
+			v.action = "close"
+		else
+			v.primary, v.secondary = "st_coop_world_btn_open_again", "st_coop_world_btn_close"
+		end
+	else
+		v.key = tostring(s)
+		opening()
+	end
+	if ctx.local_error and ctx.local_error ~= "" then
+		v.detail = plain(ctx.local_error) .. (v.detail ~= "" and ("    " .. v.detail) or "")
+	end
+	return v
+end
+
+function split_on(values)
+	if type(values) ~= "table" then return false end
+	local v = values[SPLIT_KEY]
+	return v == true or v == "true" or tonumber(v) == 1
+end
+
+-- A game's card (coop_game_settings.load_card): where its saves are played.
+function continue_plan(card)
+	if type(card) ~= "table" or not split_on(card.values) then return "local" end
+	if card.creator == nil then return "old_split" end
+	return "server"
+end
+
+-- the world's name for the window and -coop_nick: its title, else the creator's character's name
+function card_name(card)
+	if type(card) ~= "table" then return "" end
+	local t = type(card.title) == "string" and card.title or ""
+	if t:find("%S") then return t end
+	return type(card.name) == "string" and card.name or ""
+end
+
+-- the plan of the game with this id: plan, card
+function plan_for_game(id)
+	local gs = module_of("coop_game_settings")
+	if id == nil or not (gs and type(gs.load_card) == "function") then return "local", nil end
+	local ok, card = pcall(gs.load_card, id)
+	if not ok then
+		log("! the card of %s cannot be read: %s", tostring(id), tostring(card))
+		return "local", nil
+	end
+	return continue_plan(card), card
+end
+
+-- -coop_world_auto new | <stem>, -coop_world_faction <faction>
+function parse_auto(line)
+	if type(line) ~= "string" then return nil end
+	local what = line:match("%-coop_world_auto%s+([^%s%-][^%s]*)")
+	if not what then return nil end
+	return { what = what, faction = line:match("%-coop_world_faction%s+([%w_%.]+)") or "stalker" }
+end
+
+-------------------------------------------------------------------------------
+-- Starting
+-------------------------------------------------------------------------------
+local function hook_actor()
+	if S.actor_hooked then return end
+	local reg = rawget(_G, "RegisterScriptCallback")
+	if type(reg) ~= "function" then return end
+	S.actor_hooked = true
+	reg("actor_on_first_update", actor_on_first_update)
+end
+
+-- -> true | false, the text for the player
+function start_new(record, values, creator, port, nick)
+	local W = ws()
+	if not W then
+		log("! not started: this exe has no world server")
+		return false, tr("st_coop_world_err_no_engine")
+	end
+	local path = W.stage_file()
+	if type(path) ~= "string" or path == "" then
+		log("! not started: no staging file path (stage_file)")
+		return false, tr("st_coop_world_err_no_stage")
+	end
+	local sf = module_of("coop_world_stage_file")
+	local text, why = nil, "coop_world_stage_file is missing"
+	if sf then text, why = sf.build(record, values, creator) end
+	if not text then
+		log("! not started: the staging file cannot be built: %s", tostring(why))
+		return false, tr("st_coop_world_err_build", plain(why))
+	end
+	local okw, werr = sf.write_file(path, text)
+	if not okw then
+		log("! not started: the staging file cannot be written: %s", tostring(werr))
+		return false, tr("st_coop_world_err_write", plain(werr))
+	end
+	local ok, err = W.start({ world = "new", stage = true, port = port, nick = nick })
+	if not ok then
+		os.remove(path)
+		log("! not started: %s", tostring(err))
+		return false, tr("st_coop_world_err_start", plain(err))
+	end
+	-- the world runs elsewhere: this game must not host the level it never loads (coop_menu HostAfter armed it)
+	pcall(api().host_when_ready, nil)
+	S.last = { kind = "new", name = nick, port = port, nick = nick }
+	S.connected, S.joined = false, false
+	hook_actor()
+	log("start new world '%s' on port %s (faction %s)", tostring(nick), tostring(port), tostring(record and record.faction))
+	return true
+end
+
+function start_load(stem, port, nick)
+	local W = ws()
+	if not W then
+		log("! not started: this exe has no world server")
+		return false, tr("st_coop_world_err_no_engine")
+	end
+	local ok, err = W.start({ world = "load", save = stem, port = port, nick = nick })
+	if not ok then
+		log("! not started: %s", tostring(err))
+		return false, tr("st_coop_world_err_start", plain(err))
+	end
+	S.last = { kind = "load", name = nick, port = port, nick = nick, save = stem }
+	S.connected, S.joined = false, false
+	hook_actor()
+	log("start load '%s' on port %s", tostring(stem), tostring(port))
+	return true
+end
+
+-------------------------------------------------------------------------------
+-- The window: the frame, fonts, colours and buttons of the Co-op window's dialog (coop_menu BuildModal, the theme's modal)
+-------------------------------------------------------------------------------
+class "UICoopWorldWait" (CUIScriptWnd)
+
+function UICoopWorldWait:__init(owner, ctx) super()
+	self.owner = owner
+	self.ctx = ctx or {}
+	self.next_poll = 0
+	self.key = nil
+	self:InitControls()
+	self:AddCallback("btn_ww_primary", ui_events.BUTTON_CLICKED, self.OnPrimary, self)
+	self:AddCallback("btn_ww_secondary", ui_events.BUTTON_CLICKED, self.OnSecondary, self)
+end
+
+function UICoopWorldWait:__finalize() end
+
+function UICoopWorldWait:InitControls()
+	self:SetWndRect(Frect():set(0, 0, UI_W, UI_H))
+	self:Enable(true)
+	local T = coop_menu_theme_base.load()
+	self.T = T
+	self.ui = coop_ui_kit.new(self, XML_FILE, T)
+	local ui, L = self.ui, self.ui.L
+	local B = T.layout.modal
+	local xml = ui.xml
+
+	local root = xml:InitStatic("tpl_free", self)
+	root:SetWndRect(Frect():set(0, 0, UI_W, UI_H))
+	ui:flush_text(root)
+	local dim = xml:InitStatic("tpl_box", root)
+	dim:SetWndRect(Frect():set(0, 0, UI_W, UI_H))
+	dim:SetTextureColor(ui:color("modal_dim"))
+	local back = xml:Init3tButton("tpl_none", root) -- nothing under the window takes a click
+	back:SetWndRect(Frect():set(0, 0, UI_W, UI_H))
+	self:Register(back, "btn_ww_back")
+
+	-- the dialog of the Co-op window, wider and taller: the last lines of the server's log fit under the text
+	local w = B.w + 2 * B.btn_w + 2 * B.btn_gap
+	local lines_h = 22 * 12
+	local h = B.text_y + B.text_h + B.pad + lines_h + B.pad + B.btn_h + B.pad
+	local x, y = (T.design.w - w) / 2, max(40, (T.design.h - h) / 2)
+	local p = xml:InitStatic("tpl_free", root)
+	p:SetWndRect(Frect():set(L:rect(x, y, w, h)))
+	ui:box(p, 0, 0, w, h, "panel")
+	ui:outline(p, 0, 0, w, h, "line")
+	self.title = ui:label(p, B.pad, B.pad, w - 2 * B.pad, B.title_h, "modal_title", "l")
+	self.detail = ui:label(p, B.pad, B.text_y, w - 2 * B.pad, B.text_h, "modal_text", "m")
+	self.lines_text = ui:label(p, B.pad, B.text_y + B.text_h + B.pad, w - 2 * B.pad, lines_h, "status_sub", "m")
+
+	local by = h - B.pad - B.btn_h
+	self.here = ui:label(p, B.pad, by, w - 2 * B.pad - 2 * B.btn_w - 2 * B.btn_gap, B.btn_h, "hint", "l")
+	local okx = w - B.pad - B.btn_w
+	self.primary_pieces = ui:notched(p, okx, by, B.btn_w, B.btn_h, B.notch, "accent")
+	self.primary_text = ui:label(p, okx, by, B.btn_w, B.btn_h, "modal_ok", "c")
+	self.btn_primary = ui:hit(p, okx, by, B.btn_w, B.btn_h, "btn_ww_primary")
+	ui:on_hover(self.btn_primary, function(on) ui:tint(self.primary_pieces, on and "accent_hi" or "accent") end)
+	local nox = okx - B.btn_gap - B.btn_w
+	self.secondary_line = ui:outline(p, nox, by, B.btn_w, B.btn_h, "line")
+	self.secondary_text = ui:label(p, nox, by, B.btn_w, B.btn_h, "modal_no", "c")
+	self.btn_secondary = ui:hit(p, nox, by, B.btn_w, B.btn_h, "btn_ww_secondary")
+	ui:on_hover(self.btn_secondary, function(on) ui:tint(self.secondary_line, on and "accent" or "line") end)
+	self:ShowButtons(nil, nil)
+end
+
+local function show_list(list, on)
+	for _, w in ipairs(list) do w:Show(on) end
+end
+
+function UICoopWorldWait:ShowButtons(primary, secondary)
+	local p, s = primary ~= nil, secondary ~= nil
+	show_list(self.primary_pieces, p)
+	self.primary_text:Show(p)
+	self.primary_text:SetText(p and tr(primary) or "")
+	self.btn_primary:Show(p)
+	self.btn_primary:Enable(p)
+	show_list(self.secondary_line, s)
+	self.secondary_text:Show(s)
+	self.secondary_text:SetText(s and tr(secondary) or "")
+	self.btn_secondary:Show(s)
+	self.btn_secondary:Enable(s)
+end
+
+function UICoopWorldWait:Update()
+	CUIScriptWnd.Update(self)
+	local now = now_ms()
+	if self.closed then return end
+	pcall(function() self.ui:hover() end)
+	if now < self.next_poll then return end
+	self.next_poll = now + POLL_MS
+	local ok, err = pcall(self.Step, self, now)
+	if not ok and not self.step_failed then
+		self.step_failed = true
+		log("! the window's step failed: %s", tostring(err))
+	end
+end
+
+-- the client's own answer after connect: refused or lost before the world came
+function UICoopWorldWait:WatchClient()
+	local ctx = self.ctx
+	if not ctx.connected or ctx.connect_failed then return end
+	local a = api()
+	local info = a.session_info() or {}
+	if info.active == true then
+		ctx.saw_active = true
+		return
+	end
+	local err = info.last_error
+	if ctx.saw_active or (err ~= nil and err ~= ctx.err_before) then
+		local cm = module_of("coop_menu")
+		local text = cm and cm.error_text and cm.error_text(info) or ""
+		if text == "" then text = tostring(err or "?") end
+		ctx.connect_failed = text
+	end
+end
+
+function UICoopWorldWait:Connect(st)
+	local ctx = self.ctx
+	local a = api()
+	local info = a.session_info() or {}
+	ctx.err_before = info.last_error
+	ctx.connect_failed, ctx.saw_active = nil, false
+	local addr = "127.0.0.1:" .. tostring(st and st.port or 0)
+	local ok, why = a.connect(addr)
+	if ok then
+		ctx.connected = true
+		S.connected = true
+		log("connect %s", addr)
+	else
+		ctx.connected = false
+		ctx.connect_failed = tostring(why or "?")
+		log("! connect %s refused: %s", addr, tostring(why))
+	end
+end
+
+function UICoopWorldWait:Step(now)
+	local W = ws()
+	local st = W and W.state() or nil
+	self.state = st
+	self:WatchClient()
+	local v = view(st, now, self.ctx)
+	if v.key ~= self.key then
+		self.key = v.key
+		log("%s state=%s phase=%s port=%s%s", v.key, tostring(st and st.state), tostring(st and st.phase), tostring(st and st.port),
+			(v.key == "failed" or v.key == "crashed" or v.key == "connect_failed") and (" " .. v.detail) or "")
+	end
+	self.title:SetText(v.title or "")
+	self.detail:SetText(v.detail or "")
+	self.lines_text:SetText(table.concat(v.lines, "\\n"))
+	local a = api()
+	self.here:SetText(here_line(a and a.machine_memory and a.machine_memory() or nil))
+	self:ShowButtons(v.primary, v.can_cancel and "st_coop_menu_btn_cancel" or v.secondary)
+	if v.action == "connect" and not self.ctx.connected then
+		self:Connect(st)
+	elseif v.action == "close" then
+		self:Close()
+	end
+end
+
+-- Try again / Open again
+function UICoopWorldWait:OnPrimary()
+	local ctx = self.ctx
+	local key = self.key
+	local last = S.last or {}
+	ctx.local_error = nil
+	if key == "connect_failed" then
+		ctx.connected = false
+		self:Connect(self.state)
+		return
+	end
+	local ok, why
+	local st = self.state or {}
+	if key == "failed" and last.kind == "new" and (st.phase == "none" or st.phase == "starting" or st.phase == nil) then
+		log("retry: the new world again")
+		local W = ws()
+		ok, why = W.start({ world = "new", stage = true, port = last.port, nick = last.nick })
+		if not ok then why = tr("st_coop_world_err_start", plain(why)) end
+	else
+		local save = (key == "failed" and last.kind == "load" and last.save) or "last"
+		log("retry: open the world from %s", tostring(save))
+		local name = last.name
+		ok, why = start_load(save, last.port, last.nick)
+		if ok then S.last.name, S.last.kind = name, "load" end
+	end
+	if not ok then
+		ctx.local_error = why
+	else
+		ctx.connected, ctx.connect_failed, ctx.stopping = false, nil, false
+		self.key = nil
+	end
+	self.next_poll = 0
+end
+
+-- Cancel / Close: a server that runs is told to save and quit, the window waits for it
+function UICoopWorldWait:OnSecondary()
+	local W = ws()
+	if W and W.running() then
+		log("cancel: the world server saves and quits")
+		W.stop()
+		self.ctx.stopping = true
+		self.next_poll = 0
+		return
+	end
+	self:Close()
+end
+
+function UICoopWorldWait:OnKeyboard(dik, keyboard_action)
+	local res = CUIScriptWnd.OnKeyboard(self, dik, keyboard_action)
+	if res == false and keyboard_action == ui_events.WINDOW_KEY_PRESSED and dik == DIK_keys.DIK_ESCAPE then
+		if self.btn_secondary:IsShown() then self:OnSecondary() end
+		return true
+	end
+	return res
+end
+
+-- back to the main menu
+function UICoopWorldWait:Close()
+	self.closed = true
+	if self:IsShown() then self:HideDialog() end
+	self:Show(false)
+	local owner = self.owner
+	if owner and not level_loaded() then
+		pcall(function()
+			owner:ShowDialog(true)
+			owner:Show(true)
+		end)
+	end
+	if S.wnd == self then S.wnd = nil end
+end
+
+-- the level of the world came: the window has done its work
+function UICoopWorldWait:Leave()
+	self.closed = true
+	if self:IsShown() then self:HideDialog() end
+	self:Show(false)
+end
+
+-- Opens the waiting window over the main menu. ctx: { kind, name, port, save, stopping }
+function open(owner, ctx)
+	if S.wnd and S.wnd ~= nil then pcall(function() S.wnd:Leave() end) end
+	local ok, res = pcall(function()
+		local wnd = UICoopWorldWait(owner, ctx)
+		wnd:ShowDialog(true)
+		if owner then
+			owner:HideDialog()
+			owner:Show(false)
+		end
+		return wnd
+	end)
+	if not ok then
+		log("! the waiting window failed: %s", tostring(res))
+		return nil
+	end
+	S.wnd = res
+	log("window: %s '%s'", tostring(ctx and ctx.kind), tostring(ctx and ctx.name))
+	return res
+end
+
+-------------------------------------------------------------------------------
+-- In the world and leaving it
+-------------------------------------------------------------------------------
+function actor_on_first_update()
+	local a = api()
+	if not (S.connected and a and a.is_active()) then return end
+	S.joined = true
+	log("joined: the creator is in the world")
+	if S.wnd then
+		pcall(function() S.wnd:Leave() end)
+		S.wnd = nil
+	end
+end
+
+function owns_world()
+	local W = ws()
+	return S.last ~= nil and W ~= nil and W.running() == true
+end
+
+-- The creator's game left the session (Disconnect, exit to the menu, the session ended for any reason).
+function leave(owner)
+	S.joined, S.connected = false, false
+	local W = ws()
+	if not (W and S.last) then return false end
+	local last = S.last
+	if W.running() then
+		log("leave: the world server saves and quits")
+		W.stop()
+		open(owner, { kind = last.kind, name = last.name, port = last.port, stopping = true })
+		return true
+	end
+	local st = W.state()
+	if type(st) == "table" and (st.state == "crashed" or st.state == "failed" or (st.state == "down" and st.error ~= nil)) then
+		log("leave: the world server closed with an error (%s)", tostring(st.error or st.exit_code))
+		open(owner, { kind = last.kind, name = last.name, port = last.port })
+		return true
+	end
+	return false
+end
+
+-------------------------------------------------------------------------------
+-- Unattended runs: -coop_world_auto
+-------------------------------------------------------------------------------
+local function host_port()
+	local cm = module_of("coop_menu")
+	if cm and type(cm.get_port) == "function" then
+		local ok, p = pcall(cm.get_port)
+		if ok and cm.check_port and cm.check_port(p) then return cm.check_port(p) end
+	end
+	local a = api()
+	local info = a and a.session_info and a.session_info() or {}
+	return tonumber(info.default_port) or 27960
+end
+
+local function auto_new(menu, faction)
+	local sc, rec = module_of("coop_game_schema"), module_of("coop_game_record")
+	if not (sc and rec) then
+		log("auto: ! no coop_game_schema or coop_game_record")
+		return
+	end
+	local values = {}
+	for _, key in ipairs(sc.keys()) do
+		local src = sc.parse_key(key)
+		if src == "c" or src == "o" or src == "m" then
+			local v = sc.default(key)
+			local raw = v ~= nil and sc.to_raw(key, v) or nil
+			if raw ~= nil then values[key] = raw end
+		end
+	end
+	values[SPLIT_KEY] = "1"
+	local record = rec.new(values, { name = "tester", faction = faction })
+	local creator = { name = "tester", icon = "", loadout = {}, money = 5000, map = "", bare = true }
+	log("auto: new world, faction %s", faction)
+	local port = host_port()
+	local ok, why = start_new(record, values, creator, port, "tester")
+	if not ok then
+		log("auto: ! %s", tostring(why))
+		return
+	end
+	open(menu, { kind = "new", name = "tester", port = port })
+end
+
+local function auto_load(menu, stem)
+	local gs = module_of("coop_game_settings")
+	local id = gs and gs.game_of_save and gs.game_of_save(stem) or nil
+	local plan, card = plan_for_game(id)
+	log("auto: continue %s (game %s, %s)", stem, tostring(id), plan)
+	if plan == "old_split" then
+		log("auto: ! %s is a world of the old split mode: refused, the creator's character would be lost", stem)
+		return
+	end
+	if plan ~= "server" then
+		log("auto: ! %s is not a split-levels world: nothing is done", stem)
+		return
+	end
+	local port, name = host_port(), card_name(card)
+	local ok, why = start_load(stem, port, name)
+	if not ok then
+		log("auto: ! %s", tostring(why))
+		return
+	end
+	open(menu, { kind = "load", name = name, save = stem, port = port })
+end
+
+function run_auto(menu)
+	if S.auto_done then return end
+	S.auto_done = true
+	local f = rawget(_G, "command_line")
+	if type(f) ~= "function" then return end
+	local ok, line = pcall(f)
+	local a = parse_auto(ok and line or nil)
+	if not a then return end
+	if level_loaded() or (api() and api().is_active()) then
+		log("auto: ! a game or a session is already running: nothing is done")
+		return
+	end
+	if a.what == "new" then auto_new(menu, a.faction) else auto_load(menu, a.what) end
+end
+
+-- Every frame of the main menu (and once from attach).
+function on_menu_frame(menu)
+	run_auto(menu)
+	local a = api()
+	if S.joined and a and not a.is_active() then leave(menu) end
+end
+
+-- From coop_menu.on_main_menu_init: the Update of the stock class gets a hook once per script state.
+function attach(menu)
+	hook_actor()
+	if not S.hooked then
+		local m = module_of("ui_main_menu")
+		local cls = m and m.main_menu
+		if cls ~= nil and type(cls.Update) == "function" then
+			S.hooked = true
+			local stock = cls.Update
+			cls.Update = function(self, ...)
+				stock(self, ...)
+				local ok, err = pcall(on_menu_frame, self)
+				if not ok and not S.frame_failed then
+					S.frame_failed = true
+					log("! the menu frame failed: %s", tostring(err))
+				end
+			end
+		else
+			log("! no main menu Update to hook: -coop_world_auto and the end of a session wait for the next menu")
+		end
+	end
+	on_menu_frame(menu)
+end
+
+function on_game_start()
+	local reg = rawget(_G, "RegisterScriptCallback")
+	if type(reg) == "function" then
+		S.actor_hooked = true
+		reg("actor_on_first_update", actor_on_first_update)
+	end
+end

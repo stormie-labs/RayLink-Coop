@@ -291,6 +291,28 @@ local function count_other(values)
 	return n_o, n_m
 end
 
+local SPLIT_KEY_NOTE = "c|coop_split_levels"
+
+-- The note under the split setting: low memory (less than 4 GB of free commit) turns it into the warning line, in the warning
+-- colour of the Co-op window. It never blocks the choice.
+local function memory_note(dlg, tab)
+	local ww = mod("coop_world_wait")
+	local wnd = dlg.coop_view and dlg.coop_view.note_text and dlg.coop_view.note_text[tab]
+	if not (ww and wnd) then return end
+	local api = coop_api()
+	local mem = nil
+	if api and type(api.machine_memory) == "function" then
+		local ok, m = pcall(api.machine_memory)
+		if ok then mem = m end
+	end
+	local text, low = ww.memory_line(mem)
+	if low then
+		wnd:SetText(text)
+		wnd:SetTextColor(coop_ui_kit.argb(coop_menu_theme_base.DEFAULTS.colors.wait))
+		log("low memory for a world server: %s MB of commit free", tostring(mem and mem.commit_free_mb))
+	end
+end
+
 local function build_block(dlg)
 	local xml = CScriptXmlInit()
 	xml:ParseFile("ui_coop_newgame.xml") -- ui_coop_newgame_16.xml on wide screens
@@ -301,6 +323,12 @@ local function build_block(dlg)
 	dlg.coop_snapshot_at = ok_date and stamp or ""
 	dlg.coop_header = xml:InitStatic(path .. "cap_gs_header", parent)
 	local view_module = mod("coop_game_settings_view")
+	-- split levels: a note on the tab of the setting, the world would run as a separate process (stage 6b)
+	local notes = { saves = "st_coop_newgame_saves_note" }
+	local sc = schema()
+	local split_item = sc and sc.item and sc.item(SPLIT_KEY_NOTE) or nil
+	local split_tab = split_item and split_item.tab or nil
+	if split_tab and notes[split_tab] == nil then notes[split_tab] = "st_coop_world_mem_note" end
 	dlg.coop_view = view_module.new(dlg, {
 		xml = xml, parent = parent, path = path, values = values, tabs = TABS, external = EXTERNAL,
 		pages = {
@@ -309,10 +337,11 @@ local function build_block(dlg)
 				return string_format(tr("st_coop_newgame_other"), tostring(n_o), tostring(n_m), dlg.coop_snapshot_at)
 			end,
 		},
-		notes = { saves = "st_coop_newgame_saves_note" },
+		notes = notes,
 	})
 	dlg.coop_hint = xml:InitTextWnd(path .. "text_gs_hint", parent)
 	dlg.coop_hint:SetText(tr("st_coop_newgame_hint"))
+	if split_tab and notes[split_tab] == "st_coop_world_mem_note" then try("memory note", memory_note, dlg, split_tab) end
 end
 
 -- "st_diff_2" -> 2 (the stock keeps the preset as the id of its string)
@@ -430,9 +459,120 @@ local function will_start(dlg)
 	return true
 end
 
+-------------------------------------------------------------------------------
+-- Split levels (docs\plans\2026-11-12-split-levels-native.md 3.1, stage 6b): the world runs in a world server on this PC
+-------------------------------------------------------------------------------
+local SPLIT_KEY = "c|coop_split_levels"
+-- every key the stock OnStartGame writes (ui_mm_faction_select.script UINewGame:OnStartGame; soulslike: the GAMMA injector)
+local CREATION_KEYS = {
+	"new_game_difficulty", "new_game_economy", "new_game_economy_treasure", "new_game_hardcore_mode",
+	"new_game_hardcore_mode_lives", "new_game_hardcore_mode_regenerate", "new_game_story_mode", "new_game_azazel_mode",
+	"new_game_survival_mode", "new_game_campfire_mode", "new_game_conditions_mode", "new_game_opened_routes", "new_game_warfare",
+	"new_game_timer_mode", "new_game_soulslike_mode", "new_game_character_name", "new_game_faction", "new_game_icon",
+	"new_game_loadout", "new_game_map", "new_game_money",
+}
+
+local function split_chosen(dlg)
+	local view = dlg.coop_view
+	if type(view) ~= "table" or type(view.get) ~= "function" then return false end
+	local ok, v = pcall(view.get, view, SPLIT_KEY)
+	return ok and (v == true or tonumber(v) == 1)
+end
+
+-- Runs the stock start (with whatever wrappers it has) once with a trap on main_menu:StartGame: the stock writes
+-- [character_creation], the trap takes it, the keys are erased at once and no world starts in this game.
+-- -> creator | nil, why (why nil: the stock did not start, a name is missing or a pop-up is open)
+function capture_creator(dlg)
+	local owner = dlg.owner
+	local am = rawget(_G, "axr_main")
+	local cfg = am and am.config
+	if owner == nil or cfg == nil then return nil, "no main menu or no axr_main.config" end
+	local is_table = type(owner) == "table"
+	local own = is_table and rawget(owner, "StartGame") or nil
+	local prev = owner.StartGame
+	local fired = false
+	owner.StartGame = function() fired = true end
+	local ok, err = pcall(dlg.OnStartGame, dlg)
+	if is_table then rawset(owner, "StartGame", own) else owner.StartGame = prev end
+	local got = {}
+	for _, key in ipairs(CREATION_KEYS) do
+		local v
+		if cfg.r_string_ex then v = cfg:r_string_ex(SECTION, key) else v = cfg:r_value(SECTION, key, 3) end
+		if v ~= nil then
+			got[key] = tostring(v)
+			cfg:w_value(SECTION, key)
+		end
+	end
+	if next(got) ~= nil then cfg:save() end
+	if not ok then return nil, tostring(err) end
+	if not fired then return nil, nil end
+	local typed = ""
+	local okn, text = pcall(function() return dlg.character_name:GetText() end)
+	if okn and type(text) == "string" then typed = text end
+	local loadout = got.new_game_loadout or ""
+	return {
+		name = typed ~= "" and typed or (got.new_game_character_name or ""),
+		faction = got.new_game_faction,
+		icon = got.new_game_icon or "",
+		loadout = loadout,
+		money = math.floor(tonumber(got.new_game_money) or 0),
+		map = got.new_game_map or "",
+		bare = not loadout:find("%S"),
+	}
+end
+
+-- a message on the screen, in the error colour of the Co-op window, under the block
+local function say(dlg, text)
+	log("! split levels: %s", tostring(text))
+	local hint = dlg.coop_hint
+	if hint == nil then return end
+	pcall(function()
+		hint:SetText(tostring(text))
+		hint:SetTextColor(coop_ui_kit.argb(coop_menu_theme_base.DEFAULTS.colors.error))
+	end)
+end
+
+local function host_port()
+	local api = coop_api()
+	local ok, info = pcall(api.session_info)
+	local p = ok and type(info) == "table" and tonumber(info.pending_host) or nil
+	if p then return p end
+	local cm = mod("coop_menu")
+	return cm and cm.check_port and cm.check_port(cm.get_port()) or 27960
+end
+
+local function start_split(dlg)
+	local ww, rec = mod("coop_world_wait"), mod("coop_game_record")
+	if not (ww and rec) then return say(dlg, tr("st_coop_world_err_no_engine")) end
+	local values = dlg.coop_view:collect()
+	local creator, why = capture_creator(dlg)
+	if not creator then
+		if why then return say(dlg, tr("st_coop_world_err_capture"):gsub("%%s", function() return tostring(why) end)) end
+		log("split levels: the stock screen did not start (no name or a pop-up)")
+		return
+	end
+	local meta = record_meta(dlg)
+	if creator.faction and creator.faction ~= "" then meta.faction = creator.faction end
+	local record = rec.new(values, meta)
+	local name = (record.title and record.title:find("%S")) and record.title or record.name
+	local port = host_port()
+	local ok, err = ww.start_new(record, values, creator, port, name)
+	if not ok then return say(dlg, err) end
+	log("split levels: the world server starts (faction %s, port %s)", tostring(record.faction), tostring(port))
+	try("remember the rules", remember_rules, values)
+	local owner = dlg.owner
+	pcall(function() dlg:HideDialog() end)
+	ww.open(owner, { kind = "new", name = name, port = port })
+end
+
 -- Module function: the callback of btn_start of a co-op dialog (stored by AddCallback).
 function on_start_clicked(dlg)
 	try("modes off", force_off, dlg)
+	if will_start(dlg) and split_chosen(dlg) then
+		local ok, err = pcall(start_split, dlg)
+		if not ok then say(dlg, tostring(err)) end
+		return
+	end
 	if will_start(dlg) then try("game settings", write_rules, dlg) end
 	return dlg:OnStartGame()
 end

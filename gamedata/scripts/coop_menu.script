@@ -1987,10 +1987,38 @@ local function load_save(stem)
 	end
 end
 
+-- A save of a world with split levels (stage 6b): its world server is started on this PC and the waiting window joins it
+-- (coop_world_wait); nothing is loaded in this game. -> true when the save was handled here (started or refused).
+function UICoopMenu:ContinueSplit(stem, port)
+	local W = module_of("coop_world_wait")
+	if not W then return false end
+	local plan, card = W.plan_for_game(self.sel_id)
+	if plan == "local" then return false end
+	if plan == "old_split" then
+		-- its save's actor is the creator's character: a world server would make him its ghost (plan 5.4, a later stage)
+		log("! '%s' is a world of the old split mode: not opened (the creator's character would be lost)", tostring(stem))
+		self.local_error = tr("st_coop_world_err_old_split")
+		self:Refresh()
+		return true
+	end
+	local name = W.card_name(card)
+	local ok, why = W.start_load(stem, port, name)
+	if not ok then
+		self:Failed(why)
+		return true
+	end
+	log("the world server opens '%s' on port %d", tostring(stem), port)
+	local owner = self.owner
+	self:Close()
+	W.open(owner, { kind = "load", name = name, save = stem, port = port })
+	return true
+end
+
 -- Pending host + a way to get a level: the stock new game screen, or a save of this game.
 function UICoopMenu:HostAfter(start, stem, title)
 	local port = self:PrepareHost()
 	if not port then return end
+	if start == "save" and self:ContinueSplit(stem, port) then return end
 	choose_ring(start == "save" and self.sel_id or nil) -- a new game has no id yet: its record names the ring when it is in force
 	local ok, why = api.host_when_ready(port)
 	if not ok then return self:Failed(why) end
@@ -2075,6 +2103,14 @@ end
 function UICoopMenu:OnDisconnect()
 	self.local_error = nil
 	api.disconnect()
+	-- the creator of a world that runs on this PC leaves it: the world server saves and quits (plan 3.5)
+	local W = module_of("coop_world_wait")
+	if W and W.owns_world() then
+		local owner = self.owner
+		self:Close()
+		W.leave(owner)
+		return
+	end
 	self:Refresh()
 end
 
@@ -2208,4 +2244,7 @@ function on_main_menu_init(menu)
 	if not ok then log("! main menu hook failed: %s", tostring(err)) end
 	local okt, errt = pcall(touch_map, menu)
 	if not okt then log("! the map is not touched: %s", tostring(errt)) end
+	-- the world server of this game: the end of its session, -coop_world_auto (coop_world_wait, stage 6b)
+	local okw, errw = pcall(function() coop_world_wait.attach(menu) end)
+	if not okw then log("! the world server's menu hook: %s", tostring(errw)) end
 end
