@@ -1,0 +1,370 @@
+--[[
+	Anomaly Coop - guards for third-party script errors that end the game (gamedata\scripts\coop_mods_fixes.script).
+
+	A Lua error inside an engine-called function (a UI functor, a dialog precondition, a script callback on the host) is a
+	FATAL of CScriptEngine::lua_pcall_failed. Each guard below changes nothing where the original answers; it only answers
+	in the case that was fatal, and says so once in the log with what it saw, so the next report names the cause.
+
+	V1  ui_options.cont_vid_mode (the "resolution" list of the options menu; RL-MSYY-7HAC, RL-NBSV-UM22, RL-U48B-CSHH, main
+	    menu and client): it parses game.get_resolutions() and does w/h on tonumber("<w>x<h>"). The engine's string is
+	    vid_modes_string() (engine xrGame\level_script.cpp), which returns c_str() of a local xr_string (freed before Lua copies
+	    it), and an output with no mode >= 800 wide gives "" (str_explode("") is {""}): either way an entry is no number and
+	    'w' is nil. Here the stock list is kept when it builds; otherwise the valid entries (or the current vid_mode) are used.
+	    Installed from coop_main_menu.attach (the menu exists before any world) and at on_game_start.
+	V2  ssfx_weapons_dof actor_on_update (host RL-8ARK-RYS6): `local is_pda = itm and slot == 8 or slot == 14 or false` is true
+	    for slot 14 with no item, then itm:get_state() (line 269). The engine keeps the active slot after the item in it is
+	    gone until the hide finishes (Inventory.cpp Drop: m_slots[..].m_pIItem = NULL, Activate(NO_ACTIVE_SLOT) deferred; for
+	    a dead actor never), and FDDA animations live in slot 14. The handler is skipped for exactly that state (slot 14,
+	    no active item); in place in axr_main's table, same priority and route wrapper.
+	V3  spairs / hspairs / mspairs of nil on a co-op client (RL-K5WA-XMZZ, _g_patches.script:817 = hspairs, so a caller with an
+	    order function): a table the host has and a client may lack (WPO's item_parts.get_parts_con(obj) without evaluate is
+	    nil for a weapon whose "parts" never reached this machine; zzzz_arti_jamming_repairs.has_suitable_kit runs from the
+	    inventory context menu). The caller is not proven: on a client the loop is empty and the caller's file:line and stack
+	    go to the log (once per place). Host and single player: the stock error.
+	V4  tasks_guide.is_not_guider_companion / is_guider_companion (dialog preconditions of dm_companion_leave(2), the guide's
+	    talk; client RL-WZND-SWZJ, tasks_guide.script:447): get_object_squad(npc).id with no squad. On a client a member of a
+	    squad that came over the wire has m_group_id free (engine coop_entities.cpp, group_bound), so get_object_squad is
+	    nil. With a squad the original answers; without one the guide's squad (curr_guid) is asked whether it lists the NPC.
+--]]
+
+local tostring, type, pairs, ipairs, pcall, rawget = tostring, type, pairs, ipairs, pcall, rawget
+
+local said = {}
+local stats = { vid = 0, ssfx = 0, spairs = 0, guide = 0 }
+local installed = {}
+
+local function log(fmt, ...)
+	local ok, line = pcall(string.format, fmt, ...)
+	local pf = rawget(_G, "printf")
+	if pf then pcall(pf, "%s", "[coop-mods] [fixes] " .. (ok and line or tostring(fmt))) end
+end
+
+local function once(key, fmt, ...)
+	if said[key] then return end
+	said[key] = true
+	log(fmt, ...)
+end
+
+local function mod(name)
+	local ok, m = pcall(function() return _G[name] end)
+	return ok and type(m) == "table" and m or nil
+end
+
+local function is_client()
+	local core = rawget(_G, "coop_mods_core")
+	if type(core) ~= "table" or type(core.is_client) ~= "function" then return false end
+	local ok, r = pcall(core.is_client)
+	return ok and r == true
+end
+
+local function read_script(name)
+	local ok, path = pcall(function() return getFS():update_path("$game_scripts$", name .. ".script") end)
+	if not (ok and type(path) == "string") then return nil end
+	local fh = io.open(path, "rb")
+	if not fh then return nil end
+	local src = fh:read("*a")
+	fh:close()
+	return src
+end
+
+local function line_of(src, needle)
+	local at = src:find(needle, 1, true)
+	if not at or src:find(needle, at + 1, true) then return nil end
+	local n = 1
+	for _ in src:sub(1, at - 1):gmatch("\n") do n = n + 1 end
+	return n
+end
+
+-- A local of a module: an upvalue of one of its functions.
+local function module_local(m, name)
+	for _, f in pairs(m) do
+		if type(f) == "function" then
+			for i = 1, 255 do
+				local n, v = debug.getupvalue(f, i)
+				if n == nil then break end
+				if n == name then return v end
+			end
+		end
+	end
+	return nil
+end
+
+-------------------------------------------------------------------------------
+-- V1 ui_options.cont_vid_mode
+-------------------------------------------------------------------------------
+local vid_wrapped = setmetatable({}, { __mode = "k" }) -- wrapper -> true
+
+local RATIOS = { { 5, 4, "(5:4)" }, { 4, 3, "(4:3)" }, { 16, 9, "(16:9)" }, { 16, 10, "(16:10)" }, { 21, 9, "(21:9)" }, { 32, 9, "(32:9)" } }
+
+local function round1(x) return math.floor(x * 10 + 0.5) / 10 end
+
+local function ratio_of(w, h)
+	local r = round1(w / h)
+	for _, q in ipairs(RATIOS) do
+		if round1(q[1] / q[2]) == r then return q[3] end
+	end
+	return ""
+end
+
+-- The valid "<w>x<h>" entries of a resolution string, in the stock's row format; and the count of the others.
+function vid_rows(raw)
+	local rows, bad = {}, 0
+	for entry in tostring(raw or ""):gmatch("[^,]+") do
+		local w, h = entry:match("^%s*(%d+)x(%d+)%s*$")
+		w, h = tonumber(w), tonumber(h)
+		if w and h and w > 0 and h > 0 then
+			rows[#rows + 1] = { w .. "x" .. h, w .. " x " .. h .. " " .. ratio_of(w, h) }
+		else
+			bad = bad + 1
+		end
+	end
+	return rows, bad
+end
+
+local function safe_vid_mode(stock)
+	local f = function(...)
+		local ok, cont = pcall(stock, ...)
+		if ok and type(cont) == "table" and #cont > 0 then return cont end
+		stats.vid = stats.vid + 1
+		local okr, raw = pcall(function() return game.get_resolutions() end)
+		raw = okr and raw or nil
+		local rows, bad = vid_rows(raw)
+		if #rows == 0 then
+			local okc, cur = pcall(get_console_cmd, 0, "vid_mode")
+			rows = vid_rows(okc and cur or nil)
+		end
+		once("vid", "! options: the resolution list failed (%s); game.get_resolutions() = %q (%d chars, %d bad entr%s): %d row(s) used",
+			tostring(ok and "empty" or cont), tostring(raw):sub(1, 160), raw and #tostring(raw) or 0, bad, bad == 1 and "y" or "ies", #rows)
+		return rows
+	end
+	vid_wrapped[f] = true
+	return f
+end
+
+local function swap_content(t, from, to, seen, depth)
+	if type(t) ~= "table" or seen[t] or depth > 8 then return 0 end
+	seen[t] = true
+	local n = 0
+	if type(t.content) == "table" and t.content[1] == from then
+		t.content[1] = to
+		n = n + 1
+	end
+	for _, v in pairs(t) do
+		if type(v) == "table" then n = n + swap_content(v, from, to, seen, depth + 1) end
+	end
+	return n
+end
+
+function guard_options()
+	local uo = mod("ui_options")
+	local stock = uo and rawget(uo, "cont_vid_mode")
+	if type(stock) ~= "function" or vid_wrapped[stock] then return false end
+	local f = safe_vid_mode(stock)
+	uo.cont_vid_mode = f -- init_opt_base reads the global when it builds the table
+	swap_content(rawget(uo, "options"), stock, f, {}, 0) -- a table built already (ui_options.get) holds the stock one
+	installed[#installed + 1] = "vid_modes"
+	return true
+end
+
+-------------------------------------------------------------------------------
+-- V2 ssfx_weapons_dof actor_on_update
+-------------------------------------------------------------------------------
+local SSFX_HEADER = "local function actor_on_update()"
+local SSFX_LINE = "local is_pda = itm and slot == 8 or slot == 14 or false"
+
+local function intercepts()
+	local r = rawget(_G, "coop_route")
+	if type(r) == "table" and type(r.intercepts) == "function" then
+		local ok, t = pcall(r.intercepts)
+		if ok and type(t) == "table" then return t end
+	end
+	local am = rawget(_G, "axr_main")
+	local f = type(am) == "table" and am.callback_set
+	if type(f) ~= "function" then return nil end
+	for i = 1, 255 do
+		local n, v = debug.getupvalue(f, i)
+		if n == nil then return nil end
+		if n == "intercepts" and type(v) == "table" then return v end
+	end
+	return nil
+end
+
+-- Replaces handler `target` of `callback` by `repl` where it sits: the key itself (same priority) or an upvalue of the
+-- key (the route's wrapper keeps its domain and priority). Returns the number of places.
+function swap_handler(callback, is_target, make)
+	local t = intercepts()
+	local list = t and t[callback]
+	if type(list) ~= "table" then return 0 end
+	local keys = {}
+	for k in pairs(list) do keys[#keys + 1] = k end
+	local n = 0
+	for _, k in ipairs(keys) do
+		if type(k) == "function" then
+			if is_target(k) then
+				local v = list[k]
+				list[k] = nil
+				list[make(k)] = v
+				n = n + 1
+			else
+				for i = 1, 255 do
+					local name, v = debug.getupvalue(k, i)
+					if name == nil then break end
+					if type(v) == "function" and is_target(v) then
+						debug.setupvalue(k, i, make(v))
+						n = n + 1
+					end
+				end
+			end
+		end
+	end
+	return n
+end
+
+local function ssfx_guard(f)
+	return function(...)
+		local a = db.actor
+		if a then
+			local ok, slot = pcall(a.active_slot, a)
+			if ok and slot == 14 and a:active_item() == nil then
+				stats.ssfx = stats.ssfx + 1
+				once("ssfx", "! ssfx_weapons_dof: active slot 14 with no item in it: its update is skipped while it lasts (line 269 was FATAL)")
+				return
+			end
+		end
+		return f(...)
+	end
+end
+
+function guard_ssfx()
+	if installed.ssfx then return false end
+	if not mod("ssfx_weapons_dof") then return false end
+	local src = read_script("ssfx_weapons_dof")
+	if not src then return false end
+	if not src:find(SSFX_LINE, 1, true) then return false end -- another version: nothing to guard
+	local line = line_of(src, SSFX_HEADER)
+	if not line then return false end
+	local function is_target(f)
+		local info = debug.getinfo(f, "S")
+		if not (info and info.linedefined == line and type(info.source) == "string") then return false end
+		local s = info.source:lower():gsub("/", "\\")
+		return s:sub(-#"ssfx_weapons_dof.script") == "ssfx_weapons_dof.script"
+	end
+	local n = swap_handler("actor_on_update", is_target, ssfx_guard)
+	if n > 0 then
+		installed.ssfx = true
+		installed[#installed + 1] = "ssfx_dof"
+	end
+	return n > 0
+end
+
+-------------------------------------------------------------------------------
+-- V3 spairs of nil on a client
+-------------------------------------------------------------------------------
+local function empty_iter() return nil end
+
+local function spairs_guard(name, orig)
+	return function(t, ...)
+		if t ~= nil or not is_client() then return orig(t, ...) end
+		stats.spairs = stats.spairs + 1
+		local info = debug.getinfo(2, "Sl")
+		local at = info and (tostring(info.short_src) .. ":" .. tostring(info.currentline)) or "?"
+		if not said["sp:" .. at] then
+			said["sp:" .. at] = true
+			log("! %s(nil) from %s on a client: the loop is empty (stock: FATAL in _g_patches)\n%s", name, at,
+				debug.traceback("", 2))
+		end
+		return empty_iter
+	end
+end
+
+function guard_spairs()
+	if installed.spairs then return false end
+	local n = 0
+	for _, name in ipairs({ "spairs", "hspairs", "mspairs" }) do
+		local f = rawget(_G, name)
+		if type(f) == "function" then
+			_G[name] = spairs_guard(name, f)
+			n = n + 1
+		end
+	end
+	installed.spairs = n > 0
+	if n > 0 then installed[#installed + 1] = "spairs_nil" end
+	return n > 0
+end
+
+-------------------------------------------------------------------------------
+-- V4 tasks_guide companion preconditions
+-------------------------------------------------------------------------------
+local function lists_member(squad, id)
+	if not (squad and id) then return false end
+	local ok, found = pcall(function()
+		for m in squad:squad_members() do
+			if m.id == id then return true end
+		end
+		return false
+	end)
+	return ok and found == true
+end
+
+-- nil: the NPC has a squad (the original answers); else whether it is a member of the guide's squad.
+local function guide_member_without_squad(m, actor, npc)
+	local who = dialogs.who_is_npc(actor, npc)
+	if get_object_squad(who) ~= nil then return nil end
+	local job = module_local(m, "curr_guid")
+	local sid = type(job) == "table" and job.squad_id or nil
+	local member = sid ~= nil and lists_member(alife_object(sid), who and who:id()) or false
+	stats.guide = stats.guide + 1
+	once("guide", "! tasks_guide: NPC %s has no squad here (a squad from the wire leaves its members unbound): asked the guide's squad %s instead (%s)",
+		tostring(who and who:id()), tostring(sid), tostring(member))
+	return member
+end
+
+function guard_guide()
+	if installed.guide then return false end
+	local m = mod("tasks_guide")
+	if not m then return false end
+	local is_not, is = rawget(m, "is_not_guider_companion"), rawget(m, "is_guider_companion")
+	if type(is_not) ~= "function" or type(is) ~= "function" then return false end
+	m.is_not_guider_companion = function(actor, npc)
+		local member = guide_member_without_squad(m, actor, npc)
+		if member == nil then return is_not(actor, npc) end
+		return not member
+	end
+	m.is_guider_companion = function(actor, npc)
+		local member = guide_member_without_squad(m, actor, npc)
+		if member == nil then return is(actor, npc) end
+		return member
+	end
+	installed.guide = true
+	installed[#installed + 1] = "tasks_guide"
+	return true
+end
+
+-------------------------------------------------------------------------------
+-- Start
+-------------------------------------------------------------------------------
+local function step(what, f)
+	local ok, err = pcall(f)
+	if not ok then log("! %s: %s", what, tostring(err)) end
+end
+
+local function actor_on_first_update()
+	step("ssfx_weapons_dof", guard_ssfx) -- after every on_game_start: its handler is registered there
+end
+
+-- on_game_start must not throw (axr_main runs them in one unprotected loop).
+function on_game_start()
+	if not rawget(_G, "coop") then return end
+	step("ui_options", guard_options)
+	step("spairs", guard_spairs)
+	step("tasks_guide", guard_guide)
+	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
+end
+
+function print_status()
+	log("installed: %s | vid %d, ssfx %d, spairs %d, guide %d", #installed > 0 and table.concat(installed, ", ") or "none",
+		stats.vid, stats.ssfx, stats.spairs, stats.guide)
+end
+
+function _stats() return stats end
+function _installed() return installed end

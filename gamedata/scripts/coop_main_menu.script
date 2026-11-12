@@ -514,6 +514,9 @@ function attach(menu)
 	live_menu = menu
 	known_menus[menu] = true
 	hook_options()
+	-- before any world: the resolution list of the options (a FATAL in ui_options.cont_vid_mode) and the craft tooltips
+	pcall(function() return coop_mods_fixes.guard_options() end)
+	pcall(function() return coop_mods_guard.craft_tooltip_ready() end)
 	local T = coop_menu_theme_base.load()
 	if not T.main_menu.enabled then return false end
 	if not has_widget_api(menu.shniaga) then

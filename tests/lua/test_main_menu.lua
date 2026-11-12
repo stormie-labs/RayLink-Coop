@@ -137,6 +137,12 @@ SAVES = { { name = "game_a", stamp = "29/10/2026 23:38", game = "g1", at = { lev
 GAMES = { { id = "g1", name = "Halt", title = "With Kent" }, { id = "g2", name = "Other", title = "Other" } }
 local menu = new_menu(COLD)
 check(mm.attach(menu) == true, "attaches")
+local MENU_HOOKS = {}
+coop_mods_fixes = { guard_options = function() MENU_HOOKS.vid = (MENU_HOOKS.vid or 0) + 1 end }
+coop_mods_guard = { craft_tooltip_ready = function() MENU_HOOKS.craft = (MENU_HOOKS.craft or 0) + 1; error("boom") end }
+check(mm.attach(new_menu(COLD)) == true, "a failing craft tooltip guard leaves the menu")
+check(MENU_HOOKS.vid == 1 and MENU_HOOKS.craft == 1, "the menu sets up the resolution list guard and the craft tooltips before any world")
+coop_mods_fixes, coop_mods_guard = nil, nil
 local v = menu.coop_view
 check(v ~= nil, "the view is held by the menu instance")
 check(menu.shniaga.silent == true, "the stock widget goes silent")
