@@ -27,11 +27,146 @@ local function on()
 	return api ~= nil and type(api.is_dedicated) == "function" and api.is_dedicated() == true
 end
 
+local function log(fmt, ...)
+	local ok, line = pcall(string.format, fmt, ...)
+	local pf = rawget(_G, "printf")
+	if pf then pcall(pf, "%s", "[coop] dedicated: " .. (ok and line or tostring(fmt))) end
+end
+
+-- A script module by name, or nil (loaded by _G.__index on the first use).
+local function mod(name)
+	local m = rawget(_G, name)
+	if m == nil then
+		local ok, r = pcall(function() return _G[name] end)
+		m = ok and r or nil
+	end
+	return type(m) == "table" and m or nil
+end
+
+-- The record of the world in force (coop_game_settings): a world staged from coop_new_world.ltx has one, a plain new world none.
+local function record()
+	local gs = mod("coop_game_settings")
+	if not (gs and type(gs.active) == "function") then return nil end
+	local ok, r = pcall(gs.active)
+	return ok and type(r) == "table" and r or nil
+end
+
+-- Plan 2026-11-12 stage 5: a world staged from coop_new_world.ltx is the creator's choice, and the record that came with it (the engine
+-- carried it over the restart of Lua at the world start: coop.game.stage_new) says so. Without a record: NEW_WORLD as always.
+local function world_settings()
+	local r = record()
+	local w = r and type(r.world) == "table" and r.world
+	if not (w and type(r.faction) == "string" and r.faction ~= "") then return NEW_WORLD, false end
+	local t = {}
+	for key, value in pairs(NEW_WORLD) do t[key] = value end
+	t.new_game_faction = r.faction
+	if type(w.difficulty) == "number" then t.new_game_difficulty = w.difficulty end
+	if type(w.economy) == "number" then t.new_game_economy, t.new_game_economy_treasure = w.economy, w.economy end
+	t.new_game_story_mode = w.story == true or nil -- the stock screen writes nothing for an unchecked box
+	t.new_game_opened_routes = w.routes == true or nil
+	return t, true
+end
+
 function new_world_settings()
 	local config = axr_main and axr_main.config
 	if not config then return false end
-	for key, value in pairs(NEW_WORLD) do config:w_value("character_creation", key, value) end
+	local settings, staged = world_settings()
+	for key, value in pairs(settings) do config:w_value("character_creation", key, value) end
+	if staged then
+		-- a key whose value is nil above (story off, routes closed) is removed: what an earlier run left must not count
+		for _, key in ipairs({ "new_game_story_mode", "new_game_opened_routes" }) do
+			if settings[key] == nil then config:w_value("character_creation", key) end
+		end
+		log("the new world of the staging file: faction %s, difficulty %s, economy %s, story %s, routes %s", tostring(settings.new_game_faction),
+			tostring(settings.new_game_difficulty), tostring(settings.new_game_economy), tostring(settings.new_game_story_mode == true),
+			tostring(settings.new_game_opened_routes == true))
+	end
 	for _, key in ipairs(NEVER) do config:w_value("character_creation", key) end
+	return true
+end
+
+-------------------------------------------------------------------------------
+-- Plan 2026-11-12 stage 5: a new world from coop_new_world.ltx (-coop_stage, xrCoop\coop_world_stage.h)
+-------------------------------------------------------------------------------
+local FACTOR_SOURCES = { g = true, e = true, s = true }
+
+-- A value of the file as the record keeps it: text for o / m / c (the schema's canonical form), a number or a boolean for g / e / s.
+local function record_value(key, raw)
+	local src = key:match("^(%a)|")
+	if FACTOR_SOURCES[src] then
+		if raw == "true" then return true end
+		if raw == "false" then return false end
+		return tonumber(raw)
+	end
+	local sc = mod("coop_game_schema")
+	return sc and type(sc.canon) == "function" and sc.canon(key, raw) or raw
+end
+
+-- Called by the engine (coop_dedicated.cpp first_frame) before the new world starts. `stage` is the file as the engine parsed and checked
+-- it (coop_world_stage.h): { world = { id, name, title, faction, story, routes, difficulty, economy }, values = { [key] = text },
+-- creator = { name, icon, loadout = { sec, ... }, money, map, bare } | nil }; an absent flag or preset is nil. The record is built as the
+-- game's new world screen builds it and handed to the engine (coop_game_settings.stage_new), which keeps it over the restart of Lua and
+-- gives it to before_world_start("new"). true, or false and why: then nothing is staged and the engine starts no world.
+function stage_new_world(path, stage)
+	local w = type(stage) == "table" and type(stage.world) == "table" and stage.world
+	if not w then return false, "no stage" end
+	if type(w.faction) ~= "string" or w.faction == "" then return false, "the stage has no faction" end
+	local r, gs = mod("coop_game_record"), mod("coop_game_settings")
+	if not (r and gs and type(gs.stage_new) == "function") then return false, "no coop_game_record or coop_game_settings" end
+	local values, dropped = {}, 0
+	for key, raw in pairs(type(stage.values) == "table" and stage.values or {}) do
+		local v = type(key) == "string" and type(raw) == "string" and record_value(key, raw)
+		if v == nil or v == false and raw ~= "false" then
+			dropped = dropped + 1
+			log("! the staging file's %s = '%s' is not a value of its kind: dropped", tostring(key), tostring(raw))
+		else
+			values[key] = v
+		end
+	end
+	local c = type(stage.creator) == "table" and stage.creator or nil
+	local name = type(w.name) == "string" and w.name ~= "" and w.name or (c and type(c.name) == "string" and c.name) or ""
+	local rec = r.new(values, { name = name, title = w.title, faction = w.faction,
+		world = { story = w.story, routes = w.routes, difficulty = w.difficulty, economy = w.economy } })
+	if type(w.id) == "string" and w.id:find("^[%w_%-]+$") and #w.id <= 64 then rec.id = w.id end
+	if c then
+		rec.creator = { name = c.name, icon = c.icon, map = c.map, loadout = c.loadout, money = c.money, bare = c.bare == true, used = false }
+	end
+	local ok, why = gs.stage_new(rec)
+	if not ok then
+		log("! the staging file %s: the record is not staged (%s)", tostring(path), tostring(why))
+		return false, "the record is not staged: " .. tostring(why or "?")
+	end
+	local n = 0
+	for _ in pairs(values) do n = n + 1 end
+	log("staged from %s: world %s, faction %s, %d value(s) (%d dropped), creator: %s", tostring(path), tostring(rec.id), w.faction, n, dropped,
+		c and string.format("%d item(s), %d RU, map '%s'%s", type(c.loadout) == "table" and #c.loadout or 0, tonumber(c.money) or 0,
+			tostring(c.map or ""), c.bare and ", bare" or "") or "none (the window at his first join)")
+	return true
+end
+
+-- The creator of the world in force, as the record keeps it (coop_game_record clean_creator), or nil.
+function creator()
+	local r = record()
+	return r and type(r.creator) == "table" and r.creator or nil
+end
+
+-- For the engine (coop_join.cpp host_make_creator, newchar::make_creator): { creator, used, loadout = "sec,...", count, bare }.
+function creator_facts()
+	local c = creator()
+	if not c then return { creator = false, used = false, loadout = "", count = 0, bare = false } end
+	local list = {}
+	for _, sec in ipairs(type(c.loadout) == "table" and c.loadout or {}) do
+		if type(sec) == "string" then list[#list + 1] = sec end
+	end
+	return { creator = true, used = c.used == true, loadout = table.concat(list, ","), count = #list, bare = c.bare == true }
+end
+
+-- His character is made: never again from the file. The record goes into the next save with the mark.
+function creator_made()
+	local c = creator()
+	if not c then return false end
+	c.used = true
+	log("the creator's character is made: the record's creator is used")
 	return true
 end
 

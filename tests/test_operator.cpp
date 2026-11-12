@@ -452,3 +452,54 @@ TEST(operator_place_is_nobodys_without_a_token)
 	REQUIRE(join(host, a, 38211));
 	REQUIRE(join(host, b, 38211, &a.s)); // no operator to wait for: both places are for players
 }
+
+// ============================================================================ security review 2026-11-12, stages 3 and 6a
+
+// A command line with two -coop_operator keys has no token: which one is the parent's cannot be told, and a value that reads as the
+// key (a save's name) must not choose the operator.
+TEST(operator_token_key_twice_is_no_token)
+{
+	op::Token t{};
+	CHECK(op::find_token("-coop_dedicated -coop_operator 000102030405060708090a0b0c0d0e0f", t));
+	CHECK(!op::find_token("-coop_operator 000102030405060708090a0b0c0d0e0f -coop_load \"x -coop_operator 11111111111111111111111111111111\"", t));
+	CHECK(!op::find_token("-coop_load \"x -coop_operator zz\" -coop_operator 000102030405060708090a0b0c0d0e0f", t));
+	CHECK(!op::find_token("-coop_operator 000102030405060708090a0b0c0d0e0f -coop_operator 000102030405060708090a0b0c0d0e0f", t));
+	// a longer key and a key inside a word are not the key
+	CHECK(op::find_token("-coop_operatorx 1 -coop_operator 000102030405060708090a0b0c0d0e0f x-coop_operator 2", t));
+	CHECK_EQ(int(t[15]), 0x0f);
+}
+
+// coop_kick <id|nick>: an id that is a player's wins over a nick that reads as the same number; a nick two players have, or nobody's,
+// is no target. Map servers' bridges and a seat that plays no character are not in the list the caller gives.
+TEST(operator_kick_picks_one_player_or_nobody)
+{
+	const std::vector<op::KickRow> rows = {{1, "Kent"}, {2, "3"}, {3, "stormie"}, {4, "kent"}, {5, "Solo"}};
+	CHECK_EQ(op::kick_pick(rows, "5"), 4); // by id
+	CHECK_EQ(op::kick_pick(rows, "solo"), 4); // by nick, without case
+	CHECK_EQ(op::kick_pick(rows, "3"), 2); // the id 3, not the player whose nick is "3"
+	CHECK_EQ(op::kick_pick(rows, "stormie"), 2);
+	CHECK_EQ(op::kick_pick(rows, "Kent"), op::kKickAmbiguous); // two players answer to it
+	CHECK_EQ(op::kick_pick(rows, "nobody"), op::kKickNobody);
+	CHECK_EQ(op::kick_pick(rows, "9"), op::kKickNobody);
+	CHECK_EQ(op::kick_pick(rows, ""), op::kKickNobody);
+	CHECK_EQ(op::kick_pick(rows, "03"), op::kKickNobody); // not the way an id is written
+	CHECK_EQ(op::kick_pick({}, "1"), op::kKickNobody);
+	const std::vector<op::KickRow> numbers = {{7, "2"}, {8, "2"}};
+	CHECK_EQ(op::kick_pick(numbers, "2"), op::kKickAmbiguous); // no id 2: the nick, and two have it
+	CHECK_EQ(op::kick_pick(numbers, "7"), 0);
+}
+
+// The answer to an operator's command is cut to what one script event carries, counted as it is sent (escaped).
+TEST(operator_answer_fits_one_event)
+{
+	std::vector<std::string> lines(64, std::string(300, '%')); // every '%' is three bytes on the wire
+	const std::string text = op::answer_text(lines, 8 * 1024);
+	CHECK(text.size() <= size_t(8 * 1024));
+	CHECK(!text.empty());
+	CHECK_EQ(text.substr(0, 9), std::string("%25%25%25"));
+	CHECK_EQ(op::answer_text({"a=b;c", "d%"}, 8 * 1024), std::string("a%3Db%3Bc\nd%25"));
+	CHECK_EQ(op::answer_text({}, 8 * 1024), std::string());
+	CHECK_EQ(op::answer_text({"abcdef", "gh"}, 7), std::string("abcdef")); // a line that does not fit is left out whole, and what follows
+	CHECK_EQ(op::answer_text({"abcdefgh", "i"}, 7), std::string());
+	CHECK_EQ(op::escape_value("a%;=b"), std::string("a%25%3B%3Db"));
+}

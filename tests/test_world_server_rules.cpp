@@ -390,16 +390,17 @@ TEST(world_server_command_line_of_a_new_world)
 	std::string line, why;
 	CHECK(command_line(launch_new(), false, line, why));
 	CHECK_EQ(line, std::string("\"D:\\My Games\\Anomaly\\bin\\AnomalyDX11AVX.exe\" -fsltx ..\\fsgame_world.ltx -coop_dedicated 27960 "
-	                           "-coop_hidden -coop_new -coop_operator 0001abcdef1099ff7f800aa05c22203d -silent_error_mode"));
+	                           "-coop_hidden -coop_operator 0001abcdef1099ff7f800aa05c22203d -silent_error_mode -coop_new"));
 	// the staging file of stage 5, a nick and -dbg are passed on
 	LaunchArgs a = launch_new();
 	a.stage = "D:\\G\\appdata_world\\coop_new_world.ltx";
 	a.nick = "Zone of two";
 	a.dbg = true;
 	CHECK(command_line(a, false, line, why));
+	// the keys of the process stand before anything that comes from a value (security review 2026-11-12)
 	CHECK_EQ(line, std::string("\"D:\\My Games\\Anomaly\\bin\\AnomalyDX11AVX.exe\" -fsltx ..\\fsgame_world.ltx -coop_dedicated 27960 "
-	                           "-coop_hidden -coop_new -coop_stage D:\\G\\appdata_world\\coop_new_world.ltx "
-	                           "-coop_operator 0001abcdef1099ff7f800aa05c22203d -silent_error_mode -coop_nick Zone_of_two -dbg"));
+	                           "-coop_hidden -coop_operator 0001abcdef1099ff7f800aa05c22203d -silent_error_mode -dbg "
+	                           "-coop_new -coop_stage D:\\G\\appdata_world\\coop_new_world.ltx -coop_nick Zone_of_two"));
 }
 
 TEST(world_server_command_line_of_a_save)
@@ -409,7 +410,10 @@ TEST(world_server_command_line_of_a_save)
 	a.save = "stalker - autosave";
 	std::string line, why;
 	CHECK(command_line(a, false, line, why));
-	CHECK(line.find(" -coop_load \"stalker - autosave\" ") != std::string::npos);
+	// the name is never on the line as text: hex of its bytes (security review 2026-11-12)
+	CHECK(line.find(" -coop_load_hex 7374616c6b6572202d206175746f73617665") != std::string::npos);
+	CHECK(line.find("-coop_load \"") == std::string::npos);
+	CHECK(line.find("autosave") == std::string::npos);
 	CHECK(line.find("-coop_new") == std::string::npos);
 	// the dedicated host reads the name back as it was (coop_dedicated_rules.h)
 	dedicated::Args parsed_args;
@@ -424,9 +428,90 @@ TEST(world_server_command_line_of_a_save)
 	op::Token token{};
 	CHECK(op::find_token(params.c_str(), token));
 	CHECK_EQ(int(token[2]), 0xab);
+	// "last" is the host's own word, not a name
+	a.save = "last";
+	CHECK(command_line(a, false, line, why));
+	CHECK(line.find(" -coop_load last") != std::string::npos);
+	CHECK(line.find("-coop_load_hex") == std::string::npos);
+	const std::string last_params = line.substr(line.find(" -fsltx") + 1);
+	CHECK(dedicated::parse_args(last_params.c_str(), parsed_args, parse_why));
+	CHECK_EQ(parsed_args.save, std::string("last"));
 	// a staging file belongs to a new world only
 	a.stage = "D:\\x.ltx";
 	CHECK(!command_line(a, false, line, why));
+}
+
+namespace
+{
+size_t count_of(const std::string& text, const char* what)
+{
+	size_t n = 0;
+	for (size_t at = text.find(what); at != std::string::npos; at = text.find(what, at + 1))
+		++n;
+	return n;
+}
+} // namespace
+
+// The engine never parses its command line into arguments: Core.Params is the raw text, lower-cased, and its readers search it (strstr
+// "-dbg", "-load ", "-ltx ", cmd_param "-coop_connect"; "-$" anywhere runs a console command, Level_start.cpp). Quotes mean nothing to
+// them. So a value is never on the line as text (security review 2026-11-12): a save's name goes as hex, the world's name as one word
+// of letters, digits, '_' and '.'.
+TEST(world_server_command_line_carries_no_key_of_a_value)
+{
+	const char* names[] = {"x -coop_operator 11111111111111111111111111111111", "x -coop_operator zz", "x -$cfg_load evil", "a -dbg",
+	    "a -load b", "a-coop_connect 1.2.3.4", "-coop_new", "a -ltx evil.ltx", "w-$quit", "a -coop_stage b"};
+	for (const char* name : names)
+	{
+		LaunchArgs a = launch_new();
+		a.world_load = true;
+		a.save = name;
+		a.nick = name;
+		std::string line, why;
+		CHECK(command_line(a, false, line, why));
+		const std::string params = line.substr(line.find(" -fsltx") + 1);
+		for (const char* key : {"-$", "-dbg", "-load ", "-ltx ", "-coop_connect", "-coop_new", "-coop_stage", " evil", "$"})
+			CHECK_EQ(std::string(name) + " leaves " + key + ": " + std::to_string(count_of(params, key)), std::string(name) + " leaves " + key + ": 0");
+		CHECK_EQ(count_of(params, "-coop_operator"), size_t(1));
+		op::Token token{};
+		CHECK(op::find_token(params.c_str(), token));
+		CHECK_EQ(int(token[2]), 0xab);
+		dedicated::Args parsed;
+		std::string parse_why;
+		CHECK(dedicated::parse_args(params.c_str(), parsed, parse_why));
+		CHECK(parsed.world == dedicated::World::Load);
+		CHECK_EQ(parsed.save, std::string(name));
+	}
+}
+
+TEST(world_server_paths_with_a_console_key_are_refused)
+{
+	std::string line = "untouched", why;
+	LaunchArgs a = launch_new();
+	a.fsltx = "D:\\x-$y\\fsgame_world.ltx"; // "-$" anywhere in the command line runs a console command (Level_start.cpp)
+	CHECK(!command_line(a, false, line, why));
+	a = launch_new();
+	a.stage = "D:\\a-$b.ltx";
+	CHECK(!command_line(a, false, line, why));
+	CHECK_EQ(line, std::string("untouched"));
+}
+
+TEST(world_server_nick_is_one_plain_word)
+{
+	CHECK_EQ(nick_word("a-b$c"), std::string("a_b_c"));
+	CHECK_EQ(nick_word("w-$quit"), std::string("w__quit"));
+	CHECK_EQ(nick_word("v1.2_x"), std::string("v1.2_x"));
+	CHECK_EQ(nick_word("a'b;c=d(e)"), std::string("a_b_c_d_e_"));
+	CHECK_EQ(nick_word("\xCC\xE8\xF0-2"), std::string("\xCC\xE8\xF0_2")); // cp1251 letters stay
+}
+
+TEST(world_server_world_dir_of_a_drive_root_is_none)
+{
+	// "D:" + "_world\" would be a path relative to the drive's current folder (security review 2026-11-12)
+	CHECK_EQ(world_dir("D:\\"), std::string());
+	CHECK_EQ(world_dir("D:"), std::string());
+	CHECK_EQ(world_dir("D:/"), std::string());
+	CHECK_EQ(world_dir("D:\\\\"), std::string());
+	CHECK_EQ(world_dir("D:\\a"), std::string("D:\\a_world\\"));
 }
 
 TEST(world_server_command_line_refuses_what_cannot_pass)

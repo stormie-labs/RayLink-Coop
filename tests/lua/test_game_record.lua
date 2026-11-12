@@ -823,4 +823,34 @@ do
 	check(rec.decode(rec.encode(r, codec), codec).at == nil, "and one that is no table")
 end
 
+-- ------------------------------------------------------------------------------------------------ the creator (plan 2026-11-12 stage 5)
+do
+	local codec = STUB
+	local env = { now = function() return 1000 end, rand = function() return 1 end, date = function() return "2026-11-12 10:00" end }
+	local r = rec.new({}, { name = "Strelok", faction = "bandit" }, env)
+	check(r.creator == nil, "a record of the game's own screen has no creator")
+	r.creator = { name = "Strelok", icon = "ui_icon_1", loadout = { "wpn_pm", "ammo_9x18_fmj", "wpn_pm" }, money = 5000, map = "esc_m_trader",
+		bare = false, used = false, junk = 1 }
+	local d = rec.decode(rec.encode(r, codec), codec)
+	check(d.creator and d.creator.name == "Strelok" and d.creator.icon == "ui_icon_1" and d.creator.money == 5000
+		and d.creator.map == "esc_m_trader" and d.creator.bare == false and d.creator.used == false, "the creator comes through a save")
+	check(#d.creator.loadout == 3 and d.creator.loadout[3] == "wpn_pm", "his loadout, every copy")
+	check(d.creator.junk == nil, "and nothing else")
+	r.creator.used = true
+	check(rec.decode(rec.encode(r, codec), codec).creator.used == true, "made once: the mark is kept")
+	local cl = rec.clone(r)
+	check(cl.creator ~= r.creator and cl.creator.loadout ~= r.creator.loadout and cl.creator.loadout[1] == "wpn_pm", "a clone has its own copy")
+	r.creator = { loadout = { "wpn pm", 5, "ok_item" }, money = 1e12, name = string.rep("n", 100), icon = "a/b" }
+	local c = rec.decode(rec.encode(r, codec), codec).creator
+	check(#c.loadout == 1 and c.loadout[1] == "ok_item", "an entry that is no section name is dropped")
+	check(c.money == 10000000 and #c.name == 64 and c.icon == nil, "money, name and icon within their limits")
+	check(c.used == false and c.bare == false, "no mark: not used, not bare")
+	local many = {}
+	for i = 1, 100 do many[i] = "wpn_pm" end
+	r.creator = { loadout = many }
+	check(#rec.decode(rec.encode(r, codec), codec).creator.loadout == 64, "at most 64 entries")
+	r.creator = "junk"
+	check(rec.decode(rec.encode(r, codec), codec).creator == nil, "a creator that is no table is dropped")
+end
+
 finish()

@@ -163,3 +163,69 @@ TEST(newchar_sent_never_used)
 		CHECK_EQ(newchar::character_faction("", "", s), std::string("stalker"));
 	}
 }
+
+// ---------------------------------------------------------------- plan 2026-11-12 stage 5: the creator's character without the window
+
+namespace
+{
+newchar::CreatorFacts creator_ready()
+{
+	newchar::CreatorFacts f;
+	f.host_rights = true;
+	f.has_proxy = false;
+	f.creator = true;
+	f.used = false;
+	f.loadout = 3;
+	f.bare = false;
+	return f;
+}
+} // namespace
+
+TEST(newchar_creator_is_made_for_the_operator_with_a_choice)
+{
+	CHECK(newchar::make_creator(creator_ready()));
+	newchar::CreatorFacts bare = creator_ready();
+	bare.loadout = 0;
+	bare.bare = true; // he chose to start with nothing: that is a choice too
+	CHECK(newchar::make_creator(bare));
+}
+
+TEST(newchar_creator_never_without_the_token)
+{
+	newchar::CreatorFacts f = creator_ready();
+	f.host_rights = false; // any other peer, whatever the record says
+	CHECK(!newchar::make_creator(f));
+}
+
+TEST(newchar_creator_each_missing_condition_gives_the_window)
+{
+	newchar::CreatorFacts f = creator_ready();
+	f.has_proxy = true; // he returns: his character is found by key
+	CHECK(!newchar::make_creator(f));
+	f = creator_ready();
+	f.creator = false; // a world without [creator]
+	CHECK(!newchar::make_creator(f));
+	f = creator_ready();
+	f.used = true; // made once already: never a second character from the file
+	CHECK(!newchar::make_creator(f));
+	f = creator_ready();
+	f.loadout = 0; // the launcher's world without a loadout: the first choice is the window's
+	CHECK(!newchar::make_creator(f));
+}
+
+TEST(newchar_creator_choice_is_the_loadout_as_it_is)
+{
+	CharChoiceMsg m;
+	CHECK(newchar::creator_choice("bandit", "wpn_pm,ammo_9x18_fmj,wpn_pm", m));
+	CHECK_EQ(m.faction, std::string("bandit"));
+	CHECK_EQ(m.buy.size(), size_t(3)); // every copy, in the order of the file
+	CHECK_EQ(newchar::buy_csv(m), std::string("wpn_pm,ammo_9x18_fmj,wpn_pm"));
+	CHECK(newchar::creator_choice("bandit", "", m)); // bare: nothing to give
+	CHECK(m.buy.empty());
+	CHECK(!newchar::creator_choice("", "wpn_pm", m)); // no faction of the world: no character from the file
+	std::string many;
+	for (size_t i = 0; i <= CharChoiceMsg::kMaxBuy; ++i)
+		many += "wpn_pm,";
+	CHECK(!newchar::creator_choice("bandit", many, m));
+	static_assert(world_stage::kMaxLoadout == CharChoiceMsg::kMaxBuy, "a loadout of the file fits a choice");
+}

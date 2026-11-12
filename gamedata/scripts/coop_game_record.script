@@ -19,6 +19,8 @@
 		last_save, last_played, machine_snapshot_at     strings, kept in the card
 		at = { level, game_time, real_time, players = { nick, ... } } | nil     in the block of a save only: where and when
 		                           it was made, so that the Co-op window lists saves without opening them
+		creator = { name, icon, map, loadout = { sec, ... }, money, bare, used } | nil     a world staged from
+		                           coop_new_world.ltx (plan 2026-11-12 stage 5): the creator's character, made once (used)
 	}
 
 	new(values, meta, env) -> record
@@ -106,6 +108,36 @@ local function clean_at(a)
 	return out
 end
 
+-- The creator's character of a world staged from coop_new_world.ltx (plan 2026-11-12 stage 5, xrCoop\coop_world_stage.h): what he chose in
+-- the new world screen, made into his character at his first join (coop_join.cpp host_make_creator), then `used`. The limits are the file's:
+-- names 64 bytes, a section name of word characters, 64 entries, money 0..10000000. nil when it is no table.
+local MAX_CREATOR_NAME, MAX_LOADOUT, MAX_MONEY = 64, 64, 10000000
+local function word(v)
+	return type(v) == "string" and #v >= 1 and #v <= 64 and v:find("^[%w_%.%-]+$") ~= nil
+end
+
+local function clean_creator(c)
+	if type(c) ~= "table" then return nil end
+	local loadout = {}
+	if type(c.loadout) == "table" then
+		for _, sec in ipairs(c.loadout) do
+			if word(sec) and #loadout < MAX_LOADOUT then loadout[#loadout + 1] = sec end
+		end
+	end
+	local money = whole(c.money) or 0
+	if money < 0 then money = 0 elseif money > MAX_MONEY then money = MAX_MONEY end
+	local name = string_or(c.name, "")
+	return {
+		name = name:sub(1, MAX_CREATOR_NAME),
+		icon = word(c.icon) and c.icon or nil,
+		map = word(c.map) and c.map or nil,
+		loadout = loadout,
+		money = money,
+		bare = c.bare == true,
+		used = c.used == true,
+	}
+end
+
 -- A record with the known fields only and plain values; nil when it is not a record of this or an older format.
 local function clean(t)
 	if type(t) ~= "table" then return nil, "not a table" end
@@ -120,7 +152,7 @@ local function clean(t)
 		faction = string_or(t.faction, nil), world = clean_world(t.world), rev = (rev and rev > 0) and rev or 0,
 		migrated = t.migrated == true and true or nil, values = copy_values(t.values),
 		last_save = string_or(t.last_save, nil), last_played = string_or(t.last_played, nil),
-		machine_snapshot_at = string_or(t.machine_snapshot_at, nil), at = clean_at(t.at),
+		machine_snapshot_at = string_or(t.machine_snapshot_at, nil), at = clean_at(t.at), creator = clean_creator(t.creator),
 	}
 	return out
 end
@@ -138,6 +170,8 @@ function clone(record)
 			out[k] = c
 		elseif k == "at" then
 			out[k] = clean_at(v)
+		elseif k == "creator" then
+			out[k] = clean_creator(v)
 		else
 			out[k] = v
 		end
