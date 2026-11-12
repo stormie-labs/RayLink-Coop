@@ -78,10 +78,12 @@ local function host_badge(p)
 end
 
 -- A line of the world server's own seat (peer 0, which plays no character: the operator's `say`, the server console's chat) is
--- shown from "World", never from the server's nick. The engine gives a chat line by nick only: the nick of coop.server_link().
-local function sender_of(nick)
+-- shown from "World", never from the server's nick. `from` is the sender's peer as the engine names it (coop_main.on_chat): a player
+-- who took the server's nick is not the World, and a line without a sender is nobody's.
+local function sender_of(nick, from)
+	if from ~= 0 then return nick end
 	local link = call("server_link")
-	if type(link) == "table" and link.plays == false and nick == tostring(link.nick) then
+	if type(link) == "table" and link.plays == false then
 		return tr("st_coop_core_chat_world", "World")
 	end
 	return nick
@@ -191,11 +193,11 @@ function system(text)
 end
 
 -- Engine chat line (coop_main.on_chat). Returns true: shown here.
-function on_line(nick, text)
+function on_line(nick, text, from)
 	nick = clean(nick)
 	local me = my_nick()
 	local kind = (me and nick == me) and "self" or "other"
-	if kind == "other" then nick = sender_of(nick) end
+	if kind == "other" then nick = sender_of(nick, from) end
 	add(kind, nick, text)
 	stats.shown = stats.shown + 1
 	if kind == "other" then

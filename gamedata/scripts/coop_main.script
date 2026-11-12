@@ -263,13 +263,15 @@ end
 
 -- Engine entry: a chat line (R-1.7), ours included. Shown in the chat (coop_core_chat: window, HUD feed,
 -- history); a PDA news line if that script is missing.
-function on_chat(nick, text)
+-- `from`: the sender's peer id (0 = the host or the world server); nil from an engine that does not name it.
+function on_chat(nick, text, from)
 	stats.chat = stats.chat + 1
 	nick, text = tostring(nick), tostring(text)
+	if type(from) ~= "number" then from = nil end
 	local shown = false
 	local chat = rawget(_G, "coop_core_chat")
 	if chat and chat.on_line then
-		local ok, r = pcall(chat.on_line, nick, text)
+		local ok, r = pcall(chat.on_line, nick, text, from)
 		if ok then
 			shown = r == true
 		else
@@ -288,7 +290,7 @@ function on_chat(nick, text)
 	end
 	if not shown then log("<%s> %s", nick, text) end
 	if callback_exists("coop_on_chat") then
-		pcall(SendScriptCallback, "coop_on_chat", nick, text)
+		pcall(SendScriptCallback, "coop_on_chat", nick, text, from)
 	end
 end
 
