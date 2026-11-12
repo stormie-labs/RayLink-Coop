@@ -4,9 +4,11 @@
 #include "test_util.h"
 
 #include "coop_dedicated_rules.h"
+#include "coop_operator.h"
 #include "coop_world_server_rules.h"
 
 #include <string>
+#include <vector>
 
 using namespace coop;
 using namespace coop::world_server;
@@ -324,4 +326,313 @@ TEST(world_server_every_wait_has_a_code)
 	// a wait line as the game writes it
 	const Record r = round(Record::of_wait(dedicated::wait_code(Wait::Loading), dedicated::wait_text(Wait::Loading)));
 	CHECK_EQ(r.code, std::string("loading"));
+}
+
+// ---------------------------------------------------------------- stage 6a: the game starts its own world server
+
+TEST(world_server_token_hex_is_32_lower_digits)
+{
+	const uint8_t t[16] = {0x00, 0x01, 0xab, 0xCD, 0xef, 0x10, 0x99, 0xff, 0x7f, 0x80, 0x0a, 0xa0, 0x5c, 0x22, 0x20, 0x3d};
+	CHECK_EQ(token_hex(t, 16), std::string("0001abcdef1099ff7f800aa05c22203d"));
+	CHECK_EQ(token_hex(t, 16).size(), size_t(32));
+}
+
+TEST(world_server_quote_arg_follows_the_windows_rules)
+{
+	CHECK_EQ(quote_arg("C:\\Games\\Anomaly\\bin\\AnomalyDX11.exe"), std::string("\"C:\\Games\\Anomaly\\bin\\AnomalyDX11.exe\""));
+	CHECK_EQ(quote_arg("D:\\My Games\\S.T.A.L.K.E.R. Anomaly\\bin\\x.exe"), std::string("\"D:\\My Games\\S.T.A.L.K.E.R. Anomaly\\bin\\x.exe\""));
+	// a backslash before the closing quote is doubled, a quote inside is escaped with the backslashes before it doubled
+	CHECK_EQ(quote_arg("D:\\dir\\"), std::string("\"D:\\dir\\\\\""));
+	CHECK_EQ(quote_arg("a\"b"), std::string("\"a\\\"b\""));
+	CHECK_EQ(quote_arg("a\\\"b"), std::string("\"a\\\\\\\"b\""));
+	CHECK_EQ(quote_arg(""), std::string("\"\""));
+}
+
+TEST(world_server_bare_args_hold_no_blank_and_no_quote)
+{
+	CHECK(bare_arg_ok("fsgame_world.ltx"));
+	CHECK(bare_arg_ok("..\\fsgame_world.ltx"));
+	CHECK(bare_arg_ok("D:\\G\\Anomaly\\fsgame_world.ltx"));
+	CHECK(!bare_arg_ok(""));
+	CHECK(!bare_arg_ok("D:\\My Games\\fsgame_world.ltx"));
+	CHECK(!bare_arg_ok("D:\\G\tx\\f.ltx"));
+	CHECK(!bare_arg_ok("D:\\G\\\"f.ltx"));
+	CHECK(!bare_arg_ok("D:\\G\\f.ltx\n"));
+	CHECK(!bare_arg_ok("-coop_new"));
+}
+
+TEST(world_server_nick_is_one_word)
+{
+	CHECK_EQ(nick_word("My world"), std::string("My_world"));
+	CHECK_EQ(nick_word("-coop_new"), std::string("_coop_new"));
+	CHECK_EQ(nick_word("a\"b\tc\rd"), std::string("a_b_c_d"));
+	CHECK_EQ(nick_word("\xCC\xE8\xF0"), std::string("\xCC\xE8\xF0")); // cp1251 stays as it is
+	CHECK_EQ(nick_word(std::string(100, 'x')).size(), size_t(63)); // string64 with its NUL
+	CHECK_EQ(nick_word(""), std::string());
+}
+
+namespace
+{
+LaunchArgs launch_new()
+{
+	LaunchArgs a;
+	a.exe = "D:\\My Games\\Anomaly\\bin\\AnomalyDX11AVX.exe";
+	a.fsltx = "..\\fsgame_world.ltx";
+	a.port = 27960;
+	a.world_load = false;
+	a.token_hex = "0001abcdef1099ff7f800aa05c22203d";
+	return a;
+}
+} // namespace
+
+TEST(world_server_command_line_of_a_new_world)
+{
+	std::string line, why;
+	CHECK(command_line(launch_new(), false, line, why));
+	CHECK_EQ(line, std::string("\"D:\\My Games\\Anomaly\\bin\\AnomalyDX11AVX.exe\" -fsltx ..\\fsgame_world.ltx -coop_dedicated 27960 "
+	                           "-coop_hidden -coop_new -coop_operator 0001abcdef1099ff7f800aa05c22203d -silent_error_mode"));
+	// the staging file of stage 5, a nick and -dbg are passed on
+	LaunchArgs a = launch_new();
+	a.stage = "D:\\G\\appdata_world\\coop_new_world.ltx";
+	a.nick = "Zone of two";
+	a.dbg = true;
+	CHECK(command_line(a, false, line, why));
+	CHECK_EQ(line, std::string("\"D:\\My Games\\Anomaly\\bin\\AnomalyDX11AVX.exe\" -fsltx ..\\fsgame_world.ltx -coop_dedicated 27960 "
+	                           "-coop_hidden -coop_new -coop_stage D:\\G\\appdata_world\\coop_new_world.ltx "
+	                           "-coop_operator 0001abcdef1099ff7f800aa05c22203d -silent_error_mode -coop_nick Zone_of_two -dbg"));
+}
+
+TEST(world_server_command_line_of_a_save)
+{
+	LaunchArgs a = launch_new();
+	a.world_load = true;
+	a.save = "stalker - autosave";
+	std::string line, why;
+	CHECK(command_line(a, false, line, why));
+	CHECK(line.find(" -coop_load \"stalker - autosave\" ") != std::string::npos);
+	CHECK(line.find("-coop_new") == std::string::npos);
+	// the dedicated host reads the name back as it was (coop_dedicated_rules.h)
+	dedicated::Args parsed_args;
+	std::string parse_why;
+	const std::string params = line.substr(line.find(" -fsltx") + 1);
+	CHECK(dedicated::parse_args(params.c_str(), parsed_args, parse_why));
+	CHECK(parsed_args.world == dedicated::World::Load);
+	CHECK_EQ(parsed_args.save, std::string("stalker - autosave"));
+	CHECK_EQ(parsed_args.port, uint16_t(27960));
+	CHECK(dedicated::has_hidden_key(params.c_str()));
+	// and the operator's token too (coop_operator.h)
+	op::Token token{};
+	CHECK(op::find_token(params.c_str(), token));
+	CHECK_EQ(int(token[2]), 0xab);
+	// a staging file belongs to a new world only
+	a.stage = "D:\\x.ltx";
+	CHECK(!command_line(a, false, line, why));
+}
+
+TEST(world_server_command_line_refuses_what_cannot_pass)
+{
+	std::string line = "untouched", why;
+	LaunchArgs a = launch_new();
+	a.fsltx = "D:\\My Games\\fsgame_world.ltx"; // the engine reads -fsltx up to the first blank (x_ray.cpp)
+	CHECK(!command_line(a, false, line, why));
+	CHECK(!why.empty());
+	a = launch_new();
+	a.port = 0;
+	CHECK(!command_line(a, false, line, why));
+	a = launch_new();
+	a.token_hex = "0001abcd";
+	CHECK(!command_line(a, false, line, why));
+	a = launch_new();
+	a.token_hex = "0001abcdef1099ff7f800aa05c22203g";
+	CHECK(!command_line(a, false, line, why));
+	a = launch_new();
+	a.world_load = true;
+	a.save = "";
+	CHECK(!command_line(a, false, line, why));
+	a.save = "a\"b";
+	CHECK(!command_line(a, false, line, why));
+	a.save = "..\\x";
+	CHECK(!command_line(a, false, line, why));
+	a = launch_new();
+	a.stage = "D:\\My Games\\stage.ltx";
+	CHECK(!command_line(a, false, line, why));
+	CHECK_EQ(line, std::string("untouched"));
+}
+
+TEST(world_server_redacted_command_line_never_holds_the_token)
+{
+	std::string line, why;
+	CHECK(command_line(launch_new(), true, line, why));
+	CHECK(line.find("0001abcdef1099ff7f800aa05c22203d") == std::string::npos);
+	CHECK(line.find("-coop_operator <hidden>") != std::string::npos);
+}
+
+TEST(world_server_environment_loses_every_steam_variable)
+{
+	const std::string block = std::string("=C:=C:\\Games") + '\0' + "PATH=C:\\Windows" + '\0' + "RAYLINK_STEAM_JOIN=C:\\t\\join.txt" + '\0' +
+	                          "RAYLINK_STEAM_LOBBY=1234" + '\0' + "raylink_steam_lobby=5" + '\0' + "RAYLINK_STEAM_JOIN_EXTRA=x" + '\0' +
+	                          "RAYLINK_STEAMWORKS=keep" + '\0' + "XRAYLINK_STEAM_JOIN=keep" + '\0' + "OTHER=RAYLINK_STEAM_JOIN=keep" + '\0' +
+	                          "RAYLINK_STEAM_=x" + '\0' + "RAYLINK_HOME=keep" + '\0' + '\0';
+	const std::string want = std::string("=C:=C:\\Games") + '\0' + "PATH=C:\\Windows" + '\0' + "RAYLINK_STEAMWORKS=keep" + '\0' +
+	                         "XRAYLINK_STEAM_JOIN=keep" + '\0' + "OTHER=RAYLINK_STEAM_JOIN=keep" + '\0' + "RAYLINK_HOME=keep" + '\0' + '\0';
+	CHECK_EQ(filter_environment(block.c_str(), "RAYLINK_STEAM_"), want);
+	CHECK_EQ(filter_environment(block.c_str(), kSteamEnvPrefix), want);
+	// wide, as GetEnvironmentStringsW gives it
+	const std::wstring wblock = std::wstring(L"A=1") + L'\0' + L"RAYLINK_STEAM_JOIN=x" + L'\0' + L'\0';
+	CHECK(filter_environment(wblock.c_str(), "RAYLINK_STEAM_") ==std::wstring(L"A=1") + L'\0' + L'\0');
+	// nothing left: still a valid block of two NULs
+	const std::string only = std::string("RAYLINK_STEAM_JOIN=x") + '\0' + '\0';
+	CHECK_EQ(filter_environment(only.c_str(), "RAYLINK_STEAM_"), std::string(2, '\0'));
+}
+
+TEST(world_server_port_candidates_start_at_the_hosts_port)
+{
+	const std::vector<uint16_t> c = port_candidates(27960, 4);
+	CHECK_EQ(c.size(), size_t(4));
+	CHECK_EQ(c[0], uint16_t(27960));
+	CHECK_EQ(c[3], uint16_t(27963));
+	const std::vector<uint16_t> top = port_candidates(65534, 5); // never past 65535, never 0
+	CHECK_EQ(top.size(), size_t(2));
+	CHECK_EQ(top[1], uint16_t(65535));
+	CHECK_EQ(port_candidates(0, 2)[0], uint16_t(27960)); // no port: the default of the dedicated host
+}
+
+TEST(world_server_lines_of_a_pipe_come_whole)
+{
+	LineSplitter s;
+	std::vector<std::string> out;
+	s.push("@rl phase sta", 13, out);
+	CHECK(out.empty());
+	s.push("rting\r\nline two\nthree", 21, out);
+	CHECK_EQ(out.size(), size_t(2));
+	CHECK_EQ(out[0], std::string("@rl phase starting"));
+	CHECK_EQ(out[1], std::string("line two"));
+	std::string rest;
+	CHECK(s.flush(rest));
+	CHECK_EQ(rest, std::string("three"));
+	CHECK(!s.flush(rest));
+	// a line longer than the bound is cut, not held forever
+	out.clear();
+	const std::string longer(LineSplitter::kMaxLine + 10, 'x');
+	s.push(longer.data(), longer.size(), out);
+	CHECK_EQ(out.size(), size_t(1));
+	CHECK_EQ(out[0].size(), LineSplitter::kMaxLine);
+	CHECK(s.flush(rest));
+	CHECK_EQ(rest.size(), size_t(10));
+}
+
+TEST(world_server_utf8_comes_back_to_cp1251)
+{
+	CHECK_EQ(utf8_to_cp1251("plain"), std::string("plain"));
+	const std::string cp = "\xCC\xE8\xF0 \xA8\xB8 \x96 \x85 \xB9";
+	CHECK_EQ(utf8_to_cp1251(cp1251_to_utf8(cp)), cp);
+	CHECK_EQ(utf8_to_cp1251("\xE4\xB8\xAD"), std::string("?")); // a CJK letter: no such byte
+	CHECK_EQ(utf8_to_cp1251("a\xFF" "b"), std::string("a?b")); // broken UTF-8
+	CHECK_EQ(utf8_to_cp1251("a\xD0"), std::string("a?")); // cut in the middle
+}
+
+TEST(world_server_watch_follows_the_start_to_ready)
+{
+	Watch w;
+	CHECK(summary(w, false) == Summary::Starting);
+	w.line("@rl phase starting");
+	w.line("[coop] dedicated host, port 27960");
+	w.line("@rl phase world");
+	w.line("@rl wait loading the level is loading");
+	CHECK(w.phase == Phase::World);
+	CHECK_EQ(w.wait_code, std::string("loading"));
+	CHECK_EQ(w.wait_text, std::string("the level is loading"));
+	CHECK(summary(w, false) == Summary::Starting);
+	w.line("@rl phase session");
+	w.line("@rl ready port=27961");
+	w.line("@rl phase ready");
+	CHECK(w.phase == Phase::Ready);
+	CHECK_EQ(w.port, uint16_t(27961));
+	CHECK(w.wait_code.empty());
+	CHECK(summary(w, false) == Summary::Ready);
+	w.line("@rl players n=2");
+	w.line("@rl mapserver level=k00_marsh state=loading");
+	w.line("@rl mapserver level=l01_escape state=serving");
+	CHECK_EQ(w.players, 2u);
+	CHECK_EQ(w.mapservers.size(), size_t(2));
+	w.line("@rl mapserver level=k00_marsh state=gone");
+	CHECK_EQ(w.mapservers.size(), size_t(1));
+	CHECK(w.mapservers["l01_escape"] == MapState::Serving);
+	// the log keeps the lines that are not @rl, never the @rl ones
+	CHECK_EQ(w.lines.size(), size_t(1));
+	CHECK_EQ(w.lines.back(), std::string("[coop] dedicated host, port 27960"));
+	CHECK(summary(w, true) == Summary::Stopping);
+}
+
+TEST(world_server_watch_says_an_error_and_a_crash)
+{
+	Watch w;
+	w.line("@rl phase starting");
+	w.line("@rl phase world");
+	w.line("@rl error gave_up the world did not come up in 15 minutes");
+	CHECK_EQ(w.error_code, std::string("gave_up"));
+	CHECK_EQ(w.error_text, std::string("the world did not come up in 15 minutes"));
+	CHECK(summary(w, false) == Summary::Failed);
+	w.exit(3);
+	CHECK(w.exited);
+	CHECK(w.crashed); // no "down": whatever the code
+	CHECK_EQ(w.exit_code, 3u);
+	CHECK(summary(w, false) == Summary::Crashed);
+
+	Watch c;
+	c.line("@rl phase ready");
+	c.exit(0); // gone without "down", even with a clean code
+	CHECK(c.crashed);
+	CHECK(summary(c, true) == Summary::Crashed);
+}
+
+TEST(world_server_watch_after_down)
+{
+	Watch w(3);
+	w.line("@rl phase ready");
+	w.line("@rl phase saving");
+	CHECK(summary(w, false) == Summary::Stopping);
+	w.line("@rl phase down");
+	w.line("[coop] after down 1");
+	w.line("@rl phase ready"); // never back from down
+	w.line("[coop] after down 2");
+	CHECK(w.phase == Phase::Down);
+	CHECK(w.down);
+	CHECK_EQ(w.lines.size(), size_t(2));
+	w.exit(0);
+	CHECK(!w.crashed);
+	CHECK(summary(w, false) == Summary::Down);
+	// the log is bounded, the newest stay
+	w.line("a");
+	w.line("b");
+	CHECK_EQ(w.lines.size(), size_t(3));
+	CHECK_EQ(w.lines.front(), std::string("[coop] after down 2"));
+	CHECK_EQ(w.lines.back(), std::string("b"));
+	const std::vector<std::string> last2 = w.last(2);
+	CHECK_EQ(last2.size(), size_t(2));
+	CHECK_EQ(last2[0], std::string("a"));
+	CHECK_EQ(w.last(10).size(), size_t(3));
+	// a broken @rl line is a log line, not lost
+	w.line("@rl ready port=0");
+	CHECK_EQ(w.lines.back(), std::string("@rl ready port=0"));
+}
+
+TEST(world_server_fsgame_of_the_world)
+{
+	const std::string text = "$app_data_root$         = true \t| false\t| $fs_root$\t\t | appdata\\\r\n"
+	                         "$game_saves$            = true \t| false\t| $app_data_root$| savedgames\\\t\t| *.scop;*.scoc\r\n";
+	std::string out;
+	CHECK(world_fsgame(text, "D:\\My Games\\Anomaly\\appdata\\savedgames\\", out));
+	CHECK_EQ(out, std::string("$app_data_root$         = true \t| false\t| $fs_root$\t\t | appdata_world\\\r\n"
+	                          "$game_saves$            = true \t| false\t| D:\\My Games\\Anomaly\\appdata\\| savedgames\\| *.scop;*.scoc\r\n"));
+	// an absolute app data folder with blanks; a commented line is not the one
+	const std::string abs = ";$app_data_root$ = x | y | z\n$app_data_root$=false|false|D:\\My Games\\appdata \n"
+	                        "$game_saves$=true|false|$app_data_root$|savedgames\\\n";
+	CHECK(world_fsgame(abs, "D:\\My Games\\appdata\\savedgames", out));
+	CHECK_EQ(out, std::string(";$app_data_root$ = x | y | z\n$app_data_root$=false|false|D:\\My Games\\appdata_world\\ \n"
+	                          "$game_saves$=true|false|D:\\My Games\\appdata\\| savedgames\\\n"));
+	std::string kept = "untouched";
+	CHECK(!world_fsgame("$game_saves$=true|false|$app_data_root$|savedgames\\\n", "D:\\s\\x", kept)); // no app data line
+	CHECK(!world_fsgame("$app_data_root$=false|false|appdata\\\n", "D:\\s\\x", kept)); // no saves line
+	CHECK_EQ(kept, std::string("untouched"));
 }

@@ -5,6 +5,7 @@
 
 #include "coop_levels_logic.h"
 #include "coop_levels_wire.h"
+#include "../engine/src/xrGame/coop/coop_levels_map.h" // pure: the rows of the world server's LevelMap
 
 #include <string>
 #include <vector>
@@ -351,4 +352,50 @@ TEST(logic_wire_the_op_is_a_level_entity_op)
 	wire::LevelEntityHead back;
 	CHECK(back.read(r));
 	CHECK_EQ(int(back.op), int(wire::LevelEntityHead::Logic));
+}
+
+// Plan 2026-11-12 §1.3 (stage 3): host_send_map lists the seats that play. The world server's own seat on a dedicated host (plays false,
+// standing on fake_start) has no player row and its level no server row; an ordinary host's seat is listed as before.
+namespace
+{
+Seat seat_of(uint32_t peer, uint16_t level, bool plays)
+{
+	Seat s;
+	s.peer = peer;
+	s.level = level;
+	s.in_world = true;
+	s.plays = plays;
+	return s;
+}
+} // namespace
+
+TEST(levels_map_leaves_out_a_seat_that_does_not_play)
+{
+	const uint16_t fake_start = 40, cordon = 1, garbage = 2;
+	const std::vector<Seat> seats = {seat_of(0, fake_start, false), seat_of(1, cordon, true), seat_of(2, garbage, true),
+	    seat_of(3, cordon, true)};
+	const std::vector<Seat> rows = map_rows::listed_seats(seats);
+	CHECK_EQ(rows.size(), size_t(3));
+	CHECK_EQ(rows[0].peer, 1u);
+	CHECK_EQ(rows[1].peer, 2u);
+	CHECK_EQ(rows[2].peer, 3u);
+	const std::vector<uint16_t> levels = map_rows::levels_of(seats);
+	CHECK_EQ(levels.size(), size_t(2)); // fake_start has nobody who plays: no server row
+	CHECK_EQ(levels[0], cordon);
+	CHECK_EQ(levels[1], garbage);
+}
+
+TEST(levels_map_of_an_ordinary_host_is_unchanged)
+{
+	// every seat plays: the rows are the table, the levels those of the seats in order, a seat on no level adds none
+	const std::vector<Seat> seats = {seat_of(0, 5, true), seat_of(1, 7, true), seat_of(2, kNoLevel, true), seat_of(3, 5, true)};
+	const std::vector<Seat> rows = map_rows::listed_seats(seats);
+	CHECK_EQ(rows.size(), seats.size());
+	for (size_t i = 0; i < rows.size(); ++i)
+		CHECK_EQ(rows[i].peer, seats[i].peer);
+	const std::vector<uint16_t> levels = map_rows::levels_of(seats);
+	CHECK_EQ(levels.size(), size_t(2));
+	CHECK_EQ(levels[0], uint16_t(5));
+	CHECK_EQ(levels[1], uint16_t(7));
+	CHECK(map_rows::levels_of({}).empty());
 }

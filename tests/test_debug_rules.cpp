@@ -408,6 +408,40 @@ TEST(debug_console_gates)
 	CHECK(console_allowed(false, true, false, "help") == Operator::NoSession);
 }
 
+// Plan 2026-11-12 §2.3: the operator of a world server (Session::self_host_rights) is a client whose coop_debug and coop_dbg go to the
+// server as an OperatorCommand instead of being refused. The server's console keeps what only it runs (the Lua of coop_dbg lua).
+TEST(debug_console_gates_operator)
+{
+	// without the rights nothing changes: the default argument is the old rule
+	CHECK(switch_allowed(true, false, false) == Operator::NotServer);
+	CHECK(console_allowed(true, false, true, "spawn_item", false) == Operator::NotServer);
+	// the operator's own console: to the server
+	CHECK(switch_allowed(true, false, true) == Operator::ToServer);
+	CHECK(switch_allowed(false, false, true) == Operator::NoSession);
+	CHECK(switch_allowed(true, true, true) == Operator::Ok); // the world server itself: its console runs it
+	// coop_dbg: the server says whether its debug is on; the client sends whatever it is (it may not have heard the state yet)
+	CHECK(console_allowed(true, false, false, "spawn_item", true) == Operator::ToServer);
+	CHECK(console_allowed(true, false, true, "help", true) == Operator::ToServer);
+	CHECK(console_allowed(false, false, true, "spawn_item", true) == Operator::NoSession);
+	// the server console only, never sent
+	CHECK(console_allowed(true, false, true, "lua", true) == Operator::ServerConsoleOnly);
+	CHECK(server_console_only("lua"));
+	CHECK(!server_console_only("spawn_item"));
+	CHECK(!server_console_only("help"));
+	// the world server with a line of its operator: its console's rule, less the server console's own commands
+	CHECK(remote_console_allowed(true, true, "spawn_item") == Operator::Ok);
+	CHECK(remote_console_allowed(true, false, "spawn_item") == Operator::DebugOff);
+	CHECK(remote_console_allowed(true, false, "help") == Operator::Ok);
+	CHECK(remote_console_allowed(true, true, "lua") == Operator::ServerConsoleOnly);
+	CHECK(remote_console_allowed(true, false, "lua") == Operator::ServerConsoleOnly);
+	CHECK(remote_console_allowed(false, true, "spawn_item") == Operator::NoSession);
+	// the command as parse_console_line keeps it (lower case): "LUA" from the wire is "lua"
+	ConsoleLine c;
+	std::string why;
+	CHECK(parse_console_line("LUA print(1)", c, why));
+	CHECK(remote_console_allowed(true, true, c.cmd) == Operator::ServerConsoleOnly);
+}
+
 TEST(debug_console_line_parse)
 {
 	ConsoleLine c;
