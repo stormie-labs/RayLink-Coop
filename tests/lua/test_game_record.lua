@@ -90,12 +90,12 @@ end
 local EXPECT_TABS = { "death", "party", "world", "difficulty", "saves", "other" }
 check(deep_equal(schema.TABS, EXPECT_TABS), "TABS are death, party, world, difficulty, saves, other")
 
-local EXPECT_COUNT = { death = 13, party = 20, world = 21, difficulty = 2, saves = 2, other = 0 }
+local EXPECT_COUNT = { death = 13, party = 21, world = 21, difficulty = 2, saves = 2, other = 0 }
 for _, tab in ipairs(EXPECT_TABS) do
 	check(#schema.items(tab) == EXPECT_COUNT[tab], "tab " .. tab .. " has " .. EXPECT_COUNT[tab] .. " items (docs 3.6)")
 end
 check(#schema.items("nope") == 0, "an unknown tab has no items")
-check(#schema.keys() == 58, "58 catalog keys in all")
+check(#schema.keys() == 59, "59 catalog keys in all")
 check(schema.item("c|nope") == nil and schema.item(nil) == nil, "an unknown key has no item")
 
 do
@@ -195,7 +195,7 @@ do
 end
 
 -- ------------------------------------------------------------------------------------------------ schema_cvars_match_engine
--- The table of docs\GAME_SETTINGS.md 1.2 (rows 1..20, file GAME_SETTINGS.md lines 119-135 on 2026-10-23), name, kind, min,
+-- The table of docs\GAME_SETTINGS.md 1.2 (rows 1..21, file GAME_SETTINGS.md lines 119-135 on 2026-10-23), name, kind, min,
 -- max, default; the engine registration is in the comment. Rows 5 (keep) and 17 are the death-ux build 10, rows 18 and 19
 -- the split-levels build of F3a (2026-10-24): not all in the engine yet.
 local ENGINE = {
@@ -219,10 +219,11 @@ local ENGINE = {
 	{ "coop_split_levels", "int", 0, 1, 0 }, -- F3a: CCC_Integer 0..1, off by default
 	{ "coop_story_together", "int", 0, 1, 1 }, -- F3a: CCC_Integer 0..1, on by default
 	{ "coop_npc_finish_downed", "int", 0, 1, 0 }, -- coop_ai.cpp: CCC_Integer 0..1, on = the stock behaviour of a stalker
+	{ "coop_world_server", "int", 0, 1, 0 }, -- row 21 (owner 2026-11-13): coop_levels.cpp CCC_Integer 0..1, only Lua reads it
 }
 
 do
-	check(#schema.CVARS == 20, "CVARS holds 20 names")
+	check(#schema.CVARS == 21, "CVARS holds 21 names")
 	local bad = {}
 	for i, row in ipairs(ENGINE) do
 		local name, kind, lo, hi, def, tokens = row[1], row[2], row[3], row[4], row[5], row[6]
@@ -260,13 +261,13 @@ do
 		end
 		if why then bad[#bad + 1] = name .. ": " .. why end
 	end
-	check(#bad == 0, "the 20 console variables match the table 1.2: names, order, ranges, defaults, values inside ("
+	check(#bad == 0, "the 21 console variables match the table 1.2: names, order, ranges, defaults, values inside ("
 		.. table.concat(bad, "; ") .. ")")
 	local c_items = 0
 	for _, k in ipairs(schema.keys()) do
 		if k:find("^c|") then c_items = c_items + 1 end
 	end
-	check(c_items == 20, "all 20 console variables, and only they, are catalog items of source c")
+	check(c_items == 21, "all 21 console variables, and only they, are catalog items of source c")
 	local tokens = schema.item("c|coop_death_drop").values
 	check(tokens[1][1] == "drop" and tokens[4][1] == "keep", "death drop offers drop, corpse, lose, keep")
 	local share = schema.item("c|coop_death_share").values
@@ -353,13 +354,13 @@ end
 -- ------------------------------------------------------------------------------------------------ schema_create_only
 do
 	local expect = { ["faction"] = true, ["w|story"] = true, ["w|routes"] = true, ["w|difficulty"] = true,
-		["w|economy"] = true, ["c|coop_death_mode"] = true }
+		["w|economy"] = true, ["c|coop_death_mode"] = true, ["c|coop_world_server"] = true }
 	local got, all_new = {}, true
 	for _, k in ipairs(schema.keys()) do
 		if not schema.editable(k, true) then got[k] = true end
 		if not schema.editable(k, false) then all_new = false end
 	end
-	check(deep_equal(got, expect), "editable(k, true) is false for exactly faction, w|story, w|routes, w|difficulty, w|economy, c|coop_death_mode")
+	check(deep_equal(got, expect), "editable(k, true) is false for exactly faction, w|story, w|routes, w|difficulty, w|economy, c|coop_death_mode, c|coop_world_server")
 	check(all_new, "everything can be chosen while the game is created")
 	check(schema.editable("g|hit_power", true) and schema.editable("e|buy", true) and schema.editable("s|trader_buy_condition_override", true),
 		"the factors can be edited on an existing game")
@@ -571,7 +572,7 @@ local CONSOLE = {
 	coop_death_drop = "drop", coop_bleedout = "60.00000", coop_revive_health = "0.300000", coop_respawn_delay = "30.00000",
 	coop_contusion = "10.00000", coop_death_money = "10.00000", coop_death_wear = "10.00000", coop_death_rank = "0.00000",
 	coop_hardcore_new_kit = "0", coop_checkpoints_group = "1", coop_autosave_interval = "15", coop_autosave_count = "10",
-	coop_death_share = "100.00000", coop_split_levels = "1", coop_story_together = "1", coop_npc_finish_downed = "0",
+	coop_death_share = "100.00000", coop_split_levels = "1", coop_story_together = "1", coop_npc_finish_downed = "0", coop_world_server = "0",
 	coop_nick = "Bob", fov = "67",
 }
 
@@ -622,7 +623,7 @@ do
 	for k in pairs(v) do
 		if k:find("^c|") then c = c + 1 end
 	end
-	check(c == 20 and #reader.asked == 20, "the console: the 20 names, and only they are asked")
+	check(c == 21 and #reader.asked == 21, "the console: the 21 names, and only they are asked")
 	check(v["c|coop_nick"] == nil and v["c|fov"] == nil, "no other console variable")
 	check(v["c|coop_death_mode"] == "checkpoint" and v["c|coop_revive_health"] == "0.3" and v["c|coop_bleedout"] == "60"
 		and v["c|coop_autosave_interval"] == "15" and v["c|coop_death_share"] == "100", "console values come in the canonical form")

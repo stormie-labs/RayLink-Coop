@@ -12,7 +12,9 @@
 		created      "YYYY-MM-DD HH:MM", local time
 		last_played  "YYYY-MM-DD HH:MM", local time
 		last_save    the stem of the last save of this game
-		split        true | false: the game's value c|coop_split_levels (the world runs as its own process)
+		split        true | false: the game's value c|coop_split_levels (each player may be on a map of his own)
+		world_server true | false: the game's value c|coop_world_server (the new mode: with split on, the world runs as its own
+		             process and Continue starts a world server; off, the old split mode in the host's game)
 		rev          the record's revision, a whole number
 		players      [nick, ...]: the players of the last save, without the world server's own seat
 
@@ -22,6 +24,7 @@
 FILE_EXT = ".cgame.json"
 
 local SPLIT_KEY = "c|coop_split_levels"
+local WS_KEY = "c|coop_world_server"
 
 -- cp1251 0x80..0xBF as Unicode code points (0xC0..0xFF are U+0410..U+044F in order); 0x98 is not defined in cp1251
 local HIGH = {
@@ -59,8 +62,8 @@ function str(s)
 	return "\"" .. utf8(out) .. "\""
 end
 
-local function split_of(values)
-	local v = type(values) == "table" and values[SPLIT_KEY] or nil
+local function flag_of(values, key)
+	local v = type(values) == "table" and values[key] or nil
 	return v == true or tonumber(v) == 1
 end
 
@@ -74,7 +77,8 @@ function encode(card, players)
 		local v = card[key]
 		if type(v) == "string" and v ~= "" then parts[#parts + 1] = "\"" .. key .. "\":" .. str(v) end
 	end
-	parts[#parts + 1] = "\"split\":" .. (split_of(card.values) and "true" or "false")
+	parts[#parts + 1] = "\"split\":" .. (flag_of(card.values, SPLIT_KEY) and "true" or "false")
+	parts[#parts + 1] = "\"world_server\":" .. (flag_of(card.values, WS_KEY) and "true" or "false")
 	local rev = tonumber(card.rev)
 	if rev and rev == floor(rev) and rev >= 0 then parts[#parts + 1] = string.format("\"rev\":%d", rev) end
 	if type(players) == "table" then

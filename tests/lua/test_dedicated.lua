@@ -130,10 +130,14 @@ do
 	-- live 2026-11-13: the launcher's card of a world made by a world server said "split": false (the file had no [values])
 	local sv = r and r.values["c|coop_split_levels"]
 	check(sv == true or tonumber(sv) == 1, "a world a world server stages is a world of split levels (" .. tostring(sv) .. ")")
+	local wv = r and r.values["c|coop_world_server"]
+	check(wv == true or tonumber(wv) == 1, "and a world of the new mode: the world as a separate process (" .. tostring(wv) .. ")")
 	STAGED = nil
-	ok = d.stage_new_world("x", { world = { faction = "stalker" }, values = { ["c|coop_split_levels"] = "0" } })
+	ok = d.stage_new_world("x", { world = { faction = "stalker" }, values = { ["c|coop_split_levels"] = "0", ["c|coop_world_server"] = "0" } })
 	sv = STAGED and STAGED.values["c|coop_split_levels"]
+	wv = STAGED and STAGED.values["c|coop_world_server"]
 	check(ok == true and (sv == true or tonumber(sv) == 1), "also when the file says 0 (" .. tostring(sv) .. ")")
+	check(ok == true and (wv == true or tonumber(wv) == 1), "the world server value too (" .. tostring(wv) .. ")")
 
 	STAGED = nil
 	ok = d.stage_new_world("x", { world = { faction = "stalker", name = "" }, creator = { name = "Mark", loadout = {} } })

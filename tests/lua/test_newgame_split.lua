@@ -10,7 +10,7 @@ dofile("tests/lua/support/world_server_stub.lua")
 os.execute("mkdir temp\\tests_s6b 2>nul")
 
 STRINGS = {}
-for _, f in ipairs({ "st_coop_menu.xml", "st_coop_newgame.xml" }) do
+for _, f in ipairs({ "st_coop_menu.xml", "st_coop_newgame.xml", "st_coop_game.xml" }) do
 	local fh = assert(io.open(ROOT .. "configs/text/eng/" .. f, "r"))
 	for id, text in fh:read("*a"):gmatch('<string id="([^"]+)">%s*<text>(.-)</text>') do STRINGS[id] = text end
 	fh:close()
@@ -127,11 +127,14 @@ local function cc_keys()
 	for k in pairs(CFG) do if k:find("^character_creation&") then out[#out + 1] = k end end
 	return out
 end
-local function screen(split)
+-- split: "Split levels"; ws: "World as a separate process" (owner 2026-11-13: the new flow needs both, default true here)
+local function screen(split, ws)
 	local dlg = UINewGame(MENU)
 	dlg.shown = true
 	m.apply(dlg)
 	if split ~= nil then dlg.coop_view:set("c|coop_split_levels", split and 1 or 0) end
+	if split ~= nil and ws ~= false then dlg.coop_view:set("c|coop_world_server", split and 1 or 0) end
+	if ws == false then dlg.coop_view:set("c|coop_world_server", 0) end
 	return dlg
 end
 local function start(dlg) return click(dlg, "btn_start") end
@@ -159,7 +162,8 @@ check(rawget(MENU, "StartGame") == nil and MENU.StartGame == STOCK_START, "main_
 check(#cc_keys() == 0, "[character_creation] is empty: a later single player game takes nothing of it (" .. table.concat(cc_keys(), ",") .. ")")
 check(#STAGED == 0, "the record is not staged in this game")
 local text = stage_text()
-check(text:find("faction = bandit", 1, true) and text:find("\"c|coop_split_levels\" = 1", 1, true), "the staging file: the world's faction, split on")
+check(text:find("faction = bandit", 1, true) and text:find("\"c|coop_split_levels\" = 1", 1, true)
+	and text:find("\"c|coop_world_server\" = 1", 1, true), "the staging file: the world's faction, split on, world server on")
 check(text:find("[creator]\nname = Big Boss\nicon = ui_inGame2_bandit_1\nloadout = wpn_pm,ammo_9x18_fmj,ammo_9x18_fmj\nmoney = 1500\nmap = esc_bandit_start\nbare = 0\n", 1, true),
 	"[creator] is what the stock screen wrote")
 check(WS.calls[#WS.calls] == "start world=new port=27961 stage=true nick=Big Boss", "start{ world = new, stage = true, the pending host's port }")
@@ -216,12 +220,30 @@ start(dlg)
 check(MENU.starts == 1 and #STAGED == 1 and #WS.calls == 0 and INFO.pending_host == 27961, "the stock start, the record staged, no world server")
 check(CFG["character_creation&new_game_faction"] == "bandit", "the stock's keys stay for its on_game_load")
 
-print("== the memory line under the split setting")
+print("== split levels on, world server off (the default): the old split mode, as before 30656b7")
+reset()
+dlg = screen(true, false)
+start(dlg)
+check(MENU.starts == 1 and #STAGED == 1 and #WS.calls == 0 and INFO.pending_host == 27961 and io.open(WS.stage_path, "rb") == nil,
+	"the stock start in this game, the record staged, no staging file, no world server")
+check(STAGED[1] and STAGED[1].values["c|coop_split_levels"] == "1" and STAGED[1].values["c|coop_world_server"] == "0",
+	"the record: split on, world server off (" .. tostring(STAGED[1] and STAGED[1].values["c|coop_world_server"]) .. ")")
+check(coop_world_wait.window_of() == nil and dlg.shown, "no waiting window")
+
+print("== world server on, split levels off: nothing of the new flow")
+reset()
+dlg = screen(false)
+dlg.coop_view:set("c|coop_world_server", 1)
+start(dlg)
+check(MENU.starts == 1 and #STAGED == 1 and #WS.calls == 0, "the stock start, no world server")
+
+print("== the hint and the memory line under the world server setting")
 reset()
 dlg = screen(nil)
-local tab = coop_game_schema.item("c|coop_split_levels").tab
+local tab = coop_game_schema.item("c|coop_world_server").tab
 local note = dlg.coop_view.note_text[tab]
-check(note ~= nil and note.text == T("st_coop_world_mem_note"), "the note on the tab of the split setting (" .. tostring(tab) .. ")")
+check(note ~= nil and note.text == T("st_coop_game_world_server_hint") and STRINGS.st_coop_game_world_server_hint ~= nil,
+	"the hint of the world server setting on its tab (" .. tostring(tab) .. ")")
 WS.memory.commit_free_mb = 2048
 dlg = screen(nil)
 note = dlg.coop_view.note_text[tab]

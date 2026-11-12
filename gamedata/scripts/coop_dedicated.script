@@ -126,9 +126,12 @@ function stage_new_world(path, stage)
 	-- A world a world server stages is a world of split levels by what it is (its maps are its map servers'). The record says so
 	-- whatever the file does: the game's card and the launcher's send "Continue" of it to a world server again (live 2026-11-13:
 	-- a file without [values] gave a card with "split": false).
-	local split = record_value("c|coop_split_levels", "1")
-	if split == nil or split == false then split = "1" end
-	values["c|coop_split_levels"] = split
+	-- It is also a world of the new mode (owner 2026-11-13): c|coop_world_server on, so Continue of it starts a world server.
+	for _, key in ipairs({ "c|coop_split_levels", "c|coop_world_server" }) do
+		local on = record_value(key, "1")
+		if on == nil or on == false then on = "1" end
+		values[key] = on
+	end
 	local c = type(stage.creator) == "table" and stage.creator or nil
 	local name = type(w.name) == "string" and w.name ~= "" and w.name or (c and type(c.name) == "string" and c.name) or ""
 	local rec = r.new(values, { name = name, title = w.title, faction = w.faction,

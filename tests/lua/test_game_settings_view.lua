@@ -163,7 +163,7 @@ for _, with_mcm in ipairs({ false, true }) do
 	local n_world = #vw.rows.world
 	check(n_world == (with_mcm and 18 or 15), "world: " .. n_world .. " rows" .. (with_mcm and " (the 3 of the dynamic anomalies addon among them)" or ""))
 end
-check(#expected("death") == 13 and #expected("party") == 20 and #expected("saves") == 2, "13 / 20 / 2 rows in death / party / saves")
+check(#expected("death") == 13 and #expected("party") == 21 and #expected("saves") == 2, "13 / 21 / 2 rows in death / party / saves")
 
 print("== a row: caption, combo, entries")
 v, dlg = build()

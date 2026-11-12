@@ -291,9 +291,11 @@ local function count_other(values)
 	return n_o, n_m
 end
 
-local SPLIT_KEY_NOTE = "c|coop_split_levels"
+-- the note belongs to the new mode (owner 2026-11-13): "World as a separate process" is what costs the memory
+local SPLIT_KEY_NOTE = "c|coop_world_server"
+local WS_NOTE = "st_coop_game_world_server_hint"
 
--- The note under the split setting: low memory (less than 4 GB of free commit) turns it into the warning line, in the warning
+-- The note under the world server setting (its hint): low memory (less than 4 GB of free commit) turns it into the warning line, in the warning
 -- colour of the Co-op window. It never blocks the choice.
 local function memory_note(dlg, tab)
 	local ww = mod("coop_world_wait")
@@ -323,12 +325,12 @@ local function build_block(dlg)
 	dlg.coop_snapshot_at = ok_date and stamp or ""
 	dlg.coop_header = xml:InitStatic(path .. "cap_gs_header", parent)
 	local view_module = mod("coop_game_settings_view")
-	-- split levels: a note on the tab of the setting, the world would run as a separate process (stage 6b)
+	-- the world as a separate process: its hint on the tab of the setting (stage 6b)
 	local notes = { saves = "st_coop_newgame_saves_note" }
 	local sc = schema()
 	local split_item = sc and sc.item and sc.item(SPLIT_KEY_NOTE) or nil
 	local split_tab = split_item and split_item.tab or nil
-	if split_tab and notes[split_tab] == nil then notes[split_tab] = "st_coop_world_mem_note" end
+	if split_tab and notes[split_tab] == nil then notes[split_tab] = WS_NOTE end
 	dlg.coop_view = view_module.new(dlg, {
 		xml = xml, parent = parent, path = path, values = values, tabs = TABS, external = EXTERNAL,
 		pages = {
@@ -341,7 +343,7 @@ local function build_block(dlg)
 	})
 	dlg.coop_hint = xml:InitTextWnd(path .. "text_gs_hint", parent)
 	dlg.coop_hint:SetText(tr("st_coop_newgame_hint"))
-	if split_tab and notes[split_tab] == "st_coop_world_mem_note" then try("memory note", memory_note, dlg, split_tab) end
+	if split_tab and notes[split_tab] == WS_NOTE then try("memory note", memory_note, dlg, split_tab) end
 end
 
 -- "st_diff_2" -> 2 (the stock keeps the preset as the id of its string)
@@ -463,6 +465,7 @@ end
 -- Split levels (docs\plans\2026-11-12-split-levels-native.md 3.1, stage 6b): the world runs in a world server on this PC
 -------------------------------------------------------------------------------
 local SPLIT_KEY = "c|coop_split_levels"
+local WS_KEY = "c|coop_world_server" -- owner 2026-11-13: the new flow needs both; split levels alone are the old mode
 -- every key the stock OnStartGame writes (ui_mm_faction_select.script UINewGame:OnStartGame; soulslike: the GAMMA injector)
 local CREATION_KEYS = {
 	"new_game_difficulty", "new_game_economy", "new_game_economy_treasure", "new_game_hardcore_mode",
@@ -472,11 +475,17 @@ local CREATION_KEYS = {
 	"new_game_loadout", "new_game_map", "new_game_money",
 }
 
+local function chosen(view, key)
+	local ok, v = pcall(view.get, view, key)
+	return ok and (v == true or tonumber(v) == 1)
+end
+
+-- The new flow (a world server): both "Split levels" and "World as a separate process" on. Split levels alone start as
+-- before 30656b7 (the old mode, the world in this game).
 local function split_chosen(dlg)
 	local view = dlg.coop_view
 	if type(view) ~= "table" or type(view.get) ~= "function" then return false end
-	local ok, v = pcall(view.get, view, SPLIT_KEY)
-	return ok and (v == true or tonumber(v) == 1)
+	return chosen(view, SPLIT_KEY) and chosen(view, WS_KEY)
 end
 
 -- Runs the stock start (with whatever wrappers it has) once with a trap on main_menu:StartGame: the stock writes

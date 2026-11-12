@@ -736,6 +736,12 @@
 	<string id="st_coop_game_vote_timeout_60">
 		<text>60 s</text>
 	</string>
+	<string id="st_coop_game_world_server">
+		<text>World as a separate process (new mode)</text>
+	</string>
+	<string id="st_coop_game_world_server_hint">
+		<text>World as a separate process (the new mode of separate maps): the world runs as its own process on this PC (+2-4 GB of memory), the host joins it as a player, his map changes reload nobody, the server is not a player. Off: separate maps work as before.</text>
+	</string>
 	<string id="st_coop_opt_game_note">
 		<text>Set in the game's settings (Co-op menu). Takes effect on load.</text>
 	</string>

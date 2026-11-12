@@ -375,8 +375,8 @@ check(cs.is_game_owned("o", "alife/event/emission_state") == true and cs.is_game
 section("defaults: the machine's values plus the catalog's")
 fresh_machine()
 local D = gs.defaults()
-check(count_c(D) == 20 and D["c|coop_bleedout"] == "60" and D["c|coop_revive_health"] == "0.3" and D["c|coop_death_share"] == "100",
-	"the 20 console rules, canonical (the console prints 60.00000 / 0.30000)")
+check(count_c(D) == 21 and D["c|coop_bleedout"] == "60" and D["c|coop_revive_health"] == "0.3" and D["c|coop_death_share"] == "100",
+	"the 21 console rules, canonical (the console prints 60.00000 / 0.30000)")
 check(D["o|alife/event/emission_frequency"] == "24" and D["o|coop/coop_session/gather_radius"] == "20",
 	"host options come from the machine")
 check(D["o|coop/coop_session/travel_time"] == "true" and D["o|coop/coop_session/join_spawn"] == "faction_start",
@@ -402,8 +402,8 @@ gs.before_world_start("new", "")
 local A = gs.active()
 check(A and A.id == REC1.id and A.faction == "dolg" and A.world.difficulty == 2 and A.rev == 0, "the staged record is active")
 check(GAME.staged == nil, "the engine's pending game was taken")
-check(GAME.cvar_calls == 1 and count(GAME.cvars) == 20 and GAME.cvars.coop_death_mode == "checkpoint"
-	and GAME.cvars.coop_bleedout == "60" and GAME.cvars.coop_friendly_fire == "1", "20 console values go to the engine (set_cvars)")
+check(GAME.cvar_calls == 1 and count(GAME.cvars) == 21 and GAME.cvars.coop_death_mode == "checkpoint"
+	and GAME.cvars.coop_bleedout == "60" and GAME.cvars.coop_friendly_fire == "1", "21 console values go to the engine (set_cvars)")
 check(GAME.faction == "dolg" and gs.world_faction() == "dolg", "the world's faction is set")
 check(gs.origin() == "new" and gs.running_id() == REC1.id and gs.locked() == true, "origin new, the running game, locked in a level")
 check(gs.value("o", "alife/event/emission_frequency") == "48" and gs.value("o", "gameplay/none") == nil
@@ -1061,7 +1061,7 @@ local alone = {}
 gs.save_state(alone)
 check(alone.coop_game.at.players == nil, "a save of a world server with nobody in has no players (its own seat is none)")
 local jalone = VFS[SAVES .. RT.id .. ".cgame.json"]
-check(type(jalone) == "string" and jalone:find("players", 1, true) == nil and jalone:find("server", 1, true) == nil,
+check(type(jalone) == "string" and jalone:find("players", 1, true) == nil and jalone:find("\"server\"", 1, true) == nil,
 	"and the launcher's card names nobody")
 coop.is_dedicated = nil
 SESSION = { nick = "stormie", players = {} }

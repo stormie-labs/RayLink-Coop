@@ -65,28 +65,32 @@ eq(J.str("\204\232\240"), "\"\208\156\208\184\209\128\"", "cp1251 goes out as UT
 local full = J.encode({
 	id = "0a1b2c3d-00ff", name = "\204\232\240", title = "With \"Kent\"", faction = "stalker", created = "2026-11-12 23:40",
 	last_played = "2026-11-12 23:55", last_save = "coop_auto_0a1b2c3d-00ff_3", rev = 7,
-	values = { ["c|coop_split_levels"] = "1", ["c|coop_other"] = "5" },
+	values = { ["c|coop_split_levels"] = "1", ["c|coop_world_server"] = "1", ["c|coop_other"] = "5" },
 	players = { "Kent", "\204\232\240" },
 })
 eq(full,
 	"{\"format\":1,\"id\":\"0a1b2c3d-00ff\",\"name\":\"\208\156\208\184\209\128\",\"title\":\"With \\\"Kent\\\"\",\"faction\":\"stalker\"," ..
-	"\"created\":\"2026-11-12 23:40\",\"last_played\":\"2026-11-12 23:55\",\"last_save\":\"coop_auto_0a1b2c3d-00ff_3\",\"split\":true," ..
+	"\"created\":\"2026-11-12 23:40\",\"last_played\":\"2026-11-12 23:55\",\"last_save\":\"coop_auto_0a1b2c3d-00ff_3\",\"split\":true,\"world_server\":true," ..
 	"\"rev\":7,\"players\":[\"Kent\",\"\208\156\208\184\209\128\"]}",
 	"a full card: a fixed order of keys, UTF-8, split from the game's value")
 
-eq(J.encode({ id = "x", name = "", values = {} }), "{\"format\":1,\"id\":\"x\",\"name\":\"\",\"split\":false}",
+eq(J.encode({ id = "x", name = "", values = {} }), "{\"format\":1,\"id\":\"x\",\"name\":\"\",\"split\":false,\"world_server\":false}",
 	"a bare card: what is missing is left out, split is false")
-eq(J.encode({ id = "x", values = { ["c|coop_split_levels"] = 0 } }), "{\"format\":1,\"id\":\"x\",\"name\":\"\",\"split\":false}",
+eq(J.encode({ id = "x", values = { ["c|coop_split_levels"] = 0 } }), "{\"format\":1,\"id\":\"x\",\"name\":\"\",\"split\":false,\"world_server\":false}",
 	"split 0 is false, a missing name is empty")
-eq(J.encode({ id = "x", values = { ["c|coop_split_levels"] = true } }), "{\"format\":1,\"id\":\"x\",\"name\":\"\",\"split\":true}",
+eq(J.encode({ id = "x", values = { ["c|coop_split_levels"] = true } }), "{\"format\":1,\"id\":\"x\",\"name\":\"\",\"split\":true,\"world_server\":false}",
 	"split true is true")
-eq(J.encode({ id = "x", values = { ["c|coop_split_levels"] = "0" } }), "{\"format\":1,\"id\":\"x\",\"name\":\"\",\"split\":false}",
+eq(J.encode({ id = "x", values = { ["c|coop_split_levels"] = "0" } }), "{\"format\":1,\"id\":\"x\",\"name\":\"\",\"split\":false,\"world_server\":false}",
 	"split \"0\" is false")
-eq(J.encode({ id = "x", rev = "12", players = {} }), "{\"format\":1,\"id\":\"x\",\"name\":\"\",\"split\":false,\"rev\":12}",
+eq(J.encode({ id = "x", rev = "12", players = {} }), "{\"format\":1,\"id\":\"x\",\"name\":\"\",\"split\":false,\"world_server\":false,\"rev\":12}",
 	"rev is a number, an empty list of players is left out")
 eq(J.encode({ id = "x", rev = 1.5, title = 5, players = { 1, "a", {}, "" } }),
-	"{\"format\":1,\"id\":\"x\",\"name\":\"\",\"split\":false,\"players\":[\"a\"]}",
+	"{\"format\":1,\"id\":\"x\",\"name\":\"\",\"split\":false,\"world_server\":false,\"players\":[\"a\"]}",
 	"a rev that is not a whole number, a title that is not a string and players that are not names are left out")
+eq(J.encode({ id = "x", values = { ["c|coop_world_server"] = true } }),
+	"{\"format\":1,\"id\":\"x\",\"name\":\"\",\"split\":false,\"world_server\":true}", "world_server is read as split is: true")
+eq(J.encode({ id = "x", values = { ["c|coop_split_levels"] = "1", ["c|coop_world_server"] = "0" } }),
+	"{\"format\":1,\"id\":\"x\",\"name\":\"\",\"split\":true,\"world_server\":false}", "the old split mode: split true, world_server false")
 check(J.encode(nil) == nil, "no card: nil")
 check(J.encode({}) == nil, "a card without an id: nil")
 check(J.encode({ id = 5 }) == nil, "an id that is not a string: nil")

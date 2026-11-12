@@ -267,11 +267,49 @@ do
 	local s = fh and fh:read("*a") or ""
 	if fh then fh:close() end
 	check(s:find("faction = bandit", 1, true) and s:find("\"c|coop_split_levels\" = 1", 1, true) and s:find("name = tester", 1, true)
-		and s:find("money = 5000", 1, true) and s:find("bare = 1", 1, true), "the schema's defaults, split on, tester, bare, 5000")
+		and s:find("\"c|coop_world_server\" = 1", 1, true)
+		and s:find("money = 5000", 1, true) and s:find("bare = 1", 1, true), "the schema's defaults, split on, world server on, tester, bare, 5000")
 end
 check(w.window_of() and w.window_of().shown, "and the waiting window")
 local before = #WS.calls
 w.on_menu_frame(MENU)
 check(#WS.calls == before, "once per game run")
+if w.window_of() then w.window_of():Close() end
+
+print("== continue_plan: a world server only for a world made by the new flow (owner 2026-11-13)")
+local SPL, WSV = "c|coop_split_levels", "c|coop_world_server"
+local CR = { name = "Strelok" }
+check(w.continue_plan(nil) == "local" and w.continue_plan({}) == "local", "no card: local")
+check(w.continue_plan({ values = {} }) == "local", "neither: local")
+check(w.continue_plan({ values = { [SPL] = "1" } }) == "local", "split levels without the world server (the old mode): local")
+check(w.continue_plan({ values = { [SPL] = "1", [WSV] = "0" }, creator = CR }) == "local", "the old mode, world server off: local")
+check(w.continue_plan({ values = { [SPL] = "0", [WSV] = "1" } }) == "local", "world server without split levels: local")
+check(w.continue_plan({ values = { [SPL] = "1", [WSV] = "1" }, creator = CR }) == "server", "both on: server")
+check(w.continue_plan({ values = { [SPL] = true, [WSV] = true }, creator = CR }) == "server", "both on as booleans: server")
+check(w.continue_plan({ values = { [SPL] = "1", [WSV] = "1" } }) == "local",
+	"both on but no creator (an old world whose setting was switched on later): local, as the world it is")
+
+print("== -coop_world_auto <stem>")
+local CARDS = {
+	g_old = { values = { [SPL] = "1" }, name = "Old" },
+	g_new = { values = { [SPL] = "1", [WSV] = "1" }, creator = CR, name = "New" },
+}
+coop_game_settings = {
+	game_of_save = function(stem) return (stem:match("^coop_auto_(g_%a+)_")) end,
+	load_card = function(id) return CARDS[id] end,
+}
+ws_reset(); CALLS = {}; LOG = {}
+w.state_of().auto_done = false
+CMD = "x.exe -coop_world_auto coop_auto_g_old_1"
+w.on_menu_frame(MENU)
+check(#WS.calls == 0 and has_log("[coop-world-wait] auto: ! coop_auto_g_old_1 is not a world-server world: nothing is done"),
+	"an old split world: nothing is done, a log line")
+check(not has_log("old split mode"), "no refusal of the old split mode")
+ws_reset(); CALLS = {}; LOG = {}
+w.state_of().auto_done = false
+CMD = "x.exe -coop_world_auto coop_auto_g_new_1"
+w.on_menu_frame(MENU)
+check(last_call(WS.calls) and last_call(WS.calls):find("^start world=load save=coop_auto_g_new_1") ~= nil, "a world-server world: started")
+coop_game_settings = nil
 
 print(string.format("%d passed, %d failed", PASSES, FAILS))

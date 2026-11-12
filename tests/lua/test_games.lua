@@ -348,14 +348,15 @@ do
 	level = { present = function() return false end }
 	function alife() return nil end
 	CARDS = {
-		g_new = { id = "g_new", name = "Strelok", title = "Split world", values = { ["c|coop_split_levels"] = "1" }, creator = { name = "Strelok" } },
+		g_new = { id = "g_new", name = "Strelok", title = "Split world", values = { ["c|coop_split_levels"] = "1", ["c|coop_world_server"] = "1" },
+			creator = { name = "Strelok" } },
 		g_old = { id = "g_old", name = "Strelok", title = "", values = { ["c|coop_split_levels"] = "1" } },
 		g_plain = { id = "g_plain", name = "Strelok", values = { ["c|coop_split_levels"] = "0" } },
 	}
 	coop_game_settings.load_card = function(id) return CARDS[id] end
 	local ww = load_module("coop_world_wait")
-	check(ww.continue_plan(CARDS.g_new) == "server", "split on, a creator in the record: the world server")
-	check(ww.continue_plan(CARDS.g_old) == "old_split", "split on, no creator: a world of the old split mode")
+	check(ww.continue_plan(CARDS.g_new) == "server", "split and world server on, a creator in the record: the world server")
+	check(ww.continue_plan(CARDS.g_old) == "local", "split on, world server off: the old split mode, loaded in this game (owner 2026-11-13)")
 	check(ww.continue_plan(CARDS.g_plain) == "local" and ww.continue_plan(nil) == "local", "split off or no card: loaded in this game as today")
 
 	local menu_mod = load_module("coop_menu")
@@ -377,9 +378,9 @@ do
 	ws_reset(); CALLS = {}; LOG = {}
 	f = fake("g_old")
 	f:HostAfter("save", "coop_auto_g_old_1")
-	check(#WS.calls == 0 and #CALLS == 0 and not f.closed and f.local_error == STRINGS.st_coop_world_err_old_split and f.refreshed,
-		"an old split world: refused with a text, the player stays in the window, nothing loads")
-	check(log_has("old split"), "a log line of the refusal")
+	check(#WS.calls == 0 and CALLS[1] == "pending 27960" and CALLS[#CALLS]:find("coop_auto_g_old_1", 1, true) and f.local_error == nil,
+		"an old split world: loaded in this game as before 30656b7, no world server, no refusal")
+	check(STRINGS.st_coop_world_err_old_split == nil, "the refusal text is gone")
 
 	ws_reset(); CALLS = {}; LOG = {}
 	WS.start_ok, WS.start_why = false, "a world server of this game runs already"
@@ -400,7 +401,8 @@ do
 	ws_reset(); LOG = {}
 	ww.state_of().auto_done = false
 	ww.on_menu_frame({ ShowDialog = function() end, HideDialog = function() end, Show = function() end })
-	check(#WS.calls == 0 and log_has("auto: ! coop_auto_g_old_2 is a world of the old split mode"), "-coop_world_auto refuses an old split world with a log line")
+	check(#WS.calls == 0 and log_has("auto: ! coop_auto_g_old_2 is not a world%-server world: nothing is done"),
+		"-coop_world_auto does nothing with an old split world, a log line")
 end
 
 print(string.format("%d passed, %d failed", PASSES, FAILS))

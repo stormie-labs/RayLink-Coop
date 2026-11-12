@@ -82,6 +82,9 @@ cvar("coop_split_levels", "int", 0, 1, 0) -- off by default: every map then is t
 cvar("coop_story_together", "int", 0, 1, 1)
 -- row 20: stalkers finish a player who is down (the stock behaviour; off by the owner's word 2026-11-02); off, they leave him as monsters do (coop_ai.cpp)
 cvar("coop_npc_finish_downed", "int", 0, 1, 0)
+-- row 21 (owner 2026-11-13): the new split mode, the world as a world server process on the creator's PC; off = the split levels
+-- of the old mode. Only Lua reads it (coop_newgame_modes Start, coop_world_wait.continue_plan)
+cvar("coop_world_server", "int", 0, 1, 0)
 
 -------------------------------------------------------------------------------
 -- Values: parsing and formatting
@@ -211,6 +214,11 @@ c_item("party", "coop_max_new_characters", "list", { v = { 1, 2, 4, 8, 16, 32, 6
 -- and "story levels together" (only while the levels are split; off = the story levels are better-together hints only).
 -- Both act when the game is loaded.
 c_item("party", "coop_split_levels", "check", { applies = "load" })
+-- the new mode of the split levels (owner 2026-11-13): on, a new world runs as a world server and the host joins it. Chosen when
+-- the world is created and never changed after: the save's actor is the creator's own character in the old mode and the server's
+-- ghost in the new one, a world cannot change which
+c_item("party", "coop_world_server", "check", { when = "create", applies = "create",
+	shown_if = { key = "c|coop_split_levels", any = { true } } })
 c_item("party", "coop_story_together", "check", { applies = "load",
 	shown_if = { key = "c|coop_split_levels", any = { true } } })
 -- A new player appears at the base of the world's faction (F3a; it was "next to the host" before the levels were split)

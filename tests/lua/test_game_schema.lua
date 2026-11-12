@@ -3,7 +3,7 @@
 --   c|coop_split_levels      on / off, the switch of the split levels, in the menu, off by default
 --   c|coop_story_together    on / off, only while the levels are split, on by default
 --   o|coop/coop_session/join_spawn   a new player appears at the base of the world's faction by default
--- The catalog is loaded into a sealed environment (the standard library and nothing of the engine). The list of 20 console
+-- The catalog is loaded into a sealed environment (the standard library and nothing of the engine). The list of 21 console
 -- variables is also held against the engine's white list in engine\src\xrCoop\coop_game_values.h when that file is there.
 -- Not shipped. Run: tools\test_lua.cmd game_schema
 local PASSES, FAILS = 0, 0
@@ -67,12 +67,12 @@ local SPLIT, STORY = "c|coop_split_levels", "c|coop_story_together"
 local JOIN = "o|coop/coop_session/join_spawn"
 
 -------------------------------------------------------------------------------
-print("== the 20 console variables")
+print("== the 21 console variables")
 local FIRST_17 = { "coop_friendly_fire", "coop_max_new_characters", "coop_share_rewards", "coop_death_mode", "coop_death_drop",
 	"coop_bleedout", "coop_revive_health", "coop_respawn_delay", "coop_contusion", "coop_death_money", "coop_death_wear",
 	"coop_death_rank", "coop_hardcore_new_kit", "coop_checkpoints_group", "coop_autosave_interval", "coop_autosave_count",
 	"coop_death_share" }
-check(#schema.CVARS == 20, "CVARS holds 20 names (" .. #schema.CVARS .. ")")
+check(#schema.CVARS == 21, "CVARS holds 21 names (" .. #schema.CVARS .. ")")
 local same = true
 for i, n in ipairs(FIRST_17) do
 	if schema.CVARS[i] ~= n then same = false end
@@ -80,7 +80,8 @@ end
 check(same, "the first 17 names keep their order")
 check(schema.CVARS[18] == "coop_split_levels" and schema.CVARS[19] == "coop_story_together", "rows 18 and 19 are the split-levels rules")
 check(schema.CVARS[20] == "coop_npc_finish_downed", "row 20 is the NPC AI rule: stalkers finish a downed player")
-for n, def in pairs({ coop_split_levels = 0, coop_story_together = 1 }) do
+check(schema.CVARS[21] == "coop_world_server", "row 21 is the new split mode: the world as a separate process (owner 2026-11-13)")
+for n, def in pairs({ coop_split_levels = 0, coop_story_together = 1, coop_world_server = 0 }) do
 	local c = schema.CVAR[n]
 	check(c ~= nil and c.kind == "int" and c.min == 0 and c.max == 1 and c.def == def, n .. ": an on/off console flag, default " .. def)
 end
@@ -95,7 +96,7 @@ if header then
 	for i, n in ipairs(names) do
 		if schema.CVARS[i] ~= n then equal = false end
 	end
-	check(#names == 20 and equal, "coop_game_values.h kGameCvars is the catalog's CVARS (" .. #names .. " names)")
+	check(#names == 21 and equal, "coop_game_values.h kGameCvars is the catalog's CVARS (" .. #names .. " names)")
 else
 	print("  skip the engine sources are not checked out: kGameCvars is not compared")
 end
@@ -104,7 +105,7 @@ local c_items = 0
 for _, k in ipairs(schema.keys()) do
 	if k:find("^c|") then c_items = c_items + 1 end
 end
-check(c_items == 20, "all 20 console variables, and only they, are catalog items of source c (" .. c_items .. ")")
+check(c_items == 21, "all 21 console variables, and only they, are catalog items of source c (" .. c_items .. ")")
 
 -------------------------------------------------------------------------------
 print("== the two switches")
@@ -133,6 +134,22 @@ local i_split, i_story, i_join = index_of(party, SPLIT), index_of(party, STORY),
 check(i_split and i_story and i_join and i_split < i_story and i_story < i_join,
 	"on the group tab: split levels, story levels together, then where a new player appears")
 check(i_split ~= nil and index_of(party, "c|coop_max_new_characters") < i_split, "after the limit of new characters")
+
+-- the new split mode (owner 2026-11-13): a check right under the split levels, shown while they are on, off by default
+local WSK = "c|coop_world_server"
+local wsi = schema.item(WSK)
+check(wsi ~= nil and wsi.tab == "party" and wsi.kind == "check" and wsi.src == "c" and wsi.cvar == "coop_world_server",
+	"world server: a check on the group tab, a console variable")
+check(wsi and wsi.def == false and schema.default(WSK) == false, "world server: off by default")
+-- which process runs a world is decided once: its save's actor is either the creator's own character (the old mode) or the
+-- server's ghost (the new one), so the value cannot be turned on or off on a world that exists
+check(wsi and wsi.when == "create" and wsi.applies == "create", "world server: chosen when the world is created")
+check(schema.editable(WSK, false) == true and schema.editable(WSK, true) == false, "world server: not editable on an existing game")
+check(wsi and wsi.range and wsi.range[1] == 0 and wsi.range[2] == 1 and wsi.int == true and schema.to_raw(WSK, true) == "1",
+	"world server: 0..1, the console form")
+local wshown = wsi and wsi.shown_if
+check(wshown and wshown.key == SPLIT and #wshown.any == 1 and wshown.any[1] == true, "world server: shown while the levels are split")
+check(i_split and index_of(party, WSK) == i_split + 1, "world server: right under the split levels")
 
 -- values: a console flag is "1" / "0"
 check(schema.normalize(SPLIT, "1") == true and schema.normalize(SPLIT, "0") == false, "normalize: 1 / 0")
@@ -176,7 +193,7 @@ check(downed and downed.shown_if == nil, "finish a downed player: always shown")
 print("== strings")
 local ids = schema.text_ids()
 local want = { "st_coop_game_split_levels", "st_coop_game_story_together", "st_coop_game_join_spawn",
-	"st_coop_game_loot_claim", "st_coop_game_npc_finish_downed",
+	"st_coop_game_loot_claim", "st_coop_game_npc_finish_downed", "st_coop_game_world_server",
 	"st_coop_game_join_spawn_host", "st_coop_game_join_spawn_faction_start" }
 for _, id in ipairs(want) do
 	check(index_of(ids, id) ~= nil, "text_ids names " .. id)
@@ -193,6 +210,8 @@ for _, lang in ipairs({ "eng", "rus" }) do
 	end
 	check(#missing == 0, lang .. ": the strings of the two switches and of join_spawn exist (missing: " .. table.concat(missing, ",") .. ")")
 	check(have.st_coop_game_split_levels == 1 and have.st_coop_game_story_together == 1, lang .. ": each switch string is defined once")
+	check(have.st_coop_game_world_server == 1 and have.st_coop_game_world_server_hint == 1,
+		lang .. ": the world server setting has its title and its hint, once each")
 end
 
 finish()

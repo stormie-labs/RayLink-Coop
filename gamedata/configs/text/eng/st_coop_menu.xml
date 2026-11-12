@@ -749,10 +749,10 @@
 		<text>The world runs on this PC</text>
 	</string>
 	<string id="st_coop_world_mem_note">
-		<text>Split levels: the world runs as a separate process on this PC, +2-4 GB of memory</text>
+		<text>World as a separate process: the world runs as its own process on this PC, +2-4 GB of memory</text>
 	</string>
 	<string id="st_coop_world_mem_low">
-		<text>Low memory: %s GB free. With split levels the world runs as a separate process: +2-4 GB</text>
+		<text>Low memory: %s GB free. The world as a separate process takes +2-4 GB more</text>
 	</string>
 	<string id="st_coop_world_btn_retry">
 		<text>Try again</text>
@@ -801,8 +801,5 @@
 	</string>
 	<string id="st_coop_world_err_unknown">
 		<text>The server ended without saying why</text>
-	</string>
-	<string id="st_coop_world_err_old_split">
-		<text>This world was created by the old split-levels mode and cannot be opened in the new one yet: your character would be lost. It will be carried over in a coming update.</text>
 	</string>
 </string_table>
