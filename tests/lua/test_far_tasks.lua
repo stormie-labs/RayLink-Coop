@@ -834,6 +834,13 @@ do
 	Hm.ini.nowhere_task = {}
 	Hm.tm:give_task("nowhere_task", 31337) -- a giver that is no more
 	check(Hm.env.coop_tasks.taker("nowhere_task") == 0, "with nobody to measure to: as before")
+	-- a seat that plays no character: its ghost takes no task. A script that gives one with nobody named (operacia_monolith's
+	-- PDA in the group's inventory) gives it to a player of the world, or its rewards are nobody's.
+	Hm.env.coop.is_dedicated = function() return true end
+	Hm.ini.ghost_task = {}
+	Hm.tm:give_task("ghost_task")
+	check(Hm.env.coop_tasks.taker("ghost_task") == 1, "a seat with no character: a player of the world takes it, not the ghost")
+	Hm.env.coop.is_dedicated = nil
 end
 
 print("== a world hurt by a give that died: the info of the dialog is taken back, once")

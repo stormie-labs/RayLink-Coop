@@ -2834,7 +2834,18 @@ local function nearest_taker(giver)
 			pos, gv = se and se.position or nil, se and se.m_game_vertex_id or nil
 		end
 	end
-	if not pos then return 0 end
+	-- A seat that plays no character: its ghost takes no task. With nobody to measure to (a script gave it with no giver:
+	-- operacia_monolith's PDA in the group's inventory), or nobody on that level, a player of the world takes it, the one
+	-- who has been in it longest (the lowest peer): rewards written on the ghost were nobody's.
+	local function anybody()
+		if not (qc.actor_is_nobody and qc.actor_is_nobody() and qc.bodies) then return 0 end
+		local first
+		for _, c in ipairs(qc.bodies()) do
+			if type(c.peer) == "number" and c.peer ~= 0 and (not first or c.peer < first) then first = c.peer end
+		end
+		return first or 0
+	end
+	if not pos then return anybody() end
 	-- Split levels: only a player of that level is next to it; the world server's own characters are not all there is, and the
 	-- coordinates of two levels do not compare (the quest audit, 2026-11-13: a task given by logic was written on the ghost).
 	local _, peer
@@ -2843,7 +2854,8 @@ local function nearest_taker(giver)
 	else
 		_, peer = qc.nearest_character(pos)
 	end
-	return peer or 0
+	if not peer or peer == 0 then return anybody() end
+	return peer
 end
 
 local function patch_method(name, make)
