@@ -280,8 +280,11 @@ local function machine(role, self_peer)
 	CRandomTask.__index = CRandomTask
 	function CRandomTask:give_task(id, giver)
 		M.on_init[id] = (M.on_init[id] or 0) + 1
-		if M.init_fx and M.init_fx[id] then M.init_fx[id]() end -- the stock runs on_init before the task is the actor's
-		self.task_info[id] = { id = id, stage = 0, status = "selected", task_giver_id = giver, status_functor = "actor_has_fetch_item" }
+		-- the stock (CRandomTask:give_task): the task object is in task_info BEFORE its give_task runs on_init and gives the task to
+		-- the actor; the giver is written after. An on_init that dies leaves the object behind.
+		self.task_info[id] = { id = id, stage = 0, status = "selected", status_functor = "actor_has_fetch_item" }
+		if M.init_fx and M.init_fx[id] then M.init_fx[id]() end
+		self.task_info[id].task_giver_id = giver
 		M.engine_tasks[id] = { state = "in", get_id = function() return id end,
 			get_title = function() return "title_" .. id end, get_icon_name = function() return nil end }
 	end
@@ -877,7 +880,8 @@ do
 	C.talking = false
 	check(C.tm.task_info.dawn_1 ~= nil, "a provisional stub while the host is asked")
 	pump()
-	check(H.tm.task_info.dawn_1 == nil, "the host gave nothing")
+	check(H.tm.task_info.dawn_1 == nil, "the host gave nothing: no half-made task is left in its journal")
+	check(H.engine_tasks.dawn_1 == nil, "(and no task of the engine)")
 	check(C.tm.task_info.dawn_1 == nil, "the stub is gone")
 	check(#msgs == 1 and msgs[1] == "st_coop_news_task_not_given", "the player is told that the task was not given")
 	check(infos.dawn_start == nil, "the info of the phrase is taken back: the dialog offers the task again")

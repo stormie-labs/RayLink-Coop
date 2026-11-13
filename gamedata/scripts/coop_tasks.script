@@ -948,7 +948,14 @@ function ops.give(tm, id, t, from)
 	local gave, gerr = pcall(tm.give_task, tm, id, giver)
 	if npc then _G.get_speaker = stock_speaker end
 	host.giver = nil
-	if not gave then error(gerr, 0) end
+	if not gave then
+		-- The stock puts the task object into task_info BEFORE its give_task runs on_init and gives the task to the actor
+		-- (CRandomTask:give_task). An on_init that died leaves the object behind: a task of the journal that is no task of the
+		-- engine. It was sent to every player as given and never judged ("the KMB does not update", owner 2026-11-13; seen on
+		-- the stand 2026-11-14 with the guards of coop_quests_far taken out).
+		if tm.task_info[id] ~= nil and not engine_task_running(id) then tm.task_info[id] = nil end
+		error(gerr, 0)
+	end
 	local given = tm.task_info[id] ~= nil
 	if given then
 		stamp_wait(id, tm.task_info[id])
@@ -3105,9 +3112,12 @@ function heal_lost_gives()
 	if not (tm and type(tm.task_info) == "table" and db.actor) then return 0 end
 	local healed = 0
 	for _, e in ipairs(host.lost_gives) do
-		local lost = has_alife_info(e.info) and task_known(e.task) and tm.task_info[e.task] == nil
+		-- the give that died left the task object in the journal with no task of the engine behind it: lost all the same
+		local half = tm.task_info[e.task] ~= nil and not engine_task_running(e.task)
+		local lost = has_alife_info(e.info) and task_known(e.task) and (tm.task_info[e.task] == nil or half)
 		for _, info in ipairs(e.ran) do lost = lost and not has_alife_info(info) end
 		if lost then
+			if half then tm.task_info[e.task] = nil end
 			db.actor:disable_info_portion(e.info)
 			healed = healed + 1
 			log("task '%s' was asked for and never given: info '%s' is taken back, its dialog offers it again", e.task, e.info)

@@ -308,11 +308,14 @@ function machine(role, self_peer)
 	M.on_init = {}
 	function CRandomTask:give_task(id, giver)
 		M.on_init[id] = (M.on_init[id] or 0) + 1
-		if M.init_fx and M.init_fx[id] then M.init_fx[id]() end -- the stock runs on_init before the task is the actor's
-		local t = setmetatable({ id = id, stage = 0, status = "selected", task_giver_id = giver,
+		-- the stock (CRandomTask:give_task): the task object is in task_info BEFORE its give_task runs on_init and gives the task to
+		-- the actor; the giver is written after. An on_init that dies leaves the object behind.
+		local t = setmetatable({ id = id, stage = 0, status = "selected",
 			status_functor = ini_data[id] and ini_data[id].status_functor }, env.task_objects.CGeneralTask)
 		self.task_info[id] = t
+		if M.init_fx and M.init_fx[id] then M.init_fx[id]() end
 		M.engine_tasks[id] = { state = "in", get_id = function() return id end }
+		t.task_giver_id = giver
 	end
 	function CRandomTask:set_task_completed(id) if self.task_info[id] then self.task_info[id].forced_status = "complete" end end
 	function CRandomTask:set_task_failed(id) if self.task_info[id] then self.task_info[id].forced_status = "fail" end end

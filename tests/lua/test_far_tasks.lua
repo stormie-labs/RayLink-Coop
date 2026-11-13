@@ -853,11 +853,21 @@ do
 	Hm.infos.renegade_cs_story_squad_1_death = true -- ... and it ran: its squad is dead
 	Hm.infos.cs_story_task0_ambush_renegade_done = true -- its second part: the phrase was said ...
 	Hm.tm.task_info.cs_task0_ambush_renegade_story2 = { id = "cs_task0_ambush_renegade_story2", stage = 0, status = "selected" } -- ... and it is on
+	Hm.engine_tasks.cs_task0_ambush_renegade_story2 = { state = "in", get_id = function() return "cs_task0_ambush_renegade_story2" end }
 	check(T.heal_lost_gives() == 1, "one give that was lost")
 	check(Hm.infos.fanat_training_start_done == nil, "the Fanat offers his training again")
 	check(Hm.infos.cs_story_task0_ambush_renegade_start == true, "a task that ran is left alone")
 	check(Hm.infos.cs_story_task0_ambush_renegade_done == true, "a task that is on is left alone")
 	Hm.tm.task_info.cs_task0_ambush_renegade_story2 = nil
+	Hm.engine_tasks.cs_task0_ambush_renegade_story2 = nil
+	Hm.infos.cs_story_task0_ambush_renegade_done = nil -- (the second part is not this case's)
+	-- what such a give left behind: the task object in the journal that is no task of the engine (the stock makes the object
+	-- before on_init runs). It was sent to everybody and never judged: "the KMB does not update" (owner 2026-11-13).
+	Hm.infos.fanat_training_start_done = true
+	Hm.tm.task_info.task_fanat_training_1 = { id = "task_fanat_training_1", stage = 0, status = "selected" }
+	check(T.heal_lost_gives() == 1, "a half-made task is a lost give too")
+	check(Hm.tm.task_info.task_fanat_training_1 == nil, "the half-made task leaves the journal")
+	check(Hm.infos.fanat_training_start_done == nil, "and its dialog offers it again")
 	-- once a world: a task the player drops later on is his choice, the stock keeps its dialog closed
 	local pstor = Hm.env.db.storage[0].pstor
 	check(pstor.coop_lost_gives == true, "the world server looked when it started, and the world keeps that")
