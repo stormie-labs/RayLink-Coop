@@ -157,6 +157,14 @@ local function patch_check_task()
 		local ref = POSITION_FUNCTORS[self.status_functor]
 		if ref then
 			local who = qc.nearest_body(ref_object(self, ref))
+			if not who and self.status_functor == "spy_task_status_functor" and qc.actor_is_nobody() then
+				-- nobody on the spy's level: the stock brings him to "the actor", and the ghost of a seat that plays no character
+				-- stands on no level of the game. The player who took the task is the actor the stock means.
+				local taker = ct().taker and ct().taker(self.id)
+				for _, c in ipairs(qc.bodies()) do
+					if c.peer == taker then who = c.obj end
+				end
+			end
 			if who and who:id() ~= a:id() then
 				stats.near_other = stats.near_other + 1
 				fields.position = function() return who:position() end

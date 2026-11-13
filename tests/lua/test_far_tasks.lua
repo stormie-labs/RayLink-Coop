@@ -779,6 +779,29 @@ do
 	check(#Hm.logic_ran == 2, "with a live object the stock logic runs")
 end
 
+print("== the spy with no player on his level: \"the actor\" is the player who took the task, not the ghost")
+-- tasks_agent_rescue brings an offline spy to db.actor:position(). With nobody on the spy's level the nearest player is nobody and the
+-- stock read the world server's ghost: the squad went to fake_start (the followers analysis, 2026-11-13).
+do
+	Hm.env.coop.is_dedicated = function() return true end
+	records[780] = { id = 780, parent_id = 65535, m_game_vertex_id = 1, m_level_vertex_id = 1, position = vec(50, 0, 50), online = false,
+		section_name = function() return "spy" end, clsid = function() return 44 end, name = function() return "spy" end,
+		alive = function() return true end }
+	Hm.ini.spy_far = { status_functor = "spy_task_status_functor" }
+	Cm.ini.spy_far = { status_functor = "spy_task_status_functor" }
+	Hm.env.save_var(Hm.actor, "spy_far", { target_id = 780 })
+	local at
+	Hm.env.task_status_functor.spy_task_status_functor = function() at = Hm.env.db.actor:position() end
+	Cm.env.task_manager.get_task_manager():give_task("spy_far", 700)
+	pump()
+	check(Hm.env.coop_tasks.taker("spy_far") == 1, "the player of level 2 took it")
+	Hm.tm.task_info.spy_far:check_task(Hm.tm)
+	check(at ~= nil and at.x == 10 and at.z == 10, "the task reads the place of the player who took it")
+	Hm.env.coop.is_dedicated = nil
+	Hm.tm.task_info.spy_far = nil
+	records[780] = nil
+end
+
 print("== a task a script gives belongs to the player next to its giver, on the giver's level")
 -- The quest audit, 2026-11-13: nearest_taker measured to the world server's own characters only; a task given by logic or a timer was
 -- written on the ghost (peer 0) and its rewards went to nobody.
