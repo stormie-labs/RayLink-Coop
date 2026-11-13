@@ -907,6 +907,19 @@ function player_of_request(from, id)
 	return 0
 end
 
+-- Host: did player `from` talk to NPC `nid` a moment ago? The talk lock of a player on a map server's level is on that map server,
+-- which reports it with his place (as coop_quests_missions talked_recently). An engine without the talk locks: yes.
+function _spoke_to(from, nid)
+	local qc = rawget(_G, "coop_quests_core")
+	if type(qc) == "table" and qc.is_far_peer and qc.is_far_peer(from) then
+		local l = api.levels
+		return l == nil or l.talking == nil or l.talking(from) == true
+	end
+	local recent = api.talk_recent
+	if type(recent) ~= "function" then return true end
+	return recent(from, nid, 15000) == true
+end
+
 function ops.give(tm, id, t, from)
 	if tm.task_info[id] ~= nil and engine_task_running(id) then return false end
 	local got_vars = {}
@@ -925,7 +938,15 @@ function ops.give(tm, id, t, from)
 	host.given_by[id] = from
 	host.finisher[id] = nil
 	host.giver = giver
+	-- The NPC the player talks to is the speaker while the task starts: an on_init asks get_speaker() for him (setup_fetch_task of
+	-- lttz_ll_medical_supplies died on nil: the quest audit, 2026-11-13). His word counts only if the host saw the talk.
+	local sp = tonumber(t.sp)
+	local npc = sp and sp ~= 0 and (db.storage[sp] and db.storage[sp].object or level.object_by_id(sp)) or nil
+	if npc and not _spoke_to(from, sp) then npc = nil end
+	local stock_speaker = rawget(_G, "get_speaker")
+	if npc then _G.get_speaker = function() return npc end end
 	local gave, gerr = pcall(tm.give_task, tm, id, giver)
+	if npc then _G.get_speaker = stock_speaker end
 	host.giver = nil
 	if not gave then error(gerr, 0) end
 	local given = tm.task_info[id] ~= nil
@@ -1135,10 +1156,13 @@ function money_line(peer, n)
 end
 
 local function online_peers()
-	local list = { 0 }
+	-- peer 0 is the host player's character. A world server whose seat plays no character has only its ghost there: no share for it
+	-- (the quest audit, 2026-11-13: with coop_share_rewards 1 the ghost took a part of every reward).
+	local list = (api.is_dedicated and api.is_dedicated() == true) and {} or { 0 }
 	for _, p in ipairs(players()) do
 		if not p.is_self and p.avatar_id and (level.object_by_id(p.avatar_id) or far_of(p.id, p.avatar_id)) then list[#list + 1] = p.id end
 	end
+	if #list == 0 then list[1] = ctx and ctx.rcpt or 0 end -- nobody in the world to share with: the one who earned it
 	return list
 end
 
@@ -2381,6 +2405,11 @@ local function client_give(tm, id, giver)
 	if v ~= "" then extra.v = v end
 	local b = bounties()
 	if b and type(b[id]) == "number" then extra.bt = to_host_id(b[id]) end
+	if db.actor and db.actor:is_talking() and type(rawget(_G, "get_speaker")) == "function" then
+		local ok, npc = pcall(get_speaker) -- whom this player talks to: the host's on_init of the task may ask for him
+		local sid = ok and npc and npc.id and npc:id() or nil
+		if type(sid) == "number" and sid ~= 0 then extra.sp = to_host_id(sid) end
+	end
 	if not client_request("give", id, extra) then return false end
 	local stub, data = new_stub(id)
 	data.task_giver_id = gid
@@ -2743,23 +2772,32 @@ local patched = false
 local function nearest_taker(giver)
 	local qc = rawget(_G, "coop_quests_core")
 	if not (type(qc) == "table" and qc.nearest_character) then return 0 end
-	local pos
-	local near = host.give_near
-	if near then
-		local ok, p = pcall(function() return near:position() end)
-		pos = ok and p or nil
+	local pos, gv
+	local function place_of(o)
+		local ok, p = pcall(function() return o:position() end)
+		local ok2, v = pcall(function() return o:game_vertex_id() end)
+		return ok and p or nil, ok2 and type(v) == "number" and v or nil
 	end
+	local near = host.give_near
+	if near then pos, gv = place_of(near) end
 	if not pos and type(giver) == "number" then
 		local o = level.object_by_id(giver)
 		if o then
-			pos = o:position()
+			pos, gv = place_of(o)
 		else
 			local se = rawget(_G, "alife_object") and alife_object(giver)
-			pos = se and se.position or nil
+			pos, gv = se and se.position or nil, se and se.m_game_vertex_id or nil
 		end
 	end
 	if not pos then return 0 end
-	local _, peer = qc.nearest_character(pos)
+	-- Split levels: only a player of that level is next to it; the world server's own characters are not all there is, and the
+	-- coordinates of two levels do not compare (the quest audit, 2026-11-13: a task given by logic was written on the ghost).
+	local _, peer
+	if qc.nearest_body then
+		_, peer = qc.nearest_body({ position = pos, m_game_vertex_id = gv })
+	else
+		_, peer = qc.nearest_character(pos)
+	end
 	return peer or 0
 end
 

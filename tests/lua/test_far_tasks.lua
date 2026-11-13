@@ -779,6 +779,18 @@ do
 	check(#Hm.logic_ran == 2, "with a live object the stock logic runs")
 end
 
+print("== a task a script gives belongs to the player next to its giver, on the giver's level")
+-- The quest audit, 2026-11-13: nearest_taker measured to the world server's own characters only; a task given by logic or a timer was
+-- written on the ghost (peer 0) and its rewards went to nobody.
+do
+	Hm.ini.script_task = {}
+	Hm.tm:give_task("script_task", 700) -- no talk, no request, no reward scope
+	check(Hm.env.coop_tasks.taker("script_task") == 1, "the player of the giver's level, not the world server's ghost")
+	Hm.ini.nowhere_task = {}
+	Hm.tm:give_task("nowhere_task", 31337) -- a giver that is no more
+	check(Hm.env.coop_tasks.taker("nowhere_task") == 0, "with nobody to measure to: as before")
+end
+
 print("== a world hurt by a give that died: the info of the dialog is taken back, once")
 -- Worlds played on builds 45-49: the dialog phrase gave its info, the give died on the world server, the dialog is closed for good.
 do

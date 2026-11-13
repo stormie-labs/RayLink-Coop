@@ -259,7 +259,8 @@ local function machine(role, self_peer)
 	}
 
 	-- task manager (luabind-like class: methods looked up in the class table)
-	local ini = { fetch_1 = true, fetch_2 = true, story_1 = true, cf_1 = true, stage_t = true, bounty_1 = true, dawn_1 = true }
+	local ini = { fetch_1 = true, fetch_2 = true, story_1 = true, cf_1 = true, stage_t = true, bounty_1 = true, dawn_1 = true,
+		ghost_1 = true, cord_1 = true }
 	M.on_init = {}
 	M.on_complete = {}
 	local CRandomTask = {}
@@ -710,6 +711,68 @@ check(found, "unknown task id refused")
 C.tm:set_task_completed("fetch_1") -- not running any more
 pump()
 check(C.tm.task_info.fetch_1 == nil, "refused turn-in: the requester gets the host's view back")
+
+-- ---------------------------------------------------------------- the seat of a world server plays no character
+print("== coop_share_rewards 1: the ghost actor of a seat that plays no character gets no share")
+-- The quest audit, 2026-11-13: online_peers() began with peer 0 whatever the seat is; on a world server the ghost got a share.
+do
+	H.share = 1
+	H.env.coop.is_dedicated = function() return true end
+	C.tm:give_task("ghost_1", 5)
+	pump()
+	H.on_complete.ghost_1 = function() H.env.dialogs.relocate_money(H.actor, 1001, "in") end
+	local hm0, n0 = H.actor._money, #money_calls(H, "money_grant")
+	C.tm:set_task_completed("ghost_1")
+	pump()
+	H.engine_check()
+	pump()
+	local g = money_calls(H, "money_grant")
+	check(H.actor._money == hm0, "nothing lands on the ghost")
+	check(#g == n0 + 1 and g[#g][1] == 1 and g[#g][2] == 1001, "the players share the whole sum: coop.money_grant(1, 1001)")
+	H.env.coop.is_dedicated = nil
+	H.share = 0
+end
+
+-- ---------------------------------------------------------------- the speaker of a give
+print("== a task given from a talk: its on_init has the NPC the player talks to")
+-- The quest audit, 2026-11-13: lttz_ll_medical_supplies (on_init = setup_fetch_task) asks get_speaker() for the NPC; on the host nobody
+-- talked, ranks.get_obj_rank_name(nil) died and the task could never be turned in.
+do
+	local cord_c, cord_h = C.new_obj(88), H.new_obj(88)
+	C.env.get_speaker = function() return cord_c end
+	local stock_speaker = function() return nil end -- the host: nobody talks to its actor
+	H.env.get_speaker = stock_speaker
+	local talked = { [88] = true }
+	H.env.coop.talk_recent = function(from, id) return from == 1 and talked[id] == true end
+	local seen
+	H.init_fx = { cord_1 = function() seen = H.env.get_speaker(true) end }
+	C.talking = true
+	C.tm:give_task("cord_1") -- a story dialog: no giver in the call
+	C.talking = false
+	pump()
+	check(H.tm.task_info.cord_1 ~= nil, "given")
+	check(seen == cord_h, "get_speaker() of the task's on_init is the NPC of the player's talk")
+	check(H.env.get_speaker == stock_speaker, "and the stock one is back after the give")
+	-- a speaker the player did not talk to is nobody's word
+	H.tm.task_info.cord_1 = nil
+	H.engine_tasks.cord_1 = nil
+	tick(H)
+	pump()
+	talked[88] = nil
+	seen = "unset"
+	NOW = NOW + 2000
+	C.talking = true
+	C.tm:give_task("cord_1")
+	C.talking = false
+	pump()
+	check(seen == nil, "an NPC the host did not see him talk to is not taken for the speaker")
+	H.init_fx = nil
+	H.env.coop.talk_recent = nil
+	H.tm.task_info.cord_1 = nil
+	H.engine_tasks.cord_1 = nil
+	tick(H)
+	pump()
+end
 
 -- ---------------------------------------------------------------- a give the host could not do
 print("== a give the host could not do: the player is told, the dialog that asked for it opens again")
