@@ -514,6 +514,27 @@ end
 -------------------------------------------------------------------------------
 -- PDA taskboard (iTheon's, lizzardman's custom version): rows from the host's offers
 -------------------------------------------------------------------------------
+-- The "needs: <item> (xN)" line of a task that asks for an item, as the stock script words it on this machine
+-- (tasks_fetch.postpone_fetch_for_next_frame: this player's language, the task's icon). The stock board steals that line when
+-- the task's script runs. On a client the script does not run: the host prepared the offer and sent the item with it, and
+-- nobody drew the line, so every such row had "-" for a title and the noise picture (live, 2026-11-13, build 48).
+local function fetch_line(tid, d)
+	if not r_str(tid, "fetch_descr") then return nil end
+	local var = fetch_var_of(tid)
+	local sec = d.vars and d.vars[var]
+	if type(sec) ~= "string" then return nil end
+	local tf = qc.mod("tasks_fetch")
+	if not (tf and type(tf.postpone_fetch_for_next_frame) == "function") then return nil end
+	local line
+	local ok, err = qc.with_actor({
+		give_talk_message2 = function(_, caption, text, icon)
+			line = line or { task_title = caption, task_details = text, task_icon = icon }
+		end,
+	}, tf.postpone_fetch_for_next_frame, var, sec, tonumber(d.vars[var .. "_count"]) or 1)
+	if not ok then qc.report(TAG, "taskboard line of " .. tostring(tid), err) end
+	return line
+end
+
 local function patch_taskboard()
 	local pt = qc.mod("pda_taskboard")
 	local ut = qc.mod("ui_pda_taskboard_tab")
@@ -554,12 +575,20 @@ local function patch_taskboard()
 		pt.get_details = function(task_info, ...)
 			local res = orig_details(task_info, ...)
 			if res or not (qc.client_live() and type(task_info) == "table") then return res end
-			for _, o in pairs(offers) do
-				local d = o.complete and o.tasks[task_info.task_id]
-				local m = d and d.msgs and d.msgs[1]
-				if m then return { task_title = m.c, task_details = m.t, task_icon = m.i } end
+			local tid = task_info.task_id
+			-- the offer of the NPC the row belongs to; another NPC's offer of that task when the row does not say whose it is
+			local own = offers[task_info.npc_id]
+			local d = own and own.complete and own.tasks[tid]
+			if not d then
+				for _, o in pairs(offers) do
+					d = o.complete and o.tasks[tid]
+					if d then break end
+				end
 			end
-			return nil
+			if not d then return nil end
+			local m = d.msgs and d.msgs[1]
+			if m then return { task_title = m.c, task_details = m.t, task_icon = m.i } end
+			return fetch_line(tid, d)
 		end
 	end
 	local orig_click = tab.OnTaskClicked
