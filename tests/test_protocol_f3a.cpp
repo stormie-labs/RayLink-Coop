@@ -170,7 +170,7 @@ TEST(protocol_f3a_version_is_11)
 {
 	// 11: the F3a messages, Hello carries a role and a token, PlayerState carries the vertices, TransitionState a flags
 	// byte, WeatherSync a weather set; a protocol 10 peer is refused at the handshake.
-	CHECK_EQ(kProtocolVersion, 31u); // 30: atomic weapon replacement and initial spawn metadata
+	CHECK_EQ(kProtocolVersion, 32u); // 30: atomic weapon replacement and initial spawn metadata
 }
 
 TEST(protocol_f3a_a_trip_round_trip)

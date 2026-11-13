@@ -94,7 +94,7 @@ TEST(protocol_game_protocol_is_11)
 	// point of a level change). 9: CharOffer ends with `str faction` (the world's).
 	// 31 (split levels native, stage 1): Welcome.flags (HostSeatPlays), PeerList rows end with u8 flags (Operator), core
 	// OperatorCommand.
-	CHECK_EQ(kProtocolVersion, 31u);
+	CHECK_EQ(kProtocolVersion, 32u);
 }
 
 // ---------------------------------------------------------------- protocol 31: a seat without a character, the operator
