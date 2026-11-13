@@ -29,7 +29,7 @@ local function C() return coop_mods_core end
 local function log(fmt, ...) C().log("mags", fmt, ...) end
 
 local installed = {}
-local st = { data_out = 0, data_in = 0, verbs = 0, refused = 0, parts_out = 0, parts_in = 0, strips = 0, swaps = 0 }
+local st = { data_out = 0, data_in = 0, verbs = 0, refused = 0, parts_out = 0, parts_in = 0, strips = 0, swaps = 0, rolls = 0, asks = 0 }
 
 local function refuse(what, from, why)
 	st.refused = st.refused + 1
@@ -304,7 +304,7 @@ end
 -------------------------------------------------------------------------------
 -- Weapon Parts Overhaul and part states
 -------------------------------------------------------------------------------
-local WPO = { w = nil, j = nil, orig_strip = nil, orig_replace = nil, strips = {}, swaps = {} }
+local WPO = { w = nil, j = nil, orig_strip = nil, orig_replace = nil, orig_eval = nil, strips = {}, swaps = {}, asked = {} }
 
 local function parts_of(wpn)
 	local ok, p = pcall(item_parts.get_parts_con, wpn)
@@ -356,17 +356,24 @@ local function wpo_queue_strip(id, part)
 	if part then p.names[#p.names + 1] = part else p.all = true end
 end
 
+-- The requester hears why (testers 2026-11-13: "cannot take a part off a gun in a body or a box", the refusal was a host log line).
+-- `code` is one of the words below, never text: the client picks its own string for it.
+local function strip_refused(t, from, why, code)
+	refuse("wpo_strip", from, why)
+	C().to_peer(from, "wpo_no", { w = t.w, r = code })
+end
+
 local function host_strip(t, from)
 	local id = C().lid(tonumber(t.w))
 	local wpn = type(id) == "number" and id ~= 0 and level.object_by_id(id)
 	local who = C().avatar(from)
-	if not (wpn and who) then return refuse("wpo_strip", from, "unknown weapon") end
+	if not (wpn and who) then return strip_refused(t, from, "unknown weapon", "gone") end
 	local cont = wpn:parent()
-	if cont and not container_of(wpn) then return refuse("wpo_strip", from, "weapon is carried by someone") end
-	if not near(cont or wpn, who) then return refuse("wpo_strip", from, "too far") end
-	if not cont and wpn:get_ammo_in_magazine() > 0 then return refuse("wpo_strip", from, "loaded weapon on the ground") end
+	if cont and not container_of(wpn) then return strip_refused(t, from, "weapon is carried by someone", "carried") end
+	if not near(cont or wpn, who) then return strip_refused(t, from, "too far", "far") end
+	if not cont and wpn:get_ammo_in_magazine() > 0 then return strip_refused(t, from, "loaded weapon on the ground", "loaded") end
 	local parts = parts_of(wpn)
-	if not parts then return refuse("wpo_strip", from, "no parts") end
+	if not parts then return strip_refused(t, from, "no parts", "parts") end
 	local names = nil
 	if type(t.p) == "string" and t.p ~= "" then
 		names = {}
@@ -407,6 +414,48 @@ local function host_swap(t, from)
 	local c = wpn:condition()
 	if c > 0.6 then wpn:set_condition(c - math.random(3, 3 + (t.t == true and 3 or 13)) / 100) end
 	st.swaps = st.swaps + 1
+end
+
+-- Split levels (testers 2026-11-13: "parts stay 100 % if you take the item before its condition reaches the server"). The parts are
+-- rolled once, from the condition the rolling machine sees (WPO weapon_eval_parts: above 0.9 every part is 90-99). The wear of loot
+-- is given by the authority of its level (death_manager, ItemProcessor) and reaches a client's copy later (engine: LevelEntity
+-- Item, coop_levels_xfer.cpp client_loot): a client asks that authority to roll instead, the parts come with the se mirror
+-- (coop_economy_mdata). Without split levels nothing changes.
+local function split()
+	local l = api and api.levels
+	return l ~= nil and l.split ~= nil and l.split() == true
+end
+
+-- Does this item have WPO parts at all (itms_manager.ini_parts con_parts_list)? Unknown: yes.
+local function rolls_parts(obj)
+	local im = C().mod("itms_manager")
+	local ini = im and im.ini_parts
+	if not ini then return true end
+	local sec = obj:section()
+	sec = ini_sys:r_string_ex(sec, "parent_section") or sec
+	local ok, list = pcall(function() return ini:r_string_ex("con_parts_list", sec) end)
+	return ok and list ~= nil and list ~= ""
+end
+
+-- Authority of the level: roll the parts of loot near the requester, or of a weapon he carries, with this machine's condition.
+local function host_eval(t, from)
+	local id = C().lid(tonumber(t.w))
+	local wpn = type(id) == "number" and id ~= 0 and level.object_by_id(id)
+	local who = C().avatar(from)
+	if not (wpn and who and WPO.orig_eval) then return refuse("wpo_eval", from, "unknown item") end
+	if C().root_of(id) ~= who:id() then
+		local cont = wpn:parent()
+		if cont and not container_of(wpn) then return refuse("wpo_eval", from, "carried by someone") end
+		if not near(cont or wpn, who) then return refuse("wpo_eval", from, "too far") end
+	end
+	if parts_of(wpn) then return end -- rolled already: the mirror has them on the way
+	local ok, e = pcall(WPO.orig_eval, wpn)
+	if not ok then C().report("mags", "parts roll", e) end
+	st.rolls = st.rolls + 1
+end
+
+local function client_strip_refused(t)
+	wpo_tip(t.r == "loaded" and "st_coop_mods_wpo_strip_loaded" or "st_coop_mods_wpo_strip_refused")
 end
 
 -- Client: a swap into a weapon this player does not carry is finished once the host's part state is here.
@@ -505,10 +554,24 @@ local function install_wpo()
 		end
 		return routed
 	end)
+	C().wrap(item_parts, "evaluate_parts", "item_parts.evaluate_parts", function(orig)
+		WPO.orig_eval = orig
+		return function(obj, ...)
+			if not (obj and C().is_client() and split()) or parts_of(obj) or not rolls_parts(obj) then return orig(obj, ...) end
+			local id, now = obj:id(), time_global()
+			if (WPO.asked[id] or 0) > now then return end
+			WPO.asked[id] = now + 3000 -- the answer is on its way; asked again only if it got lost
+			st.asks = st.asks + 1
+			C().to_host("wpo_eval", { w = C().hid(id) })
+		end
+	end)
 	C().on("wpo_strip", host_strip, "host")
 	C().on("wpo_swap", host_swap, "host")
+	C().on("wpo_eval", host_eval, "host")
+	C().on("wpo_no", client_strip_refused, "client")
 	C().set_limit("wpo_strip", 8, 3)
 	C().set_limit("wpo_swap", 6, 2)
+	C().set_limit("wpo_eval", 20, 4)
 end
 
 -------------------------------------------------------------------------------
@@ -553,7 +616,7 @@ function on_game_start()
 	C().status_line("mags", function()
 		local parts = {}
 		for _, m in ipairs(mirrors) do parts[#parts + 1] = string.format("%s out %d in %d", m.verb, m.out or 0, m.inn or 0) end
-		return string.format("%s | %s | container verbs %d, strips %d, swaps %d, refused %d",
-			table.concat(installed, ", "), table.concat(parts, ", "), st.verbs, st.strips, st.swaps, st.refused)
+		return string.format("%s | %s | container verbs %d, strips %d, swaps %d, part rolls %d, asked %d, refused %d",
+			table.concat(installed, ", "), table.concat(parts, ", "), st.verbs, st.strips, st.swaps, st.rolls, st.asks, st.refused)
 	end)
 end

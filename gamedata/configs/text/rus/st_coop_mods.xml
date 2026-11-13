@@ -40,4 +40,10 @@
 	<string id="st_coop_mods_take_none">
 		<text>Кооп: разобрать или снять обвес можно только у предмета из своего рюкзака, ящика или тела.</text>
 	</string>
+	<string id="st_coop_mods_wpo_strip_refused">
+		<text>Деталь не снята: оружие далеко или его держит кто-то другой.</text>
+	</string>
+	<string id="st_coop_mods_wpo_strip_loaded">
+		<text>Деталь не снята: сначала разрядите оружие на земле.</text>
+	</string>
 </string_table>
