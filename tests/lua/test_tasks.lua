@@ -201,6 +201,12 @@ local function machine(role, self_peer)
 	M.goodwill = {}
 	env.task = { completed = 2, fail = 0, in_progress = 1 }
 	env.xr_effects = {
+		give_actor = function(a, npc, p) -- the stock: alife_create(section, ..., AC_ID), not alife_create_item
+			for _, v in pairs(p) do
+				M.give_item(actor, v)
+				env.news_manager.relocate_item(actor, "in", v)
+			end
+		end,
 		inc_faction_goodwill_to_actor = function(a, npc, p)
 			local id = a:id()
 			M.goodwill[id] = (M.goodwill[id] or 0) + tonumber(p[2])
@@ -260,7 +266,7 @@ local function machine(role, self_peer)
 
 	-- task manager (luabind-like class: methods looked up in the class table)
 	local ini = { fetch_1 = true, fetch_2 = true, story_1 = true, cf_1 = true, stage_t = true, bounty_1 = true, dawn_1 = true,
-		ghost_1 = true, cord_1 = true }
+		ghost_1 = true, cord_1 = true, owl_1 = true }
 	M.on_init = {}
 	M.on_complete = {}
 	local CRandomTask = {}
@@ -731,6 +737,35 @@ do
 	check(#g == n0 + 1 and g[#g][1] == 1 and g[#g][2] == 1001, "the players share the whole sum: coop.money_grant(1, 1001)")
 	H.env.coop.is_dedicated = nil
 	H.share = 0
+end
+
+-- ---------------------------------------------------------------- give_actor of a task's start
+print("== give_actor in a task's on_init: the item is the taker's")
+-- The quest audit, 2026-11-13: xr_effects.give_actor makes the task's PDA with alife_create(..., AC_ID), past the redirect of
+-- alife_create_item: it lay in the host's own inventory (a world server's ghost) while the taker read "item received".
+do
+	H.init_fx = { owl_1 = function() H.env.xr_effects.give_actor(H.actor, nil, { "owl_pda" }) end }
+	local news0 = #H.news
+	C.tm:give_task("owl_1", 5)
+	pump()
+	check(H.tm.task_info.owl_1 ~= nil, "given")
+	check(H.actor:object("owl_pda") == nil, "not into the host's own inventory")
+	check(proxy_on_host:object("owl_pda") ~= nil, "into the character of the player who took the task")
+	check(#H.news == news0, "and the line about it is his, not the host's")
+	-- the host's own talk: the stock
+	H.tm.task_info.owl_1 = nil
+	H.engine_tasks.owl_1 = nil
+	tick(H)
+	pump()
+	H.talking = true
+	H.tm:give_task("owl_1", 5)
+	H.talking = false
+	check(H.actor:object("owl_pda") ~= nil, "a task the host's player takes: his item, as in the stock")
+	H.init_fx = nil
+	H.tm.task_info.owl_1 = nil
+	H.engine_tasks.owl_1 = nil
+	tick(H)
+	pump()
 end
 
 -- ---------------------------------------------------------------- the speaker of a give
