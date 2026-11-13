@@ -517,12 +517,15 @@ do
 	W.move(2, 1)
 	W.refresh()
 	check(#Mk.env.coop.players() == 0, "(he was its only player: nobody is left in its session)")
-	check(LM()[400] == nil and Mk.env.axr_companions.companion_squads[400] == nil, "the map server lets it go")
+	check(#sent_named(Mk, "npc.comp_follow") == 1, "the map server lets it go")
+	check(LM()[400] == 501 and Mk.env.axr_companions.companion_squads[400] ~= nil, "and keeps its owner until the world server takes it")
 	check(H.teleported == nil, "the world server waits: a member is online at the map server")
 	W.online[301] = nil
 	W.refresh()
 	check(H.teleported and H.teleported.id == 400 and H.teleported.gvid == 10, "then teleports it to his body")
 	check(W.CH._leaders()[400] == 501 and H.env.axr_companions.companion_squads[400] == W.squads[400], "the host's level takes it")
+	check(LM()[400] == nil and Mk.env.axr_companions.companion_squads[400] == nil, "the map server forgets it then, no dismissal")
+	check(Mk.dismissed == nil, "(no dismissal)")
 end
 
 print("== a map server nobody stands on, just loaded: it sorts the save's leaders out, once the map says the world is split")
@@ -893,10 +896,12 @@ do
 	check(W.CM._leaders()[400] == 500 and #sent_named(Mk, "npc.comp_follow") == 0, "(its session does not know him)")
 	Mk.share.down.comp_leaders.set(H.share.down.comp_leaders.get())
 	W.refresh()
-	check(W.CM._leaders()[400] == nil and #sent_named(Mk, "npc.comp_follow") == 1, "the map server lets it go")
+	check(W.CM._leaders()[400] == 500 and #sent_named(Mk, "npc.comp_follow") == 1,
+		"the map server lets it go, its owner kept until the world server takes it")
 	W.refresh()
 	check(H.teleported and H.teleported.id == 400 and H.teleported.gvid == 10, "the world server teleports it to his body")
 	check(W.CH._leaders()[400] == 500, "his level takes it")
+	check(W.CM._leaders()[400] == nil, "the map server forgets it then")
 end
 
 print("== a squad recruited on a map server: the table of the save does not have it, the stock's mark does")
@@ -1180,6 +1185,173 @@ do
 	local m = {}
 	H.fire("save_state", m)
 	check(m.coop_npc_last_leaders and m.coop_npc_last_leaders[400] == 501, "the save has who it was")
+end
+
+print("== a client's own companions: the stock's list and Useful Idiots' answer from the authority's word, not the stock table")
+do
+	local NPCS = {}
+	local function idiots(M)
+		local NPC = {}
+		function NPC.getCompanions() return {} end
+		function NPC.getTargetCompanion() return nil end
+		NPCS[M] = NPC
+		M.env.package = { loaded = { ["illish.lib.npc"] = NPC } }
+	end
+	local W = stand({ env = idiots })
+	local H, A, B = W.H, W.A, W.B
+	W.CH._leaders()[300] = 500
+	W.refresh()
+	A.env.axr_companions.companion_squads[300] = false -- loaded: the stock's rebuild (squad_on_first_update) is the host's
+	local list = A.env.axr_companions.list_actor_squad_by_id()
+	check(#list == 1 and list[1] == 201, "his companion is in his list without aiming at it")
+	check(#B.env.axr_companions.list_actor_squad_by_id() == 0, "not in the list of a friend")
+	local own = NPCS[A].getCompanions()
+	check(#own == 1 and own[1]:id() == 201, "Useful Idiots' wheel and keys see it")
+	check(#NPCS[B].getCompanions() == 0, "and not a friend's")
+	check(#A.env.axr_companions.companion_squads == 0 and A.env.axr_companions.companion_squads[300] == false,
+		"the client writes nothing into the stock table")
+	W.CH._leaders()[300] = nil
+	H.env.axr_companions.companion_squads[300] = nil
+	W.refresh()
+	check(#A.env.axr_companions.list_actor_squad_by_id() == 0 and #NPCS[A].getCompanions() == 0, "dismissed: gone from his list")
+end
+
+print("== a client leaves a map server's level, a friend stays by his squad: the map server keeps the owner until the world server takes it")
+do
+	local W = stand()
+	local H, Mk = W.H, W.Mk
+	local LM = W.CM._leaders
+	W.move(1, 2)
+	LM()[400] = 500
+	W.refresh()
+	W.online[301] = true -- B stands next to it: the engine keeps it online at the map server
+	W.move(1, 1)
+	W.refresh()
+	W.refresh()
+	check(H.teleported == nil, "(the world server waits: a member is online at the map server)")
+	check(#sent_named(Mk, "npc.comp_follow") == 1, "the map server says it once")
+	check(LM()[400] == 500 and Mk.env.axr_companions.companion_squads[400] ~= nil, "the map server keeps the owner meanwhile")
+	local m = {}
+	H.fire("save_state", m)
+	check(m.coop_npc_leaders and m.coop_npc_leaders[400] == 500, "a save meanwhile keeps the owner")
+	W.online[301] = nil
+	W.refresh()
+	check(H.teleported and H.teleported.id == 400, "offline: the world server teleports it to him")
+	check(W.CH._leaders()[400] == 500, "his level takes it")
+	check(LM()[400] == nil and Mk.env.axr_companions.companion_squads[400] == nil, "the map server lets it go then")
+	check(Mk.dismissed == nil, "no dismissal on the way")
+end
+
+print("== the owner comes back before his squad left: it stays his on its level, the world server does not teleport it")
+do
+	local W = stand()
+	local H, Mk = W.H, W.Mk
+	local LM = W.CM._leaders
+	W.move(1, 2)
+	LM()[400] = 500
+	W.refresh()
+	W.online[301] = true
+	W.move(1, 1)
+	W.refresh()
+	W.move(1, 2)
+	W.refresh()
+	check(LM()[400] == 500, "the map server leads it again")
+	W.online[301] = nil
+	W.refresh()
+	check(H.teleported == nil, "no teleport after all")
+	check(W.CM.follows(W.comp2):id() == 500, "it follows him")
+end
+
+print("== a save with a squad on its way to its owner: after the load the way goes on")
+do
+	local W = stand()
+	local H, Mk = W.H, W.Mk
+	local LM = W.CM._leaders
+	W.move(1, 2)
+	LM()[400] = 500
+	W.refresh()
+	W.online[301] = true
+	W.move(1, 1)
+	W.refresh()
+	local m = {}
+	H.fire("save_state", m)
+	local saved = m.coop_npc_leaders
+	check(saved and saved[400] == 500, "the save has its owner")
+	H.fire("load_state", { coop_npc_leaders = saved })
+	Mk.fire("load_state", { coop_npc_leaders = saved })
+	W.refresh()
+	W.online[301] = nil
+	W.refresh()
+	check(H.teleported and H.teleported.id == 400 and W.CH._leaders()[400] == 500, "it reaches its owner")
+end
+
+print("== a pending squad a task dismisses: the map server that still holds it lets it go too")
+do
+	local W = stand()
+	local H, Mk = W.H, W.Mk
+	W.move(1, 2)
+	W.CM._leaders()[400] = 500
+	W.refresh()
+	W.online[301] = true
+	W.move(1, 1)
+	W.refresh()
+	H.env.axr_companions.companion_squads[400] = W.squads[400]
+	H.env.axr_companions.dismiss_special_squad(W.squads[400])
+	pump()
+	check(W.CM._leaders()[400] == nil and Mk.env.axr_companions.companion_squads[400] == nil, "gone there")
+end
+
+print("== the Fanatic (dialogs_escape): the stock marks him and sets the logic, no line of the table; a client said it: he is that client's")
+do
+	local function fanat(M)
+		local E = M.env
+		E.coop.talk_recent = function() return true end
+		E.dialogs_escape = {
+			set_esc_2_12_stalker_fanat_as_companion = function(a, b)
+				local npc = E.dialogs.who_is_npc(a, b)
+				local sq = E.get_object_squad(npc)
+				for k in sq:squad_members() do
+					E.se_save_var(k.id, nil, "companion", true)
+					E.se_save_var(k.id, nil, "companion_cannot_dismiss", true)
+					E.se_save_var(k.id, nil, "companion_cannot_teleport", true)
+					E.axr_companions.setup_companion_logic(npc, nil, false, true)
+				end
+			end,
+		}
+	end
+	local W = stand({ env = fanat })
+	local H, A = W.H, W.A
+	H.env.axr_companions.companion_squads[300] = nil
+	W.comp:disable_info_portion("npcx_is_companion")
+	W.refresh()
+	A.env.dialogs_escape.set_esc_2_12_stalker_fanat_as_companion(A.env.db.actor, W.comp_a)
+	pump()
+	check(H.env.axr_companions.companion_squads[300] == W.squads[300], "a companion of the group, as the stock makes him on the next load")
+	check(W.CH._leaders()[300] == 500, "led by the client who said it")
+	W.refresh()
+	check(W.CH.follows(W.comp):id() == 500, "he follows that client")
+	local list = A.env.axr_companions.list_actor_squad_by_id()
+	check(#list == 1 and list[1] == 201, "in that client's list")
+end
+
+print("== the host's own Fanatic: as before")
+do
+	local function fanat(M)
+		local E = M.env
+		E.dialogs_escape = {
+			set_esc_2_12_stalker_fanat_as_companion = function(a, b)
+				local npc = E.dialogs.who_is_npc(a, b)
+				E.se_save_var(npc:id(), nil, "companion", true)
+				E.axr_companions.setup_companion_logic(npc, nil, false, true)
+			end,
+		}
+	end
+	local W = stand({ env = fanat })
+	local H = W.H
+	H.env.axr_companions.companion_squads[300] = nil
+	W.refresh()
+	H.env.dialogs_escape.set_esc_2_12_stalker_fanat_as_companion(H.env.db.actor, W.comp)
+	check(H.env.axr_companions.companion_squads[300] == nil and W.CH._leaders()[300] == nil, "the stock's own result")
 end
 
 print(string.format("%d passed, %d failed", PASSES, FAILS))
