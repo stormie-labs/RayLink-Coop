@@ -71,6 +71,7 @@
 	  npc.comp_follow map server -> world server  { s = squad, p = leader's peer, l = his character }: his squad is let go
 	  npc.comp_adopt world server -> map server   { s = squad, l = character, p = peer, d, c = the stock's marks: no dismiss, no teleport }
 	  npc.comp_drop  world server -> map server   { s = squad, m = true: it went to its leader, forget it without a dismissal }: a task let it go
+	  npc.comp_recall world server -> map server  { s = squad }: a squad it let go (comp_follow) is held online by a friend: offline now
 	  npc.comp_req   client -> host  {}: his Lua state is new, send everything
 	  npc.comp_go    client -> host  { x, y, z }: his companions go there
 	  npc.comp_item  client -> host  { i = npc, o = item, g = true: gave, false: took }
@@ -95,6 +96,9 @@ local EV_CMD, EV_INFO = "npc.comp", "npc.comp_info"
 local EV_LEAD, EV_MSG, EV_REQ, EV_GO = "npc.comp_lead", "npc.comp_msg", "npc.comp_req", "npc.comp_go"
 local EV_ITEM, EV_ITEMS = "npc.comp_item", "npc.comp_items"
 local EV_FOLLOW, EV_ADOPT, EV_TALK, EV_DROP = "npc.comp_follow", "npc.comp_adopt", "npc.comp_talk", "npc.comp_drop"
+-- world server -> map server: a squad it let go is held online there by a friend: take it offline now (on_recall). RECALLED: `leaving` of
+-- such a squad on the map server; RECALL_AGAIN_MS: the world server asks again after this long if it still did not come home
+local EV_RECALL, RECALLED, RECALL_AGAIN_MS = "npc.comp_recall", "recalled", 20000
 
 -- Dialog actions forwarded to the host. Value: "add" / "remove" changes the leader, true = an order.
 local ACTIONS = {
@@ -148,7 +152,7 @@ local visible = {} -- client: NPC id -> { item id = true }: what the leader may 
 local asked = false -- client: this Lua state asked the host for everything (npc.comp_req)
 local every_companion = 0 -- host: > 0 while Useful Idiots' surge code runs: it needs every companion, whoever leads
 local stats = { cmd_out = 0, cmd_in = 0, refused = 0, refused_talk = 0, info_out = 0, info_in = 0, follow = 0, task_squads = 0,
-	lead = 0, lead_refused = 0, go = 0 }
+	lead = 0, lead_refused = 0, go = 0, recall = 0 }
 local RECRUIT_TALK_MS = 5000 -- Ruling F2-34: a recruit within this long after a talk with the squad
 local FACE_TO_FACE_SQR = 225 -- 15 m: the dialog was face to face
 local OTHER_PLAYERS = 7 -- lines of the choice of player: a full session less the asker (peers 0..7)
@@ -1237,6 +1241,27 @@ local function all_home(squad, l)
 	return true
 end
 
+-- May this squad go after its leader? Stock's rule (Useful Idiots' over it): not one told to wait, not one that cannot teleport.
+local function may_follow(squad)
+	local ac = axr_companions
+	local f = orig.can_teleport or (ac and ac.companion_squad_can_teleport)
+	return type(f) ~= "function" or f(squad) == true
+end
+
+-- World server: a friend who stays by the squad keeps it online at its map server, and it would never come home. That server is asked to
+-- take it offline now and give it back (coop.levels.recall there), once, and again only after a while: the word or its answer can be lost.
+-- Never a squad that may not teleport: it stays where it is, as in the stock. An engine without holder_of: it waits, as before.
+local function ask_recall(l, squad_id, squad, f)
+	if not l.holder_of or (f.r and time_global() - f.r < RECALL_AGAIN_MS) or not may_follow(squad) then return end
+	local bridge = l.holder_of(squad_id)
+	for k in squad:squad_members() do bridge = bridge or l.holder_of(k.id) end
+	if bridge and P.send(EV_RECALL, { s = squad_id }, bridge) then
+		f.r = time_global()
+		stats.recall = stats.recall + 1
+		log("recall of squad %s asked of map server %s", tostring(squad_id), tostring(bridge))
+	end
+end
+
 local function follow_home(l)
 	for squad_id, f in pairs(followers) do
 		local squad = alife_object(squad_id)
@@ -1266,15 +1291,10 @@ local function follow_home(l)
 					adopt(squad_id, f.l)
 				end
 			end
+		else
+			ask_recall(l, squad_id, squad, f)
 		end
 	end
-end
-
--- May this squad go after its leader? Stock's rule (Useful Idiots' over it): not one told to wait, not one that cannot teleport.
-local function may_follow(squad)
-	local ac = axr_companions
-	local f = orig.can_teleport or (ac and ac.companion_squad_can_teleport)
-	return type(f) ~= "function" or f(squad) == true
 end
 
 -- World server: it stands in for the authority of a level nobody leads. A level entered together leaves a squad somebody else leads behind
@@ -1307,7 +1327,10 @@ local function follow_tick()
 		local there = peer and l.level_name(l.level_of_player(peer))
 		local squad = alife_object(squad_id)
 		if leaving[squad_id] then
-			if there == level.name() then leaving[squad_id] = nil end -- he came back first: the world server drops its way too
+			if there == level.name() then -- he came back first: the world server drops its way too
+				if leaving[squad_id] == RECALLED and l.recall then l.recall(squad_id, 0) end -- it may come online for him at once
+				leaving[squad_id] = nil
+			end
 		elseif there and there ~= level.name() and (not squad or may_follow(squad)) then
 			if P.is_map_server() then
 				-- the squad goes when the engine gives it back (nothing of it online here); a friend by it keeps it here, so the owner stays
@@ -1362,13 +1385,29 @@ end
 -- A task of the world server lets a squad go that a map server holds (Hidden Threat, the player left the station): the NPC is there.
 local function on_drop(t, from)
 	if not (P.is_map_server() and from == 0 and type(t.s) == "number") then return end
+	local recalled = leaving[t.s] == RECALLED
 	leaders[t.s], adopting[t.s], lead_peer[t.s], leaving[t.s] = nil, nil, nil, nil
 	if t.m == true then -- m: it went to its leader on another level, the world server took it; no dismissal
 		if axr_companions then axr_companions.companion_squads[t.s] = nil end
+		local l = recalled and split_levels()
+		if l and l.recall then l.recall(t.s, 0) end -- it is on his level now: the pin has nothing left to hold
 		return
 	end
 	local squad = alife_object(t.s)
 	if squad and is_companion_squad(squad) then axr_companions.dismiss_special_squad(squad) end
+end
+
+-- Map server: the world server's word (npc.comp_recall). Only a squad this server let go itself and that may still teleport; a client's
+-- word comes with his peer, never 0 (coop_script.cpp server_on_script_event), and the engine's recall is a map server's alone.
+local function on_recall(t, from)
+	local l = split_levels()
+	if not (l and l.recall and P.is_map_server() and from == 0 and type(t.s) == "number" and leaving[t.s]) then return end
+	local squad = alife_object(t.s)
+	if squad and may_follow(squad) and l.recall(t.s) then
+		leaving[t.s] = RECALLED
+		stats.recall = stats.recall + 1
+		log("squad %s recalled by the world server: offline here until it took it", tostring(t.s))
+	end
 end
 
 local function patch_dismiss()
@@ -1641,9 +1680,9 @@ end
 function print_status()
 	local n = 0
 	for _ in pairs(leaders) do n = n + 1 end
-	log("installed %s | squads led by clients %d | orders out %d in %d refused %d, recruits without a talk %d | flags out %d in %d | follow ticks %d | control changed %d refused %d | go-to %d | errors %d",
+	log("installed %s | squads led by clients %d | orders out %d in %d refused %d, recruits without a talk %d | flags out %d in %d | follow ticks %d, recalls %d | control changed %d refused %d | go-to %d | errors %d",
 		tostring(installed), n, stats.cmd_out, stats.cmd_in, stats.refused, stats.refused_talk, stats.info_out, stats.info_in,
-		stats.follow, stats.lead, stats.lead_refused, stats.go, P.error_count(TAG))
+		stats.follow, stats.recall, stats.lead, stats.lead_refused, stats.go, P.error_count(TAG))
 end
 
 function on_game_start()
@@ -1670,6 +1709,7 @@ function on_game_start()
 	P.on(EV_FOLLOW, on_follow, nil, TAG)
 	P.on(EV_ADOPT, on_adopt, nil, TAG)
 	P.on(EV_DROP, on_drop, nil, TAG)
+	P.on(EV_RECALL, on_recall, nil, TAG)
 	local share = rawget(_G, "coop_levels_share") or coop_levels_share
 	if share then
 		share.up("comp_leaders", leaders_here, leaders_heard)

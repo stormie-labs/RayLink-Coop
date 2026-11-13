@@ -1301,6 +1301,114 @@ do
 	check(W.CM._leaders()[400] == nil and Mk.env.axr_companions.companion_squads[400] == nil, "gone there")
 end
 
+-- The engine's recall (coop_levels_xfer.cpp): the world server names the map server that holds a squad (holder_of), that map server takes
+-- it offline whoever stands by it and pins it there (recall); the give-back is the engine's, here W.online goes nil by hand.
+local function recall_engine(W)
+	W.recalls = {}
+	W.H.env.coop.levels.holder_of = function(id) return W.online[id] and BRIDGE or nil end
+	W.Mk.env.coop.levels.recall = function(id, ms)
+		W.recalls[#W.recalls + 1] = { id = id, ms = ms }
+		return true
+	end
+end
+
+print("== a friend stays by the squad: the world server recalls it once, and after the map server gave it back it teleports")
+do
+	local W = stand()
+	local H, Mk = W.H, W.Mk
+	recall_engine(W)
+	W.move(1, 2)
+	W.CM._leaders()[400] = 500
+	W.refresh()
+	W.online[301] = true -- B stands next to it: the engine keeps it online at the map server
+	W.move(1, 1)
+	W.refresh()
+	W.refresh()
+	check(H.teleported == nil, "(the world server waits: a member is online at the map server)")
+	local asked = sent_named(H, "npc.comp_recall")
+	check(#asked == 1 and asked[1].target == BRIDGE, "the world server asks the map server that holds it, once")
+	check(#W.recalls == 1 and W.recalls[1].id == 400 and W.recalls[1].ms == nil, "the map server takes it offline and pins it")
+	W.refresh()
+	check(#sent_named(H, "npc.comp_recall") == 1 and #W.recalls == 1, "not again while it is on its way home")
+	W.online[301] = nil -- the engine gave it back to the world server
+	W.refresh()
+	check(H.teleported and H.teleported.id == 400, "home: the world server teleports it to its owner")
+	check(W.CH._leaders()[400] == 500, "his level takes it")
+	check(#W.recalls == 2 and W.recalls[2].id == 400 and W.recalls[2].ms == 0, "the map server lifts its pin when the world server took it")
+	check(W.CM._leaders()[400] == nil and Mk.dismissed == nil, "and forgets it, no dismissal")
+end
+
+print("== a recall nobody answers is asked again later, not every tick")
+do
+	local W = stand()
+	local H = W.H
+	recall_engine(W)
+	W.Mk.env.coop.levels.recall = nil -- an old engine on the map server: the word is heard, nothing happens
+	W.move(1, 2)
+	W.CM._leaders()[400] = 500
+	W.refresh()
+	W.online[301] = true
+	W.move(1, 1)
+	W.refresh()
+	W.refresh()
+	check(#sent_named(H, "npc.comp_recall") == 1, "asked once")
+	for _ = 1, 4 do W.refresh() end
+	check(#sent_named(H, "npc.comp_recall") == 1, "(not within 15 s)")
+	for _ = 1, 3 do W.refresh() end
+	check(#sent_named(H, "npc.comp_recall") == 2, "again after a while")
+	check(H.teleported == nil, "and it waits as before")
+end
+
+print("== a squad that may not teleport any more is not recalled: the world server checks, the map server checks again")
+do
+	local W = stand()
+	local H, Mk = W.H, W.Mk
+	recall_engine(W)
+	W.move(1, 2)
+	W.CM._leaders()[400] = 500
+	W.refresh()
+	W.online[301] = true
+	W.move(1, 1)
+	H.env.se_save_var(301, nil, "companion_cannot_teleport", true) -- a scripted scene took it after the map server let it go
+	W.refresh()
+	W.refresh()
+	check(#sent_named(H, "npc.comp_recall") == 0 and #W.recalls == 0, "the world server does not ask")
+	Mk.env.se_save_var(301, nil, "companion_cannot_teleport", true)
+	H.env.coop_npc_players.send("npc.comp_recall", { s = 400 }, BRIDGE)
+	pump()
+	check(#W.recalls == 0, "the map server would not take it either")
+end
+
+print("== a recall is the world server's word only: a client's never reaches the engine")
+do
+	local W = stand()
+	recall_engine(W)
+	W.A.env.coop_npc_players.send("npc.comp_recall", { s = 400 }, BRIDGE)
+	W.B.env.coop_npc_players.send("npc.comp_recall", { s = 400 }, -1)
+	pump()
+	check(#W.recalls == 0, "a player's word is not heard")
+	W.H.env.coop_npc_players.send("npc.comp_recall", { s = 300 }, BRIDGE)
+	pump()
+	check(#W.recalls == 0, "nor one for a squad that is not a companion it let go")
+end
+
+print("== an old engine on the world server: no recall, it waits as before")
+do
+	local W = stand()
+	local H = W.H
+	W.move(1, 2)
+	W.CM._leaders()[400] = 500
+	W.refresh()
+	W.online[301] = true
+	W.move(1, 1)
+	W.refresh()
+	W.refresh()
+	check(#sent_named(H, "npc.comp_recall") == 0, "nothing asked")
+	W.online[301] = nil
+	W.refresh()
+	check(H.teleported and H.teleported.id == 400, "it goes when the friend walks away")
+end
+
 print("== the Fanatic (dialogs_escape): the stock marks him and sets the logic, no line of the table; a client said it: he is that client's")
 do
 	local function fanat(M)
