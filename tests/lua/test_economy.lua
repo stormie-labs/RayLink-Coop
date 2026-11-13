@@ -632,6 +632,24 @@ do
 	local sent = #H.SENT
 	tick(H, 400) deliver_all()
 	check(#H.SENT == sent, "no echo from the host")
+	-- Owner, live build 46, a world with a world server: "the gun is broken, maybe it is not kept at transitions". GAMMA's WPO rolls
+	-- the parts of the player's weapon right after the host's world is read, before the session is live. That write was dropped:
+	-- the host never had the parts, its save had none, and every next load of a level rolled them again with another seed.
+	add_item(H, 801, "wpn_kiparis", 501) add_item(A, 801, "wpn_kiparis", 0) add_item(B, 801, "wpn_kiparis", 501)
+	local live = A.coop.is_live
+	A.coop.is_live = function() return false end -- in a session, the host's world is still being loaded
+	A.se_save_var(801, nil, "parts", { wpn_kiparis = 55, prt_w_barrel = 17 })
+	A.se_save_var(801, nil, "parts", { wpn_kiparis = 55, prt_w_barrel = 71 }) -- the last write of a var is the one that counts
+	tick(A, 400) deliver_all()
+	check(H.se_load_var(801, nil, "parts") == nil, "nothing is sent before the session is live")
+	A.coop.is_live = live
+	tick(A, 400) deliver_all()
+	local early = H.se_load_var(801, nil, "parts")
+	check(early and early.prt_w_barrel == 71 and B.se_load_var(801, nil, "parts").wpn_kiparis == 55,
+		"a var written while the world was loading reaches the host and the others once the session is live")
+	local sent_early = #A.SENT
+	tick(A, 400) deliver_all()
+	check(#A.SENT == sent_early, "and it is sent once")
 	-- a host-only var from a client is refused
 	add_entity(H, 810, "stalker", nil) add_entity(A, 810, "stalker", nil) add_entity(B, 810, "stalker", nil)
 	A.se_save_var(810, nil, "companion", true)

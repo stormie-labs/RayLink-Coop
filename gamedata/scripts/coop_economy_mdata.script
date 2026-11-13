@@ -162,6 +162,13 @@ local se_out = {} -- "id\0var" -> { id (host numbering), var, packed }
 local se_sig = {} -- "id\0var" -> packed value last sent / received
 local se_wait = {} -- changes for entities not here yet: { id (local), var, value, packed, until_ms }
 local se_next_flush = 0
+-- A client's writes made while the host's world is being read (in a session, not live yet): "id var" -> { id (local), var, value }.
+-- They go out with the first live frame. GAMMA's WPO rolls the parts of the player's weapon then; dropped, the host never had them,
+-- its save had none, and every next load of a level rolled them again with another seed (owner, live build 46: "the gun is broken,
+-- maybe it is not kept at transitions"). The table lives as long as this Lua state: a new load starts with none.
+local se_early = {}
+local se_early_n = 0
+local SE_EARLY_MAX = 512
 
 local function not_sent(var)
 	return type(var) ~= "string" or var == "_coop_instance" or var:sub(1, 9) == "pathpoint"
@@ -169,7 +176,18 @@ end
 
 -- queues entity `id`'s var for the next flush unless the others have this value already
 local function se_queue(id, varname, val)
-	if applying or type(id) ~= "number" or not core.live() or not_sent(varname) or core.others_count() == 0 then return end
+	if applying or type(id) ~= "number" or not_sent(varname) then return end
+	if not core.live() then
+		if not core.is_client() then return end
+		local key = tostring(id) .. " " .. varname
+		if se_early[key] == nil then
+			if se_early_n >= SE_EARLY_MAX then return end
+			se_early_n = se_early_n + 1
+		end
+		se_early[key] = { id, varname, val }
+		return
+	end
+	if core.others_count() == 0 then return end
 	if clone_busy[id] then return end
 	local packed = core.pack(val)
 	local hid = core.host_id(id)
@@ -192,7 +210,16 @@ local function se_wrapper(id, name, varname, val, ...)
 	se_queue(id, varname, val)
 end
 
+-- The session is live: what was written while its world was being read is queued like any write made now.
+local function se_early_release()
+	if se_early_n == 0 then return end
+	local early = se_early
+	se_early, se_early_n = {}, 0
+	for _, e in pairs(early) do se_queue(e[1], e[2], e[3]) end
+end
+
 local function se_flush()
+	se_early_release()
 	if next(se_out) == nil then return end
 	local entries = {}
 	for _, e in pairs(se_out) do entries[#entries + 1] = e end

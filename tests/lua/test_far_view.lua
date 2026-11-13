@@ -271,4 +271,24 @@ coop.levels.map_servers = function() return {} end
 far._tick()
 check(far.orders_held() == 0 and SIM.given and SIM.given[2] == "y", "the world server gives the info to the record itself")
 
+print("== the engine's \"no object\" id is not asked of the world")
+-- Live build 46, the world server's console: "ALIFE OBJECT ID IS 65535!" and a call stack. A story squad's condlist looked for its
+-- target while the task had no giver; the stock alife_object answers that id with the error line.
+do
+	local asked = {}
+	local real_alife_object = alife_object
+	alife_object = function(id) asked[#asked + 1] = id return real_alife_object(id) end
+	local none, none_st, none_level
+	qc.with_level_of(1, function()
+		none = level.object_by_id(65535)
+		none_st = db.storage[65535]
+	end)
+	none_level = far.level_of_id(65535)
+	alife_object = real_alife_object
+	check(none == nil and none_st == nil and none_level == nil, "nobody has it, and it stands on no level")
+	local was = false
+	for _, id in ipairs(asked) do if id == 65535 then was = true end end
+	check(not was, "alife_object was not asked for it")
+end
+
 print(string.format("%d passed, %d failed", PASSES, FAILS))

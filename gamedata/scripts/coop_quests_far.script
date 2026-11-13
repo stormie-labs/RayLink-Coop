@@ -75,6 +75,15 @@ local function vertex_level(gv)
 	return game_graph():vertex(gv):level_id()
 end
 
+-- The ALife record of id; nil for what is no id at all. 65535 is the engine's "no object" (a task with no giver, a squad with no
+-- target): the stock alife_object answers it with "ALIFE OBJECT ID IS 65535!" and a call stack in the log, and a condlist of a far
+-- level asks for whatever its section names (live build 46, the world server's console).
+local NO_ID = 65535
+local function record(id)
+	if type(id) ~= "number" or id < 0 or id >= NO_ID then return nil end
+	return alife_object(id)
+end
+
 local function root_of(se)
 	for _ = 1, 8 do
 		local pid = se and se.parent_id
@@ -88,7 +97,7 @@ end
 
 -- The level object id stands on; nil when it is no more.
 function level_of_id(id)
-	local se = type(id) == "number" and alife_object(id)
+	local se = record(id)
 	if not se then return nil end
 	local root = root_of(se)
 	return root.m_game_vertex_id and vertex_level(root.m_game_vertex_id) or nil
@@ -309,7 +318,7 @@ end
 local function object_there(s, id)
 	local cached = s.objects[id]
 	if cached ~= nil then return cached or nil end
-	local se = type(id) == "number" and alife_object(id)
+	local se = record(id)
 	if not se then
 		miss(s, id, "nil")
 		s.objects[id] = false
