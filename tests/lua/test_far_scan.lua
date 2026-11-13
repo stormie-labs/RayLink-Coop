@@ -16,7 +16,9 @@ local function check(cond, what)
 end
 
 local BS = string.char(92)
-local GAMMA = "E:" .. BS .. "GAMMA"
+-- the MO2 folder of the profile: where the launcher keeps it now, then where it was before the move (2026-11)
+local ROOTS = { "E:" .. BS .. "RayLinkGames" .. BS .. "GAMMA" .. BS .. "mo2", "E:" .. BS .. "GAMMA" }
+local GAMMA = ROOTS[1]
 local STOCK = ".." .. BS .. "anomaly-ref" .. BS .. "unpacked" .. BS .. "scripts"
 local PROFILES = { "G.A.M.M.A original 920", "G.A.M.M.A. original 920", "G.A.M.M.A" }
 
@@ -29,8 +31,13 @@ local function read(path)
 end
 
 local modlist = nil
-for _, name in ipairs(PROFILES) do
-	modlist = modlist or read(GAMMA .. BS .. "profiles" .. BS .. name .. BS .. "modlist.txt")
+for _, root in ipairs(ROOTS) do
+	for _, name in ipairs(PROFILES) do
+		if not modlist then
+			modlist = read(root .. BS .. "profiles" .. BS .. name .. BS .. "modlist.txt")
+			if modlist then GAMMA = root end
+		end
+	end
 end
 if not modlist then
 	print("  (" .. GAMMA .. " not found: the scan is skipped)")
@@ -64,6 +71,7 @@ local function add_names(cmd)
 end
 add_names('dir /b "' .. STOCK .. BS .. 'tasks_*.script" 2>nul')
 add_names('dir /b "E:' .. BS .. 'AnomalyCoopGamma' .. BS .. 'gamedata' .. BS .. 'scripts' .. BS .. 'tasks_*.script" 2>nul')
+add_names('dir /b "E:' .. BS .. 'RayLinkGames' .. BS .. 'GAMMA' .. BS .. 'game-dev' .. BS .. 'gamedata' .. BS .. 'scripts' .. BS .. 'tasks_*.script" 2>nul')
 
 local sources = {}
 local count = 0
