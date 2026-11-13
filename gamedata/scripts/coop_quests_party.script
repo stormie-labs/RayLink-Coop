@@ -394,6 +394,64 @@ local function patch_host_data_conditions()
 	end
 end
 
+-------------------------------------------------------------------------------
+-- Pump station defense with split levels
+-------------------------------------------------------------------------------
+-- The commander's talk and his invulnerability are chosen by his logic on the map server of the Swamps (meet@commander and
+-- beh@guard_commander of pump_station_defense_task.ltx), whose conditions read the module's table M; only the status functor writes it,
+-- on the world server. So the world server sends down what those conditions read (coop_levels_share: a map server started later gets it
+-- too; the talk's action itself is relayed to the world server, coop_quests_missions). The map server has the live guards, the world
+-- server's stand-ins have no best_enemy: the map server sends up whether they fight a player, keyed by the commander of that task.
+local pump = { hostile = {}, UP_MS = 1000,
+	KEYS = { stage = "number", before_attack_talk = "boolean", commander_id = "number", commader_replaced = "boolean", guards = "table" } }
+
+function pump.table()
+	local psd = qc.mod("tasks_pump_station_defense")
+	local m = psd and coop_mods_core.find_local(psd, "M")
+	return type(m) == "table" and m or nil
+end
+
+-- World server. Always a table while the module is there: an ended task (cleanup leaves M = {}) clears the map server's copy.
+function pump.down_get()
+	local m = pump.table()
+	if not m then return nil end
+	if not m.stage then pump.hostile = {} end -- ids are recycled: a report of a task that is over is not the next one's
+	local out = {}
+	for k in pairs(pump.KEYS) do out[k] = m[k] end
+	return out
+end
+
+function pump.down_set(v)
+	local m = pump.table()
+	if not (m and type(v) == "table") then return end
+	for k, kind in pairs(pump.KEYS) do
+		local x = v[k]
+		if type(x) == kind then m[k] = x else m[k] = nil end
+	end
+end
+
+-- Map server: once a guard or the commander was after a player, it stands (the stock fails the task at the first check that sees it).
+function pump.up_get()
+	local m = pump.table()
+	local id = m and m.stage and m.commander_id
+	if type(id) ~= "number" then
+		pump.hostile = {}
+		return nil
+	end
+	local psd = qc.mod("tasks_pump_station_defense")
+	if not pump.hostile[id] and psd and type(psd.aggro) == "function" then
+		local ok, r = pcall(psd.aggro)
+		if ok and r then pump.hostile[id] = true end
+	end
+	return { c = id, a = pump.hostile[id] == true }
+end
+
+-- World server. Only a "yes" counts: every map server gets the table, and one of another level (no guards there) says "no"; the end of
+-- the task clears it (down_get).
+function pump.up_set(v)
+	if type(v) == "table" and type(v.c) == "number" and v.a == true then pump.hostile[v.c] = true end
+end
+
 local function patch_task_types()
 	local tsf = qc.mod("task_status_functor")
 	local tf = qc.mod("task_functor")
@@ -521,8 +579,11 @@ local function patch_task_types()
 		end
 		psd.aggro = function(...)
 			local r = orig(...)
-			if r or not party_on() then return r end
+			if r then return r end
 			local m = coop_mods_core.find_local(psd, "M")
+			-- split levels: the guards are live on the map server, which says so (pump.up_set); a stand-in here has no best_enemy
+			if type(m) == "table" and m.commander_id and pump.hostile[m.commander_id] and qc.is_host() and split_levels() then return true end
+			if not party_on() then return r end
 			if type(m) ~= "table" then return r end
 			if m.commander_id and at_player(m.commander_id) then return true end
 			for id in pairs(m.guards or {}) do
@@ -769,6 +830,11 @@ function on_game_start()
 	qc.register_host_action("give_npc", host_give_npc)
 	qc.on("rf", client_on_rf, TAG)
 	qc.on("mirror", client_on_mirror, TAG)
+	local share = qc.mod("coop_levels_share")
+	if share then
+		share.down("pump", pump.down_get, pump.down_set)
+		share.up("pump", pump.up_get, pump.up_set, pump.UP_MS)
+	end
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("actor_on_first_update", install)
 end
