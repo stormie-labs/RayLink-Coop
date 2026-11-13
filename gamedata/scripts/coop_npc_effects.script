@@ -60,7 +60,7 @@ local EV_ANA = "npc.anabiotic"
 local installed = false
 local host_on = false
 local orig = {}
-local stats = { snd_out = 0, snd_in = 0, loop_out = 0, loop_in = 0, cfx_out = 0, cfx_in = 0, anabiotic = 0, psy_floor = 0 }
+local stats = { snd_out = 0, snd_in = 0, snd_stop_in = 0, loop_out = 0, loop_in = 0, cfx_out = 0, cfx_in = 0, anabiotic = 0, psy_floor = 0 }
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
 local KEY_LOOPS = "npc.loops" -- session scope: a list of "id|theme", ids in host numbering
@@ -358,6 +358,19 @@ local function client_on_snd(t)
 	if not ok then error(err, 0) end
 end
 
+-- Engine (coop_sound.cpp, client only): the authority's CSoundPlayer dropped this creature's voice (npc_sound:stop, a
+-- scheme's silence, a death cry). The engine ended the relayed file; the theme's own copy here (the stock PDA copy of a
+-- far voice) ends as npc_sound:stop ends it on the host.
+local function client_on_voice_stop(id)
+	if type(id) ~= "number" or not puppet_voices[id] or not P.client_live() then return end
+	local th = xr_sound.sound_table[id]
+	-- a theme is an instance of a luabind class in the game (a userdata), a table in a test: asked, not typed
+	local ok, stop = pcall(function() return th and th.stop end)
+	if not (ok and type(stop) == "function") then return end
+	stats.snd_stop_in = stats.snd_stop_in + 1
+	stop(th, id)
+end
+
 local function client_on_loop(t)
 	if type(t.i) ~= "number" or type(t.s) ~= "string" then return end
 	local id = P.to_local(t.i)
@@ -638,8 +651,8 @@ local function actor_on_update()
 end
 
 function print_status()
-	log("installed %s | voices out %d in %d, loops out %d in %d, effects out %d in %d | anabiotic %d (holding %s), psy floor %d | errors %d",
-		tostring(installed), stats.snd_out, stats.snd_in, stats.loop_out, stats.loop_in, stats.cfx_out, stats.cfx_in,
+	log("installed %s | voices out %d in %d (stopped %d), loops out %d in %d, effects out %d in %d | anabiotic %d (holding %s), psy floor %d | errors %d",
+		tostring(installed), stats.snd_out, stats.snd_in, stats.snd_stop_in, stats.loop_out, stats.loop_in, stats.cfx_out, stats.cfx_in,
 		stats.anabiotic, tostring(ana.on), stats.psy_floor, P.error_count(TAG))
 end
 
@@ -663,6 +676,9 @@ function on_game_start()
 		end)
 	end
 	RegisterScriptCallback("actor_on_update", actor_on_update)
+	-- fired by the engine on a client (coop_sound.cpp client_stop); the engine raises it only once a script added the name
+	if type(rawget(_G, "AddScriptCallback")) == "function" then pcall(AddScriptCallback, "coop_npc_sound_stop") end
+	RegisterScriptCallback("coop_npc_sound_stop", client_on_voice_stop)
 	P.on(EV_ANA, host_on_ana, "host", TAG)
 	-- created by coop_main at load; fired by the engine on the revived player's machine (C1.6)
 	RegisterScriptCallback("coop_actor_revived", engine_revived)

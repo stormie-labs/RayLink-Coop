@@ -668,6 +668,57 @@ TEST(npc_sound_read_rejects_bad_input)
 	}
 }
 
+// The authority stopped a creature's sounds (set_sound_mask, remove_active_sounds, a death cry): the stop's form only.
+TEST(npc_sound_stop_roundtrip_and_form)
+{
+	NpcSound s;
+	s.object = 4321;
+	s.flags = NpcSound::Stop | NpcSound::Mask;
+	s.mask = 0xFFFFFFFFu;
+	Writer w;
+	s.write(w);
+	// u16 object + u8 flags + empty str + u16 delay + u32 mask
+	CHECK_EQ(w.size(), size_t(2 + 1 + 1 + 2 + 4));
+	NpcSound t;
+	Reader r(w.ptr(), w.size());
+	CHECK(t.read(r));
+	CHECK(r.remaining() == 0);
+	CHECK(t.object == 4321 && t.flags == (NpcSound::Stop | NpcSound::Mask) && t.mask == 0xFFFFFFFFu && t.path.empty());
+
+	auto rejected = [](const NpcSound& o)
+	{
+		Writer wo;
+		o.write(wo);
+		NpcSound x;
+		Reader rx(wo.ptr(), wo.size());
+		return !x.read(rx);
+	};
+	NpcSound no_mask = s;
+	no_mask.flags = NpcSound::Stop;
+	CHECK(rejected(no_mask));
+	NpcSound zero = s;
+	zero.mask = 0;
+	CHECK(rejected(zero));
+	NpcSound with_path = s;
+	with_path.path = "characters_voice\\human_01\\stalker\\fight\\enemy\\enemy_3";
+	CHECK(rejected(with_path));
+	NpcSound with_delay = s;
+	with_delay.delay_ms = 10;
+	CHECK(rejected(with_delay));
+	NpcSound with_extra = s;
+	with_extra.flags |= NpcSound::Follow;
+	CHECK(rejected(with_extra));
+	// a start still needs its path
+	NpcSound nameless;
+	nameless.flags = NpcSound::Mask;
+	nameless.mask = 1;
+	CHECK(rejected(nameless));
+
+	// A reader of protocol 31 (Known without Stop) rejects the entry at the flag: the sender puts a stop last in a packet.
+	CHECK((uint8_t(NpcSound::Stop) & uint8_t(NpcSound::Bone | NpcSound::Mask | NpcSound::Offset | NpcSound::Volume |
+	                                             NpcSound::Follow)) == 0);
+}
+
 TEST(sound_path_validation)
 {
 	CHECK(sound_path_valid("characters_voice\\human_01\\stalker\\fight\\enemy\\enemy_3"));

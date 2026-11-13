@@ -199,5 +199,33 @@ do
 	check(#C.voice == 6 and same, "the door plays on the client, the same file as on the host")
 end
 
+print("== the authority stopped the voice (engine stop, coop_npc_sound_stop): the client's PDA copy stops with it")
+do
+	local H, C = stage()
+	online(H, 306, 20, "stalker")
+	online(C, 306, 20, "stalker")
+	-- npc_sound:stop of the stock: the voice by set_sound_mask(-1), the PDA copy by its sound object
+	local stopped = {}
+	local th = C.env.sound_theme.theme.chatter
+	function th:stop(id) stopped[#stopped + 1] = id end
+	line(H, C, 306, "chatter")
+	check(#C.pda == 1, "(the client plays the PDA copy of the far voice)")
+	check(C.callbacks["coop_npc_sound_stop"] ~= nil, "the client listens to the engine's stop")
+	C.fire("coop_npc_sound_stop", 306)
+	check(#stopped == 1 and stopped[1] == 306, "the theme's own stop runs for that creature: " .. tostring(stopped[1]))
+	C.fire("coop_npc_sound_stop", 307)
+	check(#stopped == 1, "a creature this machine played no theme on: nothing")
+	local hs = {}
+	function H.env.sound_theme.theme.chatter:stop(id) hs[#hs + 1] = id end
+	H.fire("coop_npc_sound_stop", 306)
+	check(#hs == 0, "the host does not act on it (the engine raises it on a client only)")
+	-- in the game a theme is an instance of a luabind class: a userdata, not a table
+	local in_game = newproxy(true)
+	getmetatable(in_game).__index = { stop = function(_, id) stopped[#stopped + 1] = id end }
+	C.env.xr_sound.sound_table[306] = in_game
+	C.fire("coop_npc_sound_stop", 306)
+	check(#stopped == 2 and stopped[2] == 306, "a theme that is a userdata, as in the game, is stopped too")
+end
+
 print(string.format("%d passed, %d failed", PASSES, FAILS))
 os.exit(FAILS == 0 and 0 or 1)
