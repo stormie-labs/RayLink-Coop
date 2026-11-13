@@ -53,9 +53,26 @@ local MAX_BIG = 256 * 1024
 -------------------------------------------------------------------------------
 stats = { sent = 0, send_failed = 0, received = 0, rejected = 0, limited = 0, errors = 0, big_in = 0, big_dropped = 0 }
 
+-- A log line of these scripts is a kilobyte at most; a longer text goes out in pieces, cut at a blank where there is one. The
+-- engine's log ended the process on a line over 4 KB with nothing written (live build 47: coop_status on a world server with a
+-- player in the world printed the list of the wrapped functions, and the server was gone).
+local LINE_MAX = 900
 function log(tag, fmt, ...)
 	local ok, line = pcall(string_format, fmt, ...)
-	printf("[coop-mods] [%s] %s", tostring(tag), ok and line or tostring(fmt))
+	line = ok and line or tostring(fmt)
+	local head = "[coop-mods] [" .. tostring(tag) .. "] "
+	while #line > LINE_MAX do
+		local cut = LINE_MAX
+		for i = LINE_MAX, LINE_MAX - 200, -1 do
+			if line:sub(i, i) == " " then
+				cut = i
+				break
+			end
+		end
+		printf("%s%s", head, line:sub(1, cut))
+		line = line:sub(cut + 1)
+	end
+	printf("%s%s", head, line)
 end
 
 local err_count = {}

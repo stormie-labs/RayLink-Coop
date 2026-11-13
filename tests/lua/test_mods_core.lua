@@ -142,6 +142,24 @@ check(#SENT == 0, "path with .. refused")
 coop_main.print_status()
 check(log_has("[coop-mods] [core] role host") ~= nil, "status appended to coop_status")
 
+-- Live build 47: coop_status on a world server with a player in the world. The list of the wrapped functions made one log line of
+-- over 4 KB, and the engine's log ends the process on such a line with nothing written. A status line is a kilobyte at most.
+do
+	local before = #C.wrapped
+	for i = 1, 400 do C.wrapped[#C.wrapped + 1] = "some_module_of_a_mod.a_function_number_" .. i end
+	LOG = {}
+	C.print_status()
+	local longest, seen = 0, 0
+	for _, line in ipairs(LOG) do
+		if #line > longest then longest = #line end
+		for _ in line:gmatch("a_function_number_%d+") do seen = seen + 1 end
+	end
+	check(longest <= 1000, "no status line is longer than a kilobyte (" .. longest .. ")")
+	check(seen == 400, "and every wrapped function is still named (" .. seen .. ")")
+	check(log_has("a_function_number_400") ~= nil and log_has("[coop-mods] [core] ") ~= nil, "each piece carries the tag")
+	for i = #C.wrapped, before + 1, -1 do C.wrapped[i] = nil end
+end
+
 -- single player: everything inert
 MODE = "sp"
 check(C.active() == false and C.is_host() == false, "sp: inactive")

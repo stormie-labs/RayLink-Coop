@@ -191,6 +191,20 @@ TEST(user_ltx_a_map_server_keeps_the_hosts_and_needs_no_screen)
 	CHECK(map_server_user_ltx("vid_mode_x 1\n").find("vid_mode_x 1\r\n") != std::string::npos); // another key
 }
 
+// Read from the console of the owner's map servers (2026-11-13): "! Unknown command: g_unlimitedammo", "log_missing_ini", "ph_gravity"
+// at every start. The world server runs with -dbg, which registers them, and saves them; a map server runs without it.
+TEST(user_ltx_a_map_server_gets_no_command_only_a_debug_game_knows)
+{
+	const std::string out = map_server_user_ltx("g_god off\r\ng_unlimitedammo off\r\nph_gravity 19.62\r\nlog_missing_ini off\r\ng_end_modif 1.\r\nsnd_volume_eff 1.\r\n");
+	CHECK(out.find("g_god") == std::string::npos);
+	CHECK(out.find("g_unlimitedammo") == std::string::npos);
+	CHECK(out.find("ph_gravity") == std::string::npos);
+	CHECK(out.find("log_missing_ini") == std::string::npos);
+	CHECK(out.find("g_end_modif") == std::string::npos);
+	CHECK(out.find("snd_volume_eff 1.\r\n") != std::string::npos);
+	CHECK(map_server_user_ltx("g_god_extra 1\n").find("g_god_extra 1\r\n") != std::string::npos); // another key
+}
+
 TEST(command_tail_holds_what_the_key_needs)
 {
 	Args a;

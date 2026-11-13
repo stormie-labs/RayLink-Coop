@@ -650,6 +650,28 @@ do
 	local sent_early = #A.SENT
 	tick(A, 400) deliver_all()
 	check(#A.SENT == sent_early, "and it is sent once")
+	-- A world with a world server and one player: the server's seat plays no character and is in no row of coop.players(), so the
+	-- player counted no "others" and told nobody anything - neither his weapon's parts nor his thirst and sleep (stand, build 47:
+	-- "player data out 0" after 90 s; the owner's log: "first visit: defaults" at every load of a level). A client always has its host.
+	do
+		local real_players = A.coop.players
+		A.coop.players = function()
+			local own = {}
+			for _, p in ipairs(real_players()) do if p.is_self then own[#own + 1] = p end end
+			return own
+		end
+		add_item(H, 802, "wpn_ak74", 501) add_item(A, 802, "wpn_ak74", 0)
+		A.se_save_var(802, nil, "parts", { wpn_ak74 = 61, prt_w_barrel = 44 })
+		tick(A, 400) deliver_all()
+		local lone = H.se_load_var(802, nil, "parts")
+		check(lone and lone.prt_w_barrel == 44, "a lone player's write reaches his host")
+		local m = A.alife_storage_manager.get_state()
+		m.RF_freq = 123
+		A.coop_economy_mdata.send_player_keys()
+		tick(A, 400) deliver_all()
+		check(H.coop_economy_mdata.player_value(501, "RF_freq") == 123, "and so does what is his own (a per-player key)")
+		A.coop.players = real_players
+	end
 	-- a host-only var from a client is refused
 	add_entity(H, 810, "stalker", nil) add_entity(A, 810, "stalker", nil) add_entity(B, 810, "stalker", nil)
 	A.se_save_var(810, nil, "companion", true)
