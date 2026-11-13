@@ -274,7 +274,7 @@ TEST(server_life_defaults)
 {
 	CHECK_EQ(kStartTimeoutMs, uint32_t(240000)); // a GAMMA load takes minutes
 	CHECK_EQ(kStopTimeoutMs, uint32_t(15000));
-	CHECK_EQ(kDefaultLingerMs, uint32_t(60000)); // coop_mapserver_linger, 60 s
+	CHECK_EQ(kDefaultLingerMs, uint32_t(600000)); // coop_mapserver_linger, 600 s since build 50 (the warm map, coop_levels_dynamic.h)
 	CHECK_EQ(kFlushTimeoutMs, uint32_t(3000));
 	CHECK_EQ(kMaxStartFailures, uint32_t(3));
 	CHECK_EQ(kHealthyRunMs, uint32_t(30000));
@@ -363,14 +363,14 @@ TEST(server_life_pause)
 	CHECK(!life.want_start());
 	CHECK(!life.want_stop(kT0 + 99999999));
 
-	// The default pause is 60 s.
+	// The default pause is 600 s (build 50: the warm map; the dynamic rules shorten it for the others).
 	ServerLife d;
 	d.players(1, kT0);
 	d.started(kT0);
 	d.ready();
 	d.players(0, kT0 + 100);
-	CHECK(!d.want_stop(kT0 + 100 + 59999));
-	CHECK(d.want_stop(kT0 + 100 + 60000));
+	CHECK(!d.want_stop(kT0 + 100 + 599999));
+	CHECK(d.want_stop(kT0 + 100 + 600000));
 }
 
 // A player comes back before the pause is over: the server stays, and the next pause counts from the next departure.
