@@ -287,5 +287,29 @@ do
 	check(denied._talk == true, "the host's yes lifts it")
 end
 
+print("== the start dialog of a talk is chosen for the player who talks")
+-- Testers, 2026-11-13: "the dialog with some NPCs goes backwards". The stock meet manager picks meet_dialog for db.actor
+-- (xr_meet Cmeet_manager:update): the host's own actor, a map server's ghost. A client got that branch: an NPC opened with the line
+-- meant for another player (another faction, a task he does not have). Trade and the use text were his already.
+do
+	local H, C, proxy, MH = scene("gamma")
+	local npc = npc_pair(H, C, 240, { commander = true })
+	local mm = H.env.db.storage[240].meet.meet_manager
+	-- "a line for Duty men, the plain hello for the rest"
+	mm.a.meet_dialog = { { cond = function(who) return who._duty == true end, section = "duty_hello" }, { section = "plain_hello" } }
+	mm.startdialog = "plain_hello" -- what the manager chose for the host's actor
+	proxy._duty = true
+	local s = MH._talk_state(npc, proxy)
+	check(s and s.d == "duty_hello", "the branch of meet_dialog of the player who talks")
+	check(MH._talk_state(npc, H.env.db.actor).d == "plain_hello", "the host's own actor keeps his")
+	-- a dialog a script set for this NPC (xr_meet's own table, the surrender of a wounded man) is nobody's condlist: it stands
+	mm.startdialog = "scripted_dialog"
+	check(MH._talk_state(npc, proxy).d == "scripted_dialog", "a start dialog a script set is kept")
+	-- no meet_dialog at all: as before
+	mm.a.meet_dialog = nil
+	mm.startdialog = "plain_hello"
+	check(MH._talk_state(npc, proxy).d == "plain_hello", "an NPC with no meet_dialog: the manager's word")
+end
+
 print(string.format("\nRESULT: %d passed, %d failed", PASSES, FAILS))
 if FAILS > 0 then error("tests failed") end

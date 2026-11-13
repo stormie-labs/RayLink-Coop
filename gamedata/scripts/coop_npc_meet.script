@@ -511,7 +511,15 @@ local function talk_state(npc, who)
 	end
 	local text = pick(who, npc, a.use_text)
 	if not (text and text ~= "" and text ~= "nil") then text = talk and "character_use" or "" end
+	-- The stock meet manager picks meet_dialog for db.actor (xr_meet Cmeet_manager:update): the host's own actor, a map server's
+	-- ghost. The player who talks gets his own branch, as he gets his own trade and use text (testers 2026-11-13: an NPC opened
+	-- with the line of another player). A dialog a script set (xr_meet's own table, a surrender) is no branch of the condlist:
+	-- the manager's word is replaced only when it is what the condlist gives this machine's own actor.
 	local d = mm.startdialog
+	if a.meet_dialog ~= nil and db.actor and who:id() ~= db.actor:id() then
+		local his = pick(who, npc, a.meet_dialog)
+		if his ~= d and pick(db.actor, npc, a.meet_dialog) == d then d = his end
+	end
 	return { t = talk, r = trade, x = text, d = (type(d) == "string" and d ~= "nil") and d or "", why = why }
 end
 
