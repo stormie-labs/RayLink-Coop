@@ -201,6 +201,13 @@ local function machine(role, self_peer)
 	M.goodwill = {}
 	env.task = { completed = 2, fail = 0, in_progress = 1 }
 	env.xr_effects = {
+		inc_goodwill_by_tasker_comm = function(a, npc, p) -- the stock: the task's var, else the NPC the actor talks to
+			local var = env.load_var(actor, p[1])
+			local comm = type(var) == "table" and var.task_giver_comm
+			if not comm and actor:is_talking() then comm = "of_the_talk" end
+			M.tasker_comm = M.tasker_comm or {}
+			M.tasker_comm[#M.tasker_comm + 1] = comm or "none"
+		end,
 		give_actor = function(a, npc, p) -- the stock: alife_create(section, ..., AC_ID), not alife_create_item
 			for _, v in pairs(p) do
 				M.give_item(actor, v)
@@ -266,7 +273,7 @@ local function machine(role, self_peer)
 
 	-- task manager (luabind-like class: methods looked up in the class table)
 	local ini = { fetch_1 = true, fetch_2 = true, story_1 = true, cf_1 = true, stage_t = true, bounty_1 = true, dawn_1 = true,
-		ghost_1 = true, cord_1 = true, owl_1 = true }
+		ghost_1 = true, cord_1 = true, owl_1 = true, comm_1 = true }
 	M.on_init = {}
 	M.on_complete = {}
 	local CRandomTask = {}
@@ -737,6 +744,42 @@ do
 	check(#g == n0 + 1 and g[#g][1] == 1 and g[#g][2] == 1001, "the players share the whole sum: coop.money_grant(1, 1001)")
 	H.env.coop.is_dedicated = nil
 	H.share = 0
+end
+
+-- ---------------------------------------------------------------- goodwill by the faction of the giver
+print("== inc_goodwill_by_tasker_comm at a turn-in nobody of the host talks at")
+-- The quest audit, 2026-11-13: the stock takes the giver's faction from the task's var (only delivery tasks write it) or from the NPC
+-- the actor talks to. A task a client turns in ends in the host's task callback, where nobody talks: 15 tasks gave no goodwill.
+do
+	H.env.alife_object = function(id)
+		if id == 77 then return { id = 77, community = function() return "dolg" end } end
+		return nil
+	end
+	H.on_complete.comm_1 = function() H.env.xr_effects.inc_goodwill_by_tasker_comm(H.actor, nil, { "comm_1", 50 }) end
+	C.tm:give_task("comm_1", 77)
+	pump()
+	H.tasker_comm = {}
+	C.tm:set_task_completed("comm_1")
+	pump()
+	H.engine_check()
+	pump()
+	check(#H.tasker_comm == 1 and H.tasker_comm[1] == "dolg", "the faction of the task's giver, from his record")
+	check(H.env.load_var(H.actor, "comm_1") == nil, "the task's var is left as it was")
+	-- a var the task keeps, with its own word: the stock's
+	H.env.save_var(H.actor, "comm_1", { task_giver_comm = "freedom", n = 1 })
+	H.tasker_comm = {}
+	H.env.xr_effects.inc_goodwill_by_tasker_comm(H.actor, nil, { "comm_1", 50 })
+	check(H.tasker_comm[1] == "freedom", "a faction the task wrote itself wins")
+	H.env.save_var(H.actor, "comm_1", nil)
+	-- the host's own talk: the stock
+	H.tm.task_info.comm_1 = { id = "comm_1", stage = 0, status = "selected", task_giver_id = 77 }
+	H.talking = true
+	H.tasker_comm = {}
+	H.env.xr_effects.inc_goodwill_by_tasker_comm(H.actor, nil, { "comm_1", 50 })
+	H.talking = false
+	check(H.tasker_comm[1] == "of_the_talk", "the host's player who talks: the NPC of his talk, as in the stock")
+	H.tm.task_info.comm_1 = nil
+	H.env.alife_object = nil
 end
 
 -- ---------------------------------------------------------------- give_actor of a task's start

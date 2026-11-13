@@ -1579,6 +1579,35 @@ local function patch_rewards()
 		end
 	end
 
+	-- xr_effects.inc_goodwill_by_tasker_comm takes the giver's faction from the task's var (task_giver_comm: only the delivery
+	-- tasks write it) or from the NPC the actor talks to. A task a client turns in ends in the host's task callback, where nobody
+	-- talks: 15 tasks gave no goodwill (the quest audit, 2026-11-13). The faction of the task's giver, from his record, stands
+	-- in the var for this one call; a faction the task wrote itself and the host's own talk are the stock's.
+	local stock_comm = xe and xe.inc_goodwill_by_tasker_comm
+	if type(stock_comm) == "function" then
+		xe.inc_goodwill_by_tasker_comm = function(actor, npc, p)
+			local id = type(p) == "table" and p[1]
+			local tm = type(id) == "string" and is_host() and tmgr() or nil
+			local tsk = tm and tm.task_info and tm.task_info[id]
+			if not (tsk and db.actor) or db.actor:is_talking() then return stock_comm(actor, npc, p) end
+			local had = load_var(db.actor, id)
+			if type(had) == "table" and had.task_giver_comm then return stock_comm(actor, npc, p) end
+			local se = tsk.task_giver_id and rawget(_G, "alife_object") and alife_object(tsk.task_giver_id)
+			local ok, comm = pcall(function() return se and se:community() end)
+			if not (ok and type(comm) == "string" and comm ~= "") then return stock_comm(actor, npc, p) end
+			local with = {}
+			if type(had) == "table" then
+				for k, v in pairs(had) do with[k] = v end
+			end
+			with.task_giver_comm = comm
+			save_var(db.actor, id, with)
+			local res = { pcall(stock_comm, actor, npc, p) }
+			save_var(db.actor, id, had)
+			if not res[1] then error(res[2], 0) end
+			return unpack(res, 2)
+		end
+	end
+
 	-- item news to the player who gets / gives the items
 	local nm = rawget(_G, "news_manager") or news_manager
 	if nm and type(nm.relocate_item) == "function" then
