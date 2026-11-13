@@ -31,7 +31,10 @@
 	    scene counters are reset, so the player is not sent back down at once or left with a black screen.
 
 	Events (ids in host numbering):
-	  npc.snd   host -> client  { i = object, s = theme, f = faction?, p = point? }
+	  npc.snd   host -> client  { i = object, s = theme, f = faction?, p = point?, n = the variant the host played? }
+	            The voice itself comes from the engine (coop_sound.cpp, the host's file); the client's replay plays that
+	            variant for the rest of the theme (stock PDA copy of a far voice, subtitle, a story's place) and leaves
+	            an object_sound theme on a creature to the engine.
 	  npc.loop  host -> client  { i = object, s = theme | "", on = bool }
 	  npc.cfx   host -> client  { f = effect, n = name/section, id = effector id, l = loop, v = fov }
 	Stock functions wrapped: xr_sound.set_sound_play, play_sound_looped, stop_sound_looped;
@@ -144,7 +147,9 @@ local function patch_sounds()
 			if started and not P.is_player_id(npc_id) then
 				local ok, err = pcall(function()
 					local npc = level.object_by_id(npc_id)
-					local t = { i = npc_id, s = sound, f = plain(faction), p = plain(point) }
+					-- n: the variant this machine chose. The engine relays that very file; a client that rolled
+					-- its own would show another line's subtitle and PDA copy over it (a talk that is not there).
+					local t = { i = npc_id, s = sound, f = plain(faction), p = plain(point), n = plain(theme.played_id) }
 					local sent
 					if theme.class_id == "actor_sound" then
 						sent = send_scoped(EV_SND, t, npc)
@@ -294,15 +299,51 @@ local function client_voices_tick()
 	end
 end
 
+-- The engine relays the sounds a host creature plays through CSoundPlayer and CScriptSound (coop_sound.cpp): an object_sound
+-- theme on one is already heard here, from the host's file.
+local function engine_relays(obj)
+	for _, f in ipairs({ "IsStalker", "IsMonster", "IsTrader" }) do
+		local is = rawget(_G, f)
+		if type(is) == "function" and is(obj) then return true end
+	end
+	return false
+end
+
+-- The variant the host chose, if it is one of this theme's here (nil: none sent, false: not a valid one).
+local function host_variant(th, id, n)
+	if n == nil then return nil end
+	if type(n) ~= "number" or n ~= math.floor(n) then return false end
+	if th.class_id == "npc_sound" then
+		local d = th.npc and th.npc[id]
+		return d ~= nil and type(d.max) == "number" and n >= 0 and n <= d.max and n
+	elseif th.class_id == "object_sound" then
+		return type(th.sound) == "table" and th.sound[n] ~= nil and n
+	end
+	return nil
+end
+
 local function client_on_snd(t)
 	if type(t.i) ~= "number" or type(t.s) ~= "string" then return end
-	if not (sound_theme and sound_theme.theme[t.s]) then return end
+	local th = sound_theme and sound_theme.theme[t.s]
+	if not th then return end
 	local id = P.to_local(t.i)
-	if id ~= 0 and not level.object_by_id(id) then return end -- not online here
+	local obj = id ~= 0 and level.object_by_id(id)
+	if id ~= 0 and not obj then return end -- not online here
+	if th.class_id == "object_sound" and obj and engine_relays(obj) then return end
+	local n = host_variant(th, id, t.n)
+	if n == false then return end
 	local point = t.p
 	if type(point) == "number" then point = P.to_local(point) end
 	stats.snd_in = stats.snd_in + 1
 	if id ~= 0 then puppet_voices[id] = true end
+	-- The theme plays the host's variant: its voice is muted on a puppet (the engine relays the host's file), what is left
+	-- (the stock PDA copy of a far voice, the subtitle, the place in a story) must be of that same line. The theme
+	-- object stays the stock one; only its choice is answered for this call.
+	local as = th
+	if n then
+		as = setmetatable({ select_next_sound = function() return n end }, { __index = th, __newindex = th })
+		sound_theme.theme[t.s] = as
+	end
 	-- its subtitle news (news_manager.send_sound) comes from the host as core.news (coop_core_world): not
 	-- twice (W5)
 	local nm = rawget(_G, "news_manager")
@@ -310,6 +351,10 @@ local function client_on_snd(t)
 	if type(send) == "function" then nm.send_sound = function() return false end end
 	local ok, err = pcall(xr_sound.set_sound_play, id, t.s, t.f, point)
 	if type(send) == "function" then nm.send_sound = send end
+	if as ~= th then
+		sound_theme.theme[t.s] = th
+		if xr_sound.sound_table[id] == as then xr_sound.sound_table[id] = th end
+	end
 	if not ok then error(err, 0) end
 end
 
