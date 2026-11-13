@@ -1287,7 +1287,22 @@ local function host_task_callback(orig, tsk, state)
 		ctx.given, ctx.counted = {}, {}
 	end
 	local this = ctx
-	local ok, err = pcall(orig, tsk, state)
+	-- The stock end of a task (on_complete, on_fail, on_cancel and what they call) reads the world around "the actor": the giver's
+	-- game object (goodwill by the tasker), the quest item to take away, the actor's faction (the next DRX giver), the first target of
+	-- the task it gives next. On a world server that world is a map server's level, and "at home" none of it was found (the quest
+	-- audit, 2026-11-13). The end runs in the far view of the level of the player it is for - he stands at the giver when he turns
+	-- the task in - and, with nobody to name (a timer, a script), on the level of what the task is about. Without split levels the
+	-- far view is no view: the call is the stock's.
+	local qc = rawget(_G, "coop_quests_core")
+	local ok, err
+	if not (qc and qc.with_level_of and qc.with_target) then
+		ok, err = pcall(orig, tsk, state)
+	elseif rcpt ~= 0 then
+		ok, err = pcall(qc.with_level_of, rcpt, orig, tsk, state)
+	else
+		local about = is_task(rtask) and (type(rtask.current_target) == "number" and rtask.current_target or rtask.task_giver_id) or nil
+		ok, err = pcall(qc.with_target, about, 0, id, orig, tsk, state)
+	end
 	ctx = prev
 	group_lines(this)
 	host.given_by[id] = nil

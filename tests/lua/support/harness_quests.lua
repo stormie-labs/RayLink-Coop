@@ -344,6 +344,7 @@ function machine(role, self_peer)
 			if M.on_complete and M.on_complete[id] then M.on_complete[id]() end
 			tm_instance.task_info[id] = nil
 		else
+			if M.on_fail and M.on_fail[id] then M.on_fail[id]() end
 			tm_instance.task_info[id] = nil
 		end
 	end

@@ -656,6 +656,55 @@ do
 	check(Hm.env.xr_conditions.actor_enemy(Hm.actor, Cm.npc) == false, "on the world server stock")
 end
 
+print("== the end of a task runs where the player who ends it stands")
+-- The quest audit, 2026-11-13: on_complete / on_fail / on_cancel ran on the world server "at home" (fake_start). The stock effects there
+-- read the world around the actor: the giver's game object (inc_goodwill_by_tasker_id: 39 tasks without goodwill), the quest item to
+-- take away (remove_quest_item), the actor's faction (the next DRX giver, 136 tasks), the first target of the task they give next.
+do
+	local ended = {}
+	local function look(key)
+		ended[key] = { level = Hm.env.level.name(), giver = Hm.env.level.object_by_id(700),
+			storage = Hm.env.db.storage[700] and Hm.env.db.storage[700].object, peer = Hm.env.coop_tasks.reward_peer() }
+	end
+	Hm.ini.end_task = {}
+	Cm.ini.end_task = {}
+	Hm.on_complete = Hm.on_complete or {}
+	Hm.on_complete.end_task = function() look("complete") end
+	-- the player of level 2 took it from the NPC there and turns it in
+	Cm.env.task_manager.get_task_manager():give_task("end_task", 700)
+	pump()
+	check(Hm.tm.task_info.end_task ~= nil and Hm.env.coop_tasks.taker("end_task") == 1, "the player's task is on the world server")
+	Cm.env.task_manager.get_task_manager():set_task_completed("end_task")
+	pump()
+	Hm.env.task_manager.task_callback(Hm.engine_tasks.end_task, Hm.env.task.completed)
+	pump()
+	check(ended.complete ~= nil, "the stock end of the task ran")
+	check(ended.complete and ended.complete.level == "k00_marsh", "level.name is the level of the player who turned it in")
+	check(ended.complete and ended.complete.giver and ended.complete.giver.far == true, "the giver is found there")
+	check(ended.complete and ended.complete.storage ~= nil, "and db.storage has him: goodwill by the tasker has whom to ask")
+	check(ended.complete and ended.complete.peer == 1, "the rewards are still his")
+	check(Hm.env.level.name() == "l01_escape", "the far view is closed after the end")
+
+	-- a task nobody of a map server's level has to do with ends at home, as before
+	Hm.ini.home_task = {}
+	Hm.on_complete.home_task = function() look("home") end
+	Hm.tm:give_task("home_task", 960)
+	Hm.env.task_manager.task_callback(Hm.engine_tasks.home_task, Hm.env.task.completed)
+	check(ended.home and ended.home.level == "l01_escape", "a task of the world server's own level ends at home")
+
+	-- a failure too
+	local failed
+	local stock_callback = Hm.env.coop_tasks and Hm.env.task_manager.task_callback
+	Hm.ini.fail_task = {}
+	Cm.ini.fail_task = {}
+	Cm.env.task_manager.get_task_manager():give_task("fail_task", 700)
+	pump()
+	Hm.on_fail = { fail_task = function() failed = Hm.env.level.name() end }
+	Hm.env.task_manager.task_callback(Hm.engine_tasks.fail_task, Hm.env.task.fail)
+	check(failed == "k00_marsh", "a task that failed ends on the level of the player who took it")
+	check(stock_callback == Hm.env.task_manager.task_callback and Hm.env.level.name() == "l01_escape", "and the view is closed")
+end
+
 print("== roles")
 check(Ms.env.coop_quests_core.host_party() == true, "a map server's logic pays players")
 local Q = Ms.env.coop_tasks
