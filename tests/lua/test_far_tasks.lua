@@ -779,6 +779,28 @@ do
 	check(#Hm.logic_ran == 2, "with a live object the stock logic runs")
 end
 
+print("== a story reward of a map server's logic that comes twice in a moment is one reward")
+-- The quest audit, 2026-11-13 (risk R1): a map server does not have an info it gave until the world server's echo, so a line
+-- `{-x} %+x =reward_item(...)%` of its logic can run again inside that round trip, and every run goes up as "share".
+do
+	local runs = 0
+	Hm.env.xr_effects.reward_item = function(actor, npc, p) runs = runs + 1 end
+	local function says(first)
+		Ms.env.coop_quests_core.send("share", { f = "reward_item", p1 = first }, 0)
+	end
+	says("medkit")
+	says("medkit")
+	pump()
+	check(runs == 1, "the same reward from the same level twice at once: given once")
+	says("bandage")
+	pump()
+	check(runs == 2, "another reward is another")
+	NOW = NOW + 5000
+	says("medkit")
+	pump()
+	check(runs == 3, "the same one later is a new one")
+end
+
 print("== the spy with no player on his level: \"the actor\" is the player who took the task, not the ghost")
 -- tasks_agent_rescue brings an offline spy to db.actor:position(). With nobody on the spy's level the nearest player is nobody and the
 -- stock read the world server's ghost: the squad went to fake_start (the followers analysis, 2026-11-13).

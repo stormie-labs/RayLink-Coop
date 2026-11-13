@@ -238,6 +238,9 @@ local function patch_condlist_effects()
 	end
 end
 
+local SHARE_AGAIN_MS = 3000
+local shares_seen = {} -- world server: "bridge|effect|parameters" -> when it last came
+
 -- World server: a condlist on a map server's level gave a story reward.
 local function host_on_share(t, from)
 	if not qc.is_host() or type(from) ~= "number" or from < 0x100 or type(t.f) ~= "string"
@@ -245,6 +248,20 @@ local function host_on_share(t, from)
 	local f = qc.mod("xr_effects") and xr_effects[t.f]
 	if type(f) ~= "function" then return end
 	local p = params_of(t)
+	-- A map server has an info it gave only after this server's echo: a line `{-x} %+x =reward(...)%` of its logic can run again
+	-- inside that round trip, and each run says "share" (the quest audit, 2026-11-13, R1). The same reward with the same
+	-- parameters from the same level within a moment is that one reward.
+	local key = from .. "|" .. t.f .. "|" .. table.concat(p, "|")
+	local t_now = time_global()
+	local last = shares_seen[key]
+	shares_seen[key] = t_now
+	if last and t_now - last < SHARE_AGAIN_MS then
+		stats.share_again = (stats.share_again or 0) + 1
+		return
+	end
+	for k, at in pairs(shares_seen) do
+		if t_now - at >= SHARE_AGAIN_MS then shares_seen[k] = nil end
+	end
 	if PERSONAL_STORY[t.f] then
 		for _, id in ipairs(ct().participant_ids()) do
 			ct().with_character(id, function()
