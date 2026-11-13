@@ -44,6 +44,7 @@ local RESEND_MS = 3000
 local MAX_SENDS = 5
 local HIT_GAP_MS = 100 -- of one target
 local HITS_MS = 5000 -- the list of what the tasks wait for is compared this often
+local ZONES_MS = 1000 -- who stands in which zone of a map server's level is compared this often
 local DONE_KEPT = 256
 local MISSES_KEPT = 3
 
@@ -124,6 +125,21 @@ local function bridge_of_level(lid)
 		if ms.level == lid then return ms.bridge end
 	end
 	return nil
+end
+
+-- A map server holds it: the world server's release of it would be refused (coop_requests held_by_a_client) and the task would keep it.
+-- { id = N } alone is what tasks_intercept_artifact, tasks_nta_stash and tasks_veh_destroy give safe_release_manager: its record says.
+-- An item in a body a map server holds is held with it.
+local function held_there(se)
+	if not (se and split() and world_server()) then return false end
+	if se.online == nil and type(se.id) == "number" then se = record(se.id) end
+	if not (se and type(se.id) == "number") then return false end
+	if not se.online then
+		local pid = se.parent_id
+		if not (pid and pid ~= NO_ID and root_of(se).online) then return false end
+	end
+	local lid = level_of_id(se.id)
+	return lid ~= nil and lid ~= my_level() and bridge_of_level(lid) ~= nil
 end
 
 -------------------------------------------------------------------------------
@@ -307,6 +323,60 @@ end
 -- The far view
 -------------------------------------------------------------------------------
 local names_of = {} -- level -> { a = { anomaly name -> id }, z = { zone name -> id } }, from its map server
+local zones_in = {} -- level -> { zone name -> { avatar id, ... } }: who of its players stands in it, from its map server
+
+-- Who a place in a question about a zone of level lid is. The world server's ghost is the stock's "the actor": `avatar`, the player of
+-- the scope (nil: any player of that level). A player's record (his stand-in) is that player. Anything else: false, an NPC, the shape
+-- of the zone is the map server's.
+local function player_at(lid, avatar, pos)
+	if type(pos) ~= "table" and type(pos) ~= "userdata" then return false end
+	local ok, d = pcall(function() return db.actor:position():distance_to_sqr(pos) end)
+	if ok and type(d) == "number" and d < 0.01 then return avatar end
+	for _, p in ipairs(players_on(lid)) do
+		local se = type(p.avatar_id) == "number" and alife_object(p.avatar_id)
+		local okp, dp = pcall(function() return se.position:distance_to_sqr(pos) end)
+		if se and okp and type(dp) == "number" and dp < 0.01 then return p.avatar_id end
+	end
+	return false
+end
+
+-- The map server's last word, for a player still on that level: one who left keeps no zone of it.
+local function in_zone(lid, name, avatar)
+	local by = zones_in[lid]
+	local list = by and by[name]
+	if type(list) ~= "table" then return false end
+	for _, id in ipairs(list) do
+		if (avatar == nil or id == avatar) and level_of_id(id) == lid then return true end
+	end
+	return false
+end
+
+-- zone:inside(pos) of the stand-in of a zone (xr_conditions.actor_in_zone, npc_in_zone, utils_obj.npc_in_zone)
+local function zone_inside(self, pos)
+	local lid = self.zone_level
+	local who = player_at(lid, scope and scope.id == lid and scope.avatar or nil, pos)
+	if who == false then
+		unknown("inside of a zone, not for a player")()
+		return false
+	end
+	return in_zone(lid, self.zone_name, who)
+end
+
+-- Any player of the zone's level stands in it: the group's answer (coop_npc_logic zone_has_player).
+local function zone_anyone(self) return in_zone(self.zone_level, self.zone_name, nil) end
+
+-- db.actor_inside_zones in scope s: the stock keeps the zone there while the actor is in it (bind_restrictor). Writes go to the real one.
+local function inside_zones_view(s)
+	return setmetatable({}, {
+		__index = function(_, name)
+			if type(name) ~= "string" or not in_zone(s.id, name, s.avatar) then return nil end
+			return s.view.zone(name)
+		end,
+		__newindex = function(_, k, v)
+			if s.inside_zones then s.inside_zones[k] = v end
+		end,
+	})
+end
 
 function in_scope() return scope end
 
@@ -391,6 +461,13 @@ local function sim_view(s, real_alife)
 				end
 				return se
 			end
+		elseif k == "release" then
+			-- a task's own alife():release (tasks_recover_item_on_corpse, utils_slht): the world server's would be refused
+			local release = sim.release
+			b = function(_, se, ...)
+				if held_there(se) then return order(se.id, "release") end
+				return release(sim, se, ...)
+			end
 		else
 			local v = sim[k]
 			if type(v) ~= "function" then return v end
@@ -430,12 +507,17 @@ local function open(lid, peer, what)
 			local names = names_of[s.id]
 			local id = names and names.z and names.z[name]
 			local se = id and alife_object(id)
-			return se and make(id, se) or nil
+			if not se then return nil end
+			local o = make(id, se)
+			o.zone_name, o.zone_level, o.inside, o.anyone_inside = name, s.id, zone_inside, zone_anyone
+			return o
 		end,
 		on_actor_level = function(se) return se ~= nil and vertex_level(se.m_game_vertex_id) == s.id end,
 		online = function(se) return level_of_id(se.id) == s.id end, -- a smart is online on the level the actor stands on
 	}
 	db.anomaly_by_name = names_table(s, "a")
+	s.inside_zones = db.actor_inside_zones
+	if type(s.inside_zones) == "table" then db.actor_inside_zones = inside_zones_view(s) end
 	_G.alife = function() return s.sim_view end
 	s.sim_view = sim_view(s, s.sim)
 	-- a task's timer started here looks at the same level when it fires: tasks_fate kills its dead squad three seconds later
@@ -458,6 +540,7 @@ end
 local function close(s)
 	scope = s.prev
 	db.anomaly_by_name = s.anomalies
+	db.actor_inside_zones = s.inside_zones
 	_G.alife = s.sim
 	_G.CreateTimeEvent = s.cte
 	qc().set_far_view(scope and scope.view or nil)
@@ -516,15 +599,17 @@ end
 function at_home(fn, ...)
 	local s = scope
 	if not s then return fn(...) end
-	local anomalies, sim, cte = db.anomaly_by_name, _G.alife, _G.CreateTimeEvent
+	local anomalies, inside_zones, sim, cte = db.anomaly_by_name, db.actor_inside_zones, _G.alife, _G.CreateTimeEvent
 	scope = nil
 	db.anomaly_by_name = s.anomalies
+	db.actor_inside_zones = s.inside_zones
 	_G.alife = s.sim
 	_G.CreateTimeEvent = s.cte
 	qc().set_far_view(nil)
 	local function back(ok, ...)
 		scope = s
 		db.anomaly_by_name = anomalies
+		db.actor_inside_zones = inside_zones
 		_G.alife = sim
 		_G.CreateTimeEvent = cte
 		qc().set_far_view(s.view)
@@ -744,6 +829,31 @@ local function names_tick()
 	return t
 end
 
+-- Mk: who of the players of this level stands in which of its zones. The restrictors run here; the world server's ghost is in none of
+-- them. Only zones with somebody inside are told, and share.up sends it only when it changed.
+local function zones_in_tick()
+	local t = {}
+	local at = {}
+	for _, c in ipairs(qc().characters()) do
+		if type(c.id) == "number" and not c.self then
+			local ok, pos = pcall(function() return c.obj:position() end)
+			if ok and pos then at[#at + 1] = { c.id, pos } end
+		end
+	end
+	if #at == 0 then return t end
+	for name, z in pairs(db.zone_by_name or {}) do
+		for _, a in ipairs(at) do
+			local ok, yes = pcall(z.inside, z, a[2])
+			if ok and yes == true then
+				local list = t[name] or {}
+				t[name] = list
+				list[#list + 1] = a[1]
+			end
+		end
+	end
+	return t
+end
+
 -------------------------------------------------------------------------------
 -- The death relay
 -------------------------------------------------------------------------------
@@ -923,13 +1033,6 @@ function _orders_clear() orders = {} end
 function _stats() return stats end
 function _names_of() return names_of end
 
--- A map server holds it: the world server's release of it would be refused (coop_requests held_by_a_client) and the task would keep it.
-local function held_there(se)
-	if not (se and se.online and se.id and split() and world_server()) then return false end
-	local lid = level_of_id(se.id)
-	return lid ~= nil and lid ~= my_level() and bridge_of_level(lid) ~= nil
-end
-
 local function patch_world_calls()
 	-- The logic of a companion is an NPC's on the level he stands on: tasks_agent_rescue makes the spy one from a status functor.
 	local ac = q_mod("axr_companions")
@@ -1012,6 +1115,10 @@ function on_game_start()
 		share.up("names", names_tick, function(t, lid)
 			if type(t) == "table" then names_of[lid] = t end
 		end)
+		-- who stands in them: xr_conditions.actor_in_zone / actor_inside_zone of a task check in the far view
+		share.up("zones_in", zones_in_tick, function(t, lid)
+			if type(t) == "table" and lid ~= nil then zones_in[lid] = t end
+		end, ZONES_MS)
 		share.down("hit_list", hit_list, function(t)
 			if type(t) == "table" then
 				wanted.ids, wanted.sections = t.ids or {}, t.sections or {}

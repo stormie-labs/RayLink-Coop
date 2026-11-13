@@ -454,6 +454,9 @@ end
 
 local function zone_has_player(zone)
 	if not zone then return false end
+	-- a zone of a map server's level in the far view (coop_quests_far): its map server says who stands in it, the players there are
+	-- records here
+	if zone.far then return zone:anyone_inside() == true end
 	for _, p in ipairs(P.everyone()) do
 		if zone:inside(p:position()) then return true end
 	end
