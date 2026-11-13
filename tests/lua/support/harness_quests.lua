@@ -308,6 +308,7 @@ function machine(role, self_peer)
 	M.on_init = {}
 	function CRandomTask:give_task(id, giver)
 		M.on_init[id] = (M.on_init[id] or 0) + 1
+		if M.init_fx and M.init_fx[id] then M.init_fx[id]() end -- the stock runs on_init before the task is the actor's
 		local t = setmetatable({ id = id, stage = 0, status = "selected", task_giver_id = giver,
 			status_functor = ini_data[id] and ini_data[id].status_functor }, env.task_objects.CGeneralTask)
 		self.task_info[id] = t

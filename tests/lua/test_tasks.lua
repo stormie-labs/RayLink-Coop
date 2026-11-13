@@ -259,13 +259,14 @@ local function machine(role, self_peer)
 	}
 
 	-- task manager (luabind-like class: methods looked up in the class table)
-	local ini = { fetch_1 = true, fetch_2 = true, story_1 = true, cf_1 = true, stage_t = true, bounty_1 = true }
+	local ini = { fetch_1 = true, fetch_2 = true, story_1 = true, cf_1 = true, stage_t = true, bounty_1 = true, dawn_1 = true }
 	M.on_init = {}
 	M.on_complete = {}
 	local CRandomTask = {}
 	CRandomTask.__index = CRandomTask
 	function CRandomTask:give_task(id, giver)
 		M.on_init[id] = (M.on_init[id] or 0) + 1
+		if M.init_fx and M.init_fx[id] then M.init_fx[id]() end -- the stock runs on_init before the task is the actor's
 		self.task_info[id] = { id = id, stage = 0, status = "selected", task_giver_id = giver, status_functor = "actor_has_fetch_item" }
 		M.engine_tasks[id] = { state = "in", get_id = function() return id end,
 			get_title = function() return "title_" .. id end, get_icon_name = function() return nil end }
@@ -709,6 +710,67 @@ check(found, "unknown task id refused")
 C.tm:set_task_completed("fetch_1") -- not running any more
 pump()
 check(C.tm.task_info.fetch_1 == nil, "refused turn-in: the requester gets the host's view back")
+
+-- ---------------------------------------------------------------- a give the host could not do
+print("== a give the host could not do: the player is told, the dialog that asked for it opens again")
+-- "The Last Dawn" (cs_task0_ambush_renegade_story), 2026-11-13: the host's give died in the task's on_init. The requester's stub was
+-- dropped in silence, and the info the dialog phrase gave (<give_info>: the engine gives it after the phrase's action, in the same
+-- frame) had closed the dialog (dont_has_info) for good: the task could not be asked for again by anybody.
+do
+	local msgs = {}
+	C.env.actor_menu = { set_msg = function(_, text) msgs[#msgs + 1] = text end }
+	if rawget(C.env, "game") == nil then C.env.game = { translate_string = function(s) return s end } end
+	local infos = { old_info = true }
+	C.actor.give_info_portion = function(_, i) infos[i] = true end
+	C.actor.disable_info_portion = function(_, i) infos[i] = nil end
+	C.actor.has_info = function(_, i) return infos[i] == true end
+	local function phrase(info) -- the engine: the info of a phrase, and what bind_stalker tells of it
+		C.actor:give_info_portion(info)
+		C.callbacks.actor_on_info_callback(C.actor, info)
+	end
+	check(type(C.callbacks.actor_on_info_callback) == "function", "the client listens to the infos its actor gets")
+	H.init_fx = { dawn_1 = function() error("bad argument #1 to 'string_gmatch' (string expected, got nil)") end }
+	C.talking = true
+	C.tm:give_task("dawn_1", 77) -- the action of the phrase "I'm in"
+	phrase("dawn_start") -- its <give_info>
+	C.talking = false
+	check(C.tm.task_info.dawn_1 ~= nil, "a provisional stub while the host is asked")
+	pump()
+	check(H.tm.task_info.dawn_1 == nil, "the host gave nothing")
+	check(C.tm.task_info.dawn_1 == nil, "the stub is gone")
+	check(#msgs == 1 and msgs[1] == "st_coop_news_task_not_given", "the player is told that the task was not given")
+	check(infos.dawn_start == nil, "the info of the phrase is taken back: the dialog offers the task again")
+	check(infos.old_info == true, "an info of another moment stays")
+
+	-- the second try, the host is well: nothing is told, nothing is taken back
+	H.init_fx = nil
+	NOW = NOW + 2000
+	C.talking = true
+	C.tm:give_task("dawn_1", 77)
+	phrase("dawn_start")
+	C.talking = false
+	pump()
+	pump()
+	check(H.tm.task_info.dawn_1 ~= nil and C.tm.task_info.dawn_1 ~= nil, "given at the second try")
+	check(#msgs == 1 and infos.dawn_start == true, "a give that went well keeps the phrase's info and says nothing")
+
+	-- a task that is simply gone on the host (its removal, not a refused give) says nothing
+	H.tm.task_info.dawn_1 = nil
+	H.engine_tasks.dawn_1 = nil
+	tick(H)
+	pump()
+	check(C.tm.task_info.dawn_1 == nil and #msgs == 1 and infos.dawn_start == true, "a removal is not a refusal")
+
+	-- an info given outside a talk (a condlist: %=give_task(x) +info%) is not a phrase's: it stays, or the condlist would ask forever
+	H.init_fx = { dawn_1 = function() error("no") end }
+	NOW = NOW + 2000
+	C.tm:give_task("dawn_1", 77)
+	phrase("by_condlist")
+	pump()
+	check(C.tm.task_info.dawn_1 == nil and #msgs == 2, "refused again, told again")
+	check(infos.by_condlist == true, "an info given outside a talk is not taken back")
+	H.init_fx = nil
+end
 
 -- ---------------------------------------------------------------- bounty target chosen in the client's dialog
 print("== bounty target travels with the task")

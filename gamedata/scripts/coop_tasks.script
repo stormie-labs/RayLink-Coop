@@ -999,7 +999,14 @@ local function host_on_request(payload, from)
 	if not ok then report("request " .. op .. " " .. id, res) end
 	if not ok or not res then
 		stats.refused = stats.refused + 1
-		host_send_state(id, from) -- the requester is behind: put its view back
+		if op == "give" and tm.task_info[id] == nil then
+			-- A give this host could not do (its on_init died, the task said no) and no such task here: "not given" by name. The
+			-- requester tells its player and frees the dialog that asked; a plain removal would drop his stub in silence.
+			send(EV_STATE, pack({ i = id, d = true, r = 1 }), from)
+			stats.state_out = stats.state_out + 1
+		else
+			host_send_state(id, from) -- the requester is behind: put its view back
+		end
 		return
 	end
 	log("#%s: %s '%s'", tostring(from), op, id)
@@ -2188,6 +2195,35 @@ local function forget_task(tm, id)
 	if not ok then report("multifetch " .. id, err) end
 end
 
+-- The infos of the dialog phrase that asked for a task. The engine runs a phrase's actions first and gives its <give_info> after
+-- them, in the same frame (CDialogScriptHelper::Action): an info the actor gets in the frame of a give asked from a talk is the
+-- phrase's, and it is kept with the provisional stub.
+function _client_on_info(npc, info)
+	local a = cl.asking
+	if not a or a.at ~= now() or type(info) ~= "string" then return end
+	for _, data in ipairs(a.stubs) do
+		local list = data.phrase_infos
+		if list and #list < 8 then list[#list + 1] = info end
+	end
+end
+
+-- The host could not give the task this player asked for ("The Last Dawn", 2026-11-13: the give died in the task's on_init, the stub
+-- vanished in silence). The player is told. The infos of the phrase that asked are taken back: a dialog closed by its own info
+-- (dont_has_info) would never offer the task again, to anybody. The engine carries the removal to the host and the others.
+function _client_not_given(id, data)
+	log("! the host could not give task '%s'", id)
+	for _, info in ipairs(data.phrase_infos or {}) do
+		if db.actor and db.actor:has_info(info) then
+			db.actor:disable_info_portion(info)
+			log("info '%s' of the phrase that asked for '%s' is taken back", info, id)
+		end
+	end
+	local am = rawget(_G, "actor_menu")
+	if type(am) == "table" and type(am.set_msg) == "function" then
+		am.set_msg(1, game.translate_string("st_coop_news_task_not_given"), 8)
+	end
+end
+
 local function client_apply_state(s)
 	local rec = unpack_payload(s)
 	local id = rec.i
@@ -2196,7 +2232,13 @@ local function client_apply_state(s)
 	if not tm or type(tm.task_info) ~= "table" then return end
 	stats.state_in = stats.state_in + 1
 	if rec.d then
+		local asked = stub_data(tm.task_info[id])
+		local not_given = rec.r ~= nil and asked ~= nil and asked.pending_at ~= nil
 		forget_task(tm, id)
+		if not_given then
+			local ok, err = pcall(_client_not_given, id, asked)
+			if not ok then report("not given " .. id, err) end
+		end
 		return
 	end
 	cl.recv[id] = s
@@ -2343,6 +2385,15 @@ local function client_give(tm, id, giver)
 	local stub, data = new_stub(id)
 	data.task_giver_id = gid
 	data.pending_at = now()
+	if db.actor and db.actor:is_talking() then -- asked by a phrase: its infos go with the stub (client_on_info)
+		data.phrase_infos = {}
+		local a = cl.asking
+		if not (a and a.at == now()) then
+			a = { at = now(), stubs = {} }
+			cl.asking = a
+		end
+		a.stubs[#a.stubs + 1] = data
+	end
 	tm.task_info[id] = stub
 	cl.want_active = { id = id, at = now() }
 	log("asked the host for task '%s'", id)
@@ -2936,6 +2987,49 @@ end
 -------------------------------------------------------------------------------
 local next_tick = 0
 
+-------------------------------------------------------------------------------
+-- Host: worlds hurt by a give that died
+-------------------------------------------------------------------------------
+-- Split levels, builds 45-49: a task whose on_init makes a squad next to the player died on the world server (the far view handed
+-- the stock smart terrain a stand-in of the new squad, coop_quests_far object_there). The dialog phrase had given its info already
+-- and the dialog is closed by it (dont_has_info): the task can be asked for by nobody. `info` is taken back when the task is not
+-- on and none of the infos its own run sets (`ran`) is here. Once a world: a task dropped later is the player's choice.
+host.lost_gives = {
+	{ info = "fanat_training_start_done", task = "task_fanat_training_1",
+		ran = { "fanat_training_boars_death_done", "fanat_training_back_to_village_done", "esc_2_12_stalker_fanat_death" } },
+	{ info = "cs_story_task0_ambush_renegade_start", task = "cs_task0_ambush_renegade_story",
+		ran = { "renegade_cs_story_squad_1_death", "cs_story_task0_ambush_renegade_done" } },
+	{ info = "cs_story_task0_ambush_renegade_done", task = "cs_task0_ambush_renegade_story2",
+		ran = { "renegade_cs_story_squad_2_death", "cs_story_task0_ambush_renegade_done2" } },
+	{ info = "cs_story_task0_ambush_renegade_done2", task = "cs_task0_ambush_renegade_story3",
+		ran = { "renegade_cs_story_squad_3_death", "cs_story_task0_ambush_renegade_done3" } },
+}
+
+function heal_lost_gives()
+	local tm = tmgr()
+	if not (tm and type(tm.task_info) == "table" and db.actor) then return 0 end
+	local healed = 0
+	for _, e in ipairs(host.lost_gives) do
+		local lost = has_alife_info(e.info) and task_known(e.task) and tm.task_info[e.task] == nil
+		for _, info in ipairs(e.ran) do lost = lost and not has_alife_info(info) end
+		if lost then
+			db.actor:disable_info_portion(e.info)
+			healed = healed + 1
+			log("task '%s' was asked for and never given: info '%s' is taken back, its dialog offers it again", e.task, e.info)
+		end
+	end
+	return healed
+end
+
+function _heal_once()
+	local l = api.levels
+	if not (l and l.split and l.split()) or not db.actor then return end
+	if load_var(db.actor, "coop_lost_gives", false) then return end
+	save_var(db.actor, "coop_lost_gives", true)
+	local ok, err = pcall(heal_lost_gives)
+	if not ok then report("lost gives", err) end
+end
+
 local function actor_on_update()
 	if not api then return end
 	local t = now()
@@ -2949,6 +3043,10 @@ local function actor_on_update()
 	next_tick = t + 250
 	if is_host() and next(host.fines) ~= nil then flush_fines() end
 	if is_host() then
+		if not host.healed then
+			host.healed = true
+			_heal_once()
+		end
 		if not has_clients() then return end
 		if t >= host.next_scan then
 			host.next_scan = t + SCAN_MS
@@ -3161,6 +3259,7 @@ function on_game_start()
 	RegisterScriptCallback("actor_on_reinit", actor_on_reinit)
 	RegisterScriptCallback("save_state", save_effects)
 	RegisterScriptCallback("load_state", load_effects)
+	RegisterScriptCallback("actor_on_info_callback", _client_on_info)
 	-- Parity audit D10: this machine dropped events (a long stall): one of them may be a task's, ask for the whole list
 	RegisterScriptCallback("coop_events_lost", function()
 		if client_live() then client_request_sync() end

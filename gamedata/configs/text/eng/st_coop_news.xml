@@ -87,4 +87,7 @@
 	<string id="st_coop_quests_npc_limit">
 		<text>This NPC has given the group all the tasks it can. Turn one of them in.</text>
 	</string>
+	<string id="st_coop_news_task_not_given">
+		<text>The task was not given: the host ran into an error while starting it. Try taking it again.</text>
+	</string>
 </string_table>

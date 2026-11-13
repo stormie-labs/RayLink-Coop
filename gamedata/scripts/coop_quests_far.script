@@ -318,6 +318,17 @@ end
 local function object_there(s, id)
 	local cached = s.objects[id]
 	if cached ~= nil then return cached or nil end
+	-- What this scope (or the one it was opened from) made a moment ago has not spawned anywhere: the stock sees no game object and no
+	-- store of it. A stand-in here made the smart terrain set the logic of a new squad's member (select_npc_job -> setup_logic) and the
+	-- give of task_fanat_training_1 died in xr_logic (the world server's log, 2026-11-13).
+	local up = s
+	while up do
+		if up.born[id] then
+			miss(s, id, "nil (made here)")
+			return nil
+		end
+		up = up.prev
+	end
 	local se = record(id)
 	if not se then
 		miss(s, id, "nil")
@@ -369,6 +380,17 @@ local function sim_view(s, real_alife)
 		if b then return b end
 		if k == "actor" then
 			b = function() return s.avatar and alife_object(s.avatar) or sim:actor() end
+		elseif k == "create" then
+			local create = sim.create
+			b = function(_, ...)
+				local se = create(sim, ...)
+				local id = se and se.id
+				if type(id) == "number" then
+					s.born[id] = true
+					s.objects[id], s.stores[id] = nil, nil
+				end
+				return se
+			end
 		else
 			local v = sim[k]
 			if type(v) ~= "function" then return v end
@@ -382,7 +404,7 @@ end
 local function open(lid, peer, what)
 	local gg_name = alife():level_name(lid)
 	local q = qc()
-	local s = { id = lid, name = gg_name, peer = peer, what = what, objects = {}, stores = {}, misses = {}, bodies = {}, prev = scope,
+	local s = { id = lid, name = gg_name, peer = peer, what = what, objects = {}, stores = {}, born = {}, misses = {}, bodies = {}, prev = scope,
 		anomalies = db.anomaly_by_name, sim = _G.alife, view = nil }
 	s.avatar = peer and api.avatar_of and api.avatar_of(peer) or nil
 	for _, c in ipairs(q.bodies()) do
@@ -916,6 +938,22 @@ local function patch_world_calls()
 		ac.setup_companion_logic = function(npc, st, ...)
 			if npc and npc.far then return order(npc:id(), "companion") end
 			return setup(npc, st, ...)
+		end
+	end
+	-- The logic of an NPC runs where he is online: on his map server, whose own smart terrain gives him his job. The stock smart terrain
+	-- of the world server meets a stand-in in db.storage when a task joins a squad of that level to a smart (register_npc ->
+	-- select_npc_job -> setup_logic) and would run these on a record: nothing of them is a stand-in's.
+	local xl = q_mod("xr_logic")
+	if xl then
+		for name, answer in pairs({ configure_schemes = false, activate_by_section = false, switch_to_section = false,
+			determine_section_to_activate = "nil" }) do
+			local stock = xl[name]
+			if type(stock) == "function" then
+				xl[name] = function(npc, ...)
+					if type(npc) == "table" and npc.far then return answer or nil end
+					return stock(npc, ...)
+				end
+			end
 		end
 	end
 	local srm = q_mod("safe_release_manager")

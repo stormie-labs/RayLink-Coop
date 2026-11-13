@@ -87,4 +87,7 @@
 	<string id="st_coop_quests_npc_limit">
 		<text>У этого NPC взято максимум заданий на группу. Сдайте одно из них.</text>
 	</string>
+	<string id="st_coop_news_task_not_given">
+		<text>Задание не выдано: у хоста при его запуске произошла ошибка. Попробуйте взять его ещё раз.</text>
+	</string>
 </string_table>

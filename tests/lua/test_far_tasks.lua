@@ -167,6 +167,17 @@ local function bribe(M)
 end
 bribe(Hm); bribe(Cm); bribe(Ms)
 
+-- the stock entry points of an NPC's logic: what they are given is kept
+local LOGIC = { "configure_schemes", "determine_section_to_activate", "activate_by_section", "switch_to_section" }
+Hm.logic_ran = {}
+for _, name in ipairs(LOGIC) do
+	Hm.env.xr_logic[name] = function(npc)
+		Hm.logic_ran[#Hm.logic_ran + 1] = name
+		if npc.far then error("bad argument #1 to 'string_gmatch' (string expected, got nil)") end -- restrictor_manager, parse_names(nil)
+		return "walker@job"
+	end
+end
+
 boot(Hm); boot(Cm); boot(Ms)
 pump()
 
@@ -703,6 +714,97 @@ do
 	Hm.env.task_manager.task_callback(Hm.engine_tasks.fail_task, Hm.env.task.fail)
 	check(failed == "k00_marsh", "a task that failed ends on the level of the player who took it")
 	check(stock_callback == Hm.env.task_manager.task_callback and Hm.env.level.name() == "l01_escape", "and the view is closed")
+end
+
+print("== what a task makes at its start is not on the level yet, and a stand-in has no logic to set up")
+-- The world server's log of 2026-11-13: "! request give task_fanat_training_1: _g.script:932: bad argument #1 to 'string_gmatch' (string
+-- expected, got nil)". The task's on_init makes a squad next to the player (create_squad). The far view answered db.storage[new id]
+-- with a stand-in ("near a player = online"), the stock smart terrain (select_npc_job -> setup_logic) ran xr_logic on it and died in
+-- restrictor_manager (parse_names(npc:out_restrictions())). The give was refused in silence: the KMB at Fanat never started, and
+-- "The Last Dawn" (two squads in on_init) was never given.
+do
+	local sim = Hm.env.alife()
+	local made = 0
+	function sim:create(sec, pos, lv, gv)
+		made = made + 1
+		local id = 740 + made
+		records[id] = { id = id, parent_id = 65535, m_game_vertex_id = gv, m_level_vertex_id = lv, position = pos, online = false,
+			section_name = function() return sec end, clsid = function() return 55 end, name = function() return sec end,
+			alive = function() return true end }
+		return records[id]
+	end
+	-- the stock smart terrain, select_npc_job: "if NPC has storage, it is online, so switch logic"
+	local function job_of(id)
+		local st = Hm.env.db.storage[id]
+		if st and st.object then
+			Hm.env.xr_logic.configure_schemes(st.object)
+			Hm.env.xr_logic.activate_by_section(st.object, nil, Hm.env.xr_logic.determine_section_to_activate(st.object))
+		end
+	end
+	local seen
+	Hm.ini.spawn_task = {}
+	Cm.ini.spawn_task = {}
+	Hm.init_fx = { spawn_task = function()
+		local se = Hm.env.alife():create("boar_weak", vec(11, 0, 10), 6, 2)
+		seen = { id = se.id, level = Hm.env.level.name(), store = Hm.env.db.storage[se.id], obj = Hm.env.level.object_by_id(se.id) }
+		job_of(se.id)
+	end }
+	Hm.logic_ran = {}
+	Cm.env.task_manager.get_task_manager():give_task("spawn_task", 700)
+	pump()
+	check(seen ~= nil and seen.level == "k00_marsh", "on_init ran in the far view of the player's level")
+	check(seen and seen.store == nil, "db.storage has no store of what was made this moment")
+	check(seen and seen.obj == nil, "level.object_by_id: nil, as the stock answers before the spawn")
+	check(#Hm.logic_ran == 0, "the smart terrain set no logic on it")
+	check(Hm.tm.task_info.spawn_task ~= nil and Hm.env.coop_tasks.taker("spawn_task") == 1, "the task is given to the player")
+
+	-- what stood next to the player before, not taken by its map server yet, is found as it was: a functor waits for it
+	records[770] = { id = 770, parent_id = 65535, m_game_vertex_id = 2, m_level_vertex_id = 6, position = vec(11, 0, 10), online = false,
+		section_name = function() return "boar_weak" end, clsid = function() return 55 end, name = function() return "boar" end,
+		alive = function() return true end }
+	local older, err_logic
+	Hm.logic_ran = {}
+	Hm.env.coop_quests_core.with_level_of(1, function()
+		older = Hm.env.level.object_by_id(770)
+		-- a squad that is there joins a smart (assign_squad_to_smart -> register_npc): its logic is its map server's, not a stand-in's
+		err_logic = select(2, pcall(job_of, 700))
+	end)
+	check(older ~= nil and older.far == true, "a record near the player is a stand-in, as before")
+	check(err_logic == nil, "the logic of a stand-in is not set up: no error of the stock")
+	check(#Hm.logic_ran == 0, "the stock entry points did not run with a stand-in")
+	-- a live object of the world server's own level: the stock, untouched
+	Hm.logic_ran = {}
+	Hm.env.xr_logic.configure_schemes(Hm.actor)
+	Hm.env.xr_logic.switch_to_section(Hm.actor)
+	check(#Hm.logic_ran == 2, "with a live object the stock logic runs")
+end
+
+print("== a world hurt by a give that died: the info of the dialog is taken back, once")
+-- Worlds played on builds 45-49: the dialog phrase gave its info, the give died on the world server, the dialog is closed for good.
+do
+	local T = Hm.env.coop_tasks
+	for _, id in ipairs({ "task_fanat_training_1", "cs_task0_ambush_renegade_story", "cs_task0_ambush_renegade_story2" }) do Hm.ini[id] = {} end
+	Hm.infos.fanat_training_start_done = true -- the Fanat's dialog is closed, the training was never the group's
+	Hm.infos.cs_story_task0_ambush_renegade_start = true -- "The Last Dawn": asked for ...
+	Hm.infos.renegade_cs_story_squad_1_death = true -- ... and it ran: its squad is dead
+	Hm.infos.cs_story_task0_ambush_renegade_done = true -- its second part: the phrase was said ...
+	Hm.tm.task_info.cs_task0_ambush_renegade_story2 = { id = "cs_task0_ambush_renegade_story2", stage = 0, status = "selected" } -- ... and it is on
+	check(T.heal_lost_gives() == 1, "one give that was lost")
+	check(Hm.infos.fanat_training_start_done == nil, "the Fanat offers his training again")
+	check(Hm.infos.cs_story_task0_ambush_renegade_start == true, "a task that ran is left alone")
+	check(Hm.infos.cs_story_task0_ambush_renegade_done == true, "a task that is on is left alone")
+	Hm.tm.task_info.cs_task0_ambush_renegade_story2 = nil
+	-- once a world: a task the player drops later on is his choice, the stock keeps its dialog closed
+	local pstor = Hm.env.db.storage[0].pstor
+	check(pstor.coop_lost_gives == true, "the world server looked when it started, and the world keeps that")
+	pstor.coop_lost_gives = nil -- a world of an older build
+	Hm.infos.fanat_training_start_done = true
+	T._heal_once()
+	check(Hm.infos.fanat_training_start_done == nil and pstor.coop_lost_gives == true, "an older world is looked at once")
+	Hm.infos.fanat_training_start_done = true
+	T._heal_once()
+	check(Hm.infos.fanat_training_start_done == true, "and not again in this world")
+	Hm.infos.fanat_training_start_done = nil
 end
 
 print("== roles")
