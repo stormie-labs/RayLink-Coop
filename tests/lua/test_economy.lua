@@ -879,6 +879,54 @@ do
 	check(save3.sleep.last_sleep == 9, "keys of coop_mods_pdata are left to it")
 end
 
+section("mdata: a player's bolts")
+-- Owner, 2026-11-14: "bolts get lost at a level change", a game without split levels. The engine saves no bolt
+-- (CSE_ALifeItemBolt::can_save is false); the stock keeps their count in m_data (itms_manager.save_state: bolts, bolt_slot) and
+-- makes them again at the first update. In the host's save those are the HOST's counts: a client got as many bolts as the host had,
+-- none when the host had none.
+do
+	local H, A = setup(1)
+	local mine = { bolt = 7 }
+	A.itms_manager = { save_state = function(m) m.bolts, m.bolt_slot = mine, "bolt" end }
+	tick(A, 16000)
+	deliver_all()
+	local kept = H.coop_economy_mdata.player_value(501, "bolts")
+	check(kept and kept.bolt == 7 and H.coop_economy_mdata.player_value(501, "bolt_slot") == "bolt", "the client's count of bolts is kept with his character")
+	-- the host changes the level with no bolt of its own: the client loads that save
+	local save = { se_object = {}, bolts = {}, coop_peer_mdata = H.MDATA.coop_peer_mdata }
+	A.MDATA = save
+	A.alife_storage_manager.on_before_load_state()
+	check(save.bolts and save.bolts.bolt == 7 and save.bolt_slot == "bolt", "after the change he has his own bolts, not the host's none")
+	-- a player whose character never told its bolts (a world of an older build): the host's count stands, as it did
+	local old = { se_object = {}, bolts = { bolt = 3 }, bolt_slot = "bolt",
+		coop_peer_mdata = { [501] = { name = "coop_player_avatar501", keys = { sleep = { last_sleep = 1 } } } } }
+	A.MDATA = old
+	A.alife_storage_manager.on_before_load_state()
+	check(old.bolts and old.bolt == nil and old.bolts.bolt == 3 and old.bolt_slot == "bolt", "bolts never told: nothing is taken away at the first join after the update")
+	check(old.sleep.last_sleep == 1, "his other values are his own all the same")
+	-- he threw them all: none is his word too
+	mine = {}
+	A.itms_manager = { save_state = function(m) m.bolts, m.bolt_slot = mine, nil end }
+	A.MDATA = { se_object = {} }
+	tick(A, 16000)
+	deliver_all()
+	local none = { se_object = {}, bolts = { bolt = 40 }, bolt_slot = "bolt", coop_peer_mdata = H.MDATA.coop_peer_mdata }
+	A.MDATA = none
+	A.alife_storage_manager.on_before_load_state()
+	check(next(none.bolts) == nil and none.bolt_slot == nil, "a player with no bolt left does not get the host's forty")
+	-- a bolt picked up is told at once, not at the next 15 s look: a level change may come first
+	mine = { bolt = 2 }
+	A.itms_manager = { save_state = function(m) m.bolts, m.bolt_slot = mine, "bolt" end }
+	A.MDATA = { se_object = {} }
+	tick(A, 400) deliver_all()
+	fire(A, "actor_on_item_take", { section = function() return "bolt" end, id = function() return 990 end })
+	tick(A, 1200)
+	deliver_all()
+	local soon = H.coop_economy_mdata.player_value(501, "bolts")
+	check(soon and soon.bolt == 2, "a bolt taken is told within a second")
+	A.itms_manager = nil
+end
+
 section("mdata: world keys")
 do
 	local H, A = setup(1)

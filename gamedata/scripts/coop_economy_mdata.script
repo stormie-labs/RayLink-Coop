@@ -531,7 +531,18 @@ MANIFEST = {
 	detector_was_active = false, -- actor_effects
 	RF_freq = false, -- item_radio frequency
 	RepairItemList = from_save_state("inventory_upgrades", "RepairItemList"), -- items lent to a mechanic, ids are the world's
+	-- The engine saves no bolt (CSE_ALifeItemBolt::can_save is false): the stock keeps their count here and makes them again at
+	-- the first update. In the host's save these are the HOST's counts, so after a level change a client had as many bolts as
+	-- the host, none when the host had none (owner 2026-11-14: "bolts get lost at a level change").
+	bolts = from_save_state("itms_manager", "bolts"),
+	bolt_slot = from_save_state("itms_manager", "bolt_slot"),
 }
+
+-- Keys that stay the host's until the player told `told` at least once: a character of a world older than the key would lose what
+-- the old way gave it (the host's bolts) at its first join. bolts is a table even when empty, so "none" is told apart from "never".
+local KEEP_UNTIL_TOLD = { bolts = "bolts", bolt_slot = "bolts" }
+-- Sections whose take or drop is told soon (a second), not at the next 15 s look: a level change may come first.
+local TOLD_SOON = { bolt = true, bolt_bullet = true }
 
 function register_player_key(key, provider)
 	if type(key) == "string" then MANIFEST[key] = type(provider) == "function" and provider or false end
@@ -633,7 +644,10 @@ local function apply_surrogate(m)
 	local n = 0
 	pmd_sig = {}
 	for key in pairs(MANIFEST) do
-		if not owned_elsewhere(key) then
+		local told = KEEP_UNTIL_TOLD[key]
+		if told and keys[told] == nil then
+			-- never told: the host's value stands, and the first look sends his own
+		elseif not owned_elsewhere(key) then
 			m[key] = core.copy(keys[key])
 			pmd_sig[key] = core.pack(keys[key]) -- the host already has these: only changes are sent
 			if keys[key] ~= nil then n = n + 1 end
@@ -1046,5 +1060,13 @@ function on_game_start()
 	core.on("wmd", on_wmd)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("server_entity_on_unregister", server_entity_on_unregister)
+	for _, name in ipairs({ "actor_on_item_take", "actor_on_item_drop" }) do
+		RegisterScriptCallback(name, function(obj)
+			if not core.is_client() then return end
+			local ok, sec = pcall(function() return obj:section() end)
+			-- a second, not at once: a pack of bolts is thirty takes, one word of them is enough
+			if ok and TOLD_SOON[sec] then pmd_next_poll = math.min(pmd_next_poll, core.now() + 1000) end
+		end)
+	end
 	RegisterScriptCallback("actor_on_first_update", function() start_step("clone hook", install_clone_hook) end)
 end
