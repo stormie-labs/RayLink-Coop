@@ -22,7 +22,7 @@ local RECORDS = {
 alife_object = function(id) return RECORDS[id] end
 local RELEASED, MADE = {}, {}
 alife_release_id = function(id) RELEASED[#RELEASED + 1] = id end
-itms_manager = { create_item = function(section, to) MADE[#MADE + 1] = { section = section, to = to } end }
+itms_manager = { create_item = function(section, to, t) MADE[#MADE + 1] = { section = section, to = to, t = t } end }
 ini_sys = { r_float_ex = function(_, sec, key) return key == "max_uses" and sec == "bandage" and 3 or nil end }
 
 coop.levels = {
@@ -70,6 +70,10 @@ far:iterate_inventory(function() n = n + 1; return true end, nil)
 check(n == 1, "true stops the walk, as in the engine")
 far:transfer_item(doc, ACTOR)
 check(RELEASED[1] == 901 and MADE[1].section == "quest_doc" and MADE[1].to == ACTOR, "handing over: the record goes, a new one is made at the other end")
+-- the quest audit, 2026-11-13: the stock pays a fetch task by the item's condition (cost * con^2); a new whole item was made
+check(MADE[1].t and MADE[1].t.cond == 0.8, "as worn as the one that went: a worn item is not paid as a new one")
+far:transfer_item(far:object("bandage"), ACTOR)
+check(MADE[2].section == "bandage" and MADE[2].t == nil, "a whole item: made the stock's plain way")
 
 coop.levels.split = function() return false end
 check(qc.far_body(1, 500) == nil, "split levels off: nobody is far")

@@ -322,7 +322,10 @@ end
 -- The record goes and a new item is made at the other end: this machine has no object of it to hand over.
 function far_body_class:transfer_item(item, to)
 	alife_release_id(item:id())
-	itms_manager.create_item(item:section(), to)
+	-- as worn as the one that went: the stock pays a fetch task by the item's condition (tasks_fetch: cost * con^2), and a new
+	-- whole item was paid as a new one (the quest audit, 2026-11-13)
+	local cond = item:condition()
+	itms_manager.create_item(item:section(), to, type(cond) == "number" and cond < 1 and { cond = cond } or nil)
 end
 
 function far_body(peer, avatar_id)
