@@ -1251,7 +1251,7 @@ std::string batch_verdict(const Writer& w)
 
 TEST(levels_wire_journal_is_protocol_34_and_its_two_messages)
 {
-	static_assert(kProtocolVersion == 34u, "R32: the journal is protocol 34");
+	static_assert(kProtocolVersion >= 34u, "R32: the journal came with protocol 34");
 	static_assert(uint16_t(Msg::LevelJournal) == 0x01E0 && uint16_t(Msg::LevelJournalAck) == 0x01E1, "the ids are the wire");
 	CHECK_EQ(std::string(msg_name(Msg::LevelJournal)), std::string("LevelJournal"));
 	CHECK_EQ(std::string(msg_name(Msg::LevelJournalAck)), std::string("LevelJournalAck"));

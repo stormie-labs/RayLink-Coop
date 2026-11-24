@@ -1,6 +1,8 @@
-// Anomaly Coop unit tests: what a trade window rebuild costs on a client, read in the engine source. On a client every
-// trade goes through the engine trade window (G.A.M.M.A.'s Lua window builds no engine cells), so its list fills are
-// what a purchase costs (live 2026-10-29, b29: a hitch on every purchase at a G.A.M.M.A. trader).
+// Anomaly Coop unit tests: what a trade window rebuild costs on a client, read in the engine source. Until TZ R90 every trade
+// of a client went through the engine trade window (G.A.M.M.A.'s Lua window builds no engine cells), so its list fills were
+// what a purchase cost (live 2026-10-29, b29: a hitch on every purchase at a G.A.M.M.A. trader). Since R90 a client trades in
+// the Lua window as the host does (scripts\coop_trade_window.script); the engine window stays the client's fallback when that
+// window's buttons cannot reach the decider (test_trade_window_source.cpp), and these costs still hold for it.
 #include "test_util.h"
 
 #include <fstream>

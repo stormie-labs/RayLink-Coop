@@ -1,0 +1,618 @@
+-- Ядро: без проверок режима (docs/MODES.md)
+--[[
+	Anomaly Coop - a player's trade window is the host's window (TZ R90) (gamedata\scripts\coop_trade_window.script)
+
+	The host, single player and a server's process trade in Anomaly's Lua inventory window (ui_inventory; G.A.M.M.A. ships its own
+	copy). Its Sell, Buy and Donate move every item with transfer_item and the money with give_money, on the machine itself. On a
+	player's copy that moves the trader's money there only and prices the deal by that machine alone, so the engine gave a copy its
+	own trade window instead (CUIGameSP::StartTrade asks coop::trade::lua_trade_window_allowed): "another window than the host's".
+
+	Here a copy gets the same Lua window. On a player's copy its three buttons send one deal to whoever decides for the player's level
+	(the co-op host; a server's map server): coop.trade_deal -> TradeOp Deal (coop_trade.cpp). The decider checks it and moves
+	everything or nothing, as for the engine window; the window follows its answer and the items that arrive. The stock's own checks
+	stay before anything leaves (the partner lives, the trader or the player can pay: the stock's message box).
+
+	The decider prices such a deal with the window's own formula (flag 2): host_price below runs there under the player's character,
+	so the trader's lists and discounts are his (trade_manager), and utils_item.get_item_cost prices each item. Each side's sum is
+	floored once by the engine, as TMode_Sell does. The deal carries the sums the window showed (GetCellCost, as TMode_UpdatePrice
+	shows them; protocol 35), and the decider settles each side against them (coop_trade_window_rules.h settle_side): a sale pays the
+	smaller sum, a purchase costs the larger. Its formula can see more than the window: G.A.M.M.A.'s Weapon Parts Overhaul prices a
+	part at the mechanic's sale price when its owner's id is not 0, and there the player's character owns it, not the actor (review
+	of 2026-11-24).
+
+	The buttons (review of 2026-11-24): G.A.M.M.A. binds Sell and Buy once, when the window is made (UIInventory:__init ->
+	InitCallbacks: AddCallback with the class's function of that moment), usually at the first open of the inventory, long before
+	the first trade. So the class's functions are taken at the game's start on a player's copy, and ready() takes them again and
+	binds the open window's Sell and Buy to them (this engine's AddCallback replaces a binding, ui\UIScriptWnd.cpp). Defence in
+	depth: a stock Sell or Buy body that still runs on a copy (a binding nobody replaced, a mod calling it) stops before any item or
+	money moves. Both bodies begin with self:Print(nil, "TMode_Sell"|"TMode_Buy") and return when self:GetPartner() gives nothing:
+	that Print sends our deal instead, and the GetPartner right after it gives nothing once.
+
+	Engine -> here:
+	  ready()                               StartTrade on a copy: true when the buttons are ours (taken again now if a mod
+	                                        replaced one since, the open window's Sell and Buy bound again); false and why: the
+	                                        copy keeps the engine window.
+	  on_result(seq, code, delta, why)      the decider's answer to a deal sent from here.
+	  host_price(character, trader, sell, buy)   on the decider: the window's sums of both lists for that player, or nil and why.
+	Here -> engine:
+	  coop.trade_deal(trader, sell_ids, buy_ids, flags, sell_prices, buy_prices, sell_shown, buy_shown) -> seq | 0, why
+	  coop.search_window(trader, TRADER_VIEW)   the window shows that trader: the decider sends his money, his items' states and
+	                                            a trading computer's permit (ReqContainer of a trader).
+	Scripts:
+	  coop_core_world.on_trader_cfg -> on_profile(npc)   the trader's profile came after the window opened.
+	  coop_core_world.ask_trader(npc)    a window opened without a talk (a trading computer) asks for the profile too.
+
+	Differences from the host's window, on purpose:
+	  - an item in a stack that the trader does not take (status 2: too worn) is not given away for nothing with the stack;
+	  - while a sale or a purchase waits for the decider, the next press of Sell or Buy waits too (gifts do not wait);
+	  - gifts of one moment go as one deal (one press: one item, as the stock);
+	  - the window closes when its trader goes away on this machine (as the engine windows do, O2-partner).
+--]]
+
+local api = rawget(_G, "coop")
+
+local pairs, ipairs, pcall, type, tostring, tonumber, next = pairs, ipairs, pcall, type, tostring, tonumber, next
+local string_format, math_floor, table_sort, table_remove = string.format, math.floor, table.sort, table.remove
+
+local TRADER_VIEW = 3 -- coop.search_window: a trade window with this trader (xrCoop/coop_search_view.h kViewTrader)
+local FLAG_GIFT = 1 -- TradeOp Deal flags (xrCoop/coop_trade_window_rules.h)
+local FLAG_LUA = 2
+local TRADABLE = 4 -- utils_item.get_item_trade_status: tradable
+local RESULT_OK = 0
+local ANSWER_MS = 15000 -- a deal without an answer for this long no longer holds the buttons
+local ARRIVE_MS = 5000 -- the window follows the items of an accepted deal for this long
+local TICK_MS = 250
+local MAX_ITEMS = 1024 -- items of one deal (coop_trade.cpp kMaxDealItems)
+local TAKEN = { "TMode_Sell", "TMode_Buy", "Action_Donate", "On_Item_Exchange" }
+local STOCK_BODY = { TMode_Sell = "TMode_Sell", TMode_Buy = "TMode_Buy" } -- what a stock body prints first: its name
+
+local stats = { deals = 0, ok = 0, refused = 0, lost = 0, gifts = 0, waits = 0, closed = 0, wraps = 0, profiles = 0, errors = 0,
+	not_sent = 0, guarded = 0, stray = 0, binds = 0 }
+local pending = {} -- seq -> { kind = "sale"|"purchase"|"gift", npc = id, sell = {ids}, buy = {ids}, at = ms }
+local arriving = {} -- { npc = id, items = { [id] = holder }, seen = n, till = ms }
+local wrapped = setmetatable({}, { __mode = "k" }) -- window class -> { name -> our function }
+local handlers = {}
+local gifts = nil -- { npc = id, ids = {}, set = {} }: gifts of this moment, one deal at the next update
+local shown_npc = nil -- the trader of the Lua trade window open on this player's copy
+local told = false -- coop.search_window was given a trader
+local ticking = false
+local next_tick = 0
+local trade_snd = nil
+local drop_partner = nil -- the window whose next GetPartner gives nothing: a stock Sell or Buy body runs in it on this copy
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-trade] %s", ok and line or tostring(fmt))
+end
+
+local function report(what, err)
+	stats.errors = stats.errors + 1
+	if stats.errors <= 5 or stats.errors % 100 == 0 then log("! %s: %s", what, tostring(err)) end
+end
+
+-- This machine's objects are copies: a co-op client, a server's player.
+local function copy()
+	return coop_mode.is_player_mirror()
+end
+
+-- ui_inventory, loaded if it was not yet (the engine's script loader behind _G)
+local function inventory()
+	local ok, m = pcall(function() return ui_inventory end)
+	return ok and type(m) == "table" and m or nil
+end
+
+local function module_of(name)
+	local m = rawget(_G, name)
+	if m ~= nil then return m end
+	local ok, r = pcall(function() return _G[name] end)
+	return ok and r or nil
+end
+
+local function name_of(obj)
+	local ok, n = pcall(function() return obj:name() end)
+	return ok and n or "?"
+end
+
+-- The Lua trade window open with trader `npc_id` on this machine, or nil.
+local function window_of(npc_id)
+	local inv = inventory()
+	local gui = inv and inv.GUI
+	if not (gui and npc_id and gui.mode == "trade" and gui.npc_id == npc_id) then return nil end
+	local ok, shown = pcall(function() return gui:IsShown() end)
+	return ok and shown and gui or nil
+end
+
+-- What the window shows again: UpdateInfo(true) reads both inventories, both trade lists, prices and money at once.
+local function refresh(gui)
+	if not gui then return end
+	local ok, err = pcall(function() gui:UpdateInfo(true) end)
+	if not ok then report("refresh", err) end
+end
+
+local function play(gui)
+	if not trade_snd then
+		local ok, snd = pcall(sound_object, "interface\\inv_trade")
+		trade_snd = ok and snd or false
+	end
+	if trade_snd then pcall(function() gui:PlaySND(trade_snd) end) end
+end
+
+-------------------------------------------------------------------------------
+-- Waiting: answers and the items that come
+-------------------------------------------------------------------------------
+local tick, flush_gifts
+
+local function stop_ticks()
+	if not ticking then return end
+	ticking = false
+	UnregisterScriptCallback("actor_on_update", tick)
+end
+
+tick = function()
+	drop_partner = nil -- a stock body takes its partner right after its Print, in the same call: a drop nobody took goes now
+	flush_gifts()
+	local now = time_global()
+	if now < next_tick then return end
+	next_tick = now + TICK_MS
+	for seq, p in pairs(pending) do
+		if now - p.at > ANSWER_MS then
+			pending[seq] = nil
+			stats.lost = stats.lost + 1
+			log("! the %s #%s with %s has no answer from the decider for %d s: the window shows what is here", p.kind,
+				tostring(seq), tostring(p.npc), ANSWER_MS / 1000)
+			refresh(window_of(p.npc))
+		end
+	end
+	for i = #arriving, 1, -1 do
+		local w = arriving[i]
+		local gui = window_of(w.npc)
+		local come, all = 0, 0
+		for id, holder in pairs(w.items) do
+			all = all + 1
+			local obj = level.object_by_id(id)
+			local parent = obj and obj:parent()
+			if parent and parent:id() == holder then come = come + 1 end
+		end
+		local over = not gui or come == all or now >= w.till
+		if gui and (come > w.seen or over) then refresh(gui) end
+		w.seen = come
+		if over then table_remove(arriving, i) end
+	end
+	if next(pending) == nil and #arriving == 0 and not gifts and not drop_partner then stop_ticks() end
+end
+
+local function start_ticks()
+	if ticking then return end
+	ticking = true
+	next_tick = 0
+	RegisterScriptCallback("actor_on_update", tick)
+end
+
+-------------------------------------------------------------------------------
+-- The buttons of a copy's trade window
+-------------------------------------------------------------------------------
+-- A sale or a purchase waits for its answer; gifts do not hold the buttons.
+local function busy()
+	for _, p in pairs(pending) do
+		if p.kind ~= "gift" then return true end
+	end
+	return false
+end
+
+-- The stock's message box (TMode_Sell, TMode_Buy).
+local function message(self, text)
+	local box = self.message_box
+	if not box then return end
+	box:InitMessageBox("message_box_ok")
+	box:SetText(game.translate_string(text))
+	box:ShowDialog(true)
+end
+
+-- A trade list as the stock trades it: every item of every cell (stacks included) that its profile trades, sorted by id, with the
+-- window's price of each, and the list's sum as the window shows it: TMode_UpdatePrice's sum (GetCellCost of every cell, with the
+-- get_item_cost utils_ui took when it loaded; shown cells, one floor). That sum goes with the deal: the decider settles against it.
+local function collect(cc)
+	local profile = cc.trade_profile
+	local found = {}
+	for id in pairs(cc.indx_id or {}) do
+		local obj = cc:GetCell_ID(id) and level.object_by_id(id)
+		if obj and utils_item.get_item_trade_status(obj, profile) == TRADABLE then
+			found[#found + 1] = { id = id, price = tonumber(utils_item.get_item_cost(obj, profile)) or 0 }
+		end
+	end
+	table_sort(found, function(a, b) return a.id < b.id end)
+	local ids, prices = {}, {}
+	for i, f in ipairs(found) do ids[i], prices[i] = f.id, f.price end
+	local shown = 0
+	for _, ci in pairs(cc.cell or {}) do shown = shown + (tonumber(cc:GetCellCost(ci)) or 0) end
+	return ids, prices, math_floor(shown)
+end
+
+local function send(kind, npc, sell, buy, flags, sell_prices, buy_prices, sell_shown, buy_shown)
+	local seq, why = api.trade_deal(npc:id(), sell, buy, flags, sell_prices, buy_prices, sell_shown or 0, buy_shown or 0)
+	seq = tonumber(seq) or 0
+	if seq <= 0 then
+		stats.not_sent = stats.not_sent + 1
+		log("! the %s with %s was not sent: %s", kind, name_of(npc), tostring(why))
+		return false
+	end
+	stats.deals = stats.deals + 1
+	if kind == "gift" then stats.gifts = stats.gifts + 1 end
+	pending[seq] = { kind = kind, npc = npc:id(), sell = sell, buy = buy, at = time_global() }
+	start_ticks()
+	return true
+end
+
+handlers.TMode_Sell = function(self)
+	local npc = self:GetPartner()
+	if not (npc and npc:alive()) then return end
+	local cc = self.CC and self.CC["actor_trade"]
+	if not cc then return end
+	if busy() then
+		stats.waits = stats.waits + 1
+		return
+	end
+	local ids, prices, shown = collect(cc)
+	if #ids == 0 then return end
+	if npc:money() < shown then return message(self, "not_enough_money_partner") end
+	send("sale", npc, ids, {}, FLAG_LUA, prices, {}, shown, 0)
+end
+
+handlers.TMode_Buy = function(self)
+	local npc = self:GetPartner()
+	if not npc then return end
+	local cc = self.CC and self.CC["npc_trade"]
+	if not cc then return end
+	if busy() then
+		stats.waits = stats.waits + 1
+		return
+	end
+	local ids, prices, shown = collect(cc)
+	if #ids == 0 then return end
+	if db.actor:money() < shown then return message(self, "not_enough_money_actor") end
+	send("purchase", npc, {}, ids, FLAG_LUA, {}, prices, 0, shown)
+end
+
+-- Gifts of one moment go as one deal at the next update: Unusable Parts Handler gives every broken part away at once when the window
+-- opens, and one deal a part would run over the decider's limit of TradeOp in a row (xrCoop/coop_limits.h).
+flush_gifts = function()
+	local g = gifts
+	gifts = nil
+	if not (g and #g.ids > 0) then return end
+	local npc = level.object_by_id(g.npc)
+	if not npc then
+		log("! %d gift(s) for %s not sent: the trader is no longer here", #g.ids, tostring(g.npc))
+		return
+	end
+	local prices = {}
+	for i = 1, #g.ids do prices[i] = 0 end
+	send("gift", npc, g.ids, {}, FLAG_GIFT, prices, {})
+end
+
+handlers.Action_Donate = function(self, obj, bag)
+	obj = self:CheckItem(obj, "Action_Donate")
+	local npc = self.npc_id and get_object_by_id(self.npc_id)
+	if not (obj and npc) then return end
+	if gifts and gifts.npc ~= npc:id() then flush_gifts() end
+	gifts = gifts or { npc = npc:id(), ids = {}, set = {} }
+	local id = obj:id()
+	if gifts.set[id] then return end
+	gifts.set[id] = true
+	gifts.ids[#gifts.ids + 1] = id
+	if #gifts.ids >= MAX_ITEMS then flush_gifts() end
+	start_ticks()
+end
+
+-- Nothing of a trade window moves an item by itself on a copy: a script that got past the buttons is told so, and nothing moves.
+handlers.On_Item_Exchange = function(self, from, to, obj)
+	stats.guarded = stats.guarded + 1
+	log("! a trade window moved %s by itself on this copy: not moved, trades go to the decider", obj and name_of(obj) or "?")
+end
+
+-- Wraps `name` of the window class once (again when a mod replaced our wrapper since): on a player's copy in a trade window the handler
+-- runs instead, anywhere else the function it wraps.
+local function take(cls, name)
+	local current = cls[name]
+	if type(current) ~= "function" then return false end
+	local ours = wrapped[cls]
+	if ours and ours[name] == current then return true end
+	local orig, handler = current, handlers[name]
+	local function wrapper(self, ...)
+		if type(self) == "table" or type(self) == "userdata" then
+			if self.mode == "trade" and copy() then
+				local ok, err = pcall(handler, self, ...)
+				if not ok then report(name, err) end
+				return
+			end
+		end
+		return orig(self, ...)
+	end
+	ours = ours or {}
+	wrapped[cls] = ours
+	ours[name] = wrapper
+	cls[name] = wrapper
+	stats.wraps = stats.wraps + 1
+	return true
+end
+
+-- Defence in depth (review of 2026-11-24): a stock Sell or Buy body running on a copy in a trade window. Its first line prints its
+-- name: the press becomes ours (one deal), and the window's next GetPartner, the body's second line, gives nothing, so the body
+-- returns before any item or money moves (G.A.M.M.A.'s and the stock's TMode_Sell and TMode_Buy: "if (not npc) then return end").
+local guards = {}
+
+guards.Print = function(orig)
+	return function(self, mark, fmt, ...)
+		local name = type(fmt) == "string" and STOCK_BODY[fmt]
+		if name and (type(self) == "table" or type(self) == "userdata") and self.mode == "trade" and copy() then
+			stats.stray = stats.stray + 1
+			if stats.stray <= 5 or stats.stray % 100 == 0 then
+				log("! the stock %s of the trade window ran on this copy: it moves nothing, the press goes to the decider", name)
+			end
+			drop_partner = nil
+			local ok, err = pcall(handlers[name], self)
+			if not ok then report(name, err) end
+			drop_partner = self -- after our handler: it asks for the partner itself
+			start_ticks()
+		end
+		return orig(self, mark, fmt, ...)
+	end
+end
+
+guards.GetPartner = function(orig)
+	return function(self, ...)
+		if drop_partner ~= nil and drop_partner == self then
+			drop_partner = nil
+			return nil
+		end
+		return orig(self, ...)
+	end
+end
+
+-- Wraps a guard once (again when a mod replaced it since). False: the class has no such function (the guard is not set).
+local function take_guard(cls, name)
+	local current = cls[name]
+	if type(current) ~= "function" then return false end
+	local ours = wrapped[cls]
+	if ours and ours[name] == current then return true end
+	local wrapper = guards[name](current)
+	ours = ours or {}
+	wrapped[cls] = ours
+	ours[name] = wrapper
+	cls[name] = wrapper
+	stats.wraps = stats.wraps + 1
+	return true
+end
+
+-- The window's Sell and Buy are bound when it is made (G.A.M.M.A.'s InitCallbacks): bound again to the class's functions as they are
+-- now. This engine's AddCallback replaces the binding of a control and event (ui\UIScriptWnd.cpp).
+local function bind_buttons(gui, cls)
+	local clicked = ui_events.BUTTON_CLICKED
+	gui:AddCallback("sell", clicked, cls.TMode_Sell, gui)
+	gui:AddCallback("buy", clicked, cls.TMode_Buy, gui)
+	stats.binds = stats.binds + 1
+end
+
+-- On a player's copy: the window class's trade functions become ours, and the open window's buttons follow them. False and why: the
+-- copy must keep the engine window.
+local function take_window()
+	if not (api and type(api.trade_deal) == "function") then return false, "this exe has no coop.trade_deal" end
+	if not copy() then return false, "this process is no player's copy" end
+	local inv = inventory()
+	local cls = inv and inv.UIInventory
+	if not cls then return false, "no ui_inventory window" end
+	if type(inv.is_enabled) == "function" and not inv.is_enabled() then return false, "ui_inventory is turned off" end
+	for _, name in ipairs(TAKEN) do
+		if not take(cls, name) then return false, "ui_inventory has no " .. name end
+	end
+	if not (take_guard(cls, "Print") and take_guard(cls, "GetPartner")) then
+		report("guard", "ui_inventory has no Print or GetPartner: a stock Sell or Buy body is not stopped")
+	end
+	local gui = inv.GUI
+	if gui then
+		local ok, err = pcall(bind_buttons, gui, cls)
+		if not ok then
+			report("bind", err)
+			return false, "the window's Sell and Buy cannot be bound again: " .. tostring(err)
+		end
+	end
+	return true, "Sell, Buy and Donate go to the decider"
+end
+
+-------------------------------------------------------------------------------
+-- Engine -> here
+-------------------------------------------------------------------------------
+-- StartTrade on a player's copy: may the Lua window open? Only when its trade buttons are ours now.
+function ready()
+	return take_window()
+end
+
+-- The decider's answer to a deal sent from here.
+function on_result(seq, code, delta, why)
+	seq = tonumber(seq)
+	local p = seq and pending[seq]
+	if not p then return end
+	pending[seq] = nil
+	local gui = window_of(p.npc)
+	if tonumber(code) == RESULT_OK then
+		stats.ok = stats.ok + 1
+		local items = {}
+		local me = db.actor and db.actor:id()
+		for _, id in ipairs(p.sell) do items[id] = p.npc end
+		for _, id in ipairs(p.buy) do items[id] = me end
+		arriving[#arriving + 1] = { npc = p.npc, items = items, seen = 0, till = time_global() + ARRIVE_MS }
+		if gui and p.kind ~= "gift" then play(gui) end
+	else
+		stats.refused = stats.refused + 1
+		log("the %s #%d with %s was refused by the decider: %s", p.kind, seq, tostring(p.npc), tostring(why))
+	end
+	refresh(gui)
+	start_ticks()
+end
+
+-- On the decider (the co-op host, a map server): the sums of a Lua window's deal for that player, as his window shows them.
+local function ruck_of(npc)
+	local t = {}
+	npc:iterate_ruck(function(_, item) t[item:id()] = true end, nil)
+	return t
+end
+
+local function side(ids, profile, ruck)
+	local sum = 0
+	for _, id in ipairs(ids) do
+		local obj = level.object_by_id(tonumber(id) or -1)
+		if not obj then return nil, "item " .. tostring(id) .. " is not here" end
+		if ruck and not ruck[obj:id()] then return nil, "the trader does not offer " .. name_of(obj) end
+		local status = utils_item.get_item_trade_status(obj, profile)
+		if status ~= TRADABLE then return nil, string_format("%s is not traded here (%s)", name_of(obj), tostring(status)) end
+		local cost = tonumber(utils_item.get_item_cost(obj, profile))
+		if not cost or cost ~= cost or cost < 0 then return nil, name_of(obj) .. " has no price" end
+		sum = sum + cost
+	end
+	return sum
+end
+
+-- Under the player's identity: the trader's lists for him (trade_manager, as his own window reads them: TMode_InitProfile), then both
+-- sides priced.
+local function price_now(npc, sell, buy)
+	local tm = trade_manager
+	local id = npc:id()
+	local cfg = tm.get_trade_profile(id, "cfg_ltx")
+	if not cfg then return nil, "the trader has no trade profile here" end
+	local config = tm.get_trade_cfg(cfg)
+	if not config then
+		pcall(tm.trade_init, npc, cfg) -- the stock loads the config of a profile only at trade_init
+		config = tm.get_trade_cfg(cfg)
+	end
+	if not config then return nil, "no trade config " .. tostring(cfg) end
+	tm.setup_buy_sell_conditions(npc, id, config)
+	local function profile(key) return tm.get_trade_profile(id, key) end
+	local player_side = {
+		mode = 1,
+		cfg = cfg,
+		list = profile("current_buy_condition"),
+		cond_factor = profile("current_buy_item_condition_factor"),
+		cond_exponent = profile("current_buy_item_exponent"),
+		discount = tm.get_buy_discount(id),
+	}
+	local trader_side = {
+		mode = 2,
+		cfg = cfg,
+		list = profile("current_sell_condition"),
+		cond_exponent = profile("current_sell_item_exponent"),
+		discount = tm.get_sell_discount(id),
+	}
+	local sold, why = side(sell, player_side)
+	if not sold then return nil, why end
+	local bought, why2 = side(buy, trader_side, #buy > 0 and ruck_of(npc) or nil)
+	if not bought then return nil, why2 end
+	return sold, bought
+end
+
+function host_price(character, trader, sell, buy)
+	local who = level.object_by_id(tonumber(character) or -1)
+	local npc = level.object_by_id(tonumber(trader) or -1)
+	if not (who and npc) then return nil, "the player's character or the trader is not here" end
+	if type(sell) ~= "table" or type(buy) ~= "table" then return nil, "no lists" end
+	local ok, sold, bought = pcall(coop_npc_players.with_identity, who, price_now, npc, sell, buy)
+	if not ok then
+		report("host_price", sold)
+		return nil, tostring(sold)
+	end
+	return sold, bought
+end
+
+-- coop_core_world: the trader's profile from the decider came; an open trade window with him reads it again. Its bags are filled
+-- anew and lose what the trade lists hold, as after the stock's own reset of the bags (ui_inventory.script:2065-2090).
+local function trade_ids(cc)
+	local t = {}
+	for id in pairs(cc and cc.indx_id or {}) do t[#t + 1] = id end
+	return t
+end
+
+local function out_of_bag(b, ids)
+	if not b then return end
+	for _, id in ipairs(ids) do
+		local obj = level.object_by_id(id)
+		if obj then b:RemoveItem(obj) end
+	end
+end
+
+function on_profile(npc)
+	local ok_id, id = pcall(function() return npc:id() end)
+	local gui = ok_id and window_of(id)
+	if not gui then return end
+	stats.profiles = stats.profiles + 1
+	local ok, err = pcall(function()
+		local mine, theirs = trade_ids(gui.CC["actor_trade"]), trade_ids(gui.CC["npc_trade"])
+		gui:TMode_InitProfile(npc)
+		gui:TMode_ResetInventories(true)
+		out_of_bag(gui.CC["actor_trade_bag"], mine)
+		out_of_bag(gui.CC["npc_trade_bag"], theirs)
+		gui:UpdateInfo(true)
+	end)
+	if not ok then report("profile", err) end
+end
+
+-------------------------------------------------------------------------------
+-- The window opens and closes
+-------------------------------------------------------------------------------
+local function on_gui_show(name)
+	if name ~= "UIInventory" then return end
+	local inv = inventory()
+	local gui = inv and inv.GUI
+	if not (gui and gui.mode == "trade" and gui.npc_id) then return end
+	if api and api.search_window then
+		api.search_window(gui.npc_id, TRADER_VIEW)
+		told = true
+	end
+	if not copy() then return end
+	shown_npc = gui.npc_id
+	local npc = level.object_by_id(gui.npc_id)
+	log("trade with %s in the Lua window, as the host's: its trades go to the decider", npc and name_of(npc) or tostring(gui.npc_id))
+	-- the stock asks for the trader's profile through the talk; a window opened without one (a trading computer) asks here
+	local world = module_of("coop_core_world")
+	if npc and world and type(world.ask_trader) == "function" then
+		local ok, err = pcall(world.ask_trader, npc)
+		if not ok then report("ask_trader", err) end
+	end
+end
+
+local function on_gui_hide(name)
+	if name ~= "UIInventory" then return end
+	shown_npc = nil
+	if told and api and api.search_window then api.search_window() end
+	told = false
+end
+
+-- The trader of the open window goes away on this copy (released, or out of this machine's world): the window closes while it is whole.
+local function on_net_destroy(obj)
+	if not shown_npc then return end
+	local ok, id = pcall(function() return obj:id() end)
+	if not (ok and id == shown_npc) then return end
+	shown_npc = nil
+	local gui = window_of(id)
+	if not gui then return end
+	stats.closed = stats.closed + 1
+	log("the trader %s goes away while the trade window shows it: the window closes", tostring(id))
+	local closed, err = pcall(function() gui:Close() end)
+	if not closed then report("close", err) end
+end
+
+function print_status()
+	log("trade window: %d deals sent (%d gifts), %d ok, %d refused, %d without an answer, %d not sent, %d presses waited, %d windows closed "
+		.. "with their trader, %d late profiles, %d wraps, %d bindings, %d moves stopped, %d stock bodies stopped | errors %d", stats.deals,
+		stats.gifts, stats.ok, stats.refused, stats.lost, stats.not_sent, stats.waits, stats.closed, stats.profiles, stats.wraps,
+		stats.binds, stats.guarded, stats.stray, stats.errors)
+end
+
+function on_game_start()
+	RegisterScriptCallback("GUI_on_show", on_gui_show)
+	RegisterScriptCallback("GUI_on_hide", on_gui_hide)
+	RegisterScriptCallback("game_object_on_net_destroy", on_net_destroy)
+	-- On a player's copy the window's buttons are ours before G.A.M.M.A. makes the window and binds them (the first open of the
+	-- inventory); ready() takes them again at each trade. Any other process keeps the stock window untouched.
+	if api and type(api.trade_deal) == "function" and copy() and inventory() then
+		local ok, why = take_window()
+		if not ok then log("! the trade window's buttons are not taken at the game's start: %s", tostring(why)) end
+	end
+end

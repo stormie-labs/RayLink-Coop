@@ -160,7 +160,7 @@ TEST(debug_state_is_a_message_of_the_world_server_to_everybody)
 	CHECK(level_passes(Msg::DebugState, true, false)); // and every player, whatever level he is on
 	CHECK(link_enabled(Msg::DebugState)); // the host player gets it over the internal channel, as every client
 	CHECK(wgate::need_of(Msg::DebugState) == wgate::Need::Free); // kept, applied without a world
-	CHECK_EQ(kProtocolVersion, 34u); // 33: session mode in Welcome (S3); 34: R32 level journal and per-object heads
+	CHECK_EQ(kProtocolVersion, 35u); // 33: session mode in Welcome (S3); 34: R32 level journal and per-object heads; 35: TZ R90 Lua trade window deal
 }
 
 // ============================================================================ the receiver

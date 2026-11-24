@@ -1251,9 +1251,10 @@ local function apply_profile(npc, cfg)
 	return true
 end
 
-local function on_menu_mode(mode)
-	if not (live_client() and (mode == 10 or mode == 2) and db.actor) then return end
-	local npc = db.actor:get_talking_npc()
+-- Client: the trade profile of `npc` from the save at once, and the decider's current one asked for. A trade window with that trader
+-- opened: the stock asks through the talk (on_menu_mode); a player's Lua trade window opened without a talk (a trading computer) asks
+-- through coop_trade_window (TZ R90). Once per trader in TRADER_GAP_MS.
+function ask_trader(npc)
 	if not npc then return end
 	local ok, err = pcall(apply_profile, npc, nil) -- from the save, at once
 	if not ok then log("! trade profile not applied: %s", tostring(err)) end
@@ -1263,6 +1264,13 @@ local function on_menu_mode(mode)
 	trader_asked[id] = tg
 	stats.trader_req = stats.trader_req + 1
 	api.send_event(EV_TRADER_REQ, codec().encode({ id = host_id(id) }), 0)
+end
+
+local function on_menu_mode(mode)
+	if not (live_client() and (mode == 10 or mode == 2) and db.actor) then return end
+	local npc = db.actor:get_talking_npc()
+	if not npc then return end
+	ask_trader(npc)
 end
 
 local function host_on_trader_req(payload, from)
@@ -1290,7 +1298,11 @@ local function on_trader_cfg(payload, from)
 	local t = codec().decode(payload)
 	local id = tonumber(t.id) and local_id(tonumber(t.id))
 	local npc = id and level.object_by_id(id)
-	if npc and valid_cfg(t.cfg) then apply_profile(npc, t.cfg) end
+	if npc and valid_cfg(t.cfg) and apply_profile(npc, t.cfg) then
+		-- TZ R90: a Lua trade window already open with this trader reads the profile again (it came after the window opened)
+		local window = module_of("coop_trade_window")
+		if window and type(window.on_profile) == "function" then pcall(window.on_profile, npc) end
+	end
 end
 
 -------------------------------------------------------------------------------

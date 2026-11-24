@@ -1,12 +1,15 @@
 #include <algorithm>
+#include <atomic>
 #include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 #include "../../../engine/src/xrCoop/coop_trade_permit.h" // G6-3: the permit rules the host deal reads
+#include "../../../engine/src/xrCoop/coop_trade_window_rules.h" // TZ R90: how the host deal prices a Lua window's deal
 using u8 = uint8_t; using u16 = uint16_t; using u32 = uint32_t; using u64 = uint64_t;
 using s64 = int64_t; using PeerId = uint16_t;
 template<class T> using xr_vector = std::vector<T>;
@@ -61,7 +64,7 @@ struct CAI_Trader : CInventoryOwner {
 namespace GameObject { constexpr int eTradePerformTradeOperation = 1; }
 struct CTrade { explicit CTrade(CInventoryOwner*) {} void SetActorPartner(CInventoryOwner*) {} };
 struct { bool dwPrecacheFrame = false; } Device;
-struct Deal { u32 seq = 1; u16 trader = 10; bool donate = false; xr_vector<u16> sell, buy; u32 sell_total = 0, buy_total = 0; };
+struct Deal { u32 seq = 1; u16 trader = 10; bool donate = false; bool lua_prices = false; xr_vector<u16> sell, buy; u32 sell_total = 0, buy_total = 0; u32 sell_shown = 0, buy_shown = 0; };
 CAI_Stalker player; CAI_Trader trader;
 std::map<u16, CInventoryItem> items;
 std::map<u16, u16> server_parents;
@@ -92,6 +95,15 @@ void host_adjust(PeerId,s64 delta,const char*) { player_balance=u32(s64(player_b
 }
 u32 clamp_money(s64 v) { return u32(v); }
 u8 price_list(CTrade&, CInventoryOwner*, const xr_vector<u16>& ids, bool, u32& total) { total=u32(ids.size()*100); return Ok; }
+namespace trade_window = coop::trade_window;
+// TZ R90: what coop_trade_window.host_price answers on the decider, 100 RU an item as price_list (lua_sell_raw: another sum for the
+// sale, as G.A.M.M.A.'s Weapon Parts Overhaul gives a part there); or no price at all. lua_price_deal itself is the engine's.
+u32 lua_priced = 0; bool lua_refuse = false; double lua_sell_raw = -1;
+bool ask_host_price(u16, u16, const Deal& d, double raw[2], std::string&) {
+    ++lua_priced;
+    if (lua_refuse) return false;
+    raw[0]=lua_sell_raw>=0?lua_sell_raw:double(d.sell.size()*100); raw[1]=double(d.buy.size()*100); return true;
+}
 // The local server updates ownership synchronously; game objects catch up on its event queue.
 // Rejecting BUY after SELL leaves the entity unowned, exactly as Process_event_ownership does.
 void move_item(u16 from, u16 to, u16 id) {
@@ -110,9 +122,15 @@ void add(u16 id, u16 owner, const char* section="wpn_sil_9mm") {
 void run(const std::string& mode) {
     player.id=501; trader.id=10;
     Deal d; add(100,10); d.buy={100};
-    if(mode=="ordinary-items") {
+    if(mode=="ordinary-items"||mode=="lua-window-items"||mode=="lua-window-refused"||mode=="lua-window-purchase-shown-more") {
+        d.lua_prices = mode!="ordinary-items"; lua_refuse = mode=="lua-window-refused";
+        d.buy_shown = mode=="lua-window-purchase-shown-more" ? 1000 : 900; // what the player's window showed
         const char* sections[]={"wpn_sil_9mm","wpn_addon_scope","ammo_9x19_fmj","medkit","bread","wpn_ak74","novice_outfit","af_medusa","repairkit"};
         d.buy.clear(); for(u16 n=0;n<9;++n){ add(u16(100+n),10,sections[n]); d.buy.push_back(u16(100+n)); }
+    } else if(mode=="lua-window-wpo-part") {
+        // R90 review: a worn prt_w_barrel_10 sold to a mechanic. The decider's formula says 8250 RU (the mechanic's own sale price:
+        // its owner there is the player's character, id 501, not the actor), the player's window showed 1237 RU.
+        add(102,501,"prt_w_barrel_10"); d.buy.clear(); d.sell={102}; d.lua_prices=true; d.sell_shown=1237; lua_sell_raw=8250;
     } else if(mode=="destroying-item") items[100].destroying=true;
     else if(mode=="removed-item") items[100].removed=true;
     else if(mode=="cannot-take") items[100].takeable=false;
@@ -122,16 +140,25 @@ void run(const std::string& mode) {
     else if(mode=="refused-sale") { add(102,501);d.buy.clear();d.sell={102};reject_item=102; }
     else if(mode=="barter-rollback") { add(102,501);d.sell={102};reject_item=100; }
     s64 delta=0; const auto result=host_apply(1,d,delta);
-    if(mode=="ordinary-items") {
+    if(mode=="ordinary-items"||mode=="lua-window-items") {
         require(result==Ok && delta==-900 && player_balance==9100 && trader.balance==10900,"ordinary items must be delivered and paid exactly once");
         for(auto id:d.buy) require(server_parent(id)==501,"every purchased item must reach the player");
+        require(lua_priced==(mode=="lua-window-items"?1u:0u),"a Lua window's deal is priced by its formula, the engine window's by CTrade");
+    } else if(mode=="lua-window-purchase-shown-more") {
+        require(result==Ok && delta==-1000 && player_balance==9000 && trader.balance==11000,"a purchase never costs less than the window showed");
+        for(auto id:d.buy) require(server_parent(id)==501,"every purchased item must reach the player");
+    } else if(mode=="lua-window-wpo-part") {
+        require(result==Ok && delta==1237 && player_balance==11237 && trader.balance==8763,"a sale never pays more than the window showed (WPO part)");
+        require(d.sell_total==1237 && server_parent(102)==10,"the part went to the mechanic for the shown price");
     } else {
         require(result!=Ok,"failed delivery must not report a successful purchase");
         require(delta==0 && player_balance==10000 && trader.balance==10000 && money_changes==0,"failed delivery must not move money");
         for(auto id:d.buy) require(server_parent(id)==10,"failed purchase must remain at/return to trader");
         for(auto id:d.sell) require(server_parent(id)==501,"failed barter must restore player's items");
-        if(mode=="destroying-item"||mode=="removed-item"||mode=="cannot-take"||mode=="stale-local-owner")
+        if(mode=="destroying-item"||mode=="removed-item"||mode=="cannot-take"||mode=="stale-local-owner"||mode=="lua-window-refused")
             require(move_calls==0,"invalid item must be rejected before any ownership event");
+        if(mode=="lua-window-refused")
+            require(result==NotTraded && lua_priced==1,"no price from the Lua window's formula refuses the deal, without a fallback price");
     }
 }
 } // namespace host_test
@@ -215,6 +242,7 @@ namespace GameObject {constexpr int eTradeSellBuyItem=1;}
 CActor* Actor(){return &actor;} CGameObject* find_object(u16){return &item;}
 struct Pending {bool warned=false;u64 sent_at=0;};
 std::map<u32,Pending> g_pending;
+std::atomic<bool> g_have_queued{false}; std::mutex g_deal_lock; void send_queued_locked(){} // TZ R90: the Lua window's queue
 struct TradeCallback;
 extern std::vector<TradeCallback> g_callbacks;
 #include "trade_callback.inc"

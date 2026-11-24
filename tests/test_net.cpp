@@ -1617,7 +1617,7 @@ TEST(mode_protocol_32_client_is_refused)
 	Reader r(rj->payload.data(), rj->payload.size());
 	REQUIRE(rm.read(r));
 	CHECK(rm.reason == RejectReason::ProtocolMismatch);
-	CHECK(rm.text.find("version 34") != std::string::npos);
+	CHECK(rm.text.find("version 35") != std::string::npos); // the host's own number (TZ R90: 35)
 	CHECK(rm.text.find("version 32") != std::string::npos);
 	CHECK(raw.find(Msg::Welcome) == nullptr);
 	CHECK(host.s.peers().empty());

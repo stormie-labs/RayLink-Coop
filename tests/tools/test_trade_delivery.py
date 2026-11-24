@@ -19,7 +19,7 @@ def delivery_runner():
     signatures = ["u8 host_apply("]
     source = trade.read_text(encoding="utf-8-sig")
     # Include production helpers when present, so rollback is tested too.
-    helpers = ["bool transfer_ready(", "bool transfer_deal("]
+    helpers = ["bool transfer_ready(", "bool transfer_deal(", "u8 lua_price_deal("]
     methods = [definition(trade, s) for s in helpers if s in source]
     methods += [definition(trade, s) for s in signatures]
     (work / "trade_host.inc").write_text("\n".join(methods), encoding="utf-8")
@@ -47,7 +47,8 @@ def delivery_runner():
 
 
 @pytest.mark.parametrize("scenario", [
-    "ordinary-items", "destroying-item", "removed-item", "cannot-take", "stale-local-owner",
+    "ordinary-items", "lua-window-items", "lua-window-refused", "lua-window-wpo-part",
+    "lua-window-purchase-shown-more", "destroying-item", "removed-item", "cannot-take", "stale-local-owner",
     "refused-first-buy", "refused-later-buy", "refused-sale", "barter-rollback",
     "temporary-mirror-rejection", "mirror-repair-mask", "mirror-timeout", "mirror-success",
     "mirror-repeated-reply", "callback-before-arrival", "callback-arrived", "callback-expired",

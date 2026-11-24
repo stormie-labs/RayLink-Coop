@@ -984,6 +984,15 @@ TEST(protocol_version_bumped_for_character_before_world)
 	CHECK(msg_sender(Msg::CharChoice) == MsgSender::ClientOnly);
 }
 
+// TZ R90 (review of 2026-11-24): TradeOp Deal flag 2 is the deal of a player's Lua trade window, priced with that window's formula
+// on the decider, and such a deal carries the two sums the window showed after its lists (coop_trade.h). A 34 reader would price it
+// with the engine's formula and read no sums: the number keeps the builds apart.
+TEST(protocol_version_bumped_for_lua_trade_window)
+{
+	static_assert(kProtocolVersion >= 35u, "TZ R90: Deal flag 2 and the shown sums are protocol 35");
+	CHECK(kProtocolVersion >= 35u);
+}
+
 // F2 T14: coop.sync on the network (SYNC_SPEC §6.1-6.3; layouts in xrCoop/coop_syncnet.h). Protocol 8 has not shipped:
 // the messages join it (the lead's ruling), the history line says so.
 TEST(protocol_version_bumped_for_sync_api)

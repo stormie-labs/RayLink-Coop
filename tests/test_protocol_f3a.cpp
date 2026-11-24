@@ -170,7 +170,7 @@ TEST(protocol_f3a_version_is_11)
 {
 	// 11: the F3a messages, Hello carries a role and a token, PlayerState carries the vertices, TransitionState a flags
 	// byte, WeatherSync a weather set; a protocol 10 peer is refused at the handshake.
-	CHECK_EQ(kProtocolVersion, 34u); // 34: R32 level journal; 30: atomic weapon replacement and initial spawn metadata; 33: the Welcome's mode
+	CHECK_EQ(kProtocolVersion, 35u); // 35: TZ R90 the Lua trade window's Deal (flag 2, shown sums); 34: R32 level journal; 30: atomic weapon replacement and initial spawn metadata; 33: the Welcome's mode
 }
 
 TEST(protocol_f3a_a_trip_round_trip)
