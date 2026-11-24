@@ -8,6 +8,7 @@
 #include "srv/coop_levels_accept.h"
 #include "srv/coop_levels_journal.h"
 #include "srv/coop_levels_keeper.h"
+#include "srv/coop_levels_root_gen.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -646,10 +647,11 @@ struct World
 			s.map = w::MapLead{w::Lead::Leads, kMk};
 		return w::writer_of(r, kWorldServer, s);
 	}
+	// same_as: the hold of the root by the sender, whatever the root is now (levels::root_gen, Р68-3)
 	uint32_t gen_here(const w::RootFacts& r) const
 	{
 		const auto it = held.find(r.root);
-		return r.kind == w::RootKind::Unit && it != held.end() ? it->second : 0;
+		return root_gen(r.kind, it != held.end() ? it->second : 0);
 	}
 
 	void apply(const jr::Entry& e)
@@ -782,14 +784,12 @@ struct MapServer
 		const auto it = held.find(unit);
 		return it == held.end() ? 0 : it->second;
 	}
-	// held_gen_of: up the holders, then a creature's squad
+	// held_gen_of: the root and its kind as the world reads them (root_facts_of: up the holders, then a creature's squad), and the
+	// hold of that root (levels::root_gen, Р68-3)
 	uint32_t held_gen_of(uint16_t id)
 	{
-		uint16_t top = id;
-		for (int i = 0; i < 8 && reg.get(top) && reg.get(top)->parent != kNo; ++i)
-			top = reg.get(top)->parent;
-		const Obj* t = reg.get(top);
-		return gen(t && t->creature && t->squad != kNo ? t->squad : top);
+		const w::RootFacts r = reg.root(id);
+		return root_gen(r.kind, gen(r.root));
 	}
 	jr::ObjectHead head_of(uint16_t id) { return jr::ObjectHead{id, crc_of(*reg.get(id)), held_gen_of(id)}; }
 
