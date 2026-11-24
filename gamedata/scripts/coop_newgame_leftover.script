@@ -1,0 +1,159 @@
+-- Ядро: без проверок режима (docs/MODES.md)
+--[[
+	Anomaly Coop - the choice of a new game that never started (gamedata\scripts\coop_newgame_leftover.script), TZ R87.
+
+	A defect of the stock (Anomaly 1.5.3, G.A.M.M.A. keeps it): the new game screen (ui_mm_faction_select
+	UINewGame:OnStartGame) writes the choice to axr_options.ltx [character_creation] and saves the file BEFORE the world
+	exists. Only the stock on_game_load of the same file reads the keys and clears them, and it runs at every net_spawn of
+	the actor: a new game, a load, a level change alike. A new game that dies before it (a crash on the scripts'
+	on_game_start) leaves the choice on the disk, and the next load of any save takes it: the name, the group, the
+	profile, the money, the kit on top of the inventory, the difficulty, economy and modes of the save, and a move to the
+	start map at the first update (report #1902 -> #1804, a bandit autosave loaded as a Freedom character).
+
+	The engine's hook before every world start (coop_game_settings.before_world_start: before any on_game_start and
+	on_game_load, in every process of either mode and in single player) calls on_world_start(kind) here first. A load
+	("load"; a level change is one too) is never the world the choice was made for, so a real leftover is cleared from
+	the file: every new_game_* line, one save of the file, one journal line for the reports. A new world ("new") keeps it:
+	the stock applies it as always.
+
+	A real leftover is a line the stock (or a script beside it) would still apply to the loaded save. The keys are those
+	of OnStartGame (G.A.M.M.A. ui_mm_faction_select.script:1712-1733) and of the USE_MARSHAL block of on_game_load (:53-165):
+	  text that is not empty   new_game_faction, new_game_character_name, new_game_icon, new_game_loadout, new_game_map
+	  a number                 new_game_difficulty, new_game_economy, new_game_timer_mode, new_game_money
+	  on ("true", "1", "yes", "on" as r_value of G.A.M.M.A.'s _g_patches reads a flag)
+	                           every other new_game_* key: the modes of the screen (hardcore, story, survival, azazel,
+	                           warfare, campfire, conditions, opened_routes) and the addons' (soulslike, the debug test map)
+	Lines that are no choice by themselves (with a real leftover they go too):
+	  new_game_hardcore_mode_lives, new_game_hardcore_mode_regenerate   OnStartGame writes them at every start, also
+	      without hardcore (:1717-1718), and on_game_load reads and clears them only under hardcore (:54-68): "lives 1"
+	      stays in the file after every ordinary new game. They are inert there and the next OnStartGame writes them again,
+	      so they are left alone: no write, no save, no journal line at the level change that follows every new game.
+	  new_game_economy_treasure   always written with new_game_economy (:1714); treasure_manager clears it in memory
+	      without a save (treasure_manager.script:266-268), in an order against the stock's save that nobody fixes, so it
+	      can stay on the disk after an ordinary new game. A real leftover has new_game_economy beside it.
+
+	The file is read without the cache of ini_file_ex.r_value (collect_section, else r_string_ex line by line): the cache
+	keeps typed values and would answer with what an earlier read took. w_value(section, key) writes "" and resets the
+	cache of the key, so a later r_value of any type reads the empty line. axr_main is reached the ordinary way (mod():
+	_G.__index loads gamedata\scripts\axr_main.script on the first use, as the stock start_game_callback does a moment
+	later; the Lua state is new at every world start, CALifeSimulator::restart_all).
+
+	For other scripts:
+		on_world_start(kind) -> n      "load": the number of lines dropped (0: none); anything else: 0. Never raises.
+		is_choice(key, value) -> bool  the line is (part of) a choice the stock would still apply
+--]]
+
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+local string_format = string.format
+local tsort = table.sort
+
+local SECTION = "character_creation"
+local PREFIX = "new_game_"
+
+-- a choice when the text is not empty
+local TEXT = {
+	new_game_faction = true, new_game_character_name = true, new_game_icon = true, new_game_loadout = true,
+	new_game_map = true,
+}
+-- a choice when it is a number (the stock reads them with r_value type 2)
+local NUMBER = { new_game_difficulty = true, new_game_economy = true, new_game_timer_mode = true, new_game_money = true }
+-- what G.A.M.M.A.'s r_value reads as "on" for a flag (_g_patches.script): the stock writes "true", a hand or another
+-- addon may write the rest, and the stock would apply them all the same
+local ON = { ["true"] = true, ["1"] = true, ["yes"] = true, ["on"] = true }
+-- no choice by themselves (see the header)
+local SIDE = { new_game_hardcore_mode_lives = true, new_game_hardcore_mode_regenerate = true, new_game_economy_treasure = true }
+-- every key the stock and the addons write, for a config without collect_section (read line by line)
+local KNOWN = {
+	"new_game_difficulty", "new_game_economy", "new_game_economy_treasure", "new_game_hardcore_mode",
+	"new_game_hardcore_mode_lives", "new_game_hardcore_mode_regenerate", "new_game_story_mode", "new_game_azazel_mode",
+	"new_game_survival_mode", "new_game_campfire_mode", "new_game_conditions_mode", "new_game_opened_routes",
+	"new_game_warfare", "new_game_timer_mode", "new_game_character_name", "new_game_faction", "new_game_icon",
+	"new_game_loadout", "new_game_map", "new_game_money", "new_game_test", "new_game_soulslike_mode",
+}
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	pcall(printf, "%s", ok and line or tostring(fmt))
+end
+
+-- A script module by name, or nil (loaded by _G.__index on the first use).
+local function mod(name)
+	local m = rawget(_G, name)
+	if m == nil then
+		local ok, r = pcall(function() return _G[name] end)
+		m = ok and r or nil
+	end
+	return type(m) == "table" and m or nil
+end
+
+local function trim(v)
+	if v == nil then return "" end
+	return (tostring(v):gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+function is_choice(key, value)
+	local v = trim(value)
+	if v == "" or SIDE[key] then return false end
+	if TEXT[key] then return true end
+	if NUMBER[key] then return tonumber(v) ~= nil end
+	return ON[v] == true
+end
+
+-- The new_game_* lines of the section as the file has them: key -> text ("" for an empty line).
+local function read_lines(cfg)
+	local lines = {}
+	local ok, all = pcall(function() return cfg:collect_section(SECTION) end)
+	if ok and type(all) == "table" then
+		for key, value in pairs(all) do
+			if type(key) == "string" and key:sub(1, #PREFIX) == PREFIX then lines[key] = trim(value) end
+		end
+		return lines
+	end
+	for _, key in ipairs(KNOWN) do
+		local got, value = pcall(function() return cfg:r_string_ex(SECTION, key) end)
+		if got and value ~= nil then lines[key] = trim(value) end
+	end
+	return lines
+end
+
+local function drop()
+	local am = mod("axr_main")
+	local cfg = am and am.config
+	if cfg == nil then return 0 end -- the stock on_game_load has no config to read either
+	local lines = read_lines(cfg)
+	local real = false
+	for key, value in pairs(lines) do
+		if is_choice(key, value) then
+			real = true
+			break
+		end
+	end
+	if not real then return 0 end
+	local keys = {}
+	for key in pairs(lines) do keys[#keys + 1] = key end
+	tsort(keys)
+	local n = 0
+	for _, key in ipairs(keys) do
+		if lines[key] ~= "" then n = n + 1 end
+		cfg:w_value(SECTION, key) -- an empty line also: its cached value goes
+	end
+	local saved, why = pcall(function() cfg:save() end)
+	local faction, name = lines.new_game_faction or "", lines.new_game_character_name or ""
+	log("[coop] new game: the choice of a new game that never started is dropped at this load (faction %s, name %s, %d key(s))",
+		faction ~= "" and faction or "none", name ~= "" and name or "none", n)
+	if not saved then
+		log("! [coop] new game: axr_options.ltx is not saved (%s): only this load is free of the old choice", tostring(why))
+	end
+	return n
+end
+
+-- Called first by coop_game_settings.before_world_start (the engine's hook) at every world start, in every process.
+function on_world_start(kind)
+	if kind ~= "load" then return 0 end
+	local ok, n = pcall(drop)
+	if not ok then
+		log("! [coop] new game: the check of [character_creation] failed: %s", tostring(n))
+		return 0
+	end
+	return n
+end

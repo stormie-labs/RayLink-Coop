@@ -522,6 +522,7 @@ end
 -- The engine's hook
 -------------------------------------------------------------------------------
 local function before_world_start_impl(mode, save)
+	local leftover = mod("coop_newgame_leftover"); if leftover then pcall(leftover.on_world_start, mode) end -- R87: every process, the client too
 	reset_state()
 	if not api then return end
 	if client_now() then
