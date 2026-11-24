@@ -34,6 +34,10 @@
 	    cage) made a fighter in the pit "outside the arena" (live 2026-11-24, b62: his own gear back 15 s into the fight, the kit
 	    taken, no way out after the win). A fighter whose cutscene ended (arena.cut) is in the arena's custody even with no zone
 	    known here.
+	  - The way out of a won fight is the commentator's line (bar_arena_comment_fight_1.ltx: its sound_end runs
+	    bar_arena_teleport_2). One that never comes is taken by the authority of the Bar a fight's wait (10-37 s, the lengths of
+	    the lines) after it saw bar_arena_fight_N_done, once, for the fighters alive or down (late_way_out); a line that ends late is
+	    not the way out of a fight taken since.
 	  - His gear: the authority moves it, and keeps a ledger per character (the ids; the ids of the kit his machine made; saved with
 	    the host's world, and with split levels carried through the world server, the server's share "arena_ledger", coop_srv_levels_share):
 	      in   his whole inventory into box 1;
@@ -800,9 +804,14 @@ local function route_slot(_, _, p)
 end
 
 -- The commentator's way out (a won fight): the fighter's. With no record of the fight (it was lost: a world whose record did not
--- come back), every fighter of the ledger who is here.
+-- come back), every fighter of the ledger who is here. Its line is a won fight's (it waits for bar_arena_fight_N_done): a record of
+-- a fight not over is another one's, taken since (a line that ended late, after its way out came without it: late_way_out).
 local function route_out()
 	if not authority() then return end
+	if fight and type(fight.n) == "number" and not has_alife_info("bar_arena_fight_" .. fight.n .. "_done") then
+		log("! the commentator's way out while fight %d is not over: another fight's record, nothing moves", fight.n)
+		return
+	end
 	local ids = {}
 	if fight then
 		ids = fighters()
@@ -1874,6 +1883,47 @@ local function watch_tick(now)
 	end
 end
 
+-- The way out of a won fight is the commentator's (bar_arena_comment_fight_1.ltx, GAMMA's DLTX the same): once
+-- bar_arena_fight_N_done is given (its opponents dead: their logic, or the trigger's sr_idle@wait_finish) it plays
+-- bar_arena_fight_N_end and on its sound_end runs %=bar_arena_teleport_2 -bar_arena_fight_N% (GAMMA: -totaliz_begin_over_dialog
+-- too), route_out. A sound_end that never comes (a sound core that plays nothing, the commentator offline) left the fighters in the
+-- pit with the kit and their own gear in box 1, the heal leaves the fighters of a record alone (owner 2026-11-24: "no way back
+-- when you kill the opponent"). The authority on the Bar, every tick: a won fight's record whose way out did not come the fight's
+-- wait after this machine saw the win on the Bar takes it itself, once: route_out for its fighters alive or down (a dead one's gear
+-- waits for his respawn, as after a lost fight), then the infos the line takes off. A sound_end that came first ended the record. A record
+-- of a load (a save, a map server's carried state) has no time: the wait counts from then (the line starts again at a load too).
+-- A global: the file is at the limit of its locals (docs/MODES.md L7).
+-- The wait, s: the stock lines (sounds_voices.db0, characters_voice\scenario\bar\arena_sound, Anomaly 1.5.3; GAMMA keeps them). The
+-- end line bar_fight_N_finish (5.8, 7.7, 5.7, 5.8, 5.6, 9.5, 12.5, 12.9 s) waits for the fight's opening line bar_fight_N_ready
+-- (15.3, 12.0, 13.1, 5.9, 13.0, 8.2, 25.4, 32.1 s), which starts at the dialog: at most ready - 13 s of it is left when the fight
+-- starts (the trigger's 1 s, its cutscene camera_effects\arena.anm 360 frames at 30 fps: 12 s) and the win comes at once; the
+-- theme's pause between two lines (idle = 1,1) 1 s; 3 s for the ticks.
+function late_way_out(now)
+	local n = fight and fight.ids and fight.n
+	if type(n) ~= "number" or not has_alife_info("bar_arena_fight_" .. n .. "_done") then return end
+	if level.name() ~= ARENA_LEVEL then
+		fight.won = nil -- the pit is the Bar's: the wait counts on the Bar
+		return
+	end
+	fight.won = fight.won or now
+	local wait = ({ 13, 12, 10, 10, 10, 14, 29, 37 })[n] or 37
+	if now - fight.won < wait * 1000 then return end
+	local alive = {}
+	for _, id in ipairs(fight.ids) do
+		if fighting_life(id) then
+			alive[#alive + 1] = id
+		else
+			log("fight %d: character %s is dead: his gear waits for his respawn", n, tostring(id))
+		end
+	end
+	log("fight %d: the commentator's end never came: the way out after %d s (%d fighter(s))", n, wait, #alive)
+	fight.ids = alive
+	route_out()
+	for _, info in ipairs({ "bar_arena_fight_" .. n, "totaliz_begin_over_dialog" }) do
+		if has_alife_info(info) and type(disable_info) == "function" then disable_info(info) end
+	end
+end
+
 -------------------------------------------------------------------------------
 -- Events, saves, ticks
 -------------------------------------------------------------------------------
@@ -2082,6 +2132,9 @@ local function actor_on_update()
 		if not okf then report("a fighter's fall", errf) end
 		okf, errf = pcall(watch_tick, now)
 		if not okf then report("watch", errf) end
+		-- after the fall (a fighter dead in the pit), before the heal (route_out changes the ledger)
+		okf, errf = pcall(late_way_out, now)
+		if not okf then report("the way out after a win", errf) end
 		local ok, err = pcall(heal_tick, now)
 		if not ok then report("heal", err) end
 		ok, err = pcall(pit_reset_tick)

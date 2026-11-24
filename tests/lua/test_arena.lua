@@ -3375,5 +3375,284 @@ for _, answer in ipairs(modes.names()) do
 	end
 end
 
+-------------------------------------------------------------------------------
+-- R88, the way out that never came (owner 2026-11-24: "no way back when you kill the opponent"). After a win the way out is the
+-- commentator's: bar_arena_comment_fight_1.ltx waits for bar_arena_fight_N_done, plays bar_arena_fight_N_end and on its
+-- sound_end runs %=bar_arena_teleport_2 -bar_arena_fight_N% (route_out). A sound_end that never comes (a map server's silent
+-- sound core, the commentator offline) left the fighters in the pit with the kit and their own gear in box 1: the heal leaves the
+-- fighters of a running record alone, only a death or a rejoin got them out. The authority of the Bar takes that way out itself,
+-- once, a fight's wait after it saw the win (fight 3: 10 s, fight 1: 13 s), and takes off what the commentator's line takes off.
+-- A sound_end that came first leaves it nothing to do; a death in the pit is as before (his gear waits for his respawn); a save
+-- or a carried state of the map server brings the record back and the wait counts from then. A line of the commentator that
+-- ends late is not the way out of the record of a fight taken since.
+-------------------------------------------------------------------------------
+do
+	local LATE = { [1] = 13, [3] = 10 }
+	local BOTH_KITS = "ammo_12x70_buck,ammo_12x70_buck,ammo_12x70_buck,ammo_12x70_buck,stalker_outfit,stalker_outfit,wpn_bm16,wpn_bm16"
+	-- arena.go "out" the authority sent to `peer`
+	local function outs_to(peer)
+		local n = 0
+		for _, s in ipairs(H.sent) do
+			if s.name == "arena.go" and s.target == peer and H.env.coop_main.decode(s.payload).f == "out" then n = n + 1 end
+		end
+		return n
+	end
+	-- the stock calls this machine ran for its own player ("out": bar_arena_teleport_2)
+	local function ran(M, what)
+		local n = 0
+		for _, r in ipairs(M.ran) do if r == what then n = n + 1 end end
+		return n
+	end
+	local function never_came(n) return lines_with(H, "the commentator's end never came: the way out after " .. LATE[n] .. " s") end
+	local function wait_s(s)
+		for _ = 1, s do tick(H) end
+		pump()
+	end
+	-- the opponents are dead (bar_arena_fight_N_done: their logic, the trigger's sr_idle@wait_finish); the commentator's sound_end
+	-- does not come. The authority's next tick sees the win.
+	local function won_silent(n)
+		W.infos["bar_arena_fight_" .. n .. "_done"] = true
+		wait_s(1)
+	end
+	-- fight n: two fighters by the starter's key at Arnie, at t_way in the pit (co-op: the host and the client; server: the client
+	-- and the third on the Bar's map server). -> the host's and the client's own gear before it
+	local function pit_two(answer, n)
+		if answer == "hostplay" then setup({ start_as_is = true }) else setup({ answer = answer, start_as_is = true, third = true }) end
+		local host_gear, client_gear = owned(0), owned(PROXY)
+		real_zones(H, false)
+		H.env.disable_info = function(i) W.infos[i] = nil end
+		local b
+		if answer == "hostplay" then
+			b = PROXY
+			H.env.db.actor._pos = vec(149, 1, 76)
+			H.objects[PROXY]._pos = vec(146, 1, 70)
+			W.talked[0] = NOW
+		else
+			b = THIRD
+			H.objects[PROXY]._pos = vec(149, 1, 76)
+			H.objects[THIRD]._pos = vec(146, 1, 70)
+			W.talked[1] = NOW
+		end
+		start(n)
+		tick(H)
+		if answer == "hostplay" then press_start(HA) else relay_start(1) end
+		pump()
+		H.env.xr_effects.bar_arena_teleport(H.env.db.actor, H.objects[TRIG])
+		pump()
+		if answer == "hostplay" then
+			H.env.db.actor._pos = vector():set(T_WAY)
+			Cm.env.db.actor._pos = aside(T_WAY, 1)
+		else
+			H.objects[PROXY]._pos = vector():set(T_WAY)
+		end
+		H.objects[b]._pos = aside(T_WAY, 1)
+		wait_s(3)
+		return host_gear, client_gear
+	end
+
+	for _, answer in ipairs(modes.names()) do
+		if answer == "hostplay" then
+			print("== R88 co-op: the win, the commentator's sound_end never comes: the way out after 10 s, once")
+			local host_gear, client_gear = pit_two(answer, 3)
+			check(ids_text(HA._state().fight) == "0," .. PROXY and ledger_for(HA, 0) and ledger_for(HA, PROXY) and #owned(BOX1) == 11,
+				"co-op: the host and the client fight in the pit, their gear in box 1 (" .. ids_text(HA._state().fight) .. ")")
+			won_silent(3)
+			wait_s(9)
+			check(never_came(3) == 0 and outs_to(1) == 0 and ran(H, "out") == 0 and ledger_for(HA, 0) and ledger_for(HA, PROXY)
+				and at(H.env.db.actor, T_WAY), "co-op: 9 s after the win the commentator may still speak: both still in the pit")
+			wait_s(1)
+			check(never_came(3) == 1, "co-op: 10 s after the win: one line in the host's log (" .. never_came(3) .. ")")
+			check(outs_to(1) == 1 and ran(H, "out") == 1 and ran(Cm, "out") == 1, "co-op: each fighter's way out ran once (client "
+				.. outs_to(1) .. ", host " .. ran(H, "out") .. ")")
+			check(at(H.env.db.actor, DOOR) and at(Cm.env.db.actor, DOOR), "co-op: both fighters are at the arena's door")
+			check(same(owned(0), host_gear) and same(owned(PROXY), client_gear) and #owned(BOX1) == 0,
+				"co-op: each has exactly his own gear back, box 1 is empty")
+			check(sections_of(BOX2) == BOTH_KITS, "co-op: both kits are in box 2 (" .. sections_of(BOX2) .. ")")
+			check(HA._state().fight == nil and W.infos.bar_arena_fight_3 == nil and W.infos.bar_arena_fight_3_done == true,
+				"co-op: the record is over, bar_arena_fight_3 is taken off as the commentator's line does (its _done stays)")
+			local box2 = owned(BOX2)
+			wait_s(60)
+			check(never_came(3) == 1 and outs_to(1) == 1 and ran(H, "out") == 1 and ran(Cm, "out") == 1,
+				"co-op: a minute on: no second way out")
+			H.env.xr_effects.bar_arena_teleport_2(H.env.db.actor, H.objects[COMMENT])
+			pump()
+			check(outs_to(1) == 1 and ran(H, "out") == 1 and same(owned(0), host_gear) and same(owned(PROXY), client_gear)
+				and same(owned(BOX2), box2), "co-op: the commentator's line ends late after all: nothing moves, nobody is moved")
+
+			print("== R88 co-op: the commentator's sound_end comes 5 s after the win: one way out, no other")
+			host_gear, client_gear = pit_two(answer, 3)
+			won_silent(3)
+			wait_s(4)
+			H.env.xr_effects.bar_arena_teleport_2(H.env.db.actor, H.objects[COMMENT])
+			pump()
+			check(outs_to(1) == 1 and ran(H, "out") == 1 and at(H.env.db.actor, DOOR) and at(Cm.env.db.actor, DOOR),
+				"co-op: the commentator's way out: both at the door")
+			wait_s(60)
+			check(never_came(3) == 0 and outs_to(1) == 1 and ran(H, "out") == 1 and ran(Cm, "out") == 1,
+				"co-op: a minute on: no second way out, no line (" .. never_came(3) .. ")")
+			check(same(owned(0), host_gear) and same(owned(PROXY), client_gear) and sections_of(BOX2) == BOTH_KITS,
+				"co-op: each has his own gear, both kits in box 2, once")
+
+			print("== R88 co-op: a save and a load while the fighters wait for the commentator: the wait counts from the load")
+			host_gear, client_gear = pit_two(answer, 3)
+			won_silent(3)
+			wait_s(4)
+			local saved = {}
+			H.fire("save_state", saved)
+			H.fire("load_state", saved)
+			check(ids_text(HA._state().fight) == "0," .. PROXY, "co-op: the load brings the fight's record back")
+			wait_s(9)
+			check(never_came(3) == 0 and outs_to(1) == 0 and ran(H, "out") == 0, "co-op: 9 s after the load: still in the pit")
+			wait_s(2)
+			check(never_came(3) == 1 and outs_to(1) == 1 and ran(H, "out") == 1 and at(H.env.db.actor, DOOR) and at(Cm.env.db.actor, DOOR)
+				and same(owned(0), host_gear) and same(owned(PROXY), client_gear) and #owned(BOX1) == 0,
+				"co-op: then the way out, once: both at the door with their own gear")
+
+			print("== R88 co-op: fight 1 waits 13 s; a fighter dead in the pit is not moved, his gear waits for his respawn")
+			host_gear, client_gear = pit_two(answer, 1)
+			H.env.coop.life_of = function(x) return x == PROXY and "dead" or "alive" end
+			wait_s(1)
+			won_silent(1)
+			wait_s(12)
+			check(never_came(1) == 0 and ran(H, "out") == 0, "co-op: fight 1, 12 s after the win: the host still in the pit")
+			wait_s(1)
+			check(never_came(1) == 1 and ran(H, "out") == 1 and at(H.env.db.actor, DOOR) and same(owned(0), host_gear),
+				"co-op: 13 s: the host's way out, his own gear")
+			check(outs_to(1) == 0 and same(owned(BOX1), client_gear) and ledger_for(HA, PROXY) ~= nil and lines_with(H, "is dead") == 1,
+				"co-op: the dead client is not moved, his gear waits in box 1")
+			H.env.coop.life_of = nil
+			Cm.fire("coop_respawned")
+			pump()
+			check(outs_to(1) == 1 and same(owned(PROXY), client_gear) and #owned(BOX1) == 0, "co-op: his respawn: his own gear back, as before")
+
+			print("== R88 co-op: the fight is lost (its fighter dies in the pit): nothing new")
+			setup()
+			client_gear = owned(PROXY)
+			H.env.disable_info = function(i) W.infos[i] = nil end
+			W.talked[1] = NOW
+			start(3)
+			check(ids_text(HA._state().fight) == tostring(PROXY), "co-op: the client fights alone")
+			H.objects[PROXY]._pos = vector():set(IN_ARENA)
+			H.env.coop.life_of = function(x) return x == PROXY and "dead" or "alive" end
+			wait_s(60)
+			check(never_came(3) == 0 and outs_to(1) == 0 and same(owned(BOX1), client_gear) and W.infos.bar_arena_fight_3 == true,
+				"co-op: a minute on: no way out, his gear waits in box 1, the fight's info stays")
+			H.env.coop.life_of = nil
+
+			print("== R88 co-op: a won fight's record off the Bar (a load elsewhere): no way out there; back on the Bar it comes")
+			host_gear, client_gear = pit_two(answer, 3)
+			won_silent(3)
+			H.level_name, Cm.level_name = AGROPROM, AGROPROM
+			wait_s(60)
+			check(never_came(3) == 0 and outs_to(1) == 0 and ran(H, "out") == 0 and ids_text(HA._state().fight) == "0," .. PROXY,
+				"co-op: a minute on Agroprom: no way out, the record stays")
+			H.level_name, Cm.level_name = ARENA, ARENA
+			wait_s(10)
+			check(never_came(3) == 0 and outs_to(1) == 0, "co-op: back on the Bar the wait counts from there: not 9 s on")
+			wait_s(1)
+			check(never_came(3) == 1 and outs_to(1) == 1 and ran(H, "out") == 1 and same(owned(0), host_gear) and same(owned(PROXY), client_gear),
+				"co-op: then the way out, each his own gear")
+
+			print("== R88 co-op: after the way out without the commentator the group takes fight 4; fight 3's line ends late: not fight 4's")
+			pit_two(answer, 3)
+			won_silent(3)
+			wait_s(10)
+			check(never_came(3) == 1 and outs_to(1) == 1, "co-op: fight 3's way out came without the commentator")
+			H.env.db.actor._pos = vec(149, 1, 76)
+			H.objects[PROXY]._pos = vec(120, 0, 100)
+			Cm.env.db.actor._pos = vec(120, 0, 100)
+			W.infos.bar_arena_fight_4 = true
+			H.rule(H.objects[TRIG])
+			pump()
+			wait_s(1)
+			local f = HA._state().fight
+			check(f ~= nil and f.n == 4 and f.hold == true and view(CA) and view(CA).a == "invite", "co-op: fight 4 gathers, the client is invited")
+			local host_now, client_now = owned(0), owned(PROXY)
+			H.env.xr_effects.bar_arena_teleport_2(H.env.db.actor, H.objects[COMMENT])
+			pump()
+			f = HA._state().fight
+			check(f ~= nil and f.n == 4 and f.hold == true and view(HA) ~= nil and view(CA) and view(CA).a == "invite",
+				"co-op: fight 3's late line: fight 4 still gathers, the boards stay")
+			check(outs_to(1) == 1 and ran(H, "out") == 1 and same(owned(0), host_now) and same(owned(PROXY), client_now),
+				"co-op: nobody is moved, no gear moves")
+		elseif answer == "srv_map" then
+			print("== R88 server: the win on the Bar's map server, the commentator's sound_end never comes: the way out after 10 s, once")
+			local _, client_gear = pit_two(answer, 3)
+			check(ids_text(HA._state().fight) == PROXY .. "," .. THIRD and ledger_for(HA, PROXY) and ledger_for(HA, THIRD)
+				and same(owned(BOX1), client_gear), "server: the client and the third fight in the pit, the client's gear in box 1 ("
+				.. ids_text(HA._state().fight) .. ")")
+			won_silent(3)
+			wait_s(9)
+			check(never_came(3) == 0 and outs_to(1) == 0 and outs_to(2) == 0 and ledger_for(HA, PROXY) and same(owned(BOX1), client_gear),
+				"server: 9 s after the win: both still in the pit")
+			wait_s(1)
+			check(never_came(3) == 1 and outs_to(1) == 1 and outs_to(2) == 1,
+				"server: 10 s: one line in the map server's log, each fighter's way out once (" .. outs_to(1) .. ", " .. outs_to(2) .. ")")
+			check(same(owned(PROXY), client_gear) and #owned(BOX1) == 0 and ledger_for(HA, PROXY) == nil and ledger_for(HA, THIRD) == nil,
+				"server: the client has exactly his own gear back, box 1 is empty")
+			check(HA._state().fight == nil and W.infos.bar_arena_fight_3 == nil, "server: the record is over, bar_arena_fight_3 is taken off")
+			wait_s(60)
+			H.env.xr_effects.bar_arena_teleport_2(H.env.db.actor, H.objects[COMMENT])
+			pump()
+			check(never_came(3) == 1 and outs_to(1) == 1 and outs_to(2) == 1 and same(owned(PROXY), client_gear),
+				"server: a minute on, and the commentator's late line: no second way out")
+
+			print("== R88 server: the commentator's sound_end comes 5 s after the win: one way out, no other")
+			_, client_gear = pit_two(answer, 3)
+			won_silent(3)
+			wait_s(4)
+			H.env.xr_effects.bar_arena_teleport_2(H.env.db.actor, H.objects[COMMENT])
+			pump()
+			check(outs_to(1) == 1 and outs_to(2) == 1 and same(owned(PROXY), client_gear) and #owned(BOX1) == 0,
+				"server: the commentator's way out for both")
+			wait_s(60)
+			check(never_came(3) == 0 and outs_to(1) == 1 and outs_to(2) == 1 and same(owned(PROXY), client_gear),
+				"server: a minute on: no second way out, no line")
+
+			print("== R88 server: the map server's state is carried while the fighters wait: the wait counts from then")
+			_, client_gear = pit_two(answer, 3)
+			won_silent(3)
+			wait_s(4)
+			local carried = {}
+			H.fire("save_state", carried)
+			H.fire("load_state", carried)
+			check(ids_text(HA._state().fight) == PROXY .. "," .. THIRD, "server: the carried state brings the fight's record back")
+			wait_s(9)
+			check(never_came(3) == 0 and outs_to(1) == 0 and outs_to(2) == 0, "server: 9 s after it: still in the pit")
+			wait_s(2)
+			check(never_came(3) == 1 and outs_to(1) == 1 and outs_to(2) == 1 and same(owned(PROXY), client_gear) and #owned(BOX1) == 0,
+				"server: then the way out, once, the client's own gear back")
+
+			print("== R88 server: fight 1 waits 13 s; the third dead in the pit is not moved, his record waits for his respawn")
+			_, client_gear = pit_two(answer, 1)
+			H.env.coop.life_of = function(x) return x == THIRD and "dead" or "alive" end
+			wait_s(1)
+			won_silent(1)
+			wait_s(12)
+			check(never_came(1) == 0 and outs_to(1) == 0, "server: fight 1, 12 s after the win: the client still in the pit")
+			wait_s(1)
+			check(never_came(1) == 1 and outs_to(1) == 1 and same(owned(PROXY), client_gear), "server: 13 s: the client's way out, his own gear ("
+				.. never_came(1) .. " line(s), " .. outs_to(1) .. " way(s) out, fight " .. tostring(HA._state().fight and HA._state().fight.n) .. ")")
+			check(outs_to(2) == 0 and ledger_for(HA, THIRD) ~= nil and lines_with(H, "is dead") == 1,
+				"server: the dead third is not moved, his record waits")
+			H.env.coop.life_of = nil
+
+			print("== R88 server: the fight is lost (its fighter dies in the pit): nothing new")
+			setup({ answer = answer })
+			client_gear = owned(PROXY)
+			H.env.disable_info = function(i) W.infos[i] = nil end
+			W.talked[1] = NOW
+			start(3)
+			check(ids_text(HA._state().fight) == tostring(PROXY), "server: the client fights alone")
+			H.objects[PROXY]._pos = vector():set(IN_ARENA)
+			H.env.coop.life_of = function(x) return x == PROXY and "dead" or "alive" end
+			wait_s(60)
+			check(never_came(3) == 0 and outs_to(1) == 0 and same(owned(BOX1), client_gear) and W.infos.bar_arena_fight_3 == true,
+				"server: a minute on: no way out, his gear waits in box 1")
+			H.env.coop.life_of = nil
+		end
+	end
+end
+
 print(string.format("%d passed, %d failed", PASSES, FAILS))
 if FAILS > 0 then os.exit(1) end
