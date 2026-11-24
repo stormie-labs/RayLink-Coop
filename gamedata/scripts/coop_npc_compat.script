@@ -47,6 +47,7 @@ local CIVIL_WAR_REWARD = "coop_g94_civil_reputation"
 
 local installed = false
 local host_on = false
+local host_on_told = false
 local orig = {}
 local applied = {} -- what got installed, for coop_status
 
@@ -1247,6 +1248,11 @@ local function actor_on_update()
 	if now < next_tick then return end
 	next_tick = now + 250
 	host_on = installed and P.host_with_clients()
+	-- R68: no log has shown yet whether the wrappers run where the actor is a ghost; once per game, no line per frame
+	if host_on and not host_on_told and not coop_mode.actor_is_player() then
+		host_on_told = true
+		log("host_on: on, the wrappers run for the players here; this process's own actor is no player")
+	end
 end
 
 function print_status()

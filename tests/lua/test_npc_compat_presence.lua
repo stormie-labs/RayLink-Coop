@@ -187,7 +187,23 @@ local function target(name)
 	end
 end
 
+-- R68 (spawnface): whether host_on ever turns on where the actor is a ghost was not seen live; the first switch-on there
+-- writes one line, and no other process or frame writes it
+local function host_on_line(name)
+	local M, E, K = boot(name)
+	install(K, M)
+	for _ = 1, 3 do
+		M.fire("actor_on_update")
+		NOW = NOW + 1000
+	end
+	local n = 0
+	for _, line in ipairs(M.log) do if line:find("host_on: on", 1, true) then n = n + 1 end end
+	local ghost = name == "srv_map" or name == "srv_world"
+	check(n == (ghost and 1 or 0), name .. ": host_on says once that it is on where the actor is no player")
+end
+
 for _, name in ipairs(modes.names()) do
+	host_on_line(name)
 	anomaly(name)
 	crows(name)
 	crows(name, true)

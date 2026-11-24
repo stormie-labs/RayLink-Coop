@@ -6,6 +6,9 @@ local TAG = "npc_presence"
 local ARRIVED = "npc_presence_arrived"
 local MAX_OP = 2147483647
 local MAX_MAP = 255
+-- How long the side that leads the map holds an arrival for a body that is not up yet: as long as the player's
+-- machine itself waits before it gives an arrival up
+local ARRIVAL_WAIT_MS = 10000
 
 local function map_of(vertex)
 	if vertex == nil then return nil end
@@ -173,7 +176,7 @@ local function wrap_waves()
 	end)
 end
 
-local silos, seen = {}, {}
+local silos, seen, held = {}, {}, {}
 local arrival_due, operation = nil, 0
 local recovery
 
@@ -275,20 +278,62 @@ local function bounded_integer(value, minimum, maximum)
 	if n and n >= minimum and n <= maximum and n % 1 == 0 then return n end
 end
 
-local function receive_arrival(mod, payload, peer)
-	local id = payload and bounded_integer(payload.id, 1, MAX_OP)
-	local map = payload and bounded_integer(payload.map, 0, MAX_MAP)
+-- The player's body here, standing on a known map; nil while it is not up
+local function arrival_body(peer)
 	local actor = local_player(peer)
-	local ready = id and map and actor and map_of(actor:game_vertex_id()) == map
+	if actor and map_of(actor:game_vertex_id()) ~= nil then return actor end
+end
+
+local function apply_arrival(mod, peer, id, map, actor, now)
+	local ready = map_of(actor:game_vertex_id()) == map
 	if not coop_trust.pass("npc_presence_arrival", ready, "peer %s has no usable arrival on this map", tostring(peer)) then return end
-	if not ready then return end -- no authoritative body on which this operation can run
-	local now = time_global()
+	if not ready then return end -- his body stands on another map: the claim cannot run here
 	local ops = seen[peer] or {}
 	if ops[id] then return end
 	seen[peer] = ops
 	ops[id] = now + 120000
 	restore_due(now)
 	protect(mod, actor, now)
+end
+
+local function receive_arrival(mod, payload, peer)
+	local id = payload and bounded_integer(payload.id, 1, MAX_OP)
+	local map = payload and bounded_integer(payload.map, 0, MAX_MAP)
+	local actor = id and map and arrival_body(peer)
+	local now = time_global()
+	if actor then
+		held[peer] = nil -- his latest arrival is judged now
+		return apply_arrival(mod, peer, id, map, actor, now)
+	end
+	-- His request can be here before his body (#1821): the co-op host brings a joiner's character online at his
+	-- WorldLoaded and the level creates it in a later frame, a map server brings it online at the world server's
+	-- in_world, which its frame applies after this frame's events. The side that leads the map waits for the body.
+	if id and map and type(peer) == "number" and coop_mode.leads_here() then
+		local h = held[peer]
+		if not (h and h.id == id) and not (seen[peer] and seen[peer][id]) then
+			held[peer] = { id = id, map = map, until_ms = now + ARRIVAL_WAIT_MS }
+		end
+		return
+	end
+	coop_trust.pass("npc_presence_arrival", false, "peer %s has no usable arrival on this map", tostring(peer))
+end
+
+local function run_held(mod, now)
+	for peer, h in pairs(held) do
+		local in_session = coop_npc_players.player(peer) ~= nil
+		local actor = in_session and arrival_body(peer)
+		if not in_session then
+			-- he left the session inside the wait: an honest disconnect is no refused claim in [coop-trust]
+			held[peer] = nil
+		elseif actor then
+			held[peer] = nil
+			apply_arrival(mod, peer, h.id, h.map, actor, now)
+		elseif now > h.until_ms then
+			held[peer] = nil
+			coop_trust.pass("npc_presence_arrival", false, "peer %s (%s) has no standing body here %d s after his arrival",
+				tostring(peer), tostring(coop_mode.where(peer)), ARRIVAL_WAIT_MS / 1000)
+		end
+	end
 end
 
 local function mark_arrived()
@@ -304,9 +349,16 @@ local function update_safespawn(mod)
 		end
 		recovery = nil
 	end
-	if not active then restore_due(math.huge); return end
+	if not active then
+		if next(held) then held = {} end
+		restore_due(math.huge)
+		return
+	end
 	local now = time_global()
-	if coop_mode.leads_here() then restore_due(now) end
+	if coop_mode.leads_here() then
+		restore_due(now)
+		run_held(mod, now)
+	end
 	for peer, ops in pairs(seen) do
 		for id, expiry in pairs(ops) do if expiry <= now then ops[id] = nil end end
 		if not next(ops) then seen[peer] = nil end
@@ -349,11 +401,12 @@ local function install_safespawn()
 	RegisterScriptCallback("actor_on_update", function() update_safespawn(mod) end)
 	RegisterScriptCallback("save_state", save_silos)
 	RegisterScriptCallback("load_state", function(m_data)
-		silos, seen = {}, {}
+		silos, seen, held = {}, {}, {}
 		recovery = type(m_data.coop_npc_presence_silos) == "table" and m_data.coop_npc_presence_silos or nil
 	end)
 	RegisterScriptCallback("on_level_changing", function()
 		arrival_due = nil
+		held = {} -- made for the world that goes
 		if coop_mode.leads_here() then restore_due(math.huge) end
 	end)
 end
