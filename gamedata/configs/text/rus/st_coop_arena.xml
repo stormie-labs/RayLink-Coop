@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="windows-1251"?>
-<!-- Anomaly Coop - арена Бара в сессии: сбор группы у Арни (приглашение, метка на карте, кнопки «Запуститься одному» / «Начать без остальных») и голосование coop_economy_group о нём (scripts\coop_arena.script). Идентификаторы st_coop_arena_<имя>. -->
+<!-- Anomaly Coop - арена Бара в сессии: сбор у Арни (приглашение, метка на карте, табло того, кто начинает бой, и тех, кто идёт с ним, напоминание тем, кто далеко; scripts\coop_arena.script, scripts\coop_hud_arena.script). Идентификаторы st_coop_arena_<имя>. -->
 <string_table>
 	<string id="st_coop_arena_invite">
 		<text>%s зовёт на арену, бой %s. Подойдите к Арни.</text>
@@ -7,22 +7,40 @@
 	<string id="st_coop_arena_spot">
 		<text>Арни: бой на арене</text>
 	</string>
-	<string id="st_coop_arena_solo">
-		<text>Бой %s на арене. Остальных на Баре позвали. Запуститься одному?</text>
+	<string id="st_coop_arena_head">
+		<text>АРЕНА</text>
 	</string>
-	<string id="st_coop_arena_without">
-		<text>Бой %s на арене: у Арни %s из %s игроков. Начать без остальных?</text>
+	<string id="st_coop_arena_title">
+		<text>Бой %s</text>
 	</string>
-	<string id="st_coop_arena_vote_ask">
-		<text>%s хочет начать бой %s на арене без остальных. Согласны?</text>
+	<string id="st_coop_arena_status_lead">
+		<text>с вами идут те, кто у Арни</text>
 	</string>
-	<string id="st_coop_arena_vote_no">
-		<text>%s пока не хочет начинать бой на арене.</text>
+	<string id="st_coop_arena_status_with">
+		<text>вы идёте в бой с %s · отойдите от Арни, чтобы не идти</text>
 	</string>
-	<string id="st_coop_arena_vote_timeout">
-		<text>Бой на арене ждёт: нет ответа от %s.</text>
+	<string id="st_coop_arena_row_near">
+		<text>рядом</text>
 	</string>
-	<string id="st_coop_arena_vote_left">
-		<text>Голосование об арене отменено (%s вышел).</text>
+	<string id="st_coop_arena_row_dist">
+		<text>%d м</text>
+	</string>
+	<string id="st_coop_arena_hint_start">
+		<text>удерживайте [$$ACTION_USE$$] (не глядя на Арни) – начать бой с теми, кто рядом</text>
+	</string>
+	<string id="st_coop_arena_remind">
+		<text>ждёт вас у Арни: бой %s · %d м</text>
+	</string>
+	<string id="st_coop_arena_remind_far">
+		<text>ждёт вас у Арни: бой %s</text>
+	</string>
+	<string id="st_coop_arena_remind_back">
+		<text>вернитесь к Арни, чтобы начать · %d м</text>
+	</string>
+	<string id="st_coop_arena_remind_back_far">
+		<text>вернитесь к Арни, чтобы начать</text>
+	</string>
+	<string id="st_coop_arena_passed">
+		<text>Бой %s на арене теперь начинаете вы: удерживайте [$$ACTION_USE$$] у Арни.</text>
 	</string>
 </string_table>

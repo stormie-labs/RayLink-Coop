@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="windows-1251"?>
-<!-- Anomaly Coop - the Bar arena in a session: the group's gathering at Arnie (the invitation, its map spot, the buttons "start alone" / "start without the others") and the vote of coop_economy_group about it (scripts\coop_arena.script). Ids st_coop_arena_<name>. -->
+<!-- Anomaly Coop - the Bar arena in a session: the gathering at Arnie (the invitation, its map spot, the board of the starter and of those who go with him, the reminder of those away; scripts\coop_arena.script, scripts\coop_hud_arena.script). Ids st_coop_arena_<name>. -->
 <string_table>
 	<string id="st_coop_arena_invite">
 		<text>%s invites you to the arena, fight %s. Come to Arnie.</text>
@@ -7,22 +7,40 @@
 	<string id="st_coop_arena_spot">
 		<text>Arnie: the arena fight</text>
 	</string>
-	<string id="st_coop_arena_solo">
-		<text>Arena fight %s. The others on the Bar are invited. Start alone?</text>
+	<string id="st_coop_arena_head">
+		<text>ARENA</text>
 	</string>
-	<string id="st_coop_arena_without">
-		<text>Arena fight %s: %s of %s players at Arnie. Start without the others?</text>
+	<string id="st_coop_arena_title">
+		<text>Fight %s</text>
 	</string>
-	<string id="st_coop_arena_vote_ask">
-		<text>%s wants to start arena fight %s without the others. Agree?</text>
+	<string id="st_coop_arena_status_lead">
+		<text>those near Arnie go with you</text>
 	</string>
-	<string id="st_coop_arena_vote_no">
-		<text>%s does not want to start the arena fight yet.</text>
+	<string id="st_coop_arena_status_with">
+		<text>you go with %s · step away from Arnie not to go</text>
 	</string>
-	<string id="st_coop_arena_vote_timeout">
-		<text>The arena fight waits: no answer from %s.</text>
+	<string id="st_coop_arena_row_near">
+		<text>near</text>
 	</string>
-	<string id="st_coop_arena_vote_left">
-		<text>The arena vote was cancelled (%s left).</text>
+	<string id="st_coop_arena_row_dist">
+		<text>%d m</text>
+	</string>
+	<string id="st_coop_arena_hint_start">
+		<text>hold [$$ACTION_USE$$] (not looking at Arnie) – start the fight with those near</text>
+	</string>
+	<string id="st_coop_arena_remind">
+		<text>waits for you at Arnie: fight %s · %d m</text>
+	</string>
+	<string id="st_coop_arena_remind_far">
+		<text>waits for you at Arnie: fight %s</text>
+	</string>
+	<string id="st_coop_arena_remind_back">
+		<text>come back to Arnie to start it · %d m</text>
+	</string>
+	<string id="st_coop_arena_remind_back_far">
+		<text>come back to Arnie to start it</text>
+	</string>
+	<string id="st_coop_arena_passed">
+		<text>Arena fight %s is yours to start now: hold [$$ACTION_USE$$] at Arnie.</text>
 	</string>
 </string_table>

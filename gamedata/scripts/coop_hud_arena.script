@@ -1,0 +1,686 @@
+--[[
+	Anomaly Coop - the arena's board at Arnie (gamedata\scripts\coop_hud_arena.script).
+
+	Owner 2026-11-24 (TZ R88, 6.19): "make the accept window as at a transition: people walk up, and the one who decided to start
+	holds F to go with those near". A fight of the new arena taken with other players on the map waits at Arnie; this script
+	shows each player his part and gives the starter's held key back. It decides nothing: what it shows is coop_arena's
+	(coop_arena.gather_view(): what the authority of the Bar - the host, or the map server of the Bar - told this player), and
+	the key goes to coop_arena.start_pressed(), which asks the authority. The look is the transition's waiting point
+	(configs\ui\ui_coop_transition.xml, its sizes coop_hud_transition.layout()); the strings st_coop_arena_*.
+
+	  lead      the starter within 10 m of Arnie: the board - ARENA, "fight N", near / on the map, a segment per player, a row per
+	            player (near Arnie: "near"; away: the team panel's metres), and "hold [F] - start the fight with those near" under
+	            a bar that fills while the key is held (HOLD_MS)
+	  with      another player near Arnie: the same board without the key: "you go with <nick>; step away from Arnie not to go"
+	  lead_far  the starter away from Arnie: the reminder "fight N . come back to Arnie to start it . N m", no key
+	  invite    a player away from Arnie: the reminder "<nick> waits for you at Arnie: fight N . N m", a compass mark on Arnie
+	            (coop_hud_markers source "arena")
+
+	The key is the use key (kUSE), held as the transition's (coop_hud_transition): its press or its hold events start it
+	(G.A.M.M.A. may hand the press to another script first); HOLD_GAP_MS without hold events is its release; the HUD hidden that
+	long (the dialog with Arnie, the inventory, the PDA) ends it, and so does a board that changes under it. It goes once a hold.
+	It does not start while the crosshair is on Arnie: the use key talks to him (the hint says "not at Arnie").
+	A transition's placard wins: while coop_hud_transition shows one, this board is off and the key is the transition's.
+
+	For other scripts:
+		coop_hud_arena.current() -> the last view, nil when there is none
+		coop_hud_arena.get_window() -> the overlay while it is on the HUD
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local tostring, tonumber, type, ipairs, pcall = tostring, tonumber, type, ipairs, pcall
+local math_floor, math_max, math_min = math.floor, math.max, math.min
+local string_format = string.format
+
+XML_FILE = "ui_coop_transition.xml"
+CX = 512 -- the middle of the screen, in 1024x768 units
+MAX_ROWS = 8 -- the session's players
+HOLD_MS = 1000
+HOLD_GAP_MS = 300 -- as the transition's (coop_hud_transition.HOLD_GAP_MS): G.A.M.M.A.'s keys, a window flashing up
+MARK_PRIORITY = 35 -- on the compass: as the transition's exit mark
+-- the transition's sizes (coop_hud_transition.layout()) when it is not here
+local DEFAULTS = {
+	width = 300, top = 72, pad_x = 26, pad_y = 8, bg_alpha = 0.40,
+	icon = 12, head_h = 12, head_x = 16, level_y = 13, level_h = 20, slot_w = 60, slot_y = 15,
+	status_y = 37, status_h = 14, seg_y = 55, seg_w = 22, seg_h = 4, seg_gap = 4, seg_off_alpha = 0.18,
+	rows_y = 66, row_h = 15, stripe_w = 2, stripe_h = 12, nick_x = 8, nick_w = 150, state_w = 150,
+	bar_gap = 6, bar_h = 2, hint_gap = 3, hint_h = 12,
+	remind_w = 420, remind_nick_h = 18, remind_line_h = 14, remind_pad_x = 40,
+	dim_alpha = 0.75, text_dim_alpha = 0.85, track_alpha = 0.18,
+	fade_in_ms = 150, fade_out_ms = 150,
+}
+
+local C_WHITE = { 244, 245, 246 }
+local C_DIM = { 175, 177, 175 }
+local C_BG = { 12, 13, 10 }
+local C_SHADOW = { 0, 0, 0 }
+local A_SHADOW = 0.7
+
+local stats = { frames = 0, holds = 0, starts = 0, refused_arnie = 0, errors = 0 }
+local last_v -- the last view (gather_view)
+local WIN -- the overlay while it is on the HUD
+local hold -- { since, fired, hidden_at } the use key held under the starter's board
+-- the use key as its events show it (as coop_hud_transition): down; events_at, seen (hold events came: their end is its
+-- release); latched (a hold ended while it is still down: a new one only after it is let go)
+local key = { down = false, events_at = nil, seen = false, latched = false }
+local players_at, players_map = nil, {}
+
+local function log(fmt, ...)
+	local ok, line = pcall(string_format, fmt, ...)
+	printf("[coop-hud] %s", ok and line or tostring(fmt))
+end
+
+local function tr(id, fallback)
+	local ok, s = pcall(function() return game.translate_string(id) end)
+	if ok and type(s) == "string" and s ~= "" and s ~= id then return s end
+	return fallback or id
+end
+
+-- A script by name: loaded on access when it is not yet (as coop_hud_transition finds coop_transition_fare).
+local function module_of(name)
+	local m = rawget(_G, name)
+	if type(m) == "table" then return m end
+	local ok, v = pcall(function() return _G[name] end)
+	return ok and type(v) == "table" and v or nil
+end
+
+local function layout()
+	local T = module_of("coop_hud_transition")
+	if type(T) == "table" and type(T.layout) == "function" then
+		local ok, L = pcall(T.layout)
+		if ok and type(L) == "table" then return L end
+	end
+	return DEFAULTS
+end
+
+-------------------------------------------------------------------------------
+-- Glue
+-------------------------------------------------------------------------------
+local function live()
+	if not api then return false end
+	local ok, on = pcall(function() return api.is_active() and (coop_mode.decides_world() or api.is_live()) end)
+	return ok and on == true
+end
+
+local function arena()
+	return module_of("coop_arena")
+end
+
+local function view()
+	local A = arena()
+	if not (A and A.gather_view) then return nil end
+	local ok, v = pcall(A.gather_view)
+	if not ok then
+		stats.errors = stats.errors + 1
+		return nil
+	end
+	return type(v) == "table" and v or nil
+end
+
+-- A transition's placard is up (coop_hud_transition): it wins, the key is its.
+local function transition_up()
+	local T = module_of("coop_hud_transition")
+	if not (type(T) == "table" and T.current) then return false end
+	local ok, t = pcall(T.current)
+	return ok and type(t) == "table"
+end
+
+local function hud_visible()
+	local f = rawget(_G, "main_hud_shown")
+	if not f then return true end
+	local ok, v = pcall(f)
+	return not ok or v == true
+end
+
+-- The crosshair on Arnie: the use key talks to him.
+local function at_arnie(v)
+	local lv = rawget(_G, "level")
+	if not (v and v.arnie and lv and lv.get_target_obj) then return false end
+	local ok, o = pcall(lv.get_target_obj)
+	if not (ok and o) then return false end
+	local okid, id = pcall(o.id, o)
+	return okid and id == v.arnie
+end
+
+local function peer_color(peer)
+	local A = rawget(_G, "coop_allies")
+	if A and A.color and tonumber(peer) then
+		local ok, r, g, b = pcall(A.color, peer)
+		if ok and r then return { r, g, b } end
+	end
+	return C_WHITE
+end
+
+local function nick_of(peer)
+	peer = tonumber(peer)
+	if not peer then return "?" end
+	local tg = time_global()
+	if not players_at or tg - players_at > 500 or tg < players_at then
+		players_at = tg
+		players_map = {}
+		if api and api.players then
+			local ok, list = pcall(api.players)
+			if ok and type(list) == "table" then
+				for _, p in ipairs(list) do
+					if type(p) == "table" and tonumber(p.id) then players_map[tonumber(p.id)] = tostring(p.nick or "") end
+				end
+			end
+		end
+	end
+	local nick = players_map[peer]
+	if nick and nick ~= "" then
+		nick = nick:gsub("%%", "")
+		if #nick > 24 then nick = nick:sub(1, 23) .. "." end
+		return nick
+	end
+	return "player " .. tostring(peer)
+end
+
+local function my_peer()
+	if not api then return nil end
+	local ok, id = pcall(function() return api.self_id() end)
+	return ok and tonumber(id) or nil
+end
+
+local function metres(d)
+	d = tonumber(d)
+	if not d or d ~= d or d < 0 then return nil end
+	return math_floor(d + 0.5)
+end
+
+-------------------------------------------------------------------------------
+-- Pure parts (the tests call them)
+-------------------------------------------------------------------------------
+-- "board" (near Arnie), "remind" (away), nil
+function kind_of(v)
+	if type(v) ~= "table" then return nil end
+	if v.a == "lead" or v.a == "with" then return "board" end
+	if v.a == "lead_far" or v.a == "invite" then return "remind" end
+	return nil
+end
+
+-- The key: only the starter's at Arnie.
+function hint_of(v)
+	return type(v) == "table" and v.a == "lead" and "start" or nil
+end
+
+function hint_text(kind)
+	if kind == "start" then return tr("st_coop_arena_hint_start", "hold [F] (not at Arnie) - start the fight with those near") end
+	return ""
+end
+
+function head_text()
+	return tr("st_coop_arena_head", "ARENA")
+end
+
+function title_text(v)
+	return string_format(tr("st_coop_arena_title", "Fight %s"), tostring(v and v.n or "?"))
+end
+
+function count_text(v)
+	return string_format("%d / %d", tonumber(v and v.c) or 0, tonumber(v and v.t) or 0)
+end
+
+function status_text(v)
+	if v and v.a == "with" then
+		return string_format(tr("st_coop_arena_status_with", "you go with %s . step away from Arnie not to go"), tostring(v.w or "?"))
+	end
+	return tr("st_coop_arena_status_lead", "those near Arnie go with you")
+end
+
+-- The rows: { peer, nick, rgb, text, ready }: near Arnie first (the starter first), then the others.
+function row_texts(v)
+	local out = {}
+	if type(v) ~= "table" then return out end
+	local me = my_peer()
+	local H = rawget(_G, "coop_core_hud")
+	for _, list in ipairs({ v.near or {}, v.far or {} }) do
+		local near = list == v.near
+		for _, peer in ipairs(list) do
+			if #out >= MAX_ROWS then return out end
+			local text
+			if near then
+				text = tr("st_coop_arena_row_near", "near")
+			elseif peer == me and metres(v.dist) then
+				text = string_format(tr("st_coop_arena_row_dist", "%d m"), metres(v.dist))
+			else
+				local ok, s = false, nil
+				if type(H) == "table" and type(H.distance_text) == "function" then ok, s = pcall(H.distance_text, peer) end
+				text = ok and type(s) == "string" and s ~= "" and s or "..."
+			end
+			out[#out + 1] = { peer = peer, nick = nick_of(peer), rgb = peer_color(peer), text = text, ready = near }
+		end
+	end
+	return out
+end
+
+-- The reminder: { nick, rgb, text } or nil.
+function reminder(v)
+	if kind_of(v) ~= "remind" then return nil end
+	local m = metres(v.dist)
+	if v.a == "lead_far" then
+		local text = m and string_format(tr("st_coop_arena_remind_back", "come back to Arnie to start it . %d m"), m)
+			or tr("st_coop_arena_remind_back_far", "come back to Arnie to start it")
+		return { nick = title_text(v), rgb = C_WHITE, text = text }
+	end
+	local text = m and string_format(tr("st_coop_arena_remind", "waits for you at Arnie: fight %s . %d m"), tostring(v.n or "?"), m)
+		or string_format(tr("st_coop_arena_remind_far", "waits for you at Arnie: fight %s"), tostring(v.n or "?"))
+	return { nick = tostring(v.w or "?"), rgb = peer_color(v.s), text = text }
+end
+
+-- The compass mark on Arnie of a player away from him (coop_hud_markers' shape), as a list.
+function marks(v)
+	if kind_of(v) ~= "remind" or not v.pos then return {} end
+	local x, y, z = tonumber(v.pos.x), tonumber(v.pos.y), tonumber(v.pos.z)
+	if not (x and y and z) then return {} end
+	return { { key = "arnie", kind = "transition", pos = { x = x, y = y, z = z }, color = peer_color(v.s), label = tostring(v.w or "?"),
+		state = "waiting", priority = MARK_PRIORITY, range = 0 } }
+end
+
+-------------------------------------------------------------------------------
+-- The overlay (the transition's look: a soft panel, small caps head, the big line, the count, segments, rows, the bar, the hint)
+-------------------------------------------------------------------------------
+local function argb(a, rgb)
+	return GetARGB(math_max(0, math_min(255, math_floor(a + 0.5))), rgb[1], rgb[2], rgb[3])
+end
+
+local function el(e) return { e = e } end
+
+local function put(t, x, y, w, h)
+	if t.x ~= x or t.y ~= y then
+		t.e:SetWndPos(vector2():set(x, y))
+		t.x, t.y = x, y
+	end
+	if w and (t.w ~= w or t.h ~= h) then
+		t.e:SetWndSize(vector2():set(w, h))
+		t.w, t.h = w, h
+	end
+end
+
+local function show(t, on)
+	on = on and true or false
+	if t.shown ~= on then
+		t.shown = on
+		t.e:Show(on)
+	end
+end
+
+local function tint(t, a, rgb)
+	local c = argb(a, rgb)
+	if t.tinted ~= c then
+		t.tinted = c
+		t.e:SetTextureColor(c)
+	end
+end
+
+local function new_text(xml, parent, node)
+	return { sh = el(xml:InitTextWnd(node, parent)), tx = el(xml:InitTextWnd(node, parent)) }
+end
+
+local function text_set(t, s, a, rgb)
+	if t.text ~= s then
+		t.text = s
+		t.tx.e:SetText(s)
+		t.sh.e:SetText(s)
+	end
+	local c = argb(a, rgb)
+	if t.color ~= c then
+		t.color = c
+		t.tx.e:SetTextColor(c)
+		t.sh.e:SetTextColor(argb(a * A_SHADOW, C_SHADOW))
+	end
+end
+
+local function text_at(t, x, y, w, h, m)
+	put(t.tx, x, y, w, h)
+	put(t.sh, x + m.px, y + m.py, w, h)
+end
+
+local function text_show(t, on)
+	show(t.tx, on)
+	show(t.sh, on)
+end
+
+local function alpha_step(a, target, dt, in_ms, out_ms)
+	if target > a then return math_min(target, a + (in_ms > 0 and dt / in_ms or 1)) end
+	return math_max(target, a - (out_ms > 0 and dt / out_ms or 1))
+end
+
+local function hold_fraction(tg)
+	if not (hold and not hold.fired) then return 0 end
+	return math_max(0, math_min(1, (tg - hold.since) / HOLD_MS))
+end
+
+class "UICoopArena" (CUIScriptWnd)
+
+function UICoopArena:__init() super()
+	local xml = CScriptXmlInit()
+	xml:ParseFile(XML_FILE)
+	self.root = xml:InitStatic("coop_transition", self)
+	self.g_board = xml:InitStatic("coop_transition:group", self.root)
+	self.g_remind = xml:InitStatic("coop_transition:group", self.root)
+	self.bg = el(xml:InitStatic("coop_transition:bg", self.g_board))
+	self.icon = el(xml:InitStatic("coop_transition:icon", self.g_board))
+	self.t_head = new_text(xml, self.g_board, "coop_transition:head")
+	self.t_title = new_text(xml, self.g_board, "coop_transition:level")
+	self.t_count = new_text(xml, self.g_board, "coop_transition:slot")
+	self.t_status = new_text(xml, self.g_board, "coop_transition:line")
+	self.segs, self.rows = {}, {}
+	for i = 1, MAX_ROWS do
+		self.segs[i] = el(xml:InitStatic("coop_transition:seg", self.g_board))
+		self.rows[i] = { stripe = el(xml:InitStatic("coop_transition:stripe", self.g_board)),
+			nick = new_text(xml, self.g_board, "coop_transition:line"), state = new_text(xml, self.g_board, "coop_transition:line_r") }
+	end
+	self.bar_track = el(xml:InitStatic("coop_transition:bar", self.g_board))
+	self.bar_fill = el(xml:InitStatic("coop_transition:bar", self.g_board))
+	self.t_hint = new_text(xml, self.g_board, "coop_transition:hint")
+	self.rbg = el(xml:InitStatic("coop_transition:bg", self.g_remind))
+	self.t_rnick = new_text(xml, self.g_remind, "coop_transition:remind_nick")
+	self.t_rline = new_text(xml, self.g_remind, "coop_transition:remind_line")
+	self.g_board:Show(false)
+	self.g_remind:Show(false)
+	self.a_board, self.a_remind = 0, 0
+end
+
+function UICoopArena:__finalize()
+end
+
+local function metrics()
+	local dev = device()
+	local W, H = dev.width, dev.height
+	return { kx = 1024 * H / (768 * W), px = 1024 / W, py = 768 / H }
+end
+
+-- The group fades in and out; `v` nil fades it out (the last one shown is kept while it fades).
+local function fade(self, group, akey, vkey, v, dt, L)
+	if v then self[vkey] = v end
+	local a = alpha_step(self[akey], v and 1 or 0, dt, L.fade_in_ms, L.fade_out_ms)
+	self[akey] = a
+	local on = a > 0 and self[vkey] ~= nil
+	if group:IsShown() ~= on then group:Show(on) end
+	if not on then self[vkey] = nil end
+	return on and a or 0, self[vkey]
+end
+
+function UICoopArena:FrameBoard(tg, dt, v, m, L)
+	local a, bv = fade(self, self.g_board, "a_board", "bv", v, dt, L)
+	if a <= 0 then return end
+	local kx = m.kx
+	local Wd = L.width * kx
+	local x0, top = CX - Wd / 2, L.top
+	local x1 = x0 + Wd
+	local rows = row_texts(bv)
+	local kind = hint_of(bv)
+	local rows_bottom = top + L.rows_y + #rows * L.row_h
+	local bar_y = rows_bottom + L.bar_gap
+	local hint_y = bar_y + L.bar_h + L.hint_gap
+	local bottom = kind and (hint_y + L.hint_h) or rows_bottom
+	put(self.bg, x0 - L.pad_x * kx, top - L.pad_y, Wd + 2 * L.pad_x * kx, bottom - top + 2 * L.pad_y)
+	tint(self.bg, 255 * L.bg_alpha * a, C_BG)
+	show(self.bg, true)
+	put(self.icon, x0, top, L.icon * kx, L.icon)
+	tint(self.icon, 204 * a, C_WHITE)
+	show(self.icon, true)
+	text_at(self.t_head, x0 + L.head_x * kx, top, 240 * kx, L.head_h, m)
+	text_set(self.t_head, head_text(), 217 * a, C_DIM)
+	text_show(self.t_head, true)
+	text_at(self.t_title, x0, top + L.level_y, 240 * kx, L.level_h, m)
+	text_set(self.t_title, title_text(bv), 255 * a, C_WHITE)
+	text_show(self.t_title, true)
+	text_at(self.t_count, x1 - L.slot_w * kx, top + L.slot_y, L.slot_w * kx, L.level_h, m)
+	text_set(self.t_count, count_text(bv), 255 * a, C_WHITE)
+	text_show(self.t_count, true)
+	text_at(self.t_status, x0, top + L.status_y, Wd, L.status_h, m)
+	text_set(self.t_status, status_text(bv), 217 * a, C_WHITE)
+	text_show(self.t_status, true)
+	-- a segment per player on the map, white for one near Arnie
+	local total = math_min(MAX_ROWS, math_max(0, math_floor(tonumber(bv.t) or 0)))
+	for i = 1, MAX_ROWS do
+		local s = self.segs[i]
+		if i <= total then
+			put(s, x0 + (i - 1) * (L.seg_w + L.seg_gap) * kx, top + L.seg_y, L.seg_w * kx, L.seg_h)
+			tint(s, 255 * a * (i <= (tonumber(bv.c) or 0) and 1 or L.seg_off_alpha), C_WHITE)
+			show(s, true)
+		else
+			show(s, false)
+		end
+	end
+	for i = 1, MAX_ROWS do
+		local r, row = rows[i], self.rows[i]
+		if r then
+			local y = top + L.rows_y + (i - 1) * L.row_h
+			local ra = r.ready and 1 or L.dim_alpha
+			put(row.stripe, x0, y + 1, L.stripe_w * kx, L.stripe_h)
+			tint(row.stripe, 255 * a * ra, r.rgb)
+			show(row.stripe, true)
+			text_at(row.nick, x0 + L.nick_x * kx, y, L.nick_w * kx, L.row_h - 1, m)
+			text_set(row.nick, r.nick, 255 * a * ra, r.rgb)
+			text_show(row.nick, true)
+			text_at(row.state, x1 - L.state_w * kx, y, L.state_w * kx, L.row_h - 1, m)
+			text_set(row.state, r.text, 255 * a * (r.ready and 1 or L.text_dim_alpha), r.ready and C_WHITE or C_DIM)
+			text_show(row.state, true)
+		else
+			show(row.stripe, false)
+			text_show(row.nick, false)
+			text_show(row.state, false)
+		end
+	end
+	if kind then
+		put(self.bar_track, x0, bar_y, Wd, L.bar_h)
+		tint(self.bar_track, 255 * a * L.track_alpha, C_WHITE)
+		show(self.bar_track, true)
+		local f = hold_fraction(tg)
+		if f > 0 then
+			put(self.bar_fill, x0, bar_y, Wd * f, L.bar_h)
+			tint(self.bar_fill, 255 * a, C_WHITE)
+		end
+		show(self.bar_fill, f > 0)
+		text_at(self.t_hint, x0, hint_y, Wd, L.hint_h, m)
+		text_set(self.t_hint, hint_text(kind), 217 * a, C_DIM)
+		text_show(self.t_hint, true)
+	else
+		show(self.bar_track, false)
+		show(self.bar_fill, false)
+		text_show(self.t_hint, false)
+	end
+end
+
+function UICoopArena:FrameRemind(tg, dt, rem, m, L)
+	local a, rv = fade(self, self.g_remind, "a_remind", "rv", rem, dt, L)
+	if a <= 0 then return end
+	local kx = m.kx
+	local w = L.remind_w * kx
+	put(self.rbg, CX - w / 2 - L.remind_pad_x * kx, L.top - L.pad_y, w + 2 * L.remind_pad_x * kx, L.remind_nick_h + L.remind_line_h + 2 * L.pad_y)
+	tint(self.rbg, 255 * L.bg_alpha * a, C_BG)
+	show(self.rbg, true)
+	text_at(self.t_rnick, CX - w / 2, L.top, w, L.remind_nick_h, m)
+	text_set(self.t_rnick, rv.nick, 255 * a, rv.rgb)
+	text_show(self.t_rnick, true)
+	text_at(self.t_rline, CX - w / 2, L.top + L.remind_nick_h, w, L.remind_line_h, m)
+	text_set(self.t_rline, rv.text, 217 * a, C_WHITE)
+	text_show(self.t_rline, true)
+end
+
+-- The hold ends; while the key is still down a new one waits for it to be let go.
+local function drop_hold(tg, why)
+	if not hold then return end
+	if not hold.fired and why then log("arena: the use key hold ended after %d ms, nothing sent: %s", tg - hold.since, why) end
+	hold = nil
+	if key.down then key.latched = true end
+end
+
+-- Every frame: the hold on what this player is told (not on what the HUD shows this frame).
+local function step_hold(tg, v)
+	if key.down and key.seen and key.events_at and tg - key.events_at > HOLD_GAP_MS then
+		key.down, key.seen, key.latched = false, false, false -- its release went to another script
+		drop_hold(tg, "the key's events stopped")
+	end
+	if not hold then return end
+	if hint_of(v) ~= "start" or transition_up() then
+		drop_hold(tg, "the board is another now")
+		return
+	end
+	if hud_visible() then
+		hold.hidden_at = nil
+	elseif not hold.hidden_at then
+		hold.hidden_at = tg
+	elseif tg - hold.hidden_at > HOLD_GAP_MS then
+		drop_hold(tg, "the HUD is hidden (a dialog, an inventory, a menu)")
+		return
+	end
+	if not hold.fired and tg - hold.since >= HOLD_MS then
+		hold.fired = true
+		stats.starts = stats.starts + 1
+		log("arena: the use key held %d ms: the fight starts with those near Arnie", tg - hold.since)
+		local A = arena()
+		if A and A.start_pressed then
+			local ok, err = pcall(A.start_pressed)
+			if not ok then
+				stats.errors = stats.errors + 1
+				log("! arena: the start failed: %s", tostring(err))
+			end
+		end
+	end
+end
+
+function UICoopArena:Frame(tg)
+	local m, L = metrics(), layout()
+	local dt = self.last_tg and tg >= self.last_tg and tg - self.last_tg or 0
+	self.last_tg = tg
+	local v = view()
+	if v and transition_up() then v = nil end
+	last_v = v
+	stats.frames = stats.frames + 1
+	step_hold(tg, v)
+	local shown = v and hud_visible() and v or nil
+	local k = kind_of(shown)
+	self:FrameBoard(tg, dt, k == "board" and shown or nil, m, L)
+	self:FrameRemind(tg, dt, k == "remind" and reminder(shown) or nil, m, L)
+end
+
+function UICoopArena:Update()
+	CUIScriptWnd.Update(self)
+	local tg = time_global()
+	if self.off_until and tg < self.off_until then return end
+	local ok, err = pcall(self.Frame, self, tg)
+	if not ok then
+		self.off_until = tg + 5000
+		stats.errors = stats.errors + 1
+		log("! arena board frame failed: %s", tostring(err))
+	end
+end
+
+function get_window()
+	return WIN
+end
+
+function current()
+	return last_v
+end
+
+local function win_on()
+	if WIN then return end
+	local ok, err = pcall(function()
+		WIN = UICoopArena()
+		get_hud():AddDialogToRender(WIN)
+	end)
+	if not ok then
+		WIN = nil
+		log("! arena board failed: %s", tostring(err))
+	end
+end
+
+local function win_off()
+	if not WIN then return end
+	local w = WIN
+	WIN = nil
+	pcall(function() get_hud():RemoveDialogToRender(w) end)
+	last_v, hold = nil, nil
+	key.down, key.events_at, key.seen, key.latched = false, nil, false, false
+end
+
+-------------------------------------------------------------------------------
+-- Callbacks
+-------------------------------------------------------------------------------
+local function is_use_key(dik)
+	local ok, bind = pcall(dik_to_bind, dik)
+	return ok and bind == key_bindings.kUSE
+end
+
+-- A hold starts with the key going down under the starter's board (the HUD on, the crosshair not on Arnie).
+local function start_hold(tg, how)
+	if hold or key.latched or not WIN or hint_of(last_v) ~= "start" or not hud_visible() then return end
+	if at_arnie(last_v) then
+		key.latched = true -- this press talks to Arnie
+		stats.refused_arnie = stats.refused_arnie + 1
+		return
+	end
+	hold = { since = tg, fired = false }
+	stats.holds = stats.holds + 1
+	log("arena: the use key held (from its %s)", how)
+end
+
+local function on_key_press(dik)
+	if not is_use_key(dik) then return end
+	local tg = time_global()
+	key.down, key.events_at, key.seen, key.latched = true, tg, false, false
+	start_hold(tg, "press")
+end
+
+local function on_key_hold(dik)
+	if not is_use_key(dik) then return end
+	local tg = time_global()
+	if not key.down then key.down, key.latched = true, false end -- the press never came here
+	key.events_at, key.seen = tg, true
+	start_hold(tg, "hold events")
+end
+
+local function on_key_release(dik)
+	if not is_use_key(dik) then return end
+	key.down, key.seen, key.latched = false, false, false
+	if hold then
+		local tg = time_global()
+		drop_hold(tg, string_format("let go after %d ms", tg - hold.since))
+	end
+end
+
+local function actor_on_update()
+	if live() then
+		win_on()
+	elseif WIN then
+		win_off()
+	end
+end
+
+local function actor_on_net_destroy()
+	win_off()
+end
+
+local function marker_source()
+	local v = view()
+	if not v or transition_up() then return {} end
+	return marks(v)
+end
+
+function print_status()
+	return string_format("overlay %s, frames %d, key holds %d, starts %d, holds refused on Arnie %d, errors %d | now: %s",
+		WIN and "on" or "off", stats.frames, stats.holds, stats.starts, stats.refused_arnie, stats.errors,
+		last_v and (tostring(last_v.a) .. " fight " .. tostring(last_v.n)) or "-")
+end
+
+function on_game_start()
+	if not api then return end -- an exe without co-op: nothing of this runs
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("actor_on_net_destroy", actor_on_net_destroy)
+	RegisterScriptCallback("on_key_press", on_key_press)
+	RegisterScriptCallback("on_key_release", on_key_release)
+	RegisterScriptCallback("on_key_hold", on_key_hold)
+	local M = module_of("coop_hud_markers")
+	if M and M.add_source then
+		local ok, err = pcall(M.add_source, "arena", marker_source, 200)
+		if not ok then log("! arena: no compass source: %s", tostring(err)) end
+	end
+	local C = rawget(_G, "coop_mods_core")
+	if C and C.status_line then pcall(C.status_line, "arena_board", print_status) end
+end

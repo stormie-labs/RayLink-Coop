@@ -11,6 +11,7 @@ local BRIDGE = 0x101
 local BOX1, BOX2, TRIG, MANAGER, COMMENT, TOTAL, OPPONENT, BODY = 900, 901, 910, 920, 911, 912, 300, 777
 local SR, SPAM = 913, 914 -- Arnie's monster fight (the old arena): restrictors bar_arena_sr and bar_arena_spam
 local THIRD = 501 -- a third player's character (group entry)
+local AWAY = 502 -- a fourth player, on another map (split levels)
 local ARENA = "l05_bar"
 local IN_ARENA = vec(153, -19, 103) -- where the cutscene puts the fighter
 local DOOR = vec(150, 0.4, 75) -- t_walk_2
@@ -236,7 +237,9 @@ local function stock(M)
 	local cls = {}
 	function cls.purge_items(self) for id in pairs(self.saved_obj) do M.released[#M.released + 1] = id end end
 	function cls.net_spawn() return true end
-	M.zone = setmetatable({ saved_obj = {}, object = make_obj(930, IN_ARENA.x, IN_ARENA.y, IN_ARENA.z, { _radius = 20 }) }, { __index = cls })
+	-- the pit's zone: a script_zone named bar_arena in all.spawn (here a ball; real_zones below gives it its real box)
+	M.zone = setmetatable({ saved_obj = {}, object = make_obj(930, IN_ARENA.x, IN_ARENA.y, IN_ARENA.z, { _radius = 20, _name = "bar_arena" }) },
+		{ __index = cls })
 	M.released, M.purges = {}, 0
 	E.xr_zones = {
 		arena_zone_binder = cls,
@@ -382,6 +385,7 @@ local function setup(opts)
 	local avatars = { [1] = PROXY }
 	if not map then avatars[0] = 0 end
 	if opts.third then avatars[2] = THIRD end
+	if opts.away then avatars[3] = AWAY end -- a player of the session on another map: no character on this one
 	H = machine(map and "client" or "host", map and BRIDGE or 0, avatars)
 	if map then
 		H.env.coop.is_map_server = function() return true end
@@ -422,13 +426,41 @@ local function setup(opts)
 	if opts.before_start then opts.before_start() end
 	HA.on_game_start()
 	CA.on_game_start()
-	H.zone:net_spawn() -- the level loads: the arena zone's binder spawns (coop_arena keeps it)
+	-- the level loads: the arena zone's binder spawns (coop_arena keeps it); zone_before: it spawned before coop_arena's wrapper
+	if not opts.zone_before then H.zone:net_spawn() end
 	return H, Cm
+end
+
+-- The starter of a held fight holds the use key at Arnie (owner 2026-11-24, TZ R88): coop_hud_arena calls
+-- coop_arena.start_pressed on his machine; the host player's own goes straight in, a client's is his arena.start, and on a map
+-- server it comes through the world server (from 0, with the player's _peer).
+local NEAR_ARNIE = vec(148, 1, 76) -- 2.2 m from Arnie (149, 1, 74)
+local function press_start(A)
+	local f = A and A.start_pressed
+	if type(f) == "function" then f() end
+end
+local function relay_start(peer)
+	for _, f in ipairs(H.handlers["arena.start"] or {}) do f(H.env.coop_main.encode({ _peer = peer }), 0) end
+end
+local function hold_start(id)
+	if id == 0 then
+		H.env.db.actor._pos = vector():set(NEAR_ARNIE)
+		press_start(HA)
+	elseif H.peer == 0 and id == PROXY then
+		H.objects[id]._pos = vector():set(NEAR_ARNIE)
+		Cm.env.db.actor._pos = vector():set(NEAR_ARNIE)
+		press_start(CA)
+	else
+		H.objects[id]._pos = vector():set(NEAR_ARNIE)
+		relay_start(id == PROXY and 1 or 2)
+	end
+	pump()
 end
 
 -- The host's trigger: the dialog gave fight n; sr_idle@idle -> sr_idle@wait_n (%=disable_ui%: the audience rule), on_timer
 -- 1000 -> sr_cutscene@fight_n (%=bar_arena_teleport%), whose section reaches every machine (its cutscene).
--- START_AS_IS: only the trigger's sr_idle@wait_N (its audience); else a held fight is started by its taker alone ("start alone").
+-- START_AS_IS: only the trigger's sr_idle@wait_N (its audience); else the starter of a held fight walks up to Arnie and holds
+-- the use key there (hold_start).
 local function start(n)
 	W.infos["bar_arena_fight_" .. n], W.infos.bar_arena_fight = true, true
 	local aud = H.rule(H.objects[TRIG])
@@ -436,11 +468,7 @@ local function start(n)
 	if START_AS_IS then return aud end
 	local f = HA._state().fight
 	if f and f.hold then
-		local M = f.id == 0 and H or Cm
-		local b = M.BOX
-		M.BOX = nil
-		if b then b.ok() end
-		pump()
+		hold_start(f.id)
 		aud = H.rule(H.objects[TRIG])
 	end
 	H.env.xr_effects.bar_arena_teleport(H.env.db.actor, H.objects[TRIG])
@@ -477,6 +505,31 @@ local function at(o, v) return o._pos:distance_to(v) < 0.01 end
 local function released(M, id)
 	for _, r in ipairs(M.released) do if r == id then return true end end
 	return false
+end
+
+-- The Bar's real arena zones (all.spawn of the stand, R88): two script_zones with [arena_zone], bar_arena (the pit, a box
+-- 35.76 x 3.73 x 59.61 at 153.25 -19.46 103.67) and bar_old_arena (the old monster cage, a box 17.1 x 10.08 x 19.33 at 157.0
+-- 0.1 95.13, after the pit in the file). t_way, where the cutscene puts a fighter, is in the pit's box only.
+local T_WAY = vec(151.82, -21.06, 75.3)
+local function boxed(o, cx, cy, cz, sx, sy, sz)
+	function o:inside(p)
+		return math.abs(p.x - cx) <= sx / 2 and math.abs(p.y - cy) <= sy / 2 and math.abs(p.z - cz) <= sz / 2
+	end
+	return o
+end
+-- The zones' real boxes; the level spawns their binders again in the order of all.spawn (the pit, then the cage), or the other.
+local function real_zones(M, cage_first)
+	boxed(M.zone.object, 153.25, -19.46, 103.67, 35.76, 3.73, 59.61)
+	local cls = M.env.xr_zones.arena_zone_binder
+	local cage_obj = boxed(make_obj(931, 157.0, 0.1, 95.13, { _name = "bar_old_arena" }), 157.0, 0.1, 95.13, 17.1, 10.08, 19.33)
+	local cage = setmetatable({ saved_obj = {}, object = cage_obj }, { __index = cls })
+	if cage_first then
+		cage:net_spawn()
+		M.zone:net_spawn()
+	else
+		M.zone:net_spawn()
+		cage:net_spawn()
+	end
 end
 
 -------------------------------------------------------------------------------
@@ -1228,6 +1281,20 @@ do
 	check(tip_ids(Cm) == "bar_arena_fight_30" and #H.tips == 0, "the player standing in the arena gets it")
 end
 
+print("== the same on the real Bar: the monster fight is in the cage (bar_arena_sr), not in the pit's zone")
+do
+	setup()
+	real_zones(H)
+	local A, xe = H.env.db.actor, H.env.xr_effects
+	H.env.db.zone_by_name.bar_arena_sr = boxed(H.objects[SR], 157.19, 0, 95.27, 17.33, 12.23, 20.86) -- all.spawn
+	H.env.db.actor._pos = vec(149, 1, 75) -- the host is the nearest to Arnie
+	H.objects[PROXY]._pos = vec(157, 0.5, 96) -- the client fights a monster in the cage
+	H.logic_aud = { [0] = true, [PROXY] = true }
+	xe.bar_arena_fight_30(A, H.objects[SPAM])
+	pump()
+	check(tip_ids(Cm) == "bar_arena_fight_30" and #H.tips == 0, "the player standing in the cage gets it")
+end
+
 print("== a mod replaces a line's effect after coop: the line still goes to the fighter")
 do
 	setup()
@@ -1914,87 +1981,250 @@ do
 end
 
 -------------------------------------------------------------------------------
--- Group entry (owner 2026-11-07): a fight taken from Arnie waits for the other players on the Bar. They are invited (a tip and
--- a map spot on Arnie); whoever stands within GATHER_RADIUS of Arnie has one button: alone "start alone", with others but not
--- everybody "start without the others" (a vote among those at Arnie: coop_economy_group.propose). Everybody at Arnie: it
--- starts by itself; nobody else on the Bar: at once (stock's 1 s). Everyone at Arnie at the start goes in, each with his kit
--- and his ledger, at a spot of his own.
-local function box_of(M) return M.BOX end
-local function press(M, yes)
-	local b = M.BOX
-	M.BOX = nil
-	if b then if yes then b.ok() else b.cancel() end end
-	pump()
+-- Group entry (owner 2026-11-24, TZ R88 / 6.19, in place of the boxes and the vote of 2026-11-07: "the accept window as at a
+-- transition: people walk up, and the one who decided to start holds F to go with those near"). A fight taken with other players
+-- on the map waits (the trigger's sr_idle@wait_N holds, nobody's UI is taken). Every player on the map is told his part: the
+-- starter at Arnie "lead" (the board and the key), away from Arnie "lead_far"; another player within 10 m of Arnie "with" (the
+-- board, no key: step away not to go), farther "invite" (a reminder, a tip, a spot on Arnie). The starter holds the use key
+-- (coop_hud_arena -> coop_arena.start_pressed -> arena.start): whoever stands within 10 m of Arnie then goes in, the starter
+-- first. No window, no vote, never by itself: one who walked away (or never came) is not taken (the complaint: "it took the
+-- one who pressed No"). Nobody else on the map: at once, as in single player.
+local function view(A) return A.gather_view and A.gather_view() or nil end
+-- the last "gather" the authority sent to `peer` (a player with no machine in the model), decoded
+local function gather_sent(peer)
+	local last
+	for _, s in ipairs(H.sent) do
+		if s.name == "arena.go" and s.target == peer then
+			local t = H.env.coop_main.decode(s.payload)
+			if t.f == "gather" then last = t end
+		end
+	end
+	return last
+end
+local function no_window() return H.BOX == nil and Cm.BOX == nil end
+local function ids_text(f) return table.concat(f and f.ids or {}, ",") end
+local function idle_runs()
+	H.idle_updates = 0
+	H.env.sr_idle.action_idle.update({ object = H.objects[TRIG], st = {} })
+	return H.idle_updates
+end
+local function log_has(M, text)
+	for _, line in ipairs(M.log) do if line:find(text, 1, true) then return true end end
+	return false
 end
 
-print("== group entry: nobody else on the Bar: the fight starts at once, as in single player")
+print("== group entry (co-op): nobody else in the session: the fight starts at once, as in single player")
 do
 	setup({ start_as_is = true })
-	H.objects[PROXY]._pos = vec(300, 0, 300)
-	H.objects[PROXY]._level_away = true
 	local proxy = H.objects[PROXY]
-	H.objects[PROXY] = nil -- his character is on another map
+	H.objects[PROXY] = nil -- his character is not on the Bar
 	W.talked[0] = NOW
 	local aud = start(1)
 	check(aud and aud[0] == true and not HA._state().fight.hold, "no hold: the host's trigger effects are his at once")
-	H.idle_updates = 0
-	H.env.sr_idle.action_idle.update({ object = H.objects[TRIG], st = {} })
-	check(H.idle_updates == 1, "the trigger's sr_idle@wait runs its timer (stock 1 s)")
-	check(box_of(H) == nil, "no button")
+	check(idle_runs() == 1, "the trigger's sr_idle@wait runs its timer (stock 1 s)")
+	check(no_window() and view(HA) == nil, "no window, no board")
 	H.objects[PROXY] = proxy
 end
 
-print("== group entry: the host takes the fight, the client is on the Bar: the game waits and invites him")
+print("== group entry (co-op): three players; the host takes the fight at Arnie, the client stands 8 m from Arnie, the third 30 m away")
 do
-	setup({ start_as_is = true })
+	setup({ start_as_is = true, third = true })
+	local host_gear, client_gear, third_gear = owned(0), owned(PROXY), owned(THIRD)
+	H.env.db.actor._pos = vec(149, 1, 76) -- 2 m from Arnie
+	H.objects[PROXY]._pos = vec(149, 1, 82) -- 8 m
+	Cm.env.db.actor._pos = vec(149, 1, 82)
+	H.objects[THIRD]._pos = vec(149, 1, 104) -- 30 m
 	W.talked[0] = NOW
 	local aud = start(1)
 	local f = HA._state().fight
-	check(f and f.hold == true and aud and next(aud) == nil, "held: the trigger's disable_ui goes to nobody (the taker can move and press)")
-	H.idle_updates = 0
-	H.env.sr_idle.action_idle.update({ object = H.objects[TRIG], st = {} })
-	check(H.idle_updates == 0, "the trigger's sr_idle@wait does not run its timer while the group gathers")
-	H.env.sr_idle.action_idle.update({ object = H.objects[COMMENT], st = {} })
-	check(H.idle_updates == 1, "another sr_idle runs as stock")
+	check(f and f.hold == true and aud and next(aud) == nil, "held: the trigger's disable_ui goes to nobody")
 	tick(H)
 	pump()
-	check(box_of(H) and box_of(H).txt:find("alone", 1, true) ~= nil, "the host at Arnie: the button 'start alone' (" .. tostring(box_of(H) and box_of(H).txt) .. ")")
-	check(box_of(Cm) == nil and Cm.spot ~= nil and #Cm.tips > 0 and Cm.tips[#Cm.tips].id:find("p0", 1, true) ~= nil,
-		"the client is invited: a tip with the host's nick and a map spot on Arnie")
-	check((H.cut_in or 0) == 0 and #owned(BOX1) == 0, "nobody went in yet")
-	press(H, true)
+	check(no_window(), "no window for anybody (the boxes 'start alone' / 'start without the others' are gone)")
+	local hv, cv, tv = view(HA), view(CA), gather_sent(2)
+	check(hv and hv.a == "lead" and hv.n == 1 and hv.c == 2 and hv.t == 3,
+		"the host at Arnie: the board with the key, 2 of 3 near (" .. tostring(hv and hv.a) .. ")")
+	check(cv and cv.a == "with" and cv.w == "p0" and cv.n == 1, "the client 8 m from Arnie: the board 'you go with p0', no key")
+	check(tv and tv.a == "invite" and tv.w == "p0", "the third, 30 m away: invited (" .. tostring(tv and tv.a) .. ")")
+	check(hv and #hv.near == 2 and hv.near[1] == 0 and hv.near[2] == 1 and #hv.far == 1 and hv.far[1] == 2,
+		"the board's rows: near the host (first) and the client, far the third")
+	for _ = 1, 30 do tick(H) end
+	pump()
+	check(HA._state().fight.hold == true and idle_runs() == 0 and (H.cut_in or 0) == 0 and #owned(BOX1) == 0,
+		"30 s later nothing started by itself: only the starter's key starts it")
+	press_start(HA)
+	pump()
 	f = HA._state().fight
-	check(not f.hold and #f.ids == 1 and f.ids[1] == 0, "started alone: the host is the one fighter")
-	check(Cm.spot == nil, "the client's spot on Arnie is gone")
-	H.idle_updates = 0
-	H.env.sr_idle.action_idle.update({ object = H.objects[TRIG], st = {} })
-	check(H.idle_updates == 1, "the trigger goes on (its 1 s timer is long over: the cutscene at once)")
+	check(not f.hold and ids_text(f) == "0," .. PROXY, "the host held the key: he and the client go in, the third stays (" .. ids_text(f) .. ")")
+	check(view(HA) == nil and view(CA) == nil and (gather_sent(2) or {}).a == "off", "the boards and the invitation are gone")
+	check(H.ui_off == 1 and Cm.ui_off == 1, "both fighters lose the UI (stock disable_ui)")
+	check(idle_runs() == 1, "the trigger goes on (its 1 s timer is long over: the cutscene at once)")
 	aud = H.rule(H.objects[TRIG])
-	check(aud and aud[0] == true and aud[PROXY] == nil, "the trigger's effects are his")
+	check(aud[0] == true and aud[PROXY] == true and aud[THIRD] == nil, "the trigger's effects (enable_ui) are the two fighters'")
 	H.env.xr_effects.bar_arena_teleport(H.env.db.actor, H.objects[TRIG])
 	pump()
-	check(created_by("host", 0) == 4 and created_by("client") == 0, "only the host gets a kit")
+	check(#owned(BOX1) == #host_gear + #client_gear and same(owned(THIRD), third_gear), "both fighters' gear in box 1, the third's untouched")
+	check(created_by("host", 0) == 4 and created_by("client", PROXY) == 4, "each fighter's kit is made by his own machine")
+	check(#sent_named(H, "arena.go") > 0 and HA._state().fight.ids[1] == 0, "the starter is the first fighter")
 end
 
-print("== group entry: the client walks up to Arnie: everybody on the Bar is there, both go in")
+print("== group entry (co-op): everybody at Arnie and nobody holds the key: no fight (the 'No' complaint)")
 do
 	setup({ start_as_is = true })
-	local host_gear, client_gear = owned(0), owned(PROXY)
+	H.env.db.actor._pos = vec(149, 1, 76)
+	H.objects[PROXY]._pos = vec(146, 1, 70)
+	Cm.env.db.actor._pos = vec(146, 1, 70)
+	W.talked[0] = NOW
+	start(1)
+	for _ = 1, 20 do tick(H) end
+	pump()
+	local f = HA._state().fight
+	check(f and f.hold == true and f.ids == nil, "taken with everybody at Arnie: it waits for the key, nobody goes by himself")
+	check(idle_runs() == 0 and (Cm.cut_in or 0) == 0 and #owned(BOX1) == 0, "nobody's gear moved, no cutscene")
+	check(no_window(), "no window, no vote")
+end
+
+print("== group entry (co-op): who steps away before the key is not taken; who comes after the start is not either")
+do
+	setup({ start_as_is = true, third = true })
+	H.env.db.actor._pos = vec(149, 1, 76)
+	H.objects[PROXY]._pos = vec(149, 1, 82)
+	Cm.env.db.actor._pos = vec(149, 1, 82)
+	H.objects[THIRD]._pos = vec(149, 1, 104)
+	W.talked[0] = NOW
+	start(1)
+	tick(H)
+	pump()
+	check(view(CA) and view(CA).a == "with", "the client at 8 m goes with the host")
+	H.objects[PROXY]._pos = vec(149, 1, 85) -- 11 m: he walks away while the host holds the key
+	Cm.env.db.actor._pos = vec(149, 1, 85)
+	tick(H)
+	pump()
+	check(view(CA) and view(CA).a == "invite" and view(HA) and view(HA).c == 1, "11 m from Arnie: he is not near any more (the board says it)")
+	press_start(HA)
+	pump()
+	local f = HA._state().fight
+	check(not f.hold and ids_text(f) == "0", "the key: the host goes in alone (" .. ids_text(f) .. ")")
+	H.objects[PROXY]._pos = vec(149, 1, 75)
+	H.objects[THIRD]._pos = vec(149, 1, 73)
+	tick(H)
+	pump()
+	check(ids_text(HA._state().fight) == "0" and view(CA) == nil, "the two who come after the start are not taken")
+end
+
+print("== group entry (co-op): only the starter's key starts it; a starter who is gone or down passes it to the one nearest to Arnie")
+do
+	setup({ start_as_is = true, third = true })
+	H.env.db.actor._pos = vec(149, 1, 79) -- 5 m
+	H.objects[PROXY]._pos = vec(149, 1, 76) -- the client took it, 2 m
+	Cm.env.db.actor._pos = vec(149, 1, 76)
+	H.objects[THIRD]._pos = vec(149, 1, 82) -- 8 m
+	W.talked[1] = NOW
+	start(2)
+	tick(H)
+	pump()
+	check(view(CA) and view(CA).a == "lead" and view(HA) and view(HA).a == "with", "the client took it: he has the key, the host goes with him")
+	press_start(HA)
+	relay_start(2)
+	pump()
+	check(HA._state().fight.hold == true and log_has(H, "is not its starter"), "the host's and the third's key do nothing: they are not its starter")
+	local proxy = H.objects[PROXY]
+	H.objects[PROXY] = nil -- the starter leaves the session (his character goes off the map)
+	tick(H)
+	pump()
+	check(HA._state().fight.id == 0 and view(HA) and view(HA).a == "lead" and view(HA).passed == true,
+		"the starter is gone: the host, nearest to Arnie, can start it now (" .. tostring(HA._state().fight.id) .. ")")
+	check(log_has(H, "can start it now"), "one line in the log says who took the key over")
+	H.objects[PROXY] = proxy
+	local life = { [0] = "wounded" }
+	H.env.coop.life_of = function(id) return life[id] or "alive" end
+	tick(H)
+	pump()
+	check(HA._state().fight.id == PROXY or HA._state().fight.id == THIRD, "the host is down: the key goes on to one standing at Arnie")
+	local starter = HA._state().fight.id
+	if starter == PROXY then press_start(CA) else relay_start(2) end
+	pump()
+	local f = HA._state().fight
+	check(not f.hold and f.ids[1] == starter and f.ids[2] ~= 0 and #f.ids == 2, "the new starter's key: the two standing at Arnie go in, not the one who is down (" .. ids_text(f) .. ")")
+	H.env.coop.life_of = nil
+end
+
+print("== group entry (co-op): the starter away from Arnie has no key, the board tells him to come back")
+do
+	setup({ start_as_is = true })
+	H.env.db.actor._pos = vec(149, 1, 104) -- 30 m
+	H.objects[PROXY]._pos = vec(149, 1, 76)
+	Cm.env.db.actor._pos = vec(149, 1, 76)
+	W.talked[0] = NOW
+	start(1)
+	tick(H)
+	pump()
+	check(view(HA) and view(HA).a == "lead_far" and view(CA) and view(CA).a == "with", "the host far from Arnie: 'come back', the client near: 'with'")
+	press_start(HA)
+	pump()
+	check(HA._state().fight.hold == true and log_has(H, "not at Arnie"), "his key away from Arnie does nothing")
+	H.env.db.actor._pos = vec(149, 1, 76)
+	tick(H)
+	pump()
+	check(view(HA) and view(HA).a == "lead", "back at Arnie: the key")
+end
+
+print("== group entry (co-op): the invited player gets one tip and the spot on Arnie; both go when the fight starts")
+do
+	setup({ start_as_is = true })
 	H.env.db.actor._pos = vec(149, 1, 76)
 	W.talked[0] = NOW
 	start(1)
 	tick(H)
 	pump()
-	check(HA._state().fight.hold == true and Cm.spot ~= nil, "held, the client invited")
-	H.objects[PROXY]._pos = vec(146, 1, 70) -- he comes
+	local tips = #Cm.tips
+	check(Cm.spot ~= nil and Cm.spot.id == MANAGER and tips == 1 and Cm.tips[1].id:find("p0", 1, true) ~= nil,
+		"the client is invited: a tip with the host's nick and a map spot on Arnie")
+	H.objects[PROXY]._pos = vec(149, 1, 90) -- he walks around, still away
 	tick(H)
 	pump()
+	H.env.db.actor._pos = vec(149, 1, 104) -- the host steps away from Arnie and back: the client's board is told again
+	tick(H)
+	pump()
+	H.env.db.actor._pos = vec(149, 1, 76)
+	tick(H)
+	pump()
+	check(#Cm.tips == 1 and view(CA) and view(CA).c == 1, "one tip a fight, not one a message (" .. #Cm.tips .. ")")
+	-- the review of R88: he walks up to Arnie ("with") and away again ("invite") three times; each way back was a new tip
+	for _ = 1, 3 do
+		H.objects[PROXY]._pos = vec(149, 1, 82) -- 8 m
+		Cm.env.db.actor._pos = vec(149, 1, 82)
+		tick(H)
+		pump()
+		check(view(CA) and view(CA).a == "with" and Cm.spot == nil, "at Arnie: he goes with the host, no spot")
+		H.objects[PROXY]._pos = vec(149, 1, 90) -- 16 m
+		Cm.env.db.actor._pos = vec(149, 1, 90)
+		tick(H)
+		pump()
+	end
+	check(view(CA) and view(CA).a == "invite" and Cm.spot ~= nil and Cm.spot.id == MANAGER,
+		"away again: invited, the spot on Arnie is back")
+	check(#Cm.tips == 1, "one tip a fight: walking away from Arnie and back gives none (" .. #Cm.tips .. ")")
+	press_start(HA)
+	pump()
+	check(Cm.spot == nil and view(CA) == nil, "the spot and the reminder go at the start")
+end
+
+print("== group entry (co-op): two fighters, each his kit, his spot, his gear back; one falls, the other fights on")
+do
+	setup({ start_as_is = true })
+	local host_gear, client_gear = owned(0), owned(PROXY)
+	H.env.db.actor._pos = vec(149, 1, 76)
+	H.objects[PROXY]._pos = vec(146, 1, 70)
+	Cm.env.db.actor._pos = vec(146, 1, 70)
+	W.talked[0] = NOW
+	start(1)
+	tick(H)
+	pump()
+	press_start(HA)
+	pump()
 	local f = HA._state().fight
-	check(not f.hold and #f.ids == 2 and f.ids[1] == 0 and f.ids[2] == PROXY, "everybody at Arnie: it starts by itself, the taker first")
-	check(Cm.spot == nil and box_of(H) == nil, "no spot, no button")
-	check(Cm.ui_off == 1 and H.ui_off == 1, "both lose the UI at the start (stock disable_ui)")
-	local aud = H.rule(H.objects[TRIG])
-	check(aud[0] == true and aud[PROXY] == true, "the trigger's effects (enable_ui) are both fighters'")
+	check(not f.hold and ids_text(f) == "0," .. PROXY, "the key: both go in, the taker first")
 	H.env.xr_effects.bar_arena_teleport(H.env.db.actor, H.objects[TRIG])
 	pump()
 	H.cut, Cm.cut = H.new_cut(), Cm.new_cut()
@@ -2007,7 +2237,6 @@ do
 	check(at(H.env.db.actor, IN_ARENA) and not at(Cm.env.db.actor, IN_ARENA) and Cm.env.db.actor._pos:distance_to(IN_ARENA) < 4,
 		"each at a spot of his own in the pit")
 	check(HA._state().prizes[1] and #HA._state().prizes[1] == 2, "the fight's prize is both fighters'")
-	-- the host's cutscene ends: his trigger goes on; the client's slot and the way out are both fighters'
 	H.env.xr_effects.bar_arena_weapon_slot(H.env.db.actor, H.objects[TRIG], { "2" })
 	pump()
 	check(H.env.db.actor._slot == 2 and Cm.env.db.actor._slot == 2, "the weapon slot is both fighters'")
@@ -2015,69 +2244,133 @@ do
 	win(1)
 	check(same(owned(0), host_gear) and same(owned(PROXY), client_gear), "won: each has exactly his own gear back")
 	check(at(H.env.db.actor, DOOR) and at(Cm.env.db.actor, DOOR), "both at the door")
-end
 
-print("== group entry: one falls, the fight goes on; it is over when no fighter is left")
-do
 	setup({ start_as_is = true })
 	H.env.db.actor._pos = vec(149, 1, 76)
 	H.objects[PROXY]._pos = vec(146, 1, 70)
 	W.talked[0] = NOW
 	start(1)
 	tick(H)
+	press_start(HA)
 	pump()
 	H.env.xr_effects.bar_arena_teleport(H.env.db.actor, H.objects[TRIG])
 	pump()
 	check(#HA._state().fight.ids == 2, "two fighters")
-	-- the client falls and respawns: his gear back, the host fights on
-	for _, f in ipairs(H.handlers["arena.out"] or {}) do f(H.env.coop_main.encode({}), 1) end
+	for _, fn in ipairs(H.handlers["arena.out"] or {}) do fn(H.env.coop_main.encode({}), 1) end
 	pump()
-	local f = HA._state().fight
-	check(f and #f.ids == 1 and f.ids[1] == 0, "the fight goes on with the host")
+	f = HA._state().fight
+	check(f and ids_text(f) == "0", "the client falls and respawns: the fight goes on with the host")
 	HA.fight_over()
 	check(HA._state().fight == nil, "over")
 end
 
-print("== group entry: three players, two at Arnie: 'start without the others' asks the other one at Arnie")
+print("== group entry (co-op): a load while the group gathers keeps it waiting for the key")
 do
-	setup({ start_as_is = true, third = true })
+	setup({ start_as_is = true })
 	H.env.db.actor._pos = vec(149, 1, 76)
-	H.objects[PROXY]._pos = vec(146, 1, 70)
-	H.objects[THIRD]._pos = vec(120, 0, 100) -- on the Bar, far from Arnie
-	local asked
-	H.env.coop_economy_group = { propose = function(name, from, voters, cb, arg)
-		asked = { name = name, from = from, voters = voters, cb = cb, arg = arg }
-		return true
-	end }
+	W.talked[0] = NOW
+	start(1)
+	tick(H)
+	local saved = {}
+	H.fire("save_state", saved)
+	H.fire("load_state", saved)
+	tick(H)
+	pump()
+	local f = HA._state().fight
+	check(f and f.hold == true and idle_runs() == 0 and view(HA) and view(HA).a == "lead", "after the load: held, the board and the key are back")
+end
+
+print("== group entry (co-op): no vote and no window module is asked")
+do
+	local asked, subj = nil, nil
+	setup({ start_as_is = true, third = true, before_start = function()
+		H.env.coop_economy_group = { subject = function(name) subj = name end, propose = function() asked = true return true end }
+	end })
+	H.env.db.actor._pos = vec(149, 1, 76)
+	H.objects[PROXY]._pos = vec(149, 1, 82)
 	W.talked[0] = NOW
 	start(1)
 	tick(H)
 	pump()
-	check(box_of(H) and box_of(H).txt:find("without", 1, true) ~= nil, "two of three at Arnie: the button 'start without the others'")
-	check(box_of(Cm) and box_of(Cm).txt:find("without", 1, true) ~= nil, "the client at Arnie has it too")
-	press(H, true)
-	check(asked and asked.name == "arena" and asked.from == 0 and asked.voters[1] == true and asked.voters[0] == nil and asked.voters[2] == nil and asked.arg == "1",
-		"the host pressed: a vote of the client (the one at Arnie), not of the third player")
-	check(HA._state().fight.hold == true, "the vote runs: still waiting")
-	asked.cb(false, "no", "p1")
-	check(HA._state().fight.hold == true, "a no: the group still waits")
-	press(Cm, true)
-	check(asked.from == 1 and asked.voters[0] == true, "the client presses: the host is asked")
-	asked.cb(true)
-	local f = HA._state().fight
-	check(not f.hold and #f.ids == 2 and f.ids[1] == 0 and f.ids[2] == PROXY, "yes: the two at Arnie go in, the third stays")
+	press_start(HA)
+	pump()
+	check(subj == nil and asked == nil and no_window(), "coop_economy_group is not asked: no 'arena' vote, no window")
 end
 
-print("== group entry: the vote is the economy's (coop_economy_group.subject 'arena' with its lines)")
+print("== group entry (server): the map server of the Bar gathers its own players; the key comes through the world server")
 do
-	local subj
-	setup({ start_as_is = true, before_start = function()
-		H.env.coop_economy_group = { subject = function(name, texts) subj = { name = name, texts = texts } end }
+	local asked, subj = nil, nil
+	setup({ answer = "srv_map", start_as_is = true, third = true, away = true, before_start = function()
+		H.env.coop_economy_group = { subject = function(name) subj = name end, propose = function() asked = true return true end }
 	end })
-	check(subj and subj.name == "arena" and subj.texts.ask and subj.texts.no and subj.texts.timeout, "the arena's vote lines are registered")
+	H.objects[PROXY]._pos = vec(149, 1, 76) -- the taker at Arnie
+	H.objects[THIRD]._pos = vec(149, 1, 82) -- 8 m
+	W.talked[1] = NOW
+	start(3)
+	tick(H)
+	pump()
+	local f = HA._state().fight
+	local mine, third, away = gather_sent(1), gather_sent(2), gather_sent(3)
+	check(f and f.hold == true and f.id == PROXY, "held on the map server, the client took it")
+	check(mine and mine.a == "lead" and mine.c == 2 and mine.t == 2, "the taker's board: the key, 2 of the 2 on the Bar near")
+	check(third and third.a == "with", "the third at 8 m goes with him")
+	check(away == nil, "the player on another map is not on the board and is not asked")
+	relay_start(2)
+	check(HA._state().fight.hold == true, "the third's key does nothing: he is not the starter")
+	relay_start(1)
+	f = HA._state().fight
+	check(not f.hold and ids_text(f) == PROXY .. "," .. THIRD, "the taker's key through the world server: he and the third go in (" .. ids_text(f) .. ")")
+	check(subj == nil and asked == nil, "no vote at the world server: coop_economy_group is not asked")
+	local proposals = 0
+	for _, s in ipairs(H.sent) do if tostring(s.name):find("propose", 1, true) then proposals = proposals + 1 end end
+	check(proposals == 0, "nothing goes to the world server about the start")
+	H.env.xr_effects.bar_arena_teleport(H.env.db.actor, H.objects[TRIG])
+	pump()
+	check(ledger_for(HA, PROXY) and ledger_for(HA, THIRD), "both fighters' gear stowed by the map server")
 end
 
-print("== the arena's strings: eng and rus, every id coop_arena uses")
+print("== group entry (server): who steps away before the key is not taken; one alone on the Bar starts at once")
+do
+	setup({ answer = "srv_map", start_as_is = true, third = true })
+	H.objects[PROXY]._pos = vec(149, 1, 76)
+	H.objects[THIRD]._pos = vec(149, 1, 82)
+	W.talked[1] = NOW
+	start(3)
+	tick(H)
+	H.objects[THIRD]._pos = vec(149, 1, 85) -- 11 m
+	tick(H)
+	relay_start(1)
+	check(ids_text(HA._state().fight) == tostring(PROXY), "11 m from Arnie at the key: the third stays")
+
+	setup({ answer = "srv_map", start_as_is = true })
+	W.talked[1] = NOW
+	local aud = start(3)
+	check(aud and aud[PROXY] == true and not HA._state().fight.hold and gather_sent(1) == nil, "alone on the Bar: at once, no board")
+end
+
+print("== group entry (server): the world server has no Bar: a key that reaches it does nothing, nobody is told anything")
+do
+	reset_world()
+	NOW = NOW + 1000000
+	W = { items = {}, holders = {}, next_id = 2000, moves = 0, infos = {}, talked = {}, created = {}, client_seen = {} }
+	local Wd = machine("host", 0, { [1] = PROXY })
+	Wd.env.coop.is_dedicated = function() return true end
+	Cm = nil
+	H = Wd
+	holder(Wd, Wd.env.db.actor, 0)
+	env(Wd, "fake_start")
+	host_alife(Wd)
+	local WA = load_script(Wd, "coop_arena")
+	WA.on_game_start()
+	W.infos.bar_arena_fight_1, W.infos.bar_arena_fight = true, true -- a fight runs on the Bar's map server
+	for _, f in ipairs(Wd.handlers["arena.start"] or {}) do f(Wd.env.coop_main.encode({}), 1) end
+	tick(Wd)
+	pump()
+	check(WA._state().fight == nil and #sent_named(Wd, "arena.go") == 0 and view(WA) == nil,
+		"no fight, no board, no message on the world server")
+end
+
+print("== the arena's strings: eng and rus, every id coop_arena and its board (coop_hud_arena) use")
 do
 	local function read(path)
 		local f = io.open(path, "rb")
@@ -2085,14 +2378,18 @@ do
 		if f then f:close() end
 		return s
 	end
-	local src = read("gamedata/scripts/coop_arena.script") or ""
+	local board = read("gamedata/scripts/coop_hud_arena.script")
+	check(board ~= nil, "the arena's board is its own script, coop_hud_arena")
+	local src = (read("gamedata/scripts/coop_arena.script") or "") .. (board or "")
 	local eng = read("gamedata/configs/text/eng/st_coop_arena.xml") or ""
 	local rus = read("gamedata/configs/text/rus/st_coop_arena.xml") or ""
 	local ids, n = {}, 0
 	for id in src:gmatch('"(st_coop_arena_[%w_]+)"') do
 		if not ids[id] then ids[id] = true n = n + 1 end
 	end
-	check(n >= 6, "coop_arena names its strings (" .. n .. ")")
+	check(n >= 12, "coop_arena and its board name their strings (" .. n .. ")")
+	check(not src:find('"st_coop_arena_vote_', 1, true) and not src:find('"st_coop_arena_solo"', 1, true)
+		and not src:find('"st_coop_arena_without"', 1, true), "the vote's and the old buttons' strings are not used any more")
 	local missing = {}
 	for id in pairs(ids) do
 		if not (eng:find('id="' .. id .. '"', 1, true) and rus:find('id="' .. id .. '"', 1, true)) then missing[#missing + 1] = id end
@@ -2367,6 +2664,714 @@ for _, answer in ipairs(modes.names()) do
 			check(ledger_for(HA, 0) == nil and HA._state().mine == false and HA._state().fight == nil,
 				"V5: the host's retirement clears his gear record although the actor id stays the same")
 		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- R88 (owner 2026-11-24, b62): "the others who accepted had their own gear (not sure)" and "no way back when you kill the
+-- opponent". The Bar has two script_zones with [arena_zone] (all.spawn of the stand): bar_arena, the pit, a box 35.76 x 3.73 x
+-- 59.61 at (153.25, -19.46, 103.67), and bar_old_arena, the old monster cage 20 m above it, a box 17.1 x 10.08 x 19.33 at
+-- (157.0, 0.1, 95.13), later in the file; xr_zones binds arena_zone_binder to both. coop_arena kept the last one spawned (the
+-- cage): a fighter in the pit stood "outside the arena", so the heal gave his own gear back 15 s into the fight and took the kit
+-- (RL-WJ2J-FCJW: "never entered the pit: the kit by its ids", "waited: given back"), and the win sent him "none": no way out.
+-- The cutscene puts a fighter at t_way (151.82, -21.06, 75.3), inside the pit's box. The test world's zone was one ball that
+-- t_way is not in (27.8 m from its centre), which hid it.
+-------------------------------------------------------------------------------
+local function lines_with(M, text)
+	local n = 0
+	for _, line in ipairs(M.log) do if line:find(text, 1, true) then n = n + 1 end end
+	return n
+end
+local function last_go_to(peer)
+	local last
+	for _, s in ipairs(H.sent) do
+		if s.name == "arena.go" and s.target == peer then last = H.env.coop_main.decode(s.payload).f end
+	end
+	return last
+end
+local function aside(v, k) return vec(v.x + k * 1.5, v.y, v.z) end
+
+for _, answer in ipairs(modes.names()) do
+	if answer == "hostplay" then
+		for _, cage_first in ipairs({ false, true }) do
+			print("== R88 co-op: two fighters stand in the pit at t_way; arena zones bar_arena and bar_old_arena"
+				.. (cage_first and " (the cage spawns first)" or " (as in all.spawn: the cage spawns last)"))
+			setup({ start_as_is = true })
+			real_zones(H, cage_first)
+			local host_gear, client_gear = owned(0), owned(PROXY)
+			H.env.db.actor._pos = vec(149, 1, 76)
+			H.objects[PROXY]._pos = vec(146, 1, 70)
+			W.talked[0] = NOW
+			start(3)
+			tick(H)
+			press_start(HA)
+			pump()
+			check(ids_text(HA._state().fight) == "0," .. PROXY, "co-op: the host and the client go in")
+			H.env.xr_effects.bar_arena_teleport(H.env.db.actor, H.objects[TRIG])
+			pump()
+			H.env.db.actor._pos = vector():set(T_WAY)
+			H.objects[PROXY]._pos = aside(T_WAY, 1)
+			Cm.env.db.actor._pos = aside(T_WAY, 1)
+			local kit_host, kit_client = sections_of(0), sections_of(PROXY)
+			for _ = 1, 16 do tick(H) end
+			pump()
+			check(ledger_for(HA, 0) and ledger_for(HA, PROXY) and lines_with(H, "waited: given back") == 0
+				and lines_with(H, "never entered the pit") == 0, "co-op: 16 s into the fight in the pit: nobody's gear came back")
+			check(sections_of(0) == kit_host and sections_of(PROXY) == kit_client and kit_client:find("wpn_bm16", 1, true) ~= nil,
+				"co-op: both still hold the arena's kit (" .. kit_client .. ")")
+			check(HA.print_status():find("zone bar_arena", 1, true) ~= nil, "co-op: the status names the zone it reads: bar_arena")
+			H.zone.saved_obj = { [OPPONENT] = true }
+			win(3)
+			check(last_go_to(1) == "out", "co-op: the win sends the client the way out (" .. tostring(last_go_to(1)) .. ")")
+			check(at(H.env.db.actor, DOOR) and at(Cm.env.db.actor, DOOR), "co-op: both fighters are at the arena's door")
+			check(same(owned(0), host_gear) and same(owned(PROXY), client_gear), "co-op: each has exactly his own gear back")
+			check(sections_of(BOX2) == "ammo_12x70_buck,ammo_12x70_buck,ammo_12x70_buck,ammo_12x70_buck,stalker_outfit,stalker_outfit,wpn_bm16,wpn_bm16",
+				"co-op: both kits are in box 2 (" .. sections_of(BOX2) .. ")")
+		end
+
+		print("== R88 co-op: no zone named bar_arena here: a fighter whose cutscene ended is in the arena's custody all the same")
+		setup({ before_start = function() H.zone.object._name = "some_other_zone" end })
+		local client_gear = owned(PROXY)
+		W.talked[1] = NOW
+		start(3)
+		Cm.cut.ended = true
+		Cm.cut:update()
+		pump()
+		H.objects[PROXY]._pos = vector():set(T_WAY)
+		for _ = 1, 16 do tick(H) end
+		pump()
+		check(ledger_for(HA, PROXY) ~= nil and lines_with(H, "waited: given back") == 0, "co-op: the zone unknown: the heal leaves a fighter in the fight alone")
+		check(HA.print_status():find("zone -", 1, true) ~= nil and lines_with(H, "some_other_zone") > 0,
+			"co-op: a zone of another name is not taken, the log says so")
+		win(3)
+		check(last_go_to(1) == "out" and at(Cm.env.db.actor, DOOR) and same(owned(PROXY), client_gear),
+			"co-op: the win: the way out, his own gear (" .. tostring(last_go_to(1)) .. ")")
+	elseif answer == "srv_map" then
+		for _, cage_first in ipairs({ false, true }) do
+			print("== R88 server: two fighters stand in the pit at t_way on the Bar's map server; zones bar_arena and bar_old_arena"
+				.. (cage_first and " (the cage spawns first)" or " (as in all.spawn)"))
+			setup({ answer = answer, start_as_is = true, third = true })
+			real_zones(H, cage_first)
+			local client_gear = owned(PROXY)
+			H.objects[PROXY]._pos = vec(149, 1, 76)
+			H.objects[THIRD]._pos = vec(146, 1, 70)
+			W.talked[1] = NOW
+			start(3)
+			tick(H)
+			relay_start(1)
+			check(ids_text(HA._state().fight) == PROXY .. "," .. THIRD, "server: the client and the third go in")
+			H.env.xr_effects.bar_arena_teleport(H.env.db.actor, H.objects[TRIG])
+			pump()
+			H.objects[PROXY]._pos = vector():set(T_WAY)
+			H.objects[THIRD]._pos = aside(T_WAY, 1)
+			for _ = 1, 16 do tick(H) end
+			pump()
+			check(ledger_for(HA, PROXY) and ledger_for(HA, THIRD) and lines_with(H, "waited: given back") == 0
+				and lines_with(H, "never entered the pit") == 0, "server: 16 s into the fight in the pit: nobody's gear came back")
+			check(sections_of(PROXY) == "", "server: the client's own gear is still in box 1 (his kit is his machine's)")
+			win(3)
+			check(last_go_to(1) == "out" and last_go_to(2) == "out",
+				"server: the win sends both fighters the way out (" .. tostring(last_go_to(1)) .. ", " .. tostring(last_go_to(2)) .. ")")
+			check(same(owned(PROXY), client_gear) and #owned(BOX1) == 0, "server: the client has exactly his own gear back")
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- R88, the review of 2026-11-24: the starter's character leaves the world while the group gathers (a hardcore death and a new
+-- character: the host's coop_host_new_character, a client's avatar unregistered; or his ask arena.out after a respawn) and
+-- nobody stands at Arnie. remove_fighter found no fighter left and ended the fight record (fight_over), the trigger's
+-- sr_idle@wait_N was let go, its 1 s timer called %=bar_arena_teleport%, and route_in took the player picked anew (the one
+-- nearest to Arnie) into the pit alone: without his key ("it took the one who did not want to"). The gathering waits: the key
+-- goes to the one who stands at Arnie (pass_key), else it waits for him.
+-------------------------------------------------------------------------------
+-- The trigger's sr_idle@wait_N: its timer runs unless coop_arena holds it; when it runs, its on_timer calls %=bar_arena_teleport%
+-- (stock bar_arena_triger.ltx). -> how many times it ran.
+local function trigger_timer()
+	local runs = idle_runs()
+	if runs > 0 then
+		H.env.xr_effects.bar_arena_teleport(H.env.db.actor, H.objects[TRIG])
+		pump()
+	end
+	return runs
+end
+local AWAY_FROM_ARNIE = vec(149, 1, 104) -- 30 m
+
+for _, answer in ipairs(modes.names()) do
+	if answer == "hostplay" then
+		print("== R88 co-op: the host, the starter, takes a new character while the group gathers; nobody at Arnie: it waits for his key")
+		setup({ start_as_is = true })
+		local host_gear, client_gear = owned(0), owned(PROXY)
+		H.env.db.actor._pos = vec(149, 1, 76)
+		W.talked[0] = NOW
+		start(1)
+		tick(H)
+		pump()
+		check(HA._state().fight.hold == true and view(CA) and view(CA).a == "invite", "co-op: held, the client 25 m away is invited")
+		H.env.db.actor._pos = vector():set(AWAY_FROM_ARNIE) -- his new life starts away from Arnie
+		H.fire("coop_host_new_character", 0)
+		pump()
+		for _ = 1, 3 do tick(H) end
+		pump()
+		local f = HA._state().fight
+		local runs = trigger_timer()
+		check(f ~= nil and f.hold == true and f.id == 0, "co-op: the gathering goes on, its starter is the host's character (" .. tostring(f and f.id) .. ")")
+		check(runs == 0 and (H.cut_in or 0) == 0 and (Cm.cut_in or 0) == 0, "co-op: the trigger's timer stays held: nobody's cutscene")
+		check(#owned(BOX1) == 0 and same(owned(0), host_gear) and same(owned(PROXY), client_gear) and not H.ui_off and not Cm.ui_off,
+			"co-op: nobody is taken without his key: both keep their gear and their UI")
+		check(view(HA) and view(HA).a == "lead_far" and view(CA) and view(CA).a == "invite", "co-op: the host is told to come back to Arnie")
+		hold_start(0)
+		check(ids_text(HA._state().fight) == "0", "co-op: back at Arnie, his own key: he goes in, the client stays (" .. ids_text(HA._state().fight) .. ")")
+
+		print("== R88 co-op: the client, the starter, leaves the world while the group gathers (his avatar is retired); the host is away")
+		setup({ start_as_is = true })
+		host_gear = owned(0)
+		H.env.db.actor._pos = vector():set(AWAY_FROM_ARNIE)
+		H.objects[PROXY]._pos = vec(149, 1, 76)
+		Cm.env.db.actor._pos = vec(149, 1, 76)
+		W.talked[1] = NOW
+		start(1)
+		tick(H)
+		pump()
+		check(view(CA) and view(CA).a == "lead" and view(HA) and view(HA).a == "invite", "co-op: the client has the key, the host 30 m away is invited")
+		H.fire("server_entity_on_unregister", H.env.alife_object(PROXY), "se_stalker")
+		H.objects[PROXY] = nil
+		pump()
+		for _ = 1, 3 do tick(H) end
+		pump()
+		f = HA._state().fight
+		runs = trigger_timer()
+		check(f ~= nil and f.hold == true and runs == 0 and (H.cut_in or 0) == 0,
+			"co-op: the gathering waits, the trigger stays held (fight " .. tostring(f and f.n) .. ", timer ran " .. runs .. ")")
+		check(#owned(BOX1) == 0 and same(owned(0), host_gear) and not H.ui_off, "co-op: the host, away from Arnie, is not taken")
+		H.env.db.actor._pos = vec(149, 1, 76)
+		tick(H)
+		pump()
+		check(HA._state().fight.id == 0 and view(HA) and view(HA).a == "lead" and view(HA).passed == true,
+			"co-op: the host walks up to Arnie: the key is his now")
+		hold_start(0)
+		check(ids_text(HA._state().fight) == "0", "co-op: his own key: he goes in (" .. ids_text(HA._state().fight) .. ")")
+
+		print("== R88 co-op: the starter's ask for his gear (arena.out, a respawn) while the group gathers does not end it")
+		setup({ start_as_is = true })
+		H.env.db.actor._pos = vector():set(AWAY_FROM_ARNIE)
+		H.objects[PROXY]._pos = vec(149, 1, 76)
+		Cm.env.db.actor._pos = vec(149, 1, 76)
+		W.talked[1] = NOW
+		start(1)
+		tick(H)
+		for _, fn in ipairs(H.handlers["arena.out"] or {}) do fn(H.env.coop_main.encode({}), 1) end
+		pump()
+		tick(H)
+		pump()
+		f = HA._state().fight
+		runs = trigger_timer()
+		check(f ~= nil and f.hold == true and f.id == PROXY and runs == 0 and #owned(BOX1) == 0,
+			"co-op: still held, the client still its starter, nobody taken (timer ran " .. runs .. ")")
+	elseif answer == "srv_map" then
+		print("== R88 server: the starter's avatar is retired on the Bar's map server while the group gathers; the third is away")
+		setup({ answer = answer, start_as_is = true, third = true })
+		local third_gear = owned(THIRD)
+		H.objects[PROXY]._pos = vec(149, 1, 76)
+		H.objects[THIRD]._pos = vector():set(AWAY_FROM_ARNIE)
+		W.talked[1] = NOW
+		start(3)
+		tick(H)
+		pump()
+		check((gather_sent(1) or {}).a == "lead" and (gather_sent(2) or {}).a == "invite", "server: the client has the key, the third is invited")
+		H.fire("server_entity_on_unregister", H.env.alife_object(PROXY), "se_stalker")
+		H.objects[PROXY] = nil
+		pump()
+		for _ = 1, 3 do tick(H) end
+		pump()
+		local f = HA._state().fight
+		local runs = trigger_timer()
+		check(f ~= nil and f.hold == true and runs == 0,
+			"server: the gathering waits, the trigger stays held (fight " .. tostring(f and f.n) .. ", timer ran " .. runs .. ")")
+		check(ledger_for(HA, THIRD) == nil and same(owned(THIRD), third_gear) and #owned(BOX1) == 0,
+			"server: the third, away from Arnie, is not taken")
+		H.objects[THIRD]._pos = vec(149, 1, 76)
+		tick(H)
+		pump()
+		local told = gather_sent(2) or {}
+		check(HA._state().fight.id == THIRD and told.a == "lead" and told.p == 1, "server: the third walks up to Arnie: the key is his now")
+		relay_start(2)
+		pump()
+		check(ids_text(HA._state().fight) == tostring(THIRD), "server: his own key: he goes in (" .. ids_text(HA._state().fight) .. ")")
+
+		print("== R88 server: the starter's ask for his gear (arena.out, a respawn) while the group gathers does not end it")
+		setup({ answer = answer, start_as_is = true, third = true })
+		H.objects[PROXY]._pos = vec(149, 1, 76)
+		H.objects[THIRD]._pos = vector():set(AWAY_FROM_ARNIE)
+		W.talked[1] = NOW
+		start(3)
+		tick(H)
+		for _, fn in ipairs(H.handlers["arena.out"] or {}) do fn(H.env.coop_main.encode({ _peer = 1 }), 0) end
+		pump()
+		tick(H)
+		pump()
+		f = HA._state().fight
+		runs = trigger_timer()
+		check(f ~= nil and f.hold == true and f.id == PROXY and runs == 0 and ledger_for(HA, THIRD) == nil,
+			"server: still held, the client still its starter, nobody taken (timer ran " .. runs .. ")")
+	end
+end
+
+-------------------------------------------------------------------------------
+-- R88, the review of 2026-11-24: branches of the change no test held (the reviewer's mutants lived): the host fighter's own
+-- cutscene end (rec.cut) and its save; a fall and a death stash after a cutscene's end with no pit zone known; the boards'
+-- "off" when the gathering ends unstarted and to a player who left the Bar; the passed key's chat line; the zone taken at a
+-- purge (a binder that spawned before coop_arena's wrapper).
+-------------------------------------------------------------------------------
+local STASH_R88 = 779
+local function no_pit_zone() H.zone.object._name = "some_other_zone" end
+local function dies_at(id, pos)
+	holder(H, H.add(make_obj(STASH_R88, pos.x, pos.y, pos.z, { _section = "coop_death_stash" })), STASH_R88)
+	for _, iid in ipairs(owned(id)) do
+		if W.items[iid]._section == "ammo_12x70_buck" then W.items[iid]._parent = STASH_R88 end
+	end
+	H.env.coop.life_of = function(x) return x == id and "dead" or "alive" end
+	H.fire("coop_death_marker", id, STASH_R88, "drop")
+	tick(H)
+	pump()
+	H.env.coop.life_of = function() return "alive" end
+end
+local function zones_before_wrapper()
+	boxed(H.zone.object, 153.25, -19.46, 103.67, 35.76, 3.73, 59.61)
+	local cls = H.env.xr_zones.arena_zone_binder
+	local cage = setmetatable({ saved_obj = {},
+		object = boxed(make_obj(931, 157.0, 0.1, 95.13, { _name = "bar_old_arena" }), 157.0, 0.1, 95.13, 17.1, 10.08, 19.33) },
+		{ __index = cls })
+	local before = HA.print_status():find("zone -", 1, true) ~= nil
+	cage:purge_items()
+	local cage_not = HA.print_status():find("zone -", 1, true) ~= nil
+	H.zone:purge_items()
+	return before, cage_not, HA.print_status():find("zone bar_arena", 1, true) ~= nil
+end
+local KIT3 = "ammo_12x70_buck,ammo_12x70_buck,stalker_outfit,wpn_bm16"
+
+for _, answer in ipairs(modes.names()) do
+	if answer == "hostplay" then
+		print("== R88 co-op: no pit zone known: the host fighter's own cutscene end is his custody, kept in a save; the win takes him out")
+		setup({ before_start = no_pit_zone })
+		local host_gear = owned(0)
+		W.talked[0] = NOW
+		start(3)
+		check(ids_text(HA._state().fight) == "0", "co-op: the host goes in alone (" .. ids_text(HA._state().fight) .. ")")
+		H.cut.ended = true
+		H.cut:update()
+		pump()
+		local rec = ledger_for(HA, 0)
+		check(rec ~= nil and rec.cut == true, "co-op: his own cutscene's end is in his record")
+		local saved = {}
+		H.fire("save_state", saved)
+		H.fire("load_state", saved)
+		rec = ledger_for(HA, 0)
+		check(rec ~= nil and rec.cut == true, "co-op: and in the save")
+		H.env.db.actor._pos = vector():set(T_WAY)
+		for _ = 1, 16 do tick(H) end
+		pump()
+		check(ledger_for(HA, 0) ~= nil and lines_with(H, "waited: given back") == 0, "co-op: 16 s on, his gear still waits in box 1")
+		win(3)
+		check(at(H.env.db.actor, DOOR) and same(owned(0), host_gear), "co-op: the win: the host's way out, his own gear")
+
+		print("== R88 co-op: no pit zone known: a client fighter whose cutscene ended dies in the pit; the arena takes what he held")
+		setup({ before_start = no_pit_zone })
+		local client_gear = owned(PROXY)
+		W.talked[1] = NOW
+		start(3)
+		Cm.cut.ended = true
+		Cm.cut:update()
+		pump()
+		H.objects[PROXY]._pos = vector():set(T_WAY)
+		tick(H)
+		dies_at(PROXY, T_WAY)
+		check(#owned(PROXY) == 0 and #owned(STASH_R88) == 0 and sections_of(BOX2) == KIT3,
+			"co-op: the kit he held and the stash his death left go into box 2 (" .. sections_of(BOX2) .. ")")
+		check(same(owned(BOX1), client_gear), "co-op: his own gear still waits in box 1")
+
+		print("== R88 co-op: the gathering ends without a start (the arena reset): the boards and the spot go")
+		setup({ start_as_is = true })
+		H.env.db.actor._pos = vec(149, 1, 76)
+		W.talked[0] = NOW
+		start(1)
+		tick(H)
+		pump()
+		check(view(HA) and view(CA) and view(CA).a == "invite" and Cm.spot ~= nil, "co-op: the host's board, the client's reminder and spot")
+		HA.fight_over()
+		pump()
+		check(view(HA) == nil and view(CA) == nil and Cm.spot == nil, "co-op: reset while the group gathers: no board, no spot")
+
+		print("== R88 co-op: the key passed to a player is one line in his chat")
+		setup({ start_as_is = true })
+		local said = {}
+		Cm.env.coop_core_chat = { system = function(s) said[#said + 1] = s end }
+		H.env.db.actor._pos = vec(149, 1, 76)
+		H.objects[PROXY]._pos = vec(149, 1, 80)
+		Cm.env.db.actor._pos = vec(149, 1, 80)
+		W.talked[0] = NOW
+		start(1)
+		tick(H)
+		pump()
+		check(view(CA) and view(CA).a == "with" and #said == 0, "co-op: the client goes with the host, nothing in his chat")
+		H.env.coop.life_of = function(x) return x == 0 and "wounded" or "alive" end
+		for _ = 1, 3 do tick(H) end
+		pump()
+		check(view(CA) and view(CA).a == "lead" and view(CA).passed == true and #said == 1,
+			"co-op: the host is down: the key is the client's, one line in his chat (" .. #said .. ")")
+		H.env.coop.life_of = nil
+
+		print("== R88 co-op: the zones spawned before coop_arena's wrapper: a purge takes the pit's zone by its name, not the cage")
+		setup({ start_as_is = true, zone_before = true })
+		local before, cage_not, pit = zones_before_wrapper()
+		check(before and cage_not and pit, "co-op: no zone, the cage's purge: still none, the pit's purge: bar_arena")
+	elseif answer == "srv_map" then
+		print("== R88 server: no pit zone known on the map server: a fighter whose cutscene ended dies in the pit; the arena takes it")
+		setup({ answer = answer, before_start = no_pit_zone })
+		local client_gear = owned(PROXY)
+		W.talked[1] = NOW
+		start(3)
+		check(ids_text(HA._state().fight) == tostring(PROXY), "server: the client fights alone on the Bar")
+		for _, fn in ipairs(H.handlers["arena.cut"] or {}) do fn(H.env.coop_main.encode({ _peer = 1 }), 0) end
+		pump()
+		local rec = ledger_for(HA, PROXY)
+		check(rec ~= nil and rec.cut == true, "server: his cutscene's end (arena.cut through the world server) is in his record")
+		local carried = {}
+		H.fire("save_state", carried)
+		H.fire("load_state", carried)
+		rec = ledger_for(HA, PROXY)
+		check(rec ~= nil and rec.cut == true, "server: and in what the map server carries")
+		-- what his machine made of the kit is on him (the map server's model makes no kit: put it there)
+		for _, s in ipairs({ "stalker_outfit", "wpn_bm16", "ammo_12x70_buck", "ammo_12x70_buck" }) do new_item(s, PROXY, "client") end
+		H.objects[PROXY]._pos = vector():set(T_WAY)
+		tick(H)
+		dies_at(PROXY, T_WAY)
+		check(#owned(PROXY) == 0 and #owned(STASH_R88) == 0 and sections_of(BOX2) == KIT3,
+			"server: what he held and the stash his death left go into box 2 (" .. sections_of(BOX2) .. ")")
+		check(same(owned(BOX1), client_gear), "server: his own gear still waits in box 1")
+
+		print("== R88 server: a player who leaves the Bar loses his reminder; the gathering's end without a start takes the boards")
+		setup({ answer = answer, start_as_is = true, third = true })
+		H.objects[PROXY]._pos = vec(149, 1, 76)
+		H.objects[THIRD]._pos = vector():set(AWAY_FROM_ARNIE)
+		W.talked[1] = NOW
+		start(3)
+		tick(H)
+		pump()
+		check((gather_sent(2) or {}).a == "invite", "server: the third is invited")
+		H.objects[THIRD] = nil -- he walks to another map: his character leaves the Bar's map server
+		tick(H)
+		pump()
+		check((gather_sent(2) or {}).a == "off", "server: the third left the Bar: his reminder goes (" .. tostring((gather_sent(2) or {}).a) .. ")")
+		HA.fight_over()
+		pump()
+		check((gather_sent(1) or {}).a == "off", "server: reset while the group gathers: the starter's board goes")
+
+		print("== R88 server: the zones spawned before coop_arena's wrapper: a purge takes the pit's zone by its name, not the cage")
+		setup({ answer = answer, start_as_is = true, zone_before = true })
+		local before, cage_not, pit = zones_before_wrapper()
+		check(before and cage_not and pit, "server: no zone, the cage's purge: still none, the pit's purge: bar_arena")
+	end
+end
+
+-------------------------------------------------------------------------------
+-- R88, the second review of 2026-11-24: the gathering is the Bar's, at Arnie. A co-op level change is a new Lua state and a load:
+-- the held fight came back with its hold, and gather_tick told every player of the next map his part with no Arnie there
+-- ("<nick> waits for you at Arnie" on Agroprom, a new tip and the spot on Arnie after every level change; only going back to the
+-- Bar and starting the fight took it away). Off the Bar, and on the Bar with Arnie not here, the gathering rests: the fight stays
+-- held, nobody is told anything, who was told hears "off"; back on the Bar the boards and the key come back.
+-- Also: a save of a build before R88 made while the group gathered (its fight saved with neither ids nor hold) waits for a key, as
+-- the gathering did; the trigger found waiting in sr_idle@wait_N with no record (a new map server of the Bar: it writes nothing
+-- into the save) makes it anew, and waits while nobody is on the map; the starter's id taken by a non-player object (X-Ray reuses
+-- ids) still passes the key.
+-------------------------------------------------------------------------------
+local AGROPROM = "l03_agroprom"
+-- "gather" messages the authority sent after `from` (its own player's are played on its machine, not sent)
+local function gathers_since(from)
+	local n = 0
+	for i = from + 1, #H.sent do
+		local s = H.sent[i]
+		if s.name == "arena.go" and H.env.coop_main.decode(s.payload).f == "gather" then n = n + 1 end
+	end
+	return n
+end
+-- the trigger's sr_idle@wait_N as xr_logic keeps it (the section in the scheme's storage): one update; -> how many times its 1 s
+-- timer ran (with its %=bar_arena_teleport%)
+local function wait_timer(n)
+	H.idle_updates = 0
+	H.env.sr_idle.action_idle.update({ object = H.objects[TRIG], st = { section = "sr_idle@wait_" .. n, signals = {} } })
+	local runs = H.idle_updates
+	if runs > 0 then
+		H.env.xr_effects.bar_arena_teleport(H.env.db.actor, H.objects[TRIG])
+		pump()
+	end
+	return runs
+end
+-- a player's message to this machine's coop_arena (the authority's arena.go)
+local function to_client(t)
+	for _, fn in ipairs(Cm.handlers["arena.go"] or {}) do fn(Cm.env.coop_main.encode(t), 0) end
+end
+-- the session forgets the player of `peer` (he left it); his avatar id goes to an object of the world (X-Ray reuses ids)
+local function id_reused(peer, id)
+	local players, by_avatar = H.env.coop.players, H.env.coop.peer_of_avatar
+	H.env.coop.players = function()
+		local out = {}
+		for _, p in ipairs(players()) do if p.id ~= peer then out[#out + 1] = p end end
+		return out
+	end
+	H.env.coop.peer_of_avatar = function(x) if x == id then return nil end return by_avatar(x) end
+	H.objects[id] = make_obj(id, 120, 0, 120, { _name = "a_stalker_of_the_world" })
+end
+
+for _, answer in ipairs(modes.names()) do
+	if answer == "hostplay" then
+		print("== R88 co-op: the group leaves the Bar while the gathering waits: on another map no board, no reminder, no tip, no spot")
+		setup({ start_as_is = true })
+		H.env.db.actor._pos = vec(149, 1, 76)
+		W.talked[0] = NOW
+		start(1)
+		tick(H)
+		pump()
+		check(view(HA) and view(HA).a == "lead" and view(CA) and view(CA).a == "invite" and #Cm.tips == 1 and Cm.spot ~= nil,
+			"co-op: on the Bar: the host's board, the client's reminder, one tip and the spot on Arnie")
+		-- the group's transition: every machine loads the next map; the host's new Lua state restores its save, the client's new
+		-- state was told nothing yet (his old board and spot went with the old state)
+		local saved = {}
+		H.fire("save_state", saved)
+		local arnie = H.objects[MANAGER]
+		H.level_name, Cm.level_name = AGROPROM, AGROPROM
+		H.objects[MANAGER] = nil -- Arnie is not on this map
+		H.env.db.actor._pos = vec(10, 0, 10)
+		H.objects[PROXY]._pos = vec(12, 0, 10)
+		Cm.env.db.actor._pos = vec(12, 0, 10)
+		to_client({ f = "gather", a = "off" })
+		local tips = #Cm.tips
+		H.fire("load_state", saved)
+		local sent = #H.sent
+		for _ = 1, 60 do tick(H) end
+		pump()
+		local f = HA._state().fight
+		check(f ~= nil and f.hold == true and f.n == 1, "co-op: on Agroprom the fight stays held (" .. tostring(f and f.hold) .. ")")
+		check(f ~= nil and next(f.board or {}) == nil and gathers_since(sent) == 0,
+			"co-op: nobody on Agroprom is told anything (" .. gathers_since(sent) .. " message(s))")
+		check(view(HA) == nil and view(CA) == nil, "co-op: no board, no reminder on Agroprom (host " .. tostring(view(HA) and view(HA).a)
+			.. ", client " .. tostring(view(CA) and view(CA).a) .. ")")
+		check(#Cm.tips == tips and Cm.spot == nil, "co-op: no new tip, no spot on Arnie (" .. (#Cm.tips - tips) .. " tip(s))")
+		check(#owned(BOX1) == 0 and (H.cut_in or 0) == 0 and not H.ui_off and not Cm.ui_off, "co-op: nobody is taken")
+		-- an invitation that reaches a player on another map all the same (sent before the level change) shows nothing there
+		to_client({ f = "gather", a = "invite", n = 1, w = "p0", s = 0, c = 1, t = 2, r = "0", o = "1", m = MANAGER })
+		check(view(CA) == nil and #Cm.tips == tips and Cm.spot == nil, "co-op: an invitation on another map: no reminder, no tip, no spot")
+
+		print("== R88 co-op: back on the Bar the gathering goes on: the boards and the key")
+		local back = {}
+		H.fire("save_state", back)
+		H.level_name, Cm.level_name = ARENA, ARENA
+		H.objects[MANAGER] = arnie
+		H.env.db.actor._pos = vec(149, 1, 76)
+		H.objects[PROXY]._pos = vec(149, 1, 82) -- 8 m
+		Cm.env.db.actor._pos = vec(149, 1, 82)
+		to_client({ f = "gather", a = "off" })
+		H.fire("load_state", back)
+		tick(H)
+		pump()
+		check(view(HA) and view(HA).a == "lead" and view(CA) and view(CA).a == "with",
+			"co-op: back on the Bar: the host's board with the key, the client goes with him (" .. tostring(view(HA) and view(HA).a) .. ", "
+			.. tostring(view(CA) and view(CA).a) .. ")")
+		check(idle_runs() == 0, "co-op: the trigger is still held")
+		press_start(HA)
+		pump()
+		check(ids_text(HA._state().fight) == "0," .. PROXY and idle_runs() == 1,
+			"co-op: the host's key: both go in, the trigger goes on (" .. ids_text(HA._state().fight) .. ")")
+
+		print("== R88 co-op: a save of a build before R88 made while the group gathered (no ids, no hold) waits for a key")
+		setup({ start_as_is = true })
+		local client_gear = owned(PROXY)
+		H.env.db.actor._pos = vec(149, 1, 76) -- the host at Arnie
+		H.objects[PROXY]._pos = vector():set(AWAY_FROM_ARNIE) -- the client, who took it, 30 m away
+		Cm.env.db.actor._pos = vector():set(AWAY_FROM_ARNIE)
+		W.infos.bar_arena_fight_1, W.infos.bar_arena_fight = true, true
+		H.fire("load_state", { coop_arena = { ledger = {}, fight = { id = PROXY, n = 1 } } })
+		local runs = wait_timer(1)
+		f = HA._state().fight
+		check(runs == 0 and f ~= nil and f.hold == true and f.id == PROXY, "co-op: held, its taker the starter (timer ran " .. runs .. ")")
+		check(#owned(BOX1) == 0 and same(owned(PROXY), client_gear) and ledger_for(HA, PROXY) == nil, "co-op: nobody is taken")
+		tick(H)
+		pump()
+		check(view(CA) and view(CA).a == "lead_far" and view(HA) and view(HA).a == "with", "co-op: the client is told to come to Arnie, the host goes with him")
+		-- its taker is not on the map, the host is alone there: not "the taker alone at once" (nobody's fight), it waits for a key
+		setup({ start_as_is = true })
+		local away = H.objects[PROXY]
+		H.objects[PROXY] = nil
+		H.env.coop_npc_players.invalidate()
+		H.env.db.actor._pos = vec(149, 1, 76)
+		W.infos.bar_arena_fight_1, W.infos.bar_arena_fight = true, true
+		H.fire("load_state", { coop_arena = { ledger = {}, fight = { id = PROXY, n = 1 } } })
+		runs = wait_timer(1)
+		f = HA._state().fight
+		check(runs == 0 and f ~= nil and f.hold == true and #owned(BOX1) == 0, "co-op: its taker away, the host alone: held (timer ran " .. runs .. ")")
+		tick(H)
+		pump()
+		check(HA._state().fight.id == 0 and view(HA) and view(HA).a == "lead", "co-op: the host at Arnie can start it")
+		H.objects[PROXY] = away
+		-- a fight of a save before 2026-11-07 that ran (one fighter, no ids; its trigger is past sr_idle@wait_N) keeps its fighter
+		setup({ start_as_is = true })
+		W.infos.bar_arena_fight_1, W.infos.bar_arena_fight = true, true
+		H.fire("load_state", { coop_arena = { ledger = { { id = PROXY, kind = "fight", items = {} } }, fight = { id = PROXY, n = 1 } } })
+		H.idle_updates = 0
+		H.env.sr_idle.action_idle.update({ object = H.objects[TRIG], st = { section = "sr_idle@fight", signals = {} } })
+		f = HA._state().fight
+		check(H.idle_updates == 1 and f ~= nil and not f.hold and f.id == PROXY and HA.blocks_trip(PROXY) == true,
+			"co-op: a fight that ran keeps its fighter: no gathering, its trigger goes on")
+
+		print("== R88 co-op: the trigger waits in sr_idle@wait_N with no record (a save with none): it gathers by a key")
+		setup({ start_as_is = true })
+		H.env.db.actor._pos = vector():set(AWAY_FROM_ARNIE)
+		W.infos.bar_arena_fight_2, W.infos.bar_arena_fight = true, true
+		H.fire("load_state", {})
+		runs = wait_timer(2)
+		f = HA._state().fight
+		check(runs == 0 and f ~= nil and f.hold == true and f.n == 2 and #owned(BOX1) == 0,
+			"co-op: two players on the Bar: the fight is held for a key, nobody taken (timer ran " .. runs .. ")")
+		-- the host alone takes a fight now (no client: nobody asks the audience rule; its timer not due yet): at once, as stock
+		setup({ start_as_is = true })
+		local proxy = H.objects[PROXY]
+		H.objects[PROXY] = nil
+		H.env.coop_npc_players.invalidate()
+		W.infos.bar_arena_fight_2, W.infos.bar_arena_fight = true, true
+		H.env.db.storage[TRIG] = { activation_time = NOW }
+		runs = wait_timer(2)
+		f = HA._state().fight
+		check(runs == 1 and f ~= nil and not f.hold and ids_text(f) == "0", "co-op: the host alone takes it now: at once, as stock (" .. ids_text(f) .. ")")
+		-- the host alone, the trigger's timer due long ago (a save with no record): who took it is not known, it waits for a key
+		setup({ start_as_is = true })
+		H.objects[PROXY] = nil
+		H.env.coop_npc_players.invalidate()
+		H.env.db.actor._pos = vector():set(AWAY_FROM_ARNIE)
+		W.infos.bar_arena_fight_2, W.infos.bar_arena_fight = true, true
+		H.fire("load_state", {})
+		H.env.db.storage[TRIG] = { activation_time = NOW - 120000 }
+		runs = wait_timer(2)
+		f = HA._state().fight
+		check(runs == 0 and f ~= nil and f.hold == true and f.id == 0 and #owned(BOX1) == 0 and log_has(H, "taken anew"),
+			"co-op: the host alone, the timer due: held for his key (timer ran " .. runs .. ")")
+		hold_start(0)
+		check(ids_text(HA._state().fight) == "0" and idle_runs() == 1, "co-op: his key at Arnie starts it (" .. ids_text(HA._state().fight) .. ")")
+		H.objects[PROXY] = proxy
+
+		print("== R88 co-op: the starter's id taken by a non-player object (X-Ray reuses ids): the key passes all the same")
+		setup({ start_as_is = true })
+		H.env.db.actor._pos = vec(149, 1, 76)
+		H.objects[PROXY]._pos = vector():set(AWAY_FROM_ARNIE)
+		Cm.env.db.actor._pos = vector():set(AWAY_FROM_ARNIE)
+		W.talked[1] = NOW
+		start(1)
+		tick(H)
+		pump()
+		check(view(HA) and view(HA).a == "with", "co-op: the client took it, the host at Arnie goes with him")
+		id_reused(1, PROXY)
+		for _ = 1, 2 do tick(H) end
+		pump()
+		check(HA._state().fight.id == 0 and view(HA) and view(HA).a == "lead" and view(HA).passed == true,
+			"co-op: the client left, a stalker got his id: the key is the host's (" .. tostring(HA._state().fight.id) .. ")")
+	elseif answer == "srv_map" then
+		print("== R88 server: Arnie is not here on the Bar's map server while the group gathers: the boards go, the fight waits")
+		setup({ answer = answer, start_as_is = true, third = true })
+		H.objects[PROXY]._pos = vec(149, 1, 76)
+		H.objects[THIRD]._pos = vector():set(AWAY_FROM_ARNIE)
+		W.talked[1] = NOW
+		start(3)
+		tick(H)
+		pump()
+		check((gather_sent(1) or {}).a == "lead" and (gather_sent(2) or {}).a == "invite", "server: the client has the key, the third is invited")
+		local arnie = H.objects[MANAGER]
+		H.objects[MANAGER] = nil
+		tick(H)
+		pump()
+		local f = HA._state().fight
+		check(f ~= nil and f.hold == true and (gather_sent(1) or {}).a == "off" and (gather_sent(2) or {}).a == "off",
+			"server: no Arnie: both hear 'off', the fight stays held (" .. tostring((gather_sent(1) or {}).a) .. ", "
+			.. tostring((gather_sent(2) or {}).a) .. ")")
+		local sent = #H.sent
+		for _ = 1, 10 do tick(H) end
+		pump()
+		local runs = trigger_timer()
+		check(gathers_since(sent) == 0 and runs == 0 and ledger_for(HA, PROXY) == nil and ledger_for(HA, THIRD) == nil,
+			"server: nobody is told anything more, nobody is taken (" .. gathers_since(sent) .. " message(s), timer ran " .. runs .. ")")
+		H.objects[MANAGER] = arnie
+		tick(H)
+		pump()
+		check((gather_sent(1) or {}).a == "lead" and (gather_sent(2) or {}).a == "invite", "server: Arnie is back: the boards are back")
+		relay_start(1)
+		pump()
+		check(ids_text(HA._state().fight) == tostring(PROXY), "server: the starter's key: he goes in (" .. ids_text(HA._state().fight) .. ")")
+
+		print("== R88 server: a new map server of the Bar finds the trigger waiting with no record: held, nobody taken without a key")
+		setup({ answer = answer, start_as_is = true, third = true })
+		local third_gear = owned(THIRD)
+		H.objects[PROXY]._pos = vec(149, 1, 76)
+		H.objects[THIRD]._pos = vector():set(AWAY_FROM_ARNIE)
+		W.talked[1] = NOW
+		start(3)
+		tick(H)
+		pump()
+		-- the Bar empties and its map server stops (it writes nothing into the save); a new one starts from the world save: no
+		-- record of the fight there, the trigger's logic (coop_levels_logic) is back at sr_idle@wait_3, its timer long over
+		local proxy, third = H.objects[PROXY], H.objects[THIRD]
+		H.objects[PROXY], H.objects[THIRD] = nil, nil
+		H.fire("load_state", {})
+		NOW = NOW + 600000
+		H.env.db.storage[TRIG] = { activation_time = NOW - 590000 } -- the trigger's old activation time came back with its logic
+		H.env.coop_npc_players.invalidate()
+		runs = wait_timer(3)
+		check(runs == 0 and HA._state().fight == nil, "server: nobody on the Bar: the trigger's timer waits (timer ran " .. runs .. ")")
+		-- the third, who never took it, comes back first and alone
+		H.objects[THIRD] = third
+		H.objects[THIRD]._pos = vec(149, 1, 100) -- 26 m
+		H.env.coop_npc_players.invalidate()
+		runs = wait_timer(3)
+		f = HA._state().fight
+		check(runs == 0 and f ~= nil and f.hold == true and f.n == 3 and f.id == THIRD,
+			"server: the third alone on the Bar: not at once, the fight is held for his key (timer ran " .. runs .. ", starter "
+			.. tostring(f and f.id) .. ")")
+		check(ledger_for(HA, THIRD) == nil and same(owned(THIRD), third_gear) and #owned(BOX1) == 0, "server: the third is not taken")
+		check(log_has(H, "taken anew"), "server: one line in the map server's log says the record was made anew")
+		H.objects[PROXY] = proxy
+		H.objects[PROXY]._pos = vector():set(AWAY_FROM_ARNIE) -- 30 m
+		H.objects[THIRD]._pos = vec(149, 1, 76)
+		tick(H)
+		pump()
+		check((gather_sent(2) or {}).a == "lead" and (gather_sent(1) or {}).a == "invite", "server: at Arnie the third has the key, the client is invited")
+		relay_start(2)
+		pump()
+		check(ids_text(HA._state().fight) == tostring(THIRD) and ledger_for(HA, PROXY) == nil,
+			"server: his key: he goes in alone, the client 30 m away stays (" .. ids_text(HA._state().fight) .. ")")
+
+		print("== R88 server: a carried state of a build before R88 made while the group gathered (no ids, no hold) waits for a key")
+		setup({ answer = answer, start_as_is = true, third = true })
+		H.objects[PROXY]._pos = vector():set(AWAY_FROM_ARNIE)
+		H.objects[THIRD]._pos = vec(149, 1, 76)
+		W.infos.bar_arena_fight_1, W.infos.bar_arena_fight = true, true
+		H.fire("load_state", { coop_arena = { ledger = {}, fight = { id = PROXY, n = 1 } } })
+		runs = wait_timer(1)
+		f = HA._state().fight
+		check(runs == 0 and f ~= nil and f.hold == true and ledger_for(HA, PROXY) == nil and ledger_for(HA, THIRD) == nil,
+			"server: held, nobody taken (timer ran " .. runs .. ")")
+
+		print("== R88 server: the starter's id taken by a non-player object (X-Ray reuses ids): the key passes all the same")
+		setup({ answer = answer, start_as_is = true, third = true })
+		H.objects[PROXY]._pos = vector():set(AWAY_FROM_ARNIE)
+		H.objects[THIRD]._pos = vec(149, 1, 76)
+		W.talked[1] = NOW
+		start(3)
+		tick(H)
+		pump()
+		check((gather_sent(1) or {}).a == "lead_far" and (gather_sent(2) or {}).a == "with", "server: the client took it, the third at Arnie goes with him")
+		id_reused(1, PROXY)
+		for _ = 1, 2 do tick(H) end
+		pump()
+		local told = gather_sent(2) or {}
+		check(HA._state().fight.id == THIRD and told.a == "lead" and told.p == 1,
+			"server: the client left, a stalker got his id: the key is the third's (" .. tostring(HA._state().fight.id) .. ")")
 	end
 end
 

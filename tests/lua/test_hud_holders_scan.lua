@@ -34,6 +34,7 @@ local SAFE = {
 	axr_companions = { dialog = OWN_DIALOG },
 	coop_core_chat = { dialog = OWN_DIALOG },
 	coop_core_hud = { dialog = OWN_DIALOG .. "; it applies the minimap option to the new main HUD on the event (1003)" },
+	coop_hud_arena = { dialog = OWN_DIALOG },
 	coop_hud_compass = { dialog = OWN_DIALOG },
 	coop_hud_glare = { dialog = OWN_DIALOG },
 	coop_hud_netgraph = { dialog = OWN_DIALOG },
