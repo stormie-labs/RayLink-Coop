@@ -48,7 +48,10 @@ def delivery_runner():
 
 @pytest.mark.parametrize("scenario", [
     "ordinary-items", "lua-window-items", "lua-window-refused", "lua-window-wpo-part",
-    "lua-window-purchase-shown-more", "destroying-item", "removed-item", "cannot-take", "stale-local-owner",
+    "lua-window-purchase-shown-more", "lua-window-purchase-dearer", "lua-window-sale-cheaper", "lua-window-sale-rounding",
+    "lua-window-wpo-claimed", "lua-window-no-formula", "engine-window-no-formula", "engine-window-lua-dearer",
+    "engine-window-lua-cheaper", "engine-window-lua-refused", "lua-window-purchase-rounding", "engine-window-lua-floors",
+    "destroying-item", "removed-item", "cannot-take", "stale-local-owner",
     "refused-first-buy", "refused-later-buy", "refused-sale", "barter-rollback",
     "temporary-mirror-rejection", "mirror-repair-mask", "mirror-timeout", "mirror-success",
     "mirror-repeated-reply", "callback-before-arrival", "callback-arrived", "callback-expired",

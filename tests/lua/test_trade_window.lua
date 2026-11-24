@@ -164,7 +164,25 @@ local function fresh_ui()
 		end
 	end
 	function UI:TMode_InitProfile(npc) C.profile = C.profile + 1 end
-	function UI:UpdateInfo(go) C.info = C.info + 1; C.info_go = go end
+	-- G.A.M.M.A.'s TMode_UpdatePrice (ui_inventory.script:2765-2781): the sum of the list's cells, one floor, on its label and button
+	function UI:TMode_UpdatePrice(ele_txt, ele_btn, bag)
+		self:Print(nil, "TMode_UpdatePrice | bag: %s", bag)
+		local cc = self.CC[bag]
+		if not cc then return end
+		local tot = 0
+		for _, ci in pairs(cc.cell) do tot = tot + cc:GetCellCost(ci) end
+		tot = math.floor(tot)
+		ele_txt:SetText(tot .. " RU")
+		ele_btn:Enable(tot > 0)
+	end
+	-- G.A.M.M.A.'s UpdateInfo (ui_inventory.script:1401-1436): in a trade window both prices are counted again
+	function UI:UpdateInfo(go)
+		C.info = C.info + 1; C.info_go = go
+		if self.mode == "trade" and self.player_trade_price then
+			self:TMode_UpdatePrice(self.player_trade_price, self.player_trade_sell, "actor_trade")
+			self:TMode_UpdatePrice(self.npc_trade_price, self.npc_trade_buy, "npc_trade")
+		end
+	end
 	function UI:PlaySND(s) C.snd = C.snd + 1 end
 	function UI:IsShown() return self.shown == true end
 	function UI:Close() C.closed = C.closed + 1; self.shown = false; SendScriptCallback("GUI_on_hide", "UIInventory", "ui_inventory") end
@@ -197,6 +215,11 @@ local function window(mode, npc, sell_cells, buy_cells, reuse, cfg)
 		SetText = function(_, t) MSGBOX = t end,
 		ShowDialog = function() end,
 	}
+	-- the price labels and the buttons under the two trade lists (ui_inventory.script:362, 396)
+	local function label() return { text = "", SetText = function(self, t) self.text = t end } end
+	local function button() return { Enable = function(self, on) self.enabled = on end } end
+	ui.player_trade_price, ui.npc_trade_price = label(), label()
+	ui.player_trade_sell, ui.npc_trade_buy = button(), button()
 	ui_inventory.GUI = ui
 	return ui
 end
@@ -315,25 +338,67 @@ modes.each(coop_mode, function(name)
 	TM[trader:id()] = { cfg_ltx = CFG.name }
 	check(tw.host_price(500, 4242, { s1:id() }, {}) == nil, name .. ": no trader here, no price")
 
-	-- R90 review 2: G.A.M.M.A.'s Weapon Parts Overhaul (a_wpo_parts.script:5-15) prices a part at the mechanic's own sale price when
-	-- its owner's id is not 0. On the decider the player's character (500) owns the part he sells, so the decider's formula says far
-	-- more than his window, where the actor (0) owns it, shows (the window's side below, the C++ settle_side takes the smaller sum).
-	local base_cost = utils_item.get_item_cost
+	-- R90 review 2 and review of 2026-11-25: G.A.M.M.A.'s Weapon Parts Overhaul looks at the id of the item's owner. A part not held by
+	-- the actor (id 0) goes at the mechanic's own sale price (a_wpo_parts.script:5-15), a weapon not held by the actor skips the check
+	-- of its busted parts (:18-35, the test at :25). On the decider the player's character (500) holds what he sells: host_price prices
+	-- the player's side as his own window does, where the actor holds it.
+	local base_cost, base_status = utils_item.get_item_cost, utils_item.get_item_trade_status
 	utils_item.get_item_cost = function(obj, profile)
 		if profile.cfg == MECH and PARTS[obj:section()] and obj:parent() and obj:parent():id() ~= 0 then
 			return profile.discount * PARTS[obj:section()]
 		end
 		return base_cost(obj, profile)
 	end
+	utils_item.get_item_trade_status = function(obj, profile)
+		if not (obj and profile) then return end
+		if not IsWeapon(obj) or (obj:parent() and obj:parent():id() ~= 0) then return base_status(obj, profile) end
+		if obj._busted then return 2 end -- se_load_var(id, name, "parts"): a prt_w_ part under the threshold
+		return base_status(obj, profile)
+	end
 	local _, mech = spawn("mechanic", vec3(1, 0, 1), nil, { kind = "stalker" })
 	TM[mech:id()] = { cfg_ltx = MECH }
 	local barrel = item("prt_w_barrel_10", 500, 1237) -- worn: 1237 RU with its wear, as the window prices it
-	local sold = tw.host_price(500, mech:id(), { barrel:id() }, {})
-	check(sold == 8250 * 0.5, name .. ": the decider's formula prices a worn WPO part at the mechanic's sale price (" .. tostring(sold) .. ")")
+	real_actor = db.actor
+	local sold, why_sold = tw.host_price(500, mech:id(), { barrel:id() }, {})
+	check(sold == 1237 * 0.5, name .. ": the decider prices a worn WPO part with its wear, as the player's window does, not at the " ..
+		"mechanic's sale price (" .. tostring(sold) .. ", " .. tostring(why_sold) .. ")")
+	check(barrel:parent():id() == 500 and db.actor == real_actor, name .. ": the part stays his character's, the actor comes back")
+	-- review of 2026-11-25, nit 4: a game_object is luabind userdata whose methods check `self`; the item as the actor's must call them on
+	-- the object itself, not on its wrapper
+	do
+		local proxy = newproxy(true)
+		local wrong = 0
+		getmetatable(proxy).__index = function(u, k)
+			local v = barrel[k]
+			if type(v) ~= "function" then return v end
+			return function(self, ...)
+				if self ~= u then wrong = wrong + 1; error("a game_object method called on another object", 2) end
+				return v(barrel, ...)
+			end
+		end
+		local base_object = level.object_by_id
+		level.object_by_id = function(id) if id == barrel:id() then return proxy end return base_object(id) end
+		local ok_u, sold_u, why_u = pcall(tw.host_price, 500, mech:id(), { barrel:id() }, {})
+		level.object_by_id = base_object
+		check(ok_u and wrong == 0 and sold_u == 1237 * 0.5, name .. ": a userdata item is priced through its own methods, with its " ..
+			"wear (" .. tostring(ok_u) .. ", " .. tostring(sold_u) .. ", " .. tostring(why_u) .. ", wrong self " .. wrong .. ")")
+	end
+	local his = item("prt_w_barrel_10", mech:id(), 1237) -- the mechanic's own part: his price on both machines
+	local _, bought = tw.host_price(500, mech:id(), {}, { his:id() })
+	check(bought == 8250, name .. ": a part the mechanic sells goes at his price (" .. tostring(bought) .. ")")
+	local ak = item("wpn_ak74", 500, 5000, { _kind = "weapon", _busted = true })
+	local r_ak, w_ak = tw.host_price(500, trader:id(), { ak:id() }, {})
+	check(r_ak == nil and type(w_ak) == "string", name .. ": a weapon with busted parts is not bought: the player's window would not " ..
+		"offer it (" .. tostring(r_ak) .. ", " .. tostring(w_ak) .. ")")
+	ak._busted = nil
+	check(tw.host_price(500, trader:id(), { ak:id() }, {}) == 5000 * 0.5, name .. ": a weapon whose parts are whole is")
+	local theirs = item("bread", trader:id(), 50)
+	r, w = tw.host_price(500, trader:id(), { theirs:id() }, {})
+	check(r == nil and type(w) == "string", name .. ": the player sells only what his character holds (" .. tostring(w) .. ")")
 	SE[barrel:id()].parent_id = 0
 	check(utils_item.get_item_cost(barrel, { cfg = MECH, discount = 1 }) == 1237, name .. ": the actor's own part costs its worn price")
-	utils_item.get_item_cost = base_cost
-	release_id(barrel:id())
+	utils_item.get_item_cost, utils_item.get_item_trade_status = base_cost, base_status
+	for _, o in ipairs({ barrel, his, ak, theirs }) do release_id(o:id()) end
 
 	if name == "none" then
 		done("trade window (" .. name .. ")")
@@ -515,6 +580,68 @@ modes.each(coop_mode, function(name)
 	tw.on_result(DEALS[1].seq, 0, -300, "ok") -- a late answer to a forgotten deal: nothing happens
 	run(600)
 
+	-- Review of 2026-11-25: the decider prices the purchase above what the window showed. Refused, nothing paid; the window shows the
+	-- decider's price then, and the next press of Buy agrees to it (the deal carries that price as the window's sum).
+	trader._money, db.actor._money = 5000, 1000
+	local n1 = item("medkit", 0, 100)
+	local n2 = item("vodka", trader:id(), 300)
+	gui = window("trade", trader, { { n1 } }, { { n2 } }, gui)
+	gui:UpdateInfo(true)
+	check(gui.npc_trade_price.text == "300 RU" and gui.player_trade_price.text == "100 RU",
+		name .. " copy: the window shows its own prices (" .. gui.npc_trade_price.text .. ", " .. gui.player_trade_price.text .. ")")
+	DEALS, MONEY_CALLS = {}, 0
+	gui:TMode_Buy()
+	check(#DEALS == 1 and DEALS[1].bs == 300, name .. " copy: Buy sends the 300 RU the window shows")
+	tw.on_result(DEALS[1].seq, 10, 0, "the price is not the one shown", 0, 345)
+	check(gui.npc_trade_price.text == "345 RU" and gui.npc_trade_buy.enabled == true,
+		name .. " copy: a refusal for its price shows the decider's price under the list (" .. gui.npc_trade_price.text .. ")")
+	check(gui.player_trade_price.text == "100 RU", name .. " copy: the other list keeps its own price")
+	gui:UpdateInfo(true)
+	check(gui.npc_trade_price.text == "345 RU", name .. " copy: and keeps showing it while the list stays the same")
+	check(MONEY_CALLS == 0 and TRANSFERS == 0, name .. " copy: nothing moved here")
+	db.actor._money = 320
+	MSGBOX = nil
+	gui:TMode_Buy()
+	check(#DEALS == 1 and MSGBOX == "not_enough_money_actor", name .. " copy: the stock's money check counts the price the window shows now")
+	db.actor._money = 1000
+	gui:TMode_Buy()
+	check(#DEALS == 2 and DEALS[2].bs == 345 and ids_of(DEALS[2].buy) == idset(n2),
+		name .. " copy: the next press agrees to it: the deal carries the decider's price (" .. tostring(DEALS[2] and DEALS[2].bs) .. ")")
+	tw.on_result(DEALS[2].seq, 0, -345, "ok")
+	gui:UpdateInfo(true)
+	check(gui.npc_trade_price.text == "300 RU", name .. " copy: after the deal the window counts by itself again")
+
+	-- a sale the decider prices more than 1 RU (rounding) below what the window showed: refused, the window shows his price
+	DEALS = {}
+	gui:TMode_Sell()
+	check(#DEALS == 1 and DEALS[1].ss == 100, name .. " copy: Sell sends the 100 RU the window shows")
+	tw.on_result(DEALS[1].seq, 10, 0, "the price is not the one shown", 80, 0)
+	check(gui.player_trade_price.text == "80 RU" and gui.npc_trade_price.text == "300 RU",
+		name .. " copy: a sale refused for its price shows what the decider pays (" .. gui.player_trade_price.text .. ")")
+	gui:TMode_Sell()
+	check(#DEALS == 2 and DEALS[2].ss == 80, name .. " copy: the next press of Sell agrees to it")
+	tw.on_result(DEALS[2].seq, 5, 0, "no money") -- refused for another reason: the price stays shown
+	gui:UpdateInfo(true)
+	check(gui.player_trade_price.text == "80 RU", name .. " copy: another refusal keeps the decider's price shown")
+
+	-- another list is another price: the window counts it again by itself
+	local n3 = item("bread", 0, 50)
+	gui = window("trade", trader, { { n1 }, { n3 } }, { { n2 } }, gui)
+	gui:UpdateInfo(true)
+	check(gui.player_trade_price.text == "150 RU", name .. " copy: a changed list shows the window's own price (" .. gui.player_trade_price.text .. ")")
+	DEALS = {}
+	gui:TMode_Sell()
+	check(#DEALS == 1 and DEALS[1].ss == 150, name .. " copy: and sells for it")
+	tw.on_result(DEALS[1].seq, 10, 0, "the price is not the one shown", 120, 0)
+	check(gui.player_trade_price.text == "120 RU", name .. " copy: refused again: the decider's price of this list")
+	-- the window closes: the decider's prices are forgotten
+	SendScriptCallback("GUI_on_show", "UIInventory", "ui_inventory")
+	SendScriptCallback("GUI_on_hide", "UIInventory", "ui_inventory")
+	gui = window("trade", trader, { { n1 }, { n3 } }, { { n2 } }, gui)
+	gui:UpdateInfo(true)
+	check(gui.player_trade_price.text == "150 RU", name .. " copy: a window opened again counts by itself")
+	run(6000)
+
 	-- Donate: gifts of one moment go as one gift deal (Unusable Parts Handler gives every broken part away when the window opens)
 	DEALS, TRANSFERS = {}, 0
 	local p1 = item("part", 0, 10)
@@ -677,5 +804,16 @@ do
 	-- on_profile copies the stock's clean-up after a reset of the bags
 	check(has(inv, "self:TMode_ResetInventories(true)") and has(inv, "cc_a2:RemoveItem(obj)") and has(inv, "cc_b2:RemoveItem(obj)"),
 		"G.A.M.M.A. ui_inventory: the bags lose what the trade lists hold after TMode_ResetInventories(true)")
+	-- review of 2026-11-25: the decider's price of a refused deal is shown through TMode_UpdatePrice, which UpdateInfo calls by name
+	check(has(inv, "function UIInventory:TMode_UpdatePrice(ele_txt, ele_btn, bag)")
+		and has(inv, 'self:TMode_UpdatePrice(self.player_trade_price, self.player_trade_sell, "actor_trade")')
+		and has(inv, 'self:TMode_UpdatePrice(self.npc_trade_price, self.npc_trade_buy, "npc_trade")')
+		and has(inv, 'ele_txt:SetText(tot_cost .. " RU")') and has(inv, "ele_btn:Enable( tot_cost > 0 )"),
+		"G.A.M.M.A. ui_inventory: both prices are set by TMode_UpdatePrice from UpdateInfo")
+	-- and Weapon Parts Overhaul looks at the id of the item's owner (host_price shows it the actor as the player's window does)
+	local wpo = read("a_wpo_parts.script")
+	check(has(wpo, "obj:parent() and obj:parent():id() ~= 0 then") and has(wpo, "local cost_final = discount * parts_list[sec]")
+		and has(wpo, "(obj:parent() and obj:parent():id() ~= 0) then return GetStatus(obj, profile) end"),
+		"G.A.M.M.A. a_wpo_parts: the part price and the busted-parts check depend on the owner's id")
 end
 print(string.format("%d passed, %d failed", PASSES, FAILS))

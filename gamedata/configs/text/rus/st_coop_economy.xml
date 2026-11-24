@@ -199,6 +199,12 @@
 	<string id="st_coop_trade_failed">
 		<text>Сделка не состоялась: товара больше нет</text>
 	</string>
+	<string id="st_coop_trade_price_buy">
+		<text>Сделка отменена: торговец просит %u RU, больше, чем показало окно</text>
+	</string>
+	<string id="st_coop_trade_price_sell">
+		<text>Сделка отменена: торговец платит %u RU, меньше, чем показало окно</text>
+	</string>
 	<string id="st_coop_eco_travel_offer">
 		<text>%s быстро перемещается, это в %d м от вас. Отправиться вместе с ним? Для вас это бесплатно.</text>
 	</string>

@@ -19,7 +19,7 @@ void require(bool ok, const char* reason) { if (!ok) { std::fprintf(stderr, "%s\
 constexpr u16 kNoId = 65535;
 
 namespace host_test {
-enum Result : u8 { Ok, NotReady, NoPlayer, NoTrader, ItemGone, NoMoney, TraderNoMoney, Malformed, TooFar, NotTraded };
+enum Result : u8 { Ok, NotReady, NoPlayer, NoTrader, ItemGone, NoMoney, TraderNoMoney, Malformed, TooFar, NotTraded, PriceChanged };
 constexpr size_t kMaxDealItems = 1024;
 constexpr float kTradeReach = 5;
 constexpr s64 kMaxMoney = 0xffffffffll;
@@ -64,7 +64,7 @@ struct CAI_Trader : CInventoryOwner {
 namespace GameObject { constexpr int eTradePerformTradeOperation = 1; }
 struct CTrade { explicit CTrade(CInventoryOwner*) {} void SetActorPartner(CInventoryOwner*) {} };
 struct { bool dwPrecacheFrame = false; } Device;
-struct Deal { u32 seq = 1; u16 trader = 10; bool donate = false; bool lua_prices = false; xr_vector<u16> sell, buy; u32 sell_total = 0, buy_total = 0; u32 sell_shown = 0, buy_shown = 0; };
+struct Deal { u32 seq = 1; u16 trader = 10; bool donate = false; bool lua_prices = false; xr_vector<u16> sell, buy; u32 sell_total = 0, buy_total = 0; u32 sell_shown = 0, buy_shown = 0; u32 sell_decider = 0, buy_decider = 0; };
 CAI_Stalker player; CAI_Trader trader;
 std::map<u16, CInventoryItem> items;
 std::map<u16, u16> server_parents;
@@ -96,13 +96,15 @@ void host_adjust(PeerId,s64 delta,const char*) { player_balance=u32(s64(player_b
 u32 clamp_money(s64 v) { return u32(v); }
 u8 price_list(CTrade&, CInventoryOwner*, const xr_vector<u16>& ids, bool, u32& total) { total=u32(ids.size()*100); return Ok; }
 namespace trade_window = coop::trade_window;
-// TZ R90: what coop_trade_window.host_price answers on the decider, 100 RU an item as price_list (lua_sell_raw: another sum for the
-// sale, as G.A.M.M.A.'s Weapon Parts Overhaul gives a part there); or no price at all. lua_price_deal itself is the engine's.
-u32 lua_priced = 0; bool lua_refuse = false; double lua_sell_raw = -1;
-bool ask_host_price(u16, u16, const Deal& d, double raw[2], std::string&) {
+// TZ R90: what coop_trade_window.host_price answers on the decider, 100 RU an item as price_list (lua_sell_raw / lua_buy_raw: another
+// sum for a side); a refusal (nil and why: an item the window does not trade); or nothing (no such script on the decider).
+// lua_price_deal itself is the engine's.
+u32 lua_priced = 0; trade_window::Answer lua_answer = trade_window::Answer::Priced; double lua_sell_raw = -1, lua_buy_raw = -1;
+trade_window::Answer ask_host_price(u16, u16, const Deal& d, double raw[2], std::string&) {
     ++lua_priced;
-    if (lua_refuse) return false;
-    raw[0]=lua_sell_raw>=0?lua_sell_raw:double(d.sell.size()*100); raw[1]=double(d.buy.size()*100); return true;
+    if (lua_answer != trade_window::Answer::Priced) return lua_answer;
+    raw[0]=lua_sell_raw>=0?lua_sell_raw:double(d.sell.size()*100); raw[1]=lua_buy_raw>=0?lua_buy_raw:double(d.buy.size()*100);
+    return trade_window::Answer::Priced;
 }
 // The local server updates ownership synchronously; game objects catch up on its event queue.
 // Rejecting BUY after SELL leaves the entity unowned, exactly as Process_event_ownership does.
@@ -122,15 +124,32 @@ void add(u16 id, u16 owner, const char* section="wpn_sil_9mm") {
 void run(const std::string& mode) {
     player.id=501; trader.id=10;
     Deal d; add(100,10); d.buy={100};
-    if(mode=="ordinary-items"||mode=="lua-window-items"||mode=="lua-window-refused"||mode=="lua-window-purchase-shown-more") {
-        d.lua_prices = mode!="ordinary-items"; lua_refuse = mode=="lua-window-refused";
-        d.buy_shown = mode=="lua-window-purchase-shown-more" ? 1000 : 900; // what the player's window showed
+    const bool engine_window = mode.find("engine-window")==0 || mode=="ordinary-items";
+    if(mode=="ordinary-items"||mode=="lua-window-items"||mode=="lua-window-refused"||mode=="lua-window-purchase-shown-more"
+       ||mode=="lua-window-purchase-dearer"||mode=="lua-window-no-formula"||mode=="engine-window-no-formula"
+       ||mode=="engine-window-lua-dearer"||mode=="engine-window-lua-refused"||mode=="engine-window-lua-cheaper"
+       ||mode=="lua-window-purchase-rounding"||mode=="engine-window-lua-floors") {
+        d.lua_prices = !engine_window;
+        if(mode=="lua-window-refused"||mode=="engine-window-lua-refused") lua_answer = trade_window::Answer::Refused;
+        if(mode=="lua-window-no-formula"||mode=="engine-window-no-formula") lua_answer = trade_window::Answer::NoFormula;
+        d.buy_shown = mode=="lua-window-purchase-shown-more" ? 1000 : mode=="lua-window-purchase-dearer" ? 850
+                    : mode=="lua-window-purchase-rounding" ? 899 : 900; // the window showed
+        if(mode=="engine-window-lua-dearer") lua_buy_raw = 1000; // the decider's Lua formula: more than CTrade (900), which that window showed
+        if(mode=="engine-window-lua-cheaper") lua_buy_raw = 700;
+        // review of 2026-11-25, nit 1: CTrade floors each of the 9 items twice, the Lua formula once a side: 910 against 900 is rounding
+        if(mode=="engine-window-lua-floors") lua_buy_raw = 910.7;
         const char* sections[]={"wpn_sil_9mm","wpn_addon_scope","ammo_9x19_fmj","medkit","bread","wpn_ak74","novice_outfit","af_medusa","repairkit"};
         d.buy.clear(); for(u16 n=0;n<9;++n){ add(u16(100+n),10,sections[n]); d.buy.push_back(u16(100+n)); }
     } else if(mode=="lua-window-wpo-part") {
         // R90 review: a worn prt_w_barrel_10 sold to a mechanic. The decider's formula says 8250 RU (the mechanic's own sale price:
         // its owner there is the player's character, id 501, not the actor), the player's window showed 1237 RU.
         add(102,501,"prt_w_barrel_10"); d.buy.clear(); d.sell={102}; d.lua_prices=true; d.sell_shown=1237; lua_sell_raw=8250;
+    } else if(mode=="lua-window-sale-cheaper"||mode=="lua-window-sale-rounding"||mode=="lua-window-wpo-claimed") {
+        // review of 2026-11-25: the decider pays less than the window showed: 1 RU is rounding, more is refused for its price. A modified
+        // window that claims a worn part's price from the mechanic's list (8250) meets the decider's worn price (1237): refused too.
+        add(102,501,"prt_w_barrel_10"); d.buy.clear(); d.sell={102}; d.lua_prices=true;
+        d.sell_shown = mode=="lua-window-wpo-claimed" ? 8250 : 1000;
+        lua_sell_raw = mode=="lua-window-sale-rounding" ? 999 : mode=="lua-window-wpo-claimed" ? 1237 : 900;
     } else if(mode=="destroying-item") items[100].destroying=true;
     else if(mode=="removed-item") items[100].removed=true;
     else if(mode=="cannot-take") items[100].takeable=false;
@@ -140,10 +159,29 @@ void run(const std::string& mode) {
     else if(mode=="refused-sale") { add(102,501);d.buy.clear();d.sell={102};reject_item=102; }
     else if(mode=="barter-rollback") { add(102,501);d.sell={102};reject_item=100; }
     s64 delta=0; const auto result=host_apply(1,d,delta);
-    if(mode=="ordinary-items"||mode=="lua-window-items") {
+    if(mode=="ordinary-items"||mode=="lua-window-items"||mode=="engine-window-no-formula"||mode=="engine-window-lua-cheaper") {
         require(result==Ok && delta==-900 && player_balance==9100 && trader.balance==10900,"ordinary items must be delivered and paid exactly once");
         for(auto id:d.buy) require(server_parent(id)==501,"every purchased item must reach the player");
-        require(lua_priced==(mode=="lua-window-items"?1u:0u),"a Lua window's deal is priced by its formula, the engine window's by CTrade");
+        // review of 2026-11-25: the formula is the decider's whatever the flag: the engine window's deal meets the Lua formula too, and
+        // pays what that window showed (CTrade) when the Lua formula is cheaper or missing on the decider
+        require(lua_priced==1u,"every deal is priced by the decider's own window's formula when it has one");
+    } else if(mode=="lua-window-purchase-rounding"||mode=="engine-window-lua-floors") {
+        // review of 2026-11-25: rounding is no refusal, and it costs the trader, not the player: the purchase costs what was shown
+        const s64 paid = mode=="lua-window-purchase-rounding" ? 899 : 900;
+        require(result==Ok && delta==-paid && player_balance==10000-paid && trader.balance==10000+paid,"rounding: the purchase costs what the window showed");
+        require(d.buy_decider==(mode=="lua-window-purchase-rounding" ? 900u : 910u) && lua_priced==1u,"the decider's formula priced it");
+        for(auto id:d.buy) require(server_parent(id)==501,"every purchased item must reach the player");
+    } else if(mode=="lua-window-sale-rounding") {
+        require(result==Ok && delta==999 && player_balance==10999 && d.sell_total==999,"1 RU of rounding: the sale pays the decider's price");
+    } else if(mode=="lua-window-purchase-dearer"||mode=="engine-window-lua-dearer"||mode=="lua-window-sale-cheaper"||mode=="lua-window-wpo-claimed") {
+        require(result==PriceChanged,"a purchase dearer or a sale cheaper than the window showed is refused for its price");
+        require(delta==0 && player_balance==10000 && trader.balance==10000 && money_changes==0 && move_calls==0,"a refusal for the price moves nothing");
+        for(auto id:d.buy) require(server_parent(id)==10,"the items stay with the trader");
+        for(auto id:d.sell) require(server_parent(id)==501,"the player's items stay his");
+        if(mode=="lua-window-purchase-dearer") require(d.buy_decider==900 && d.sell_decider==0,"the refusal carries the decider's price of the purchase");
+        if(mode=="engine-window-lua-dearer") require(d.buy_decider==1000 && lua_priced==1u,"the engine window's deal meets the Lua formula");
+        if(mode=="lua-window-sale-cheaper") require(d.sell_decider==900 && d.buy_decider==0,"the refusal carries the decider's price of the sale");
+        if(mode=="lua-window-wpo-claimed") require(d.sell_decider==1237,"a modified window gets no more than the worn part's price");
     } else if(mode=="lua-window-purchase-shown-more") {
         require(result==Ok && delta==-1000 && player_balance==9000 && trader.balance==11000,"a purchase never costs less than the window showed");
         for(auto id:d.buy) require(server_parent(id)==501,"every purchased item must reach the player");
@@ -155,10 +193,13 @@ void run(const std::string& mode) {
         require(delta==0 && player_balance==10000 && trader.balance==10000 && money_changes==0,"failed delivery must not move money");
         for(auto id:d.buy) require(server_parent(id)==10,"failed purchase must remain at/return to trader");
         for(auto id:d.sell) require(server_parent(id)==501,"failed barter must restore player's items");
-        if(mode=="destroying-item"||mode=="removed-item"||mode=="cannot-take"||mode=="stale-local-owner"||mode=="lua-window-refused")
+        if(mode=="destroying-item"||mode=="removed-item"||mode=="cannot-take"||mode=="stale-local-owner"||mode=="lua-window-refused"
+           ||mode=="lua-window-no-formula"||mode=="engine-window-lua-refused")
             require(move_calls==0,"invalid item must be rejected before any ownership event");
-        if(mode=="lua-window-refused")
+        if(mode=="lua-window-refused"||mode=="lua-window-no-formula")
             require(result==NotTraded && lua_priced==1,"no price from the Lua window's formula refuses the deal, without a fallback price");
+        if(mode=="engine-window-lua-refused")
+            require(result==NotTraded && lua_priced==1,"what the decider's own window would not trade is not traded through the engine window either");
     }
 }
 } // namespace host_test
