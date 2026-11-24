@@ -966,7 +966,9 @@ end
 -------------------------------------------------------------------------------
 -- A window on a box
 -------------------------------------------------------------------------------
-local LESS_ARTYS_DELAY = 1 -- s: a client's box asks for its treasure at the same time, that goes through the world server
+-- s: a client's box asks for its treasure at the same time, that goes through the world server. What a player puts in
+-- within this second is kept by the clean (R89 (A): coop_mods_xchg_meat guard_release); a death stash is never cleaned.
+local LESS_ARTYS_DELAY = 1
 local rolled = {} -- boxes a client's window rolled, when the mod's own table is not found
 
 local function on_gui_show(name)

@@ -308,6 +308,99 @@ local function install_meat()
 	end)
 end
 
+-- R89 (2026-11-24, the owner: "у типа артефакт цепь пропал", "из тайника!!!", "в коопе обычном"). PBA's clean removed
+-- players' items in a session, through two holes, both closed here on the process that writes the box (the co-op host, a
+-- map server in the Server mode; the same wrapper runs on both):
+--   (A) a client's first opening reaches that process as container_opened, and the clean runs LESS_ARTYS_DELAY (1 s,
+--       coop_mods_items) later, once the treasure the opening asked for is in the box. A junk artefact (af_chelust) the
+--       player put in within that second was cleaned with it. Now the clean releases no item a player's character let go of
+--       in the last PUT_KEEP_MS: a box takes nothing from a player before it is opened, so such an item came in after the
+--       opening (or was taken out and put back). Everything else - what lay in the box, the treasure and the loot created
+--       for the opening, an NPC's - goes through PBA's own kind check and roll as in the stock; a kept item still uses its
+--       roll, so the others' chances do not move. A snapshot of the box at the opening would miss that treasure: it is
+--       asked for by another message and may come in after container_opened.
+--   (B) a player's death stash (coop_death_stash, the stock backpack stash container) is not in player_created_stashes,
+--       so the host's first opening cleaned the junk artefacts out of it (two af_ball, 2026-11-07). It is never cleaned now,
+--       on any path, and not put into PBA's table (its id is reused once the stash is gone).
+-- One line in the game log per kept item / per death stash, next to the item journal's lines:
+--   [coop-items] box <id> (<name>): kept <section> (id <id>) from the PBA less-artefacts clean: <nick> let it go N ms before the clean
+--   [coop-items] death stash <id> (<name>): the PBA less-artefacts clean is not run on a player's death stash; ...
+local DEATH_STASH = "coop_death_stash"
+local PUT_KEEP_MS = 60000 -- the clean runs about 1 s after the opening it is for; a stall of the game is far shorter
+local PUT_PRUNE_MIN = 256
+local puts, put_count, put_prune_at = {}, 0, PUT_PRUNE_MIN -- item id -> { at = time_global(), peer = peer }
+local death_noted = {} -- death stash ids whose line is written
+
+-- A player's character let go of `item` (the drop callback fires while the item still has its old parent).
+local function note_put(owner_id, item)
+	if not (C().active() and item and C().is_player(owner_id)) then return end
+	local id = item:id()
+	if type(id) ~= "number" then return end
+	local now = time_global()
+	if puts[id] == nil then put_count = put_count + 1 end
+	puts[id] = { at = now, peer = C().peer_of(owner_id) }
+	if put_count < put_prune_at then return end
+	for k, v in pairs(puts) do
+		if now - v.at > PUT_KEEP_MS then
+			puts[k] = nil
+			put_count = put_count - 1
+		end
+	end
+	put_prune_at = math.max(PUT_PRUNE_MIN, put_count * 2)
+end
+
+local installed_puts = false
+local function install_puts()
+	if installed_puts then return end
+	installed_puts = true
+	RegisterScriptCallback("actor_on_item_drop", function(item)
+		local ok, err = pcall(note_put, 0, item)
+		if not ok then C().report("xchg_meat", "note a player's put", err) end
+	end)
+	RegisterScriptCallback("npc_on_item_drop", function(npc, item)
+		local ok, err = pcall(function() note_put(npc:id(), item) end)
+		if not ok then C().report("xchg_meat", "note a player's put", err) end
+	end)
+end
+
+local function section_of(id)
+	local ok, sec = pcall(function()
+		local obj = level.object_by_id(id)
+		if obj then return obj:section() end
+		local se = alife():object(id)
+		return se and se:section_name()
+	end)
+	return ok and sec or "?"
+end
+
+-- PBA's alife_release_id while it cleans box `box_id`: a player's put is kept and written, the rest goes on to `release`.
+local function guard_release(box_id, box_name, release)
+	return function(id, ...)
+		local put = type(id) == "number" and puts[id]
+		local age = put and time_global() - put.at
+		if not (age and age <= PUT_KEEP_MS) then return release(id, ...) end -- a tail call: the journal still names PBA
+		local who = put.peer ~= nil and C().nick_of(put.peer) or nil
+		printf("[coop-items] box %d (%s): kept %s (id %d) from the PBA less-artefacts clean: %s let it go %d ms before the clean",
+			box_id, tostring(box_name), tostring(section_of(id)), id, tostring(who or ("peer " .. tostring(put.peer))), age)
+	end
+end
+
+local function skip_death_stash(box)
+	local id = box:id()
+	if death_noted[id] then return end
+	death_noted[id] = true
+	local n, list = 0, {}
+	local is_af = rawget(_G, "IsArtefact")
+	pcall(function()
+		box:iterate_inventory_box(function(_, item)
+			n = n + 1
+			if is_af and is_af(item) and #list < 16 then list[#list + 1] = item:section() .. "#" .. item:id() end
+		end, box)
+	end)
+	printf("[coop-items] death stash %d (%s): the PBA less-artefacts clean is not run on a player's death stash; %d item(s) in it, artefacts: %s",
+		id, tostring(box:name()), n, #list > 0 and table.concat(list, " ") or "-")
+end
+
 -- Retain the stock PBA callback and the closure carrying its settings/junk rules.
 -- Intercept only its scheduling call, and postpone the stock callback's box mark
 -- in the actual table read by save_state and by the world-state sharing layer.
@@ -320,6 +413,10 @@ local function install_boxes()
 	local pending = setmetatable({}, { __mode = "k" })
 	installed_boxes = C().wrap(mod, "physic_object_on_use_callback", PBA .. ".physic_object_on_use_callback", function(orig)
 		return function(box, ...)
+			if box and box:section() == DEATH_STASH then -- R89 (B): single player too (a co-op world opened without a session)
+				if not C().active() or coop_mode.writes(box:id()) then skip_death_stash(box) end
+				return
+			end
 			if not C().active() then return orig(box, ...) end
 			local id, name = box:id(), box:name()
 			if not coop_mode.writes(id) then return end
@@ -341,7 +438,11 @@ local function install_boxes()
 					local current = level.object_by_id(id)
 					if boxes[id] or not (coop_mode.writes(id) and current and current:name() == name
 						and C().find_local(mod, "boxes") == boxes) then return true end
+					-- R89 (A): PBA's own global, shadowed in its module for this one call (as CreateTimeEvent above)
+					local release = rawget(env, "alife_release_id")
+					rawset(env, "alife_release_id", guard_release(id, name, release or env.alife_release_id))
 					local ok, complete = pcall(callback, ...)
+					rawset(env, "alife_release_id", release)
 					if ok and complete then boxes[id] = true end
 					if not ok then C().report("xchg_meat", "clean treasure box", complete) end
 					return true
@@ -368,5 +469,6 @@ if api then step("wrap treasure boxes", install_boxes) end
 function on_game_start()
 	if not api then return end
 	step("wrap treasure boxes", install_boxes)
+	if installed_boxes then step("watch players' puts into boxes", install_puts) end
 	step("wrap meat spoilage", install_meat)
 end
