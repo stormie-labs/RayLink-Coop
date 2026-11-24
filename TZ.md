@@ -660,6 +660,8 @@ Anomaly (`appdata\user.ltx`), а свои настройки игрока со S
 - Код — ветка `feat/gamma-mirrors` лаунчера (`gameinstall/mirrors.rs`, `gameinstall/mega.rs`). Не проверено: квота
   MEGA на полном архиве, открытие ссылок MEGA `#ключ` и magnet в проводнике.
 - Выпуск 0.3.39 — по слову владельца «выпускай» (Р82).
+- Выпущено 2026-11-24 14:12: https://github.com/stormie-labs/RayLink-Launcher/releases/tag/v0.3.39 (Latest), `RayLinkSetup.exe`
+  12 776 960 байт, SHA-256 `fecb8bd3…c50094`; анонимная загрузка `latest` совпала. Пункты тестеров Л-4, Л-5.
 
 ### 6.18. Сайт RayLink (Р83, 2026-11-24)
 
