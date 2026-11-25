@@ -1,0 +1,195 @@
+-- Ядро: без проверок режима (docs/MODES.md)
+--[[
+	Anomaly Coop - Weapon Parts Overhaul: an item in the hands of any player is a player's item (TZ R92)
+	(gamedata\scripts\coop_mods_wpo_holder.script)
+
+	G.A.M.M.A.'s Weapon Parts Overhaul (a_wpo_parts.script) asks the machine one thing about an item: who holds it. Its price
+	wrapper of utils_item.get_item_cost sells a part the actor does not hold (parent id ~= 0) to a mechanic at the mechanic's own
+	price list (a_wpo_parts.script:8), and its wrapper of utils_item.get_item_trade_status checks a weapon's busted parts only when
+	the actor holds it (:25). Single player knows one player, the actor. In a session a player's items are the actor's on his own
+	machine (id 0), and on the decider of his deals (the co-op host, the map server of his level) the same items are held by his
+	character, a stalker with another id: there WPO took them for a trader's goods.
+
+	TZ R92 (owner, 2026-11-25, variant 1 "as in single player"): the decider counts the window's formula as for itself, with no
+	stand-in for the player; WPO's "in the actor's hands" becomes "in the hands of any player". install() puts a wrapper over each
+	of WPO's two functions:
+	  - the item's holder is a player's character (coop_npc_players.is_player_id, id ~= 0): WPO's branch of the actor. The price is
+	    a_wpo_parts.GetCost (the function WPO wraps: no mechanic's price list); the status of a weapon is 2 when one of its prt_w_
+	    parts is under a_arti_jamming_mcm minpart (se_load_var(id, name, "parts"), as WPO reads it), else a_wpo_parts.GetStatus;
+	  - anything else (the actor, id 0; a trader; no holder): WPO's own function as it is. The actor's window is unchanged on every
+	    machine.
+	Where: utils_item.get_item_cost / get_item_trade_status when they hold WPO's functions, and the file locals utils_ui took of
+	them when it loaded (utils_ui.script:93-94, upvalues of UICellContainer:GetCellCost), when they are WPO's: the trade window
+	sums with those, and the decider (coop_trade_window.host_price) prices with them, so both count with one function.
+	A function is WPO's when its environment is the a_wpo_parts namespace (the engine loads every script into its own table).
+
+	Lazy: coop_trade_window calls install() before it prices; it does its work once a_wpo_parts is loaded, and the utils_ui part
+	once utils_ui is loaded too. No WPO: nothing. Again: a slot that holds our wrapper (or anything that is not WPO's) is left, so
+	nothing is wrapped twice; one function of WPO gets one wrapper wherever it sits.
+--]]
+
+local pairs, pcall, type, tostring, tonumber = pairs, pcall, type, tostring, tonumber
+local string_find = string.find
+
+local SLOTS = {
+	{ key = "get_item_cost", wpo = "GetCost" },
+	{ key = "get_item_trade_status", wpo = "GetStatus" },
+}
+local BUSTED = 2 -- utils_item.get_item_trade_status: too worn for the trader (what WPO answers for busted parts)
+
+local stats = { utils_item = 0, utils_ui = 0, players = 0, busted = 0, errors = 0 }
+local wrappers = setmetatable({}, { __mode = "k" }) -- WPO's function -> our wrapper of it
+local ours = setmetatable({}, { __mode = "k" }) -- our wrapper -> true
+local done = false -- both places checked with a_wpo_parts and utils_ui loaded
+
+local function log(fmt, ...)
+	local ok, line = pcall(string.format, fmt, ...)
+	printf("[coop-wpo-holder] %s", ok and line or tostring(fmt))
+end
+
+local function report(what, err)
+	stats.errors = stats.errors + 1
+	if stats.errors <= 5 or stats.errors % 100 == 0 then log("! %s: %s", what, tostring(err)) end
+end
+
+-- a_wpo_parts when it is loaded and has both of its saved functions; never loads it (rawget).
+local function wpo()
+	local m = rawget(_G, "a_wpo_parts")
+	if type(m) ~= "table" then return nil end
+	if type(rawget(m, "GetCost")) ~= "function" or type(rawget(m, "GetStatus")) ~= "function" then return nil end
+	return m
+end
+
+local function is_wpo(f, m)
+	if type(f) ~= "function" or ours[f] then return false end
+	local ok, env = pcall(getfenv, f)
+	return ok and env == m
+end
+
+-- The item's holder is a player's character (not the actor): WPO's branch of the actor applies to it.
+local function player_holds(obj)
+	local ok, id = pcall(function()
+		local holder = obj:parent()
+		return holder and holder:id()
+	end)
+	if not (ok and type(id) == "number" and id ~= 0) then return false end
+	local players = rawget(_G, "coop_npc_players")
+	if players == nil then
+		local found, m = pcall(function() return coop_npc_players end)
+		players = found and m or nil
+	end
+	if not (type(players) == "table" and type(players.is_player_id) == "function") then return false end
+	local asked, yes = pcall(players.is_player_id, id)
+	return asked and yes == true
+end
+
+-- WPO's busted-parts check of a weapon held by the actor (a_wpo_parts.script:18-38), for a weapon held by a player's character.
+local function busted(obj)
+	local sec = obj:section()
+	if not (IsWeapon(obj) and not IsItem("fake_ammo_wpn", sec)) then return false end
+	local parts = se_load_var(obj:id(), obj:name(), "parts")
+	if type(parts) ~= "table" then return false end
+	local mcm = rawget(_G, "a_arti_jamming_mcm")
+	local threshold = mcm and type(mcm.get_config) == "function" and tonumber(mcm.get_config("minpart"))
+	if not threshold then return false end
+	for k, v in pairs(parts) do
+		if type(k) == "string" and string_find(k, "prt_w_", 1, true) and tonumber(v) and tonumber(v) < threshold then
+			return true
+		end
+	end
+	return false
+end
+
+local make = {}
+
+make.get_item_cost = function(orig, m)
+	return function(obj, profile)
+		if obj and player_holds(obj) then
+			stats.players = stats.players + 1
+			return m.GetCost(obj, profile)
+		end
+		return orig(obj, profile)
+	end
+end
+
+make.get_item_trade_status = function(orig, m)
+	return function(obj, profile)
+		if obj and profile and player_holds(obj) then
+			stats.players = stats.players + 1
+			local ok, b = pcall(busted, obj)
+			if not ok then
+				report("busted parts", b)
+			elseif b then
+				stats.busted = stats.busted + 1
+				return BUSTED
+			end
+			return m.GetStatus(obj, profile)
+		end
+		return orig(obj, profile)
+	end
+end
+
+-- The one wrapper of WPO's function `f` (slot `key`).
+local function wrapper_of(key, f, m)
+	local w = wrappers[f]
+	if not w then
+		w = make[key](f, m)
+		wrappers[f] = w
+		ours[w] = true
+	end
+	return w
+end
+
+-- utils_ui's file locals get_item_cost / get_item_trade_status: upvalues of UICellContainer:GetCellCost. Nil when utils_ui is not
+-- loaded (never loads it).
+local function cell_cost_fn()
+	local ui = rawget(_G, "utils_ui")
+	if type(ui) ~= "table" then return nil end
+	local ok, f = pcall(function() return ui.UICellContainer.GetCellCost end)
+	return ok and type(f) == "function" and f or nil
+end
+
+-- Puts the wrappers where WPO's functions are. True when there is nothing more to do (done, or no WPO here); false while utils_ui
+-- is not loaded yet.
+function install()
+	if done then return true end
+	local m = wpo()
+	if not m then return true end
+	local ui = rawget(_G, "utils_item")
+	if type(ui) == "table" then
+		for _, s in ipairs(SLOTS) do
+			local f = ui[s.key]
+			if is_wpo(f, m) then
+				ui[s.key] = wrapper_of(s.key, f, m)
+				stats.utils_item = stats.utils_item + 1
+				log("utils_item.%s: a player's item goes WPO's way of the actor's", s.key)
+			end
+		end
+	end
+	local holder = cell_cost_fn()
+	if not holder then return false end
+	for i = 1, 255 do
+		local name, v = debug.getupvalue(holder, i)
+		if name == nil then break end
+		for _, s in ipairs(SLOTS) do
+			if name == s.key and is_wpo(v, m) then
+				debug.setupvalue(holder, i, wrapper_of(s.key, v, m))
+				stats.utils_ui = stats.utils_ui + 1
+				log("utils_ui's %s (the trade window's sums): a player's item goes WPO's way of the actor's", s.key)
+			end
+		end
+	end
+	done = true
+	return true
+end
+
+-- Ours: the function is a wrapper this script made (tests, coop_status).
+function is_ours(f)
+	return ours[f] == true
+end
+
+function print_status()
+	log("Weapon Parts Overhaul by any player's hands: %s, %d place(s) in utils_item, %d in utils_ui, %d items of players priced, "
+		.. "%d busted weapons | errors %d", wpo() and (done and "installed" or "waiting for utils_ui") or "no WPO",
+		stats.utils_item, stats.utils_ui, stats.players, stats.busted, stats.errors)
+end

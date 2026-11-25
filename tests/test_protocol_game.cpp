@@ -96,7 +96,8 @@ TEST(protocol_game_protocol_is_11)
 	// 31 (split levels native, stage 1): Welcome.flags (HostSeatPlays), PeerList rows end with u8 flags (Operator), core
 	// OperatorCommand.
 	// 33 (two modes, step S3; the only bump of build 57): Welcome ends with u8 mode (SessionMode), test below.
-	// 35 (TZ R90): TradeOp Deal flag 2, the Lua trade window's deal, carries the sums its window showed.
+	// 35 (TZ R90): TradeOp Deal flag 2, the Lua trade window's deal, carries the sums its window showed; TZ R92 (still 35, no layout
+	// change): they are the deal's price, the decider checks them against its formula within a tolerance (test_trade_window_rules.cpp).
 	CHECK_EQ(kProtocolVersion, 35u);
 }
 

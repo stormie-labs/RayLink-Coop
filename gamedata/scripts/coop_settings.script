@@ -814,6 +814,7 @@ function apply_factor_table(t, reason)
 	local saved_give = rawget(_G, "give_info")
 	if saved_give then _G.give_info = function() end end
 	local n = 0
+	local prices = false -- TZ R92 (W6): an economy factor of trade prices changed
 	local ok, err = pcall(function()
 		for _, src in ipairs({ "g", "e" }) do
 			local set, get = setters[src], getters[src]
@@ -830,6 +831,7 @@ function apply_factor_table(t, reason)
 					if get(k) ~= v then
 						set(k, v)
 						n = n + 1
+						if src == "e" and (k == "buy" or k == "sell") then prices = true end
 					end
 				end
 			end
@@ -853,6 +855,13 @@ function apply_factor_table(t, reason)
 	if n > 0 then
 		stats.factor_sets = stats.factor_sets + n
 		log("%d difficulty/economy factor(s) set (%s)", n, reason or "update")
+	end
+	-- TZ R92 (W6): a trade window copied the trader's discounts when it opened; an open one reads them again (a window only exists
+	-- when its script is loaded: not loaded here for it)
+	local window = prices and rawget(_G, "coop_trade_window")
+	if window and type(window.on_factors) == "function" then
+		local done, why = pcall(window.on_factors)
+		if not done then log("! the open trade window did not read the new prices: %s", tostring(why)) end
 	end
 	return n
 end

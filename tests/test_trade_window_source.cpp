@@ -1,7 +1,8 @@
 // Anomaly Coop unit tests (TZ R90): a player's trade window is the host's window. The engine files cannot be linked into this exe, so
 // the wiring is read in their sources: CUIGameSP::StartTrade still asks coop::trade::lua_trade_window_allowed(), which lets a copy
 // (is_mirror) have Anomaly's Lua window once scripts\coop_trade_window.script sends that window's trades to the decider
-// (coop.trade_deal -> one TradeOp Deal), and the decider prices such a deal with the window's own Lua formula (host_price).
+// (coop.trade_deal -> one TradeOp Deal), and the decider checks the sums that window showed, the deal's price (TZ R92), against the
+// window's own Lua formula (host_price), computed as for the decider itself.
 // The pure rules are in xrCoop/coop_trade_window_rules.h (test_trade_window_rules.cpp).
 #include "test_util.h"
 
@@ -75,7 +76,7 @@ TEST(trade_window_lua_api_registers_trade_deal)
 	CHECK(has(header, "int lua_trade_deal(lua_State* L);"));
 }
 
-// The deal of a Lua window carries flag 2; the decider prices it with the window's formula, the engine window's deal as before.
+// The deal of a Lua window carries flag 2; the decider checks it with the window's formula, the engine window's deal too (TZ R92).
 TEST(trade_window_lua_deal_is_priced_by_the_window_formula)
 {
 	const std::string src = repo_file("engine/src/xrGame/coop/coop_trade.cpp");
@@ -103,8 +104,9 @@ TEST(trade_window_lua_deal_is_priced_by_the_window_formula)
 	CHECK(has(ask, "trade_window::Answer::Refused"));
 }
 
-// Review of 2026-11-25: the formula is the decider's own window's, whichever flag came. The engine window's deal (flag 0) is priced
-// with CTrade, which is what that window showed, and then settled against the decider's Lua formula as a Lua window's deal is.
+// Review of 2026-11-25, TZ R92: the formula is the decider's own window's, whichever flag came. The engine window's deal (flag 0) is
+// priced with CTrade, which is what that window showed, and goes at it once the decider's Lua formula agrees within that window's
+// tolerance. The Lua window's deal gets no new item check (item->CanTrade() of a stalker trader is can_sell: false NotTraded).
 TEST(trade_window_engine_window_deal_meets_the_lua_formula_too)
 {
 	const std::string src = repo_file("engine/src/xrGame/coop/coop_trade.cpp");
@@ -116,14 +118,20 @@ TEST(trade_window_engine_window_deal_meets_the_lua_formula_too)
 	const size_t shown = apply.find("d.sell_shown = d.sell_total;", ctrade);
 	const size_t lua = apply.find("lua_price_deal(proxy_id, trader_id, d)", shown);
 	CHECK(engine != std::string::npos && ctrade != std::string::npos && shown != std::string::npos && lua != std::string::npos);
+	const size_t lua_case = apply.find("case trade_window::Pricing::Lua:");
+	REQUIRE(lua_case != std::string::npos && lua_case < engine);
+	const std::string lua_branch = apply.substr(lua_case, engine - lua_case);
+	CHECK(has(lua_branch, "lua_price_deal(proxy_id, trader_id, d)"));
+	CHECK(!has(lua_branch, "price_list(") && !has(lua_branch, "CanTrade"));
 	const std::string lua_price = body_of(src, "u8 lua_price_deal(");
-	CHECK(has(lua_price, "trade_window::charge_of(d.lua_prices,"));
-	CHECK(has(lua_price, "trade_window::Charge::EngineOnly"));
+	CHECK(has(lua_price, "trade_window::check_of(d.lua_prices,"));
+	CHECK(has(lua_price, "trade_window::Check::EngineOnly"));
 	CHECK(has(lua_price, "return PriceChanged;"));
 }
 
 // Review of 2026-11-25: a refusal for its price carries the decider's prices of both sides (protocol 35, the same Dev build: no new
-// number); the player is told the price of the side that changed, and the Lua window gets both prices to show them.
+// number). TZ R92: for the log and the text only. The engine window's player is told the side beyond the tolerance (price_tell); the
+// Lua window gets both prices (on_result keeps its signature) and tells its own text.
 TEST(trade_window_price_refusal_carries_the_decider_prices)
 {
 	const std::string src = repo_file("engine/src/xrGame/coop/coop_trade.cpp");
@@ -143,7 +151,7 @@ TEST(trade_window_price_refusal_carries_the_decider_prices)
 	const size_t read = result.find("if (code == PriceChanged) { decider_sell = r.u32(); decider_buy = r.u32(); }");
 	const size_t ok = result.find("if (!r.ok()) return;");
 	CHECK(read != std::string::npos && ok != std::string::npos && read < ok);
-	CHECK(has(result, "trade_window::tell_purchase("));
+	CHECK(has(result, "if (!deal.lua) switch (trade_window::price_tell("));
 	CHECK(has(result, "\"st_coop_trade_price_buy\""));
 	CHECK(has(result, "\"st_coop_trade_price_sell\""));
 	CHECK(has(result, "lua_pushnumber(L, lua_Number(decider_sell));"));
@@ -165,8 +173,54 @@ TEST(trade_window_price_refusal_carries_the_decider_prices)
 	CHECK(has(rus, "\xD1\xE4\xE5\xEB\xEA\xE0 \xEE\xF2\xEC\xE5\xED\xE5\xED\xE0"));
 }
 
-// R90 review, blocking 2 (protocol 35): a Lua window's deal carries the sums its window showed after the lists; the decider settles
-// each side against them (trade_window::settle_side): a sale pays the smaller sum, a purchase costs the larger.
+// Review of 2026-11-25 (TZ R92, lua_flow#1, lua_flow#2): a refusal for its price brings the trader's items and money ahead of the Result
+// (host_send_trader_view, once per answer: a repeat sends the stored Result alone), so the Lua window takes the trader's data again
+// without closing its view (a close revokes a trading computer's permit, whose grant is taken once). With the window closed, the Lua
+// side tells the refusal on the HUD: the engine still tells no text for a Lua window's deal.
+TEST(trade_window_price_refusal_sends_the_trader_first)
+{
+	const std::string src = repo_file("engine/src/xrGame/coop/coop_trade.cpp");
+	REQUIRE(src.size() > 20000);
+	const std::string view = body_of(src, "void host_send_trader_view(PeerId to, u16 trader_id)");
+	REQUIRE(!view.empty());
+	CHECK(has(view, "if (sync::host_peer_joining(to) || !may_see_contents(to, ContTrader, trader_id)) return;"));
+	const size_t contents = view.find("items::host_send_contents(to, trader_id);");
+	const size_t money = view.find("write_trader_money(w, trader_id, trader->get_money());");
+	const size_t send = view.find("net::host_send(to, Msg::TradeOp, w);");
+	CHECK(contents != std::string::npos && money != std::string::npos && send != std::string::npos && contents < money && money < send);
+	const std::string on_deal = body_of(src, "void host_on_deal(PeerId from, Reader& r)");
+	REQUIRE(!on_deal.empty());
+	const size_t repeat = on_deal.find("if (last.have && d.seq == last.seq) { host_send_result(from, last); return; }");
+	const size_t first = on_deal.find("if (code == PriceChanged) host_send_trader_view(from, d.trader);");
+	const size_t answer = on_deal.rfind("host_send_result(from, last);");
+	CHECK(repeat != std::string::npos && first != std::string::npos && answer != std::string::npos);
+	CHECK(repeat < first && first < answer);
+	// Re-review of 2026-11-25: "the trader's states before the Result" holds only while ItemState and TradeOp share one lane (the
+	// default, Reliable): both sends name no lane.
+	const std::string items_src = repo_file("engine/src/xrGame/coop/coop_items.cpp");
+	REQUIRE(items_src.size() > 20000);
+	const std::string state = body_of(items_src, "void host_send_state(PeerId to, u16 id)");
+	REQUIRE(!state.empty());
+	CHECK(has(state, "net::host_send(to, Msg::ItemState, w);"));
+	CHECK(has(body_of(src, "void host_send_result(PeerId to, const LastResult& r)"), "net::host_send(to, Msg::TradeOp, w);"));
+	// may_see_contents is defined before host_on_deal (the helper uses it)
+	const size_t see = src.find("bool may_see_contents(PeerId from, u8 kind, u16 id)");
+	CHECK(see != std::string::npos && see < src.find("void host_on_deal(PeerId from, Reader& r)"));
+	const std::string script = repo_file("gamedata/scripts/coop_trade_window.script");
+	REQUIRE(script.size() > 2000);
+	CHECK(!has(script, "REOPEN_MS") && !has(script, "local reopen"));
+	CHECK(has(script, "tell_on_hud(STALE_TEXT, STALE_FALLBACK)"));
+	CHECK(has(script, "pcall(core.hud, text, fallback)"));
+	// lua_flow#3: TMode_UpdatePrice is watched (its sum kept), never replaced by a price of the decider
+	CHECK(has(script, "local function watch_price(cls)"));
+	CHECK(has(script, "if moved_since_drawn(self, cc, shown) then return end"));
+	const std::string result = body_of(src, "void client_on_result(Reader& r)");
+	CHECK(has(result, "if (!deal.lua) switch (trade_window::price_tell("));
+}
+
+// R90 review, blocking 2 (protocol 35): a Lua window's deal carries the sums its window showed after the lists. TZ R92: they are its
+// price; the decider compares each side with its own formula's sum within the tolerance (trade_window::settle_side, tolerance_of) and
+// the side goes at the shown sum (settle_side's out is the deal's total).
 TEST(trade_window_lua_deal_carries_the_shown_sums)
 {
 	const std::string src = repo_file("engine/src/xrGame/coop/coop_trade.cpp");
@@ -180,11 +234,11 @@ TEST(trade_window_lua_deal_carries_the_shown_sums)
 	CHECK(has(on_deal, "d.sell_shown = r.u32();"));
 	CHECK(has(on_deal, "d.buy_shown = r.u32();"));
 	const std::string lua_price = body_of(src, "u8 lua_price_deal(");
-	CHECK(has(lua_price, "trade_window::settle_side(!d.sell.empty(), true,"));
-	CHECK(has(lua_price, "trade_window::settle_side(!d.buy.empty(), false,"));
-	// review of 2026-11-25, nit 1: the engine window's CTrade sums floor twice an item (trade_window::slack_of)
-	CHECK(has(lua_price, "trade_window::slack_of(d.lua_prices, d.sell.size())"));
-	CHECK(has(lua_price, "trade_window::slack_of(d.lua_prices, d.buy.size())"));
+	CHECK(has(lua_price, "trade_window::settle_side(!d.sell.empty(), decider[0], d.sell_shown, sell_tolerance, d.sell_total)"));
+	CHECK(has(lua_price, "trade_window::settle_side(!d.buy.empty(), decider[1], d.buy_shown, buy_tolerance, d.buy_total)"));
+	// the tolerance of the window that sent the deal (the engine window's CTrade sums floor twice an item)
+	CHECK(has(lua_price, "trade_window::tolerance_of(d.lua_prices, d.sell.size())"));
+	CHECK(has(lua_price, "trade_window::tolerance_of(d.lua_prices, d.buy.size())"));
 	CHECK(has(lua_price, "d.sell_shown"));
 	CHECK(has(lua_price, "d.buy_shown"));
 	// the window's sums come from the script (coop.trade_deal arguments 7 and 8: what the window showed, GetCellCost)
@@ -248,4 +302,18 @@ TEST(trade_window_lua_adapter_is_core)
 	CHECK(has(src, "\nfunction on_result("));
 	CHECK(has(src, "\nfunction host_price("));
 	CHECK(!has(src, "is_host(") && !has(src, "is_client("));
+}
+
+// TZ R92: the decider computes the window's formula as for itself: no player character put in (coop_npc_players.with_identity) and no
+// item wrapped to look held by the actor (as_actors); the engine side of the contract (host_price -> two sums or nil and why) stays.
+TEST(trade_window_decider_puts_no_player_character_in)
+{
+	const std::string src = repo_file("gamedata/scripts/coop_trade_window.script");
+	REQUIRE(src.size() > 2000);
+	// Lua comments dropped: long ones (--[[ ]], --[==[ ]==]) first, then the rest of a line after --
+	const std::string no_long = std::regex_replace(src, std::regex(R"(--\[(=*)\[[\s\S]*?\]\1\])"), "");
+	const std::string code = std::regex_replace(no_long, std::regex(R"(--[^\n]*)"), "");
+	CHECK(has(code, "\nfunction host_price("));
+	CHECK(!has(code, "with_identity"));
+	CHECK(!has(code, "as_actors"));
 }

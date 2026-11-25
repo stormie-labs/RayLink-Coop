@@ -1,5 +1,6 @@
 // Anomaly Coop unit tests (TZ R90): the pure rules of the trade window (xrCoop/coop_trade_window_rules.h) - which window a process
-// shows, how a deal from Anomaly's Lua window is checked before it leaves, how the decider prices it, and what the Lua inventory
+// shows, how a deal from Anomaly's Lua window is checked before it leaves, how the decider checks its price (TZ R92: the shown sums
+// within a tolerance of the decider's formula, either way), and what the Lua inventory
 // tells the decider it shows. The window choice runs under every process kind (MODE_CASES): only a player's copy keeps the engine
 // window, and only while the Lua adapter is not in place.
 #include "test_util.h"
@@ -120,34 +121,43 @@ TEST(trade_window_decider_total_of_a_side)
 	CHECK(std::string(price_verdict_name(PriceVerdict::Zero)).size() > 3);
 }
 
-// R90 review, blocking 2: the decider's formula and the player's window may disagree on a side. A sale pays the smaller sum, a
-// purchase costs what the window showed: the player never gets more than his window showed, nor than the decider's own price.
-// Review of 2026-11-25: and he never pays more nor gets less than his window showed without seeing it. A side the decider prices worse
-// for him than shown beyond the rounding slack is refused: the window shows the decider's price then, and the next press agrees to it.
-TEST(trade_window_settles_each_side_against_what_the_window_showed)
+// TZ R92 (the owner's choice of 2026-11-25, "as in single player"): the player pays and gets exactly what his window showed. The decider
+// compares its own formula's sum of each side with the shown one, the sale and the purchase alike: within the tolerance the side goes at
+// the shown sum, beyond it, either way, the deal is refused (a modified client, or a sync fault that moved the client's price).
+TEST(trade_window_settles_each_side_at_what_the_window_showed)
 {
-	const uint32_t r = kRoundingRu;
 	uint32_t out = 7;
+	const uint32_t one = tolerance_of(true, 1); // a Lua window's deal of one item: 1 RU of rounding + 1 RU for its condition
+	CHECK_EQ(one, 2u);
+	// a purchase dearer on the decider within the tolerance costs what was shown
+	CHECK(settle_side(true, 902, 900, one, out) == PriceVerdict::Ok && out == 900);
+	// a purchase cheaper on the decider within the tolerance costs what was shown too, not the decider's sum
+	CHECK(settle_side(true, 898, 900, one, out) == PriceVerdict::Ok && out == 900);
+	// a sale cheaper on the decider within the tolerance pays what was shown
+	CHECK(settle_side(true, 998, 1000, one, out) == PriceVerdict::Ok && out == 1000);
+	// a sale dearer on the decider within the tolerance pays what was shown too
+	CHECK(settle_side(true, 1002, 1000, one, out) == PriceVerdict::Ok && out == 1000);
+	CHECK(settle_side(true, 900, 900, one, out) == PriceVerdict::Ok && out == 900);
+	// beyond the tolerance, either way, the deal is refused and nothing is paid
+	CHECK(settle_side(true, 903, 900, one, out) == PriceVerdict::Changed && out == 0); // the trader asks more than shown
+	CHECK(settle_side(true, 897, 900, one, out) == PriceVerdict::Changed && out == 0); // a sync fault made the shown price higher
+	CHECK(settle_side(true, 900, 1000, one, out) == PriceVerdict::Changed && out == 0); // the trader pays less than shown
+	CHECK(settle_side(true, 1100, 1000, one, out) == PriceVerdict::Changed && out == 0); // the shown sale was too cheap
 	// a worn prt_w_barrel_10 sold to a mechanic: a modified window claims 8250 RU (part_prices.ltx), the decider prices it 1237 RU
-	CHECK(settle_side(true, true, 1237, 8250, r, out) == PriceVerdict::Changed && out == 0);
-	// the window showed less than the decider pays: the sale pays what was shown
-	CHECK(settle_side(true, true, 8250, 1237, r, out) == PriceVerdict::Ok && out == 1237);
-	CHECK(settle_side(true, true, 900, 900, r, out) == PriceVerdict::Ok && out == 900);
-	CHECK(settle_side(true, true, 999, 1000, r, out) == PriceVerdict::Ok && out == 999); // 1 RU of rounding: never over the decider
-	CHECK(settle_side(true, true, 900, 1000, r, out) == PriceVerdict::Changed && out == 0); // less than shown: refused, not paid
-	CHECK(settle_side(true, true, 0xfffffffeu, 0xffffffffu, r, out) == PriceVerdict::Ok && out == 0xfffffffeu); // no overflow
-	// a purchase never costs more than the window showed: beyond the rounding it is refused
-	CHECK(settle_side(true, false, 900, 500, r, out) == PriceVerdict::Changed && out == 0);
-	CHECK(settle_side(true, false, 902, 900, r, out) == PriceVerdict::Changed && out == 0);
-	CHECK(settle_side(true, false, 901, 900, r, out) == PriceVerdict::Ok && out == 900); // 1 RU of rounding costs the trader, not him
-	CHECK(settle_side(true, false, 900, 900, r, out) == PriceVerdict::Ok && out == 900);
-	CHECK(settle_side(true, false, 900, 1000, r, out) == PriceVerdict::Ok && out == 1000); // nor less: the window's sum, as the stock
-	CHECK(settle_side(true, false, 0xffffffffu, 0, r, out) == PriceVerdict::Changed && out == 0); // no overflow
-	CHECK(settle_side(false, true, 8250, 1237, r, out) == PriceVerdict::Ok && out == 0); // an empty side costs nothing
-	CHECK(settle_side(false, false, 900, 1000, r, out) == PriceVerdict::Ok && out == 0);
-	// the window's button is off at 0 RU: a sale the window showed for nothing is no sale
-	CHECK(settle_side(true, true, 900, 0, r, out) == PriceVerdict::Zero && out == 0);
-	CHECK(settle_side(true, false, 0, 0, r, out) == PriceVerdict::Zero && out == 0);
+	CHECK(settle_side(true, 1237, 8250, one, out) == PriceVerdict::Changed && out == 0);
+	CHECK(settle_side(true, 8250, 1237, one, out) == PriceVerdict::Changed && out == 0);
+	// an empty side costs nothing, whatever the sums
+	CHECK(settle_side(false, 8250, 1237, one, out) == PriceVerdict::Ok && out == 0);
+	CHECK(settle_side(false, 0, 0, one, out) == PriceVerdict::Ok && out == 0);
+	// the window's button is off at 0 RU: a side shown for nothing is no deal, even within the tolerance
+	CHECK(settle_side(true, 1, 0, one, out) == PriceVerdict::Zero && out == 0);
+	CHECK(settle_side(true, 0, 0, one, out) == PriceVerdict::Zero && out == 0);
+	CHECK(settle_side(true, 2, 1, one, out) == PriceVerdict::Ok && out == 1);
+	// no overflow at the ends of a u32
+	CHECK(settle_side(true, 0xffffffffu, 0, one, out) == PriceVerdict::Changed && out == 0);
+	CHECK(settle_side(true, 0, 0xffffffffu, one, out) == PriceVerdict::Changed && out == 0);
+	CHECK(settle_side(true, 0xfffffffeu, 0xffffffffu, one, out) == PriceVerdict::Ok && out == 0xffffffffu);
+	CHECK(settle_side(true, 0, 0xffffffffu, 0xffffffffu, out) == PriceVerdict::Ok && out == 0xffffffffu);
 	CHECK(std::string(price_verdict_name(PriceVerdict::Changed)).size() > 10);
 	// the window's sum travels as a whole number, floored once (total_of of the one sum)
 	uint32_t shown = 0;
@@ -155,24 +165,36 @@ TEST(trade_window_settles_each_side_against_what_the_window_showed)
 	CHECK(total_of({1237.9}, 0xffffffffu, shown) && shown == 1237);
 }
 
-// Review of 2026-11-25: the formula is the decider's, not the player's choice of flag. Its own window's (the Lua formula) prices every
-// deal it can: a Lua window's deal against the sums it showed, an engine window's deal (flag 0) against the engine formula's sums,
-// which that window showed. The engine sums alone stand only where the decider has no Lua formula at all (its gamedata is older).
+// Review of 2026-11-25, TZ R92: the formula is the decider's, not the player's choice of flag. Its own window's (the G.A.M.M.A. formula)
+// checks every deal it can: a Lua window's deal against the sums it showed, an engine window's deal (flag 0) against the CTrade sums,
+// which that window showed. The CTrade sums alone stand only where the decider has no Lua formula at all (its gamedata is older).
 TEST(trade_window_the_decider_picks_the_formula)
 {
-	CHECK(charge_of(true, Answer::Priced) == Charge::Settle);
-	CHECK(charge_of(false, Answer::Priced) == Charge::Settle); // flag 0 is no way around the Lua formula
-	CHECK(charge_of(true, Answer::Refused) == Charge::Refuse);
-	CHECK(charge_of(false, Answer::Refused) == Charge::Refuse); // an item the host's window would not trade (busted WPO parts)
-	CHECK(charge_of(true, Answer::NoFormula) == Charge::Refuse); // no fallback price for a Lua window's deal
-	CHECK(charge_of(false, Answer::NoFormula) == Charge::EngineOnly); // as before R90
-	// a refusal for its price tells the player of the side that changed: the purchase if it costs more, else the sale
-	CHECK(tell_purchase(true, 901, 900));
-	CHECK(!tell_purchase(true, 900, 900));
-	CHECK(!tell_purchase(false, 901, 900));
+	CHECK(check_of(true, Answer::Priced) == Check::Compare);
+	CHECK(check_of(false, Answer::Priced) == Check::Compare); // flag 0 is no way around the G.A.M.M.A. formula
+	CHECK(check_of(true, Answer::Refused) == Check::Refuse);
+	CHECK(check_of(false, Answer::Refused) == Check::Refuse); // an item the host's window would not trade (busted WPO parts)
+	CHECK(check_of(true, Answer::NoFormula) == Check::Refuse); // no fallback price for a Lua window's deal
+	CHECK(check_of(false, Answer::NoFormula) == Check::EngineOnly); // as before R90
 	static_assert(kPriceChanged == 10, "TradeResult PriceChanged (coop_trade.cpp), RESULT_PRICE (coop_trade_window.script)");
 }
 
+// TZ R92: the engine window's refusal for its price tells the side beyond the tolerance, the purchase first, and in which direction; a
+// side the decider prices better for the player than shown is a stale window, not a dearer trader.
+TEST(trade_window_price_refusal_tells_the_side_beyond_the_tolerance)
+{
+	// the engine window's tolerance of one item is 4 RU
+	CHECK(price_tell(false, 0, 1, 0, 910, 0, 900) == PriceTell::Purchase); // the trader asks more
+	CHECK(price_tell(false, 0, 1, 0, 890, 0, 900) == PriceTell::Stale); // the window showed more than the trader asks
+	CHECK(price_tell(false, 1, 0, 890, 0, 900, 0) == PriceTell::Sale); // the trader pays less
+	CHECK(price_tell(false, 1, 0, 910, 0, 900, 0) == PriceTell::Stale); // the window showed less than the trader pays
+	// a barter: the purchase within its tolerance, the sale beyond it: the sale is told
+	CHECK(price_tell(false, 1, 1, 800, 902, 900, 900) == PriceTell::Sale);
+	CHECK(price_tell(false, 1, 1, 800, 1000, 900, 900) == PriceTell::Purchase); // both beyond: the purchase first
+	// a Lua window's tolerance of one item is 2 RU
+	CHECK(price_tell(true, 0, 1, 0, 903, 0, 900) == PriceTell::Purchase);
+	CHECK(price_tell(true, 0, 1, 0, 902, 0, 900) == PriceTell::Stale); // within: nothing to blame the trader for
+}
 // What the Lua inventory shows of an object (coop.search_window(id, kind)): a box, a body, a trader in a trade window; the bag of a
 // living companion is no view of the decider.
 TEST(trade_window_search_kind)
@@ -203,25 +225,34 @@ TEST(trade_window_search_step_kind)
 	CHECK(search_step(700, 701, kNone).open);
 }
 
-// Review of 2026-11-25, nit 1: the engine window's sums are CTrade's, floored twice an item; the Lua formula's are floored once a side.
-// The reviewer's lists (the real host_total and settle_side, CTrade's floors): 640 against 641, 7775 against 7777, 5820 against 5821 RU.
-// Without an allowance of 2 RU an item the engine window, which cannot show the decider's price, could buy nothing.
-TEST(trade_window_engine_window_rounding_is_no_refusal)
+// TZ R92: the tolerance of a side. A Lua window's deal: 1 RU of rounding of the sum and 1 RU an item for its condition (a u16 each way,
+// coop_items.cpp:308-309). An engine window's deal: CTrade floors every item twice where the formula floors a side once, 2 RU an item
+// more. The reviewer's lists of 2026-11-25 (the real host_total and CTrade's floors): 640 against 641, 7775 against 7777, 5820 against
+// 5821 RU; without the allowance the engine window, which cannot show the decider's price, could buy nothing.
+TEST(trade_window_tolerance_of_a_side)
 {
-	CHECK(slack_of(true, 9) == kRoundingRu); // a Lua window floors a side once, as the decider
-	CHECK(slack_of(false, 0) == kRoundingRu);
-	CHECK(slack_of(false, 3) == kRoundingRu + 6u);
-	CHECK(slack_of(false, size_t(0x80000000u)) == 0xffffffffu); // no overflow
+	CHECK_EQ(tolerance_of(true, 0), kRoundingRu);
+	CHECK_EQ(tolerance_of(true, 9), kRoundingRu + 9u);
+	CHECK_EQ(tolerance_of(false, 0), kRoundingRu);
+	CHECK_EQ(tolerance_of(false, 3), kRoundingRu + 9u);
+	// saturates at the most a u32 holds, no overflow
+	CHECK_EQ(tolerance_of(true, size_t(0xfffffffeu)), 0xffffffffu);
+	CHECK_EQ(tolerance_of(true, size_t(0xffffffffu)), 0xffffffffu);
+	CHECK_EQ(tolerance_of(false, size_t(0x55555554u)), 0xfffffffdu);
+	CHECK_EQ(tolerance_of(false, size_t(0x55555555u)), 0xffffffffu);
+	CHECK_EQ(tolerance_of(false, size_t(0x80000000u)), 0xffffffffu);
 	uint32_t out = 7;
-	CHECK(settle_side(true, false, 641, 640, slack_of(false, 1), out) == PriceVerdict::Ok && out == 640);
-	CHECK(settle_side(true, false, 7777, 7775, slack_of(false, 2), out) == PriceVerdict::Ok && out == 7775);
-	CHECK(settle_side(true, false, 5821, 5820, slack_of(false, 1), out) == PriceVerdict::Ok && out == 5820);
-	// the same rounding from a Lua window, which floors once, is beyond its slack
-	CHECK(settle_side(true, false, 7777, 7775, slack_of(true, 2), out) == PriceVerdict::Changed && out == 0);
-	// more than CTrade's floors can make is another price: refused, the engine window says so
-	CHECK(settle_side(true, false, 1000, 900, slack_of(false, 9), out) == PriceVerdict::Changed && out == 0);
-	CHECK(settle_side(true, false, 919, 900, slack_of(false, 9), out) == PriceVerdict::Ok && out == 900);
-	CHECK(settle_side(true, false, 920, 900, slack_of(false, 9), out) == PriceVerdict::Changed && out == 0);
-	// a sale from the engine window: CTrade's floors only lower its sum, the sale pays it
-	CHECK(settle_side(true, true, 1003, 1000, slack_of(false, 2), out) == PriceVerdict::Ok && out == 1000);
+	CHECK(settle_side(true, 641, 640, tolerance_of(false, 1), out) == PriceVerdict::Ok && out == 640);
+	CHECK(settle_side(true, 7777, 7775, tolerance_of(false, 2), out) == PriceVerdict::Ok && out == 7775);
+	CHECK(settle_side(true, 5821, 5820, tolerance_of(false, 1), out) == PriceVerdict::Ok && out == 5820);
+	// a Lua window's deal of 2 items: 3 RU either way
+	CHECK(settle_side(true, 7778, 7775, tolerance_of(true, 2), out) == PriceVerdict::Ok && out == 7775);
+	CHECK(settle_side(true, 7779, 7775, tolerance_of(true, 2), out) == PriceVerdict::Changed && out == 0);
+	CHECK(settle_side(true, 7771, 7775, tolerance_of(true, 2), out) == PriceVerdict::Changed && out == 0);
+	// the engine window's deal of 9 items: 28 RU either way; more than CTrade's floors can make is another price
+	CHECK(settle_side(true, 928, 900, tolerance_of(false, 9), out) == PriceVerdict::Ok && out == 900);
+	CHECK(settle_side(true, 929, 900, tolerance_of(false, 9), out) == PriceVerdict::Changed && out == 0);
+	CHECK(settle_side(true, 872, 900, tolerance_of(false, 9), out) == PriceVerdict::Ok && out == 900);
+	CHECK(settle_side(true, 871, 900, tolerance_of(false, 9), out) == PriceVerdict::Changed && out == 0);
+	CHECK(settle_side(true, 1000, 900, tolerance_of(false, 9), out) == PriceVerdict::Changed && out == 0);
 }

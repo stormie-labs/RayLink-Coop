@@ -1253,14 +1253,15 @@ end
 
 -- Client: the trade profile of `npc` from the save at once, and the decider's current one asked for. A trade window with that trader
 -- opened: the stock asks through the talk (on_menu_mode); a player's Lua trade window opened without a talk (a trading computer) asks
--- through coop_trade_window (TZ R90). Once per trader in TRADER_GAP_MS.
-function ask_trader(npc)
+-- through coop_trade_window (TZ R90). Once per trader in TRADER_GAP_MS; `now` asks past that gap (TZ R92: the decider refused a deal
+-- of the window for its price, and the window takes the trader's data again at once).
+function ask_trader(npc, now)
 	if not npc then return end
 	local ok, err = pcall(apply_profile, npc, nil) -- from the save, at once
 	if not ok then log("! trade profile not applied: %s", tostring(err)) end
 	local id = npc:id()
 	local tg = time_global()
-	if trader_asked[id] and tg - trader_asked[id] < TRADER_GAP_MS then return end
+	if not now and trader_asked[id] and tg - trader_asked[id] < TRADER_GAP_MS then return end
 	trader_asked[id] = tg
 	stats.trader_req = stats.trader_req + 1
 	api.send_event(EV_TRADER_REQ, codec().encode({ id = host_id(id) }), 0)

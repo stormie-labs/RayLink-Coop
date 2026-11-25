@@ -23,6 +23,14 @@ def delivery_runner():
     methods = [definition(trade, s) for s in helpers if s in source]
     methods += [definition(trade, s) for s in signatures]
     (work / "trade_host.inc").write_text("\n".join(methods), encoding="utf-8")
+    # Review of 2026-11-25 (TZ R92, lua_flow#1): host_on_deal with what it calls, the deal_test scenarios. The helper that sends the
+    # trader's items and money with a refusal for its price is included when present (without it the deal-price-changed-* fail).
+    (work / "trade_deal_types.inc").write_text(
+        definition(trade, "struct LastResult") + ";\n" + definition(trade, "struct PeerTrade") + ";\n", encoding="utf-8")
+    deal = ["void write_trader_money(", "void host_send_result(", "bool read_list(", "bool may_see_contents("]
+    deal += [s for s in ["void host_send_trader_view("] if s in source]
+    deal += ["void host_on_deal("]
+    (work / "trade_deal.inc").write_text("\n".join(definition(trade, s) for s in deal), encoding="utf-8")
     (work / "trade_mirror.inc").write_text(
         definition(game / "coop_events.cpp", "void client_step_parents(") + "\n" +
         definition(game / "coop_events.cpp", "void client_on_entity_parent("), encoding="utf-8")
@@ -51,6 +59,13 @@ def delivery_runner():
     "lua-window-purchase-shown-more", "lua-window-purchase-dearer", "lua-window-sale-cheaper", "lua-window-sale-rounding",
     "lua-window-wpo-claimed", "lua-window-no-formula", "engine-window-no-formula", "engine-window-lua-dearer",
     "engine-window-lua-cheaper", "engine-window-lua-refused", "lua-window-purchase-rounding", "engine-window-lua-floors",
+    # TZ R92: the shown sum is paid within the tolerance either way; beyond it, either way, PriceChanged
+    "lua-window-purchase-within", "lua-window-sale-within-dearer", "lua-window-sale-dearer", "lua-window-shown-zero",
+    "engine-window-lua-edge-dearer", "engine-window-lua-edge-cheaper", "engine-window-lua-beyond-edge",
+    "map-server-balance-unnamed",
+    # review of 2026-11-25 (TZ R92, lua_flow#1): a refusal for its price sends the trader's items and money before the Result
+    "deal-price-changed-talk", "deal-price-changed-computer", "deal-price-changed-unseen", "deal-price-changed-joining",
+    "deal-price-changed-repeat", "deal-ok-sends-the-result",
     "destroying-item", "removed-item", "cannot-take", "stale-local-owner",
     "refused-first-buy", "refused-later-buy", "refused-sale", "barter-rollback",
     "temporary-mirror-rejection", "mirror-repair-mask", "mirror-timeout", "mirror-success",

@@ -205,6 +205,9 @@
 	<string id="st_coop_trade_price_sell">
 		<text>Trade cancelled: the trader pays %u RU, less than the window showed</text>
 	</string>
+	<string id="st_coop_trade_price_stale">
+		<text>Trade failed: the prices in the window were out of date, the window is refreshed</text>
+	</string>
 	<string id="st_coop_eco_travel_offer">
 		<text>%s fast travels, %d m from you. Go with him? It costs you nothing.</text>
 	</string>

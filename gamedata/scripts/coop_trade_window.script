@@ -1,6 +1,7 @@
 -- Ядро: без проверок режима (docs/MODES.md)
 --[[
-	Anomaly Coop - a player's trade window is the host's window (TZ R90) (gamedata\scripts\coop_trade_window.script)
+	Anomaly Coop - a player's trade window is the host's window (TZ R90), its price is the window's (TZ R92)
+	(gamedata\scripts\coop_trade_window.script)
 
 	The host, single player and a server's process trade in Anomaly's Lua inventory window (ui_inventory; G.A.M.M.A. ships its own
 	copy). Its Sell, Buy and Donate move every item with transfer_item and the money with give_money, on the machine itself. On a
@@ -12,16 +13,20 @@
 	everything or nothing, as for the engine window; the window follows its answer and the items that arrive. The stock's own checks
 	stay before anything leaves (the partner lives, the trader or the player can pay: the stock's message box).
 
-	The decider prices such a deal with the window's own formula (flag 2): host_price below runs there under the player's character,
-	so the trader's lists and discounts are his (trade_manager), and utils_item.get_item_cost prices each item. Each side's sum is
-	floored once by the engine, as TMode_Sell does. The deal carries the sums the window showed (GetCellCost, as TMode_UpdatePrice
-	shows them; protocol 35), and the decider settles each side against them (coop_trade_window_rules.h settle_side): a sale pays the
-	smaller sum, a purchase costs the larger. Review of 2026-11-25: a purchase the decider prices above the shown sum, or a sale more
-	than 1 RU below it, is refused for its price (code 10) with the decider's prices; the window then shows them under its lists, and
-	the next press of the same list sends that price as the window's sum, so it agrees to it. The player never pays more nor gets less
-	than his window showed. On the decider the player's items are held by his character, not by the actor (id 0) as on his machine,
-	and G.A.M.M.A.'s Weapon Parts Overhaul looks at that id (a part not held by the actor goes at the mechanic's sale price, a weapon not
-	held by the actor skips its busted-parts check): host_price shows the formula the player's items as held by the actor.
+	The price (TZ R92, owner 2026-11-25, variant 1 "as in single player"): the player pays and gets exactly what his window showed.
+	The deal (flag 2) carries the sums the window showed (GetCellCost, as TMode_UpdatePrice shows them; protocol 35). The decider
+	counts the same G.A.M.M.A. formula as for itself, with no stand-in for the player (no with_identity): host_price below takes the
+	trader's lists and discounts from trade_manager as the decider's own window would (in G.A.M.M.A. they do not depend on the
+	player), and prices each item with the very functions the window sums with: utils_ui took get_item_cost and get_item_trade_status
+	when it loaded (utils_ui.script:93-94), and both are read from UICellContainer:GetCellCost (formula). The engine compares each side
+	with the shown sum within its tolerance (coop_trade_window_rules.h): the same, the deal goes at the shown sum; not the same, it is
+	refused for its price (code 10, PriceChanged). The window then tells so (on the HUD when it is no longer open), takes the trader's
+	data again (his profile at once; his money and his items' states the decider sent ahead of its answer, its view stays open: a close
+	would revoke a trading computer's permit) and draws itself anew; nothing agrees to the decider's price. Weapon Parts Overhaul is the
+	one mod that looks at who holds an item: coop_mods_wpo_holder makes "in the actor's hands" "in the hands of any player" (install
+	before pricing). A copy picks the ids and the prices of a deal with the same functions as the window's sum (collect, priced: W4 of
+	the R92 review), and sends a side only at the sum its label shows: TMode_UpdatePrice is watched, never changed, and a sum that moved
+	since it drew (an item's state came) redraws the window instead of a deal (review of 2026-11-25, lua_flow#3).
 
 	The buttons (review of 2026-11-24): G.A.M.M.A. binds Sell and Buy once, when the window is made (UIInventory:__init ->
 	InitCallbacks: AddCallback with the class's function of that moment), usually at the first open of the inventory, long before
@@ -36,15 +41,20 @@
 	                                        replaced one since, the open window's Sell and Buy bound again); false and why: the
 	                                        copy keeps the engine window.
 	  on_result(seq, code, delta, why, sell_price, buy_price)   the decider's answer to a deal sent from here; the prices: code 10
-	                                        (refused for its price) only, the decider's sums of both sides.
-	  host_price(character, trader, sell, buy)   on the decider: the window's sums of both lists for that player, or nil and why.
+	                                        (refused for its price) only, the decider's sums of both sides, for the log.
+	  host_price(character, trader, sell, buy)   on the decider: the window formula's sums of both lists (not floored), or nil and
+	                                        why. `character` holds the items sold, the trader's ruck the items bought.
 	Here -> engine:
 	  coop.trade_deal(trader, sell_ids, buy_ids, flags, sell_prices, buy_prices, sell_shown, buy_shown) -> seq | 0, why
 	  coop.search_window(trader, TRADER_VIEW)   the window shows that trader: the decider sends his money, his items' states and
 	                                            a trading computer's permit (ReqContainer of a trader).
 	Scripts:
 	  coop_core_world.on_trader_cfg -> on_profile(npc)   the trader's profile came after the window opened.
-	  coop_core_world.ask_trader(npc)    a window opened without a talk (a trading computer) asks for the profile too.
+	  coop_core_world.ask_trader(npc[, now])   a window opened without a talk (a trading computer) asks for the profile too; after
+	                                        a refusal for its price, at once ("now": past the gap of 15 s).
+	  coop_settings.apply_factor_table -> on_factors()   the economy factors buy/sell changed while a trade window is open (W6).
+	  coop_mods_wpo_holder.install()      before the formula prices.
+  coop_mods_core.hud(text, fallback)  a refusal for its price when the window is no longer open (one line on the HUD).
 
 	Differences from the host's window, on purpose:
 	  - an item in a stack that the trader does not take (status 2: too worn) is not given away for nothing with the stack;
@@ -64,20 +74,21 @@ local FLAG_LUA = 2
 local TRADABLE = 4 -- utils_item.get_item_trade_status: tradable
 local RESULT_OK = 0
 local RESULT_PRICE = 10 -- refused for its price (coop_trade.cpp PriceChanged, xrCoop/coop_trade_window_rules.h kPriceChanged)
-local ACTOR_ID = 0 -- the actor's id on every machine (AC_ID)
 local ANSWER_MS = 15000 -- a deal without an answer for this long no longer holds the buttons
 local ARRIVE_MS = 5000 -- the window follows the items of an accepted deal for this long
 local TICK_MS = 250
+local STALE_TEXT = "st_coop_trade_price_stale" -- gamedata\configs\text\*\st_coop_economy.xml
+local STALE_FALLBACK = "Trade failed: the prices in the window were out of date, the window is refreshed"
 local MAX_ITEMS = 1024 -- items of one deal (coop_trade.cpp kMaxDealItems)
 local TAKEN = { "TMode_Sell", "TMode_Buy", "Action_Donate", "On_Item_Exchange" }
 local STOCK_BODY = { TMode_Sell = "TMode_Sell", TMode_Buy = "TMode_Buy" } -- what a stock body prints first: its name
 
 local stats = { deals = 0, ok = 0, refused = 0, lost = 0, gifts = 0, waits = 0, closed = 0, wraps = 0, profiles = 0, errors = 0,
-	not_sent = 0, guarded = 0, stray = 0, binds = 0, repriced = 0 }
-local pending = {} -- seq -> { kind = "sale"|"purchase"|"gift", npc = id, sell = {ids}, buy = {ids}, at = ms }
-local agreed = {} -- bag ("actor_trade"|"npc_trade") -> { npc = id, key = "ids", price = RU }: the decider's price of that list
+	not_sent = 0, guarded = 0, stray = 0, binds = 0, stale = 0, factors = 0, hud = 0, redrawn = 0 }
+local pending = {} -- seq -> { kind = "sale"|"purchase"|"gift", npc = id, sell = {ids}, buy = {ids}, shown = {sell, buy}, at = ms }
 local arriving = {} -- { npc = id, items = { [id] = holder }, seen = n, till = ms }
 local wrapped = setmetatable({}, { __mode = "k" }) -- window class -> { name -> our function }
+local drawn = setmetatable({}, { __mode = "k" }) -- trade list (cell container) -> the sum TMode_UpdatePrice drew under it last
 local handlers = {}
 local gifts = nil -- { npc = id, ids = {}, set = {} }: gifts of this moment, one deal at the next update
 local shown_npc = nil -- the trader of the Lua trade window open on this player's copy
@@ -206,25 +217,61 @@ local function busy()
 	return false
 end
 
--- The stock's message box (TMode_Sell, TMode_Buy).
-local function message(self, text)
+-- The stock's message box (TMode_Sell, TMode_Buy). `fallback`: the text when the string table has no `text` (our own strings).
+local function message(self, text, fallback)
 	local box = self.message_box
 	if not box then return end
+	local shown = game.translate_string(text)
+	if fallback and (type(shown) ~= "string" or shown == "" or shown == text) then shown = fallback end
 	box:InitMessageBox("message_box_ok")
-	box:SetText(game.translate_string(text))
+	box:SetText(shown)
 	box:ShowDialog(true)
+end
+
+-- TZ R92: the functions the window sums with. G.A.M.M.A.'s utils_ui took utils_item.get_item_cost and get_item_trade_status into file
+-- locals when it loaded (utils_ui.script:93-94), and UICellContainer:GetCellCost prices with those, not with what utils_item holds now
+-- (a mod may have wrapped it since). The deal's ids and prices on a copy and the decider's sums take them from there too, so all of it
+-- counts as the window does. Not found (another utils_ui): utils_item's, said once in the log. Weapon Parts Overhaul's wrappers are
+-- put in place first (coop_mods_wpo_holder).
+local told_fallback = false
+
+local function formula()
+	local holder = module_of("coop_mods_wpo_holder")
+	if holder and type(holder.install) == "function" then
+		local ok, err = pcall(holder.install)
+		if not ok then report("wpo_holder", err) end
+	end
+	local cost, status
+	local ui = rawget(_G, "utils_ui")
+	local ok_f, cell_cost = pcall(function() return ui.UICellContainer.GetCellCost end)
+	if ok_f and type(cell_cost) == "function" then
+		for i = 1, 255 do
+			local name, v = debug.getupvalue(cell_cost, i)
+			if name == nil then break end
+			if name == "get_item_cost" and type(v) == "function" then cost = v end
+			if name == "get_item_trade_status" and type(v) == "function" then status = v end
+		end
+	end
+	if not (cost and status) then
+		if not told_fallback then
+			told_fallback = true
+			log("! utils_ui's own get_item_cost / get_item_trade_status are not found: prices go through utils_item's")
+		end
+		cost = cost or utils_item.get_item_cost
+		status = status or utils_item.get_item_trade_status
+	end
+	return cost, status
 end
 
 -- A trade list as the stock trades it: every item of every cell (stacks included) that its profile trades, sorted by id (collect);
 -- priced: with the window's price of each, and the list's sum as the window shows it: TMode_UpdatePrice's sum (GetCellCost of every
--- cell, with the get_item_cost utils_ui took when it loaded; shown cells, one floor). That sum goes with the deal: the decider settles
--- against it.
-local function collect(cc)
+-- cell; shown cells, one floor). That sum goes with the deal: the player pays or gets it when the decider counts the same.
+local function collect(cc, status)
 	local profile = cc.trade_profile
 	local found = {}
 	for id in pairs(cc.indx_id or {}) do
 		local obj = cc:GetCell_ID(id) and level.object_by_id(id)
-		if obj and utils_item.get_item_trade_status(obj, profile) == TRADABLE then
+		if obj and status(obj, profile) == TRADABLE then
 			found[#found + 1] = { id = id, obj = obj }
 		end
 	end
@@ -232,34 +279,33 @@ local function collect(cc)
 	return found
 end
 
+-- The list's sum as TMode_UpdatePrice counts it (ui_inventory.script:2765-2781): GetCellCost of every cell, one floor.
+local function sum_of(cc)
+	local sum = 0
+	for _, ci in pairs(cc.cell or {}) do sum = sum + (tonumber(cc:GetCellCost(ci)) or 0) end
+	return math_floor(sum)
+end
+
 local function priced(cc)
-	local found = collect(cc)
+	local cost, status = formula()
+	local found = collect(cc, status)
 	local ids, prices = {}, {}
-	for i, f in ipairs(found) do ids[i], prices[i] = f.id, tonumber(utils_item.get_item_cost(f.obj, cc.trade_profile)) or 0 end
-	local shown = 0
-	for _, ci in pairs(cc.cell or {}) do shown = shown + (tonumber(cc:GetCellCost(ci)) or 0) end
-	return ids, prices, math_floor(shown)
+	for i, f in ipairs(found) do ids[i], prices[i] = f.id, tonumber(cost(f.obj, cc.trade_profile)) or 0 end
+	return ids, prices, sum_of(cc)
 end
 
-local function key_of(ids)
-	return table.concat(ids, ",")
-end
-
--- Review of 2026-11-25: the decider's price of the list `bag` of this window shows now, when the decider refused that very list for its
--- price; nil when there is none (another trader, another list: forgotten).
-local function agreed_price(gui, bag)
-	local a = agreed[bag]
-	if not a then return nil end
-	local cc = gui.CC and gui.CC[bag]
-	local ids = {}
-	if cc and a.npc == gui.npc_id then
-		for i, f in ipairs(collect(cc)) do ids[i] = f.id end
-	end
-	if #ids == 0 or key_of(ids) ~= a.key then
-		agreed[bag] = nil
-		return nil
-	end
-	return a.price
+-- Review of 2026-11-25 (lua_flow#3): the player pays exactly the sum he sees under the list. An item's state may come at any moment
+-- (another player, the decider) and G.A.M.M.A. draws the labels only on its own events, so the sum of a press can differ from the
+-- label. Then the window draws itself anew (the label shows the new sum) and nothing is sent: the next press sends what he sees.
+-- No sum drawn for this list yet (TMode_UpdatePrice not watched): the press goes as it is.
+local function moved_since_drawn(self, cc, shown)
+	local was = drawn[cc]
+	if was == nil or was == shown then return false end
+	stats.redrawn = stats.redrawn + 1
+	log("the sum of a trade list is %s RU now, its label showed %s RU: the window draws itself anew, nothing is sent", tostring(shown),
+		tostring(was))
+	refresh(self)
+	return true
 end
 
 local function send(kind, npc, sell, buy, flags, sell_prices, buy_prices, sell_shown, buy_shown)
@@ -272,7 +318,7 @@ local function send(kind, npc, sell, buy, flags, sell_prices, buy_prices, sell_s
 	end
 	stats.deals = stats.deals + 1
 	if kind == "gift" then stats.gifts = stats.gifts + 1 end
-	pending[seq] = { kind = kind, npc = npc:id(), sell = sell, buy = buy, at = time_global() }
+	pending[seq] = { kind = kind, npc = npc:id(), sell = sell, buy = buy, shown = { sell_shown or 0, buy_shown or 0 }, at = time_global() }
 	start_ticks()
 	return true
 end
@@ -287,8 +333,9 @@ handlers.TMode_Sell = function(self)
 		return
 	end
 	local ids, prices, shown = priced(cc)
+	-- TZ R92 review: before the empty-list return, so a list whose items all became untradable or went away is redrawn (0 RU) too
+	if moved_since_drawn(self, cc, shown) then return end
 	if #ids == 0 then return end
-	shown = agreed_price(self, "actor_trade") or shown -- the decider's price the window shows: this press agrees to it
 	if npc:money() < shown then return message(self, "not_enough_money_partner") end
 	send("sale", npc, ids, {}, FLAG_LUA, prices, {}, shown, 0)
 end
@@ -303,8 +350,9 @@ handlers.TMode_Buy = function(self)
 		return
 	end
 	local ids, prices, shown = priced(cc)
+	-- TZ R92 review: before the empty-list return, so a list whose items all became untradable or went away is redrawn (0 RU) too
+	if moved_since_drawn(self, cc, shown) then return end
 	if #ids == 0 then return end
-	shown = agreed_price(self, "npc_trade") or shown
 	if db.actor:money() < shown then return message(self, "not_enough_money_actor") end
 	send("purchase", npc, {}, ids, FLAG_LUA, {}, prices, 0, shown)
 end
@@ -404,34 +452,6 @@ guards.GetPartner = function(orig)
 	end
 end
 
--- Review of 2026-11-25: the price under a trade list (G.A.M.M.A.'s UpdateInfo calls TMode_UpdatePrice by name for both lists) is the
--- decider's price of that list after the decider refused it for its price, until the list or the trader changes or the deal goes
--- through: the player sees what the next press costs or pays.
-guards.TMode_UpdatePrice = function(orig)
-	return function(self, ele_txt, ele_btn, bag, ...)
-		local r = orig(self, ele_txt, ele_btn, bag, ...)
-		if (type(self) == "table" or type(self) == "userdata") and self.mode == "trade" and next(agreed) ~= nil and copy() then
-			local ok, err = pcall(function()
-				local price = agreed_price(self, bag)
-				if price then
-					ele_txt:SetText(price .. " RU")
-					ele_btn:Enable(price > 0)
-				end
-			end)
-			if not ok then report("price", err) end
-		end
-		return r
-	end
-end
-
--- The window shows the decider's price through our TMode_UpdatePrice: only then a price of the decider is kept for the next press.
-local function shows_prices()
-	local inv = inventory()
-	local cls = inv and inv.UIInventory
-	local ours = cls and wrapped[cls]
-	return ours ~= nil and ours.TMode_UpdatePrice ~= nil and cls.TMode_UpdatePrice == ours.TMode_UpdatePrice
-end
-
 -- Wraps a guard once (again when a mod replaced it since). False: the class has no such function (the guard is not set).
 local function take_guard(cls, name)
 	local current = cls[name]
@@ -443,6 +463,38 @@ local function take_guard(cls, name)
 	wrapped[cls] = ours
 	ours[name] = wrapper
 	cls[name] = wrapper
+	stats.wraps = stats.wraps + 1
+	return true
+end
+
+-- Review of 2026-11-25 (lua_flow#3): TMode_UpdatePrice of the window class, watched once (again when a mod replaced our wrapper since).
+-- It runs as it is, its label and button untouched (no price of the decider is shown: TZ R92); on a player's copy in a trade window
+-- the sum it drew under that list is kept for moved_since_drawn. UpdateInfo calls it by name (self:TMode_UpdatePrice), so a wrapper
+-- in the class reaches it, unlike a button bound once. False: the class has none.
+local function watch_price(cls)
+	local name = "TMode_UpdatePrice"
+	local current = cls[name]
+	if type(current) ~= "function" then return false end
+	local ours = wrapped[cls]
+	if ours and ours[name] == current then return true end
+	local orig = current
+	local function keep(self, bag, ...)
+		if (type(self) == "table" or type(self) == "userdata") and self.mode == "trade" and copy() then
+			local ok, err = pcall(function()
+				local cc = self.CC and self.CC[bag]
+				if cc then drawn[cc] = sum_of(cc) end
+			end)
+			if not ok then report("watch_price", err) end
+		end
+		return ...
+	end
+	local function watcher(self, ele_txt, ele_btn, bag, ...)
+		return keep(self, bag, orig(self, ele_txt, ele_btn, bag, ...))
+	end
+	ours = ours or {}
+	wrapped[cls] = ours
+	ours[name] = watcher
+	cls[name] = watcher
 	stats.wraps = stats.wraps + 1
 	return true
 end
@@ -471,8 +523,8 @@ local function take_window()
 	if not (take_guard(cls, "Print") and take_guard(cls, "GetPartner")) then
 		report("guard", "ui_inventory has no Print or GetPartner: a stock Sell or Buy body is not stopped")
 	end
-	if not take_guard(cls, "TMode_UpdatePrice") then
-		report("guard", "ui_inventory has no TMode_UpdatePrice: a price the decider refused a deal for is told, not shown")
+	if not watch_price(cls) then
+		report("watch_price", "ui_inventory has no TMode_UpdatePrice: a press is not checked against the sum its label shows")
 	end
 	local gui = inv.GUI
 	if gui then
@@ -493,16 +545,35 @@ function ready()
 	return take_window()
 end
 
--- Review of 2026-11-25: the decider refused a list for its price; the window shows that price under it now, and the next press of the
--- same list agrees to it (handlers.TMode_Sell / TMode_Buy send it as the window's sum).
-local function keep_price(bag, npc, ids, price)
-	price = math_floor(tonumber(price) or 0)
-	if #ids == 0 then return end
-	if price < 1 or not shows_prices() then
-		agreed[bag] = nil
+-- TZ R92: the decider refused a deal for its price: what the window showed is not what the trader's data gives the decider (a profile,
+-- a factor or an item's state that came late here: W1-W6 of the review, or a changed client). Nothing agrees to the decider's price:
+-- the window takes the trader's data again and draws itself anew. His profile at once (coop_core_world.ask_trader past its gap of
+-- 15 s: it applies the profile of the save here now and asks the decider for his; its answer draws the window again, on_trader_cfg ->
+-- on_profile). His money and his items' states came before this answer: the decider sends them ahead of a refusal for its price on
+-- the same reliable lane (coop_trade.cpp host_send_trader_view). The trader's view is not closed (review of 2026-11-25, lua_flow#1:
+-- a close revokes a trading computer's permit on the decider, and its grant is taken once: every later deal would be TooFar).
+local function renew(npc_id)
+	local npc = level.object_by_id(npc_id)
+	if not npc then return end
+	local world = module_of("coop_core_world")
+	if world and type(world.ask_trader) == "function" then
+		local ok, err = pcall(world.ask_trader, npc, true)
+		if not ok then report("ask_trader", err) end
+	end
+	on_profile(npc)
+end
+
+-- Review of 2026-11-25 (lua_flow#2): a refusal for its price with the window no longer open (closed, another trader) is told once on
+-- the HUD, with the window's text. The engine tells no text of its own for a Lua window's deal.
+local function tell_on_hud(text, fallback)
+	local core = module_of("coop_mods_core")
+	if not (core and type(core.hud) == "function") then
+		report("hud", "coop_mods_core.hud is missing: the refusal for its price is only logged")
 		return
 	end
-	agreed[bag] = { npc = npc, key = key_of(ids), price = price }
+	stats.hud = stats.hud + 1
+	local ok, err = pcall(core.hud, text, fallback)
+	if not ok then report("hud", err) end
 end
 
 -- The decider's answer to a deal sent from here.
@@ -513,23 +584,26 @@ function on_result(seq, code, delta, why, sell_price, buy_price)
 	pending[seq] = nil
 	local gui = window_of(p.npc)
 	code = tonumber(code)
-	if code == RESULT_PRICE then
-		stats.repriced = stats.repriced + 1
-		keep_price("actor_trade", p.npc, p.sell, sell_price)
-		keep_price("npc_trade", p.npc, p.buy, buy_price)
-		log("the %s #%d with %s was refused for its price: the trader's prices are %s RU for the sale, %s RU for the purchase",
-			p.kind, seq, tostring(p.npc), tostring(sell_price), tostring(buy_price))
-	end
 	if code == RESULT_OK then
 		stats.ok = stats.ok + 1
-		if #p.sell > 0 and p.kind ~= "gift" then agreed.actor_trade = nil end
-		if #p.buy > 0 then agreed.npc_trade = nil end
 		local items = {}
 		local me = db.actor and db.actor:id()
 		for _, id in ipairs(p.sell) do items[id] = p.npc end
 		for _, id in ipairs(p.buy) do items[id] = me end
 		arriving[#arriving + 1] = { npc = p.npc, items = items, seen = 0, till = time_global() + ARRIVE_MS }
 		if gui and p.kind ~= "gift" then play(gui) end
+	elseif code == RESULT_PRICE then
+		stats.refused = stats.refused + 1
+		stats.stale = stats.stale + 1
+		log("the %s #%d with %s was refused for its price: this window showed %s RU for the sale and %s RU for the purchase, the "
+			.. "decider counts %s and %s RU; the window takes the trader's data again", p.kind, seq, tostring(p.npc),
+			tostring(p.shown[1]), tostring(p.shown[2]), tostring(sell_price), tostring(buy_price))
+		if gui then
+			renew(p.npc)
+			message(gui, STALE_TEXT, STALE_FALLBACK)
+			return
+		end
+		tell_on_hud(STALE_TEXT, STALE_FALLBACK)
 	else
 		stats.refused = stats.refused + 1
 		log("the %s #%d with %s was refused by the decider: %s", p.kind, seq, tostring(p.npc), tostring(why))
@@ -538,38 +612,17 @@ function on_result(seq, code, delta, why, sell_price, buy_price)
 	start_ticks()
 end
 
--- On the decider (the co-op host, a map server): the sums of a Lua window's deal for that player, as his window shows them.
+-- On the decider (the co-op host, a map server): the sums of a Lua window's deal, as a window of this machine counts them.
 local function ruck_of(npc)
 	local t = {}
 	npc:iterate_ruck(function(_, item) t[item:id()] = true end, nil)
 	return t
 end
 
--- Review of 2026-11-25: an object of this machine as the player's own window sees it. A method call goes to the object; a field read
--- gives the object's field.
-local function forward(target, k)
-	local v = target[k]
-	if type(v) ~= "function" then return v end
-	return function(_, ...) return v(target, ...) end
-end
-
--- The player's item as his window prices it: there the actor holds it (id 0), here his character does. G.A.M.M.A.'s Weapon Parts Overhaul
--- looks at that id (a_wpo_parts.script:8 a part not held by the actor goes at the mechanic's own sale price, :25 a weapon not held by the
--- actor skips its busted-parts check), so the formula sees the item held by the actor: parent():id() is 0, everything else is the item
--- and its holder as they are here (under with_identity db.actor is that holder too).
-local function as_actors(obj, holder)
-	local held_by = setmetatable({}, { __index = function(_, k)
-		if k == "id" then return function() return ACTOR_ID end end
-		return forward(holder, k)
-	end })
-	return setmetatable({}, { __index = function(_, k)
-		if k == "parent" then return function() return held_by end end
-		return forward(obj, k)
-	end })
-end
-
--- `who`: the player's character, for the player's side (his items, seen as the actor's); nil for the trader's side.
-local function side(ids, profile, ruck, who)
+-- The items of one side priced with the window's functions. `who`: the id of the player's character, for the player's side: the items
+-- sold are his character's (who holds them is checked: ownership, nothing stands in for him); nil for the trader's side, whose items
+-- are in his ruck. Every item is one the trader takes (status 4).
+local function side(ids, profile, cost, status, ruck, who)
 	local sum = 0
 	for _, id in ipairs(ids) do
 		local obj = level.object_by_id(tonumber(id) or -1)
@@ -578,19 +631,19 @@ local function side(ids, profile, ruck, who)
 		if who then
 			local holder = obj:parent()
 			if not (holder and holder:id() == who) then return nil, name_of(obj) .. " is not the player's" end
-			obj = as_actors(obj, holder)
 		end
-		local status = utils_item.get_item_trade_status(obj, profile)
-		if status ~= TRADABLE then return nil, string_format("%s is not traded here (%s)", name_of(obj), tostring(status)) end
-		local cost = tonumber(utils_item.get_item_cost(obj, profile))
-		if not cost or cost ~= cost or cost < 0 then return nil, name_of(obj) .. " has no price" end
-		sum = sum + cost
+		local st = status(obj, profile)
+		if st ~= TRADABLE then return nil, string_format("%s is not traded here (%s)", name_of(obj), tostring(st)) end
+		local c = tonumber(cost(obj, profile))
+		if not c or c ~= c or c < 0 then return nil, name_of(obj) .. " has no price" end
+		sum = sum + c
 	end
 	return sum
 end
 
--- Under the player's identity: the trader's lists for him (trade_manager, as his own window reads them: TMode_InitProfile), then both
--- sides priced.
+-- TZ R92: the trader's lists as a window of this machine reads them (trade_manager, as TMode_InitProfile), the decider's own, with no
+-- stand-in for the player: in G.A.M.M.A. they do not depend on who trades (constant lists and discounts in every trade config; on a map
+-- server db.actor is its service actor). Then both sides priced with the window's functions (formula).
 local function price_now(who, npc, sell, buy)
 	local tm = trade_manager
 	local id = npc:id()
@@ -619,9 +672,10 @@ local function price_now(who, npc, sell, buy)
 		cond_exponent = profile("current_sell_item_exponent"),
 		discount = tm.get_sell_discount(id),
 	}
-	local sold, why = side(sell, player_side, nil, who)
+	local cost, status = formula()
+	local sold, why = side(sell, player_side, cost, status, nil, who)
 	if not sold then return nil, why end
-	local bought, why2 = side(buy, trader_side, #buy > 0 and ruck_of(npc) or nil)
+	local bought, why2 = side(buy, trader_side, cost, status, #buy > 0 and ruck_of(npc) or nil)
 	if not bought then return nil, why2 end
 	return sold, bought
 end
@@ -632,7 +686,7 @@ function host_price(character, trader, sell, buy)
 	local npc = level.object_by_id(tonumber(trader) or -1)
 	if not (who and npc) then return nil, "the player's character or the trader is not here" end
 	if type(sell) ~= "table" or type(buy) ~= "table" then return nil, "no lists" end
-	local ok, sold, bought = pcall(coop_npc_players.with_identity, who, price_now, who:id(), npc, sell, buy)
+	local ok, sold, bought = pcall(price_now, who:id(), npc, sell, buy)
 	if not ok then
 		report("host_price", sold)
 		return nil, tostring(sold)
@@ -673,6 +727,19 @@ function on_profile(npc)
 	if not ok then report("profile", err) end
 end
 
+-- TZ R92 (W6): coop_settings set the economy factor buy or sell anew while a trade window is open. The window copied the trader's
+-- discounts into its lists when it opened (TMode_InitProfile): it reads the trader's profile again, as on_profile does. Any window
+-- of this machine, the same in both modes; ui_inventory is not loaded for it (no window without it).
+function on_factors()
+	local inv = rawget(_G, "ui_inventory")
+	local gui = type(inv) == "table" and inv.GUI
+	if not (gui and gui.mode == "trade" and gui.npc_id) then return end
+	local npc = level.object_by_id(gui.npc_id)
+	if not npc then return end
+	stats.factors = stats.factors + 1
+	on_profile(npc)
+end
+
 -------------------------------------------------------------------------------
 -- The window opens and closes
 -------------------------------------------------------------------------------
@@ -700,7 +767,6 @@ end
 local function on_gui_hide(name)
 	if name ~= "UIInventory" then return end
 	shown_npc = nil
-	agreed = {} -- the decider's prices belong to the window that showed them
 	if told and api and api.search_window then api.search_window() end
 	told = false
 end
@@ -720,10 +786,11 @@ local function on_net_destroy(obj)
 end
 
 function print_status()
-	log("trade window: %d deals sent (%d gifts), %d ok, %d refused (%d for their price), %d without an answer, %d not sent, %d presses "
-		.. "waited, %d windows closed with their trader, %d late profiles, %d wraps, %d bindings, %d moves stopped, %d stock bodies "
-		.. "stopped | errors %d", stats.deals, stats.gifts, stats.ok, stats.refused, stats.repriced, stats.lost, stats.not_sent,
-		stats.waits, stats.closed, stats.profiles, stats.wraps, stats.binds, stats.guarded, stats.stray, stats.errors)
+	log("trade window: %d deals sent (%d gifts), %d ok, %d refused (%d for their price: the window read again, %d told on the HUD), "
+		.. "%d without an answer, %d not sent, %d presses waited, %d presses redrew a moved sum, %d windows closed with their trader, "
+		.. "%d late profiles, %d factor changes, %d wraps, %d bindings, %d moves stopped, %d stock bodies stopped | errors %d",
+		stats.deals, stats.gifts, stats.ok, stats.refused, stats.stale, stats.hud, stats.lost, stats.not_sent, stats.waits,
+		stats.redrawn, stats.closed, stats.profiles, stats.factors, stats.wraps, stats.binds, stats.guarded, stats.stray, stats.errors)
 end
 
 function on_game_start()
