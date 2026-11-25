@@ -8,7 +8,10 @@ param(
     [string]$Tag = 'b57',
     [string]$Faction = 'stalker',
     [string]$Map = 'rookie_village',
-    [int]$StepsTimeoutS = 900
+    [int]$StepsTimeoutS = 900,
+    # 2026-11-25: no audio output on the machine (headphones unplugged: every endpoint Unknown) makes the engine stop at once with
+    # "OpenAL: Can't create sound device". -NoSound starts the game with the engine's -nosound key; the run says so in its result.
+    [switch]$NoSound
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..\stand_common.ps1')  # Write-Stand*, Copy-Stand*, Remove-StandFile: never write through a hard link (TZ R21)
@@ -126,9 +129,10 @@ $game = $null
 $why = ''
 try {
     # no -coop_ key: the plain single player game of the stand's exe
-    $game = Start-Process -FilePath $exe -WorkingDirectory $Stand -PassThru -ArgumentList "-fsltx fsgame_s.ltx -zz_sp $token -silent_error_mode -start server(all/single/alife/new) client(localhost)"
+    $game = Start-Process -FilePath $exe -WorkingDirectory $Stand -PassThru -ArgumentList "-fsltx fsgame_s.ltx -zz_sp $token -silent_error_mode$(if ($NoSound) { ' -nosound' } else { '' }) -start server(all/single/alife/new) client(localhost)"
     $null = $game.Handle
     Write-Host "game pid $($game.Id)"
+    if ($NoSound) { Write-Host 'sound: off (-nosound): the run checks no sound' }
     if (-not (Wait-Log $log '\[sp\] the steps start' 900 $game)) { throw 'the new game did not start' }
     Write-Host ("in the new game ({0:HH:mm:ss})" -f (Get-Date))
     if (-not (Wait-Log $log '\[sp\] load zz_sp_smoke asked' 180 $game)) { throw 'the save and the load were not asked' }
