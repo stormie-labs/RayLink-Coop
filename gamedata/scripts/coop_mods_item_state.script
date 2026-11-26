@@ -1,10 +1,10 @@
 -- Ядро: без проверок режима (docs/MODES.md)
--- Dev 57 G3-1. Item riders own the concrete weapon's selections and Lua jam type.
+-- Item riders own the concrete weapon's selections and Lua jam type.
 -- economy.se also carries changes (including NPC loot) to the world and its maps;
 -- economy.imd carries the same riders with inventory/clone snapshots. No new wire verbs.
 -- Every value includes the economy item_instance identity. A clear is a stamped value,
 -- not a missing entry, so an old owner's Lua table cannot resurrect a cleared jam.
--- G3-1c: a client's move of its weapon carries the riders (carry / carried, coop_requests.cpp), and engine ticks
+-- A client's move of its weapon carries the riders (carry / carried, coop_requests.cpp), and engine ticks
 -- (coop.event_tick / coop.released_after) keep a rider of a released weapon off a same-name replacement.
 
 local function C() return coop_mods_core end
@@ -14,7 +14,7 @@ local specs = {
 }
 local specs_by_key = {}
 for _, s in ipairs(specs) do specs_by_key[s.key] = s end
--- since[id]: the engine tick from which this script holds state for the id's current instance (F4 G3-1c).
+-- since[id]: the engine tick from which this script holds state for the id's current instance.
 local seen, pending, retired, since = {}, {}, {}, {}
 local applying, installed, storage = false, false, nil
 local receive_item, flush_se
@@ -25,7 +25,7 @@ local function data()
 	return asm and asm.get_state and asm.get_state() or nil
 end
 
--- F4 G3-1c (engine/src/xrCoop/coop_item_rider_rules.h): the engine numbers the events reaching its Lua inbox and the
+-- engine/src/xrCoop/coop_item_rider_rules.h: the engine numbers the events reaching its Lua inbox and the
 -- releases of entities on this process with one counter. arrival: the event being delivered now (now outside one).
 local function ticks()
 	local f = coop and coop.event_tick
@@ -55,16 +55,16 @@ local function live(s)
 end
 
 -- Same precedence as coop_economy_mdata.item_instance, with the saved name available
--- while a clone target has metadata but no online game object yet.
-local function instance(id)
-	local m = data()
+-- while a clone target has metadata but no online game object yet. m: the storage, when the caller has it.
+local function instance(id, m)
+	m = m or data()
 	local se = m and m.se_object and m.se_object[id]
 	if se and se._coop_instance then return se._coop_instance end
 	local obj = alife_object(id)
 	return obj and obj:name() or se and se.name
 end
 
--- P99 R2 (TZ §6.28): instances `a` and `b` of the weapon under local id `id` name the same item: equal, or another process's
+-- Instances `a` and `b` of the weapon under local id `id` name the same item: equal, or another process's
 -- stamp of it, or its bare name (coop_economy_mdata.same_item: the same name, and in a stamp the item's host id). Each
 -- process mints its own stamp when it first writes the weapon's EntitySpawn; an unstamped copy's instance is its name. Another
 -- name or another host id is another item. The id-reuse checks (fresh / released_since, clone_pending) stay with the callers.
@@ -164,7 +164,7 @@ local function checked_state(s, id, record)
 	if coop_trust.pass("item_state_value", valid, "item %s: invalid weapon rider", tostring(id)) and valid then return state end
 end
 
--- P99 R2: the record's instance and the stamp it travelled with name this weapon (same_item: this process's instance of it,
+-- The record's instance and the stamp it travelled with name this weapon (same_item: this process's instance of it,
 -- another process's stamp of it or its bare name); a record of another item under the id is refused.
 local function matches_instance(id, current, record, wire_stamp)
 	local matches = (not current or same_item(id, current, record.instance))
@@ -233,24 +233,19 @@ local function receive_se(s, id, hid, record, packed, from, world)
 	end
 end
 
--- Filter only these two keys before the economy stores, queues or relays them.
--- Other riders and SE vars in the same batch keep their ordinary handler.
-local function dispatch_riders(orig, event, payload, from, ...)
-	if not C().active() or (event ~= "economy.se" and event ~= "economy.imd") then
-		return orig(event, payload, from, ...)
-	end
+-- The economy's admission of a received se or imd batch (coop_economy_mdata.admit): only these two keys are checked here,
+-- before the economy stores, queues or relays them. Other riders and SE vars in the same batch keep their ordinary handler.
+-- Returns what runs once the economy has stored the batch.
+local function admit_riders(kind, t, from)
+	if not C().active() then return end
 	local world = coop_mode.decides_world()
 	local source = type(from) == "number" and from == math.floor(from) and from >= 0 and from <= 65535
 		and ((world and from > 0) or (not world and from == 0))
 	local allowed = coop_trust.pass("item_state_sender", source, "weapon rider: unexpected transport sender %s", tostring(from)) and source
 	local ec = C().mod("coop_economy_core")
-	local cm = C().mod("coop_main")
-	local t = cm.decode(payload)
 	local n = ec.int(t.n, 0, 2000)
-	if not coop_trust.pass("item_state_batch", n ~= nil, "weapon rider: invalid batch size") or not n then
-		return orig(event, payload, from, ...)
-	end
-	local changed, received, admitted = false, {}, {}
+	if not coop_trust.pass("item_state_batch", n ~= nil, "weapon rider: invalid batch size") or not n then return end
+	local received, admitted = {}, {}
 	local arrival = ticks()
 	for i = 1, n do
 		local key = "k" .. i
@@ -259,7 +254,7 @@ local function dispatch_riders(orig, event, payload, from, ...)
 			local hid, packed, stamp = ec.int(t["i" .. i], 1, 65534), t["d" .. i], t["x" .. i]
 			local valid = false
 			-- item_poll can report an absent entry. An actual clear carries an instance.
-			if allowed and not (event == "economy.imd" and packed == "_") then
+			if allowed and not (kind == "imd" and packed == "_") then
 				local wire_ok = hid ~= nil and type(packed) == "string" and #packed <= MAX_PACKED
 				if coop_trust.pass("item_state_wire", wire_ok, "weapon rider: invalid id or payload") and wire_ok then
 					local id = C().lid(hid)
@@ -267,7 +262,7 @@ local function dispatch_riders(orig, event, payload, from, ...)
 					local decoded = err == nil
 					valid = coop_trust.pass("item_state_wire", decoded, "item %s: invalid rider encoding", tostring(hid))
 						and decoded and checked_state(s, id, record) ~= nil and matches_instance(id, instance(id), record, stamp)
-					-- F4 G3-1c: it waited in the inbox while the engine released its weapon here (a replacement may
+					-- It waited in the inbox while the engine released its weapon here (a replacement may
 					-- have the same name and id now). An honest race, not a refusal: counted, never logged.
 					valid = valid and coop_trust.guard("item_state_released", not released_since(id, arrival))
 					if valid and world and from < 0x100 and alife_object(id) then
@@ -282,22 +277,24 @@ local function dispatch_riders(orig, event, payload, from, ...)
 						end
 					end
 					if valid then admitted[#admitted + 1] = id end
-					if valid and event == "economy.se" then
+					if valid and kind == "se" then
 						received[#received + 1] = { spec = s, id = id, hid = hid, record = record, packed = packed }
 					end
 				end
 			end
 			if not valid then
-				t[key], t["i" .. i], t["d" .. i], t["x" .. i], changed = nil, nil, nil, nil, true
+				t[key], t["i" .. i], t["d" .. i], t["x" .. i] = nil, nil, nil, nil
 			end
 		end
 	end
 	-- Before the economy stores them: what this script held for a released instance goes first.
 	for _, id in ipairs(admitted) do fresh(id) end
-	orig(event, changed and cm.encode(t) or payload, from, ...)
+	if not received[1] then return end
 	-- Keep admitted SE deliveries until the weapon appears, including on maps
 	-- where the shared economy's 30-second wait would expire.
-	for _, e in ipairs(received) do receive_se(e.spec, e.id, e.hid, e.record, e.packed, from, world) end
+	return function()
+		for _, e in ipairs(received) do receive_se(e.spec, e.id, e.hid, e.record, e.packed, from, world) end
+	end
 end
 
 local function restore_se(s, id, m)
@@ -316,11 +313,12 @@ local function restore(id)
 	end
 end
 
-local function observe(id)
+-- m: the storage, when the caller has it.
+local function observe(id, m)
+	m = m or data()
 	fresh(id)
-	local current = instance(id)
+	local current = instance(id, m)
 	if not current then return end
-	local m = data()
 	local changed = seen[id] and seen[id] ~= current
 	for _, s in ipairs(specs) do
 		local record = m and m[s.key] and m[s.key][id]
@@ -346,10 +344,12 @@ local parts_asked, parts_queries, parts_dirty, parts_waiting = {}, {}, {}, {}
 -- parts_after[id]: readers of this machine waiting for the item's parts ({ f, name }); routes[peer] (the world): the
 -- process that led that player's map when last seen (0: none)
 local parts_after, routes = {}, {}
+-- The tables update swaps in for parts_dirty and routes (nil while one is in use).
+local parts_dirty_spare, routes_spare = {}, {}
 local parts_eval
 local parts_seq = 0
 
--- P99 (TZ §6.28): what the ask path of the parts did on this process (coop_status, line "wpo"), and a log of it: one line
+-- What the ask path of the parts did on this process (coop_status, line "wpo"), and a log of it: one line
 -- per ask, answer and refusal, at most WPO_SAY_MAX lines a minute (then one line with how many were left out).
 local wpo = { asked = 0, answered = 0, refused = 0, unrouted = 0, rolled = 0, known = 0, waiting = 0, denied = 0, why = {} }
 local WPO_SAY_MAX = 40
@@ -507,7 +507,7 @@ local function run_after()
 	end
 end
 
--- An ask whose answer may be lost on its way (item 3 of the R35 review): asked again now while the item is here without
+-- An ask whose answer may be lost on its way: asked again now while the item is here without
 -- parts. Events only, never a timer: the world back, the player's map led by another process, the item coming online here.
 local function ask_again(id)
 	local asked = parts_asked[id]
@@ -533,8 +533,10 @@ local function watch_routes()
 	if not coop_mode.decides_world() then return end
 	local bridge_of = coop_mode.hook("levels.bridge_of_player")
 	if not bridge_of then return end
-	local now = {}
-	for _, p in ipairs(C().players()) do
+	local now = routes_spare or {}
+	routes_spare = nil
+	for id in pairs(now) do now[id] = nil end
+	for _, p in ipairs(coop_util.players()) do
 		if type(p.id) == "number" and not p.is_self then
 			local ok, b = pcall(bridge_of, p.id)
 			b = ok and tonumber(b) or 0
@@ -542,7 +544,7 @@ local function watch_routes()
 			if routes[p.id] ~= nil and routes[p.id] ~= b then C().to_peer(p.id, "wpo_eval_again", { r = b }) end
 		end
 	end
-	routes = now
+	routes, routes_spare = now, routes
 end
 
 local function evaluate_parts(obj, ...)
@@ -567,7 +569,7 @@ function send_parts(peer, id, fill)
 	return false
 end
 
--- P99: an answer of this authority, counted and in the log
+-- An answer of this authority, counted and in the log
 local function wpo_answered(kind, from, hid, name)
 	wpo[kind] = wpo[kind] + 1
 	wpo_say("answer to peer %s: %d [%s] %s", tostring(from), hid, tostring(name), kind)
@@ -581,7 +583,7 @@ local function answer_parts(t, from)
 	local se = alife_object(id)
 	local obj = level.object_by_id(id)
 	local who = C().avatar(from)
-	local why -- P99: why it is refused, for the log and coop_status
+	local why -- why it is refused, for the log and coop_status
 	if not coop_mode.leads_here() then
 		why = "this process leads no map"
 	elseif not se then
@@ -878,7 +880,7 @@ local function player_takes(npc, obj)
 end
 
 -------------------------------------------------------------------------------
--- P99 (TZ §6.28): coop_status lines. "wpo": the asks and answers of this process. "wpo_census": the items with a parts list
+-- coop_status lines. "wpo": the asks and answers of this process. "wpo_census": the items with a parts list
 -- this process knows, with a table and without, those without by their holder (read only: it walks the entities when the
 -- command runs). On a player's machine "without" is what he would see without parts; on the world server what it does not
 -- keep; on the authority of a map what nobody has looked at or taken yet (single player rolls those on the first look too).
@@ -904,8 +906,8 @@ function status_text()
 end
 
 -- Only a creature's server object has alive(). A game object has it for everything, and for a box or a stash the engine
--- answers false after writing "cannot access class member Alive!" with the whole Lua stack (script_game_object_use.cpp,
--- review of P99 2026-11-26): such a box counted as a body, one error per item. So the game object is not asked.
+-- answers false after writing "cannot access class member Alive!" with the whole Lua stack (script_game_object_use.cpp):
+-- such a box counted as a body, one error per item. So the game object is not asked.
 local function census_holder(id, root)
 	if root == id then return "ground" end
 	if C().is_player(root) then return "players" end
@@ -1020,7 +1022,7 @@ function install_parts(parts, jam)
 		if not n then return end
 		for i = 1, n do release_ask(t["w" .. i], t["s" .. i], t["q" .. i]) end
 	end, "client")
-	-- Lost asks (R35 review, item 3): asked again on events. The world says his map is led by another process now; the
+	-- Lost asks: asked again on events. The world says his map is led by another process now; the
 	-- world is back after its move; the item came online on his machine.
 	C().on("wpo_eval_again", ask_all_again, "client")
 	RegisterScriptCallback("coop_world_back", ask_all_again)
@@ -1097,13 +1099,24 @@ local function unregister_item(se)
 	seen[id], pending[id] = nil, nil
 end
 
+-- The walk of the actor's inventory: every item is observed (a first sight restores its saved riders), and captured
+-- only when the mod's table or the storage has a rider of it: without one, capture has nothing to write.
+local walk_m, walk_live = nil, {}
+local function walk_item(_, obj)
+	local id = obj:id()
+	observe(id, walk_m)
+	for i, s in ipairs(specs) do
+		local tbl, records = walk_live[i], walk_m and walk_m[s.key]
+		if (type(tbl) == "table" and tbl[id] ~= nil) or (records and records[id] ~= nil) then capture(s, id) end
+	end
+end
+
 local function capture_inventory()
 	if not C().active() or not coop_mode.actor_is_player() or not db.actor then return end
-	db.actor:iterate_inventory(function(_, obj)
-		local id = obj:id()
-		observe(id)
-		for _, s in ipairs(specs) do capture(s, id) end
-	end, db.actor)
+	walk_m = data()
+	for i, s in ipairs(specs) do walk_live[i] = live(s) end
+	db.actor:iterate_inventory(walk_item, db.actor)
+	walk_m = nil
 end
 
 local function restore_all()
@@ -1126,8 +1139,13 @@ local function update()
 	if next(parts_waiting) then answer_online_parts() end
 	watch_routes()
 	local dirty = parts_dirty
-	parts_dirty = {}
-	for id in pairs(dirty) do refresh_parts_cell(id) end
+	if next(dirty) then
+		-- What a cell's redraw marks goes to the other table, for the next frame.
+		parts_dirty, parts_dirty_spare = parts_dirty_spare or {}, nil
+		for id in pairs(dirty) do refresh_parts_cell(id) end
+		for id in pairs(dirty) do dirty[id] = nil end
+		parts_dirty_spare = dirty
+	end
 	if next(parts_after) then run_after() end
 	if next(retired) then retired = {} end
 	if next(pending) then
@@ -1189,16 +1207,14 @@ local function install_riders()
 	receive_item = assert(C().find_local(em, "on_imd"), "economy item receiver missing")
 	flush_se = assert(C().find_local(em, "se_flush"), "economy SE flush missing")
 	local se_signatures = assert(C().upvalue(em.apply_se, "se_sig"), "economy SE signatures missing")
-	C().wrap(C().mod("coop_main"), "on_event", "item_state.rider_admission", function(orig)
-		return function(...) return dispatch_riders(orig, ...) end
-	end)
+	em.admit(admit_riders)
 	for _, s in ipairs(specs) do
 		em.declare_item_key(s.key, { apply = function(id, value)
 			if not C().active() then return end
 			-- nil: the economy has no rider of this weapon. clone_activate gives it for a weapon spawned or cloned with none
 			-- (every mirrored weapon spawn carries a clone initial), carry_release for a kept clear. A peer's malformed
-			-- rider never gets here as nil: dispatch_riders checks the wire before the economy. So no trust check (stand
-			-- b57i: "invalid weapon rider" once per weapon of a trader's restock); the SE copy decides, as before.
+			-- rider never gets here as nil: admit_riders checks the wire before the economy. So no trust check (it would
+			-- log "invalid weapon rider" once per weapon of a trader's restock); the SE copy decides.
 			if value ~= nil and apply(s, id, value) then
 				-- A newer admitted item rider also supersedes an already queued SE value.
 				if coop_mode.decides_world() and not em.clone_pending(id) then em.apply_se(id, s.key, value) end
@@ -1283,7 +1299,7 @@ local function install_riders()
 	end)
 end
 
--- F4 G3-1c (engine/src/xrCoop/coop_item_rider_rules.h). A client's move of its weapon is applied when the request
+-- engine/src/xrCoop/coop_item_rider_rules.h: a client's move of its weapon is applied when the request
 -- arrives, its se copy of the same change waits in a Lua inbox and is checked there against the next holder. So the
 -- request carries the riders, and the process that applies the move writes them first, under its own holder check.
 
