@@ -323,6 +323,39 @@ end
 -------------------------------------------------------------------------------
 local data_orig = {} -- update_data / delete_data originals
 
+-- The stock lamp saves its record on every binder update. What went out last, per object: { sig, rest, fuel, at }.
+-- The same record is repeated every DATA_REPEAT_MS for players who joined since. A change of the fuel alone goes out
+-- once a FUEL_MS or on a step of FUEL_STEP; any other change, and the lamp going out, go at once.
+local data_sent = {}
+local DATA_REPEAT_MS, FUEL_MS, FUEL_STEP = 3000, 1000, 0.001
+
+-- Record `d` without its condition, with the stash link: equal for two records that differ in fuel alone.
+local function rest_of(d, link)
+	local rest = {}
+	for k, v in pairs(d) do
+		if k ~= "condition" then rest[k] = v end
+	end
+	return (C().ser(rest) or "") .. link
+end
+
+-- Whether record `d` (serialized `s`, nil for a removed record) with stash link `box` goes out now; remembers it when it does.
+local function data_due(id, d, s, box)
+	local now, link = time_global(), "|" .. tostring(box)
+	local sig, fuel = (s or "x") .. link, d and d.condition
+	if type(fuel) ~= "number" then fuel = nil end
+	local last, rest = data_sent[id], nil
+	if last and now < last.at + DATA_REPEAT_MS then
+		if sig == last.sig then return false end
+		if fuel and last.fuel and now < last.at + FUEL_MS and math.abs(fuel - last.fuel) < FUEL_STEP
+			and (fuel > 0) == (last.fuel > 0) then
+			rest = rest_of(d, link)
+			if rest == last.rest then return false end
+		end
+	end
+	data_sent[id] = { sig = sig, rest = fuel and (rest or rest_of(d, link)), fuel = fuel, at = now }
+	return true
+end
+
 local function refresh_frozen_menu(w)
 	local pf = C().mod("placeable_furniture")
 	local refresh = C().fn(pf, "update_radial_gui")
@@ -345,8 +378,10 @@ local function host_publish_data(id)
 		box = C().hid(harv.stash_id(id)) or -1
 	end
 	if s and #s < 4500 then -- encode may triple it
+		if not data_due(id, d, s, box) then return end
 		C().publish("hf_data", { o = wire_id, d = s, b = box })
 	elseif not (ok and d) then
+		if not data_due(id, nil, nil, box) then return end
 		C().publish("hf_data", { o = wire_id, x = true, b = box })
 	end
 	st.data_out = st.data_out + 1
@@ -415,6 +450,7 @@ local function install_data_mirror()
 			if not C().active() or not alife_object(id) then return orig(id, ...) end
 			if not coop_mode.writes(id) then return end
 			local r = orig(id, ...)
+			data_sent[id] = nil
 			C().publish("hf_data", { o = C().hid(id), x = true })
 			return r
 		end
@@ -1363,6 +1399,7 @@ local function finish_harvester_demount(obj, box, player, section, op)
 	alife_release_id(id)
 	if alife_object(id) then return false end
 	if data_orig.delete then data_orig.delete(id) end
+	data_sent[id] = nil
 	C().publish("hf_data", { o = C().hid(id), x = true, b = -1 })
 	st.pickup = st.pickup + 1
 	return true
