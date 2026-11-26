@@ -409,7 +409,8 @@ TEST(scope_r32_the_coop_rows_are_unchanged)
 	}
 	CHECK(!level_passes(Msg::EntityDied, true, false)); // a player on another level hears a death from the map server of his own
 	CHECK(!level_passes(Msg::EntityHash, true, false));
-	CHECK(level_takes(Msg::StateDumpRequest, true, false)); // his repair: the world's copy answers it, as before
+	CHECK(level_takes(Msg::StateDumpRequest, true, false)); // his repair: kept (P99: answered here only while his map server is not
+	                                                        // connected, mapserver::route_incoming; test_srv_repair_answer.cpp)
 	CHECK(!level_takes(Msg::EntityResync, true, false));
 	// the journal is the trunk's: never a player's, never on a co-op player's way
 	for (const Msg m : {Msg::LevelJournal, Msg::LevelJournalAck})

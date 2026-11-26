@@ -528,6 +528,28 @@ TEST(srv_journal_parent_net_sends_one_move_per_flush)
 	net.unborn(0x9305);
 	CHECK(net.unborn_here(0x9305));
 	CHECK(!net.send(0x9305, unknown, 0x9102)); // made and gone: the world never hears of it
+	CHECK_EQ(net.unchanged(), uint32_t(1)); // the departure flood (2026-11-26): only 0x9302 was left out for standing where it stood
+}
+
+// The departure flood (2026-11-26): the snapshot lists the children of the characters of the level's players too; the reject of his
+// departure (switch_offline) finds the character there, and the flush leaves out the item taken back into it without a hook.
+TEST(srv_journal_held_memory_knows_a_players_items)
+{
+	constexpr uint16_t kHim = 0x0010, kPistol = 0x9310, kAmmo = 0x9311;
+	jr::HeldMemory m;
+	m.begin();
+	m.child(kPistol, kHim);
+	m.child(kAmmo, kHim);
+	CHECK_EQ(m.children(), size_t(2));
+	CHECK_EQ(m.members(), size_t(0)); // no squad of his: squad_before is not touched
+	const jr::ParentBefore reject = m.moved(kPistol, wire::kNoObject);
+	CHECK(reject.known);
+	CHECK_EQ(reject.parent, kHim);
+	jr::ParentNet net;
+	CHECK(!net.send(kPistol, reject, kHim)); // back in him at the flush (add_offline_impl): nothing goes up
+	CHECK(!net.send(kPistol, jr::ParentBefore{true, wire::kNoObject}, kHim)); // ... nor any later hook of it in the flush
+	CHECK(net.send(kAmmo, m.moved(kAmmo, 0x9400), 0x9400)); // a real move out of him in the same flush: sent
+	CHECK_EQ(net.unchanged(), uint32_t(1));
 }
 
 namespace
@@ -630,6 +652,11 @@ struct World
 	std::map<uint16_t, uint32_t> held;
 	std::vector<uint8_t> refused;
 	uint32_t taken = 0;
+	uint32_t repeats = 0; // taken, and nothing changed (accept::Verdict::repeat)
+	// The departure flood (2026-11-26): characters whose player left (host_park_proxy, host_rejoin_peer): played_by gives nobody, so
+	// world_seat gives no map and the world writes them and their items
+	std::set<uint16_t> parked;
+	bool unchanged_guard = true; // false: the acceptance as it was before the fix (no accept::unchanged_parent)
 
 	w::Writer writer_of(const w::RootFacts& r)
 	{
@@ -643,7 +670,7 @@ struct World
 				s.holder_level = kMap;
 			}
 		}
-		else
+		else if (r.kind != w::RootKind::Character || !parked.count(r.root))
 			s.map = w::MapLead{w::Lead::Leads, kMk};
 		return w::writer_of(r, kWorldServer, s);
 	}
@@ -737,6 +764,7 @@ struct World
 			parent = lr.u16();
 			f.two_roots = true;
 			f.writer_new = parent != kNo ? writer_of(reg.root(parent)) : w::other(kMk);
+			f.unchanged = unchanged_guard && o && acc::unchanged_parent(o->parent, parent); // as coop_levels_alife.cpp fills it
 		}
 		const acc::Verdict v = acc::accepts(f);
 		if (!v.ok)
@@ -745,6 +773,11 @@ struct World
 			return;
 		}
 		++taken;
+		if (v.repeat)
+		{
+			++repeats;
+			return;
+		}
 		if (e.op == Head::Parent)
 			reg.attach(h.id, parent);
 		else if (e.op == Head::Died)
@@ -775,6 +808,7 @@ struct MapServer
 
 	Registry reg;
 	std::map<uint16_t, uint32_t> held;
+	std::set<uint16_t> players; // the characters its players play here (mapserver::trunk_peers().on(): the departure flood fix)
 	jr::HeldMemory memory;
 	std::vector<Up> ups;
 	bool member_hook = false; // WP5's hook in unregister_member: a Left up from the stock death chain
@@ -813,6 +847,25 @@ struct MapServer
 				}
 			else if (u->creature)
 				children_of(unit.first);
+		}
+		for (const uint16_t c : players) // the departure flood (2026-11-26): and the children of its players' characters
+			if (const Obj* o = reg.get(c))
+				for (const uint16_t child : o->children)
+					memory.child(child, c);
+	}
+
+	// A player leaves this level (quits, drops, takes an exit): his virtual peer leaves the trunk first (server_on_map), then
+	// join::on_peer_left -> take_offline switches his character offline: Perform_destroy rejects each item with a hook,
+	// add_offline_impl takes each back without one. The snapshot of the last frame end is still the one the hooks read.
+	void take_offline(uint16_t character)
+	{
+		players.erase(character);
+		const std::vector<uint16_t> items = reg.get(character)->children;
+		for (const uint16_t item : items)
+		{
+			reg.attach(item, kNo);
+			parent_hook(item, kNo);
+			reg.attach(item, character);
 		}
 	}
 
@@ -1135,13 +1188,150 @@ TEST(srv_journal_netting_leaves_out_what_changes_nothing)
 	}
 }
 
+// ---------------------------------------------------------------- the departure flood (Server, 2026-11-26)
+//
+// World log xray_banan4ik2.log (5 players, Server mode): every printed "Parent of object N from map server M refused: not the writer"
+// reads "parent X, moved to X" for a player's character X, 1-3 lines after "player left" or after his level exit and the world's save;
+// at least 1500 in the session, 100-300 per departure. The world parks the character first (it writes him from then on); the map server
+// he left switches him offline, which rejects each item with a hook and takes each back without one; its snapshot listed only the
+// held units' children, so each item went up as a Parent into the same character, refused, and its repair (Fetch: StateDumpRequest
+// Replace) destroyed and made the item again on that map server. Fixed twice: the map server's snapshot lists its players' characters
+// (client_remember_held), and the world takes a Parent into the holder an object has already as a repeat (accept::unchanged_parent).
+
+namespace
+{
+constexpr uint16_t kPistol = 0x9310, kAmmo = 0x9311, kArtefact = 0x9312;
+
+// same_world, and the player's character with three items on both sides; `listed`: the map server's snapshot lists his character
+// (the fix; false: as before it)
+void player_with_items(World& world, MapServer& ms, bool listed)
+{
+	same_world(world, ms);
+	for (Registry* r : {&world.reg, &ms.reg})
+	{
+		const auto add = [&](uint16_t id, const char* section) {
+			r->objs[id].section = section;
+			r->attach(id, kPlayer);
+		};
+		add(kPistol, "wpn_pm");
+		add(kAmmo, "ammo_9x19_fmj");
+		add(kArtefact, "af_dragon_eye");
+	}
+	if (listed)
+		ms.players.insert(kPlayer);
+	ms.remember(); // the end of the frame before his departure
+}
+} // namespace
+
+// Flows A and B (he quits or drops; he takes a level exit): the map server's flush sends nothing; the world keeps his items in him.
+// Before the fix the same departure sent one Parent per item into the same character (head gen 0: a character's root), which the
+// world, writing the parked character, refused as not the writer: the log's flood. The world's own guard takes those stragglers as
+// repeats, so nothing is refused and nothing repaired even if the map server's snapshot misses him (a change of the frame order).
+TEST(srv_journal_a_departing_players_inventory_sends_no_parent)
+{
+	{
+		World world;
+		MapServer ms;
+		player_with_items(world, ms, true);
+		world.parked.insert(kPlayer); // the world parked him first: it writes him and his items now
+		ms.take_offline(kPlayer);
+		CHECK(ms.flush().empty());
+		CHECK(world.refused.empty());
+		for (const uint16_t item : {kPistol, kAmmo, kArtefact})
+		{
+			CHECK_EQ(world.reg.get(item)->parent, kPlayer);
+			CHECK_EQ(ms.reg.get(item)->parent, kPlayer);
+		}
+		CHECK_EQ(ms.memory.children(), size_t(2)); // the next snapshot: the gun and the knife of the held NPCs, he is gone from the trunk
+	}
+	// before the fix: his character not in the snapshot
+	World world;
+	MapServer ms;
+	player_with_items(world, ms, false);
+	world.parked.insert(kPlayer);
+	ms.take_offline(kPlayer);
+	const std::vector<jr::Entry> es = ms.flush();
+	REQUIRE(es.size() == 3u);
+	for (const jr::Entry& e : es)
+	{
+		CHECK_EQ(e.op, uint8_t(Head::Parent));
+		jr::ObjectHead h;
+		REQUIRE(jr::object_of(e, h));
+		CHECK_EQ(h.gen, uint32_t(0));
+		coop::Reader lr = jr::layout_of(e);
+		CHECK_EQ(lr.u16(), h.id);
+		CHECK_EQ(lr.u16(), kPlayer); // "parent X, moved to X"
+	}
+	world.unchanged_guard = false; // the world's acceptance as it was
+	world.apply_all(es);
+	CHECK_EQ(world.taken, uint32_t(0));
+	REQUIRE(world.refused.size() == 3u);
+	for (const uint8_t why : world.refused)
+		CHECK_EQ(why, uint8_t(jr::NotWriter));
+	// the world's guard: the same entries are repeats, nothing refused (so no Fetch), nothing changed
+	World guarded;
+	MapServer guarded_ms;
+	player_with_items(guarded, guarded_ms, false);
+	guarded.parked.insert(kPlayer);
+	guarded.apply_all(es);
+	all_taken(guarded, 3);
+	CHECK_EQ(guarded.repeats, uint32_t(3));
+	for (const uint16_t item : {kPistol, kAmmo, kArtefact})
+		CHECK_EQ(guarded.reg.get(item)->parent, kPlayer);
+	// a player still seated here (the map server writes him): his own unchanged Parent is a repeat too, as host_apply_parent's no-op was
+	World seated;
+	MapServer seated_ms;
+	player_with_items(seated, seated_ms, false);
+	seated.apply_all(es);
+	all_taken(seated, 3);
+	CHECK_EQ(seated.repeats, uint32_t(3));
+}
+
+// Flow C (a pick-up from a body in the frame of his departure): one Parent goes up, the body's ring into him, its head the body's root
+// (a resident, gen 0); his other items are left out. While the world still seats him there it takes it. Parked before the entry arrives,
+// the world still refuses it as not the writer and the map server's repair puts the ring back into the body there: the departure race
+// (TRACE 5C), which needs the W4.2 departure fence (world_seat's Seat::from) and is not covered by this fix.
+TEST(srv_journal_a_pickup_in_the_departures_frame_sends_one_parent)
+{
+	for (const bool parked : {false, true})
+	{
+		World world;
+		MapServer ms;
+		player_with_items(world, ms, true);
+		ms.move(kRing, kPlayer); // from the body: a reject (not known: no held unit had it), then his take
+		ms.take_offline(kPlayer);
+		const std::vector<jr::Entry> es = ms.flush();
+		REQUIRE(es.size() == 1u);
+		CHECK_EQ(es[0].op, uint8_t(Head::Parent));
+		jr::ObjectHead h;
+		REQUIRE(jr::object_of(es[0], h));
+		CHECK_EQ(h.id, kRing);
+		CHECK_EQ(h.gen, uint32_t(0));
+		if (parked)
+			world.parked.insert(kPlayer);
+		world.apply_all(es);
+		if (!parked)
+		{
+			all_taken(world, 1);
+			CHECK_EQ(world.repeats, uint32_t(0));
+			CHECK_EQ(world.reg.get(kRing)->parent, kPlayer);
+		}
+		else
+		{
+			REQUIRE(world.refused.size() == 1u);
+			CHECK_EQ(world.refused[0], uint8_t(jr::NotWriter));
+			CHECK_EQ(world.reg.get(kRing)->parent, kBody);
+		}
+	}
+}
+
 // ---------------------------------------------------------------- review WP4 #3, #6, #9, #10: the engine's glue (its source is read)
 
 namespace
 {
-std::string xfer_code()
+std::string engine_code(const char* relative)
 {
-	const auto path = std::filesystem::path(__FILE__).parent_path().parent_path() / "engine/src/xrGame/coop/srv/coop_levels_xfer.cpp";
+	const auto path = std::filesystem::path(__FILE__).parent_path().parent_path() / "engine/src" / relative;
 	std::ifstream in(path, std::ios::binary);
 	REQUIRE(in.is_open());
 	std::ostringstream source;
@@ -1149,6 +1339,8 @@ std::string xfer_code()
 	const std::regex comments_and_literals(R"cpp(//[^\r\n]*|/\*[\s\S]*?\*/|"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])')cpp");
 	return std::regex_replace(source.str(), comments_and_literals, " ");
 }
+
+std::string xfer_code() { return engine_code("xrGame/coop/srv/coop_levels_xfer.cpp"); }
 
 std::string_view body_of(const std::string& code, const char* type, const char* name)
 {
@@ -1214,4 +1406,55 @@ TEST(srv_journal_engine_glue)
 	REQUIRE(quiet != std::string_view::npos);
 	CHECK(before(ack.substr(quiet), "alife_rw().release(e, true)", "g.quiet.erase(local)"));
 	CHECK(ack.find("ClientApply") == std::string_view::npos);
+}
+
+// The departure flood (Server, 2026-11-26): the engine's glue of both fixes (its source is read; the engine is not built into the test
+// exe). The map server's snapshot lists the characters of its players and the flush counts what it left out
+// (srv/coop_levels_xfer.cpp); the world fills `unchanged` for a Parent before its acceptance and takes a repeat without applying it
+// (srv/coop_levels_alife.cpp).
+TEST(srv_journal_departure_flood_glue)
+{
+	const std::string code = xfer_code();
+	const auto remember = body_of(code, "void", "client_remember_held");
+	REQUIRE(!remember.empty());
+	CHECK(before(remember, "g.holder->ids()", "mapserver::trunk_peers().on()")); // after the held units, as the harness's remember()
+	CHECK(remember.find("ai().alife().objects().object(it.second.proxy, true)") != std::string_view::npos); // take_offline's id
+	CHECK(before(remember, "mapserver::trunk_peers().on()", "children_of(played)"));
+	const auto flush = body_of(code, "void", "client_flush_up");
+	CHECK(before(flush, "net.send(u.a, u.before, holder)", "g.parents_unchanged += net.unchanged()"));
+	// the snapshot is still taken after the frame's flush: the departure's hooks (the session update, before the levels frame) read
+	// the one of the frame before, which still lists his character
+	const auto frame = body_of(code, "void", "xfer_client_frame");
+	const size_t flushed = frame.find("client_flush_up()");
+	REQUIRE(flushed != std::string_view::npos);
+	CHECK(frame.find("client_remember_held()", flushed) != std::string_view::npos);
+	// the frame order the fix relies on (review nit 2): a map server's frame runs the world's session first (the LevelMap that takes a
+	// player off this level comes down in it: mapserver::server_on_map -> virtual_leave), then the session of its level (the departure's
+	// hooks run in its update), then the sync frame, whose mode frame runs the levels frame (xfer_client_frame above: the flush, then
+	// the snapshot); so the departure's hooks read the snapshot of the frame before
+	const std::string manager = engine_code("xrGame/coop/coop_manager.cpp");
+	const auto manager_frame = body_of(manager, "void", "Manager::frame");
+	REQUIRE(!manager_frame.empty());
+	CHECK(before(manager_frame, "m_world.update(now_ms())", "m_session.update(now_ms())"));
+	CHECK(before(manager_frame, "m_session.update(now_ms())", "sync::frame()"));
+	const std::string sync = engine_code("xrGame/coop/coop_sync.cpp");
+	const auto sync_frame = body_of(sync, "void", "frame");
+	REQUIRE(!sync_frame.empty());
+	CHECK(sync_frame.find("mode().frame()") != std::string_view::npos);
+
+	const std::string alife = engine_code("xrGame/coop/srv/coop_levels_alife.cpp");
+	const auto fact = body_of(alife, "ApplyVerdict", "apply_entry");
+	const size_t at = fact.find("case H::Parent:");
+	REQUIRE(at != std::string_view::npos);
+	const auto parent_case = fact.substr(at);
+	CHECK(before(parent_case, "f.unchanged = obj && item == h.id && accept::unchanged_parent(obj->ID_Parent, parent)",
+	    "accept::accepts(f)"));
+	CHECK(before(parent_case, "refused_by(author, e.op, item, v, why, to_seen)", "if (v.repeat)"));
+	CHECK(before(parent_case, "parent_unchanged(author, item, parent, accept::sender_writes(f))", "host_apply_parent(item, parent, pos)"));
+	const auto repeat = body_of(alife, "ApplyVerdict", "parent_unchanged");
+	REQUIRE(!repeat.empty());
+	CHECK(repeat.find("++g_accept.repeats") != std::string_view::npos);
+	CHECK(repeat.find("host_apply_parent") == std::string_view::npos); // nothing applied, nothing relayed
+	CHECK(repeat.find("host_on_parent_changed") == std::string_view::npos);
+	CHECK(body_of(alife, "void", "host_accept_print_status").find("g_accept.parents_unchanged") != std::string_view::npos);
 }

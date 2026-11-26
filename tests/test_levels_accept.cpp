@@ -433,3 +433,70 @@ TEST(accept_fixa_leave_plan)
 	f.listed = false;
 	CHECK(acc::leave_plan(f) == acc::Leave::NotMember);
 }
+
+// The departure flood (Server, 2026-11-26; world log xray_banan4ik2.log: every printed "Parent ... not the writer" reads "parent X,
+// moved to X", 1-3 lines after a player left or took an exit). A map server switched the leaving player's character offline, each item
+// rejected and taken back, and sent a Parent of each into the same character; the world had parked him (nobody plays him: the world
+// writes him) and refused each, and each repair made the item again on that map server. A Parent into the holder the object has here
+// already is a repeat, whoever sent it; a real move and a put-down still need the writer, and the fence, the object, the ghost and its
+// identity still come first (srv/coop_levels_alife.cpp fills `unchanged`, tests/test_srv_journal.cpp plays the departure).
+TEST(accept_unchanged_parent_is_a_repeat)
+{
+	constexpr uint16_t kNoObject = coop::levels::wire::kNoObject;
+	CHECK(acc::unchanged_parent(2001, 2001));
+	CHECK(!acc::unchanged_parent(2001, 2002)); // a real move
+	CHECK(!acc::unchanged_parent(kNoObject, kNoObject)); // a put-down carries a place: never unchanged
+	CHECK(!acc::unchanged_parent(2001, kNoObject));
+
+	const w::Writer parked = character(2001, kA, kUnled); // his player left: no seat, the world writes him
+	CHECK(parked == w::this_process());
+	acc::Facts f = from_a(H::Parent, parked); // an item of his, from map server A
+	f.two_roots = true;
+	f.writer_new = parked; // ... into the same character
+	CHECK(!acc::sender_writes(f));
+	CHECK(refused_for(acc::accepts(f), jr::NotWriter)); // what the log shows (no `unchanged` before the fix)
+	f.unchanged = true;
+	acc::Verdict v = acc::accepts(f);
+	CHECK(v.ok);
+	CHECK(v.repeat); // nothing to apply, nothing refused, nothing for A to repair
+
+	// the reasons before the writer still win
+	f.fence = 6; // the entry came after A's Flushed (W4)
+	CHECK(refused_for(acc::accepts(f), jr::PastFence));
+	f.fence = w::kNoFence;
+	f.same = false;
+	CHECK(refused_for(acc::accepts(f), jr::Identity));
+	f.same = true;
+	f.ghost = true;
+	CHECK(refused_for(acc::accepts(f), jr::Ghost));
+	f.ghost = false;
+	f.exists = false;
+	CHECK(refused_for(acc::accepts(f), jr::Unknown));
+	f.exists = true;
+
+	// a real move of his item still needs the writer of both roots (the departure race, TRACE 5C: not covered here)
+	f.unchanged = false;
+	CHECK(refused_for(acc::accepts(f), jr::NotWriter));
+	// only a Parent: another fact about his item is the writer's alone
+	f.unchanged = true;
+	f.op = H::Destroy;
+	f.two_roots = false;
+	CHECK(refused_for(acc::accepts(f), jr::NotWriter));
+
+	// the writer's own Parent into the same holder: a repeat as well (host_apply_parent changed nothing for it before either); its real
+	// move is taken and applied
+	f = from_a(H::Parent, character(2001, kA, kLedA));
+	f.two_roots = true;
+	f.writer_new = character(2001, kA, kLedA);
+	CHECK(acc::sender_writes(f));
+	f.unchanged = true;
+	v = acc::accepts(f);
+	CHECK(v.ok && v.repeat);
+	f.unchanged = false;
+	v = acc::accepts(f);
+	CHECK(v.ok && !v.repeat);
+	// one root A writes, the other the world: refused as before
+	f.writer_new = parked;
+	CHECK(!acc::sender_writes(f));
+	CHECK(refused_for(acc::accepts(f), jr::NotWriter));
+}
