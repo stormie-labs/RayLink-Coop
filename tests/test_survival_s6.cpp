@@ -58,7 +58,7 @@ TEST(survival_s6_map_stash_completion_keeps_the_queued_report_order)
 {
 	const auto survival = source("coop_survival.cpp");
 	const auto frame = function(survival, "void frame()");
-	const auto stash = function(survival, "void level_stash_frame()");
+	const auto stash = function(source("coop_survival_newchar.cpp"), "void level_stash_frame()");
 	const auto transfer = function(source("srv/coop_levels_xfer.cpp"), "void up_stash(");
 	const auto level_branch = frame.find("else if (mode().level())");
 	const auto finish = frame.find("level_stash_frame()");

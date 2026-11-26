@@ -92,7 +92,7 @@ TEST(t7_link_carries_the_moved_types)
 
 TEST(t7_rest_host_player_lies_down_through_the_link)
 {
-	HostWithLink h(37651);
+	HostWithLink h(t::port(37651));
 	REQUIRE(h.start());
 	std::vector<PeerId> asked_from;
 	std::vector<rest::Request> asked;
@@ -177,7 +177,7 @@ TEST(t7_rest_host_player_lies_down_through_the_link)
 
 TEST(t7_checkpoint_claim_of_the_host_player_through_the_link)
 {
-	HostWithLink h(37652);
+	HostWithLink h(t::port(37652));
 	REQUIRE(h.start());
 	std::vector<checkpoint::ClaimWhat> claims;
 	std::vector<PeerId> claim_from;
@@ -240,7 +240,7 @@ TEST(t7_checkpoint_claim_of_the_host_player_through_the_link)
 
 TEST(t7_survival_host_player_through_the_link)
 {
-	HostWithLink h(37653);
+	HostWithLink h(t::port(37653));
 	REQUIRE(h.start());
 	struct Report
 	{
@@ -360,7 +360,7 @@ TEST(t7_survival_host_player_through_the_link)
 
 TEST(t7_death_marker_reaches_the_host_player_once)
 {
-	HostWithLink h(37654);
+	HostWithLink h(t::port(37654));
 	REQUIRE(h.start());
 	std::vector<death::Marker> markers;
 	h.link.on(Msg::DeathMarker, [&](PeerId from, Reader& r) {
@@ -389,7 +389,7 @@ TEST(t7_death_marker_reaches_the_host_player_once)
 
 TEST(t7_money_transfer_of_the_host_player_through_the_link)
 {
-	HostWithLink h(37655);
+	HostWithLink h(t::port(37655));
 	REQUIRE(h.start());
 	std::vector<ledger::MoneyReq> reqs;
 	std::vector<ledger::MoneyBalanceMsg> balances;
@@ -447,7 +447,7 @@ TEST(t7_money_transfer_of_the_host_player_through_the_link)
 
 TEST(t7_sync_request_of_the_host_player_through_the_link)
 {
-	HostWithLink h(37656);
+	HostWithLink h(t::port(37656));
 	REQUIRE(h.start());
 	std::vector<syncnet::Request> taken;
 	std::vector<syncnet::Result> results;
@@ -493,7 +493,7 @@ TEST(t7_script_event_of_the_host_process_to_peer_0_through_the_link)
 {
 	// coop.send_event(name, payload, 0) in the host's process: the host player's event to his world server (menu.new_character)
 	// and the world's to its host player (menu.char_offer) are one delivery to the one Lua state, with from = 0.
-	HostWithLink h(37657);
+	HostWithLink h(t::port(37657));
 	REQUIRE(h.start());
 	std::vector<PeerId> from_seen;
 	std::vector<std::string> names;
@@ -647,6 +647,8 @@ TEST(t7_direct_host_branches_gone)
 		{"coop_survival.cpp", "host_new_character(0)", "the host's own new character started directly"},
 		{"coop_survival.cpp", "reply_to == kHostPeer", "an answer to the host applied directly"},
 		{"coop_survival.cpp", "host_finish_own", "the host stood up at his arrival point by itself"},
+		{"coop_survival_newchar.cpp", "host_new_character(0)", "the host's own new character started directly"},
+		{"coop_survival_newchar.cpp", "host_finish_own", "the host stood up at his arrival point by itself"},
 		{"coop_rest.cpp", "host_request(0,", "the host's own lie-down taken without a message"},
 		{"coop_rest.cpp", "tell_lua(g_host.group.entries()", "the host's Lua told the book directly, not its player's copy"},
 		{"coop_checkpoint_sources.cpp", "host_claim_tent(0,", "the host's own tent claim taken without a message"},

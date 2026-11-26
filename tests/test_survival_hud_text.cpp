@@ -1,4 +1,4 @@
-// Anomaly Coop unit tests: the engine's own HUD lines of the down / dead / reviving player (xrGame/coop/coop_survival.cpp
+// Anomaly Coop unit tests: the engine's own HUD lines of the down / dead / reviving player (xrGame/coop/coop_survival_hud.cpp
 // build_hud) are shown in the player's language. The native runner cannot link xrGame, so the lines are read in the source:
 // every format build_hud hands to xr_sprintf comes from tr_format or holds placeholders only; the reviver's line goes through
 // tr_format with its st_coop_* id; that id is in both string tables (text/{eng,rus}/st_coop_survival.xml) with a text that
@@ -184,7 +184,7 @@ TEST(survival_hud_text_parser_rejects_broken_tables)
 // passed death::one_conversion, else the English fallback) or placeholders only around tr() texts ("%s %u%%").
 TEST(survival_hud_text_formats_come_from_the_string_table)
 {
-	const std::string hud = hud_function(hud_read("engine/src/xrGame/coop/coop_survival.cpp"), "void build_hud(");
+	const std::string hud = hud_function(hud_read("engine/src/xrGame/coop/coop_survival_hud.cpp"), "void build_hud(");
 	size_t calls = 0;
 	for (size_t at = hud.find("xr_sprintf(buf,"); at != std::string::npos; at = hud.find("xr_sprintf(buf,", at + 1))
 	{
@@ -206,7 +206,7 @@ TEST(survival_hud_text_formats_come_from_the_string_table)
 // The reviver's line: its id, an English fallback that passes the same check as the translation, one %s for the nick.
 TEST(survival_hud_text_reviving_line_is_translated)
 {
-	const std::string hud = hud_function(hud_read("engine/src/xrGame/coop/coop_survival.cpp"), "void build_hud(");
+	const std::string hud = hud_function(hud_read("engine/src/xrGame/coop/coop_survival_hud.cpp"), "void build_hud(");
 	const std::string call = std::string("tr_format(\"") + kRevivingId + "\", \"";
 	const size_t at = hud.find(call);
 	REQUIRE(at != std::string::npos);
@@ -216,7 +216,7 @@ TEST(survival_hud_text_reviving_line_is_translated)
 	const std::string fallback = hud.substr(start, close - start);
 	CHECK(coop::death::one_conversion(fallback.c_str(), 's'));
 	CHECK(hud.compare(close, 7, "\", 's')") == 0);
-	const size_t target = hud.find("g_me.revive_target != 0xffff");
+	const size_t target = hud.find("g_me.revive_target != kNoId");
 	REQUIRE(target != std::string::npos);
 	CHECK(at > target); // the call sits in the reviver's branch
 }
