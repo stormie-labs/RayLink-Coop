@@ -112,7 +112,7 @@
 - R-6.6 выключает `DEV_DEBUG` у клиента (`coop_main.script:1207-1214`). Домены `ui_debug_*`, `xrs_debug_tools`, `debug_cmd_list`,
   `zz_ui_debug_inputs` = `host`. Функции `start_*` на клиенте заменены сообщением «debug tools are disabled on a client»
   (`coop_route.ltx:136-158`, `coop_main.script:988-1009`).
-- `PERSONAL_PREFIXES = { …, "ui_debug_", "xrs_debug" }` (`coop_core_world.script:170`) — только маршрут **новостей**: строки отладочных
+- `PERSONAL_PREFIXES = { …, "ui_debug_", "xrs_debug" }` (`coop_core_world_news.script:93`) — только маршрут **новостей**: строки отладочных
   скриптов не рассылаются. К правам отладки отношения не имеет.
 - Лаунчер передаёт `-fsltx … -coop_nick <ник> [-coop_host | -coop_connect]`, без `-dbg` (`launch/mod.rs:36-42`).
 - Итог: в сессии F7 есть только у хоста, запущенного вручную с `-dbg`, и работает в обход единого пути.

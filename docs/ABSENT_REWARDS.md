@@ -106,7 +106,7 @@
 |---|---|---|---|---|---|---|
 | B1 | Предметы награды задания (`give_reward` → `relocate_item_section` → `alife_create_item`) | `task_objects.script:263-277`, `itms_manager.script:974-1015`; у нас `coop_tasks.script:873-886` (спавн хоста в прокси сдавшего) | Сд; нет в игре — хосту | как не-сдавший не получает по правилу; как взявший-скрипт — хосту | Т\* | **H**: спавн в прокси офлайн-взявшего |
 | B2 | `reward_item`, `reward_random_item`, `reward_item_cost_mult_and_remove`, `give_reward`, `fetch_reward_and_remove` | `xr_effects.script:133-150, 1398, 1417, 1448`; `coop_tasks.script:1237-1244` | как B1 | как B1 | Т\* | **H** как B1 |
-| B3 | Предметы сюжетного кондлиста «всем» (`reward_item`, `reward_random_item`, `give_actor`, `give_letter`) | `coop_quests_story.script:87-90, 165-181`; `coop_tasks.script:1108-1133` (`give_to_peer`) | Вс | не получает | Т | **H**: `absent_share` по штукам (пол — вниз) |
+| B3 | Предметы сюжетного кондлиста «всем» (`reward_item`, `reward_random_item`, `give_actor`, `give_letter`) | `coop_quests_story.script:87-90, 165-181`; `coop_tasks_items.script` (`give_to_peer`) | Вс | не получает | Т | **H**: `absent_share` по штукам (пол — вниз) |
 | B4 | Псих-шлемы Янтаря (`give_player_bad/good_psi_helmet`) | `coop_quests_story.script:328-365`; `qc.characters()` — `coop_quests_core.script:229-240` (только онлайн) | Вс | не получает; шлем нужен на Янтаре против пси-поля (`coop_quests_story.script:26-28`) | Т | **H**, всегда полностью («прогрессовый» предмет) |
 | B5 | Тайники: `reward_stash`, «Турист» (3 тайника), метки КПК | `xr_effects.script:1377`, `game_achievements.script:803-811`; `coop_quests_pda.script:345-375` | группе (мир, создаёт хост) | тайник и метка лежат в сейве хоста | С | **S** |
 | B6 | Пакеты RF-охоты `quest_package_N` | `coop_mods_radio.script:324-342` | подобравшему | личное | Л | — |
@@ -212,7 +212,7 @@
 | Состояние | Признак | Маршрут |
 |---|---|---|
 | `present` | игрок в мире: хост или `host_player_in_world` | как сейчас: `money_grant(peer)`, спавн в `avatar_obj`, relay на машину |
-| `joining` | подключён, мир ещё грузит (`sync::host_peer_joining`) | числа и предметы — прямо на сущность (новые сущности и изменения после снимка мира ждут в очереди и уходят в `host_end_join`: `coop_entities.h:28-29`, `coop_sync.cpp:144-155`); ранг, репутация, фракция — relay-событием: оно ждёт, пока машина в мире |
+| `joining` | подключён, мир ещё грузит (`sync::host_peer_joining`) | числа и предметы — прямо на сущность (новые сущности и изменения после снимка мира ждут в очереди и уходят в `sync::host_end_join`, `coop_sync.cpp`); ранг, репутация, фракция — relay-событием: оно ждёт, пока машина в мире |
 | `absent` | peer нет, прокси офлайн | **H** и **M** по описи |
 | `dormant` | `absent` дольше `absent_days` | ничего не начисляется, журнал не растёт (§2.7) |
 
@@ -426,7 +426,7 @@ m_data.coop_absent = {
    Одна награда выполняется синхронно одним проходом Lua, поэтому участник получает её ровно по одному маршруту.
    Отложенные награды (`CreateTimeEvent` на 1 с, `coop_tasks.script:979-998`) держат контекст по **ключу** и выбирают
    маршрут при выполнении. Для `joining` числа и предметы идут прямо на сущность: новые сущности и изменения после снимка мира ждут в
-   очереди до `host_end_join` (`coop_entities.h:28-29`), поэтому игрок не пропустит и не получит дважды; ранг и репутация идут relay-событием,
+   очереди до `sync::host_end_join` (`coop_sync.cpp`), поэтому игрок не пропустит и не получит дважды; ранг и репутация идут relay-событием,
    которое доставляется, когда машина в мире.
 6. **Плодить «кошельки».** Отсутствующий участник получает доли после 10 минут накопленного присутствия
    (`LIMITS.min_present_s = 600`, считает опрос `coop.members()` раз в 2 с); подключённые игроки (`present`, `joining`) — всегда.
