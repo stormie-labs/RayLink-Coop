@@ -64,6 +64,17 @@ local function instance(id)
 	return obj and obj:name() or se and se.name
 end
 
+-- P99 R2 (TZ §6.28): instances `a` and `b` of the weapon under local id `id` name the same item: equal, or another process's
+-- stamp of it, or its bare name (coop_economy_mdata.same_item: the same name, and in a stamp the item's host id). Each
+-- process mints its own stamp when it first writes the weapon's EntitySpawn; an unstamped copy's instance is its name. Another
+-- name or another host id is another item. The id-reuse checks (fresh / released_since, clone_pending) stay with the callers.
+local function same_item(id, a, b)
+	if a == nil or b == nil then return false end
+	if a == b then return true end
+	local em = C().mod("coop_economy_mdata")
+	return em ~= nil and type(em.same_item) == "function" and em.same_item(a, b, C().hid(id)) == true
+end
+
 local function copy_state(s, value)
 	if s.field == "jammed_guns" then
 		if value == nil or value == 0 then return 0 end
@@ -153,9 +164,11 @@ local function checked_state(s, id, record)
 	if coop_trust.pass("item_state_value", valid, "item %s: invalid weapon rider", tostring(id)) and valid then return state end
 end
 
+-- P99 R2: the record's instance and the stamp it travelled with name this weapon (same_item: this process's instance of it,
+-- another process's stamp of it or its bare name); a record of another item under the id is refused.
 local function matches_instance(id, current, record, wire_stamp)
-	local matches = (not current or current == record.instance)
-		and (wire_stamp == nil or wire_stamp == "" or wire_stamp == record.instance)
+	local matches = (not current or same_item(id, current, record.instance))
+		and (wire_stamp == nil or wire_stamp == "" or same_item(id, wire_stamp, record.instance))
 	return coop_trust.pass("item_state_instance", matches, "item %s: weapon instance changed", tostring(id)) and matches
 end
 
@@ -311,7 +324,7 @@ local function observe(id)
 	local changed = seen[id] and seen[id] ~= current
 	for _, s in ipairs(specs) do
 		local record = m and m[s.key] and m[s.key][id]
-		if changed or (record and (type(record) ~= "table" or record.instance ~= current)) then
+		if changed or (record and (type(record) ~= "table" or not same_item(id, record.instance, current))) then
 			local tbl = live(s)
 			if tbl then tbl[id] = nil end
 		end
@@ -335,6 +348,25 @@ local parts_asked, parts_queries, parts_dirty, parts_waiting = {}, {}, {}, {}
 local parts_after, routes = {}, {}
 local parts_eval
 local parts_seq = 0
+
+-- P99 (TZ §6.28): what the ask path of the parts did on this process (coop_status, line "wpo"), and a log of it: one line
+-- per ask, answer and refusal, at most WPO_SAY_MAX lines a minute (then one line with how many were left out).
+local wpo = { asked = 0, answered = 0, refused = 0, unrouted = 0, rolled = 0, known = 0, waiting = 0, denied = 0, why = {} }
+local WPO_SAY_MAX = 40
+local wpo_said = { n = 0, quiet = 0, until_ms = 0 }
+local function wpo_say(fmt, ...)
+	local t = time_global()
+	if t >= wpo_said.until_ms then
+		if wpo_said.quiet > 0 then C().log("wpo", "%d more lines of the last minute not written", wpo_said.quiet) end
+		wpo_said.n, wpo_said.quiet, wpo_said.until_ms = 0, 0, t + 60000
+	end
+	if wpo_said.n >= WPO_SAY_MAX then
+		wpo_said.quiet = wpo_said.quiet + 1
+		return
+	end
+	wpo_said.n = wpo_said.n + 1
+	C().log("wpo", fmt, ...)
+end
 
 local function has_parts(obj)
 	local im = C().mod("itms_manager")
@@ -373,7 +405,7 @@ local function request_parts(obj, again)
 	parts_seq = parts_seq + 1
 	-- Older passive readers can still receive a refusal without a sequence when there was no overlapping ask.
 	local overlap = asked and (asked.overlap or (asked.sent and not asked.refused))
-	local query = { w = hid, name = name, holder = holder, tick = now, q = parts_seq, overlap = overlap }
+	local query = { w = hid, name = name, holder = holder, tick = now, q = parts_seq, overlap = overlap, at = time_global() }
 	parts_asked[id], parts_queries[id] = query, query
 	return query
 end
@@ -395,8 +427,12 @@ local function flush_parts_queries()
 	end
 	if t.n > 0 and C().to_host("wpo_eval", t) then
 		for _, id in ipairs(ids) do
-			parts_queries[id].sent = true
+			local query = parts_queries[id]
+			query.sent = true
+			query.at = time_global()
 			parts_queries[id] = nil
+			wpo.asked = wpo.asked + 1
+			wpo_say("ask %d [%s] in %s (%d in this ask)", query.w, query.name, tostring(query.holder), t.n)
 		end
 	end
 end
@@ -531,6 +567,12 @@ function send_parts(peer, id, fill)
 	return false
 end
 
+-- P99: an answer of this authority, counted and in the log
+local function wpo_answered(kind, from, hid, name)
+	wpo[kind] = wpo[kind] + 1
+	wpo_say("answer to peer %s: %d [%s] %s", tostring(from), hid, tostring(name), kind)
+end
+
 local function answer_parts(t, from)
 	local hid = tonumber(t.w)
 	if not (hid and hid > 0 and hid < 65535 and hid % 1 == 0 and type(t.name) == "string") then return end
@@ -539,23 +581,35 @@ local function answer_parts(t, from)
 	local se = alife_object(id)
 	local obj = level.object_by_id(id)
 	local who = C().avatar(from)
-	if coop_mode.leads_here() and se and who and se:name() == t.name then
+	local why -- P99: why it is refused, for the log and coop_status
+	if not coop_mode.leads_here() then
+		why = "this process leads no map"
+	elseif not se then
+		why = "no such item here"
+	elseif not who then
+		why = "his character is not here"
+	elseif se:name() ~= t.name then
+		why = "another item under this id"
+	else
 		local root = C().root_of(id)
 		local at = level.object_by_id(root) or obj
 		if root == who:id() or (at and at:position():distance_to_sqr(who:position()) <= 12 * 12) then
 			local known = read_parts(id)
 			local em = C().mod("coop_economy_mdata")
-			if not known and obj and has_parts(obj) and not (em and em.clone_pending and em.clone_pending(id)) then
+			local cloning = em and em.clone_pending and em.clone_pending(id)
+			if not known and obj and has_parts(obj) and not cloning then
 				-- The first roll goes to everybody on the SE lane in this frame, the asker too, once: a second copy (a
 				-- direct answer as well) could come after his own edit of his own item and undo it.
 				parts_eval(obj)
 				if read_parts(id) then
+					wpo_answered("rolled", from, hid, t.name)
 					if flush_se and coop_economy_core.live() then flush_se() end
 					return
 				end
+				why = "the roll gave no table"
 			end
 			-- Known here already: he missed it, or it is on its way to him; his machine keeps a table it has.
-			if known and send_parts(from, id, true) then return end
+			if known and send_parts(from, id, true) then return wpo_answered("known", from, hid, t.name) end
 			if not known and not obj then
 				local waiting = parts_waiting[id]
 				local stamp = instance(id)
@@ -566,12 +620,19 @@ local function answer_parts(t, from)
 					parts_waiting[id] = waiting
 				end
 				waiting.peers[from] = t
-				return
+				return wpo_answered("waiting", from, hid, t.name)
 			end
+			why = why or known and "the table could not be sent" or cloning and "a clone of it is under way"
+				or "it has no parts list"
+		else
+			why = "his character is farther than 12 m"
 		end
 	end
 	-- The world authority can receive the ask itself while there is no map route for this player.
 	local unrouted = coop_mode.decides_world() and not coop_mode.leads_here()
+	wpo.denied = wpo.denied + 1
+	wpo.why[why] = (wpo.why[why] or 0) + 1
+	wpo_say("answer to peer %s: %d [%s] refused: %s%s", tostring(from), hid, t.name, why, unrouted and " (no map route)" or "")
 	C().to_peer(from, "wpo_eval_no", { w = hid, name = t.name, q = t.q, unrouted = unrouted or nil })
 end
 
@@ -611,6 +672,11 @@ end
 
 local function parts_changed(id, key)
 	if key ~= PARTS then return end
+	local asked = parts_asked[id]
+	if asked and asked.sent and read_parts(id) then
+		wpo.answered = wpo.answered + 1
+		wpo_say("table of %d [%s] here, %d ms after the ask", asked.w, asked.name, time_global() - (asked.at or time_global()))
+	end
 	parts_asked[id], parts_queries[id] = nil, nil
 	parts_dirty[id] = true
 end
@@ -811,6 +877,80 @@ local function player_takes(npc, obj)
 	if flush_se and coop_economy_core.live() then flush_se() end
 end
 
+-------------------------------------------------------------------------------
+-- P99 (TZ §6.28): coop_status lines. "wpo": the asks and answers of this process. "wpo_census": the items with a parts list
+-- this process knows, with a table and without, those without by their holder (read only: it walks the entities when the
+-- command runs). On a player's machine "without" is what he would see without parts; on the world server what it does not
+-- keep; on the authority of a map what nobody has looked at or taken yet (single player rolls those on the first look too).
+-------------------------------------------------------------------------------
+function status_text()
+	local out, oldest, t = 0, nil, time_global()
+	for _, q in pairs(parts_asked) do
+		if q.sent and not q.refused then
+			out = out + 1
+			local age = t - (q.at or t)
+			if not oldest or age > oldest then oldest = age end
+		end
+	end
+	local why = {}
+	for reason, n in pairs(wpo.why) do why[#why + 1] = reason .. " " .. n end
+	table.sort(why)
+	local waiting = 0
+	for _ in pairs(parts_waiting) do waiting = waiting + 1 end
+	return string.format("asks sent %d (out %d%s), answered %d, refused %d (no map route %d) | answers given: rolled %d, known %d, "
+		.. "waiting %d (%d wait now), refused %d%s", wpo.asked, out, oldest and string.format(", the oldest %d s", math.floor(oldest / 1000)) or "",
+		wpo.answered, wpo.refused, wpo.unrouted, wpo.rolled, wpo.known, wpo.waiting, waiting, wpo.denied,
+		#why > 0 and (" [" .. table.concat(why, ", ") .. "]") or "")
+end
+
+-- Only a creature's server object has alive(). A game object has it for everything, and for a box or a stash the engine
+-- answers false after writing "cannot access class member Alive!" with the whole Lua stack (script_game_object_use.cpp,
+-- review of P99 2026-11-26): such a box counted as a body, one error per item. So the game object is not asked.
+local function census_holder(id, root)
+	if root == id then return "ground" end
+	if C().is_player(root) then return "players" end
+	local se = alife_object(root)
+	if se and type(se.alive) == "function" then
+		local ok, v = pcall(se.alive, se)
+		if ok and v == true then return "npcs" end
+		if ok and v == false then return "bodies" end
+	end
+	return "boxes"
+end
+
+function census_text()
+	local im = C().mod("itms_manager")
+	local ini = im and im.ini_parts
+	if not ini then return "no parts lists (Weapon Parts Overhaul is not here)" end
+	local m = data()
+	local records = m and m.se_object
+	local listed, n, with, stamped = {}, 0, 0, 0
+	local without = { bodies = 0, npcs = 0, boxes = 0, ground = 0, players = 0 }
+	for id = 1, 65534 do
+		local se = alife_object(id)
+		local ok, sec = false, nil
+		if se then ok, sec = pcall(se.section_name, se) end
+		if ok and type(sec) == "string" then
+			if listed[sec] == nil then
+				local list = ini:r_string_ex("con_parts_list", ini_sys:r_string_ex(sec, "parent_section") or sec)
+				listed[sec] = type(list) == "string" and list ~= ""
+			end
+			if listed[sec] then
+				n = n + 1
+				if records and type(records[id]) == "table" and records[id]._coop_instance then stamped = stamped + 1 end
+				if read_parts(id) then
+					with = with + 1
+				else
+					local kind = census_holder(id, C().root_of(id) or id)
+					without[kind] = without[kind] + 1
+				end
+			end
+		end
+	end
+	return string.format("%d with a parts list, %d with a table, %d without (bodies %d, npcs %d, boxes %d, ground %d, players %d), "
+		.. "%d stamped", n, with, n - with, without.bodies, without.npcs, without.boxes, without.ground, without.players, stamped)
+end
+
 function install_parts(parts, jam)
 	if parts_eval then return end
 	C().wrap(parts, "evaluate_parts", "item_state.parts", function(orig)
@@ -848,6 +988,9 @@ function install_parts(parts, jam)
 		if not n then return end
 		local no = { n = n }
 		for i = 1, n do no["w" .. i], no["s" .. i], no["q" .. i] = t["w" .. i], t["s" .. i], t["q" .. i] end
+		wpo.denied = wpo.denied + n
+		wpo.why["over the ask limit"] = (wpo.why["over the ask limit"] or 0) + n
+		wpo_say("answer to peer %s: %d asks refused: over the ask limit", tostring(from), n)
 		C().to_peer(from, "wpo_eval_no", no)
 	end)
 	-- A refusal only ends the ask it answers. Keep the demand of open cells and readers waiting for a map route.
@@ -858,6 +1001,9 @@ function install_parts(parts, jam)
 		if q == nil then
 			if asked.overlap or parts_after[id] then return end
 		elseif tonumber(q) ~= asked.q then return end
+		wpo.refused = wpo.refused + 1
+		if unrouted then wpo.unrouted = wpo.unrouted + 1 end
+		wpo_say("refused by the authority: %d [%s]%s", asked.w, name, unrouted and " (no map route; asked again when one comes)" or "")
 		if not unrouted and parts_after[id] then
 			parts_after[id] = nil
 			say_unknown()
@@ -883,6 +1029,8 @@ function install_parts(parts, jam)
 		if id and parts_asked[id] and coop_mode.is_player_mirror() then ask_again(id) end
 	end)
 	RegisterScriptCallback("npc_on_item_take", player_takes)
+	C().status_line("wpo", status_text)
+	C().status_line("wpo_census", census_text)
 	RegisterScriptCallback("actor_on_update", flush_parts_queries)
 	RegisterScriptCallback("actor_on_first_update", function()
 		bind_parts_jamming(jam)
@@ -936,7 +1084,7 @@ local function unregister_item(se)
 	for _, s in ipairs(specs) do
 		local records = m[s.key]
 		local record = records and records[id]
-		if type(record) == "table" and record.instance == stamp then
+		if type(record) == "table" and same_item(id, record.instance, stamp) then
 			-- Stock alife_clone_weapon unregisters before after_clone. Keep
 			-- its source through that call without exposing it under the old ID.
 			retired[id] = retired[id] or {}
@@ -1074,7 +1222,7 @@ local function install_riders()
 		local packed = se_signatures[tostring(C().hid(id)) .. "\0" .. key]
 		if packed and type(value) == "table" and packed ~= ec.pack(value) then
 			local latest = ec.unpack(packed)
-			if type(latest) == "table" and latest.instance == value.instance and apply(s, id, latest) then
+			if type(latest) == "table" and same_item(id, latest.instance, value.instance) and apply(s, id, latest) then
 				em.quietly(se_save_var, id, nil, key, latest)
 				store(s, id, latest)
 				return
@@ -1096,7 +1244,7 @@ local function install_riders()
 				local m = data()
 				for _, s in ipairs(specs) do
 					local record = m and m[s.key] and m[s.key][id]
-					if type(record) == "table" and record.instance == before then
+					if type(record) == "table" and same_item(id, record.instance, before) then
 						local rebound = { instance = stamp, state = record.state }
 						store(s, id, rebound)
 						se_save_var(id, nil, s.key, rebound)
@@ -1118,9 +1266,9 @@ local function install_riders()
 				for _, s in ipairs(specs) do
 					local records = m and m[s.key]
 					local record = records and records[new_id]
-					if type(record) ~= "table" or record.instance ~= stamp then
+					if type(record) ~= "table" or not same_item(new_id, record.instance, stamp) then
 						local source = records and records[old_id]
-						record = type(source) == "table" and source.instance == source_stamp and source
+						record = type(source) == "table" and same_item(old_id, source.instance, source_stamp) and source
 							or released and released[s.key]
 					end
 					if record and stamp then
@@ -1150,7 +1298,7 @@ function carry(id)
 	for _, s in ipairs(specs) do
 		capture(s, id) -- a direct write of the mod's table in this frame, before the next poll saw it
 		local record = type(m[s.key]) == "table" and m[s.key][id]
-		if type(record) == "table" and record.instance == stamp and copy_state(s, record.state) ~= nil then
+		if type(record) == "table" and same_item(id, record.instance, stamp) and copy_state(s, record.state) ~= nil then
 			local packed = ec.pack(record)
 			if type(packed) == "string" and #packed <= MAX_PACKED then
 				n = n + 1
@@ -1214,7 +1362,7 @@ function carried(hid, from, text, holder)
 	if t.parts ~= nil and parts_eval then
 		local packed = t.parts
 		local wire_ok = type(packed) == "string" and #packed <= MAX_PACKED
-			and type(t.parts_instance) == "string" and t.parts_instance == instance(id)
+			and type(t.parts_instance) == "string" and same_item(id, t.parts_instance, instance(id))
 		if coop_trust.pass("item_state_wire", wire_ok, "weapon parts carry: invalid value or instance") and wire_ok then
 			local value, err = ec.unpack(packed)
 			local ok = err == nil and valid_parts(value)

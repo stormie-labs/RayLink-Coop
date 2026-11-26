@@ -436,12 +436,22 @@ function on_game_start()
 	step("spairs", guard_spairs)
 	step("tasks_guide", guard_guide)
 	step("game_relations", guard_relations)
+	-- P99 (TZ §6.28): in coop_status. "spairs" counts the loops over a missing table on a client (a WPO tooltip of an item whose
+	-- parts are not here: zzzz_arti_jamming_repairs.script:614/792); print_status had no caller
+	step("status", function()
+		local core = mod("coop_mods_core")
+		if core and type(core.status_line) == "function" then core.status_line("fixes", status_text) end
+	end)
 	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
 end
 
+function status_text()
+	return string.format("installed: %s | vid %d, ssfx %d, spairs %d, guide %d, relation resets %d",
+		#installed > 0 and table.concat(installed, ", ") or "none", stats.vid, stats.ssfx, stats.spairs, stats.guide, stats.relations)
+end
+
 function print_status()
-	log("installed: %s | vid %d, ssfx %d, spairs %d, guide %d, relation resets %d", #installed > 0 and table.concat(installed, ", ") or "none",
-		stats.vid, stats.ssfx, stats.spairs, stats.guide, stats.relations)
+	log("%s", status_text())
 end
 
 function _stats() return stats end

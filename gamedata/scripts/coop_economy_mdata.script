@@ -16,6 +16,12 @@
 	   item is there, not refused: the parts GAMMA moved onto the clone were lost on the host, its save and the
 	   others. GAMMA's alife_clone_weapon copies the old id's table to the clone directly (only "parts" goes through
 	   se_save_var): after a clone its other vars go out too (after_clone). Item riders are held the same way.
+	   P99 (2026-11-25, TZ §6.28): each value carries the sender's instance of the item (its stamp _coop_instance, or its
+	   name). Processes stamp one weapon each its own way (a repair answered by the world server and by the map server, a
+	   repair sent to one co-op client), so a weapon's "parts" under another stamp that names this same item (name, and the
+	   host id in the stamp) are applied (item_alias); a value for another item under the id is still refused or waits.
+	   R2 (2026-11-26, Core): the same for every se var of the item and its riders (2.), and the bare name (an unstamped copy)
+	   names it too (same_item): an unstamped holder's jam and camo reach an authority that took another stamp.
 	2. Item riders (m_data[key][item_id]) of addons that keep per-item state in their own m_data table
 	   (Powered Exos, 3DSS marks, Meat Spoiling, GAMMA pouches ...): the machine that holds the item polls its
 	   inventory and sends changed entries; the host stores and relays them. Addons declare keys with
@@ -77,6 +83,8 @@ local stats = {
 	imd_out = 0, imd_in = 0, imd_refused = 0, imd_held = 0, clones = 0,
 	pmd_out = 0, pmd_in = 0, pmd_applied = 0,
 	wmd_out = 0, wmd_in = 0, errors = 0, oversize = 0,
+	parts_alias = 0, parts_refused = 0, parts_parked = 0, -- P99: parts under another stamp of the same item / of another
+	se_alias = 0, imd_alias = 0, clone_alias = 0, -- P99 R2: se vars / item riders / an owner's clone source taken under another stamp of the same item (or its name)
 }
 
 local function m_data()
@@ -108,6 +116,61 @@ local function clone_is_retired(id)
 		return false
 	end
 	return true
+end
+
+-- P99 (TZ §6.28): the item an SE value's instance names. A weapon's stamp is "<name>/<host id>/<nonce>" (the engine's
+-- replacement::token, engine/src/xrCoop/coop_replacement.h:69); an unstamped item's instance is its name. <name> is the item's own
+-- name in a spawn's stamp (write_clone_initial), but the SOURCE's name in a clone transaction's stamp (prepare_local_clone /
+-- host_replace -> clone_stage gives the target the token): item_alias wants the item's own name there, so a clone target's stamp
+-- never aliases (review R2 finding 3: strict, as before R2).
+local function named_by(instance)
+	local name, hid = instance:match("^(.+)/(%d+)/%d+$")
+	if name then return name, tonumber(hid) end
+	return instance, nil
+end
+
+-- P99 R2 (TZ §6.28, Core: both modes, no mode check): do instances `a` and `b` of item `hid` (host numbering) name the same
+-- item? Equal, or the same name where every stamp among them carries the item's host id: another process's stamp of this item,
+-- or its bare name (a copy no process stamped). The processes stamp a weapon each its own way when each of them writes its
+-- EntitySpawn first (write_clone_initial -> clone_export): in the server mode a player's repair is answered by the world server
+-- and by the map server of his level, each with a new stamp; in the co-op the host stamps its copy on any spawn it writes (a
+-- repair to one client: the host and that client hold the stamp, the holder may hold none). The stamp only tells two objects
+-- under one id apart; another name, or a stamp of another host id, names another item. Pure: reads nothing.
+-- coop_mods_item_state takes its riders by this rule too.
+function same_item(a, b, hid)
+	if type(a) ~= "string" or type(b) ~= "string" or a == "" or b == "" then return false end
+	if a == b then return true end
+	local name_a, hid_a = named_by(a)
+	local name_b, hid_b = named_by(b)
+	return name_a == name_b and (hid_a == nil or hid_a == hid) and (hid_b == nil or hid_b == hid)
+end
+
+-- P99: a value (a weapon's parts, any se var, an item rider) sent under another stamp of the item this process holds under
+-- `lid`, or under its bare name: the instance names this item here (its object's name, and same_item with this process's own
+-- instance of it). A value for another item (another name, another host id) is still refused or waits; every other check of
+-- the value (holder, clone_busy / clone_retired, the item riders' id-reuse ticks) still applies after this one.
+local function item_alias(lid, hid, instance)
+	if type(instance) ~= "string" or instance == "" then return false end
+	local object = alife_object(lid)
+	if not object then return false end
+	return named_by(instance) == object:name() and same_item(instance, item_instance(lid), hid)
+end
+
+-- P99: what the parts lane did with a value under another stamp, in the log: at most PARTS_SAY_MAX lines a minute
+local PARTS_SAY_MAX = 30
+local parts_said = { n = 0, quiet = 0, until_ms = 0 }
+local function say_parts(fmt, ...)
+	local t = core.now()
+	if t >= parts_said.until_ms then
+		if parts_said.quiet > 0 then core.log("parts: %d more lines of the last minute not written", parts_said.quiet) end
+		parts_said.n, parts_said.quiet, parts_said.until_ms = 0, 0, t + 60000
+	end
+	if parts_said.n >= PARTS_SAY_MAX then
+		parts_said.quiet = parts_said.quiet + 1
+		return
+	end
+	parts_said.n = parts_said.n + 1
+	core.log(fmt, ...)
 end
 
 -- se vars the world server does not send its map servers (filled from SE_HOST_ONLY below): NPC state that the authority of each
@@ -426,16 +489,29 @@ local function on_se(t, from)
 		local mismatch = alife_object(lid) and e.instance and e.instance ~= item_instance(lid)
 		local m = m_data()
 		local stamped = m and m.se_object and m.se_object[lid] and m.se_object[lid]._coop_instance
+		-- P99: a weapon's value under another stamp of this same item, or under its bare name, is its value (item_alias: its parts,
+		-- since R2 every se var of it - jam, camo ...); the checks below still apply
+		local alias = mismatch and item_alias(lid, e.id, e.instance)
+		if alias then mismatch = false end
 		if clone_is_retired(lid) or clone_busy[lid] then
 			stats.se_refused = stats.se_refused + 1
 		elseif e.key == "parts" and mismatch and not stamped and (not host or from >= 0x100) then
 			-- An existing mirror can receive parts before it learns the
 			-- matching initial stamp. Never apply them under the old stamp.
+			-- (Here the value names another item: another stamp of this same item is no reason to wait, P99.)
 			se_parts_wait[lid] = e
 			stats.se_pending = stats.se_pending + 1
+			stats.parts_parked = stats.parts_parked + 1
+			say_parts("parts of %s [%s] from %s wait: sent for %s, another item than this one", tostring(e.id),
+				tostring(item_instance(lid)), tostring(from), tostring(e.instance))
 			if host then relay[#relay + 1] = { e.id, e.key, e.packed, e.instance } end
 		elseif mismatch or (stamped and not e.instance) then
 			stats.se_refused = stats.se_refused + 1
+			if e.key == "parts" then
+				stats.parts_refused = stats.parts_refused + 1
+				say_parts("parts of %s [%s] from %s refused: sent for %s, another item than this one", tostring(e.id),
+					tostring(item_instance(lid)), tostring(from), tostring(e.instance))
+			end
 		elseif not_sent(e.key) then
 			-- ignore
 		elseif t.f == 1 and not host and m and m.se_object and m.se_object[lid]
@@ -460,6 +536,15 @@ local function on_se(t, from)
 				end
 			else
 				if e.key == "parts" then se_parts_wait[lid] = nil end
+				if alias and e.key == "parts" then
+					stats.parts_alias = stats.parts_alias + 1
+					say_parts("parts of %s [%s] from %s taken under another stamp of the same item (sent %s)", tostring(e.id),
+						tostring(item_instance(lid)), tostring(from), tostring(e.instance))
+				elseif alias then
+					stats.se_alias = stats.se_alias + 1
+					say_parts("se var %s of %s [%s] from %s taken under another stamp of the same item (sent %s)", e.key,
+						tostring(e.id), tostring(item_instance(lid)), tostring(from), tostring(e.instance))
+				end
 				se_heard(lid, e.key)
 			end
 			if host then relay[#relay + 1] = { e.id, e.key, e.packed, e.instance } end
@@ -478,7 +563,8 @@ local function se_release_held()
 	for _, h in ipairs(se_hold) do
 		local e = h.e
 		if alife_object(e.id) ~= nil then
-			if client_may_write(h.from, e.id, e.key) and (not e.instance or e.instance == item_instance(e.id)) then
+			if client_may_write(h.from, e.id, e.key)
+				and (not e.instance or e.instance == item_instance(e.id) or item_alias(e.id, e.id, e.instance)) then
 				se_sig[tostring(e.id) .. "\0" .. e.key] = e.packed
 				stats.se_in = stats.se_in + 1
 				if se_store(e.id, e.key, e.value) then se_heard(e.id, e.key) end
@@ -508,9 +594,11 @@ local function se_retry()
 		if not clone_busy[id] and alife_object(id) then
 			local stamp = item_instance(id)
 			local se = m and m.se_object and m.se_object[id]
-			if clone_is_retired(id) or (se and se._coop_instance and stamp ~= e.instance) then
+			-- P99: the item came with another stamp of itself (item_alias): its parts apply
+			local same = stamp == e.instance or item_alias(id, e.id, e.instance)
+			if clone_is_retired(id) or (se and se._coop_instance and not same) then
 				se_parts_wait[id] = nil
-			elseif stamp == e.instance and se_store(id, "parts", e.value) then
+			elseif same and se_store(id, "parts", e.value) then
 				se_parts_wait[id] = nil
 				se_sig[tostring(e.id) .. "\0parts"] = e.packed
 				se_heard(id, "parts")
@@ -520,8 +608,8 @@ local function se_retry()
 	if #se_wait == 0 then return end
 	local keep, t = {}, core.now()
 	for _, w in ipairs(se_wait) do
-		if not clone_busy[w[1]] and not clone_is_retired(w[1]) and
-			(not alife_object(w[1]) or not w.instance or w.instance == item_instance(w[1])) then
+		if not clone_busy[w[1]] and not clone_is_retired(w[1]) and (not alife_object(w[1]) or not w.instance
+			or w.instance == item_instance(w[1]) or item_alias(w[1], core.host_id(w[1]), w.instance)) then
 			if se_store(w[1], w[2], w[3]) then
 				se_heard(w[1], w[2])
 			elseif t < w.until_ms then
@@ -623,7 +711,11 @@ local function on_imd(t, from)
 	for _, e in ipairs(read_batch(t)) do
 		local d = item_decl(e.key)
 		local lid = host and e.id or core.local_id(e.id)
-		if clone_busy[lid] or clone_is_retired(lid) or (alife_object(lid) and e.instance and e.instance ~= item_instance(lid)) then
+		-- P99 R2: a rider under another stamp of this same item, or under its bare name, is its rider (item_alias)
+		local mismatch = alife_object(lid) and e.instance and e.instance ~= item_instance(lid)
+		local alias = mismatch and item_alias(lid, e.id, e.instance)
+		if alias then mismatch = false end
+		if clone_busy[lid] or clone_is_retired(lid) or mismatch then
 			stats.imd_refused = stats.imd_refused + 1
 		elseif not d then
 			-- an addon this machine does not have
@@ -639,6 +731,11 @@ local function on_imd(t, from)
 			item_base[lid][e.key] = e.packed
 			imd_recent[tostring(e.id) .. "\0" .. e.key] = nil -- a newer word than what this machine sent
 			stats.imd_in = stats.imd_in + 1
+			if alias then
+				stats.imd_alias = stats.imd_alias + 1
+				say_parts("item rider %s of %s [%s] from %s taken under another stamp of the same item (sent %s)", e.key,
+					tostring(e.id), tostring(item_instance(lid)), tostring(from), tostring(e.instance))
+			end
 			if host then relay[#relay + 1] = { e.id, e.key, e.packed } end
 		end
 	end
@@ -657,7 +754,7 @@ local function imd_release_held()
 		if d and alife_object(e.id) ~= nil then
 			local p = core.player(h.from)
 			if not clone_busy[e.id] and not clone_is_retired(e.id) and p and p.avatar_id and core.root_of(e.id) == p.avatar_id
-				and (not e.instance or e.instance == item_instance(e.id)) then
+				and (not e.instance or e.instance == item_instance(e.id) or item_alias(e.id, e.id, e.instance)) then
 				item_store(m, d, e.id, e.value)
 				item_base[e.id] = item_base[e.id] or {}
 				item_base[e.id][e.key] = e.packed
@@ -1047,7 +1144,8 @@ local function mine_to_write(lid, world_var)
 end
 
 local function same_instance(lid, instance)
-	return instance == nil or instance == "" or instance == item_instance(lid)
+	-- P99 R2: or another stamp of this same item / its bare name (item_alias): the save he loads may hold the world's stamp
+	return instance == nil or instance == "" or instance == item_instance(lid) or item_alias(lid, core.host_id(lid), instance)
 end
 
 -- Client, his first live frame in the next world: a kept value his save lacks is written here and sent as a write of his own.
@@ -1406,15 +1504,40 @@ function clone_stage(source, target, name, packed, trust, token)
 	if source ~= 65535 and not original then return false end
 	if trust == 1 then
 		local host = m.se_object[source] or {}
-		if snapshot.se._coop_instance ~= host._coop_instance then return false end
+		-- P99 R2 (review 2026-11-26, Core): the owner's source under another stamp of this same item, or under its bare name, is
+		-- this source (item_alias): his unstamped copy while this process stamped its own (another player's repair), or his stamp
+		-- of it while this process holds none (the world's answer to his repair, the map server's copy from the save). Another
+		-- item (another name, a stamp of another host id) is refused as before; the engine has checked the source's name.
+		local theirs = snapshot.se._coop_instance
+		if theirs ~= host._coop_instance then
+			local object = alife_object(source)
+			local named = theirs or (object and object:name())
+			if not item_alias(source, core.host_id(source), named) then return false end
+			stats.clone_alias = stats.clone_alias + 1
+			say_parts("clone of %s [%s] into %s: the owner's source under another stamp of the same item (sent %s)",
+				tostring(core.host_id(source)), tostring(item_instance(source)), tostring(core.host_id(target)), tostring(named))
+		end
 		for key in pairs(SE_HOST_ONLY) do snapshot.se[key] = nil end
 		for key in pairs(SE_HOST_ONLY) do snapshot.se[key] = host[key] end
 		snapshot.se_present = snapshot.se_present or m.se_object[source] ~= nil
 		original = core.pack(snapshot) -- the owner's permitted source state survives a rejected replacement
 	end
 	local early = se_parts_wait[target]
-	if trust == 2 and early and early.instance == snapshot.se._coop_instance and snapshot.se.parts == nil then
-		snapshot.se.parts = early.value
+	if trust == 2 and early and snapshot.se.parts == nil and type(early.instance) == "string" then
+		-- P99 (review 2026-11-26): the waiting table applies under this item's own stamp, and also under another stamp of this same
+		-- item (its name, and in a stamp its host id - as item_alias): in the server mode the map server's answer waits under its
+		-- stamp while the gun arrives here with the world's, and the waiting entry is cleared below.
+		local same = early.instance == snapshot.se._coop_instance
+		if not same then
+			local early_name, early_hid = named_by(early.instance)
+			same = early_name == name and (early_hid == nil or early_hid == core.host_id(target))
+			if same then
+				stats.parts_alias = stats.parts_alias + 1
+				say_parts("parts of %s [%s] waiting under %s taken with the item's arrival under another stamp of the same item",
+					tostring(core.host_id(target)), tostring(name), tostring(early.instance))
+			end
+		end
+		if same then snapshot.se.parts = early.value end
 	end
 	local rollback = original and clone_decode(original)
 	if original and not rollback then return false end
@@ -1518,6 +1641,25 @@ function clone_adopt(id, packed)
 	for key, value in pairs(m.se_object[id]) do
 		if key ~= "name" and not SE_HOST_ONLY[key] and (key ~= "parts" or local_parts) then se_queue(id, key, value) end
 	end
+	return true
+end
+
+-- TZ 6.28 (P99, review D1 R1, 2026-11-26): the stamp alone of another process's spawn of a weapon this copy knows, while this copy
+-- holds no stamp of it or the same one (the engine: coop_trunk.cpp world_takes_spawn_stamp -> requests::adopt_spawn_stamp). Stamped
+-- as clone_export does above; nothing else of the spawn: no SE_HOST_ONLY keys, no parts, no purge (held and pending changes of the
+-- item stay), no resend. clone_adopt is the whole adoption a player's copy does from its authority's spawn.
+function clone_take_stamp(id, packed)
+	local snapshot = clone_decode(packed)
+	local m = m_data()
+	local stamp = snapshot and snapshot.se._coop_instance
+	if type(stamp) ~= "string" or not (m and type(m.se_object) == "table") or clone_busy[id] then return false end
+	local held = m.se_object[id] and m.se_object[id]._coop_instance
+	if held then return held == stamp end
+	local object = alife_object(id)
+	if not object then return false end
+	m.se_object[id] = m.se_object[id] or { name = object:name() }
+	m.se_object[id]._coop_instance = stamp
+	clone_retired[id] = nil
 	return true
 end
 
@@ -1695,6 +1837,10 @@ function print_status()
 		stats.imd_out, stats.imd_in, stats.imd_refused, stats.imd_held, #imd_hold, stats.clones, stats.pmd_out,
 		stats.pmd_in, stats.pmd_applied, stats.wmd_out, stats.wmd_in, stats.oversize, stats.errors)
 	if (stats.wmd_big or 0) > 0 then core.log("mdata: world keys sent in pieces %d", stats.wmd_big) end
+	local waiting = 0
+	for _ in pairs(se_parts_wait) do waiting = waiting + 1 end
+	core.log("mdata parts (P99): taken under another stamp of the same item %d | for another item: refused %d, waited %d (%d wait now) | other se vars %d, item riders %d, clone sources %d taken under another stamp of the same item",
+		stats.parts_alias, stats.parts_refused, stats.parts_parked, waiting, stats.se_alias, stats.imd_alias, stats.clone_alias)
 end
 
 -- Tests only.

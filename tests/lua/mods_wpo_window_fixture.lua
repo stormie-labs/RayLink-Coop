@@ -612,7 +612,9 @@ if scenario == "r35" then
 	local empty = assert(authority.coop_economy_mdata.clone_export(id, "spawn951"))
 	if M then
 		add_entity(H, id, GUN, 700)
-		check(H.coop_economy_mdata.clone_adopt(id, empty), "the world registers the map's item stamp")
+		-- the world takes the stamp alone of the map server's spawn as the engine does (coop_trunk.cpp trunk_host_on_tunnel ->
+		-- requests::adopt_spawn_stamp -> clone_take_stamp; review D1 R1: not clone_adopt)
+		check(H.coop_economy_mdata.clone_take_stamp(id, empty), "the world registers the map's item stamp")
 	end
 	authority.item_parts.evaluate_parts(real)
 	deliver_all()
@@ -944,6 +946,335 @@ if scenario == "fix2" then
 	no_errors(A, "client")
 	no_errors(authority, "map authority")
 	if M then no_errors(H, "world server") end
+	local checks, fails = CHECKS, FAILS
+	CHECKS, FAILS = 0, 0
+	return checks, fails
+end
+
+-------------------------------------------------------------------------------
+-- P99 (TZ §6.28, owner 2026-11-25, Dev 64): weapons in NPC bodies with no parts on a player's machine. The processes stamp a
+-- weapon each its own way (_coop_instance, minted by write_clone_initial on whoever writes its EntitySpawn first), and the
+-- parts of that weapon were then refused or parked for good where the stamp differed; the asker heard nothing and never asked
+-- again. Each mode has its own scenario: the co-op's stamps differ after a repair sent to one client (p99_coop), the server
+-- mode's after a repair answered by the world server and by the map server (p99_srv).
+-- A weapon's stamp as the engine writes it (replacement::token): "<name>/<host id>/<nonce>".
+local function p99_token(id, nonce, name) return (name or GUN .. id) .. "/" .. id .. "/" .. nonce end
+local function p99_stamp(W, id, s)
+	W.MDATA.se_object[id] = W.MDATA.se_object[id] or { name = W.SE[id] and W.SE[id]:name() or GUN .. id }
+	W.MDATA.se_object[id]._coop_instance = s
+end
+local function p99_asks(W)
+	local n = 0
+	for _, s in ipairs(W.SENT) do if s.name == "mods.wpo_eval" then n = n + 1 end end
+	return n
+end
+local function p99_stats(W) return W.coop_economy_mdata._stats() end
+local function p99_logged(W, pattern)
+	local n = 0
+	for _, line in ipairs(W.LOG) do if line:find(pattern) then n = n + 1 end end
+	return n
+end
+-- a weapon in the body 700 everywhere (the map's copy has its wear), with the stamps each process holds
+local function p99_corpse_gun(H, M, id, cond, stamps)
+	gun_everywhere(id, cond, 1)
+	if M then H.OBJ[id] = nil end -- the world server has no game object of a map's item
+	for W, s in pairs(stamps or {}) do p99_stamp(W, id, s) end
+end
+-- he opens the body, the answers come; then he opens it again and hovers the gun: what he asks after the table came
+local function p99_look(A, id)
+	open(A, 700, { id })
+	settle()
+	local before = p99_asks(A)
+	close(A)
+	open(A, 700, { id })
+	A.item_parts.get_parts_con(A.OBJ[id], nil, true)
+	settle()
+	return p99_asks(A) - before
+end
+local function p99_got(W, id, value)
+	local p = parts(W, id)
+	return p ~= nil and p[GUN] == value
+end
+-- a line of coop_status of that process ("" when the script has no such function)
+local function p99_text(W, fn)
+	local f = W.coop_mods_item_state[fn]
+	local ok, text = pcall(function() return f() end)
+	return ok and type(text) == "string" and text or ""
+end
+
+if scenario == "p99_coop" then
+	assert(not server, "p99_coop is the co-op's scenario")
+	section("P99, co-op: the host rolls, every client gets the table whatever stamp his copy holds")
+	local H, A, B = setup(false)
+
+	-- 1. A repair to client B (the host's directed EntitySpawn) stamped the gun on the host and on B; A keeps the save's copy.
+	p99_corpse_gun(H, nil, 1201, 0.4, { [H] = p99_token(1201, 11), [B] = p99_token(1201, 11) })
+	local again = p99_look(A, 1201)
+	check(p99_got(H, 1201, 40), "the host rolled the body's gun from its condition (40)")
+	check(p99_got(A, 1201, 40) and select(2, dots(A, 1201)) == 3,
+		"client A, whose copy has no stamp, has the host's table and draws its dots (got " .. tostring(parts(A, 1201) and parts(A, 1201)[GUN]) .. ")")
+	check(p99_got(B, 1201, 40), "client B, stamped by the repair, has it too")
+	check(A.MDATA.se_object[1201] == nil or A.MDATA.se_object[1201]._coop_instance == nil,
+		"A's stamp is not rewritten: only the parts follow the host's word")
+	check(again == 0, "a look after the table came asks nothing (" .. again .. " asks)")
+	check(p99_stats(A).parts_alias >= 1, "A counts a table taken under another stamp of the same gun")
+
+	-- 2. A holds an older stamp of the same gun (an earlier repair to him): the host's newer stamp names the same gun.
+	p99_corpse_gun(H, nil, 1202, 0.35, { [H] = p99_token(1202, 12), [B] = p99_token(1202, 12), [A] = p99_token(1202, 3) })
+	p99_look(A, 1202)
+	check(p99_got(A, 1202, 35), "another stamp of the same gun on A: A has the host's table (35)")
+
+	-- 3. Not the same item: A's copy under the id is another item (a helmet, a reused id). The host's gun is refused there.
+	p99_corpse_gun(H, nil, 1203, 0.3, { [H] = p99_token(1203, 13), [B] = p99_token(1203, 13) })
+	item(A, 1203, HELM, 700, 1)
+	p99_stamp(A, 1203, p99_token(1203, 4, HELM .. 1203))
+	local refused = p99_stats(A).parts_refused
+	open(B, 700, { 1203 })
+	settle()
+	check(p99_got(B, 1203, 30), "B asked and has the gun's table")
+	check(parts(A, 1203) == nil and p99_stats(A).parts_refused == refused + 1,
+		"another item under that id on A: the gun's table is refused there, as before")
+	-- the same with no stamp on A's helmet: it waits for a stamp, never applied to the helmet
+	p99_corpse_gun(H, nil, 1204, 0.3, { [H] = p99_token(1204, 14), [B] = p99_token(1204, 14) })
+	item(A, 1204, HELM, 700, 1)
+	local parked = p99_stats(A).parts_parked
+	open(B, 700, { 1204 })
+	settle()
+	check(parts(A, 1204) == nil and p99_stats(A).parts_parked == parked + 1, "an unstamped other item waits, its table is not taken")
+	-- a stamp that names the gun under another host id is another object
+	p99_corpse_gun(H, nil, 1205, 0.3, { [H] = GUN .. 1205 .. "/999/15", [B] = GUN .. 1205 .. "/999/15" })
+	open(B, 700, { 1205 })
+	settle()
+	check(parts(A, 1205) == nil, "a stamp minted for another host id is not this gun's")
+
+	-- 4. His own gun under another stamp: the host's roll on his take reaches him, and his own edits reach the host and B.
+	local char = H.level.object_by_id(PLAYERS[1].proxy)
+	for peer, W in pairs(WORLDS) do item(W, 1206, GUN, peer == 1 and 0 or PLAYERS[1].proxy, peer == 0 and 0.45 or 1) end
+	p99_stamp(H, 1206, p99_token(1206, 16))
+	p99_stamp(B, 1206, p99_token(1206, 16))
+	p99_stamp(A, 1206, p99_token(1206, 6))
+	fire(H, "npc_on_item_take", char, H.OBJ[1206])
+	deliver_all()
+	check(p99_got(A, 1206, 45), "the host's roll of the gun he took reaches him under his older stamp (45)")
+	local mine = { [GUN] = 45, prt_w_trigger_1 = -1, prt_w_spring_1 = 70, prt_w_barrel_1 = 60 }
+	A.item_parts.set_parts_con(1206, mine)
+	settle()
+	check(parts(H, 1206) and parts(H, 1206).prt_w_trigger_1 == -1 and parts(H, 1206).prt_w_spring_1 == 70,
+		"his edit of his own gun is stored on the host")
+	check(parts(B, 1206) and parts(B, 1206).prt_w_trigger_1 == -1, "and reaches the other client")
+	-- 4c. Review R2 (finding 1a): his move of his own gun carries its parts (coop_requests.cpp send_action -> carry; the host's
+	-- host_move -> carried). His copy holds no stamp, the host's holds its own: the parts under the gun's name are the gun's.
+	for peer, W in pairs(WORLDS) do item(W, 1209, GUN, peer == 1 and 0 or PLAYERS[1].proxy, 1) end
+	p99_stamp(H, 1209, p99_token(1209, 19))
+	p99_stamp(B, 1209, p99_token(1209, 19))
+	A.item_parts.set_parts_con(1209, { [GUN] = 52, prt_w_trigger_1 = 12, prt_w_spring_1 = 71, prt_w_barrel_1 = 63 })
+	local carried_1209 = A.coop_mods_item_state.carry(1209)
+	check(carried_1209 and H.coop_mods_item_state.carried(1209, 1, carried_1209, PLAYERS[1].proxy)
+		and parts(H, 1209) and parts(H, 1209).prt_w_trigger_1 == 12,
+		"his move carries his unstamped gun's parts to the host, whose copy holds its stamp (P99 R2)")
+	settle()
+	check(parts(B, 1209) and parts(B, 1209).prt_w_trigger_1 == 12, "and the other client has them")
+	-- 4b. The table comes before A has the gun at all (it waits), then the gun comes to A under another stamp of itself
+	p99_corpse_gun(H, nil, 1207, 0.27, { [H] = p99_token(1207, 17), [B] = p99_token(1207, 17) })
+	A.OBJ[1207], A.SE[1207] = nil, nil
+	open(B, 700, { 1207 })
+	settle()
+	check(p99_got(B, 1207, 27) and parts(A, 1207) == nil, "the table reached A before the gun: it waits")
+	item(A, 1207, GUN, 700, 1)
+	p99_stamp(A, 1207, p99_token(1207, 7))
+	settle()
+	check(p99_got(A, 1207, 27), "the gun came under another stamp of itself: the waiting table applies (27)")
+
+	-- 5. The log names what happened, the host's census counts the tables.
+	check(p99_logged(A, "%[wpo%] ask ") >= 1, "the client's log names its asks")
+	check(p99_logged(H, "%[wpo%] answer .*rolled") >= 1, "the host's log names what it rolled for whom")
+	check(p99_logged(A, "under another stamp of the same item") >= 1, "the client's log names a table taken under another stamp")
+	section("P99, co-op: the census of tables (coop_status, line wpo_census)")
+	H, A, B = setup(false)
+	gun_everywhere(1210, 0.5, 1) gun_everywhere(1211, 0.6, 1) gun_everywhere(1212, 0.7, 1)
+	for _, W in pairs(WORLDS) do
+		local npc = item(W, 720, "stalker_alive", nil, 1, "stalker")
+		npc.alive = function() return true end
+		-- a creature's server object has alive(): the live NPC and the body
+		W.SE[720].alive = function() return true end
+		W.SE[700].alive = function() return false end
+		-- a box: its server object has no alive(); its game object's alive() is the engine's error for a non-entity (it writes
+		-- "cannot access class member Alive!" with the Lua stack and answers false) - counted here, it must never be asked
+		local box = item(W, 730, "inventory_box", nil, 1, "box")
+		box.alive = function() W.box_alive_asked = (W.box_alive_asked or 0) + 1 return false end
+	end
+	gun_everywhere(1213, 0.8, 1)
+	place(1213, 720)
+	gun_everywhere(1214, 0.9, 1)
+	place(1214, 730)
+	open(A, 700, { 1210, 1211 })
+	settle()
+	local census = p99_text(H, "census_text")
+	check(census:find("5 with a parts list, 2 with a table, 3 without", 1, true) ~= nil
+		and census:find("bodies 1", 1, true) ~= nil and census:find("npcs 1", 1, true) ~= nil
+		and census:find("boxes 1", 1, true) ~= nil,
+		"the host counts the tables by holder, a box as a box (" .. census .. ")")
+	check(H.box_alive_asked == nil, "the census never asks a box's game object whether it is alive (an engine error per item)")
+	local mine_census = p99_text(A, "census_text")
+	check(mine_census:find("2 with a table, 3 without", 1, true) ~= nil, "a client counts its own copies (" .. mine_census .. ")")
+	check(A.box_alive_asked == nil, "a client's census never asks a box's game object either")
+	local status = p99_text(A, "status_text")
+	check(status:find("asks sent 2", 1, true) ~= nil and status:find("answered 2", 1, true) ~= nil,
+		"the client's line counts its asks and answers (" .. status .. ")")
+	no_errors(A, "client A") no_errors(B, "client B") no_errors(H, "host")
+	local checks, fails = CHECKS, FAILS
+	CHECKS, FAILS = 0, 0
+	return checks, fails
+end
+
+if scenario == "p99_srv" then
+	assert(server, "p99_srv is the server mode's scenario")
+	section("P99, server: the map server rolls, the world keeps it, every player gets it whatever stamps the processes hold")
+	local H, A, B, M = setup(true)
+	local function all_have(id, value, label)
+		check(p99_got(M, id, value), label .. ": the map server rolled " .. value)
+		check(p99_got(H, id, value), label .. ": the world server keeps it (got " .. tostring(parts(H, id) and parts(H, id)[GUN]) .. ")")
+		check(p99_got(A, id, value) and select(2, dots(A, id)) == 3,
+			label .. ": the asker has it and draws its dots (got " .. tostring(parts(A, id) and parts(A, id)[GUN]) .. ")")
+		check(p99_got(B, id, value), label .. ": the other player has it")
+	end
+
+	-- 1. His repair answered twice (the world's EntitySpawn stamped W, the map server's stamped M); he kept the world's first.
+	p99_corpse_gun(H, M, 1301, 0.4, { [H] = p99_token(1301, 21), [M] = p99_token(1301, 22), [A] = p99_token(1301, 21) })
+	local again = p99_look(A, 1301)
+	all_have(1301, 40, "world W, map M, he W")
+	check(again == 0, "a look after the table came asks nothing (" .. again .. " asks)")
+	-- 2. The same, he kept the map server's answer
+	p99_corpse_gun(H, M, 1302, 0.38, { [H] = p99_token(1302, 23), [M] = p99_token(1302, 24), [A] = p99_token(1302, 24), [B] = p99_token(1302, 24) })
+	p99_look(A, 1302)
+	all_have(1302, 38, "world W, map and players M")
+	-- 3. A repair answered by the world only: the world and he stamped, the map server's copy (the world's save) not
+	p99_corpse_gun(H, M, 1303, 0.36, { [H] = p99_token(1303, 25), [A] = p99_token(1303, 25) })
+	p99_look(A, 1303)
+	all_have(1303, 36, "world and he W, map none")
+	-- 4. The map server stamped it (its own answer), the world did not: the world used to park the map's roll for good
+	p99_corpse_gun(H, M, 1304, 0.34, { [M] = p99_token(1304, 26), [A] = p99_token(1304, 26), [B] = p99_token(1304, 26) })
+	p99_look(A, 1304)
+	all_have(1304, 34, "map and players M, world none")
+	-- 5. He keeps the stamp of the map server before this one
+	p99_corpse_gun(H, M, 1305, 0.32, { [M] = p99_token(1305, 28), [B] = p99_token(1305, 28), [A] = p99_token(1305, 27) })
+	p99_look(A, 1305)
+	all_have(1305, 32, "an older map server's stamp on him")
+	-- 6. World and map agree (the map server's repair from the world), he has none
+	p99_corpse_gun(H, M, 1306, 0.3, { [H] = p99_token(1306, 29), [M] = p99_token(1306, 29) })
+	p99_look(A, 1306)
+	all_have(1306, 30, "world and map W, he none")
+
+	-- 7. Not the same item: the world holds another item under the id. The map's roll of its gun is refused there, as before.
+	p99_corpse_gun(H, M, 1307, 0.3, { [M] = p99_token(1307, 31) })
+	add_entity(H, 1307, HELM, 700)
+	p99_stamp(H, 1307, p99_token(1307, 30, HELM .. 1307))
+	local refused = p99_stats(H).parts_refused
+	open(A, 700, { 1307 })
+	settle()
+	check(p99_got(M, 1307, 30) and parts(H, 1307) == nil and p99_stats(H).parts_refused == refused + 1,
+		"another item under that id on the world: the map's gun table is refused there")
+	check(parts(A, 1307) == nil, "and no player gets a table the world refused")
+
+	-- 8. His own gun under other stamps: the map server's roll on his take, then his own edit, reach every process.
+	for peer, W in pairs(WORLDS) do
+		local parent = peer == 1 and 0 or PLAYERS[1].proxy
+		if peer == 0 then add_entity(W, 1308, GUN, parent) else item(W, 1308, GUN, parent, peer == MK and 0.44 or 1) end
+	end
+	p99_stamp(H, 1308, p99_token(1308, 32))
+	p99_stamp(M, 1308, p99_token(1308, 33))
+	p99_stamp(A, 1308, p99_token(1308, 34))
+	local char = M.level.object_by_id(PLAYERS[1].proxy)
+	fire(M, "npc_on_item_take", char, M.OBJ[1308])
+	settle(2)
+	check(p99_got(H, 1308, 44) and p99_got(A, 1308, 44) and p99_got(B, 1308, 44),
+		"the map server's roll of the gun he took reaches the world, him and the other player (44)")
+	A.item_parts.set_parts_con(1308, { [GUN] = 44, prt_w_trigger_1 = -1, prt_w_spring_1 = 71, prt_w_barrel_1 = 61 })
+	settle()
+	check(parts(H, 1308) and parts(H, 1308).prt_w_trigger_1 == -1, "his edit of his own gun is stored on the world")
+	check(parts(M, 1308) and parts(M, 1308).prt_w_spring_1 == 71, "and on the map server (it strips by that table)")
+	check(parts(B, 1308) and parts(B, 1308).prt_w_barrel_1 == 61, "and on the other player")
+	-- 8c. Review R2 (finding 1a): his move of his own gun carries its parts to the map server of his level (coop_requests.cpp
+	-- send_action -> carry; host_move -> carried). His copy holds no stamp, the map server's its own.
+	for peer, W in pairs(WORLDS) do
+		local parent = peer == 1 and 0 or PLAYERS[1].proxy
+		if peer == 0 then add_entity(W, 1310, GUN, parent) else item(W, 1310, GUN, parent, 1) end
+	end
+	p99_stamp(M, 1310, p99_token(1310, 37))
+	A.item_parts.set_parts_con(1310, { [GUN] = 52, prt_w_trigger_1 = 12, prt_w_spring_1 = 71, prt_w_barrel_1 = 63 })
+	local carried_1310 = A.coop_mods_item_state.carry(1310)
+	check(carried_1310 and M.coop_mods_item_state.carried(1310, 1, carried_1310, PLAYERS[1].proxy)
+		and parts(M, 1310) and parts(M, 1310).prt_w_trigger_1 == 12,
+		"his move carries his unstamped gun's parts to the map server, whose copy holds its stamp (P99 R2)")
+	settle()
+	check(parts(H, 1310) and parts(H, 1310).prt_w_trigger_1 == 12, "and the world keeps them")
+	-- 8b. His edit of a gun the world does not have yet is held there; the gun comes to the world under another stamp of itself
+	for peer, W in pairs(WORLDS) do
+		if peer ~= 0 then item(W, 1309, GUN, peer == 1 and 0 or PLAYERS[1].proxy, 1) end
+	end
+	p99_stamp(A, 1309, p99_token(1309, 35))
+	A.item_parts.set_parts_con(1309, { [GUN] = 90, prt_w_trigger_1 = 81, prt_w_spring_1 = 82, prt_w_barrel_1 = 83 })
+	settle(2)
+	check(parts(H, 1309) == nil, "the world holds his edit of a gun it does not have yet")
+	add_entity(H, 1309, GUN, PLAYERS[1].proxy)
+	p99_stamp(H, 1309, p99_token(1309, 36))
+	settle()
+	check(parts(H, 1309) and parts(H, 1309).prt_w_trigger_1 == 81, "the gun came under another stamp of itself: the held edit is stored")
+
+	-- 9. The log names asks and answers on every process; a page of guns writes a bounded number of lines.
+	check(p99_logged(A, "%[wpo%] ask ") >= 1, "the client's log names its asks")
+	check(p99_logged(M, "%[wpo%] answer .*rolled") >= 1, "the map server's log names what it rolled for whom")
+	check(p99_logged(H, "under another stamp of the same item") >= 1, "the world's log names a table taken under another stamp")
+	local page = {}
+	for id = 1320, 1379 do
+		gun_everywhere(id, 0.5, 1)
+		H.OBJ[id] = nil
+		page[#page + 1] = id
+	end
+	local before = p99_logged(A, "%[wpo%] ask ")
+	open(A, 700, page, "npc_trade")
+	settle()
+	local lines = p99_logged(A, "%[wpo%] ask ") - before
+	check(lines > 0 and lines <= 40, "60 asks of a page write at most 40 ask lines a minute (" .. lines .. ")")
+
+	section("P99, server: the map's table waits for the gun, the gun comes staged under the world's stamp (review 2026-11-26)")
+	H, A, B, M = setup(true)
+	-- the world's metadata of the gun, stamped by its own repair answer, as its EntitySpawn carries it (no parts yet)
+	p99_corpse_gun(H, M, 1308, 0.29, { [M] = p99_token(1308, 61), [B] = p99_token(1308, 61), [H] = p99_token(1308, 62) })
+	local world_spawn = H.coop_economy_mdata.clone_export(1308, p99_token(1308, 62))
+	check(world_spawn ~= nil, "the world exports the gun's metadata under its stamp")
+	A.OBJ[1308], A.SE[1308] = nil, nil
+	open(B, 700, { 1308 })
+	settle()
+	check(p99_got(B, 1308, 29) and parts(A, 1308) == nil, "the map's table reached A before the gun: it waits")
+	if world_spawn then
+		-- the real arrival path: coop_entities -> stage_clone_initial -> clone_stage(trust 2), then the object registers
+		check(A.coop_economy_mdata.clone_stage(65535, 1308, GUN .. 1308, world_spawn, 2, p99_token(1308, 62)),
+			"the gun is staged on A with the world's stamp")
+		item(A, 1308, GUN, 700, 1)
+		check(A.coop_economy_mdata.clone_activate(1308), "its staged metadata activates")
+		A.coop_economy_mdata.clone_finish(1308, true)
+		check(p99_got(A, 1308, 29), "the gun came staged under the world's stamp of itself: the map's waiting table applies (got "
+			.. tostring(parts(A, 1308) and parts(A, 1308)[GUN]) .. ")")
+	end
+
+	section("P99, server: the census of tables (coop_status, line wpo_census)")
+	H, A, B, M = setup(true)
+	for _, W in pairs(WORLDS) do W.SE[700].alive = function() return false end end -- the body's server object
+	gun_everywhere(1390, 0.5, 1) gun_everywhere(1391, 0.6, 1) gun_everywhere(1392, 0.7, 1)
+	for id = 1390, 1392 do H.OBJ[id] = nil end
+	p99_stamp(H, 1390, p99_token(1390, 40))
+	p99_stamp(M, 1390, p99_token(1390, 41))
+	open(A, 700, { 1390, 1391 })
+	settle()
+	local census = p99_text(H, "census_text")
+	check(census:find("3 with a parts list, 2 with a table, 1 without", 1, true) ~= nil and census:find("bodies 1", 1, true) ~= nil,
+		"the world server counts the tables it keeps (" .. census .. ")")
+	census = p99_text(M, "census_text")
+	check(census:find("2 with a table, 1 without", 1, true) ~= nil, "the map server counts its own (" .. census .. ")")
+	local status = p99_text(M, "status_text")
+	check(status:find("rolled 2", 1, true) ~= nil, "the map server's line counts its rolls (" .. status .. ")")
+	no_errors(A, "client A") no_errors(B, "client B") no_errors(M, "map server") no_errors(H, "world server")
 	local checks, fails = CHECKS, FAILS
 	CHECKS, FAILS = 0, 0
 	return checks, fails
