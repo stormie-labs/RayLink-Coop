@@ -1,7 +1,7 @@
-// Anomaly Coop unit tests: the wiring of admitted_move (engine/src/xrGame/coop/coop_requests.cpp) for a move into a player's
+// Anomaly Coop unit tests: the wiring of admitted_move (engine/src/xrGame/coop/coop_requests_moves.cpp) for a move into a player's
 // character (R32 WP18 P4, temp/r30/design/R32-final.md section 8a A21 E-3).
 //
-// coop_requests.cpp is an engine file and cannot be linked into this exe. tests/tools/test_move_admission_wiring.py runs the
+// coop_requests_moves.cpp is an engine file and cannot be linked into this exe. tests/tools/test_move_admission_wiring.py runs the
 // real admitted_move and player_move over stubs (pytest; tools\run_all_tests.cmd runs it too); this guard keeps the same wiring in
 // the native suite that run_all_tests.cmd runs. It reads the two functions (comments dropped, white space folded) and checks:
 //   - admitted_move routes by the destination first: the ground asks nothing, a destination whose root is a player goes to
@@ -29,7 +29,7 @@ std::string requests_source()
 		const std::string here = __FILE__;
 		const size_t slash = here.find_last_of("/\\");
 		path = (slash == std::string::npos ? std::string(".") : here.substr(0, slash) + "/..") +
-		       "/engine/src/xrGame/coop/coop_requests.cpp";
+		       "/engine/src/xrGame/coop/coop_requests_moves.cpp";
 	}
 	std::ifstream in(path, std::ios::binary);
 	if (!in.good())
@@ -39,7 +39,7 @@ std::string requests_source()
 	return out.str();
 }
 
-// One top-level function of coop_requests.cpp (it closes at the start of a line), comments dropped, white space folded.
+// One top-level function of coop_requests_moves.cpp (it closes at the start of a line), comments dropped, white space folded.
 // Empty when the source has no such function.
 std::string function_of(const std::string& source, const char* signature)
 {

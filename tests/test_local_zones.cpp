@@ -205,7 +205,7 @@ TEST(zones_a_new_world_forgets_them)
 }
 
 // ---------------------------------------------------------------- the engine's release of a zone (report #859)
-// local_zone_release (engine/src/xrGame/coop/coop_requests.cpp) cannot be linked into this exe; tests/tools/test_local_zone_release.py
+// local_zone_release (engine/src/xrGame/coop/coop_local_zones.cpp) cannot be linked into this exe; tests/tools/test_local_zone_release.py
 // runs it over stubs. This guard keeps its wiring in the native suite: a zone of ours released while the world is not ready (the
 // client leaves it: a disconnect, a rejoin, a load; builds 56-57 gave one red line per zone and then the stock release a client's
 // world call cannot make) is taken out of the book and handled here, without a line and without the stock release.
@@ -222,7 +222,7 @@ std::string zones_requests_source()
 		const std::string here = __FILE__;
 		const size_t slash = here.find_last_of("/\\");
 		path = (slash == std::string::npos ? std::string(".") : here.substr(0, slash) + "/..") +
-		       "/engine/src/xrGame/coop/coop_requests.cpp";
+		       "/engine/src/xrGame/coop/coop_local_zones.cpp";
 	}
 	std::ifstream in(path, std::ios::binary);
 	if (!in.good())

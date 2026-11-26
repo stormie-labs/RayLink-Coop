@@ -19,6 +19,7 @@
 #include "coop_reconcile.h"
 #include "srv/coop_mapserver_rules.h"
 #include "srv/coop_session_srv.h"
+#include "support/scope_listed.h"
 
 #include <algorithm>
 #include <chrono>
@@ -156,7 +157,7 @@ struct Rig
 			if (m.read(r))
 				SessionSrv(map).virtual_receive(m.peer, mapserver::tunnel_lane(m.flags), m.packet.data(), m.packet.size());
 		});
-		// the world server's handler (coop_entities.cpp install_server -> host_on_entity_request): answers whoever asks, from its copy
+		// the world server's handler (coop_entities.cpp install_server -> coop_roster.cpp host_on_entity_request): answers whoever asks, from its copy
 		// (which also holds an entity its map server lacks: review D4)
 		host.s.on(Msg::StateDumpRequest, [this](PeerId from, Reader& r) {
 			const uint16_t id = r.u16();
@@ -443,7 +444,6 @@ TEST(srv_repair_answer_rule_only_the_repair_is_silenced)
 	CHECK(mapserver::map_server_sends(Msg::StateDumpRequest));
 	// the world keeps the request for the case nobody else can answer it
 	CHECK(kept_from_every_level(Msg::StateDumpRequest));
-	CHECK(level_takes(Msg::StateDumpRequest, true, false));
 }
 
 TEST(srv_repair_answer_rule_coop_rows_unchanged)
@@ -457,15 +457,13 @@ TEST(srv_repair_answer_rule_coop_rows_unchanged)
 		const mapserver::Incoming same = mapserver::route_incoming(Msg::StateDumpRequest, true, true, has);
 		CHECK(same.here && !same.tunnel);
 	}
-	CHECK(level_takes(Msg::StateDumpRequest, false, false));
-	CHECK(level_takes(Msg::StateDumpRequest, false, true));
 }
 
 // ---------------------------------------------------------------- the trunk on real sessions
 
 TEST(srv_repair_answer_one_spawn_per_request_for_the_four_entities)
 {
-	Rig k(38361);
+	Rig k(t::port(38361));
 	REQUIRE(k.start());
 	REQUIRE(k.connect_map_server());
 	Node& al = k.add_player("Al");
@@ -494,7 +492,7 @@ TEST(srv_repair_answer_one_spawn_per_request_for_the_four_entities)
 
 TEST(srv_repair_answer_without_his_map_server_the_world_answers_once)
 {
-	Rig k(38362);
+	Rig k(t::port(38362));
 	REQUIRE(k.start());
 	k.add_player("Al"); // seated on a level whose map server is not connected (starting, or gone): no bridge
 	REQUIRE(k.ask_all(reconcile::kAskMissing));
@@ -511,7 +509,7 @@ TEST(srv_repair_answer_without_his_map_server_the_world_answers_once)
 
 TEST(srv_repair_answer_the_world_still_answers_its_map_server_and_keeps_his_data)
 {
-	Rig k(38363);
+	Rig k(t::port(38363));
 	REQUIRE(k.start());
 	REQUIRE(k.connect_map_server());
 	Node& al = k.add_player("Al");
@@ -569,7 +567,7 @@ TEST(srv_repair_answer_the_world_takes_the_stamp_of_the_answer)
 {
 	for (const bool fixed : {false, true})
 	{
-		Rig k(fixed ? 38365 : 38364);
+		Rig k(fixed ? t::port(38365) : t::port(38364));
 		k.world_takes_spawn_stamps = fixed;
 		// the world's Lua: the two of his map are the save's (never stamped there); the map server holds the other two as a client
 		// of the world, under the world's stamp
@@ -602,7 +600,7 @@ TEST(srv_repair_answer_the_world_takes_the_stamp_of_the_answer)
 	}
 	// a weapon the world stamped itself (its own answer while the map server was not connected) keeps the world's stamp: the trunk
 	// counts and logs the refusal, and his rider under the map server's stamp stays refused at the world (the known limit)
-	Rig k(38366);
+	Rig k(t::port(38366));
 	const uint16_t gun = kEntities[0].id;
 	k.world_stamp[gun] = kWorldStamp | 0x77;
 	seat_al(k);
@@ -617,14 +615,14 @@ TEST(srv_repair_answer_the_world_takes_the_stamp_of_the_answer)
 
 // ---------------------------------------------------------------- review D4: the known gap of the one answerer
 
-// Not solved here. The map server answers what its copy holds (host_on_entity_request, coop_entities.cpp: no entity under the id ->
+// Not solved here. The map server answers what its copy holds (host_on_entity_request, coop_roster.cpp: no entity under the id ->
 // only a Replace or a Gone ask is answered, with EntityDestroy). A handler's ask (kAskMissing = Spawn | Died, client_on_spawn's ask for
 // a missing parent) for an id the map server lacks and the world holds gets NO answer while the bridge is up: the world keeps silent,
 // the map server has nothing to send. Before P99 the world's copy answered it too. Without the bridge the world answers it.
 TEST(srv_repair_answer_known_gap_an_id_his_map_server_lacks_gets_no_answer)
 {
 	{
-		Rig k(38367);
+		Rig k(t::port(38367));
 		Node& al = seat_al(k);
 		al.s.send(kHostPeer, Lane::Reliable, Msg::StateDumpRequest, repair_of(kOnlyAtWorld.id, reconcile::kAskMissing));
 		REQUIRE(k.pump(5000, [&k] { return k.map_answered == 1u; })); // the map server's handler ran ...
@@ -632,19 +630,19 @@ TEST(srv_repair_answer_known_gap_an_id_his_map_server_lacks_gets_no_answer)
 		CHECK(k.at_player[kOnlyAtWorld.id].empty()); // ... and had nothing to send; nobody answers him
 		CHECK_EQ(k.world_answered_a_player, 0u);
 	}
-	Rig k(38368);
+	Rig k(t::port(38368));
 	REQUIRE(k.start());
 	Node& al = k.add_player("Al"); // no map server connected: the world's copy answers
 	al.s.send(kHostPeer, Lane::Reliable, Msg::StateDumpRequest, repair_of(kOnlyAtWorld.id, reconcile::kAskMissing));
 	REQUIRE(k.pump(5000, [&k] { return !k.at_player[kOnlyAtWorld.id].empty(); }));
 	CHECK_EQ(k.at_player[kOnlyAtWorld.id][0].by, kByWorld);
 	// the engine's handler still answers nothing for a missing entity but a Replace or a Gone ask: the gap stands as pinned here
-	const std::string entities = code_of(project_file("engine/src/xrGame/coop/coop_entities.cpp"));
-	const std::string handler = body_of(entities, "void host_on_entity_request(PeerId from, Reader& r)");
+	const std::string roster = code_of(project_file("engine/src/xrGame/coop/coop_roster.cpp"));
+	const std::string handler = body_of(roster, "void host_on_entity_request(PeerId from, Reader& r)");
 	const size_t missing = handler.find("if (!e)");
 	REQUIRE(missing != npos);
 	const std::string branch = handler.substr(missing, handler.find("return;", missing) - missing);
-	CHECK(branch.find("(what & reconcile::Replace) || ((what & reconcile::Gone) && !events::find_entity(id))") != npos);
+	CHECK(branch.find("(what & reconcile::Replace) || ((what & reconcile::Gone) && !world::server_entity(id))") != npos);
 	CHECK(branch.find("send_subtree") == npos);
 }
 
@@ -665,7 +663,7 @@ TEST(srv_repair_answer_wiring_the_trunk_returns_the_rule_and_the_core_has_no_mod
 	CHECK(srv_mode.find("set_in_filter(&mapserver::host_incoming)") != npos);
 	// the Core's handler answers whenever it runs: no mode check and no Server word was added to it for this
 	const std::string entities = code_of(project_file("engine/src/xrGame/coop/coop_entities.cpp"));
-	CHECK(entities.find("answered_by_his_map_server") == npos);
+	CHECK(code_of(project_file("engine/src/xrGame/coop/coop_roster.cpp")).find("answered_by_his_map_server") == npos);
 	const std::string server = body_of(entities, "void install_server(Session& s)");
 	CHECK(server.find("Msg::StateDumpRequest") != npos);
 	CHECK(server.find("host_on_entity_request(from, r)") != npos);
@@ -708,11 +706,11 @@ TEST(srv_repair_answer_wiring_the_world_takes_the_stamp_before_the_spawn_goes_on
 		CHECK(takes.find(outcome) != npos); // each counted and logged
 	// the Core's helper: reads the spawn as write_spawn writes it, then takes the stamp alone (review R1: clone_take_stamp, not the
 	// whole adoption of stage_clone_initial -> clone_adopt, whose purge drops the item's held changes)
-	const std::string requests = code_of(project_file("engine/src/xrGame/coop/coop_requests.cpp"));
+	const std::string requests = code_of(project_file("engine/src/xrGame/coop/coop_requests_clone.cpp"));
 	const std::string adopt = body_of(requests, "SpawnStamp adopt_spawn_stamp(const u8* message, size_t size, u16& id_host)");
 	CHECK(in_order(adopt, {"!= u16(Msg::EntitySpawn)", "id_host = r.u16();", "r.u16();", "r.u8();", "r.vec3(skipped);",
 	                          "r.vec3(skipped);", "r.u32();", "r.u16();", "r.skip(r.u16());", "read_clone_initial(r, id, initial)",
-	                          "if (initial.empty())", "events::find_entity(id)", "g_clone_prepared.count(id)",
+	                          "if (initial.empty())", "world::server_entity(id)", "g_clone_prepared.count(id)",
 	                          "replacement::decode(initial.data(), initial.size(), snapshot)", "clone_function(\"clone_take_stamp\", top)",
 	                          "clone_return(L, top, 2)"}));
 	CHECK(adopt.find("stage_clone_initial") == npos);

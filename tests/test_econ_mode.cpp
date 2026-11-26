@@ -60,7 +60,7 @@ void check_econ_answers(const char* name, bool leads_trade, bool decides_world, 
 
 TEST(econ_trade_is_judged_only_on_the_loaded_level)
 {
-	const std::string code = econ_source("coop_trade.cpp");
+	const std::string code = econ_source("coop_trade.cpp") + econ_source("coop_trade_views.cpp");
 	check_guard(code, "case Op::Deal: if (mode().leads_level() && from != kHostPeer) host_on_deal");
 	check_guard(code, "if (mode().leads_level()) host_on_container");
 	check_guard(code, "if (!mode().leads_level() || id == kNoId)");
@@ -72,7 +72,7 @@ TEST(econ_trade_is_judged_only_on_the_loaded_level)
 TEST(econ_ammo_and_leases_ask_for_player_placement)
 {
 	check_guard(econ_source("coop_items.cpp"), "op == Op::SpawnAmmo && mode().where(from) != Where::Away");
-	check_guard(econ_source("coop_requests.cpp"),
+	check_guard(econ_source("coop_requests_leases.cpp"),
 	    "sync::host_peer_joining(p.id) || mode().where(p.id) == Where::Away");
 }
 

@@ -1,4 +1,4 @@
-// Anomaly Coop unit tests: the item and request lines of the reports of builds 55-58 (O7). coop_items.cpp and coop_requests.cpp are
+// Anomaly Coop unit tests: the item and request lines of the reports of builds 55-58 (O7). coop_items.cpp and coop_requests_moves.cpp are
 // engine files and cannot be linked into this exe; the engine-slice tests run the logic over stubs
 // (tests/tools/test_items_gift_late.py: the giver's grace; test_trade_delivery.py: host_transfer_item; test_local_zone_release.py).
 // This guard keeps the wiring of the lines in the native suite (comments dropped, white space folded):
@@ -10,7 +10,7 @@
 //   - #705/#708: host_transfer_item counts a dying item and a move done already without a line, lets a move to the holder the
 //     item has fall through to the stock pair, and its refusal line names the section and the holder the item has now.
 // The mode does not enter: the co-op host and the map server of the level (and the world server for its own script moves) run the
-// same code. COOP_ITEMS_CPP / COOP_REQUESTS_CPP=<file> read those copies instead of the tree's (mutation checks).
+// same code. COOP_ITEMS_CPP / COOP_REQUESTS_CPP / COOP_REQUESTS_CORE_CPP=<file> read those copies instead of the tree's (mutation checks).
 #include "test_util.h"
 
 #include <cstdlib>
@@ -77,7 +77,13 @@ const std::string& o7_items()
 
 const std::string& o7_requests()
 {
-	static const std::string code = o7_source("COOP_REQUESTS_CPP", "coop_requests.cpp");
+	static const std::string code = o7_source("COOP_REQUESTS_CPP", "coop_requests_moves.cpp");
+	return code;
+}
+
+const std::string& o7_requests_core()
+{
+	static const std::string code = o7_source("COOP_REQUESTS_CORE_CPP", "coop_requests.cpp");
 	return code;
 }
 } // namespace
@@ -132,7 +138,7 @@ TEST(o7_script_moves_of_this_process)
 	const std::string line = o7_function(o7_requests(), "void log_script_move_refused(");
 	REQUIRE(!line.empty());
 	o7_at("log_script_move_refused", line, "! [coop] script transfer item %u [%s] from %u to %u refused: %s%s%s; it is in %u [%s]");
-	o7_at("print_status", o7_function(o7_requests(), "void print_status("), "g_script_moves.in_place");
+	o7_at("print_status", o7_function(o7_requests_core(), "void print_status("), "g_script_moves.in_place");
 }
 
 // Verifier finding (O7, low): the engine-slice fixture stubs these two helpers, so their real bodies need a pin here.
