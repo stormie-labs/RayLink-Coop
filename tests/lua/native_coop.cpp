@@ -19,6 +19,14 @@
 //   coop_native.fn_call(ref, ...)              -> true, first result | false, fail kind, reason (luafn::reason), error
 //                                                 kinds: "no_state" | "no_reference" | "stack_full" | "not_function" | "lua_error"
 //   coop_native.fn_drop(ref), coop_native.fn_same(ref, f) -> boolean
+//   coop_native.fn_call_named(module, fn, ...) -> as fn_call, <module>.<fn> by name (luafn::call_named, luafn::traceback the
+//                                                 handler); kind "missing" for no such module or function
+// The coop.* registrar and argument readers (xrGame/coop/coop_lua.h):
+//   coop_native.fill(name | nil) -> boolean    coop.<name> (coop itself for nil) gets one() -> 1 and two() -> 2
+//   coop_native.fill_global(name)              the global table <name> gets one() and two()
+//   coop_native.arg(kind, value[, lo, hi])     -> ok, out: kind "number" | "whole" (lo, hi) | "whole_u32" (hi) | "object_id" |
+//                                                 "trunc" (lo, hi) | "number_in" (lo, hi)
+//   coop_native.fields()                       -> {yes = true, n = 1.5, s = "text", null = "", z = "a\0b"} made by set_*
 // luabind's own registry references beside them, as the engine makes them for every luabind::object and functor (a model of
 // 3rd party/luabind/luabind/src/ref.cpp ref / unref: free list in registry[1], count in sizes[registry] at registry[2]):
 //   coop_native.lb_ref(v) -> reference, coop_native.lb_unref(ref), coop_native.lb_get(ref) -> what the registry slot holds
@@ -26,6 +34,7 @@
 
 #include "coop_routes.h"
 #include "coop_lua_fn.h"
+#include "../xrGame/coop/coop_lua.h"
 
 #include <new>
 #include <string>
@@ -224,8 +233,26 @@ const char* fail_kind(coop::luafn::Fail f)
 	case Fail::StackFull: return "stack_full";
 	case Fail::NotFunction: return "not_function";
 	case Fail::LuaError: return "lua_error";
+	case Fail::Missing: return "missing";
 	}
 	return "?";
+}
+
+// true, the first result | false, fail kind, reason, error
+int fn_answer(lua_State* L, coop::luafn::Fail f, int slot, const std::string& error)
+{
+	if (f == coop::luafn::Fail::None)
+	{
+		lua_pushboolean(L, 1);
+		lua_pushvalue(L, slot);
+		return 2;
+	}
+	const std::string why = coop::luafn::reason(f, error);
+	lua_pushboolean(L, 0);
+	lua_pushstring(L, fail_kind(f));
+	lua_pushlstring(L, why.data(), why.size());
+	lua_pushlstring(L, error.data(), error.size());
+	return 4;
 }
 
 int l_fn_call(lua_State* L)
@@ -243,18 +270,26 @@ int l_fn_call(lua_State* L)
 		    return nargs;
 	    },
 	    1, [&](lua_State* S) { lua_replace(S, slot); }, error);
-	if (f == coop::luafn::Fail::None)
-	{
-		lua_pushboolean(L, 1);
-		lua_pushvalue(L, slot);
-		return 2;
-	}
-	const std::string why = coop::luafn::reason(f, error);
-	lua_pushboolean(L, 0);
-	lua_pushstring(L, fail_kind(f));
-	lua_pushlstring(L, why.data(), why.size());
-	lua_pushlstring(L, error.data(), error.size());
-	return 4;
+	return fn_answer(L, f, slot, error);
+}
+
+int l_fn_call_named(lua_State* L)
+{
+	const char* module = luaL_checkstring(L, 1);
+	const char* fn = luaL_checkstring(L, 2);
+	const int nargs = lua_gettop(L) - 2;
+	lua_pushnil(L); // the first result goes here
+	const int slot = lua_gettop(L);
+	std::string error;
+	const coop::luafn::Fail f = coop::luafn::call_named(
+	    L, module, fn, &coop::luafn::traceback,
+	    [&](lua_State* S) {
+		    for (int i = 0; i < nargs; ++i)
+			    lua_pushvalue(S, 3 + i);
+		    return nargs;
+	    },
+	    1, [&](lua_State* S) { lua_replace(S, slot); }, error);
+	return fn_answer(L, f, slot, error);
 }
 
 int l_fn_drop(lua_State* L)
@@ -266,6 +301,88 @@ int l_fn_drop(lua_State* L)
 int l_fn_same(lua_State* L)
 {
 	lua_pushboolean(L, coop::luafn::same(L, static_cast<int>(luaL_checkinteger(L, 1)), 2) ? 1 : 0);
+	return 1;
+}
+
+// ---- the coop.* registrar and argument readers (xrGame/coop/coop_lua.h)
+
+int l_one(lua_State* L)
+{
+	lua_pushinteger(L, 1);
+	return 1;
+}
+
+int l_two(lua_State* L)
+{
+	lua_pushinteger(L, 2);
+	return 1;
+}
+
+const luaL_Reg kFilled[] = {{"one", l_one}, {"two", l_two}, {nullptr, nullptr}};
+
+int l_fill(lua_State* L)
+{
+	const char* name = lua_isnil(L, 1) ? nullptr : luaL_checkstring(L, 1);
+	lua_pushboolean(L, coop::lua_api::fill(L, name, kFilled) ? 1 : 0);
+	return 1;
+}
+
+int l_fill_global(lua_State* L)
+{
+	coop::lua_api::fill_global(L, luaL_checkstring(L, 1), kFilled);
+	return 0;
+}
+
+int l_arg(lua_State* L)
+{
+	using namespace coop::lua_api;
+	const std::string kind = luaL_checkstring(L, 1);
+	const double lo = lua_isnumber(L, 3) ? double(lua_tonumber(L, 3)) : 0.0;
+	const double hi = lua_isnumber(L, 4) ? double(lua_tonumber(L, 4)) : 0.0;
+	bool ok = false;
+	double out = 0.0;
+	if (kind == "number")
+		ok = arg_number(L, 2, out);
+	else if (kind == "whole")
+		ok = arg_whole(L, 2, lo, hi, out);
+	else if (kind == "whole_u32")
+	{
+		uint32_t v = 0;
+		ok = arg_whole_u32(L, 2, hi, v);
+		out = double(v);
+	}
+	else if (kind == "object_id")
+	{
+		uint16_t v = 0;
+		ok = arg_object_id(L, 2, v);
+		out = double(v);
+	}
+	else if (kind == "trunc")
+	{
+		int64_t v = 0;
+		ok = arg_trunc(L, 2, lo, hi, v);
+		out = double(v);
+	}
+	else if (kind == "number_in")
+		ok = arg_number_in(L, 2, lo, hi, out);
+	else
+		return luaL_error(L, "unknown kind %s", kind.c_str());
+	lua_pushboolean(L, ok ? 1 : 0);
+	if (!ok)
+		return 1;
+	lua_pushnumber(L, lua_Number(out));
+	return 2;
+}
+
+int l_fields(lua_State* L)
+{
+	using namespace coop::lua_api;
+	lua_newtable(L);
+	set_bool(L, "yes", true);
+	set_num(L, "n", 1.5);
+	set_str(L, "s", "text");
+	set_str(L, "null", static_cast<const char*>(nullptr));
+	set_str(L, "z", std::string("a\0b", 3));
 	return 1;
 }
 
@@ -389,6 +506,11 @@ extern "C" int luaopen_coop_native(lua_State* L)
 		{"fn_call", l_fn_call},
 		{"fn_drop", l_fn_drop},
 		{"fn_same", l_fn_same},
+		{"fn_call_named", l_fn_call_named},
+		{"fill", l_fill},
+		{"fill_global", l_fill_global},
+		{"arg", l_arg},
+		{"fields", l_fields},
 		{"lb_ref", l_lb_ref},
 		{"lb_unref", l_lb_unref},
 		{"lb_get", l_lb_get},
