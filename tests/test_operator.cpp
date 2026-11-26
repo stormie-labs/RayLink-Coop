@@ -66,18 +66,18 @@ struct Commands
 TEST(operator_token_parse)
 {
 	op::Token t{};
-	CHECK(op::parse_token("00112233445566778899aabbccddeeff", t));
+	CHECK(srv::parse_operator_token("00112233445566778899aabbccddeeff", t));
 	CHECK(t[0] == 0x00 && t[1] == 0x11 && t[15] == 0xff);
-	CHECK(op::parse_token("00112233445566778899AABBCCDDEEFF -dbg", t)); // either case, ends at a blank
+	CHECK(srv::parse_operator_token("00112233445566778899AABBCCDDEEFF -dbg", t)); // either case, ends at a blank
 	CHECK(t[10] == 0xaa);
 	op::Token keep = token_of(3);
 	op::Token u = keep;
-	CHECK(!op::parse_token("00112233445566778899aabbccddeef", u)); // 31 digits
-	CHECK(!op::parse_token("00112233445566778899aabbccddeeff0", u)); // 33
-	CHECK(!op::parse_token("0011223344556677889gaabbccddeeff", u)); // not hex
-	CHECK(!op::parse_token("00000000000000000000000000000000", u)); // zeros are no token
-	CHECK(!op::parse_token("", u));
-	CHECK(!op::parse_token(nullptr, u));
+	CHECK(!srv::parse_operator_token("00112233445566778899aabbccddeef", u)); // 31 digits
+	CHECK(!srv::parse_operator_token("00112233445566778899aabbccddeeff0", u)); // 33
+	CHECK(!srv::parse_operator_token("0011223344556677889gaabbccddeeff", u)); // not hex
+	CHECK(!srv::parse_operator_token("00000000000000000000000000000000", u)); // zeros are no token
+	CHECK(!srv::parse_operator_token("", u));
+	CHECK(!srv::parse_operator_token(nullptr, u));
 	CHECK(u == keep); // a refusal leaves it alone
 }
 

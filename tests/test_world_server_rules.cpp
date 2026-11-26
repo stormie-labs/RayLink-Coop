@@ -5,6 +5,7 @@
 
 #include "srv/coop_dedicated_rules.h"
 #include "srv/coop_operator.h"
+#include "srv/coop_token.h"
 #include "srv/coop_world_server_rules.h"
 
 #include <string>
@@ -333,8 +334,8 @@ TEST(world_server_every_wait_has_a_code)
 TEST(world_server_token_hex_is_32_lower_digits)
 {
 	const uint8_t t[16] = {0x00, 0x01, 0xab, 0xCD, 0xef, 0x10, 0x99, 0xff, 0x7f, 0x80, 0x0a, 0xa0, 0x5c, 0x22, 0x20, 0x3d};
-	CHECK_EQ(token_hex(t, 16), std::string("0001abcdef1099ff7f800aa05c22203d"));
-	CHECK_EQ(token_hex(t, 16).size(), size_t(32));
+	CHECK_EQ(srv::token_hex(t, 16), std::string("0001abcdef1099ff7f800aa05c22203d"));
+	CHECK_EQ(srv::token_hex(t, 16).size(), size_t(32));
 }
 
 TEST(world_server_quote_arg_follows_the_windows_rules)

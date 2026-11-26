@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "coop_text.h"
 #include "coop_vehicle_seats.h"
 
 namespace v = coop::vehicles;
@@ -94,6 +95,7 @@ bool in_order(const std::string& text, const std::vector<std::string>& tokens, s
 // A minimal ltx reader for the data test: [section] (a ":parent" is cut), key = value, ';' starts a comment.
 std::map<std::string, Lines> read_ltx(const std::string& text)
 {
+	const auto trim = [](std::string_view s) { return std::string(coop::ascii::trim(s, coop::ascii::space_or_eol)); };
 	std::map<std::string, Lines> out;
 	std::string section;
 	size_t at = 0;
@@ -107,7 +109,7 @@ std::map<std::string, Lines> read_ltx(const std::string& text)
 		const size_t semi = line.find(';');
 		if (semi != std::string::npos)
 			line.resize(semi);
-		line = v::detail::trim(line);
+		line = trim(line);
 		if (line.empty())
 			continue;
 		if (line[0] == '[')
@@ -120,7 +122,7 @@ std::map<std::string, Lines> read_ltx(const std::string& text)
 		const size_t eq = line.find('=');
 		if (eq == std::string::npos || section.empty())
 			continue;
-		out[section][v::detail::trim(line.substr(0, eq))] = v::detail::trim(line.substr(eq + 1));
+		out[section][trim(line.substr(0, eq))] = trim(line.substr(eq + 1));
 	}
 	return out;
 }
