@@ -23,8 +23,13 @@ std::string join_source()
 	const std::string here = __FILE__;
 	const auto slash = here.find_last_of("\\/");
 	const auto dir = slash == std::string::npos ? std::string(".") : here.substr(0, slash);
-	std::ifstream in(dir + "/../engine/src/xrGame/coop/coop_join.cpp", std::ios::binary);
-	return {std::istreambuf_iterator<char>(in), {}};
+	std::string all; // the join module: coop_join.cpp and the files it is split into
+	for (const char* file : {"coop_join.cpp", "coop_join_characters.cpp", "coop_join_transition.cpp", "coop_join_transition_load.cpp", "coop_join_swap.cpp"})
+	{
+		std::ifstream in(dir + "/../engine/src/xrGame/coop/" + file, std::ios::binary);
+		all.append(std::istreambuf_iterator<char>(in), {});
+	}
+	return all;
 }
 
 std::string_view section(std::string_view source, std::string_view start, std::string_view end)
@@ -93,13 +98,13 @@ TEST(seat_hold_coop_prepared_detaches_before_the_world_goes)
 
 	const auto blob = section(src, "void on_blob_complete(PeerId from", "\n}");
 	const auto prepared_part = section(blob, "if (kind == BlobPreparedSave)", "if (kind != BlobWorldSave)");
-	const size_t hold = at(prepared_part, "g.save_hold.step(vehicles::local_seat_attached(), mgr().now_ms())");
+	const size_t hold = at(prepared_part, "g_load.save_hold.step(vehicles::local_seat_attached(), mgr().now_ms())");
 	const size_t load = at(prepared_part, "client_load_world(data)");
 	CHECK(hold < load);
-	at(prepared_part, "g.seated_save.swap(data)");
+	at(prepared_part, "g_load.seated_save.swap(data)");
 
 	const auto holds = section(src, "void client_seat_holds(u64 now)", "\n}");
-	at(holds, "g.save_hold.step(vehicles::local_seat_attached(), now)");
+	at(holds, "g_load.save_hold.step(vehicles::local_seat_attached(), now)");
 	at(holds, "client_load_world(save)");
 	at(holds, "prepared_save_awaited()");
 	const auto frame = section(src, "void frame()", "\n}");
@@ -113,22 +118,22 @@ TEST(seat_hold_server_move_waits_for_the_release_and_detach)
 	REQUIRE(!src.empty());
 	const auto exit_move = section(src, "void client_level_move(u16 changer, u64 now)\r\n{", "\n}");
 	at(exit_move, "client_send_move(m, now)");
-	at(exit_move, "g.move_held");
+	at(exit_move, "g_load.move_held");
 	CHECK(exit_move.find("net::client_send(Msg::LevelMove") == std::string_view::npos);
 	const auto trip = section(src, "void client_level_trip(NET_Packet& P)", "\n}");
 	at(trip, "client_send_move(m, now)");
-	at(trip, "g.move_held");
+	at(trip, "g_load.move_held");
 	CHECK(trip.find("net::client_send(Msg::LevelMove") == std::string_view::npos);
 
 	const auto send = section(src, "bool client_send_move(const levels::wire::LevelMoveMsg& m, u64 now)", "\n}");
-	const size_t hold = at(send, "g.move_hold.step(vehicles::local_seat_attached(), now)");
+	const size_t hold = at(send, "g_load.move_hold.step(vehicles::local_seat_attached(), now)");
 	const size_t out = at(send, "\"exit_for_travel\"");
 	const size_t sent = at(send, "move_out(m, now)");
 	CHECK(hold < out);
 	CHECK(out < sent);
 	const auto holds = section(src, "void client_seat_holds(u64 now)", "\n}");
-	at(holds, "g.move_hold.step(vehicles::local_seat_attached(), now)");
-	at(holds, "move_out(g.held_move, now)");
+	at(holds, "g_load.move_hold.step(vehicles::local_seat_attached(), now)");
+	at(holds, "move_out(g_load.held_move, now)");
 	const auto move_out = section(src, "void move_out(const levels::wire::LevelMoveMsg& m, u64 now)", "\n}");
 	at(move_out, "net::client_send(Msg::LevelMove, w)");
 }

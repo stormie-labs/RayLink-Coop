@@ -107,7 +107,7 @@ TEST(srv_join_a_level_is_left_standing)
 	REQUIRE(!move.empty());
 	CHECK(sjw_order(move, "srv::departure::may_leave(u8(life))", "levels::host_judge_move(from, target)"));
 	CHECK(sjw_order(move, "srv::departure::may_leave(u8(life))", "alife_rw().teleport_object(proxy->ID"));
-	const std::string core = sjw_read("xrGame/coop/coop_join.cpp");
+	const std::string core = sjw_read("xrGame/coop/coop_join_transition.cpp");
 	REQUIRE(!core.empty());
 	const std::string trip = sjw_member(core, R"(void\s+client_level_trip)");
 	REQUIRE(!trip.empty());

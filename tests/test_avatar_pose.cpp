@@ -150,7 +150,11 @@ TEST(avatar_carries_its_player_nick)
 // swaps the stored names too.
 TEST(player_character_stores_its_nick)
 {
-	const std::string src = game_source("coop/coop_join.cpp");
+	const std::string src = game_source("coop/coop_join.cpp")
+	    + game_source("coop/coop_join_characters.cpp")
+	    + game_source("coop/coop_join_transition.cpp")
+	    + game_source("coop/coop_join_transition_load.cpp")
+	    + game_source("coop/coop_join_swap.cpp");
 	REQUIRE(src.size() > 10000);
 	const std::string set = between(src, "void set_player_name(", "\n}\n");
 	REQUIRE(!set.empty());
@@ -160,5 +164,5 @@ TEST(player_character_stores_its_nick)
 	CHECK(src.find("proxy->m_character_name = p.nick.c_str();") == npos);
 	CHECK(src.find("set_player_name(*proxy, p.nick);") != npos);
 	CHECK(src.find("set_player_name(*proxy, p->nick);") != npos);
-	CHECK(src.find("swap_values(actor->m_character_name_str, proxy->m_character_name_str);") != npos);
+	CHECK(src.find("std::swap(actor->m_character_name_str, proxy->m_character_name_str);") != npos);
 }

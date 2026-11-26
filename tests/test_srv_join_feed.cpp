@@ -118,6 +118,15 @@ std::string sj_code(const std::string& src)
 }
 
 std::string sj_engine(const std::string& rel) { return sj_code(sj_read(sj_root() + "/engine/src/" + rel)); }
+// The join module: coop_join.cpp and the files it is split into.
+std::string sj_join()
+{
+	return sj_engine("xrGame/coop/coop_join.cpp")
+	    + sj_engine("xrGame/coop/coop_join_characters.cpp")
+	    + sj_engine("xrGame/coop/coop_join_transition.cpp")
+	    + sj_engine("xrGame/coop/coop_join_transition_load.cpp")
+	    + sj_engine("xrGame/coop/coop_join_swap.cpp");
+}
 
 // The body of the function whose definition matches `head` (a regex up to its parameter list), braces matched; "" if none.
 std::string sj_body(const std::string& code, const std::string& head)
@@ -324,23 +333,23 @@ TEST(srv_join_answers_its_bridges_and_level_move)
 // The Core asks the H-JOIN answers (xrCoop/coop_mode.h) where the server's lines were.
 TEST(srv_join_core_asks_the_mode)
 {
-	const std::string join = sj_engine("xrGame/coop/coop_join.cpp");
+	const std::string join = sj_join();
 	REQUIRE(!join.empty());
-	CHECK(sj_has(sj_body(join, R"(void\s+host_on_join_request)"), "mode().join_from_bridge(from, Msg::JoinRequest)"));
-	CHECK(sj_has(sj_body(join, R"(void\s+host_on_world_loaded)"), "mode().join_from_bridge(from, Msg::WorldLoaded)"));
+	CHECK(sj_has(sj_body(join, R"(void\s+player_join_request)"), "mode().join_from_bridge(from, Msg::JoinRequest)"));
+	CHECK(sj_has(sj_body(join, R"(void\s+player_world_loaded)"), "mode().join_from_bridge(from, Msg::WorldLoaded)"));
 	const std::string save = sj_body(join, R"(bool\s+host_send_save)");
 	REQUIRE(!save.empty());
 	CHECK(sj_order(save, "mode().join_save(from, *proxy)", "mode().level_ready(level)"));
 	CHECK(sj_has(sj_body(join, R"(void\s+host_held_step)"), "mode().level_ready(h.level)"));
 	CHECK(sj_has(sj_body(join, R"(void\s+client_go_live)"), "mode().on_world_live()"));
-	CHECK(sj_has(sj_body(join, R"(void\s+load_screen_line)"), "mode().load_text(g.screen_level"));
+	CHECK(sj_has(sj_body(join, R"(void\s+load_screen_line)"), "mode().load_text(g_load.screen_level"));
 	CHECK(sj_has(sj_body(join, R"(void\s+on_alife_objects_loaded)"), "coop::place_ghost(objects)"));
 	// who leads no level of a player (the world server) puts nobody "next to the host", has no level for a joiner, names none in the
 	// offer; whose actor is a ghost is nobody in AvatarList, waits at no exit and arrives nowhere
 	CHECK(sj_has(sj_body(join, R"(StartPoint\s+host_place)"), "valid && (here || !mode().leads_level())"));
 	CHECK(sj_has(sj_body(join, R"(bool\s+host_fall_back_to_level)"), "if (!mode().leads_level())"));
 	CHECK(sj_has(sj_body(join, R"(bool\s+host_offer_character)"), "g_pGameLevel && mode().leads_level()"));
-	CHECK(sj_has(sj_body(join, R"(void\s+send_owners)"), "if (mode().actor_is_player())"));
+	CHECK(sj_has(sj_body(join, R"(void\s+host_send_owners)"), "if (mode().actor_is_player())"));
 	const std::string waits = sj_body(join, R"(bool\s+group_waits_here)");
 	CHECK(sj_order(waits, "!mode().actor_is_player()", "mode().decides_world() ? host_has_company() : mgr().is_live_client()"));
 	CHECK(sj_has(sj_body(join, R"(void\s+arrival_begin)"), "!mode().actor_is_player()"));
@@ -365,7 +374,7 @@ TEST(coop_join_level_move_refuses_with_the_requests_sequence)
 	const auto source = sj_engine("xrGame/coop/hostplay/coop_hostplay_mode.cpp");
 	const auto install = sj_body(source, R"(void\s+install)");
 	CHECK(sj_has(install, "tables.session.on(Msg::LevelMove, &join::refuse_level_move)"));
-	const auto handler = sj_body(sj_engine("xrGame/coop/coop_join.cpp"), R"(void\s+refuse_level_move)");
+	const auto handler = sj_body(sj_join(), R"(void\s+refuse_level_move)");
 	CHECK(sj_order(handler, "if (!request.read(r))", "return;"));
 	CHECK(sj_order(handler, "return;", "request.seq"));
 	CHECK(sj_has(handler, "Result::Refused, Result::Invalid, levels::wire::kNoLevel"));
@@ -402,7 +411,7 @@ TEST(srv_feed_frame_in_the_source)
 // The co-op mode installs its own refusal and calls nothing of the server's join.
 TEST(srv_join_coop_has_none_of_it)
 {
-	const std::string join = sj_engine("xrGame/coop/coop_join.cpp");
+	const std::string join = sj_join();
 	REQUIRE(!join.empty());
 	const std::string install = sj_body(join, R"(void\s+install_server)");
 	REQUIRE(!install.empty());
@@ -421,5 +430,5 @@ TEST(srv_join_coop_has_none_of_it)
 		CHECK(!sj_has(coop, word));
 	// a player of the co-op asks the decider for a lone move only where the group does not travel together
 	CHECK(sj_has(sj_body(join, R"(void\s+client_request_level_change)"), "!mode().group_travels()"));
-	CHECK(sj_has(sj_body(join, R"(void\s+transition_step)"), "mode().group_travels() || g.move_board"));
+	CHECK(sj_has(sj_body(join, R"(void\s+transition_step)"), "mode().group_travels() || g_load.move_board"));
 }

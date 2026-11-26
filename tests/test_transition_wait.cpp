@@ -1490,11 +1490,11 @@ Writer load_wait(uint8_t state, uint32_t epoch, uint16_t level)
 // the save completes there.
 TEST(load_prepared_world_reaches_the_client_across_the_epoch_move)
 {
-	Node host("Boss", 37801), cl("Alice", 37801);
+	Node host("Boss", t::port(37801)), cl("Alice", t::port(37801));
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host());
 	host.s.set_world_epoch(3);
-	REQUIRE(cl.connect(37801));
+	REQUIRE(cl.connect(t::port(37801)));
 	REQUIRE(t::pump_until({&host.s, &cl.s}, 5000, [&] { return cl.s.is_active() && host.s.peers().size() == 1; }));
 	const PeerId id = host.s.peers()[0].id;
 	CHECK_EQ(cl.s.world_epoch(), 3u);
@@ -1526,7 +1526,7 @@ TEST(load_prepared_world_reaches_the_client_across_the_epoch_move)
 TEST(load_ready_before_the_server_world_waits_and_replays)
 {
 	LocalLink link; // outlives the session it is attached to
-	Node host("Boss", 37802), cl("Alice", 37802);
+	Node host("Boss", t::port(37802)), cl("Alice", t::port(37802));
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host());
 	host.s.set_world_epoch(4);
@@ -1538,7 +1538,7 @@ TEST(load_ready_before_the_server_world_waits_and_replays)
 		if (m.read(r))
 			ready.emplace_back(from, m.epoch);
 	});
-	REQUIRE(cl.connect(37802));
+	REQUIRE(cl.connect(t::port(37802)));
 	REQUIRE(t::pump_until({&host.s, &cl.s}, 5000, [&] { return cl.s.is_active() && host.s.peers().size() == 1; }));
 	const PeerId id = host.s.peers()[0].id;
 	levels::wire::LoadReadyMsg m;
@@ -1570,7 +1570,7 @@ TEST(load_ready_before_the_server_world_waits_and_replays)
 TEST(load_wait_to_the_host_player_goes_after_the_epoch_move)
 {
 	LocalLink link;
-	Node host("Boss", 37803);
+	Node host("Boss", t::port(37803));
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host());
 	host.s.attach_local(&link);
@@ -1600,7 +1600,7 @@ TEST(board_vote_and_state_travel_the_gated_link)
 		CHECK(link_enabled(m));
 	LocalLink link;
 	link.set_gate(&link_enabled);
-	Node host("Boss", 37804);
+	Node host("Boss", t::port(37804));
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host());
 	host.s.attach_local(&link);
@@ -1649,7 +1649,15 @@ std::string coop_source(const char* name)
 	return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 }
 
-std::string coop_join_source() { return coop_source("coop_join.cpp"); }
+// The join module: coop_join.cpp and the files it is split into.
+std::string coop_join_source()
+{
+	return coop_source("coop_join.cpp")
+	    + coop_source("coop_join_characters.cpp")
+	    + coop_source("coop_join_transition.cpp")
+	    + coop_source("coop_join_transition_load.cpp")
+	    + coop_source("coop_join_swap.cpp");
+}
 
 // The text of the function whose definition starts with `head` (a declaration of it is skipped), up to its closing brace at
 // the start of a line; "" if none.
@@ -1674,9 +1682,9 @@ TEST(board_host_direct_path_gone)
 {
 	const std::string src = coop_join_source();
 	REQUIRE(src.size() > 10000);
-	CHECK(src.find("g.board.claim(0, goal, now)") == std::string::npos); // transition_step's own claim
-	CHECK(src.find("g.board.release(0)") == std::string::npos); // transition_step / transition_cancel's own release
-	CHECK(src.find("g.view = transition::state_message") == std::string::npos); // the host's placard from the board itself
+	CHECK(src.find("g_board.board.claim(0, goal, now)") == std::string::npos); // transition_step's own claim
+	CHECK(src.find("g_board.board.release(0)") == std::string::npos); // transition_step / transition_cancel's own release
+	CHECK(src.find("g_board.view = transition::state_message") == std::string::npos); // the host's placard from the board itself
 	CHECK(src.find("Msg::TransitionVote, w);") != std::string::npos); // every player votes with the message
 }
 
@@ -1693,7 +1701,7 @@ TEST(transition_host_go_now_is_gone)
 	CHECK(console.find("\"coop_transition_go\"") == std::string::npos);
 	CHECK(console.find("\"coop_transition_consent\"") != std::string::npos);
 	CHECK(console.find("\"coop_accept_transition\"") != std::string::npos);
-	CHECK(body_of(join, "bool accept_transition(").find("g.board.force(") != std::string::npos);
+	CHECK(body_of(join, "bool accept_transition(").find("g_board.board.force(") != std::string::npos);
 }
 
 // The go: every player's screen darkens on the board's Going state and the host's own load starts kGoFadeMs later (the
@@ -1704,10 +1712,10 @@ TEST(transition_the_go_darkens_before_the_load)
 	const std::string step = body_of(join, "void host_board_step(");
 	REQUIRE(!step.empty());
 	CHECK(step.find("kGoFadeMs") != std::string::npos);
-	CHECK(step.find("host_release(g.going_goal)") != std::string::npos);
+	CHECK(step.find("host_release(g_board.going_goal)") != std::string::npos);
 	CHECK(step.find("host_release(st.goal)") == std::string::npos); // never on the tick of the go itself
-	CHECK(body_of(join, "void host_on_transition_vote(").find("g.going") != std::string::npos);
-	CHECK(body_of(join, "void transition_world_replaced(").find("g.going = false") != std::string::npos);
+	CHECK(body_of(join, "void host_on_transition_vote(").find("g_board.going") != std::string::npos);
+	CHECK(body_of(join, "void transition_world_replaced(").find("g_board.going = false") != std::string::npos);
 }
 
 // A route restrictor whose drop point lies in a level changer is that changer's exit while the actor is inside it (the
@@ -1720,7 +1728,7 @@ TEST(transition_route_restrictors_are_exits_in_the_source)
 	CHECK(step.find("route_touched(") != std::string::npos);
 	CHECK(step.find("transition::VoteRoute") != std::string::npos);
 	CHECK(step.find("transition::VoteConsent") != std::string::npos);
-	CHECK(body_of(join, "void transition_world_replaced(").find("g.routes.clear()") != std::string::npos);
+	CHECK(body_of(join, "void transition_world_replaced(").find("g_board.routes.clear()") != std::string::npos);
 }
 
 // ---------------------------------------------------------------- F3a T8, fix round 1
@@ -1806,7 +1814,7 @@ TEST(load_held_screen_blocks_hits_and_input)
 	CHECK(input.find("g_bDisableAllInput = true") != std::string::npos);
 	CHECK(input.find("DeactivateSoft") != std::string::npos);
 	const std::string step = body_of(join, "void player_load_step(");
-	CHECK(step.find("load_screen_input(g.screen.holds())") != std::string::npos);
+	CHECK(step.find("load_screen_input(g_load.screen.holds())") != std::string::npos);
 	CHECK(body_of(join, "void load_screen_off(").find("load_screen_input(false)") != std::string::npos);
 	CHECK(body_of(join, "void on_session_lost(").find("load_screen_input(false)") != std::string::npos);
 }
@@ -1817,8 +1825,8 @@ TEST(load_join_clock_restarts_on_the_held_screen)
 {
 	const std::string step = body_of(coop_join_source(), "void player_load_step(");
 	REQUIRE(!step.empty());
-	const size_t up = step.find("g.screen.world_up(now");
-	const size_t clock = step.find("g.receive_started = now");
+	const size_t up = step.find("g_load.screen.world_up(now");
+	const size_t clock = step.find("g_join.receive_started = now");
 	CHECK(up != std::string::npos && clock != std::string::npos && up < clock);
 }
 
@@ -1834,6 +1842,6 @@ TEST(load_reload_watchdog_in_the_source)
 	CHECK(watch.find("world_up()") != std::string::npos);
 	CHECK(watch.find("host_load_void(") != std::string::npos);
 	CHECK(watch.find("sync::host_begin_join(") != std::string::npos);
-	CHECK(watch.find("g.reset_pending = true") != std::string::npos);
+	CHECK(watch.find("g_join.reset_pending = true") != std::string::npos);
 	CHECK(body_of(join, "void frame(").find("host_load_watch(") != std::string::npos);
 }

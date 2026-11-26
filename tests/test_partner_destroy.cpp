@@ -369,10 +369,10 @@ TEST(partner_destroy_game_object_hook_runs_first)
 	CHECK(!pd_has(body, "mode()"));
 }
 
-// coop_trade.cpp gathers the windows, asks the rules and closes in their order: the menu, its memory, the talk, the talk window.
+// coop_trade_views.cpp gathers the windows, asks the rules and closes in their order: the menu, its memory, the talk, the talk window.
 TEST(partner_destroy_trade_applies_the_rules)
 {
-	const std::string trade = pd_file("xrGame/coop/coop_trade.cpp");
+	const std::string trade = pd_file("xrGame/coop/coop_trade_views.cpp");
 	REQUIRE(!trade.empty());
 	CHECK(pd_has(trade, "#include \"xrCoop/coop_partner_rules.h\""));
 	CHECK(pd_has(trade, "#include \"ui/UITalkWnd.h\""));
@@ -410,7 +410,7 @@ TEST(partner_destroy_trade_applies_the_rules)
 // gated by stop_talk keeps a freed partner for its StopSnd (RL-8CGN-EU7U). Mutations checked: temp/O2-partner/mutate.py.
 TEST(partner_destroy_dispatch_gates_each_close_by_its_rule)
 {
-	const std::string trade = pd_file("xrGame/coop/coop_trade.cpp");
+	const std::string trade = pd_file("xrGame/coop/coop_trade_views.cpp");
 	REQUIRE(!trade.empty());
 	const std::string close = pd_body(trade, R"(void\s+close_partner_windows)");
 	// nothing to do only when no field asks for anything: the first statement and the only return
@@ -443,15 +443,25 @@ TEST(partner_lock_revoke_wiring)
 	const std::string revoke = pd_body(dialog, R"(void\s+client_on_revoke)");
 	CHECK(pd_before(revoke, "g_cl.granted = kNoId; g_cl.start = kNoId;",
 	    "CInventoryOwner* io = find_owner(join::to_local(npc)); if (io && trade::on_talk_lock_revoked(*io)) "
-	    "hud_message(\"st_coop_talk_revoked\", \"The conversation was interrupted by the host\");"));
-	CHECK(!pd_has(revoke, "Actor()->StopTalk();")); // the rules stop it (coop_trade.cpp close_partner_windows)
+	    "hud_text::say(\"st_coop_talk_revoked\", \"The conversation was interrupted by the host\");"));
+	CHECK(!pd_has(revoke, "Actor()->StopTalk();")); // the rules stop it (coop_trade_views.cpp close_partner_windows)
+}
+
+// The join module: coop_join.cpp and the files it is split into.
+std::string pd_join()
+{
+	return pd_file("xrGame/coop/coop_join.cpp")
+	    + pd_file("xrGame/coop/coop_join_characters.cpp")
+	    + pd_file("xrGame/coop/coop_join_transition.cpp")
+	    + pd_file("xrGame/coop/coop_join_transition_load.cpp")
+	    + pd_file("xrGame/coop/coop_join_swap.cpp");
 }
 
 // coop_join client_on_session_reset: the dialogs of the world that goes close first, while its objects are whole and the session's
 // state of them (talk lock, open container) is there to be closed; sync::reset and the load come after.
 TEST(partner_session_reset_hides_the_dialogs_before_the_state_goes)
 {
-	const std::string join = pd_file("xrGame/coop/coop_join.cpp");
+	const std::string join = pd_join();
 	REQUIRE(!join.empty());
 	CHECK(pd_has(join, "#include \"UIGameCustom.h\""));
 	const std::string reset = pd_body(join, R"(void\s+client_on_session_reset)");
@@ -466,12 +476,14 @@ TEST(partner_session_reset_hides_the_dialogs_before_the_state_goes)
 // HUD line each time. Where the group does not travel together (Server) the same request is still a Trip.
 TEST(partner_join_log_lines)
 {
-	const std::string join = pd_file("xrGame/coop/coop_join.cpp");
+	const std::string join = pd_join();
 	REQUIRE(!join.empty());
 	CHECK(pd_ascii(join));
 	CHECK(!pd_has(join, "is not a stalker \xE2\x80\x94"));
-	CHECK(pd_has(join, "::Msg(\"! [coop] section [%s] is not a stalker: check gamedata (mod_system_coop.ltx)\", kProxySection);"));
+	CHECK(pd_has(join, "::Msg(\"! [coop] section [%s] is not a stalker: check gamedata (mod_system_coop.ltx)\", world::avatar_section().c_str());"));
 	CHECK(pd_ascii(pd_file("xrGame/coop/coop_trade.cpp")));
+	CHECK(pd_ascii(pd_file("xrGame/coop/coop_trade_views.cpp")));
+	CHECK(pd_ascii(pd_file("xrGame/coop/coop_trade_window_lua.cpp")));
 	CHECK(pd_ascii(pd_file("xrGame/coop/coop_dialog.cpp")));
 
 	const std::string precache = pd_body(join, R"(bool\s+host_precaching)");
@@ -485,10 +497,10 @@ TEST(partner_join_log_lines)
 	REQUIRE(at != size_t(-1));
 	const std::string coop_branch = change.substr(at, pd_at(change, "if (!mode().group_travels()) {") - at);
 	CHECK(!pd_has(coop_branch, "\"! [coop]"));
-	CHECK(pd_has(coop_branch, "if (g.trips_refused++ == 0) ::Msg(\"[coop] level exit: no level changer of this level leads there"));
+	CHECK(pd_has(coop_branch, "if (g_board.trips_refused++ == 0) ::Msg(\"[coop] level exit: no level changer of this level leads there"));
 	CHECK(pd_before(coop_branch, "client_stays_on_level();",
-	    "dialog::hud_message(\"st_coop_core_go_host_only\", \"Only the host can move the group.\"); return; }"));
-	CHECK(pd_has(join, "u32 trips_refused = 0;"));
+	    "hud_text::say(\"st_coop_core_go_host_only\", \"Only the host can move the group.\"); return; }"));
+	CHECK(pd_has(pd_file("xrGame/coop/coop_join_impl.h"), "u32 trips_refused = 0;"));
 	// the line on the HUD is translated: the id is in both string tables
 	for (const char* lang : {"rus", "eng"})
 		CHECK(pd_has(pd_read(pd_engine_src() + "/../../gamedata/configs/text/" + lang + "/st_coop_core.xml"),
