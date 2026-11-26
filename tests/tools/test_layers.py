@@ -21,11 +21,20 @@ from conftest import ROOT
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "layers"
 SCRIPT = ROOT / "tools" / "check_layers.py"
 LINE = re.compile(r"^(?P<path>[^\s:][^:]*):(?P<line>\d+): \[(?P<rule>L\d+C?)\] ")
+MOD_NAMES = (
+    "script drx_da_main fixture\n"
+    "script z_3dss_silencer_condition fixture\n"
+    "script arm fixture\n"
+    "script larp fixture\n"
+    "ignore larp\n"
+    "name DAO\n"
+)
 
 
 def make(work: Path, *overlays: str) -> Path:
     root = work / "tree"
     shutil.copytree(FIXTURES / "clean", root)
+    (root / "tools/mod_names.txt").write_text(MOD_NAMES, encoding="utf-8")
     for name in overlays:
         shutil.copytree(FIXTURES / name, root, dirs_exist_ok=True)
     return root
@@ -507,7 +516,8 @@ def test_core_file_moved_into_srv_leaves_a_stale_entry_only(work, capsys):
 
 # --- inputs and the script ------------------------------------------------------------------------------------------
 
-@pytest.mark.parametrize("name", ["layers.txt", "layers_allow.txt", "srv_entry.txt", "persisted_keys.txt"])
+@pytest.mark.parametrize("name", ["layers.txt", "layers_allow.txt", "srv_entry.txt", "persisted_keys.txt",
+                                  "mod_names.txt"])
 def test_missing_input_is_exit_2(work, capsys, name):
     root = make(work)
     (root / "tools" / name).unlink()
@@ -556,6 +566,293 @@ def tree(work: Path, files: dict) -> Path:
 
 def found(out: str, name: str, rule: str = "L9") -> list[int]:
     return sorted(line for path, line, r in violations(out) if r == rule and path.endswith(name))
+
+
+# --- P106: engine C++ cannot name a mod --------------------------------------------------------------------------------
+
+@pytest.mark.parametrize(("source", "note"), [
+    ("drx_da_main::tick();", "names the mod script 'drx_da_main' (tools/mod_names.txt:1, fixture)"),
+    ('lua_getglobal(L,"drx_da_main");', "a string names the mod script 'drx_da_main'"),
+    ('"drx_da_main.on_tick";', "a string names the mod script 'drx_da_main'"),
+    (r'"\tdrx_da_main";', "a string names the mod script 'drx_da_main'"),
+    ('"drx_da" "_main";', "a string names the mod script 'drx_da_main'"),
+    ('R"(drx_da_main)";', "a string names the mod script 'drx_da_main'"),
+    ('#include "drx_da_main.h"', "a string names the mod script 'drx_da_main'"),
+    ('#include <drx_da_main.h>', "names the mod script 'drx_da_main'"),
+    ('#if 0\ndrx_da_main::tick();\n#endif', "names the mod script 'drx_da_main'"),
+    ('"// drx_da_main";', "a string names the mod script 'drx_da_main'"),
+    ('R"(/* DAO */)";', "a string names the mod script 'DAO'"),
+    ('R"tag(\ndrx_da_main\n)tag";', "a string names the mod script 'drx_da_main'"),
+    ('lua_getglobal(L,"coop_mods_items");', "a string names the mods layer 'coop_mods_items'"),
+    ('Msg("failed: coop_mods_x.%s", drx_da_main);', "a string names the mods layer 'coop_mods_x'"),
+])
+def test_l12_mod_names_in_code_and_literals(work, capsys, source, note):
+    code, out = run(tree(work, {X: "\n" + source + "\n"}), capsys)
+    assert code == 1, out
+    assert found(out, X, "L12") == ([3] if source.startswith("#if") else [2]), out
+    assert note in out
+
+
+def test_l12_ignores_comments_and_nonmatching_tokens(work, capsys):
+    root = tree(work, {X: """\
+// drx_da_main
+/* larp
+drx_da_main DAO coop_mods_items */
+'"' // drx_da_main
+drx_da_main2; my_drx_da_main; "drx_da_mainx"; arm; larp; dao; coop_mods_count;
+"""})
+    code, out = run(root, capsys)
+    assert code == 0, out
+    assert violations(out) == []
+
+
+def test_l12_scans_only_engine_cpp_under_src_outside_third_party(work, capsys):
+    root = tree(work, {
+        "engine/gamedata/scripts/mod.script": 'local name = "drx_da_main"\n',
+        "gamedata/scripts/coop_mods_fixture.script": 'local name = "drx_da_main"\n',
+        "engine/src/3rd party/mod.cpp": "drx_da_main::tick();\n",
+        "tests/test_srv_mod.cpp": 'constexpr auto name = "drx_da_main";\n',
+    })
+    code, out = run(root, capsys)
+    assert code == 0 and not violations(out), out
+
+
+L12_STOCK = "engine/src/xrEngine/stock_mod.cpp"
+
+
+def mark_stock(root: Path, path: str) -> None:
+    with (root / "tools/stock_files.txt").open("a", encoding="utf-8") as stock:
+        stock.write(f"\n{path}\n")
+
+
+def test_l12_checks_every_cpp_layer(work, capsys):
+    dying = "engine/src/xrCoop/coop_soft_move.h"
+    paths = {
+        X: "core",
+        "engine/src/xrGame/coop/srv/mod.cpp": "srv",
+        "engine/src/xrGame/coop/hostplay/mod.cpp": "hostplay",
+        L12_STOCK: "stock",
+        dying: "dying",
+    }
+    root = tree(work, {path: "drx_da_main::tick();\n" for path in paths})
+    mark_stock(root, L12_STOCK)
+    with (root / "tools/layers.txt").open("a", encoding="utf-8") as layers_file:
+        layers_file.write(f"\ndying {dying}\n")
+    layers = check.parse_layers((root / "tools/layers.txt").read_text(encoding="utf-8"), root)
+    assert {path: layers.layer_of(path) for path in paths} == paths
+    code, out = run(root, capsys)
+    assert code == 1, out
+    assert {v for v in violations(out) if v[2] == "L12"} == {(path, 1, "L12") for path in paths}, out
+
+
+def test_l12_gate_model_checks_lazy_stock_without_mutating_it(work, capsys):
+    root = tree(work, {L12_STOCK: "drx_da_main::tick();\n"})
+    mark_stock(root, L12_STOCK)
+    layers = check.parse_layers((root / "tools/layers.txt").read_text(encoding="utf-8"), root)
+    entries = check.parse_names((root / "tools/srv_entry.txt").read_text(encoding="utf-8"))
+    model = check.build(root, layers, entries)
+    stock = model.by_path[L12_STOCK]
+    assert stock.data and not stock.code
+    assert check.main(["--root", str(root)], model=model) == 1
+    out = capsys.readouterr().out
+    assert found(out, L12_STOCK, "L12") == [1], out
+    assert stock.data and not stock.raw and not stock.code and not stock.code_strings
+
+
+@pytest.mark.parametrize("source", [
+    '"drx_da" "_main";\n',
+    '"drx_da" /* comment */ "_main";\n',
+    r'"\tdrx_da_main";' + "\n",
+])
+def test_l12_stock_prefilter_accepts_names_only_visible_after_literal_processing(work, capsys, source):
+    root = tree(work, {L12_STOCK: source})
+    mark_stock(root, L12_STOCK)
+    code, out = run(root, capsys)
+    assert code == 1 and found(out, L12_STOCK, "L12") == [1], out
+
+
+def test_l12_debt_uses_the_allow_counts_and_warns_when_moved(work, capsys):
+    source = "zonepath::Path p;\n"
+    root = tree(work, {X: source * 2, "tools/mod_names.txt": "debt R1 zonepath\nignore unused\n"})
+    allow = allow_text(root).replace("# ceiling: 2", "# ceiling: 4") + f"L12|{X}|{source.strip()}|2\n"
+    (root / "tools/layers_allow.txt").write_text(allow, encoding="utf-8")
+    code, out = run(root, capsys)
+    assert code == 0, out
+    assert "warning: tools/mod_names.txt:2: ignore 'unused' covers no script row" in out
+    (root / X).write_text(source * 3, encoding="utf-8")
+    code, out = run(root, capsys)
+    assert code == 1 and "3 found, 2 allowed" in out, out
+    assert "P106 R1 debt 'zonepath' (tools/mod_names.txt:1)" in out
+    (root / X).write_text("", encoding="utf-8")
+    code, out = run(root, capsys)
+    assert code == 0, out
+    assert ("warning: tools/mod_names.txt:1: debt R1 'zonepath' names no line any more: "
+            "the item is moved, delete the row") in out
+    assert "warning: stale allow entry (allowed 2, found 0): L12|" in out
+
+
+def test_l12_debt_path_scope_and_mod_names_override(work, capsys):
+    root = tree(work, {
+        X: 'const auto section = "script_zone";\n',
+        "engine/src/xrCoop/coop_local_zones.h": 'const auto section = "script_zone";\n',
+        "tools/scoped.txt": "debt R4 script_zone engine/src/xrCoop/coop_*_zones.h\n",
+    })
+    code, out = run(root, capsys, "--mod-names", str(root / "tools/scoped.txt"))
+    assert code == 1, out
+    assert [v for v in violations(out) if v[2] == "L12"] == [
+        ("engine/src/xrCoop/coop_local_zones.h", 1, "L12"),
+    ], out
+
+
+def test_l12_write_allow_requires_a_ceiling_reset_for_new_entries(work, capsys):
+    root = tree(work, {X: "drx_da_main::tick();\n"})
+    code, out = run(root, capsys, "--write-allow")
+    assert code == 1 and "refusing --write-allow" in out, out
+    assert "L12|" not in allow_text(root)
+    code, out = run(root, capsys, "--write-allow", "--reset-ceiling")
+    assert code == 0 and "ceiling 3" in out, out
+    assert f"L12|{X}|drx_da_main::tick();|1" in allow_text(root)
+
+
+@pytest.mark.parametrize("row", [
+    "script valid", "script some-name fixture", "name !DAO", "ignore", "debt R5 word",
+    "debt R1 word path extra", "build gamma-b61 wrong-date E:/stand 10 3", "unknown word",
+])
+def test_l12_bad_input_reports_the_line(work, capsys, row):
+    root = tree(work, {"tools/mod_names.txt": f"# test\nname DAO\n{row}\n"})
+    code, out = run(root, capsys)
+    assert code == 2 and "mod_names.txt line 3:" in out, out
+
+
+# Remove entries and lower counts here as the P106 adapters replace the engine debt.
+P106_TODAY = {
+    ("engine/src/" + path, code): count
+    for path, entries in {
+        'xrCoop/coop_local_zones.h': {
+            'inline bool local_section(std::string_view section) { return section == "script_zone"; }': 1,
+        },
+        'xrCoop/coop_trade_permit.h': {
+            'bool issue(uint32_t player, uint16_t computer, uint16_t trader, uint64_t now, uint64_t ttl_ms, float reach)': 1,
+            'case Verdict::FarFromComputer: return "far from the computer";': 1,
+            'case Verdict::NoComputer: return "no computer";': 1,
+            'const uint16_t c = object_of(computer);': 1,
+            'float to_computer = -1.f;': 1,
+            'if (!(f.to_computer >= 0.f))': 1,
+            'if (f.to_computer > p->reach)': 1,
+            'if (player == 0 || player == kNoPlayer || computer == 0 || computer == kNoObject || trader == 0 ||': 1,
+            'inline Window window_of(uint16_t trader, double computer, double ms_left, uint64_t now)': 1,
+            'inline bool window_keeps(const Window& w, uint16_t partner, uint64_t now, float to_computer)': 1,
+            'p.computer = computer;': 1,
+            'return w.computer != kNoObject && w.trader != kNoObject && w.trader == partner && now < w.until && to_computer >= 0.f &&': 1,
+            'to_computer <= kWindowReach;': 1,
+            'trader == kNoObject || computer == trader || ttl == 0 || !(reach > 0.f) || std::isinf(reach))': 1,
+            'uint16_t computer = kNoObject;': 2,
+            'w.computer = c;': 1,
+        },
+        'xrCoop/coop_zone_path_rules.h': {
+            'namespace zonepath': 1,
+        },
+        'xrGame/coop/coop_objects.cpp': {
+            '!zonepath::same_zone(run.p.section_hash, zonepath::name_hash(zone->cNameSect().c_str()), run.p.origin, pos))': 1,
+            '#include "xrCoop/coop_zone_path_rules.h"': 1,
+            'const u32 tick = zonepath::tick_at(run.p, ran);': 1,
+            'const u64 ran = zonepath::run_at(run.base_ms, run.base_run, now);': 1,
+            'const zonepath::Point to = zonepath::point_at(run.p, run.ys, ran);': 1,
+            'here = zonepath::same_zone(s.p.section_hash, zonepath::name_hash(zone->cNameSect().c_str()), s.p.origin, pos);': 1,
+            'if (!(v > -double(zonepath::kMaxCoord) && v < double(zonepath::kMaxCoord)))': 1,
+            'if (!r.ok() || count > zonepath::kMaxPathsPerMessage)': 1,
+            'if (!zonepath::read_path(r, p, phase))': 1,
+            'if (run.zone || now - run.received > zonepath::kPendingTtlMs)': 1,
+            'int l_zone_path(lua_State* L)': 1,
+            'lua_finite(L, 3, p.origin[1]) && lua_finite(L, 4, p.origin[2]) && lua_whole(L, 5, 0, zonepath::kCircle - 1, i0) &&': 1,
+            'lua_pushcfunction(L, &l_zone_path);': 1,
+            'lua_setfield(L, -2, "zone_path");': 1,
+            'lua_whole(L, 6, 1, zonepath::kMaxIStep, i_step) && lua_whole(L, 7, 1, zonepath::kMaxJStep, j_step) &&': 1,
+            'ok = zonepath::valid(p) && zonepath::same_zone(p.section_hash, p.section_hash, p.origin, pos);': 1,
+            'p.section_hash = zonepath::name_hash(zone->cNameSect().c_str());': 1,
+            'return zonepath::heights(p, [graph](float x, float y, float z, float& out) {': 1,
+            'std::vector<float> path_heights(const zonepath::Path& p)': 1,
+            'zonepath::Path p;': 4,
+            'zonepath::write_path(w, run.p, zonepath::phase_ms(run.p, zonepath::run_at(run.base_ms, run.base_run, now)));': 1,
+        },
+        'xrGame/coop/coop_requests.cpp': {
+            'constexpr const char* kRiderScript = "coop_mods_item_state";': 1,
+            'int lua_silencer_state(lua_State* L)': 1,
+            'lua_getfield(L, -1, "native_silencer_state");': 1,
+            'lua_getglobal(L, "coop_mods_items");': 1,
+            'lua_getglobal(L, "coop_mods_move_limits");': 1,
+            'lua_pushcfunction(L, lua_silencer_state);': 1,
+        },
+        'xrGame/coop/coop_trade.cpp': {
+            '::Msg("! [coop] coop_mods_trade_computer.%s failed (the stock rules stand): %s", fn, err ? err : "?");': 1,
+            '::Msg("! [coop] trade: player #%u\'s computer grant for %u through %u is not kept (%s)", from, u32(trader_id),': 1,
+            '::Msg("[coop] trade #%u: the computer permit does not hold (%s), the stock rules apply", d.seq,': 1,
+            '::Msg("[coop] trade computer: %u permits held, %llu issued, %llu not kept, %llu deals let through",': 1,
+            '::Msg("[coop] trade: player #%u may trade with %u through computer %u", from, u32(trader_id), u32(computer));': 1,
+            'book.issue(from, computer, trader_id, f.now, trade_permit::ttl_of(g[1]), trade_permit::reach_of(g[2])))': 1,
+            'bool call_trade_computer(const char* fn, double a, double b, double out[3])': 1,
+            'const float to_computer = distance_to(Actor(), find_object(g_view.remote.computer));': 1,
+            'const u16 computer = trade_permit::object_of(g[0]);': 1,
+            'f.to_computer = distance_to(smart_cast<CGameObject*>(find_object(join::proxy_of_peer(from))), find_object(computer));': 1,
+            'f.to_computer = distance_to(smart_cast<CGameObject*>(proxy), find_object(p->computer));': 1,
+            'if (!call_trade_computer("take_grant", double(from), double(trader_id), g))': 1,
+            'if (!world::is_player_proxy(computer) && !world::is_player_proxy(trader_id) &&': 1,
+            'if (call_trade_computer("window_grant", double(trader), 0.0, g))': 1,
+            'if (computer == trade_permit::kNoObject)': 1,
+            'int lua_trade_computer(lua_State* L)': 1,
+            'lua_getglobal(L, "coop_mods_trade_computer");': 1,
+            'lua_pushcfunction(L, &lua_trade_computer);': 1,
+            'return trade_permit::window_keeps(g_view.remote, g_view.id, now_ms(), to_computer);': 1,
+            'u32(computer), trade_permit::verdict_name(v));': 1,
+        },
+    }.items()
+    for code, count in entries.items()
+}
+
+P106_DEBT_TODAY = {
+    ("R1", "zonepath", ""),
+    ("R1", "l_zone_path", ""),
+    ("R1", "zone_path", ""),
+    ("R1", "coop_zone_path_rules", ""),
+    ("R2", "to_computer", ""),
+    ("R2", "lua_trade_computer", ""),
+    ("R2", "call_trade_computer", ""),
+    ("R2", "computer", "engine/src/xrCoop/coop_trade_permit.h"),
+    ("R2", "computer", "engine/src/xrGame/coop/coop_trade.cpp"),
+    ("R3", "native_silencer_state", ""),
+    ("R3", "lua_silencer_state", ""),
+    ("R4", "script_zone", "engine/src/xrCoop/coop_local_zones.h"),
+}
+
+
+def test_l12_real_allow_and_debt_only_shrink():
+    _, allowed = check.parse_allow((ROOT / "tools/layers_allow.txt").read_text(encoding="utf-8"))
+    assert {(path, code): count for (rule, path, code), count in allowed.items()
+            if rule == "L12" and count > P106_TODAY.get((path, code), 0)} == {}
+    mods = check.parse_mod_names((ROOT / "tools/mod_names.txt").read_text(encoding="utf-8"))
+    debt = {(row.build_or_debt, row.token, row.scope) for row in mods if row.kind == "debt"}
+    assert debt <= P106_DEBT_TODAY
+
+
+
+STOCK_MOD_SCRIPTS = Path("D:/Projects/ForEverything/anomaly-ref/unpacked/scripts")
+
+
+def test_l12_real_mod_names_are_well_formed():
+    mods = check.parse_mod_names((ROOT / "tools/mod_names.txt").read_text(encoding="utf-8"))
+    scripts = [row.token for row in mods if row.kind == "script"]
+    assert scripts == sorted(set(scripts))
+    assert scripts
+    local = {p.stem for folder in ("engine/gamedata/scripts", "gamedata/scripts", "gamedata_gamma/scripts")
+             for p in (ROOT / folder).glob("*.script")}
+    assert local.isdisjoint(scripts)
+
+
+@pytest.mark.skipif(not STOCK_MOD_SCRIPTS.is_dir(), reason="stock Anomaly scripts are unavailable")
+def test_l12_real_mod_names_exclude_stock_scripts_ignoring_case():
+    mods = check.parse_mod_names((ROOT / "tools/mod_names.txt").read_text(encoding="utf-8"))
+    stock = {p.stem.casefold() for p in STOCK_MOD_SCRIPTS.glob("*.script")}
+    assert stock.isdisjoint(row.token.casefold() for row in mods if row.kind == "script")
 
 
 FAR_CFG = "-- Ядро: limits\nmax_squads = 4\n\nfunction may_spawn(n)\n\treturn n < max_squads\nend\n"

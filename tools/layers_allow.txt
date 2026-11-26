@@ -1,8 +1,73 @@
-# ceiling: 273
+# ceiling: 342
 # Today's violations of the layer rules (tools/check_layers.py, docs/MODES.md section 5).
 # rule|path|code of the line, comments dropped, white space collapsed|count. The ceiling only goes down:
 # a migration step deletes lines here and lowers the ceiling in the same commit (python -I tools\check_layers.py
 # --write-allow). Any change to a file listed here is an Ядро change (critique H9, tools/check_gates.py).
+L12|engine/src/xrCoop/coop_local_zones.h|inline bool local_section(std::string_view section) { return section == "script_zone"; }|1
+L12|engine/src/xrCoop/coop_trade_permit.h|bool issue(uint32_t player, uint16_t computer, uint16_t trader, uint64_t now, uint64_t ttl_ms, float reach)|1
+L12|engine/src/xrCoop/coop_trade_permit.h|case Verdict::FarFromComputer: return "far from the computer";|1
+L12|engine/src/xrCoop/coop_trade_permit.h|case Verdict::NoComputer: return "no computer";|1
+L12|engine/src/xrCoop/coop_trade_permit.h|const uint16_t c = object_of(computer);|1
+L12|engine/src/xrCoop/coop_trade_permit.h|float to_computer = -1.f;|1
+L12|engine/src/xrCoop/coop_trade_permit.h|if (!(f.to_computer >= 0.f))|1
+L12|engine/src/xrCoop/coop_trade_permit.h|if (f.to_computer > p->reach)|1
+L12|engine/src/xrCoop/coop_trade_permit.h|if (player == 0 || player == kNoPlayer || computer == 0 || computer == kNoObject || trader == 0 |||1
+L12|engine/src/xrCoop/coop_trade_permit.h|inline Window window_of(uint16_t trader, double computer, double ms_left, uint64_t now)|1
+L12|engine/src/xrCoop/coop_trade_permit.h|inline bool window_keeps(const Window& w, uint16_t partner, uint64_t now, float to_computer)|1
+L12|engine/src/xrCoop/coop_trade_permit.h|p.computer = computer;|1
+L12|engine/src/xrCoop/coop_trade_permit.h|return w.computer != kNoObject && w.trader != kNoObject && w.trader == partner && now < w.until && to_computer >= 0.f &&|1
+L12|engine/src/xrCoop/coop_trade_permit.h|to_computer <= kWindowReach;|1
+L12|engine/src/xrCoop/coop_trade_permit.h|trader == kNoObject || computer == trader || ttl == 0 || !(reach > 0.f) || std::isinf(reach))|1
+L12|engine/src/xrCoop/coop_trade_permit.h|uint16_t computer = kNoObject;|2
+L12|engine/src/xrCoop/coop_trade_permit.h|w.computer = c;|1
+L12|engine/src/xrCoop/coop_zone_path_rules.h|namespace zonepath|1
+L12|engine/src/xrGame/coop/coop_objects.cpp|!zonepath::same_zone(run.p.section_hash, zonepath::name_hash(zone->cNameSect().c_str()), run.p.origin, pos))|1
+L12|engine/src/xrGame/coop/coop_objects.cpp|#include "xrCoop/coop_zone_path_rules.h"|1
+L12|engine/src/xrGame/coop/coop_objects.cpp|const u32 tick = zonepath::tick_at(run.p, ran);|1
+L12|engine/src/xrGame/coop/coop_objects.cpp|const u64 ran = zonepath::run_at(run.base_ms, run.base_run, now);|1
+L12|engine/src/xrGame/coop/coop_objects.cpp|const zonepath::Point to = zonepath::point_at(run.p, run.ys, ran);|1
+L12|engine/src/xrGame/coop/coop_objects.cpp|here = zonepath::same_zone(s.p.section_hash, zonepath::name_hash(zone->cNameSect().c_str()), s.p.origin, pos);|1
+L12|engine/src/xrGame/coop/coop_objects.cpp|if (!(v > -double(zonepath::kMaxCoord) && v < double(zonepath::kMaxCoord)))|1
+L12|engine/src/xrGame/coop/coop_objects.cpp|if (!r.ok() || count > zonepath::kMaxPathsPerMessage)|1
+L12|engine/src/xrGame/coop/coop_objects.cpp|if (!zonepath::read_path(r, p, phase))|1
+L12|engine/src/xrGame/coop/coop_objects.cpp|if (run.zone || now - run.received > zonepath::kPendingTtlMs)|1
+L12|engine/src/xrGame/coop/coop_objects.cpp|int l_zone_path(lua_State* L)|1
+L12|engine/src/xrGame/coop/coop_objects.cpp|lua_finite(L, 3, p.origin[1]) && lua_finite(L, 4, p.origin[2]) && lua_whole(L, 5, 0, zonepath::kCircle - 1, i0) &&|1
+L12|engine/src/xrGame/coop/coop_objects.cpp|lua_pushcfunction(L, &l_zone_path);|1
+L12|engine/src/xrGame/coop/coop_objects.cpp|lua_setfield(L, -2, "zone_path");|1
+L12|engine/src/xrGame/coop/coop_objects.cpp|lua_whole(L, 6, 1, zonepath::kMaxIStep, i_step) && lua_whole(L, 7, 1, zonepath::kMaxJStep, j_step) &&|1
+L12|engine/src/xrGame/coop/coop_objects.cpp|ok = zonepath::valid(p) && zonepath::same_zone(p.section_hash, p.section_hash, p.origin, pos);|1
+L12|engine/src/xrGame/coop/coop_objects.cpp|p.section_hash = zonepath::name_hash(zone->cNameSect().c_str());|1
+L12|engine/src/xrGame/coop/coop_objects.cpp|return zonepath::heights(p, [graph](float x, float y, float z, float& out) {|1
+L12|engine/src/xrGame/coop/coop_objects.cpp|std::vector<float> path_heights(const zonepath::Path& p)|1
+L12|engine/src/xrGame/coop/coop_objects.cpp|zonepath::Path p;|4
+L12|engine/src/xrGame/coop/coop_objects.cpp|zonepath::write_path(w, run.p, zonepath::phase_ms(run.p, zonepath::run_at(run.base_ms, run.base_run, now)));|1
+L12|engine/src/xrGame/coop/coop_requests.cpp|constexpr const char* kRiderScript = "coop_mods_item_state";|1
+L12|engine/src/xrGame/coop/coop_requests.cpp|int lua_silencer_state(lua_State* L)|1
+L12|engine/src/xrGame/coop/coop_requests.cpp|lua_getfield(L, -1, "native_silencer_state");|1
+L12|engine/src/xrGame/coop/coop_requests.cpp|lua_getglobal(L, "coop_mods_items");|1
+L12|engine/src/xrGame/coop/coop_requests.cpp|lua_getglobal(L, "coop_mods_move_limits");|1
+L12|engine/src/xrGame/coop/coop_requests.cpp|lua_pushcfunction(L, lua_silencer_state);|1
+L12|engine/src/xrGame/coop/coop_trade.cpp|::Msg("! [coop] coop_mods_trade_computer.%s failed (the stock rules stand): %s", fn, err ? err : "?");|1
+L12|engine/src/xrGame/coop/coop_trade.cpp|::Msg("! [coop] trade: player #%u's computer grant for %u through %u is not kept (%s)", from, u32(trader_id),|1
+L12|engine/src/xrGame/coop/coop_trade.cpp|::Msg("[coop] trade #%u: the computer permit does not hold (%s), the stock rules apply", d.seq,|1
+L12|engine/src/xrGame/coop/coop_trade.cpp|::Msg("[coop] trade computer: %u permits held, %llu issued, %llu not kept, %llu deals let through",|1
+L12|engine/src/xrGame/coop/coop_trade.cpp|::Msg("[coop] trade: player #%u may trade with %u through computer %u", from, u32(trader_id), u32(computer));|1
+L12|engine/src/xrGame/coop/coop_trade.cpp|book.issue(from, computer, trader_id, f.now, trade_permit::ttl_of(g[1]), trade_permit::reach_of(g[2])))|1
+L12|engine/src/xrGame/coop/coop_trade.cpp|bool call_trade_computer(const char* fn, double a, double b, double out[3])|1
+L12|engine/src/xrGame/coop/coop_trade.cpp|const float to_computer = distance_to(Actor(), find_object(g_view.remote.computer));|1
+L12|engine/src/xrGame/coop/coop_trade.cpp|const u16 computer = trade_permit::object_of(g[0]);|1
+L12|engine/src/xrGame/coop/coop_trade.cpp|f.to_computer = distance_to(smart_cast<CGameObject*>(find_object(join::proxy_of_peer(from))), find_object(computer));|1
+L12|engine/src/xrGame/coop/coop_trade.cpp|f.to_computer = distance_to(smart_cast<CGameObject*>(proxy), find_object(p->computer));|1
+L12|engine/src/xrGame/coop/coop_trade.cpp|if (!call_trade_computer("take_grant", double(from), double(trader_id), g))|1
+L12|engine/src/xrGame/coop/coop_trade.cpp|if (!world::is_player_proxy(computer) && !world::is_player_proxy(trader_id) &&|1
+L12|engine/src/xrGame/coop/coop_trade.cpp|if (call_trade_computer("window_grant", double(trader), 0.0, g))|1
+L12|engine/src/xrGame/coop/coop_trade.cpp|if (computer == trade_permit::kNoObject)|1
+L12|engine/src/xrGame/coop/coop_trade.cpp|int lua_trade_computer(lua_State* L)|1
+L12|engine/src/xrGame/coop/coop_trade.cpp|lua_getglobal(L, "coop_mods_trade_computer");|1
+L12|engine/src/xrGame/coop/coop_trade.cpp|lua_pushcfunction(L, &lua_trade_computer);|1
+L12|engine/src/xrGame/coop/coop_trade.cpp|return trade_permit::window_keeps(g_view.remote, g_view.id, now_ms(), to_computer);|1
+L12|engine/src/xrGame/coop/coop_trade.cpp|u32(computer), trade_permit::verdict_name(v));|1
 L1|engine/src/xrCoop/coop_newchar.h|constexpr bool point_usable(bool valid, bool on_host_level, bool own_levels = kOwnLevels)|1
 L1|engine/src/xrCoop/coop_newchar.h|return valid && (on_host_level || own_levels);|1
 L1|engine/src/xrGame/coop/coop_ai.cpp|bool ghost(const CObject* obj) { return obj && ghost_actor() && obj == static_cast<const CObject*>(g_actor); }|1

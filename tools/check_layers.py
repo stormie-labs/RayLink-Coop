@@ -7,11 +7,12 @@ tools/check_gates.py imports it for core_reach: a srv or hostplay file that Яд
 calls, names in Lua, in a C++ string or in a config, declares extern, owns the class of; static initializers) counts as
 Ядро for the gate, and so does everything a reached file reaches in turn (to a fixed point).
 
-  python -I tools/check_layers.py [--root DIR] [--write-allow [--reset-ceiling]] [--top N]
+  python -I tools/check_layers.py [--root DIR] [--mod-names PATH] [--write-allow [--reset-ceiling]] [--top N]
 
 Inputs (under <root>/tools unless given): layers.txt (the layer of every file; its `stock-list` row names the list of
 GSC files, tools/stock_files.txt), layers_allow.txt (today's violations: a ceiling that only goes down), srv_entry.txt
-(server functions that stock hooks reach), persisted_keys.txt (saved names that never disappear). Scanned: engine/src
+(server functions that stock hooks reach), persisted_keys.txt (saved names that never disappear), mod_names.txt
+(mod script stems, hand-listed names, ignores and frozen P106 debt). Scanned: engine/src
 (without "3rd party") .cpp .h .hpp .inl, gamedata/scripts/*.script, and as stock Lua engine/gamedata/scripts/*.script
 and gamedata_gamma/scripts/*.script (the stock scripts the mod patches and the GAMMA layer: axr_main runs every
 script's file level and on_game_start in every process). core_reach also reads gamedata/configs,
@@ -84,8 +85,10 @@ Rules (ids as in docs/MODES.md section 5):
       virtual_*, is_virtual, host_virtual, on_bridge_*, on_operator_command, operator_refused, operator_token; review
       A-S4S probe h2): only srv reaches it, through srv::SessionSrv. Never an allow entry: today's callers are
       SESSION_SRV_FROZEN (a list that only shrinks); coop_session.cpp/.h are the class itself
+  L12 engine C++ in any layer names a mod in code or a literal: a coop_mods_ literal, a name in mod_names.txt, or a
+      P106 debt token within its scope. The inventory is generated separately by tools/gen_mod_names.py.
 Comments are not code; string contents are not code either (L6, L8, the command-line keys and the Lua module
-references read them).
+references and mod names read them).
 
 Allow list: `rule|path|code of the line, comments dropped, white space collapsed|count`, first line `# ceiling: N`.
 No line numbers: an edit elsewhere in a file does not break an entry. A (rule, path, code) found more often than
@@ -110,7 +113,8 @@ import re
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Iterable, NamedTuple, Optional, Sequence
+from datetime import date
+from typing import Iterable, Iterator, NamedTuple, Optional, Sequence
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 LAYERS = ("core", "hostplay", "srv", "stock", "dying")
@@ -350,8 +354,10 @@ WHY = {
     "L10": "a saved key disappeared from the scripts; saved names are never renamed or dropped (§3 rule 10)",
     "L11": "Ядро calls the server's part of Session (bridges, virtual host, operator token): only srv does, through "
            "srv::SessionSrv (docs/MODES.md §4; never an allow entry, SESSION_SRV_FROZEN only shrinks)",
+    "L12": "the engine knows no mod (TZ P106): a mod's names, data and formulas live in its adapter "
+           "gamedata/scripts/coop_mods_*.script; give the engine a generic mechanism the adapter registers with",
 }
-ALLOWABLE = frozenset({"L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9", "L9C"})
+ALLOWABLE = frozenset({"L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9", "L9C", "L12"})
 
 
 def rule_order(rule: str) -> tuple[int, str]:
@@ -493,6 +499,62 @@ def parse_keys(text: str) -> list[tuple[int, str, str]]:
         if len(parts) != 2:
             raise InputError(f"persisted_keys.txt line {number}: expected '<kind> <key>', got {raw!r}")
         rows.append((number, parts[0], parts[1].strip()))
+    return rows
+
+
+MOD_WORD = re.compile(r"\w+")
+MOD_BUILD_TAG = re.compile(r"[\w-]+")
+MOD_DEBT_IDS = frozenset({"R1", "R2", "R3", "R4"})
+
+
+class ModRow(NamedTuple):
+    line: int
+    kind: str
+    token: str
+    build_or_debt: str = ""
+    scope: str = ""
+
+
+def valid_mod_build(fields: list[str]) -> bool:
+    # Split the stand path from the right so it may contain spaces.
+    if len(fields) != 4 or not MOD_BUILD_TAG.fullmatch(fields[1]):
+        return False
+    tail = fields[3].rsplit(None, 2)
+    if len(tail) != 3 or not all(re.fullmatch(r"[0-9]+", n) for n in tail[1:]):
+        return False
+    try:
+        return date.fromisoformat(fields[2]).isoformat() == fields[2]
+    except ValueError:
+        return False
+
+
+def parse_mod_names(text: str) -> list[ModRow]:
+    rows = []
+    seen: set[tuple[str, ...]] = set()
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        fields = line.split()
+        kind = fields[0]
+        if (kind == "script" and len(fields) == 3
+                and MOD_WORD.fullmatch(fields[1]) and MOD_BUILD_TAG.fullmatch(fields[2])):
+            row = ModRow(number, kind, fields[1], fields[2])
+        elif kind in ("name", "ignore") and len(fields) == 2 and MOD_WORD.fullmatch(fields[1]):
+            row = ModRow(number, kind, fields[1])
+        elif (kind == "debt" and len(fields) in (3, 4)
+              and fields[1] in MOD_DEBT_IDS and MOD_WORD.fullmatch(fields[2])):
+            scope = fields[3].replace("\\", "/") if len(fields) == 4 else ""
+            row = ModRow(number, kind, fields[2], fields[1], scope)
+        elif kind == "build" and valid_mod_build(line.split(None, 3)):
+            row = ModRow(number, kind, fields[1])
+        else:
+            raise InputError(f"mod_names.txt line {number}: malformed row {raw!r}")
+        key = tuple(row[1:] if kind == "debt" else row[1:3])
+        if key in seen:
+            raise InputError(f"mod_names.txt line {number}: duplicate row {raw!r}")
+        seen.add(key)
+        rows.append(row)
     return rows
 
 
@@ -2627,6 +2689,149 @@ def scan(root: pathlib.Path, layers: LayerMap, srv_entry: list[str], keys: list[
     return scan_model(model, keys, keys_path), model.sources
 
 
+# ---- L12: mod names in engine C++ ----------------------------------------------------------------------------------
+
+MOD_ADAPTER = "coop_mods_"
+MOD_ADAPTER_RX = re.compile(r"coop_mods_\w*")
+CPP_ESCAPE = r"\\(?:x[0-9A-Fa-f]+|[0-7]{1,3}|.)"
+MOD_ESCAPE = re.compile(CPP_ESCAPE, re.S)
+# A name may not be a whole word until an escape is replaced or adjacent literals are joined. Comments between
+# literals are whitespace after strip_both; the bytes prefilter must allow those joins as well.
+CPP_LITERAL_JOIN = r"""["'](?:\s+|//[^\r\n]*|/\*[\s\S]*?\*/)*+(?:["'](?=\w)|R")"""
+MOD_JOIN = re.compile(CPP_LITERAL_JOIN)
+MOD_JOIN_BYTES = re.compile(CPP_LITERAL_JOIN.encode("ascii"))
+
+
+def cpp_literal_bodies(text: str) -> Iterator[tuple[int, str]]:
+    """Starting offset and body with escapes replaced, joining adjacent literals in comment-free C++."""
+    end = start = 0
+    parts: list[str] = []
+    for match in CPP_TOKENS.finditer(text):
+        literal = match[0]
+        if not literal.startswith(("R\"", '"', "'")):
+            continue
+        if parts and (gap := text[end:match.start()]) and not gap.isspace():
+            yield start, "".join(parts)
+            parts.clear()
+        if not parts:
+            start = match.start()
+        if (delimiter := match[1]) is not None:
+            body = literal[3 + len(delimiter):-2 - len(delimiter)]
+        else:
+            body = literal[1:-1] if len(literal) > 1 and literal.endswith(literal[0]) else literal[1:]
+        parts.append(MOD_ESCAPE.sub(" ", body))
+        end = match.end()
+    if parts:
+        yield start, "".join(parts)
+
+
+class ModLine(NamedTuple):
+    path: str
+    number: int
+    code: str
+    code_tokens: list[str]
+    string_tokens: list[str]
+    adapter: str
+
+
+def mod_lines(sources: Iterable[Source], words: set[str], adapters: bool = False) -> Iterator[ModLine]:
+    """Lines matching the named tokens, or (for L12 itself) containing a coop_mods_ literal."""
+    if not words and not adapters:
+        return
+    trie = trie_regex(words) if words else r"(?!)"
+    word = re.compile(rf"(?<!\w)(?:{trie})(?!\w)")
+    escaped = re.compile(rf"{CPP_ESCAPE}(?:{trie})(?!\w)")
+    byte_word = re.compile(rb"(?<![A-Za-z0-9_])(?:" + trie.encode() + rb")(?![A-Za-z0-9_])")
+    byte_escaped = re.compile(CPP_ESCAPE.encode() + rb"(?:" + trie.encode() + rb")(?![A-Za-z0-9_])")
+    # A non-ASCII input word could occur in a cp1251 stock file as well as in its usual UTF-8 encoding.
+    unicode_words = any(not token.isascii() for token in words)
+    for src in sources:
+        if src.lang != "cpp":
+            continue
+        code, kept = src.code, src.code_strings
+        if src.data:
+            data = src.data
+            if not (unicode_words or (adapters and b"coop_mods_" in data) or byte_word.search(data)
+                    or (b"\\" in data and byte_escaped.search(data)) or MOD_JOIN_BYTES.search(data)):
+                continue
+            code, kept = strip_both(decode(data), CPP_TOKENS, "/")
+
+        code_hits: dict[int, list[str]] = defaultdict(list)
+        string_hits: dict[int, list[str]] = defaultdict(list)
+        adapter_hits: dict[int, str] = {}
+        starts = []
+        for hit in word.finditer(code):
+            if not starts:
+                starts = line_starts(code)
+            code_hits[bisect.bisect_right(starts, hit.start())].append(hit[0])
+        if ((adapters and MOD_ADAPTER in kept) or word.search(kept)
+                or ("\\" in kept and escaped.search(kept)) or MOD_JOIN.search(kept)):
+            literal_starts = []
+            for offset, body in cpp_literal_bodies(kept):
+                tokens = word.findall(body)
+                adapter = MOD_ADAPTER_RX.search(body) if adapters else None
+                if not tokens and not adapter:
+                    continue
+                # code and kept have equal line layout but different offsets.
+                if not literal_starts:
+                    literal_starts = line_starts(kept)
+                number = bisect.bisect_right(literal_starts, offset)
+                string_hits[number].extend(tokens)
+                if adapter:
+                    adapter_hits.setdefault(number, adapter[0])
+        numbers = code_hits.keys() | string_hits.keys() | adapter_hits.keys()
+        if numbers:
+            lines = kept.split("\n")
+            for number in sorted(numbers):
+                yield ModLine(src.path, number, norm(lines[number - 1]), code_hits[number],
+                              string_hits[number], adapter_hits.get(number, ""))
+
+
+def mod_findings(sources: Iterable[Source], mods: Sequence[ModRow]) -> tuple[list[Finding], list[str]]:
+    scripts = {row.token: row for row in mods if row.kind == "script"}
+    ignores = {row.token for row in mods if row.kind == "ignore"}
+    watched = {row.token: row for row in mods if row.kind == "name"}
+    watched.update((word, row) for word, row in scripts.items() if len(word) >= 4)
+    for word in ignores:
+        watched.pop(word, None)
+    debt = [row for row in mods if row.kind == "debt"]
+    debt_tokens: dict[str, list[tuple[ModRow, Optional[re.Pattern[str]]]]] = defaultdict(list)
+    for row in debt:
+        debt_tokens[row.token].append((row, glob_regex(row.scope) if row.scope else None))
+
+    findings = []
+    used_debt: set[ModRow] = set()
+    for line in mod_lines(sources, set(watched) | debt_tokens.keys(), adapters=True):
+        tokens = line.code_tokens + line.string_tokens
+        matched_debt = [row for word in tokens for row, scope in debt_tokens.get(word, ())
+                        if scope is None or scope.match(line.path)]
+        used_debt.update(matched_debt)
+        named = next((watched[word] for word in tokens if word in watched), None)
+        if line.adapter:
+            note = f"a string names the mods layer '{line.adapter}'"
+        elif named:
+            prefix = "" if named.token in line.code_tokens else "a string "
+            location = f"tools/mod_names.txt:{named.line}"
+            if named.kind == "script":
+                location += f", {named.build_or_debt}"
+            note = f"{prefix}names the mod script '{named.token}' ({location})"
+        elif matched_debt:
+            item = matched_debt[0]
+            note = f"P106 {item.build_or_debt} debt '{item.token}' (tools/mod_names.txt:{item.line})"
+        else:
+            continue  # A debt word outside its configured path.
+        findings.append(Finding("L12", line.path, line.number, line.code, note))
+    warnings = [
+        f"warning: tools/mod_names.txt:{row.line}: debt {row.build_or_debt} '{row.token}' names no line any more: "
+        "the item is moved, delete the row"
+        for row in debt if row not in used_debt
+    ] + [
+        f"warning: tools/mod_names.txt:{row.line}: ignore '{row.token}' covers no script row"
+        for row in mods if row.kind == "ignore" and row.token not in scripts
+    ]
+    return findings, warnings
+
+
 # ---- what Ядро reaches (tools/check_gates.py) ---------------------------------------------------------------------
 
 def config_refs(root: pathlib.Path, script_layer: dict[str, str]) -> list[tuple[str, int, str]]:
@@ -2898,6 +3103,7 @@ def main(argv: Optional[Sequence[str]] = None, model: Optional[Model] = None) ->
     ap.add_argument("--allow", help="layers_allow.txt (default <root>/tools/layers_allow.txt)")
     ap.add_argument("--srv-entry", help="srv_entry.txt (default <root>/tools/srv_entry.txt)")
     ap.add_argument("--keys", help="persisted_keys.txt (default <root>/tools/persisted_keys.txt)")
+    ap.add_argument("--mod-names", help="mod_names.txt (default <root>/tools/mod_names.txt)")
     ap.add_argument("--write-allow", action="store_true", help="rewrite the allow list from the tree, ceiling = its sum")
     ap.add_argument("--reset-ceiling", action="store_true",
                     help="with --write-allow: accept new entries and let the ceiling go up (the lead, after review)")
@@ -2906,14 +3112,18 @@ def main(argv: Optional[Sequence[str]] = None, model: Optional[Model] = None) ->
 
     root = pathlib.Path(args.root).resolve()
     allow_path = pathlib.Path(args.allow) if args.allow else root / "tools" / "layers_allow.txt"
+    mods_path = pathlib.Path(args.mod_names) if args.mod_names else root / "tools" / "mod_names.txt"
     try:
         if not args.write_allow and not allow_path.is_file():
             raise InputError(f"missing input file layers_allow.txt: {allow_path}")
         layers, srv_entry, keys, keys_file, _ = load_inputs(root, args)
+        if not mods_path.is_file():
+            raise InputError(f"missing input file mod_names.txt: {mods_path}")
+        mods = parse_mod_names(mods_path.read_text(encoding="utf-8"))
         ceiling, allowed = (parse_allow(allow_path.read_text(encoding="utf-8")) if allow_path.is_file() else (None, {}))
         if not args.write_allow and ceiling is None:
             raise InputError(f"layers_allow.txt has no '# ceiling: N' line: {allow_path}")
-    except (OSError, InputError) as error:
+    except (OSError, UnicodeError, InputError) as error:
         print(f"check_layers: {error}")
         return 2
 
@@ -2925,9 +3135,14 @@ def main(argv: Optional[Sequence[str]] = None, model: Optional[Model] = None) ->
         findings, sources = scan_model(model, keys, keys_rel), model.sources
     else:
         findings, sources = scan(root, layers, srv_entry, keys, keys_rel)
+    mod_hits, mod_warnings = mod_findings(sources, mods)
+    findings.extend(mod_hits)
     findings, frozen_warnings = apply_session_frozen(findings, root)
     found = group(findings)
     total = sum(len(v) for v in found.values())
+
+    for w in mod_warnings:
+        print(w)
 
     if args.write_allow:
         if not args.reset_ceiling:
@@ -2986,6 +3201,8 @@ def main(argv: Optional[Sequence[str]] = None, model: Optional[Model] = None) ->
         for (rule, _, _), items in found.items():
             per_rule[rule] += len(items)
         print("rules: " + ", ".join(f"{r} {per_rule[r]}" for r in sorted(per_rule, key=rule_order)))
+    else:
+        print(f"L12: {len(mod_hits)} findings")
     files = len(sources)
     if failures:
         print(f"check_layers: FAIL ({len(failures)})")

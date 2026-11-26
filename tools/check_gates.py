@@ -126,6 +126,7 @@ TESTS = "tests"
 # stand's scenarios (B12): an edit of them is an Ядро change
 GATE_FILES = frozenset([f"tools/{name}" for name in (
     "layers.txt", "layers_allow.txt", "srv_entry.txt", "persisted_keys.txt", "stock_files.txt", "check_layers.py",
+    "mod_names.txt", "gen_mod_names.py",
     "check_gates.py", "release.py", "stand_common.ps1", "stand_hostplay.ps1", "stand_srv.ps1", "ded_check.ps1",
     "mo2_stand.py", "test_lua.cmd", "build_tests.cmd", "run_all_tests.cmd")] + ["tests/lua/run_all.lua"])
 GATE_DIRS = ("tools/stand/",)
