@@ -105,14 +105,16 @@ TEST(s6_integration_coop_my_level_is_the_guarded_getter)
 {
 	const std::string script = engine_file("xrGame/coop/coop_script.cpp");
 	REQUIRE(!script.empty());
-	const std::string fn = body(script, "int l_own_level(lua_State* L)");
-	CHECK(fn.find("levels::my_level()") != std::string::npos);
-	CHECK(fn.find("levels::wire::kNoLevel") != std::string::npos);
-	CHECK(fn.find("lua_pushnil(L)") != std::string::npos);
 	const std::string raw = body(script, "void register_raw(lua_State* L)");
-	CHECK(raw.find("{\"my_level\", &l_own_level}") != std::string::npos);
-	// the getter it reads answers nothing while the world is built or torn down
+	CHECK(raw.find("{\"my_level\", &levels::lua_my_level}") != std::string::npos);
+	// one function answers coop.my_level and coop.levels.my_level: the getter, nil for no level
 	const std::string levels = engine_file("xrGame/coop/coop_levels.cpp");
+	CHECK(body(levels, "void register_lua(lua_State* L)").find("{\"my_level\", &lua_my_level}") != std::string::npos);
+	CHECK(body(levels, "int lua_my_level(lua_State* L)").find("push_level(L, my_level())") != std::string::npos);
+	const std::string push = body(levels, "void push_level(lua_State* L, LevelId level)");
+	CHECK(push.find("wire::kNoLevel") != std::string::npos);
+	CHECK(push.find("lua_pushnil(L)") != std::string::npos);
+	// the getter it reads answers nothing while the world is built or torn down
 	const std::string getter = body(levels, "LevelId my_level()");
 	CHECK(getter.find("if (!world_up() || !ai().get_alife())") != std::string::npos);
 	CHECK(getter.find("return wire::kNoLevel;") != std::string::npos);

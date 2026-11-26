@@ -192,7 +192,7 @@ TEST(sync_fnrefs_coop_sync_keeps_and_calls_through_coop_lua_fn)
 	// every kind of failure is logged (a Lua error with its traceback; a call not made with why), none silently
 	CHECK(pcall.find("lua error in coop.sync") != std::string::npos);
 	CHECK(pcall.find("not called") != std::string::npos);
-	CHECK(pcall.find("log_allowed(") != std::string::npos);
+	CHECK(pcall.find("line_allowed(") != std::string::npos);
 	CHECK(pcall.find("return false") == pcall.rfind("return false")); // one way out on failure, after the log
 }
 

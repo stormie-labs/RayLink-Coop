@@ -206,9 +206,9 @@ TEST(p45_srv_kill_record_applies_a_death_as_the_world_applies_a_map_server_s)
 	CHECK(p45_has(living, "!world::is_player_character(c)"));
 	CHECK(p45_has(living, "world_up()"));
 	// an id is a whole number below 0xffff, anything else is nobody
-	const std::string id = p45_body(code, R"(u16\s+id_arg)");
-	CHECK(p45_has(id, "lua_type(L, at) != LUA_TNUMBER"));
-	CHECK(p45_has(id, "v >= 0 && v < 0xffff && v == lua_Number(u16(v))"));
+	CHECK(p45_has(body, "u16 victim = 0xffff, killer = 0xffff;"));
+	CHECK(p45_has(body, "lua_api::arg_object_id(L, 1, victim);"));
+	CHECK(p45_has(body, "lua_api::arg_object_id(L, 2, killer);"));
 
 	// the journal's Died entry takes the same two steps: when it gains one, srv.kill_record needs it too
 	const std::string alife = p45_code(p45_read(src + "/xrGame/coop/srv/coop_levels_alife.cpp"));
