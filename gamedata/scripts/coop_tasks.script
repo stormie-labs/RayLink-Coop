@@ -2601,7 +2601,9 @@ local function online_peers()
 end
 
 -- Host, in a reward scope: pays n to the player who turned the task in, or splits it over the online players
--- (coop_share_rewards 1; the remainder goes to the finisher). give(peer, amount) pays one share, peer 0 = the host.
+-- (coop_share_rewards 1). The remainder goes to the player it is for when he shares, else to the first sharer: a world
+-- server's seat 0 and a player off the level do not share, and the parts must add up to n. give(peer, amount) pays one share,
+-- peer 0 = the host.
 local function split_money(n, give)
 	if ctx.group then
 		local rg = reward_group()
@@ -2620,7 +2622,7 @@ local function split_money(n, give)
 	end
 	local part = math_floor(n / #list)
 	local rest = n - part * #list
-	local rest_to = 0
+	local rest_to = list[1]
 	for _, peer in ipairs(list) do
 		if peer == ctx.rcpt then rest_to = peer end
 	end

@@ -273,7 +273,7 @@ local function machine(role, self_peer)
 
 	-- task manager (luabind-like class: methods looked up in the class table)
 	local ini = { fetch_1 = true, fetch_2 = true, story_1 = true, cf_1 = true, stage_t = true, bounty_1 = true, dawn_1 = true,
-		ghost_1 = true, cord_1 = true, owl_1 = true, comm_1 = true }
+		ghost_1 = true, cord_1 = true, owl_1 = true, comm_1 = true, rest_1 = true }
 	M.on_init = {}
 	M.on_complete = {}
 	local CRandomTask = {}
@@ -752,6 +752,66 @@ do
 	check(H.actor._money == hm0, "nothing lands on the ghost")
 	check(#g == n0 + 1 and g[#g][1] == 1 and g[#g][2] == 1001, "the players share the whole sum: coop.money_grant(1, 1001)")
 	H.env.coop.is_dedicated = nil
+	H.share = 0
+end
+
+-- ---------------------------------------------------------------- the remainder of a split
+print("== coop_share_rewards 1: the remainder when the player the reward is for is not among the sharers")
+-- n RU over k sharers leaves n % k. It goes to the player the reward is for when he shares, else to the first sharer: the
+-- parts always add up to the reward.
+do
+	H.new_obj(620)
+	H.new_obj(630)
+	local players0, talking0 = H.players, H.talking
+	H.players = { players0[1], players0[2], { id = 2, is_self = false, avatar_id = 620 },
+		{ id = 3, is_self = false, avatar_id = 630 } }
+	H.talking = false
+	H.share = 1
+	H.on_complete.rest_1 = function() H.env.dialogs.relocate_money(H.actor, 1001, "in") end
+	-- The task is given by peer `taker` (nil: by a script nobody is located for, so its taker is the seat 0) and ended by a
+	-- script, so the reward is for its taker. Peer 3 is on his loading screen when it ends. Returns the reward's recipient and
+	-- the RU each peer got (0: the host's actor).
+	local function payout(taker)
+		H.players[4].avatar_id = 630
+		if taker then H.mod.run_as(taker, function() H.tm:give_task("rest_1", 5) end) else H.tm:give_task("rest_1", 5) end
+		pump()
+		H.players[4].avatar_id = nil
+		local rcpt = H.mod.recipient("rest_1")
+		local hm0, n0 = H.actor._money, #money_calls(H, "money_grant")
+		H.tm:set_task_completed("rest_1")
+		H.engine_check()
+		pump()
+		local got, g = { [0] = H.actor._money - hm0 }, money_calls(H, "money_grant")
+		for i = n0 + 1, #g do got[g[i][1]] = (got[g[i][1]] or 0) + g[i][2] end
+		return rcpt, got
+	end
+	local function sum(got)
+		local s = 0
+		for _, n in pairs(got) do s = s + n end
+		return s
+	end
+
+	-- Server: the world server's seat 0 plays no character, so it is never a sharer
+	H.env.coop.is_dedicated = function() return true end
+	local rcpt, got = payout(nil)
+	check(rcpt == 0, "Server: the reward of a task nobody took is for the seat 0")
+	check(sum(got) == 1001 and got[0] == 0, "Server, the seat 0: the parts add up to 1001 (" .. sum(got) .. "), the ghost gets none")
+	check(got[1] == 501 and got[2] == 500 and got[3] == nil, "Server, the seat 0: the remainder goes to the first sharer, peer 1")
+	rcpt, got = payout(3)
+	check(rcpt == 3, "Server: the reward is for peer 3, who is off the level")
+	check(sum(got) == 1001 and got[0] == 0 and got[3] == nil,
+		"Server, peer 3 off the level: the parts add up to 1001 (" .. sum(got) .. "), he gets none")
+	check(got[1] == 501 and got[2] == 500, "Server, peer 3 off the level: the remainder goes to the first sharer, peer 1")
+
+	-- Coop: the host plays seat 0 and is the first sharer, so the remainder is his as before
+	H.env.coop.is_dedicated = nil
+	rcpt, got = payout(3)
+	check(rcpt == 3, "Coop: the reward is for peer 3, who is off the level")
+	check(sum(got) == 1001 and got[0] == 335 and got[1] == 333 and got[2] == 333 and got[3] == nil,
+		"Coop, peer 3 off the level: 333 each and the remainder 2 to the host, the first sharer")
+
+	H.on_complete.rest_1 = nil
+	H.players, H.talking = players0, talking0
 	H.share = 0
 end
 
