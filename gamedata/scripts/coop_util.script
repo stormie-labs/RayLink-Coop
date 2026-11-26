@@ -1,0 +1,231 @@
+-- Ядро: без проверок режима (docs/MODES.md)
+--[[
+	Anomaly Coop - the small helpers every Core script needs (gamedata\scripts\coop_util.script), one copy each
+	(docs\CODE_RULES.md LUA-1). Adapters keep coop_mods_core; the Core never calls it.
+
+	Constants:
+		MAX_PEER                   16: the last player seat on the wire, the host's seat 0 included (coop_protocol.h)
+	Log and start:
+		logger(head) -> log(fmt, ...)       printf("<head> <line>"); a format error prints fmt itself
+		start_step(tag, what, f, ...) -> ok f(...) protected: on_game_start must not throw (axr_main runs every script's
+		                                    on_game_start in one unprotected loop); a fault is "! [<tag>] <what> failed: <e>"
+		add_status(name)                    module `name` prints its coop_status lines (its print_status); once per name,
+		                                    the order of the first registration
+		print_statuses(log)                 every registered module's print_status, protected; a fault goes to
+		                                    log("! %s.print_status: %s", name, e)
+	Engine:
+		active()                            a co-op session is running
+		call(f, ...) -> v                   the first result of f(...), nil when f is no function or raises (false stays false)
+		module(name) -> table | nil         a script module by name, loaded on first access; nil when the file is not there
+	Text (each caller keeps its fallback):
+		tr(id, fallback)                    the string table's text; fallback (or id) when it has no such id. "" is a text
+		tr_nonempty(id, fallback)           as tr, an empty text counts as missing too
+		trs(id, fallback, ...)              as tr_nonempty, then every %s filled in order with tostring of the next argument
+	Players (read once per frame from coop.players()):
+		players() -> { row, ... }           this frame's list, the same table for every caller in the frame: read only. No
+		                                    sort, insert, remove or field write, on the list or on a row: the next caller
+		                                    would get it changed. A caller that sorts or changes it takes players_by_id()
+		players_by_id() -> { row, ... }     a private copy of this frame's list, sorted by peer id: the caller's own array
+		                                    (the rows in it are still shared and read only)
+		player_row(peer) -> row | nil       that peer's row of this frame
+		nick(peer) -> string | nil          his nick, nil when he has no row or no nick
+		nick_of_character(id) -> string|nil the nick of the player whose character has local id `id`
+	Game data:
+		bare_faction(f) -> string | nil     "actor_stalker" and "stalker" are one faction: the name without "actor_"; nil for
+		                                    anything that is not a name (a non-string, "", "actor_")
+		level_of_gvid(gvid) -> number | nil the level id of a game vertex
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local type, ipairs, pcall, tostring, tonumber, select = type, ipairs, pcall, tostring, tonumber, select
+local table_sort = table.sort
+local string_format = string.format
+
+MAX_PEER = 16
+
+-------------------------------------------------------------------------------
+-- Log and start
+-------------------------------------------------------------------------------
+function logger(head)
+	return function(fmt, ...)
+		local ok, line = pcall(string_format, fmt, ...)
+		printf("%s %s", head, ok and line or tostring(fmt))
+	end
+end
+
+function start_step(tag, what, f, ...)
+	local ok, err = pcall(f, ...)
+	if not ok then printf("! [%s] %s failed: %s", tag, what, tostring(err)) end
+	return ok
+end
+
+local status_names = {}
+local status_known = {}
+
+function add_status(name)
+	if type(name) ~= "string" or status_known[name] then return end
+	status_known[name] = true
+	status_names[#status_names + 1] = name
+end
+
+function print_statuses(log)
+	for _, name in ipairs(status_names) do
+		local m = rawget(_G, name)
+		if m and m.print_status then
+			local ok, err = pcall(m.print_status)
+			if not ok then log("! %s.print_status: %s", name, tostring(err)) end
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Engine
+-------------------------------------------------------------------------------
+function active()
+	if not api then return false end
+	local ok, v = pcall(api.is_active)
+	return ok and v == true
+end
+
+function call(f, ...)
+	if type(f) ~= "function" then return nil end
+	local ok, v = pcall(f, ...)
+	if ok then return v end
+	return nil
+end
+
+local file_known = {} -- name -> the script file is there
+
+local function script_exists(name) return getFS():exist("$game_scripts$", name .. ".script") end
+-- _G.__index loads gamedata\scripts\<name>.script on the first access
+local function global_of(name) return _G[name] end
+
+-- The file is checked before _G is touched, so an absent addon costs one look, once.
+function module(name)
+	if type(name) ~= "string" then return nil end
+	local m = rawget(_G, name)
+	if m == nil then
+		local known = file_known[name]
+		if known == nil then
+			local ok, ex = pcall(script_exists, name)
+			known = (not ok) or (ex ~= nil and ex ~= false) -- cannot check: let _G decide
+			file_known[name] = known
+		end
+		if not known then return nil end
+		local ok, r = pcall(global_of, name)
+		m = ok and r or nil
+	end
+	return type(m) == "table" and m or nil
+end
+
+-------------------------------------------------------------------------------
+-- Text
+-------------------------------------------------------------------------------
+-- the string table's text of `id`, nil when it has none (it returns the id itself) or cannot be asked
+local function translated(id)
+	local g = rawget(_G, "game")
+	local f = g and g.translate_string
+	if type(f) ~= "function" then return nil end
+	local ok, s = pcall(f, id)
+	if ok and type(s) == "string" and s ~= id then return s end
+	return nil
+end
+
+function tr(id, fallback)
+	return translated(id) or fallback or id
+end
+
+function tr_nonempty(id, fallback)
+	local s = translated(id)
+	if s ~= nil and s ~= "" then return s end
+	return fallback or id
+end
+
+function trs(id, fallback, ...)
+	local s = translated(id)
+	if s == nil or s == "" then s = fallback end
+	if select("#", ...) > 0 then
+		local args, i = { ... }, 0
+		s = s:gsub("%%s", function()
+			i = i + 1
+			return tostring(args[i])
+		end)
+	end
+	return s
+end
+
+-------------------------------------------------------------------------------
+-- Players
+-------------------------------------------------------------------------------
+-- One coop.players() per frame. Input: the engine's player list (a new table on every call of it, so this file owns the
+-- one it keeps); reset: the next frame (time_global moves). Handed out as it is, with no copy: every caller reads it.
+local NO_ROWS = {} -- no session, or the engine cannot list: shared and read only like any frame's list
+local rows_at = nil
+local rows = NO_ROWS
+
+local function frame_rows()
+	local now = time_global()
+	if now == rows_at then return rows end
+	rows_at = now
+	rows = NO_ROWS
+	if api then
+		local ok, list = pcall(api.players)
+		if ok and type(list) == "table" then rows = list end
+	end
+	return rows
+end
+
+players = frame_rows
+
+local function by_id(a, b) return (tonumber(a.id) or 0) < (tonumber(b.id) or 0) end
+
+function players_by_id()
+	local list = frame_rows()
+	local out = {}
+	for i = 1, #list do out[i] = list[i] end
+	table_sort(out, by_id)
+	return out
+end
+
+function player_row(peer)
+	for _, p in ipairs(frame_rows()) do
+		if type(p) == "table" and p.id == peer then return p end
+	end
+	return nil
+end
+
+local function nick_of_row(p)
+	if p and type(p.nick) == "string" and p.nick ~= "" then return p.nick end
+	return nil
+end
+
+function nick(peer)
+	return nick_of_row(player_row(peer))
+end
+
+function nick_of_character(id)
+	if type(id) ~= "number" then return nil end
+	for _, p in ipairs(frame_rows()) do
+		if type(p) == "table" and p.avatar_id == id then return nick_of_row(p) end
+	end
+	return nil
+end
+
+-------------------------------------------------------------------------------
+-- Game data
+-------------------------------------------------------------------------------
+function bare_faction(f)
+	if type(f) ~= "string" then return nil end
+	f = f:gsub("^actor_", "")
+	return f ~= "" and f or nil
+end
+
+local function level_id_of(gvid) return game_graph():vertex(gvid):level_id() end
+
+function level_of_gvid(gvid)
+	if type(gvid) ~= "number" then return nil end
+	local ok, lid = pcall(level_id_of, gvid)
+	if ok then return lid end
+	return nil
+end

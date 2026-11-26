@@ -1,0 +1,64 @@
+-- Ядро: без проверок режима (docs/MODES.md)
+--[[
+	Anomaly Coop - the HUD widget kit (gamedata\scripts\coop_hud_kit.script): one copy of what every HUD overlay does to its
+	windows. A widget is the table el(e) makes around a window `e`; the kit remembers what it last set there and calls the
+	engine only when the value changes.
+
+		argb(a, rgb) -> color     alpha 0..255 rounded and clamped, rgb = { r, g, b }
+		el(e) -> widget           { e = e }
+		put(t, x, y[, w, h])      position, and size when w is given
+		show(t, on)               shown or hidden by the widget's own flag (any value of `on` counts as a boolean)
+		tint(t, a, rgb)           the texture color argb(a, rgb)
+		live() -> bool            the HUD of a session runs here: a session is active and this process decides the world
+		                          or has loaded it (coop.is_live)
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local pcall = pcall
+local math_max, math_min, math_floor = math.max, math.min, math.floor
+
+function argb(a, rgb)
+	return GetARGB(math_max(0, math_min(255, math_floor(a + 0.5))), rgb[1], rgb[2], rgb[3])
+end
+
+function el(e)
+	return { e = e }
+end
+
+function put(t, x, y, w, h)
+	if t.x ~= x or t.y ~= y then
+		t.e:SetWndPos(vector2():set(x, y))
+		t.x, t.y = x, y
+	end
+	if w and (t.w ~= w or t.h ~= h) then
+		t.e:SetWndSize(vector2():set(w, h))
+		t.w, t.h = w, h
+	end
+end
+
+function show(t, on)
+	on = on and true or false
+	if t.shown ~= on then
+		t.shown = on
+		t.e:Show(on)
+	end
+end
+
+function tint(t, a, rgb)
+	local c = argb(a, rgb)
+	if t.tinted ~= c then
+		t.tinted = c
+		t.e:SetTextureColor(c)
+	end
+end
+
+-- Called every frame by every overlay: no closure; an engine call that raises means "not live".
+function live()
+	if not api then return false end
+	local ok, on = pcall(api.is_active)
+	if not (ok and on) then return false end
+	if coop_mode.decides_world() then return true end
+	ok, on = pcall(api.is_live)
+	return ok and on == true
+end

@@ -20,6 +20,7 @@
 		is_player_mirror()   this process is a player's machine: its objects are copies
 		seat_plays(peer)     the seat of that peer plays a character (seat 0: is the host's seat a player)
 		group_travels()      the group moves between maps together
+		leads_for_world_elsewhere()  this process leads the map it has loaded for a world another process decides
 		from_level(from)    the transport sender is a registered map-server bridge on the active Server world
 		facts_of(peer)       { talking = bool|nil, partner = id|false|nil }: what the map server of that player's map
 		                     reported of his body, where it is reported to this process (the world server); nil: the
@@ -53,7 +54,11 @@
 		                     The only place a srv script registers callbacks, condition functions, events and saves
 		                     (check_layers L9). `layer`: the srv layer itself, passed by scripts\coop_srv_mode.script
 		                     only: L9 lets a srv script call nothing at load but this function
+	Start:
+		at_first_update(fn)  fn() at the actor's first update, or at the next update when that is over already
+		late_load(load_state) load_state(m) with what the save loaded before the caller registered its load_state
 	print_status()           coop_status: which layers are installed and which one answers
+	timing_sites             the questions coop_route's timing counts and times while it is on (docs\MEASURE.md)
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
@@ -79,7 +84,9 @@ end
 
 -- a fault of a layer is told three times, then every 100th
 local faults = {}
+local fault_count = 0 -- every fault: an answer asked while one happened is not kept (below)
 local function fault(what, e)
+	fault_count = fault_count + 1
 	local n = (faults[what] or 0) + 1
 	faults[what] = n
 	if n <= 3 or n % 100 == 0 then log("! %s (#%d): %s", tostring(what), n, tostring(e)) end
@@ -154,6 +161,20 @@ local FAR_STUB = {
 local layers = {} -- name -> layer table
 local pending = {} -- when_srv functions that have not run yet, in the order they came
 local flushing = false
+-- The kept answers of the questions without arguments (below): question -> the coop.mode_stamp() value it was asked
+-- under, and the answer. NOT_KEPT is a value no stamp call returns, not even a failing one, so it never matches.
+-- `generation` counts every forget().
+local NOT_KEPT = {}
+local kept_stamp = { actor_is_player = NOT_KEPT, decides_world = NOT_KEPT, leads_here = NOT_KEPT,
+	is_player_mirror = NOT_KEPT, group_travels = NOT_KEPT }
+local kept_value = {}
+local generation = 0
+
+-- install, uninstall and when_srv change which layer answers: every kept answer is asked again
+local function forget()
+	generation = generation + 1
+	for k in pairs(kept_stamp) do kept_stamp[k] = NOT_KEPT end
+end
 
 local function valid(layer)
 	if type(layer) ~= "table" or not KNOWN[layer.name] then return false, "not a layer (name hostplay or srv)" end
@@ -209,16 +230,19 @@ function install(layer)
 	end
 	if layers[layer.name] and layers[layer.name] ~= layer then log("the %s layer is replaced", layer.name) end
 	layers[layer.name] = layer
+	forget()
 	return true
 end
 
 function uninstall(name)
 	if not KNOWN[name] then return false end
 	layers[name] = nil
+	forget()
 	return true
 end
 
 function when_srv(fn, layer)
+	forget()
 	if layer ~= nil then
 		if type(layer) == "table" and layer.name == "srv" then install(layer) else log("! when_srv: the layer is not srv") end
 	end
@@ -255,11 +279,51 @@ function decider(peer)
 	return NONE.decider(peer)
 end
 
-function actor_is_player() return ask("actor_is_player") == true end
-function decides_world() return ask("decides_world") == true end
-function leads_here() return ask("leads_here") == true end
-function is_player_mirror() return ask("is_player_mirror") == true end
-function group_travels() return ask("group_travels") == true end
+-- The questions without arguments are kept for one value of coop.mode_stamp() (HOT-7). The engine changes that value at
+-- the start of every frame and at every event inside a frame that can change an answer of this facade (a session starts,
+-- stops or changes its phase, this process changes its role, a peer joins or leaves, a level starts or changes or the
+-- level split changes, a map-server link comes or goes, a character changes its level), and never gives one value in two
+-- frames: an answer kept under a value is the layer's answer for as long as the engine returns it. What the engine does
+-- not see changes the kept answers through forget(): install, uninstall and when_srv.
+-- `answer` is chosen once, when this file loads: an exe without the stamp asks the layer at every question as it always
+-- did; with the stamp a question costs the stamp's call and a compare. The stamp runs under pcall (the facade's questions
+-- never raise): a failing stamp is logged once and answers are no longer kept. An answer asked while a fault was logged is
+-- not kept (the fault count and its log lines stay those of every call); an answer asked while the layers changed (a
+-- waiting when_srv function ran in it) is not kept either. A miss asks through current(), so the waiting when_srv
+-- functions run on the same question as without the stamp.
+-- Not kept: far(), which depends on whether the server's script has loaded, not on the stamp's events; and the questions
+-- that take an argument (where, decider, seat_plays, writes, presence, op_done, from_level, facts_of, hook).
+local stamp_of = api and api.mode_stamp
+if type(stamp_of) ~= "function" then stamp_of = nil end
+
+local answer = ask
+
+local function kept(k)
+	local ok, stamp = pcall(stamp_of)
+	if kept_stamp[k] == stamp then return kept_value[k] end
+	if not ok then
+		log("! coop.mode_stamp failed, the answers are asked every time from now on: %s", tostring(stamp))
+		answer = ask
+		return ask(k)
+	end
+	local gen, faults_before = generation, fault_count
+	local v = ask(k)
+	if type(stamp) == "number" and gen == generation and faults_before == fault_count then
+		kept_stamp[k], kept_value[k] = stamp, v
+	end
+	return v
+end
+
+if stamp_of then answer = kept end
+
+function actor_is_player() return answer("actor_is_player") == true end
+function decides_world() return answer("decides_world") == true end
+function leads_here() return answer("leads_here") == true end
+function is_player_mirror() return answer("is_player_mirror") == true end
+function group_travels() return answer("group_travels") == true end
+
+-- A map server's question: the map it has loaded is led here, the world is decided by another process.
+function leads_for_world_elsewhere() return leads_here() and not decides_world() end
 
 function seat_plays(peer)
 	peer = peer_of(peer)
@@ -362,6 +426,17 @@ end
 function share_up(name, get, set, every) return share("share_up", name, get, set, every) end
 function share_down(name, get, set, every) return share("share_down", name, get, set, every) end
 
+-- The questions coop_route's timing counts and times (docs\MEASURE.md, clock group "mode"): while it is on, they are swapped
+-- in this module's table for timed copies; off, every question is the function above. The key is the module's own table
+-- (the environment this file runs in), where callers find coop_mode.x.
+timing_sites = { [getfenv(1)] = {
+	where = "where", decider = "decider", actor_is_player = "actor_is_player", decides_world = "decides_world",
+	leads_here = "leads_here", is_player_mirror = "is_player_mirror", seat_plays = "seat_plays",
+	group_travels = "group_travels", leads_for_world_elsewhere = "leads_for_world_elsewhere", writes = "writes",
+	presence = "presence", op_done = "op_done", from_level = "from_level", facts_of = "facts_of", hook = "hook",
+	far = "far",
+} }
+
 -------------------------------------------------------------------------------
 -- Delivery
 -------------------------------------------------------------------------------
@@ -425,6 +500,29 @@ function print_status()
 	end
 	log("layers %s, answers %s, when_srv waiting %d", #have > 0 and table.concat(have, ",") or "-", current().name,
 		#pending)
+end
+
+-- fn() at the actor's first update; when that update is over already (a world server's session starts after its world is
+-- up, so its srv layer answers late), at the next update instead.
+function at_first_update(fn)
+	local seen = false
+	local function late()
+		UnregisterScriptCallback("actor_on_update", late)
+		if not seen then fn() end
+	end
+	RegisterScriptCallback("actor_on_first_update", function()
+		seen = true
+		fn()
+	end)
+	RegisterScriptCallback("actor_on_update", late)
+end
+
+-- load_state(m) with what the save brought when it was loaded before the caller registered its load_state (a world server
+-- loads its save before its session starts, and so before its srv scripts register).
+function late_load(load_state)
+	local asm = rawget(_G, "alife_storage_manager")
+	local m = asm and type(asm.get_state) == "function" and asm.get_state() or nil
+	if type(m) == "table" then load_state(m) end
 end
 
 -- A player's machine learns the server mode from its first level map (step S3 moves that into Welcome): the waiting

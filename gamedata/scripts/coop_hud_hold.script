@@ -1,0 +1,123 @@
+-- Ядро: без проверок режима (docs/MODES.md)
+--[[
+	Anomaly Coop - "hold the use key" (gamedata\scripts\coop_hud_hold.script): the key and hold state machine of the HUD
+	boards that act on a held key. The board keeps what is specific to it: when a hold may start, what the hold is for
+	(`kind`), how long it lasts, what it does and every log line.
+
+	Another script may take the key's press before the board sees it; then the hold starts from the key's hold events,
+	and `gap_ms` without hold events is its release. A hold that ends while the key stays down latches the key: a new hold
+	waits for it to be let go.
+
+		h = coop_hud_hold.new(gap_ms, on_drop)   on_drop(hold, tg, why): a hold ended before it fired (the board logs it)
+		h:press(tg)                    the key went down
+		h:hold_event(tg)               a hold event of the key (every frame while it is down)
+		h:release(tg, why)             the key was let go; why: the drop's reason when a hold runs (the board formats it)
+		h:may_start() -> bool          no hold runs and the key is not latched
+		h:start(tg, kind)              a hold begins (h.hold = { kind, since, fired })
+		h:latch()                      this press belongs to something else: no hold until the key is let go
+		h:drop(tg, why)                the hold ends
+		h:key_step(tg) -> bool         per frame, first: the key's events stopped (its release went to another script):
+		                               the key is up and the hold dropped; true while a hold still runs
+		h:hidden_step(tg, visible, why) -> bool  per frame, after key_step returned true and the board's own drop checks:
+		                               the HUD hidden longer than gap_ms drops the hold; true when dropped. With no hold
+		                               (a board that calls it out of that order) it changes nothing and returns false
+		h:due(tg, ms) -> bool          true once, on the frame the hold has lasted `ms`: it fires
+		h:fraction(tg, ms) -> 0..1     how far the running hold is (0 when none or fired)
+		h:reset()                      the board is gone: no hold, the key up
+--]]
+
+local setmetatable = setmetatable
+local math_max, math_min = math.max, math.min
+
+local Hold = {}
+Hold.__index = Hold
+
+function new(gap_ms, on_drop)
+	return setmetatable({
+		gap_ms = gap_ms,
+		on_drop = on_drop,
+		hold = nil,
+		key = { down = false, events_at = nil, seen = false, latched = false },
+	}, Hold)
+end
+
+function Hold:drop(tg, why)
+	local hold = self.hold
+	if not hold then return end
+	if not hold.fired and why then self.on_drop(hold, tg, why) end
+	self.hold = nil
+	if self.key.down then self.key.latched = true end
+end
+
+function Hold:press(tg)
+	local key = self.key
+	key.down, key.events_at, key.seen, key.latched = true, tg, false, false
+end
+
+function Hold:hold_event(tg)
+	local key = self.key
+	if not key.down then key.down, key.latched = true, false end -- the press never came here
+	key.events_at, key.seen = tg, true
+end
+
+function Hold:release(tg, why)
+	local key = self.key
+	key.down, key.seen, key.latched = false, false, false
+	if self.hold then self:drop(tg, why) end
+end
+
+function Hold:may_start()
+	return not self.hold and not self.key.latched
+end
+
+function Hold:start(tg, kind)
+	self.hold = { kind = kind, since = tg, fired = false }
+end
+
+function Hold:latch()
+	self.key.latched = true
+end
+
+function Hold:key_step(tg)
+	local key = self.key
+	if key.down and key.seen and key.events_at and tg - key.events_at > self.gap_ms then
+		key.down, key.seen, key.latched = false, false, false
+		self:drop(tg, "the key's events stopped")
+	end
+	return self.hold ~= nil
+end
+
+function Hold:hidden_step(tg, visible, why)
+	local hold = self.hold
+	if not hold then return false end
+	if visible then
+		hold.hidden_at = nil
+	elseif not hold.hidden_at then
+		hold.hidden_at = tg
+	elseif tg - hold.hidden_at > self.gap_ms then
+		self:drop(tg, why)
+		return true
+	end
+	return false
+end
+
+function Hold:due(tg, ms)
+	local hold = self.hold
+	if hold and not hold.fired and tg - hold.since >= ms then
+		hold.fired = true
+		return true
+	end
+	return false
+end
+
+function Hold:fraction(tg, ms)
+	local hold = self.hold
+	if not (hold and not hold.fired) then return 0 end
+	return math_max(0, math_min(1, (tg - hold.since) / ms))
+end
+
+function Hold:reset()
+	local key = self.key
+	self.hold = nil
+	key.down, key.events_at, key.seen, key.latched = false, nil, false, false
+end
