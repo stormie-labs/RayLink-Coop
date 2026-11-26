@@ -1,6 +1,6 @@
 -- Ядро: без проверок режима (docs/MODES.md)
 --[[
-	Anomaly Coop - combat perks of third-party mods (gamedata\scripts\coop_mods_perks.script), W4 "mods".
+	Anomaly Coop - combat perks of third-party mods (gamedata\scripts\coop_mods_perks.script).
 
 	Perk-Based Artefacts (perk_based_artefacts) and Haru's Skill System (haru_skills) read the belt and the skills
 	of `db.actor`, the player of THIS machine. In a session a client's shot is applied on the host, where db.actor is
@@ -22,9 +22,9 @@ local api = rawget(_G, "coop")
 
 local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
 
-local function C() return coop_mods_core end
-local function P() return coop_mods_pdata end
-local function log(fmt, ...) C().log("perks", fmt, ...) end
+local core = coop_mods_core
+local pdata = coop_mods_pdata
+local function log(fmt, ...) core.log("perks", fmt, ...) end
 
 local MAX_SECTIONS = 25
 local EXTRA_SECTIONS = { "ied_new_blow" } -- created by a perk's code, not named in its tables
@@ -34,12 +34,12 @@ local installed = {}
 
 local function remote_drafts(s_hit)
 	local ok, id = pcall(function() return s_hit.draftsman:id() end)
-	return ok and C().is_remote_player(id)
+	return ok and core.is_remote_player(id)
 end
 
 local function remote_who(who)
 	local ok, id = pcall(function() return who:id() end)
-	return ok and C().is_remote_player(id)
+	return ok and core.is_remote_player(id)
 end
 
 local function own_who(who)
@@ -53,12 +53,12 @@ end
 local skills_orig, skills_wrapper = nil, nil
 
 local function install_skills()
-	local hs = C().mod("haru_skills")
+	local hs = core.mod("haru_skills")
 	if not hs then return end
-	P().register("skills_levels", { prime = { "haru_skills" } })
-	local ok, orig = C().wrap(hs, "creature_on_before_hit", "haru_skills.creature_on_before_hit", function(orig)
+	pdata.register("skills_levels", { prime = { "haru_skills" } })
+	local ok, orig = core.wrap(hs, "creature_on_before_hit", "haru_skills.creature_on_before_hit", function(orig)
 		return function(npc, s_hit, ...)
-			if C().active() and coop_mode.leads_here() and s_hit and remote_drafts(s_hit) then
+			if core.active() and coop_mode.leads_here() and s_hit and remote_drafts(s_hit) then
 				st.skipped_hits = st.skipped_hits + 1
 				return
 			end
@@ -75,7 +75,7 @@ end
 local function rebind_skills()
 	if not skills_wrapper then return end
 	for _, name in ipairs({ "npc_on_before_hit", "monster_on_before_hit" }) do
-		C().swap_callback(name, skills_orig, skills_wrapper)
+		core.swap_callback(name, skills_orig, skills_wrapper)
 	end
 end
 
@@ -98,10 +98,10 @@ end
 local function allowed_sections()
 	if allowed then return allowed end
 	allowed = {}
-	local pba = C().mod("perk_based_artefacts")
+	local pba = core.mod("perk_based_artefacts")
 	if pba and type(pba.artefact_props) == "table" then
 		local ok, e = pcall(collect_sections, pba.artefact_props, allowed, 0)
-		if not ok then C().report("perks", "section list", e) end
+		if not ok then core.report("perks", "section list", e) end
 	end
 	for _, s in ipairs(EXTRA_SECTIONS) do
 		if ini_sys:section_exist(s) then allowed[s] = true end
@@ -121,7 +121,7 @@ end
 -- would repeat their load-time patches of other mods. Unknown versions keep the original and are reported.
 -- Outside a session (and on the decider) the wrapper calls that original unchanged.
 local function death_rewrite(tbl, key, label, changes)
-	local orig = C().fn(tbl, key)
+	local orig = core.fn(tbl, key)
 	local info = orig and debug.getinfo(orig, "S")
 	local file = info and info.source:match("([^/\\@]+%.script)$")
 	if file ~= "perk_based_artefacts.script" and file ~= "momopate_pba_tweaks.script" then return end
@@ -156,7 +156,7 @@ local function death_rewrite(tbl, key, label, changes)
 	end
 	local decl = #names > 0 and ("local " .. table.concat(names, ",") .. "; ") or ""
 	local chunk, err = loadstring(string.rep("\n", info.linedefined - 1) .. decl .. "return " .. text, info.source)
-	if not chunk then C().report("perks", label, err); return end
+	if not chunk then core.report("perks", label, err); return end
 	setfenv(chunk, getfenv(orig))
 	local fixed = chunk()
 	for i = 1, 255 do
@@ -164,9 +164,9 @@ local function death_rewrite(tbl, key, label, changes)
 		if not name then break end
 		if values[name] then debug.setupvalue(fixed, i, values[name][1]) end
 	end
-	C().wrap(tbl, key, label, function(original)
+	core.wrap(tbl, key, label, function(original)
 		return function(...)
-			if C().active() and coop_mode.is_player_mirror() then return fixed(...) end
+			if core.active() and coop_mode.is_player_mirror() then return fixed(...) end
 			return original(...)
 		end
 	end)
@@ -228,11 +228,11 @@ local function client_death(orig, tbl, victim, who, ...)
 	local ok, e = pcall(orig, tbl, victim, who, ...)
 	_G.alife_create, _G.alife_release, _G.alife_release_id = real_create, real_release, real_release_id
 	_G.alife_create_item = real_create_item
-	if not ok then C().report("perks", "death perks", e) end
+	if not ok then core.report("perks", "death perks", e) end
 	if #cap.spawn == 0 and not cap.release then return end
 	local n = math.min(#cap.spawn, MAX_SECTIONS)
 	local s = table.concat(cap.spawn, "|", 1, n)
-	if C().to_host("pba_corpse", { v = C().hid(vid), s = s, r = cap.release }) then st.corpse_out = st.corpse_out + 1 end
+	if core.to_host("pba_corpse", { v = core.hid(vid), s = s, r = cap.release }) then st.corpse_out = st.corpse_out + 1 end
 end
 
 -- Host: the world part of a client's death perks.
@@ -249,12 +249,12 @@ end
 local function host_corpse(t, from)
 	local wire = tonumber(t.v)
 	local bounded = wire and wire > 0 and wire < 65535 and wire == math.floor(wire)
-	local id = bounded and C().lid(wire)
+	local id = bounded and core.lid(wire)
 	bounded = bounded and type(id) == "number" and id > 0 and id < 65535 and id == math.floor(id)
 	local accept_id = coop_trust.pass("pba_corpse_id", bounded, "corpse id from #%s is outside object bounds", tostring(from))
 	if not accept_id or not bounded then st.corpse_refused = st.corpse_refused + 1; return end
 	local victim = level.object_by_id(id)
-	local who = C().avatar(from)
+	local who = core.avatar(from)
 	local present = victim and who and (IsStalker(victim) or IsMonster(victim)) and not victim:alive()
 	local accept_body = coop_trust.pass("pba_corpse_body", present, "corpse %s from #%s is not an available dead creature", tostring(id), tostring(from))
 	if not accept_body or not present then st.corpse_refused = st.corpse_refused + 1; return end
@@ -279,7 +279,7 @@ local function host_corpse(t, from)
 	served[body] = true
 	st.corpse_in = st.corpse_in + 1
 	local ok_list = allowed_sections()
-	local pba = C().mod("perk_based_artefacts")
+	local pba = core.mod("perk_based_artefacts")
 	local skull = pba and pba.artefact_props and pba.artefact_props.af_skull_miser
 	local money_items = skull and skull.money_items or {}
 	local explode = nil
@@ -297,7 +297,7 @@ local function host_corpse(t, from)
 				for _, money in ipairs(money_items) do
 					if sec == money then
 						-- PBA's money_fountain timer needs an online object, on the machine that owns its physics.
-						C().when_online(se.id, sec, function(obj)
+						core.when_online(se.id, sec, function(obj)
 							local force = 125 + math.random() * 200
 							obj:get_physics_shell():apply_force(force, force * 5, force)
 						end, 5000)
@@ -308,7 +308,7 @@ local function host_corpse(t, from)
 		end
 	end
 	if explode then
-		C().when_online(explode.id, explode:section_name(), function(obj)
+		core.when_online(explode.id, explode:section_name(), function(obj)
 			if release then pcall(alife_release_id, id) end
 			obj:explode(0)
 		end, 5000)
@@ -328,7 +328,7 @@ end
 -- GAMMA's ballistics records hit details only where it applies damage. The owner's before-hit
 -- callback carries those details before the shot is sent, and several victims can be in flight.
 local function remember_stalker_hit(victim, s_hit, bone)
-	if C().active() and coop_mode.is_player_mirror() and s_hit and s_hit.draftsman and own_who(s_hit.draftsman) then
+	if core.active() and coop_mode.is_player_mirror() and s_hit and s_hit.draftsman and own_who(s_hit.draftsman) then
 		stalker_hits[body_key(victim)] = { hit = hit(s_hit), bone = bone }
 	end
 end
@@ -337,7 +337,7 @@ end
 -- mod's death-roll ranges for this confirmed kill without changing damage or the next mutant's roll.
 local function run_stalker_death(tbl, victim, who, orig, pba, last)
 	local props = pba.artefact_props or {}
-	local belt = C().upvalue(orig, "artefacts")
+	local belt = core.upvalue(orig, "artefacts")
 	local eye = (not belt or belt.af_dragon_eye) and props.af_dragon_eye
 	local claw = (not belt or belt.af_kogot) and props.af_kogot
 	local eye_roll, claw_roll = eye and eye.dice_roll, claw and claw.dice_roll
@@ -354,9 +354,9 @@ end
 -- The replica's death callback is raised after the confirmed EntityDied was applied. GAMMA's grok_bo replaces
 -- PBA's stalker callback with an empty function and calls its table only from its authoritative ballistics.
 local function confirmed_stalker_death(victim, who)
-	if not (C().active() and coop_mode.is_player_mirror() and victim and who and own_who(who)
+	if not (core.active() and coop_mode.is_player_mirror() and victim and who and own_who(who)
 		and IsStalker(victim) and not victim:alive()) then return end
-	local pba = C().mod("perk_based_artefacts")
+	local pba = core.mod("perk_based_artefacts")
 	if pba then
 		pba.process_artefacts(pba.artefact_on_npc_death_functions, victim, who)
 	end
@@ -364,23 +364,23 @@ end
 
 local function install_pba()
 	if pba_installed then return end
-	local pba = C().mod("perk_based_artefacts")
+	local pba = core.mod("perk_based_artefacts")
 	if not pba then return end
-	local gamma_ballistics = C().mod("grok_bo") ~= nil
+	local gamma_ballistics = core.mod("grok_bo") ~= nil
 	install_death_rewrites(pba)
-	P().register("perk_based_artefacts_cooldowns", { prime = { "perk_based_artefacts" } })
-	-- Build 56 (review of 2026-11-18, "everything a client has must come through a transition exactly as in a usual game"):
-	-- the mod's save_state writes five keys and load_state reads five; only the cooldowns were a player's own. After every
-	-- load a client ran the HOST's timed effects (his infinite sprint, his food heal), statuses (Lucifer overcharge, Moss
-	-- invisibility), virtual artefacts (Sandstone) and Lucifer condition, and lost his own. The same save_state fills them
+	pdata.register("perk_based_artefacts_cooldowns", { prime = { "perk_based_artefacts" } })
+	-- Everything a client has comes through a transition exactly as in a usual game: the mod's save_state writes five keys
+	-- and load_state reads five, and all five are a player's own. With only the cooldowns his, after every load a client
+	-- would run the HOST's timed effects (his infinite sprint, his food heal), statuses (Lucifer overcharge, Moss
+	-- invisibility), virtual artefacts (Sandstone) and Lucifer condition, and lose his own. The same save_state fills them
 	-- (the functions of an effect travel as the dumped strings the mod itself saves).
 	for _, key in ipairs({ "perk_based_artefacts_effects", "perk_based_artefacts_status_effects",
 		"perk_based_artefacts_virtual_artefacts", "perk_based_artefacts_lucifer_condition" }) do
-		P().register(key, { prime = { "perk_based_artefacts" } })
+		pdata.register(key, { prime = { "perk_based_artefacts" } })
 	end
-	local ok = C().wrap(pba, "process_artefacts", "perk_based_artefacts.process_artefacts", function(orig)
+	local ok = core.wrap(pba, "process_artefacts", "perk_based_artefacts.process_artefacts", function(orig)
 		return function(tbl, ...)
-			if not C().active() then return orig(tbl, ...) end
+			if not core.active() then return orig(tbl, ...) end
 			if is_death(pba, tbl) and not coop_mode.actor_is_player() then
 				st.skipped_deaths = st.skipped_deaths + 1
 				return
@@ -421,8 +421,8 @@ local function install_pba()
 	end)
 	if ok then
 		pba_installed = true
-		C().on("pba_corpse", host_corpse, "host")
-		C().set_limit("pba_corpse", 10, 2)
+		core.on("pba_corpse", host_corpse, "host")
+		core.set_limit("pba_corpse", 10, 2)
 		RegisterScriptCallback("npc_on_before_hit", remember_stalker_hit)
 		RegisterScriptCallback("npc_on_death_callback", confirmed_stalker_death)
 		installed[#installed + 1] = "perk_based_artefacts"
@@ -432,28 +432,21 @@ end
 -------------------------------------------------------------------------------
 -- Start
 -------------------------------------------------------------------------------
-local rebound = false
+-- One job at the first update: the handler goes once it is done.
 local function actor_on_update()
-	if rebound then return end
-	rebound = true
-	local ok, e = pcall(rebind_skills)
-	if not ok then C().report("perks", "rebind skills", e) end
+	UnregisterScriptCallback("actor_on_update", actor_on_update)
+	core.install("perks", "rebind skills", rebind_skills)
 end
 
 -- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
--- error here would skip all the scripts after this one, single player included (W5).
-local function start_step(what, f)
-	local ok, err = pcall(f)
-	if not ok then printf("! [coop_mods_perks] %s failed: %s", what, tostring(err)) end
-end
-
+-- error here would skip all the scripts after this one, single player included.
 function on_game_start()
 	if not api then return end
-	start_step("install_skills", install_skills)
-	start_step("install_pba", install_pba)
+	core.install("perks", "install_skills", install_skills)
+	core.install("perks", "install_pba", install_pba)
 	if #installed == 0 then return end
 	RegisterScriptCallback("actor_on_update", actor_on_update)
-	C().status_line("perks", function()
+	core.status_line("perks", function()
 		return string.format("%s | host: skipped hits %d, deaths %d, corpse requests %d (refused %d) | client: corpse requests %d",
 			table.concat(installed, ", "), st.skipped_hits, st.skipped_deaths, st.corpse_in, st.corpse_refused, st.corpse_out)
 	end)

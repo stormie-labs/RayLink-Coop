@@ -160,6 +160,7 @@ end
 local ORIG_COONAN = NimbleTrade.coonan_requested
 
 start_all()
+if not rawget(_G, "coop_world_events") then load_script("coop_world_events") end
 load_script("coop_mods_xchg")
 coop_mods_xchg.on_game_start()
 local loaded, N = pcall(load_script, "coop_mods_xchg_nimble")
@@ -184,12 +185,12 @@ if name == "srv_world" then
 end
 modes.install(coop_mode, name, OVERRIDES)
 
--- B-REV F7: mods.nim_held is the world's word only (the keeper of the money to the map servers): reserved, so the Lua ingress
+-- mods.nim_held is the world's word only (the keeper of the money to the map servers): reserved, so the Lua ingress
 -- refuses it from any other sender; mods.nim_done goes the other way and is not
 coop_trust.reset_for_test({ default = "refuse" })
-check(N ~= nil and coop_main.allow_world_event("mods.nim_held", BRIDGE2) == false
-	and coop_main.allow_world_event("mods.nim_held", 0) == true and coop_main.allow_world_event("mods.nim_done", BRIDGE) == true,
-	"mods.nim_held is reserved for the world (coop_main.reserve_world_event), mods.nim_done is not")
+check(N ~= nil and coop_world_events.allows("mods.nim_held", BRIDGE2) == false
+	and coop_world_events.allows("mods.nim_held", 0) == true and coop_world_events.allows("mods.nim_done", BRIDGE) == true,
+	"mods.nim_held is reserved for the world (coop_world_events.reserve), mods.nim_done is not")
 coop_trust.reset_for_test({ default = "log" })
 
 -------------------------------------------------------------------------------

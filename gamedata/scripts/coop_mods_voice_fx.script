@@ -1,8 +1,9 @@
 -- Ядро: без проверок режима (docs/MODES.md)
--- G11-3. The level decider has the companion, attacker and player's proxy. In Co-op
+-- The level decider has the companion, attacker and player's proxy. In Co-op
 -- it is the playing host. In Server it is the map process reached through the world.
 -- Players choose the actual VAR sound locally. No save data.
 
+local core = coop_mods_core
 local ORDER, WOUND = "voice_fx_order", "voice_fx_wound"
 -- The level decider sends the "squadmate hit" line once per companion in this many ms: the bound on messages while a
 -- companion is under fire. It is also the cooldown VAR starts on the player when the line plays, so after a line that
@@ -43,12 +44,8 @@ local inline = {
 	stop_loot = { "dont_loot_com_close", 3000 },
 }
 
-local function pack(...)
-	return { n = select("#", ...), ... }
-end
-
 local function player_can_speak()
-	return coop_mods_core.active() and coop_mode.actor_is_player() and db.actor and db.actor:alive()
+	return core.active() and coop_mode.actor_is_player() and db.actor and db.actor:alive()
 end
 
 local function range_of(npc, actor)
@@ -66,7 +63,7 @@ local function note_order(key)
 end
 
 local function run_order(handler, t, from)
-	if not coop_mods_core.active() or not coop_mode.leads_here() or from == 0 then return end
+	if not core.active() or not coop_mode.leads_here() or from == 0 then return end
 	local id = t.i
 	local valid_id = type(id) == "number" and id >= 1 and id < 65535 and id % 1 == 0
 	if not coop_trust.pass("voice_fx_companion_id", valid_id, "peer %s sent an invalid companion id", tostring(from)) then return end
@@ -79,27 +76,27 @@ local function run_order(handler, t, from)
 	local ok, err = pcall(handler, t, from)
 	pending = previous
 	if not ok then
-		coop_mods_core.report("voice_fx", "companion action", err)
+		core.report("voice_fx", "companion action", err)
 		return
 	end
 	if not (order.key and npc and coop_mode.where(from) == "here") then return end
-	local actor = coop_mods_core.avatar(from)
+	local actor = core.avatar(from)
 	if not (actor and actor:alive()) then return end
 	local is_companion = npc:has_info("npcx_is_companion")
 	if order.key == "joined" and (was_companion or not is_companion) then return end
 	if order.key == "left" and (not was_companion or is_companion) then return end
 	local range
 	if order.key ~= "joined" and order.key ~= "left" then range = range_of(npc, actor) end
-	coop_mods_core.to_peer(from, ORDER, { k = order.key, r = range })
+	core.to_peer(from, ORDER, { k = order.key, r = range })
 end
 
 -- axr_main loads every file before it calls any on_game_start. Interpose at registration
 -- so the existing companion handler still performs the action and its acceptance checks.
 local function install_order_route()
-	local players = coop_mods_core.mod("coop_npc_players")
-	coop_mods_core.wrap(players, "on", "voice_fx.companion_route", function(orig)
+	local players = core.mod("coop_npc_players")
+	core.wrap(players, "on", "voice_fx.companion_route", function(orig)
 		return function(name, handler, side, ...)
-			if name ~= "npc.comp" or side ~= "host" or not coop_mods_core.mod("axr_companions_varefined") then
+			if name ~= "npc.comp" or side ~= "host" or not core.mod("axr_companions_varefined") then
 				return orig(name, handler, side, ...)
 			end
 			return coop_mode.on_level_request(name, function(payload, from)
@@ -111,7 +108,7 @@ end
 
 local function play_order(t)
 	if not player_can_speak() then return end
-	local var = coop_mods_core.mod("axr_companions_varefined")
+	local var = core.mod("axr_companions_varefined")
 	if not var then return end
 	if t.k == "joined" then
 		return var.actor_speak_npc_joined()
@@ -121,14 +118,14 @@ local function play_order(t)
 	local spec, simple = commands[t.k], inline[t.k]
 	local r = t.r
 	if not (spec or simple) or type(r) ~= "number" or not (r >= 1 and r <= 5 and r % 1 == 0) then return end
-	local ac, voiced = coop_mods_core.mod("axr_companions"), coop_mods_core.mod("agdd_voiced_actor")
+	local ac, voiced = core.mod("axr_companions"), core.mod("agdd_voiced_actor")
 	if not (ac and voiced) then return end
 	local previous = command_range
 	command_range = r
 	local ok, err = pcall(function()
 		if spec then
 			ac["voiceover_companion_" .. spec]()
-		elseif coop_mods_core.upvalue(var.on_option_change, "mcm_enable_companions_commands_shouts") then
+		elseif core.upvalue(var.on_option_change, "mcm_enable_companions_commands_shouts") then
 			ac.actors_command(voiced.commands_with_lang_muffle_random(simple[1]), 1.0, simple[2], true, false, false, false, false)
 		end
 	end)
@@ -137,12 +134,12 @@ local function play_order(t)
 end
 
 local function install_orders()
-	local var = coop_mods_core.mod("axr_companions_varefined")
-	local ac = coop_mods_core.mod("axr_companions")
+	local var = core.mod("axr_companions_varefined")
+	local ac = core.mod("axr_companions")
 	if not (var and ac) then return end
 	for key, suffix in pairs(commands) do
 		local helper = "voiceover_companion_" .. suffix
-		coop_mods_core.wrap(ac, helper, "voice_fx." .. helper, function(orig)
+		core.wrap(ac, helper, "voice_fx." .. helper, function(orig)
 			return function(...)
 				if not pending then return orig(...) end
 				note_order(key)
@@ -150,16 +147,16 @@ local function install_orders()
 		end)
 	end
 	for setter, spec in pairs(toggles) do
-		coop_mods_core.wrap(ac, setter, "voice_fx." .. setter, function(orig)
+		core.wrap(ac, setter, "voice_fx." .. setter, function(orig)
 			return function(npc, ...)
 				if not pending then return orig(npc, ...) end
-				local result = pack(orig(npc, ...))
+				local result = core.pack(orig(npc, ...))
 				note_order(npc:has_info(spec[1]) and spec[2] or spec[3])
 				return unpack(result, 1, result.n)
 			end
 		end)
 	end
-	coop_mods_core.wrap(ac, "actors_command", "voice_fx.actors_command", function(orig)
+	core.wrap(ac, "actors_command", "voice_fx.actors_command", function(orig)
 		return function(file, volume, cooldown, ...)
 			if pending then return end
 			if not command_range then return orig(file, volume, cooldown, ...) end
@@ -170,19 +167,19 @@ local function install_orders()
 	end)
 	for _, key in ipairs({ "joined", "left" }) do
 		local helper = "actor_speak_npc_" .. key
-		coop_mods_core.wrap(var, helper, "voice_fx." .. helper, function(orig)
+		core.wrap(var, helper, "voice_fx." .. helper, function(orig)
 			return function(...)
 				if not pending then return orig(...) end
 				pending.key = key -- the stock recruit can also run command setters
 			end
 		end)
 	end
-	coop_mods_core.on(ORDER, play_order, "player")
+	core.on(ORDER, play_order, "player")
 end
 
 local function play_wound()
 	if not player_can_speak() then return end
-	local v = coop_mods_core.mod("agdd_voiced_actor")
+	local v = core.mod("agdd_voiced_actor")
 	if v then v.actor_speak_default(v.squad_with_lang_muffle("squadmate_hit"), 1.0, WOUND_GAP_MS, 100) end
 end
 
@@ -191,7 +188,7 @@ end
 -- map whose own actor is nobody's. Nobody named: the companion acts for this process's player, and play_wound stays
 -- silent where that actor is nobody's.
 local function on_npc_hit(npc, amount, _, attacker)
-	if not coop_mods_core.active() or not coop_mode.leads_here() then return end
+	if not core.active() or not coop_mode.leads_here() then return end
 	if not (npc and attacker and type(amount) == "number" and amount > 0 and npc:has_info("npcx_is_companion")) then return end
 	local id, now = npc:id(), time_global()
 	local last = wound_at[id]
@@ -203,45 +200,45 @@ local function on_npc_hit(npc, amount, _, attacker)
 	wound_at[id] = now
 	local player = coop_npc_companions.follows(npc)
 	if not player then return play_wound() end
-	local peer = coop_mods_core.peer_of(player:id())
-	if peer then coop_mods_core.to_peer(peer, WOUND, { m = level.name() }) end
+	local peer = core.peer_of(player:id())
+	if peer then core.to_peer(peer, WOUND, { m = level.name() }) end
 end
 
 local function install_wounds()
-	local v = coop_mods_core.mod("agdd_voiced_actor")
-	if not (v and coop_mods_core.mod("dialogs_axr_companion")) then return end
-	if not (coop_mods_core.fn(v, "actor_speak_default") and coop_mods_core.fn(v, "squad_with_lang_muffle")) then return end
+	local v = core.mod("agdd_voiced_actor")
+	if not (v and core.mod("dialogs_axr_companion")) then return end
+	if not (core.fn(v, "actor_speak_default") and core.fn(v, "squad_with_lang_muffle")) then return end
 	-- Keep the original hit closure, its callback domain and its combat-intensity
 	-- logic, including when world.fight calls it directly. Redirect just its wound
 	-- predicate, even if VAR already registered the closure by value.
-	local patched = coop_mods_core.wrap(v, "npc_on_hit_callback", "voice_fx.stock_wound", function(orig)
+	local patched = core.wrap(v, "npc_on_hit_callback", "voice_fx.stock_wound", function(orig)
 		local env = getfenv(orig)
 		local dialog = { is_actor_companion = function(...)
-			if coop_mods_core.active() then return false end
+			if core.active() then return false end
 			return env.dialogs_axr_companion.is_actor_companion(...)
 		end }
 		setfenv(orig, setmetatable({ dialogs_axr_companion = dialog }, { __index = env, __newindex = env }))
 		return orig
 	end)
 	if not patched then return end
-	coop_mods_core.on(WOUND, function(t)
+	core.on(WOUND, function(t)
 		if t.m == level.name() then play_wound() end
 	end, "player")
 	RegisterScriptCallback("npc_on_hit_callback", on_npc_hit)
 end
 
 local function install_servos()
-	local m = coop_mods_core.mod("z_npc_footsteps")
-	coop_mods_core.wrap(m, "npc_on_foot_step", "voice_fx.local_servo", function(orig)
+	local m = core.mod("z_npc_footsteps")
+	core.wrap(m, "npc_on_foot_step", "voice_fx.local_servo", function(orig)
 		-- The binder captures this closure and the mod caches one sound per visual.
 		-- Adapt reads of that cache so even an existing callback and sound are covered.
-		local sounds, holder, slot = coop_mods_core.upvalue(orig, "sound_table")
+		local sounds, holder, slot = core.upvalue(orig, "sound_table")
 		if type(sounds) ~= "table" then return end
 		local adapters = {}
 		debug.setupvalue(holder, slot, setmetatable({}, {
 			__index = function(_, id)
 				local sound = sounds[id]
-				if not sound or not coop_mods_core.active() then return sound end
+				if not sound or not core.active() then return sound end
 				if not adapters[id] then
 					adapters[id] = { play_at_pos = function(_, _, pos, delay, flags)
 						return sound:play_at_pos(nil, pos, delay, flags)
@@ -257,17 +254,12 @@ local function install_servos()
 	end)
 end
 
-local function start_step(name, fn)
-	local ok, err = pcall(fn)
-	if not ok then printf("[coop-mods] [voice_fx] %s: %s", name, tostring(err)) end
-end
-
 function on_game_start()
 	if not rawget(_G, "coop") or started then return end
 	started = true
-	start_step("orders", install_orders)
-	start_step("wounds", install_wounds)
-	start_step("servos", install_servos)
+	core.install("voice_fx", "orders", install_orders)
+	core.install("voice_fx", "wounds", install_wounds)
+	core.install("voice_fx", "servos", install_servos)
 end
 
-if rawget(_G, "coop") then start_step("companion route", install_order_route) end
+if rawget(_G, "coop") then core.install("voice_fx", "companion route", install_order_route) end

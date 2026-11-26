@@ -1,6 +1,6 @@
 -- Ядро: без проверок режима (docs/MODES.md)
 --[[
-	Anomaly Coop - Weapon Parts Overhaul: an item in the hands of any player is a player's item (TZ R92)
+	Anomaly Coop - Weapon Parts Overhaul: an item in the hands of any player is a player's item
 	(gamedata\scripts\coop_mods_wpo_holder.script)
 
 	G.A.M.M.A.'s Weapon Parts Overhaul (a_wpo_parts.script) asks the machine one thing about an item: who holds it. Its price
@@ -10,7 +10,7 @@
 	machine (id 0), and on the decider of his deals (the co-op host, the map server of his level) the same items are held by his
 	character, a stalker with another id: there WPO took them for a trader's goods.
 
-	TZ R92 (owner, 2026-11-25, variant 1 "as in single player"): the decider counts the window's formula as for itself, with no
+	As in single player, the decider counts the window's formula as for itself, with no
 	stand-in for the player; WPO's "in the actor's hands" becomes "in the hands of any player". install() puts a wrapper over each
 	of WPO's two functions:
 	  - the item's holder is a player's character (coop_npc_players.is_player_id, id ~= 0): WPO's branch of the actor. The price is
@@ -23,9 +23,10 @@
 	sums with those, and the decider (coop_trade_window.host_price) prices with them, so both count with one function.
 	A function is WPO's when its environment is the a_wpo_parts namespace (the engine loads every script into its own table).
 
-	Lazy: coop_trade_window calls install() before it prices; it does its work once a_wpo_parts is loaded, and the utils_ui part
-	once utils_ui is loaded too. No WPO: nothing. Again: a slot that holds our wrapper (or anything that is not WPO's) is left, so
-	nothing is wrapped twice; one function of WPO gets one wrapper wherever it sits.
+	Lazy: install() runs before every pricing of the trade window (coop_trade_window.before_pricing); it does its work
+	once a_wpo_parts is loaded, and the utils_ui part once utils_ui is loaded too. No WPO: nothing. Again: a slot that
+	holds our wrapper (or anything that is not WPO's) is left, so nothing is wrapped twice; one function of WPO gets one
+	wrapper wherever it sits.
 --]]
 
 local pairs, pcall, type, tostring, tonumber = pairs, pcall, type, tostring, tonumber
@@ -188,8 +189,14 @@ function is_ours(f)
 	return ours[f] == true
 end
 
-function print_status()
-	log("Weapon Parts Overhaul by any player's hands: %s, %d place(s) in utils_item, %d in utils_ui, %d items of players priced, "
-		.. "%d busted weapons | errors %d", wpo() and (done and "installed" or "waiting for utils_ui") or "no WPO",
-		stats.utils_item, stats.utils_ui, stats.players, stats.busted, stats.errors)
+local function status()
+	return string.format("Weapon Parts Overhaul by any player's hands: %s, %d place(s) in utils_item, %d in utils_ui, "
+		.. "%d items of players priced, %d busted weapons | errors %d", wpo() and (done and "installed" or "waiting for utils_ui")
+		or "no WPO", stats.utils_item, stats.utils_ui, stats.players, stats.busted, stats.errors)
+end
+
+-- coop_status: the line goes with the other adapters' (install itself waits for the trade window).
+function on_game_start()
+	coop_mods_core.status_line("wpo_holder", status)
+	coop_trade_window.before_pricing(install)
 end

@@ -1,7 +1,7 @@
 -- Ядро: без проверок режима (docs/MODES.md)
 --[[
 	Anomaly Coop - Keep Crafting Window Opened (Demonized): a repair waits for the confirmed removal of what the last one
-	spent (gamedata\scripts\coop_mods_xchg_repair.script), F4 G4-1, finding m30:1 (build 57).
+	spent (gamedata\scripts\coop_mods_xchg_repair.script).
 
 	zz_item_repair_keep_crafting_window_open replaces item_repair.UIRepair.OnRepair (:206): it repairs the item at once,
 	spends the support part and a kit use (utils_item.discharge / degrade, alife_release for the last use), disables the
@@ -38,10 +38,8 @@ local MAX_REWRAPS = 5
 
 stats = { waited = 0, ignored = 0, deferred = 0, refreshed = 0, closed = 0 }
 
-local function C() return coop_mods_core end
-local function log(fmt, ...) C().log("xchg_repair", fmt, ...) end
-local function pack(...) return { n = select("#", ...), ... } end
-
+local core = coop_mods_core
+local function log(fmt, ...) core.log("xchg_repair", fmt, ...) end
 local function id_of(x)
 	if type(x) == "number" then return x end
 	local ok, id = pcall(function()
@@ -51,7 +49,7 @@ local function id_of(x)
 	return ok and type(id) == "number" and id or nil
 end
 
--- Runs f(self, ...): pack(pcall(..)) and the ids it released.
+-- Runs f(self, ...): core.pack(pcall(..)) and the ids it released.
 local function watched(f, self, ...)
 	local ids = {}
 	local function note(x)
@@ -65,7 +63,7 @@ local function watched(f, self, ...)
 	if type(rel_id) == "function" then
 		rawset(_G, "alife_release_id", function(x, ...) note(x); return rel_id(x, ...) end)
 	end
-	local res = pack(pcall(f, self, ...))
+	local res = core.pack(pcall(f, self, ...))
 	if type(rel) == "function" then rawset(_G, "alife_release", rel) end
 	if type(rel_id) == "function" then rawset(_G, "alife_release_id", rel_id) end
 	return res, ids
@@ -84,7 +82,7 @@ end
 local function close(win)
 	stats.closed = stats.closed + 1
 	local ok, e = pcall(function() win:OnCancel() end)
-	if not ok then C().report("xchg_repair", "close the repair window", e) end
+	if not ok then core.report("xchg_repair", "close the repair window", e) end
 end
 
 local owed = nil -- { window, due }: a confirmed repair whose refresh the mod has not run (yet)
@@ -97,7 +95,7 @@ local function refresh(win)
 	stats.refreshed = stats.refreshed + 1
 	local ok, e = pcall(function() return win:UpdateUi() end)
 	if not ok then
-		C().report("xchg_repair", "refresh the repair window", e)
+		core.report("xchg_repair", "refresh the repair window", e)
 		close(win)
 	end
 end
@@ -141,7 +139,7 @@ end
 
 local function guard_repair(orig)
 	return function(self, ...)
-		if not C().active() then return orig(self, ...) end
+		if not core.active() then return orig(self, ...) end
 		if waiting then
 			stats.ignored = stats.ignored + 1
 			if stats.ignored <= 3 or stats.ignored % 50 == 0 then
@@ -154,7 +152,7 @@ local function guard_repair(orig)
 		local res, ids = watched(orig, self, ...)
 		if next(ids) ~= nil then
 			local ok, e = pcall(wait_for, self, ids)
-			if not ok then C().report("xchg_repair", "wait for the spend", e) end
+			if not ok then core.report("xchg_repair", "wait for the spend", e) end
 		end
 		if not res[1] then error(res[2], 0) end
 		return unpack(res, 2, res.n)
@@ -163,7 +161,7 @@ end
 
 local function guard_refresh(orig)
 	return function(self, ...)
-		if not C().active() then return orig(self, ...) end
+		if not core.active() then return orig(self, ...) end
 		local w = waiting
 		if w and rawequal(w.window, self) then
 			stats.deferred = stats.deferred + 1
@@ -184,14 +182,14 @@ local GUARDS = {
 }
 
 local function window_class()
-	if not C().mod(MOD) then return nil end
-	local ir = C().mod("item_repair")
+	if not core.mod(MOD) then return nil end
+	local ir = core.mod("item_repair")
 	local ok, cls = pcall(function() return ir and ir.UIRepair end)
 	return ok and cls or nil
 end
 
 local function ensure(g, cls)
-	local cur = C().fn(cls, g.key)
+	local cur = core.fn(cls, g.key)
 	if not cur or cur == g.fn then return end
 	if g.n >= MAX_REWRAPS then
 		if not g.gave_up then
@@ -200,9 +198,9 @@ local function ensure(g, cls)
 		end
 		return
 	end
-	local ok = C().wrap(cls, g.key, g.label, g.make)
+	local ok = core.wrap(cls, g.key, g.label, g.make)
 	if not ok then return end
-	g.fn = C().fn(cls, g.key)
+	g.fn = core.fn(cls, g.key)
 	g.n = g.n + 1
 	if g.n > 1 then log("%s was wrapped by a later script: the guard is outermost again (#%d)", g.label, g.n) end
 end
@@ -213,7 +211,7 @@ local function actor_on_update()
 	if owed and now >= owed.due then
 		local o = owed
 		owed = nil
-		if C().active() then refresh(o.window) end
+		if core.active() then refresh(o.window) end
 	end
 	if now < next_check then return end
 	next_check = now + CHECK_MS
@@ -221,7 +219,7 @@ local function actor_on_update()
 	if not cls then return end
 	for _, g in ipairs(GUARDS) do
 		local ok, e = pcall(ensure, g, cls)
-		if not ok then C().report("xchg_repair", "wrap " .. g.label, e) end
+		if not ok then core.report("xchg_repair", "wrap " .. g.label, e) end
 	end
 end
 
@@ -236,12 +234,10 @@ local function status()
 		#on > 0 and table.concat(on, ", ") or "nothing (the mod is not installed)")
 end
 
--- on_game_start must not throw (axr_main runs every script's on_game_start in one unprotected loop, W5)
 function on_game_start()
 	if not api then return end
-	local ok, e = pcall(function()
+	core.install("xchg_repair", "start", function()
 		RegisterScriptCallback("actor_on_update", actor_on_update)
-		C().status_line("xchg_repair", status)
+		core.status_line("xchg_repair", status)
 	end)
-	if not ok then printf("! [coop_mods_xchg_repair] start failed: %s", tostring(e)) end
 end

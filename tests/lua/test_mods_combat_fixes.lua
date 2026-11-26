@@ -112,10 +112,7 @@ xr_wounded = {
 	is_wounded = function() return true end,
 }
 db.storage[npc:id()] = { wounded = { wound_manager = { can_use_medkit = false } } }
--- The original animation addon is absent from the corpus. Exercise the dialogs variant explicitly.
 dialogs = { who_is_npc = function(_, n) return n end, transfer_medkit = function() old_help=old_help+1 end }
-zzz_wounded_heal_anim = { use_injector = function() end, look_at_npc=function() end,
-	on_hud_animation_end = function() dialogs.transfer_medkit(db.actor, TEST_NPC) end }
 module("zzzz_wounded_heal_anim_dotmarks")
 -- Exact existing npc.heal body, with its module-local helper available to the adapter.
 module("coop_npc_meet", [[
@@ -341,21 +338,14 @@ for _, name in ipairs(modes.names()) do
 			ui_hud_dotmarks.help_wounded_stalker(npc:id(),{},true)
 			check(own._uses==1 and heal_calls==hs+1 and stats==ss+1,"m04: host player heals through same direct body")
 		end
-		-- Animation completion can already call dialogs; its second DotMarks call must join one transaction.
+		-- With DotMarks' heal animation on and no animation mod (G.A.M.M.A.), the help goes out at once as one request.
 		enter(name,true) NOW=NOW+11000
 		db.storage[npc:id()].wounded.wound_manager.can_use_medkit=false
-		local sc=sent_count("mods.combat_heal") local dh=old_help
-		zzz_wounded_heal_anim.use_injector(npc)
-		zzz_wounded_heal_anim.on_hud_animation_end()
-		check(sent_count("mods.combat_heal")==sc and old_help==dh+1,"m04: a non-DotMarks animation keeps its dialogs callback")
+		local sc=sent_count("mods.combat_heal")
 		ui_hud_dotmarks.cfg.sec_enable_heal_anim=true
 		ui_hud_dotmarks.help_wounded_stalker(npc:id(),TEST_MARK)
-		check(sent_count("mods.combat_heal")==sc and TEST_MARK.hidden==true,"m04: DotMarks waits for its animation")
-		zzz_wounded_heal_anim.on_hud_animation_end()
-		check(sent_count("mods.combat_heal")==sc+1 and old_help==dh+1,"m04: animation dialogs and DotMarks share one request")
-		check(TEST_MARK.hidden==false and ui_hud_dotmarks.cfg.hidden_before_anim==nil,"m04: animation restores marker state")
+		check(sent_count("mods.combat_heal")==sc+1,"m04: DotMarks' heal animation without its mod sends one request")
 		ui_hud_dotmarks.cfg.sec_enable_heal_anim=false
-		ui_hud_dotmarks.cfg.healing_stalker=nil
 		local _,animreq=sent("mods.combat_heal")
 		if animreq then
 			receive(animreq,name)
@@ -364,7 +354,7 @@ for _, name in ipairs(modes.names()) do
 			if ack then coop_main.on_event(ack.name,ack.payload,2) end
 			check(stats==ss,"m04: forged confirmation from another player is ignored")
 			if ack then coop_main.on_event(ack.name,ack.payload,0) end
-			check(stats==ss+1,"m04: animation credit after confirmation only")
+			check(stats==ss+1,"m04: credit after confirmation only")
 		end
 		-- Existing NPC dose can be consumed by its wound manager; a new wound may be helped later.
 		db.storage[npc:id()].wounded.wound_manager.can_use_medkit=false

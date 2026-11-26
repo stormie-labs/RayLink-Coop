@@ -1,7 +1,7 @@
 --[[
-	Anomaly Coop - movement speed diagnostic (gamedata\scripts\coop_mods_speed.script), W4 "mods".
+	Anomaly Coop - movement speed diagnostic (gamedata\scripts\coop_mods_speed.script).
 
-	Players, build 54: "a client with movement 101% runs faster than the host with 110%". The percentage in the inventory is
+	Players asked why a client with movement 101% runs faster than the host with 110%. The percentage in the inventory is
 	only the outfit's entry (outfit_speed_mcm.get_outfit_speed). The speed that moves the actor is speed.script's product of
 	every run / sprint modifier: outfit, load, BHS legs, weapon in the hands, endurance skill, artefacts, anomalies. Each
 	machine computes it for its own player with the same scripts, so two players with different loads or legs run at
@@ -20,7 +20,7 @@ local api = rawget(_G, "coop")
 
 local tostring, type, pairs, pcall, string_format = tostring, type, pairs, pcall, string.format
 
-local function C() return coop_mods_core end
+local core = coop_mods_core
 
 local PERIOD_MS = 30000
 
@@ -54,12 +54,12 @@ end
 local function snapshot()
 	local actor = db and db.actor
 	if not actor then return nil end
-	local M = C().mod("speed")
+	local M = core.mod("speed")
 	local run_t, sprint_t = nil, nil
 	if type(M) == "table" then
 		-- speed.script keeps both tables as file locals: they are upvalues of its add_speed / remove_speed.
-		local ok1, r = pcall(C().find_local, M, "run_modifiers")
-		local ok2, s = pcall(C().find_local, M, "sprint_modifiers")
+		local ok1, r = pcall(core.find_local, M, "run_modifiers")
+		local ok2, s = pcall(core.find_local, M, "sprint_modifiers")
 		run_t = ok1 and r or nil
 		sprint_t = ok2 and s or nil
 	end
@@ -69,7 +69,7 @@ end
 
 -- A machine with a player character in a session: the host's game or a client, not a headless server.
 local function plays_here()
-	return C().active() and coop_mode.actor_is_player()
+	return core.active() and coop_mode.actor_is_player()
 end
 
 local function step()
@@ -79,18 +79,20 @@ local function step()
 		st.next = now + PERIOD_MS
 		return
 	end
-	if now < st.next then return end
 	st.next = now + PERIOD_MS
 	local text = snapshot()
 	if not text or text == st.last then return end
 	st.last = text
 	st.lines = st.lines + 1
-	C().log("speed", "%s", text) -- the text is an argument, never the format
+	core.log("speed", "%s", text) -- the text is an argument, never the format
 end
 
+-- The 30 s timer is looked at first, and here only: the questions about the session cost engine calls, and this runs
+-- every frame.
 local function actor_on_update()
+	if st.next and time_global() < st.next then return end
 	local ok, e = pcall(step)
-	if not ok then pcall(C().report, "speed", "diagnostic", e) end
+	if not ok then pcall(core.report, "speed", "diagnostic", e) end
 end
 
 -- The 30 s count starts when the player is in the world, so the first line comes 30 s after it.
@@ -102,13 +104,11 @@ function status()
 	return string_format("lines %d | last: %s", st.lines, tostring(st.last))
 end
 
--- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop (W5).
 function on_game_start()
 	if not api then return end
-	local ok, err = pcall(function()
+	core.install("speed", "start", function()
 		RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
 		RegisterScriptCallback("actor_on_update", actor_on_update)
-		C().status_line("speed", status)
+		core.status_line("speed", status)
 	end)
-	if not ok then printf("! [coop_mods_speed] start failed: %s", tostring(err)) end
 end

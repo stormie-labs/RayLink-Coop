@@ -1,19 +1,31 @@
 --[[
-	Anomaly Coop - shared helpers for third-party mod patches (gamedata\scripts\coop_mods_core.script), W4 "mods".
+	Anomaly Coop - shared helpers for third-party mod patches (gamedata\scripts\coop_mods_core.script).
 
 	Every coop_mods_*.script builds on this file. Nothing here changes the game by itself: it only offers
 	helpers, and every helper is inert outside a co-op session (single player behaves like stock).
 
 	Session:   active() is_client() live_client() world_client()
 	           is_client() identifies a player's mirror; world_client() includes every non-deciding process in a session.
+	Start:     install(tag, what, f, ...) -> ok, result   one step of an adapter's start, protected; a fault is counted
+	           and logged by report (axr_main runs every on_game_start in one unprotected loop)
 	Modules:   mod(name) -> module table or nil (a missing addon is not an error; the file is checked first)
 	           fn(tbl, key) -> function or nil
-	           wrap(tbl, key, label, make) -> true, orig   (tbl[key] = make(orig); listed in coop_status)
+	           wrap(tbl, key, label, make[, script]) -> true, orig   (tbl[key] = make(orig); listed in coop_status).
+	           No function there: without tbl the mod is not installed, which is no news; a mod that is there without the
+	           function has changed, and the adapter says so once per label and function, in the log and in coop_status,
+	           however often it tries. script names the mod's script when the function is one that script adds to another
+	           script's table (xr_effects, task_status_functor): without that script the mod is not installed; while the
+	           script is not loaded the adapter waits (coop_status says for what) and tries again; a try without script is
+	           its last word. A later try that attaches removes the entry and takes the line back.
 	           upvalue(f, name) / find_local(module, name) -> value, holder, index (file locals of a script)
+	Ids:       object_id(v, allow_zero, coerce) -> id | nil   a whole number 1..65534 (0..65534 with allow_zero; with
+	           coerce a string is read as a number first)
+	           wire_id(v) -> local id | nil   an object id a client sent: 1..65534 in host numbering, as a local id here
 	Players:   players() self_peer() avatar(peer) peer_of(id) is_player(id) is_remote_player(id)
 	           player_objects() -> { {peer=, obj=}, ... } (online characters on this machine)
 	           all_players() -> the same with a player on another level as coop_quests_core far_body
 	           nearest_player(pos) -> obj, dist_sqr      root_of(id) -> top parent id
+	           near(obj, who, dist) -> true when the two objects are at most dist metres apart
 	           holder_peer(item_id) -> peer that carries the item (root parent is a player character)
 	Identity:  as_player(obj, f, ...) -> pcall results, db.actor = obj for one synchronous call (host only)
 	           identity_peer() -> peer of the swapped identity inside such a call, else nil
@@ -31,14 +43,15 @@
 	Host:      give(peer, section, cond) -> true when an item was created in that player's character
 	           teleport(peer, pos)   fx_sound(path) fx_cam(anm, id, loop) fx_stop_cam(id)
 	Data:      ser(v) -> string | nil, why     deser(str) -> value | nil, why   (no code is ever loaded)
+	           pack(...) -> { n = count, ... }   the arguments of a call, nils included
 	Text:      text(id, fallback)  hud(id, fallback)
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
 
 local tostring, tonumber, type, pairs, ipairs, pcall, select = tostring, tonumber, type, pairs, ipairs, pcall, select
-local string_format, string_sub, string_byte, string_find = string.format, string.sub, string.byte, string.find
-local table_concat, math_floor, math_huge = table.concat, math.floor, math.huge
+local string_format, string_sub, string_find = string.format, string.sub, string.find
+local table_concat, table_remove, math_floor, math_huge = table.concat, table.remove, math.floor, math.huge
 
 local PREFIX = "mods."
 local MAX_PAYLOAD = 15000 -- engine limit is 16 KiB
@@ -50,9 +63,8 @@ local MAX_BIG = 256 * 1024
 -------------------------------------------------------------------------------
 stats = { sent = 0, send_failed = 0, received = 0, rejected = 0, limited = 0, errors = 0, big_in = 0, big_dropped = 0 }
 
--- A log line of these scripts is a kilobyte at most; a longer text goes out in pieces, cut at a blank where there is one. The
--- engine's log ended the process on a line over 4 KB with nothing written (live build 47: coop_status on a world server with a
--- player in the world printed the list of the wrapped functions, and the server was gone).
+-- A log line of these scripts is a kilobyte at most; a longer text goes out in pieces, cut at a blank where there is one: the
+-- engine's log ends the process on a line over 4 KB with nothing written (coop_status prints the list of wrapped functions).
 local LINE_MAX = 900
 function log(tag, fmt, ...)
 	local ok, line = pcall(string_format, fmt, ...)
@@ -89,6 +101,12 @@ function status_line(tag, f)
 	status_lines[tag] = f
 end
 
+function install(tag, what, f, ...)
+	local ok, result = pcall(f, ...)
+	if not ok then report(tag, what, result) end
+	return ok, result
+end
+
 -------------------------------------------------------------------------------
 -- Session
 -------------------------------------------------------------------------------
@@ -96,27 +114,12 @@ function active()
 	return api ~= nil and api.is_active() == true
 end
 
--- Compatibility for personal-data save handling and bridge validation.
-function is_world_server()
-	return active() and coop_mode.decides_world()
-end
-
-
 function world_client()
-	return api ~= nil and api.is_active() == true and api.is_client() == true
+	return active() and api.is_client() == true
 end
 
 function is_client()
 	return coop_mode.is_player_mirror()
-end
-
-function is_bridge(peer)
-	local l = api and api.levels
-	if not (l and l.map_servers and is_world_server()) then return false end
-	for _, ms in ipairs(l.map_servers()) do
-		if ms.bridge == peer then return true end
-	end
-	return false
 end
 
 function live_client()
@@ -132,18 +135,23 @@ end
 -------------------------------------------------------------------------------
 local fs_cache = {}
 
+-- The script's file is in gamedata\scripts (loaded or not). When that cannot be asked, _G decides.
+local function on_disk(name)
+	local known = fs_cache[name]
+	if known == nil then
+		local ok, ex = pcall(function() return getFS():exist("$game_scripts$", name .. ".script") end)
+		known = (not ok) or (ex ~= nil and ex ~= false)
+		fs_cache[name] = known
+	end
+	return known
+end
+
 -- Script module by name, or nil. The file is checked before _G is touched, so an absent addon costs nothing.
 function mod(name)
 	if type(name) ~= "string" then return nil end
 	local m = rawget(_G, name)
 	if m == nil then
-		local known = fs_cache[name]
-		if known == nil then
-			local ok, ex = pcall(function() return getFS():exist("$game_scripts$", name .. ".script") end)
-			known = (not ok) or (ex ~= nil and ex ~= false) -- cannot check: let _G decide
-			fs_cache[name] = known
-		end
-		if not known then return nil end
+		if not on_disk(name) then return nil end
 		local ok, r = pcall(function() return _G[name] end) -- _G.__index loads gamedata\scripts\<name>.script
 		m = ok and r or nil
 	end
@@ -157,18 +165,86 @@ function fn(tbl, key)
 end
 
 wrapped = {} -- labels of everything wrapped, for the report and coop_status
+-- Attachment points an adapter did not get, in the order they were found: { label, key, mod, waits }, one per label and
+-- function however often and with whatever table the adapter tries, so the list is as long as the points the adapters
+-- have. waits: the script the adapter waits for (nothing was said aloud); nil: the miss was said in the log.
+unattached = {}
+local point = {} -- label -> key -> its entry of unattached
 -- tbl -> { key -> label } of everything wrapped (weak: a wrapped object can go); coop_route's timing swaps them for timed
 -- copies while it is on
 timing_sites = setmetatable({}, { __mode = "k" })
 
--- tbl[key] = make(orig). Returns true, orig; false when there is nothing to wrap.
-function wrap(tbl, key, label, make)
+-- The global name of a script module, for the line that says the mod changed.
+local function module_name(tbl)
+	for name, v in pairs(_G) do
+		if v == tbl and type(name) == "string" then return name end
+	end
+	return "?"
+end
+
+local MISSED = "! mod %s changed: no function %s, the adapter did not attach (%s)"
+
+-- wrap found no function. An adapter may try from a timer: a point that is listed costs two lookups and says nothing more.
+local function not_attached(tbl, key, label, script)
+	local tt = type(tbl)
+	if tt ~= "table" and tt ~= "userdata" then return end -- no table to look in: the mod is not installed
+	local waits = nil
+	if script ~= nil and rawget(_G, script) == nil then
+		if not on_disk(script) then return end -- the mod that adds the function is not installed
+		waits = script
+	end
+	label = tostring(label)
+	if key == nil then key = "?" end
+	local keys = point[label]
+	local e = keys and keys[key]
+	if e then
+		if waits or not e.waits then return end
+		e.waits = nil -- the script came without the function, or the adapter stopped waiting for it
+	else
+		e = { label = label, key = key, mod = script, waits = waits }
+		if not script then
+			local ok, name = pcall(module_name, tbl)
+			e.mod = ok and name or "?"
+		end
+		if not keys then
+			keys = {}
+			point[label] = keys
+		end
+		keys[key] = e
+		unattached[#unattached + 1] = e
+		if waits then return end
+	end
+	log("core", MISSED, e.mod, tostring(key), label)
+end
+
+-- A try attached a point that was listed: the entry goes, and a line that was said aloud is taken back.
+local function attached(keys, key, label)
+	local e = keys[key]
+	if not e then return end
+	keys[key] = nil
+	if next(keys) == nil then point[label] = nil end
+	for i = #unattached, 1, -1 do
+		if unattached[i] == e then
+			table_remove(unattached, i)
+			break
+		end
+	end
+	if not e.waits then log("core", "mod %s: function %s is there now, the adapter attached (%s)", e.mod, tostring(key), label) end
+end
+
+-- tbl[key] = make(orig). Returns true, orig; false when there is nothing to wrap, and not_attached tells which case it is.
+function wrap(tbl, key, label, make, script)
 	local orig = fn(tbl, key)
-	if not orig then return false end
+	if not orig then
+		not_attached(tbl, key, label, script)
+		return false
+	end
 	local w = make(orig)
 	if type(w) ~= "function" then return false end
 	tbl[key] = w
 	wrapped[#wrapped + 1] = label
+	local listed = point[label]
+	if listed then attached(listed, key, label) end
 	local keys = timing_sites[tbl]
 	if not keys then
 		keys = {}
@@ -179,7 +255,7 @@ function wrap(tbl, key, label, make)
 end
 
 -- A callback the mod registered by value: register the wrapper instead. Only where the mod's own one is
--- registered now (an MCM toggle may have left it off; single player must stay as the mod set it, W5).
+-- registered now (an MCM toggle may have left it off; single player must stay as the mod set it).
 function swap_callback(name, old, new)
 	if type(old) ~= "function" or type(new) ~= "function" then return end
 	local cm = rawget(_G, "coop_main")
@@ -239,19 +315,32 @@ end
 -------------------------------------------------------------------------------
 -- Ids and players
 -------------------------------------------------------------------------------
+local MAX_OBJECT_ID = 65534 -- 65535 is "no object"
+
+function object_id(v, allow_zero, coerce)
+	if coerce then v = tonumber(v) end
+	if type(v) ~= "number" or v ~= math_floor(v) or v > MAX_OBJECT_ID or v < (allow_zero and 0 or 1) then return nil end
+	return v
+end
+
 -- local id -> host numbering (only the actor/own proxy pair differs on a client)
 function hid(id)
 	if not (api and type(id) == "number") then return id end
 	local ok, v = pcall(api.to_host_id, id)
-	if ok then return v end -- nil: the engine rejected it (NaN, fraction, out of range), W5
+	if ok then return v end -- nil: the engine rejected it (NaN, fraction, out of range)
 	return nil
 end
 
 function lid(id)
 	if not (api and type(id) == "number") then return id end
 	local ok, v = pcall(api.to_local_id, id)
-	if ok then return v end -- nil: rejected (level.object_by_id(NaN) would be the actor, W5)
+	if ok then return v end -- nil: rejected (level.object_by_id(NaN) would be the actor)
 	return nil
+end
+
+function wire_id(v)
+	if not object_id(v) then return nil end
+	return object_id(lid(v), true)
 end
 
 function players()
@@ -328,13 +417,22 @@ function all_players()
 	return out
 end
 
+local function dist_sqr_to(obj, pos) return obj:position():distance_to_sqr(pos) end
+
 function nearest_player(pos)
 	local best, best_d
 	for _, p in ipairs(player_objects()) do
-		local ok, d = pcall(function() return p.obj:position():distance_to_sqr(pos) end)
+		local ok, d = pcall(dist_sqr_to, p.obj, pos)
 		if ok and d and (best_d == nil or d < best_d) then best, best_d = p.obj, d end
 	end
 	return best, best_d or math_huge
+end
+
+local function dist_sqr_between(a, b) return a:position():distance_to_sqr(b:position()) end
+
+function near(obj, who, dist)
+	local ok, d = pcall(dist_sqr_between, obj, who)
+	return ok and d <= dist * dist
 end
 
 -- Top parent of an object (the object itself when it has none).
@@ -368,8 +466,8 @@ local function finish_identity(real, ok, ...)
 	return ok, ...
 end
 
--- Live 2026-10-24 (FATAL on the first story mission): game_object has no == in luabind, two different objects raise
--- "No such operator __eq defined in class [game_object]". Objects are compared by id.
+-- game_object has no == in luabind: two different objects raise "No such operator __eq defined in class [game_object]".
+-- Objects are compared by id.
 function as_player(obj, f, ...)
 	local real = db.actor
 	if obj == nil or identity ~= nil or (real ~= nil and obj:id() == real:id()) then return pcall(f, ...) end
@@ -390,23 +488,38 @@ end
 -- Network
 -------------------------------------------------------------------------------
 -- Host side flood guard: per sender and verb, burst then a steady rate.
-local buckets = {}
+local buckets = {} -- sender -> verb -> { tokens, at }; a sender's go once he is out of the session (prune_buckets)
 local limits = {} -- verb -> { burst, per_s }
+local DEFAULT_LIMIT = { 20, 10 }
 
 -- on_limited(t, from), optional: runs for a request the limit drops, so the requester can be told (a dropped strip was silent).
 function set_limit(verb, burst, per_s, on_limited)
 	limits[verb] = { burst, per_s, type(on_limited) == "function" and on_limited or nil }
 end
 
+-- A sender seen for the first time is a moment to drop the buckets of those who left: no list grows with every join.
+local function prune_buckets()
+	local here = {}
+	for _, p in ipairs(players()) do here[p.id] = true end
+	for peer in pairs(buckets) do
+		if not here[peer] then buckets[peer] = nil end
+	end
+end
+
 local function rate_ok(from, verb)
 	if from == 0 or not (coop_mode.decides_world() or coop_mode.leads_here()) then return true end
-	local lim = limits[verb] or { 20, 10 }
-	local k = tostring(from) .. ":" .. verb
-	local b = buckets[k]
+	local lim = limits[verb] or DEFAULT_LIMIT
+	local of = buckets[from]
+	if not of then
+		prune_buckets()
+		of = {}
+		buckets[from] = of
+	end
+	local b = of[verb]
 	local now = time_global()
 	if not b then
 		b = { tokens = lim[1], at = now }
-		buckets[k] = b
+		of[verb] = b
 	end
 	b.tokens = math.min(lim[1], b.tokens + (now - b.at) * lim[2] / 1000)
 	b.at = now
@@ -472,7 +585,7 @@ end
 local function payload_of(verb, t)
 	if not active() then return nil end
 	-- coop.is_live is coop.send_event's own acceptance test ("not in a co-op world"): the process that decides the world,
-	-- or a client that is Live in it. A player's machine offers nothing while it loads (build 56 ran no sender then); every
+	-- or a client that is Live in it. A player's machine offers nothing while it loads; every
 	-- send the engine accepts passes here unchanged, in every process kind
 	if api.is_live and api.is_live() ~= true then return nil end
 	local cm = mod("coop_main")
@@ -598,7 +711,6 @@ end
 local function vec(x, y, z)
 	return vector():set(tonumber(x) or 0, tonumber(y) or 0, tonumber(z) or 0)
 end
-_vec = vec
 
 -- Moves a player's own actor: the server orders, his machine moves its character (the owner moves it; the host only asks). The host
 -- player is no exception (docs\DEBUG_DESIGN.md A.2 p. 3, C.2): the order to peer 0 comes back to the Lua of the host's process from 0,
@@ -669,6 +781,8 @@ local function ser_into(v, out, depth, budget)
 	return false, "type " .. tv
 end
 
+function pack(...) return { n = select("#", ...), ... } end
+
 function ser(v)
 	local out = {}
 	local ok, why = ser_into(v, out, 0, { n = 0 })
@@ -724,7 +838,7 @@ function deser(str)
 end
 
 -------------------------------------------------------------------------------
--- Notifications from the engine or other coop scripts (see Requests in the W4 report).
+-- Notifications from the engine or other coop scripts.
 -- They call these entry points when they exist; nothing here depends on them being called.
 --   coop_mods_core.on_actor_revived(reviver_peer, medkit_section)   owner of the revived actor, after a revive
 --   coop_respawned (engine callback)                                owner, a fresh body after a death: "actor_respawned"
@@ -758,8 +872,8 @@ function on_actor_revived(reviver_peer, medkit_section)
 	fire("actor_revived", tonumber(reviver_peer), type(medkit_section) == "string" and medkit_section or nil)
 end
 
--- A fresh body after a death (live 2026-11-08: a G.A.M.M.A. player killed by psi stood up with the psy health and the body
--- parts that killed him and died again and again). The engine's coop_respawned names a camp respawn; a hardcore run's new
+-- A fresh body after a death: without it a player killed by psi stands up with the psy health and the body parts that
+-- killed him and dies again and again. The engine's coop_respawned names a camp respawn; a hardcore run's new
 -- character has none, and the engine's callback queue is bounded (a callback can be lost), so the life of this machine's
 -- actor is looked at too: respawning, dead or spectating -> alive is a respawn (a revive goes wounded -> alive). One respawn
 -- seen both ways (or an order repeated in the RTT window) is one "actor_respawned".
@@ -828,6 +942,14 @@ function print_status()
 		if ok and line then log(tag, "%s", tostring(line)) end
 	end
 	if #wrapped > 0 then log("core", "wrapped: %s", table_concat(wrapped, ", ")) end
+	for i = 1, #unattached do
+		local e = unattached[i]
+		if e.waits then
+			log("core", "waiting for script %s: function %s (%s)", e.waits, tostring(e.key), e.label)
+		else
+			log("core", MISSED, e.mod, tostring(e.key), e.label)
+		end
+	end
 end
 
 local cams = {}
@@ -860,12 +982,12 @@ local function actor_on_update()
 end
 
 function on_game_start()
+	coop_util.add_status("coop_mods_core", 220)
 	if not api then return end
 	on("fx", on_fx, "client")
 	on("tp", on_tp, "player") -- a client's machine and the host player's half of the host's process alike
-	-- coop_status: coop_main.print_status calls print_status above (W5)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
-	-- engine notifications (W5); coop_main creates the callback names at load
+	-- engine notifications; coop_main creates the callback names at load
 	RegisterScriptCallback("coop_actor_revived", on_actor_revived)
 	RegisterScriptCallback("coop_respawned", on_actor_respawned)
 	RegisterScriptCallback("coop_on_container_opened", on_container_opened)

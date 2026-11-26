@@ -1,6 +1,7 @@
 -- Ядро: без проверок режима (docs/MODES.md)
--- R58-R60: send a VAR line after local playback, then play it at the peer's head.
+-- A voice line goes out after it plays here, and plays at the speaking player's head on the other machines.
 local api = rawget(_G, "coop")
+local core = coop_mods_core
 local REQ, VOICE = "core.actor_voice_req", "core.actor_voice"
 local GAP_MS, SLACK_MS = 400, 50
 local MIN_DISTANCE, NORMAL_DISTANCE, LOUD_DISTANCE = 2, 24, 60
@@ -60,14 +61,13 @@ end
 
 local function avatar_at_head(peer)
 	if coop_mode.where(peer) ~= "here" then return end
-	local avatar = coop_mods_core.avatar(peer)
+	local avatar = core.avatar(peer)
 	if not avatar then return end
 	local ok, pos = pcall(avatar.bone_position, avatar, HEAD)
 	return avatar, (ok and pos) or avatar:position()
 end
 
 local function receiver_gain(gain)
-	local core = coop_mods_core
 	local var = core.mod("agdd_voiced_actor")
 	local options = var and var.on_option_change
 	local shouts = core.upvalue(options, "mcm_shouts_volume") or 2
@@ -109,7 +109,7 @@ end
 
 local function receive(t)
 	local actor, peer = local_player(), t.speaker
-	if not actor or peer == coop_mods_core.self_peer() or t.level ~= level.name() then return end
+	if not actor or peer == core.self_peer() or t.level ~= level.name() then return end
 	stop(peer)
 	if not coop_menu_options.actor_voice_enabled() then return end
 	local avatar, pos = avatar_at_head(peer)
@@ -188,7 +188,7 @@ local function share(file, gain, can_hear)
 	if not valid_line(line) then return end
 	local sent
 	if coop_mode.decides_world() then
-		sent = accept(line, coop_mods_core.self_peer(), now)
+		sent = accept(line, core.self_peer(), now)
 	else
 		sent = api.send_event(REQ, coop_main.encode(line), 0) -- a request to the world decider
 	end
@@ -200,7 +200,6 @@ end
 
 local function install_wrapper()
 	if wrapped or not api.is_active() or not coop_mode.actor_is_player() then return end
-	local core = coop_mods_core
 	wrapped = core.wrap(core.mod("agdd_voiced_actor"), "actor_speak_base", "actor_voice.share", function(original)
 		return function(file, gain, cooldown, chance, near, can_hear, ...)
 			local accepted = original(file, gain, cooldown, chance, near, can_hear, ...)
@@ -250,8 +249,8 @@ local function on_destroy()
 	clear()
 end
 
-function print_status()
-	printf("[coop] actor voice: sent %d, relayed %d, played %d, refused: local rate %d, rate %d, bad %d, non-player %d, foreign %d",
+local function status()
+	return string.format("sent %d, relayed %d, played %d, refused: local rate %d, rate %d, bad %d, non-player %d, foreign %d",
 		stats.sent, stats.relayed, stats.played, stats.local_rate, stats.rate, stats.bad, stats.non_player, stats.foreign)
 end
 
@@ -264,4 +263,5 @@ function on_game_start()
 	RegisterScriptCallback("actor_on_first_update", on_first_update)
 	RegisterScriptCallback("actor_on_update", update)
 	RegisterScriptCallback("actor_on_net_destroy", on_destroy)
+	core.status_line("actor_voice", status)
 end

@@ -1,5 +1,5 @@
 --[[
-	Anomaly Coop - Hideout Furniture family (gamedata\scripts\coop_mods_hf.script), W4 "mods".
+	Anomaly Coop - Hideout Furniture family (gamedata\scripts\coop_mods_hf.script).
 
 	Hideout Furniture (Aoldri), Hideout Furniture Expansion (stove), Gadgets for Hideout Furniture (artefact
 	harvester, weapon showcase) and the placed radio of Hideout Furniture. Furniture is world state: the host
@@ -8,7 +8,7 @@
 	asks the host for the world half:
 
 	  mods.hf_place    client -> host  { i item, s section, x y z, ax ay az, d data }  place an item (the host builds the data
-	                                                           itself since round 3: d is for a host of build 56)
+	                                                           itself; d is not read)
 	  mods.hf_pickup   client -> host  { o object }            pack furniture up (the mod's own pickup, run with
 	                                                           the requester's character as the actor)
 	  mods.hf_takeall  client -> host  { o box }               pack an empty, registered HF stash up
@@ -33,8 +33,8 @@ local api = rawget(_G, "coop")
 
 local tostring, tonumber, type, pairs, ipairs, pcall, next = tostring, tonumber, type, pairs, ipairs, pcall, next
 
-local function C() return coop_mods_core end
-local function log(fmt, ...) C().log("hf", fmt, ...) end
+local core = coop_mods_core
+local function log(fmt, ...) core.log("hf", fmt, ...) end
 
 local NEAR = 15 -- metres between the requester's character and the furniture
 local installed = {}
@@ -45,22 +45,16 @@ local function refuse(what, from, why)
 	log("%s from #%s refused: %s", what, tostring(from), why)
 end
 
-local function near(obj, who, dist)
-	local ok, d = pcall(function() return obj:position():distance_to_sqr(who:position()) end)
-	return ok and d <= (dist or NEAR) * (dist or NEAR)
-end
-
-local function m_data() return alife_storage_manager.get_state() end
-
 local function wrapper_of(id)
-	local b = C().mod("bind_hf_base")
-	local f = b and C().fn(b, "get_wrapper")
+	local b = core.mod("bind_hf_base")
+	local f = b and core.fn(b, "get_wrapper")
 	if not f then return nil end
 	local ok, w = pcall(f, id)
 	return ok and w or nil
 end
 
-near_ok = near
+-- the furniture's reach, for the toggles of its devices (coop_mods_hf_toggles)
+function near_ok(obj, who) return core.near(obj, who, NEAR) end
 wrapper = wrapper_of
 
 local function wrapper_fuel(w, condition)
@@ -71,39 +65,26 @@ local function wrapper_fuel(w, condition)
 end
 
 -------------------------------------------------------------------------------
--- Lamp tools and fuel (TZ v2 6.4, round 2, 2026-11-18): the host checks and spends them
+-- Lamp tools and fuel: the host checks and spends them
 -------------------------------------------------------------------------------
 -- A light names the tool (i, host numbering), a refuel the fuel item. The host checks it is this player's and of the kind the
 -- lamp needs (coop_trust "hf_lamp_tool", "hf_refuel_item"), spends what the mod spends and answers mods.hf_item_r { i, r }:
 --   "took"  the host removed it: a plain item (the mod's discharge removes it), the last use of a multi-use one, a tool at its
 --           last step of condition (the mod's degrade removes it);
---   "spent" the host spent a use of a multi-use item or a step of condition itself, through the stock setters (R32 W8.1: the
---           item's writer, coop_mode.writes(item); its write is the item's new state and reaches the player's machine with the
+--   "spent" the host spent a use of a multi-use item or a step of condition itself, through the stock setters (the item's
+--           writer, coop_mode.writes(item); its write is the item's new state and reaches the player's machine with the
 --           item's field versions, so nothing is left to his machine and nothing of his is checked afterwards);
 --   "left"  only a check that failed in "log" (the host could not see the item as his): his machine spends its own copy, an
---           owner's own change (R32 W8.2);
+--           owner's own change;
 --   "no"    refused, or over the request rate (an explicit answer: the item never waits for silence): nothing spent.
--- No answer is no answer (R32 W7): the request is held and nothing is spent on a timer; the item is free again when its answer
--- comes or when it leaves the inventory (the build 56 fallback "spent after 15 s" is gone: mixed builds cannot connect). A
--- request without the id, or with an id that is no number, fails a check of its own: "hf_refuel_item_id", "hf_lamp_tool_id"
--- (round 4); in "log" it goes through as before, in "refuse" nothing is lit or refuelled.
--- Facts: Co-op, the host's copy of the player's character and his items; Server, the map server of his level (C().on "host"
+-- No answer is no answer: the request is held and nothing is spent on a timer; the item is free again when its answer comes
+-- or when it leaves the inventory. A request without the id, or with an id that is no number, fails a check of its own:
+-- "hf_refuel_item_id", "hf_lamp_tool_id"; in "log" it goes through as before, in "refuse" nothing is lit or refuelled.
+-- Facts: Co-op, the host's copy of the player's character and his items; Server, the map server of his level (core.on "host"
 -- passes the request there) with the same facts.
 -- wait: client, item -> { kind, lamp, revision }; done: client, item -> true (the host took it, its removal is on its way)
 local spend = { wait = {}, done = {}, TOOL_STEP = 0.05 }
 local fuel_revision = setmetatable({}, { __mode = "k" }) -- wrapper -> most recent authoritative condition message
-
-local function trust(name, ok, fmt, ...)
-	local found, t = pcall(function() return _G.coop_trust end)
-	if not (found and type(t) == "table" and type(t.pass) == "function") then return true end
-	local good, res = pcall(t.pass, name, ok, fmt, ...)
-	return not good or res ~= false
-end
-
-local function object_id(value)
-	local id = tonumber(value)
-	if id and id > 0 and id < 65535 and id == math.floor(id) then return id end
-end
 
 -- The tools a lamp needs (ui_furniture_light.toggle_light): its require_tool list, and matches for the old require_matches.
 local function lamp_tools(sec)
@@ -132,7 +113,7 @@ end
 
 -- Host: is item `iid` (host numbering) carried by `who` and of one of `sections`? -> the item, or nil and why
 local function carried(iid, who, sections)
-	local id = type(iid) == "number" and iid > 0 and iid < 65535 and iid == math.floor(iid) and C().lid(iid) or nil
+	local id = type(iid) == "number" and iid > 0 and iid < 65535 and iid == math.floor(iid) and core.lid(iid) or nil
 	local se = type(id) == "number" and alife_object(id)
 	if not se then return nil, "no such item here" end
 	local sec = se:section_name()
@@ -141,14 +122,14 @@ local function carried(iid, who, sections)
 		if s == sec then fits = true end
 	end
 	if not fits then return nil, string.format("the item is %s, the lamp takes %s", tostring(sec), table.concat(sections, ", ")) end
-	local root = C().root_of(id)
+	local root = core.root_of(id)
 	if root ~= who:id() then return nil, string.format("held by %s, his character is %d", tostring(root), who:id()) end
 	local obj = level.object_by_id(id)
 	if not obj then return nil, "the item is not online here" end
 	return obj
 end
 
--- Host, the item's writer: spends what the mod spends, here (R32 W8.1). -> "took" (removed here) | "spent" (a use or a step
+-- Host, the item's writer: spends what the mod spends, here. -> "took" (removed here) | "spent" (a use or a step
 -- spent here through the stock setters: the item's new state, on its way to the player's machine)
 local function host_spend(obj, kind)
 	local k, v = spend_state(obj, kind)
@@ -161,18 +142,18 @@ local function host_spend(obj, kind)
 end
 
 -- Client: asks the host with item `obj` and waits for its answer. False: asked already (no second request), the host took it
--- and its removal is not here yet (round 3, R2-S1: one item, one use), or not sent.
+-- and its removal is not here yet (one item, one use), or not sent.
 local function client_ask(verb, t, obj, kind, lamp_id)
 	local id = obj:id()
 	if spend.wait[id] or spend.done[id] then return false end
-	t.i = C().hid(id)
+	t.i = core.hid(id)
 	local lamp = lamp_id and wrapper_of(lamp_id)
-	if not C().to_host(verb, t) then return false end
+	if not core.to_host(verb, t) then return false end
 	spend.wait[id] = { kind = kind, lamp = lamp, revision = lamp and fuel_revision[lamp] }
 	return true
 end
 
--- Client (round 3, R2-S1): an item of `sec` in this player's inventory that neither waits for the host's answer nor was taken by
+-- Client: an item of `sec` in this player's inventory that neither waits for the host's answer nor was taken by
 -- the host, so that a second honest light or refuel uses another one. Second value: he holds one of `sec`, but it is busy.
 function spend.free_item(sec)
 	local found, busy = nil, false
@@ -186,7 +167,7 @@ end
 
 -- Client: what the host did with the item we named.
 local function client_item_answer(t)
-	local id = C().lid(tonumber(t.i))
+	local id = core.lid(tonumber(t.i))
 	local w = type(id) == "number" and spend.wait[id]
 	if not w then return end -- not ours, or answered already
 	if t.r == "left" then
@@ -200,7 +181,7 @@ local function client_item_answer(t)
 		return
 	elseif t.r == "took" then
 		-- "took": the host's removal (an entity release) and this answer (a Lua event) take separate channels; until the removal
-		-- is here the item is still in this inventory and must not be named again (round 3, R2-S1, as the mine's spent)
+		-- is here the item is still in this inventory and must not be named again (as the mine's spent)
 		spend.wait[id] = nil
 		spend.done[id] = true
 	else
@@ -211,7 +192,7 @@ local function client_item_answer(t)
 end
 
 -- Client: an item that left this inventory (the host's removal arrived, or it went elsewhere) waits for nothing. No timer: a
--- request without its answer stays held (R32 W7).
+-- request without its answer stays held.
 local function client_spend_tick()
 	if next(spend.wait) == nil and next(spend.done) == nil then return end
 	for id in pairs(spend.done) do
@@ -237,23 +218,23 @@ function harv.is_device(obj)
 end
 
 local function request_id(value)
-	return object_id(C().lid(object_id(value)))
+	return core.object_id(core.lid(core.object_id(value, false, true)), false, true)
 end
 
 -- Trust records failed checks in log mode too. A checked action still needs real
 -- objects, a reachable device and the actual owner's inventory to execute.
 local function checked(name, ok, from, id)
-	return trust(name, ok and true or false, "player #%s, object %s", tostring(from), tostring(id)) and ok
+	return coop_trust.pass(name, ok and true or false, "player #%s, object %s", tostring(from), tostring(id)) and ok
 end
 
 local function known_link(kind, owner_id)
 	local key = link_tables[kind]
-	local t = key and m_data()[key]
+	local t = key and alife_storage_manager.get_state()[key]
 	return type(t) == "table" and t[owner_id] or nil
 end
 
 local function open_box(box_id)
-	C().when_online(box_id, nil, function(box)
+	core.when_online(box_id, nil, function(box)
 		if hide_hud_inventory then hide_hud_inventory() end
 		box:use(db.actor)
 	end, 10000)
@@ -267,20 +248,20 @@ local function ask_box(kind, owner_id, on_ready)
 		return
 	end
 	waiting[key] = { at = time_global(), on_ready = on_ready }
-	C().to_host("hf_box", { k = kind, o = C().hid(owner_id) })
+	core.to_host("hf_box", { k = kind, o = core.hid(owner_id) })
 end
 
 local function host_box(t, from)
 	local kind, owner = t.k, request_id(t.o)
 	local resolve = type(kind) == "string" and resolvers[kind]
 	local obj = resolve and type(owner) == "number" and level.object_by_id(owner)
-	local who = C().avatar(from)
+	local who = core.avatar(from)
 	local box = -1
 	if kind == "harvester" and not checked("hf_harv_box",
-		harv.is_device(obj) and who and coop_mode.where(from) == "here" and near(obj, who), from, owner) then
-		return C().to_peer(from, "hf_box_r", { k = kind, o = owner and C().hid(owner), b = box })
+		harv.is_device(obj) and who and coop_mode.where(from) == "here" and core.near(obj, who, NEAR), from, owner) then
+		return core.to_peer(from, "hf_box_r", { k = kind, o = owner and core.hid(owner), b = box })
 	end
-	if not (obj and who and near(obj, who) and coop_mode.writes(owner)) then
+	if not (obj and who and core.near(obj, who, NEAR) and coop_mode.writes(owner)) then
 		refuse("hf_box " .. tostring(kind), from, "unknown, far, or another writer's furniture")
 	else
 		local ok, id = pcall(resolve, obj)
@@ -288,33 +269,33 @@ local function host_box(t, from)
 			box = id
 			st.box = st.box + 1
 		elseif not ok then
-			C().report("hf", "box " .. kind, id)
+			core.report("hf", "box " .. kind, id)
 		end
 	end
-	C().to_peer(from, "hf_box_r", { k = kind, o = t.o, b = box })
+	core.to_peer(from, "hf_box_r", { k = kind, o = t.o, b = box })
 end
 
 local function client_box_answer(t)
-	local kind, owner, box = t.k, C().lid(tonumber(t.o)), tonumber(t.b)
+	local kind, owner, box = t.k, core.lid(tonumber(t.o)), tonumber(t.b)
 	if type(kind) ~= "string" or not owner then return end
 	local key = kind .. ":" .. tostring(owner)
 	local w = waiting[key]
 	waiting[key] = nil
 	if not box or box < 0 or box >= 65535 then
-		C().hud("st_coop_mods_hf_box_refused", "The host could not open this storage.")
+		core.hud("st_coop_mods_hf_box_refused", "The host could not open this storage.")
 		return
 	end
-	box = C().lid(box)
+	box = core.lid(box)
 	if kind == "harvester" and harv.set_mapping and box then harv.set_mapping(owner, box) end
 	local tname = link_tables[kind]
 	if tname then
-		local m = m_data()
+		local m = alife_storage_manager.get_state()
 		if type(m[tname]) ~= "table" then m[tname] = {} end
 		m[tname][owner] = box
 	end
 	if w and w.on_ready then
 		local ok, e = pcall(w.on_ready, box)
-		if not ok then C().report("hf", "box open", e) end
+		if not ok then core.report("hf", "box open", e) end
 	end
 end
 
@@ -325,7 +306,8 @@ local data_orig = {} -- update_data / delete_data originals
 
 -- The stock lamp saves its record on every binder update. What went out last, per object: { sig, rest, fuel, at }.
 -- The same record is repeated every DATA_REPEAT_MS for players who joined since. A change of the fuel alone goes out
--- once a FUEL_MS or on a step of FUEL_STEP; any other change, and the lamp going out, go at once.
+-- once a FUEL_MS or on a step of FUEL_STEP; any other change, and the lamp going out, go at once. A removed record and the
+-- end of the session forget what went out: the next session, or a new object with the same id, starts with nothing sent.
 local data_sent = {}
 local DATA_REPEAT_MS, FUEL_MS, FUEL_STEP = 3000, 1000, 0.001
 
@@ -335,7 +317,7 @@ local function rest_of(d, link)
 	for k, v in pairs(d) do
 		if k ~= "condition" then rest[k] = v end
 	end
-	return (C().ser(rest) or "") .. link
+	return (core.ser(rest) or "") .. link
 end
 
 -- Whether record `d` (serialized `s`, nil for a removed record) with stash link `box` goes out now; remembers it when it does.
@@ -357,32 +339,36 @@ local function data_due(id, d, s, box)
 end
 
 local function refresh_frozen_menu(w)
-	local pf = C().mod("placeable_furniture")
-	local refresh = C().fn(pf, "update_radial_gui")
+	local pf = core.mod("placeable_furniture")
+	local refresh = core.fn(pf, "update_radial_gui")
 	local menu = pf and pf.RadialGUI
-	local target = C().fn(pf, "get_wrapper_at_crosshair")
+	local target = core.fn(pf, "get_wrapper_at_crosshair")
 	if refresh and menu and menu:IsShown() and target and rawequal(target(), w) then refresh(w) end
 end
 
 local function host_publish_data(id)
-	if not (C().active() and coop_mode.writes(id)) then return end
-	local hm = C().mod("hf_obj_manager")
-	local get = hm and C().fn(hm, "get_data")
+	if not core.active() then
+		if next(data_sent) then data_sent = {} end
+		return
+	end
+	if not coop_mode.writes(id) then return end
+	local hm = core.mod("hf_obj_manager")
+	local get = hm and core.fn(hm, "get_data")
 	if not get then return end
 	local ok, d = pcall(get, id)
-	local s = ok and type(d) == "table" and C().ser(d) or nil
-	local wire_id = C().hid(id)
+	local s = ok and type(d) == "table" and core.ser(d) or nil
+	local wire_id = core.hid(id)
 	if not wire_id then return end
 	local box
 	if harv.stash_id and harv.is_device(level.object_by_id(id)) then
-		box = C().hid(harv.stash_id(id)) or -1
+		box = core.hid(harv.stash_id(id)) or -1
 	end
 	if s and #s < 4500 then -- encode may triple it
 		if not data_due(id, d, s, box) then return end
-		C().publish("hf_data", { o = wire_id, d = s, b = box })
+		core.publish("hf_data", { o = wire_id, d = s, b = box })
 	elseif not (ok and d) then
 		if not data_due(id, nil, nil, box) then return end
-		C().publish("hf_data", { o = wire_id, x = true, b = box })
+		core.publish("hf_data", { o = wire_id, x = true, b = box })
 	end
 	st.data_out = st.data_out + 1
 end
@@ -404,7 +390,7 @@ local function scalar_table(d, max)
 end
 
 local function client_data(t, from_level)
-	local id = C().lid(tonumber(t.o))
+	local id = core.lid(tonumber(t.o))
 	if not (id and data_orig.update and data_orig.delete) then return end
 	-- A writer can hear the world's relay of its own update. Keep its current live state.
 	if not from_level and not coop_mode.is_player_mirror() and level.object_by_id(id) and coop_mode.writes(id) then return end
@@ -414,7 +400,7 @@ local function client_data(t, from_level)
 		pcall(data_orig.delete, id)
 		return
 	end
-	local d = C().deser(t.d)
+	local d = core.deser(t.d)
 	if type(d) ~= "table" then return end
 	pcall(data_orig.delete, id)
 	pcall(data_orig.update, id, d)
@@ -432,30 +418,30 @@ local function client_data(t, from_level)
 end
 
 local function install_data_mirror()
-	local hm = C().mod("hf_obj_manager")
+	local hm = core.mod("hf_obj_manager")
 	if not hm then return end
-	C().wrap(hm, "update_data", "hf_obj_manager.update_data", function(orig)
+	core.wrap(hm, "update_data", "hf_obj_manager.update_data", function(orig)
 		data_orig.update = orig
 		return function(id, ...)
-			if C().active() and not coop_mode.writes(id) then return end
+			if core.active() and not coop_mode.writes(id) then return end
 			local r = orig(id, ...)
 			host_publish_data(id)
 			return r
 		end
 	end)
-	C().wrap(hm, "delete_data", "hf_obj_manager.delete_data", function(orig)
+	core.wrap(hm, "delete_data", "hf_obj_manager.delete_data", function(orig)
 		data_orig.delete = orig
 		return function(id, ...)
 			-- Unregister can remove the ALife record before the stock data cleanup runs.
-			if not C().active() or not alife_object(id) then return orig(id, ...) end
+			if not core.active() or not alife_object(id) then return orig(id, ...) end
 			if not coop_mode.writes(id) then return end
 			local r = orig(id, ...)
 			data_sent[id] = nil
-			C().publish("hf_data", { o = C().hid(id), x = true })
+			core.publish("hf_data", { o = core.hid(id), x = true })
 			return r
 		end
 	end)
-	C().on("hf_data", function(t, from)
+	core.on("hf_data", function(t, from)
 		if not coop_mode.decides_world() then
 			if from == 0 then client_data(t) end
 		else
@@ -464,7 +450,7 @@ local function install_data_mirror()
 				or not source then return end
 			-- A map server changed it: the world's save keeps it, every machine hears it.
 			client_data(t, true)
-			C().to_all("hf_data", t)
+			core.to_all("hf_data", t)
 		end
 	end)
 end
@@ -479,101 +465,101 @@ local function is_hf_stash(obj)
 end
 
 local function run_level_action(verb, action, t)
-	if coop_mode.is_player_mirror() then return C().to_host(verb, t) end
+	if coop_mode.is_player_mirror() then return core.to_host(verb, t) end
 	if coop_mode.actor_is_player() and coop_mode.writes(request_id(t.o)) then
-		return action(t, C().self_peer())
+		return action(t, core.self_peer())
 	end
 end
 
 local function pack_stash(box, player, book, section)
 	local id = box:id()
 	local request = { stash_id = id, cancel = false }
-	local ok, err = C().as_player(player, SendScriptCallback, "actor_on_stash_remove", request)
-	if not ok then C().report("hf", "stash removal callback", err) end
+	local ok, err = core.as_player(player, SendScriptCallback, "actor_on_stash_remove", request)
+	if not ok then core.report("hf", "stash removal callback", err) end
 	if not ok or request.cancel or not box:is_inv_box_empty() then return false end
 
 	-- Reserve the return item before deleting the box. Roll it back if the box is still there.
 	local item = alife_create_item(section, player)
 	if not item then return false end
 	local released, release_error = pcall(alife_release_id, id)
-	if not released then C().report("hf", "stash release", release_error) end
+	if not released then core.report("hf", "stash release", release_error) end
 	if alife_object(id) then
 		alife_release_id(item.id)
 		return false
 	end
 
 	book[id] = nil
-	local items = C().mod("coop_mods_items")
-	local note_owner = C().fn(items, "note_stash_owner")
+	local items = core.mod("coop_mods_items")
+	local note_owner = core.fn(items, "note_stash_owner")
 	if note_owner then note_owner(id, nil) end
 	level.map_remove_object_spot(id, "treasure")
 	if not coop_mode.decides_world() then
 		-- The world's stash book is sent to observers by the existing (chunked for large lists) m_data sync.
-		C().publish("stash_book", { b = C().hid(id), x = true })
+		core.publish("stash_book", { b = core.hid(id), x = true })
 	end
 	st.pickup = st.pickup + 1
 	return true
 end
 
 local function host_takeall(t, from)
-	local wire_id = object_id(t.o)
-	local id = wire_id and object_id(C().lid(wire_id))
-	if not trust("hf_takeall_id", id ~= nil, "player #%s: invalid HF stash id", tostring(from)) or not id then return end
+	local wire_id = core.object_id(t.o, false, true)
+	local id = wire_id and core.object_id(core.lid(wire_id), false, true)
+	if not coop_trust.pass("hf_takeall_id", id ~= nil, "player #%s: invalid HF stash id", tostring(from)) or not id then return end
 	if packing[id] or not coop_mode.writes(id) then return end
-	local box, player = level.object_by_id(id), C().avatar(from)
-	local book = m_data().player_created_stashes
+	local box, player = level.object_by_id(id), core.avatar(from)
+	local book = alife_storage_manager.get_state().player_created_stashes
 	local section = type(book) == "table" and book[id]
 	local matches = is_hf_stash(box) and type(section) == "string" and ini_sys:section_exist(section)
 		and ini_sys:r_string_ex(box:section(), "item_section") == section and IsInvbox(box) and alife_object(id) ~= nil
-	if not trust("hf_takeall_section", matches, "player #%s: box %d is not a registered HF stash", tostring(from), id)
+	if not coop_trust.pass("hf_takeall_section", matches, "player #%s: box %d is not a registered HF stash", tostring(from), id)
 		or not matches then return end
-	if not trust("hf_takeall_near", player and near(box, player), "player #%s: stash %d is out of reach", tostring(from), id)
+	if not coop_trust.pass("hf_takeall_near", player and core.near(box, player, NEAR), "player #%s: stash %d is out of reach", tostring(from), id)
 		or not player then return end
 	if not coop_mode.writes(player:id()) then return end
 	local empty = box:is_inv_box_empty()
-	if not trust("hf_takeall_empty", empty, "player #%s: stash %d still has items", tostring(from), id) or not empty then return end
+	if not coop_trust.pass("hf_takeall_empty", empty, "player #%s: stash %d still has items", tostring(from), id) or not empty then return end
 
 	packing[id] = true
 	local ok, packed = pcall(pack_stash, box, player, book, section)
 	packing[id] = nil
-	if not ok then C().report("hf", "packing stash", packed) end
+	if not ok then core.report("hf", "packing stash", packed) end
 	return ok and packed
 end
 
 local function install_takeall()
-	if not C().mod("hf_monkeypatches") then return end
-	local ui = C().mod("ui_inventory")
+	if not core.mod("hf_monkeypatches") then return end
+	local ui = core.mod("ui_inventory")
 	if not ui then return end
-	C().wrap(ui.UIInventory, "LMode_TakeAll", "hf_monkeypatches.UIInventory.LMode_TakeAll", function(orig)
+	core.wrap(ui.UIInventory, "LMode_TakeAll", "hf_monkeypatches.UIInventory.LMode_TakeAll", function(orig)
 		return function(self, ...)
-			if not C().active() then return orig(self, ...) end
+			if not core.active() then return orig(self, ...) end
 			local box, bag = self:GetPartner(), self.CC["npc_bag"]
 			if not (bag and is_hf_stash(box)) or next(bag.indx_id) then return orig(self, ...) end
-			if run_level_action("hf_takeall", host_takeall, { o = C().hid(box:id()) }) then hide_hud_inventory() end
+			if run_level_action("hf_takeall", host_takeall, { o = core.hid(box:id()) }) then hide_hud_inventory() end
 		end
 	end)
-	C().on("hf_takeall", host_takeall, "host")
-	C().set_limit("hf_takeall", 5, 1)
+	core.on("hf_takeall", host_takeall, "host")
+	core.set_limit("hf_takeall", 5, 1)
 end
 
 local function install_frozen()
-	local b = C().mod("bind_hf_base")
-	local hm = C().mod("hf_obj_manager")
+	local b = core.mod("bind_hf_base")
+	local hm = core.mod("hf_obj_manager")
 	local cls = b and b.hf_binder_wrapper
-	local set_frozen = C().fn(cls, "set_frozen")
-	if not (set_frozen and hm and C().fn(hm, "update_data") and C().fn(hm, "get_data")) then return end
+	local set_frozen = core.fn(cls, "set_frozen")
+	if not (set_frozen and hm and core.fn(hm, "update_data") and core.fn(hm, "get_data")) then return end
 	local function host_frozen(t, from)
-		local wire_id = object_id(t.o)
-		local id = wire_id and object_id(C().lid(wire_id))
+		local wire_id = core.object_id(t.o, false, true)
+		local id = wire_id and core.object_id(core.lid(wire_id), false, true)
 		local valid = id ~= nil and type(t.f) == "boolean"
-		if not trust("hf_freeze_args", valid, "player #%s: invalid freeze request", tostring(from)) or not valid then return end
+		if not coop_trust.pass("hf_freeze_args", valid, "player #%s: invalid freeze request", tostring(from)) or not valid then return end
 		if not coop_mode.writes(id) then return end
-		local w, player = wrapper_of(id), C().avatar(from)
+		local w, player = wrapper_of(id), core.avatar(from)
 		local d = w and hm.get_data(id)
 		local movable = type(d) == "table" and not d.is_world_obj and w.object ~= nil
-		if not trust("hf_freeze_object", movable, "player #%s: furniture %d cannot be frozen or unfrozen", tostring(from), id)
+		if not coop_trust.pass("hf_freeze_object", movable, "player #%s: furniture %d cannot be frozen or unfrozen", tostring(from), id)
 			or not movable then return end
-		if not trust("hf_freeze_near", player and near(w.object, player), "player #%s: furniture %d is out of reach", tostring(from), id)
+		if not coop_trust.pass("hf_freeze_near", player and core.near(w.object, player, NEAR), "player #%s: furniture %d is out of reach", tostring(from), id)
 			or not player then return end
 		set_frozen(w, t.f)
 		if w.is_frozen == t.f then
@@ -583,13 +569,13 @@ local function install_frozen()
 	end
 	local function request_frozen(orig)
 		return function(self, value, ...)
-			if not C().active() then return orig(self, value, ...) end
+			if not core.active() then return orig(self, value, ...) end
 			if self.object then
-				return run_level_action("hf_freeze", host_frozen, { o = C().hid(self.object:id()), f = value })
+				return run_level_action("hf_freeze", host_frozen, { o = core.hid(self.object:id()), f = value })
 			end
 		end
 	end
-	C().wrap(cls, "set_frozen", "bind_hf_base.hf_binder_wrapper.set_frozen", request_frozen)
+	core.wrap(cls, "set_frozen", "bind_hf_base.hf_binder_wrapper.set_frozen", request_frozen)
 	-- LuaBind copies methods at class declaration. Later classes inherit our wrapper already.
 	for module, member in pairs({
 		bind_alarm_system = "alarm_system_wrapper",
@@ -602,15 +588,15 @@ local function install_frozen()
 		bind_workshop_furniture = "hf_workshop_wrapper",
 		placeable_radio = "placeable_radio_wrapper",
 	}) do
-		local mod = rawget(_G, module) and C().mod(module)
+		local mod = rawget(_G, module) and core.mod(module)
 		local subclass = mod and mod[member]
-		if C().fn(subclass, "set_frozen") == set_frozen then
-			C().wrap(subclass, "set_frozen", module .. "." .. member .. ".set_frozen", request_frozen)
+		if core.fn(subclass, "set_frozen") == set_frozen then
+			core.wrap(subclass, "set_frozen", module .. "." .. member .. ".set_frozen", request_frozen)
 		end
 	end
-	C().wrap(b, "freeze_obj", "bind_hf_base.freeze_obj", function(orig)
+	core.wrap(b, "freeze_obj", "bind_hf_base.freeze_obj", function(orig)
 		return function(id, ...)
-			if not C().active() then return orig(id, ...) end
+			if not core.active() then return orig(id, ...) end
 			local d, w = hm.get_data(id), wrapper_of(id)
 			if not coop_mode.is_player_mirror() and coop_mode.writes(id) and w and d and d.is_frozen == false and not d.is_world_obj then
 				if not w.object:get_physics_shell() then return false end
@@ -622,22 +608,22 @@ local function install_frozen()
 			return frozen
 		end
 	end)
-	C().on("hf_freeze", host_frozen, "host")
-	C().set_limit("hf_freeze", 5, 2)
+	core.on("hf_freeze", host_frozen, "host")
+	core.set_limit("hf_freeze", 5, 2)
 end
 
 local function install_lamp_mirror()
-	local b = C().mod("bind_light_furniture")
+	local b = core.mod("bind_light_furniture")
 	local cls = b and b.placeable_light_wrapper
 	local function runs_stock(self)
-		return not C().active() or (not coop_mode.is_player_mirror() and self.object and coop_mode.writes(self.object:id()))
+		return not core.active() or (not coop_mode.is_player_mirror() and self.object and coop_mode.writes(self.object:id()))
 	end
-	C().wrap(cls, "save_data", "bind_light_furniture.placeable_light_wrapper.save_data", function(orig)
+	core.wrap(cls, "save_data", "bind_light_furniture.placeable_light_wrapper.save_data", function(orig)
 		return function(self, ...)
 			if runs_stock(self) then return orig(self, ...) end
 		end
 	end)
-	C().wrap(cls, "update", "bind_light_furniture.placeable_light_wrapper.update", function(orig)
+	core.wrap(cls, "update", "bind_light_furniture.placeable_light_wrapper.update", function(orig)
 		return function(self, ...)
 			if runs_stock(self) then return orig(self, ...) end
 			-- The stock visual update still runs. Its infinite-fuel branch skips the consumption step.
@@ -672,25 +658,25 @@ end
 local function client_place(section, loc, rot, lvid, gvid, item_id)
 	local ang = euler(rot)
 	if not ang then
-		C().report("hf", "place", "unknown rotation")
+		core.report("hf", "place", "unknown rotation")
 		return
 	end
 	local data = {}
-	local hm = C().mod("hf_obj_manager")
-	local get = hm and C().fn(hm, "get_data")
+	local hm = core.mod("hf_obj_manager")
+	local get = hm and core.fn(hm, "get_data")
 	if get then
 		local ok, d = pcall(get, item_id)
 		if ok and type(d) == "table" then data = scalar_table(d) or {} end
 	end
 	local item = level.object_by_id(item_id)
 	if item then data.condition = item:condition() end
-	C().to_host("hf_place", {
-		i = C().hid(item_id), s = section, x = loc.x, y = loc.y, z = loc.z, ax = ang.x, ay = ang.y, az = ang.z,
-		d = C().ser(data) or "",
+	core.to_host("hf_place", {
+		i = core.hid(item_id), s = section, x = loc.x, y = loc.y, z = loc.z, ax = ang.x, ay = ang.y, az = ang.z,
+		d = core.ser(data) or "",
 	})
 end
 
--- Round 5 (S7 of the round 4 review): is placed section `sec` furniture that has an owner? A Hideout Furniture stash
+-- Is placed section `sec` furniture that has an owner? A Hideout Furniture stash
 -- (placeable_type = stash, as coop_npc_world's mine check reads it) or a workbench (placeable_workshop, bound by
 -- bind_workshop_furniture: its box, m_data.workshop_stashes, is judged by the workbench's owner).
 local function owned_kind(sec)
@@ -702,11 +688,11 @@ local function owned_kind(sec)
 end
 
 local function host_place(t, from)
-	local item_id = C().lid(tonumber(t.i))
+	local item_id = core.lid(tonumber(t.i))
 	local se = type(item_id) == "number" and item_id < 65535 and alife_object(item_id)
-	local who = C().avatar(from)
+	local who = core.avatar(from)
 	local section = t.s
-	if not (se and who and C().root_of(item_id) == who:id()) then return refuse("hf_place", from, "item not in the player's inventory") end
+	if not (se and who and core.root_of(item_id) == who:id()) then return refuse("hf_place", from, "item not in the player's inventory") end
 	if not coop_mode.writes(item_id) then return refuse("hf_place", from, "another writer owns the item") end
 	local psec = ini_sys:r_string_ex(se:section_name(), "placeable_section")
 	if not (type(section) == "string" and psec == section) then return refuse("hf_place", from, "section does not match the item") end
@@ -720,14 +706,14 @@ local function host_place(t, from)
 	local ok, res = pcall(orig_create, section, pos, ang, who:level_vertex_id(), who:game_vertex_id())
 	local obj_id = ok and (type(res) == "number" and res or (res and res.id)) or nil
 	if not obj_id then return refuse("hf_place", from, "the mod did not create " .. section .. " (" .. tostring(res) .. ")") end
-	-- Round 3 (R2-B3): the furniture's data is built here, as the mod's placeable_furniture.transfer_item_data does: the host's own
-	-- data of the item, then the item's condition when it is online. Nothing of the client's text (t.d, which a build 57 client
-	-- still sends): bind_light_furniture reads condition as the fuel, is_world_obj as endless fuel and is_on as lit, so a forged
+	-- The furniture's data is built here, as the mod's placeable_furniture.transfer_item_data does: the host's own data of the
+	-- item, then the item's condition when it is online. Nothing of the client's text (t.d): bind_light_furniture reads
+	-- condition as the fuel, is_world_obj as endless fuel and is_on as lit, so a forged
 	-- table made a lit lamp with endless fuel past hf_lamp_tool and hf_refuel_item. is_world_obj is the map's (hf_map_objects sets
 	-- it on the host) and a lamp is lit only through hf_lamp: neither ever comes with an item. The condition is the host's copy of
-	-- his item, which his machine reports (coop_items WP9).
-	local hm = C().mod("hf_obj_manager")
-	local get = hm and C().fn(hm, "get_data")
+	-- his item, which his machine reports (coop_items).
+	local hm = core.mod("hf_obj_manager")
+	local get = hm and core.fn(hm, "get_data")
 	local okd, own = false, nil
 	if get then okd, own = pcall(get, item_id) end
 	local data = okd and scalar_table(own) or {}
@@ -738,11 +724,11 @@ local function host_place(t, from)
 	if next(data) and hm and hm.update_data then pcall(hm.update_data, obj_id, data) end
 	if hm and hm.delete_data then pcall(hm.delete_data, item_id) end
 	alife_release_id(item_id)
-	-- round 4 (S5 of the round 3 review): its owner, his character: a mine from his own stash or his workbench's box
-	-- (coop_npc_world); forgotten at its pickup. Round 5 (S7 of the round 4 review): booked only for a stash or a workbench, what
-	-- that check reads (a lamp or a chair grew the save's list for nothing), and forgotten whenever the object goes
+	-- its owner, his character: a mine from his own stash or his workbench's box (coop_npc_world) is judged by him. Booked
+	-- only for a stash or a workbench, what that check reads (a lamp or a chair would grow the save's list for nothing), and
+	-- forgotten whenever the object goes
 	-- (coop_mods_items: server_entity_on_unregister), not only through hf_pickup.
-	local items = C().mod("coop_mods_items")
+	local items = core.mod("coop_mods_items")
 	if owned_kind(section) and items and type(items.note_stash_owner) == "function" then
 		pcall(items.note_stash_owner, obj_id, who:id())
 	end
@@ -773,10 +759,10 @@ local function client_pickup(obj_id)
 	local box_id = known_link("workshop", obj_id)
 	local box = box_id and level.object_by_id(box_id)
 	if box and not box:is_inv_box_empty() then
-		C().hud("st_coop_mods_hf_empty_first", "Empty the workbench stash before packing it up.")
+		core.hud("st_coop_mods_hf_empty_first", "Empty the workbench stash before packing it up.")
 		return
 	end
-	C().to_host("hf_pickup", { o = C().hid(obj_id) })
+	core.to_host("hf_pickup", { o = core.hid(obj_id) })
 end
 
 local function host_pickup(t, from)
@@ -784,11 +770,11 @@ local function host_pickup(t, from)
 	local obj = id and level.object_by_id(id)
 	if not (obj and coop_mode.writes(id)) then return refuse("hf_pickup", from, "another writer or no furniture") end
 	if harv.ready and harv.is_device(obj) then return harv.demount(t, from) end
-	local who = C().avatar(from)
-	if not (obj and who and near(obj, who) and coop_mode.writes(who:id())) then
+	local who = core.avatar(from)
+	if not (obj and who and core.near(obj, who, NEAR) and coop_mode.writes(who:id())) then
 		return refuse("hf_pickup", from, "unknown or far furniture")
 	end
-	local hm = C().mod("hf_obj_manager")
+	local hm = core.mod("hf_obj_manager")
 	local data = hm and hm.get_data and select(2, pcall(hm.get_data, id))
 	if type(data) == "table" and data.is_world_obj then return refuse("hf_pickup", from, "a world object") end
 	for _, kind in ipairs({ "workshop", "stove" }) do
@@ -802,17 +788,17 @@ local function host_pickup(t, from)
 	local pick = w and w.pickup
 	if type(pick) ~= "function" then return refuse("hf_pickup", from, "no binder for the object") end
 	if not reserve_pickup(w, id) then return refuse("hf_pickup", from, "cannot pack this furniture") end
-	local ok, e = C().as_player(who, pick, w)
+	local ok, e = core.as_player(who, pick, w)
 	if not ok then
-		C().report("hf", "pickup", e)
+		core.report("hf", "pickup", e)
 		return
 	end
 	st.pickup = st.pickup + 1
-	local items = C().mod("coop_mods_items") -- round 4 (S5): its owner is forgotten
+	local items = core.mod("coop_mods_items") -- its owner is forgotten with the furniture
 	if items and type(items.note_stash_owner) == "function" then pcall(items.note_stash_owner, id, nil) end
 	for _, kind in ipairs({ "workshop", "stove" }) do
 		local tname = link_tables[kind]
-		local tt = m_data()[tname]
+		local tt = alife_storage_manager.get_state()[tname]
 		if type(tt) == "table" and tt[id] and not alife_object(tt[id]) then tt[id] = nil end
 	end
 end
@@ -821,7 +807,7 @@ local function dialog_pickup(field, direct)
 	return function(orig)
 		return function(self, ...)
 			local id = self[field]
-			if not C().active() then return orig(self, ...) end
+			if not core.active() then return orig(self, ...) end
 			if coop_mode.writes(id) then
 				if reserve_pickup(wrapper_of(id), id, direct) then return orig(self, ...) end
 				return
@@ -834,52 +820,52 @@ local function dialog_pickup(field, direct)
 end
 
 local function install_furniture()
-	local b = C().mod("bind_hf_base")
-	local pf = C().mod("placeable_furniture")
+	local b = core.mod("bind_hf_base")
+	local pf = core.mod("placeable_furniture")
 	if not (b or pf) then return end
 	installed[#installed + 1] = "hideout_furniture"
 
 	-- placing
-	if pf and C().fn(pf, "create_object") then
-		C().wrap(pf, "create_object", "placeable_furniture.create_object", function(orig)
+	if pf and core.fn(pf, "create_object") then
+		core.wrap(pf, "create_object", "placeable_furniture.create_object", function(orig)
 			orig_create = orig
 			return function(section, loc, rot, lvid, gvid, ...)
 				local item = place_item
 				place_item = nil
-				if not C().active() or (item and coop_mode.writes(item)) then return orig(section, loc, rot, lvid, gvid, ...) end
+				if not core.active() or (item and coop_mode.writes(item)) then return orig(section, loc, rot, lvid, gvid, ...) end
 				-- Map objects use the stock create gate and the host-domain route of hf_map_objects.
 				if not item and not coop_mode.is_player_mirror() then return orig(section, loc, rot, lvid, gvid, ...) end
 				if item and section and loc and rot and coop_mode.is_player_mirror() then
 					local ok, e = pcall(client_place, section, loc, rot, lvid, gvid, item)
-					if not ok then C().report("hf", "place request", e) end
+					if not ok then core.report("hf", "place request", e) end
 				end
 				return nil
 			end
 		end)
-		C().wrap(pf, "func_place_item", "placeable_furniture.func_place_item", function(orig)
+		core.wrap(pf, "func_place_item", "placeable_furniture.func_place_item", function(orig)
 			return function(obj, ...)
-				if not C().active() then return orig(obj, ...) end
+				if not core.active() then return orig(obj, ...) end
 				place_item = obj and obj:id() or nil
 				if coop_mode.writes(place_item) then return orig(obj, ...) end
 				if not coop_mode.is_player_mirror() then return end
 				local sec = obj and ini_sys:r_string_ex(obj:section(), "placeable_section")
-				local start = C().fn(pf, "start_placing_item")
+				local start = core.fn(pf, "start_placing_item")
 				if sec and start then
 					return start(sec)
 				end
 				return orig(obj, ...)
 			end
 		end)
-		C().on("hf_place", host_place, "host")
-		C().set_limit("hf_place", 5, 1)
+		core.on("hf_place", host_place, "host")
+		core.set_limit("hf_place", 5, 1)
 	end
 
 	-- packing up: every entry point a client can use
 	if b and b.hf_binder_wrapper then
 		local function wrap_wrapper_pickup(cls, label, calls_base)
-			local ok = C().wrap(cls, "pickup", label, function(orig)
+			local ok = core.wrap(cls, "pickup", label, function(orig)
 				return function(self, ...)
-					if not C().active() then return orig(self, ...) end
+					if not core.active() then return orig(self, ...) end
 					local id = self.object and self.object:id()
 					if not id then return end
 					if harv.ready and harv.is_device(self.object) then
@@ -906,16 +892,16 @@ local function install_furniture()
 			if ok then guarded_pickups[cls.pickup] = true end
 		end
 		wrap_wrapper_pickup(b.hf_binder_wrapper, "bind_hf_base.hf_binder_wrapper.pickup")
-		local bw = C().mod("bind_workshop_furniture")
+		local bw = core.mod("bind_workshop_furniture")
 		if bw and bw.hf_workshop_wrapper then
 			wrap_wrapper_pickup(bw.hf_workshop_wrapper, "bind_workshop_furniture.hf_workshop_wrapper.pickup", true)
 		end
 	end
 	if pf then
-		C().wrap(pf, "pickup_obj", "placeable_furniture.pickup_obj", function(orig)
+		core.wrap(pf, "pickup_obj", "placeable_furniture.pickup_obj", function(orig)
 			return function(obj, ...)
-				if C().active() and harv.ready and harv.is_device(obj) then return harv.request_demount(obj) end
-				if not (C().active() and obj) then return orig(obj, ...) end
+				if core.active() and harv.ready and harv.is_device(obj) then return harv.request_demount(obj) end
+				if not (core.active() and obj) then return orig(obj, ...) end
 				if coop_mode.writes(obj:id()) then
 					if reserve_pickup(wrapper_of(obj:id()), obj:id()) then return orig(obj, ...) end
 					return
@@ -928,136 +914,136 @@ local function install_furniture()
 			end
 		end)
 	end
-	local light, piano, radio, ws = C().mod("ui_furniture_light"), C().mod("ui_furniture_piano"),
-		C().mod("placeable_radio"), C().mod("ui_furniture_workshop")
-	C().wrap(light and light.UIFurnitureLight, "Pickup", "ui_furniture_light.UIFurnitureLight.Pickup", dialog_pickup("light_id"))
-	C().wrap(piano and piano.UIFurniturePiano, "Pickup", "ui_furniture_piano.UIFurniturePiano.Pickup", dialog_pickup("obj_id", true))
-	C().wrap(radio and radio.UIFurnitureRadio, "Pickup", "placeable_radio.UIFurnitureRadio.Pickup", dialog_pickup("obj_id"))
-	C().wrap(ws and ws.UIFurnitureWorkshop, "Pickup", "ui_furniture_workshop.UIFurnitureWorkshop.Pickup", dialog_pickup("obj_id"))
-	C().on("hf_pickup", host_pickup, "host")
-	C().set_limit("hf_pickup", 5, 1)
+	local light, piano, radio, ws = core.mod("ui_furniture_light"), core.mod("ui_furniture_piano"),
+		core.mod("placeable_radio"), core.mod("ui_furniture_workshop")
+	core.wrap(light and light.UIFurnitureLight, "Pickup", "ui_furniture_light.UIFurnitureLight.Pickup", dialog_pickup("light_id"))
+	core.wrap(piano and piano.UIFurniturePiano, "Pickup", "ui_furniture_piano.UIFurniturePiano.Pickup", dialog_pickup("obj_id", true))
+	core.wrap(radio and radio.UIFurnitureRadio, "Pickup", "placeable_radio.UIFurnitureRadio.Pickup", dialog_pickup("obj_id"))
+	core.wrap(ws and ws.UIFurnitureWorkshop, "Pickup", "ui_furniture_workshop.UIFurnitureWorkshop.Pickup", dialog_pickup("obj_id"))
+	core.on("hf_pickup", host_pickup, "host")
+	core.set_limit("hf_pickup", 5, 1)
 
 	-- lamps
 	if light then
-		local _, orig_toggle = C().wrap(light, "toggle_light", "ui_furniture_light.toggle_light", function(orig)
+		local _, orig_toggle = core.wrap(light, "toggle_light", "ui_furniture_light.toggle_light", function(orig)
 			return function(obj_id, ...)
-				if not C().active() or coop_mode.writes(obj_id) then return orig(obj_id, ...) end
+				if not core.active() or coop_mode.writes(obj_id) then return orig(obj_id, ...) end
 				if not coop_mode.is_player_mirror() then return end
 				local ok, e = pcall(function()
-					local hm = C().mod("hf_obj_manager")
+					local hm = core.mod("hf_obj_manager")
 					local d = hm and hm.get_data and hm.get_data(obj_id)
 					local turning_on = not (type(d) == "table" and d.is_on)
 					if turning_on then
 						-- Tools and matches the lamp needs come from this player's inventory: the first one he holds, as the mod
-						-- picks it. The host checks and spends it (round 2): nothing is spent here before its answer.
+						-- picks it. The host checks and spends it: nothing is spent here before its answer.
 						local se = alife_object(obj_id)
 						local tools = lamp_tools(se and se:section_name())
 						if #tools > 0 then
-							-- round 3 (R2-S1): one he holds that waits for no answer and was not taken by the host already
+							-- one he holds that waits for no answer and was not taken by the host already
 							local busy = false
 							for _, tool in ipairs(tools) do
 								local it, b = spend.free_item(tool)
 								if it then
-									client_ask("hf_lamp", { o = C().hid(obj_id), on = true }, it, "tool")
+									client_ask("hf_lamp", { o = core.hid(obj_id), on = true }, it, "tool")
 									return
 								end
 								busy = busy or b
 							end
 							-- his only tool is on its way to the host's answer or its removal: nothing (as a second click did before)
-							if not busy then C().hud("st_ui_campfire_prereq", "You need a tool to light this.") end
+							if not busy then core.hud("st_ui_campfire_prereq", "You need a tool to light this.") end
 							return
 						end
 					end
-					C().to_host("hf_lamp", { o = C().hid(obj_id), on = turning_on })
+					core.to_host("hf_lamp", { o = core.hid(obj_id), on = turning_on })
 				end)
-				if not ok then C().report("hf", "lamp", e) end
+				if not ok then core.report("hf", "lamp", e) end
 			end
 		end)
-		C().on("hf_lamp", function(t, from)
-			local id = C().lid(tonumber(t.o))
+		core.on("hf_lamp", function(t, from)
+			local id = core.lid(tonumber(t.o))
 			local obj = type(id) == "number" and level.object_by_id(id)
-			local who = C().avatar(from)
+			local who = core.avatar(from)
 			local iid = tonumber(t.i)
 			local function answer(r)
-				if iid and r then C().to_peer(from, "hf_item_r", { i = iid, r = r }) end
+				if iid and r then core.to_peer(from, "hf_item_r", { i = iid, r = r }) end
 			end
-			if not (obj and who and near(obj, who) and coop_mode.writes(id)) then
+			if not (obj and who and core.near(obj, who, NEAR) and coop_mode.writes(id)) then
 				answer("no")
 				return refuse("hf_lamp", from, "unknown or far lamp")
 			end
 			local r = nil
 			local tools = t.on == true and lamp_tools(obj:section()) or {}
 			if #tools > 0 then
-				-- round 2: the tool the lamp needs is this player's, named by its id
+				-- the tool the lamp needs is this player's, named by its id
 				local item, why = nil, nil
 				local ok = false
 				if iid then
 					item, why = carried(iid, who, tools)
 					if item and not coop_mode.writes(item:id()) then return answer("no") end
 					ok = item ~= nil
-					if not trust("hf_lamp_tool", ok, "player %s (#%s) lit lamp %s with item %s: %s", tostring(C().nick_of(from)),
+					if not coop_trust.pass("hf_lamp_tool", ok, "player %s (#%s) lit lamp %s with item %s: %s", tostring(core.nick_of(from)),
 						tostring(from), tostring(id), tostring(iid), tostring(why)) then
 						return answer("no")
 					end
 				else
-					-- round 4 (blocker 2 of the round 3 review): no id, or an id that is no number, is its own check that always
-					-- fails, as hf_refuel_item_id: "log" lights it as build 56 did (his machine spent its copy), "refuse" lights
-					-- nothing. It used to pass hf_lamp_tool on "he holds one" and spent nothing anywhere: one box of matches lit
-					-- the lamp again and again. Mixed builds cannot connect, so no honest client sends one.
+					-- no id, or an id that is no number, is its own check that always fails, as hf_refuel_item_id: "log" lights
+					-- it (his machine spends its copy), "refuse" lights nothing. Passing hf_lamp_tool on "he holds one" would
+					-- spend nothing anywhere: one box of matches would light the lamp again and again. No honest client sends
+					-- one.
 					local holds = false
 					for _, tool in ipairs(tools) do
 						if who:object(tool) then holds = true break end
 					end
-					if not trust("hf_lamp_tool_id", false,
-						"player %s (#%s) lit lamp %s without the tool's id (sent %s; he holds %s; a build 56 client?)",
-						tostring(C().nick_of(from)), tostring(from), tostring(id), tostring(t.i),
+					if not coop_trust.pass("hf_lamp_tool_id", false,
+						"player %s (#%s) lit lamp %s without the tool's id (sent %s; he holds %s)",
+						tostring(core.nick_of(from)), tostring(from), tostring(id), tostring(t.i),
 						holds and "one" or ("none of " .. table.concat(tools, ", "))) then
 						return
 					end
 				end
-				r = (ok and item) and host_spend(item, "tool") or "left" -- a failed check in "log": his own copy (W8.2)
+				r = (ok and item) and host_spend(item, "tool") or "left" -- a failed check in "log": his own copy
 			end
-			local hm = C().mod("hf_obj_manager")
+			local hm = core.mod("hf_obj_manager")
 			if hm and hm.update_data then
 				hm.update_data(id, { is_on = t.on == true })
 			elseif orig_toggle then
-				C().as_player(who, orig_toggle, id)
+				core.as_player(who, orig_toggle, id)
 			end
 			st.lamp = st.lamp + 1
 			answer(r)
 		end, "host")
 
 		local function host_refuel(t, from)
-			local wire_id = object_id(t.o)
-			local id = wire_id and object_id(C().lid(wire_id))
+			local wire_id = core.object_id(t.o, false, true)
+			local id = wire_id and core.object_id(core.lid(wire_id), false, true)
 			local obj = id and level.object_by_id(id)
-			local who = C().avatar(from)
-			local iid = object_id(t.i)
-			local own = coop_mode.actor_is_player() and from == C().self_peer()
+			local who = core.avatar(from)
+			local iid = core.object_id(t.i, false, true)
+			local own = coop_mode.actor_is_player() and from == core.self_peer()
 			local function answer(r)
-				if not own and iid and r then C().to_peer(from, "hf_item_r", { i = iid, r = r }) end
+				if not own and iid and r then core.to_peer(from, "hf_item_r", { i = iid, r = r }) end
 			end
 			local w = obj and wrapper_of(id)
 			local is_lamp = obj and (ini_sys:r_string_ex(obj:section(), "placeable_type") == "light"
 				or (w and (type(w.fuel) == "number" or type(w.condition) == "number")))
-			if not trust("hf_refuel_object", is_lamp, "player #%s: invalid lamp id", tostring(from)) or not is_lamp then
+			if not coop_trust.pass("hf_refuel_object", is_lamp, "player #%s: invalid lamp id", tostring(from)) or not is_lamp then
 				return answer("no")
 			end
 			if not coop_mode.writes(id) then return answer("no") end
-			if not trust("hf_refuel_near", who and near(obj, who), "player #%s: lamp %d is out of reach", tostring(from), id)
+			if not coop_trust.pass("hf_refuel_near", who and core.near(obj, who, NEAR), "player #%s: lamp %d is out of reach", tostring(from), id)
 				or not who then return answer("no") end
-			local hm = C().mod("hf_obj_manager")
-			local update = C().fn(hm, "update_data")
+			local hm = core.mod("hf_obj_manager")
+			local update = core.fn(hm, "update_data")
 			if not update then return answer("no") end
 			if not iid and t.i ~= nil then
-				trust("hf_refuel_item", false, "player #%s: invalid fuel item id", tostring(from))
+				coop_trust.pass("hf_refuel_item", false, "player #%s: invalid fuel item id", tostring(from))
 				return answer("no")
 			end
 			local r = nil
 			if t.i == nil then
-				-- a client of build 56: he removed the fuel himself
-				if not trust("hf_refuel_item_id", false, "player %s (#%s) refuelled lamp %s without the fuel item's id (a build 56 "
-					.. "client?)", tostring(C().nick_of(from)), tostring(from), tostring(id)) then
+				-- a request without the fuel item's id: his machine removed the fuel itself
+				if not coop_trust.pass("hf_refuel_item_id", false, "player %s (#%s) refuelled lamp %s without the fuel item's id",
+					tostring(core.nick_of(from)), tostring(from), tostring(id)) then
 					return
 				end
 			else
@@ -1065,72 +1051,72 @@ local function install_furniture()
 				local item, why = carried(iid, who, { fuel })
 				if item and not coop_mode.writes(item:id()) then return answer("no") end
 				local ok = item ~= nil
-				if not trust("hf_refuel_item", ok, "player %s (#%s) refuelled lamp %s with item %s: %s", tostring(C().nick_of(from)),
+				if not coop_trust.pass("hf_refuel_item", ok, "player %s (#%s) refuelled lamp %s with item %s: %s", tostring(core.nick_of(from)),
 					tostring(from), tostring(id), tostring(iid), tostring(why)) then
 					return answer("no")
 				end
-				r = ok and host_spend(item, "fuel") or "left" -- a failed check in "log": his own copy (W8.2); own: no answer
+				r = ok and host_spend(item, "fuel") or "left" -- a failed check in "log": his own copy; own: no answer
 			end
 			wrapper_fuel(w, 1.0)
 			update(id, { condition = 1.0 })
 			answer(r)
 		end
-		C().wrap(light.UIFurnitureLight, "Refuel", "ui_furniture_light.UIFurnitureLight.Refuel", function(orig)
+		core.wrap(light.UIFurnitureLight, "Refuel", "ui_furniture_light.UIFurnitureLight.Refuel", function(orig)
 			return function(self, ...)
-				if not C().active() then return orig(self, ...) end
+				if not core.active() then return orig(self, ...) end
 				local fuel = ini_sys:r_string_ex(self.section or "", "fuel_section") or "charcoal"
 				local item, busy = spend.free_item(fuel)
 				if item then
-					local t = { o = C().hid(self.light_id) }
+					local t = { o = core.hid(self.light_id) }
 					if coop_mode.is_player_mirror() then
 						client_ask("hf_refuel", t, item, "fuel", self.light_id)
 					elseif coop_mode.actor_is_player() and coop_mode.writes(self.light_id) then
-						t.i = C().hid(item:id())
-						host_refuel(t, C().self_peer())
+						t.i = core.hid(item:id())
+						host_refuel(t, core.self_peer())
 					end
 				elseif not busy then
-					C().hud("st_coop_mods_hf_no_fuel", "I don't have any fuel for this.")
+					core.hud("st_coop_mods_hf_no_fuel", "I don't have any fuel for this.")
 				end
 				pcall(function() self:Close() end)
 			end
 		end)
-		C().on("hf_refuel", host_refuel, "host")
-		C().on("hf_item_r", client_item_answer, "client")
+		core.on("hf_refuel", host_refuel, "host")
+		core.on("hf_item_r", client_item_answer, "client")
 		RegisterScriptCallback("actor_on_update", client_spend_tick)
 		-- over the rate: an explicit "no" for the named item (it would wait for an answer that never comes)
 		local function limited(t, from)
-			local iid = type(t) == "table" and object_id(t.i)
-			if iid then C().to_peer(from, "hf_item_r", { i = iid, r = "no" }) end
+			local iid = type(t) == "table" and core.object_id(t.i, false, true)
+			if iid then core.to_peer(from, "hf_item_r", { i = iid, r = "no" }) end
 		end
-		C().set_limit("hf_lamp", 6, 2, limited)
-		C().set_limit("hf_refuel", 5, 2, limited)
+		core.set_limit("hf_lamp", 6, 2, limited)
+		core.set_limit("hf_refuel", 5, 2, limited)
 	end
 
 	-- workbench box
-	if ws and C().fn(ws, "GetStash") then
-		local _, orig_get = C().wrap(ws, "GetStash", "ui_furniture_workshop.GetStash", function(orig)
+	if ws and core.fn(ws, "GetStash") then
+		local _, orig_get = core.wrap(ws, "GetStash", "ui_furniture_workshop.GetStash", function(orig)
 			return function(wb, ...)
-				if C().active() and not coop_mode.writes(wb) then return known_link("workshop", wb) end
+				if core.active() and not coop_mode.writes(wb) then return known_link("workshop", wb) end
 				return orig(wb, ...)
 			end
 		end)
 		resolvers.workshop = function(obj) return orig_get(obj:id()) end
-		C().wrap(ws, "UseWorkshop", "ui_furniture_workshop.UseWorkshop", function(orig)
+		core.wrap(ws, "UseWorkshop", "ui_furniture_workshop.UseWorkshop", function(orig)
 			return function(wb, ...)
-				if not C().active() or coop_mode.writes(wb) then return orig(wb, ...) end
+				if not core.active() or coop_mode.writes(wb) then return orig(wb, ...) end
 				if not coop_mode.is_player_mirror() then return end
 				ask_box("workshop", wb, function(box)
-					local open = C().fn(ws, "OpenWorkshop")
-					C().when_online(box, nil, function()
+					local open = core.fn(ws, "OpenWorkshop")
+					core.when_online(box, nil, function()
 						if open then open(box) else open_box(box) end
 					end, 10000)
 				end)
 			end
 		end)
-		C().wrap(ws.UIFurnitureWorkshop, "AccessStash", "ui_furniture_workshop.UIFurnitureWorkshop.AccessStash", function(orig)
+		core.wrap(ws.UIFurnitureWorkshop, "AccessStash", "ui_furniture_workshop.UIFurnitureWorkshop.AccessStash", function(orig)
 			return function(self, ...)
 				local wb = self.obj_id
-				if not C().active() or coop_mode.writes(wb) then return orig(self, ...) end
+				if not core.active() or coop_mode.writes(wb) then return orig(self, ...) end
 				if not coop_mode.is_player_mirror() then return end
 				pcall(function() self:Close() end)
 				if type(wb) == "number" then ask_box("workshop", wb, open_box) end
@@ -1143,25 +1129,25 @@ end
 -- Hideout Furniture Expansion: the stove's box
 -------------------------------------------------------------------------------
 local function install_stove()
-	local us = C().mod("ui_stove_furniture")
-	if not (us and C().fn(us, "access_inventory")) then return end
+	local us = core.mod("ui_stove_furniture")
+	if not (us and core.fn(us, "access_inventory")) then return end
 	installed[#installed + 1] = "hf_expansion"
-	C().wrap(us.UICookStove, "Pickup", "ui_stove_furniture.UICookStove.Pickup", dialog_pickup("obj_id", true))
-	local _, orig_access = C().wrap(us, "access_inventory", "ui_stove_furniture.access_inventory", function(orig)
+	core.wrap(us.UICookStove, "Pickup", "ui_stove_furniture.UICookStove.Pickup", dialog_pickup("obj_id", true))
+	local _, orig_access = core.wrap(us, "access_inventory", "ui_stove_furniture.access_inventory", function(orig)
 		return function(obj, ...)
-			if not (C().active() and obj) or coop_mode.writes(obj:id()) then return orig(obj, ...) end
+			if not (core.active() and obj) or coop_mode.writes(obj:id()) then return orig(obj, ...) end
 			if coop_mode.is_player_mirror() then ask_box("stove", obj:id(), open_box) end
 		end
 	end)
 	resolvers.stove = function(obj)
 		orig_access(obj)
 		RemoveTimeEvent(obj:id(), "container") -- the box opens for the requester, not on the host
-		local t = m_data().stove_stashes
+		local t = alife_storage_manager.get_state().stove_stashes
 		return type(t) == "table" and t[obj:id()] or nil
 	end
-	C().wrap(us, "start_dialog", "ui_stove_furniture.start_dialog", function(orig)
+	core.wrap(us, "start_dialog", "ui_stove_furniture.start_dialog", function(orig)
 		return function(obj_id, ...)
-			if C().is_client() and type(obj_id) == "number" and not known_link("stove", obj_id) then
+			if core.is_client() and type(obj_id) == "number" and not known_link("stove", obj_id) then
 				ask_box("stove", obj_id, nil) -- the link is known before a button needs it
 			end
 			return orig(obj_id, ...)
@@ -1169,17 +1155,17 @@ local function install_stove()
 	end)
 	local cook_wait = setmetatable({}, { __mode = "k" })
 	local function same_stove(self, pending)
-		return C().active() and not pending.cancelled and self.obj_id == pending.id and self:IsShown()
+		return core.active() and not pending.cancelled and self.obj_id == pending.id and self:IsShown()
 			and level.object_by_id(pending.id) and db.actor and db.actor:id() == pending.actor
 	end
-	C().wrap(us.UICookStove, "Close", "ui_stove_furniture.UICookStove.Close", function(orig)
+	core.wrap(us.UICookStove, "Close", "ui_stove_furniture.UICookStove.Close", function(orig)
 		return function(self, ...)
 			local pending = cook_wait[self]
 			if pending and pending.moved then pending.cancelled = true else cook_wait[self] = nil end
 			return orig(self, ...)
 		end
 	end)
-	C().wrap(us.UICookStove, "OpenCookUI", "ui_stove_furniture.UICookStove.OpenCookUI", function(orig)
+	core.wrap(us.UICookStove, "OpenCookUI", "ui_stove_furniture.UICookStove.OpenCookUI", function(orig)
 		return function(self, ...)
 			local pending = cook_wait[self]
 			if not pending or not pending.moved then return orig(self, ...) end
@@ -1189,9 +1175,9 @@ local function install_stove()
 			return true
 		end
 	end)
-	C().wrap(us.UICookStove, "UseCook", "ui_stove_furniture.UICookStove.UseCook", function(orig)
+	core.wrap(us.UICookStove, "UseCook", "ui_stove_furniture.UICookStove.UseCook", function(orig)
 		return function(self, ...)
-			if not (C().active() and coop_mode.actor_is_player()) then return orig(self, ...) end
+			if not (core.active() and coop_mode.actor_is_player()) then return orig(self, ...) end
 			local id = self.obj_id
 			local obj = id and level.object_by_id(id)
 			if not (obj and db.actor) then return end
@@ -1199,7 +1185,7 @@ local function install_stove()
 			local box_id = known_link("stove", id)
 			local mirror = coop_mode.is_player_mirror()
 			if not section or section == "" then
-				if not box_id and mirror then return C().hud("st_coop_mods_hf_syncing", "The stove's storage is still syncing, try again.") end
+				if not box_id and mirror then return core.hud("st_coop_mods_hf_syncing", "The stove's storage is still syncing, try again.") end
 				return orig(self, ...)
 			end
 			local pending = cook_wait[self]
@@ -1208,7 +1194,7 @@ local function install_stove()
 			cook_wait[self] = pending
 			local function wait_for_box(box_id)
 				if cook_wait[self] ~= pending or not same_stove(self, pending) then return end
-				C().when_online(box_id, section, function()
+				core.when_online(box_id, section, function()
 					if cook_wait[self] ~= pending then return end
 					local box = level.object_by_id(box_id)
 					if not (same_stove(self, pending) and known_link("stove", id) == box_id and box and box:section() == section) then
@@ -1225,7 +1211,7 @@ local function install_stove()
 			elseif coop_mode.writes(id) then
 				wait_for_box(resolvers.stove(obj))
 			elseif mirror then
-				C().hud("st_coop_mods_hf_syncing", "The stove's storage is still syncing, try again.")
+				core.hud("st_coop_mods_hf_syncing", "The stove's storage is still syncing, try again.")
 				ask_box("stove", id, wait_for_box)
 			end
 		end
@@ -1288,7 +1274,7 @@ local function apply_case(ws, case_id, map)
 end
 
 local function publish_case(ws, case_id)
-	if C().active() and coop_mode.writes(case_id) then C().publish("hf_show_map", { c = case_id, m = encode_case(ws, case_id) }) end
+	if core.active() and coop_mode.writes(case_id) then core.publish("hf_show_map", { c = case_id, m = encode_case(ws, case_id) }) end
 end
 
 -- The map decider has the device, its hidden box and the player's inventory.
@@ -1303,25 +1289,25 @@ local function harvester_feedback(reason)
 	elseif reason == "occupied" then
 		actor_menu.set_msg(1, "This harvester accepts exactly one input artifact.", 3)
 	else
-		C().hud("st_coop_guard_failed")
+		core.hud("st_coop_guard_failed")
 	end
 end
 
 local function harvester_refusal(from, reason)
 	refuse("harvester", from, reason)
-	if from == C().self_peer() and coop_mode.actor_is_player() then return harvester_feedback(reason) end
-	return C().to_peer(from, "hf_harv_r", { r = reason })
+	if from == core.self_peer() and coop_mode.actor_is_player() then return harvester_feedback(reason) end
+	return core.to_peer(from, "hf_harv_r", { r = reason })
 end
 
 local function harvester_target(t, from, check)
 	local id = request_id(t.o)
 	if not checked(check .. "_id", id ~= nil, from, id) then return nil, nil, "device" end
-	local obj, player = level.object_by_id(id), C().avatar(from)
+	local obj, player = level.object_by_id(id), core.avatar(from)
 	if not checked(check .. "_device", harv.is_device(obj) and alife_object(id) ~= nil, from, id) then
 		return nil, nil, "device"
 	end
 	if not coop_mode.writes(id) then return nil, nil, "device" end
-	if not checked(check .. "_near", player and coop_mode.where(from) == "here" and near(obj, player), from, id) then
+	if not checked(check .. "_near", player and coop_mode.where(from) == "here" and core.near(obj, player, NEAR), from, id) then
 		return nil, nil, "reach"
 	end
 	return obj, player
@@ -1342,7 +1328,7 @@ local function harvester_insert_reason(id, item)
 	if not harv.valid_section(sec) or ini_sys:r_bool_ex(sec, "quest_item", false) then return "section" end
 	if not harv.reaches_first(sec, item:id()) then return "condition" end
 	local d = hf_obj_manager.get_data(id) or {}
-	local active = object_id(d.artifact_item_id)
+	local active = core.object_id(d.artifact_item_id, false, true)
 	if active and active ~= item:id() and alife_object(active) then
 		local cond = harv.item_condition(active)
 		if cond == nil or cond > 0 then return "occupied" end
@@ -1367,8 +1353,8 @@ local function host_harvester_insert(t, from)
 	player:transfer_item(item, box)
 	if se.parent_id ~= box:id() then return harvester_refusal(from, "transfer") end
 	harv.clear_active(id) -- also discards a stale or spent input lock
-	local ok, err = C().as_player(player, harv.after, box:id(), item, "loot", EDDListType.iActorBag)
-	if not ok then C().report("hf", "harvester start", err) end
+	local ok, err = core.as_player(player, harv.after, box:id(), item, "loot", EDDListType.iActorBag)
+	if not ok then core.report("hf", "harvester start", err) end
 end
 
 local function finish_harvester_demount(obj, box, player, section, op)
@@ -1400,7 +1386,7 @@ local function finish_harvester_demount(obj, box, player, section, op)
 	if alife_object(id) then return false end
 	if data_orig.delete then data_orig.delete(id) end
 	data_sent[id] = nil
-	C().publish("hf_data", { o = C().hid(id), x = true, b = -1 })
+	core.publish("hf_data", { o = core.hid(id), x = true, b = -1 })
 	st.pickup = st.pickup + 1
 	return true
 end
@@ -1426,21 +1412,21 @@ function harv.demount(t, from)
 	op.busy = false
 	if (ok and packed) or not (op.moved or op.packed) or not alife_object(id) then harv_ops[id] = nil end
 	if ok and packed then return true end
-	if not ok then C().report("hf", "harvester demount", packed) end
+	if not ok then core.report("hf", "harvester demount", packed) end
 	return harvester_refusal(from, "transfer")
 end
 
 function harv.request_demount(obj)
-	return run_level_action("hf_harv_demount", harv.demount, { o = C().hid(obj:id()) })
+	return run_level_action("hf_harv_demount", harv.demount, { o = core.hid(obj:id()) })
 end
 
 local function harvester_watch()
-	if not C().active() or time_global() < harv.next_look then return end
+	if not core.active() or time_global() < harv.next_look then return end
 	harv.next_look = time_global() + 1000
 	for id, box_id in pairs(harv.links()) do
 		if level.object_by_id(id) and level.object_by_id(box_id) and coop_mode.writes(id) and coop_mode.writes(box_id) then
 			local d = hf_obj_manager.get_data(id) or {}
-			local active = object_id(d.artifact_item_id)
+			local active = core.object_id(d.artifact_item_id, false, true)
 			local item, se = active and level.object_by_id(active), active and alife_object(active)
 			if item and se and se.parent_id ~= box_id then harv.after(box_id, item, "loot", nil) end
 		end
@@ -1456,27 +1442,27 @@ local function install_harvester_binder(cls, base)
 	-- Keep the mod's constructor (including super and the local wrapper registry),
 	-- but gate its two world steps where the constructor calls them.
 	local function guard_init(name, read)
-		local fn, holder, index = C().upvalue(cls.__init, name)
+		local fn, holder, index = core.upvalue(cls.__init, name)
 		if not (holder and type(fn) == "function") then return end
 		debug.setupvalue(holder, index, function(id, ...)
-			if not C().active() or writes_harvester(id) then return fn(id, ...) end
+			if not core.active() or writes_harvester(id) then return fn(id, ...) end
 			if read then return hf_obj_manager.get_data(id) or {} end
 		end)
 	end
 	guard_init("ensure_defaults", true)
 	guard_init("sync_display_for_active", false)
-	local running, holder, index = C().upvalue(cls.refresh_sound_state, "is_production_running")
+	local running, holder, index = core.upvalue(cls.refresh_sound_state, "is_production_running")
 	if holder then
-		local minimum = C().upvalue(running, "MIN_ACTIVE_CONDITION")
+		local minimum = core.upvalue(running, "MIN_ACTIVE_CONDITION")
 		debug.setupvalue(holder, index, function(d)
-			if not (C().active() and coop_mode.is_player_mirror()) then return running(d) end
+			if not (core.active() and coop_mode.is_player_mirror()) then return running(d) end
 			local sec = d.artifact_section
-			return object_id(d.artifact_item_id) and harv.valid_section(sec) and (tonumber(d.artifact_condition) or 0) > minimum
+			return core.object_id(d.artifact_item_id, false, true) and harv.valid_section(sec) and (tonumber(d.artifact_condition) or 0) > minimum
 		end)
 	end
-	C().wrap(cls, "update", "bind_artifact_harvester.artifact_harvester_wrapper.update", function(orig)
+	core.wrap(cls, "update", "bind_artifact_harvester.artifact_harvester_wrapper.update", function(orig)
 		return function(self, delta, ...)
-			if not C().active() or (self.object and writes_harvester(self.object:id())) then return orig(self, delta, ...) end
+			if not core.active() or (self.object and writes_harvester(self.object:id())) then return orig(self, delta, ...) end
 			base.update(self, delta)
 			if coop_mode.is_player_mirror() then
 				self:refresh_sound_state()
@@ -1484,10 +1470,10 @@ local function install_harvester_binder(cls, base)
 			end
 		end
 	end)
-	local registry = C().upvalue(cls.net_destroy, "harvester_wrappers")
-	C().wrap(cls, "net_destroy", "bind_artifact_harvester.artifact_harvester_wrapper.net_destroy", function(orig)
+	local registry = core.upvalue(cls.net_destroy, "harvester_wrappers")
+	core.wrap(cls, "net_destroy", "bind_artifact_harvester.artifact_harvester_wrapper.net_destroy", function(orig)
 		return function(self, ...)
-			if not C().active() then return orig(self, ...) end
+			if not core.active() then return orig(self, ...) end
 			local id = self.object:id()
 			if self.snd_hum and self.snd_hum:playing() then self.snd_hum:stop() end
 			RemoveTimeEvent("hf_artifact_harvester_stash", "open_" .. tostring(id))
@@ -1499,15 +1485,15 @@ local function install_harvester_binder(cls, base)
 end
 
 local function install_harvester_inventory(before)
-	local bags = C().upvalue(before, "valid_actor_bags")
+	local bags = core.upvalue(before, "valid_actor_bags")
 	local function in_window(case_id)
 		local obj = case_id and level.object_by_id(case_id)
 		if harv.is_device(obj) then return case_id end
 		-- Search the links read-only. The mod's lookup would cache a reverse link.
 		for id, box_id in pairs(harv.links()) do if box_id == case_id then return id end end
 	end
-	C().swap_callback("ActorMenu_on_item_before_move", before, function(flags, case_id, item, mode, bag)
-		if not C().active() then return before(flags, case_id, item, mode, bag) end
+	core.swap_callback("ActorMenu_on_item_before_move", before, function(flags, case_id, item, mode, bag)
+		if not core.active() then return before(flags, case_id, item, mode, bag) end
 		if not (flags and flags.ret_value and item and mode == "loot" and bags[bag]) then return end
 		local id = in_window(case_id)
 		local reason = id and harvester_insert_reason(id, item)
@@ -1516,42 +1502,42 @@ local function install_harvester_inventory(before)
 			harvester_feedback(reason)
 		end
 	end)
-	C().swap_callback("ActorMenu_on_item_after_move", harv.after, function(case_id, item, mode, bag)
-		if not C().active() then return harv.after(case_id, item, mode, bag) end
+	core.swap_callback("ActorMenu_on_item_after_move", harv.after, function(case_id, item, mode, bag)
+		if not core.active() then return harv.after(case_id, item, mode, bag) end
 		local id = not bags[bag] and in_window(case_id)
 		if id and coop_mode.writes(id) and coop_mode.writes(case_id) then
 			return harv.after(case_id, item, mode, bag)
 		end
 	end)
-	local ui = C().mod("ui_inventory")
-	C().wrap(ui and ui.UIInventory, "Action_Move", "ui_inventory.UIInventory.Action_Move (harvester)", function(orig)
+	local ui = core.mod("ui_inventory")
+	core.wrap(ui and ui.UIInventory, "Action_Move", "ui_inventory.UIInventory.Action_Move (harvester)", function(orig)
 		return function(self, item, bag, ...)
-			local id = C().active() and self.mode == "loot" and (bag == "actor_bag" or bag == "actor_equ")
+			local id = core.active() and self.mode == "loot" and (bag == "actor_bag" or bag == "actor_equ")
 				and in_window(self.npc_id)
 			if not id then return orig(self, item, bag, ...) end
 			item = self:CheckItem(item, "Action_Move")
 			if not item then return end
 			local reason = harvester_insert_reason(id, item)
 			if reason then return harvester_feedback(reason) end
-			return run_level_action("hf_harv_insert", host_harvester_insert, { o = C().hid(id), i = C().hid(item:id()) })
+			return run_level_action("hf_harv_insert", host_harvester_insert, { o = core.hid(id), i = core.hid(item:id()) })
 		end
 	end)
 end
 
 local function install_harvester()
-	local bh, b = C().mod("bind_artifact_harvester"), C().mod("bind_hf_base")
+	local bh, b = core.mod("bind_artifact_harvester"), core.mod("bind_hf_base")
 	local cls, base = bh and bh.artifact_harvester_wrapper, b and b.hf_binder_wrapper
-	local open, save = C().fn(bh, "open_harvester_stash"), C().fn(bh, "harvester_save_state")
-	if not (cls and base and open and save and C().mod("hf_obj_manager")) then return end
-	local before = C().find_local(bh, "on_item_before_move")
-	harv.after = C().find_local(bh, "on_item_after_move")
-	local get_or_create = C().upvalue(open, "get_or_create_harvester_stash")
-	harv.set_mapping = C().upvalue(get_or_create, "set_stash_mapping")
-	harv.reaches_first = C().upvalue(before, "can_reach_first_spawn")
-	harv.valid_section = C().upvalue(before, "is_valid_artifact_section")
-	harv.item_condition = C().upvalue(before, "get_item_condition_and_setter")
-	harv.clear_active = C().upvalue(harv.after, "clear_active")
-	harv.remove_display = C().upvalue(harv.after, "remove_display")
+	local open, save = core.fn(bh, "open_harvester_stash"), core.fn(bh, "harvester_save_state")
+	if not (cls and base and open and save and core.mod("hf_obj_manager")) then return end
+	local before = core.find_local(bh, "on_item_before_move")
+	harv.after = core.find_local(bh, "on_item_after_move")
+	local get_or_create = core.upvalue(open, "get_or_create_harvester_stash")
+	harv.set_mapping = core.upvalue(get_or_create, "set_stash_mapping")
+	harv.reaches_first = core.upvalue(before, "can_reach_first_spawn")
+	harv.valid_section = core.upvalue(before, "is_valid_artifact_section")
+	harv.item_condition = core.upvalue(before, "get_item_condition_and_setter")
+	harv.clear_active = core.upvalue(harv.after, "clear_active")
+	harv.remove_display = core.upvalue(harv.after, "remove_display")
 	if not (harv.set_mapping and harv.reaches_first and harv.valid_section and harv.item_condition
 		and harv.clear_active and harv.remove_display) then error("unsupported artifact harvester bindings", 0) end
 	function harv.links()
@@ -1565,9 +1551,9 @@ local function install_harvester()
 		if box_id then host_publish_data(obj:id()) end
 		return box_id
 	end
-	C().wrap(bh, "open_harvester_stash", "bind_artifact_harvester.open_harvester_stash", function(orig)
+	core.wrap(bh, "open_harvester_stash", "bind_artifact_harvester.open_harvester_stash", function(orig)
 		return function(id, ...)
-			if not C().active() then return orig(id, ...) end
+			if not core.active() then return orig(id, ...) end
 			if coop_mode.is_player_mirror() then return ask_box("harvester", id, open_box) end
 			if coop_mode.writes(id) and coop_mode.actor_is_player() then
 				local result = orig(id, ...)
@@ -1580,11 +1566,11 @@ local function install_harvester()
 	bh.on_game_start()
 	install_harvester_binder(cls, base)
 	install_harvester_inventory(before)
-	C().on("hf_harv_insert", host_harvester_insert, "host")
-	C().on("hf_harv_demount", harv.demount, "host")
-	C().on("hf_harv_r", function(t) harvester_feedback(t.r) end, "player")
-	C().set_limit("hf_harv_insert", 6, 2, function(_, from) harvester_refusal(from, "busy") end)
-	C().set_limit("hf_harv_demount", 4, 1, function(_, from) harvester_refusal(from, "busy") end)
+	core.on("hf_harv_insert", host_harvester_insert, "host")
+	core.on("hf_harv_demount", harv.demount, "host")
+	core.on("hf_harv_r", function(t) harvester_feedback(t.r) end, "player")
+	core.set_limit("hf_harv_insert", 6, 2, function(_, from) harvester_refusal(from, "busy") end)
+	core.set_limit("hf_harv_demount", 4, 1, function(_, from) harvester_refusal(from, "busy") end)
 	harv.next_look = 0
 	RegisterScriptCallback("actor_on_update", harvester_watch)
 	harv.ready = true
@@ -1634,26 +1620,26 @@ local function display_case_of(ws, id)
 end
 
 local function install_gadgets()
-	local ws = C().mod("weapon_showcase")
-	if not (ws and C().fn(ws, "spawn_displayed_item") and C().fn(ws, "remove_displayed_item")) then return end
+	local ws = core.mod("weapon_showcase")
+	if not (ws and core.fn(ws, "spawn_displayed_item") and core.fn(ws, "remove_displayed_item")) then return end
 	installed[#installed + 1] = "hf_gadgets.showcase"
-	-- R32 P4 (temp/r30/design/R32-addendum-gaps2.md): a display copy is a real weapon in its case, and the mod's veto runs only on
+	-- A display copy is a real weapon in its case, and the mod's veto runs only on
 	-- the picker's machine. The process that applies a move asks coop_mods_move_limits.admit first (engine admitted_move): every
 	-- move of a display copy is refused there, whoever asks and wherever it goes: into a container, and into a player's
 	-- character (admitted_move asks for that destination too, without held moves: §8a A21 E-3, tests/lua/test_move_rules_player.lua).
-	local limits = C().mod("coop_mods_move_limits")
+	local limits = core.mod("coop_mods_move_limits")
 	if limits and type(limits.add_rule) == "function" then
 		limits.add_rule("hf_showcase_display", function(_, item)
 			if display_case_of(ws, item) ~= nil then return false, "a weapon showcase display copy" end
 		end)
 	end
-	C().wrap(ws, "spawn_displayed_item", "weapon_showcase.spawn_displayed_item", function(orig)
+	core.wrap(ws, "spawn_displayed_item", "weapon_showcase.spawn_displayed_item", function(orig)
 		show.orig_spawn = orig
 		return function(case_id, item_id, gun_number, item_sec, ...)
-			if not C().active() then return orig(case_id, item_id, gun_number, item_sec, ...) end
+			if not core.active() then return orig(case_id, item_id, gun_number, item_sec, ...) end
 			if not coop_mode.writes(case_id) then
 				if coop_mode.is_player_mirror() then
-					C().to_host("hf_show", { c = C().hid(case_id), i = C().hid(item_id), m = 1, s = item_sec or "" })
+					core.to_host("hf_show", { c = core.hid(case_id), i = core.hid(item_id), m = 1, s = item_sec or "" })
 				end
 				return
 			end
@@ -1662,13 +1648,13 @@ local function install_gadgets()
 			return r
 		end
 	end)
-	C().wrap(ws, "remove_displayed_item", "weapon_showcase.remove_displayed_item", function(orig)
+	core.wrap(ws, "remove_displayed_item", "weapon_showcase.remove_displayed_item", function(orig)
 		show.orig_remove = orig
 		return function(item_id, world_item_id, case_id, ...)
-			if not C().active() then return orig(item_id, world_item_id, case_id, ...) end
+			if not core.active() then return orig(item_id, world_item_id, case_id, ...) end
 			if not writes_display(case_id, world_item_id) then
 				if coop_mode.is_player_mirror() then
-					C().to_host("hf_show", { c = C().hid(case_id), i = C().hid(item_id), m = 0 })
+					core.to_host("hf_show", { c = core.hid(case_id), i = core.hid(item_id), m = 0 })
 					return true
 				end
 				return
@@ -1678,17 +1664,17 @@ local function install_gadgets()
 			return r
 		end
 	end)
-	C().wrap(ws, "respawn_weapon_displays", "weapon_showcase.respawn_weapon_displays", function(orig)
+	core.wrap(ws, "respawn_weapon_displays", "weapon_showcase.respawn_weapon_displays", function(orig)
 		return function(...)
-			if not C().active() then return orig(...) end
+			if not core.active() then return orig(...) end
 			return respawn_own_displays(ws, orig, ...)
 		end
 	end)
-	C().on("hf_show", function(t, from)
-		local case_id, item_id = C().lid(tonumber(t.c)), C().lid(tonumber(t.i))
+	core.on("hf_show", function(t, from)
+		local case_id, item_id = core.lid(tonumber(t.c)), core.lid(tonumber(t.i))
 		local case = type(case_id) == "number" and level.object_by_id(case_id)
-		local who = C().avatar(from)
-		if not (case and who and type(item_id) == "number" and near(case, who)) then return refuse("hf_show", from, "unknown or far case") end
+		local who = core.avatar(from)
+		if not (case and who and type(item_id) == "number" and core.near(case, who, NEAR)) then return refuse("hf_show", from, "unknown or far case") end
 		if not coop_mode.writes(case_id) then return refuse("hf_show", from, "another writer owns the case") end
 		if t.m == 1 then
 			local se = alife_object(item_id)
@@ -1699,9 +1685,9 @@ local function install_gadgets()
 				publish_case(ws, case_id)
 				return
 			end
-			local sec = (type(t.s) == "string" and t.s ~= "" and ini_sys:section_exist(t.s)) and t.s or nil -- W5
-			local ok, err = C().as_player(who, show.orig_spawn, case_id, item_id, nil, sec)
-			if not ok then C().report("hf", "spawn display", err) end
+			local sec = (type(t.s) == "string" and t.s ~= "" and ini_sys:section_exist(t.s)) and t.s or nil
+			local ok, err = core.as_player(who, show.orig_spawn, case_id, item_id, nil, sec)
+			if not ok then core.report("hf", "spawn display", err) end
 		else
 			local guns = ws.weapon_displays or {}
 			local world_id = guns[case_id] and guns[case_id][item_id]
@@ -1709,8 +1695,8 @@ local function install_gadgets()
 		end
 		publish_case(ws, case_id)
 	end, "host")
-	C().on("hf_show_map", function(t, from)
-		local case_id = C().lid(tonumber(t.c))
+	core.on("hf_show_map", function(t, from)
+		local case_id = core.lid(tonumber(t.c))
 		local valid = case_id and type(t.m) == "string"
 		if not coop_mode.decides_world() then
 			if from == 0 and valid then apply_case(ws, case_id, t.m) end
@@ -1721,10 +1707,10 @@ local function install_gadgets()
 			if not coop_trust.pass("hf_show_map_payload", valid, "invalid showcase report from peer %s", tostring(from))
 				or not valid then return end
 			apply_case(ws, case_id, t.m)
-			C().to_all("hf_show_map", t)
+			core.to_all("hf_show_map", t)
 		end
 	end)
-	C().set_limit("hf_show", 6, 2)
+	core.set_limit("hf_show", 6, 2)
 end
 
 -------------------------------------------------------------------------------
@@ -1738,7 +1724,7 @@ local KIND_TRACK, KIND_SESSION = 0, 1
 local function radio_local(name)
 	local l = R.loc[name]
 	if l == nil then
-		local v, holder, idx = C().find_local(R.P, name)
+		local v, holder, idx = core.find_local(R.P, name)
 		l = { v = v, holder = holder, idx = idx }
 		R.loc[name] = l
 	end
@@ -1829,7 +1815,7 @@ local function host_radio_publish(w, force)
 	if sig == p.sig and not force then return end
 	if sig ~= p.sig then p.n = p.n + 1 end
 	p.sig = sig
-	C().to_all("hf_radio", { o = id, on = on, p = c and c.p or "", q = c and c.q or "", k = kind or -1, c = clip, v = vol, n = p.n })
+	core.to_all("hf_radio", { o = id, on = on, p = c and c.p or "", q = c and c.q or "", k = kind or -1, c = clip, v = vol, n = p.n })
 	st.radio_out = st.radio_out + 1
 end
 
@@ -1878,9 +1864,9 @@ local RADIO_ACTIONS = { action_radio_start = true, action_radio_stop = true, act
 	action_radio_v_up = true, action_radio_v_down = true }
 
 local function install_radio()
-	R.P = C().mod("placeable_radio")
+	R.P = core.mod("placeable_radio")
 	R.W = R.P and R.P.placeable_radio_wrapper
-	if not (R.W and C().fn(R.W, "update") and C().mod("bind_hf_base")) then return end
+	if not (R.W and core.fn(R.W, "update") and core.mod("bind_hf_base")) then return end
 	-- File locals are looked up before the methods that hold them are wrapped.
 	for _, name in ipairs({ "path_radio_ch", "path_radio_session", "radio_vol", "psi_vol", "safety_lock" }) do radio_local(name) end
 	if not radio_catalog() then
@@ -1888,60 +1874,60 @@ local function install_radio()
 		return
 	end
 	installed[#installed + 1] = "hf_radio"
-	C().wrap(R.W, "update", "placeable_radio.placeable_radio_wrapper.update", function(orig)
+	core.wrap(R.W, "update", "placeable_radio.placeable_radio_wrapper.update", function(orig)
 		R.orig.update = orig
 		return function(w, delta, ...)
-			if not (C().active() and radio_ok(w)) then return orig(w, delta, ...) end
+			if not (core.active() and radio_ok(w)) then return orig(w, delta, ...) end
 			if not coop_mode.is_player_mirror() and coop_mode.writes(w.object:id()) then
 				local r = orig(w, delta, ...)
 				local ok, e = pcall(host_radio_publish, w, false)
-				if not ok then C().report("hf", "radio publish", e) end
+				if not ok then core.report("hf", "radio publish", e) end
 				return r
 			end
 			if not coop_mode.is_player_mirror() then return end
 			local ok, e = pcall(client_radio_apply, w)
-			if not ok then C().report("hf", "radio apply", e) end
+			if not ok then core.report("hf", "radio apply", e) end
 			-- The mod's own picker stays shut on a client (safety lock); noise and emission effects still run.
 			local lock = radio_local("safety_lock")
 			set_radio_local("safety_lock", true)
 			local ok2, r = pcall(orig, w, delta, ...)
 			set_radio_local("safety_lock", lock)
-			if not ok2 then C().report("hf", "radio update", r) end
+			if not ok2 then core.report("hf", "radio update", r) end
 			return r
 		end
 	end)
 	for name in pairs(RADIO_ACTIONS) do
-		C().wrap(R.W, name, "placeable_radio.placeable_radio_wrapper." .. name, function(orig)
+		core.wrap(R.W, name, "placeable_radio.placeable_radio_wrapper." .. name, function(orig)
 			R.orig[name] = orig
 			return function(w, value, ...)
-				if not (C().active() and radio_ok(w)) then return orig(w, value, ...) end
+				if not (core.active() and radio_ok(w)) then return orig(w, value, ...) end
 				if not coop_mode.is_player_mirror() then
 					if coop_mode.writes(w.object:id()) then return orig(w, value, ...) end
 					return
 				end
-				local t = { o = C().hid(w.object:id()), a = name }
+				local t = { o = core.hid(w.object:id()), a = name }
 				if name == "action_radio_ch" then
 					local c = radio_catalog() and radio_catalog()[value]
 					if not c then return false end
 					t.p, t.q = c.p, c.q
 				end
-				C().to_host("hf_radio_ctl", t)
+				core.to_host("hf_radio_ctl", t)
 				return false -- the radio follows the host's state
 			end
 		end)
 	end
-	C().on("hf_radio_ctl", function(t, from)
+	core.on("hf_radio_ctl", function(t, from)
 		local id = request_id(t.o)
 		if not checked("hf_radio_id", id ~= nil, from, id) then return refuse("hf_radio_ctl", from, "invalid id") end
 		if not coop_mode.writes(id) then return refuse("hf_radio_ctl", from, "another writer owns the radio") end
 		local w = wrapper_of(id)
-		local who = C().avatar(from)
+		local who = core.avatar(from)
 		local action = t.a
 		local valid = radio_ok(w) and type(action) == "string" and RADIO_ACTIONS[action] and R.orig[action]
 		if not checked("hf_radio_action", valid, from, id) then
 			return refuse("hf_radio_ctl", from, "unknown radio or action")
 		end
-		if not checked("hf_radio_near", who and coop_mode.where(from) == "here" and near(w.object, who), from, id) then
+		if not checked("hf_radio_near", who and coop_mode.where(from) == "here" and core.near(w.object, who, NEAR), from, id) then
 			return refuse("hf_radio_ctl", from, "radio out of reach")
 		end
 		local arg = nil
@@ -1954,19 +1940,19 @@ local function install_radio()
 		pcall(R.orig[action], w, arg)
 		host_radio_publish(w, true)
 	end, "host")
-	C().on("hf_radio", function(t)
-		local id = C().lid(tonumber(t.o))
+	core.on("hf_radio", function(t)
+		local id = core.lid(tonumber(t.o))
 		if not id then return end
 		R.state[id] = { on = t.on == true, p = lower(tostring(t.p or "")), q = lower(tostring(t.q or "")),
 			k = tonumber(t.k), c = lower(tostring(t.c or "")), v = tonumber(t.v) }
 		st.radio_in = st.radio_in + 1
 	end, "client")
-	C().set_limit("hf_radio_ctl", 8, 3)
+	core.set_limit("hf_radio_ctl", 8, 3)
 end
 
 -- Host: radios that are on are announced again now and then (late joiners, lost state).
 local function host_radio_refresh()
-	if not (R.W and C().active()) then return end
+	if not (R.W and core.active()) then return end
 	local tg = time_global()
 	if tg < R.next_refresh then return end
 	R.next_refresh = tg + 20000
@@ -1981,29 +1967,24 @@ end
 -- Start
 -------------------------------------------------------------------------------
 -- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
--- error here would skip all the scripts after this one, single player included (W5).
-local function start_step(what, f)
-	local ok, err = pcall(f)
-	if not ok then printf("! [coop_mods_hf] %s failed: %s", what, tostring(err)) end
-end
-
+-- error here would skip all the scripts after this one, single player included.
 function on_game_start()
 	if not api then return end
-	start_step("install_furniture", install_furniture)
-	start_step("install_stove", install_stove)
-	start_step("install_harvester", install_harvester)
-	start_step("install_gadgets", install_gadgets)
-	start_step("install_data_mirror", install_data_mirror)
-	start_step("install_takeall", install_takeall)
-	start_step("install_frozen", install_frozen)
-	start_step("install_lamp_mirror", install_lamp_mirror)
-	start_step("install_radio", install_radio)
+	core.install("hf", "install_furniture", install_furniture)
+	core.install("hf", "install_stove", install_stove)
+	core.install("hf", "install_harvester", install_harvester)
+	core.install("hf", "install_gadgets", install_gadgets)
+	core.install("hf", "install_data_mirror", install_data_mirror)
+	core.install("hf", "install_takeall", install_takeall)
+	core.install("hf", "install_frozen", install_frozen)
+	core.install("hf", "install_lamp_mirror", install_lamp_mirror)
+	core.install("hf", "install_radio", install_radio)
 	if #installed == 0 then return end
-	C().on("hf_box", host_box, "host")
-	C().on("hf_box_r", client_box_answer, "client")
-	C().set_limit("hf_box", 6, 2)
+	core.on("hf_box", host_box, "host")
+	core.on("hf_box_r", client_box_answer, "client")
+	core.set_limit("hf_box", 6, 2)
 	RegisterScriptCallback("actor_on_update", host_radio_refresh)
-	C().status_line("hf", function()
+	core.status_line("hf", function()
 		return string.format("%s | placed %d, packed %d, lamps %d, boxes %d, refused %d | data out %d in %d | radio out %d in %d",
 			table.concat(installed, ", "), st.place, st.pickup, st.lamp, st.box, st.refused, st.data_out, st.data_in,
 			st.radio_out, st.radio_in)

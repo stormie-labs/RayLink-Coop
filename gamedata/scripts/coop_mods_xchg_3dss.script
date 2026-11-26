@@ -1,59 +1,56 @@
 -- Ядро: без проверок режима (docs/MODES.md)
--- Dev 57 G4-2. 3DSS battery extraction, canted scope removal and silencer installation.
+-- 3DSS battery extraction, canted scope removal and silencer installation.
 -- The player's level authority handles extraction. The other two actions use the native
 -- create/attach requests and keep the mod's condition transfer pending until they settle.
 
 local api = rawget(_G, "coop")
 local THERMAL, SILENCER = "z_3dss_thermal_battery", "z_3dss_silencer_condition"
 local FUNCTOR, BATT = "3dss_remove_thermal_battery", "3dss_batt"
-local SIL_KEY = "3dss_silencer_condition"
 local WAIT_MS = 10000
 local battery, scopes, silencers = nil, {}, {}
 local used_silencers = {}
 local installed = {}
 
-local function C() return coop_mods_core end
-local function X() return coop_mods_xchg end
-local function pack(...) return { n = select("#", ...), ... } end
-
+local core = coop_mods_core
+local xchg = coop_mods_xchg
 local function own(obj)
-	return obj and db.actor and C().root_of(obj:id()) == db.actor:id()
+	return obj and db.actor and core.root_of(obj:id()) == db.actor:id()
 end
 
 local function player()
-	return C().active() and coop_mode.actor_is_player()
+	return core.active() and coop_mode.actor_is_player()
 end
 
-local function report(step, err) C().report("xchg_3dss", step, err) end
+local function report(step, err) core.report("xchg_3dss", step, err) end
 
 -- 3DSS keeps its selection and state setters private. Use the same functions for
 -- built-in, main and canted sights, including its versioned loose-sight records.
 local function thermal_helpers()
-	local mod = C().mod(THERMAL)
+	local mod = core.mod(THERMAL)
 	if not mod then return nil end
-	local patches = C().upvalue(mod.on_game_start, "install_patches")
-	local functor = C().upvalue(patches, "install_battery_functor")
-	local action = C().upvalue(functor, "remove_battery")
-	local label = C().upvalue(functor, "battery_remove_name")
-	local read = C().upvalue(action, "removable_charge")
-	local loose, loose_holder, loose_index = C().upvalue(action, "set_loose_charge")
-	local loose_read, read_holder, read_index = C().upvalue(read, "loose_charge")
-	local slot = C().upvalue(action, "set_slot_entry")
-	local refresh = C().upvalue(action, "refresh_shader_if_needed")
-	local entry = C().upvalue(mod.on_canted_removed, "get_slot_entry")
-	local read_state = C().upvalue(loose, "read_state")
-	local write_state = C().upvalue(loose, "write_state")
-	local object_section = C().upvalue(loose, "object_section")
+	local patches = core.upvalue(mod.on_game_start, "install_patches")
+	local functor = core.upvalue(patches, "install_battery_functor")
+	local action = core.upvalue(functor, "remove_battery")
+	local label = core.upvalue(functor, "battery_remove_name")
+	local read = core.upvalue(action, "removable_charge")
+	local loose, loose_holder, loose_index = core.upvalue(action, "set_loose_charge")
+	local loose_read, read_holder, read_index = core.upvalue(read, "loose_charge")
+	local slot = core.upvalue(action, "set_slot_entry")
+	local refresh = core.upvalue(action, "refresh_shader_if_needed")
+	local entry = core.upvalue(mod.on_canted_removed, "get_slot_entry")
+	local read_state = core.upvalue(loose, "read_state")
+	local write_state = core.upvalue(loose, "write_state")
+	local object_section = core.upvalue(loose, "object_section")
 	if not (label and read and loose and loose_read and slot and entry and read_state and write_state and object_section) then return nil end
 	local function read_condition(obj)
-		if not C().active() then return loose_read(obj) end
+		if not core.active() then return loose_read(obj) end
 		local installed = entry(obj, "loose")
 		-- A fresh scope may have ordinary item condition even though it has never held a battery.
 		if not (installed and installed.section == obj:section()) then return 0 end
 		return obj:condition()
 	end
 	local function write_condition(item, section, value)
-		if not C().active() then return loose(item, section, value) end
+		if not core.active() then return loose(item, section, value) end
 		if not item then return false end
 		value = math.max(0, math.min(1, tonumber(value) or 0))
 		local obj = type(item.set_condition) == "function" and item or level.object_by_id(item.id)
@@ -80,24 +77,24 @@ local function thermal_helpers()
 end
 
 local function battery_section()
-	return C().upvalue(battery.action, "battery_section")
+	return core.upvalue(battery.action, "battery_section")
 end
 
 local function battery_source(t, from, who)
-	local id = X().wire_id(t.src)
+	local id = core.wire_id(t.src)
 	if id == nil or t.key ~= t.src then return nil, "bad source id" end
 	local obj = level.object_by_id(id)
-	if not (obj and who and C().root_of(id) == who:id() and C().holder_peer(id) == from and coop_mode.writes(id)) then
+	if not (obj and who and core.root_of(id) == who:id() and core.holder_peer(id) == from and coop_mode.writes(id)) then
 		return nil, "source not owned"
 	end
 	return obj
 end
 
 local function serve_battery()
-	X().serve(BATT, {
+	xchg.serve(BATT, {
 		check = function(t, from, who)
 			local obj, why = battery_source(t, from, who)
-			return obj ~= nil, why -- G4-1 calls coop_trust.pass before reserve runs.
+			return obj ~= nil, why -- coop_mods_xchg calls coop_trust.pass before reserve runs.
 		end,
 		reserve = function(t, from, who)
 			local obj, why = battery_source(t, from, who)
@@ -120,7 +117,7 @@ local function serve_battery()
 			elseif not battery.loose(obj, section, 0) then
 				return false, "charge"
 			end
-			if not C().give(from, battery_section(), value) then return false, "create" end
+			if not core.give(from, battery_section(), value) then return false, "create" end
 			return true, { slot = slot or "loose", section = section }
 		end,
 		rollback = function(_, _, _, token)
@@ -132,18 +129,18 @@ local function serve_battery()
 end
 
 local function battery_menu(orig, obj, ...)
-	if C().active() and (not player() or not own(obj) or scopes[obj:id()]) then return nil end
+	if core.active() and (not player() or not own(obj) or scopes[obj:id()]) then return nil end
 	return orig(obj, ...)
 end
 
 local function battery_action(orig, obj, ...)
-	if not C().active() then return orig(obj, ...) end
+	if not core.active() then return orig(obj, ...) end
 	if not (player() and own(obj)) or scopes[obj:id()] then return end
-	local id, source_section = C().hid(obj:id()), obj:section()
-	if id == nil or X().busy(BATT, id) then return end
-	X().ask(BATT, { key = id, src = id }, function(ok, result)
+	local id, source_section = core.hid(obj:id()), obj:section()
+	if id == nil or xchg.busy(BATT, id) then return end
+	xchg.ask(BATT, { key = id, src = id }, function(ok, result)
 		if not ok then return end
-		local local_id = C().lid(id)
+		local local_id = core.lid(id)
 		local source = local_id and level.object_by_id(local_id)
 		if not (type(result) == "table" and own(source) and source:section() == source_section) then return end
 		local slot = result.slot
@@ -161,23 +158,23 @@ end
 local function battery_busy(obj)
 	if not obj then return false end
 	local id = obj:id()
-	return scopes[id] ~= nil or X().busy(BATT, C().hid(id))
+	return scopes[id] ~= nil or xchg.busy(BATT, core.hid(id))
 end
 
 local function guard_battery_writes()
 	local mod = battery.mod
-	local drag = C().fn(mod, "on_item_drag_dropped")
-	if C().wrap(mod, "on_item_drag_dropped", "3DSS battery pending exchange", function(orig)
+	local drag = core.fn(mod, "on_item_drag_dropped")
+	if core.wrap(mod, "on_item_drag_dropped", "3DSS battery pending exchange", function(orig)
 		return function(first, second, ...)
 			if player() and (battery_busy(first) or battery_busy(second)) then return end
 			return orig(first, second, ...)
 		end
 	end) then
-		C().swap_callback("ActorMenu_on_item_drag_drop", drag, mod.on_item_drag_dropped)
+		core.swap_callback("ActorMenu_on_item_drag_drop", drag, mod.on_item_drag_dropped)
 	end
-	local start = C().upvalue(mod.on_game_start, "start_drain_event")
-	local tick = C().upvalue(start, "drain_tick_callback")
-	local drain, holder, index = C().upvalue(tick, "drain_active_scope")
+	local start = core.upvalue(mod.on_game_start, "start_drain_event")
+	local tick = core.upvalue(start, "drain_tick_callback")
+	local drain, holder, index = core.upvalue(tick, "drain_active_scope")
 	if drain then
 		debug.setupvalue(holder, index, function(elapsed)
 			if player() and db.actor and battery_busy(db.actor:active_item()) then return end
@@ -188,17 +185,17 @@ end
 
 local function install_battery()
 	battery = battery or thermal_helpers()
-	local functors = battery and C().mod("custom_functor_autoinject")
+	local functors = battery and core.mod("custom_functor_autoinject")
 	if not functors then return end
-	local inventory = C().mod("ui_inventory")
+	local inventory = core.mod("ui_inventory")
 	local gui = inventory and inventory.GUI
-	local find = C().fn(gui, "get_functor_by_name")
+	local find = core.fn(gui, "get_functor_by_name")
 	local handlers = find and find(gui, FUNCTOR)
 	local registered = handlers ~= nil
 	handlers = handlers or { cond_name = battery.label, func_name = battery.label, cond_action = battery.label,
 		func_action = battery.action }
 	for _, key in ipairs({ "cond_name", "func_name", "cond_action", "func_action" }) do
-		C().wrap(handlers, key, "3DSS battery " .. key, function(orig)
+		core.wrap(handlers, key, "3DSS battery " .. key, function(orig)
 			local run = key == "func_action" and battery_action or battery_menu
 			return function(...) return run(orig, ...) end
 		end)
@@ -250,14 +247,14 @@ local function scope_guard(canted, orig)
 		local entry = battery.entry(weapon, "canted")
 		local section = canted.get_installed_section(weapon)
 		if not entry or not section or entry.section ~= section then return orig(weapon, ...) end
-		if not own(weapon) or X().busy(BATT, C().hid(id)) then return end
+		if not own(weapon) or xchg.busy(BATT, core.hid(id)) then return end
 		local mirror = coop_mode.is_player_mirror()
 		if mirror and (not api.lease_ids or not api.lease_waiting or api.lease_ids() < 1 or api.lease_waiting(id)) then return end
 		local p = { id = id, owner = db.actor:id(), section = section, charge = entry.charge, canted = canted, remove = orig,
-			mirror = mirror, args = pack(...) }
+			mirror = mirror, args = core.pack(...) }
 		scopes[id] = p
 		if mirror then
-			X().after_made(section, p.owner, function(made)
+			xchg.after_made(section, p.owner, function(made)
 				if scopes[id] == p and made == p.target then complete_scope(p) end
 			end)
 		end
@@ -270,16 +267,16 @@ local function scope_guard(canted, orig)
 end
 
 local function install_scope()
-	local canted = battery and C().mod("scripted_canted_irons")
-	if not canted or not C().fn(canted, "get_installed_section") then return end
-	installed.scope = C().wrap(canted, "remove_irons", "3DSS canted removal", function(orig)
+	local canted = battery and core.mod("scripted_canted_irons")
+	if not canted or not core.fn(canted, "get_installed_section") then return end
+	installed.scope = core.wrap(canted, "remove_irons", "3DSS canted removal", function(orig)
 		return scope_guard(canted, orig)
 	end)
 	if not installed.scope then return end
 	-- Replacement installs call remove_irons and continue regardless of its result.
 	-- A powered canted sight must finish its own detach first.
 	for _, key in ipairs({ "install_irons", "install_rds_pos1", "install_rds_pos2", "install_rds_pos3" }) do
-		C().wrap(canted, key, "3DSS canted " .. key, function(orig)
+		core.wrap(canted, key, "3DSS canted " .. key, function(orig)
 			return function(item, weapon, ...)
 				local target = weapon
 				if player() then
@@ -310,15 +307,15 @@ local function finish_silencer(p)
 end
 
 local function install_silencer()
-	local mod = C().mod(SILENCER)
-	local utils = mod and C().mod("utils_item")
+	local mod = core.mod(SILENCER)
+	local utils = mod and core.mod("utils_item")
 	if not utils then return end
-	local fired = C().upvalue(mod.on_game_start, "actor_on_weapon_fired")
-	local per_shot = C().upvalue(fired, "condition_per_shot")
-	local enabled = C().upvalue(fired, "silencer_wear_enabled")
-	local write = C().upvalue(fired, "write_state")
+	local fired = core.upvalue(mod.on_game_start, "actor_on_weapon_fired")
+	local per_shot = core.upvalue(fired, "condition_per_shot")
+	local enabled = core.upvalue(fired, "silencer_wear_enabled")
+	local write = core.upvalue(fired, "write_state")
 	if not (per_shot and enabled and write) then return end
-	installed.silencer = C().wrap(utils, "attach_addon", "3DSS silencer attachment", function(orig)
+	installed.silencer = core.wrap(utils, "attach_addon", "3DSS silencer attachment", function(orig)
 		return function(weapon, item, kind, ...)
 			if not player() or kind ~= "sil" or not (weapon and item) then return orig(weapon, item, kind, ...) end
 			local wid, id = weapon:id(), item:id()
@@ -330,11 +327,11 @@ local function install_silencer()
 			local p = { weapon = wid, weapon_section = weapon:section(), item = id, section = section, utils = utils,
 				condition = math.max(0, math.min(1, item:condition())), write = write, wear = 0,
 				deadline = time_global() + WAIT_MS }
-			local result = pack(orig(weapon, item, kind, ...))
+			local result = core.pack(orig(weapon, item, kind, ...))
 			if result[1] == false then return unpack(result, 1, result.n) end
 			p.baseline = coop_mods_items.native_silencer_state(weapon, false)
 			silencers[wid], used_silencers[id] = p, p
-			X().after_gone(id, function(gone)
+			xchg.after_gone(id, function(gone)
 				p.gone, p.failed = gone, not gone
 				finish_silencer(p)
 			end, WAIT_MS)
@@ -342,14 +339,14 @@ local function install_silencer()
 		end
 	end)
 	if not installed.silencer then return end
-	C().swap_callback("actor_on_weapon_fired", fired, function(actor, weapon, ...)
+	core.swap_callback("actor_on_weapon_fired", fired, function(actor, weapon, ...)
 		local p = player() and weapon and silencers[weapon:id()]
 		if not p or utils.get_attached_silencer(weapon) ~= p.section then return fired(actor, weapon, ...) end
 		if enabled() and IsWeapon(weapon) and not weapon:weapon_in_grenade_mode() then
 			p.wear = p.wear + per_shot(p.section)
 		end
 	end)
-	C().wrap(utils, "detach_addon", "3DSS silencer pending attachment", function(orig)
+	core.wrap(utils, "detach_addon", "3DSS silencer pending attachment", function(orig)
 		return function(weapon, item, kind, ...)
 			if player() and kind == "sil" and weapon and silencers[weapon:id()] then return end
 			return orig(weapon, item, kind, ...)
@@ -357,16 +354,11 @@ local function install_silencer()
 	end)
 end
 
-local function step(label, fn)
-	local ok, err = pcall(fn)
-	if not ok then report(label, err) end
-end
-
 local function update()
-	if not C().active() then return end
-	if not installed.battery then step("battery functor", install_battery) end
-	if not installed.scope then step("canted hook", install_scope) end
-	if not installed.silencer then step("silencer hook", install_silencer) end
+	if not core.active() then return end
+	if not installed.battery then core.install("xchg_3dss", "battery functor", install_battery) end
+	if not installed.scope then core.install("xchg_3dss", "canted hook", install_scope) end
+	if not installed.silencer then core.install("xchg_3dss", "silencer hook", install_silencer) end
 	for _, p in pairs(scopes) do complete_scope(p) end -- an already-online lease may predate after_made's next poll
 	for _, p in pairs(silencers) do
 		if p.gone then finish_silencer(p) end -- the attachment itself can replicate after the removal
@@ -375,6 +367,6 @@ end
 
 function on_game_start()
 	if not api then return end
-	step("battery exchange", serve_battery)
-	step("actor update", function() RegisterScriptCallback("actor_on_update", update) end)
+	core.install("xchg_3dss", "battery exchange", serve_battery)
+	core.install("xchg_3dss", "actor update", function() RegisterScriptCallback("actor_on_update", update) end)
 end

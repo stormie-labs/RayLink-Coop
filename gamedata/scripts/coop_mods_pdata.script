@@ -1,5 +1,5 @@
 --[[
-	Anomaly Coop - per-player m_data of third-party mods (gamedata\scripts\coop_mods_pdata.script), W4 "mods".
+	Anomaly Coop - per-player m_data of third-party mods (gamedata\scripts\coop_mods_pdata.script).
 
 	A client never saves (R-9.2) and loads the HOST's save, so a mod that keeps the player's progress in the
 	script storage (XP, skills, worn devices, wheel layout, perk cooldowns ...) would show the host's progress on
@@ -17,9 +17,8 @@
 	          client asks the listed modules to refresh their keys (module.save_state, if they have one) and
 	          sends the keys to the host when they changed.
 	  Keys with `subs` travel only partly (the rest of the table is world state and stays the host's).
-	  Build 56 (live 2026-11-18, "everything a client has must come through a transition exactly as in a usual game"):
-	  the 15 s report left a window: what changed in the seconds before a level change came back as it was at the last
-	  report. The engine now says when a load that continues this world starts, while the old world is still up
+	  Everything a client has comes through a transition exactly as in a usual game. The 15 s report alone leaves a window:
+	  what changed in the seconds before a level change would come back as it was at the last report. The engine says when a load that continues this world starts, while the old world is still up
 	  (coop_main.on_world_leaving -> keep_for_load): the keys go into the stash as they are that moment, under the
 	  token "@load:<epoch of the new world>", and the load reads them back in that world whatever token the host's
 	  record has. Nothing is sent then: the host is saving already.
@@ -49,9 +48,9 @@ local st = { token = nil, last = nil, next_report = 0, applied = 0, sent = 0, ac
 	kept = false, kept_at = 0, keeps = 0, -- kept: the stash holds the state a load starts with, nothing may replace it in this world
 	foreign = false } -- the restore of this world failed: the registered keys are still the HOST's, never to be reported as mine
 
-local function C() return coop_mods_core end
+local core = coop_mods_core
 
-local function log(fmt, ...) C().log("pdata", fmt, ...) end
+local function log(fmt, ...) core.log("pdata", fmt, ...) end
 
 function register(key, opts)
 	if type(key) ~= "string" or key == "" or key == STORE then return false end
@@ -72,8 +71,8 @@ end
 -- Registers every top-level key a module's save_state writes, found by running it on a scratch table at
 -- start (for mods that keep only the player's own records and whose key names are not known here).
 function register_module(name)
-	local M = C().mod(name)
-	local f = M and C().fn(M, "save_state")
+	local M = core.mod(name)
+	local f = M and core.fn(M, "save_state")
 	if not f then return 0 end
 	local scratch = {}
 	local ok = pcall(f, scratch)
@@ -109,7 +108,7 @@ local function stash_data(saved_token)
 	if kept_for then
 		-- kept by keep_for_load: the player's state the moment he left the old world. It is read in the world it was kept
 		-- for and nowhere else (the host loaded a save meanwhile: that world does not continue the one he left).
-		local d = tonumber(kept_for) == world_epoch() and C().deser(body) or nil
+		local d = tonumber(kept_for) == world_epoch() and core.deser(body) or nil
 		if type(d) ~= "table" then
 			pcall(api.stash_set, STASH, nil)
 			return nil
@@ -118,7 +117,7 @@ local function stash_data(saved_token)
 		return d, "load"
 	end
 	if tok ~= (saved_token or "") then return nil end
-	local d = C().deser(body)
+	local d = core.deser(body)
 	return type(d) == "table" and d or nil
 end
 
@@ -128,11 +127,11 @@ function apply_loaded(m)
 		if type(m) == "table" then m[STORE] = nil end
 		return
 	end
-	local my = C().hid(0)
+	local my = core.hid(0)
 	if type(my) ~= "number" or my == 0 then
 		log("! own character id unknown: per-player mod data not restored")
 		m[STORE] = nil
-		-- Review of build 56: the keys stay the host's then, and a report (or a state kept for a load) would write the
+		-- The keys stay the host's then, and a report (or a state kept for a load) would write the
 		-- host's values into this player's record. Nothing of this world is reported.
 		st.foreign = true
 		return
@@ -176,11 +175,11 @@ local function collect()
 		for _, name in ipairs(keys[key].prime or {}) do
 			if not primed[name] then
 				primed[name] = true
-				local M = C().mod(name)
-				local f = M and C().fn(M, "save_state")
+				local M = core.mod(name)
+				local f = M and core.fn(M, "save_state")
 				if f then
 					local ok, e = pcall(f, m)
-					if not ok then C().report("pdata", name .. ".save_state", e) end
+					if not ok then core.report("pdata", name .. ".save_state", e) end
 				end
 			end
 		end
@@ -206,7 +205,7 @@ local function collect()
 end
 
 local function client_report(force)
-	if #order == 0 or st.foreign or not C().live_client() then return end
+	if #order == 0 or st.foreign or not core.live_client() then return end
 	if st.kept then
 		if time_global() - st.kept_at < KEPT_MS then return end
 		st.kept = false -- the load it was kept for never came: this world goes on, and so do its reports
@@ -214,13 +213,13 @@ local function client_report(force)
 	local tg = time_global()
 	if not force and tg < st.next_report then return end
 	st.next_report = tg + REPORT_MS
-	local s, why = C().ser(collect())
+	local s, why = core.ser(collect())
 	if not s then
-		C().report("pdata", "serialize", why)
+		core.report("pdata", "serialize", why)
 		return
 	end
 	if s == st.last then return end
-	if C().send_big("pd", s, 0) then
+	if core.send_big("pd", s, 0) then
 		st.last = s
 		st.sent = st.sent + 1
 	end
@@ -238,10 +237,10 @@ end
 -- its record is not what this load reads.
 function keep_for_load(epoch)
 	epoch = tonumber(epoch)
-	if #order == 0 or not epoch or st.foreign or not C().live_client() then return false end
-	local s, why = C().ser(collect())
+	if #order == 0 or not epoch or st.foreign or not core.live_client() then return false end
+	local s, why = core.ser(collect())
 	if not s then
-		C().report("pdata", "serialize", why)
+		core.report("pdata", "serialize", why)
 		return false
 	end
 	local ok, done = pcall(api.stash_set, STASH, LOAD_TOKEN .. string.format("%d", epoch) .. "|" .. s)
@@ -265,23 +264,23 @@ local function on_ack(t, from)
 end
 
 local function patch_report(s, key, value)
-	local data = s and C().deser(s)
+	local data = s and core.deser(s)
 	if type(data) ~= "table" then return nil end
 	data[key] = value
-	return C().ser(data)
+	return core.ser(data)
 end
 
 local function tracker_local_id(id, names)
 	if type(id) ~= "number" or id < 0 or id >= 65535 or id ~= math.floor(id) then return nil end
-	local lid = C().lid(id)
+	local lid = core.lid(id)
 	local obj = lid and level.object_by_id(lid)
 	if obj and (type(names) ~= "table" or names[id] ~= obj:name()) then return nil end
 	return lid
 end
 
 local function fix_tracker(value)
-	local tracker = C().mod("ish_kill_tracker")
-	local load = C().fn(tracker, "load_state")
+	local tracker = core.mod("ish_kill_tracker")
+	local load = core.fn(tracker, "load_state")
 	if not load then return end
 	local data = type(value) == "table" and value or {}
 	local meta = type(data._coop_pda_ids) == "table" and data._coop_pda_ids or {}
@@ -313,7 +312,7 @@ local function apply_fix(t, from)
 	local key = t.k
 	local spec = type(key) == "string" and keys[key]
 	if not spec or type(t.v) ~= "string" then return end
-	local value, why = C().deser(t.v)
+	local value, why = core.deser(t.v)
 	if why then return end
 
 	local m = alife_storage_manager.get_state()
@@ -329,12 +328,12 @@ local function apply_fix(t, from)
 		fix_tracker(value)
 	else
 		for _, name in ipairs(spec.prime or {}) do
-			local mod = C().mod(name)
-			local load = C().fn(mod, "load_state")
+			local mod = core.mod(name)
+			local load = core.fn(mod, "load_state")
 			if load and not pcall(load, m) then log("! progress correction could not load the mod") end
 			if name == "haru_skills" then
 				-- The load path sets skills_levels; on_game_load also rebuilds the live bonuses and defaults.
-				local rebuild = C().fn(mod, "on_game_load")
+				local rebuild = core.fn(mod, "on_game_load")
 				if rebuild and not pcall(rebuild) then log("! progress correction could not rebuild Haru bonuses") end
 			end
 		end
@@ -350,14 +349,14 @@ local function apply_fix(t, from)
 	if corrected then
 		pcall(api.stash_set, STASH, token .. "|" .. corrected)
 	elseif not st.kept then
-		local encoded = st.last or C().ser({ [key] = value })
+		local encoded = st.last or core.ser({ [key] = value })
 		if encoded then pcall(api.stash_set, STASH, (st.token or "") .. "|" .. encoded) end
 	end
 end
 
 local function apply_big_fix(s, from)
 	if from ~= 0 then return end
-	local t = C().deser(s)
+	local t = core.deser(s)
 	if type(t) == "table" then apply_fix(t, from) end
 end
 
@@ -365,21 +364,21 @@ end
 -- Host: store reports in the save
 -------------------------------------------------------------------------------
 local function send_fix(peer, fix)
-	local encoded = C().ser(fix.v)
+	local encoded = core.ser(fix.v)
 	if not encoded then return end
 	local t = { k = fix.k, v = encoded }
 	-- A flat event codec may triple the bytes; send bigger values in chunks.
 	if #encoded <= 4800 then
-		C().to_peer(peer, "pd_fix", t)
+		core.to_peer(peer, "pd_fix", t)
 	else
-		local big = C().ser(t)
-		if big then C().send_big("prg_pd_fix_big", big, peer) end
+		local big = core.ser(t)
+		if big then core.send_big("prg_pd_fix_big", big, peer) end
 	end
 end
 
 local function host_store(s, from)
 	local pid = api.avatar_of(from)
-	local d = C().deser(s)
+	local d = core.deser(s)
 	local valid = type(pid) == "number" and pid > 0 and pid < 65535 and pid == math.floor(pid)
 		and type(d) == "table"
 	if not coop_trust.pass("progress_pdata", valid, "invalid pdata envelope or character") or not valid then
@@ -400,12 +399,12 @@ local function host_store(s, from)
 	m[STORE][tostring(pid)] = { t = tok, d = clean, progress_checked = progress.snapshot(pid) }
 	st.stored = st.stored + 1
 	for _, fix in ipairs(fixes) do send_fix(from, fix) end
-	C().to_peer(from, "pd_ack", { t = tok })
+	core.to_peer(from, "pd_ack", { t = tok })
 end
 
 -- Refresh progress at save time: observations may have arrived since the last pdata report.
 local function host_save_state(m)
-	if not (C().is_world_server() and type(m) == "table" and type(m[STORE]) == "table") then return end
+	if not (core.active() and coop_mode.decides_world() and type(m) == "table" and type(m[STORE]) == "table") then return end
 	for k, record in pairs(m[STORE]) do
 		local id = tonumber(k)
 		local se = id and id < 65535 and alife_object(id)
@@ -421,17 +420,17 @@ end
 -- Wiring
 -------------------------------------------------------------------------------
 local function actor_on_update()
-	if C().is_client() then client_report(false) end
+	if core.is_client() then client_report(false) end
 end
 
 local function install_load_hook()
-	local asm = C().mod("alife_storage_manager")
-	return C().wrap(asm, "on_before_load_state", "alife_storage_manager.on_before_load_state", function(orig)
+	local asm = core.mod("alife_storage_manager")
+	return core.wrap(asm, "on_before_load_state", "alife_storage_manager.on_before_load_state", function(orig)
 		return function(...)
 			local r = orig(...)
-			if C().world_client() then
+			if core.world_client() then
 				local ok, e = pcall(apply_loaded, alife_storage_manager.get_state())
-				if not ok then C().report("pdata", "restore", e) end
+				if not ok then core.report("pdata", "restore", e) end
 			end
 			return r
 		end
@@ -445,21 +444,16 @@ function status()
 end
 
 -- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
--- error here would skip all the scripts after this one, single player included (W5).
-local function start_step(what, f)
-	local ok, err = pcall(f)
-	if not ok then printf("! [coop_mods_pdata] %s failed: %s", what, tostring(err)) end
-end
-
+-- error here would skip all the scripts after this one, single player included.
 function on_game_start()
 	if not api then return end
-	start_step("install_load_hook", install_load_hook)
-	C().on_big("pd", host_store, "world")
-	C().on("pd_ack", on_ack, "client")
-	start_step("pd_fix", function() C().on("pd_fix", apply_fix, "player") end)
-	start_step("prg_pd_fix_big", function() C().on_big("prg_pd_fix_big", apply_big_fix, "player") end)
-	C().set_limit("pd", 70, 8)
+	core.install("pdata", "install_load_hook", install_load_hook)
+	core.on_big("pd", host_store, "world")
+	core.on("pd_ack", on_ack, "client")
+	core.install("pdata", "pd_fix", function() core.on("pd_fix", apply_fix, "player") end)
+	core.install("pdata", "prg_pd_fix_big", function() core.on_big("prg_pd_fix_big", apply_big_fix, "player") end)
+	core.set_limit("pd", 70, 8)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("save_state", host_save_state)
-	C().status_line("pdata", status)
+	core.status_line("pdata", status)
 end

@@ -1,6 +1,6 @@
 -- Ядро: без проверок режима (docs/MODES.md)
 --[[
-	Anomaly Coop - F4 G8-1 (m31:2): Dynamic Emission Cover protects a companion by its own player
+	Anomaly Coop - Dynamic Emission Cover protects a companion by its own player
 	(gamedata\scripts\coop_mods_emission_cover.script).
 
 	426- Dynamic Emission Cover (dynamic_emission_cover_mcm.script:20-53) patches surge_manager.CSurgeManager.pos_in_cover:
@@ -24,8 +24,8 @@
 	    within the mod's range of the place; the range and the first matching companion are the mod's.
 	cover_of(character_id) -> covered, age_ms (nil: no fact) is the only place that knows where the facts come from:
 	this process's own player is the mod's dynamic_is_safe now (age 0); any other character is the map's decider's
-	decision about his body (coop_env_cover.cover_of, F5-COV-1/2: the decider checks a client's report against its own
-	scan, TZ 6.4 row 8). Nothing goes over the network here and no client's word is read here.
+	decision about his body (coop_env_cover.cover_of: the decider checks a client's report against its own
+	scan). Nothing goes over the network here and no client's word is read here.
 	Elsewhere (a world server, a player's machine, single player) the chain runs unchanged.
 	Installed at the actor's first update: axr_main runs every on_game_start in file order and the mod patches
 	pos_in_cover in its own, after this file's; the wrapper must sit over that patch to switch its clause off.
@@ -39,19 +39,19 @@ local FRESH_MS = 3000 -- coop_main's COVER_FRESH_MS, coop_env_cover's mirror ver
 local installed = false
 local stats = { judged = 0, protected = 0 }
 
-local function C() return coop_mods_core end
+local core = coop_mods_core
 
 -- covered (bool), age_ms (number) of the cover of a character on this map, or nil when there is no fact about it.
 function cover_of(character_id)
 	if type(character_id) ~= "number" then return nil end
 	local own = coop_npc_players.own_actor()
 	if own and own:id() == character_id and coop_mode.actor_is_player() then
-		local dyn = C().mod("dynamic_emission_cover_mcm")
+		local dyn = core.mod("dynamic_emission_cover_mcm")
 		if not dyn then return nil end
 		return dyn.dynamic_is_safe == true, 0
 	end
-	local env = C().mod("coop_env_cover")
-	local f = env and C().fn(env, "cover_of")
+	local env = core.mod("coop_env_cover")
+	local f = env and core.fn(env, "cover_of")
 	if not f then return nil end
 	local covered, age = f(character_id)
 	if type(covered) ~= "boolean" or type(age) ~= "number" or age ~= age then return nil end
@@ -60,7 +60,7 @@ end
 
 -- The mod's loop (dynamic_emission_cover_mcm.script:33-50): the first living companion standing exactly at `at`.
 local function companion_at(at)
-	local ac = C().mod("axr_companions")
+	local ac = core.mod("axr_companions")
 	local squads = ac and ac.companion_squads
 	if type(squads) ~= "table" then return nil end
 	for _, squad in pairs(squads) do
@@ -77,8 +77,8 @@ end
 
 -- The player whose shelter covers this companion: its leader on this map, else this process's player, else the nearest.
 local function player_of(npc)
-	local companions = C().mod("coop_npc_companions")
-	local leader_of = companions and C().fn(companions, "leader_of")
+	local companions = core.mod("coop_npc_companions")
+	local leader_of = companions and core.fn(companions, "leader_of")
 	local lead = leader_of and leader_of(npc)
 	if lead then return lead end
 	if coop_mode.actor_is_player() then return coop_npc_players.own_actor() end
@@ -101,8 +101,8 @@ end
 
 local function make(prev)
 	return function(self, pos, by_name)
-		if not (C().active() and coop_mode.leads_here()) then return prev(self, pos, by_name) end
-		local dyn = C().mod("dynamic_emission_cover_mcm")
+		if not (core.active() and coop_mode.leads_here()) then return prev(self, pos, by_name) end
+		local dyn = core.mod("dynamic_emission_cover_mcm")
 		local range = dyn and dyn.protect_companions_range
 		if type(range) ~= "number" then return prev(self, pos, by_name) end
 		dyn.protect_companions_range = 0 -- the mod's clause is off: it would judge by this process's actor
@@ -112,23 +112,23 @@ local function make(prev)
 		if result or range == 0 then return result end
 		local okc, covered = pcall(sheltered_by_player, pos, range)
 		if okc then return covered end
-		C().report(TAG, "companion cover", covered)
+		core.report(TAG, "companion cover", covered)
 		return prev(self, pos, by_name) -- the mod's own answer
 	end
 end
 
 local function install()
-	if installed or not C().mod("dynamic_emission_cover_mcm") then return end
-	local sm = C().mod("surge_manager")
+	if installed or not core.mod("dynamic_emission_cover_mcm") then return end
+	local sm = core.mod("surge_manager")
 	local cls = sm and sm.CSurgeManager
 	if not cls then return end
-	installed = C().wrap(cls, "pos_in_cover", LABEL, make) == true
-	if installed then C().log(TAG, "%s: a companion is covered by its own player's shelter", LABEL) end
+	installed = core.wrap(cls, "pos_in_cover", LABEL, make) == true
+	if installed then core.log(TAG, "%s: a companion is covered by its own player's shelter", LABEL) end
 end
 
 local function actor_on_first_update()
 	local ok, err = pcall(install)
-	if not ok then C().report(TAG, "install", err) end
+	if not ok then core.report(TAG, "install", err) end
 end
 
 function status()
@@ -136,12 +136,10 @@ function status()
 		stats.judged, stats.protected)
 end
 
--- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop (W5).
 function on_game_start()
-	local ok, err = pcall(function()
-		if not C().mod("dynamic_emission_cover_mcm") then return end
+	core.install(TAG, "start", function()
+		if not core.mod("dynamic_emission_cover_mcm") then return end
 		RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
-		C().status_line(TAG, status)
+		core.status_line(TAG, status)
 	end)
-	if not ok then printf("! [coop_mods_emission_cover] start failed: %s", tostring(err)) end
 end

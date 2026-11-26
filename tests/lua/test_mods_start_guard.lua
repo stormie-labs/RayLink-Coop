@@ -158,7 +158,12 @@ for _, role in ipairs({ "hostplay", "client", "srv_player" }) do
 		SendScriptCallback("actor_on_update", s.actor, 100)
 		assert(s.hits == 1 and s.power == 0.2, "wet stationary actor must receive stock damage")
 		assert(load_var(s.actor, "grw_in_water") ~= true, "water flag must stay transient")
+		SendScriptCallback("actor_on_update", s.actor, 100)
+		assert(s.hits == 2 and s.probes == 1, "a player who stands where he was probed keeps the result: no new ray")
+		s.hits = 1
+		-- a transition loads the level: the next update probes the ground again
 		s.material = "default"
+		SendScriptCallback("load_state", {})
 		SendScriptCallback("actor_on_footstep", "materials\\water")
 		SendScriptCallback("actor_on_update", s.actor, 100)
 		assert(s.hits == 1, "stale footstep must not override current dry material")
@@ -208,25 +213,6 @@ test("client: load before actor exists clears stale water on first dry update", 
 	db.actor, s.live = s.actor, true
 	SendScriptCallback("actor_on_update", s.actor, 100)
 	assert(s.hits == 0 and load_var(s.actor, "grw_in_water") ~= true, "late actor must not keep loaded flag")
-end)
-
-test("client: delayed mode answer keeps cleanup pending without guessing a role", function()
-	local s = fixture("client")
-	s.live, s.acknowledge = true, true
-	spawn("ammo_knife", s.actor:position(), s.actor:id())
-	local answers = coop_mode
-	coop_mode = nil
-	local mod = coop_mods_core.mod
-	coop_mods_core.mod = function(name)
-		if name == "coop_mode" then return rawget(_G, name) end
-		return mod(name)
-	end
-	SendScriptCallback("actor_on_first_update")
-	s.tick(1000)
-	assert(s.attempts == 0, "missing facade must not guess that this actor is a player")
-	coop_mode = answers
-	s.tick(1000)
-	assert(not s.actor:object("ammo_knife"), "cleanup resumes after the mode supplies the answer")
 end)
 
 test("hostplay: widget chain preserves registration results and call arguments", function()

@@ -1,9 +1,9 @@
 --[[
 	Anomaly Coop - client guards for mod item paths that duplicate or lose items on a co-op client
-	(gamedata\scripts\coop_mods_guard.script). B3 review round 1, Ruling L-2: until the id lease of F2 T12b a function a
-	client cannot do safely is refused with a message rather than allowed to duplicate.
+	(gamedata\scripts\coop_mods_guard.script). A function a client cannot do safely without ids of its own is refused with a
+	message rather than allowed to duplicate.
 
-	On a client a world call is a request to the host (call router, F2 T12): alife():create and alife():register answer
+	On a client a world call is a request to the host (call router): alife():create and alife():register answer
 	nil, alife():create(.., false) answers an unregistered entity (no id yet), alife_release only asks the host to remove
 	(the item stays here until the host's EntityDestroy). A mod written for single player that indexes such a result
 	between its create and its release stops on a Lua error (the router's pcall) with the create already sent:
@@ -15,11 +15,11 @@
 	    version registers the clone first and indexes register's answer (nil without an id) before it releases the old
 	    weapon: each attach, detach, Toggle Scope key, magnifier switch or wheel scope change left the old weapon (and the
 	    scope) beside the new one.
-	    F2 T12b (leased ids): a client with ids (coop.lease_ids() >= SWAP_IDS) swaps a weapon in its own bag as in single
+	    Leased ids: a client with ids (coop.lease_ids() >= SWAP_IDS) swaps a weapon in its own bag as in single
 	    player - the clone is created here at once under a leased id, register answers it, the parts and m_data move to
 	    its real id, and the old weapon's release goes with the clone (the host releases it when it creates the clone,
 	    keeps it when it refuses). Without ids (right after joining), for a weapon outside the own bag or one that waits
-	    for the host (its create or a clone of it not answered yet: round 1, review C1) the swap is refused on a client
+	    for the host (its create or a clone of it not answered yet) the swap is refused on a client
 	    before any world call, the player is told:
 	      _G.alife_clone_weapon (backstop: magnifier fallback, MP-412 upgrade, any other caller)
 	      item_weapon.attach_scope / detach_scope        a weapon with scope variants (parent_section); also Toggle
@@ -38,9 +38,8 @@
 	    returned, so its releases go first; a function that fails registers nothing.
 	C3  keep-crafting-window mods (zz_item_cooking_ / zz_ui_workshop_keep_crafting_window_open): their refresh timers
 	    are host-only (coop_compat_crafting.ltx): the ingredients just released are still in the local inventory until
-	    the host confirms, a second action from them would be free. Until 2026-11-12 the window was closed after every
-	    cook, craft, repair or upgrade on a client ("the workbench closes after every craft"). Now it stays open: the
-	    next action is refused until the host has taken what this one released (or 5 s passed), then the mod's own
+	    the host confirms, a second action from them would be free. The window stays open after a cook, craft, repair
+	    or upgrade on a client: the next action is refused until the host has taken what this one released (or 5 s passed), then the mod's own
 	    UpdateUi refreshes the window from the real inventory. The window still closes when the host does not answer
 	    in 5 s or the refresh fails.
 	I3  af_inspect (FDDA): inspect() locks the input until its temporary item arrives and is in slot 14; on a client
@@ -48,18 +47,18 @@
 	    released. Its two level.add_call pairs are registered through a cancel switch: level.remove_call is not
 	    reliable (stock _g.script, AddUniqueCall), and a pair left running would index the cleared item name in a
 	    luabind functor (FATAL); cancelled, the condition answers true once and the action does nothing.
-	I4  (round 2) the same for a random range, cond_r / cond_cr (mutant parts, loot): rolled with the processor's own
+	I4  the same for a random range, cond_r / cond_cr (mutant parts, loot): rolled with the processor's own
 	    Random_Condition / Random_Choice as the host would (item_condition).
-	C4  (round 2) crafting, cooking, repair and the melter from stashes (GAMMA's zzzzzz_*_nearby_stashes, the Hideout
+	C4  crafting, cooking, repair and the melter from stashes (GAMMA's zzzzzz_*_nearby_stashes, the Hideout
 	    Furniture workbench): the gate refuses the release of an item in a stash, the product came anyway. On a client
 	    no stash is in range and the workshop gets no stash id: the backpack only, the player is told.
-	I2  (part data and spawn budget of a swap) F2 T12b: the parts and m_data go to the clone's real id; the host charges
+	I2  (part data and spawn budget of a swap): the parts and m_data go to the clone's real id; the host charges
 	    the budget only what the clone costs more than its source and creates it together with the source's release, so
 	    a queue that drops it loses nothing.
 	C5  item_weapon.ammo_aggregation of a box or a corpse (item_weapon's move, after an ammo pack is put there): the move waits for
 	    the host, so a damaged pack is still ours here and its release goes out, the host allows it in the box, and the new pack
 	    into the box is refused: the pack is gone. Merging packs there would change copies. A client sorts its own inventory only.
-	C6  (2026-11-08, upgrade kits) the addon item_weapon.attach_scope uses up (a scope, a GAMMA upgrade kit) is released after
+	C6  (upgrade kits) the addon item_weapon.attach_scope uses up (a scope, a GAMMA upgrade kit) is released after
 	    the host's Ok to the clone, kept and the player told on a refusal, and not fitted again while it waits.
 	death_manager.decide_items_to_keep (xr_motivator, every dying NPC) stays on a client: its releases are refused, but its wear is
 	all the weapon of the client's copy gets, it spawned whole and nothing else lowers it.
@@ -69,8 +68,8 @@ local api = rawget(_G, "coop")
 
 local tostring, type, ipairs, pcall, select, unpack = tostring, type, ipairs, pcall, select, unpack
 
-local function C() return coop_mods_core end
-local function log(fmt, ...) C().log("guard", fmt, ...) end
+local core = coop_mods_core
+local function log(fmt, ...) core.log("guard", fmt, ...) end
 
 -- The input lock of af_inspect: in single player it lasts the slot switch (hide the weapon, draw the item: about 1-2
 -- s); a client adds the round trip of the item's request. 5 s covers a slow link and is short for a stuck player.
@@ -96,12 +95,10 @@ local function tell(txt)
 	local now = time_global()
 	if (next_tell[txt[1]] or 0) > now then return end
 	next_tell[txt[1]] = now + TELL_GAP_MS
-	C().hud(txt[1], txt[2])
+	core.hud(txt[1], txt[2])
 end
 
 -- results of pcall(f, ...) as a table with n
-local function pack(...) return { n = select("#", ...), ... } end
-
 -------------------------------------------------------------------------------
 -- Items and sections
 -------------------------------------------------------------------------------
@@ -162,7 +159,7 @@ local function degradable(sec)
 	return ok and d and true or false
 end
 
--- An entity in the own actor that is not registered yet (alife():create(.., false); on a client F2 T12 keeps it until
+-- An entity in the own actor that is not registered yet (alife():create(.., false); on a client the engine keeps it until
 -- alife():register sends it as a request).
 local function unregistered(sec)
 	local a = db.actor
@@ -179,15 +176,15 @@ local function write_condition(se, cond)
 		data.condition = clamp(cond, 0, 1)
 		utils_stpk.set_item_data(data, se)
 	end)
-	if not ok then C().report("guard", "condition of " .. tostring(section_of(se) or "?"), e) end
+	if not ok then core.report("guard", "condition of " .. tostring(section_of(se) or "?"), e) end
 end
 
--- alife():register's answer: on a client the item itself when it holds a leased id (F2 T12b), else nil (the item
+-- alife():register's answer: on a client the item itself when it holds a leased id, else nil (the item
 -- comes with the host's answer).
 local function register(se)
 	local ok, r = pcall(function() return alife():register(se) end)
 	if not ok then
-		C().report("guard", "register", r)
+		core.report("guard", "register", r)
 		return nil
 	end
 	return r
@@ -201,7 +198,7 @@ local function refuse_swap()
 	tell(TXT_SWAP)
 end
 
--- F2 T12b: the ids a swap may take - the clone, a detached scope, one more for a later wrapper (canted irons give their
+-- The leased ids a swap may take - the clone, a detached scope, one more for a later wrapper (canted irons give their
 -- irons back first).
 local SWAP_IDS = 3
 
@@ -231,7 +228,7 @@ local function id_waiting(id)
 	return ok and w == true
 end
 
--- F2 T12b round 1 (review C1): the weapon waits for the host - its create is not answered yet (the host's budget queue,
+-- The weapon waits for the host - its create is not answered yet (the host's budget queue,
 -- a retry), or a clone of ours replaces it already. The engine refuses its clone (nil), but the mods create the scope
 -- before the clone (detach): refused here first, before any world call.
 local function lease_waiting(wpn) return id_waiting(id_of(wpn)) end
@@ -241,7 +238,7 @@ local function lease_waiting(wpn) return id_waiting(id_of(wpn)) end
 local function swap_ready(wpn, holder)
 	local a = db.actor
 	local pid = holder or holder_id(wpn)
-	return C().live_client() and a ~= nil and pid ~= nil and pid == id_of(a) and lease_ids() >= SWAP_IDS
+	return core.live_client() and a ~= nil and pid ~= nil and pid == id_of(a) and lease_ids() >= SWAP_IDS
 		and not lease_waiting(wpn)
 end
 
@@ -249,7 +246,7 @@ end
 local function swap_guard(when)
 	return function(orig)
 		return function(...)
-			if C().is_client() then
+			if core.is_client() then
 				local wpn, holder = when(...)
 				if wpn ~= nil then
 					if not swap_ready(wpn, holder) then
@@ -265,7 +262,7 @@ local function swap_guard(when)
 end
 
 -------------------------------------------------------------------------------
--- C6: the addon an attach uses up waits for the host's answer to the clone (2026-11-08)
+-- C6: the addon an attach uses up waits for the host's answer to the clone
 -------------------------------------------------------------------------------
 -- Live report (GAMMA, stable 41.4): a client could not fit an upgrade kit (PP Vityaz), the host could. A kit is a
 -- scope-style addon (mod_system_weapon_addons_upg_kits.ltx, 3DSS weapon_kit): item_weapon.attach_scope clones the weapon
@@ -298,7 +295,7 @@ local function release_fitted(id, f)
 		local se = alife():object(id)
 		if se then alife_release(se) end
 	end)
-	if not ok then C().report("guard", "release of the fitted " .. f.sec, e) end
+	if not ok then core.report("guard", "release of the fitted " .. f.sec, e) end
 end
 
 local function fit_tick(now)
@@ -325,7 +322,7 @@ end
 -- attach_scope with the addon's release held when the call made a clone of ours (a client: the clone has its leased id)
 local function fit_after_answer(orig)
 	return function(item, weapon, ...)
-		if not C().is_client() then return orig(item, weapon, ...) end
+		if not core.is_client() then return orig(item, weapon, ...) end
 		local addon = id_of(item)
 		if addon ~= nil and fits[addon] then
 			stats.fit_waits = stats.fit_waits + 1
@@ -333,7 +330,7 @@ local function fit_after_answer(orig)
 			return nil
 		end
 		local real_clone, real_release = rawget(_G, "alife_clone_weapon"), rawget(_G, "alife_release")
-		if not (C().live_client() and addon ~= nil and type(real_clone) == "function" and type(real_release) == "function") then
+		if not (core.live_client() and addon ~= nil and type(real_clone) == "function" and type(real_release) == "function") then
 			return orig(item, weapon, ...)
 		end
 		local made, held
@@ -351,7 +348,7 @@ local function fit_after_answer(orig)
 			end
 			return real_release(obj, ...)
 		end)
-		local res = pack(pcall(orig, item, weapon, ...))
+		local res = core.pack(pcall(orig, item, weapon, ...))
 		rawset(_G, "alife_clone_weapon", real_clone)
 		rawset(_G, "alife_release", real_release)
 		if held then
@@ -366,7 +363,7 @@ end
 -------------------------------------------------------------------------------
 -- I1 / C2: creates into the own actor
 -------------------------------------------------------------------------------
--- I4 (B3 round 2): the condition ItemProcessor:Create_Item gives an item: t.cond, or a roll from t.cond_r (t.cond_cr
+-- I4: the condition ItemProcessor:Create_Item gives an item: t.cond, or a roll from t.cond_r (t.cond_cr
 -- for items of type cond_ct) with the processor's own Random_Condition ({a, b}: random(a, b) / 100) or Random_Choice
 -- (more than two values). The processor tests IsItem(cond_ct, section) with a GLOBAL cond_ct (a typo for t.cond_ct in
 -- 1.5.3 and GAMMA), so its cond_cr branch never runs; the same lookup here gives what the host would give. Mutant
@@ -402,14 +399,14 @@ end
 
 local function cond_create(orig)
 	return function(section, owner, t, ...)
-		local cond = C().live_client() and type(t) == "table" and t.ammo == nil and t.uses == nil
+		local cond = core.live_client() and type(t) == "table" and t.ammo == nil and t.uses == nil
 			and section_exists(section) and own_actor(owner) and degradable(section) and item_condition(section, t)
 		if cond then
 			local se = unregistered(section)
 			if se then
 				write_condition(se, cond)
 				stats.cond = stats.cond + 1
-				-- F2 T12b: the item itself with a leased id; nil without one (it comes with the host's answer)
+				-- the item itself with a leased id; nil without one (it comes with the host's answer)
 				return register(se)
 			end
 		end
@@ -432,12 +429,12 @@ local function with_deferred_creates(label, f, ...)
 		end
 		return real(section, owner, t, ...)
 	end)
-	local res = pack(pcall(f, ...))
+	local res = core.pack(pcall(f, ...))
 	rawset(_G, "alife_create_item", real)
 	if not res[1] then
 		-- nothing created: what it released before the error is lost, never doubled
 		stats.failed = stats.failed + 1
-		C().report("guard", label, res[2])
+		core.report("guard", label, res[2])
 		tell(TXT_FAILED)
 		return nil
 	end
@@ -449,7 +446,7 @@ end
 local function deferred(label)
 	return function(orig)
 		return function(...)
-			if not C().live_client() then return orig(...) end
+			if not core.live_client() then return orig(...) end
 			return with_deferred_creates(label, orig, ...)
 		end
 	end
@@ -486,7 +483,7 @@ local function here(id)
 	return ok and o ~= nil
 end
 
--- Runs f(self, ...) and answers pack(pcall(..)) and what it released (ids), asked to create into the own actor and
+-- Runs f(self, ...) and answers core.pack(pcall(..)) and what it released (ids), asked to create into the own actor and
 -- discharged.
 local function watched(f, self, ...)
 	local rec = { ids = {}, n = 0, creates = 0, uses = 0 }
@@ -513,7 +510,7 @@ local function watched(f, self, ...)
 	if type(discharge) == "function" then
 		items.discharge = function(...) rec.uses = rec.uses + 1; return discharge(...) end
 	end
-	local res = pack(pcall(f, self, ...))
+	local res = core.pack(pcall(f, self, ...))
 	if type(rel) == "function" then rawset(_G, "alife_release", rel) end
 	if type(rel_id) == "function" then rawset(_G, "alife_release_id", rel_id) end
 	if type(create) == "function" then rawset(_G, "alife_create_item", create) end
@@ -524,7 +521,7 @@ end
 local function settle_after(window_of)
 	return function(orig)
 		return function(self, ...)
-			if not C().is_client() then return orig(self, ...) end
+			if not core.is_client() then return orig(self, ...) end
 			if settling then
 				stats.settling_refused = stats.settling_refused + 1
 				tell(TXT_SETTLING)
@@ -552,7 +549,7 @@ end
 local function settling_close(s)
 	stats.closed = stats.closed + 1
 	local ok, e = pcall(function() s.self:Close() end)
-	if not ok then C().report("guard", "close the crafting window", e) end
+	if not ok then core.report("guard", "close the crafting window", e) end
 end
 
 local function settle_tick(now)
@@ -580,7 +577,7 @@ local function settle_tick(now)
 		return s.self:UpdateUi(s.self.last_cont, s.self.last_idx)
 	end)
 	if not ok then
-		C().report("guard", "refresh the crafting window", e)
+		core.report("guard", "refresh the crafting window", e)
 		settling_close(s)
 	end
 end
@@ -596,7 +593,7 @@ local late  -- { item, deadline }
 
 local function inspect_guard(orig)
 	return function(...)
-		if not C().is_client() then return orig(...) end
+		if not core.is_client() then return orig(...) end
 		local ticket = { cancelled = false, n = 0 }
 		local lvl = level
 		local real_add = lvl.add_call
@@ -616,7 +613,7 @@ local function inspect_guard(orig)
 			end
 			return real_add(...)
 		end
-		local res = pack(pcall(orig, ...))
+		local res = core.pack(pcall(orig, ...))
 		lvl.add_call = real_add
 		local m = rawget(_G, "af_inspect")
 		if res[1] and type(m) == "table" and m.af_anim_item ~= nil and ticket.n > 0 then
@@ -652,7 +649,7 @@ local function inspect_tick(now)
 		local ok, obj = pcall(function() return db.actor:object(late.item) end)
 		if ok and obj then
 			local okr, e = pcall(alife_release, obj)
-			if okr then stats.late_released = stats.late_released + 1 else C().report("guard", "late af_inspect item", e) end
+			if okr then stats.late_released = stats.late_released + 1 else core.report("guard", "late af_inspect item", e) end
 			late = nil
 		elseif now >= late.deadline then
 			late = nil
@@ -665,7 +662,7 @@ end
 -------------------------------------------------------------------------------
 local function own_ammo_only(orig)
 	return function(obj, npc, ...)
-		if C().is_client() and npc ~= nil and npc:id() ~= db.actor:id() then return true end
+		if core.is_client() and npc ~= nil and npc:id() ~= db.actor:id() then return true end
 		return orig(obj, npc, ...)
 	end
 end
@@ -673,10 +670,10 @@ end
 -------------------------------------------------------------------------------
 -- Entry points, kept outermost
 -------------------------------------------------------------------------------
-local function module_of(name) return function() return C().mod(name) end end
+local function module_of(name) return function() return core.mod(name) end end
 local function class_of(name, cls)
 	return function()
-		local m = C().mod(name)
+		local m = core.mod(name)
 		local ok, c = pcall(function() return m and m[cls] end)
 		return ok and c or nil
 	end
@@ -685,7 +682,7 @@ end
 local function pending_mutation(orig)
 	return function(obj, ...)
 		local id = type(obj) == "number" and obj or id_of(obj)
-		if C().is_client() and id ~= nil and id_waiting(id) then refuse_swap() return nil end
+		if core.is_client() and id ~= nil and id_waiting(id) then refuse_swap() return nil end
 		return orig(obj, ...)
 	end
 end
@@ -717,7 +714,7 @@ local GUARDS = {
 			if typ == "scope" and wpn ~= nil and scoped_variant(wpn) then
 				-- a gun in a box or a body: coop_mods_items takes it into the bag first and runs the detach there, through
 				-- the guard's inner copies (the swap is checked on the taken gun)
-				local it = C().mod("coop_mods_items")
+				local it = core.mod("coop_mods_items")
 				local ok, takes = pcall(function() return it and it.takes_first and it.takes_first(wpn) end)
 				if ok and takes == true then return nil end
 				return wpn
@@ -752,7 +749,7 @@ local GUARDS = {
 for _, g in ipairs(GUARDS) do g.n = 0 end
 
 -------------------------------------------------------------------------------
--- C4 (B3 round 2): crafting, cooking, repair and the melter from stashes
+-- C4: crafting, cooking, repair and the melter from stashes
 -------------------------------------------------------------------------------
 -- GAMMA's "craft from nearby stashes" family takes ingredients from stashes: zzzzzz_ui_workshop_nearby_stashes defines
 -- _G.GetStashesInRange / IterateStashesInRange / collect_amount_in_range, which zzzzzz_craft_use_low_cond_,
@@ -760,7 +757,7 @@ for _, g in ipairs(GUARDS) do g.n = 0 end
 -- Furniture workbench opens the workshop with its stash (stashId, read by GAMMA's ui_workshop and craft_use_low_cond;
 -- coop_mods_hf opens it with the host's box on a client). On a client the release, discharge or uses change of an
 -- item in a stash is refused by the call gate (not ours: own_release) and only logged, while the product is created:
--- free crafting, endless. Until a stash item can go into the bag first (transfer_item, F2 T12b) a client crafts,
+-- free crafting, endless. Until a stash item can go into the bag first (transfer_item) a client crafts,
 -- cooks and repairs from its backpack only and is told so: no stash is in range, the workshop gets no stash id.
 local STASH_TELL_GAP_MS = 30000 -- the lists ask for the stashes on every refresh
 local TXT_STASH = { "st_coop_guard_stash",
@@ -774,12 +771,12 @@ local function tell_stash()
 	if now < next_stash_tell then return end
 	next_stash_tell = now + STASH_TELL_GAP_MS
 	log("stash ingredients refused on a client: the backpack only (#%d)", stats.stashes)
-	C().hud(TXT_STASH[1], TXT_STASH[2])
+	core.hud(TXT_STASH[1], TXT_STASH[2])
 end
 
 local function no_stashes(orig)
 	return function(...)
-		if not C().is_client() then return orig(...) end
+		if not core.is_client() then return orig(...) end
 		local ok, found = pcall(orig, ...)
 		if ok and type(found) == "table" and next(found) ~= nil then tell_stash() end
 		return {}
@@ -790,8 +787,8 @@ end
 local function no_stash_arg(index)
 	return function(orig)
 		return function(...)
-			if not C().is_client() then return orig(...) end
-			local args = pack(...)
+			if not core.is_client() then return orig(...) end
+			local args = core.pack(...)
 			if args[index] ~= nil then
 				args[index] = nil
 				tell_stash()
@@ -820,7 +817,7 @@ local function current(tbl, key)
 		local f = rawget(_G, key)
 		return type(f) == "function" and f or nil
 	end
-	return C().fn(tbl, key)
+	return core.fn(tbl, key)
 end
 
 local function ensure(g)
@@ -838,13 +835,13 @@ local function ensure(g)
 	local w = g.make(cur)
 	local okw, e = pcall(function() tbl[g.key] = w end)
 	if not okw then
-		C().report("guard", "wrap " .. g.label, e)
+		core.report("guard", "wrap " .. g.label, e)
 		return
 	end
 	g.fn = w
 	g.n = g.n + 1
 	if g.n == 1 then
-		local list = C().wrapped
+		local list = core.wrapped
 		if type(list) == "table" then list[#list + 1] = g.label end
 	else
 		log("%s was wrapped by a later script: the guard is outermost again (#%d)", g.label, g.n)
@@ -852,14 +849,14 @@ local function ensure(g)
 end
 
 -------------------------------------------------------------------------------
--- T1 GAMMA's craft tooltip before the world (every role and single player, inert where the mod is absent)
+-- GAMMA's craft tooltip before the world (every role and single player, inert where the mod is absent)
 -------------------------------------------------------------------------------
 -- zzz_craft_use_in_tooltip_mcm replaces utils_ui.UIInfoItem.Update at its load (:182) with one that reads craft.ltx and
 -- cook.ltx through its file locals ini_craft / ini_cook (:2-3), opened only in its on_game_start (:476-477). A tooltip
 -- shown before that (the main-menu new-game windows: stock ui_mm_faction_select's loadout, the co-op character window)
--- failed on every hover: ":288: attempt to index upvalue 'ini_craft' (a nil value)" (reports b40-b43). The two locals
--- are filled with the very files its on_game_start opens, once, when they are still nil; its on_game_start later
--- assigns its own (the same files).
+-- fails on every hover: ":288: attempt to index upvalue 'ini_craft' (a nil value)". The two locals are filled with
+-- the very files its on_game_start opens, once, when they are still nil; its on_game_start later assigns its own (the
+-- same files).
 local CRAFT_TIP_MOD = "zzz_craft_use_in_tooltip_mcm"
 local CRAFT_TIP_INI = {
 	{ fn = "getCraftableItems", up = "ini_craft", file = "items\\settings\\craft.ltx" },
@@ -883,8 +880,7 @@ function craft_tooltip_ready()
 	for _, u in ipairs(CRAFT_TIP_INI) do
 		local f = rawget(m, u.fn)
 		if type(f) == "function" then
-			local ok, err = pcall(fill_ini_upvalue, f, u.up, u.file)
-			if not ok then printf("! [coop_mods_guard] craft tooltip %s: %s", u.up, tostring(err)) end
+			core.install("guard", "craft tooltip " .. u.up, fill_ini_upvalue, f, u.up, u.file)
 		end
 	end
 end
@@ -911,7 +907,7 @@ end
 local next_check = 0
 
 local function actor_on_update()
-	if not C().is_client() then return end
+	if not core.is_client() then return end
 	local now = time_global()
 	inspect_tick(now)
 	fit_tick(now)
@@ -936,16 +932,15 @@ local function status()
 		stats.late_released, #on > 0 and table.concat(on, ", ") or "nothing yet (a client installs at its first update)")
 end
 
--- on_game_start must not throw (axr_main runs every script's on_game_start in one unprotected loop, W5)
+-- on_game_start must not throw (axr_main runs every script's on_game_start in one unprotected loop)
 function on_game_start()
 	if not api then return end
-	local ok, e = pcall(function()
+	core.install("guard", "start", function()
 		install_craft_tooltip()
 		RegisterScriptCallback("actor_on_update", actor_on_update)
-		RegisterScriptCallback("actor_on_item_take", function() takes = takes + 1 end) -- C3: the product of a craft came
-		C().status_line("guard", status)
+		RegisterScriptCallback("actor_on_item_take", function() takes = takes + 1 end) -- the product of a craft came
+		core.status_line("guard", status)
 	end)
-	if not ok then printf("! [coop_mods_guard] start failed: %s", tostring(e)) end
 end
 
 -- at load as well: a window before the world (main menu) gets no on_game_start

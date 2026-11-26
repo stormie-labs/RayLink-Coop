@@ -1,5 +1,5 @@
 -- Ядро: без проверок режима (docs/MODES.md)
--- Dev 57 G4-6. The co-op host has both players' inventories. In Server, the world
+-- The co-op host has both players' inventories. In Server, the world
 -- routes the player's hint to the map server that has the holder and inventory.
 -- Only that decider replaces the item. The owner supplies the expiry clock through
 -- the existing rider and can raise a hint when the decider hasn't seen the rider.
@@ -13,12 +13,12 @@ local RETRY_MS, RECEIPT_MS = 1000, 30000
 local jobs, retries, mirror_watches = {}, {}, {}
 local meat, next_tick, installed_boxes = nil, 0, false
 
-local function C() return coop_mods_core end
-local function X() return coop_mods_xchg end
-local function ready() return C().active() and api.is_live() end
+local core = coop_mods_core
+local xchg = coop_mods_xchg
+local function ready() return core.active() and api.is_live() end
 
 local function rider_table()
-	local asm = C().mod("alife_storage_manager")
+	local asm = core.mod("alife_storage_manager")
 	local data = asm and asm.get_state and asm.get_state()
 	return data and type(data.expiration_table) == "table" and data.expiration_table or nil
 end
@@ -59,7 +59,7 @@ end
 
 local function holder_here(se, peer)
 	if not (se and peer ~= nil and coop_mode.decider(peer) == "this") then return nil end
-	local who = C().avatar(peer)
+	local who = core.avatar(peer)
 	return who and se.parent_id == who:id() and who or nil
 end
 
@@ -70,7 +70,7 @@ local function clear_clock(id)
 end
 
 local function send_completion(receipt)
-	return C().to_peer(receipt.peer, DONE, receipt.payload)
+	return core.to_peer(receipt.peer, DONE, receipt.payload)
 end
 
 local function tick_receipts(now)
@@ -95,8 +95,8 @@ local function finish_failed(job)
 	if not made then jobs[job.id] = nil; return end
 	-- Keep the reservation until the rollback has also reached the world.
 	local ok, err = pcall(alife_release, made)
-	if not ok then C().report("xchg_meat", "roll back replacement", err) end
-	X().after_gone(job.made, function(gone)
+	if not ok then core.report("xchg_meat", "roll back replacement", err) end
+	xchg.after_gone(job.made, function(gone)
 		if jobs[job.id] ~= job then return end
 		if gone then
 			jobs[job.id] = nil
@@ -112,14 +112,14 @@ local function after_removal(job, gone)
 		if alife_object(job.id) then return finish_failed(job) end
 		-- The removal committed in ALife. A lagging online object is no reason
 		-- to also remove the replacement.
-		X().after_gone(job.id, function(ok) after_removal(job, ok) end, WAIT_MS)
+		xchg.after_gone(job.id, function(ok) after_removal(job, ok) end, WAIT_MS)
 		return
 	end
 	jobs[job.id] = nil
 	clear_clock(job.id)
-	if job.peer ~= C().self_peer() then
+	if job.peer ~= core.self_peer() then
 		local now = time_global()
-		local receipt = { peer = job.peer, payload = { i = C().hid(job.id), r = C().hid(job.made) },
+		local receipt = { peer = job.peer, payload = { i = core.hid(job.id), r = core.hid(job.made) },
 			retry_at = now + RETRY_MS, until_ms = now + RECEIPT_MS }
 		if not send_completion(receipt) then retries[job.id] = receipt end
 	end
@@ -135,16 +135,16 @@ local function after_creation(job, seen)
 		-- after_made can see another item's replacement in the same bag first.
 		local left = job.deadline - time_global()
 		if left <= 0 or not made then return finish_failed(job) end
-		X().after_made(ROTTEN, job.parent, function(id) after_creation(job, id) end, left)
+		xchg.after_made(ROTTEN, job.parent, function(id) after_creation(job, id) end, left)
 		return
 	end
 
 	local se = alife_object(job.id)
 	if not (eligible(se) and holder_here(se, job.peer) and se.parent_id == job.parent
-		and C().holder_peer(job.id) == job.peer and se:name() == job.instance) then return finish_failed(job) end
+		and core.holder_peer(job.id) == job.peer and se:name() == job.instance) then return finish_failed(job) end
 	local ok, err = pcall(alife_release, se)
-	if not ok then C().report("xchg_meat", "remove expired meat", err) end
-	X().after_gone(job.id, function(gone) after_removal(job, gone) end, WAIT_MS)
+	if not ok then core.report("xchg_meat", "remove expired meat", err) end
+	xchg.after_gone(job.id, function(gone) after_removal(job, gone) end, WAIT_MS)
 end
 
 local function begin_swap(se, peer, who)
@@ -152,12 +152,12 @@ local function begin_swap(se, peer, who)
 	if jobs[id] then return true end
 	local job = { id = id, parent = parent, peer = peer, instance = se:name(), deadline = time_global() + WAIT_MS }
 	jobs[id] = job
-	X().after_made(ROTTEN, parent, function(seen) after_creation(job, seen) end, WAIT_MS)
+	xchg.after_made(ROTTEN, parent, function(seen) after_creation(job, seen) end, WAIT_MS)
 	local ok, made = pcall(alife_create_item, ROTTEN, who)
 	job.made = ok and made and made.id or nil
 	if not job.made then
 		jobs[id] = nil
-		if not ok then C().report("xchg_meat", "create replacement", made) end
+		if not ok then core.report("xchg_meat", "create replacement", made) end
 		return false, "create failed"
 	end
 	job.made_instance = made:name()
@@ -165,12 +165,12 @@ local function begin_swap(se, peer, who)
 end
 
 local function inspect_request(t, from, who)
-	local id = X().wire_id(t.i)
+	local id = core.wire_id(t.i)
 	local se = id and alife_object(id)
 	if not (ready() and eligible(se) and writes_meat(se) and who and holder_here(se, from)
-		and se.parent_id == who:id() and C().holder_peer(id) == from) then return nil, "inventory" end
+		and se.parent_id == who:id() and core.holder_peer(id) == from) then return nil, "inventory" end
 	local riders = rider_table()
-	local data = from == C().self_peer() and meat.expiration_table[id]
+	local data = from == core.self_peer() and meat.expiration_table[id]
 		or (riders and riders[id]) or meat.expiration_table[id]
 	local duration = remaining(data, game.get_game_time())
 	if duration and duration > 0 then return nil, "fresh" end
@@ -178,7 +178,7 @@ local function inspect_request(t, from, who)
 end
 
 local function serve_meat()
-	X().serve(KIND, {
+	xchg.serve(KIND, {
 		check = function(t, from, who)
 			local se, why = inspect_request(t, from, who)
 			return se ~= nil and why == nil, why
@@ -200,20 +200,20 @@ local function serve_meat()
 end
 
 local function ask_spoil(id)
-	local wire = C().hid(id)
-	if wire and not X().busy(KIND, wire) then X().ask(KIND, { key = wire, i = wire }) end
+	local wire = core.hid(id)
+	if wire and not xchg.busy(KIND, wire) then xchg.ask(KIND, { key = wire, i = wire }) end
 end
 
 local function receive_done(t)
 	if not coop_mode.is_player_mirror() then return end
-	local id, replacement = X().wire_id(t.i), X().wire_id(t.r)
+	local id, replacement = core.wire_id(t.i), core.wire_id(t.r)
 	if not (id and replacement and id ~= replacement) or mirror_watches[id] then return end
 	local clocks = meat.expiration_table
 	local clock = clocks[id]
 	if not clock then return end
 	local watch = {}
 	mirror_watches[id] = watch
-	X().after_gone(id, function(gone)
+	xchg.after_gone(id, function(gone)
 		if mirror_watches[id] ~= watch then return end
 		mirror_watches[id] = nil
 		if gone and meat.expiration_table == clocks and clocks[id] == clock then clear_clock(id) end
@@ -222,9 +222,9 @@ end
 
 local function expire_player(se, peer, writes)
 	if jobs[se.id] then return end
-	if peer == C().self_peer() and coop_mode.actor_is_player() then
+	if peer == core.self_peer() and coop_mode.actor_is_player() then
 		ask_spoil(se.id) -- also takes the direct decider path for the playing host
-	elseif writes and not X().reserved(se.id) then
+	elseif writes and not xchg.reserved(se.id) then
 		local holder = holder_here(se, peer)
 		if holder then begin_swap(se, peer, holder) end
 	end
@@ -234,9 +234,9 @@ local function tick_clocks(clocks, now, stamp_now, mirror, skip)
 	for id, data in pairs(clocks) do
 		local se = in_range(id, 1, 65534) and not (skip and skip[id]) and alife_object(id)
 		if eligible(se) and not jobs[id] and not mirror_watches[id] then
-			local peer = C().holder_peer(id)
+			local peer = core.holder_peer(id)
 			local writes = writes_meat(se)
-			if writes or (mirror and peer == C().self_peer()) then
+			if writes or (mirror and peer == core.self_peer()) then
 				local frozen = meat.get_meat_is_frozen(se)
 				local duration = not frozen and remaining(data, now)
 				if duration and duration <= 0 then
@@ -269,32 +269,32 @@ local function tick_expiry()
 end
 
 local function install_meat()
-	meat = C().mod(MEAT)
-	if not (meat and type(meat.expiration_table) == "table" and C().fn(meat, "get_meat_is_frozen")) then
+	meat = core.mod(MEAT)
+	if not (meat and type(meat.expiration_table) == "table" and core.fn(meat, "get_meat_is_frozen")) then
 		meat = nil
 		return
 	end
-	local ok, old = C().wrap(meat, "tick_expiration", MEAT .. ".tick_expiration", function(orig)
+	local ok, old = core.wrap(meat, "tick_expiration", MEAT .. ".tick_expiration", function(orig)
 		return function(...)
-			if not C().active() then return orig(...) end
+			if not core.active() then return orig(...) end
 			return tick_expiry()
 		end
 	end)
-	if ok then C().swap_callback("actor_on_first_update", old, meat.tick_expiration) end
-	C().wrap(meat, "expire_food", MEAT .. ".expire_food", function(orig)
+	if ok then core.swap_callback("actor_on_first_update", old, meat.tick_expiration) end
+	core.wrap(meat, "expire_food", MEAT .. ".expire_food", function(orig)
 		return function(se, ...)
-			if not C().active() then return orig(se, ...) end
+			if not core.active() then return orig(se, ...) end
 			if not (ready() and eligible(se)) then return end
-			local peer = C().holder_peer(se.id)
+			local peer = core.holder_peer(se.id)
 			local writes = writes_meat(se)
-			if peer ~= nil and (writes or (coop_mode.is_player_mirror() and peer == C().self_peer())) then
+			if peer ~= nil and (writes or (coop_mode.is_player_mirror() and peer == core.self_peer())) then
 				return expire_player(se, peer, writes)
 			end
 			if peer == nil and writes then return orig(se, ...) end
 		end
 	end)
 	serve_meat()
-	C().on(DONE, receive_done, "player")
+	core.on(DONE, receive_done, "player")
 	RegisterScriptCallback("actor_on_update", function()
 		if not ready() then return end
 		local now = time_global()
@@ -308,19 +308,18 @@ local function install_meat()
 	end)
 end
 
--- R89 (2026-11-24, the owner: "у типа артефакт цепь пропал", "из тайника!!!", "в коопе обычном"). PBA's clean removed
--- players' items in a session, through two holes, both closed here on the process that writes the box (the co-op host, a
+-- PBA's clean would remove players' items in a session through two holes, both closed here on the process that writes the box (the co-op host, a
 -- map server in the Server mode; the same wrapper runs on both):
 --   (A) a client's first opening reaches that process as container_opened, and the clean runs LESS_ARTYS_DELAY (1 s,
 --       coop_mods_items) later, once the treasure the opening asked for is in the box. A junk artefact (af_chelust) the
---       player put in within that second was cleaned with it. Now the clean releases no item a player's character let go of
+--       player put in within that second would be cleaned with it. The clean releases no item a player's character let go of
 --       in the last PUT_KEEP_MS: a box takes nothing from a player before it is opened, so such an item came in after the
 --       opening (or was taken out and put back). Everything else - what lay in the box, the treasure and the loot created
 --       for the opening, an NPC's - goes through PBA's own kind check and roll as in the stock; a kept item still uses its
 --       roll, so the others' chances do not move. A snapshot of the box at the opening would miss that treasure: it is
 --       asked for by another message and may come in after container_opened.
 --   (B) a player's death stash (coop_death_stash, the stock backpack stash container) is not in player_created_stashes,
---       so the host's first opening cleaned the junk artefacts out of it (two af_ball, 2026-11-07). It is never cleaned now,
+--       so the host's first opening would clean the junk artefacts out of it. It is never cleaned,
 --       on any path, and not put into PBA's table (its id is reused once the stash is gone).
 -- One line in the game log per kept item / per death stash, next to the item journal's lines:
 --   [coop-items] box <id> (<name>): kept <section> (id <id>) from the PBA less-artefacts clean: <nick> let it go N ms before the clean
@@ -333,12 +332,12 @@ local death_noted = {} -- death stash ids whose line is written
 
 -- A player's character let go of `item` (the drop callback fires while the item still has its old parent).
 local function note_put(owner_id, item)
-	if not (C().active() and item and C().is_player(owner_id)) then return end
+	if not (core.active() and item and core.is_player(owner_id)) then return end
 	local id = item:id()
 	if type(id) ~= "number" then return end
 	local now = time_global()
 	if puts[id] == nil then put_count = put_count + 1 end
-	puts[id] = { at = now, peer = C().peer_of(owner_id) }
+	puts[id] = { at = now, peer = core.peer_of(owner_id) }
 	if put_count < put_prune_at then return end
 	for k, v in pairs(puts) do
 		if now - v.at > PUT_KEEP_MS then
@@ -355,11 +354,11 @@ local function install_puts()
 	installed_puts = true
 	RegisterScriptCallback("actor_on_item_drop", function(item)
 		local ok, err = pcall(note_put, 0, item)
-		if not ok then C().report("xchg_meat", "note a player's put", err) end
+		if not ok then core.report("xchg_meat", "note a player's put", err) end
 	end)
 	RegisterScriptCallback("npc_on_item_drop", function(npc, item)
 		local ok, err = pcall(function() note_put(npc:id(), item) end)
-		if not ok then C().report("xchg_meat", "note a player's put", err) end
+		if not ok then core.report("xchg_meat", "note a player's put", err) end
 	end)
 end
 
@@ -379,7 +378,7 @@ local function guard_release(box_id, box_name, release)
 		local put = type(id) == "number" and puts[id]
 		local age = put and time_global() - put.at
 		if not (age and age <= PUT_KEEP_MS) then return release(id, ...) end -- a tail call: the journal still names PBA
-		local who = put.peer ~= nil and C().nick_of(put.peer) or nil
+		local who = put.peer ~= nil and core.nick_of(put.peer) or nil
 		printf("[coop-items] box %d (%s): kept %s (id %d) from the PBA less-artefacts clean: %s let it go %d ms before the clean",
 			box_id, tostring(box_name), tostring(section_of(id)), id, tostring(who or ("peer " .. tostring(put.peer))), age)
 	end
@@ -406,21 +405,21 @@ end
 -- in the actual table read by save_state and by the world-state sharing layer.
 local function install_boxes()
 	if installed_boxes then return end
-	local mod = C().mod(PBA)
-	local clean = C().fn(mod, "clean_artys")
+	local mod = core.mod(PBA)
+	local clean = core.fn(mod, "clean_artys")
 	if not clean then return end
 	local sequence = 0
 	local pending = setmetatable({}, { __mode = "k" })
-	installed_boxes = C().wrap(mod, "physic_object_on_use_callback", PBA .. ".physic_object_on_use_callback", function(orig)
+	installed_boxes = core.wrap(mod, "physic_object_on_use_callback", PBA .. ".physic_object_on_use_callback", function(orig)
 		return function(box, ...)
-			if box and box:section() == DEATH_STASH then -- R89 (B): single player too (a co-op world opened without a session)
-				if not C().active() or coop_mode.writes(box:id()) then skip_death_stash(box) end
+			if box and box:section() == DEATH_STASH then -- (B): single player too (a co-op world opened without a session)
+				if not core.active() or coop_mode.writes(box:id()) then skip_death_stash(box) end
 				return
 			end
-			if not C().active() then return orig(box, ...) end
+			if not core.active() then return orig(box, ...) end
 			local id, name = box:id(), box:name()
 			if not coop_mode.writes(id) then return end
-			local boxes = C().find_local(mod, "boxes")
+			local boxes = core.find_local(mod, "boxes")
 			if not boxes then return end
 			local queued = pending[boxes]
 			if not queued then queued = {}; pending[boxes] = queued end
@@ -437,14 +436,14 @@ local function install_boxes()
 					queued[id] = nil
 					local current = level.object_by_id(id)
 					if boxes[id] or not (coop_mode.writes(id) and current and current:name() == name
-						and C().find_local(mod, "boxes") == boxes) then return true end
-					-- R89 (A): PBA's own global, shadowed in its module for this one call (as CreateTimeEvent above)
+						and core.find_local(mod, "boxes") == boxes) then return true end
+					-- (A): PBA's own global, shadowed in its module for this one call (as CreateTimeEvent above)
 					local release = rawget(env, "alife_release_id")
 					rawset(env, "alife_release_id", guard_release(id, name, release or env.alife_release_id))
 					local ok, complete = pcall(callback, ...)
 					rawset(env, "alife_release_id", release)
 					if ok and complete then boxes[id] = true end
-					if not ok then C().report("xchg_meat", "clean treasure box", complete) end
+					if not ok then core.report("xchg_meat", "clean treasure box", complete) end
 					return true
 				end, ...)
 				queued[id] = true
@@ -452,23 +451,18 @@ local function install_boxes()
 			local ok, err = pcall(orig, box, ...)
 			rawset(env, "CreateTimeEvent", saved)
 			if queued[id] then boxes[id] = nil end
-			if not ok then C().report("xchg_meat", "queue treasure box", err) end
+			if not ok then core.report("xchg_meat", "queue treasure box", err) end
 		end
 	end)
 end
 
-local function step(name, fn)
-	local ok, err = pcall(fn)
-	if not ok then printf("! [coop_mods_xchg_meat] %s: %s", name, tostring(err)) end
-end
-
 -- axr_main loads every script before it starts any of them. Install the PBA
 -- wrapper before the item adapter caches the box callback in its start hook.
-if api then step("wrap treasure boxes", install_boxes) end
+if api then core.install("xchg_meat", "wrap treasure boxes", install_boxes) end
 
 function on_game_start()
 	if not api then return end
-	step("wrap treasure boxes", install_boxes)
-	if installed_boxes then step("watch players' puts into boxes", install_puts) end
-	step("wrap meat spoilage", install_meat)
+	core.install("xchg_meat", "wrap treasure boxes", install_boxes)
+	if installed_boxes then core.install("xchg_meat", "watch players' puts into boxes", install_puts) end
+	core.install("xchg_meat", "wrap meat spoilage", install_meat)
 end

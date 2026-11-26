@@ -1,10 +1,11 @@
--- Core: no mode checks (docs/MODES.md). G17-2, Dev 57.
+-- Ядро: без проверок режима (docs/MODES.md)
 -- Co-op: the host decides inventory actions; Server: the level's object owner
 -- decides them. The original release calls keep that engine path. This adapter
 -- only waits for Live and observes confirmation in the own inventory.
 -- Water and ImGui are local: probe the own actor, ask the original widget's route.
--- No new wire messages or saved keys. grw_in_water is legacy, cleared in session.
+-- No new wire messages or saved keys. grw_in_water stays cleared in a session (the probe below replaces it).
 
+local core = coop_mods_core
 local api = rawget(_G, "coop")
 local PERIOD_MS, WAIT_MS = 250, 15000
 local cleanup = {}
@@ -12,15 +13,7 @@ local installed = {}
 local widget_wrappers = setmetatable({}, { __mode = "k" })
 local knife_sections = { "ammo_knife", "ammo_knife_2", "ammo_knife_3", "ammo_knife_4", "ammo_knife_5", "ammo_knife_6" }
 
-local function active()
-	return api and api.is_active()
-end
-
 local function own_actor()
-	-- The S4 facade supplies this answer in either mode; no guessed role when
-	-- loading with an older installation that does not provide the facade yet.
-	if not coop_mods_core.mod("coop_mode") then return nil end
-	if not coop_mode.actor_is_player then return nil end
 	if not coop_mode.actor_is_player() then return nil, false end
 	return db and db.actor, true
 end
@@ -33,12 +26,12 @@ local function has_knife(actor)
 end
 
 local function install_cleanup()
-	local mod = coop_mods_core.mod("grok_remove_knife_ammo_on_start")
+	local mod = core.mod("grok_remove_knife_ammo_on_start")
 	if not mod then return false end
 	for _, key in ipairs({ "remove_knife_ammo_1", "remove_knife_ammo_2" }) do
-		coop_mods_core.wrap(mod, key, "grok_remove_knife_ammo_on_start." .. key, function(orig)
+		core.wrap(mod, key, "grok_remove_knife_ammo_on_start." .. key, function(orig)
 			return function(...)
-				if not active() then return orig(...) end
+				if not core.active() then return orig(...) end
 				if not api.is_live() then return false end -- keep the mod's event queued
 				local actor, plays = own_actor()
 				if plays == false then return true end
@@ -54,7 +47,7 @@ local function install_cleanup()
 				local now = time_global()
 				if now - state.started >= WAIT_MS then
 					state.done = true
-					coop_mods_core.log("start_guard", "%s: removal still unconfirmed after %d ms", key, WAIT_MS)
+					core.log("start_guard", "%s: removal still unconfirmed after %d ms", key, WAIT_MS)
 					return true
 				end
 				if not actor then return false end -- Live can precede the Lua actor
@@ -62,7 +55,7 @@ local function install_cleanup()
 				if state.next_try and now < state.next_try then return false end
 				state.next_try = now + PERIOD_MS
 				local ok, err = pcall(orig, ...)
-				if not ok then coop_mods_core.report("start_guard", key, err) end
+				if not ok then core.report("start_guard", key, err) end
 				-- A release call's return is not an acknowledgement. Several objects
 				-- may share a section; continue until the inventory confirms all gone.
 				if not has_knife(actor) then state.done = true; return true end
@@ -73,35 +66,48 @@ local function install_cleanup()
 	return true
 end
 
+-- The probe of the water under the actor: its result stays while he stands where it was taken (the same ray gives the
+-- same surface), so a player who does not move costs no ray.
+local water = { x = nil, y = nil, z = nil, wet = false }
+local probe_from, DOWN = vector(), vector():set(0, -1, 0)
+
+local function in_water(actor)
+	local pos = actor:position()
+	if pos.x == water.x and pos.y == water.y and pos.z == water.z then return water.wet end
+	water.x, water.y, water.z = pos.x, pos.y, pos.z
+	probe_from:set(pos)
+	probe_from.y = probe_from.y + 0.5
+	local material = level.pick_material(probe_from, DOWN, 1.5, actor)
+	water.wet = type(material) == "string" and material:find("water", 1, true) ~= nil
+	return water.wet
+end
+
 local function clear_water()
-	if not active() then return end
+	water.x = nil
+	if not core.active() then return end
 	local actor = own_actor()
 	if actor then save_var(actor, "grw_in_water", nil) end
 end
 
 local function install_water()
-	local mod = coop_mods_core.mod("gameplay_radioactive_water")
+	local mod = core.mod("gameplay_radioactive_water")
 	if not mod then return false end
-	local ok, old = coop_mods_core.wrap(mod, "actor_on_footstep", "gameplay_radioactive_water.actor_on_footstep", function(orig)
+	local ok, old = core.wrap(mod, "actor_on_footstep", "gameplay_radioactive_water.actor_on_footstep", function(orig)
 		return function(...)
-			if not active() then return orig(...) end
+			if not core.active() then return orig(...) end
 			-- Footsteps do not persist a surface flag. Even a stationary actor is
 			-- probed on update, after a load/transition and before applying damage.
 		end
 	end)
-	if ok then coop_mods_core.swap_callback("actor_on_footstep", old, mod.actor_on_footstep) end
-	ok, old = coop_mods_core.wrap(mod, "actor_on_update", "gameplay_radioactive_water.actor_on_update", function(orig)
+	if ok then core.swap_callback("actor_on_footstep", old, mod.actor_on_footstep) end
+	ok, old = core.wrap(mod, "actor_on_update", "gameplay_radioactive_water.actor_on_update", function(orig)
 		return function(obj, delta, ...)
-			if not active() then return orig(obj, delta, ...) end
+			if not core.active() then return orig(obj, delta, ...) end
 			if not api.is_live() then return end
 			local actor = own_actor()
 			if not actor then return end
-			save_var(actor, "grw_in_water", nil)
-			local pos = vector():set(actor:position())
-			pos.y = pos.y + 0.5
-			local material = level.pick_material(pos, vector():set(0, -1, 0), 1.5, actor)
-			local in_water = type(material) == "string" and material:find("water", 1, true) ~= nil
-			if not in_water then return end
+			if load_var(actor, "grw_in_water") ~= nil then save_var(actor, "grw_in_water", nil) end
+			if not in_water(actor) then return end
 			local h = hit()
 			h.impulse = 0
 			h.direction = VEC_Z
@@ -111,7 +117,7 @@ local function install_water()
 			actor:hit(h)
 		end
 	end)
-	if ok then coop_mods_core.swap_callback("actor_on_update", old, mod.actor_on_update) end
+	if ok then core.swap_callback("actor_on_update", old, mod.actor_on_update) end
 	return true
 end
 
@@ -120,11 +126,11 @@ local function wrap_widgets(groups, name)
 	if type(group) ~= "table" or type(group._widgets) ~= "table" then return end
 	for i, widget in ipairs(group._widgets) do
 		if type(widget) == "function" and not widget_wrappers[widget] then
-			coop_mods_core.wrap(group._widgets, i, "ImGui.Groups." .. name .. "[" .. i .. "]", function(orig)
+			core.wrap(group._widgets, i, "ImGui.Groups." .. name .. "[" .. i .. "]", function(orig)
 				-- Capture the source BEFORE replacing it with this adapter's closure.
 				local domain = api.route.of("imgui_on_render", orig)
 				local wrapped = function(...)
-					if active() and not api.route.runs(domain) then return end
+					if core.active() and not api.route.runs(domain) then return end
 					return orig(...)
 				end
 				widget_wrappers[wrapped] = true
@@ -136,7 +142,7 @@ end
 
 local function install_widgets()
 	if not (api.route and api.route.of and api.route.runs) then return false end
-	if not coop_mods_core.mod("_imgui_groups") then return false end
+	if not core.mod("_imgui_groups") then return false end
 	local groups = ImGui and ImGui.Groups
 	if type(groups) ~= "table" then return false end
 	for name in pairs(groups) do wrap_widgets(groups, name) end
@@ -144,7 +150,7 @@ local function install_widgets()
 		wrap_widgets(groups, name)
 		return ...
 	end
-	coop_mods_core.wrap(groups, "Widget", "ImGui.Groups.Widget", function(orig)
+	core.wrap(groups, "Widget", "ImGui.Groups.Widget", function(orig)
 		return function(name, widget, ...)
 			-- Register through the original, including its validation and any
 			-- chained adapter. Its return values and the widgets' order survive.
@@ -155,16 +161,15 @@ local function install_widgets()
 end
 
 local function on_load()
-	if not active() then return end
+	if not core.active() then return end
 	cleanup = {}
 	clear_water()
 end
 
 local function start_step(name, f)
 	if installed[name] then return end
-	local ok, result = pcall(f)
-	if ok then installed[name] = result
-	else coop_mods_core.report("start_guard", name, result) end
+	local ok, result = core.install("start_guard", name, f)
+	if ok then installed[name] = result end
 end
 
 function on_game_start()

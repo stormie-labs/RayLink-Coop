@@ -12,17 +12,21 @@ local installed = {}
 local defaults = {}
 local names = { pda = {}, body = {}, killer = {} }
 local body_records = {}
+-- Dot Marks asks its getters for every container in range on each marker pass: a container's identity is checked once a
+-- frame (id -> the row checked and the time_global of that frame; a row the mod replaces is checked anew; at most one
+-- entry per object id)
+local checked_row, checked_at = {}, {}
 local restored_storage = nil
 local next_validation = 0
 
-local function C() return coop_mods_core end
-local function P() return coop_mods_pdata end
+local core = coop_mods_core
+local pdata = coop_mods_pdata
 
 -- Codec bounds are always enforced: even trust's log mode cannot pass non-ids to the engine.
 -- These are representation/instance guards, not decisions about a player's object action.
 local function object_id(id)
-	local ok = type(id) == "number" and id == id and id >= 0 and id < 65535 and id == math.floor(id)
-	-- round 6: an always-on guard (coop_trust.guard): dropped in every mode, its line says so
+	local ok = core.object_id(id, true) ~= nil
+	-- an always-on guard (coop_trust.guard): dropped in every mode, its line says so
 	return coop_trust.guard("pda_id", ok, "invalid object id in personal PDA state") and id or nil
 end
 
@@ -78,7 +82,7 @@ end
 
 local function same_name(name, current)
 	-- identity is an always-on guard against recycled object ids; the engine gives a freed id to a new object in honest play
-	-- (validate_current looks once a second): counted with no line (round 6, S5 of the round 5 review)
+	-- (validate_current looks once a second): counted with no line
 	return coop_trust.guard("pda_identity", type(name) == "string" and current == name)
 end
 
@@ -89,8 +93,8 @@ end
 
 local function translate(id, to_world)
 	if not object_id(id) then return nil end
-	if to_world then return object_id(C().hid(id)) end
-	return object_id(C().lid(id))
+	if to_world then return object_id(core.hid(id)) end
+	return object_id(core.lid(id))
 end
 
 local function remembered(kind, id)
@@ -108,7 +112,7 @@ local function body_name(id, row)
 end
 
 local function config()
-	local dm = C().mod("dotmarks_main")
+	local dm = core.mod("dotmarks_main")
 	return dm and type(dm.cfg) == "table" and dm.cfg or nil
 end
 
@@ -165,7 +169,7 @@ local function dot_restore(m)
 end
 
 local function mil_get()
-	local item, tracker = C().mod("item_milpda"), C().mod("ish_kill_tracker")
+	local item, tracker = core.mod("item_milpda"), core.mod("ish_kill_tracker")
 	local out = { faction_data = copy(as_table(item and item.fd) or {}), found_npc_pda = {}, tracked_bodies = {} }
 	local meta = { version = 1, pda = {}, body = {}, killer = {} }
 	for id, value in pairs(as_table(item and item.found_npc_pda) or {}) do
@@ -210,7 +214,7 @@ local function restore_factions(value)
 end
 
 local function mil_restore(m, selected)
-	local item, tracker = C().mod("item_milpda"), C().mod("ish_kill_tracker")
+	local item, tracker = core.mod("item_milpda"), core.mod("ish_kill_tracker")
 	local state = as_table(m.milpda) or {}
 	local personal = selected and state or {}
 	local meta = as_table(personal[ID_META]) or {}
@@ -261,7 +265,7 @@ local function raw_restore(m)
 	state.found_npc_pda = copy(as_table(state.found_npc_pda)) or {}
 	state.tracked_bodies = copy(as_table(state.tracked_bodies)) or {}
 	m.milpda = state
-	local item, tracker = C().mod("item_milpda"), C().mod("ish_kill_tracker")
+	local item, tracker = core.mod("item_milpda"), core.mod("ish_kill_tracker")
 	if item then item.fd, item.found_npc_pda = state.faction_data, state.found_npc_pda end
 	if tracker then tracker.tracked_bodies = state.tracked_bodies end
 	names, body_records = { pda = {}, body = {}, killer = {} }, {}
@@ -277,7 +281,7 @@ local function validate_current()
 			if not same_object(id, name) then cfg.dropped_items[id] = nil end
 		end
 	end
-	local item, tracker = C().mod("item_milpda"), C().mod("ish_kill_tracker")
+	local item, tracker = core.mod("item_milpda"), core.mod("ish_kill_tracker")
 	for id in pairs(as_table(item and item.found_npc_pda) or {}) do
 		local name = remembered("pda", id)
 		if not same_object(id, name) then
@@ -294,26 +298,26 @@ local function validate_current()
 end
 
 local function actor_on_update()
-	if not C().active() or time_global() < next_validation then return end
+	if not core.active() or time_global() < next_validation then return end
 	next_validation = time_global() + 1000
 	validate_current()
 end
 
 local function register_mil()
-	P().register("milpda", { subs = { "faction_data", "found_npc_pda", "tracked_bodies", ID_META }, get = mil_get })
+	pdata.register("milpda", { subs = { "faction_data", "found_npc_pda", "tracked_bodies", ID_META }, get = mil_get })
 end
 
 local function declare_keys()
 	-- The world-side pdata receiver filters by this registry, even without any player UI loaded.
-	P().register(DOT, { get = dot_get })
+	pdata.register(DOT, { get = dot_get })
 	register_mil()
 end
 
 local function install_dot()
-	if installed.dot or not (C().mod("dotmarks_main") and C().mod("ui_hud_dotmarks")) then return end
-	C().wrap(C().mod("ui_hud_dotmarks"), "validate_object_tables", "pda.dotmarks.validate_object_tables", function(orig)
+	if installed.dot or not (core.mod("dotmarks_main") and core.mod("ui_hud_dotmarks")) then return end
+	core.wrap(core.mod("ui_hud_dotmarks"), "validate_object_tables", "pda.dotmarks.validate_object_tables", function(orig)
 		return function(...)
-			if not C().active() then return orig(...) end
+			if not core.active() then return orig(...) end
 			local cfg = config()
 			if not cfg then return end
 			-- The stock validator removes offline objects. Another map is not evidence of ID reuse.
@@ -325,14 +329,18 @@ local function install_dot()
 			end
 		end
 	end)
-	local dm = C().mod("dotmarks_main")
+	local dm = core.mod("dotmarks_main")
 	for _, key in ipairs({ "is_invbox_found", "is_invbox_searched", "is_concealed_stash_marker" }) do
-		C().wrap(dm, key, "pda.dotmarks." .. key, function(orig)
+		core.wrap(dm, key, "pda.dotmarks." .. key, function(orig)
 			return function(id, ...)
-				if C().active() then
+				if core.active() then
 					local cfg = config()
 					local row = cfg and cfg.invboxes and cfg.invboxes[id]
-					if row and not same_object(id, row.name) then cfg.invboxes[id] = nil end
+					local now = time_global()
+					if row and (checked_row[id] ~= row or checked_at[id] ~= now) then
+						checked_row[id], checked_at[id] = row, now
+						if not same_object(id, row.name) then cfg.invboxes[id] = nil end
+					end
 				end
 				return orig(id, ...)
 			end
@@ -342,13 +350,13 @@ local function install_dot()
 end
 
 local function install_mil()
-	local item, tracker = C().mod("item_milpda"), C().mod("ish_kill_tracker")
+	local item, tracker = core.mod("item_milpda"), core.mod("ish_kill_tracker")
 	if installed.mil or not (item or tracker) then return end
 	defaults = copy(item and item.fd or {})
 	for _, module in ipairs({ item or false, tracker or false }) do
-		C().wrap(module, "save_state", module == item and "pda.item_milpda.save_state" or "pda.ish_kill_tracker.save_state", function(orig)
+		core.wrap(module, "save_state", module == item and "pda.item_milpda.save_state" or "pda.ish_kill_tracker.save_state", function(orig)
 			return function(data, ...)
-				if not C().active() then return orig(data, ...) end
+				if not core.active() then return orig(data, ...) end
 				data.milpda = type(data.milpda) == "table" and data.milpda or {}
 				local result = orig(data, ...)
 				if item then data.milpda.faction_data, data.milpda.found_npc_pda = item.fd, item.found_npc_pda end
@@ -357,9 +365,9 @@ local function install_mil()
 			end
 		end)
 	end
-	C().wrap(item, "check_for_pda_progress", "pda.item_milpda.check_for_pda_progress", function(orig)
+	core.wrap(item, "check_for_pda_progress", "pda.item_milpda.check_for_pda_progress", function(orig)
 		return function(obj, ...)
-			if not (C().active() and obj) then return orig(obj, ...) end
+			if not (core.active() and obj) then return orig(obj, ...) end
 			local id = type(obj.id) == "function" and obj:id() or obj.id
 			if not object_id(id) then return orig(obj, ...) end
 			local found = item.found_npc_pda
@@ -373,9 +381,9 @@ local function install_mil()
 			return result
 		end
 	end)
-	C().wrap(tracker, "invalid_body_record", "pda.ish_kill_tracker.invalid_body_record", function(orig)
+	core.wrap(tracker, "invalid_body_record", "pda.ish_kill_tracker.invalid_body_record", function(orig)
 		return function(id, row, ...)
-			if not C().active() then return orig(id, row, ...) end
+			if not core.active() then return orig(id, row, ...) end
 			if row and body_records[id] == row then
 				if not same_object(id, names.body[id]) then return true end
 				-- Let stock check expiry and corpse state whenever ALife can see the body.
@@ -384,10 +392,10 @@ local function install_mil()
 			return orig(id, row, ...)
 		end
 	end)
-	local old_first = item and C().fn(item, "actor_on_first_update")
-	if C().wrap(item, "actor_on_first_update", "pda.item_milpda.actor_on_first_update", function(orig)
+	local old_first = item and core.fn(item, "actor_on_first_update")
+	if core.wrap(item, "actor_on_first_update", "pda.item_milpda.actor_on_first_update", function(orig)
 		return function(...)
-			if not C().active() then return orig(...) end
+			if not core.active() then return orig(...) end
 			validate_current()
 			local offline = {}
 			for id, value in pairs(item.found_npc_pda or {}) do
@@ -395,12 +403,12 @@ local function install_mil()
 			end
 			local ok, result = pcall(orig, ...)
 			for id, value in pairs(offline) do item.found_npc_pda[id] = value end
-			if not ok then error(result) end
+			if not ok then error(result, 0) end
 			return result
 		end
-	end) then C().swap_callback("actor_on_first_update", old_first, item.actor_on_first_update) end
+	end) then core.swap_callback("actor_on_first_update", old_first, item.actor_on_first_update) end
 	-- misc's discovery may also register milpda. Keep this explicit provider in either startup order.
-	C().wrap(P(), "register_module", "pda.register_module", function(orig)
+	core.wrap(pdata, "register_module", "pda.register_module", function(orig)
 		return function(name, ...)
 			local result = orig(name, ...)
 			if name == "ish_kill_tracker" then register_mil() end
@@ -412,12 +420,12 @@ end
 
 local function install_restore()
 	if installed.restore then return end
-	C().wrap(P(), "apply_loaded", "pda.apply_loaded", function(orig)
+	core.wrap(pdata, "apply_loaded", "pda.apply_loaded", function(orig)
 		return function(m, ...)
 			local result = orig(m, ...)
-			if not C().active() or type(m) ~= "table" then return result end
+			if not core.active() or type(m) ~= "table" then return result end
 			-- pdata leaves the world's values in place if the avatar is unresolved.
-			local avatar = C().hid(0)
+			local avatar = core.hid(0)
 			local selected = type(avatar) == "number" and avatar ~= 0
 			if not selected then m[DOT] = nil end
 			if installed.dot then dot_restore(m) end
@@ -426,10 +434,10 @@ local function install_restore()
 			return result
 		end
 	end)
-	C().wrap(C().mod("alife_storage_manager"), "on_before_load_state", "pda.on_before_load_state", function(orig)
+	core.wrap(core.mod("alife_storage_manager"), "on_before_load_state", "pda.on_before_load_state", function(orig)
 		return function(...)
 			local result = orig(...)
-			if C().active() then
+			if core.active() then
 				local m = alife_storage_manager.get_state()
 				if type(m) == "table" and m ~= restored_storage then raw_restore(m) end
 			end
@@ -444,6 +452,6 @@ function on_game_start()
 	if not rawget(_G, "coop") then return end
 	for _, step in ipairs({ declare_keys, install_dot, install_mil, install_restore }) do
 		local ok, err = pcall(step)
-		if not ok then C().report("pdata_pda", "start", err) end
+		if not ok then core.report("pdata_pda", "start", err) end
 	end
 end

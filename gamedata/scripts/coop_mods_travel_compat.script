@@ -1,11 +1,11 @@
 -- Ядро: без проверок режима (docs/MODES.md)
--- Dev 57 G15-4. Campfire actions take no shared time. Extra transitions are
+-- Campfire actions take no shared time. Extra transitions are
 -- checked on the player's map, while their dialog, fade and move belong to the player.
 -- mods.g15_lc_prompt { i }: decider -> player (transition object id).
 -- mods.g15_lc_req { i, t }: player -> decider (object id and one-use ticket).
 -- mods.g15_lc_result { t, ok }: decider -> player. Object ids use host numbering.
 
-local C = coop_mods_core
+local core = coop_mods_core
 local PROMPT, REQUEST, RESULT = "g15_lc_prompt", "g15_lc_req", "g15_lc_result"
 local MAX_ID, MAX_TICKET = 65534, 2147483647
 local REQUEST_MS, FADE_MS = 10000, 3000
@@ -15,7 +15,7 @@ local seen, sweep_at = {}, 0
 local started = false
 
 local function report(what, err)
-	C.report("travel_compat", what, err)
+	core.report("travel_compat", what, err)
 end
 
 local function finish_campfire(cp, saved, ok, ...)
@@ -25,12 +25,12 @@ local function finish_campfire(cp, saved, ok, ...)
 end
 
 local function install_campfire()
-	local cp = C.mod("campfire_placeable")
+	local cp = core.mod("campfire_placeable")
 	if not cp then return end
 	for _, key in ipairs({ "gather_wood", "prepare_campfire" }) do
-		C.wrap(cp, key, "campfire_placeable." .. key, function(orig)
+		core.wrap(cp, key, "campfire_placeable." .. key, function(orig)
 			return function(...)
-				if not C.active() then return orig(...) end
+				if not core.active() then return orig(...) end
 				-- Only these synchronous calls skip time. Keep the stock items,
 				-- fades, cooldown and the existing mods.cf_place placement path.
 				local saved = rawget(cp, "level")
@@ -45,16 +45,14 @@ local function bounded_int(value, min, max)
 	if type(value) == "number" and value >= min and value <= max and value % 1 == 0 then return value end
 end
 
-local function object_id(value)
-	return bounded_int(value, 1, MAX_ID)
-end
+local object_id = core.object_id
 
 local function ticket_id(value)
 	return bounded_int(value, 1, MAX_TICKET)
 end
 
 local function object_for(id)
-	local local_id = id and object_id(C.lid(id))
+	local local_id = id and object_id(core.lid(id))
 	return local_id and level.object_by_id(local_id)
 end
 
@@ -95,7 +93,7 @@ end
 
 local function travel_time()
 	if not (coop_mode.decides_world() and group_travel() and coop_economy_group.travel_takes_time()) then return end
-	local settings = C.upvalue(stock_teleport, "settings")
+	local settings = core.upvalue(stock_teleport, "settings")
 	if not (settings and settings.enable_time_advance) then return end
 	local distance = math.random(800, 1600)
 	local minutes = math.floor(distance / SYS_GetParam(2, "actor", "walk_accel", 11.5) * random_float(0.75, 1.25))
@@ -115,13 +113,13 @@ end
 
 local function authorize(id, from)
 	local obj = object_for(id)
-	local actor = coop_mode.leads_here() and coop_mode.decider(from) == "this" and C.avatar(from)
+	local actor = coop_mode.leads_here() and coop_mode.decider(from) == "this" and core.avatar(from)
 	local cfg = config_for(obj)
 	local usable = actor and actor:alive() and cfg and destination(cfg) ~= nil
 	local reachable = usable and within_reach(actor, obj)
 	if not coop_trust.pass("g15_transition_reach", reachable, "peer %s, transition #%s is unavailable or out of reach",
 		tostring(from), tostring(id)) or not usable then return false end
-	local ok, allowed = C.as_player(actor, actor_effects, actor, obj, cfg)
+	local ok, allowed = core.as_player(actor, actor_effects, actor, obj, cfg)
 	if not ok then report("transition effects", allowed) end
 	return ok and allowed == true
 end
@@ -163,8 +161,8 @@ end
 
 local function begin(actor, obj)
 	if pending or not (coop_mode.actor_is_player() and actor and db.actor and actor:id() == db.actor:id()
-		and C.peer_of(actor:id()) == C.self_peer()) then return end
-	local id = obj and object_id(C.hid(obj:id()))
+		and core.peer_of(actor:id()) == core.self_peer()) then return end
+	local id = obj and object_id(core.hid(obj:id()))
 	local cfg = config_for(obj)
 	local dest = cfg and destination(cfg)
 	if not (id and dest) then return end
@@ -174,10 +172,10 @@ local function begin(actor, obj)
 	local trip = { cfg = cfg, dest = dest, same_map = same_map,
 		ticket = math.random(1, MAX_TICKET), actor = db.actor, map = level.name(), expires = time_global() + REQUEST_MS }
 	pending = trip
-	local self = C.self_peer()
+	local self = core.self_peer()
 	if coop_mode.leads_here() then
 		reply({ t = trip.ticket, ok = authorize(id, self) })
-	elseif not C.to_host(REQUEST, { i = id, t = trip.ticket }) then
+	elseif not core.to_host(REQUEST, { i = id, t = trip.ticket }) then
 		pending = nil
 	end
 end
@@ -209,7 +207,7 @@ local function update()
 	end
 	local trip = pending
 	if not trip then return end
-	local actor = C.active() and owner_of(trip)
+	local actor = core.active() and owner_of(trip)
 	if not actor or (not trip.move_at and now >= trip.expires) then
 		pending = nil
 	elseif trip.move_at and now >= trip.move_at then
@@ -220,7 +218,7 @@ local function update()
 end
 
 local function respond(from, ticket, ok)
-	C.to_peer(from, RESULT, { t = ticket, ok = ok })
+	core.to_peer(from, RESULT, { t = ticket, ok = ok })
 end
 
 local function request(t, from)
@@ -241,7 +239,7 @@ local function show_prompt(obj)
 	local cfg = config_for(obj)
 	if pending or not (cfg and actor and actor:alive() and within_reach(actor, obj)) then return end
 	if cfg.disable_dialog then return transitions.teleport_actor(actor, obj) end
-	local ui = C.mod("lc_extra_transitions_ui")
+	local ui = core.mod("lc_extra_transitions_ui")
 	if not ui then return end
 	local dialog = ui.create_dialog()
 	dialog:SetObj(obj)
@@ -250,7 +248,7 @@ end
 
 local function nearby_players(obj, f)
 	if not coop_mode.leads_here() then return false end
-	for _, p in ipairs(C.player_objects()) do
+	for _, p in ipairs(core.player_objects()) do
 		if coop_mode.where(p.peer) == "here" and p.obj:alive() and within_reach(p.obj, obj) and f(p) then return true end
 	end
 	return false
@@ -258,33 +256,33 @@ end
 
 local function prompt_players(obj, cfg)
 	nearby_players(obj, function(p)
-		local ok, eligible = C.as_player(p.obj, precondition, p.obj, obj, cfg)
+		local ok, eligible = core.as_player(p.obj, precondition, p.obj, obj, cfg)
 		if not ok then report("transition precondition", eligible) end
 		if not (ok and eligible) then return end
-		if p.peer == C.self_peer() then
+		if p.peer == core.self_peer() then
 			show_prompt(obj)
 		else
-			C.to_peer(p.peer, PROMPT, { i = C.hid(obj:id()) })
+			core.to_peer(p.peer, PROMPT, { i = core.hid(obj:id()) })
 		end
 	end)
 end
 
 local function wrap_world_callback(key, callback)
-	local wrapped, orig = C.wrap(transitions, key, "lc_extra_transitions." .. key, function(f)
+	local wrapped, orig = core.wrap(transitions, key, "lc_extra_transitions." .. key, function(f)
 		return function(...)
-			if not C.active() or coop_mode.decides_world() then return f(...) end
+			if not core.active() or coop_mode.decides_world() then return f(...) end
 		end
 	end)
-	if wrapped then C.swap_callback(callback, orig, transitions[key]) end
+	if wrapped then core.swap_callback(callback, orig, transitions[key]) end
 end
 
 local function install_transitions()
-	transitions = C.mod("lc_extra_transitions")
-	stock_teleport = C.fn(transitions, "teleport_actor")
+	transitions = core.mod("lc_extra_transitions")
+	stock_teleport = core.fn(transitions, "teleport_actor")
 	if not stock_teleport then return end
-	C.wrap(transitions, "teleport_actor", "lc_extra_transitions.teleport_actor", function(orig)
+	core.wrap(transitions, "teleport_actor", "lc_extra_transitions.teleport_actor", function(orig)
 		return function(actor, obj, ...)
-			if not C.active() then return orig(actor, obj, ...) end
+			if not core.active() then return orig(actor, obj, ...) end
 			local ok, err = pcall(begin, actor, obj)
 			if not ok then
 				pending = nil
@@ -292,40 +290,35 @@ local function install_transitions()
 			end
 		end
 	end)
-	C.wrap(transitions, "handle_nearby_actor", "lc_extra_transitions.handle_nearby_actor", function(orig)
+	core.wrap(transitions, "handle_nearby_actor", "lc_extra_transitions.handle_nearby_actor", function(orig)
 		return function(actor, obj, ...)
-			if not C.active() then return orig(actor, obj, ...) end
+			if not core.active() then return orig(actor, obj, ...) end
 			local cfg = config_for(obj)
 			if cfg then prompt_players(obj, cfg) end
 		end
 	end)
-	C.wrap(xr_conditions, "is_actor_inside_lc", "lc_extra_transitions.is_actor_inside_lc", function(orig)
+	core.wrap(xr_conditions, "is_actor_inside_lc", "lc_extra_transitions.is_actor_inside_lc", function(orig)
 		return function(actor, obj, ...)
-			if not C.active() then return orig(actor, obj, ...) end
+			if not core.active() then return orig(actor, obj, ...) end
 			local gate = config_for(obj) and obj or (config_for(actor) and actor)
 			return gate and nearby_players(gate, function() return true end) or false
 		end
-	end)
+	end, "lc_extra_transitions")
 	wrap_world_callback("actor_on_first_update", "actor_on_first_update")
 	wrap_world_callback("delete_level_transitions", "on_option_change")
-	C.on(PROMPT, function(t) show_prompt(object_for(object_id(t.i))) end, "player")
-	C.on(REQUEST, request, "host")
-	C.on(RESULT, reply, "player")
-	C.set_limit(REQUEST, 3, 1, function(t, from)
+	core.on(PROMPT, function(t) show_prompt(object_for(object_id(t.i))) end, "player")
+	core.on(REQUEST, request, "host")
+	core.on(RESULT, reply, "player")
+	core.set_limit(REQUEST, 3, 1, function(t, from)
 		local ticket = ticket_id(t.t)
 		if ticket then respond(from, ticket, false) end
 	end)
 	RegisterScriptCallback("actor_on_update", update)
 end
 
-local function start_step(what, f)
-	local ok, err = pcall(f)
-	if not ok then printf("! [coop_mods_travel_compat] %s failed: %s", what, tostring(err)) end
-end
-
 function on_game_start()
 	if started or not rawget(_G, "coop") then return end
 	started = true
-	start_step("campfire", install_campfire)
-	start_step("extra transitions", install_transitions)
+	core.install("travel_compat", "campfire", install_campfire)
+	core.install("travel_compat", "extra transitions", install_transitions)
 end

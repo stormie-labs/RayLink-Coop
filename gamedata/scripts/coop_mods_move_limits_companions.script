@@ -1,11 +1,12 @@
 -- Ядро: без проверок режима (docs/MODES.md)
--- F4 G6-2 (m13:2), GAMMA UI: the level authority checks single gifts to a companion before the engine moves them.
+-- GAMMA UI: the level authority checks single gifts to a companion before the engine moves them.
 -- axr_companions.OnItemBeforeMove stops the next gift once the assigned weight exceeds 30 kg. The rule also sees
 -- admitted moves still in the engine's event queue. Once a gift lands, the NPC's take callback assigns it locally.
 
+local core = coop_mods_core
 local RULE = "companion_assigned_weight"
 local MAX_WEIGHT = 30 -- axr_companions.is_overweight
-local TAKE_TTL_MS = 5000 -- same window as the G6-1 engine reservation
+local TAKE_TTL_MS = 5000 -- same window as the engine's reservation of an admitted move
 local companions
 local awaiting_take = {} -- item id -> expected NPC and timestamp, bounded by the engine's object id space
 
@@ -18,12 +19,12 @@ local function on_npc_take(npc, item)
 	local parent = item:parent()
 	if not parent or parent:id() ~= move.npc then return end
 	local ok, err = pcall(companions.OnItemAfterMove, move.npc, item, "loot", EDDListType.iActorBag)
-	if not ok then coop_mods_core.report(RULE, "assign landed item", err) end
+	if not ok then core.report(RULE, "assign landed item", err) end
 end
 
 local function admit(npc_id, item_id, pending_count, pending_weight, from_id)
 	if companions.Enabled == false or not coop_mode.leads_here() then return nil end
-	if not coop_mods_core.is_player(from_id) then return nil end
+	if not core.is_player(from_id) then return nil end
 	local npc = level.object_by_id(npc_id)
 	if not (npc and se_load_var(npc_id, nil, "companion") and level.object_by_id(item_id)) then return nil end
 
@@ -48,7 +49,7 @@ end
 
 local function install()
 	if companions then return end
-	local mod = coop_mods_core.mod("axr_companions")
+	local mod = core.mod("axr_companions")
 	if not (mod and type(mod.is_assigned_item) == "function" and type(mod.OnItemAfterMove) == "function") then return end
 	RegisterScriptCallback("npc_on_item_take", on_npc_take)
 	assert(coop_mods_move_limits.add_rule(RULE, admit), "move admission rule registration refused")
@@ -57,5 +58,5 @@ end
 
 function on_game_start()
 	local ok, err = pcall(install)
-	if not ok then coop_mods_core.report(RULE, "install", err) end
+	if not ok then core.report(RULE, "install", err) end
 end

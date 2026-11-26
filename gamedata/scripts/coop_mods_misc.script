@@ -1,25 +1,25 @@
 --[[
-	Anomaly Coop - small third-party mod patches (gamedata\scripts\coop_mods_misc.script), W4 "mods".
+	Anomaly Coop - small third-party mod patches (gamedata\scripts\coop_mods_misc.script).
 
 	Each patch installs only when its mod is present and does nothing outside a co-op session.
 
 	Experience Framework (experience_core)     XP, skills, traits, own XP tasks, potion buff are per player
 	                                           (coop_mods_pdata, sub-keys of experience_framework_savedata;
 	                                           NPC levels nls_storage stay the host's).
-	Wearable Devices (wd_core)                 not adapted (2026-10-29 clean room: its key list came only from another
-	                                           co-op's patch, the mod is not in our GAMMA to derive it from).
+	Wearable Devices (wd_core)                 not adapted (its key list would come only from another co-op's patch;
+	                                           the mod is not in our GAMMA to derive it from).
 	Quick Action Wheel (haru_qaw)              the layout is per player; entries whose item is not in this
 	                                           player's inventory any more are dropped at the first update.
 	Kill Tracker (ish_kill_tracker)            a player's character is named by the player's nick; the mod's
 	                                           own records are per player (keys found from its save_state).
 	New Player Experience (npe_director)       what was shown is per player (its key npe): a client loads the host's
-	                                           save at every level change and was taught everything anew (live 2026-11-16).
+	                                           save at every level change and would be taught everything anew.
 	Fair Fast Travel (game_fast_travel)        the cooldowns, the count of found points and the paused hunger are per
 	                                           player (sub-keys of fast_travel_system; the zones it spawned are the world's).
-	Small per-player keys (PREFS, build 56)    belt per outfit, voice cooldown, last helmet, sorting favourites/junk,
+	Small per-player keys (PREFS)              belt per outfit, voice cooldown, last helmet, sorting favourites/junk,
 	                                           scope FOVs, NVG scope flag, DOF reload times are the player's own after a load.
 	Guitar / harmonica (guitar_anim, harmonica_anim)  original Daiviey HUD entry points feed bounded native
-	                                           coop.instrument state; older engines retain event mods.song.
+	                                           coop.instrument state.
 	Immersive Sleep (ui_sleep_dialog)          the tiredness veto judges the most tired player of the group
 	                                           (mods.sleepy client -> host, mods.sleepy_max host -> all).
 	Zone Customization Project (smr_loot)      bonus loot is rolled by the host only; a client's container is
@@ -30,28 +30,28 @@
 	Body Health System (zzz_player_injuries)   after a co-op revive head/torso get back above zero and the medkit
 	                                           heals the limbs (the mod's own heal never runs on a revive);
 	                                           head_tbl and the body parts are per player (the parts live in the
-	                                           actor's pstor, which comes with the host's save: live 2026-11-07). Its concussion waits until the player stands:
-	                                           hits on a body turned the volume down and up again and again.
+	                                           actor's pstor, which comes with the host's save). Its concussion waits until the player stands:
+	                                           hits on a body would turn the volume down and up again and again.
 	Grok's actor damage balancer               the armour, the body part and the limb of Body Health System are its work,
 	                                           and it leaves a bullet alone when the weapon of the hit is not on this
 	                                           machine: the shooter's hands stand in, else the bullet is counted with
 	                                           no armour piercing. Every hit by a player is in the log.
 	AGDD Voiced Actor                          a player who is down or dead says nothing: grunts over the teammate he
-	                                           watches (live 2026-11-01).
+	                                           watches.
 	Oleh's Extended MovementSFX                footsteps of other players' characters (when the engine reports
-	                                           avatar steps through coop_mods_core.on_avatar_step).
+	                                           avatar steps through core.on_avatar_step).
 --]]
 
 local api = rawget(_G, "coop")
 
 local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
 
-local function C() return coop_mods_core end
-local function P() return coop_mods_pdata end
+local core = coop_mods_core
+local pdata = coop_mods_pdata
 
 local installed = {}
 
-local function log(tag, fmt, ...) C().log(tag, fmt, ...) end
+local function log(tag, fmt, ...) core.log(tag, fmt, ...) end
 
 -------------------------------------------------------------------------------
 -- Experience Framework, Quick Action Wheel, Kill Tracker: per-player keys
@@ -60,9 +60,8 @@ local EF_SUBS = { "XP", "skills_savedata", "traits_savedata", "tasks_manager", "
 -- game_fast_travel.save_state: the rest of the table (spawned_travel_zones, zone_spawn_version) names objects of the world
 local FFT_SUBS = { "cooldowns", "locations_found", "survival_paused", "stored_satiety" }
 
--- Build 56 (live 2026-11-18, "everything a client has must come through a transition exactly as in a usual game"; review
--- F8): small per-player keys these mods keep in m_data came back as the HOST's after every world load (a client loads the
--- host's save). Each one is read the way the mod saves it: the mod's own save function run on a scratch table, so the
+-- Everything a client has comes through a transition exactly as in a usual game: small per-player keys these mods keep in
+-- m_data would come back as the HOST's after every world load (a client loads the host's save). Each one is read the way the mod saves it: the mod's own save function run on a scratch table, so the
 -- value is exactly what its next save would write. A local save_state is reached as an upvalue (find_local).
 --   module, its save function, keys it writes
 -- Ids in the values: beltMemory (outfit and belt item OBJECT ids) is only ever looked up in the player's own inventory
@@ -76,11 +75,11 @@ local PREFS = {
 	{ "ssfx_weapons_dof", "save_state", { "ssfx_saved_reload_time" } }, -- measured reload times per weapon section
 }
 
--- Build 57 G1-2: these mods keep personal values outside m_data. Read their
+-- These mods keep personal values outside m_data. Read their
 -- live upvalues, and restore at load_state (after pdata replaces the world's
 -- values, before on_game_load/first use). No map or mode knowledge is needed.
 local function mod_local(M, name, value, write)
-	local v, holder, index = C().find_local(M, name)
+	local v, holder, index = core.find_local(M, name)
 	if write and holder then debug.setupvalue(holder, index, value) end
 	return v, holder
 end
@@ -91,9 +90,8 @@ local function bounded_number(v, low, high, fallback)
 end
 
 local function personal_active()
-	-- S4 supplies the actor answer; retain compatibility while that facade is
-	-- being integrated. Registration/getters do not depend on a local actor.
-	return C().active() and (not rawget(_G, "coop_mode") or coop_mode.actor_is_player())
+	-- Registration and getters do not depend on a local actor.
+	return core.active() and coop_mode.actor_is_player()
 end
 
 -- A Co-op host starts its session after its level is up (coop_manager.cpp autostart waits for level_ready; the in-game
@@ -112,12 +110,12 @@ local late = { from = nil, save = nil, states = {} }
 local function restore_late()
 	local m = late.save
 	if m == nil then return true end
-	if not C().active() then return false end
+	if not core.active() then return false end
 	late.from, late.save = nil, nil
 	if not personal_active() then return true end
 	for _, s in ipairs(late.states) do
 		local ok, e = pcall(s.restore, m[s.key], m)
-		if not ok then C().report("misc", "late restore " .. s.key, e) end
+		if not ok then core.report("misc", "late restore " .. s.key, e) end
 	end
 	return true
 end
@@ -127,7 +125,7 @@ local function await_session()
 end
 
 local function personal_state(key, get, restore)
-	P().register(key, { get = get })
+	pdata.register(key, { get = get })
 	late.states[#late.states + 1] = { key = key, restore = restore }
 	RegisterScriptCallback("save_state", function(m)
 		if not personal_active() then return end
@@ -135,7 +133,7 @@ local function personal_state(key, get, restore)
 		m[key] = get()
 	end)
 	RegisterScriptCallback("load_state", function(m)
-		if not C().active() then
+		if not core.active() then
 			if late.from ~= m then late.from, late.save = m, {} end
 			late.save[key] = m[key]
 			RegisterScriptCallback("actor_on_update", await_session)
@@ -147,16 +145,16 @@ local function personal_state(key, get, restore)
 end
 
 local function install_helmet_prefs()
-	local M = C().mod("liz_fdda_redone_headgear_animations_hotkey")
+	local M = core.mod("liz_fdda_redone_headgear_animations_hotkey")
 	if not M then return end
 	-- Older/partial versions keep the previous ownership-only behaviour.
-	local setter = C().fn(M, "set_last_helmet")
-	if not (setter and C().fn(M, "toggle_helmet")) then P().register("lastHelmetId", {}); return end
+	local setter = core.fn(M, "set_last_helmet")
+	if not (setter and core.fn(M, "toggle_helmet")) then pdata.register("lastHelmetId", {}); return end
 	local chosen, pending = 0, false -- host numbering; zero explicitly clears an older choice
 	local function own_helmet()
 		local found
 		if chosen > 0 and db.actor then
-			local id = C().lid(chosen)
+			local id = core.lid(chosen)
 			db.actor:iterate_ruck(function(_, item)
 				if item:id() == id then found = item end
 			end, nil)
@@ -165,28 +163,28 @@ local function install_helmet_prefs()
 		pending = chosen > 0 and not found
 	end
 	personal_state("lastHelmetId", function() return chosen end, function(v, m)
-		local valid = type(v) == "number" and v >= 0 and v < 65535 and v == math.floor(v)
+		local valid = core.object_id(v, true) ~= nil
 		-- Ids are identities, not magnitudes: an invalid id is dropped in every mode, never clamped or rounded to the id of a
-		-- different inventory item (an always-on guard, coop_trust.guard: its line says "dropped", round 6)
+		-- different inventory item (an always-on guard, coop_trust.guard: its line says "dropped")
 		local accepted = coop_trust.guard("mods_misc_helmet_id", v == nil or valid, "invalid saved helmet id (%s)", type(v))
 		chosen = accepted and valid and v or 0
 		if v ~= nil then m.lastHelmetId = chosen end
 		setter(nil)
 		pending = chosen > 0
 	end)
-	C().wrap(M, "set_last_helmet", "misc.helmet_choice", function(orig) return function(item, ...)
-		if not C().active() then return orig(item, ...) end
+	core.wrap(M, "set_last_helmet", "misc.helmet_choice", function(orig) return function(item, ...)
+		if not core.active() then return orig(item, ...) end
 		-- The caller has just chosen a live item. Never obtain this id from lastHelmet later.
-		chosen = item and C().hid(item:id()) or 0
+		chosen = item and core.hid(item:id()) or 0
 		pending = false
 		return orig(item, ...)
 	end end)
-	C().wrap(M, "toggle_helmet", "misc.helmet_hotkey", function(orig) return function(...)
-		if not C().active() then return orig(...) end
+	core.wrap(M, "toggle_helmet", "misc.helmet_hotkey", function(orig) return function(...)
+		if not core.active() then return orig(...) end
 		own_helmet()
 		local before = mod_local(M, "lastHelmet")
 		local current = db.actor and db.actor:item_in_slot(12)
-		local id = current and C().hid(current:id()) -- capture BEFORE the animation can move the item
+		local id = current and core.hid(current:id()) -- capture BEFORE the animation can move the item
 		local r = orig(...)
 		-- The mod's slot lookup can return a different userdata for the same item.
 		-- Detect the assignment by reference without dereferencing either saved value.
@@ -194,20 +192,20 @@ local function install_helmet_prefs()
 		if id and selected and not rawequal(selected, before) then chosen, pending = id, false end
 		return r
 	end end)
-	local old = C().fn(M, "on_save_state")
-	if C().wrap(M, "on_save_state", "misc.helmet_save", function(orig) return function(m, ...)
-		if not C().active() then return orig(m, ...) end
+	local old = core.fn(M, "on_save_state")
+	if core.wrap(M, "on_save_state", "misc.helmet_save", function(orig) return function(m, ...)
+		if not core.active() then return orig(m, ...) end
 		m.lastHelmetId = chosen
-	end end) then C().swap_callback("save_state", old, M.on_save_state) end
+	end end) then core.swap_callback("save_state", old, M.on_save_state) end
 	local function retry()
-		if C().active() and pending then own_helmet() end
+		if core.active() and pending then own_helmet() end
 	end
 	RegisterScriptCallback("actor_on_first_update", retry)
 	RegisterScriptCallback("actor_on_update", retry)
 end
 
 local function install_live_prefs()
-	local N = C().mod("z_beefs_nvgs")
+	local N = core.mod("z_beefs_nvgs")
 	if N then
 		personal_state("coop_misc_nvg_state", function()
 			return { gain = bounded_number(mod_local(N, "nvg_gain_current"), 0.1, 3, 1),
@@ -218,11 +216,11 @@ local function install_live_prefs()
 			mod_local(N, "gain_directionality", v.direction ~= false, true)
 		end)
 	end
-	local O = C().mod("liz_fdda_redone_outfit")
+	local O = core.mod("liz_fdda_redone_outfit")
 	if O then
 		local function limit()
-			local mcm = C().mod("liz_fdda_redone_mcm")
-			local max = mcm and C().fn(mcm, "get_config") and mcm.get_config("outfit_anm/memory_size")
+			local mcm = core.mod("liz_fdda_redone_mcm")
+			local max = mcm and core.fn(mcm, "get_config") and mcm.get_config("outfit_anm/memory_size")
 			max = bounded_number(max or mod_local(O, "mcm_memory_max"), -1, 64, 3)
 			return max > 0 and math.floor(max) or 64 -- unlimited MCM history still has a bounded personal record
 		end
@@ -250,17 +248,17 @@ local function install_live_prefs()
 			mod_local(O, "memory_last", #ordered - 1, true)
 		end)
 	end
-	local X = C().mod("exo_powers")
+	local X = core.mod("exo_powers")
 	if X then
 		local deadline = 0
-		C().wrap(X, "deactivate_powers", "misc.exo_cooldown", function(orig) return function(seconds, ...)
-			if not C().active() then return orig(seconds, ...) end
+		core.wrap(X, "deactivate_powers", "misc.exo_cooldown", function(orig) return function(seconds, ...)
+			if not core.active() then return orig(seconds, ...) end
 			local r = orig(seconds, ...)
 			deadline = time_global() + bounded_number(seconds, 0, 86400, 0) * 1000
 			return r
 		end end)
-		C().wrap(X, "reset_cooldown", "misc.exo_reset", function(orig) return function(...)
-			if C().active() then deadline = 0 end
+		core.wrap(X, "reset_cooldown", "misc.exo_reset", function(orig) return function(...)
+			if core.active() then deadline = 0 end
 			return orig(...)
 		end end)
 		personal_state("coop_misc_exo_cooldown_ms", function()
@@ -273,7 +271,7 @@ local function install_live_prefs()
 			if left > 0 then CreateTimeEvent("exo_powers", "deactivate_power", left / 1000, X.reset_cooldown) end
 		end)
 	end
-	local R = C().mod("level_environment")
+	local R = core.mod("level_environment")
 	if R then
 		-- Stock on_game_load reads this key after pdata; refresh from live locals,
 		-- not its possibly stale m_data copy. No console text comes from the wire.
@@ -292,12 +290,12 @@ end
 local function install_prefs()
 	local n = 0
 	for _, spec in ipairs(PREFS) do
-		local M = C().mod(spec[1])
-		local save = M and (C().fn(M, spec[2]) or C().find_local(M, spec[2]))
+		local M = core.mod(spec[1])
+		local save = M and (core.fn(M, spec[2]) or core.find_local(M, spec[2]))
 		-- no save function found: the current value cannot be read, and a key that is never reported is better left alone
 		if type(save) == "function" then
 			for _, key in ipairs(spec[3]) do
-				P().register(key, { get = function()
+				pdata.register(key, { get = function()
 					local t = {}
 					save(t)
 					return t[key] -- nil (the helmet hotkey writes nothing while no helmet is off): the loaded value stays
@@ -309,9 +307,9 @@ local function install_prefs()
 	install_helmet_prefs()
 	install_live_prefs()
 	-- its save_state is a global (agdd_voiced_actor.script:1481): the remaining ms of the long shout cooldown
-	local voiced = C().mod("agdd_voiced_actor")
-	if voiced and C().fn(voiced, "save_state") then
-		P().register("varefined_random_long_cd", { prime = { "agdd_voiced_actor" } })
+	local voiced = core.mod("agdd_voiced_actor")
+	if voiced and core.fn(voiced, "save_state") then
+		pdata.register("varefined_random_long_cd", { prime = { "agdd_voiced_actor" } })
 		n = n + 1
 	end
 	if n > 0 then installed[#installed + 1] = "prefs(" .. n .. " keys)" end
@@ -378,44 +376,44 @@ local function wheel_load_data(manager, data)
 end
 
 local function install_pdata()
-	local inspect = C().mod("grok_doom_weapons_inspect")
+	local inspect = core.mod("grok_doom_weapons_inspect")
 	if inspect then
 		-- Its save_state is local: collect the live table directly. Otherwise every
 		-- world load gives the client the host's history and repeats first-equip animations.
-		P().register("inspected_weapons", { get = function() return inspect.inspected_weapons end })
+		pdata.register("inspected_weapons", { get = function() return inspect.inspected_weapons end })
 		installed[#installed + 1] = "weapon_inspection"
 	end
-	if C().mod("experience_core") then
-		P().register("experience_framework_savedata", { subs = EF_SUBS, prime = { "experience_core" } })
+	if core.mod("experience_core") then
+		pdata.register("experience_framework_savedata", { subs = EF_SUBS, prime = { "experience_core" } })
 		installed[#installed + 1] = "experience_framework"
 	end
-	local wheel = C().mod("haru_quick_action_wheel_mcm")
+	local wheel = core.mod("haru_quick_action_wheel_mcm")
 	if wheel then
-		P().register("haru_qaw", { get = function()
+		pdata.register("haru_qaw", { get = function()
 			local tm = wheel.TAB_MANAGER -- created by the mod's later on_game_start
 			if tm then return { tabs = tm.tabs, current_tab = tm.current_tab } end
 		end })
 		-- The callback is registered on the instance; it looks the class method up at load.
-		C().wrap(wheel.TabManager, "load_state", "misc.wheel_load", function(orig) return function(tm, m, ...)
-			if C().active() and coop_mode.is_player_mirror() and m.haru_qaw ~= nil then
+		core.wrap(wheel.TabManager, "load_state", "misc.wheel_load", function(orig) return function(tm, m, ...)
+			if core.active() and coop_mode.is_player_mirror() and m.haru_qaw ~= nil then
 				m.haru_qaw = wheel_load_data(tm, m.haru_qaw)
 			end
 			return orig(tm, m, ...)
 		end end)
 		installed[#installed + 1] = "quick_action_wheel"
 	end
-	if C().mod("ish_kill_tracker") then
-		local n = P().register_module("ish_kill_tracker")
+	if core.mod("ish_kill_tracker") then
+		local n = pdata.register_module("ish_kill_tracker")
 		installed[#installed + 1] = "kill_tracker(" .. n .. " keys)"
 	end
-	local npe = C().mod("npe_director")
-	if npe and C().fn(npe, "get_state") then
+	local npe = core.mod("npe_director")
+	if npe and core.fn(npe, "get_state") then
 		-- its save_state writes a line and the whole table to the log each time: the state is asked for directly
-		P().register("npe", { get = function() return { npe_state = npe.get_state() } end })
+		pdata.register("npe", { get = function() return { npe_state = npe.get_state() } end })
 		installed[#installed + 1] = "tutorials"
 	end
-	if C().mod("game_fast_travel") then
-		P().register("fast_travel_system", { subs = FFT_SUBS, prime = { "game_fast_travel" } })
+	if core.mod("game_fast_travel") then
+		pdata.register("fast_travel_system", { subs = FFT_SUBS, prime = { "game_fast_travel" } })
 		installed[#installed + 1] = "fast_travel"
 	end
 	install_prefs()
@@ -423,9 +421,9 @@ end
 
 -- Wheel entries that name an item by id: the item must be in this player's own inventory.
 local function qaw_drop_lost_entries()
-	if not C().is_client() then return end
+	if not core.is_client() then return end
 	local qaw = alife_storage_manager.get_state().haru_qaw
-	local mcm = C().mod("haru_quick_action_wheel_mcm")
+	local mcm = core.mod("haru_quick_action_wheel_mcm")
 	local tm = mcm and mcm.TAB_MANAGER
 	if type(qaw) ~= "table" or type(qaw.tabs) ~= "table" or not (tm and type(tm.classes) == "table") then return end
 	local dropped = 0
@@ -449,13 +447,13 @@ local function qaw_drop_lost_entries()
 end
 
 local function install_kill_tracker()
-	local ikt = C().mod("ish_kill_tracker")
-	C().wrap(ikt, "safename", "ish_kill_tracker.safename", function(orig)
+	local ikt = core.mod("ish_kill_tracker")
+	core.wrap(ikt, "safename", "ish_kill_tracker.safename", function(orig)
 		return function(obj, ...)
-			if C().active() and obj then
+			if core.active() and obj then
 				local ok, id = pcall(function() return obj:id() end)
-				if ok and C().is_remote_player(id) then
-					local nick = C().nick_of(C().peer_of(id))
+				if ok and core.is_remote_player(id) then
+					local nick = core.nick_of(core.peer_of(id))
 					if nick and nick ~= "" then return nick end
 				end
 			end
@@ -467,35 +465,31 @@ end
 -------------------------------------------------------------------------------
 -- Guitar / harmonica: the song is heard at the player's character everywhere
 -------------------------------------------------------------------------------
-local songs = {} -- peer -> sound object playing on this machine
-
 -- Provenance: installed GAMMA 382 Guitar Animation - Daiviey guitar_anim/harmonica_anim;
 -- draw -> play -> holster_guitar -> restore, including harmonica's original holster_guitar spelling.
 -- NPC world poses/attachments are the engine's original NPC assets, not HUD meshes or another co-op's code.
 local function native_instrument(kind, phase, track, length)
-	if not (C().active() and api and type(api.instrument) == "function") then return false end
+	if not core.active() then return false end
 	local ok, accepted = pcall(api.instrument, kind, phase, track or 0, length or 0)
 	return ok and accepted == true
 end
 
 local function announcing(kind)
 	return function(orig) return function(...)
-		if not C().active() then return orig(...) end
+		if not core.active() then return orig(...) end
 		local real = _G.sound_object
-		local track, snd, native, fallback_play
-		local function pack(...) return { n = select("#", ...), ... } end
+		local native, fallback_play
 		local proxy = setmetatable({}, {
 			__call = function(_, name, ...)
 				local s = real(name, ...)
-				if track == nil then track, snd = name, s end
 				local prefix = kind == 1 and "^music\\guitar_(%d+)$" or "^music\\harmonica_(%d+)$"
 				local n = type(name) == "string" and tonumber(name:match(prefix))
-				if s and n and n >= 1 and n <= (kind == 1 and 28 or 5) and type(api.instrument) == "function" then
+				if s and n and n >= 1 and n <= (kind == 1 and 28 or 5) then
 					local function play(method, ...)
 						local ok, length = pcall(function() return s:length() end)
 						if ok and type(length) == "number" and length > 0 and length <= 600000 and
 							native_instrument(kind, 2, n, math.floor(length)) then
-							local args = pack(...)
+							local args = core.pack(...)
 							fallback_play = function() return s[method](s, unpack(args, 1, args.n)) end
 							native = true
 							return
@@ -517,7 +511,7 @@ local function announcing(kind)
 			__index = function(_, k) return real[k] end,
 		})
 		_G.sound_object = proxy
-		local res = pack(pcall(orig, ...))
+		local res = core.pack(pcall(orig, ...))
 		_G.sound_object = real
 		if not res[1] then
 			if native then
@@ -526,26 +520,8 @@ local function announcing(kind)
 			end
 			error(res[2], 0)
 		end
-		if not native and type(api.instrument) ~= "function" and type(track) == "string" and snd then
-			local ok, len = pcall(function() return snd:length() end)
-			C().to_all("song", { s = track, l = ok and tonumber(len) or 0 })
-		end
 		return unpack(res, 2, res.n)
 	end end
-end
-
-local function on_song(t, from)
-	if api and type(api.instrument) == "function" then return end -- protocol 15 owns its only source
-	local track = t.s
-	if type(track) ~= "string" or #track > 200 or track:find("..", 1, true) then return end
-	local obj = C().avatar(from)
-	if not obj or obj:id() == 0 then return end
-	local old = songs[from]
-	if old then pcall(function() old:stop() end) end
-	local ok, snd = pcall(sound_object, track)
-	if not (ok and snd) then return end
-	pcall(function() snd:play_at_pos(obj, obj:position(), 0, sound_object.s3d) end)
-	songs[from] = snd
 end
 
 local guitar_done = false
@@ -553,11 +529,11 @@ local function install_guitar()
 	if guitar_done or not api then return end
 	guitar_done = true
 	for _, spec in ipairs({ { "guitar_anim", "guitar", 1 }, { "harmonica_anim", "harmonica", 2 } }) do
-		local mod, name, kind = C().mod(spec[1]), spec[2], spec[3]
-		C().wrap(mod, "play_" .. name, spec[1] .. ".play", announcing(kind))
+		local mod, name, kind = core.mod(spec[1]), spec[2], spec[3]
+		core.wrap(mod, "play_" .. name, spec[1] .. ".play", announcing(kind))
 		for _, action in ipairs({ { "draw_" .. name, 1 }, { "holster_guitar", 3 }, { "restore", 0 } }) do
 			local phase = action[2]
-			C().wrap(mod, action[1], spec[1] .. "." .. action[1], function(orig)
+			core.wrap(mod, action[1], spec[1] .. "." .. action[1], function(orig)
 				return function(...)
 					native_instrument(kind, phase)
 					return orig(...)
@@ -584,7 +560,7 @@ local function quant(v) return math.floor(v / QUANT) * QUANT end
 local function host_party_max()
 	local m = own_sleepiness()
 	local online = {}
-	for _, p in ipairs(C().players()) do online[p.id] = true end
+	for _, p in ipairs(core.players()) do online[p.id] = true end
 	for peer, v in pairs(sleep.peers) do
 		if not online[peer] then sleep.peers[peer] = nil elseif v > m then m = v end
 	end
@@ -592,7 +568,7 @@ local function host_party_max()
 end
 
 local function party_view()
-	if C().active() and coop_mode.decides_world() then return host_party_max() end
+	if core.active() and coop_mode.decides_world() then return host_party_max() end
 	return math.max(own_sleepiness(), sleep.party)
 end
 
@@ -603,57 +579,57 @@ local function with_sleepiness(value, f, ...)
 	m.get_last_sleep = function() return value end
 	local ok, e = pcall(f, ...)
 	m.get_last_sleep = cur
-	if not ok then C().report("sleep", "sleep dialog", e) end
+	if not ok then core.report("sleep", "sleep dialog", e) end
 end
 
 local function sleep_tick()
 	local tg = time_global()
 	if tg < sleep.next_tick then return end
 	sleep.next_tick = tg + SLEEP_TICK_MS
-	if C().active() and coop_mode.decides_world() then
+	if core.active() and coop_mode.decides_world() then
 		local q = quant(host_party_max())
 		if q ~= sleep.pushed then
 			sleep.pushed = q
-			C().to_all("sleepy_max", { v = q })
+			core.to_all("sleepy_max", { v = q })
 		end
-	elseif C().live_client() then
+	elseif core.live_client() then
 		local q = quant(own_sleepiness())
 		if q ~= sleep.sent then
 			sleep.sent = q
-			C().to_host("sleepy", { v = q })
+			core.to_host("sleepy", { v = q })
 		end
 	end
 end
 
 -- For coop_economy_group: a sleep approved by the group vote runs after the dialog's own call (and this
--- wrapper's scope) ended; it runs f inside the same group-sleepiness scope (W5).
+-- wrapper's scope) ended; it runs f inside the same group-sleepiness scope.
 function with_party_sleepiness(f, ...)
-	if not (sleep.on and C().active()) then return f(...) end
+	if not (sleep.on and core.active()) then return f(...) end
 	return with_sleepiness(party_view(), f, ...)
 end
 
 local function install_sleep()
-	local dlg, ass = C().mod("ui_sleep_dialog"), C().mod("actor_status_sleep")
-	if not (dlg and C().fn(dlg, "get_immersive_sleep_hours") and ass and C().fn(ass, "get_last_sleep")) then return end
+	local dlg, ass = core.mod("ui_sleep_dialog"), core.mod("actor_status_sleep")
+	if not (dlg and core.fn(dlg, "get_immersive_sleep_hours") and ass and core.fn(ass, "get_last_sleep")) then return end
 	local cls = dlg.UISleep
 	if not cls then return end
-	C().wrap(cls, "TestAndShow", "ui_sleep_dialog.UISleep.TestAndShow", function(orig)
+	core.wrap(cls, "TestAndShow", "ui_sleep_dialog.UISleep.TestAndShow", function(orig)
 		return function(self, ...)
-			if not C().active() then return orig(self, ...) end
+			if not core.active() then return orig(self, ...) end
 			with_sleepiness(party_view(), orig, self, ...)
 		end
 	end)
-	C().wrap(cls, "OnButtonSleep", "ui_sleep_dialog.UISleep.OnButtonSleep", function(orig)
+	core.wrap(cls, "OnButtonSleep", "ui_sleep_dialog.UISleep.OnButtonSleep", function(orig)
 		return function(self, ...)
-			if not C().active() then return orig(self, ...) end
+			if not core.active() then return orig(self, ...) end
 			with_sleepiness(party_view(), orig, self, ...)
 		end
 	end)
-	C().on("sleepy", function(t, from)
+	core.on("sleepy", function(t, from)
 		local v = tonumber(t.v)
 		if v then sleep.peers[from] = math.max(0, math.min(10000, v)) end
 	end, "world")
-	C().on("sleepy_max", function(t)
+	core.on("sleepy_max", function(t)
 		local v = tonumber(t.v)
 		if v then sleep.party = math.max(0, math.min(10000, v)) end
 	end, "client")
@@ -666,34 +642,34 @@ end
 -- Zone Customization Project: loot rolled by the box or corpse writer
 -------------------------------------------------------------------------------
 local function install_zcp()
-	local smr = C().mod("smr_loot")
+	local smr = core.mod("smr_loot")
 	if not smr then return end
 	local function enabled()
-		local get_config = C().fn(C().mod("smr_amain_mcm"), "get_config")
+		local get_config = core.fn(core.mod("smr_amain_mcm"), "get_config")
 		return not get_config or get_config("smr_enabled")
 	end
 	local function writer_roll(orig)
 		return function(box, ...)
-			if C().active() then
+			if core.active() then
 				if not (box and type(box.id) == "function" and coop_mode.writes(box:id())) then return end
 				if not enabled() then return end
 			end
 			return orig(box, ...)
 		end
 	end
-	local ok = C().wrap(smr, "try_spawn", "smr_loot.try_spawn", writer_roll)
-	C().wrap(smr, "try_spawn_mag", "smr_loot.try_spawn_mag", writer_roll)
+	local ok = core.wrap(smr, "try_spawn", "smr_loot.try_spawn", writer_roll)
+	core.wrap(smr, "try_spawn_mag", "smr_loot.try_spawn_mag", writer_roll)
 
 	-- Stock registers this callback from its host-routed first update. Keep its single-player registration
 	-- and run the same roll on the corpse writer in a session, including a map server.
-	local death, holder, index = C().find_local(smr, "npc_on_death_callback")
-	local loot_config = C().fn(C().mod("smr_loot_mcm"), "get_config")
+	local death, holder, index = core.find_local(smr, "npc_on_death_callback")
+	local loot_config = core.fn(core.mod("smr_loot_mcm"), "get_config")
 	if holder and type(death) == "function" and loot_config then
 		debug.setupvalue(holder, index, function(...)
-			if not C().active() then return death(...) end
+			if not core.active() then return death(...) end
 		end)
 		RegisterScriptCallback("npc_on_death_callback", function(npc, ...)
-			if C().active() and npc and coop_mode.writes(npc:id()) and enabled() and loot_config("npc_spawn") then
+			if core.active() and npc and coop_mode.writes(npc:id()) and enabled() and loot_config("npc_spawn") then
 				return death(npc, ...)
 			end
 		end)
@@ -701,12 +677,12 @@ local function install_zcp()
 
 	if ok then
 		-- A client's container: rolled with that player's character as the actor (magazines for its guns).
-		C().listen("container_opened", function(peer, id)
+		core.listen("container_opened", function(peer, id)
 			local box = level.object_by_id(id)
-			local who = C().avatar(peer)
-			if C().active() and box and who and coop_mode.writes(id) and enabled() then
-				local done, e = C().as_player(who, smr.try_spawn, box)
-				if not done then C().report("zcp", "roll for a client", e) end
+			local who = core.avatar(peer)
+			if core.active() and box and who and coop_mode.writes(id) and enabled() then
+				local done, e = core.as_player(who, smr.try_spawn, box)
+				if not done then core.report("zcp", "roll for a client", e) end
 			end
 		end)
 	end
@@ -717,18 +693,18 @@ end
 -- Personal Adjustable Waypoint
 -------------------------------------------------------------------------------
 local function install_paw()
-	if not C().mod("tasks_placeable_waypoints") then return end
+	if not core.mod("tasks_placeable_waypoints") then return end
 	-- Personal task: given, checked and finished on this machine only (quests group, coop_tasks).
-	local ct = C().mod("coop_tasks")
+	local ct = core.mod("coop_tasks")
 	local ok = ct and type(ct.set_local_task) == "function" and ct.set_local_task("task_placeable_waypoint")
 	if not ok then log("paw", "the waypoint task could not be made personal: it is handled like a group task") end
-	local r = C().mod("ui_paw_reticle")
-	C().wrap(r and r.UIPAWReticle, "GetTargetName", "ui_paw_reticle.UIPAWReticle.GetTargetName", function(orig)
+	local r = core.mod("ui_paw_reticle")
+	core.wrap(r and r.UIPAWReticle, "GetTargetName", "ui_paw_reticle.UIPAWReticle.GetTargetName", function(orig)
 		return function(self, obj, ...)
-			if C().active() and obj then
+			if core.active() and obj then
 				local ok, id = pcall(function() return obj:id() end)
-				if ok and C().is_remote_player(id) then
-					local nick = C().nick_of(C().peer_of(id))
+				if ok and core.is_remote_player(id) then
+					local nick = core.nick_of(core.peer_of(id))
 					if nick and nick ~= "" then return nick end
 				end
 			end
@@ -758,7 +734,7 @@ end
 
 -- What a concussion left behind when the player fell: the volume, its two effectors, the head's last value.
 local function bhs_clear_concussion(b)
-	local head = C().find_local(b, "head_tbl")
+	local head = core.find_local(b, "head_tbl")
 	if type(head) ~= "table" then return end
 	head.previous, head.stage = nil, 0
 	if head.volume then exec_console_cmd("snd_volume_eff " .. tostring(head.volume)) end
@@ -767,7 +743,7 @@ local function bhs_clear_concussion(b)
 end
 
 local function bhs_on_revived(reviver, section)
-	local b = C().mod("zzz_player_injuries")
+	local b = core.mod("zzz_player_injuries")
 	if not (bhs_tables(b) and db.actor) then return end
 	bhs_clear_concussion(b)
 	-- The mod keeps the player down while head or torso is at zero.
@@ -791,9 +767,9 @@ local function bhs_on_revived(reviver, section)
 	log("bhs", "revived (%s): head %s, torso %s", tostring(section), tostring(b.health.head), tostring(b.health.torso))
 end
 
--- The body parts are each player's own (live 2026-11-07: a GAMMA client broke a leg at a level change). The mod keeps them in
+-- The body parts are each player's own (otherwise a GAMMA client breaks a leg at a level change). The mod keeps them in
 -- the actor's pstor ("health.<part>", "timedhp.<part>", utils_obj.save_var), and the pstor comes with the host's save: a client
--- got the HOST's parts at every load. A client's own parts are per-player data (coop_mods_pdata, BHS_KEY: the host keeps them
+-- would get the HOST's parts at every load. A client's own parts are per-player data (coop_mods_pdata, BHS_KEY: the host keeps them
 -- in its save, the session stash carries them over a level change; a change is reported within BHS_TICK_MS). At the actor's
 -- first update, before the mod's own load (its first actor_on_update: LoadHealthStatus), they go into the mod and into the
 -- pstor; a player the host has no record of starts whole. The host and single player keep the mod's own pstor.
@@ -810,7 +786,7 @@ local BHS_TICK_MS = 1000
 local bhs_st = { pending = false, own = nil, last = nil, next = 0, applied = 0, reports = 0 }
 
 local function bhs_snapshot()
-	local b = C().mod("zzz_player_injuries")
+	local b = core.mod("zzz_player_injuries")
 	if not bhs_tables(b) then return nil end
 	local h, t = {}, {}
 	for _, k in ipairs(PARTS) do
@@ -848,8 +824,8 @@ end
 local function bhs_apply_own()
 	if not bhs_st.pending then return end
 	bhs_st.pending = false
-	if not C().is_client() then return end
-	local b = C().mod("zzz_player_injuries")
+	if not core.is_client() then return end
+	local b = core.mod("zzz_player_injuries")
 	if not (bhs_tables(b) and db.actor) then return end
 	local own = bhs_st.own
 	local h = own and type(own.h) == "table" and own.h or {}
@@ -870,15 +846,15 @@ local function bhs_apply_own()
 end
 
 local function bhs_tick()
-	if bhs_st.pending or not C().live_client() then return end
+	if bhs_st.pending or not core.live_client() then return end
 	local now = time_global()
 	if now < bhs_st.next then return end
 	bhs_st.next = now + BHS_TICK_MS
 	local text = bhs_text(bhs_snapshot())
 	if text == "" or text == bhs_st.last then return end
 	bhs_st.last = text
-	local ok, e = pcall(P().report_now)
-	if not ok then C().report("bhs", "report_now", e) end
+	local ok, e = pcall(pdata.report_now)
+	if not ok then core.report("bhs", "report_now", e) end
 	bhs_st.reports = bhs_st.reports + 1
 end
 
@@ -886,9 +862,9 @@ end
 -- A co-op respawn is a fresh body
 -------------------------------------------------------------------------------
 -- The engine's respawn knows only its own condition (health, wounds, radiation). The stock never respawns, so the mods never
--- reset what killed the player: with a head or a torso still at zero BHS sets health to -1 on its next update (live
--- 2026-10-31), with arszi_psy's psy health at or below 0.001 that mod sets it to 0 every in-game second (live 2026-11-08: psi
--- killed a player, he stood up at his respawn point with the head and torso red and died again and again). Every respawn
+-- reset what killed the player: with a head or a torso still at zero BHS sets health to -1 on its next update, with
+-- arszi_psy's psy health at or below 0.001 that mod sets it to 0 every in-game second (a player killed by psi would stand up
+-- at his respawn point with the head and torso red and die again and again). Every respawn
 -- (coop_mods_core "actor_respawned": a camp, a hardcore run's new character) gives them back, as G.A.M.M.A.'s own Soulslike
 -- respawn does (soulslike_scenarios HealActor: psy 1), and at once into the per-player records: a level change right after
 -- must not bring the dead values back. A teammate's revive is not a respawn: the damage stays (bhs_on_revived lifts only
@@ -896,7 +872,7 @@ end
 local fresh = { count = 0 }
 
 local function bhs_fresh()
-	local b = C().mod("zzz_player_injuries")
+	local b = core.mod("zzz_player_injuries")
 	if not (bhs_tables(b) and db.actor) then return end
 	for _, k in ipairs(PARTS) do
 		b.health[k] = b.maxhp[k]
@@ -907,25 +883,25 @@ local function bhs_fresh()
 	-- The respawn came before the first update of a new world: the record that load brought is from before the death.
 	if bhs_st.pending then bhs_st.own = nil end
 	bhs_st.last = bhs_text(bhs_snapshot())
-	if C().live_client() then
-		local ok, e = pcall(P().report_now)
-		if not ok then C().report("bhs", "report_now", e) end
+	if core.live_client() then
+		local ok, e = pcall(pdata.report_now)
+		if not ok then core.report("bhs", "report_now", e) end
 	end
 end
 
 local function psy_fresh()
-	local ap = C().mod("arszi_psy")
-	if not (ap and C().fn(ap, "set_psy_health")) then return end
+	local ap = core.mod("arszi_psy")
+	if not (ap and core.fn(ap, "set_psy_health")) then return end
 	ap.set_psy_health(1)
-	if C().fn(ap, "on_game_load") then pcall(ap.on_game_load) end -- its stage and death-scene counter
-	if C().fn(ap, "remove_all_psy_ppe_effects") then pcall(ap.remove_all_psy_ppe_effects) end
+	if core.fn(ap, "on_game_load") then pcall(ap.on_game_load) end -- its stage and death-scene counter
+	if core.fn(ap, "remove_all_psy_ppe_effects") then pcall(ap.remove_all_psy_ppe_effects) end
 	-- the psy table is a per-player key of coop_economy_mdata (polled every 15 s): to the host now
 	local em = rawget(_G, "coop_economy_mdata")
-	if C().live_client() and em and type(em.send_player_keys) == "function" then pcall(em.send_player_keys) end
+	if core.live_client() and em and type(em.send_player_keys) == "function" then pcall(em.send_player_keys) end
 end
 
 local function radiation_fresh()
-	local r = C().mod("grok_progressive_rad_damages")
+	local r = core.mod("grok_progressive_rad_damages")
 	if not r then return end
 	-- The engine clears the dose, but GAMMA leaves grok_rads at 1 until another
 	-- radiation cough roll. BHS reads it to skip injury damage, even with zero dose.
@@ -942,9 +918,9 @@ local function vitals_text()
 		v = ok and tonumber(v) or nil
 		return v and string.format("%.3f", v) or "?"
 	end
-	local ap = C().mod("arszi_psy")
+	local ap = core.mod("arszi_psy")
 	local ok_psy, psy = pcall(function() return ap and ap.get_psy_health and ap.get_psy_health() end)
-	local b = C().mod("zzz_player_injuries")
+	local b = core.mod("zzz_player_injuries")
 	local parts = bhs_tables(b) and string.format("%s/%s", tostring(b.health.head), tostring(b.health.torso)) or "-"
 	return string.format("health %s, psy %s (arszi %s), radiation %s, bleeding %s, head/torso %s", field("health"),
 		field("psy_health"), ok_psy and type(psy) == "number" and string.format("%.3f", psy) or "-", field("radiation"),
@@ -955,11 +931,11 @@ local function on_respawned_fresh()
 	if not db.actor then return end
 	local before = vitals_text()
 	local ok, e = pcall(bhs_fresh)
-	if not ok then C().report("respawn", "bhs", e) end
+	if not ok then core.report("respawn", "bhs", e) end
 	ok, e = pcall(psy_fresh)
-	if not ok then C().report("respawn", "psy", e) end
+	if not ok then core.report("respawn", "psy", e) end
 	ok, e = pcall(radiation_fresh)
-	if not ok then C().report("respawn", "radiation", e) end
+	if not ok then core.report("respawn", "radiation", e) end
 	fresh.count = fresh.count + 1
 	note_apply("respawn: a fresh body")
 	log("respawn", "fresh body: before %s | after %s", before, vitals_text())
@@ -968,14 +944,14 @@ end
 -------------------------------------------------------------------------------
 -- Diagnostic: a client's health falling with nothing hitting him
 -------------------------------------------------------------------------------
--- Live 2026-11-08: a G.A.M.M.A. client's health ran down after a level change with no hit (Yadulin outpaced it while it acted).
+-- A G.A.M.M.A. client's health can run down after a level change with no hit (Yadulin outpaces it while it acts).
 -- Until the source is proven, one line per DRAIN_MS while his health fell at least DRAIN_MIN with no hit in that time: what
 -- G.A.M.M.A. drains health from (thirst above 4000, satiety, radiation, bleeding, psy, the BHS head and torso) and the last co-op
--- apply that touched his state. Every player in a session, the host's too (owner 2026-11-08: maybe it starts when a player dies),
+-- apply that touched his state. Every player in a session, the host's too (it may start when a player dies),
 -- with each player's life (alive / wounded / dead ...) at that moment.
 local function players_life()
 	local out = {}
-	local ok, list = pcall(function() return C().players() end)
+	local ok, list = pcall(function() return core.players() end)
 	if not (ok and type(list) == "table") then return "-" end
 	for _, p in ipairs(list) do
 		local life = "?"
@@ -990,8 +966,7 @@ end
 
 -- What he wears changes his health every second with nothing on the screen: CActor::UpdateArtefactsOnBeltAndOutfit gives
 -- health_restore_speed * condition of every artefact of the belt, and health_restore_speed of the outfit and of the helmet.
--- Owner 2026-11-16 (build 51): "my health goes somewhere by itself, no effects"; the engine's ledger said "condition", no hit, no
--- script, no radiation, no bleeding. The line names every worn item with its value and what they add up to in the window.
+-- Such a loss shows in the engine's ledger as "condition", with no hit, no script, no radiation and no bleeding. The line names every worn item with its value and what they add up to in the window.
 local function worn_text()
 	local a = db.actor
 	local sum = 0
@@ -1032,12 +1007,12 @@ local function drain_line(fell)
 		return num(ok and v or nil)
 	end
 	local function call(modname, f)
-		local m = C().mod(modname)
-		if not (m and C().fn(m, f)) then return "-" end
+		local m = core.mod(modname)
+		if not (m and core.fn(m, f)) then return "-" end
 		local ok, v = pcall(m[f])
 		return ok and v ~= nil and tostring(v) or "-"
 	end
-	local b = C().mod("zzz_player_injuries")
+	local b = core.mod("zzz_player_injuries")
 	-- every part: BHS takes 0.029 health on a sprint step (13 %, once per 2.5 s) while a leg is at 3 HP or less, with no hit
 	local parts = "-"
 	if bhs_tables(b) then
@@ -1053,11 +1028,11 @@ local function drain_line(fell)
 		local ok_s, s = pcall(ims, "mcSprint")
 		if ok_s then sprint = s and "yes" or "no" end
 	end
-	-- db.actor.satiety is the base condition's (1.000 always); the actor's own is CActorCondition::GetSatiety (live 2026-11-09)
+	-- db.actor.satiety is the base condition's (1.000 always); the actor's own is CActorCondition::GetSatiety
 	local satiety = field("satiety")
 	local ok_sat, sat = pcall(function() return a:cast_Actor():conditions():GetSatiety() end)
 	if ok_sat and type(sat) == "number" then satiety = string.format("%.3f", sat) end
-	local ap = C().mod("arszi_psy")
+	local ap = core.mod("arszi_psy")
 	local ok_psy, psy = pcall(function() return ap and ap.get_psy_health and ap.get_psy_health() end)
 	drain.lines = drain.lines + 1
 	log("drain", "health %s fell %.3f in %d s with no hit: psy %s (arszi %s), BHS hp/timed %s, sprint %s, satiety %s, thirst %s, "
@@ -1072,7 +1047,7 @@ local function drain_on_hit()
 end
 
 local function drain_tick()
-	if not (db.actor and C().active()) then return end
+	if not (db.actor and core.active()) then return end
 	local now = time_global()
 	local ok, h = pcall(function() return tonumber(db.actor.health) end)
 	if not (ok and h) then return end
@@ -1087,23 +1062,23 @@ local function drain_tick()
 end
 
 local function install_respawn()
-	C().listen("actor_respawned", on_respawned_fresh) -- always: its log line says what a respawn stood up with
+	core.listen("actor_respawned", on_respawned_fresh) -- always: its log line says what a respawn stood up with
 	RegisterScriptCallback("actor_on_update", drain_tick)
 	RegisterScriptCallback("actor_on_hit_callback", drain_on_hit)
-	-- live 2026-11-08 (Agroprom, a client: two hits in the log, both [drain] lines said "no hit"): G.A.M.M.A.'s damage
-	-- balancer (grok_actor_damage_balancer.shit_booster) takes every hit in actor_on_before_hit, sets its power to 0 and
+	-- G.A.M.M.A.'s damage balancer (grok_actor_damage_balancer.shit_booster) takes every hit in actor_on_before_hit, sets its power to 0 and
 	-- lowers the health itself (set_health_ex), so actor_on_hit_callback does not count it; actor_on_before_hit runs for every hit
 	RegisterScriptCallback("actor_on_before_hit", drain_on_hit)
-	if bhs_tables(C().mod("zzz_player_injuries")) or C().mod("arszi_psy") then installed[#installed + 1] = "respawn" end
+	if bhs_tables(core.mod("zzz_player_injuries")) or core.mod("arszi_psy") then installed[#installed + 1] = "respawn" end
 end
 
+-- test hook (tests/lua/test_mods_respawn.lua): how many fresh-body resets ran
 function _fresh_count() return fresh.count end
 
 local function install_bhs()
-	local b = C().mod("zzz_player_injuries")
+	local b = core.mod("zzz_player_injuries")
 	if not bhs_tables(b) then return end
-	P().register("head_tbl", { prime = { "zzz_player_injuries" } })
-	P().register(BHS_KEY, { get = bhs_snapshot })
+	pdata.register("head_tbl", { prime = { "zzz_player_injuries" } })
+	pdata.register(BHS_KEY, { get = bhs_snapshot })
 	RegisterScriptCallback("load_state", bhs_on_load)
 	RegisterScriptCallback("actor_on_first_update", bhs_apply_own)
 	RegisterScriptCallback("actor_on_update", bhs_tick)
@@ -1114,7 +1089,7 @@ local function install_bhs()
 			return concussion(...)
 		end
 	end
-	C().listen("actor_revived", bhs_on_revived)
+	core.listen("actor_revived", bhs_on_revived)
 	installed[#installed + 1] = "bhs"
 end
 
@@ -1134,7 +1109,7 @@ local function weapon_of_hit(shit)
 end
 
 local function install_adb()
-	local m = C().mod("grok_actor_damage_balancer")
+	local m = core.mod("grok_actor_damage_balancer")
 	local before, booster = m and m.actor_on_before_hit, m and m.shit_booster
 	if type(before) ~= "function" or type(booster) ~= "function" then return end
 	local wrapped = function(shit, bone_id, flags)
@@ -1150,7 +1125,7 @@ local function install_adb()
 		if bullet and shit.power > 0 then booster(shit, bone_id, 0) end -- it stopped at the weapon or its ammo
 	end
 	m.actor_on_before_hit = wrapped
-	C().swap_callback("actor_on_before_hit", before, wrapped)
+	core.swap_callback("actor_on_before_hit", before, wrapped)
 	installed[#installed + 1] = "damage_balancer"
 end
 
@@ -1158,7 +1133,7 @@ end
 -- AGDD Voiced Actor: every line of the player's voice goes through actor_speak_base
 -------------------------------------------------------------------------------
 local function install_voiced()
-	local v = C().mod("agdd_voiced_actor")
+	local v = core.mod("agdd_voiced_actor")
 	local speak = v and v.actor_speak_base
 	if type(speak) ~= "function" then return end
 	v.actor_speak_base = function(...)
@@ -1175,7 +1150,7 @@ local STEP_DIR = "footstep\\n_"
 local last_variant = {}
 
 local function on_avatar_step(avatar_id, material, power, move_state)
-	local fs = C().mod("footstep_sounds")
+	local fs = core.mod("footstep_sounds")
 	local obj = type(avatar_id) == "number" and avatar_id ~= 0 and level.object_by_id(avatar_id)
 	if not (fs and type(fs.available_materials) == "table" and obj) then return end
 	local mat = fs.available_materials[material] or fs.available_materials["default"]
@@ -1194,9 +1169,9 @@ local function on_avatar_step(avatar_id, material, power, move_state)
 end
 
 local function install_oleh()
-	if not (C().mod("footstep_sounds") and (C().mod("oleh_sound_utils") or C().mod("extended_movement_sounds")
-		or C().mod("extended_movement_sounds_mcm"))) then return end
-	C().listen("avatar_step", on_avatar_step)
+	if not (core.mod("footstep_sounds") and (core.mod("oleh_sound_utils") or core.mod("extended_movement_sounds")
+		or core.mod("extended_movement_sounds_mcm"))) then return end
+	core.listen("avatar_step", on_avatar_step)
 	installed[#installed + 1] = "oleh_movement"
 end
 
@@ -1204,44 +1179,33 @@ end
 -- Start
 -------------------------------------------------------------------------------
 local function actor_on_first_update()
-	if C().is_client() then
+	if core.is_client() then
 		local ok, e = pcall(qaw_drop_lost_entries)
-		if not ok then C().report("qaw", "drop lost entries", e) end
+		if not ok then core.report("qaw", "drop lost entries", e) end
 	end
 end
 
 -- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
--- error here would skip all the scripts after this one, single player included (W5).
-local function start_step(what, f)
-	local ok, err = pcall(f)
-	if not ok then printf("! [coop_mods_misc] %s failed: %s", what, tostring(err)) end
-end
-
+-- error here would skip all the scripts after this one, single player included.
 function on_game_start()
 	if not api then return end
-	start_step("install_pdata", install_pdata)
-	start_step("install_kill_tracker", install_kill_tracker)
-	start_step("install_guitar", install_guitar)
-	if C().mod("guitar_anim") or C().mod("harmonica_anim") then
-		C().on("song", on_song)
-		installed[#installed + 1] = "guitar_anim"
-	end
-	start_step("install_sleep", install_sleep)
-	start_step("install_zcp", install_zcp)
-	start_step("install_paw", install_paw)
-	start_step("install_bhs", install_bhs)
-	start_step("install_respawn", install_respawn)
-	start_step("install_adb", install_adb)
-	start_step("install_voiced", install_voiced)
-	start_step("install_oleh", install_oleh)
-	if C().mod("haru_quick_action_wheel_mcm") then RegisterScriptCallback("actor_on_first_update", actor_on_first_update) end
-	C().status_line("misc", function()
+	core.install("misc", "install_pdata", install_pdata)
+	core.install("misc", "install_kill_tracker", install_kill_tracker)
+	core.install("misc", "install_guitar", install_guitar)
+	if core.mod("guitar_anim") or core.mod("harmonica_anim") then installed[#installed + 1] = "guitar_anim" end
+	core.install("misc", "install_sleep", install_sleep)
+	core.install("misc", "install_zcp", install_zcp)
+	core.install("misc", "install_paw", install_paw)
+	core.install("misc", "install_bhs", install_bhs)
+	core.install("misc", "install_respawn", install_respawn)
+	core.install("misc", "install_adb", install_adb)
+	core.install("misc", "install_voiced", install_voiced)
+	core.install("misc", "install_oleh", install_oleh)
+	if core.mod("haru_quick_action_wheel_mcm") then RegisterScriptCallback("actor_on_first_update", actor_on_first_update) end
+	core.status_line("misc", function()
 		return "installed: " .. (#installed > 0 and table.concat(installed, ", ") or "none (mods absent)")
 	end)
 end
 
 -- Load time (before any on_game_start): the song functions may be captured by other mods at their start.
-if api then
-	local ok, e = pcall(install_guitar)
-	if not ok then printf("[coop-mods] [misc] ! guitar patch: %s", tostring(e)) end
-end
+if api then core.install("misc", "guitar patch", install_guitar) end

@@ -1,5 +1,5 @@
 --[[
-	Anomaly Coop - item mods that touch the world (gamedata\scripts\coop_mods_items.script), W4 "mods".
+	Anomaly Coop - item mods that touch the world (gamedata\scripts\coop_mods_items.script).
 
 	A client may create and remove items only in its own inventory (the engine forwards those to the host and
 	refuses world objects, P7). These mods make world objects out of items, so the world half goes to the host:
@@ -27,7 +27,7 @@
 	                   player stands (a backpack on the ground: where it lies) and spends the backpack.
 	  mods.stash_made  host -> client { b box, i backpack, s section, p, t, f }  the client shows the stash; with f it moves its own bag in.
 	  mods.stash_free  client -> host { b box }  a stash emptied: the box goes, the player gets the backpack back.
-	  mods.stash_book  map server -> world server { b, s, p, t, o | b, x }  player_created_stashes, the stash's owner (o, round 4:
+	  mods.stash_book  map server -> world server { b, s, p, t, o | b, x }  player_created_stashes, the stash's owner (o:
 	                   m_data.coop_stash_owner), the FFT hint and the map spot live in the world's save.
 	Placeable campfire (campfire_placeable)
 	  mods.cf_place    client -> host { i item }  the stock's own place_campfire with the client's character as the actor; the item is
@@ -45,8 +45,8 @@ local api = rawget(_G, "coop")
 
 local tostring, tonumber, type, pairs, ipairs, pcall, next = tostring, tonumber, type, pairs, ipairs, pcall, next
 
-local function C() return coop_mods_core end
-local function log(fmt, ...) C().log("items", fmt, ...) end
+local core = coop_mods_core
+local function log(fmt, ...) core.log("items", fmt, ...) end
 
 local installed = {}
 local st = { gs_throw = 0, gs_pick = 0, md = 0, md_clean = 0, al = 0, gso = 0, stash = 0, stash_freed = 0, cf = 0, refused = 0 }
@@ -55,13 +55,6 @@ local function refuse(what, from, why)
 	st.refused = st.refused + 1
 	log("%s from #%s refused: %s", what, tostring(from), why)
 end
-
-local function near(obj, who, dist)
-	local ok, d = pcall(function() return obj:position():distance_to_sqr(who:position()) end)
-	return ok and d <= dist * dist
-end
-
-local function m_data() return alife_storage_manager.get_state() end
 
 local spent = {} -- online release queues GE_DESTROY; reject replays until the source is gone
 
@@ -77,7 +70,7 @@ local function gs_table()
 	if not m then return nil end
 	if type(m.glowsticks) == "table" then return m.glowsticks end
 	if not GS.holder then
-		local _, holder, idx = C().find_local(m, "glowsticks")
+		local _, holder, idx = core.find_local(m, "glowsticks")
 		GS.holder, GS.idx = holder, idx
 	end
 	if not GS.holder then return nil end
@@ -132,7 +125,7 @@ local function host_create_lamp(section, pos, dir, lv, gv, charge, throw)
 	if t then t[se.id] = { section, charge } end -- the host's mod burns it down
 	local force = throw and (((ui_mcm and ui_mcm.get and ui_mcm.get("glowsticks/throw_force")) or 8) * 1000) or 100
 	local fx, fy, fz = dir.x * force, dir.y * force, dir.z * force
-	C().when_online(se.id, LAMP, function(obj)
+	core.when_online(se.id, LAMP, function(obj)
 		local sh = obj:get_physics_shell()
 		if sh then sh:apply_force(fx, fy, fz) end
 	end, 2000)
@@ -145,7 +138,7 @@ local function is_glowstick_item(section)
 end
 
 local function host_gs_throw(t, from)
-	local who = C().avatar(from)
+	local who = core.avatar(from)
 	local section, throw = t.s, t.t == true
 	local x, y, z = tonumber(t.x), tonumber(t.y), tonumber(t.z)
 	if not (who and is_glowstick_item(section) and x and y and z) then return refuse("gs_throw", from, "bad request") end
@@ -155,7 +148,7 @@ local function host_gs_throw(t, from)
 	local function unit(v) v = tonumber(v) or 0 if v ~= v then return 0 end return math.max(-1, math.min(1, v)) end
 	local dir = vector():set(unit(t.dx), unit(t.dy), unit(t.dz))
 	local charge = math.max(0, math.min(1, tonumber(t.c) or 0.01))
-	local iid = C().lid(tonumber(t.i))
+	local iid = core.lid(tonumber(t.i))
 	if spent[iid] then return refuse("gs_throw", from, "source item already spent") end
 	local item = type(iid) == "number" and iid < 65535 and alife_object(iid)
 	if not (item and item:section_name() == section) then return refuse("gs_throw", from, "no matching source item") end
@@ -179,11 +172,11 @@ local function host_gs_throw(t, from)
 end
 
 local function host_gs_pick(t, from)
-	local id = C().lid(tonumber(t.l))
+	local id = core.lid(tonumber(t.l))
 	local se = type(id) == "number" and id < 65535 and alife_object(id)
 	local obj = se and level.object_by_id(id)
-	local who = C().avatar(from)
-	if not (se and obj and who and se:section_name() == LAMP and near(obj, who, 4)) then return refuse("gs_pick", from, "no lamp there") end
+	local who = core.avatar(from)
+	if not (se and obj and who and se:section_name() == LAMP and core.near(obj, who, 4)) then return refuse("gs_pick", from, "no lamp there") end
 	if not (coop_mode.writes(id) and coop_mode.writes(who:id())) then return refuse("gs_pick", from, "another writer owns the lamp") end
 	local tbl = gs_table()
 	local entry = tbl and tbl[id]
@@ -192,12 +185,12 @@ local function host_gs_pick(t, from)
 	if charge <= 0.01 then return refuse("gs_pick", from, "burnt out") end
 	tbl[id] = nil
 	alife_release_id(id)
-	C().give(from, section, charge)
+	core.give(from, section, charge)
 	st.gs_pick = st.gs_pick + 1
 end
 
 local function client_gs_key(key)
-	if not (C().live_client() and db.actor) then return end
+	if not (core.live_client() and db.actor) then return end
 	if dik_to_bind(key) ~= key_bindings.kUSE then return end
 	if _GUIs and not is_empty(_GUIs) then return end
 	if not game.hud_motion_allowed() or game.only_movekeys_allowed() then return end
@@ -207,19 +200,19 @@ local function client_gs_key(key)
 		if p.x < 350 or p.x > 750 or p.y < 250 or p.y > 500 then return false end
 		local lamp = obj:get_hanging_lamp()
 		if not (lamp and lamp:is_on()) then return false end
-		C().to_host("gs_pick", { l = C().hid(obj:id()) })
+		core.to_host("gs_pick", { l = core.hid(obj:id()) })
 		return true
 	end)
 end
 
 local function install_glowsticks()
-	local m = C().mod("zz_glowstick_mcm")
-	if not (m and C().fn(m, "spawn_glowstick")) then return end
+	local m = core.mod("zz_glowstick_mcm")
+	if not (m and core.fn(m, "spawn_glowstick")) then return end
 	GS.mod = m
 	installed[#installed + 1] = "glowsticks"
-	C().wrap(m, "spawn_glowstick", "zz_glowstick_mcm.spawn_glowstick", function(orig)
+	core.wrap(m, "spawn_glowstick", "zz_glowstick_mcm.spawn_glowstick", function(orig)
 		return function(id, throw, ...)
-			if not C().active() or coop_mode.writes(id) then return orig(id, throw, ...) end
+			if not core.active() or coop_mode.writes(id) then return orig(id, throw, ...) end
 			if not coop_mode.is_player_mirror() then return end
 			local itm = id and level.object_by_id(id)
 			if not itm or (not throw and itm:parent()) then return true end
@@ -228,14 +221,14 @@ local function install_glowsticks()
 			pos = ok and pos or actor:position()
 			pos.y = pos.y + 0.1
 			local dir = device().cam_dir
-			C().to_host("gs_throw", { i = C().hid(id), s = itm:section(), t = throw and true or false, c = itm:condition(),
+			core.to_host("gs_throw", { i = core.hid(id), s = itm:section(), t = throw and true or false, c = itm:condition(),
 				x = pos.x, y = pos.y, z = pos.z, dx = dir.x, dy = dir.y, dz = dir.z })
 			return true
 		end
 	end)
-	local wrapped, old = C().wrap(m, "actor_on_hud_animation_end", "zz_glowstick_mcm.actor_on_hud_animation_end", function(orig)
+	local wrapped, old = core.wrap(m, "actor_on_hud_animation_end", "zz_glowstick_mcm.actor_on_hud_animation_end", function(orig)
 		return function(item, section, motion, ...)
-			if not (C().active() and item and type(section) == "string"
+			if not (core.active() and item and type(section) == "string"
 				and section:find("glowstick", 1, true) and motion == "anm_throw_stick") or coop_mode.writes(item:id()) then
 				return orig(item, section, motion, ...)
 			end
@@ -247,15 +240,15 @@ local function install_glowsticks()
 			end
 			local ok, result = pcall(orig, item, section, motion, ...)
 			m.alife_release_id = saved
-			if not ok then error(result) end
+			if not ok then error(result, 0) end
 			return result
 		end
 	end)
-	if wrapped then C().swap_callback("actor_on_hud_animation_end", old, m.actor_on_hud_animation_end) end
+	if wrapped then core.swap_callback("actor_on_hud_animation_end", old, m.actor_on_hud_animation_end) end
 	local binder = m.glowstick_binder
-	C().wrap(binder, "update", "zz_glowstick_mcm.glowstick_binder.update", function(orig)
+	core.wrap(binder, "update", "zz_glowstick_mcm.glowstick_binder.update", function(orig)
 		return function(self, delta, ...)
-			if not C().active() or (self.object and coop_mode.writes(self.object:id())) then return orig(self, delta, ...) end
+			if not core.active() or (self.object and coop_mode.writes(self.object:id())) then return orig(self, delta, ...) end
 			-- Burning down and removal are the host's; the client only shows the prompt.
 			if self.first_update then
 				self.first_update = nil
@@ -265,10 +258,10 @@ local function install_glowsticks()
 			end
 		end
 	end)
-	C().on("gs_throw", host_gs_throw, "host")
-	C().on("gs_pick", host_gs_pick, "host")
-	C().set_limit("gs_throw", 4, 1)
-	C().set_limit("gs_pick", 4, 2)
+	core.on("gs_throw", host_gs_throw, "host")
+	core.on("gs_pick", host_gs_pick, "host")
+	core.set_limit("gs_throw", 4, 1)
+	core.set_limit("gs_pick", 4, 2)
 	RegisterScriptCallback("on_key_press", client_gs_key)
 end
 
@@ -308,9 +301,9 @@ local function md_spawn(orig, from, who, ...)
 			if not drop then return real_event(ev, action, delay, f, id, ...) end
 			return real_event(ev, action, delay, function(...)
 				if md.dropped[id] ~= drop or level.name() ~= drop.map or not coop_mode.writes(id) then return true end
-				local body = coop_mode.where(from) == "here" and C().avatar(from)
+				local body = coop_mode.where(from) == "here" and core.avatar(from)
 				if not body then return true end
-				local run, done = C().as_player(body, f, ...)
+				local run, done = core.as_player(body, f, ...)
 				-- The stock timer appends a cleanup entry after positioning the debris. Take it over.
 				local list = md.stock_drops
 				local last = list and list[#list]
@@ -318,23 +311,23 @@ local function md_spawn(orig, from, who, ...)
 					drop.pos = last[2]
 					table.remove(list)
 				end
-				if not run then C().report("items", "model drop force", done) end
+				if not run then core.report("items", "model drop force", done) end
 				return done or not run
 			end, id, ...)
 		end
 	end
 	md.spawning = true
-	local okp, ok, result = pcall(C().as_player, who, orig, ...)
+	local okp, ok, result = pcall(core.as_player, who, orig, ...)
 	md.spawning = false
 	if real_event then events.CreateTimeEvent = real_event end
 	_G.alife_create = real
-	if not (okp and ok) then C().report("items", "model drop", okp and result or ok) end
+	if not (okp and ok) then core.report("items", "model drop", okp and result or ok) end
 	st.md = st.md + 1
 	if okp and ok then return result end
 end
 
 local function host_md_drop(t, from)
-	local who = C().avatar(from)
+	local who = core.avatar(from)
 	local valid = who ~= nil and md_has_model(t.s) and (t.a == nil or type(t.a) == "boolean")
 	if not coop_trust.pass("md_drop_model", valid, "peer %s requested an unavailable model or sent invalid data", tostring(from))
 		or not valid then return refuse("md_drop", from, "no model for that item") end
@@ -349,7 +342,7 @@ local function host_md_clean()
 	md.next_clean = tg + 5000
 	local map = level.name()
 	local positions = {}
-	for _, p in ipairs(C().player_objects()) do
+	for _, p in ipairs(core.player_objects()) do
 		if coop_mode.where(p.peer) == "here" and p.obj:alive() then
 			positions[#positions + 1] = p.obj:position()
 		end
@@ -377,25 +370,25 @@ local function host_md_clean()
 end
 
 local function install_model_dropper()
-	local M = C().mod("model_dropper_mcm")
-	md.original = C().fn(M, "spawn_object")
+	local M = core.mod("model_dropper_mcm")
+	md.original = core.fn(M, "spawn_object")
 	if not md.original then return end
-	md.stock_drops = C().find_local(M, "dropper_id")
+	md.stock_drops = core.find_local(M, "dropper_id")
 	installed[#installed + 1] = "model_dropper"
-	C().wrap(M, "spawn_object", "model_dropper_mcm.spawn_object", function(orig)
+	core.wrap(M, "spawn_object", "model_dropper_mcm.spawn_object", function(orig)
 		return function(item_sec, alted, ...)
-			if not C().active() or md.spawning then return orig(item_sec, alted, ...) end
-			if db.actor and coop_mode.writes(db.actor:id()) and (coop_mode.actor_is_player() or C().identity_obj()) then
-				return md_spawn(orig, C().self_peer(), db.actor, item_sec, alted, ...)
+			if not core.active() or md.spawning then return orig(item_sec, alted, ...) end
+			if db.actor and coop_mode.writes(db.actor:id()) and (coop_mode.actor_is_player() or core.identity_obj()) then
+				return md_spawn(orig, core.self_peer(), db.actor, item_sec, alted, ...)
 			end
 			if coop_mode.is_player_mirror() then
-				if not alted and md_has_model(item_sec) then C().to_host("md_drop", { s = item_sec, a = false }) end
+				if not alted and md_has_model(item_sec) then core.to_host("md_drop", { s = item_sec, a = false }) end
 				return true
 			end
 		end
 	end)
-	C().on("md_drop", host_md_drop, "host")
-	C().set_limit("md_drop", 6, 1)
+	core.on("md_drop", host_md_drop, "host")
+	core.set_limit("md_drop", 6, 1)
 	RegisterScriptCallback("server_entity_on_unregister", function(se)
 		if se then md.dropped[se.id] = nil end
 	end)
@@ -434,7 +427,7 @@ local function al_request_when_settled(lm, cont)
 		local now = time_global()
 		if looted then
 			al.pending[cid] = nil
-			C().to_host("al_del", { c = C().hid(cid) })
+			core.to_host("al_del", { c = core.hid(cid) })
 			return true
 		end
 		local key = al_contents_key(lm, c)
@@ -446,7 +439,7 @@ local function al_request_when_settled(lm, cont)
 			ResetTimeEvent("coop_mods_al", "del_" .. cid, 0.25)
 			return false
 		end
-		if C().fn(lm, "handle_loot") then pcall(lm.handle_loot, c) end
+		if core.fn(lm, "handle_loot") then pcall(lm.handle_loot, c) end
 		looted = true
 		ResetTimeEvent("coop_mods_al", "del_" .. cid, 0.25)
 		return false
@@ -463,7 +456,7 @@ local DEATH_BAG = "coop_death_stash"
 
 local function protected_loot_box(cont, character)
 	if cont:section() == DEATH_BAG then return true end
-	local data = m_data()
+	local data = alife_storage_manager.get_state()
 	local benches, owners = data.workshop_stashes, data.coop_stash_owner
 	if type(benches) ~= "table" or type(owners) ~= "table" then return false end
 	local id = cont:id()
@@ -474,12 +467,12 @@ local function protected_loot_box(cont, character)
 end
 
 local function install_autolooter()
-	local lm = C().mod("z_auto_looter")
-	if not (lm and C().fn(lm, "handle_delete")) then return end
+	local lm = core.mod("z_auto_looter")
+	if not (lm and core.fn(lm, "handle_delete")) then return end
 	installed[#installed + 1] = "autolooter"
-	local _, orig_delete = C().wrap(lm, "handle_delete", "z_auto_looter.handle_delete", function(orig)
+	local _, orig_delete = core.wrap(lm, "handle_delete", "z_auto_looter.handle_delete", function(orig)
 		return function(cont, ...)
-			if not (C().active() and cont) then return orig(cont, ...) end
+			if not (core.active() and cont) then return orig(cont, ...) end
 			local actor = db.actor
 			if protected_loot_box(cont, actor and actor:id()) then return end
 			if coop_mode.writes(cont:id()) then return orig(cont, ...) end
@@ -492,15 +485,15 @@ local function install_autolooter()
 			al_request_when_settled(lm, cont)
 		end
 	end)
-	C().on("al_del", function(t, from)
-		local id = C().lid(tonumber(t.c))
+	core.on("al_del", function(t, from)
+		local id = core.lid(tonumber(t.c))
 		local cont = type(id) == "number" and id ~= 0 and level.object_by_id(id)
-		local who = C().avatar(from)
-		if not (cont and who and near(cont, who, 12)) then return refuse("al_del", from, "unknown or far container") end
+		local who = core.avatar(from)
+		if not (cont and who and core.near(cont, who, 12)) then return refuse("al_del", from, "unknown or far container") end
 		if not coop_mode.writes(id) then return refuse("al_del", from, "another writer owns the container") end
 		local corpse = (IsStalker(cont) or IsMonster(cont)) and not cont:alive()
-		if not (corpse or IsInvbox(cont)) or C().is_player(id) then return refuse("al_del", from, "not a corpse or a box") end
-		local placeable = C().fn(lm, "is_placable_stash")
+		if not (corpse or IsInvbox(cont)) or core.is_player(id) then return refuse("al_del", from, "not a corpse or a box") end
+		local placeable = core.fn(lm, "is_placable_stash")
 		if protected_loot_box(cont, who:id()) or (placeable and placeable(cont)) then
 			return refuse("al_del", from, "a protected stash")
 		end
@@ -510,11 +503,11 @@ local function install_autolooter()
 			alife_release_id(id) -- the mod's body branch would close the host's own loot window
 		else
 			local ok, e = pcall(orig_delete, cont)
-			if not ok then C().report("items", "autolooter delete", e) end
+			if not ok then core.report("items", "autolooter delete", e) end
 		end
 		st.al = st.al + 1
 	end, "host")
-	C().set_limit("al_del", 10, 2)
+	core.set_limit("al_del", 10, 2)
 end
 
 -------------------------------------------------------------------------------
@@ -523,20 +516,20 @@ end
 local gso_served = {}
 
 local function install_gso()
-	local g = C().mod("grok_stashes_on_corpses")
-	if not (g and C().fn(g, "npc_on_use")) then return end
+	local g = core.mod("grok_stashes_on_corpses")
+	if not (g and core.fn(g, "npc_on_use")) then return end
 	installed[#installed + 1] = "gso"
-	local _, orig_use = C().wrap(g, "npc_on_use", "grok_stashes_on_corpses.npc_on_use", function(orig)
+	local _, orig_use = core.wrap(g, "npc_on_use", "grok_stashes_on_corpses.npc_on_use", function(orig)
 		return function(npc, ...)
-			if not (C().active() and npc) or coop_mode.writes(npc:id()) then return orig(npc, ...) end
-			if coop_mode.is_player_mirror() and not npc:alive() then C().to_host("gso_use", { n = C().hid(npc:id()) }) end
+			if not (core.active() and npc) or coop_mode.writes(npc:id()) then return orig(npc, ...) end
+			if coop_mode.is_player_mirror() and not npc:alive() then core.to_host("gso_use", { n = core.hid(npc:id()) }) end
 		end
 	end)
-	C().on("gso_use", function(t, from)
-		local id = C().lid(tonumber(t.n))
+	core.on("gso_use", function(t, from)
+		local id = core.lid(tonumber(t.n))
 		local npc = type(id) == "number" and id ~= 0 and level.object_by_id(id)
-		local who = C().avatar(from)
-		if not (npc and who and IsStalker(npc) and not npc:alive() and near(npc, who, 6)) then
+		local who = core.avatar(from)
+		if not (npc and who and IsStalker(npc) and not npc:alive() and core.near(npc, who, 6)) then
 			return refuse("gso_use", from, "no corpse there")
 		end
 		if not coop_mode.writes(id) then return refuse("gso_use", from, "another writer owns the corpse") end
@@ -544,11 +537,11 @@ local function install_gso()
 		local key = tostring(id) .. ":" .. npc:section()
 		if gso_served[key] then return end
 		gso_served[key] = true
-		local ok, e = C().as_player(who, orig_use, npc)
-		if not ok then C().report("items", "corpse stash", e) end
+		local ok, e = core.as_player(who, orig_use, npc)
+		if not ok then core.report("items", "corpse stash", e) end
 		st.gso = st.gso + 1
 	end, "host")
-	C().set_limit("gso_use", 6, 2)
+	core.set_limit("gso_use", 6, 2)
 end
 
 -------------------------------------------------------------------------------
@@ -564,10 +557,10 @@ local USE_HANDLERS = { "tasks_mystery_of_the_swamps" }
 
 -- guaranteed_loot counts the searches of "the player" and takes only id 0 for him: this process's actor stands for whoever searched.
 local function count_guaranteed_drops(npc)
-	local drops = C().fn(C().mod("guaranteed_loot"), "npc_on_use")
+	local drops = core.fn(core.mod("guaranteed_loot"), "npc_on_use")
 	if not drops then return end
 	local done, err = pcall(drops, npc, db.actor)
-	if not done then C().report("items", "guaranteed_loot.npc_on_use", err) end
+	if not done then core.report("items", "guaranteed_loot.npc_on_use", err) end
 end
 
 -- At the first update: Haru's skills and FDDA replace create_release_item when they load, and a wrapper put here earlier
@@ -575,53 +568,53 @@ end
 local function wrap_corpse_loot()
 	if corpse_loot_wrapped then return end
 	corpse_loot_wrapped = true
-	C().wrap(death_manager, "create_release_item", "death_manager.create_release_item", function(orig)
+	core.wrap(death_manager, "create_release_item", "death_manager.create_release_item", function(orig)
 		return function(npc, ...)
-			if not (C().active() and npc) or coop_mode.writes(npc:id()) then return orig(npc, ...) end
-			if coop_mode.is_player_mirror() and not npc:alive() then C().to_host("corpse_loot", { n = C().hid(npc:id()) }) end
+			if not (core.active() and npc) or coop_mode.writes(npc:id()) then return orig(npc, ...) end
+			if coop_mode.is_player_mirror() and not npc:alive() then core.to_host("corpse_loot", { n = core.hid(npc:id()) }) end
 		end
 	end)
 	-- The stock use_callback asks for the money right after the loot. On a client's copy of the body it can only be refused: it is
 	-- made with the loot, where the body is.
-	C().wrap(C().mod("item_money"), "actor_on_loot_money", "item_money.actor_on_loot_money", function(orig)
+	core.wrap(core.mod("item_money"), "actor_on_loot_money", "item_money.actor_on_loot_money", function(orig)
 		return function(npc, ...)
-			if C().active() and npc and not coop_mode.writes(npc:id()) then return end
+			if core.active() and npc and not coop_mode.writes(npc:id()) then return end
 			return orig(npc, ...)
 		end
 	end)
 end
 
 local function install_corpse_loot()
-	if not C().fn(C().mod("death_manager"), "create_release_item") then return end
+	if not core.fn(core.mod("death_manager"), "create_release_item") then return end
 	installed[#installed + 1] = "corpse loot"
 	RegisterScriptCallback("actor_on_first_update", wrap_corpse_loot)
-	C().on("corpse_loot", function(t, from)
-		local id = C().lid(tonumber(t.n))
+	core.on("corpse_loot", function(t, from)
+		local id = core.lid(tonumber(t.n))
 		local npc = type(id) == "number" and id ~= 0 and level.object_by_id(id)
-		local who = C().avatar(from)
-		if not (npc and who and IsStalker(npc) and not npc:alive() and near(npc, who, 6)) then
+		local who = core.avatar(from)
+		if not (npc and who and IsStalker(npc) and not npc:alive() and core.near(npc, who, 6)) then
 			return refuse("corpse_loot", from, "no corpse there")
 		end
 		if not coop_mode.writes(id) then return refuse("corpse_loot", from, "another writer owns the corpse") end
-		local ok, e = C().as_player(who, death_manager.create_release_item, npc)
-		if not ok then C().report("items", "corpse loot", e) end
-		local money = C().fn(C().mod("item_money"), "actor_on_loot_money")
+		local ok, e = core.as_player(who, death_manager.create_release_item, npc)
+		if not ok then core.report("items", "corpse loot", e) end
+		local money = core.fn(core.mod("item_money"), "actor_on_loot_money")
 		if money then
-			local paid, why = C().as_player(who, money, npc)
-			if not paid then C().report("items", "corpse money", why) end
+			local paid, why = core.as_player(who, money, npc)
+			if not paid then core.report("items", "corpse money", why) end
 		end
-		if coop_mode.leads_here() and not coop_mode.decides_world() then C().publish("corpse_dropped", { n = id, s = npc:name() }) end -- a body rolls once, in the world's save too
+		if coop_mode.leads_here() and not coop_mode.decides_world() then core.publish("corpse_dropped", { n = id, s = npc:name() }) end -- a body rolls once, in the world's save too
 		for _, name in ipairs(USE_HANDLERS) do
-			local handler = C().fn(C().mod(name), "npc_on_use")
+			local handler = core.fn(core.mod(name), "npc_on_use")
 			if handler then
 				local done, err = pcall(handler, npc, who)
-				if not done then C().report("items", name .. ".npc_on_use", err) end
+				if not done then core.report("items", name .. ".npc_on_use", err) end
 			end
 		end
 		count_guaranteed_drops(npc)
 	end, "host")
-	C().set_limit("corpse_loot", 6, 2)
-	C().on("corpse_dropped", function(t, from)
+	core.set_limit("corpse_loot", 6, 2)
+	core.on("corpse_dropped", function(t, from)
 		local source = coop_mode.from_level(from)
 		if not coop_trust.pass("corpse_dropped_sender", source, "unexpected corpse report from peer %s", tostring(from))
 			or not source then return end
@@ -645,12 +638,12 @@ local STASH_EMPTY_WAIT_MS = 5000 -- a client: what it took out of the box is on 
 local STASH_SPOT_WAIT_MS = 15000 -- the world server: a map server's box is on its way
 
 local function stash_section(id)
-	local book = m_data().player_created_stashes
+	local book = alife_storage_manager.get_state().player_created_stashes
 	return type(book) == "table" and book[id] or nil
 end
 
 local function stash_note(id, section)
-	local m = m_data()
+	local m = alife_storage_manager.get_state()
 	if type(m.player_created_stashes) ~= "table" then m.player_created_stashes = {} end
 	m.player_created_stashes[id] = section
 end
@@ -675,22 +668,22 @@ local function stash_book(id, section, spot, name)
 end
 
 local function stash_unbook(id)
-	local book = m_data().player_created_stashes
+	local book = alife_storage_manager.get_state().player_created_stashes
 	if type(book) == "table" then book[id] = nil end
 	note_stash_owner(id, nil)
 	for spot in pairs(STASH_SPOTS) do level.map_remove_object_spot(id, spot) end
 end
 
--- Round 4 (S5 of the round 3 review): the owner of a player's stash, booked when it is made: m_data.coop_stash_owner[id] = the
+-- The owner of a player's stash, booked when it is made: m_data.coop_stash_owner[id] = the
 -- character (his object's id on the process that made it) of the player who made it. Who reads it: the mine check
 -- (coop_npc_world others_stash), on the process that leads the level (the host of a co-op, the map server of a server; the book
 -- goes on to the world server's save with stash_book). Booked here for a backpack stash, by coop_mods_hf for placed furniture
--- (a Hideout Furniture stash, a workbench and so its box; round 5: nothing else). A stash made before build 57 has none. owner
--- nil: forgotten (round 5: also whenever the object is released, server_entity_on_unregister in on_game_start).
+-- (a Hideout Furniture stash, a workbench and so its box; nothing else). A stash of an older save has none. owner nil:
+-- forgotten (also whenever the object is released, server_entity_on_unregister in on_game_start).
 function note_stash_owner(id, owner)
 	id = tonumber(id)
 	if not id then return end
-	local m = m_data()
+	local m = alife_storage_manager.get_state()
 	if type(m) ~= "table" then return end
 	if owner == nil and type(m.coop_stash_owner) ~= "table" then return end
 	if type(m.coop_stash_owner) ~= "table" then m.coop_stash_owner = {} end
@@ -702,13 +695,13 @@ local function stash_name()
 end
 
 local function client_stash_ask(item_id, name, spot, whole_bag)
-	C().to_host("stash_make", { i = C().hid(item_id), t = name, p = spot, f = whole_bag == true })
+	core.to_host("stash_make", { i = core.hid(item_id), t = name, p = spot, f = whole_bag == true })
 end
 
 -- What item_backpack.actor_on_item_use moves. Its loop is a closure of that function, the id of the box it needs comes late here.
 local function client_stash_fill(box, backpack)
-	local ib = C().mod("item_backpack")
-	local keep = C().find_local(ib, "keep_items") or {}
+	local ib = core.mod("item_backpack")
+	local keep = core.find_local(ib, "keep_items") or {}
 	local actor = db.actor
 	actor:iterate_inventory(function(_, item)
 		if not item or item:id() == backpack or keep[item:section()] ~= nil then return end
@@ -721,17 +714,17 @@ local function client_stash_fill(box, backpack)
 end
 
 local function client_stash_made(t)
-	local id = C().lid(tonumber(t.b))
+	local id = core.lid(tonumber(t.b))
 	local section = t.s
 	if not (id and type(section) == "string") then return end
 	local spot = STASH_SPOTS[t.p] and t.p or "treasure_player"
 	local name = tostring(t.t or "")
-	C().when_online(id, nil, function(box)
+	core.when_online(id, nil, function(box)
 		level.map_add_object_spot_ser(id, spot, name)
 		actor_menu.set_msg(1, game.translate_string("st_stash_created"), 4)
 		stash_note(id, section)
 		SendScriptCallback("actor_on_stash_create", { stash_id = id, stash_name = name, stash_section = section })
-		if t.f == true then client_stash_fill(box, C().lid(tonumber(t.i))) end
+		if t.f == true then client_stash_fill(box, core.lid(tonumber(t.i))) end
 	end, STASH_BOX_WAIT_MS)
 end
 
@@ -742,7 +735,7 @@ local function client_stash_free(id)
 		local box = level.object_by_id(id)
 		if not box then return true end
 		if box:is_inv_box_empty() then
-			C().to_host("stash_free", { b = C().hid(id) })
+			core.to_host("stash_free", { b = core.hid(id) })
 			return true
 		end
 		return time_global() > deadline
@@ -750,9 +743,9 @@ local function client_stash_free(id)
 end
 
 local function host_stash_make(t, from)
-	local who = C().avatar(from)
+	local who = core.avatar(from)
 	local hid = tonumber(t.i)
-	local iid = hid and hid > 0 and hid < 65535 and hid % 1 == 0 and C().lid(hid)
+	local iid = hid and hid > 0 and hid < 65535 and hid % 1 == 0 and core.lid(hid)
 	local se = iid and alife_object(iid)
 	local available = who and se
 	if not coop_trust.pass("stash_make_item", available, "peer %d named an unavailable backpack", from) or not available then
@@ -766,7 +759,7 @@ local function host_stash_make(t, from)
 		return refuse("stash_make", from, "not a backpack")
 	end
 	local pos
-	if C().root_of(iid) == who:id() then
+	if core.root_of(iid) == who:id() then
 		pos = who:position()
 	elseif (se.parent_id == nil or se.parent_id == 65535) and who:position():distance_to_sqr(se.position) <= STASH_REACH * STASH_REACH then
 		pos = se.position
@@ -781,22 +774,22 @@ local function host_stash_make(t, from)
 	alife_release_id(iid)
 	local spot = STASH_SPOTS[t.p] and t.p or "treasure_player"
 	local name = type(t.t) == "string" and t.t:sub(1, STASH_NAME_MAX):gsub("%c", " ") or ""
-	note_stash_owner(box.id, who:id()) -- round 4 (S5): his stash, booked here where the level's mines are judged
+	note_stash_owner(box.id, who:id()) -- his stash, booked here where the level's mines are judged
 	if coop_mode.decides_world() then
 		stash_book(box.id, section, spot, name)
 	else
 		stash_note(box.id, section) -- the level authority keeps its local list for object checks
-		C().publish("stash_book", { b = C().hid(box.id), s = section, p = spot, t = name, o = C().hid(who:id()) })
+		core.publish("stash_book", { b = core.hid(box.id), s = section, p = spot, t = name, o = core.hid(who:id()) })
 	end
-	C().to_peer(from, "stash_made", { b = box.id, i = t.i, s = section, p = spot, t = name, f = t.f == true })
+	core.to_peer(from, "stash_made", { b = box.id, i = t.i, s = section, p = spot, t = name, f = t.f == true })
 	st.stash = st.stash + 1
 end
 
 local function host_stash_free(t, from)
-	local id = C().lid(tonumber(t.b))
+	local id = core.lid(tonumber(t.b))
 	local box = type(id) == "number" and id ~= 0 and level.object_by_id(id)
-	local who = C().avatar(from)
-	if not (box and who and near(box, who, STASH_FREE_REACH)) then return refuse("stash_free", from, "no such box there") end
+	local who = core.avatar(from)
+	if not (box and who and core.near(box, who, STASH_FREE_REACH)) then return refuse("stash_free", from, "no such box there") end
 	if not (coop_mode.writes(id) and coop_mode.writes(who:id())) then
 		return refuse("stash_free", from, "another writer owns the box or character")
 	end
@@ -805,12 +798,12 @@ local function host_stash_free(t, from)
 	if spent[id] or not box:is_inv_box_empty() then return refuse("stash_free", from, "not empty") end
 	spent[id] = true
 	alife_release_id(id)
-	C().give(from, section)
+	core.give(from, section)
 	if not coop_mode.decides_world() then
-		local book = m_data().player_created_stashes
+		local book = alife_storage_manager.get_state().player_created_stashes
 		if type(book) == "table" then book[id] = nil end
 		note_stash_owner(id, nil)
-		C().publish("stash_book", { b = id, x = true })
+		core.publish("stash_book", { b = id, x = true })
 	else
 		stash_unbook(id)
 	end
@@ -818,30 +811,30 @@ local function host_stash_free(t, from)
 end
 
 local function install_stash()
-	local ib = C().mod("item_backpack")
-	if not (ib and C().fn(ib, "actor_on_item_use") and C().fn(ib, "actor_on_item_take_from_box")) then return end
+	local ib = core.mod("item_backpack")
+	if not (ib and core.fn(ib, "actor_on_item_use") and core.fn(ib, "actor_on_item_take_from_box")) then return end
 	installed[#installed + 1] = "backpack stash"
-	C().wrap(ib.UICreateStash, "OnAccept", "item_backpack.UICreateStash.OnAccept", function(orig)
+	core.wrap(ib.UICreateStash, "OnAccept", "item_backpack.UICreateStash.OnAccept", function(orig)
 		return function(self, ...)
-			if not C().active() or coop_mode.writes(self.id) then return orig(self, ...) end
+			if not core.active() or coop_mode.writes(self.id) then return orig(self, ...) end
 			if not coop_mode.is_player_mirror() then return end
 			local name = self.input:GetText()
 			client_stash_ask(self.id, name ~= "" and name or stash_name(), "treasure_player")
 			self:Close()
 		end
 	end)
-	local use_wrapped, use_old = C().wrap(ib, "actor_on_item_use", "item_backpack.actor_on_item_use", function(orig)
+	local use_wrapped, use_old = core.wrap(ib, "actor_on_item_use", "item_backpack.actor_on_item_use", function(orig)
 		return function(obj, ...)
-			local backpack = C().active() and obj and obj:section() == "itm_actor_backpack" and db.actor
+			local backpack = core.active() and obj and obj:section() == "itm_actor_backpack" and db.actor
 				and db.actor:item_in_slot(STASH_SLOT)
 			if not backpack or coop_mode.writes(backpack:id()) then return orig(obj, ...) end
 			if coop_mode.is_player_mirror() then client_stash_ask(backpack:id(), stash_name(), "treasure_player", true) end
 		end
 	end)
-	if use_wrapped then C().swap_callback("actor_on_item_use", use_old, ib.actor_on_item_use) end
-	local take_wrapped, take_old = C().wrap(ib, "actor_on_item_take_from_box", "item_backpack.actor_on_item_take_from_box", function(orig)
+	if use_wrapped then core.swap_callback("actor_on_item_use", use_old, ib.actor_on_item_use) end
+	local take_wrapped, take_old = core.wrap(ib, "actor_on_item_take_from_box", "item_backpack.actor_on_item_take_from_box", function(orig)
 		return function(box, obj, ...)
-			if not (C().active() and box and stash_section(box:id())) or coop_mode.writes(box:id()) then return orig(box, obj, ...) end
+			if not (core.active() and box and stash_section(box:id())) or coop_mode.writes(box:id()) then return orig(box, obj, ...) end
 			if not coop_mode.is_player_mirror() then return end
 			if box:section() ~= STASH_BOX or not box:is_inv_box_empty() then return end
 			hide_hud_inventory()
@@ -852,27 +845,27 @@ local function install_stash()
 			client_stash_free(box:id())
 		end
 	end)
-	if take_wrapped then C().swap_callback("actor_on_item_take_from_box", take_old, ib.actor_on_item_take_from_box) end
-	local dots = C().mod("ui_hud_dotmarks")
-	C().wrap(dots, "deploy_backpack", "ui_hud_dotmarks.deploy_backpack", function(orig)
+	if take_wrapped then core.swap_callback("actor_on_item_take_from_box", take_old, ib.actor_on_item_take_from_box) end
+	local dots = core.mod("ui_hud_dotmarks")
+	core.wrap(dots, "deploy_backpack", "ui_hud_dotmarks.deploy_backpack", function(orig)
 		return function(id, ...)
-			if not C().active() or coop_mode.writes(id) then return orig(id, ...) end
+			if not core.active() or coop_mode.writes(id) then return orig(id, ...) end
 			if coop_mode.is_player_mirror() then client_stash_ask(id, stash_name(), "treasure") end
 		end
 	end)
-	C().wrap(dots, "remove_placed_backpack", "ui_hud_dotmarks.remove_placed_backpack", function(orig)
+	core.wrap(dots, "remove_placed_backpack", "ui_hud_dotmarks.remove_placed_backpack", function(orig)
 		return function(id, mapspot, ...)
-			if not (C().active() and id and stash_section(id)) or coop_mode.writes(id) then return orig(id, mapspot, ...) end
+			if not (core.active() and id and stash_section(id)) or coop_mode.writes(id) then return orig(id, mapspot, ...) end
 			if not coop_mode.is_player_mirror() then return end
 			level.map_remove_object_spot(id, mapspot or "treasure")
 			client_stash_free(id)
 			return true
 		end
 	end)
-	C().on("stash_make", host_stash_make, "host")
-	C().on("stash_free", host_stash_free, "host")
-	C().on("stash_made", client_stash_made, "client")
-	C().on("stash_book", function(t, from)
+	core.on("stash_make", host_stash_make, "host")
+	core.on("stash_free", host_stash_free, "host")
+	core.on("stash_made", client_stash_made, "client")
+	core.on("stash_book", function(t, from)
 		local source = coop_mode.from_level(from)
 		if not coop_trust.pass("stash_book_sender", source, "unexpected stash report from peer %s", tostring(from))
 			or not source then return end
@@ -880,12 +873,12 @@ local function install_stash()
 		if not id then return end
 		if t.x == true then return stash_unbook(id) end
 		if type(t.s) == "string" then stash_book(id, t.s, STASH_SPOTS[t.p] and t.p or "treasure_player", tostring(t.t or "")) end
-		-- round 4 (S5): its owner, in the world's save
+		-- its owner, in the world's save
 		if type(t.s) == "string" and tonumber(t.o) then note_stash_owner(id, t.o) end
 	end, "world")
-	C().set_limit("stash_make", 3, 1)
-	C().set_limit("stash_free", 3, 1)
-	C().set_limit("stash_book", 20, 5)
+	core.set_limit("stash_make", 3, 1)
+	core.set_limit("stash_free", 3, 1)
+	core.set_limit("stash_book", 20, 5)
 end
 
 -------------------------------------------------------------------------------
@@ -894,15 +887,15 @@ end
 local CAMPFIRE_ITEM = "itm_campfire"
 
 local function install_campfire()
-	local cp = C().mod("campfire_placeable")
-	if not (cp and C().fn(cp, "place_campfire") and C().fn(cp, "actor_on_item_use")) then return end
+	local cp = core.mod("campfire_placeable")
+	if not (cp and core.fn(cp, "place_campfire") and core.fn(cp, "actor_on_item_use")) then return end
 	installed[#installed + 1] = "campfire"
 	local item_id = nil -- a client: the item that waits for its fade
 	-- Here because a host-only script of the stock does not run on a client. The stock's check of the ground, tip, fade and time, without
 	-- its release: the authority spends the item when the campfire stands.
-	local use_wrapped, use_old = C().wrap(cp, "actor_on_item_use", "campfire_placeable.actor_on_item_use", function(orig)
+	local use_wrapped, use_old = core.wrap(cp, "actor_on_item_use", "campfire_placeable.actor_on_item_use", function(orig)
 		return function(obj, ...)
-			if not (C().active() and obj and obj:section() == CAMPFIRE_ITEM) or coop_mode.writes(obj:id()) then return orig(obj, ...) end
+			if not (core.active() and obj and obj:section() == CAMPFIRE_ITEM) or coop_mode.writes(obj:id()) then return orig(obj, ...) end
 			if not coop_mode.is_player_mirror() then return end
 			local release = rawget(cp, "alife_release")
 			cp.alife_release = function(item) item_id = item:id() end
@@ -911,34 +904,34 @@ local function install_campfire()
 			if not ok then error(e, 0) end
 		end
 	end)
-	if use_wrapped then C().swap_callback("actor_on_item_use", use_old, cp.actor_on_item_use) end
-	local _, place = C().wrap(cp, "place_campfire", "campfire_placeable.place_campfire", function(orig)
+	if use_wrapped then core.swap_callback("actor_on_item_use", use_old, cp.actor_on_item_use) end
+	local _, place = core.wrap(cp, "place_campfire", "campfire_placeable.place_campfire", function(orig)
 		return function(...)
-			if not C().active() then return orig(...) end
+			if not core.active() then return orig(...) end
 			local actor = db.actor
-			if actor and coop_mode.writes(actor:id()) and (coop_mode.actor_is_player() or C().identity_obj()) then return orig(...) end
+			if actor and coop_mode.writes(actor:id()) and (coop_mode.actor_is_player() or core.identity_obj()) then return orig(...) end
 			if not coop_mode.is_player_mirror() then return end
-			if item_id then C().to_host("cf_place", { i = C().hid(item_id) }) end
+			if item_id then core.to_host("cf_place", { i = core.hid(item_id) }) end
 			item_id = nil
 			return true
 		end
 	end)
-	C().on("cf_place", function(t, from)
-		local who = C().avatar(from)
-		local iid = C().lid(tonumber(t.i))
+	core.on("cf_place", function(t, from)
+		local who = core.avatar(from)
+		local iid = core.lid(tonumber(t.i))
 		local se = type(iid) == "number" and iid < 65535 and alife_object(iid)
-		if not (who and se and se:section_name() == CAMPFIRE_ITEM and C().root_of(iid) == who:id()) then
+		if not (who and se and se:section_name() == CAMPFIRE_ITEM and core.root_of(iid) == who:id()) then
 			return refuse("cf_place", from, "no campfire in the player's inventory")
 		end
 		if not coop_mode.writes(iid) then return refuse("cf_place", from, "another writer owns the campfire") end
 		if spent[iid] then return refuse("cf_place", from, "the item is spent already") end
-		local ok, e = C().as_player(who, place) -- the spot is 2 m ahead of that character
-		if not ok then return C().report("items", "campfire", e) end
+		local ok, e = core.as_player(who, place) -- the spot is 2 m ahead of that character
+		if not ok then return core.report("items", "campfire", e) end
 		spent[iid] = true
 		alife_release_id(iid)
 		st.cf = st.cf + 1
 	end, "host")
-	C().set_limit("cf_place", 3, 1)
+	core.set_limit("cf_place", 3, 1)
 end
 
 -------------------------------------------------------------------------------
@@ -947,18 +940,18 @@ end
 local GUN_OBJECT = "deployable_mgun"
 
 local function install_gun()
-	C().wrap(C().mod("itms_manager"), "use_deployable_mgun", "itms_manager.use_deployable_mgun", function(orig)
+	core.wrap(core.mod("itms_manager"), "use_deployable_mgun", "itms_manager.use_deployable_mgun", function(orig)
 		return function(obj, ...)
-			if not C().active() then return orig(obj, ...) end
+			if not core.active() then return orig(obj, ...) end
 			local actor = db.actor
 			if not actor then return end
 			if not coop_mode.is_player_mirror() then
-				if not (coop_mode.writes(actor:id()) and (coop_mode.actor_is_player() or C().identity_obj())) then return end
+				if not (coop_mode.writes(actor:id()) and (coop_mode.actor_is_player() or core.identity_obj())) then return end
 				if ini_sys:section_exist(GUN_OBJECT) then return orig(obj, ...) end
 			end
 			-- Use already consumed the item. A mirror asks through the engine's ordinary inventory create path.
 			alife_create_item(obj:section(), actor)
-			C().hud("st_coop_items_gun_refused", "This machine gun cannot be set up: the item is back in your inventory.")
+			core.hud("st_coop_items_gun_refused", "This machine gun cannot be set up: the item is back in your inventory.")
 		end
 	end)
 end
@@ -967,7 +960,7 @@ end
 -- A window on a box
 -------------------------------------------------------------------------------
 -- s: a client's box asks for its treasure at the same time, that goes through the world server. What a player puts in
--- within this second is kept by the clean (R89 (A): coop_mods_xchg_meat guard_release); a death stash is never cleaned.
+-- within this second is kept by the clean (coop_mods_xchg_meat guard_release); a death stash is never cleaned.
 local LESS_ARTYS_DELAY = 1
 local rolled = {} -- boxes a client's window rolled, when the mod's own table is not found
 
@@ -984,7 +977,7 @@ end
 local function first_roll(smr, box)
 	local id = box:id()
 	if not IsInvbox(box) or stash_section(id) or box:section() == DEATH_BAG then return false end
-	local boxes = C().find_local(smr, "boxes") or rolled
+	local boxes = core.find_local(smr, "boxes") or rolled
 	if boxes[id] then return false end
 	boxes[id] = true
 	return true
@@ -993,22 +986,22 @@ end
 local function install_box_rolls()
 	RegisterScriptCallback("GUI_on_show", on_gui_show)
 	RegisterScriptCallback("GUI_on_hide", on_gui_hide)
-	local smr = C().mod("smr_loot")
-	C().wrap(smr, "try_spawn", "smr_loot.try_spawn (a client's window)", function(orig)
+	local smr = core.mod("smr_loot")
+	core.wrap(smr, "try_spawn", "smr_loot.try_spawn (a client's window)", function(orig)
 		return function(box, ...)
-			if C().identity_obj() and not first_roll(smr, box) then return end -- coop_mods_misc rolls under as_player
+			if core.identity_obj() and not first_roll(smr, box) then return end -- coop_mods_misc rolls under as_player
 			return orig(box, ...)
 		end
 	end)
-	local less_artys = C().fn(C().mod("zz_treasure_manager_pba_less_artys"), "physic_object_on_use_callback")
+	local less_artys = core.fn(core.mod("zz_treasure_manager_pba_less_artys"), "physic_object_on_use_callback")
 	if not less_artys then return end
-	C().listen("container_opened", function(_, id)
+	core.listen("container_opened", function(_, id)
 		if not coop_mode.writes(id) then return end
 		CreateTimeEvent("coop_mods_box", "less_artys_" .. id, LESS_ARTYS_DELAY, function()
 			if not coop_mode.writes(id) then return true end
 			local box = level.object_by_id(id)
 			local ok, e = pcall(function() return box and box:section() ~= DEATH_BAG and less_artys(box) end)
-			if not ok then C().report("items", "less artefacts", e) end
+			if not ok then core.report("items", "less artefacts", e) end
 			return true
 		end)
 	end)
@@ -1020,8 +1013,7 @@ end
 -- An item in a box or a dead body is the host's; a client's copy of it is a copy. The stock disassembly released the item
 -- (refused on a client), gave the parts to its holder (a world spawn, refused) and cleared its parts table here, so the same
 -- gun stood there again with new parts each time; a detach took the addon off the client's copy only (the addon's spawn into
--- the body was refused) and the host kept it on the gun (reports 2026-11-06, also armour of dead enemies and the
--- Autolooter's strip). A client takes such an item first, the ordinary move the host arbitrates for any loot, and then runs
+-- the body was refused) and the host kept it on the gun (also armour of dead enemies and the Autolooter's strip). A client takes such an item first, the ordinary move the host arbitrates for any loot, and then runs
 -- the whole call on it as on an item of its own bag, the path that works: the parts and the addon go into its bag (as a
 -- field strip's parts do, coop_mods_mags), the tool it holds wears, the release and the creates go through the host. A gun
 -- that had its addons taken off goes back where it was (the clone, when a scope variant was swapped). An item that is
@@ -1041,7 +1033,7 @@ local IN_BAG_MS = 600
 local RETURN_MS = 3000 -- the gun given back counts as out of the box until the host has put it there (the Autolooter waits)
 
 local function own(id)
-	return type(id) == "number" and id ~= 0 and C().root_of(id) == 0
+	return type(id) == "number" and id ~= 0 and core.root_of(id) == 0
 end
 
 -- The game object is in the actor's own inventory too: the host's move reaches the ALife copy a frame before the game
@@ -1056,7 +1048,7 @@ local function holder_of(obj)
 	local ok, p = pcall(function() return obj:parent() end)
 	if not (ok and p) or p:id() == 0 then return nil end
 	if IsInvbox(p) then return p end
-	if (IsStalker(p) or IsMonster(p)) and not p:alive() and not C().is_player(p:id()) then return p end
+	if (IsStalker(p) or IsMonster(p)) and not p:alive() and not core.is_player(p:id()) then return p end
 	return nil
 end
 
@@ -1089,7 +1081,7 @@ local function item_tool(item)
 end
 
 local function take_tip(id, fallback)
-	local msg = C().text(id, fallback)
+	local msg = core.text(id, fallback)
 	if db.actor and news_manager and news_manager.send_tip then
 		pcall(news_manager.send_tip, db.actor, msg, nil, "swiss_knife", 6000)
 	end
@@ -1104,7 +1096,7 @@ local function give_back(ids, cid)
 	CreateTimeEvent("coop_mods_take", key, BACK_S, function()
 		local function done() TK.backs[key] = nil return true end
 		if sent_id then -- asked: busy until the host has put it back (or it went elsewhere)
-			if C().root_of(sent_id) == cid or not alife_object(sent_id) or time_global() - sent_at > RETURN_MS then return done() end
+			if core.root_of(sent_id) == cid or not alife_object(sent_id) or time_global() - sent_at > RETURN_MS then return done() end
 			ResetTimeEvent("coop_mods_take", key, 0.25)
 			return false
 		end
@@ -1152,7 +1144,7 @@ local function take_wait(id)
 				if not cur then break end
 				local ok, e, clone = pcall(f, cur, job)
 				if not ok then
-					C().report("items", "take first " .. job.what, e)
+					core.report("items", "take first " .. job.what, e)
 					break
 				end
 				if clone then table.insert(back, 1, clone) end
@@ -1201,7 +1193,7 @@ end
 -- coop_mods_guard: a scope variant's detach of a gun in a box or a body goes through take first (the guard checks the
 -- swap again on the taken gun, inside the deferred call). True when this file takes that item first.
 function takes_first(obj)
-	return TK.mine["utils_item.detach_addon"] ~= nil and C().is_client() and obj ~= nil and not own(obj:id())
+	return TK.mine["utils_item.detach_addon"] ~= nil and core.is_client() and obj ~= nil and not own(obj:id())
 		and holder_of(obj) ~= nil
 end
 
@@ -1227,7 +1219,7 @@ end
 local function disassembly_wrapper(what)
 	return function(orig)
 		return function(obj, obj_d, ...)
-			local id = C().active() and item_id(obj)
+			local id = core.active() and item_id(obj)
 			if not id or coop_mode.writes(id) then return orig(obj, obj_d, ...) end
 			if not (coop_mode.is_player_mirror() and db.actor) then return end
 			if own(id) then return orig(obj, obj_d, ...) end
@@ -1259,7 +1251,7 @@ function native_silencer_state(weapon, committed)
 		se_save_var(weapon:id(), nil, SILENCER_KEY, nil)
 		return 1
 	end
-	local mod = C().mod("z_3dss_silencer_condition")
+	local mod = core.mod("z_3dss_silencer_condition")
 	if mod and type(mod.get_attached_silencer_condition) == "function" then
 		return mod.get_attached_silencer_condition(weapon) or 1
 	end
@@ -1267,10 +1259,10 @@ function native_silencer_state(weapon, committed)
 end
 
 local function install_silencer_snapshot()
-	local mod = C().mod("z_3dss_silencer_condition")
-	local start = C().fn(mod, "on_game_start")
-	local capture, capture_fn, capture_slot = C().upvalue(start, "capture_level_transition_state")
-	local restore, restore_fn, restore_slot = C().upvalue(start, "schedule_level_transition_restore")
+	local mod = core.mod("z_3dss_silencer_condition")
+	local start = core.fn(mod, "on_game_start")
+	local capture, capture_fn, capture_slot = core.upvalue(start, "capture_level_transition_state")
+	local restore, restore_fn, restore_slot = core.upvalue(start, "schedule_level_transition_restore")
 	if not (capture_fn and restore_fn and type(capture) == "function" and type(restore) == "function") then return end
 
 	local key = "3dss_silencer_condition_level_transition"
@@ -1279,7 +1271,7 @@ local function install_silencer_snapshot()
 	local serial = 0
 	local function character()
 		if not (coop_mode.actor_is_player() and db.actor) then return nil end
-		local id = C().hid(db.actor:id())
+		local id = core.hid(db.actor:id())
 		if id == 0 and coop_mode.is_player_mirror() then return nil end
 		return id
 	end
@@ -1288,9 +1280,9 @@ local function install_silencer_snapshot()
 		if type(stamp) == "string" and stamp ~= "" then return stamp end
 	end
 	local hooks = { capture = capture, restore = restore }
-	C().wrap(hooks, "capture", "3DSS silencer transition capture", function(orig)
+	core.wrap(hooks, "capture", "3DSS silencer transition capture", function(orig)
 		return function(...)
-			if not C().active() then return orig(...) end
+			if not core.active() then return orig(...) end
 			local storage = alife_storage_manager.get_state()
 			local owner = character()
 			if not owner then
@@ -1309,7 +1301,7 @@ local function install_silencer_snapshot()
 					local stamp = instance(id)
 					if not stamp then
 						serial = serial + 1
-						stamp = string.format("%d:%d:%d:%d", owner, C().hid(id) or id, time_global(), serial)
+						stamp = string.format("%d:%d:%d:%d", owner, core.hid(id) or id, time_global(), serial)
 						se_save_var(id, nil, instance_key, stamp)
 					end
 					record.instance = stamp
@@ -1321,9 +1313,9 @@ local function install_silencer_snapshot()
 			storage[key] = #records > 0 and snapshot or nil
 		end
 	end)
-	C().wrap(hooks, "restore", "3DSS silencer transition restore", function(orig)
+	core.wrap(hooks, "restore", "3DSS silencer transition restore", function(orig)
 		return function(...)
-			if not C().active() then return orig(...) end
+			if not core.active() then return orig(...) end
 			local storage = alife_storage_manager.get_state()
 			local snapshot = storage[key]
 			if not snapshot then return end
@@ -1345,7 +1337,7 @@ local function install_silencer_snapshot()
 			RemoveTimeEvent(SILENCER_KEY, "level_transition_restore")
 			CreateTimeEvent(SILENCER_KEY, "level_transition_restore", 0, function()
 				if storage[key] ~= snapshot or alife_storage_manager.get_state() ~= storage then return true end
-				if C().active() and character() == owner then
+				if core.active() and character() == owner then
 					db.actor:iterate_inventory(function(_, weapon)
 						if not IsWeapon(weapon) then return end
 						local id = weapon:id()
@@ -1375,13 +1367,13 @@ local function install_silencer_snapshot()
 	-- Capture is registered by value. The first-update callback reads the shared
 	-- restore upvalue when it runs, so it needs no re-registration.
 	if coop_main.callback_registered(callback, capture) then
-		C().swap_callback(callback, capture, hooks.capture)
+		core.swap_callback(callback, capture, hooks.capture)
 	end
 end
 
 local function detach_wrapper(orig)
 	return function(wpn, addon, typ, ignore, ...)
-		local id = C().active() and item_id(wpn)
+		local id = core.active() and item_id(wpn)
 		if not id or coop_mode.writes(id) then return orig(wpn, addon, typ, ignore, ...) end
 		if not (coop_mode.is_player_mirror() and db.actor) then return end
 		if own(id) then return orig(wpn, addon, typ, ignore, ...) end
@@ -1416,10 +1408,10 @@ local TAKE_HOOKS = {
 -- Puts each wrapper outermost again when an addon wrapped the function after it.
 local function take_outer()
 	for _, h in ipairs(TAKE_HOOKS) do
-		local tbl = C().mod(h.mod)
-		local cur = C().fn(tbl, h.key)
+		local tbl = core.mod(h.mod)
+		local cur = core.fn(tbl, h.key)
 		if cur and cur ~= TK.mine[h.mod .. "." .. h.key] then
-			local done, _ = C().wrap(tbl, h.key, h.mod .. "." .. h.key, h.make)
+			local done, _ = core.wrap(tbl, h.key, h.mod .. "." .. h.key, h.make)
 			if done then
 				TK.mine[h.mod .. "." .. h.key] = tbl[h.key]
 				TK.outer = TK.outer + 1
@@ -1429,7 +1421,7 @@ local function take_outer()
 end
 
 local function install_take()
-	if not (C().fn(C().mod("item_parts"), "disassembly_weapon") or C().fn(C().mod("utils_item"), "detach_addon")) then return end
+	if not (core.fn(core.mod("item_parts"), "disassembly_weapon") or core.fn(core.mod("utils_item"), "detach_addon")) then return end
 	installed[#installed + 1] = "take first"
 	take_outer()
 	-- Addons wrap these at their first update too (3DSS): after every first update, and once more a moment later.
@@ -1446,35 +1438,30 @@ local first_done = false
 local function actor_on_update()
 	if coop_mode.decides_world() or coop_mode.leads_here() then
 		for id in pairs(spent) do if not alife_object(id) then spent[id] = nil end end
-	elseif not first_done and C().is_client() and GS.mod then
+	elseif not first_done and core.is_client() and GS.mod then
 		-- The save's lamp table describes the host's lamps; a client never burns or picks them up itself.
 		first_done = true
 		local ok, e = pcall(gs_clear_local_table)
-		if not ok then C().report("items", "glowstick table", e) end
+		if not ok then core.report("items", "glowstick table", e) end
 	end
 end
 
 -- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
--- error here would skip all the scripts after this one, single player included (W5).
-local function start_step(what, f)
-	local ok, err = pcall(f)
-	if not ok then printf("! [coop_mods_items] %s failed: %s", what, tostring(err)) end
-end
-
+-- error here would skip all the scripts after this one, single player included.
 function on_game_start()
 	if not api then return end
-	start_step("install_glowsticks", install_glowsticks)
-	start_step("install_model_dropper", install_model_dropper)
-	start_step("install_autolooter", install_autolooter)
-	start_step("install_gso", install_gso)
-	start_step("install_corpse_loot", install_corpse_loot)
-	start_step("install_stash", install_stash)
-	start_step("install_campfire", install_campfire)
-	start_step("install_gun", install_gun)
-	start_step("install_box_rolls", install_box_rolls)
-	start_step("install_silencer_snapshot", install_silencer_snapshot)
-	start_step("install_take", install_take)
-	-- round 5 (S7 of the round 4 review): an owner booked for a stash or a workbench (here and by coop_mods_hf) goes with its object
+	core.install("items", "install_glowsticks", install_glowsticks)
+	core.install("items", "install_model_dropper", install_model_dropper)
+	core.install("items", "install_autolooter", install_autolooter)
+	core.install("items", "install_gso", install_gso)
+	core.install("items", "install_corpse_loot", install_corpse_loot)
+	core.install("items", "install_stash", install_stash)
+	core.install("items", "install_campfire", install_campfire)
+	core.install("items", "install_gun", install_gun)
+	core.install("items", "install_box_rolls", install_box_rolls)
+	core.install("items", "install_silencer_snapshot", install_silencer_snapshot)
+	core.install("items", "install_take", install_take)
+	-- an owner booked for a stash or a workbench (here and by coop_mods_hf) goes with its object
 	-- however the object goes (a pickup by another's stock code, a script's release), so a reused id inherits none. The stock's own
 	-- place for that (axr_main: "good place to remove ids from persistent tables").
 	RegisterScriptCallback("server_entity_on_unregister", function(se)
@@ -1484,7 +1471,7 @@ function on_game_start()
 	if #installed == 0 then return end
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("load_state", function() spent = {} end)
-	C().status_line("items", function()
+	core.status_line("items", function()
 		return string.format("%s | glowsticks thrown %d picked %d | drops %d cleaned %d | autoloot deletes %d | corpse stashes %d | stashes %d freed %d | campfires %d | refused %d | taken first %d (not taken %d, given back %d, not a box %d, wrapped %d)",
 			table.concat(installed, ", "), st.gs_throw, st.gs_pick, st.md, st.md_clean, st.al, st.gso, st.stash, st.stash_freed, st.cf, st.refused,
 			TK.taken, TK.failed, TK.back, TK.refused, TK.outer) .. string.format(", no tool %d", TK.no_tool)

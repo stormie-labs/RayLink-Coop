@@ -1,5 +1,5 @@
 --[[
-	Anomaly Coop - New Tasks Addon by iTheon (gamedata\scripts\coop_mods_nta.script), W4 "mods".
+	Anomaly Coop - New Tasks Addon by iTheon (gamedata\scripts\coop_mods_nta.script).
 
 	NTA tasks are ordinary tasks of the host's task manager, so coop_tasks already gives, mirrors and rewards them
 	like quests. What NTA itself does with `db.actor` is fixed here, on the host:
@@ -35,20 +35,13 @@ local api = rawget(_G, "coop")
 
 local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
 
-local function C() return coop_mods_core end
-local function world_active() return C().active() and coop_mode.decides_world() end
-local function log(fmt, ...) C().log("nta", fmt, ...) end
-local function qc() return coop_quests_core end
+local core = coop_mods_core
+local function world_active() return core.active() and coop_mode.decides_world() end
+local function log(fmt, ...) core.log("nta", fmt, ...) end
 
-local FUNCTORS = {
-	"house_of_horrors_task_status_functor",
-	"no_step_back_task_status_functor",
-	"hold_the_ground_task_status_functor",
-	"big_game_task_status_functor",
-	"baba_yaga_task_status_functor",
-	"mirage_task_status_functor",
-	"nta_stash_task_status_functor",
-}
+-- The tasks whose status functor is evaluated for the group: tasks_<task>.script puts <task>_task_status_functor into
+-- task_status_functor.
+local GROUP_TASKS = { "house_of_horrors", "no_step_back", "hold_the_ground", "big_game", "baba_yaga", "mirage", "nta_stash" }
 local PROMETHEUS_SID = "the_living_fire_prometheus"
 local QUAKE_CAM = 3
 local REVENGE_RANGE_SQR = 40000 -- 200 m: the revenge of stage 25 needs somebody at the finale
@@ -73,8 +66,8 @@ end
 
 local function nearest_standing(pos, here_only)
 	local best, best_d
-	local far_view = qc().far_seen and qc().far_seen()
-	for _, p in ipairs(C().player_objects()) do
+	local far_view = coop_quests_core.far_seen and coop_quests_core.far_seen()
+	for _, p in ipairs(core.player_objects()) do
 		-- in a far view the world server's own actor stands on another level: his coordinates mean nothing there
 		if standing(p.obj) and not (far_view and p.obj:id() == 0)
 			and (not here_only or (coop_mode.where(p.peer) == "here" and coop_mode.seat_plays(p.peer))) then
@@ -92,23 +85,23 @@ local function faction_of(obj)
 end
 
 local function any_of_faction(name)
-	for _, p in ipairs(C().all_players()) do
+	for _, p in ipairs(core.all_players()) do
 		if faction_of(p.obj) == name then return true end
 	end
 	return false
 end
 
 local function split_levels()
-	local l = C().engine().levels
+	local l = core.engine().levels
 	return l ~= nil and l.split ~= nil and l.split() == true
 end
 
 -- A player of the faction on that level. level.name() answers for this process, with split levels each player stands on his own level.
 local function faction_on_level(name, lvl)
 	local split = split_levels()
-	for _, p in ipairs(C().all_players()) do
+	for _, p in ipairs(core.all_players()) do
 		if faction_of(p.obj) == name then
-			local id = split and C().engine().levels.level_of_player(p.peer)
+			local id = split and core.engine().levels.level_of_player(p.peer)
 			if (id and alife():level_name(id) or level.name()) == lvl then return true end
 		end
 	end
@@ -119,14 +112,14 @@ end
 -- Range helpers
 -------------------------------------------------------------------------------
 local function install_helpers(nu)
-	C().wrap(nu, "actor_in_range", "nta_utils.actor_in_range", function(orig)
+	core.wrap(nu, "actor_in_range", "nta_utils.actor_in_range", function(orig)
 		return function(vec, dist, ...)
 			if not (world_active() and vec and tonumber(dist)) then return orig(vec, dist, ...) end
 			local _, d = nearest_standing(vec)
 			return d < dist * dist
 		end
 	end)
-	C().wrap(nu, "entity_in_range", "nta_utils.entity_in_range", function(orig)
+	core.wrap(nu, "entity_in_range", "nta_utils.entity_in_range", function(orig)
 		return function(id, dist, vec, ...)
 			if vec or not (world_active() and tonumber(dist)) then return orig(id, dist, vec, ...) end
 			local se = alife_object(id)
@@ -137,14 +130,14 @@ local function install_helpers(nu)
 			return d < dist * dist
 		end
 	end)
-	C().wrap(nu, "spawn_at_position", "nta_utils.spawn_at_position", function(orig)
+	core.wrap(nu, "spawn_at_position", "nta_utils.spawn_at_position", function(orig)
 		return function(...)
 			if coop_mode.is_player_mirror() then return nil end
 			return orig(...)
 		end
 	end)
 	-- Player mirrors lack the stalker simulation; their task list still reads the intercept precondition.
-	C().wrap(nu, "find_random_stalker", "nta_utils.find_random_stalker", function(orig)
+	core.wrap(nu, "find_random_stalker", "nta_utils.find_random_stalker", function(orig)
 		return function(...)
 			if coop_mode.is_player_mirror() then return nil end
 			return orig(...)
@@ -152,12 +145,12 @@ local function install_helpers(nu)
 	end)
 	-- is_axe() asks db.actor's hand. The kill tasks (brain game, gambling with life, vengence amplified; coop_npc_compat
 	-- rewrites their handlers) pass the killer: his hand decides, not the host's.
-	C().wrap(nu, "is_axe", "nta_utils.is_axe", function(orig)
+	core.wrap(nu, "is_axe", "nta_utils.is_axe", function(orig)
 		return function(who, ...)
 			if not (world_active() and who) then return orig() end
-			local ok, r = C().as_player(who, orig)
+			local ok, r = core.as_player(who, orig)
 			if not ok then
-				C().report("nta", "is_axe", r)
+				core.report("nta", "is_axe", r)
 				return nil
 			end
 			return r
@@ -168,20 +161,20 @@ end
 -- Replaying the last member's death calls the squad's stock death effect on
 -- the world too. Keep its task progress, and let the squad writer spawn the wave.
 local function install_hold_the_ground()
-	local task = C().mod("tasks_hold_the_ground")
-	local effects = C().mod("xr_effects")
+	local task = core.mod("tasks_hold_the_ground")
+	local effects = core.mod("xr_effects")
 	local key = "on_flea_market_defense_squad_death"
-	if not (C().fn(task, "spawn") and C().fn(effects, key)) then return end
+	if not (core.fn(task, "spawn") and core.fn(effects, key)) then return end
 
 	local record_only = false
-	C().wrap(task, "spawn", "tasks_hold_the_ground.spawn", function(orig)
+	core.wrap(task, "spawn", "tasks_hold_the_ground.spawn", function(orig)
 		return function(...)
 			if not record_only then return orig(...) end
 		end
 	end)
-	C().wrap(effects, key, "xr_effects." .. key, function(orig)
+	core.wrap(effects, key, "xr_effects." .. key, function(orig)
 		return function(actor, squad, ...)
-			if not (C().active() and squad and not coop_mode.writes(squad.id)) then
+			if not (core.active() and squad and not coop_mode.writes(squad.id)) then
 				return orig(actor, squad, ...)
 			end
 			local previous = record_only
@@ -199,7 +192,7 @@ end
 -- Every other player, on any level: each pass looks at his level (as_his_level).
 local function others_here()
 	local out = {}
-	for _, p in ipairs(C().all_players()) do
+	for _, p in ipairs(core.all_players()) do
 		if (not db.actor or p.obj:id() ~= db.actor:id()) and p.obj:alive() and standing(p.obj) then -- by id: no == in luabind
 			out[#out + 1] = p
 		end
@@ -209,18 +202,18 @@ end
 
 -- The functor as this player, on his level: level.name and the objects are his.
 local function as_his_level(p, f, ...)
-	return qc().with_level_of(p.peer, C().as_player, p.obj, f, ...)
+	return coop_quests_core.with_level_of(p.peer, core.as_player, p.obj, f, ...)
 end
 
 local function party_functor(name, orig)
 	return function(tsk, task_id, ...)
-		if not (world_active() and tsk ~= nil) or C().identity_peer() then return orig(tsk, task_id, ...) end
+		if not (world_active() and tsk ~= nil) or core.identity_peer() then return orig(tsk, task_id, ...) end
 		local pre = tsk.stage
 		local held, failed = false, false
 		pass_stage = pre
 		local actor_pass = name ~= "mirage_task_status_functor" or not coop_mode or coop_mode.actor_is_player()
 		if actor_pass and standing(db.actor) then
-			local r = qc().at_home(orig, tsk, task_id, ...)
+			local r = coop_quests_core.at_home(orig, tsk, task_id, ...)
 			if tsk.stage ~= pre or (r ~= nil and r ~= "fail") then
 				pass_stage = nil
 				return r
@@ -231,7 +224,7 @@ local function party_functor(name, orig)
 			local ok, r2 = as_his_level(p, orig, tsk, task_id, ...)
 			if not ok then
 				st.errors = st.errors + 1
-				C().report("nta", name, r2)
+				core.report("nta", name, r2)
 			elseif tsk.stage ~= pre then
 				st.party_stage = st.party_stage + 1
 				log("%s: stage %s -> %s by player #%s", task_id, tostring(pre), tostring(tsk.stage), tostring(p.peer))
@@ -260,21 +253,21 @@ end
 -- the trap: a client's pick up is read from the artefact's holder, "he walked off" from the player nearest to the spot.
 local function baba_stage_1(tsk, task_id, orig)
 	if tsk.stage ~= 1 then return false end
-	local by, cfg = C().mod("tasks_baba_yaga"), C().mod("baba_yaga_configs")
-	local state = by and C().find_local(by, "state")
+	local by, cfg = core.mod("tasks_baba_yaga"), core.mod("baba_yaga_configs")
+	local state = by and core.find_local(by, "state")
 	if not (state and cfg and cfg.art_location) then return false end
 	local se = state.art_id and alife_object(state.art_id)
-	if se and not state.was_teleported and C().is_remote_player(se.parent_id) then
+	if se and not state.was_teleported and core.is_remote_player(se.parent_id) then
 		state.was_teleported = true
-		C().as_player(level.object_by_id(se.parent_id), by.teleport)
+		core.as_player(level.object_by_id(se.parent_id), by.teleport)
 		by.spawn()
 		tsk.stage = 2
 		return true
 	end
 	local near = nearest_standing(cfg.art_location.vector)
 	if near then
-		local ok, e = C().as_player(near, orig, tsk, task_id)
-		if not ok then C().report("nta", "baba yaga", e) end
+		local ok, e = core.as_player(near, orig, tsk, task_id)
+		if not ok then core.report("nta", "baba yaga", e) end
 	end
 	return true
 end
@@ -282,7 +275,7 @@ end
 -- Big Game, stage 1: level.object_by_id is nil for a giant that went offline, and the task takes that for a dead one.
 local function big_game_offline(tsk)
 	if tsk.stage ~= 1 then return false end
-	local state = C().find_local(C().mod("tasks_big_game"), "state")
+	local state = core.find_local(core.mod("tasks_big_game"), "state")
 	for _, id in ipairs(state and state.small_giants_ids or {}) do
 		local se = alife_object(id)
 		if se and se:alive() and not level.object_by_id(id) then return true end
@@ -297,17 +290,19 @@ local function group_functor(name, orig)
 	local before = BEFORE_PASS[name]
 	if not before then return party end
 	return function(tsk, task_id, ...)
-		if world_active() and tsk ~= nil and not C().identity_peer() and before(tsk, task_id, orig) then return nil end
+		if world_active() and tsk ~= nil and not core.identity_peer() and before(tsk, task_id, orig) then return nil end
 		return party(tsk, task_id, ...)
 	end
 end
 
 local function install_functors()
-	local tsf = C().mod("task_status_functor")
+	local tsf = core.mod("task_status_functor")
 	if not tsf then return 0 end
 	local n = 0
-	for _, name in ipairs(FUNCTORS) do
-		if C().wrap(tsf, name, "task_status_functor." .. name, function(orig) return group_functor(name, orig) end) then
+	for _, task in ipairs(GROUP_TASKS) do
+		local name = task .. "_task_status_functor"
+		if core.wrap(tsf, name, "task_status_functor." .. name, function(orig) return group_functor(name, orig) end,
+			"tasks_" .. task) then
 			n = n + 1
 		end
 	end
@@ -322,11 +317,11 @@ local function teleport_wrapper(label, dest_of, forced_from)
 	return function(orig)
 		return function(...)
 			if world_active() and pass_stage and pass_stage >= forced_from then return end
-			local peer = C().identity_peer()
-			if not (world_active() and peer and peer ~= C().self_peer()) then return orig(...) end
+			local peer = core.identity_peer()
+			if not (world_active() and peer and peer ~= core.self_peer()) then return orig(...) end
 			local ok, dest = pcall(dest_of, orig)
 			if ok and dest then
-				C().teleport(peer, dest)
+				core.teleport(peer, dest)
 				st.teleports = st.teleports + 1
 				log("%s: player #%s moved", label, tostring(peer))
 			else
@@ -338,24 +333,24 @@ end
 
 -- The trap took one player: who stands at the artefact goes along. After the status pass, out of its identity.
 local function pull_from_artefact()
-	local cfg = C().mod("baba_yaga_configs")
+	local cfg = core.mod("baba_yaga_configs")
 	if not (cfg and cfg.art_location and cfg.teleport_to_location) then return true end
-	for _, p in ipairs(C().player_objects()) do
+	for _, p in ipairs(core.player_objects()) do
 		if standing(p.obj) and p.obj:position():distance_to_sqr(cfg.art_location.vector) < PULL_RANGE_SQR then
-			C().teleport(p.peer, cfg.teleport_to_location.vector)
+			core.teleport(p.peer, cfg.teleport_to_location.vector)
 		end
 	end
 	return true
 end
 
 local function install_teleports()
-	local by = C().mod("tasks_baba_yaga")
+	local by = core.mod("tasks_baba_yaga")
 	if by then
-		C().wrap(by, "teleport", "tasks_baba_yaga.teleport", teleport_wrapper("baba_yaga", function()
-			local cfg = C().mod("baba_yaga_configs")
+		core.wrap(by, "teleport", "tasks_baba_yaga.teleport", teleport_wrapper("baba_yaga", function()
+			local cfg = core.mod("baba_yaga_configs")
 			return cfg and cfg.teleport_to_location and cfg.teleport_to_location.vector
 		end, 2))
-		C().wrap(by, "spawn", "tasks_baba_yaga.spawn", function(orig)
+		core.wrap(by, "spawn", "tasks_baba_yaga.spawn", function(orig)
 			return function(...)
 				local r = orig(...)
 				if world_active() then CreateTimeEvent("coop_mods_nta", "baba_pull", 0, pull_from_artefact) end
@@ -363,10 +358,10 @@ local function install_teleports()
 			end
 		end)
 	end
-	local mi = C().mod("tasks_mirage")
+	local mi = core.mod("tasks_mirage")
 	if mi then
-		C().wrap(mi, "teleport", "tasks_mirage.teleport", teleport_wrapper("mirage", function(orig)
-			local smart = C().upvalue(orig, "iron_forest_smart")
+		core.wrap(mi, "teleport", "tasks_mirage.teleport", teleport_wrapper("mirage", function(orig)
+			local smart = core.upvalue(orig, "iron_forest_smart")
 			local se = smart and SIMBOARD and SIMBOARD:get_smart_by_name(smart)
 			return se and se.position
 		end, 1))
@@ -378,7 +373,7 @@ end
 -------------------------------------------------------------------------------
 -- The player the fight is about: on his feet, in the fight's circle.
 local function mirage_player(here_only)
-	local cfg = C().mod("mirage_configs")
+	local cfg = core.mod("mirage_configs")
 	local pos = cfg and cfg.teleport_activator_center_point
 	if not pos then return nil end
 	local who, d = nearest_standing(pos, here_only)
@@ -390,9 +385,9 @@ end
 -- lookup needs replacing: the spawn, logic setup and saved enemy list remain in the world task's context.
 local function spawn_mirages_for_player(orig)
 	return function(...)
-		if not C().active() then return orig(...) end
+		if not core.active() then return orig(...) end
 		if not coop_mode.decides_world() then return end
-		local who = C().identity_obj() or (coop_mode.actor_is_player() and db.actor)
+		local who = core.identity_obj() or (coop_mode.actor_is_player() and db.actor)
 		if not who then return end
 		local se = alife_object(who:id())
 		if not se then error("Mirage wave has no server object for its player", 0) end
@@ -414,19 +409,27 @@ local function mirage_gun(npc, sec)
 	return gun
 end
 
+-- A visual's name without its extension; the set of visuals is the game's, so the table stays small.
+local visual_base = setmetatable({}, { __index = function(t, name)
+	local base = str_explode(name, "%.")[1]
+	t[name] = base
+	return base
+end })
+
 -- A map can identify its online mirages by section even while the world task's local enemy list lives elsewhere.
 -- Appearance and inventory use one read of the player. Selection uses that applied sample until the next update.
+-- The section test comes first: this runs on every NPC's update.
 local function sample_mirage(mi, npc)
-	if not (coop_mode.leads_here() and mi.is_mirage(npc) and npc:alive()) then return end
-	local nu = C().mod("nta_utils")
+	if not (mi.is_mirage(npc) and core.active() and coop_mode.leads_here() and npc:alive()) then return end
+	local nu = core.mod("nta_utils")
 	if not (nu and nu.actor_on_level(nu.levels.zaton)) then return end
 	local id = npc:id()
 	local who = mirage_player(true)
 	if not who then mirage_weapons[id] = nil; return end
 	local item = who:active_item()
 	local sec = item and IsWeapon(item) and not nu.is_melee(item) and item:section() or "wpn_pkp"
-	local visual = str_explode(who:get_visual_name(), "%.")[1]
-	if visual ~= str_explode(npc:get_visual_name(), "%.")[1] then npc:set_visual_name(visual) end
+	local visual = visual_base[who:get_visual_name()]
+	if visual ~= visual_base[npc:get_visual_name()] then npc:set_visual_name(visual) end
 	local sample = mirage_weapons[id]
 	if not sample or sample.section ~= sec then
 		sample = { section = sec }
@@ -440,17 +443,17 @@ local function sample_mirage(mi, npc)
 end
 
 local function install_mirage()
-	local mi = C().mod("tasks_mirage")
+	local mi = core.mod("tasks_mirage")
 	if not mi then return end
 	-- The blast comes down where db.actor stands, every 6 s, and the loop calls itself through this name. With nobody in the
 	-- circle nobody is hit (the stock would blast a player at his camp); the loop goes on, for the group that comes back.
-	C().wrap(mi, "start_explosions_loop", "tasks_mirage.start_explosions_loop", function(orig)
+	core.wrap(mi, "start_explosions_loop", "tasks_mirage.start_explosions_loop", function(orig)
 		return function()
 			if not world_active() then return orig() end
 			local who = mirage_player()
 			if who then
-				local ok, e = C().as_player(who, orig)
-				if not ok then C().report("nta", "mirage blasts", e) end
+				local ok, e = core.as_player(who, orig)
+				if not ok then core.report("nta", "mirage blasts", e) end
 				return
 			end
 			CreateTimeEvent("coop_mods_nta", "mirage_wait", MIRAGE_LOOP_S, function()
@@ -459,29 +462,27 @@ local function install_mirage()
 			end)
 		end
 	end)
-	C().wrap(mi, "spawn_mirages", "tasks_mirage.spawn_mirages", spawn_mirages_for_player)
+	core.wrap(mi, "spawn_mirages", "tasks_mirage.spawn_mirages", spawn_mirages_for_player)
 	-- Copying is done with the online NPC and player on their map, outside the world task's status passes.
 	for _, name in ipairs({ "update_mirages_visual", "give_mirages_weapon" }) do
-		C().wrap(mi, name, "tasks_mirage." .. name, function(orig)
+		core.wrap(mi, name, "tasks_mirage." .. name, function(orig)
 			return function(...)
-				if not C().active() then return orig(...) end
+				if not core.active() then return orig(...) end
 			end
 		end)
 	end
-	local wrapped, old = C().wrap(mi, "npc_on_choose_weapon", "tasks_mirage.npc_on_choose_weapon", function(orig)
+	local wrapped, old = core.wrap(mi, "npc_on_choose_weapon", "tasks_mirage.npc_on_choose_weapon", function(orig)
 		return function(npc, curr_wpn, flags, ...)
-			if not C().active() then return orig(npc, curr_wpn, flags, ...) end
-			if not (flags and coop_mode.leads_here() and mi.is_mirage(npc)) then return end
+			if not core.active() then return orig(npc, curr_wpn, flags, ...) end
+			if not (flags and mi.is_mirage(npc) and coop_mode.leads_here()) then return end
 			local sample = mirage_weapons[npc:id()]
 			local gun = sample and mirage_gun(npc, sample.section)
 			if gun then flags.gun_id = gun end
 		end
 	end)
 	if wrapped then
-		C().swap_callback("npc_on_choose_weapon", old, mi.npc_on_choose_weapon)
-		RegisterScriptCallback("npc_on_update", function(npc)
-			if C().active() then sample_mirage(mi, npc) end
-		end)
+		core.swap_callback("npc_on_choose_weapon", old, mi.npc_on_choose_weapon)
+		RegisterScriptCallback("npc_on_update", function(npc) sample_mirage(mi, npc) end)
 		RegisterScriptCallback("npc_on_net_destroy", function(npc) mirage_weapons[npc:id()] = nil end)
 	end
 end
@@ -493,18 +494,18 @@ local fire = { orig_hit = nil, wrapped_hit = nil, in_hit = false }
 
 local function remote_drafts(s_hit)
 	local ok, id = pcall(function() return s_hit.draftsman:id() end)
-	return ok and C().is_remote_player(id) and id or nil
+	return ok and core.is_remote_player(id) and id or nil
 end
 
 local function install_living_fire()
-	local lf = C().mod("tasks_the_living_fire")
+	local lf = core.mod("tasks_the_living_fire")
 	if not lf then return end
-	local ok = C().wrap(lf, "npc_on_before_hit", "tasks_the_living_fire.npc_on_before_hit", function(orig)
+	local ok = core.wrap(lf, "npc_on_before_hit", "tasks_the_living_fire.npc_on_before_hit", function(orig)
 		fire.orig_hit = orig
 		return function(npc, s_hit, bone_id, ...)
 			-- Registered as a callback, this wrapper would run on clients (coop_* scripts are view): the mod's
 			-- script is host-only there.
-			if C().world_client() then return end
+			if core.world_client() then return end
 			if world_active() and s_hit then
 				local id = remote_drafts(s_hit)
 				if id then
@@ -512,9 +513,9 @@ local function install_living_fire()
 					-- the file: the rewrite runs the script again after this wrapper is in place, and drops it.
 					local who = level.object_by_id(id)
 					lf.AC_ID = id
-					local done, e = C().as_player(who, orig, npc, s_hit, bone_id, ...)
+					local done, e = core.as_player(who, orig, npc, s_hit, bone_id, ...)
 					lf.AC_ID = nil
-					if not done then C().report("nta", "living fire hit", e) end
+					if not done then core.report("nta", "living fire hit", e) end
 					return
 				end
 			end
@@ -527,10 +528,10 @@ local function install_living_fire()
 	if ok then fire.wrapped_hit = lf.npc_on_before_hit end
 
 	-- Revenge on a client's character: the burn at that character, the death on that player's machine.
-	C().wrap(lf, "prometheus_kill_actor", "tasks_the_living_fire.prometheus_kill_actor", function(orig)
+	core.wrap(lf, "prometheus_kill_actor", "tasks_the_living_fire.prometheus_kill_actor", function(orig)
 		return function(...)
-			local peer = C().identity_peer()
-			local who = C().identity_obj()
+			local peer = core.identity_peer()
+			local who = core.identity_obj()
 			-- Stage 25's timer: no hit says who. The stock takes the host wherever he is.
 			if world_active() and not peer and not fire.in_hit then
 				local se = get_story_se_object(PROMETHEUS_SID)
@@ -538,47 +539,47 @@ local function install_living_fire()
 				if se then who, d = nearest_standing(se.position) end
 				if not (who and d < REVENGE_RANGE_SQR) then return end
 				if who:id() == db.actor:id() then return orig(...) end
-				peer = C().peer_of(who:id())
+				peer = core.peer_of(who:id())
 			end
-			if not (world_active() and peer and who and peer ~= C().self_peer()) then return orig(...) end
+			if not (world_active() and peer and who and peer ~= core.self_peer()) then return orig(...) end
 			st.revenge = st.revenge + 1
 			local id = who:id()
 			CreateTimeEvent("coop_mods_nta", "revenge_" .. tostring(id), 2, function()
 				local obj = level.object_by_id(id)
-				local nu = C().mod("nta_utils")
+				local nu = core.mod("nta_utils")
 				if obj and nu and nu.obj_position_to_spawn_config_partial and nu.spawn_helper then
 					local cfg = nu.obj_position_to_spawn_config_partial(obj)
 					cfg.section, cfg.is_anomaly = "zone_zhar", true
 					cfg.vector.y = cfg.vector.y - 1
 					pcall(nu.spawn_helper, cfg)
 				end
-				C().fx_sound([[new_tasks_addon\zhar_blow]])
-				C().to_peer(peer, "nta_kill", {})
+				core.fx_sound([[new_tasks_addon\zhar_blow]])
+				core.to_peer(peer, "nta_kill", {})
 				return true
 			end)
 		end
 	end)
 
 	-- Army squads of X-18 turn on every player, not only on the host.
-	C().wrap(lf, "set_x18_military_relation", "tasks_the_living_fire.set_x18_military_relation", function(orig)
+	core.wrap(lf, "set_x18_military_relation", "tasks_the_living_fire.set_x18_military_relation", function(orig)
 		return function(...)
 			local r = orig(...)
 			if world_active() then
-				for _, p in ipairs(others_here()) do C().as_player(p.obj, orig, ...) end
+				for _, p in ipairs(others_here()) do core.as_player(p.obj, orig, ...) end
 			end
 			return r
 		end
 	end)
 
-	C().wrap(lf, "earthquake_effect", "tasks_the_living_fire.earthquake_effect", function(orig)
+	core.wrap(lf, "earthquake_effect", "tasks_the_living_fire.earthquake_effect", function(orig)
 		return function(...)
 			local r = orig(...)
 			if world_active() then
-				C().fx_sound([[new_tasks_addon\blowout_boom_02_old]])
-				C().fx_sound([[new_tasks_addon\earthquake_old]])
-				C().fx_cam([[camera_effects\earthquake.anm]], QUAKE_CAM, true)
+				core.fx_sound([[new_tasks_addon\blowout_boom_02_old]])
+				core.fx_sound([[new_tasks_addon\earthquake_old]])
+				core.fx_cam([[camera_effects\earthquake.anm]], QUAKE_CAM, true)
 				CreateTimeEvent("coop_mods_nta", "quake_stop", 6, function()
-					C().fx_stop_cam(QUAKE_CAM)
+					core.fx_stop_cam(QUAKE_CAM)
 					return true
 				end)
 			end
@@ -589,7 +590,7 @@ end
 
 local function rebind_living_fire()
 	if not fire.wrapped_hit then return end
-	C().swap_callback("npc_on_before_hit", fire.orig_hit, fire.wrapped_hit)
+	core.swap_callback("npc_on_before_hit", fire.orig_hit, fire.wrapped_hit)
 	-- a coop_* wrapper is view: the hit relay of a map server's level does not find it by its domain
 	local qc = rawget(_G, "coop_quests_core") -- the Core keeps the list, a server's relay calls it (coop_srv_quests_far)
 	if qc and qc.add_death_listener then qc.add_death_listener("npc_on_before_hit", fire.wrapped_hit) end
@@ -609,20 +610,16 @@ local SKY_HIT, SKY_COVER = "nta_sky_hit", "nta_sky_cover"
 local SKY_HELI = "new_tasks_addon_heli_strong_static"
 local sky_hits = {} -- heli id -> one 0.1 s window; values contain character ids, never game objects
 
-local function object_id(id, minimum)
-	return type(id) == "number" and id >= minimum and id < 65535 and id % 1 == 0
-end
-
 local function skyfall_current(sky, hid)
-	local state = C().upvalue(sky.save_state, "state") or C().find_local(sky, "state")
-	return state and state.static_heli_id ~= nil and C().hid(state.static_heli_id) == hid
+	local state = core.upvalue(sky.save_state, "state") or core.find_local(sky, "state")
+	return state and state.static_heli_id ~= nil and core.hid(state.static_heli_id) == hid
 end
 
 local function skyfall_lose_cover(t)
-	if not (object_id(t.c, 0) and coop_mode.actor_is_player() and db.actor and C().hid(db.actor:id()) == t.c) then return end
-	local disguise = C().mod("gameplay_disguise")
+	if not (core.object_id(t.c, true) and coop_mode.actor_is_player() and db.actor and core.hid(db.actor:id()) == t.c) then return end
+	local disguise = core.mod("gameplay_disguise")
 	if disguise then disguise.set_comm(disguise.get_default_comm()) end
-	local news = C().mod("dynamic_news_helper")
+	local news = core.mod("dynamic_news_helper")
 	if news then
 		news.send_tip(game.translate_string("skyfall_cover_blow_message"), game.translate_string("army"),
 			nil, nil, "ui_icon_news_trx_army", nil, "npc")
@@ -630,13 +627,13 @@ local function skyfall_lose_cover(t)
 end
 
 local function skyfall_penalize(cid)
-	local id = C().lid(cid)
+	local id = core.lid(cid)
 	if id == nil then return end
 	local who = coop_mode.leads_here() and level.object_by_id(id)
 	local se = alife_object(id)
 	local faction = who and who:character_community() or (se and se:community())
 	if not faction then return end
-	local reputation = C().mod("coop_reputation")
+	local reputation = core.mod("coop_reputation")
 	local goodwill = reputation.goodwill_of("army", id)
 	if goodwill == -3000 or relation_registry.community_relation(faction, "army") + goodwill <= game_relations.ENEMIES then return end
 	relation_registry.set_community_goodwill("army", id, -3000)
@@ -654,13 +651,13 @@ end
 local function skyfall_fact(t, from)
 	-- The transport reserves 0x101..0x107 for map peers (coop_mapserver_rules.h). A player cannot report physics.
 	local map_peer = type(from) == "number" and from >= 0x101 and from <= 0x107 and from % 1 == 0
-	local sky = C().mod("tasks_skyfall")
-	local valid = coop_mode.decides_world() and map_peer and sky and object_id(t.o, 1) and skyfall_current(sky, t.o)
+	local sky = core.mod("tasks_skyfall")
+	local valid = coop_mode.decides_world() and map_peer and sky and core.object_id(t.o) and skyfall_current(sky, t.o)
 	if valid then
 		if t.b == true then
 			valid = t.c == nil
 		else
-			local id = t.b == nil and object_id(t.c, 1) and C().lid(t.c)
+			local id = t.b == nil and core.object_id(t.c) and core.lid(t.c)
 			local se = id and alife_object(id)
 			valid = se and se:section_name() == "coop_player_avatar"
 		end
@@ -671,18 +668,18 @@ end
 
 local function skyfall_finish(sky, hid, batch, explode)
 	sky_hits[hid] = nil
-	if not (C().active() and coop_mode.leads_here()) then return end
+	if not (core.active() and coop_mode.leads_here()) then return end
 	local owns_world = coop_mode.decides_world()
 	if owns_world and not skyfall_current(sky, hid) then return end
 	local function report(t)
-		if owns_world then skyfall_apply(sky, t) else C().publish(SKY_HIT, t) end
+		if owns_world then skyfall_apply(sky, t) else core.publish(SKY_HIT, t) end
 	end
 	for cid in pairs(batch and batch.shooters or {}) do report({ o = hid, c = cid }) end
 	if explode or (batch and batch.count > 15) then report({ o = hid, b = true }) end
 end
 
 local function skyfall_hit(sky, obj, who)
-	local hid = C().hid(obj:id())
+	local hid = core.hid(obj:id())
 	if not hid or (coop_mode.decides_world() and not skyfall_current(sky, hid)) then return end
 	local batch = sky_hits[hid]
 	local timer = "skyfall_hits_" .. hid
@@ -693,9 +690,9 @@ local function skyfall_hit(sky, obj, who)
 		return
 	end
 	local id = who:id()
-	local peer = C().peer_of(id)
+	local peer = core.peer_of(id)
 	if not (peer and coop_mode.seat_plays(peer) and coop_mode.decider(peer) == "this") then return end
-	local cid = C().hid(id)
+	local cid = core.hid(id)
 	if cid == nil then return end
 	if not batch then
 		batch = { count = 0, shooters = {} }
@@ -710,56 +707,56 @@ local function skyfall_hit(sky, obj, who)
 end
 
 local function install_skyfall()
-	local sky = C().mod("tasks_skyfall")
+	local sky = core.mod("tasks_skyfall")
 	if not sky then return end
 	local event = "physic_object_on_hit_callback"
-	local wrapped, old = C().wrap(sky, event, "tasks_skyfall.physic_object_on_hit_callback", function(orig)
+	local wrapped, old = core.wrap(sky, event, "tasks_skyfall.physic_object_on_hit_callback", function(orig)
 		return function(obj, damage, dir, who, ...)
-			if not C().active() then return orig(obj, damage, dir, who, ...) end
+			if not core.active() then return orig(obj, damage, dir, who, ...) end
 			if not (coop_mode.leads_here() and obj and who) then return end
 			if obj:section() ~= SKY_HELI then return orig(obj, damage, dir, who, ...) end
 			skyfall_hit(sky, obj, who)
 		end
 	end)
-	if wrapped then C().swap_callback(event, old, sky[event]) end
-	C().wrap(sky, "is_enemies_with_military", "tasks_skyfall.is_enemies_with_military", function(orig)
+	if wrapped then core.swap_callback(event, old, sky[event]) end
+	core.wrap(sky, "is_enemies_with_military", "tasks_skyfall.is_enemies_with_military", function(orig)
 		return function(...)
 			if orig(...) then return true end
-			if C().identity_peer() or not world_active() then return false end
+			if core.identity_peer() or not world_active() then return false end
 			for _, p in ipairs(others_here()) do
-				local ok, r = C().as_player(p.obj, orig, ...)
+				local ok, r = core.as_player(p.obj, orig, ...)
 				if ok and r then return true end
 			end
 			return false
 		end
 	end)
 	-- stage 1 and 2 fail on "not on Agroprom": in the checkpoint mode the task goes back to its start instead
-	C().wrap(C().mod("task_status_functor"), "skyfall_task_status_functor", "task_status_functor.skyfall_task_status_functor",
+	core.wrap(core.mod("task_status_functor"), "skyfall_task_status_functor", "task_status_functor.skyfall_task_status_functor",
 		function(orig)
 			return function(tsk, task_id, ...)
-				local enc = C().mod("coop_encounters")
+				local enc = core.mod("coop_encounters")
 				if enc and tsk and enc.left_level("skyfall", tsk) then return nil end
 				return orig(tsk, task_id, ...)
 			end
-		end)
+		end, "tasks_skyfall")
 end
 
 -- The ghost's blow is inside a timer the function starts, where db.actor is the host's: the timer runs as the player nearest
 -- to the ghost.
 local function install_mystery()
-	local mots, nu = C().mod("tasks_mystery_of_the_swamps"), C().mod("nta_utils")
+	local mots, nu = core.mod("tasks_mystery_of_the_swamps"), core.mod("nta_utils")
 	if not (mots and nu) then return end
-	C().wrap(mots, "spawn_garbage_ghost", "tasks_mystery_of_the_swamps.spawn_garbage_ghost", function(orig)
+	core.wrap(mots, "spawn_garbage_ghost", "tasks_mystery_of_the_swamps.spawn_garbage_ghost", function(orig)
 		return function(args, ...)
 			if not (world_active() and type(args) == "table" and args.bonk_actor) then return orig(args, ...) end
-			local cfg = C().mod("mystery_of_the_swamps_configs")
+			local cfg = core.mod("mystery_of_the_swamps_configs")
 			local spot = cfg and cfg.garbage_ghost_configs and cfg.garbage_ghost_configs[1]
 			local timer = nu.set_timeout
 			nu.set_timeout = function(cb, delay)
 				return timer(function()
 					local who = spot and nearest_standing(spot.vector) or db.actor
-					local ok, e = C().as_player(who, cb)
-					if not ok then C().report("nta", "ghost", e) end
+					local ok, e = core.as_player(who, cb)
+					if not ok then core.report("nta", "ghost", e) end
 				end, delay)
 			end
 			local ok, e = pcall(orig, args, ...)
@@ -775,25 +772,25 @@ end
 local mono = { orig = nil, wrapped = nil, next = 0 }
 
 local function install_monolith()
-	local om = C().mod("operacia_monolith")
+	local om = core.mod("operacia_monolith")
 	if not om then return end
-	local ok = C().wrap(om, "actor_on_update", "operacia_monolith.actor_on_update", function(orig)
+	local ok = core.wrap(om, "actor_on_update", "operacia_monolith.actor_on_update", function(orig)
 		mono.orig = orig
 		return function(...)
-			if C().world_client() then return end -- registered from here this wrapper would run on clients
+			if core.world_client() then return end -- registered from here this wrapper would run on clients
 			if not world_active() then return orig(...) end
 			local now = time_global()
 			if now < mono.next then return end
 			mono.next = now + POLL_INV_MS
 			local real = db.actor.object
-			local done, e = qc().with_actor({
+			local done, e = coop_quests_core.with_actor({
 				object = function(me, sec, ...)
 					local o = real(me, sec, ...)
 					if o or type(sec) ~= "string" then return o end
-					return coop_tasks.party_object(sec)
+					return coop_tasks_items.party_object(sec)
 				end,
 			}, orig, ...)
-			if not done then C().report("nta", "operation monolith", e) end
+			if not done then core.report("nta", "operation monolith", e) end
 		end
 	end)
 	if ok then mono.wrapped = om.actor_on_update end
@@ -810,56 +807,56 @@ local function urgent_side()
 	local info = task_manager.get_task_manager().task_info
 	if info[URGENT_DUTY] then return "dolg" end
 	if info[URGENT_ARMY] then return "army" end
-	local nu = C().mod("nta_utils")
+	local nu = core.mod("nta_utils")
 	if faction_on_level("dolg", nu.levels.bar) then return "dolg" end
 	if faction_on_level("army", nu.levels.agroprom) then return "army" end
 	return nil
 end
 
 local function install_factions()
-	local uo = C().mod("tasks_urgent_orders")
+	local uo = core.mod("tasks_urgent_orders")
 	if uo then
-		C().wrap(uo, "is_from_duty", "tasks_urgent_orders.is_from_duty", function(orig)
+		core.wrap(uo, "is_from_duty", "tasks_urgent_orders.is_from_duty", function(orig)
 			return function(...)
 				if not world_active() then return orig(...) end
 				return urgent_side() == "dolg"
 			end
 		end)
-		C().wrap(uo, "is_from_army", "tasks_urgent_orders.is_from_army", function(orig)
+		core.wrap(uo, "is_from_army", "tasks_urgent_orders.is_from_army", function(orig)
 			return function(...)
 				if not world_active() then return orig(...) end
 				return urgent_side() == "army"
 			end
 		end)
 	end
-	local dlg = C().mod("dialogs")
-	C().wrap(dlg, "actor_true_isg", "dialogs.actor_true_isg", function(orig)
+	local dlg = core.mod("dialogs")
+	core.wrap(dlg, "actor_true_isg", "dialogs.actor_true_isg", function(orig)
 		return function(...)
 			local r = orig(...)
 			if not r and world_active() and any_of_faction("isg") then return true end
 			return r
 		end
 	end)
-	local xe = C().mod("xr_effects")
-	C().wrap(xe, "lttz_set_squad_enemy_to_actor", "xr_effects.lttz_set_squad_enemy_to_actor", function(orig)
+	local xe = core.mod("xr_effects")
+	core.wrap(xe, "lttz_set_squad_enemy_to_actor", "xr_effects.lttz_set_squad_enemy_to_actor", function(orig)
 		return function(...)
 			local r = orig(...)
 			if world_active() then
-				for _, p in ipairs(others_here()) do C().as_player(p.obj, orig, ...) end
+				for _, p in ipairs(others_here()) do core.as_player(p.obj, orig, ...) end
 			end
 			return r
 		end
-	end)
-	local u = C().mod("utils_slht")
+	end, "dialogs_lostzone")
+	local u = core.mod("utils_slht")
 	if not u then return end
 	-- A running storyline is not ended by the army player leaving: the disabled info fails its tasks for good.
-	C().wrap(u, "valid_faction_actor", "utils_slht.valid_faction_actor", function(orig)
+	core.wrap(u, "valid_faction_actor", "utils_slht.valid_faction_actor", function(orig)
 		return function(...)
 			if orig(...) then return true end
 			return world_active() and (has_alife_info("hidden_threat_start") or any_of_faction("army"))
 		end
 	end)
-	C().wrap(u, "actor_in_smart", "utils_slht.actor_in_smart", function(orig)
+	core.wrap(u, "actor_in_smart", "utils_slht.actor_in_smart", function(orig)
 		return function(smart, dist, ...)
 			if orig(smart, dist, ...) then return true end
 			if not world_active() then return false end
@@ -870,7 +867,7 @@ local function install_factions()
 		end
 	end)
 	-- The cut scenes of the storyline move db.actor: on every player's own machine, like the stock teleports of a scene.
-	local logic = C().mod("coop_npc_logic")
+	local logic = core.mod("coop_npc_logic")
 	if logic then
 		logic.register_actor_effect("ht_ds_domik_st_prestart_cut_scene")
 		logic.register_actor_effect("ht_pri_b35_teleport_actor")
@@ -879,18 +876,18 @@ end
 
 -- The checks of the first update run when clients are not there yet.
 local function on_new_player()
-	local uo = C().mod("tasks_urgent_orders")
+	local uo = core.mod("tasks_urgent_orders")
 	if uo and split_levels() then
-		for _, p in ipairs(C().all_players()) do qc().with_level_of(p.peer, uo.actor_on_first_update) end -- it reads level.name()
+		for _, p in ipairs(core.all_players()) do coop_quests_core.with_level_of(p.peer, uo.actor_on_first_update) end -- it reads level.name()
 	elseif uo then
 		uo.actor_on_first_update()
 	end
-	local dl = C().mod("dialogs_lostzone")
-	local isg_check = dl and C().find_local(dl, "actor_on_first_update")
+	local dl = core.mod("dialogs_lostzone")
+	local isg_check = dl and core.find_local(dl, "actor_on_first_update")
 	if isg_check and any_of_faction("isg") and not has_alife_info("lttz_hb_spawned_ds_isg_leader_squad") then isg_check() end
 	if has_alife_info("hidden_threat_disabled") and not has_alife_info("hidden_threat_complete") and any_of_faction("army") then
-		local ht = C().mod("hidden_threat")
-		local update = ht and C().find_local(ht, "hidden_threat_update")
+		local ht = core.mod("hidden_threat")
+		local update = ht and core.find_local(ht, "hidden_threat_update")
 		if update then
 			disable_info("hidden_threat_disabled")
 			CreateTimeEvent("cycle", "stht_update", 5, update)
@@ -902,14 +899,14 @@ end
 -- Hidden Threat starts at a rank, read on db.actor: an army client who reaches it starts it the stock way.
 local function hidden_threat_rank()
 	if not world_active() or has_alife_info("hidden_threat_start") or has_alife_info("hidden_threat_disabled") then return end
-	local ht, u = C().mod("hidden_threat"), C().mod("utils_slht")
+	local ht, u = core.mod("hidden_threat"), core.mod("utils_slht")
 	if not (ht and u) then return end
 	-- cond_rank (hidden_threat.script:12) is an upvalue of the local hidden_threat_update only, two levels below the module
 	-- function on_game_start (-> actor_on_first_update -> hidden_threat_update): past find_local's one-wrapper walk
-	local rank = C().find_local(ht, "cond_rank")
-	if rank == nil then rank = C().upvalue(C().find_local(ht, "hidden_threat_update"), "cond_rank") end
+	local rank = core.find_local(ht, "cond_rank")
+	if rank == nil then rank = core.upvalue(core.find_local(ht, "hidden_threat_update"), "cond_rank") end
 	if type(rank) ~= "number" then return end
-	for _, p in ipairs(C().all_players()) do
+	for _, p in ipairs(core.all_players()) do
 		if faction_of(p.obj) == "army" and p.obj:character_rank() >= rank then
 			-- the quest's opening message is his: it names him and comes to his PDA (no object of his here: the host's PDA shows it)
 			if p.obj.far then
@@ -929,14 +926,14 @@ local function poll_players()
 	local now = time_global()
 	if now < poll.next then return end
 	poll.next = now + POLL_MS
-	local n = #C().all_players() -- a character that is there: a faction can be read
+	local n = #core.all_players() -- a character that is there: a faction can be read
 	if n > poll.players then
 		local ok, e = pcall(on_new_player)
-		if not ok then C().report("nta", "new player", e) end
+		if not ok then core.report("nta", "new player", e) end
 	end
 	poll.players = n
 	local ok, e = pcall(hidden_threat_rank)
-	if not ok then C().report("nta", "hidden threat", e) end
+	if not ok then core.report("nta", "hidden threat", e) end
 end
 
 -------------------------------------------------------------------------------
@@ -945,56 +942,53 @@ end
 -- Functors are added to task_status_functor and callbacks registered by NTA in its own on_game_start
 -- (after this file's): both are taken over at the first update, before the task manager's first check of this world
 -- (bind_stalker runs actor_on_first_update first, and actor_on_update after the task manager).
+-- One job at the actor's first update: whichever of the two callbacks comes first runs it, and the per-frame one goes.
 local function late_install()
+	UnregisterScriptCallback("actor_on_update", late_install)
 	if late_done then return end
 	late_done = true
 	local ok, n = pcall(install_functors)
-	if not ok then C().report("nta", "functors", n) else log("%d task functor(s) evaluated for the group", n) end
+	if not ok then core.report("nta", "functors", n) else log("%d task functor(s) evaluated for the group", n) end
 	ok, n = pcall(rebind_living_fire)
-	if not ok then C().report("nta", "living fire", n) end
+	if not ok then core.report("nta", "living fire", n) end
 	for _, s in ipairs({ { "skyfall", install_skyfall }, { "mirage", install_mirage }, { "mystery", install_mystery },
 		{ "factions", install_factions } }) do
 		ok, n = pcall(s[2])
-		if not ok then C().report("nta", s[1], n) end
+		if not ok then core.report("nta", s[1], n) end
 	end
 	if mono.wrapped then
-		ok, n = pcall(C().swap_callback, "actor_on_update", mono.orig, mono.wrapped)
-		if not ok then C().report("nta", "operation monolith", n) end
+		ok, n = pcall(core.swap_callback, "actor_on_update", mono.orig, mono.wrapped)
+		if not ok then core.report("nta", "operation monolith", n) end
 	end
 end
 
 local function actor_on_update()
 	if world_active() then poll_players() end
-	late_install()
 end
 
 -- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
--- error here would skip all the scripts after this one, single player included (W5).
-local function start_step(what, f)
-	local ok, err = pcall(f)
-	if not ok then printf("! [coop_mods_nta] %s failed: %s", what, tostring(err)) end
-end
-
+-- error here would skip all the scripts after this one, single player included.
 function on_game_start()
 	if not api then return end
-	local nu = C().mod("nta_utils")
+	local nu = core.mod("nta_utils")
 	if nu then
-		start_step("install_helpers", function() install_helpers(nu) end)
-		start_step("hold the ground", install_hold_the_ground)
-		start_step("install_teleports", install_teleports)
-		start_step("install_living_fire", install_living_fire)
+		core.install("nta", "install_helpers", function() install_helpers(nu) end)
+		core.install("nta", "hold the ground", install_hold_the_ground)
+		core.install("nta", "install_teleports", install_teleports)
+		core.install("nta", "install_living_fire", install_living_fire)
 	end
-	start_step("install_monolith", install_monolith) -- the storyline pack comes without NTA as well
-	C().on("nta_kill", on_kill_order, "client")
-	start_step("skyfall events", function()
-		if not C().mod("tasks_skyfall") then return end
-		C().set_limit(SKY_HIT, 64, 32)
-		C().on(SKY_HIT, skyfall_fact, "world")
-		C().on(SKY_COVER, skyfall_lose_cover, "player")
+	core.install("nta", "install_monolith", install_monolith) -- the storyline pack comes without NTA as well
+	core.on("nta_kill", on_kill_order, "client")
+	core.install("nta", "skyfall events", function()
+		if not core.mod("tasks_skyfall") then return end
+		core.set_limit(SKY_HIT, 64, 32)
+		core.on(SKY_HIT, skyfall_fact, "world")
+		core.on(SKY_COVER, skyfall_lose_cover, "player")
 	end)
 	RegisterScriptCallback("actor_on_first_update", late_install)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
-	C().status_line("nta", function()
+	RegisterScriptCallback("actor_on_update", late_install)
+	core.status_line("nta", function()
 		return string.format("group stage changes %d, defences held by others %d, teleports %d, revenges %d, errors %d",
 			st.party_stage, st.party_hold, st.teleports, st.revenge, st.errors)
 	end)

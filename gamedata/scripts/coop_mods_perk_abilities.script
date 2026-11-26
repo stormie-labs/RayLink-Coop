@@ -1,18 +1,17 @@
 -- Ядро: без проверок режима (docs/MODES.md)
 --[[
 	Anomaly Coop - active abilities of Perk-Based Artefacts as verified commands (gamedata\scripts\coop_mods_perk_abilities.script).
-	F4 unit G7-2, Dev 57: review m08:4, m08:6, m08:7 (docs\reports\2026-11-18-f4-gamma-review.md, group G7). The mod's file is
-	not changed.
+	The mod's file is not changed.
 
 	PBA runs on the player's own machine (route owner): his belt, cooldowns and timed effects are his. What an active ability
 	does to the world - the AI's choice of enemies, a stunned creature, an explosion - belongs to the process that leads his
-	map. Before this file a client's ability changed only his own copies.
+	map. Without this file a client's ability changes only his own copies.
 
 	Who decides, per mode (nothing here asks which mode it is):
 	  Co-op:  the host's process leads the map (bodies, AI, inventories) and applies every player's ability. The host's own
 	          player calls the same decider function directly, with from = his own peer.
 	  Server: the map server of the player's level leads it: his machine sends to the world server, which passes the request
-	          to that map server (coop_mods_core.on(..., "host")). The world server has no map and applies nothing. Players on
+	          to that map server (core.on(..., "host")). The world server has no map and applies nothing. Players on
 	          two maps each reach their own map server; a state is dropped where its owner is no longer "here".
 
 	Commands, event mods.pba_cmd (the owner's machine -> the decider of his level):
@@ -34,13 +33,13 @@
 	    pba_<kind>_floor   (guard)  a world action keeps its minimum interval per owner (always on)
 	    pba_<kind>_rate    (trust)  the time since his last accepted request of the kind
 	    pba_<kind>_duration (trust) d within the kind's bound; d is cut to the bound in every mode
-	    pba_blow_lamp      (guard)  B-REV F2, the death lamp's explosion: a death lamp his living character carried was released
+	    pba_blow_lamp      (guard)  the death lamp's explosion: a death lamp his living character carried was released
 	                                on this process in the last 3 s (his sacrifice asks it to; server_entity_on_unregister),
-	                                or one from a box, a corpse or an NPC within 15 m of him (the loot window; rv_FIX-PBA
-	                                R2), one explosion a lamp (always on)
+	                                or one from a box, a corpse or an NPC within 15 m of him (the loot window),
+	                                one explosion a lamp (always on)
 	  Network text never becomes a format string or a log line; ids and kinds are checked before they are used.
 
-	m08:4  ability states. The owner's machine reads the mod's own state twice a second and sends the changes:
+	Ability states. The owner's machine reads the mod's own state twice a second and sends the changes:
 	         phantom  Phantom Star on the belt (callbacks["af_star_phantom_on_equip"]): a 10 s lease, renewed every 4 s
 	         moss     food eaten with Moss (status "af_moh_invisibility"): its remaining time, at most 60 s
 	         down     Seraphim's revival (before the mod releases the artefact): 2 s
@@ -48,7 +47,7 @@
 	       (the mod's own callbacks compare with AC_ID, the decider's own actor). Cleared by "o", at the end time, when he hits
 	       a creature (moss, as the mod does), when he leaves the session or the map, and when the session ends.
 
-	API for other units (G7-3):
+	API for coop_mods_perk_dots:
 	  cmd(kind, target_id, params) -> bool   owner side: target_id a local id (0 / nil: none); params.ids = { local ids of
 	                                         the artefacts }, params.n = their count, params.d = seconds, params.o = true,
 	                                         and the kind's own keys. On the process that leads the map with a player of its
@@ -69,9 +68,9 @@ local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
 local type, pairs, ipairs, pcall, tostring, tonumber, next, select = type, pairs, ipairs, pcall, tostring, tonumber, next, select
 local math_floor, math_min, math_max = math.floor, math.min, math.max
 
-local function C() return coop_mods_core end
-local function log(fmt, ...) C().log("perk_abilities", fmt, ...) end
-local function PBA() return C().mod("perk_based_artefacts") end
+local core = coop_mods_core
+local function log(fmt, ...) core.log("perk_abilities", fmt, ...) end
+local function PBA() return core.mod("perk_based_artefacts") end
 
 local VERB = "pba_cmd"
 local MAX_COUNT = 5 -- artefacts of one kind an ability counts
@@ -87,7 +86,7 @@ local STUN_RANGE = 8 -- metres: the mod stuns a monster within 2 m or the one th
 local DIE_KEY = "af_death_lamp_die" -- PBA af_lucifer.sacrifice_artefact: add_timed_effect(1.8, nil, nil, die, nil, DIE_KEY)
 local BLOW = "ied_new_blow" -- the charge die() creates at the player
 local LUCIFER = "af_lucifer"
-local LAMP = "af_death_lamp" -- B-REV F2: the artefact whose sacrifice arms die() (sacrifice_artefact releases it)
+local LAMP = "af_death_lamp" -- the artefact whose sacrifice arms die() (sacrifice_artefact releases it)
 local LAMP_MS = 3000 -- a released lamp of his allows one explosion this long (die() runs 1.8 s after the release, plus latency)
 local MAX_LAMPS = 4 -- unspent lamps kept per player
 local RESERVED = { k = true, q = true, t = true, n = true, d = true, o = true, ids = true }
@@ -103,7 +102,7 @@ local function check_name(kind, what) return "pba_" .. kind .. "_" .. what end
 -- PBA's own mapping of an artefact in a container to its artefact (settings.allow_arty_containers).
 local function base_of(sec)
 	local pba = PBA()
-	local f = pba and C().fn(pba, "get_artefact_from_container")
+	local f = pba and core.fn(pba, "get_artefact_from_container")
 	if f then
 		local ok, base = pcall(f, sec)
 		if ok and type(base) == "string" then return base end
@@ -118,7 +117,7 @@ local specs = {} -- kind -> spec
 local once = {} -- peer -> the last operation applied (always on)
 local last = {} -- peer -> kind -> time_global() of his last accepted request
 local by_peer, by_id = {}, {} -- states: peer -> { peer, id = his character, ends = { kind = time_global() } }; id -> the same
-local lamps = {} -- B-REV F2: peer -> time_global() of each release of a death lamp of his, unspent, oldest first
+local lamps = {} -- peer -> time_global() of each release of a death lamp of his, unspent, oldest first
 
 function serve(kind, spec)
 	if type(kind) ~= "string" or not kind:match("^[%l_]+$") or #kind > 16 or type(spec) ~= "table"
@@ -136,12 +135,12 @@ local function verified_items(t, owner, bases)
 	local oid = owner:id()
 	for i = 1, MAX_COUNT do
 		local wire = t["i" .. i]
-		local id = whole(wire, 1, MAX_ID) and C().lid(wire) or nil
+		local id = whole(wire, 1, MAX_ID) and core.lid(wire) or nil
 		if whole(id, 1, MAX_ID) and not seen[id] then
 			seen[id] = true
 			local se = sim and sim:object(id)
 			local ok, sec = pcall(function() return se and se:section_name() end)
-			if ok and type(sec) == "string" and bases[base_of(sec)] and C().root_of(id) == oid then out[#out + 1] = id end
+			if ok and type(sec) == "string" and bases[base_of(sec)] and core.root_of(id) == oid then out[#out + 1] = id end
 		end
 	end
 	return out
@@ -159,9 +158,9 @@ end
 
 -- The target of a request: the game object, or nil and the request refused.
 local function target_of(t, spec, kind, owner, from)
-	local tid = t.t ~= nil and t.t ~= 0 and C().lid(t.t) or nil
+	local tid = t.t ~= nil and t.t ~= 0 and core.lid(t.t) or nil
 	local obj = whole(tid, 1, MAX_ID) and level.object_by_id(tid) or nil
-	local creature = obj ~= nil and (IsStalker(obj) or IsMonster(obj)) and C().peer_of(tid) == nil
+	local creature = obj ~= nil and (IsStalker(obj) or IsMonster(obj)) and core.peer_of(tid) == nil
 	local fits = creature and obj:alive()
 	if not coop_trust.pass(check_name(kind, "target"), fits, "player #%d: the target is no living creature here", from)
 		or not creature then
@@ -187,13 +186,13 @@ local function decide(t, from)
 		return refused()
 	end
 	once[from] = t.q
-	local owner = C().avatar(from)
+	local owner = core.avatar(from)
 	local r = { from = from, kind = kind, owner = owner, t = t,
-		own = from == C().self_peer() and coop_mode.actor_is_player() }
+		own = from == core.self_peer() and coop_mode.actor_is_player() }
 	if t.o == true then
 		if spec.off then
 			local ok, e = pcall(spec.off, r)
-			if not ok then C().report("perk_abilities", kind .. " off", e) end
+			if not ok then core.report("perk_abilities", kind .. " off", e) end
 		end
 		return
 	end
@@ -241,11 +240,11 @@ local function decide(t, from)
 	per[kind] = now
 	st.decided = st.decided + 1
 	local ok, e = pcall(spec.apply, r)
-	if not ok then C().report("perk_abilities", kind, e) end
+	if not ok then core.report("perk_abilities", kind, e) end
 end
 
 -------------------------------------------------------------------------------
--- m08:4 ability states on the decider
+-- Ability states on the decider
 -------------------------------------------------------------------------------
 local function drop_state(peer)
 	local s = by_peer[peer]
@@ -304,16 +303,16 @@ end
 
 -- Ends what ran out; forgets players who left the session or this map, and everything once the session is over.
 local function sweep(now)
-	if not C().active() then
+	if not core.active() then
 		by_peer, by_id, once, last, lamps = {}, {}, {}, {}, {}
 		return
 	end
-	local present = { [C().self_peer()] = true }
-	for _, p in ipairs(C().players()) do
+	local present = { [core.self_peer()] = true }
+	for _, p in ipairs(core.players()) do
 		if type(p.id) == "number" then present[p.id] = true end
 	end
 	for peer, s in pairs(by_peer) do
-		local a = present[peer] and coop_mode.where(peer) == "here" and C().avatar(peer)
+		local a = present[peer] and coop_mode.where(peer) == "here" and core.avatar(peer)
 		local keep = a and a:id() == s.id
 		if keep then
 			for kind, ends in pairs(s.ends) do
@@ -341,20 +340,20 @@ end
 local seq = 0
 
 function cmd(kind, target_id, params)
-	if type(kind) ~= "string" or not (api and C().active() and coop_mode.actor_is_player()) then return false end
+	if type(kind) ~= "string" or not (api and core.active() and coop_mode.actor_is_player()) then return false end
 	params = type(params) == "table" and params or {}
 	seq = seq + 1
 	local t = { k = kind, q = seq }
 	local tid = tonumber(target_id)
 	if tid and tid ~= 0 then
-		local h = C().hid(tid)
+		local h = core.hid(tid)
 		if not whole(h, 1, MAX_ID) then return false end
 		t.t = h
 	end
 	local n = 0
 	if type(params.ids) == "table" then
 		for _, id in ipairs(params.ids) do
-			local h = type(id) == "number" and C().hid(id) or nil
+			local h = type(id) == "number" and core.hid(id) or nil
 			if n < MAX_COUNT and whole(h, 1, MAX_ID) then
 				n = n + 1
 				t["i" .. n] = h
@@ -371,10 +370,10 @@ function cmd(kind, target_id, params)
 		end
 	end
 	if coop_mode.leads_here() then
-		decide(t, C().self_peer())
+		decide(t, core.self_peer())
 		return true
 	end
-	if C().to_host(VERB, t) then
+	if core.to_host(VERB, t) then
 		st.sent = st.sent + 1
 		return true
 	end
@@ -401,7 +400,7 @@ local POLLED = {
 		return type(cbs) == "table" and cbs[PHANTOM_KEY] ~= nil, PHANTOM_LEASE
 	end },
 	{ kind = "moss", base = "af_moh", read = function(pba)
-		local check, left = C().fn(pba, "check_status_effect"), C().fn(pba, "get_status_effect_remaining_time")
+		local check, left = core.fn(pba, "check_status_effect"), core.fn(pba, "get_status_effect_remaining_time")
 		if not (check and left and check(MOSS_STATUS)) then return false end
 		local s = tonumber(left(MOSS_STATUS)) or 0
 		return s > 0, math_min(s, MOSS_MAX)
@@ -412,7 +411,7 @@ local told = {} -- kind -> { at = when sent, ends = when it ends there }: what t
 
 local function poll(now)
 	local pba = PBA()
-	if not (pba and C().active() and coop_mode.actor_is_player()) then
+	if not (pba and core.active() and coop_mode.actor_is_player()) then
 		told = {}
 		return
 	end
@@ -432,7 +431,7 @@ local function poll(now)
 end
 
 -------------------------------------------------------------------------------
--- m08:6 Tapeworm's stun: the owner names the target, the decider runs the mod's own stun_func
+-- Tapeworm's stun: the owner names the target, the decider runs the mod's own stun_func
 -------------------------------------------------------------------------------
 local stun_orig = nil -- the mod's function, for the decider
 
@@ -449,7 +448,7 @@ local function stun_apply(r)
 	local ok, e = pcall(stun_orig, props, r.owner, r.count, r.ids, {}, r.owner, nil, r.target, h)
 	if not r.own and type(cds) == "table" then cds[TAPEWORM] = before end
 	if not ok then
-		C().report("perk_abilities", "stun", e)
+		core.report("perk_abilities", "stun", e)
 		return
 	end
 	st.stuns = st.stuns + 1
@@ -457,14 +456,14 @@ end
 
 local function install_stun(pba)
 	local props = pba.artefact_props and pba.artefact_props[TAPEWORM]
-	local ok, orig = C().wrap(props, "stun_func", "perk_based_artefacts.af_tapeworm.stun_func:coop_cmd", function(orig)
+	local ok, orig = core.wrap(props, "stun_func", "perk_based_artefacts.af_tapeworm.stun_func:coop_cmd", function(orig)
 		return function(self, actor, count, ids, names, obj, amount, who, ...)
-			if not (C().active() and coop_mode.actor_is_player()) then return orig(self, actor, count, ids, names, obj, amount, who, ...) end
+			if not (core.active() and coop_mode.actor_is_player()) then return orig(self, actor, count, ids, names, obj, amount, who, ...) end
 			local okid, tid = pcall(function() return who:id() end)
 			if not okid then return end
 			cmd("stun", tid, { ids = ids, n = count })
 			if not coop_mode.leads_here() then
-				local add = C().fn(pba, "add_cooldown")
+				local add = core.fn(pba, "add_cooldown")
 				if add then pcall(add, STUN_COOLDOWN, TAPEWORM) end
 			end
 		end
@@ -476,19 +475,19 @@ local function install_stun(pba)
 end
 
 -------------------------------------------------------------------------------
--- m08:7 the death lamp's reaction: the explosion on the decider, the personal effect finished once
+-- The death lamp's reaction: the explosion on the decider, the personal effect finished once
 -------------------------------------------------------------------------------
--- B-REV F2, the decider: a death lamp a living player carried is released here (his sacrifice asks this process to release
+-- The decider: a death lamp a living player carried is released here (his sacrifice asks this process to release
 -- it: coop_requests.cpp host_destroy). server_entity_on_unregister runs inside the release: an offline item is still in its
 -- parent (alife_simulator_base2.cpp unregister_object); an online one has already left it on the server side
 -- (xrServer_process_event_destroy.cpp: Process_event_reject first), while its game object still has the parent until this
--- process reads the reject later. One unspent lamp of his for LAMP_MS. rv_FIX-PBA R2: the mod offers the sacrifice in the
+-- process reads the reject later. One unspent lamp of his for LAMP_MS. The mod offers the sacrifice in the
 -- loot window too (a box, a corpse, a companion he loots: PBA check_lucifer_condition, modes inventory and loot), so a lamp
 -- whose holder is no player counts for every living player within 15 m of that holder (coop_requests.cpp kReachRange);
 -- a credit only sets off one charge at the requester's own character.
 local lamp_released_for
 local function lamp_released(se)
-	if se == nil or not C().active() then return end
+	if se == nil or not core.active() then return end
 	local ok, sec, parent, id = pcall(function() return se:section_name(), se.parent_id, se.id end)
 	if not (ok and sec == LAMP and whole(id, 1, MAX_ID)) or not coop_mode.leads_here() then return end
 	local holder = nil
@@ -502,8 +501,8 @@ local function lamp_released(se)
 		end)
 		holder = okp and whole(p, 0, MAX_ID) and p or nil
 	end
-	holder = holder and C().root_of(holder)
-	if whole(holder, 0, MAX_ID) and not C().is_player(holder) then
+	holder = holder and core.root_of(holder)
+	if whole(holder, 0, MAX_ID) and not core.is_player(holder) then
 		-- rv: the mod's sacrifice works in the loot window too (a box, a corpse, a companion he loots): every living player
 		-- within the engine's reach of that holder (coop_requests.cpp kReachRange 15 m)
 		local okp, pos = pcall(function()
@@ -514,7 +513,7 @@ local function lamp_released(se)
 		end)
 		holder = nil
 		if okp and pos then
-			for _, p in ipairs(C().player_objects()) do
+			for _, p in ipairs(core.player_objects()) do
 				local okd, d2 = pcall(function() return p.obj:position():distance_to_sqr(pos) end)
 				if okd and type(d2) == "number" and d2 <= 225 then lamp_released_for(p.obj:id()) end
 			end
@@ -524,9 +523,9 @@ local function lamp_released(se)
 end
 
 lamp_released_for = function(holder)
-	if not (whole(holder, 0, MAX_ID) and C().is_player(holder)) then return end
+	if not (whole(holder, 0, MAX_ID) and core.is_player(holder)) then return end
 	local obj = level.object_by_id(holder)
-	local peer = C().peer_of(holder)
+	local peer = core.peer_of(holder)
 	if not (obj and obj:alive() and type(peer) == "number") then return end -- a dead player sacrifices nothing
 	local list = lamps[peer]
 	if not list then
@@ -538,7 +537,7 @@ lamp_released_for = function(holder)
 	st.lamps = st.lamps + 1
 end
 
--- The decider: the charge at his character (never a position from the network), exploded once it is online. B-REV F2: only
+-- The decider: the charge at his character (never a position from the network), exploded once it is online. Only
 -- for a death lamp of his released in the last LAMP_MS, one charge a lamp (always on: the Lucifer stays in his inventory
 -- and proves nothing; the request may come after his own self hit killed him, so it does not ask that he lives).
 local function blow_apply(r)
@@ -554,13 +553,13 @@ local function blow_apply(r)
 	local se = alife_create(BLOW, a:position(), a:level_vertex_id(), a:game_vertex_id())
 	if not se then return end
 	st.blows = st.blows + 1
-	C().when_online(se.id, BLOW, function(obj) obj:explode(0) end, 5000)
+	core.when_online(se.id, BLOW, function(obj) obj:explode(0) end, 5000)
 end
 
 -- The owner: the mod's die() runs here (the 10000 self hit is his own), first the request; its world spawn of the charge
 -- gets a placeholder, and the explode timer keyed by it is not made, so nothing waits for an object that is not there.
 local function reaction(real, ...)
-	if not (C().active() and coop_mode.actor_is_player()) then return real(...) end
+	if not (core.active() and coop_mode.actor_is_player()) then return real(...) end
 	local lucifer = nil
 	pcall(function()
 		local o = db.actor and db.actor:object(LUCIFER)
@@ -582,7 +581,7 @@ local function reaction(real, ...)
 	end
 	local ok, e = pcall(real, ...)
 	_G.alife_create_item, _G.CreateTimeEvent = create, timer
-	if not ok then C().report("perk_abilities", "death lamp reaction", e) end
+	if not ok then core.report("perk_abilities", "death lamp reaction", e) end
 end
 
 local guarded = setmetatable({}, { __mode = "k" }) -- timed effects whose on_end is ours
@@ -603,10 +602,10 @@ end
 
 local function install_blow(pba)
 	-- the on_end of the effect is replaced right after the mod adds it; one a load brought back, on the next update
-	C().wrap(pba, "add_timed_effect", "perk_based_artefacts.add_timed_effect:coop_death_lamp", function(orig)
+	core.wrap(pba, "add_timed_effect", "perk_based_artefacts.add_timed_effect:coop_death_lamp", function(orig)
 		return function(...)
 			orig(...)
-			if select(6, ...) == DIE_KEY and C().active() then guard_die() end
+			if select(6, ...) == DIE_KEY and core.active() then guard_die() end
 		end
 	end)
 	serve("blow", { items = { [LUCIFER] = true }, alive = false, floor = 5000, every = 10000, apply = blow_apply })
@@ -616,16 +615,16 @@ end
 -- Seraphim: the mod releases the artefact in the same call, so "down" is told before it runs.
 local function install_down(pba)
 	local tbl = pba.artefact_on_before_death_functions
-	local f = C().fn(tbl, "af_serofim")
+	local f = core.fn(tbl, "af_serofim")
 	if not f then return end
-	local _, holder, idx = C().upvalue(f, "actor_is_dying")
+	local _, holder, idx = core.upvalue(f, "actor_is_dying")
 	if not holder then
 		log("Seraphim: no actor_is_dying in the mod's function, the revival is not told to the decider")
 		return
 	end
-	C().wrap(tbl, "af_serofim", "perk_based_artefacts.af_serofim:coop_down", function(orig)
+	core.wrap(tbl, "af_serofim", "perk_based_artefacts.af_serofim:coop_down", function(orig)
 		return function(actor, count, ids, ...)
-			if C().active() and coop_mode.actor_is_player() then
+			if core.active() and coop_mode.actor_is_player() then
 				local _, dying = debug.getupvalue(holder, idx)
 				if dying == false then cmd("down", 0, { ids = ids, n = count, d = DOWN_S }) end
 			end
@@ -651,16 +650,16 @@ end
 local next_poll, next_sweep = 0, 0
 local function update()
 	local now = time_global()
-	if C().active() then guard_die() end
+	if core.active() then guard_die() end
 	if now >= next_poll then
 		next_poll = now + POLL_MS
 		local ok, e = pcall(poll, now)
-		if not ok then C().report("perk_abilities", "poll", e) end
+		if not ok then core.report("perk_abilities", "poll", e) end
 	end
 	if now >= next_sweep then
 		next_sweep = now + SWEEP_MS
 		local ok, e = pcall(sweep, now)
-		if not ok then C().report("perk_abilities", "sweep", e) end
+		if not ok then core.report("perk_abilities", "sweep", e) end
 	end
 end
 
@@ -680,30 +679,25 @@ function _state()
 end
 
 -- on_game_start never throws (axr_main runs every script's on_game_start in one unprotected loop).
-local function step(what, f)
-	local ok, e = pcall(f)
-	if not ok then printf("! [coop_mods_perk_abilities] %s failed: %s", what, tostring(e)) end
-end
-
 local started = false
 function on_game_start()
 	if started or not api then return end
 	started = true
-	local pba = C().mod("perk_based_artefacts")
+	local pba = core.mod("perk_based_artefacts")
 	if not pba then return end
-	step("net", function()
-		C().set_limit(VERB, 10, 4)
-		C().on(VERB, decide, "host")
+	core.install("perk_abilities", "net", function()
+		core.set_limit(VERB, 10, 4)
+		core.on(VERB, decide, "host")
 	end)
-	step("states", install_states)
-	step("down", function() install_down(pba) end)
-	step("stun", function() install_stun(pba) end)
-	step("blow", function() install_blow(pba) end)
-	step("callbacks", function()
+	core.install("perk_abilities", "states", install_states)
+	core.install("perk_abilities", "down", function() install_down(pba) end)
+	core.install("perk_abilities", "stun", function() install_stun(pba) end)
+	core.install("perk_abilities", "blow", function() install_blow(pba) end)
+	core.install("perk_abilities", "callbacks", function()
 		RegisterScriptCallback("on_enemy_eval", enemy_eval)
 		RegisterScriptCallback("npc_on_before_hit", owner_attacks)
 		RegisterScriptCallback("monster_on_before_hit", owner_attacks)
 		RegisterScriptCallback("actor_on_update", update)
 	end)
-	step("status", function() C().status_line("perk_abilities", status) end)
+	core.install("perk_abilities", "status", function() core.status_line("perk_abilities", status) end)
 end

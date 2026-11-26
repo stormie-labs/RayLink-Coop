@@ -274,7 +274,7 @@ if have_gamma then
 
 	print("== Operation Monolith: an item with any player starts its stage")
 	H, E = host_world()
-	E.coop_tasks = { party_object = function(sec) return sec == "pda_barbos" and H.objects[500] or nil end }
+	E.coop_tasks_items = { party_object = function(sec) return sec == "pda_barbos" and H.objects[500] or nil end }
 	E.level.get_time_hours = function() return 12 end
 	E.alife = function() return { create = function() end } end
 	E.news_manager = { send_tip = function() end }
@@ -421,7 +421,9 @@ do
 	H.coop_players = true
 	local N2 = load_script(H, "coop_mods_nta")
 	N2.on_game_start()
-	H.callbacks.actor_on_update = { H.callbacks.actor_on_update[#H.callbacks.actor_on_update] }
+	-- the new adapter's two: its per-frame poll and its one-shot late install
+	local cbs = H.callbacks.actor_on_update
+	H.callbacks.actor_on_update = { cbs[#cbs - 1], cbs[#cbs] }
 	H.timers = {}
 	NOW = NOW + 6000
 	H.fire("actor_on_update")

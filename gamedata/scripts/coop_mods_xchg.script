@@ -1,11 +1,11 @@
 -- Ядро: без проверок режима (docs/MODES.md)
 --[[
 	Anomaly Coop - one-shot exchanges between a player and the process that decides for him
-	(gamedata\scripts\coop_mods_xchg.script), F4 G4-1 (TZ R19, build 57; review group G4 "item actions finish before they
-	are confirmed"). The shared protocol of the G4 adapters (coop_mods_xchg_<mod>.script): an operation with a stable id,
+	(gamedata\scripts\coop_mods_xchg.script): item actions finish before they are confirmed. The shared protocol of the
+	exchange adapters (coop_mods_xchg_<mod>.script): an operation with a stable id,
 	the items it uses reserved, the client's word checked, committed once, refused or rolled back, and helpers that tie a
 	debit to a confirmed world change. Core: it never asks which mode it runs in; the delivery is the mode's
-	(coop_mods_core.on "host" / "player", docs\MODES.md section 4).
+	(core.on "host" / "player", docs\MODES.md section 4).
 
 	Player side (any process with a player of its own, the co-op host's included):
 		ask(kind, t, cb) -> op | nil     holds and resends { k = kind, o = op, a = origin, ...t } until answered.
@@ -21,7 +21,7 @@
 		                                          rollback(t, from, who, token)
 		                                          after_gone(t, from, who, token, commit_result) -> ok, r_or_why }
 		                                 commit is required, the others optional. `who` = the requester's character
-		                                 here (coop_mods_core.avatar), nil when it is not here. token.ids: item ids
+		                                 here (core.avatar), nil when it is not here. token.ids: item ids
 		                                 reserved while the op runs. A reservation conflict or a failed commit rolls
 		                                 back and answers false. token.spent: local ids of items commit removes.
 		                                 Spent items stay reserved until gone. With spec.after_gone, all reservations
@@ -34,17 +34,16 @@
 		                                 Rollback does not run after a successful commit. Results: a number, string,
 		                                 boolean, or a flat table of them (string keys). Reasons: short strings.
 		reserved(id) -> op | nil         the op that holds that item
-		wire_id(v) -> local id | nil     an object id a client sent: a whole number 1..65534 (host numbering) -> local
-	G4-3 / dm_bomb: set_timeout("dm_bomb", 15000), then ask("dm_bomb", { key = wire_mine_id, i = wire_mine_id }, cb).
-	Resolve t.i with wire_id. Return { spent = { local_mine_id } } from reserve, start the mine release in commit,
+	dm_bomb: set_timeout("dm_bomb", 15000), then ask("dm_bomb", { key = wire_mine_id, i = wire_mine_id }, cb).
+	Resolve t.i with coop_mods_core.wire_id. Return { spent = { local_mine_id } } from reserve, start the mine release in commit,
 	and award in spec.after_gone. Clear the player's mark on final success.
-	Rules on the decider: one dispatcher, coop_mods_core.on("xchg", ..., "host"); a request without a valid op id is
+	Rules on the decider: one dispatcher, core.on("xchg", ..., "host"); a request without a valid op id is
 	dropped (coop_trust.guard "xchg_op"), an exchange nobody serves is answered "kind" (guard "xchg_kind"); the check goes
 	through coop_trust.pass("xchg_" .. kind) before any refusal ("log": a failed check is logged and let through); a
 	repeated (sender, op) gets the stored final answer for 5 minutes. Until then, a duplicate of a running op receives
 	{ o, ok = false, why = "busy", pending = true }; ask keeps waiting, and the operation runs only once. The
-	answer, mods.xchg_r { o, ok, why, r | r.<k> }, goes to the sender (coop_mods_core.to_peer: the world server relays a
-	map server's answer) and is taken where coop_mods_core.on "player" delivers it (from 0).
+	answer, mods.xchg_r { o, ok, why, r | r.<k> }, goes to the sender (core.to_peer: the world server relays a
+	map server's answer) and is taken where core.on "player" delivers it (from 0).
 	Completion helpers (polled in actor_on_update, no busy loops):
 		after_gone(id, fn, timeout_ms)                fn(true) once the server object and the game object are gone,
 		                                              fn(false) on the timeout (default 10 s)
@@ -68,8 +67,8 @@ local KIND_MAX, WHY_MAX, TEXT_MAX, R_MAX, IDS_MAX = 32, 64, 1000, 32, 64
 stats = { asked = 0, answered = 0, timeouts = 0, late = 0, served = 0, repeats = 0, refused = 0, conflicts = 0,
 	rolled_back = 0, errors = 0, dropped = 0, gone = 0, made = 0, watch_timeouts = 0 }
 
-local function C() return coop_mods_core end
-local function log(fmt, ...) C().log("xchg", fmt, ...) end
+local core = coop_mods_core
+local function log(fmt, ...) core.log("xchg", fmt, ...) end
 
 local function trust_pass(name, ok, fmt, ...)
 	local found, t = pcall(function() return coop_trust end)
@@ -98,17 +97,6 @@ local function valid_kind(kind)
 	return type(kind) == "string" and #kind <= KIND_MAX and kind:match("^[%w_]+$") ~= nil
 end
 
--- An object id a client sent: a whole number 1..65534 in host numbering, as a local id here; nil otherwise.
-function wire_id(v)
-	if type(v) ~= "number" or v ~= v or v < 1 or v >= 65535 or v ~= math_floor(v) then return nil end
-	local id = C().lid(v)
-	if type(id) ~= "number" or id < 0 or id >= 65535 then return nil end
-	return id
-end
-
-local function valid_id(v)
-	return type(v) == "number" and v == v and v >= 0 and v < 65535 and v == math_floor(v)
-end
 
 -------------------------------------------------------------------------------
 -- Completion helpers
@@ -138,7 +126,7 @@ local function items_in(parent_id, section)
 end
 
 function after_gone(id, fn, timeout_ms)
-	if not valid_id(id) or type(fn) ~= "function" then return false end
+	if not core.object_id(id, true) or type(fn) ~= "function" then return false end
 	local ms = tonumber(timeout_ms) or GONE_MS
 	local cleanup = committing and committing.spent[id] and committing or nil
 	watches[#watches + 1] = { gone = id, fn = fn, deadline = time_global() + ms, cleanup = cleanup }
@@ -146,7 +134,7 @@ function after_gone(id, fn, timeout_ms)
 end
 
 function after_made(section, parent_id, fn, timeout_ms)
-	if type(section) ~= "string" or section == "" or not valid_id(parent_id) or type(fn) ~= "function" then return false end
+	if type(section) ~= "string" or section == "" or not core.object_id(parent_id, true) or type(fn) ~= "function" then return false end
 	local ms = tonumber(timeout_ms) or GONE_MS
 	watches[#watches + 1] = { made = section, parent = parent_id, fn = fn, deadline = time_global() + ms,
 		known = items_in(parent_id, section), next_at = 0 }
@@ -169,23 +157,24 @@ end
 
 local function finish(w, ...)
 	local ok, e = pcall(w.fn, ...)
-	if not ok then C().report("xchg", w.gone and "after_gone" or "after_made", e) end
+	if not ok then core.report("xchg", w.gone and "after_gone" or "after_made", e) end
 	return ok
 end
 
+-- The watches that stay are packed in place, in their order; the due ones run after the walk, and a watch one of them
+-- adds goes to the end.
 local function watch_tick(now)
 	if not watches[1] then return end
-	local keep, due = {}, {}
-	for _, w in ipairs(watches) do
+	local count, kept, due = #watches, 0, nil
+	for i = 1, count do
+		local w, done, value = watches[i], false, nil
 		if w.gone then
 			if gone_here(w.gone, w.cleanup ~= nil) then
 				stats.gone = stats.gone + 1
-				due[#due + 1] = { w, true }
+				done, value = true, true
 			elseif now >= w.deadline then
 				stats.watch_timeouts = stats.watch_timeouts + 1
-				due[#due + 1] = { w, false }
-			else
-				keep[#keep + 1] = w
+				done, value = true, false
 			end
 		else
 			local id = nil
@@ -195,16 +184,22 @@ local function watch_tick(now)
 			end
 			if id then
 				stats.made = stats.made + 1
-				due[#due + 1] = { w, id }
+				done, value = true, id
 			elseif now >= w.deadline then
 				stats.watch_timeouts = stats.watch_timeouts + 1
-				due[#due + 1] = { w, nil }
-			else
-				keep[#keep + 1] = w
+				done = true
 			end
 		end
+		if done then
+			due = due or {}
+			due[#due + 1] = { w, value }
+		else
+			kept = kept + 1
+			watches[kept] = w
+		end
 	end
-	watches = keep
+	for i = count, kept + 1, -1 do watches[i] = nil end
+	if not due then return end
 	for _, d in ipairs(due) do
 		local w, value = d[1], d[2]
 		-- A rollback watcher registered by commit can end the transaction only if
@@ -223,7 +218,7 @@ end
 -------------------------------------------------------------------------------
 local served = {} -- kind -> spec
 local running = {} -- character and sequence -> true while running
-local awaiting_gone = {}
+local awaiting_gone, awaiting_spare = {}, {} -- the jobs that wait; the empty table the next walk swaps in
 local held = {}   -- item id -> { op, key }
 
 function serve(kind, spec)
@@ -258,7 +253,7 @@ local function ids_of(token, deferred)
 		if type(list) == "table" then
 			local iterate = strict and pairs or ipairs
 			for _, id in iterate(list) do
-				if valid_id(id) and (n < IDS_MAX or (strict and all[id])) then
+				if core.object_id(id, true) and (n < IDS_MAX or (strict and all[id])) then
 					if not all[id] then n = n + 1 end
 					all[id] = true
 					if field == "spent" then spent[id] = true end
@@ -303,7 +298,7 @@ local function call(f, k, ...)
 	local ok, a, b = pcall(f, ...)
 	if ok then return true, a, b end
 	stats.errors = stats.errors + 1
-	C().report("xchg", k, a)
+	core.report("xchg", k, a)
 	return false
 end
 
@@ -319,10 +314,12 @@ local function all_gone(spent)
 	return true
 end
 
+-- A job that finishes may queue new ones: they go to the table swapped in, among the jobs that keep waiting, in walk
+-- order.
 local function deferred_tick()
 	if not awaiting_gone[1] then return end
 	local queued = awaiting_gone
-	awaiting_gone = {}
+	awaiting_gone, awaiting_spare = awaiting_spare or {}, nil -- none after a walk a job's error cut short
 	for _, job in ipairs(queued) do
 		if job.cancelled or all_gone(job.spent) then
 			job.finish(not job.cancelled)
@@ -330,11 +327,13 @@ local function deferred_tick()
 			awaiting_gone[#awaiting_gone + 1] = job
 		end
 	end
+	for i = #queued, 1, -1 do queued[i] = nil end
+	awaiting_spare = queued
 end
 
 -- check -> reserve -> commit once; returns the answer, or defers it to complete
 local function run(spec, kind, t, from, op, key, complete)
-	local found, who = call(C().avatar, "avatar", from)
+	local found, who = call(core.avatar, "avatar", from)
 	if not found then return answer(op, false, "error") end
 	if not who then return { o = op, pending = true } end
 	local good, ok, why = true, true, nil
@@ -389,7 +388,7 @@ local function run(spec, kind, t, from, op, key, complete)
 				return answer(op, false, "gone_timeout")
 			end
 			local called, accepted, result = call(function()
-				return spec.after_gone(t, from, C().avatar(from), token, r)
+				return spec.after_gone(t, from, core.avatar(from), token, r)
 			end, "after_gone")
 			for id in pairs(all) do free(id, key) end
 			if not (called and accepted == true) then
@@ -425,7 +424,7 @@ local function dispatch(t, from, reply)
 		return
 	end
 	local number = coop_ops_done.identify(from, seq, t.a)
-	if not number or not coop_mode.writes(C().lid(number.origin)) then return end
+	if not number or not coop_mode.writes(core.lid(number.origin)) then return end
 	local saved, retired = coop_ops_done.get(number)
 	if saved then
 		stats.repeats = stats.repeats + 1
@@ -456,7 +455,7 @@ local function dispatch(t, from, reply)
 end
 
 local function from_wire(t, from)
-	dispatch(t, from, function(ans) C().to_peer(from, ANSWER, ans) end)
+	dispatch(t, from, function(ans) core.to_peer(from, ANSWER, ans) end)
 end
 
 -------------------------------------------------------------------------------
@@ -496,7 +495,7 @@ local function settle(op, ok, r, why)
 	pending[op] = nil
 	if not p.cb then return end
 	local good, e = pcall(p.cb, ok, r, why)
-	if not good then C().report("xchg", "answer of " .. tostring(p.kind), e) end
+	if not good then core.report("xchg", "answer of " .. tostring(p.kind), e) end
 end
 
 -- an answer (from the wire, or from the dispatcher directly): its op, ok, why and r
@@ -526,7 +525,7 @@ local function on_answer(t)
 end
 
 function ask(kind, t, cb)
-	if not (C().active() and valid_kind(kind)) then return nil end
+	if not (core.active() and valid_kind(kind)) then return nil end
 	if t ~= nil and type(t) ~= "table" then return nil end
 	if not coop_mode.actor_is_player() then return nil end -- a server's ghost has no player to ask for
 	local msg = {}
@@ -536,7 +535,7 @@ function ask(kind, t, cb)
 		if type(k) ~= "string" or not (tv == "string" or tv == "boolean" or (tv == "number" and v == v)) then return nil end
 		if k ~= "k" and k ~= "o" then msg[k] = v end
 	end
-	local me = C().self_peer()
+	local me = core.self_peer()
 	local origin, seq = coop_ops_done.origin(me), coop_ops_done.new_sequence()
 	if origin == nil or seq == nil then return nil end
 	local op = string.format("%.0f:%.0f:%.0f", me, epoch(), seq)
@@ -550,21 +549,21 @@ function ask(kind, t, cb)
 		-- the co-op host's own player: this process decides for him, the same dispatcher, no wire
 		dispatch(msg, me, on_answer)
 	else
-		C().to_host(VERB, msg)
+		core.to_host(VERB, msg)
 	end
 	return op
 end
 
 local function pending_tick(now)
-	if not next(pending) or not (C().active() and coop_mode.actor_is_player()) then return end
-	local peer = C().self_peer()
+	if not next(pending) or not (core.active() and coop_mode.actor_is_player()) then return end
+	local peer = core.self_peer()
 	local origin = coop_ops_done.origin(peer)
 	for _, p in pairs(pending) do
 		if now >= p.next_at and p.msg.a == origin then
 			p.next_at = now + p.interval
 			stats.timeouts = stats.timeouts + 1
 			if coop_mode.leads_here() then dispatch(p.msg, peer, on_answer)
-			else C().to_host(VERB, p.msg) end
+			else core.to_host(VERB, p.msg) end
 		end
 	end
 end
@@ -591,18 +590,15 @@ local function status()
 		stats.gone, stats.made, stats.watch_timeouts)
 end
 
--- on_game_start must not throw (axr_main runs every script's on_game_start in one unprotected loop, W5)
+-- on_game_start must not throw (axr_main runs every script's on_game_start in one unprotected loop)
 function on_game_start()
 	if not api then return end
 	local steps = {
-		function() C().on(VERB, from_wire, "host") end,
-		function() C().on(ANSWER, on_answer, "player") end,
-		function() C().set_limit(VERB, 20, 5) end,
+		function() core.on(VERB, from_wire, "host") end,
+		function() core.on(ANSWER, on_answer, "player") end,
+		function() core.set_limit(VERB, 20, 5) end,
 		function() RegisterScriptCallback("actor_on_update", actor_on_update) end,
-		function() C().status_line("xchg", status) end,
+		function() core.status_line("xchg", status) end,
 	}
-	for i, step in ipairs(steps) do
-		local ok, e = pcall(step)
-		if not ok then printf("! [coop_mods_xchg] start step %d failed: %s", i, tostring(e)) end
-	end
+	for i, step in ipairs(steps) do core.install("xchg", "start step " .. i, step) end
 end

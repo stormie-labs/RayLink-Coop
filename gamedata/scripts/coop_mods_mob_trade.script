@@ -1,16 +1,18 @@
--- G6-4: carry the stock mobile trader's window lifecycle to the decider of the player's map.
+-- Carry the stock mobile trader's window lifecycle to the decider of the player's map.
 -- The stock scheme owns one set of reaction fields per trader. A visit belongs to one transport peer.
+local core = coop_mods_core
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
 local TAG = "mob_trade"
 local BEGIN, END = "mob_trade_begin", "mob_trade_end"
 local OPEN, CLOSE = "ActorMenu_on_trade_started", "ActorMenu_on_trade_closed"
-local MAX_NPC, MAX_SEQ = 65534, 2147483647
+local MAX_SEQ = 2147483647
 local TALK_WINDOW_MS = 15000
 local visits, last_begin, owners = {}, {}, {}
 local own_window, sequence = nil, 0
 local installed = false
 
-local function valid_id(n, max)
-	return type(n) == "number" and n >= 1 and n <= max and n % 1 == 0
+local function valid_seq(n)
+	return type(n) == "number" and n >= 1 and n <= MAX_SEQ and n % 1 == 0
 end
 
 local function is_trader(npc)
@@ -23,8 +25,8 @@ local function scheme(id)
 end
 
 local function react(npc, st, actor)
-	local ok, err = coop_mods_core.as_player(actor, xr_logic.try_switch_to_another_section, npc, st, actor)
-	if not ok then coop_mods_core.report(TAG, "reaction", err) end
+	local ok, err = core.as_player(actor, xr_logic.try_switch_to_another_section, npc, st, actor)
+	if not ok then core.report(TAG, "reaction", err) end
 end
 
 local function close_visit(peer, visit, actor)
@@ -39,23 +41,21 @@ local function close_visit(peer, visit, actor)
 end
 
 local function fields(verb, t, peer)
-	local ok = valid_id(t.n, MAX_NPC) and valid_id(t.seq, MAX_SEQ)
+	local ok = core.object_id(t.n) and valid_seq(t.seq)
 	return coop_trust.pass(verb .. "_fields", ok, "invalid trader or window serial from peer %s", tostring(peer)) and ok
 end
 
 local function begin(t, peer)
 	if not fields(BEGIN, t, peer) then return end
-	local id = coop_mods_core.lid(t.n)
-	local npc = valid_id(id, MAX_NPC) and level.object_by_id(id)
-	local actor = coop_mode.where(peer) == "here" and coop_mods_core.avatar(peer)
+	local id = core.lid(t.n)
+	local npc = core.object_id(id) and level.object_by_id(id)
+	local actor = coop_mode.where(peer) == "here" and core.avatar(peer)
 	local st = npc and is_trader(npc) and npc:alive() and scheme(id)
 	local ready = actor and actor:alive() and type(st) == "table"
 	if not coop_trust.pass(BEGIN .. "_target", ready, "peer %s has no usable trader %d on this map", tostring(peer), t.n)
 		or not ready then return end
 
-	local api = coop_mods_core.engine()
-	local talked = peer == coop_mods_core.self_peer()
-		or (type(api.talk_recent) == "function" and api.talk_recent(peer, t.n, TALK_WINDOW_MS) == true)
+	local talked = peer == core.self_peer() or api.talk_recent(peer, t.n, TALK_WINDOW_MS) == true
 	if not coop_trust.pass(BEGIN .. "_talk", talked, "peer %s has no recent talk with trader %d", tostring(peer), t.n) then return end
 	if t.seq <= (last_begin[peer] or 0) then return end
 	local owner = owners[st]
@@ -75,16 +75,16 @@ local function finish(t, peer)
 	local visit = visits[peer]
 	-- A close can arrive after a newer open or be repeated. Only the exact visit can change the scheme.
 	if not visit or t.n ~= visit.n or t.seq ~= visit.seq then return end
-	local actor = coop_mode.where(peer) == "here" and coop_mods_core.avatar(peer)
+	local actor = coop_mode.where(peer) == "here" and core.avatar(peer)
 	close_visit(peer, visit, actor)
 end
 
 local function update()
-	local active = coop_mods_core.active()
+	local active = core.active()
 	if not active then own_window = nil end
 	if next(last_begin) == nil then return end
 	for peer in pairs(last_begin) do
-		local actor = active and coop_mode.where(peer) == "here" and coop_mods_core.avatar(peer)
+		local actor = active and coop_mode.where(peer) == "here" and core.avatar(peer)
 		local visit = visits[peer]
 		if not actor or (visit and (actor:id() ~= visit.actor or not actor:alive())) then
 			if visit then close_visit(peer, visit) end
@@ -95,18 +95,18 @@ end
 
 local function dispatch(verb, handler, window)
 	if coop_mode.leads_here() and coop_mode.actor_is_player() then
-		handler(window, coop_mods_core.self_peer())
+		handler(window, core.self_peer())
 		return true
 	end
-	if coop_mode.is_player_mirror() then return coop_mods_core.to_host(verb, window) end
+	if coop_mode.is_player_mirror() then return core.to_host(verb, window) end
 	return false
 end
 
 local function open_window(mod)
 	local npc = mod.GetTalkingNpc()
 	if not is_trader(npc) then return end
-	local id = coop_mods_core.hid(npc:id())
-	if not valid_id(id, MAX_NPC) or (own_window and own_window.n == id) then return end
+	local id = core.hid(npc:id())
+	if not core.object_id(id) or (own_window and own_window.n == id) then return end
 	if own_window then dispatch(END, finish, own_window) end
 	sequence = sequence + 1
 	local window = { n = id, seq = sequence }
@@ -120,39 +120,29 @@ local function close_window()
 end
 
 local function wrap_menu(mod, name, handler)
-	local wrapped, old = coop_mods_core.wrap(mod, name, TAG .. "." .. name, function(original)
+	local wrapped, old = core.wrap(mod, name, TAG .. "." .. name, function(original)
 		return function(...)
-			if not coop_mods_core.active() then return original(...) end
+			if not core.active() then return original(...) end
 			return handler(mod)
 		end
 	end)
-	if wrapped then coop_mods_core.swap_callback(name, old, mod[name]) end
-end
-
-local function step(name, f, ...)
-	local ok, err = pcall(f, ...)
-	if not ok then printf("! [mob_trade] %s: %s", name, tostring(err)) end
-	return ok
+	if wrapped then core.swap_callback(name, old, mod[name]) end
 end
 
 function on_game_start()
 	if installed then return end
-	local ok, mod = pcall(function() return coop_mods_core.mod("mob_trade") end)
-	if not ok then
-		printf("! [mob_trade] module lookup: %s", tostring(mod))
-		return
-	end
+	local mod = core.mod("mob_trade")
 	if not (mod and type(mod.GetTalkingNpc) == "function") then return end
 	installed = true
-	step("begin event", function()
-		coop_mods_core.set_limit(BEGIN, 12, 6)
-		coop_mods_core.on(BEGIN, begin, "host")
+	core.install(TAG, "begin event", function()
+		core.set_limit(BEGIN, 12, 6)
+		core.on(BEGIN, begin, "host")
 	end)
-	step("end event", function()
-		coop_mods_core.set_limit(END, 12, 6)
-		coop_mods_core.on(END, finish, "host")
+	core.install(TAG, "end event", function()
+		core.set_limit(END, 12, 6)
+		core.on(END, finish, "host")
 	end)
-	step("sweep", RegisterScriptCallback, "actor_on_update", update)
-	step("open window", wrap_menu, mod, OPEN, open_window)
-	step("close window", wrap_menu, mod, CLOSE, close_window)
+	core.install(TAG, "sweep", RegisterScriptCallback, "actor_on_update", update)
+	core.install(TAG, "open window", wrap_menu, mod, OPEN, open_window)
+	core.install(TAG, "close window", wrap_menu, mod, CLOSE, close_window)
 end

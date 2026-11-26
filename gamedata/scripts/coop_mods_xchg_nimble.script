@@ -2,7 +2,7 @@
 --[[
 	Anomaly Coop - Darkasleif's Nimble Upgrades Guns: an upgrade is one exchange, its money held by the keeper of the
 	world's money, its guns swapped by the decider of the player's map, the money given back on any refusal
-	(gamedata\scripts\coop_mods_xchg_nimble.script), F4 G4-5, finding m20:1 (TZ R19, build 57).
+	(gamedata\scripts\coop_mods_xchg_nimble.script).
 
 	The mod: Nimble's dialog (dialogs_zaton.xml) runs NimbleTrade.<kind>_requested(first_speaker, second_speaker)
 	(NimbleTrade.script :2360-2990). It checks the money (player_has_<kind>_money: db.actor:money() >= <Cost>), takes the
@@ -15,7 +15,7 @@
 	Here, in a session, on a process with a player of its own, every <kind>_requested runs the mod dry (its three
 	relocations recorded, none done: the mod's own money, gun and parts conditions decide whether there is an upgrade)
 	and turns what it would do into one operation in two steps, one code path for both modes:
-	  1. the money: mods.nim_hold to the keeper of the world's money (coop_mods_core.on "world": the co-op host, the world
+	  1. the money: mods.nim_hold to the keeper of the world's money (core.on "world": the co-op host, the world
 	     server). It checks the balance and takes the price at once (the hold).
 	  2. the guns: coop_mods_xchg kind "nimble" to the decider of his map ("host": the co-op host, the map server of his
 	     level). It checks the concrete gun (his, a source gun of that upgrade, the mod's good_gun on it), the hold and the
@@ -31,7 +31,7 @@
 	The keeper and the map retain open holds until a decision. The player repeats a pending request with the same
 	number, and the map repeats its outcome until the keeper acknowledges it. Terminal replies and open holds go
 	in coop_ops_done. The map also checks the concrete gun and the trader before performing the upgrade.
-	Every hold ends with a word that does not hang on the player's memory (Dev 58 Lua fix): the map step's commit or refund
+	Every hold ends with a word that does not hang on the player's memory: the map step's commit or refund
 	(nim_done, or in Server also the gun step's Done entry, which names its hold); and, when no player of the session plays
 	the hold's character any more, the keeper gives it back to the character (coop.money_grant_to) and closes it. A commit
 	that comes after a hold went back takes its price again.
@@ -41,7 +41,7 @@
 	the mod) is left to the mod (logged).
 	Differences from the mod in a session: the upgraded gun is always made new (the mod hands over the trader's own copy
 	when he has one), and the old gun is removed, not given to the trader (a move to him can be refused: his weight,
-	Inventory.cpp :1321, the cause of the finding).
+	Inventory.cpp :1321).
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
@@ -101,9 +101,9 @@ stats = { asked = 0, done = 0, told = 0, timeouts = 0, ignored = 0, foreign = 0,
 	unknown = 0, dropped = 0, retaken = 0, orphaned = 0,
 	applied = 0, apply_refused = 0, unpaid = 0 } -- the decider of the map
 
-local function C() return coop_mods_core end
-local function X() return coop_mods_xchg end
-local function log(fmt, ...) C().log("xchg_nimble", fmt, ...) end
+local core = coop_mods_core
+local xchg = coop_mods_xchg
+local function log(fmt, ...) core.log("xchg_nimble", fmt, ...) end
 
 local function trust_pass(name, ok, fmt, ...)
 	local found, t = pcall(function() return coop_trust end)
@@ -146,7 +146,7 @@ local function word(v, default)
 	return v
 end
 
-local function mod() return C().mod(MOD) end
+local function mod() return core.mod(MOD) end
 
 -- The price of an upgrade in this process's copy of the mod: a whole number 1..MAX_PRICE, else nil.
 local function price_of(kind)
@@ -202,7 +202,7 @@ end
 
 local function peer_for(origin, peer)
 	if coop_ops_done.origin(peer) == origin then return peer end
-	for _, row in ipairs(C().players()) do
+	for _, row in ipairs(core.players()) do
 		if coop_ops_done.origin(row.id) == origin then return row.id end
 	end
 end
@@ -282,7 +282,7 @@ end
 
 local function send_done(t)
 	if coop_mode.decides_world() then return settle(t.p, t.h, t.c == 1, t.a) end
-	C().publish(V_DONE, t)
+	core.publish(V_DONE, t)
 end
 
 local function report(peer, origin, op, commit)
@@ -329,15 +329,15 @@ local orig = {} -- kind -> the mod's <kind>_requested
 -- global has_bad_part with part_val 60.
 local function parts_ok(kind, gun)
 	local f = orig[kind]
-	local good = f and C().upvalue(f, "good_gun")
+	local good = f and core.upvalue(f, "good_gun")
 	if type(good) == "function" then
-		local gv = C().upvalue(f, "gun_val")
-		local pv = C().upvalue(f, "part_val")
+		local gv = core.upvalue(f, "gun_val")
+		local pv = core.upvalue(f, "part_val")
 		local ok, r = pcall(good, gv, tonumber(pv) or PART_VAL, gun)
 		return ok and r == true
 	end
 	local m = mod()
-	local bad = m and C().fn(m, "has_bad_part")
+	local bad = m and core.fn(m, "has_bad_part")
 	if bad then
 		local ok, r = pcall(bad, PART_VAL, gun)
 		return ok and not r
@@ -387,17 +387,17 @@ local function reserve(t, from, who)
 		return refuse("make")
 	end
 	if not who then return refuse("away") end
-	local wid = X().wire_id(t.w)
+	local wid = core.wire_id(t.w)
 	local gun = wid and level.object_by_id(wid) or nil
 	local section = gun and gun:section()
-	local his = gun ~= nil and C().root_of(wid) == who:id() and u.from[section] == true and coop_mode.writes(wid)
+	local his = gun ~= nil and core.root_of(wid) == who:id() and u.from[section] == true and coop_mode.writes(wid)
 	if not trust_guard("nimble_weapon", his, "player #%d, op %s: the gun is not his or not one this upgrade takes", from, op) then
 		return refuse("weapon")
 	end
 	if not trust_pass("nimble_parts", parts_ok(kind, gun), "player #%d, op %s: the parts of the gun are worn", from, op) then
 		return refuse("parts")
 	end
-	local nid = t.n ~= nil and X().wire_id(t.n) or nil
+	local nid = t.n ~= nil and core.wire_id(t.n) or nil
 	local npc = nid and level.object_by_id(nid) or nil
 	if not trust_pass("nimble_trader", near(who, npc), "player #%d, op %s: no trader near him", from, op) then
 		return refuse("far")
@@ -506,7 +506,7 @@ local function hold_from_wire(t, from)
 		stats.dropped = stats.dropped + 1
 		return
 	end
-	hold(t, from, function(ans) C().to_peer(from, V_HOLD_R, ans) end)
+	hold(t, from, function(ans) core.to_peer(from, V_HOLD_R, ans) end)
 end
 
 -- The bridge of the map server that leads player `peer`'s map, as this process knows it (the srv layer's hook
@@ -527,7 +527,7 @@ function publish_hold(h)
 		note_held(h.peer, h.op, h.kind, h.price, h.origin)
 	else
 		local bridge = bridge_of(h.peer)
-		if bridge and C().to_peer(bridge, V_HELD, { p = h.peer, a = h.origin, h = h.op, g = h.kind, m = h.price }) then
+		if bridge and core.to_peer(bridge, V_HELD, { p = h.peer, a = h.origin, h = h.op, g = h.kind, m = h.price }) then
 			h.bridges = h.bridges or {}
 			h.bridges[bridge] = true
 		end
@@ -600,7 +600,7 @@ local function done_from_wire(t, from)
 	end
 	if settle(t.p, t.h, t.c == 1, origin) then
 		if h and saved then saved.settlement_bridge = from end
-		C().to_peer(from, V_DONE_R, t)
+		core.to_peer(from, V_DONE_R, t)
 	end
 end
 
@@ -635,7 +635,7 @@ local function new_op()
 		v = ok and tonumber(v) or nil
 		if whole(v, 0, 2147483647) then e = v end
 	end
-	return string.format("%.0f:%.0f:%.0f", C().self_peer(), e, seq)
+	return string.format("%.0f:%.0f:%.0f", core.self_peer(), e, seq)
 end
 
 local TEXT = {
@@ -648,12 +648,12 @@ local function tell(why)
 	local t = TEXT[why] or FAILED
 	stats.told = stats.told + 1
 	log("an upgrade was not made: %s", word(why, "refused"))
-	C().hud(t[1], t[2])
+	core.hud(t[1], t[2])
 end
 
 -- What the mod's relocations would have told (itms_manager.relocate_item_*, dialogs.relocate_money_from_actor).
 local function news(p)
-	local nm = C().mod("news_manager")
+	local nm = core.mod("news_manager")
 	if not (nm and db.actor) then return end
 	pcall(nm.relocate_item, db.actor, "out", p.from, 1)
 	pcall(nm.relocate_money, db.actor, "out", p.price)
@@ -683,9 +683,9 @@ local function on_hold_answer(t)
 	end
 	p.applying = true
 	if whole(t.m, 1, MAX_PRICE) then p.price = t.m end
-	local req = { h = p.op, g = p.kind, w = C().hid(p.w) }
-	if p.n then req.n = C().hid(p.n) end
-	if not X().ask(KIND, req, function(ok, r, why)
+	local req = { h = p.op, g = p.kind, w = core.hid(p.w) }
+	if p.n then req.n = core.hid(p.n) end
+	if not xchg.ask(KIND, req, function(ok, r, why)
 		pend[t.o] = nil
 		applied(p, ok, r, why)
 	end) then p.applying = nil end
@@ -695,7 +695,7 @@ local RELOCATIONS = { "relocate_item_section_from_actor", "relocate_money_from_a
 
 -- Runs the mod's action with its three relocations recorded instead of done: ok, error, the calls { { n, arg } }.
 local function dry_run(f, first, second)
-	local d = C().mod("dialogs")
+	local d = core.mod("dialogs")
 	if not d then return false, "no dialogs.script", {} end
 	local calls, saved = {}, {}
 	for i, name in ipairs(RELOCATIONS) do
@@ -740,7 +740,7 @@ local function npc_of(first, second)
 end
 
 local function busy()
-	return next(pend) ~= nil or X().busy(KIND)
+	return next(pend) ~= nil or xchg.busy(KIND)
 end
 
 local function start(kind, f, first, second)
@@ -763,7 +763,7 @@ local function start(kind, f, first, second)
 	local gun = gun_of(plan.from)
 	if not gun then return end
 	local npc = npc_of(first, second)
-	local op, origin = new_op(), coop_ops_done.origin(C().self_peer())
+	local op, origin = new_op(), coop_ops_done.origin(core.self_peer())
 	if not op or origin == nil then return end
 	local req = { o = op, a = origin, g = kind }
 	pend[op] = { op = op, kind = kind, from = plan.from, to = plan.to, price = plan.price, w = gun:id(),
@@ -771,16 +771,16 @@ local function start(kind, f, first, second)
 	stats.asked = stats.asked + 1
 	if coop_mode.decides_world() and coop_mode.actor_is_player() then
 		-- the co-op host's own player: this process keeps the money and decides his map, the same functions, no wire
-		return hold(req, C().self_peer(), on_hold_answer)
+		return hold(req, core.self_peer(), on_hold_answer)
 	end
-	C().to_host(V_HOLD, req)
+	core.to_host(V_HOLD, req)
 end
 
 local function guard_action(kind, f)
 	return function(first, second, ...)
-		if not (C().active() and coop_mode.actor_is_player()) then return f(first, second, ...) end
+		if not (core.active() and coop_mode.actor_is_player()) then return f(first, second, ...) end
 		local ok, e = pcall(start, kind, f, first, second)
-		if not ok then C().report("xchg_nimble", kind .. "_requested", e) end
+		if not ok then core.report("xchg_nimble", kind .. "_requested", e) end
 	end
 end
 
@@ -792,7 +792,7 @@ local function install()
 	for _, u in ipairs(UPGRADES) do
 		local key = u.kind .. "_requested"
 		if not orig[u.kind] then
-			local ok, f = C().wrap(m, key, MOD .. "." .. key, function(fn) return guard_action(u.kind, fn) end)
+			local ok, f = core.wrap(m, key, MOD .. "." .. key, function(fn) return guard_action(u.kind, fn) end)
 			if ok then
 				orig[u.kind] = f
 				installed = installed + 1
@@ -807,9 +807,9 @@ end
 local next_sweep = 0
 
 local function actor_on_update()
-	if not C().active() then return end
+	if not core.active() then return end
 	local now = time_global()
-	local me = C().self_peer()
+	local me = core.self_peer()
 	local origin = coop_ops_done.origin(me)
 	if next(pend) and coop_mode.actor_is_player() then
 		for _, p in pairs(pend) do
@@ -817,7 +817,7 @@ local function actor_on_update()
 				p.next_at = now + RETRY_MS
 				stats.timeouts = stats.timeouts + 1
 				if coop_mode.decides_world() then hold(p.req, me, on_hold_answer)
-				else C().to_host(V_HOLD, p.req) end
+				else core.to_host(V_HOLD, p.req) end
 			end
 		end
 	end
@@ -829,7 +829,7 @@ local function actor_on_update()
 	end
 	if coop_mode.leads_here() or coop_mode.decides_world() then
 		for key, h in pairs(known) do
-			local id = C().lid(h.origin)
+			local id = core.lid(h.origin)
 			if h.state == "known" and id and not coop_mode.writes(id) then known[key] = nil end
 		end
 		for key, t in pairs(outgoing) do
@@ -863,33 +863,30 @@ local function status()
 		stats.unpaid, k, installed)
 end
 
--- on_game_start must not throw (axr_main runs every script's on_game_start in one unprotected loop, W5)
+-- on_game_start must not throw (axr_main runs every script's on_game_start in one unprotected loop)
 function on_game_start()
 	if not api then return end
 	local ok_mod, has = pcall(function() return mod() ~= nil end)
 	if not (ok_mod and has) then return end -- the mod is not installed: nothing to do
 	local steps = {
-		-- B-REV F7: mods.nim_held is the world's word only; a relay must not make another process's copy look like it
+		-- mods.nim_held is the world's word only; a relay must not make another process's copy look like it
 		function()
-			coop_main.reserve_world_event("mods." .. V_HELD)
-			coop_main.reserve_world_event("mods." .. V_DONE_R)
+			coop_world_events.reserve("mods." .. V_HELD)
+			coop_world_events.reserve("mods." .. V_DONE_R)
 		end,
-		function() C().on(V_HOLD, hold_from_wire, "world") end,
-		function() C().on(V_HOLD_R, function(t) on_hold_answer(t) end, "player") end,
-		function() C().on(V_HELD, held_from_wire, "client") end,
-		function() C().on(V_DONE, done_from_wire, "world") end,
-		function() C().on(V_DONE_R, done_answer, "client") end,
+		function() core.on(V_HOLD, hold_from_wire, "world") end,
+		function() core.on(V_HOLD_R, function(t) on_hold_answer(t) end, "player") end,
+		function() core.on(V_HELD, held_from_wire, "client") end,
+		function() core.on(V_DONE, done_from_wire, "world") end,
+		function() core.on(V_DONE_R, done_answer, "client") end,
 		function() coop_ops_done.bind_state("nimble", save_holds, load_holds) end,
 		function() coop_ops_done.listen("nimble", done_heard) end,
-		function() C().set_limit(V_HOLD, 6, 1) end,
-		function() C().set_limit(V_DONE, 60, 30) end,
-		function() X().serve(KIND, SPEC) end,
+		function() core.set_limit(V_HOLD, 6, 1) end,
+		function() core.set_limit(V_DONE, 60, 30) end,
+		function() xchg.serve(KIND, SPEC) end,
 		function() install() end,
 		function() RegisterScriptCallback("actor_on_update", actor_on_update) end,
-		function() C().status_line("xchg_nimble", status) end,
+		function() core.status_line("xchg_nimble", status) end,
 	}
-	for i, step in ipairs(steps) do
-		local ok, e = pcall(step)
-		if not ok then printf("! [coop_mods_xchg_nimble] start step %d failed: %s", i, tostring(e)) end
-	end
+	for i, step in ipairs(steps) do core.install("xchg_nimble", "start step " .. i, step) end
 end

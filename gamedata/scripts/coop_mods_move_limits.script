@@ -1,16 +1,16 @@
 -- Ядро: без проверок режима (docs/MODES.md)
 --[[
 	Anomaly Coop - limits of mods on item moves into containers, asked by the process that applies the move
-	(gamedata\scripts\coop_mods_move_limits.script), F4 G6-1, finding m17:4.
+	(gamedata\scripts\coop_mods_move_limits.script).
 
 	A mod that limits what a container takes checks it only in the mover's window (a view callback: every player's machine
-	runs it on its own copy). Two players filling one stash at once each saw the old content, and the decider applied both
-	moves (Hideout Furniture: 50 kg of 60, two moves of 6 kg -> 62 kg). The engine (coop_requests.cpp admitted_move) now asks
+	runs it on its own copy). Two players filling one stash at once would each see the old content, and the decider would apply
+	both moves (Hideout Furniture: 50 kg of 60, two moves of 6 kg -> 62 kg). The engine (coop_requests.cpp admitted_move) asks
 	admit() on the process that applies a move into a container - the co-op host, or in the Server mode the map server of
 	the player's level - before it moves the item: a client's ReqTake / ReqTransfer (host_move) and that process's own script
 	and window moves (host_transfer_item: G.A.M.M.A.'s ui_inventory moves items with transfer_item). The windows of the mods
 	stay a preview. A move onto the ground is not asked about. A move into a character whose root is a player is asked too
-	(R32 WP18 P4, temp/r30/design/R32-final.md §8a A21 E-3), with pending 0 and nothing held: only a refusal stops it (the
+	with pending 0 and nothing held: only a refusal stops it (the
 	Weapon Showcase display copy), so every rule must answer nil for an ordinary pickup into a player
 	(tests/lua/test_move_rules_player.lua lists every registered rule and proves it). A refusal goes back to a client as the
 	existing ReqResult "not allowed" (its window shows the real content again).
@@ -48,7 +48,7 @@ local tostring, tonumber, type, ipairs, pcall = tostring, tonumber, type, ipairs
 local math_floor, math_huge = math.floor, math.huge
 local string_format = string.format
 
-local function C() return coop_mods_core end
+local core = coop_mods_core
 
 local TAG = "move_limits"
 local NO_ID = 65535
@@ -131,7 +131,7 @@ function admit(container_id, item_id, pending_count, pending_weight, from_id)
 			local ok, verdict, why = pcall(fn, box, it, n, w, from)
 			if not ok then
 				st.errors = st.errors + 1
-				C().report(TAG, "rule " .. name, verdict)
+				core.report(TAG, "rule " .. name, verdict)
 			elseif verdict == false then
 				st.refused = st.refused + 1
 				return false, short(why, name)
@@ -171,7 +171,7 @@ local function game_weight(box)
 end
 
 local function hf_capacity(box_id, item_id, pending_count, pending_weight, from_id)
-	if not C().is_player(from_id) then return nil end
+	if not core.is_player(from_id) then return nil end
 	local box = level.object_by_id(box_id)
 	if not box then return nil end -- not on the map this process leads: nothing here to weigh
 	local section = box:section()
@@ -189,16 +189,11 @@ local function hf_capacity(box_id, item_id, pending_count, pending_weight, from_
 end
 
 local function install_hf()
-	if not C().mod("stash_capacities") then return end
+	if not core.mod("stash_capacities") then return end
 	add_rule("hf_capacity", hf_capacity)
 end
 
 -------------------------------------------------------------------------------
-local function start_step(what, f)
-	local ok, err = pcall(f)
-	if not ok then printf("! [coop_mods_move_limits] %s failed: %s", what, tostring(err)) end
-end
-
 local function status_text()
 	return string_format("%s | asked %d: let in %d, refused %d, no rule %d, rule errors %d, bad numbers %d",
 		#order > 0 and table.concat(order, ", ") or "no rules", st.asked, st.admitted, st.refused, st.no_rule, st.errors, st.bad)
@@ -206,6 +201,6 @@ end
 
 function on_game_start()
 	started = true
-	start_step("install_hf", install_hf)
-	start_step("status", function() C().status_line(TAG, status_text) end)
+	core.install(TAG, "install_hf", install_hf)
+	core.install(TAG, "status", function() core.status_line(TAG, status_text) end)
 end
