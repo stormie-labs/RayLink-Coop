@@ -625,6 +625,7 @@ end
 -- axr_main calls every script's on_game_start after all scripts are loaded: a CreateTimeEvent replaced since install
 -- (_g_patches.script) is wrapped again.
 function on_game_start()
+	coop_util.add_status("coop_route", 20)
 	if installed then
 		wrap_globals()
 		every(kFlushMs, flush)
@@ -735,7 +736,7 @@ function script_of(fn)
 end
 
 -- The domain of a function registered as a handler (an axr_main callback, a unique call, a time event, a tick of every),
--- nil for any other function: coop_core_world's news reads it for the handler it finds on the stack.
+-- nil for any other function: coop_core_world_news reads it for the handler it finds on the stack.
 function handler_domain(fn)
 	return fn ~= nil and handler_dom[fn] or nil
 end

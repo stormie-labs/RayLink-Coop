@@ -532,6 +532,7 @@ local function actor_on_update()
 end
 
 function on_game_start()
+	coop_util.add_status("coop_mode")
 	if not api then return end -- an exe without co-op: no layer ever answers
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 end
