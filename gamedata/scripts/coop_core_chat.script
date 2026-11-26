@@ -193,10 +193,18 @@ function system(text)
 end
 
 -- Engine chat line (coop_main.on_chat). Returns true: shown here.
+-- Ours is decided by the sender's peer (the engine passes our own peer with our own line), so a player who took our nick is
+-- still another player. Only a line without a sender falls back to the nick.
 function on_line(nick, text, from)
 	nick = clean(nick)
-	local me = my_nick()
-	local kind = (me and nick == me) and "self" or "other"
+	local mine
+	if from ~= nil then
+		mine = from == call("self_id")
+	else
+		local me = my_nick()
+		mine = me ~= nil and nick == me
+	end
+	local kind = mine and "self" or "other"
 	if kind == "other" then nick = sender_of(nick, from) end
 	add(kind, nick, text)
 	stats.shown = stats.shown + 1
@@ -307,7 +315,7 @@ function on_op_answer(payload, from)
 		for l in tostring(t.text or ""):gmatch("[^\n]+") do all[#all + 1] = clean(l) end
 		local ok, taken = pcall(taker[waiting[2]], good, all)
 		if not ok then log("! the answer to %s: %s", cmd, tostring(taken)) end
-		if ok and taken == true and cmd == "coop_restore" then return end
+		if ok and taken == true then return end
 	end
 	local dbg = rawget(_G, "coop_debug_client")
 	if (cmd == "coop_dbg" or cmd == "coop_debug") and type(dbg) == "table" and type(dbg.add_line) == "function" then

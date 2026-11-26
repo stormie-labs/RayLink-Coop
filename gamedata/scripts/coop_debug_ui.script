@@ -262,14 +262,26 @@ function fav_set()
 	return s.fav_cache
 end
 
+-- At most FAV_MAX stars: a new one past it is refused, so a favourite already kept is never dropped to make room.
+local FAV_MAX = 200
+
 function toggle_fav(key)
 	local s = get_settings()
 	local set = fav_set()
-	if set[key] then set[key] = nil else set[key] = true end
+	if set[key] then
+		set[key] = nil
+	else
+		local n = 0
+		for _ in pairs(set) do n = n + 1 end
+		if n >= FAV_MAX then
+			log("favourites: %d kept, %s refused", n, tostring(key))
+			return false
+		end
+		set[key] = true
+	end
 	local list = {}
 	for k in pairs(set) do list[#list + 1] = k end
 	table.sort(list)
-	while #list > 200 do table.remove(list) end
 	s.favs = table.concat(list, "|")
 	s.fav_cache, s.fav_cache_src = nil, nil
 	save_settings()
