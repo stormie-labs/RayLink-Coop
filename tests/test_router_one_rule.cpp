@@ -1,6 +1,7 @@
 // Anomaly Coop unit tests: coop.route.of and coop.route.rule_of answer one rule, and coop.route.note_batch counts in bounded steps.
-// The counters run here (xrCoop/coop_routes.h); the router's Lua functions (xrGame/coop/coop_router.cpp) need the engine, so their
-// shape is read from the source: one place computes the domain, one reads the script key, both functions are one template.
+// The counters and the rule run here (xrCoop/coop_routes.h; the rule in tests/test_route_rule.cpp); the router's Lua functions
+// (xrGame/coop/coop_router.cpp) need the engine, so their shape is read from the source: one place computes the domain, one reads the
+// script key, both functions are one template, and note_batch allocates nothing.
 #include "test_util.h"
 
 #include "coop_routes.h"
@@ -126,26 +127,29 @@ TEST(route_of_and_rule_of_are_one_rule_in_the_source)
 {
 	const std::string code = router_code();
 	REQUIRE(!code.empty());
-	// one computation of the domain (the table's route and the Level upgrade), one reader of the script key
-	CHECK_EQ(count_of(code, "g.table.route("), size_t(1));
-	CHECK_EQ(count_of(code, "level_behaviour("), size_t(1));
+	// one computation of the domain (routes::Table::rule: the route and the Level upgrade, tests/test_route_rule.cpp runs it), one
+	// reader of the script key
+	CHECK_EQ(count_of(code, "g.table.route("), size_t(0));
+	CHECK_EQ(count_of(code, "level_behaviour("), size_t(0));
+	CHECK_EQ(count_of(code, "g.table.rule(callback, script)"), size_t(2));
 	CHECK_EQ(count_of(code, "lua_getinfo(L, \">S\""), size_t(1));
-	const std::string rule = body_of(code, "Domain rule_now(");
-	CHECK(rule.find("g.table.route(") != std::string::npos);
-	CHECK(rule.find("level_behaviour(") != std::string::npos);
-	// the cache holds rule_now's answers only
+	// the cache holds the table's answers only
 	const std::string cached = body_of(code, "Domain route_of(");
 	REQUIRE(!cached.empty());
-	CHECK(cached.find("rule_now(callback, script)") != std::string::npos);
+	CHECK(cached.find("g.table.rule(callback, script)") != std::string::npos);
 	CHECK_EQ(count_of(cached, "g.cache.emplace("), size_t(1));
-	// of and rule_of: one function, which answers rule_now (cached or not) for every input, an empty callback too
+	// of and rule_of: one function, which answers the table's rule (cached or not) for every input, an empty callback too
 	CHECK(code.find("{\"of\", &l_rule<true>},") != std::string::npos);
 	CHECK(code.find("{\"rule_of\", &l_rule<false>},") != std::string::npos);
 	const std::string answer = body_of(code, "int l_rule(lua_State* L)");
 	REQUIRE(!answer.empty());
 	CHECK(answer.find("script_of(L, 2)") != std::string::npos);
 	CHECK(answer.find("d = route_of(callback, script);") != std::string::npos);
-	CHECK(answer.find("d = rule_now(callback, script);") != std::string::npos);
+	CHECK(answer.find("d = g.table.rule(callback, script);") != std::string::npos);
+	// rule_of has no side effect: only of (Traced) touches the cache and the routed totals
+	CHECK(answer.find("const bool traced = Traced && !callback.empty();") != std::string::npos);
+	CHECK_EQ(count_of(answer, "g.routed["), size_t(1));
+	CHECK_EQ(count_of(answer, "route_of("), size_t(1));
 	CHECK(code.find("int l_of(") == std::string::npos);
 	CHECK(code.find("int l_rule_of(") == std::string::npos);
 }
@@ -160,6 +164,12 @@ TEST(route_note_batch_is_bounded_in_the_source)
 	// under the lock: one addition per row, the count in one step
 	CHECK(batch.find("g.counters.note(r.d, r.o, r.script, r.callback, r.count);") != std::string::npos);
 	CHECK(batch.find("k < r.count") == std::string::npos);
+	// no allocation per call: the rows are a fixed array of views of the Lua strings
+	CHECK(batch.find("Row rows[kNoteBatchRows];") != std::string::npos);
+	CHECK(batch.find("std::string_view script, callback;") != std::string::npos);
+	CHECK(batch.find("std::vector") == std::string::npos);
+	CHECK(batch.find("std::string ") == std::string::npos);
+	CHECK(batch.find(".assign(") == std::string::npos);
 	// the refused rows are counted and logged
 	CHECK(batch.find("g.batch_refusals.allow()") != std::string::npos);
 	CHECK(batch.find("note_batch refused") != std::string::npos);

@@ -16,6 +16,8 @@ namespace
 {
 using Lines = std::vector<std::pair<std::string, std::string>>;
 
+size_t stock_count() { return sizeof(kStockRoutes) / sizeof(kStockRoutes[0]); }
+
 Override script_rule(const char* script, Domain d) { return Override{Override::Script, "", script, d}; }
 Override callback_rule(const char* callback, Domain d) { return Override{Override::Callback, callback, "", d}; }
 Override forced_rule(const char* callback, Domain d) { return Override{Override::Forced, callback, "", d}; }
@@ -486,9 +488,6 @@ TEST(routes_binder_action)
 	c.clear();
 	CHECK(c.binder_action("bind_camp.bind", "update") == BinderAction::Run);
 	CHECK_EQ(c.binder_size(), size_t(0));
-
-	CHECK(std::string(binder_action_name(BinderAction::Run)) == "run");
-	CHECK(std::string(binder_action_name(BinderAction::HostOnly)) == "host");
 }
 
 TEST(routes_binder_parse)
@@ -560,7 +559,7 @@ Ltx read_ltx(const std::string& path)
 		const size_t c = line.find(';');
 		if (c != std::string::npos)
 			line.resize(c);
-		const std::string_view l = coop::routes::detail::trimmed(line);
+		const std::string_view l = coop::ascii::trim(line, coop::ascii::space_or_eol);
 		if (l.empty())
 			continue;
 		if (l.front() == '[' && l.back() == ']')
@@ -574,8 +573,8 @@ Ltx read_ltx(const std::string& path)
 		if (eq == std::string_view::npos)
 			out.back().second.emplace_back(std::string(l), std::string());
 		else
-			out.back().second.emplace_back(std::string(coop::routes::detail::trimmed(l.substr(0, eq))),
-				std::string(coop::routes::detail::trimmed(l.substr(eq + 1))));
+			out.back().second.emplace_back(std::string(coop::ascii::trim(l.substr(0, eq), coop::ascii::space_or_eol)),
+				std::string(coop::ascii::trim(l.substr(eq + 1), coop::ascii::space_or_eol)));
 	}
 	return out;
 }
@@ -617,7 +616,7 @@ TEST(routes_binders_ltx)
 	CHECK_EQ(host_lines, size_t(3));
 	// The engine reads [binder_host] only; a leftover [binder_keep] would be lines nobody reads (F2-35).
 	for (const std::string& s : sections)
-		CHECK(!coop::routes::detail::iequals(s, "binder_keep"));
+		CHECK(!coop::ascii::iequals(s, "binder_keep"));
 
 	// W10 POLICY "host": faction, camp and heli binders run only their base update on a client.
 	for (const char* b : {"bind_faction.bind", "bind_camp.bind", "bind_heli.bind"})
@@ -633,7 +632,7 @@ TEST(routes_binders_ltx)
 	std::vector<std::string> guarded_update; // script.class of the guarded `update` lines
 	for (const auto& s : ltx)
 	{
-		if (!coop::routes::detail::istarts_with(s.first, "binder_lua_"))
+		if (!coop::ascii::istarts_with(s.first, "binder_lua_"))
 			continue;
 		for (const auto& l : s.second)
 		{

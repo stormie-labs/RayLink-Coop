@@ -54,7 +54,7 @@ std::string act_name(c::WriteAct a)
 {
 	switch (a)
 	{
-	case c::WriteAct::Today: return "today";
+	case c::WriteAct::KeepCallGate: return "keep call gate";
 	case c::WriteAct::Refuse: return "refuse";
 	case c::WriteAct::Ask: return "ask";
 	case c::WriteAct::Order: return "order";
@@ -169,7 +169,7 @@ TEST(writer_gate_coop_verdicts_identical_under_hostplay_answers)
 									const c::WriteDecision d = c::decide_writer_gate(f, g.op, today, setting);
 									const std::string at = std::string(name) + " " + g.name + " " + c::writer_gate_name(setting);
 									CHECK(d.verdict == (client ? w::GateVerdict::Mirror : w::GateVerdict::Run));
-									ACT_EQ(at, d.act, c::WriteAct::Today);
+									ACT_EQ(at, d.act, c::WriteAct::KeepCallGate);
 									GATE_EQ(at, d.gate, today);
 									GATE_EQ(at, d.gate, client ? golden_client(applying, own, args_ok) : c::Gate::Run);
 									CHECK(!c::census_counts(d.verdict));
@@ -219,7 +219,7 @@ TEST(writer_gate_world_server_rows)
 			    c::Gate::Run, setting);
 			CHECK(lc.verdict == w::GateVerdict::Refuse);
 			CHECK(c::census_counts(lc.verdict));
-			ACT_EQ(std::string("level code ") + w::op_name(op), lc.act, enforce ? c::WriteAct::Refuse : c::WriteAct::Today);
+			ACT_EQ(std::string("level code ") + w::op_name(op), lc.act, enforce ? c::WriteAct::Refuse : c::WriteAct::KeepCallGate);
 			GATE_EQ(std::string("level code ") + w::op_name(op), lc.gate, enforce ? c::Gate::Refuse : c::Gate::Run);
 		}
 		for (w::CodeScope s : {w::CodeScope::Decision, w::CodeScope::Unknown})
@@ -236,7 +236,7 @@ TEST(writer_gate_world_server_rows)
 				const c::WriteDecision od = c::decide_writer_gate(c::WriteFacts{kind, mk, s, false, false}, op, c::Gate::Run, setting);
 				CHECK(od.verdict == w::GateVerdict::Order);
 				CHECK(c::census_counts(od.verdict));
-				ACT_EQ(sn + " " + w::op_name(op), od.act, enforce ? c::WriteAct::Order : c::WriteAct::Today);
+				ACT_EQ(sn + " " + w::op_name(op), od.act, enforce ? c::WriteAct::Order : c::WriteAct::KeepCallGate);
 				GATE_EQ(sn + " " + w::op_name(op), od.gate, c::Gate::Run);
 			}
 		}
@@ -276,7 +276,7 @@ TEST(writer_gate_map_server_rows)
 			{
 				const c::WriteDecision d = c::decide_writer_gate(c::WriteFacts{kind, world, s, true, false}, op, c::Gate::Run, setting);
 				CHECK(d.verdict == w::GateVerdict::Ask);
-				ACT_EQ(std::string("ask ") + w::op_name(op), d.act, enforce ? c::WriteAct::Ask : c::WriteAct::Today);
+				ACT_EQ(std::string("ask ") + w::op_name(op), d.act, enforce ? c::WriteAct::Ask : c::WriteAct::KeepCallGate);
 				GATE_EQ(std::string("ask ") + w::op_name(op), d.gate, c::Gate::Run);
 			}
 			// create or state under a root it does not write, or anything on another map: refused
@@ -389,8 +389,9 @@ TEST(writer_gate_setting_names)
 	CHECK(!c::parse_writer_gate("", g));
 	CHECK_EQ(std::string(c::writer_gate_name(c::WriterGate::Log)), std::string("log"));
 	CHECK_EQ(std::string(c::writer_gate_name(c::WriterGate::Enforce)), std::string("enforce"));
-	// the first build counts only: a process starts in log until its console command says otherwise
-	CHECK(c::writer_gate_setting().load() == c::WriterGate::Log);
+	// a process starts in log (it counts only) until its console command says otherwise: the router keeps the setting
+	CHECK(read_engine("xrGame/coop/coop_router.cpp").find("std::atomic<calls::WriterGate> g_writer_gate{calls::WriterGate::Log};") !=
+	      std::string::npos);
 }
 
 // ------------------------------------------------------------------------------------------------- the census
@@ -633,6 +634,12 @@ TEST(writer_gate_script_creates_ask_before_stock_code)
 		const char* head;
 		const char* stock; // the first stock line that takes an id
 	};
+	// one helper asks the writer and the pool of a create, one runs the call gate and then that helper
+	const std::string refused = body_of(s, "static bool coop_create_refused(CALifeSimulator* self");
+	CHECK(before(refused, "coop_writer_refuses(", "CoopMayCreate("));
+	CHECK(refused.find("WriteOp::Create") != std::string::npos);
+	const std::string gated = body_of(s, "static coop::calls::Gate coop_create_gate(CALifeSimulator* self");
+	CHECK(before(gated, "coop_spawn_gate(", "coop_create_refused("));
 	const Site sites[] = {
 		{"CSE_ALifeDynamicObject* CALifeSimulator__create(CALifeSimulator* self, ALife::_SPAWN_ID spawn_id)", "self->create(object, spawn, spawn_id);"},
 		{"CSE_Abstract* CALifeSimulator__spawn_item(CALifeSimulator* self", "self->spawn_item("},
@@ -645,15 +652,13 @@ TEST(writer_gate_script_creates_ask_before_stock_code)
 		const std::string b = body_of(s, site.head);
 		CHECK_EQ(std::string(site.head).substr(0, 40) + (b.empty() ? " missing" : " found"),
 		    std::string(site.head).substr(0, 40) + " found");
-		CHECK(before(b, "coop_writer_refuses(", site.stock));
-		CHECK(before(b, "CoopMayCreate(", site.stock));
-		CHECK(b.find("WriteOp::Create") != std::string::npos);
+		CHECK(before(b, "coop_create_", site.stock)); // coop_create_gate, or coop_create_refused after its own call gate
 	}
-	// spawn_item3 with reg goes to spawn_item2 (which asks); its own paths ask after that
+	// spawn_item3 with reg goes to spawn_item2 before any gate (asked there, once); its own paths ask after that
 	const std::string b3 = body_of(s, "CSE_Abstract* CALifeSimulator__spawn_item3(CALifeSimulator* self");
-	CHECK(before(b3, "return CALifeSimulator__spawn_item2(", "coop_writer_refuses("));
-	CHECK(before(b3, "coop_writer_refuses(", "self->spawn_item("));
-	CHECK(before(b3, "CoopMayCreate(", "self->spawn_item("));
+	CHECK(before(b3, "return CALifeSimulator__spawn_item2(", "coop_create_gate("));
+	CHECK(b3.find("coop_spawn_gate(") == std::string::npos);
+	CHECK(before(b3, "coop_create_gate(", "self->spawn_item("));
 	// register makes no id of its own (create(..., false) took it): the writer gate only
 	const std::string reg = body_of(s, "CSE_Abstract* reprocess_spawn(CALifeSimulator* self, CSE_Abstract* object)");
 	CHECK(before(reg, "coop_writer_refuses(", "Process_spawn("));
@@ -691,7 +696,7 @@ TEST(writer_gate_setting_is_a_registered_console_command)
 	CHECK(read_engine("xrGame/coop/coop_router.h").find("void register_console();") != std::string::npos);
 	const std::string router = read_engine("xrGame/coop/coop_router.cpp");
 	CHECK(body_of(router, "void register_console()").find("CMD1(CCC_WriterGate, \"coop_writer_gate\");") != std::string::npos);
-	CHECK(c::writer_gate_setting().load() == c::WriterGate::Log);
+	CHECK(router.find("std::atomic<calls::WriterGate> g_writer_gate{calls::WriterGate::Log};") != std::string::npos);
 }
 
 // Review R32 B finding 4 / §8a A22: the world's and a map server's writer_of read join's peers, the session's peers, the seats and the
