@@ -38,8 +38,9 @@ TEST(identity_normal_spawn_is_made)
 	CHECK_EQ(spawn_verdict(true, true, true, false), id::Spawn::Make);
 }
 
-// The crash's other half: an item outlived its entity under 52480, the box comes. The box is made (it registers under
-// the id; the stale item is no longer the id's object and its export is held back), not held back by the stale item.
+// The crash's other half: an item outlived its entity under 52480, the box comes. The identity guard does not call the
+// box a duplicate of the stale item (its export is held back); the stock net_Spawn still refuses the box while the item
+// holds the id, so coop_spawn_wait_rules.h holds the box back until the id is free (tests/test_spawn_wait_rules.cpp).
 TEST(identity_stale_object_of_another_kind_does_not_hold_the_new_one_back)
 {
 	CHECK_EQ(spawn_verdict(true, true, true, /*live_same_kind*/ false), id::Spawn::Make);
