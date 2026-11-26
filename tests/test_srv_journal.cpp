@@ -812,6 +812,7 @@ struct MapServer
 	jr::HeldMemory memory;
 	std::vector<Up> ups;
 	bool member_hook = false; // WP5's hook in unregister_member: a Left up from the stock death chain
+	bool registry_guard = true; // false: up_parent as it was before journal::journals_parent (no look at the registry)
 
 	uint32_t gen(uint16_t unit) const
 	{
@@ -869,13 +870,47 @@ struct MapServer
 		}
 	}
 
+	// up_parent: `reg` is this map server's ALife registry; an entity outside it (its id only in a holder's children, as xrServer lists
+	// it) is left out under the guard (journal::journals_parent); head_before_move gives it no section and gen 0
 	void parent_hook(uint16_t item, uint16_t new_parent)
 	{
+		const Obj* o = reg.get(item);
+		if (registry_guard && !jr::journals_parent(o != nullptr, false))
+			return;
 		const jr::ParentBefore before = memory.moved(item, new_parent);
-		jr::ObjectHead h{item, crc_of(*reg.get(item)), 0};
-		if (before.known)
+		jr::ObjectHead h{item, o ? crc_of(*o) : uint16_t(0), 0};
+		if (before.known && o)
 			h.gen = before.parent == kNo ? gen(item) : held_gen_of(before.parent);
 		ups.push_back(Up{Head::Parent, item, new_parent, h, before});
+	}
+	// An xrServer entity the registry never takes, in its holder's children (Process_spawn lists it there): no Spawn hook, no up. The
+	// bolt CInventoryOwner::spawn_supplies gives an NPC that comes online here (CALifeSimulatorBase::create skips what cannot be saved),
+	// a grenade's copy in the hand (spawn_fake_missile; game_sv_Single::OnCreate leaves an item held by an item outside).
+	void server_child(uint16_t holder, uint16_t child) { reg.get(holder)->children.push_back(child); }
+	// CALifeSwitchManager::remove_online of an NPC: Perform_destroy rejects each child with a hook; a child of the registry is taken
+	// back without one (add_offline_impl), one outside it is destroyed with no release (no Released hook).
+	void npc_offline(uint16_t npc)
+	{
+		const std::vector<uint16_t> children = reg.get(npc)->children;
+		for (const uint16_t child : children)
+		{
+			std::vector<uint16_t>& c = reg.get(npc)->children;
+			c.erase(std::remove(c.begin(), c.end(), child), c.end());
+			if (Obj* o = reg.get(child))
+				o->parent = kNo;
+			parent_hook(child, kNo);
+			if (reg.get(child))
+				reg.attach(child, npc);
+		}
+	}
+	// A grenade's copy in the hand (spawn_fake_missile: an xrServer child of the grenade, outside the registry) is thrown:
+	// game_sv_Single::OnDetach registers it (its Spawn hook), then the reject puts it down (its Parent hook).
+	void throw_copy(uint16_t grenade, uint16_t copy)
+	{
+		std::vector<uint16_t>& c = reg.get(grenade)->children;
+		c.erase(std::remove(c.begin(), c.end(), copy), c.end());
+		spawn(copy, kNo);
+		parent_hook(copy, kNo);
 	}
 	// The stock move: a reject from the old holder, then a take by the new one, each with its hook after the change.
 	void move(uint16_t item, uint16_t to)
@@ -1188,6 +1223,78 @@ TEST(srv_journal_netting_leaves_out_what_changes_nothing)
 	}
 }
 
+// An entity outside the map server's ALife registry (an NPC's bolt, a grenade's copy in the hand) is no object of the world's: no Spawn
+// of it ever goes up. When its NPC goes offline here, Perform_destroy rejects the bolt with a hook and destroys it without a release.
+// The hook without the registry guard sent its Parent "put down" with an empty head; the world refused it as no such object, its line
+// "Parent of object N from map server M refused (...): no such object; not here, put down" (every such line of the Server stand and of
+// a live world server named no section and put the object down), and the map server's repair (Fetch) asked the world for it again.
+// journals_parent leaves it out; the NPC's gun, back in it, is left out as unchanged; a thrown copy, which OnDetach registers before
+// its reject's hook, still goes up as its Spawn, written on the ground.
+TEST(srv_journal_an_entity_outside_the_registry_sends_no_parent)
+{
+	constexpr uint16_t kBolt = 0x9051, kGrenade = 0x9320, kCopy = 0x9053;
+	CHECK(jr::journals_parent(true, false));
+	CHECK(!jr::journals_parent(false, false)); // outside the registry
+	CHECK(!jr::journals_parent(true, true)); // a refused create being released (g.quiet)
+	CHECK(!jr::journals_parent(false, true));
+	for (const bool guard : {false, true})
+	{
+		World world;
+		MapServer ms;
+		same_world(world, ms);
+		ms.registry_guard = guard;
+		ms.server_child(kN1, kBolt); // N1 (a member of the held squad S) comes online here
+		CHECK(ms.flush().empty()); // no Spawn: the registry's hook never ran; the snapshot lists the bolt among N1's children
+		ms.npc_offline(kN1);
+		const std::vector<jr::Entry> es = ms.flush();
+		world.apply_all(es);
+		CHECK(ms.reg.get(kBolt) == nullptr);
+		CHECK(world.reg.get(kBolt) == nullptr);
+		CHECK_EQ(ms.reg.get(kGun)->parent, kN1); // the gun is back in N1 and left out as unchanged
+		CHECK_EQ(world.reg.get(kGun)->parent, kN1);
+		if (guard)
+		{
+			CHECK(es.empty());
+			CHECK(world.refused.empty());
+			continue;
+		}
+		REQUIRE(es.size() == 1u);
+		CHECK_EQ(es[0].op, uint8_t(Head::Parent));
+		jr::ObjectHead h;
+		REQUIRE(jr::object_of(es[0], h));
+		CHECK_EQ(h.id, kBolt);
+		CHECK_EQ(h.crc, uint16_t(0)); // head_before_move: no registry entry, no section
+		coop::Reader lr = jr::layout_of(es[0]);
+		CHECK_EQ(lr.u16(), kBolt);
+		CHECK_EQ(lr.u16(), kNo); // put down
+		CHECK_EQ(world.taken, uint32_t(0));
+		REQUIRE(world.refused.size() == 1u);
+		CHECK_EQ(world.refused[0], uint8_t(jr::Unknown));
+		CHECK(jr::object_note(false, nullptr, h.crc, kNo, true, kNo) == "not here, put down"); // the world's refusal line
+		CHECK(jr::repair_of(Head::Parent, jr::Unknown) == jr::Repair::Fetch); // and the map server's repair asks for it again
+	}
+	// a grenade's copy in N1's hand is thrown: its Spawn goes up written on the ground, its Parent is left out, the world takes it
+	World world;
+	MapServer ms;
+	same_world(world, ms);
+	for (Registry* r : {&world.reg, &ms.reg})
+	{
+		r->objs[kGrenade].section = "grenade_f1";
+		r->attach(kGrenade, kN1);
+	}
+	ms.remember();
+	ms.server_child(kGrenade, kCopy); // spawn_fake_missile at the throw's start
+	CHECK(ms.flush().empty());
+	ms.throw_copy(kGrenade, kCopy);
+	const std::vector<jr::Entry> es = ms.flush();
+	REQUIRE(es.size() == 1u);
+	CHECK_EQ(es[0].op, uint8_t(Head::Spawn));
+	world.apply_all(es);
+	all_taken(world, 1);
+	REQUIRE(world.reg.get(kCopy) != nullptr);
+	CHECK_EQ(world.reg.get(kCopy)->parent, kNo);
+}
+
 // ---------------------------------------------------------------- the departure flood (Server, 2026-11-26)
 //
 // World log xray_banan4ik2.log (5 players, Server mode): every printed "Parent of object N from map server M refused: not the writer"
@@ -1457,4 +1564,32 @@ TEST(srv_journal_departure_flood_glue)
 	CHECK(repeat.find("host_apply_parent") == std::string_view::npos); // nothing applied, nothing relayed
 	CHECK(repeat.find("host_on_parent_changed") == std::string_view::npos);
 	CHECK(body_of(alife, "void", "host_accept_print_status").find("g_accept.parents_unchanged") != std::string_view::npos);
+}
+
+// The engine's glue of journal::journals_parent (its source is read): up_parent asks this map server's ALife registry at the hook, before
+// the snapshot's move and the up, and counts what it left out for the status; and the stock chain the rule rests on: ALife's create
+// registers nothing that cannot be saved (a bolt cannot), and a reject runs game_sv_Single::OnDetach, which registers a thrown copy,
+// before the Parent hook.
+TEST(srv_journal_registry_guard_glue)
+{
+	const std::string code = xfer_code();
+	const auto hook = body_of(code, "void", "up_parent");
+	REQUIRE(!hook.empty());
+	CHECK(before(hook, "ai().alife().objects().object(item, true)", "journal::journals_parent("));
+	CHECK(before(hook, "journal::journals_parent(", "g.memory.moved(item, new_parent)"));
+	CHECK(before(hook, "journal::journals_parent(", "g.up.push_back("));
+	CHECK(hook.find("g.quiet.count(item)") != std::string_view::npos);
+	CHECK(hook.find("++g.parents_unregistered") != std::string_view::npos);
+	CHECK(body_of(code, "void", "xfer_print_status").find("g.parents_unregistered") != std::string_view::npos);
+
+	const std::string alife = engine_code("xrGame/alife_simulator_base.cpp");
+	const size_t create = alife.find("void CALifeSimulatorBase::create(CSE_ALifeObject* object)"); // the create of a client's spawn
+	REQUIRE(create != std::string::npos);
+	CHECK(before(std::string_view(alife).substr(create), "can_save()", "register_object("));
+	const std::string items = engine_code("xrServerEntities/xrServer_Objects_ALife_Items.cpp");
+	CHECK(std::regex_search(items, std::regex(R"(CSE_ALifeItemBolt::can_save\s*\(\s*\)\s*const\s*\{\s*return\s*\(\s*false\s*\)\s*;)")));
+	const std::string reject = engine_code("xrGame/xrServer_process_event_reject.cpp");
+	const auto on_reject = body_of(reject, "bool", "xrServer::Process_event_reject");
+	REQUIRE(!on_reject.empty());
+	CHECK(before(on_reject, "game->OnDetach(id_parent, id_entity)", "host_on_parent_changed(id_entity, id_parent, 0xffff)"));
 }
