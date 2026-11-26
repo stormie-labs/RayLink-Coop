@@ -4,6 +4,8 @@
 #include "coop_rules.h"
 
 using coop::Msg;
+using coop::rules::avatar_equip;
+using coop::rules::AvatarEquip;
 using coop::rules::client_echo;
 using coop::rules::Echo;
 using coop::rules::is_machine_info;
@@ -129,4 +131,14 @@ TEST(rules_client_echo)
 	CHECK_EQ(client_echo(false, true, true), Echo::Drop);
 	CHECK_EQ(client_echo(true, true, false), Echo::Drop);
 	CHECK_EQ(client_echo(true, true, true), Echo::Drop);
+}
+// Dev 66 creator10_server: an avatar's game object was found and not destroying while ALife had already taken its server entity
+// away (Perform_destroy); apply_equip sent GE_CHANGE_VISUAL and xrServer::Process_event read the missing entity (0xC0000005).
+TEST(rules_avatar_equip_waits_for_its_server_entity)
+{
+	CHECK_EQ(avatar_equip(true, false, true), AvatarEquip::Apply);
+	CHECK_EQ(avatar_equip(true, false, false), AvatarEquip::WaitNoEntity); // the object outlives its server entity
+	CHECK_EQ(avatar_equip(false, false, false), AvatarEquip::Wait); // not spawned here yet
+	CHECK_EQ(avatar_equip(true, true, false), AvatarEquip::Wait); // being destroyed
+	CHECK_EQ(avatar_equip(true, true, true), AvatarEquip::Wait);
 }

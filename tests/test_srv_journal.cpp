@@ -813,6 +813,11 @@ struct MapServer
 	std::vector<Up> ups;
 	bool member_hook = false; // WP5's hook in unregister_member: a Left up from the stock death chain
 	bool registry_guard = true; // false: up_parent as it was before journal::journals_parent (no look at the registry)
+	// Items that cannot be saved (a bolt of a player's belt, CSE_ALifeItemBolt): the stock switch offline releases them instead of
+	// taking them back; their Parent "put down" and their Destroy follow
+	std::set<uint16_t> unsaveable;
+	bool departure_guard = true; // false: client_flush_up as it was before journal::journals_move_out_of_character
+	std::set<uint16_t> departed; // g.departed: left out with a departed character, their Destroy too
 
 	uint32_t gen(uint16_t unit) const
 	{
@@ -866,6 +871,12 @@ struct MapServer
 		{
 			reg.attach(item, kNo);
 			parent_hook(item, kNo);
+			if (unsaveable.count(item))
+			{
+				ups.push_back(Up{Head::Destroy, item, kNo, head_of(item), {}}); // xfer_on_released: the head now, on the ground
+				reg.objs.erase(item);
+				continue;
+			}
 			reg.attach(item, character);
 		}
 	}
@@ -973,6 +984,13 @@ struct MapServer
 				const uint16_t holder = e ? e->parent : u.b;
 				if (!net.send(u.a, u.before, holder))
 					break;
+				const Obj* from = u.before.known && u.before.parent != kNo ? reg.get(u.before.parent) : nullptr;
+				const bool from_character = from && from->character;
+				if (departure_guard && !jr::journals_move_out_of_character(from_character, players.count(u.before.parent) != 0))
+				{
+					departed.insert(u.a);
+					break;
+				}
 				w.u16(u.a);
 				w.u16(holder);
 				const float p[3] = {0.f, 0.f, 0.f};
@@ -984,6 +1002,12 @@ struct MapServer
 				w.u16(u.a);
 				w.u16(kNo);
 				object(Head::Died, u.head, w);
+				break;
+			case Head::Destroy:
+				if (departure_guard && departed.erase(u.a))
+					break;
+				w.u16(u.a);
+				object(Head::Destroy, u.head, w);
 				break;
 			case Head::Spawn:
 				if (!e)
@@ -1392,6 +1416,73 @@ TEST(srv_journal_a_departing_players_inventory_sends_no_parent)
 	seated.apply_all(es);
 	all_taken(seated, 3);
 	CHECK_EQ(seated.repeats, uint32_t(3));
+}
+
+// The bolt of his belt (allymark_server, Dev 65 and 66: "Parent of object 29957 from map server 1 refused: not the writer; here:
+// section 'bolt', parent 29698, put down", then its Destroy, after 'allymover' left level 7). A bolt cannot be saved: the stock
+// switch offline of his character releases it instead of taking it back, so ParentNet does not net it out. Both its entries named a
+// character the map server no longer writes; the world, writing him, refused both and keeps the bolt in him. Left out
+// (journal::journals_move_out_of_character), nothing is refused and both sides end as the world says.
+namespace
+{
+// a bolt in the player's character on both sides, in the snapshot of the frame's end
+void with_bolt(World& world, MapServer& ms, uint16_t bolt)
+{
+	for (Registry* r : {&world.reg, &ms.reg})
+	{
+		r->objs[bolt].section = "bolt";
+		r->attach(bolt, kPlayer);
+	}
+	ms.remember();
+}
+} // namespace
+
+TEST(srv_journal_a_departing_players_bolt_sends_neither_parent_nor_destroy)
+{
+	constexpr uint16_t kBolt = 0x9313;
+	for (const bool guard : {true, false})
+	{
+		World world;
+		MapServer ms;
+		player_with_items(world, ms, true);
+		with_bolt(world, ms, kBolt);
+		ms.unsaveable.insert(kBolt);
+		ms.departure_guard = guard;
+		world.parked.insert(kPlayer);
+		ms.take_offline(kPlayer);
+		CHECK(ms.reg.get(kBolt) == nullptr); // released here
+		const std::vector<jr::Entry> es = ms.flush();
+		world.apply_all(es);
+		CHECK_EQ(world.reg.get(kBolt)->parent, kPlayer); // the world keeps it in him either way
+		if (guard)
+		{
+			CHECK(es.empty());
+			CHECK(world.refused.empty());
+			CHECK(ms.departed.empty()); // its Destroy took its mark
+			continue;
+		}
+		// before the fix: the stand's two lines
+		REQUIRE(es.size() == 2u);
+		CHECK_EQ(es[0].op, uint8_t(Head::Parent));
+		CHECK_EQ(es[1].op, uint8_t(Head::Destroy));
+		REQUIRE(world.refused.size() == 2u);
+		for (const uint8_t why : world.refused)
+			CHECK_EQ(why, uint8_t(jr::NotWriter));
+	}
+	// a player who still plays here puts his bolt down: that move is his map server's and goes up
+	World world;
+	MapServer ms;
+	player_with_items(world, ms, true);
+	with_bolt(world, ms, kBolt);
+	ms.move(kBolt, kNo);
+	const std::vector<jr::Entry> es = ms.flush();
+	REQUIRE(es.size() == 1u);
+	world.apply_all(es);
+	all_taken(world, 1);
+	CHECK_EQ(world.reg.get(kBolt)->parent, kNo);
+	CHECK(jr::journals_move_out_of_character(false, false)); // not out of a character: the rule does not look
+	CHECK(jr::journals_move_out_of_character(true, true));
+	CHECK(!jr::journals_move_out_of_character(true, false));
 }
 
 // Flow C (a pick-up from a body in the frame of his departure): one Parent goes up, the body's ring into him, its head the body's root

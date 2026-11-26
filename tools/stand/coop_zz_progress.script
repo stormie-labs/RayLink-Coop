@@ -12,6 +12,11 @@ local wait_note_at, wait_noted, next_flush = nil, false, 0
 local CORPSE_NOTES = 6
 local corpse_since, corpse_kind, corpse_notes = nil, nil, 0
 local guest_peer, guest_character, pending, honest_xp, skills_done
+-- The +5000 report is audited when it is stored (co-op), or later: the Server's world holds a skills report that fails a
+-- budget for its map's final tally and audits it on release (coop_srv_progress.script "hold disputed reports", HOLD 5 s).
+-- Each actual scavenging budget failure is counted here; the stored inflated report waits this long for one.
+local AUDIT_WAIT_MS = 10000
+local budget_failures = 0
 local step_m, corpse_search, facts_ready = 0, 0, false
 local walking = false
 local allow_report, report_sent = false, false
@@ -175,6 +180,14 @@ local function prepare_keeper()
 	guest_peer, guest_character = peer, character
 	local progress = coop_progress_check
 
+	-- Count the exact failed check wherever it runs: inside the transport report's filter or at a held report's release.
+	local pass = coop_trust.pass
+	coop_trust.pass = function(name, ok, fmt, ...)
+		if name == "progress_skills" and not ok and fmt == "progress check failed: %s"
+			and (...) == "scavenging: budget" then budget_failures = budget_failures + 1 end
+		return pass(name, ok, fmt, ...)
+	end
+
 	-- Co-op's observe calls note locally. Server calls note only after the world tally
 	-- receiver has validated the transport sender, assignment, sequence and amounts.
 	local note = progress.note
@@ -206,20 +219,14 @@ local function prepare_keeper()
 		local inflated = command == "skills" and honest_xp and not skills_done and xp - honest_xp == 5000
 		if not (honest or inflated) then return filter(id, from, clean, previous) end
 
-		-- Attribute the counter changes and the exact failed check to this transport report.
-		-- Restore the trust entry even if the real filter raises.
+		-- Attribute the counter changes and the exact failed check to this transport report: the honest one at once,
+		-- the inflated one from here to its audit (see AUDIT_WAIT_MS).
 		local checked, rejected, refused = trust_counts()
-		local pass, budget_failed = coop_trust.pass, false
-		coop_trust.pass = function(name, ok, fmt, ...)
-			if name == "progress_skills" and not ok and fmt == "progress check failed: %s"
-				and (...) == "scavenging: budget" then budget_failed = true end
-			return pass(name, ok, fmt, ...)
-		end
-		local ok, accepted, fixes = pcall(filter, id, from, clean, previous)
-		coop_trust.pass = pass
-		if not ok then error(accepted, 0) end
+		local failures = budget_failures
+		local accepted, fixes = filter(id, from, clean, previous)
 		local after_checked, after_rejected, after_refused = trust_counts()
-		pending = { xp = xp, prior_token = previous and previous.t, honest = honest, budget_failed = budget_failed,
+		pending = { xp = xp, prior_token = previous and previous.t, honest = honest, failures = failures,
+			base = { checked = checked, rejected = rejected, refused = refused },
 			checked = after_checked - checked, rejected = after_rejected - rejected, refused = after_refused - refused }
 		return accepted, fixes
 	end
@@ -250,8 +257,13 @@ local function keeper_step(step)
 			out("honest accepted peer=%d character=%d xp=%.6f checked=%d failed=0 refused=0",
 				guest_peer, guest_character, honest_xp, pending.checked)
 		else
-			assert(pending.budget_failed and pending.rejected > 0 and pending.refused == 0,
-				"trust did not log the +5000 scavenging budget failure")
+			local now = time_global()
+			pending.stored_at = pending.stored_at or now
+			local audited = budget_failures > pending.failures
+			if not audited and now - pending.stored_at < AUDIT_WAIT_MS then return end
+			local _, rejected, refused = trust_counts()
+			assert(audited and rejected > pending.base.rejected and refused == pending.base.refused, string.format(
+				"trust did not log the +5000 scavenging budget failure within %d ms of the stored report", AUDIT_WAIT_MS))
 			skills_done = true
 			out("skills budget failed peer=%d character=%d delta=5000", guest_peer, guest_character)
 		end

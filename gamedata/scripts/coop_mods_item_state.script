@@ -40,6 +40,31 @@ local function released_since(id, tick)
 	return type(tick) == "number" and type(f) == "function" and f(id, tick) == true
 end
 
+-- The decider's last carry of a weapon (carried, below): hid -> { ms = time_global(), from = transport sender }.
+-- Read only by the owner-check line, so a refusal says whether the item moved a moment before (at most 256 kept).
+local carried_at, carried_n = {}, 0
+
+-- Owner probe (dev66 carry_group: "item 19664: sender 1 is not its carrier", no way to tell from the line why).
+-- What the world holds for the item: its section, the parent and root it sits under, the sender's character, the
+-- rider's path and how long ago that sender's own carry moved it.
+local function carrier_facts(id, hid, avatar, path)
+	local sim = alife()
+	local se = sim and sim:object(id)
+	local parent = se and se.parent_id
+	local root = C().mod("coop_economy_core").root_of(hid)
+	local root_se = root and sim and sim:object(root)
+	local last = carried_at[hid]
+	return string.format("[%s] parent %s, root %s [%s], his character %s, %s rider, %s",
+		se and se:section_name() or "not in the world", tostring(parent), tostring(root),
+		root_se and root_se:section_name() or "?", tostring(avatar), tostring(path),
+		last and string.format("carried by sender %s %d ms ago", tostring(last.from), time_global() - last.ms)
+			or "no carry of it seen here")
+end
+local function carrier_text(...)
+	local ok, text = pcall(carrier_facts, ...)
+	return ok and text or "(no facts: " .. tostring(text) .. ")"
+end
+
 local function live(s)
 	local mod = C().mod(s.module)
 	if not mod then return nil end
@@ -272,8 +297,9 @@ local function admit_riders(kind, t, from)
 							-- The former holder's own copy of what his move carried: written already (carried).
 							valid = coop_trust.guard("item_state_carried", false)
 						else
-							valid = coop_trust.pass("item_state_owner", owner,
-								"item %s: sender %s is not its carrier", tostring(hid), tostring(from)) and owner
+							valid = coop_trust.pass("item_state_owner", owner, "item %s: sender %s is not its carrier: %s",
+								tostring(hid), tostring(from),
+								not owner and carrier_text(id, hid, player and player.avatar_id, kind) or "") and owner
 						end
 					end
 					if valid then admitted[#admitted + 1] = id end
@@ -1350,10 +1376,15 @@ function carried(hid, from, text, holder)
 		holder = player and player.avatar_id
 	end
 	local owner = holder ~= nil and ec.root_of(hid) == holder
-	if not coop_trust.pass("item_state_owner", owner, "item %s: sender %s is not its carrier", tostring(hid), tostring(from))
-		or not owner then
+	if not coop_trust.pass("item_state_owner", owner, "item %s: sender %s is not its carrier: %s", tostring(hid),
+		tostring(from), not owner and carrier_text(C().lid(hid), hid, holder, "carry") or "") or not owner then
 		return false
 	end
+	if not carried_at[hid] then
+		carried_n = carried_n + 1
+		if carried_n > 256 then carried_at, carried_n = {}, 1 end
+	end
+	carried_at[hid] = { ms = time_global(), from = from }
 	local decoded, t = pcall(cm.decode, text)
 	t = decoded and type(t) == "table" and t or {}
 	local n = ec.int(t.n, t.parts ~= nil and 0 or 1, #specs)

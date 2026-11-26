@@ -20,6 +20,11 @@ def source(path):
     return path.read_bytes().decode("latin-1").replace("\r", "")
 
 
+def entities_source():
+    # The entities module is split: the session reset, the snapshots, the pose lines.
+    return "\n".join(source(GAME / "coop" / name) for name in ("coop_entities.cpp", "coop_snapshots.cpp", "coop_pose_diag.cpp"))
+
+
 def between(text, start, end):
     at = text.find(start)
     assert at >= 0, start
@@ -40,13 +45,13 @@ def test_premise_every_live_npc_spawns_in_death_init():
 
 
 def test_drive_mirror_goes_through_the_rules_with_and_without_a_snapshot():
-    src = source(GAME / "coop" / "coop_entities.cpp")
+    src = entities_source()
     drive = between(src, "bool drive_mirror(CGameObject* obj, mirror_pose::Book& book)", "\nvoid frame()")
     none = between(drive, "if (it == g_tracks.end() || !interpolate(", "return false;")
     assert "drive_parts(obj, ka, book, nullptr, track, now);" in none
     assert "watch_pose(obj, ka, book, track, nullptr, now);" in none
-    assert "drive_parts(obj, ka, book, &s, &track, now);" in drive
-    assert "watch_pose(obj, ka, book, &track, &s, now);" in drive
+    assert "drive_parts(obj, ka, book, s.sample, &track, now);" in drive
+    assert "watch_pose(obj, ka, book, &track, s.sample, now);" in drive
     assert "plays no base motion" not in src  # the 26fe5b0b line is replaced
     assert "anim_diag_after" not in src
     parts = between(src, "void drive_parts(", "\n}\n")
@@ -62,7 +67,7 @@ def test_drive_mirror_goes_through_the_rules_with_and_without_a_snapshot():
     assert "book.fallback_tried |= b;" in idle
     watch = between(src, "void watch_pose(", "\n}\n")
     assert "mirror_pose::cause_of(f)" in watch
-    assert "mirror_pose::say_now(book, cause, mirror_pose::settled(book, now))" in watch
+    assert "mirror_pose::say_now(book, cause, due)" in watch
     assert "mirror_pose::line_allowed(g_pose_lines)" in watch
     assert "if (!alive || !alive->g_Alive())" in watch
 
@@ -80,7 +85,7 @@ def test_the_copy_book_starts_with_each_skeleton():
 
 
 def test_decider_lines_are_wired_and_bounded():
-    src = source(GAME / "coop" / "coop_entities.cpp")
+    src = entities_source()
     # A round every kRoundMs, off the 66 ms snapshot path (host_send_snapshots is as before P101).
     assert "watch_" not in between(src, "void host_send_snapshots()", "\n}\n")
     assert "watch_decider(mgr().now_ms());" in between(src, "void frame()", "\n}\n")
@@ -104,7 +109,7 @@ def test_decider_round_walks_only_its_level():
     """P101 review: the round ran on the decider's main thread (the Coop host's) over the whole ALife registry, every item
     of the world, every 10 s. It walks the current level's registry now; a squad's members are not in it (register_member
     takes them out), so they are met through their squad."""
-    src = source(GAME / "coop" / "coop_entities.cpp")
+    src = entities_source()
     round_ = between(src, "void watch_decider(u64 now)", "\n}\n")
     assert "ai().alife().objects().objects()" not in round_
     assert "if (ai().alife().graph().level_exists())" in round_
@@ -129,16 +134,21 @@ def test_decider_round_walks_only_its_level():
 def test_no_snapshot_is_said_only_while_the_stream_reaches_this_client():
     """P101 review: "no snapshot of this id" (Wolf's signature: the decider streams the others, not him) only while a sample
     of some creature was taken here within kStaleMs and after the copy appeared; else Cause::NoStream, one line per gap."""
-    src = source(GAME / "coop" / "coop_entities.cpp")
+    src = entities_source()
     snapshot = between(src, "void client_on_snapshot(PeerId, Reader& r)", "\n}\n")
-    taken = snapshot.find("t.samples.push_back(s);")
+    taken = snapshot.find("t.samples.push_back(")
     stamp = snapshot.find("g_snapshot_in_at = now;")
     assert 0 <= taken < stamp
     assert "g_pose_gap_said = false;" in snapshot[taken:]
     watch = between(src, "void watch_pose(", "\n}\n")
     assert "f.stream = mirror_pose::stream_reaches(g_snapshot_in_at, book.since_ms, now);" in watch
     gap = between(watch, "if (cause == mirror_pose::Cause::NoStream)", "\n\t}\n")
-    assert "mirror_pose::settled(book, now) && !g_pose_gap_said" in gap
+    assert "if (due && !g_pose_gap_said)" in gap
+    # Judged only once this client can take snapshots (live in an up world), not while it joins or leaves a level.
+    opened = watch.find("g_stream_open_at = mirror_pose::stream_open_at(g_stream_open_at, mgr().is_live_client() && world_up(), now);")
+    due = watch.find("const bool due = mirror_pose::watch_due(book, g_stream_open_at, now);")
+    assert 0 <= opened < due < watch.find("if (cause == mirror_pose::Cause::NoStream)")
+    assert "mirror_pose::say_now(book, cause, due)" in watch
     assert "mirror_pose::line_allowed(g_pose_gap_lines)" in gap
     assert "return;" in gap
     assert watch.find("if (cause == mirror_pose::Cause::NoStream)") < watch.find("mirror_pose::say_now(")
@@ -154,10 +164,12 @@ def test_no_snapshot_is_said_only_while_the_stream_reaches_this_client():
 
 
 def test_session_reset_clears_the_pose_books_and_budgets():
-    src = source(GAME / "coop" / "coop_entities.cpp")
-    reset = between(src, "\nvoid reset()\n{", "\n}\n")
+    src = entities_source()
+    # The session reset of the module and the two it calls (the snapshots, the pose lines).
+    reset = "".join(between(src, head, "\n}\n")
+                    for head in ("\nvoid reset()\n{", "void reset_snapshots()", "void reset_pose_diag()"))
     for line in ("g_pose_fallbacks = 0;", "g_pose_lines = g_copy_state_lines = g_pose_gap_lines = 0;",
-                 "g_snapshot_in_at = 0;", "g_pose_gap_said = false;", "g_decider_round_at = 0;",
+                 "g_snapshot_in_at = 0;", "g_pose_gap_said = false;", "g_stream_open_at = 0;", "g_decider_round_at = 0;",
                  "g_decider_unposed.clear();", "g_decider_rootctl.clear();", "g_bodiless.clear();",
                  "g_decider_lines = g_rootctl_lines = g_bodiless_lines = 0;"):
         assert line in reset, line
@@ -183,7 +195,7 @@ def test_rules_header_is_core_and_pure():
     text = RULES.read_text(encoding="utf-8")
     assert text.startswith("// Ядро: без проверок режима (docs/MODES.md)")
     includes = re.findall(r'^#include\s+[<"]([^>"]+)[>"]', text, re.M)
-    assert includes == ["cstdint"]
+    assert includes == ["cstdint", "coop_text.h"]  # coop_text.h: text helpers of the standard library only
     for word in ("is_map_server", "is_host(", "is_client(", "dedicated", "split("):
         assert word not in text, word
     # The fallback names exist in GAMMA's stalker_animation.omf on these partitions (temp/r101/server/omfdefs.py, 2026-11-25):

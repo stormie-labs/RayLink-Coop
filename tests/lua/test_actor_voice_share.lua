@@ -292,6 +292,14 @@ else
 	ready = true
 	check(speak(NORMAL, 1, 100, true) == true and sent_count(REQ) == 4 and sent(REQ).loud == true,
 		"VAR marks squad_can_hear speech as loud even with an ordinary file name")
+	-- dev66 sil_group: a name VAR plays with no sound file on this machine is no line for anybody; it stays here and
+	-- is named once, so the world's "does not exist on the world" means a file only the speaker has.
+	NOW = NOW + 400
+	check(speak("characters_voice/player_eng/pain/m_pain_404", 1, 100) == true and sent_count(REQ) == 4
+		and log_has("[coop-mods] [actor_voice] VAR said characters_voice/player_eng/pain/m_pain_404, but no such sound file is here: not shared (1 so far)"),
+		name .. " a line with no sound file here is not shared and is named")
+	NOW = NOW + 400
+	check(speak(NORMAL, 1, 100) == true and sent_count(REQ) == 5, name .. " the next line with its file is shared")
 
 	role("host", name == "hostplay", 0)
 	local before = #played
@@ -314,6 +322,7 @@ else
 	event(REQ, wire(), 257)
 	event(REQ, wire(), 1)
 	check(sent_count(VOICE) == 1, name .. " rejects invalid files, unknown peers, bridges and a duplicate inside 400 ms")
+	check(log_has("sound file missing does not exist on the world"), name .. " the world's refusal names the sound file")
 	event(REQ, wire(), 17)
 	NOW = NOW + 370
 	event(REQ, wire(), 1)
@@ -329,7 +338,7 @@ else
 	if name == "hostplay" then
 		NOW = NOW + 400
 		before = #played
-		check(speak(NORMAL, 0.75, 100) == true and sent_count(REQ) == 4 and sent_count(VOICE) == 5
+		check(speak(NORMAL, 0.75, 100) == true and sent_count(REQ) == 5 and sent_count(VOICE) == 5
 			and sent(VOICE).speaker == 0 and #played == before + 1,
 			"co-op host shares its own line without a network round trip or double playback")
 		role("client", true, 2)

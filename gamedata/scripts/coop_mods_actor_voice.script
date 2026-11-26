@@ -11,7 +11,9 @@ local MAX_PEER_ID = 0xfffffffe -- PeerId is u32; the number of playable seats is
 local next_from, playing = {}, {}
 local last_sent
 local started, first_update, wrapped
-local stats = { sent = 0, relayed = 0, played = 0, local_rate = 0, rate = 0, bad = 0, non_player = 0, foreign = 0 }
+-- absent: lines VAR said here whose sound file this machine does not have either (not shared, see share).
+local stats = { sent = 0, relayed = 0, played = 0, local_rate = 0, rate = 0, bad = 0, non_player = 0, foreign = 0,
+	absent = 0 }
 
 local function refuse(event, peer, counter, reason)
 	stats[counter] = stats[counter] + 1
@@ -118,7 +120,7 @@ local function receive(t)
 	local distance = pos:distance_to(actor:position())
 	if distance > limit then return end
 	local path = local_path(t.file)
-	if not path then return refuse(VOICE, peer, "bad", "sound file does not exist on the listener") end
+	if not path then return refuse(VOICE, peer, "bad", "sound file " .. t.file .. " does not exist on the listener") end
 	local voice = play_at_head(path, pos, distance, limit, receiver_gain(t.volume), avatar:id(), t.level)
 	if voice then
 		playing[peer] = voice
@@ -143,7 +145,7 @@ local function accept(t, from, now)
 	end
 	local due = next_from[from]
 	if due and now < due - SLACK_MS then return refuse(REQ, from, "rate", "voice line sent too soon") end
-	if not local_path(t.file) then return refuse(REQ, from, "bad", "sound file does not exist on the world") end
+	if not local_path(t.file) then return refuse(REQ, from, "bad", "sound file " .. t.file .. " does not exist on the world") end
 	-- Borrow a little time for jitter without letting successive sends run faster than 400 ms.
 	next_from[from] = (due or now) + GAP_MS
 	local line = { file = t.file, volume = t.volume, level = t.level, x = t.x, y = t.y, z = t.z,
@@ -186,6 +188,17 @@ local function share(file, gain, can_hear)
 	local line = { file = file, volume = gain, level = level.name(), x = pos.x, y = pos.y, z = pos.z,
 		loud = is_loud(file, can_hear) }
 	if not valid_line(line) then return end
+	-- dev66 sil_group: the world dropped a line as "sound file does not exist on the world" and the line named no file.
+	-- A name with no file here is no line anybody can hear (the engine plays its $no_sound instead): it stays here,
+	-- counted, its first lines named, so the world's "!" means a file this machine has and the world lacks.
+	if not local_path(file) then
+		stats.absent = stats.absent + 1
+		if stats.absent <= 4 or stats.absent % 64 == 0 then
+			printf("[coop-mods] [actor_voice] VAR said %s, but no such sound file is here: not shared (%d so far)", file,
+				stats.absent)
+		end
+		return
+	end
 	local sent
 	if coop_mode.decides_world() then
 		sent = accept(line, core.self_peer(), now)
@@ -250,8 +263,9 @@ local function on_destroy()
 end
 
 local function status()
-	return string.format("sent %d, relayed %d, played %d, refused: local rate %d, rate %d, bad %d, non-player %d, foreign %d",
-		stats.sent, stats.relayed, stats.played, stats.local_rate, stats.rate, stats.bad, stats.non_player, stats.foreign)
+	return string.format("sent %d, relayed %d, played %d, refused: local rate %d, rate %d, bad %d, non-player %d, foreign %d"
+		.. ", not here %d", stats.sent, stats.relayed, stats.played, stats.local_rate, stats.rate, stats.bad, stats.non_player,
+		stats.foreign, stats.absent)
 end
 
 -- axr_main discovers all script modules with on_game_start.

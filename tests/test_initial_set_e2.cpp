@@ -46,6 +46,7 @@ struct WorldTables
 	}
 	PeerId holder_of(uint16_t) const { return kInvalidPeer; }
 	uint16_t map_of_bridge(PeerId bridge) const { return bridge == kBridge ? kLedMap : writer::kNoLevel; }
+	PeerId maker_of(uint16_t) const { return kInvalidPeer; }
 };
 
 // The map server's tables (map_seat): the player plays here.
@@ -54,6 +55,7 @@ struct MapTables
 	bool plays_here(uint16_t character) const { return character == kCharacter; }
 	bool authors(uint16_t) const { return false; }
 	bool born(uint16_t) const { return false; }
+	bool made_here(uint16_t) const { return false; }
 };
 
 // What set_initial answered before E-2: the writer only.

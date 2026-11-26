@@ -14,10 +14,14 @@ $ErrorActionPreference = 'Stop'
 $s7Live = '\[coop\] phase loading-world -> live\b'
 $s7Load = 'host replaced the world|phase .* -> (?:receiving-world|loading-world)\b|\[coop\] load: the group moves to '
 $s7Bad = '\[s7\] FAIL\b|ownership violation:|Unknown command:.*srv_|@rl error\b'
-$s7Player = 'role=(?<role>s7move|s7stay) map=(?<map>\w+) peer=(?<peer>\d+) operator=(?<operator>[01]) alive=(?<alive>[01]) kits=(?<kits>\d+) character=(?<character>\d+) levelid=(?<level>\d+)\s*$'
+$s7Player = 'role=(?<role>s7move|s7stay) map=(?<map>\w+) peer=(?<peer>\d+) operator=(?<operator>[01]) alive=(?<alive>[01]) kits=(?<kits>\d+) character=(?<character>\d+) levelid=(?<level>\d+) god=(?<god>[01])\s*$'
 $s7Counter = '\[coop\] levels: (?<held>\d+) object\(s\) online at map servers, .*\| xfer in flight (?<pending>\d+), retries \d+, completed (?<completed>\d+), rolled back (?<rolled>\d+), resyncs (?<asked>\d+) asked (?<heard>\d+) heard, violations (?<violations>\d+)\s*$'
 $s7Start = '\[coop\] map server (?<slot>[1-7]) starts for level (?<level>\d+) \(.+, process (?<process>\d+)\)\s*$'
 $s7God = '\[coop\] debug: my flags from the server: god on\b'
+# A trip's join ends with the server's DebugState (the client logs "debug of the server" anew after its reset). The flags its actor
+# had stay (coop_debug_rules.h flags_taken_at_reset), so no "my flags" line comes unless the state takes one: god off.
+$s7DebugIn = '\[coop\] debug of the server: on\b'
+$s7GodLost = '\[coop\] debug: (?:my flags from the server:.* on,(?: \w+)* god(?: \w+)* off|the server''s flags taken back:(?: \w+)* god\b)'
 $s7From = 'l01_escape'
 $s7To = 'l02_garbage'
 
@@ -162,7 +166,7 @@ function Read-S7Player($Hit) {
         Role = $fields['role'].Value; Map = $fields['map'].Value; Line = $Hit.LineNumber
         Peer = [int]$fields['peer'].Value; Operator = [int]$fields['operator'].Value
         Alive = [int]$fields['alive'].Value; Kits = [int]$fields['kits'].Value
-        Character = [int]$fields['character'].Value; Level = [int]$fields['level'].Value
+        Character = [int]$fields['character'].Value; Level = [int]$fields['level'].Value; God = [int]$fields['god'].Value
     }
 }
 
@@ -190,8 +194,8 @@ function Start-S7Client($Context, [ValidateSet('s7move','s7stay')][string]$Role)
 # b57h creator10_server: on trip 6 of 10 the creator was downed 1.5 s after his arrival on l02_garbage (damage of his own game,
 # the actor its own initiator; no hit came from the map server), died, and the death drop put the staged medkit into a stash:
 # "unexpected player evidence ... Kits 0". In ms_crash_server dogs downed him at the same arrival point. S7 judges transitions,
-# not the Zone: both players are immortal through the server's debug (docs/DEBUG_DESIGN.md §B.9). Every trip replaces the
-# client's world, which takes the flags back; Complete-S7Trip waits for the world to give them again.
+# not the Zone: both players are immortal through the server's debug (docs/DEBUG_DESIGN.md §B.9). A trip replaces the client's
+# world and keeps the flags on his actor; Complete-S7Trip waits for the join's DebugState and checks that god stayed.
 function Set-S7Immortal($Context, [string]$Role) {
     $worldAfter = Get-S7LineCount $Context.Logs.world
     $after = Get-S7LineCount $Context.Logs[$Role]
@@ -229,9 +233,11 @@ function Start-S7Trip($Context, $Player, [string]$Goal, [int[]]$SaveFixtures) {
 
 function Complete-S7Trip($Context, $Player, $Trip) {
     $loaded = Wait-S7Line $Context $Context.Logs[$Player.Role] $s7Live $StepTimeoutS $Trip.ClientLine
-    $null = Wait-S7Line $Context $Context.Logs[$Player.Role] $s7God 90 $Trip.ClientLine
-    $arrival =Wait-S7Line $Context $Context.Logs[$Player.Role] "\[s7\] arrival seq=$($Trip.Sequence) $s7Player" 90 $loaded.LineNumber
+    $arrival = Wait-S7Line $Context $Context.Logs[$Player.Role] "\[s7\] arrival seq=$($Trip.Sequence) $s7Player" 90 $loaded.LineNumber
+    $null = Wait-S7Line $Context $Context.Logs[$Player.Role] $s7DebugIn 90 $Trip.ClientLine
+    $lost = Find-S7Line $Context.Logs[$Player.Role] $s7GodLost $Trip.ClientLine
     $new = Read-S7Player $arrival
+    if ($lost -or $new.God -ne 1) { throw "$($Player.Role) is not immortal after trip $($Trip.Sequence): $(if ($lost) { $lost.Line } else { 'god=0' })" }
     $worldLevel = Get-S7PlayerLevel (Get-S7Status $Context) $new $Trip.Goal
     if ($worldLevel -ne $Trip.GoalLevel) { throw 'the world changed the trip destination level ID' }
     Assert-S7Player $new $Player $Trip.Goal -ExpectedLevel $worldLevel -RequireAlive

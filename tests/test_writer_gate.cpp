@@ -165,7 +165,7 @@ TEST(writer_gate_coop_verdicts_identical_under_hostplay_answers)
 								{
 									const c::Gate today =
 									    c::decide(c::class_of(g.name), client, applying, own, c::has_request_path(g.name, own), args_ok);
-									const c::WriteFacts f{kind, m.writer_of(r), s, false, c::is_ghost(r, m.actor_is_player())};
+									const c::WriteFacts f{kind, m.writer_of(r), s, false, c::is_ghost(r, m.actor_is_player()), false};
 									const c::WriteDecision d = c::decide_writer_gate(f, g.op, today, setting);
 									const std::string at = std::string(name) + " " + g.name + " " + c::writer_gate_name(setting);
 									CHECK(d.verdict == (client ? w::GateVerdict::Mirror : w::GateVerdict::Run));
@@ -192,7 +192,7 @@ TEST(writer_gate_single_player_runs_everything)
 		for (w::CodeScope s : kScopes)
 			for (c::WriterGate setting : kSettings)
 			{
-				const c::WriteFacts f{w::ProcessKind::Whole, m.writer_of(kRoots[0]), s, false, false};
+				const c::WriteFacts f{w::ProcessKind::Whole, m.writer_of(kRoots[0]), s, false, false, false};
 				const c::WriteDecision d = c::decide_writer_gate(f, g.op, c::Gate::Run, setting);
 				GATE_EQ(std::string("none ") + g.name, d.gate, c::Gate::Run);
 			}
@@ -215,7 +215,7 @@ TEST(writer_gate_world_server_rows)
 		for (w::WriteOp op : {w::WriteOp::Create, w::WriteOp::Release, w::WriteOp::State, w::WriteOp::Info})
 		{
 			// level code: that map server runs its own copy of it: refused (log: counted, today's runs)
-			const c::WriteDecision lc = c::decide_writer_gate(c::WriteFacts{kind, mk, w::CodeScope::LevelCode, false, false}, op,
+			const c::WriteDecision lc = c::decide_writer_gate(c::WriteFacts{kind, mk, w::CodeScope::LevelCode, false, false, false}, op,
 			    c::Gate::Run, setting);
 			CHECK(lc.verdict == w::GateVerdict::Refuse);
 			CHECK(c::census_counts(lc.verdict));
@@ -227,13 +227,13 @@ TEST(writer_gate_world_server_rows)
 			const std::string sn = c::scope_name(s);
 			// a decision, or an unknown scope (counts as one on the world server): a create runs, the spawn goes down
 			const c::WriteDecision cr =
-			    c::decide_writer_gate(c::WriteFacts{kind, mk, s, false, false}, w::WriteOp::Create, c::Gate::Run, setting);
+			    c::decide_writer_gate(c::WriteFacts{kind, mk, s, false, false, false}, w::WriteOp::Create, c::Gate::Run, setting);
 			CHECK(cr.verdict == w::GateVerdict::Run);
 			GATE_EQ(sn + " create", cr.gate, c::Gate::Run);
 			// release, state, info: the far order to that map server; no path in the engine yet: today's code, counted
 			for (w::WriteOp op : {w::WriteOp::Release, w::WriteOp::State, w::WriteOp::Info})
 			{
-				const c::WriteDecision od = c::decide_writer_gate(c::WriteFacts{kind, mk, s, false, false}, op, c::Gate::Run, setting);
+				const c::WriteDecision od = c::decide_writer_gate(c::WriteFacts{kind, mk, s, false, false, false}, op, c::Gate::Run, setting);
 				CHECK(od.verdict == w::GateVerdict::Order);
 				CHECK(c::census_counts(od.verdict));
 				ACT_EQ(sn + " " + w::op_name(op), od.act, enforce ? c::WriteAct::Order : c::WriteAct::KeepCallGate);
@@ -246,7 +246,7 @@ TEST(writer_gate_world_server_rows)
 		for (w::CodeScope s : kScopes)
 		{
 			const c::WriteDecision d =
-			    c::decide_writer_gate(c::WriteFacts{kind, own, s, false, false}, w::WriteOp::Release, c::Gate::Run, setting);
+			    c::decide_writer_gate(c::WriteFacts{kind, own, s, false, false, false}, w::WriteOp::Release, c::Gate::Run, setting);
 			CHECK(d.verdict == w::GateVerdict::Run);
 			CHECK(!c::census_counts(d.verdict));
 		}
@@ -274,7 +274,7 @@ TEST(writer_gate_map_server_rows)
 			// its own map's object it does not write: release, info -> an ask to its world (no path in the engine yet: today's, counted)
 			for (w::WriteOp op : {w::WriteOp::Release, w::WriteOp::Info})
 			{
-				const c::WriteDecision d = c::decide_writer_gate(c::WriteFacts{kind, world, s, true, false}, op, c::Gate::Run, setting);
+				const c::WriteDecision d = c::decide_writer_gate(c::WriteFacts{kind, world, s, true, false, false}, op, c::Gate::Run, setting);
 				CHECK(d.verdict == w::GateVerdict::Ask);
 				ACT_EQ(std::string("ask ") + w::op_name(op), d.act, enforce ? c::WriteAct::Ask : c::WriteAct::KeepCallGate);
 				GATE_EQ(std::string("ask ") + w::op_name(op), d.gate, c::Gate::Run);
@@ -282,25 +282,78 @@ TEST(writer_gate_map_server_rows)
 			// create or state under a root it does not write, or anything on another map: refused
 			for (w::WriteOp op : {w::WriteOp::Create, w::WriteOp::State})
 			{
-				const c::WriteDecision d = c::decide_writer_gate(c::WriteFacts{kind, world, s, true, false}, op, c::Gate::Run, setting);
+				const c::WriteDecision d = c::decide_writer_gate(c::WriteFacts{kind, world, s, true, false, false}, op, c::Gate::Run, setting);
 				CHECK(d.verdict == w::GateVerdict::Refuse);
 				GATE_EQ(std::string("own map ") + w::op_name(op), d.gate, enforce ? c::Gate::Refuse : c::Gate::Run);
 			}
 			for (w::WriteOp op : {w::WriteOp::Create, w::WriteOp::Release, w::WriteOp::State, w::WriteOp::Info})
 			{
-				const c::WriteDecision d = c::decide_writer_gate(c::WriteFacts{kind, world, s, false, false}, op, c::Gate::Run, setting);
+				const c::WriteDecision d = c::decide_writer_gate(c::WriteFacts{kind, world, s, false, false, true}, op, c::Gate::Run, setting);
 				CHECK(d.verdict == w::GateVerdict::Refuse);
-				GATE_EQ(std::string("another map ") + w::op_name(op), d.gate, enforce ? c::Gate::Refuse : c::Gate::Run);
+				// a create there is refused under Log as well: the world refuses its Spawn anyway (calls::world_refuses_anyway)
+				GATE_EQ(std::string("another map ") + w::op_name(op), d.gate,
+				    enforce || op == w::WriteOp::Create ? c::Gate::Refuse : c::Gate::Run);
 			}
 			// what it writes: run
 			for (w::WriteOp op : {w::WriteOp::Create, w::WriteOp::Release, w::WriteOp::State, w::WriteOp::Info})
 			{
-				const c::WriteDecision d = c::decide_writer_gate(c::WriteFacts{kind, mine, s, true, false}, op, c::Gate::Run, setting);
+				const c::WriteDecision d = c::decide_writer_gate(c::WriteFacts{kind, mine, s, true, false, false}, op, c::Gate::Run, setting);
 				CHECK(d.verdict == w::GateVerdict::Run);
 				GATE_EQ(std::string("its own ") + w::op_name(op), d.gate, c::Gate::Run);
 			}
 		}
 	}
+}
+
+// cover_server (Dev 65 and 66): the map server of l05_bar ran a mod's create of a map marker on each of some 30 places of other maps
+// (level code, alife_create_item); under Log every create ran, and the world refused each Spawn as not the writer ("Spawn of object 37003
+// from map server 1 refused: not the writer"), its repair releasing it here a round trip later. A create on another map is refused in
+// both settings; anything else under Log still runs, and so does a create at no map (a psy phantom: its maker's, writer::map_seat).
+TEST(writer_gate_map_server_create_on_another_map_is_refused_in_both_settings)
+{
+	t::FakeMode m(t::mode_case("map_server"));
+	m.own_level(kA);
+	m.lead(kA, w::Lead::Leads);
+	const w::ProcessKind kind = m.process().kind;
+	const w::Writer elsewhere = m.writer_of(w::RootFacts{w::RootKind::Resident, w::kNoId, kB}); // a new root on another map
+	CHECK(elsewhere.is == w::WriterIs::Other);
+	for (c::WriterGate setting : kSettings)
+		for (w::CodeScope s : kScopes)
+		{
+			const std::string at = std::string(c::writer_gate_name(setting)) + " " + c::scope_name(s);
+			const c::WriteFacts f{kind, elsewhere, s, false, false, true};
+			const c::WriteDecision cr = c::decide_writer_gate(f, w::WriteOp::Create, c::Gate::Run, setting);
+			CHECK(cr.verdict == w::GateVerdict::Refuse);
+			ACT_EQ("create " + at, cr.act, c::WriteAct::Refuse);
+			GATE_EQ("create " + at, cr.gate, c::Gate::Refuse);
+			CHECK(c::census_note(kind, elsewhere, w::WriteOp::Create, s, cr.verdict).counted); // still counted in coop_status
+			// release, state, info there: Log keeps today's code (the gate's rule of those is the enforce step's)
+			for (w::WriteOp op : {w::WriteOp::Release, w::WriteOp::State, w::WriteOp::Info})
+			{
+				const c::WriteDecision d = c::decide_writer_gate(f, op, c::Gate::Run, setting);
+				GATE_EQ(std::string(w::op_name(op)) + " " + at, d.gate,
+				    setting == c::WriterGate::Enforce ? c::Gate::Refuse : c::Gate::Run);
+			}
+			// on its own map, or at no map: not this exception
+			for (bool own : {true, false})
+			{
+				const c::WriteDecision d =
+				    c::decide_writer_gate(c::WriteFacts{kind, elsewhere, s, own, false, false}, w::WriteOp::Create, c::Gate::Run, setting);
+				GATE_EQ(std::string(own ? "own map " : "no map ") + at, d.gate,
+				    setting == c::WriterGate::Enforce ? c::Gate::Refuse : c::Gate::Run);
+			}
+		}
+	// the world server, the co-op host and client never take this exception
+	for (const w::ProcessKind other : {w::ProcessKind::World, w::ProcessKind::Whole, w::ProcessKind::Mirror})
+	{
+		const c::WriteFacts f{other, elsewhere, w::CodeScope::LevelCode, false, false, true};
+		CHECK(!c::world_refuses_anyway(f, w::WriteOp::Create, w::GateVerdict::Refuse));
+	}
+	// the engine fills it from the root's map (coop_router.cpp writer_refuses)
+	const std::string router = read_engine("xrGame/coop/coop_router.cpp");
+	CHECK(router.find("const bool on_other_level = kind == writer::ProcessKind::Level && root.level != writer::kNoLevel && root.level != own;") !=
+	    std::string::npos);
+	CHECK(router.find("calls::is_ghost(root, mode().actor_is_player()), on_other_level};") != std::string::npos);
 }
 
 TEST(writer_gate_the_ghost)
@@ -320,7 +373,7 @@ TEST(writer_gate_the_ghost)
 				for (w::WriteOp op : {w::WriteOp::Create, w::WriteOp::Info})
 				{
 					const c::WriteDecision d =
-					    c::decide_writer_gate(c::WriteFacts{kind, m.writer_of(ghost), s, true, true}, op, c::Gate::Run, setting);
+					    c::decide_writer_gate(c::WriteFacts{kind, m.writer_of(ghost), s, true, true, false}, op, c::Gate::Run, setting);
 					CHECK(d.verdict == w::GateVerdict::Refuse);
 					GATE_EQ(std::string(name) + " ghost " + w::op_name(op), d.gate,
 					    setting == c::WriterGate::Enforce ? c::Gate::Refuse : c::Gate::Run);
@@ -450,7 +503,7 @@ TEST(writer_gate_census_sees_world_creates_into_a_led_map)
 		// an unknown scope (a time event of no known scope, a C++ to Lua path) creating under a root a map server writes: it runs in
 		// both settings, and the census names it
 		const c::WriteDecision unknown =
-		    c::decide_writer_gate(c::WriteFacts{kind, mk, w::CodeScope::Unknown, false, false}, w::WriteOp::Create, c::Gate::Run, setting);
+		    c::decide_writer_gate(c::WriteFacts{kind, mk, w::CodeScope::Unknown, false, false, false}, w::WriteOp::Create, c::Gate::Run, setting);
 		CHECK(unknown.verdict == w::GateVerdict::Run);
 		GATE_EQ(sn + " unknown create into a led map", unknown.gate, c::Gate::Run);
 		const c::CensusNote un = c::census_note(kind, mk, w::WriteOp::Create, w::CodeScope::Unknown, unknown.verdict);
@@ -459,10 +512,10 @@ TEST(writer_gate_census_sees_world_creates_into_a_led_map)
 		// level code making a new unit there: the unit is the world's own (new_root_writer), so it runs; that map's server runs the same
 		// level code: counted, with the writer of the map (before new_root_writer) as the reason
 		const c::WriteDecision first =
-		    c::decide_writer_gate(c::WriteFacts{kind, mk, w::CodeScope::LevelCode, false, false}, w::WriteOp::Create, c::Gate::Run, setting);
+		    c::decide_writer_gate(c::WriteFacts{kind, mk, w::CodeScope::LevelCode, false, false, false}, w::WriteOp::Create, c::Gate::Run, setting);
 		CHECK(first.verdict == w::GateVerdict::Refuse);
 		const w::Writer unit_writer = c::new_root_writer(kind, c::Target::NewUnit, false, mk);
-		const c::WriteDecision unit = c::decide_writer_gate(c::WriteFacts{kind, unit_writer, w::CodeScope::LevelCode, false, false},
+		const c::WriteDecision unit = c::decide_writer_gate(c::WriteFacts{kind, unit_writer, w::CodeScope::LevelCode, false, false, false},
 		    w::WriteOp::Create, c::Gate::Run, setting);
 		CHECK(unit.verdict == w::GateVerdict::Run);
 		const c::CensusNote un2 = c::census_note(kind, mk, w::WriteOp::Create, w::CodeScope::LevelCode, unit.verdict);
@@ -470,20 +523,20 @@ TEST(writer_gate_census_sees_world_creates_into_a_led_map)
 		CHECK(un2.kind == c::CensusKind::RunIntoLed);
 		// a decision (the host domain, which the router keeps off the map server): the spawn goes down, nothing doubles, not counted
 		const c::WriteDecision dec =
-		    c::decide_writer_gate(c::WriteFacts{kind, mk, w::CodeScope::Decision, false, false}, w::WriteOp::Create, c::Gate::Run, setting);
+		    c::decide_writer_gate(c::WriteFacts{kind, mk, w::CodeScope::Decision, false, false, false}, w::WriteOp::Create, c::Gate::Run, setting);
 		CHECK(dec.verdict == w::GateVerdict::Run);
 		CHECK(!c::census_note(kind, mk, w::WriteOp::Create, w::CodeScope::Decision, dec.verdict).counted);
 		// the world's own roots: never counted, whatever the scope
 		for (w::CodeScope s : kScopes)
 		{
 			const c::WriteDecision d =
-			    c::decide_writer_gate(c::WriteFacts{kind, own, s, false, false}, w::WriteOp::Create, c::Gate::Run, setting);
+			    c::decide_writer_gate(c::WriteFacts{kind, own, s, false, false, false}, w::WriteOp::Create, c::Gate::Run, setting);
 			CHECK(d.verdict == w::GateVerdict::Run);
 			CHECK(!c::census_note(kind, own, w::WriteOp::Create, s, d.verdict).counted);
 		}
 		// a counted verdict keeps its own kind (an unknown release into a led map is an order)
 		const c::WriteDecision rel =
-		    c::decide_writer_gate(c::WriteFacts{kind, mk, w::CodeScope::Unknown, false, false}, w::WriteOp::Release, c::Gate::Run, setting);
+		    c::decide_writer_gate(c::WriteFacts{kind, mk, w::CodeScope::Unknown, false, false, false}, w::WriteOp::Release, c::Gate::Run, setting);
 		const c::CensusNote rn = c::census_note(kind, mk, w::WriteOp::Release, w::CodeScope::Unknown, rel.verdict);
 		CHECK(rn.counted && rn.kind == c::CensusKind::Order);
 		const c::CensusNote lc = c::census_note(kind, mk, w::WriteOp::Create, w::CodeScope::LevelCode, first.verdict);

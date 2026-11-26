@@ -186,6 +186,33 @@ TEST(mirror_pose_no_stream_to_this_client_is_not_the_ids_matter)
 	CHECK(!mirror_pose::say_now(b, Cause::NoSnapshot, true)); // and comes back: the same episode, not said again
 }
 
+TEST(mirror_pose_no_judgement_while_this_process_takes_no_snapshot)
+{
+	// Dev 65/66 stands: the joining client wrote "no snapshot stream to this client" in loading-world (its handler drops every
+	// EntitySnapshot until it is live in an up world), and a Server client 0.2 s after "phase live -> receiving-world".
+	const mirror_pose::Book b = settled_book(); // appeared at 1000, many frames
+	const uint64_t now = 1000 + 4344; // 4344 ms with this model, as in dev66_base_client.log
+	CHECK(mirror_pose::settled(b, now)); // the copy's own first moments are over
+	CHECK(!mirror_pose::watch_due(b, 0, now)); // loading-world / receiving-world: no stream can reach, no line
+	// The clock of the open stream: set on the first open frame, kept while open, cleared when it closes.
+	CHECK(mirror_pose::stream_open_at(0, false, now) == 0);
+	CHECK(mirror_pose::stream_open_at(0, true, now) == now);
+	CHECK(mirror_pose::stream_open_at(now, true, now + 500) == now);
+	CHECK(mirror_pose::stream_open_at(now, false, now + 500) == 0);
+	// Live since `now`: a copy that appeared long before is judged kGraceMs after the stream opened, not at once.
+	CHECK(!mirror_pose::watch_due(b, now, now));
+	CHECK(!mirror_pose::watch_due(b, now, now + mirror_pose::kGraceMs - 1));
+	CHECK(mirror_pose::watch_due(b, now, now + mirror_pose::kGraceMs));
+	// A copy that appears after the stream opened keeps its own first moments.
+	mirror_pose::Book late = b;
+	late.since_ms = now + 5000;
+	CHECK(!mirror_pose::watch_due(late, now, now + 5000 + mirror_pose::kGraceMs - 1));
+	CHECK(mirror_pose::watch_due(late, now, now + 5000 + mirror_pose::kGraceMs));
+	// A real gap is still said: live, the copies settled, and no sample of any creature for kStaleMs.
+	CHECK(mirror_pose::watch_due(b, 1000, now));
+	CHECK(!mirror_pose::stream_reaches(0, b.since_ms, now));
+}
+
 TEST(mirror_pose_the_deciders_own_placeholder_is_mirrored_not_hidden)
 {
 	// The decider names death_init (its own animation update never ran, or a ragdoll: a corpse there): the copy plays it as
@@ -337,7 +364,7 @@ TEST(mirror_pose_drive_mirror_uses_the_rules)
 	CHECK(idle.find("ka->ID_Cycle_Safe(name)") != npos); // by name in this model, never a host id
 	const std::string watch = between(game_source("coop/coop_pose_diag.cpp"), "void watch_pose(", "\n}\n");
 	CHECK(watch.find("mirror_pose::cause_of(f)") != npos);
-	CHECK(watch.find("mirror_pose::say_now(book, cause, mirror_pose::settled(book, now))") != npos);
+	CHECK(watch.find("mirror_pose::say_now(book, cause, due)") != npos);
 	CHECK(watch.find("mirror_pose::line_allowed(g_pose_lines)") != npos);
 }
 
@@ -401,11 +428,20 @@ TEST(mirror_pose_stream_stamp_and_session_reset_are_wired)
 	CHECK(watch.find("f.stream = mirror_pose::stream_reaches(g_snapshot_in_at, book.since_ms, now);") != npos);
 	CHECK(watch.find("if (cause == mirror_pose::Cause::NoStream)") != npos);
 	CHECK(watch.find("mirror_pose::line_allowed(g_pose_gap_lines)") != npos);
+	// Judged only once this client can take a sample: live in an up world (the handler and the world gate drop them before).
+	const size_t opened = watch.find("g_stream_open_at = mirror_pose::stream_open_at(g_stream_open_at, mgr().is_live_client() && world_up(), now);");
+	const size_t due = watch.find("const bool due = mirror_pose::watch_due(book, g_stream_open_at, now);");
+	CHECK(opened != npos);
+	CHECK(due != npos);
+	CHECK(opened < due);
+	CHECK(due < watch.find("if (cause == mirror_pose::Cause::NoStream)"));
+	CHECK(watch.find("if (due && !g_pose_gap_said)") != npos);
+	CHECK(game_source("coop/coop_entities.cpp").find("if (mgr().is_live_client()) client_on_snapshot(from, r);") != npos);
 	// The counters, books and line budgets are the session's (entities::reset: reset_snapshots, reset_pose_diag).
 	const std::string reset = between(src, "\nvoid reset_snapshots()\n{", "\n}\n") +
 	    between(diag, "\nvoid reset_pose_diag()\n{", "\n}\n");
 	for (const char* line : {"g_pose_fallbacks = 0;", "g_pose_lines = g_copy_state_lines = g_pose_gap_lines = 0;",
-	                         "g_snapshot_in_at = 0;", "g_pose_gap_said = false;", "g_decider_round_at = 0;",
+	                         "g_snapshot_in_at = 0;", "g_pose_gap_said = false;", "g_stream_open_at = 0;", "g_decider_round_at = 0;",
 	                         "g_decider_unposed.clear();", "g_decider_rootctl.clear();", "g_bodiless.clear();",
 	                         "g_decider_lines = g_rootctl_lines = g_bodiless_lines = 0;"})
 		CHECK(reset.find(line) != npos);

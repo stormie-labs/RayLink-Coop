@@ -220,8 +220,11 @@ local function report(label, actor, map, link, character, map_id)
 	actor:iterate_inventory(function(_, item)
 		if item:section() == "medkit" then kits = kits + 1 end
 	end)
-	out("%s role=%s map=%s peer=%d operator=%d alive=%d kits=%d character=%d levelid=%d", label, role, map,
-		coop.self_id(), link.operator and 1 or 0, life_of(actor) == "alive" and 1 or 0, kits, character, map_id)
+	-- god: the actor's own flag (g_god reads AF_GODMODE). The server's debug flags stay on the actor through a trip and print no
+	-- "my flags" line again (coop_debug_rules.h flags_taken_at_reset): the stand reads the flag here.
+	out("%s role=%s map=%s peer=%d operator=%d alive=%d kits=%d character=%d levelid=%d god=%d", label, role, map,
+		coop.self_id(), link.operator and 1 or 0, life_of(actor) == "alive" and 1 or 0, kits, character, map_id,
+		get_console():get_bool("g_god") and 1 or 0)
 end
 
 local function tick()

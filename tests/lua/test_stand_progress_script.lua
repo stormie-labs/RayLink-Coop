@@ -171,6 +171,10 @@ local function has(f, literal)
 	return table.concat(f.log, "\n"):find("[progress-stand] " .. literal, 1, true) ~= nil
 end
 
+local function logged(f, literal)
+	return table.concat(f.log, "\n"):find(literal, 1, true) ~= nil
+end
+
 run("unrelated_role_is_inert", function()
 	local f = fixture(nil, "l01_escape")
 	check(not f.update and #f.log == 0 and f.spawned == 0, "unrelated_role_is_inert")
@@ -376,7 +380,58 @@ run("a_5000_xp_report_must_fail_the_scavenging_budget_check_itself", function()
 	f.step = "skills"
 	f.receive(4, 42, 5045)
 	step(f, "skills")
-	check(not has(f, "skills budget failed") and has(f, "FAIL"), "another_skill_budget_warning_is_not_enough")
+	check(not has(f, "skills budget failed") and not has(f, "FAIL"), "the_stored_report_waits_for_its_audit")
+	step(f, "skills", 10000)
+	check(not has(f, "skills budget failed")
+		and logged(f, "trust did not log the +5000 scavenging budget failure within 10000 ms of the stored report"),
+		"another_skill_budget_warning_is_not_enough")
+end)
+
+-- dev66 progress_server (2026-11-27): the world stored the +5000 report and the probe failed at once ("trust did not log
+-- the +5000 scavenging budget failure"); the world's very next line was that failure. The Server's world holds a skills
+-- report that fails a budget for its map's final tally (coop_srv_progress.script "hold disputed reports") and audits it
+-- on release, up to 5 s later. The keeper waits for that audit; co-op audits inside the filter (the test above).
+run("the_world_waits_for_the_audit_of_a_held_report", function()
+	for _, released in ipairs({ true, false }) do
+		local f = fixture("prg_world", "l01_escape")
+		-- As coop_srv_progress does (wrapped at load, so inside the keeper's later wrap): a skills report that fails a
+		-- budget skips the filter's audit and is stored as reported. The honest report passes its preview: not held.
+		local filter, holding, held = f.progress.filter, false, nil
+		f.progress.filter = function(character, peer, clean, previous)
+			if not holding then return filter(character, peer, clean, previous) end
+			held = clean.skills_levels
+			clean.skills_levels = nil
+			local out, fixes = filter(character, peer, clean, previous)
+			out.skills_levels = held
+			return out, fixes
+		end
+		step(f, "ready")
+		step(f, "walk")
+		f.progress.note(42, "step_m", 300)
+		step(f, "search 901")
+		f.progress.note(42, "corpse_search", 1, { rank = "veteran" })
+		step(f, "search 901")
+		f.step = "honest 45.000000"
+		f.receive(4, 42, 45)
+		step(f, f.step)
+		check(has(f, "honest accepted peer=4 character=42 xp=45.000000"), "held_honest_report_accepted")
+		holding = true
+		f.step = "skills"
+		f.receive(4, 42, 5045)
+		step(f, "skills")
+		step(f, "skills", 2000)
+		check(held and not has(f, "FAIL") and not has(f, "skills budget failed"), "held_report_waits_for_its_release")
+		if released then
+			f.progress.check(42, 4, "skills_levels", nil, held)
+			step(f, "skills", 1000)
+			check(has(f, "skills budget failed peer=4 character=42 delta=5000") and not has(f, "FAIL"),
+				"held_report_counts_the_failure_at_its_release")
+		else
+			step(f, "skills", 8000)
+			check(logged(f, "trust did not log the +5000 scavenging budget failure within 10000 ms of the stored report"),
+				"held_report_never_audited_fails_after_the_wait")
+		end
+	end
 end)
 
 run("map_child_and_offline_session_do_not_acknowledge_reports", function()

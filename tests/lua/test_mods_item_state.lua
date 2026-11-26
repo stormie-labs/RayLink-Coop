@@ -629,6 +629,16 @@ for _, name in ipairs(modes.names()) do
 				and owner_trust.item_state_owner and owner_trust.item_state_owner.failed == before + 1,
 				event .. " non-owner is checked through trust and cannot write or relay a weapon rider")
 		end
+		-- dev66 carry_group: the owner line says what the world holds for the item, so a refusal tells a stale view from
+		-- a moved item (the probe of the decider's last carry).
+		local owner_lines = {}
+		for _, line in ipairs(h.LOG) do
+			if line:find("item_state_owner: item 820: sender 1 is not its carrier: [wpn_test] parent 502, root ", 1, true) then
+				owner_lines[#owner_lines + 1] = line
+			end
+		end
+		check(#owner_lines == 2 and owner_lines[1]:find(" rider, no carry of it seen here (would be refused", 1, true) ~= nil,
+			"the owner line names the item, its parent and root, the rider path and the last carry: " .. tostring(owner_lines[1]))
 
 		native_cases(name)
 	end

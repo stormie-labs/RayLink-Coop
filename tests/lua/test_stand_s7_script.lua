@@ -74,7 +74,8 @@ local function fixture(role)
 			return not f.reject
 		end,
 		printf = function(fmt, ...) f.log[#f.log + 1] = string.format(fmt, ...) end,
-		get_console = function() return { execute = function(_, cmd)
+		get_console = function() return { get_bool = function(_, name) assert(name == "g_god"); return f.god == true end,
+			execute = function(_, cmd)
 			f.commands[#f.commands + 1] = cmd
 			if cmd == "srv_levels_audit" then
 				f.audit_round = (f.audit_round or 0) + 1
@@ -132,7 +133,7 @@ check(#client.log == 0, "waits for a server map id")
 client.unmapped = false
 client.tick()
 check(client.has("ready role=s7move map=l01_escape peer=2 operator=1 alive=1 kits=1"), "connected creator and marker item")
-check(client.has("kits=1 character=71 levelid=1"), "observes the server's character and map identities")
+check(client.has("kits=1 character=71 levelid=1 god=0"), "observes the server's character and map identities")
 client.instruction = "1 s7stay travel l02_garbage"
 client.tick()
 check(#client.trips == 0, "does not execute a different role's step")
@@ -152,8 +153,11 @@ client.map, client.live = "l02_garbage", false
 client.tick()
 check(not client.has("arrival seq=3"), "target map must be live")
 client.live = true
+client.god = true -- the server's god stays on the actor through the trip (flags_taken_at_reset)
 client.tick()
 check(client.has("arrival seq=3 role=s7move map=l02_garbage peer=2 operator=1 alive=1 kits=1"), "observes live arrival")
+check(client.has("arrival seq=3 role=s7move map=l02_garbage peer=2 operator=1 alive=1 kits=1 character=71 levelid=2 god=1"),
+	"the arrival names the actor's own god flag")
 client.instruction = "2 s7move travel l01_escape"
 client.tick()
 check(#client.trips == 1, "ignores an older sequence")
@@ -702,6 +706,37 @@ Start-Sleep -Seconds 90
         if (-not $unrelated.HasExited) { $unrelated.Kill() }
         $unrelated.Dispose()
     }
+}
+# Dev 66 save_handover_server: after the trip the client took the join's DebugState ("debug of the server: on") with god still
+# on its actor, so apply_local printed no "my flags from the server: god on": the old wait for that line timed out.
+Verify 'a trip keeps the server god: the join''s DebugState and the arrival flag, no new flags line' {
+    foreach ($definition in (Import-Fixture "$scenarios/ms_crash_server.ps1" @('Complete-S7Trip', 'Read-S7Player') @(
+            '$s7Live', '$s7Player', '$s7DebugIn', '$s7GodLost'))) {
+        . ([scriptblock]::Create($definition))
+    }
+    function Get-S7Status($Context) { @{} }
+    function Get-S7PlayerLevel($Status, $Player, [string]$Map) { 3 }
+    $before = [pscustomobject]@{ Role = 's7move'; Map = 'l01_escape'; Peer = 1; Operator = 1; Alive = 1; Kits = 1
+        Character = 29440; Level = 2; God = 1 }
+    $trip = @{ Sequence = 2; Goal = 'l02_garbage'; GoalLevel = 3; ClientLine = 1 }
+    $client = "$Log.trip"
+    $kept = @(
+        '[03:24:13.574] [s7] trip seq=2 role=s7move from=l01_escape to=l02_garbage'
+        '[03:24:16.581] [coop] phase live -> receiving-world'
+        '[03:24:53.892] [coop] phase loading-world -> live'
+        '[03:24:58.455] [s7] arrival seq=2 role=s7move map=l02_garbage peer=1 operator=1 alive=1 kits=1 character=29440 levelid=3 god=1'
+        '[03:24:58.467] [coop] debug of the server: on (key)'
+    )
+    $ctx = @{ Logs = @{ s7move = $client } }
+    Set-Content -LiteralPath $client -Value (@('[03:24:03.492] [coop] debug: my flags from the server: god on, none off') + $kept)
+    $new = Complete-S7Trip $ctx $before $trip
+    Require ($new.Map -eq 'l02_garbage' -and $new.God -eq 1) 'did not accept the arrival with god kept'
+    Set-Content -LiteralPath $client -Value (@('x') + $kept + '[03:24:58.470] [coop] debug: my flags from the server: none on, god off')
+    MustThrow { Complete-S7Trip $ctx $before $trip } 'not immortal'
+    Set-Content -LiteralPath $client -Value (@('x') + ($kept -replace 'god=1', 'god=0'))
+    MustThrow { Complete-S7Trip $ctx $before $trip } 'not immortal'
+    Set-Content -LiteralPath $client -Value (@('x') + $kept[0..3])
+    MustThrow { Complete-S7Trip $ctx $before $trip } 'missing fixture line'
 }
 Verify 'guard keeps native arguments, output streams, and the scenario exit code' {
     Initialize-GuardJob

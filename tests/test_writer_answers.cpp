@@ -40,6 +40,7 @@ struct WorldRows
 	std::map<uint16_t, w::MapLead> leads; // map -> its server's life and bridge (lead_of(host_life_of), bridge_of)
 	std::map<uint16_t, PeerId> holders; // unit -> the bridge that holds it (levels::holder_of)
 	std::map<PeerId, uint16_t> bridges; // bridge -> the map its server leads (mapserver::level_of_bridge)
+	std::map<uint16_t, PeerId> made; // object -> the bridge whose ids it has (levels::host_id_is_senders)
 
 	PeerId player_of(uint16_t character) const
 	{
@@ -67,6 +68,11 @@ struct WorldRows
 		const auto it = bridges.find(bridge);
 		return it == bridges.end() ? w::kNoLevel : it->second;
 	}
+	PeerId maker_of(uint16_t root) const
+	{
+		const auto it = made.find(root);
+		return it == made.end() ? coop::kInvalidPeer : it->second;
+	}
 };
 
 // A map server's tables (MapServerMode asks the same of join, levels and mapserver).
@@ -78,10 +84,12 @@ struct MapRows
 	std::set<uint16_t> playing; // characters a player of its session plays (join::peer_of_proxy + its session)
 	std::set<uint16_t> authored; // units its holder authors (levels::xfer_authors)
 	std::set<uint16_t> newborn; // units it made under its slice since its last flush (levels::xfer_born)
+	std::set<uint16_t> pool; // ids of its own pool that name objects (levels::xfer_made_here)
 
 	bool plays_here(uint16_t character) const { return playing.count(character) != 0; }
 	bool authors(uint16_t root) const { return authored.count(root) != 0; }
 	bool born(uint16_t root) const { return newborn.count(root) != 0; }
+	bool made_here(uint16_t root) const { return pool.count(root) != 0; }
 };
 
 // The world server and the map servers that run: A and B serve, S is loading its world.
@@ -94,9 +102,9 @@ struct Cluster
 	{
 		ws.leads = {{kA, {w::Lead::Leads, kBridgeA}}, {kB, {w::Lead::Leads, kBridgeB}}, {kS, {w::Lead::Starting, kBridgeS}}};
 		ws.bridges = {{kBridgeA, kA}, {kBridgeB, kB}, {kBridgeS, kS}};
-		mks.push_back(MapRows{kA, kBridgeA, w::Lead::Leads, {}, {}, {}});
-		mks.push_back(MapRows{kB, kBridgeB, w::Lead::Leads, {}, {}, {}});
-		mks.push_back(MapRows{kS, kBridgeS, w::Lead::Starting, {}, {}, {}});
+		mks.push_back(MapRows{kA, kBridgeA, w::Lead::Leads, {}, {}, {}, {}});
+		mks.push_back(MapRows{kB, kBridgeB, w::Lead::Leads, {}, {}, {}, {}});
+		mks.push_back(MapRows{kS, kBridgeS, w::Lead::Starting, {}, {}, {}, {}});
 	}
 	MapRows* find(uint16_t map)
 	{
@@ -255,6 +263,39 @@ TEST(writer_answer_crow_and_phantom_are_their_maps)
 	c.ws.holders[kCrow] = kBridgeA;
 	c.mk(kA).authored.insert(kCrow);
 	WRITERS_ARE("lone monster held by A", c, root(creature(true, true, true), kCrow, kA), "MkA");
+}
+
+// A psy phantom stands at no game vertex (level.spawn_item with none, CPhantom exports none): of no map in every process. The world
+// takes its Spawn as its maker's (accept::rootless_spawn_writer), so its maker writes its Died and Destroy as well.
+TEST(writer_answer_phantom_of_no_map_is_its_makers)
+{
+	Cluster c;
+	constexpr uint16_t kPhantom = 0x9005; // an id of B's slice
+	const w::RootFacts phantom = root(creature(false, true, false), kPhantom, w::kNoLevel);
+	CHECK(phantom.kind == w::RootKind::None);
+	c.ws.made[kPhantom] = kBridgeB;
+	c.mk(kB).pool.insert(kPhantom);
+	WRITERS_ARE("phantom B made", c, phantom, "MkB");
+	// the world's answer names B's bridge, B's own answer is This
+	const w::Asked asked = w::world_seat(phantom, c.ws);
+	const w::Writer ws = w::writer_of(asked.root, w::Process{w::ProcessKind::World, w::kNoLevel, coop::kHostPeer}, asked.seat);
+	CHECK_EQ(said(ws), said(w::other(kBridgeB)));
+	// one S made while its map is still starting: the world writes it, as it writes S's residents
+	c.ws.made[kPhantom] = kBridgeS;
+	c.mk(kB).pool.clear();
+	c.mk(kS).pool.insert(kPhantom);
+	WRITERS_ARE("phantom of starting S", c, phantom, "WS");
+	// of no map and of nobody's ids (a record): the world's
+	c.ws.made.clear();
+	c.mk(kS).pool.clear();
+	WRITERS_ARE("record of no map", c, root(w::KindFacts{false, false, false, false, false, false}, kBox, w::kNoLevel), "WS");
+	// a new root a map server makes at no vertex (the gate of its level.spawn_item): its own, as the world takes its Spawn
+	const w::RootFacts new_free{w::RootKind::Resident, w::kNoId, w::kNoLevel};
+	const w::Asked mine = w::map_seat(new_free, kB, w::Lead::Leads, c.mk(kB));
+	CHECK_EQ(said(w::writer_of(mine.root, w::Process{w::ProcessKind::Level, kB, coop::kHostPeer}, mine.seat)), said(w::this_process()));
+	const w::Asked starting = w::map_seat(new_free, kS, w::Lead::Starting, c.mk(kS));
+	CHECK_EQ(said(w::writer_of(starting.root, w::Process{w::ProcessKind::Level, kS, coop::kHostPeer}, starting.seat)),
+	    said(w::other(coop::kHostPeer)));
 }
 
 TEST(writer_answer_dead_monster_is_its_maps)
@@ -418,6 +459,7 @@ struct FlushingRows
 		question();
 		return b;
 	}
+	bool made_here(uint16_t) const { return false; }
 };
 } // namespace
 
