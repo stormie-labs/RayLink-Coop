@@ -24,4 +24,97 @@
 	<string id="st_coop_hardcore_new_hold">
 		<text>Hold USE for 3 s to start a new character</text>
 	</string>
+	<string id="st_coop_hud_down">
+		<text>YOU ARE DOWN</text>
+	</string>
+	<string id="st_coop_hud_bleeding">
+		<text>Bleeding out: %d s. A teammate can revive you with a medkit.</text>
+	</string>
+	<string id="st_coop_hud_dead">
+		<text>YOU DIED</text>
+	</string>
+	<string id="st_coop_hud_wait_host">
+		<text>Waiting for the host...</text>
+	</string>
+	<string id="st_coop_hud_spectate_keys">
+		<text>[$$ACTION_WPN_FIRE$$] next player   [$$ACTION_WPN_ZOOM$$] previous player</text>
+	</string>
+	<string id="st_coop_hud_respawning">
+		<text>Respawning...</text>
+	</string>
+	<string id="st_coop_hud_newchar_starting">
+		<text>Starting a new character...</text>
+	</string>
+	<string id="st_coop_hud_newchar">
+		<text>New character...</text>
+	</string>
+	<string id="st_coop_feed_you_down">
+		<text>You are down! A teammate can revive you with a medkit (%d s).</text>
+	</string>
+	<string id="st_coop_feed_you_died">
+		<text>You died.</text>
+	</string>
+	<string id="st_coop_feed_revived_by">
+		<text>%s revived you.</text>
+	</string>
+	<string id="st_coop_feed_new_char">
+		<text>A new character. Choose faction and gear.</text>
+	</string>
+	<string id="st_coop_feed_hardcore_out">
+		<text>Hardcore: your character is gone. Hold [$$ACTION_USE$$] to start a new one.</text>
+	</string>
+	<string id="st_coop_feed_revive_refused">
+		<text>Revive of %s refused</text>
+	</string>
+	<string id="st_coop_feed_peer_down">
+		<text>%s is down! Hold [$$ACTION_USE$$] on them with a medkit to revive.</text>
+	</string>
+	<string id="st_coop_feed_peer_died">
+		<text>%s died.</text>
+	</string>
+	<string id="st_coop_feed_peer_out">
+		<text>%s is out of the run (hardcore).</text>
+	</string>
+	<string id="st_coop_feed_peer_up">
+		<text>%s is back on their feet.</text>
+	</string>
+	<string id="st_coop_feed_peer_respawned">
+		<text>%s respawned.</text>
+	</string>
+	<string id="st_coop_feed_death_mode">
+		<text>Death mode: %s.</text>
+	</string>
+	<string id="st_coop_feed_revive_cancel">
+		<text>Revive cancelled (%s).</text>
+	</string>
+	<string id="st_coop_feed_need_medkit">
+		<text>You need a medkit to revive %s.</text>
+	</string>
+	<string id="st_coop_cancel_too_far">
+		<text>too far</text>
+	</string>
+	<string id="st_coop_cancel_released">
+		<text>you let go of the key</text>
+	</string>
+	<string id="st_coop_refusal_not_wounded">
+		<text>the player is no longer down</text>
+	</string>
+	<string id="st_coop_refusal_too_far">
+		<text>too far away</text>
+	</string>
+	<string id="st_coop_refusal_no_medkit">
+		<text>no medkit</text>
+	</string>
+	<string id="st_coop_refusal_busy">
+		<text>somebody is already reviving this player</text>
+	</string>
+	<string id="st_coop_refusal_you_are_down">
+		<text>you are down yourself</text>
+	</string>
+	<string id="st_coop_refusal_self">
+		<text>you cannot revive yourself</text>
+	</string>
+	<string id="st_coop_refusal_other">
+		<text>refused</text>
+	</string>
 </string_table>

@@ -24,4 +24,97 @@
 	<string id="st_coop_hardcore_new_hold">
 		<text>Удерживай «Использовать» 3 с — новый персонаж</text>
 	</string>
+	<string id="st_coop_hud_down">
+		<text>ТЫ ПРИ СМЕРТИ</text>
+	</string>
+	<string id="st_coop_hud_bleeding">
+		<text>Истекаешь кровью: %d с. Товарищ может поднять тебя аптечкой.</text>
+	</string>
+	<string id="st_coop_hud_dead">
+		<text>ТЫ ПОГИБ</text>
+	</string>
+	<string id="st_coop_hud_wait_host">
+		<text>Ждём решения хоста...</text>
+	</string>
+	<string id="st_coop_hud_spectate_keys">
+		<text>[$$ACTION_WPN_FIRE$$] — следующий игрок   [$$ACTION_WPN_ZOOM$$] — предыдущий</text>
+	</string>
+	<string id="st_coop_hud_respawning">
+		<text>Возвращаешься...</text>
+	</string>
+	<string id="st_coop_hud_newchar_starting">
+		<text>Создаётся новый персонаж...</text>
+	</string>
+	<string id="st_coop_hud_newchar">
+		<text>Новый персонаж...</text>
+	</string>
+	<string id="st_coop_feed_you_down">
+		<text>Ты при смерти! Товарищ может поднять тебя аптечкой (%d с).</text>
+	</string>
+	<string id="st_coop_feed_you_died">
+		<text>Ты погиб.</text>
+	</string>
+	<string id="st_coop_feed_revived_by">
+		<text>Тебя поднял %s.</text>
+	</string>
+	<string id="st_coop_feed_new_char">
+		<text>Новый персонаж. Выбери группировку и снаряжение.</text>
+	</string>
+	<string id="st_coop_feed_hardcore_out">
+		<text>Хардкор: твой персонаж погиб. Удерживай [$$ACTION_USE$$], чтобы начать новым.</text>
+	</string>
+	<string id="st_coop_feed_revive_refused">
+		<text>Не удалось поднять %s</text>
+	</string>
+	<string id="st_coop_feed_peer_down">
+		<text>%s при смерти! Удерживай [$$ACTION_USE$$] на нём с аптечкой, чтобы поднять.</text>
+	</string>
+	<string id="st_coop_feed_peer_died">
+		<text>%s погиб.</text>
+	</string>
+	<string id="st_coop_feed_peer_out">
+		<text>%s выбыл из игры (хардкор).</text>
+	</string>
+	<string id="st_coop_feed_peer_up">
+		<text>%s снова на ногах.</text>
+	</string>
+	<string id="st_coop_feed_peer_respawned">
+		<text>%s вернулся в игру.</text>
+	</string>
+	<string id="st_coop_feed_death_mode">
+		<text>Режим смерти: %s.</text>
+	</string>
+	<string id="st_coop_feed_revive_cancel">
+		<text>Подъём отменён (%s).</text>
+	</string>
+	<string id="st_coop_feed_need_medkit">
+		<text>Чтобы поднять %s, нужна аптечка.</text>
+	</string>
+	<string id="st_coop_cancel_too_far">
+		<text>слишком далеко</text>
+	</string>
+	<string id="st_coop_cancel_released">
+		<text>ты отпустил кнопку</text>
+	</string>
+	<string id="st_coop_refusal_not_wounded">
+		<text>он уже не при смерти</text>
+	</string>
+	<string id="st_coop_refusal_too_far">
+		<text>слишком далеко</text>
+	</string>
+	<string id="st_coop_refusal_no_medkit">
+		<text>нет аптечки</text>
+	</string>
+	<string id="st_coop_refusal_busy">
+		<text>его уже поднимает другой игрок</text>
+	</string>
+	<string id="st_coop_refusal_you_are_down">
+		<text>ты сам при смерти</text>
+	</string>
+	<string id="st_coop_refusal_self">
+		<text>себя поднять нельзя</text>
+	</string>
+	<string id="st_coop_refusal_other">
+		<text>отказано</text>
+	</string>
 </string_table>
