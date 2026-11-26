@@ -55,7 +55,7 @@ TEST(trade_accepted_deal_rebuilds_only_on_a_missing_item)
 	CHECK(result.find("kSettleMs") == std::string::npos);
 	CHECK(result.find("on_container_move(kNoId, trader_local, di.id)") != std::string::npos);
 	CHECK(result.find("on_container_move(kNoId, a->ID(), di.id)") != std::string::npos);
-	CHECK(result.find("request_rebuild(now_ms()); // undo the optimistic move") != std::string::npos);
+	CHECK(result.find("request_rebuild(mgr().now_ms()); // undo the optimistic move") != std::string::npos);
 }
 
 // Grouping cells: the cheap compare runs before the ini lookups of every pair.

@@ -44,6 +44,13 @@ std::string game_source(const char* name)
 	return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 }
 
+// The trade module: the deals, the views, the Lua window, and last the declarations they share (a head finds its definition first).
+std::string trade_module()
+{
+	return game_source("coop/coop_trade.cpp") + game_source("coop/coop_trade_views.cpp") +
+	    game_source("coop/coop_trade_window_lua.cpp") + game_source("coop/coop_trade_impl.h");
+}
+
 // From `head` to the closing brace at column 0; "" if `head` is missing.
 std::string function_body(const std::string& src, const std::string& head)
 {
@@ -199,7 +206,7 @@ TEST(trade_permit_window_keeps_open_only_at_the_computer)
 // coop_trade.cpp: the deal takes the permit instead of the talk and the stock reach, and only then.
 TEST(trade_permit_deal_check_uses_the_permit_instead_of_the_stock_reach)
 {
-	const std::string src = game_source("coop/coop_trade.cpp");
+	const std::string src = trade_module();
 	REQUIRE(src.size() > 20000);
 	CHECK(src.find("#include \"xrCoop/coop_trade_permit.h\"") != std::string::npos);
 	const std::string apply = function_body(src, "u8 host_apply(PeerId from, Deal& d, s64& delta)");
@@ -218,7 +225,7 @@ TEST(trade_permit_deal_check_uses_the_permit_instead_of_the_stock_reach)
 // a player who left, a new world and a session end forget it; the contents of the permitted trader reach the window.
 TEST(trade_permit_window_open_and_close_bind_the_permit)
 {
-	const std::string src = game_source("coop/coop_trade.cpp");
+	const std::string src = trade_module();
 	REQUIRE(src.size() > 20000);
 	CHECK(src.find("\"coop_mods_trade_computer\"") != std::string::npos);
 	CHECK(src.find("\"take_grant\"") != std::string::npos);
@@ -229,7 +236,7 @@ TEST(trade_permit_window_open_and_close_bind_the_permit)
 	CHECK(container.find("permits().revoke(from)") != std::string::npos);
 	const std::string see = function_body(src, "bool may_see_contents(PeerId from, u8 kind, u16 id)");
 	REQUIRE(!see.empty());
-	CHECK(see.find("permits().covers(from, id, now_ms())") != std::string::npos);
+	CHECK(see.find("permits().covers(from, id, mgr().now_ms())") != std::string::npos);
 	const std::string left = function_body(src, "void on_peer_left(PeerId id)");
 	CHECK(left.find("g_permits.revoke(id)") != std::string::npos);
 	const std::string reset = function_body(src, "void reset()");
@@ -243,7 +250,7 @@ TEST(trade_permit_window_open_and_close_bind_the_permit)
 
 TEST(trade_permit_every_container_close_revokes_the_senders_permit)
 {
-	const std::string container = function_body(game_source("coop/coop_trade.cpp"), "void host_on_container(PeerId from, Reader& r)");
+	const std::string container = function_body(trade_module(), "void host_on_container(PeerId from, Reader& r)");
 	REQUIRE(!container.empty());
 	// The close branch must revoke unconditionally before returning, even when the message names another kind of container.
 	const std::regex close(R"(if\s*\(!open\)\s*\{\s*g_open\.erase\(from\);\s*permits\(\)\.revoke\(from\);[^\n]*\n\s*return;)");

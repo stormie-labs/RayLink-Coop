@@ -36,6 +36,13 @@ std::string body_of(const std::string& src, const std::string& head)
 }
 
 bool has(const std::string& text, const char* what) { return text.find(what) != std::string::npos; }
+
+// The trade module: the deals, the views, the Lua window, and last the declarations they share (a head finds its definition first).
+std::string trade_module()
+{
+	return repo_file("engine/src/xrGame/coop/coop_trade.cpp") + repo_file("engine/src/xrGame/coop/coop_trade_views.cpp") +
+	    repo_file("engine/src/xrGame/coop/coop_trade_window_lua.cpp") + repo_file("engine/src/xrGame/coop/coop_trade_impl.h");
+}
 } // namespace
 
 // StartTrade keeps one question; the Lua window comes first, the engine window stays the fallback.
@@ -55,7 +62,7 @@ TEST(trade_window_start_trade_asks_the_coop_gate)
 // The gate: a copy gets the Lua window only when the Lua adapter says its trade buttons reach the decider; the log says which window.
 TEST(trade_window_gate_asks_the_lua_adapter)
 {
-	const std::string src = repo_file("engine/src/xrGame/coop/coop_trade.cpp");
+	const std::string src = trade_module();
 	REQUIRE(src.size() > 20000);
 	const std::string gate = body_of(src, "bool lua_trade_window_allowed()");
 	REQUIRE(!gate.empty());
@@ -79,7 +86,7 @@ TEST(trade_window_lua_api_registers_trade_deal)
 // The deal of a Lua window carries flag 2; the decider checks it with the window's formula, the engine window's deal too (TZ R92).
 TEST(trade_window_lua_deal_is_priced_by_the_window_formula)
 {
-	const std::string src = repo_file("engine/src/xrGame/coop/coop_trade.cpp");
+	const std::string src = trade_module();
 	REQUIRE(src.size() > 20000);
 	const std::string send = body_of(src, "void send_deal_locked(");
 	CHECK(has(send, "kDealLuaPrices"));
@@ -109,7 +116,7 @@ TEST(trade_window_lua_deal_is_priced_by_the_window_formula)
 // tolerance. The Lua window's deal gets no new item check (item->CanTrade() of a stalker trader is can_sell: false NotTraded).
 TEST(trade_window_engine_window_deal_meets_the_lua_formula_too)
 {
-	const std::string src = repo_file("engine/src/xrGame/coop/coop_trade.cpp");
+	const std::string src = trade_module();
 	REQUIRE(src.size() > 20000);
 	const std::string apply = body_of(src, "u8 host_apply(PeerId from, Deal& d, s64& delta)");
 	REQUIRE(!apply.empty());
@@ -134,7 +141,7 @@ TEST(trade_window_engine_window_deal_meets_the_lua_formula_too)
 // Lua window gets both prices (on_result keeps its signature) and tells its own text.
 TEST(trade_window_price_refusal_carries_the_decider_prices)
 {
-	const std::string src = repo_file("engine/src/xrGame/coop/coop_trade.cpp");
+	const std::string src = trade_module();
 	REQUIRE(src.size() > 20000);
 	CHECK(has(src, "PriceChanged = 10,"));
 	CHECK(has(src, "static_assert(PriceChanged == trade_window::kPriceChanged"));
@@ -154,8 +161,10 @@ TEST(trade_window_price_refusal_carries_the_decider_prices)
 	CHECK(has(result, "if (!deal.lua) switch (trade_window::price_tell("));
 	CHECK(has(result, "\"st_coop_trade_price_buy\""));
 	CHECK(has(result, "\"st_coop_trade_price_sell\""));
-	CHECK(has(result, "lua_pushnumber(L, lua_Number(decider_sell));"));
-	CHECK(has(result, "lua_pushnumber(L, lua_Number(decider_buy));"));
+	CHECK(has(result, "window_on_result(seq, code, delta, result_name(code), decider_sell, decider_buy);"));
+	const std::string window = body_of(src, "void window_on_result(");
+	CHECK(has(window, "lua_pushnumber(L, lua_Number(decider_sell));"));
+	CHECK(has(window, "lua_pushnumber(L, lua_Number(decider_buy));"));
 	const std::string header = repo_file("engine/src/xrGame/coop/coop_trade.h");
 	CHECK(has(header, "code 10 only: u32 decider_sell, u32 decider_buy"));
 	// both strings, English and Russian (windows-1251: "Сделка отменена")
@@ -179,15 +188,18 @@ TEST(trade_window_price_refusal_carries_the_decider_prices)
 // side tells the refusal on the HUD: the engine still tells no text for a Lua window's deal.
 TEST(trade_window_price_refusal_sends_the_trader_first)
 {
-	const std::string src = repo_file("engine/src/xrGame/coop/coop_trade.cpp");
+	const std::string src = trade_module();
 	REQUIRE(src.size() > 20000);
 	const std::string view = body_of(src, "void host_send_trader_view(PeerId to, u16 trader_id)");
 	REQUIRE(!view.empty());
 	CHECK(has(view, "if (sync::host_peer_joining(to) || !may_see_contents(to, ContTrader, trader_id)) return;"));
 	const size_t contents = view.find("items::host_send_contents(to, trader_id);");
-	const size_t money = view.find("write_trader_money(w, trader_id, trader->get_money());");
-	const size_t send = view.find("net::host_send(to, Msg::TradeOp, w);");
-	CHECK(contents != std::string::npos && money != std::string::npos && send != std::string::npos && contents < money && money < send);
+	const size_t money = view.find("host_send_trader_money(to, trader_id);");
+	CHECK(contents != std::string::npos && money != std::string::npos && contents < money);
+	const std::string send_money = body_of(src, "void host_send_trader_money(PeerId to, u16 trader_id)");
+	const size_t write = send_money.find("write_trader_money(w, trader_id, trader->get_money());");
+	const size_t send = send_money.find("net::host_send(to, Msg::TradeOp, w);");
+	CHECK(write != std::string::npos && send != std::string::npos && write < send);
 	const std::string on_deal = body_of(src, "void host_on_deal(PeerId from, Reader& r)");
 	REQUIRE(!on_deal.empty());
 	const size_t repeat = on_deal.find("if (last.have && d.seq == last.seq) { host_send_result(from, last); return; }");
@@ -223,7 +235,7 @@ TEST(trade_window_price_refusal_sends_the_trader_first)
 // the side goes at the shown sum (settle_side's out is the deal's total).
 TEST(trade_window_lua_deal_carries_the_shown_sums)
 {
-	const std::string src = repo_file("engine/src/xrGame/coop/coop_trade.cpp");
+	const std::string src = trade_module();
 	REQUIRE(src.size() > 20000);
 	const std::string send = body_of(src, "void send_deal_locked(");
 	REQUIRE(!send.empty());
@@ -269,22 +281,23 @@ TEST(trade_window_add_callback_replaces_a_binding)
 // The answer reaches the Lua window (its buttons wait for it); the engine window's own handling stays.
 TEST(trade_window_result_reaches_the_lua_window)
 {
-	const std::string src = repo_file("engine/src/xrGame/coop/coop_trade.cpp");
+	const std::string src = trade_module();
 	const std::string result = body_of(src, "void client_on_result(Reader& r)");
 	REQUIRE(!result.empty());
 	CHECK(has(result, "deal.lua"));
-	CHECK(has(result, "\"on_result\""));
-	CHECK(has(result, "request_rebuild(now_ms());")); // the engine window undoes its optimistic move of the cells
+	CHECK(has(result, "window_on_result("));
+	CHECK(has(body_of(src, "void window_on_result("), "\"on_result\""));
+	CHECK(has(result, "request_rebuild(mgr().now_ms());")); // the engine window undoes its optimistic move of the cells
 }
 
 // The Lua window tells the decider of the trader it shows (ReqContainer ContTrader: the trader's money, its items' states, a permit).
 TEST(trade_window_lua_window_opens_the_trader)
 {
-	const std::string src = repo_file("engine/src/xrGame/coop/coop_trade.cpp");
+	const std::string src = trade_module();
 	const std::string search = body_of(src, "int lua_search_window(lua_State* L)");
 	REQUIRE(!search.empty());
 	CHECK(has(search, "lua_isnumber(L, 2)"));
-	const std::string frame = body_of(src, "static void search_frame()");
+	const std::string frame = body_of(src, "void search_frame()");
 	REQUIRE(!frame.empty());
 	CHECK(has(frame, "search_kind("));
 	CHECK(has(frame, "search_step_kind("));
