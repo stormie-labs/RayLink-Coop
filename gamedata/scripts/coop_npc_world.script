@@ -20,6 +20,8 @@
 	    level runs the handler (the world server passes it on) with the same facts of its level.
 	  - Proximity charges trigger on the clients' proxies too (the stock check only sees db.actor, NPCs and
 	    monsters). A client's charge blames that client: its blast hits NPCs "from" the client's proxy.
+	  - A client's charge outlives his session (charges are saved with the game): the process that decides the world or
+	    leads this map keeps its timer running and lets NPCs, monsters and players set it off with no client online too.
 	  - On the host every charge goes off as its planter (coop.explode_as; the host's own stock charges as the
 	    host's character), so the engine applies friendly fire to its blast (R3 В2 review). Without that engine
 	    function the stock explode runs (the charge is its own initiator) and mine_blame re-blames NPC hits.
@@ -61,6 +63,9 @@ local EV_MINE_OK = "npc.mine_ok"
 
 local installed = false
 local host_on = false
+-- This process decides the world or leads this map and holds clients' charges (actor_on_update, 4 Hz): they tick with or
+-- without clients.
+local mines_on = false
 local orig = {}
 local stats = { mines_out = 0, mines_in = 0, blasts = 0, blame = 0, pulses = 0, pulses_in = 0, fire_out = 0, fire_in = 0,
 	music = 0, silent = 0, alerts = 0, artefacts = 0, as_planter = 0 }
@@ -821,6 +826,13 @@ local function guard(what, f)
 	end
 end
 
+-- npc_on_update / monster_on_update, per creature per frame: a creature at a client's charge sets it off.
+local function creature_on_update(obj)
+	if not mines_on then return end
+	local ok, err = pcall(near_mine, obj)
+	if not ok then report("creature at a charge", err) end
+end
+
 local next_tick, next_sweep = 0, 0
 
 local function actor_on_update()
@@ -832,14 +844,16 @@ local function actor_on_update()
 		if not ok then report("mine answers", err) end
 	end
 	host_on = installed and P.host_with_clients()
-	if host_on then
+	mines_on = installed and next(mines) ~= nil and (coop_mode.decides_world() or coop_mode.leads_here())
+	-- host_mines_tick also feeds stock charges the clients' proxies: that part needs clients, the clients' charges do not
+	if host_on or mines_on then
 		local ok, err = pcall(host_mines_tick)
 		if not ok then report("mines", err) end
-		if now >= next_sweep then
-			next_sweep = now + 2000
-			ok, err = pcall(artefact_sweep)
-			if not ok then report("artefact sweep", err) end
-		end
+	end
+	if host_on and now >= next_sweep then
+		next_sweep = now + 2000
+		local ok, err = pcall(artefact_sweep)
+		if not ok then report("artefact sweep", err) end
 	end
 end
 
@@ -896,8 +910,8 @@ function on_game_start()
 		local ok, err = pcall(silent_kill, ...)
 		if not ok then report("silent kill", err) end
 	end)
-	RegisterScriptCallback("npc_on_update", guard("npc update", near_mine))
-	RegisterScriptCallback("monster_on_update", guard("monster update", near_mine))
+	RegisterScriptCallback("npc_on_update", creature_on_update)
+	RegisterScriptCallback("monster_on_update", creature_on_update)
 	RegisterScriptCallback("save_state", save_state)
 	RegisterScriptCallback("load_state", load_state)
 	RegisterScriptCallback("coop_on_container_opened", guard("container opened", on_container_opened)) -- coop_main names it
