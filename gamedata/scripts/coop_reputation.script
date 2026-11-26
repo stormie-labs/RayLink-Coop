@@ -60,21 +60,38 @@ end
 
 function in_personal_check() return checking_personal end
 
+-- The lines of a condlist that punish a player in a zone: { [line] = true }, or false when it has none. xr_logic parses a
+-- condlist once and never changes it, so the answer is kept by the condlist table itself (weak: it goes with the table).
+local offences_of = setmetatable({}, { __mode = "k" })
+
+local function offences_in(condlist)
+	local offences = offences_of[condlist]
+	if offences ~= nil then return offences end
+	offences = false
+	for i, cond in ipairs(condlist) do
+		local zone, penalty = false, false
+		for _, c in ipairs(cond[2] or {}) do
+			if c[1] == "actor_in_zone" then zone = true end
+		end
+		for _, e in ipairs(cond[3] or {}) do
+			if e[1] == "actor_enemy" or e[1] == "set_speaker_as_enemy" or e[1] == "dec_faction_goodwill_to_actor" then penalty = true end
+		end
+		if zone and penalty then
+			offences = offences or {}
+			offences[i] = true
+		end
+	end
+	offences_of[condlist] = offences
+	return offences
+end
+
 -- Guard-zone offences have a concrete set of trespassers. Do not use the scene's
 -- expanded audience (which also contains nearby innocent players).
 function pick_offence(obj, npc, condlist, evaluate)
 	local players = coop_npc_players
-	if checking_personal or not owns_reputation() or type(condlist) ~= "table" then return false end
-	local offences = {}
-	for i, cond in ipairs(condlist) do
-		local zone, penalty = false, false
-		for _, c in ipairs(cond[2] or {}) do if c[1] == "actor_in_zone" then zone = true end end
-		for _, e in ipairs(cond[3] or {}) do
-			if e[1] == "actor_enemy" or e[1] == "set_speaker_as_enemy" or e[1] == "dec_faction_goodwill_to_actor" then penalty = true end
-		end
-		if zone and penalty then offences[i] = true end
-	end
-	if next(offences) == nil then return false end
+	if checking_personal or type(condlist) ~= "table" then return false end
+	local offences = offences_in(condlist)
+	if not offences or not owns_reputation() then return false end
 	for i, cond in ipairs(condlist) do
 		if offences[i] then
 			local ids = {}

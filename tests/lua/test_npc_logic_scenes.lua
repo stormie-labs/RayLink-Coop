@@ -143,7 +143,7 @@ local function setup(M, set)
 	E.coop_npc_logic = load_script(M, "coop_npc_logic")
 	E.coop_npc_logic.on_game_start()
 	M.fire("actor_on_first_update")
-	if set == "hostplay" or set == "srv_map" then E.coop_npc_logic._set_host_on(true) end
+	if set == "hostplay" or set == "srv_map" then E.coop_npc_players.host_on = function() return true end end
 end
 
 local function zone(M)

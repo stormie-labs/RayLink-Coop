@@ -58,7 +58,7 @@ RegisterScriptCallback(OPEN, mob_trade.ActorMenu_on_trade_started)
 RegisterScriptCallback(CLOSE, mob_trade.ActorMenu_on_trade_closed)
 
 load_script("coop_trust")
-load_script("coop_npc_adapters").install(load_script("coop_npc_players"), coop_mods_core.active, {})
+load_script("coop_npc_adapters").install(load_script("coop_npc_players"), {})
 local on_trade = mob_trade.mob_trade.on_trade
 local engine_peer_present = true
 coop.avatar_of = function(id)

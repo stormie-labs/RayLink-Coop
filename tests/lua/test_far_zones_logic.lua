@@ -46,7 +46,7 @@ end
 if not H.env.coop_trust then load_script(H, "coop_trust") end
 E.coop_npc_players = load_script(H, "coop_npc_players")
 L.on_game_start()
-L._set_host_on(true)
+E.coop_npc_players.host_on = function() return true end
 
 -- what coop_quests_far.view.zone gives: a stand-in whose map server says who stands in it; its inside() of a place it cannot tell is no
 local someone = true

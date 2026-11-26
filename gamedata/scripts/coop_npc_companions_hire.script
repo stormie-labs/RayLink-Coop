@@ -1,10 +1,10 @@
 -- Ядро: без проверок режима (docs/MODES.md)
 --[[
-	Anomaly Coop - companion hire (gamedata\scripts\coop_npc_companions_hire.script), Dev 57 unit G12-1 (TZ R19, review F4 group G12).
+	Anomaly Coop - companion hire (gamedata\scripts\coop_npc_companions_hire.script).
 	The companion limit and G_FLAT's individual recruit for every player, decided by the authority of the map the companions stand on.
 	Partner of coop_npc_companions.script (its recruit channel npc.comp, its leaders); that file calls this one by name.
 
-	The count (review m13:3, s35:2). The stock counts one player's ordinary companions (axr_companions.non_task_companions: a dialog's
+	The count. The stock counts one player's ordinary companions (axr_companions.non_task_companions: a dialog's
 	  recruit, not a task's or a story's) and the mods' room rules read that count: dialogs_axr_companion.is_room_in_actor_squad
 	  (Custom Companion Squad Size's replacement in G.A.M.M.A.) and individually_recruitable_companions.is_room_for_one_in_actor_squad.
 	  The stock table holds every player's companions on the authority and nothing true on a player's machine, so
@@ -29,16 +29,16 @@
 	  mod does, and when the clone is online it joins that player (coop_npc_companions.recruit_for: the stock recruit, his leader
 	  entry, the paid one with the days he paid for) and his machine opens the talk with it (npc.comp_one). One under way per player.
 	  The co-op host's own recruit runs the mod's own code, as before.
-	The dialog on the decider (B-REV F3). The request skips the dialog's preconditions (modxml_individually_recruitable_companions :24-31
-	  the free one, :46-55 the paid one) and a release cannot be undone, so recruit_one asks them again before the clone:
+	The dialog on the decider. The request skips the dialog's free and paid preconditions, and a release cannot
+	  be undone, so recruit_one checks those preconditions before cloning:
 	  dialogs_axr_companion.is_non_story and is_not_hostage_task_giver as always-on guards (coop_trust.guard "comp_one_story": a story NPC
 	  or a hostage task's giver is never released); not_a_one_man_squad, and is_actor_friend (free) or txr_paid_companions.is_actor_natural,
 	  is_paid_companion_faction, is_not_dangerous_map (paid) under his identity (his character's relation) through coop_trust.pass
 	  "comp_one_dialog". The hostage giver's mark is in the group's task book (drx_sl_* of this process's own actor, coop_tasks; a map server
 	  holds the world server's copy), so that one runs as this process.
-	The price on the decider (B-REV F4). The paid dialogs take the money with take_guard_money_1/2, an action on the player's machine. In a
-	  session that action there only names the days and the multiplier its dialog showed (txr_paid_companions' dialog_squad, the stock's
-	  roll of the squad's price) and shows the stock's line of the money (coop_npc_companions patch_client_actions); the authority of his
+	The price on the decider. The paid dialogs take the money with take_guard_money_1/2 on the player's machine.
+	  In a session it names the days and the multiplier shown in the dialog (the squad's price roll in dialog_squad)
+	  and displays the stock payment message (coop_npc_companions patch_client_actions). The authority of his
 	  map takes the price from the world's book (coop.money_of / coop.money_grant: the co-op host's ledger, a map server's word up to the
 	  world server) before anything joins him, and refuses a player who has too little ("st_not_enough_money" to him; coop_trust.guard
 	  "comp_paid_money": what he cannot pay for he does not get). The price, as take_guard_money_1/2 compute it: the multiplier x
@@ -75,13 +75,13 @@ local DAY, TWO_DAYS = 86400, 172800 -- txr_paid_companions' guard_period of take
 local MAX_COUNT = 64 -- far beyond any squad limit: a bigger number on the wire is a bad one
 local MAX_ID = 65534 -- 0xffff is the engine's invalid id
 local PUSH_MS, ONE_WAIT_MS, TALK_WAIT_MS = 1000, 30000, 5000
--- B-REV F3: G_FLAT's dialogs' preconditions that the decider asks again under his identity (coop_trust "comp_one_dialog")
+-- The decider checks the dialog preconditions under the player's identity (coop_trust "comp_one_dialog").
 local DAC, TP = "dialogs_axr_companion", "txr_paid_companions"
 local DIALOG_FREE = { { IRC, "not_a_one_man_squad" }, { DAC, "is_actor_friend" } }
 local DIALOG_PAID = { { IRC, "not_a_one_man_squad" }, { TP, "is_actor_natural" }, { TP, "is_paid_companion_faction" },
 	{ TP, "is_not_dangerous_map" } }
--- B-REV F4: the stock's paid hire dialog; txr_paid_companions.is_squad_competent's roll of the price (:62-75, hundredths by the squad's
--- section; the rest 80-120); money_1_base / money_2_base (:19-20) per contract, the stock's values when its file has none
+-- Stock paid hire uses the price roll from txr_paid_companions.is_squad_competent (hundredths by squad section,
+-- otherwise 80–120). Contract prices use money_1_base and money_2_base with stock defaults.
 local PAID_DIALOG = "paid_companion_dialog"
 local TIERS = { { "veteran", 180, 240 }, { "advanced", 130, 160 } }
 local TIER_LO, TIER_HI = 80, 120
@@ -192,7 +192,7 @@ end
 function push_counts()
 	if not (started and P.active() and coop_mode.leads_here()) then return end
 	local here, present = count_here(), {}
-	for _, p in ipairs(P.players()) do
+	for _, p in ipairs(coop_util.players()) do
 		if not p.is_self and type(p.avatar_id) == "number" then
 			present[p.id] = true
 			local n = math.min(count_for(p.id, here), MAX_COUNT)
@@ -243,7 +243,7 @@ function room_on_decider(full, from, npc, dialog)
 end
 
 -------------------------------------------------------------------------------
--- The price on the decider (B-REV F4)
+-- The price on the decider
 -------------------------------------------------------------------------------
 -- A player's balance in the world's book (coop.money_of: the co-op host's ledger; a map server: the world server's word), nil: unknown.
 local function balance(peer)
@@ -375,7 +375,7 @@ function paid_days(from, npc)
 	return h.period
 end
 
--- B-REV F4: the stock paid hire's register (host_on_cmd, before the stock's register runs). -> ok, days (nil: nothing paid here).
+-- Before the stock paid hire registers, return whether it may proceed and the paid days (nil for no payment).
 -- A register that names no payment never replaces a running contract (the stock writes a new join_time: a renewal for free). An
 -- honest player never sends one (the paid dialog wants is_not_actor_companion): an always-on guard.
 function paid_register(from, npc, squad)
@@ -388,7 +388,7 @@ function paid_register(from, npc, squad)
 end
 
 -------------------------------------------------------------------------------
--- The individual recruit's dialog on the decider (B-REV F3)
+-- The individual recruit's dialog on the decider
 -------------------------------------------------------------------------------
 -- A mod's precondition f(actor, npc), under the identity of `who` when given: true / false; nil: no such function in this game, or
 -- it broke (then the second value is true, reported).
@@ -472,7 +472,7 @@ local function finish_one(clone_id)
 	if coop_npc_companions.recruit_for(p.from, npc, p.paid) then
 		stats.ones_done = stats.ones_done + 1
 	else
-		give_back(p.from, p.who, p.price) -- B-REV F4: paid for, not his
+		give_back(p.from, p.who, p.price) -- refund payment if the clone fails to join
 	end
 	talk_on(p.from, clone_id)
 	push_counts()
@@ -490,7 +490,7 @@ local function finish_one_safe(clone_id)
 end
 
 -- coop_npc_companions host_on_cmd, on the authority, after the recruit's checks: the mod's action for player `from`. full: which
--- action (the paid one registers a contract of t.p seconds and is paid here for those days, B-REV F4).
+-- action (the paid one registers a contract of t.p seconds and is paid here for those days).
 function recruit_one(full, t, from, npc)
 	if not started then return end
 	local under_way = busy[from]
@@ -498,7 +498,7 @@ function recruit_one(full, t, from, npc)
 		P.log(TAG, "individual recruit of %s by player #%s refused: his last one is not done", tostring(npc:name()), tostring(from))
 		return
 	end
-	if not one_allowed(full, from, npc) then -- B-REV F3
+	if not one_allowed(full, from, npc) then
 		stats.ones_refused = stats.ones_refused + 1
 		return
 	end
@@ -507,7 +507,7 @@ function recruit_one(full, t, from, npc)
 	local clone = util and core.fn(util, "clone_stalker")
 	if not clone then return end
 	local paid, price, who = nil, nil, nil
-	if PAID[full] then -- B-REV F4: paid before the clone, given back when no clone comes of it
+	if PAID[full] then -- collect before cloning and refund if cloning fails
 		paid = t.p == TWO_DAYS and TWO_DAYS or DAY
 		price = price_of(npc, paid, t.m)
 		who = P.avatar_of_peer(from)

@@ -1,7 +1,5 @@
 --[[
-	Anomaly Coop - NPC group (W4 "npc"): xr_logic for several players (restrictors, actor conditions,
-	actor effects). Port of the behaviour of xrRazom 1.4 xrr_patch_restrictor_logic, xrr_patch_logic_section
-	and xrr_patch_logic_heal on our architecture (own code, our event API).
+	Anomaly Coop - NPC group: xr_logic for several players (restrictors, actor conditions, actor effects).
 
 	Stock xr_logic reacts to ONE actor. In a session:
 	Host (runs the world logic):
@@ -56,10 +54,10 @@
 	has_active_tutorial; xr_effects.<actor effects>; bind_physic_object.generic_physics_binder.use_callback;
 	ph_code.codepad.use_callback.
 
-	Dev 57 G15-5: snapshot a cutscene's participants before activation. npc.logic carries the run, roster and
-	optional stop signal on switches and re-issues. Only an invited machine runs the camera and reports completion
-	(mods.npc_scene_end). Keep the actor of local scheme transitions for story|actor remarks. The owner's NPC use
-	and remote USE (mods.npc_abuse_use) both judge irritation on the map that runs the NPC and use G15-1 for the punch.
+	A cutscene's participants are taken before activation. npc.logic carries the run, roster and optional stop signal
+	on switches and re-issues. Only an invited machine runs the camera and reports completion (mods.npc_scene_end). The
+	actor of local scheme transitions is kept for story|actor remarks. The owner's NPC use and remote USE
+	(mods.npc_abuse_use) both judge irritation on the map that runs the NPC; the punch lands as coop_quests_punch says.
 --]]
 
 local tostring, tonumber, type, pairs, ipairs, pcall, next = tostring, tonumber, type, pairs, ipairs, pcall, next
@@ -104,9 +102,9 @@ local MACHINE_EFFECTS = {
 local GATHERS = { disable_ui = true, disable_ui_only = true, teleport_actor = true }
 -- Effects on db.actor: true = audience only, "always" = also on the host whatever the audience.
 -- sr_teleport (ui_sr_teleport: the route / level-exit restrictors of sr_teleport_sections.ltx, cfg sr_teleport_logic.ltx,
--- on_actor_inside = %=sr_teleport%) moves db.actor 3 s later: for the player who walked in only. Left out, it ran on the
--- host for ANY player's arrival and put the host's character at the exit's drop point (live 2026-10-24: "I walk up to the
--- exit mark and the others are teleported to it"). It is no scene (GATHERS): the others stay where they are and walk up.
+-- on_actor_inside = %=sr_teleport%) moves db.actor 3 s later: for the player who walked in only. Left out, it would run on
+-- the host for ANY player's arrival and put the host's character at the exit's drop point. It is no scene (GATHERS): the
+-- others stay where they are and walk up.
 -- The Bar arena's effects (bar_arena_teleport, _2, bar_arena_weapon_slot) are not here: they are one fighter's, coop_arena
 -- routes them; its audience rule gives the trigger's disable_ui / enable_ui to him alone.
 local ACTOR_FX = {
@@ -117,7 +115,7 @@ local ACTOR_FX = {
 }
 local TUTORIAL_FX = { run_tutorial = true, stop_tutorial = true }
 -- Effects on this player's own UI: never on a server (its actor is a ghost). The ones that start something also wait for
--- a ready HUD; an unlock never waits: the lock it ends may have come while the HUD was ready (R38 review).
+-- a ready HUD; an unlock never waits: the lock it ends may have come while the HUD was ready.
 local UI_FX = {
 	run_tutorial = true, stop_tutorial = true, disable_ui = true, disable_ui_only = true, enable_ui = true,
 	enable_imput = true,
@@ -130,7 +128,6 @@ local KILL_GATES = { x16_timer_restrictor = "good_psy_helmet" }
 
 local STYPE_RESTRICTOR = 4
 local installed = false
-local host_on = false -- host with at least one client (refreshed every 250 ms)
 local applying = false -- client: applying a host section
 local leading = false -- host: a companion's logic is switching under its leader's identity
 local replaying = false -- client: running a relayed effect
@@ -237,7 +234,7 @@ end
 function is_replicated(id)
 	local st = db.storage[id]
 	if st == nil then return false end
-	return (st.stype == STYPE_RESTRICTOR and st.coop_local == false) or (host_on and st.coop_press ~= nil)
+	return (st.stype == STYPE_RESTRICTOR and st.coop_local == false) or (P.host_on() and st.coop_press ~= nil)
 end
 
 local function is_local_restrictor(obj)
@@ -329,7 +326,7 @@ end
 -- The restrictor whose condlist the host is evaluating for the group right now, or nil.
 local function current(npc)
 	local top = ctx[#ctx]
-	if not (top and host_on) then return nil end
+	if not (top and P.host_on()) then return nil end
 	if npc and top.npc_id ~= (type(npc.id) == "function" and npc:id() or npc.id) then return nil end
 	return top.st, top
 end
@@ -357,7 +354,7 @@ end
 
 -- The players the last press of this physics object is for; nil = nobody pressed it, or the host is alone.
 local function press_of(npc)
-	if not host_on then return nil end
+	if not P.host_on() then return nil end
 	local st = storage_of(npc)
 	return st and st.coop_press or nil
 end
@@ -399,7 +396,7 @@ local function local_player_ui(actor)
 end
 
 -- GAMMA's modxml_tutorial_hooks prints its prompts into UIStaticTutorials, a child of the main game window. A HUD rebuild
--- deletes it; coop_hud_lifecycle builds it again (R38, the rule for every HUD window a script keeps).
+-- deletes it; coop_hud_lifecycle builds it again (the rule for every HUD window a script keeps).
 -- Its stop and start functions index that window: before the mod's first update it is nil.
 local function tutorial_monitor_built()
 	local hooks = rawget(_G, "modxml_tutorial_hooks")
@@ -577,11 +574,21 @@ local function radius_sqr(c)
 	local r = tonumber(c.v1) or 0
 	return r * r
 end
+-- The record a test reads (team_try_switch): npc, st, ost; the position and the nearest player's squared distance are read
+-- once, on the first test that needs them.
+local function here_pos(x)
+	if x.pos == nil then x.pos = x.npc:position() end
+	return x.pos
+end
+local function here_near(x)
+	if x.nearest == nil then x.nearest = P.nearest_dist_sqr(here_pos(x)) end
+	return x.nearest
+end
 local SWITCH_TESTS = {
-	on_actor_dist_le = function(x, c) return sees_player(x.npc, x.pos(), radius_sqr(c)) end,
-	on_actor_dist_le_nvis = function(x, c) return x.near() <= radius_sqr(c) end,
-	on_actor_dist_ge = function(x, c) return x.near() > radius_sqr(c) and sees_player(x.npc) end,
-	on_actor_dist_ge_nvis = function(x, c) return x.near() > radius_sqr(c) end,
+	on_actor_dist_le = function(x, c) return sees_player(x.npc, here_pos(x), radius_sqr(c)) end,
+	on_actor_dist_le_nvis = function(x, c) return here_near(x) <= radius_sqr(c) end,
+	on_actor_dist_ge = function(x, c) return here_near(x) > radius_sqr(c) and sees_player(x.npc) end,
+	on_actor_dist_ge_nvis = function(x, c) return here_near(x) > radius_sqr(c) end,
 	on_signal = function(x, c)
 		local signals = x.st.signals
 		return signals ~= nil and signals[c.v1]
@@ -590,7 +597,7 @@ local SWITCH_TESTS = {
 	on_timer = function(x, c) return time_global() >= (x.ost.activation_time or 0) + c.v1 end,
 	on_game_timer = function(x, c)
 		local since = x.ost.activation_game_time
-		-- a nil CTime into the luabind diffSec is a native crash, not a Lua error (W5)
+		-- a nil CTime into the luabind diffSec is a native crash, not a Lua error
 		return since ~= nil and game.get_game_time():diffSec(since) >= c.v1
 	end,
 	on_actor_in_zone = function(_, c) return zone_has_player(db.zone_by_name[c.v1]) end,
@@ -639,7 +646,7 @@ local function players_matching(npc, test)
 		end
 	end
 	visit(P.self_peer())
-	for _, row in ipairs(P.players()) do
+	for _, row in ipairs(coop_util.players()) do
 		if not row.is_self then visit(row.id) end
 	end
 	return matches, nearest
@@ -669,22 +676,34 @@ local function pick_and_switch(npc, st, actor, c)
 	return xr_logic.switch_to_section(npc, st.ini, xr_logic.pick_section_from_condlist(actor, npc, c.condlist))
 end
 
+-- Records for team_try_switch that no call uses now. A condlist's effects can run a nested team_try_switch (another
+-- object's logic) while the outer loop still reads its record, so each call takes its own and gives it back at the end;
+-- a call that raises leaves its record to the collector.
+local free_records = {}
+
+local function take_record(npc, st, ost)
+	local n = #free_records
+	local x = free_records[n]
+	if x then
+		free_records[n] = nil
+	else
+		x = {}
+	end
+	x.npc, x.st, x.ost, x.pos, x.nearest = npc, st, ost, nil, nil
+	return x
+end
+
+local function give_back(x)
+	x.npc, x.st, x.ost, x.pos, x.nearest = nil, nil, nil, nil, nil
+	free_records[#free_records + 1] = x
+end
+
 -- Vanilla's loop with the actor conditions read against every alive player.
 local function team_try_switch(npc, st, actor, l)
 	local npc_id = npc:id()
 	local ost = db.storage[npc_id] or {}
 	local replicated = ost.stype == STYPE_RESTRICTOR and ost.coop_local == false
-	-- what the tests ask about this NPC, the position and the nearest player's squared distance read once
-	local here = { npc = npc, st = st, ost = ost }
-	local pos, nearest
-	function here.pos()
-		if pos == nil then pos = npc:position() end
-		return pos
-	end
-	function here.near()
-		if nearest == nil then nearest = P.nearest_dist_sqr(here.pos()) end
-		return nearest
-	end
+	local here = take_record(npc, st, ost)
 	local switched = false
 	for _, c in pairs(l) do
 		local name = c.name
@@ -700,7 +719,7 @@ local function team_try_switch(npc, st, actor, l)
 			local arrival = replicated and ARRIVAL_CONDS[name]
 			if arrival then ost.coop_arrival = c end
 			local matches, initiator
-			if coop_mode and coop_mode.leads_here() and ARRIVAL_CONDS[name] then
+			if coop_mode.leads_here() and ARRIVAL_CONDS[name] then
 				matches, initiator = arrival_players(npc, c)
 			end
 			if initiator then
@@ -715,6 +734,7 @@ local function team_try_switch(npc, st, actor, l)
 		end
 		if switched == true then break end
 	end
+	give_back(here)
 	if switched then stats.switched_team = stats.switched_team + 1 end
 	return switched
 end
@@ -737,7 +757,7 @@ end
 
 local function try_switch(npc, st, actor)
 	if installed and npc and P.active() then
-		if host_on then
+		if P.host_on() then
 			local lead = actor and followed(npc)
 			if lead then return switch_for_leader(lead, npc, st) end
 			local l = st and st.logic
@@ -748,10 +768,12 @@ local function try_switch(npc, st, actor)
 			local ost = restrictor_st(npc)
 			if ost and ost.coop_local == false then return false end
 		end
-		if coop_mode and coop_mods_core and coop_mode.leads_here() and actor then
-			local player, own = player_by_id(actor:id()), own_actor()
-			if player and (not own or player:id() ~= own:id()) then
-				return transition_for(npc, player, nil, orig.try_switch, npc, st, actor)
+		-- almost every call is for this process's own actor: the stock path, without a player lookup
+		if actor and coop_mode.leads_here() then
+			local own, id = own_actor(), actor:id()
+			if not (own and id == own:id()) then
+				local player = player_by_id(id)
+				if player then return transition_for(npc, player, nil, orig.try_switch, npc, st, actor) end
 			end
 		end
 	end
@@ -883,7 +905,7 @@ local function switch_to_section(npc, ini, section)
 	local switched = orig.switch(npc, ini, section)
 	if switched then
 		if not st.active_section then st.coop_aud, st.coop_trigger_zone = nil, nil end
-		if host_on or st.coop_cutscene then broadcast_section(npc:id(), st.active_section) end
+		if P.host_on() or st.coop_cutscene then broadcast_section(npc:id(), st.active_section) end
 	end
 	return switched
 end
@@ -954,7 +976,7 @@ local function initialize(obj, st, loaded, actor, stype)
 	if not (installed and stype == STYPE_RESTRICTOR and st and P.active()) then return end
 	classify(st)
 	if st.coop_local ~= false then return end
-	if host_on or (st.coop_cutscene and coop_mode.leads_here()) then
+	if P.host_on() or (st.coop_cutscene and coop_mode.leads_here()) then
 		broadcast_section(obj:id(), st.active_section)
 	elseif P.is_client() then
 		local p = pending[obj:id()]
@@ -1116,7 +1138,7 @@ end
 local function team_actor(actor, npc)
 	local rep = rawget(_G, "coop_reputation")
 	if rep and rep.in_personal_check() then return false end
-	return host_on and actor ~= nil and actor:id() == 0 and not is_local_restrictor(npc)
+	return P.host_on() and actor ~= nil and actor:id() == 0 and not is_local_restrictor(npc)
 end
 
 local function patch_conditions()
@@ -1157,7 +1179,7 @@ local function patch_conditions()
 		return r
 	end end)
 	wrap("actor_near_smart", function(f) return function(actor, npc, p)
-		if not (host_on and db.actor and p and p[1]) then return f(actor, npc, p) end
+		if not (P.host_on() and db.actor and p and p[1]) then return f(actor, npc, p) end
 		local smart = SIMBOARD and SIMBOARD.smarts_by_names[p[1]]
 		if not (smart and smart.online) then return false end
 		local dist = p[2] and tonumber(p[2]) or 50
@@ -1267,12 +1289,12 @@ end
 
 local function pick_section(obj, npc, condlist)
 	local rep = rawget(_G, "coop_reputation")
-	if rep and host_on then
+	if rep and P.host_on() then
 		local handled, section = rep.pick_offence(obj, npc, condlist, pick_for_leader)
 		if handled then return section end
 	end
 	if leading and condlist and P.in_identity() then return pick_for_leader(obj, npc, condlist) end
-	if not host_on or npc == nil then return orig.pick(obj, npc, condlist) end
+	if not P.host_on() or npc == nil then return orig.pick(obj, npc, condlist) end
 	local ok_id, id = pcall(id_of, npc) -- npc can be a game object, a server object or a squad
 	local st = ok_id and type(id) == "number" and db.storage[id]
 	if not (st and st.stype == STYPE_RESTRICTOR and st.coop_local == false) then
@@ -1353,7 +1375,7 @@ local function on_use(obj, who)
 	local player = P.is_player_id(id)
 	if st then
 		st.coop_user = player and id or nil
-		st.coop_press = host_on and player and press_audience(st, obj, id) or nil
+		st.coop_press = P.host_on() and player and press_audience(st, obj, id) or nil
 	end
 	if P.is_proxy(id) and obj:name():find("awr_tiski", 1, true) then
 		host_vise_use(obj, who)
@@ -1733,7 +1755,6 @@ local function actor_on_update()
 	local now = time_global()
 	if now < next_tick then return end
 	next_tick = now + 250
-	host_on = installed and P.host_with_clients()
 	if not installed then return end
 	if routed_tutorial and routed_tutorial.stop_pending and local_player_ui(db.actor)
 		and (not coop_mode.is_player_mirror() or P.client_live()) then
@@ -1806,6 +1827,7 @@ function print_status()
 end
 
 function on_game_start()
+	coop_util.add_status("coop_npc_logic", 130)
 	P = coop_npc_players
 	if not rawget(_G, "coop") then return end -- exe without co-op: nothing to do
 	local ok, err = pcall(install)
@@ -1815,5 +1837,4 @@ function on_game_start()
 end
 
 -- Tests and diagnostics.
-function _state() return { host_on = host_on, pending = pending, stats = stats, ctx = ctx } end
-function _set_host_on(v) host_on = v end
+function _state() return { pending = pending, stats = stats, ctx = ctx } end

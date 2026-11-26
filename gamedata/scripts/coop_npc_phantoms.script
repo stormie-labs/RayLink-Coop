@@ -1,6 +1,5 @@
 --[[
-	Anomaly Coop - NPC group (W4 "npc"): phantoms for every player (enemy audit F10, 2026-10-31). Independently derived from
-	the original scripts, which stay as they are: no module is reexecuted.
+	Anomaly Coop - NPC group: phantoms for every player. The original scripts stay as they are: no module is reexecuted.
 
 	Native hooks (host, with clients; otherwise every wrapped function is the original):
 	  - phantom_manager: a monster spawns dynamic phantoms while it fights "the actor" within 30 m of db.actor, the host.
@@ -26,7 +25,7 @@ local function fought_client(P, npc)
 	return enemy and P.is_proxy(enemy) and enemy or nil
 end
 
-local function dynamic(C, P, active)
+local function dynamic(C, P)
 	local m = C.mod("phantom_manager")
 	if not m then return false end
 	local old, holder, index = C.find_local(m, "monster_on_update")
@@ -34,7 +33,7 @@ local function dynamic(C, P, active)
 	local wrapped = function(npc, st, ...)
 		-- The route declares this wrapper host-only. A direct invocation on a client must not spawn either.
 		if P.is_client() then return end
-		local player = active() and not P.in_identity() and fought_client(P, npc)
+		local player = P.host_on() and not P.in_identity() and fought_client(P, npc)
 		if not player then return old(npc, st, ...) end
 		-- Stock asks this table, which knows fights with the host only: marked for this one call.
 		local fights = xr_combat_ignore.fighting_with_actor_npcs
@@ -50,14 +49,14 @@ local function dynamic(C, P, active)
 	return true
 end
 
-local function psy(C, P, active)
+local function psy(C, P)
 	local m, reports = C.mod("arszi_psy"), C.mod("coop_economy_mdata")
 	local get = m and m.get_ppe_intensity
 	if type(get) ~= "function" or not reports then return false end
 	local _, holder, index = C.find_local(m, "psy_table")
 	if not holder then return false end
 	m.get_ppe_intensity = function(...)
-		local who = P.in_identity() and (active() or (C.active() and coop_mode and coop_mode.leads_here())) and db.actor
+		local who = P.in_identity() and (P.host_on() or (C.active() and coop_mode.leads_here())) and db.actor
 		if not (who and P.is_proxy(who)) then return get(...) end
 		local _, t = debug.getupvalue(holder, index) -- arszi replaces the table at load_state
 		if type(t) ~= "table" then return get(...) end
@@ -88,7 +87,7 @@ local function xcv_squads(C, m)
 	end
 end
 
-local function contact(C, P, active)
+local function contact(C, P)
 	local m = C.mod("xcv_phantoms")
 	local update, psi_hit = m and m.monster_on_update, m and m.psi_health_hit
 	if type(update) ~= "function" or type(psi_hit) ~= "function" then return false end
@@ -109,7 +108,7 @@ local function contact(C, P, active)
 	end
 	local wrapped = function(npc, ...)
 		if P.is_client() then return end
-		local squad = active() and not P.in_identity() and npc and npc:alive() and get_object_squad(npc)
+		local squad = P.host_on() and not P.in_identity() and npc and npc:alive() and get_object_squad(npc)
 		local spawned = phantom_squads()
 		local near = squad and type(spawned) == "table" and spawned[squad.id] and P.nearest(npc)
 		if not (near and P.is_proxy(near)) then return update(npc, ...) end
@@ -123,7 +122,7 @@ local function contact(C, P, active)
 	return true
 end
 
-local function squad_place(C, P, active)
+local function squad_place(C, P)
 	local m, squads = C.mod("xcv_phantoms"), C.mod("sim_squad_scripted")
 	local class = squads and squads.sim_squad_scripted
 	local task = class and class.get_current_task
@@ -132,7 +131,7 @@ local function squad_place(C, P, active)
 	if not phantom_squads then return false end
 	class.get_current_task = function(self, ...) -- the engine asks this for every squad: the table first
 		local spawned = phantom_squads()
-		if not (type(spawned) == "table" and spawned[self.id] and active()) then return task(self, ...) end
+		if not (type(spawned) == "table" and spawned[self.id] and P.host_on()) then return task(self, ...) end
 		local near = P.nearest(self.position)
 		if not (near and P.is_proxy(near)) then return task(self, ...) end
 		return CALifeSmartTerrainTask(near:game_vertex_id(), near:level_vertex_id())
@@ -166,7 +165,7 @@ local function xcv_fix(C, P)
 	local original = m and m.actor_on_update
 	if type(original) ~= "function" or coop_route.script_of(original) ~= "xcv_phantoms_fix" then return false end
 	-- G.A.M.M.A. ships configs\unlocalizers\xcv_phantoms_fix_unlocalizer.ltx: the engine makes these locals module
-	-- fields before the script compiles, so the replacement reads what it expects. Nothing to supply (build 56).
+	-- fields before the script compiles, so the replacement reads what it expects. Nothing to supply.
 	if type(rawget(m, "phantom_frequency")) == "number" and type(rawget(m, "phantoms_appear_at")) == "number"
 		and type(rawget(m, "spawned_phantoms")) == "table" then return false end
 	local _, holder, index = C.find_local(m, "spawned_phantoms")
@@ -214,14 +213,14 @@ local function xcv_fix(C, P)
 	return true
 end
 
-function install(P, active, applied)
+function install(P, applied)
 	if installed then return end
 	local C = coop_mods_core
 	if not (C and type(C.find_local) == "function") then return end
 	installed = true
 	for _, spec in ipairs({ { "phantoms", dynamic }, { "phantom_psy", psy }, { "phantom_contact", contact },
 		{ "phantom_squad", squad_place }, { "phantom_xcv_fix", xcv_fix } }) do
-		local ok, result = pcall(spec[2], C, P, active)
+		local ok, result = pcall(spec[2], C, P)
 		if not ok then
 			P.report("compat", "native " .. spec[1], result)
 		elseif result then

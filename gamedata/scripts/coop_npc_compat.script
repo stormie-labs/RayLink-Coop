@@ -1,8 +1,6 @@
 --[[
-	Anomaly Coop - NPC group (W4 "npc"): third-party mods (G.A.M.M.A. and friends) that assume one player.
-	Historical W4 wrappers were ported from xrRazom behaviour. Native hooks now live in
-	coop_npc_adapters: independently derived from the original Anomaly/GAMMA mods, without
-	using xrRazom source/assets as an implementation reference.
+	Anomaly Coop - NPC group: third-party mods (G.A.M.M.A. and friends) that assume one player.
+	Native hooks live in coop_npc_adapters.
 
 	Every patch activates only when its mod's script exists; nothing here touches plain Anomaly 1.5.3 except
 	what is said. Outside a session every patched function answers exactly like the original.
@@ -22,13 +20,13 @@
 	marks and identity scopes; furniture-trader proximity through the existing update chain.
 	SKD's actor-only hook stays intact: coop_npc_world already judges proxy silent kills and
 	credits their owner here, so broadening SKD would duplicate that path.
-	Retained D2 loose-source rewrites: hxf damage classification, grok friendly-kill classification,
-	smr civil-war classification (our 2026-10-24 audit, not borrowed rewrite templates).
+	Loose-source rewrites: hxf damage classification, grok friendly-kill classification,
+	smr civil-war classification.
 	Their private early-return branches have no safe identity-only hook; preserve their complete
 	mod bodies and reject changed versions rather than replacing their policies. Useful Idiots
 	is handled separately by coop_npc_idiots, with token-aware checks derived from the original mod.
 	Function rewrites (FUNCTION_REWRITES): G.A.M.M.A.'s ballistics (grok_bo) counts every player's hit where hits are applied.
-	Stock _g.CActor__BeforeHitCallback (TZ P46, every machine with a player's actor): in a session a teammate's hit is not a
+	Stock _g.CActor__BeforeHitCallback (every machine with a player's actor): in a session a teammate's hit is not a
 	friendly NPC's stray bullet: it counts, or the actor got the hurt sound and hit marks with no damage.
 
 	Events: npc.stat host -> client { k = statistic id }
@@ -46,32 +44,25 @@ local EV_STAT = "npc.stat"
 local CIVIL_WAR_REWARD = "coop_g94_civil_reputation"
 
 local installed = false
-local host_on = false
 local host_on_told = false
 local orig = {}
 local applied = {} -- what got installed, for coop_status
 
-local function mod(name)
-	local ok, m = pcall(function() return _G[name] end)
-	return ok and type(m) == "table" and m or nil
-end
-
 -------------------------------------------------------------------------------
--- Transitional D2 source rewrites, independently specified by our attacker-domain audit.
+-- Source rewrites
 -------------------------------------------------------------------------------
 local REWRITES = {
-	-- audit D2 (2026-10-24): a client counted as an NPC attacker (no companion / important-NPC damage scaling, no
-	-- friendly-kill goodwill loss, civil-war kills ignored)
-	-- 2026-11-16: the scaling counts once, on the machine that applies the hit (coop_npc_applies_hits). By the route rules this
+	-- Without these a client counts as an NPC attacker (no companion / important-NPC damage scaling, no friendly-kill
+	-- goodwill loss, civil-war kills ignored).
+	-- The scaling counts once, on the machine that applies the hit (coop_npc_applies_hits). By the route rules this
 	-- script runs on the host only; the check keeps it once if a pack's rule gives it to the owner (client_hit_perks runs the
 	-- owner's handlers on his machine before the hit is sent).
 	hxf_tough_important_npcs = {
 		{ "if shit.draftsman:id() == AC_ID then", "if coop_npc_is_player_id(shit.draftsman:id()) then", all = true },
 		{ "\tif not npc then", "\tif not npc or not coop_npc_applies_hits() then" },
 	},
-	-- live 2026-11-09 (Agroprom underground): Reefer (agr_u_bandit_boss) died only to the host. G.A.M.M.A.'s story NPCs take 10 %
-	-- (enemy faction) / 1 % of a hit from db.actor and nothing from anyone else; on the host a client's hit comes from his proxy.
-	-- Every player now counts, with his own faction.
+	-- G.A.M.M.A.'s story NPCs (Reefer, agr_u_bandit_boss, among them) take 10 % (enemy faction) / 1 % of a hit from db.actor
+	-- and nothing from anyone else; on the host a client's hit comes from his proxy. Every player counts, with his own faction.
 	grok_additional_storyline_npc_invincible = {
 		{ "if shit.draftsman:id() == db.actor:id() and game_relations.is_factions_enemies(get_actor_true_community(), character_community(npc)) then",
 		"if coop_npc_is_player_id(shit.draftsman:id()) and game_relations.is_factions_enemies(coop_npc_player_community(shit.draftsman), character_community(npc)) then" },
@@ -106,9 +97,9 @@ local REWRITES = {
 		{ "db.actor:change_character_reputation(75)",
 			"if character then coop_npc_compat.credit_civil_war(npc, character, 75) else db.actor:change_character_reputation(75) end" },
 	},
-	-- audit B3 (2026-10-31): the kill and loot checks of the New Tasks Addon tasks compared the killer / user with AC_ID, the
-	-- host's actor: a client's kill, hit or search of a body never counted. is_axe() reads db.actor's hand; it now gets
-	-- the killer (nta_utils.is_axe wrapper in coop_mods_nta). The handlers are host-only callbacks.
+	-- The kill and loot checks of the New Tasks Addon tasks compare the killer / user with AC_ID, the host's actor: a
+	-- client's kill, hit or search of a body would never count. is_axe() reads db.actor's hand; it gets the killer
+	-- (nta_utils.is_axe wrapper in coop_mods_nta). The handlers are host-only callbacks.
 	tasks_brain_game = {
 		{ "(killer and killer:id() == AC_ID)", "(killer and coop_npc_is_player_id(killer:id()))" },
 	},
@@ -142,7 +133,7 @@ local REWRITES = {
 	tasks_dominance = {
 		{ "if not ( squad.first_update ) then", "if not ( squad.first_update or coop_quests_core.held_there(squad) ) then", all = true },
 	},
-	-- enemy audit F6 (2026-10-31): the psy drain under a controller asks the controller for an enemy; a client's copy of a
+	-- The psy drain under a controller asks the controller for an enemy; a client's copy of a
 	-- monster is a puppet without AI and has none. On a client the distance (10 m) decides.
 	gunslinger_controller = {
 		{ "elseif obj:get_enemy() and obj:position()", "elseif (coop_npc_on_client() or obj:get_enemy()) and obj:position()" },
@@ -245,11 +236,11 @@ end
 
 -- A rewrite runs the script a second time inside its own module. A script that wraps another module at load
 -- (`TraderUpdate = trade_manager.update`, then `function trade_manager.update`) would capture its own wrapper the
--- second time, and that wrapper calls itself: stack overflow in TraderUpdate (live check 2026-10-23). The original
+-- second time, and that wrapper calls itself: stack overflow in TraderUpdate. The original
 -- goes back before the second run.
 local BEFORE_RERUN = {
 	trader_autoinject = function(m)
-		local tm = mod("trade_manager")
+		local tm = coop_util.module("trade_manager")
 		local original = rawget(m, "TraderUpdate")
 		if tm and type(original) == "function" then
 			tm.update = original
@@ -294,14 +285,13 @@ function credit_civil_war(victim, character, delta)
 		if actor then actor:change_character_reputation(delta) end
 	else
 		-- ZCP uses the direct reputation delta. The stock statistic helper also applies an arena veto and a cap.
-		coop_tasks.with_character(character, coop_tasks.send_personal,
+		coop_tasks.with_character(character, coop_tasks_rewards.send_personal,
 			{ k = "fx", f = CIVIL_WAR_REWARD, p1 = tostring(delta) })
 	end
 end
 
 local function apply_rewrite(name, list)
-	local m
-	if name == "smr_civil_war" then m = coop_mods_core.mod(name) else m = mod(name) end
+	local m = coop_util.module(name)
 	if not m then return end -- mod absent
 	local src, path = read_script(name)
 	if not src then
@@ -320,7 +310,7 @@ local function apply_rewrite(name, list)
 	end
 	if name == "smr_civil_war" then
 		xr_effects[CIVIL_WAR_REWARD] = apply_civil_war_reward
-		coop_tasks.forward_allow(CIVIL_WAR_REWARD)
+		coop_tasks_rewards.forward_allow(CIVIL_WAR_REWARD)
 	end
 	applied[#applied + 1] = "rewrite:" .. name
 	log("rewrite %s applied (%d change(s))", name, #list)
@@ -335,7 +325,7 @@ function _rewrites() return REWRITES end
 -- that would declare its luabind class anew and drop every other mod's patch of it. Like the rewrites above it applies
 -- in and outside a session (on_game_start of a RayLink exe); outside one the fixed line answers what the author meant.
 local METHOD_REWRITES = {
-	-- R37: an interrupted scene enters idle through the same transition as a completed scene.
+	-- An interrupted scene enters idle through the same transition as a completed scene.
 	{ module = "sr_camp", class = "CCampManager", method = "unregister_npc", archive = true,
 		header = "function CCampManager:unregister_npc(npc_id)",
 		{ '\t\tself.active_state_time = 0\n\t\tself.director = nil\n\t\t\n\t\tself.active_state = "idle"',
@@ -411,7 +401,7 @@ end
 
 local function apply_method_rewrite(r)
 	local tag = r.module .. "." .. r.method
-	local m = mod(r.module)
+	local m = coop_util.module(r.module)
 	local cls = m and m[r.class]
 	if not cls then return end -- mod absent
 	local src, path = read_script(r.module, r.archive)
@@ -468,19 +458,18 @@ function _method_rewrites() return METHOD_REWRITES end
 -- module, or in every wrapper that kept it. Like the rewrites above it applies in and outside a session; outside one the
 -- rewritten line answers exactly what the original did.
 --
--- Live 2026-11-16 (build 51): an ordinary stalker, a base commander and sergeant Loshkin did not die from clients' fire.
 -- G.A.M.M.A.'s ballistics (grok_bo) computes a hit of db.actor itself (ammo, bone armour, distance, barrel), writes the health
 -- directly (past the engine's invulnerable) and leaves the engine a power of 0.0001; any other hit returns at its first line. By
 -- the route rules (checked with the pack's own route files) that chain runs on the host only, never on a client's machine. On
--- the host a client's hit comes from his proxy, not from db.actor: grok returned at once, the hit went the engine's stock way
--- and an NPC whose job logic says invulnerable (traders, base commanders, guards) took nothing. Now the machine that applies
--- hits (the host or a map server) counts every player's hit the way it counts its own actor's. The multihit fix judges a hit by
--- the last bullet of THIS machine, and a client's bullets do not fly on the host: his next shot at the same target would look
--- like a second hit of one bullet and be cancelled, so a remote player's hit goes past that wrapper; the fix's rule is kept for
--- it by the bullet's own number that comes with the hit (bullet_again). The host's own on-hit artefact perks are for the
+-- the host a client's hit comes from his proxy, not from db.actor: grok would return at once, the hit would go the engine's
+-- stock way and an NPC whose job logic says invulnerable (traders, base commanders, guards) would take nothing.
+-- The machine that applies hits (the host or a map server) counts every player's hit as it counts its own actor's.
+-- The multihit fix uses this machine's last bullet. A client's bullets do not fly on the host, so that wrapper could
+-- cancel the client's next shot at the same target as a duplicate. Remote hits skip the wrapper and use the bullet
+-- number in the hit (bullet_again). The host's own on-hit artefact perks are for the
 -- host's hits (its before-hit and death perks are skipped by coop_mods_perks).
 local FUNCTION_REWRITES = {
-	-- G8-3 u01:2: both camera filters count living players here; the independent
+	-- Both camera filters count living players here; the independent
 	-- mutant/anomaly radius and the mod's registry/invalidation cadence stay intact.
 	{ module = "aaaa_script_fixes_mp", name = "anomaly_restrictor_update", header = "function anomaly_restrictor_update()",
 		{ "if dist_to_cam_sqr < (max_dist_limit * max_dist_limit) then",
@@ -566,7 +555,7 @@ end
 
 local function apply_function_rewrite(r)
 	local tag = r.module .. "." .. r.name
-	local m = mod(r.module)
+	local m = coop_util.module(r.module)
 	if not m then return end -- mod absent
 	local src, path = read_script(r.module, r.archive)
 	if not src then
@@ -649,7 +638,7 @@ function _function_rewrites() return FUNCTION_REWRITES end
 -- Wrappers
 -------------------------------------------------------------------------------
 local function wrap_ai_rework()
-	local m = mod("schemes_ai_gamma")
+	local m = coop_util.module("schemes_ai_gamma")
 	if not m then return end
 	for _, name in ipairs({ "scheme_camper", "scheme_cover" }) do
 		local f = m[name]
@@ -658,7 +647,7 @@ local function wrap_ai_rework()
 		if type(f) == "function" and (nparams == nil or nparams > 0) and not orig[name] then
 			orig[name] = f
 			m[name] = function(enemy, npc, actor, ...)
-				if not (host_on and enemy and P.is_proxy(enemy)) then return f(enemy, npc, actor, ...) end
+				if not (P.host_on() and enemy and P.is_proxy(enemy)) then return f(enemy, npc, actor, ...) end
 				local ok, r = pcall(P.with_identity, enemy, f, enemy, npc, actor, ...)
 				if not ok then
 					report(name, r)
@@ -674,13 +663,13 @@ end
 local NIGHT_RADIUS = 75 -- night_mutants: safe_radius
 
 local function wrap_night_mutants()
-	local m = mod("night_mutants")
+	local m = coop_util.module("night_mutants")
 	local f = m and m.se_obj_outside_spawn_radius
 	if type(f) ~= "function" or orig.night then return end
 	orig.night = f
 	m.se_obj_outside_spawn_radius = function(se_obj, ...)
 		if not f(se_obj, ...) then return false end -- too close to the host's player
-		if not (host_on and se_obj) then return true end
+		if not (P.host_on() and se_obj) then return true end
 		for _, p in ipairs(P.others()) do
 			local ok, outside = pcall(P.with_identity, p, f, se_obj, ...)
 			if not ok then
@@ -698,18 +687,18 @@ local function wrap_night_mutants()
 	applied[#applied + 1] = "night_mutants"
 end
 
--- Audit B5 (2026-10-24): NPCs do not loot a corpse or pick up an item within the loot distance of the HOST's actor
--- (xr_corpse_detection / xr_gather_items near_actor), so they looted a client's kills right in front of him. Any player
+-- NPCs do not loot a corpse or pick up an item within the loot distance of the HOST's actor (xr_corpse_detection /
+-- xr_gather_items near_actor), so they would loot a client's kills right in front of him. Any player
 -- within that distance counts. The module calls near_actor through its own table: the wrapper is seen at once.
 local function wrap_loot()
 	for _, name in ipairs({ "xr_corpse_detection", "xr_gather_items" }) do
-		local m = mod(name)
+		local m = coop_util.module(name)
 		local f = m and m.near_actor
 		if type(f) == "function" and not orig["loot_" .. name] then
 			orig["loot_" .. name] = f
 			m.near_actor = function(obj)
 				local r = f(obj)
-				if r or not (host_on and obj) then return r end -- single player: the stock answer as it is
+				if r or not (P.host_on() and obj) then return r end -- single player: the stock answer as it is
 				local dist = tonumber(ui_options.get("gameplay/general/npc_loot_distance"))
 				return dist ~= nil and dist > 0 and coop_npc_any_player_within(obj, dist) == true
 			end
@@ -718,23 +707,23 @@ local function wrap_loot()
 	end
 end
 
--- Audit B3 (2026-10-24): a squad may not come online within excl_dist (75 m) of the player - the HOST's player, so
--- squads popped into view next to a far client. The stock rule runs again as each other player (with_identity); any
+-- A squad may not come online within excl_dist (75 m) of the player - the HOST's player, so squads would pop into view
+-- next to a far client. The stock rule runs again as each other player (with_identity); any
 -- "no" stands. On a map server db.actor is its ghost, nobody: the players of its level are all that counts.
 local function wrap_squads()
-	local m = mod("sim_squad_scripted")
+	local m = coop_util.module("sim_squad_scripted")
 	local cls = m and m.sim_squad_scripted
 	local f = cls and cls.check_online_status
 	if type(f) ~= "function" or orig.squad_online then return end
 	orig.squad_online = f
 	cls.check_online_status = function(self, ...)
-		local first = host_on and coop_mode.leads_here() and not coop_mode.decides_world() and P.others()[1] or nil
+		local first = P.host_on() and coop_mode.leads_for_world_elsewhere() and P.others()[1] or nil
 		if first then
 			P.with_identity(first, f, self, ...)
 		else
 			f(self, ...)
 		end
-		if self.forced_online_status ~= nil or self.online or not host_on then return end
+		if self.forced_online_status ~= nil or self.online or not P.host_on() then return end
 		for _, p in ipairs(P.others()) do
 			local ok, err = pcall(P.with_identity, p, f, self, ...)
 			if not ok then
@@ -746,10 +735,10 @@ local function wrap_squads()
 	end
 	applied[#applied + 1] = "squad_exclusion"
 	-- A squad sent at "the actor" (a bounty, a task) goes to id 0: on a map server that is its ghost. It goes to a player of the level.
-	local actor = mod("se_actor")
+	local actor = coop_util.module("se_actor")
 	local ca = actor and actor.se_actor
 	local function player_here()
-		return host_on and coop_mode.leads_here() and not coop_mode.decides_world() and P.others()[1] or nil
+		return P.host_on() and coop_mode.leads_for_world_elsewhere() and P.others()[1] or nil
 	end
 	local where, task = ca and ca.get_location, ca and ca.get_alife_task
 	if type(where) == "function" then
@@ -768,14 +757,14 @@ local function wrap_squads()
 	end
 end
 
--- Audit B4: a smart terrain does not respawn within its respawn_radius of the HOST's player only; any player counts. The world
+-- A smart terrain does not respawn within its respawn_radius of the HOST's player only; any player counts. The world
 -- server alone respawns (a map server's try_respawn returns, coop_main): for a player on a map server's level it has no object, only
 -- the record of his body, and "the actor is on this level" holds for him too (respawn_only_level).
 local function player_near_record(self, r)
 	local gg = game_graph()
 	local lid = gg:vertex(self.m_game_vertex_id):level_id()
 	local on_level = false
-	for _, p in ipairs(P.players()) do
+	for _, p in ipairs(coop_util.players()) do
 		local se = not p.is_self and type(p.avatar_id) == "number" and alife_object(p.avatar_id) or nil
 		if se and gg:vertex(se.m_game_vertex_id):level_id() == lid then
 			on_level = true
@@ -785,7 +774,7 @@ local function player_near_record(self, r)
 	return false, on_level
 end
 
--- G8-3: these answers concern presence, never the process's role. everyone()
+-- These answers concern presence, never the process's role. everyone()
 -- already excludes a server's actor and only returns live bodies on this map.
 function camera_player_near(pos, limit_sqr, original_distance_sqr)
 	if not P.active() then return original_distance_sqr < limit_sqr end
@@ -823,7 +812,7 @@ local function escort_distance_sqr(squad)
 			best = math.min(best, squad.position:distance_to_sqr(o:position()))
 		end
 	end
-	for _, p in ipairs(P.players()) do
+	for _, p in ipairs(coop_util.players()) do
 		local id = p.avatar_id
 		local se = not p.is_self and type(id) == "number" and not level.object_by_id(id) and alife_object(id)
 		if se and (owner == nil or owner == id) and record_is_alive(se) and same_presence_level(squad, se.m_game_vertex_id) then
@@ -850,13 +839,13 @@ local function wrap_faction_target()
 end
 
 local function wrap_smart_respawn()
-	local m = mod("smart_terrain")
+	local m = coop_util.module("smart_terrain")
 	local cls = m and m.se_smart_terrain
 	local f = cls and cls.try_respawn
 	if type(f) ~= "function" or orig.smart_respawn then return end
 	orig.smart_respawn = f
 	cls.try_respawn = function(self, ...)
-		if not (host_on and self.position) then return f(self, ...) end
+		if not (P.host_on() and self.position) then return f(self, ...) end
 		local r = tonumber(self.respawn_radius) or 150
 		if P.any_within(self.position, r) then return end -- a player is near: nothing spawns in his view
 		local near_one, on_level = player_near_record(self, r)
@@ -870,13 +859,13 @@ local function wrap_smart_respawn()
 	applied[#applied + 1] = "smart_respawn"
 end
 
--- Audit B7 (2026-10-24): helicopters (heli_combat / heli_fire, stock scripts in the archives: class methods are wrapped)
--- know the HOST's actor as "the actor" and every other player's character as an ordinary NPC, so a heli set on the
--- player (actor_always_enemy, combat_enemy = actor, heli_fire enemy = actor) never turned on a client. A player's
+-- Helicopters (heli_combat / heli_fire, stock scripts in the archives: class methods are wrapped) know the HOST's actor
+-- as "the actor" and every other player's character as an ordinary NPC, so a heli set on the player (actor_always_enemy,
+-- combat_enemy = actor, heli_fire enemy = actor) would never turn on a client. A player's
 -- character counts as the actor: the actor's enemy rule (his own heli flag - set on his character when he shot the
 -- heli - or actor_always_enemy), and "the actor" as a target is the nearest player.
--- Live 2026-10-31: heli_fire with enemy = actor picks once and keeps it, and a player who is down is alive for the engine: a
--- mission's heli fired at the host alone, even dead. It now works through the players it sees, on their feet, in turns.
+-- heli_fire with enemy = actor picks once and keeps it, and a player who is down is alive for the engine: a mission's heli
+-- would fire at the host alone, even dead. It works through the players it sees, on their feet, in turns.
 -- Skyfall sets its heli on db.actor at every status check, past all of this (tasks_skyfall set_player_enemy ->
 -- heli_combat:set_enemy): that one call goes through the same turns; a heli that sees nobody looks for the players it knows of.
 local HELI_TURN_MS = 10000 -- how long one player has its attention
@@ -894,14 +883,14 @@ local function heli_next_player(self, heli, anywhere)
 end
 
 local function wrap_helis()
-	local hc = mod("heli_combat")
+	local hc = coop_util.module("heli_combat")
 	local cls = hc and hc.heli_combat
 	local is_enemy = cls and cls.is_enemy
 	if type(is_enemy) == "function" and not orig.heli_is_enemy then
 		orig.heli_is_enemy = is_enemy
 		cls.is_enemy = function(self, obj)
-			if host_on and obj and P.is_player_id(obj:id()) and not P.standing(obj) then return false end
-			if not (host_on and obj and P.is_proxy(obj)) then return is_enemy(self, obj) end
+			if P.host_on() and obj and P.is_player_id(obj:id()) and not P.standing(obj) then return false end
+			if not (P.host_on() and obj and P.is_proxy(obj)) then return is_enemy(self, obj) end
 			-- the stock's checks for anybody, then its rule for the actor (heli_combat.script is_enemy)
 			if not obj:alive() or IsWounded(obj) then return false end
 			if xr_combat_ignore.ignore_enemy_by_overrides(self.object, obj) then return false end
@@ -919,7 +908,7 @@ local function wrap_helis()
 		orig.heli_from_data = from_data
 		cls.set_enemy_from_custom_data = function(self, combat_enemy, ...)
 			local r = from_data(self, combat_enemy, ...)
-			if host_on and combat_enemy == "actor" and self.st and self.st.enemy_id == AC_ID and self.object then
+			if P.host_on() and combat_enemy == "actor" and self.st and self.st.enemy_id == AC_ID and self.object then
 				local near = P.nearest(self.object:position())
 				if near and P.is_proxy(near) then self.st.enemy_id = near:id() end
 			end
@@ -927,13 +916,13 @@ local function wrap_helis()
 		end
 		applied[#applied + 1] = "heli:combat_enemy"
 	end
-	local hf = mod("heli_fire")
+	local hf = coop_util.module("heli_fire")
 	local fcls = hf and hf.heli_fire
 	local set_enemy = fcls and fcls.set_enemy
 	if type(set_enemy) == "function" and not orig.heli_fire then
 		orig.heli_fire = set_enemy
 		fcls.set_enemy = function(self, ...)
-			if not (host_on and self.enemy_ == "actor" and self.obj) then return set_enemy(self, ...) end
+			if not (P.host_on() and self.enemy_ == "actor" and self.obj) then return set_enemy(self, ...) end
 			local ok, heli = pcall(self.obj.get_helicopter, self.obj)
 			if not (ok and heli) then return set_enemy(self, ...) end
 			local now = time_global()
@@ -953,7 +942,7 @@ local function wrap_helis()
 		end
 		applied[#applied + 1] = "heli:fire"
 	end
-	local sky = mod("tasks_skyfall")
+	local sky = coop_util.module("tasks_skyfall")
 	local aim = sky and sky.set_player_enemy
 	if type(aim) == "function" and not orig.heli_skyfall then
 		orig.heli_skyfall = aim
@@ -979,28 +968,28 @@ local function wrap_helis()
 	end
 end
 
--- Audit B6 (2026-10-24): an old corpse is released when there are more than five and it lies 75 m from the HOST's
--- actor (release_body_manager Crelease_body:clear), so a body next to a client went while he came to loot it. A body
+-- An old corpse is released when there are more than five and it lies 75 m from the HOST's actor (release_body_manager
+-- Crelease_body:clear), so a body next to a client would go while he came to loot it. A body
 -- within that distance of any other player stays in the queue but is not offered to the stock pass this time. The stock's
 -- clear(all) at a level change would take every body of a level the others stay on: with a player here it does nothing.
 local RELEASE_DIST_SQR = 5625 -- release_body_manager MIN_RELEASE_DISTANCE (75 m, squared)
 local function release_dist_sqr(dist)
 	if tonumber(dist) then return tonumber(dist) end
-	local o = mod("ui_options")
+	local o = coop_util.module("ui_options")
 	local ok, v = pcall(function() return o and o.get("gameplay/general/corpse_min_dist") end)
 	v = ok and tonumber(v)
 	return v and v * v or RELEASE_DIST_SQR -- the stock keeps the option in a local of its own
 end
 
 local function wrap_body_release()
-	local m = mod("release_body_manager")
+	local m = coop_util.module("release_body_manager")
 	local cls = m and m.Crelease_body
 	local f = cls and cls.clear
 	if type(f) ~= "function" or orig.body_release then return end
 	orig.body_release = f
 	cls.clear = function(self, all, dist, ...)
 		local queue = self and self.release_objects_table
-		if not host_on or type(queue) ~= "table" then return f(self, all, dist, ...) end
+		if not P.host_on() or type(queue) ~= "table" then return f(self, all, dist, ...) end
 		if all then
 			if not coop_mode.group_travels() and P.others()[1] then return end
 			return f(self, all, dist, ...)
@@ -1028,20 +1017,20 @@ local function wrap_body_release()
 	applied[#applied + 1] = "body_release"
 end
 
--- Enemy audit F8 (2026-10-31): a mounted gun (ph_minigun) aims at a target's feet + 0.1 m; only the host's actor gets the chest
+-- A mounted gun (ph_minigun) aims at a target's feet + 0.1 m; only the host's actor gets the chest
 -- point (+1 m, the stock "FAKE" aim), so a client, a proxy on the host, was shot at the ground. rot_to_firepoint receives the
 -- point the aim has just computed: for a player's proxy, when the point is on his spot (xz), it moves to his chest.
 local CHEST_HEIGHT = 1 -- the stock chest aim of the actor
 local AIM_XZ_SQR = 0.0025 -- 5 cm: the stock jitter is 1 cm
 
 local function wrap_mounted_guns()
-	local m = mod("ph_minigun")
+	local m = coop_util.module("ph_minigun")
 	local cls = m and m.action_mgun
 	local f = cls and cls.rot_to_firepoint
 	if type(f) ~= "function" or orig.mgun_aim then return end
 	orig.mgun_aim = f
 	cls.rot_to_firepoint = function(self, pt, ...)
-		local tid = host_on and pt and self.st and self.st.target_id
+		local tid = P.host_on() and pt and self.st and self.st.target_id
 		if tid and P.is_proxy(tid) then
 			local st = db.storage[tid]
 			local target = st and st.object
@@ -1060,14 +1049,14 @@ end
 local crime = {} -- proxy id -> true
 
 local function wrap_peace_zone()
-	local m = mod("gameplay_peace_zone")
+	local m = coop_util.module("gameplay_peace_zone")
 	if not (m and type(m.npcs_friendly_to_community) == "function" and type(m.level_is_bar) == "function") then return end
 	if orig.peace then return end
 	local friendly = m.npcs_friendly_to_community
 	orig.peace = friendly
 	-- Both call sites pass the player second: false for a proxy keeps the mod's single crime bit off it.
 	m.npcs_friendly_to_community = function(a, b, com, ...)
-		if host_on and b and P.is_proxy(b) then return false end
+		if P.host_on() and b and P.is_proxy(b) then return false end
 		return friendly(a, b, com, ...)
 	end
 	local function pair(npc, who)
@@ -1076,11 +1065,11 @@ local function wrap_peace_zone()
 	end
 	RegisterScriptCallback("npc_on_before_hit", function(npc, s_hit)
 		local who = s_hit and s_hit.draftsman
-		if not (host_on and who and P.is_proxy(who)) then return end
+		if not (P.host_on() and who and P.is_proxy(who)) then return end
 		if m.level_is_bar() and pair(npc, who) then crime[who:id()] = true end
 	end)
 	RegisterScriptCallback("on_enemy_eval", function(npc, ene, flags)
-		if not (host_on and ene and P.is_proxy(ene)) or crime[ene:id()] then return end
+		if not (P.host_on() and ene and P.is_proxy(ene)) or crime[ene:id()] then return end
 		if m.level_is_bar() and IsStalker(npc) and pair(npc, ene) then
 			flags.override = true
 			flags.result = false
@@ -1096,7 +1085,7 @@ end
 
 -- Called by coop_npc_world after a client's silent kill.
 function credit_silent_kill(proxy)
-	if not mod("stealth_kill_detection") then return end
+	if not coop_util.module("stealth_kill_detection") then return end
 	local peer = P.peer_of(proxy)
 	if peer then P.send(EV_STAT, { k = "silent_kills" }, peer) end
 end
@@ -1125,47 +1114,66 @@ local function outfit_of(who)
 	return coeff[1], coeff[2]
 end
 
+-- The engine asks get_visible_value for every object every NPC sees, on every visibility update: the wrapper allocates
+-- nothing. The three upvalues of the formula are its own, so a call keeps the values it replaced on its stack.
 local function wrap_stealth_visibility(C, visual, facts)
-	local slots, env = {}, nil
-	for _, key in ipairs({ "jacketmult", "get_camo_k", "pewpewmult" }) do
+	local holders, indexes, env = {}, {}, nil
+	for i, key in ipairs({ "jacketmult", "get_camo_k", "pewpewmult" }) do
 		local value, holder, index = C.find_local(visual, key)
 		if type(value) ~= "number" or not holder then return end
 		env = env or getfenv(holder)
 		if env ~= getfenv(holder) then return end
-		slots[#slots + 1] = { holder, index }
+		holders[i], indexes[i] = holder, index
 	end
 	if type(env.IsMoveState) ~= "function" then return end
+	local jacket_at, jacket_i = holders[1], indexes[1]
+	local camo_at, camo_i = holders[2], indexes[2]
+	local shot_at, shot_i = holders[3], indexes[3]
 
-	local function restore(move, saved, ok, ...)
-		rawset(env, "IsMoveState", move)
-		for i, slot in ipairs(slots) do debug.setupvalue(slot[1], slot[2], saved[i]) end
+	-- The formula's IsMoveState for the call in progress: the observed player's movement state when the formula asks
+	-- without a compare_state; a nested call keeps the query of the outer one and restores both after it.
+	local cur_move, cur_query = nil, nil
+	local function move_state(state, compare_state)
+		if compare_state == nil then compare_state = cur_move end
+		return cur_query(state, compare_state)
+	end
+
+	local function restore(previous, outer_move, outer_query, jacket, camo, shot, ok, ...)
+		rawset(env, "IsMoveState", previous)
+		cur_move, cur_query = outer_move, outer_query
+		debug.setupvalue(jacket_at, jacket_i, jacket)
+		debug.setupvalue(camo_at, camo_i, camo)
+		debug.setupvalue(shot_at, shot_i, shot)
 		if not ok then error((...), 0) end
 		return ...
 	end
 
 	C.wrap(visual, "get_visible_value", "npc.stealth_facts", function(old)
 		return function(npc, who, ...)
-			if not (who and C.active() and coop_mode.leads_here()) then return old(npc, who, ...) end
+			if not (who and coop_mode.leads_here() and coop_util.active()) then return old(npc, who, ...) end
 			local id = who:id()
 			local peer = P.peer_of(id)
 			local player = peer ~= nil and (id ~= 0 or coop_mode.actor_is_player()) and coop_mode.where(peer) == "here"
 			local jacket, camo = outfit_of(player and who)
 			local move, shot = facts.get(player and who)
-			local values, saved = { jacket, camo, shot }, {}
-			for i, slot in ipairs(slots) do
-				local _, value = debug.getupvalue(slot[1], slot[2])
-				saved[i] = value
-				debug.setupvalue(slot[1], slot[2], values[i])
-			end
+			local _, was_jacket = debug.getupvalue(jacket_at, jacket_i)
+			local _, was_camo = debug.getupvalue(camo_at, camo_i)
+			local _, was_shot = debug.getupvalue(shot_at, shot_i)
+			debug.setupvalue(jacket_at, jacket_i, jacket)
+			debug.setupvalue(camo_at, camo_i, camo)
+			debug.setupvalue(shot_at, shot_i, shot)
 			-- Keep only the original formula in this scope. Its IsMoveState calls
 			-- take an explicit compare_state even after the native identity swap.
-			local move_query, previous = env.IsMoveState, rawget(env, "IsMoveState")
-			rawset(env, "IsMoveState", function(state, compare_state)
-				if compare_state == nil then compare_state = move end
-				return move_query(state, compare_state)
-			end)
-			if player then return restore(previous, saved, pcall(P.with_identity, who, old, npc, who, ...)) end
-			return restore(previous, saved, pcall(old, npc, who, ...))
+			local previous = rawget(env, "IsMoveState")
+			local outer_move, outer_query = cur_move, cur_query
+			if previous ~= move_state then cur_query = env.IsMoveState end
+			cur_move = move
+			rawset(env, "IsMoveState", move_state)
+			if player then
+				return restore(previous, outer_move, outer_query, was_jacket, was_camo, was_shot,
+					pcall(P.with_identity, who, old, npc, who, ...))
+			end
+			return restore(previous, outer_move, outer_query, was_jacket, was_camo, was_shot, pcall(old, npc, who, ...))
 		end
 	end)
 end
@@ -1204,17 +1212,16 @@ local function install_stealth_facts()
 end
 
 -------------------------------------------------------------------------------
--- A player's hit on this machine's actor (TZ P46)
+-- A player's hit on this machine's actor
 -------------------------------------------------------------------------------
 -- CActor::Hit (engine Actor.cpp) plays a hit's hurt sound, hit marks and camera kick first and only then asks the stock
 -- _G.CActor__BeforeHitCallback (_g.script), whose clause "the draftsman is a stalker friendly to db.actor" drops the hit:
 -- a friendly NPC's stray bullet does no damage. A player's character is a stalker as well (his proxy where his level is
 -- led, his avatar on another player's machine), and a teammate's hit reaches an actor only by the session's friendly fire
--- rule (coop_requests.cpp host_hit, host_actor_hit_dropped, stalker_hit; xrCoop/coop_hits.h). That clause dropped it:
--- the hit player got the sound and the picture of a hit and no damage (owner, Dev 58: "урон другого игрока передал звук
--- урона хосту"). The stock function stays as it is; in a session its own IsStalker (used only by that clause) does not
--- count another player's character. The global IsStalker, every NPC's hit and single player stay stock. Every machine
--- with an actor of a player (Coop host, every player's machine in both modes).
+-- rule (coop_requests.cpp host_hit, host_actor_hit_dropped, stalker_hit; xrCoop/coop_hits.h). That clause would drop it:
+-- the player would hear and see the hit without taking damage. In a session, the IsStalker used by that clause
+-- excludes teammates. The global IsStalker, NPC hits, and single-player hits keep the stock rules. Apply this where
+-- a human plays the local actor (the Co-op host and player clients in either mode).
 local function wrap_actor_friend_hit()
 	local f = rawget(_G, "CActor__BeforeHitCallback")
 	if type(f) ~= "function" or orig.actor_hit then return end
@@ -1247,9 +1254,8 @@ local function actor_on_update()
 	local now = time_global()
 	if now < next_tick then return end
 	next_tick = now + 250
-	host_on = installed and P.host_with_clients()
-	-- R68: no log has shown yet whether the wrappers run where the actor is a ghost; once per game, no line per frame
-	if host_on and not host_on_told and not coop_mode.actor_is_player() then
+	-- whether the wrappers run where the actor is a ghost: once per game, no line per frame
+	if not host_on_told and P.host_on() and not coop_mode.actor_is_player() then
 		host_on_told = true
 		log("host_on: on, the wrappers run for the players here; this process's own actor is no player")
 	end
@@ -1261,6 +1267,7 @@ function print_status()
 end
 
 function on_game_start()
+	coop_util.add_status("coop_npc_compat", 190)
 	P = coop_npc_players
 	if not rawget(_G, "coop") then return end
 	if not installed then
@@ -1286,10 +1293,10 @@ function on_game_start()
 		end
 		local ok, err = pcall(install_stealth_facts)
 		if not ok then report("install stealth facts", err) end
-		local adapters = mod("coop_npc_adapters")
-		if adapters then adapters.install(P, function() return host_on and P.host_with_clients() end, applied) end
-		local phantoms = mod("coop_npc_phantoms") -- enemy audit F10
-		if phantoms then phantoms.install(P, function() return host_on and P.host_with_clients() end, applied) end
+		local adapters = coop_util.module("coop_npc_adapters")
+		if adapters then adapters.install(P, applied) end
+		local phantoms = coop_util.module("coop_npc_phantoms")
+		if phantoms then phantoms.install(P, applied) end
 		for _, s in ipairs({ { "ai_rework", wrap_ai_rework }, { "night_mutants", wrap_night_mutants },
 			{ "faction_target", wrap_faction_target },
 			{ "peace_zone", wrap_peace_zone }, { "loot", wrap_loot },
@@ -1304,5 +1311,4 @@ function on_game_start()
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 end
 
-function _set_host_on(v) host_on = v end
 function _applied() return applied end

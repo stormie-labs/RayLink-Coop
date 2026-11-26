@@ -13,7 +13,7 @@
 	Install only when ZCP's seek rule is present. Single player and player mirrors use the stock distance.
 --]]
 
-local type, ipairs, pcall, error, tostring = type, ipairs, pcall, error, tostring
+local type, ipairs, pcall, error = type, ipairs, pcall, error
 local math_huge = math.huge
 
 local TAG = "sim_target"
@@ -23,13 +23,6 @@ local seeks = 0
 
 local function C() return coop_mods_core end
 
-local function level_of(gvid)
-	if type(gvid) ~= "number" then return nil end
-	local ok, lid = pcall(function() return game_graph():vertex(gvid):level_id() end)
-	if ok then return lid end
-	return nil
-end
-
 -- A downed player is still present: the record's own life, as coop_npc_compat record_is_alive.
 local function record_alive(se)
 	local ok, alive = pcall(se.alive, se)
@@ -38,21 +31,22 @@ end
 
 -- Distance of the nearest living player on the squad's map, or math.huge if there is none.
 local function nearest_distance(squad)
-	local lid = level_of(squad.m_game_vertex_id)
+	local lid = coop_util.level_of_gvid(squad.m_game_vertex_id)
 	if lid == nil then return math_huge end
 	local pos = squad.position
 	local best = math_huge
 	for _, o in ipairs(coop_npc_players.everyone()) do
-		if level_of(o:game_vertex_id()) == lid and coop_mode.where(coop_npc_players.peer_of(o)) ~= "joining" then
+		if coop_util.level_of_gvid(o:game_vertex_id()) == lid
+			and coop_mode.where(coop_npc_players.peer_of(o)) ~= "joining" then
 			local d = pos:distance_to(o:position())
 			if d < best then best = d end
 		end
 	end
-	for _, p in ipairs(C().players()) do
+	for _, p in ipairs(coop_util.players()) do
 		local id = p.avatar_id
 		if not p.is_self and type(id) == "number" and not level.object_by_id(id) and coop_mode.where(p.id) ~= "joining" then
 			local se = alife_object(id)
-			if se and record_alive(se) and level_of(se.m_game_vertex_id) == lid then
+			if se and record_alive(se) and coop_util.level_of_gvid(se.m_game_vertex_id) == lid then
 				local d = pos:distance_to(se.position)
 				if d < best then best = d end
 			end
@@ -131,11 +125,11 @@ function status()
 	return string.format("%s | seeks %d", installed and "wrapped" or "not wrapped", seeks)
 end
 
--- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop (W5).
+local function start()
+	install()
+	if installed then C().status_line(TAG, status) end
+end
+
 function on_game_start()
-	local ok, err = pcall(function()
-		install()
-		if installed then C().status_line(TAG, status) end
-	end)
-	if not ok then printf("! [coop_npc_sim_target] start failed: %s", tostring(err)) end
+	coop_util.start_step("coop_npc_sim_target", "start", start)
 end

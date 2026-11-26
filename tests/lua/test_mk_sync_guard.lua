@@ -73,6 +73,7 @@ local function sites_of(src)
 				local text = body(fn_at)
 				local prior = table.concat(lines, "\n", fn_at, i - 1)
 				local facade_guard = prior:match("\n%s*if coop_mode%.leads_here%(%) and not coop_mode%.decides_world%(%) then return ")
+					or prior:match("\n%s*if coop_mode%.leads_for_world_elsewhere%(%) then return ")
 				local guarded = text:find("is_map_server", 1, true) ~= nil or text:find("is_world_server", 1, true) ~= nil or
 					text:find("-- Mk:", 1, true) ~= nil or facade_guard ~= nil
 				sites[#sites + 1] = { line = i, what = method, fn = fn, guarded = guarded }
@@ -132,11 +133,16 @@ local function loops(sync, list)
 	if coop_mode.leads_here() and not coop_mode.decides_world() then return tell_map(list) end
 	return sync.set(SCOPE, KEY, list)
 end
+local function loops_asked(sync, list)
+	if coop_mode.leads_for_world_elsewhere() then return tell_map(list) end
+	return sync.set(SCOPE, KEY, list)
+end
 ]]
 	sites = sites_of(good)
-	check(#sites == 4, "a scope in a constant counts, a player's scope does not (" .. #sites .. ")")
+	check(#sites == 5, "a scope in a constant counts, a player's scope does not (" .. #sites .. ")")
 	check(sites[1].guarded and sites[2].guarded and sites[3].guarded, "a branch or a comment guards a call")
 	check(sites[4].guarded, "a facade branch that returns before the world write guards it")
+	check(sites[5].guarded, "so does the facade's own question for that branch")
 end
 
 print("== the scripts")

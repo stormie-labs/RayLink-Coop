@@ -445,6 +445,7 @@ for _, role in ipairs(names) do
 			tasks_defense.actor_on_first_update()
 			if adapter.update then adapter.update() end
 			registry = connected
+			NOW = NOW + 1000 -- the adapter's next update comes a second later: the player list of a new frame
 			if adapter.update then adapter.update() end
 			run_time_events(21000)
 			check(sent_count("mods.npcrel_offer") > 0, "srv_world m09 participant joining after world startup gets an offer")

@@ -1,5 +1,5 @@
 -- Ядро: без проверок режима (docs/MODES.md)
--- G12-3 / Dev 57. Player UI reads mirrored flags; only the level decider changes bodies/inventories.
+-- Player UI reads mirrored flags; only the level decider changes bodies/inventories.
 -- Co-op: the host has the bodies and inventories. Server: the leading map has them; the world routes requests.
 -- No save data. Wire (host ids): mods.compui_no_ammo {i}, mods.compui_no_ammo_r {i,n},
 -- mods.compui_ammo_state {i,w,a=0}. Sender identity always comes from the transport.
@@ -8,6 +8,9 @@ local started = false
 local wrapped = setmetatable({}, { __mode = "k" })
 local panel, panel_hud, panel_module
 local previous, next_unstuck = {}, 0
+-- The stock unstuck timer may be registered: axr_companions' on_game_load registers it, and a session removes it once
+-- (it must never measure to db.actor in a session). Nothing else registers it, so a load is the only thing that sets this.
+local stock_unstuck = true
 
 local function active() return coop_mods_core.active() end
 local function player() return active() and coop_mode.actor_is_player() end
@@ -105,11 +108,13 @@ end
 
 local function unstuck()
     if not active() then return end
-    -- The stock local callback is registered by on_game_load; it must never measure to db.actor in a session.
-    RemoveTimeEvent("cycle", "companion_unstuck")
-    if not coop_mode.leads_here() then return end
+    if stock_unstuck then
+        RemoveTimeEvent("cycle", "companion_unstuck")
+        stock_unstuck = false
+    end
     local now = time_global()
     if now < next_unstuck then return end
+    if not coop_mode.leads_here() then return end
     next_unstuck = now + 30000
     local companions = coop_mods_core.mod("coop_npc_companions")
     local local_actor = coop_mode.actor_is_player() and db.actor
@@ -156,8 +161,8 @@ local function no_ammo(t, from)
         "peer %s has no living companion", tostring(from)) then return end
     if not eligible then return end
     local companions = coop_mods_core.mod("coop_npc_companions")
-    -- Ruling F2-32b (coop_requests.cpp moves::check): every companion of the group shares its inventory with every player,
-    -- so the sender need not lead it; it must be some player's companion (review RV-G12-3).
+    -- Every companion in the group shares its inventory with every player. Any member can send the request
+    -- as long as the NPC is a player's companion (coop_requests.cpp moves::check).
     local owner = companions and companions.owner_character(npc)
     if not coop_trust.pass("compui_ammo_owner", owner ~= nil,
         "peer %s: %s is no player's companion", tostring(from), tostring(id)) then return end
@@ -222,6 +227,7 @@ end
 
 local function load()
     previous, next_unstuck = {}, 0
+    stock_unstuck = true
     step("remove", remove_panel)
 end
 

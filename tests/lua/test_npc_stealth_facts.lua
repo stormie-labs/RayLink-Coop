@@ -123,7 +123,7 @@ local function boot(role, peer, avatars, answers, overrides)
 	load_script(M, "coop_npc_compat").on_game_start()
 	-- The meeting wrapper starts after compat in the game's alphabetic startup.
 	load_script(M, "coop_npc_meet").on_game_start()
-	E.coop_npc_meet._set_host_on(true)
+	E.coop_npc_players.host_on = function() return true end
 	return M
 end
 

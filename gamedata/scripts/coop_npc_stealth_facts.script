@@ -28,7 +28,7 @@ end
 local function sender_record(from)
 	local who = body_here(from)
 	-- No body to attach facts to: dropped in every mode, so a guard, not a check of a request. Honest play hits it on every
-	-- level change (facts still in flight from a player who has just left this map: the stand, build 57), so it is
+	-- level change (facts still in flight from a player who has just left this map), so it is
 	-- counted (coop_status) with no line.
 	if not coop_trust.guard("sf_player", who ~= nil) then return nil end
 	local id = who:id()

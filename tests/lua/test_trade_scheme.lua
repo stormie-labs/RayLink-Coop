@@ -29,7 +29,7 @@ local function boot(role)
 		return self.st.all_money, nil, "reaction"
 	end
 	E.mob_trade = { mob_trade = class }
-	adapter.install(E.coop_npc_players, function() return false end, {})
+	adapter.install(E.coop_npc_players, {})
 	-- ALife calls on_game_start before load(), so NPC setup captures this function
 	-- after installation, even when the NPC comes from an existing save.
 	local function bind(st)

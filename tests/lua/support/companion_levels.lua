@@ -288,6 +288,8 @@ local function stand(opts)
 		local M = level == 1 and cordon or Mk
 		if obj then M.objects[id] = obj end
 		W.bodies[id] = { position = vec(1, 0, 0), m_level_vertex_id = 7, m_game_vertex_id = level == 1 and 10 or 20, id = id }
+		-- the engine's player list changes between frames: the next frame reads it (coop_util.players keeps one per frame)
+		NOW = NOW + 1
 		for _, each in ipairs(machines) do each.env.coop_npc_players.invalidate() end
 	end
 	W.refresh()

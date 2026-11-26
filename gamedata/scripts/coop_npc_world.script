@@ -1,7 +1,5 @@
 --[[
-	Anomaly Coop - NPC group (W4 "npc"): world things that assumed one player.
-	Port of the behaviour of xrRazom 1.4 xrr_patch_mines, xrr_patch_anomalies, xrr_patch_activatables,
-	xrr_patch_silent_kills and the stock-game part of xrr_patch_stealth_kill_detection (own code, our events).
+	Anomaly Coop - NPC group: world things that assumed one player.
 	Covered by C++ and not repeated here: anomaly field states and campfire flames (coop_objects ZoneState),
 	anomaly damage to players (each owner computes its own, coop_objects), artefact movement (host physics,
 	coop_objects), doors and buttons (a client's use goes to the host, coop_objects), explosions (host only).
@@ -10,12 +8,11 @@
 	  - A client's "plant" goes to the host (npc.mine): the host creates the charge where the client stands
 	    and arms it (proximity or timer). Stock plant_bomb on a client would fail (a client's alife create
 	    returns no object) and leave the charge unarmed on the host.
-	  - TZ v2 6.4 row 5 (2026-11-18): the request names the mine item (i). The host checks it is this player's: in his
-	    inventory, or on the ground at his feet (Interaction Dot Marks plants a mine lying there), of the planted kind
-	    (coop_trust "mine_item"), removes it itself and answers (npc.mine_ok): "took" = the host removed it, "left" = the
-	    client removes its own copy as build 56 did (a check that failed in "log", a charge the host did not create), "no" =
-	    refused, the client keeps it. No answer in 15 s (a host of build 56): the client removes it itself. A request with
-	    no id (a client of build 56, which removes its item itself) goes through as before (coop_trust "mine_item_id").
+	  - The request names the mine item (i). The host checks it is this player's: in his inventory, or on the ground at
+	    his feet (Interaction Dot Marks plants a mine lying there), of the planted kind (coop_trust "mine_item"), removes
+	    it itself and answers (npc.mine_ok): "took" = the host removed it, "left" = the client removes its own copy (a
+	    check that failed in "log", a charge the host did not create), "no" = refused, the client keeps it. No answer in
+	    15 s (the answer was lost): the client removes it itself.
 	    Facts: Co-op - the host's ALife and his copy of the player's character; Server - the map server of the player's
 	    level runs the handler (the world server passes it on) with the same facts of its level.
 	  - Proximity charges trigger on the clients' proxies too (the stock check only sees db.actor, NPCs and
@@ -23,7 +20,7 @@
 	  - A client's charge outlives his session (charges are saved with the game): the process that decides the world or
 	    leads this map keeps its timer running and lets NPCs, monsters and players set it off with no client online too.
 	  - On the host every charge goes off as its planter (coop.explode_as; the host's own stock charges as the
-	    host's character), so the engine applies friendly fire to its blast (R3 В2 review). Without that engine
+	    host's character), so the engine applies friendly fire to its blast. Without that engine
 	    function the stock explode runs (the charge is its own initiator) and mine_blame re-blames NPC hits.
 	Anomalies (bind_anomaly_field):
 	  - Dynamic anomalies are not switched on next to ANY player (stock: next to the host only).
@@ -40,7 +37,7 @@
 	  in the stock fresh-victim table. It alerts witnesses once, using visible players on that map.
 
 	Events (ids in host numbering):
-	  npc.mine   client -> host  { s = item section, m = mode, d = delay, x, y, z, lv, gv, i = mine item (build 57) }
+	  npc.mine   client -> host  { s = item section, m = mode, d = delay, x, y, z, lv, gv, i = mine item }
 	  npc.mine_ok host -> client { i = mine item, r = "took" | "left" | "no" }
 	  npc.pulse  host -> client  { x, y, z }
 	  npc.fire   client -> host  { i = campfire object, on = bool }
@@ -62,7 +59,6 @@ local EV_MINE, EV_PULSE, EV_FIRE, EV_ISND = "npc.mine", "npc.pulse", "npc.fire",
 local EV_MINE_OK = "npc.mine_ok"
 
 local installed = false
-local host_on = false
 -- This process decides the world or leads this map and holds clients' charges (actor_on_update, 4 Hz): they tick with or
 -- without clients.
 local mines_on = false
@@ -78,20 +74,20 @@ local function vec(x, y, z) return vector():set(tonumber(x) or 0, tonumber(y) or
 local PLANTED = { mine_new = "mine_new_blow", ied_rpg_new = "rpg_new_blow", ied_new = "ied_new_blow" }
 local FX = { mine_new = "mine", ied_rpg_new = "ied_rpg", ied_new = "ied" }
 local MODE_PROX, MODE_TIMER = 0, 1
-local TRIGGER_RADIUS = 2.5
+local TRIGGER_RADIUS_SQR = 2.5 * 2.5
 local FUSE = 5
 
 local mines = {} -- host: planted id -> { exp, mode, planter = proxy id, active }
--- The mine item a client asked to plant (TZ v2 6.4 row 5): client, waiting for the host's answer (waiting) and the items the
--- host took whose removal has not reached us yet (spent): neither is planted again (round 2, F3: one item, one charge).
--- Host: the check's reach, and the container each player opened last (round 2, F9: a mine taken from a box a moment ago is
--- still in the box on the host when the take comes after the plant).
+-- The mine item a client asked to plant: client, waiting for the host's answer (waiting) and the items the host took whose
+-- removal has not reached us yet (spent): neither is planted again (one item, one charge).
+-- Host: the check's reach, and the container each player opened last (a mine taken from a box a moment ago is still in the
+-- box on the host when the take comes after the plant).
 local mine_item = { waiting = {}, spent = {}, ACK_MS = 15000, GROUND_REACH_SQR = 25,
 	opened = {}, OPEN_MS = 10000, OPEN_REACH_SQR = 100, BOX_NEAR_SQR = 4 }
 
 local function tss() return game.get_game_time():diffSec(level.get_start_time()) end
 
--- Host: sets off charge `id` as player character `by` (R3 В2 review). False when the engine has no coop.explode_as
+-- Host: sets off charge `id` as player character `by`. False when the engine has no coop.explode_as
 -- yet or refuses (planter offline): the caller then runs the stock explode.
 local function explode_as(id, by)
 	local api = rawget(_G, "coop")
@@ -106,7 +102,7 @@ local function client_plant(obj, mode, delay)
 	local sec = obj:section()
 	if not PLANTED[sec] then return orig.plant(obj, mode, delay) end
 	local id = obj:id()
-	-- F3: an item already asked for (no answer yet, or taken by the host and not removed here yet), or gone: no second charge
+	-- an item already asked for (no answer yet, or taken by the host and not removed here yet), or gone: no second charge
 	if mine_item.waiting[id] or mine_item.spent[id] or not level.object_by_id(id) then return end
 	if FX[sec] and actor_effects then pcall(actor_effects.play_item_fx, FX[sec]) end
 	local a = db.actor
@@ -115,12 +111,12 @@ local function client_plant(obj, mode, delay)
 		x = pos.x, y = pos.y, z = pos.z, lv = a:level_vertex_id(), gv = a:game_vertex_id(), i = P.to_host(id) }, 0)
 	if sent then
 		stats.mines_out = stats.mines_out + 1
-		-- the host removes the item or tells us to; no answer (a host of build 56): we remove it, as build 56 did at once
+		-- the host removes the item or tells us to; no answer (it was lost): we remove it
 		mine_item.waiting[id] = time_global() + mine_item.ACK_MS
 	end
 end
 
--- Client: removes our copy of a mine item the host did not take (what build 56 did right after the request).
+-- Client: removes our copy of a mine item the host did not take.
 local function client_drop_item(id)
 	mine_item.waiting[id] = nil
 	if level.object_by_id(id) then alife_release_id(id) end
@@ -144,7 +140,7 @@ end
 local function client_mines_tick(now)
 	for id, deadline in pairs(mine_item.waiting) do
 		if now >= deadline then
-			log("no answer to the mine of item %d in %d s: removed here (a host of build 56?)", id, mine_item.ACK_MS / 1000)
+			log("no answer to the mine of item %d in %d s: removed here (the answer was lost?)", id, mine_item.ACK_MS / 1000)
 			client_drop_item(id)
 		end
 	end
@@ -154,8 +150,7 @@ local function client_mines_tick(now)
 end
 
 local function nick_of(peer)
-	local ok, p = pcall(P.player, peer)
-	return ok and p and p.nick or "?"
+	return coop_util.nick(peer) or "?"
 end
 
 -- Host: where object `id` is now: the online object's place (an item on the ground may have rolled since its entity was
@@ -167,7 +162,7 @@ local function place_of(id, se)
 	return se and se.position or nil
 end
 
--- Host (F9): a container (a box, a stash, a dead body) the mine may have come from a moment ago. A living holder (another
+-- Host: a container (a box, a stash, a dead body) the mine may have come from a moment ago. A living holder (another
 -- player, a trader) is none.
 local function is_container(id)
 	local o = level.object_by_id(id)
@@ -185,13 +180,13 @@ local function is_container(id)
 	return ok and alive == false
 end
 
--- Host (round 3, R2-S5; round 4, S5 of the round 3 review): is container `id` (object o) a player's personal stash that is not
+-- Host: is container `id` (object o) a player's personal stash that is not
 -- player `from`'s own (`me`: his character's id here)? A backpack stash (m_data.player_created_stashes), a Hideout Furniture stash
 -- (placeable_type = stash), the box of a workbench (m_data.workshop_stashes: workbench -> box) or a fallen player's bag
 -- (coop_death_stash, its owner's nick in its custom data). The owner of a backpack stash, of placed furniture and so of its
 -- workbench box is booked when it is made (coop_mods_items, coop_mods_hf: m_data.coop_stash_owner, the character that made it):
--- his own is no other's. A backpack or furniture stash with no owner booked (made before build 57) counts as another's (round 3);
--- a workbench box with no owner booked is an ordinary box, as before. Another's stash is no container of the 2 m rule: a take
+-- his own is no other's. A backpack or furniture stash with no owner booked counts as another's; a workbench box with no
+-- owner booked is an ordinary box. Another's stash is no container of the 2 m rule: a take
 -- from it needs his own opening of it (the host's fact), as every honest take from a stash does. -> true, what it is (the line)
 local function others_stash(id, o, from, me)
 	local sec = o:section()
@@ -248,11 +243,11 @@ local function mine_item_check(iid, sec, who, from)
 		return false, string.format("on the ground %.1f m from him", d and math.sqrt(d) or -1)
 	end
 	if root == who:id() then return true end
-	-- F9: taken from a container a moment ago, the take not here yet: a container within 2 m of him, or the one he opened in the
+	-- taken from a container a moment ago, the take not here yet: a container within 2 m of him, or the one he opened in the
 	-- last OPEN_MS within OPEN_REACH of him
 	local pos = is_container(root) and place_of(root) or nil
 	local d = pos and at:distance_to_sqr(pos)
-	-- round 3 (R2-S5): another player's personal stash only through his own opening of it
+	-- another player's personal stash only through his own opening of it
 	local stash, what = false, nil
 	if pos then stash, what = others_stash(root, level.object_by_id(root), from, who:id()) end
 	if d and d <= mine_item.BOX_NEAR_SQR and not stash then return true end
@@ -271,31 +266,16 @@ local function on_container_opened(peer, id)
 	end
 end
 
--- coop_trust.pass; without that script (an older install) the request goes through as before.
-local function trust_pass(name, ok, fmt, ...)
-	local found, trust = pcall(function() return _G.coop_trust end)
-	if not (found and type(trust) == "table" and type(trust.pass) == "function") then return true end
-	return trust.pass(name, ok, fmt, ...)
-end
-
 local function host_on_mine(t, from)
 	local planted = type(t.s) == "string" and PLANTED[t.s]
 	local who = P.object_of_peer(from)
 	if not (planted and who) then return end
 	local iid = tonumber(t.i)
-	local item_ok = false
-	if t.i == nil then
-		-- a client of build 56: he removes the item himself
-		if not trust_pass("mine_item_id", false, "player %s (peer %d) planted %s without the item's id (a build 56 client?)",
-			nick_of(from), from, t.s) then return end
-	else
-		local why
-		item_ok, why = mine_item_check(iid, t.s, who, from)
-		if not trust_pass("mine_item", item_ok, "player %s (peer %d) planted %s with item %s: %s", nick_of(from), from, t.s,
-			tostring(iid), tostring(why)) then
-			if iid then P.send(EV_MINE_OK, { i = iid, r = "no" }, from) end
-			return
-		end
+	local item_ok, why = mine_item_check(iid, t.s, who, from)
+	if not coop_trust.pass("mine_item", item_ok, "player %s (peer %d) planted %s with item %s: %s", nick_of(from), from, t.s,
+		tostring(iid), tostring(why)) then
+		if iid then P.send(EV_MINE_OK, { i = iid, r = "no" }, from) end
+		return
 	end
 	local function answer(took)
 		if iid then P.send(EV_MINE_OK, { i = iid, r = took and "took" or "left" }, from) end
@@ -304,7 +284,7 @@ local function host_on_mine(t, from)
 	if not (x and y and z) then return answer(false) end
 	local pos = vec(x, y, z)
 	if not (who:position():distance_to_sqr(pos) <= 25) then return answer(false) end -- planted where the player stands (NaN too)
-	-- graph vertices of the planter's own character, never from the network (a bad lvid crashes the engine, W5)
+	-- graph vertices of the planter's own character, never from the network (a bad lvid crashes the engine)
 	local se = alife_create(planted, pos, who:level_vertex_id(), who:game_vertex_id())
 	if not se then return answer(false) end
 	local mode = (t.m == MODE_TIMER) and MODE_TIMER or MODE_PROX
@@ -333,7 +313,7 @@ local function near_mine(obj)
 	for id, m in pairs(mines) do
 		if m.active and m.mode == MODE_PROX and now >= m.exp then
 			local mine = level.object_by_id(id)
-			if mine and mine:position():distance_to(pos) <= TRIGGER_RADIUS then blast(id) end
+			if mine and mine:position():distance_to_sqr(pos) <= TRIGGER_RADIUS_SQR then blast(id) end
 		end
 	end
 end
@@ -346,13 +326,17 @@ local function host_mines_tick()
 	end
 	if next(mines) == nil then return end
 	local now = tss()
+	-- One pass of every player over every charge, at the first live proximity charge: a pass sets off every charge a
+	-- player stands at, so a second one finds nothing more.
+	local players_checked = false
 	for id, m in pairs(mines) do
 		if not alife_object(id) then
 			mines[id] = nil
 		elseif m.active then
 			if m.mode == MODE_TIMER and now >= m.exp then
 				blast(id)
-			elseif m.mode == MODE_PROX then
+			elseif m.mode == MODE_PROX and not players_checked then
+				players_checked = true
 				for _, p in ipairs(P.everyone()) do near_mine(p) end
 			end
 		end
@@ -380,7 +364,7 @@ end
 local SAFE_DIST_SQR = 15 * 15 -- stock dyn_ano_safe_dist
 
 local function dyn_update()
-	if not host_on then return orig.dyn() end
+	if not P.host_on() then return orig.dyn() end
 	local baf = bind_anomaly_field
 	local lvl = level.name()
 	local on_level = (baf.dyn_anomalies or {})[lvl]
@@ -414,15 +398,7 @@ local function pa_assets()
 	if not pa.close then pa.close = sound_object("anomaly\\emi_blowout") end
 	if not pa.far then pa.far = sound_object("anomaly\\emi_blowout_01") end
 	if not pa.light then
-		local l = script_light()
-		l.range = 100
-		l.lanim = "koster_01_electra"
-		l.lanim_brightness = 0.025
-		l.volumetric = true
-		l.volumetric_quality = 1
-		l.volumetric_distance = 0.25
-		l.volumetric_intensity = 0.05
-		pa.light = l
+		pa.light = coop_world_fx.pulse_light()
 	end
 end
 
@@ -457,9 +433,7 @@ local function pa_hit_one(kind, dist, range, ppe, ppe_id)
 end
 
 local function pa_hit(pos)
-	pa.light.lanim_brightness = 0.2
-	pa.light.volumetric_distance = 1
-	pa.light.volumetric_intensity = 0.1
+	coop_world_fx.pulse_light_step(pa.light, true)
 	if not db.actor or GetEvent("current_safe_cover") then return true end
 	local dist = distance_2d(db.actor:position(), pos)
 	if dist < PA.article then SendScriptCallback("actor_on_interaction", "anomalies", nil, "pulse") end
@@ -469,9 +443,7 @@ local function pa_hit(pos)
 end
 
 local function pa_dim()
-	pa.light.lanim_brightness = 0.025
-	pa.light.volumetric_distance = 0.25
-	pa.light.volumetric_intensity = 0.05
+	coop_world_fx.pulse_light_step(pa.light, false)
 	pa.light.enabled = false
 	return true
 end
@@ -698,10 +670,8 @@ local function silent_kill(npc, shit, bone_id, flags)
 	end
 end
 
-local function corpse_alert(sk, npc)
+local function corpse_alert(sk, npc, victims)
 	if not (npc and npc:alive() and sk.feature_enabled()) then return end
-	local victims = fresh_victims()
-	if not victims or next(victims) == nil then return end
 	local now = sk.tss()
 	local suspect = sk.get_suspect_dist()
 	for id, expires in pairs(victims) do
@@ -765,8 +735,9 @@ local function install_silent_kills()
 	wrap_callback("npc_on_update", function(original)
 		return function(npc, ...)
 			if not P.active() then return original(npc, ...) end
-			if not coop_mode.leads_here() then return end
-			local ok, err = pcall(corpse_alert, sk, npc)
+			local victims = fresh_victims()
+			if not victims or next(victims) == nil or not coop_mode.leads_here() then return end
+			local ok, err = pcall(corpse_alert, sk, npc, victims)
 			if not ok then report("corpse alert", err) end
 		end
 	end)
@@ -785,7 +756,7 @@ local function install()
 		end
 	end
 	if tm and type(tm.trigger_mine) == "function" then
-		-- the host's own charge goes off as the host's character (friendly fire covers it, R3 В2 review)
+		-- the host's own charge goes off as the host's character (friendly fire covers it)
 		orig.trigger = tm.trigger_mine
 		tm.trigger_mine = function(id)
 			if not explode_as(id, db.actor and db.actor:id()) then return orig.trigger(id) end
@@ -820,7 +791,7 @@ end
 
 local function guard(what, f)
 	return function(...)
-		if not host_on then return end
+		if not P.host_on() then return end
 		local ok, err = pcall(f, ...)
 		if not ok then report(what, err) end
 	end
@@ -843,7 +814,7 @@ local function actor_on_update()
 		local ok, err = pcall(client_mines_tick, now)
 		if not ok then report("mine answers", err) end
 	end
-	host_on = installed and P.host_with_clients()
+	local host_on = installed and P.host_on()
 	mines_on = installed and next(mines) ~= nil and (coop_mode.decides_world() or coop_mode.leads_here())
 	-- host_mines_tick also feeds stock charges the clients' proxies: that part needs clients, the clients' charges do not
 	if host_on or mines_on then
@@ -890,6 +861,7 @@ function print_status()
 end
 
 function on_game_start()
+	coop_util.add_status("coop_npc_world", 180)
 	P = coop_npc_players
 	if not rawget(_G, "coop") then return end
 	if not installed then
@@ -917,6 +889,5 @@ function on_game_start()
 	RegisterScriptCallback("coop_on_container_opened", guard("container opened", on_container_opened)) -- coop_main names it
 end
 
-function _set_host_on(v) host_on = v end
 function _mines() return mines end
 function _stats() return stats end

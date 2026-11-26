@@ -1,16 +1,14 @@
 --[[
-	Anomaly Coop - NPC group (W4 "npc"): meeting and talking to NPCs for every player.
-	Port of the behaviour of xrRazom 1.4 xrr_patch_meet, xrr_patch_wounded and the NPC side of
-	xrr_wounded (own code, our event API). The talk lock itself (one talker per NPC) is coop_dialog (C++);
-	a player's own down/revive state is coop_survival (C++).
+	Anomaly Coop - NPC group: meeting and talking to NPCs for every player.
+	coop_dialog (C++) allows one talker per NPC. coop_survival (C++) tracks each player's down/revive state.
 
 	Host (stock xr_meet only ever looks at db.actor):
 	  - Greetings, hello/bye lines, "stop/hide your weapon" warnings and the close/far animations of the meet
 	    scheme react to the clients' proxies as well; the NPC faces the nearest player it is meeting.
-	    (W11) Meet condlists per player: init_meet chose the defaults by the HOST's relation; a client whose
+	    Meet condlists per player: init_meet chose the defaults by the HOST's relation; a client whose
 	    relation case differs gets the stock defaults of his own case (explicit section lines stay). Needs the
-	    NPC to see the proxy: the engine gives proxies their light (coop_ai.cpp), it was ~0 off the host's screen.
-	  - (W11) A client talking to the NPC on his machine (host talk lock, coop.talk_holder) is met "close" like
+	    NPC to see the proxy: the engine gives proxies their light (coop_ai.cpp), else it is ~0 off the host's screen.
+	  - A client talking to the NPC on his machine (host talk lock, coop.talk_holder) is met "close" like
 	    the talking actor: the NPC stands still and faces him for the whole talk.
 	  - "Get out of my way" (a player standing on an NPC for 4 s) and the squad's commander threat count
 	    every player.
@@ -59,7 +57,7 @@ local DEF_USE = "{=is_wounded} false, {!is_squad_commander} false, {=actor_enemy
 local DEF_TRADE = "true"
 
 local installed = false
-local host_on = false
+local was_on = false -- host_on() at the last tick: its end forgets what the players were told
 local orig = {}
 local stats = { talk_out = 0, talk_in = 0, wnd_out = 0, wnd_in = 0, heal_out = 0, heal_in = 0, greet = 0,
 	seen = 0, met = 0, talks = 0, own_cfg = 0 }
@@ -89,7 +87,7 @@ local function enemy_for(npc, who)
 end
 
 -------------------------------------------------------------------------------
--- Host: meet settings per player (W11)
+-- Host: meet settings per player
 -------------------------------------------------------------------------------
 -- Stock xr_meet.init_meet picks its default condlists by "is the ACTOR an enemy of this NPC" once per section.
 -- A client whose answer differs (host bandit, client loner at a loner camp) gets the defaults of his own case;
@@ -175,7 +173,7 @@ local function play(npc, who, condlist)
 end
 
 local function mm_update(self)
-	if not host_on then
+	if not P.host_on() then
 		self.coop_focus, self.coop_talk = nil, nil
 		return orig.mm_update(self)
 	end
@@ -235,7 +233,7 @@ local function mm_update(self)
 			fl.hello, fl.bye = false, false
 		end
 	end
-	-- W11: a client talking to this NPC on his machine holds its talk lock here. Stock meets the actor it talks
+	-- a client talking to this NPC on his machine holds its talk lock here. Stock meets the actor it talks
 	-- to as "close" (meet_on_talking): the NPC stands still and faces him for the whole talk.
 	local talker = talking_player(npc)
 	if talker then
@@ -250,7 +248,7 @@ end
 
 local function mm_update_state(self)
 	local fid = self.coop_focus
-	if not (host_on and fid and fid ~= 0) then return orig.mm_update_state(self) end
+	if not (P.host_on() and fid and fid ~= 0) then return orig.mm_update_state(self) end
 	local focus = level.object_by_id(fid)
 	if not (focus and focus:alive()) then
 		self.coop_focus = nil
@@ -272,7 +270,7 @@ end
 -- Stock "already in range when the scheme starts: no greeting", per proxy.
 local function mm_set_start_distance(self)
 	orig.mm_set_start(self)
-	if not (host_on and self.npc:alive()) then return end
+	if not (P.host_on() and self.npc:alive()) then return end
 	local npc = self.npc
 	local npc_pos = npc:position()
 	self.coop_flags = self.coop_flags or {}
@@ -303,7 +301,7 @@ end
 
 -- Stock evaluator with "the actor" = any player for gtfo and the commander threat.
 local function eva_evaluate(self)
-	if not host_on then return orig.eva_evaluate(self) end
+	if not P.host_on() then return orig.eva_evaluate(self) end
 	local obj = self.object
 	if not obj:alive() or self.a.meet_set ~= true then return false end
 	if not (db.actor and db.actor:alive()) then return false end
@@ -314,7 +312,7 @@ local function eva_evaluate(self)
 	if obj:best_enemy() ~= nil then return false end
 	local state = state_mgr.get_state(obj)
 	if state == "search_corpse" or state == "pickup_crouch" then return false end
-	local talking = obj:is_talking() or self.a.meet_manager.coop_talk == true -- W11: a client talks to it
+	local talking = obj:is_talking() or self.a.meet_manager.coop_talk == true -- a client talks to it
 	if (obj:has_info("npcx_is_companion") or not get_object_story_id(obj:id())) and not talking then
 		if self.a.gtfo == true then return true end
 		local animpoint = utils_obj.get_current_action_id(obj) == xr_actions_id.animpoint_action + 1
@@ -345,7 +343,7 @@ end
 -- Keep the installed xr_meet action (including other mods' movement/animation changes).
 -- RayLink supplies its nearest player's identity; only its remote conversation lock is additional state.
 local function act_execute(self)
-	if not host_on then return orig.act_execute(self) end
+	if not P.host_on() then return orig.act_execute(self) end
 	local npc = self.object
 	if self.a.gtfo and self.a.can_gtfo == "true" and self.a.meet_manager.coop_talk == true then
 		action_base.execute(self)
@@ -398,12 +396,12 @@ local function task_target(npc)
 	return false
 end
 
--- B8 (build 10): which xr_meet rules does the running game apply?
--- A client's puppets never run xr_meet, so the host decides for the client's character. The first W4 port copied the
--- STOCK process_npc_usability: "use = false" switches talk off (squad members that are not the commander, enemies,
+-- Which xr_meet rules does the running game apply?
+-- A client's puppets never run xr_meet, so the host decides for the client's character. The STOCK
+-- process_npc_usability: "use = false" switches talk off (squad members that are not the commander, enemies,
 -- NPCs with a fight or a distance over 3 m ...). G.A.M.M.A. replaced that function (its own xr_meet.script, last line
--- "Override": npc:enable_talk()): every living, unhurt NPC talks to the host's player. So the host talked to NPCs
--- that the client was told were mute, and F did nothing (renegade "Dimuha Knyaz", build 10).
+-- "Override": npc:enable_talk()): every living, unhurt NPC talks to the host's player. Told the stock rules there, a client
+-- would find mute an NPC the host talks to.
 -- Which of the two applies is learned from the host's own NPCs: the stock function leaves talk off on an NPC whose
 -- cached `meet_manager.use` is "false"; one that is still talkable after the real function ran (it ran just before the
 -- sample) shows the use rules are not applied. soft.mode: nil = not known (the stock rules, as before), "stock" =
@@ -512,8 +510,8 @@ local function talk_state(npc, who)
 	local text = pick(who, npc, a.use_text)
 	if not (text and text ~= "" and text ~= "nil") then text = talk and "character_use" or "" end
 	-- The stock meet manager picks meet_dialog for db.actor (xr_meet Cmeet_manager:update): the host's own actor, a map server's
-	-- ghost. The player who talks gets his own branch, as he gets his own trade and use text (testers 2026-11-13: an NPC opened
-	-- with the line of another player). A dialog a script set (xr_meet's own table, a surrender) is no branch of the condlist:
+	-- ghost. The player who talks gets his own branch, as he gets his own trade and use text (else an NPC opens with the line
+	-- of another player). A dialog a script set (xr_meet's own table, a surrender) is no branch of the condlist:
 	-- the manager's word is replaced only when it is what the condlist gives this machine's own actor.
 	local d = mm.startdialog
 	if a.meet_dialog ~= nil and db.actor and who:id() ~= db.actor:id() then
@@ -547,7 +545,7 @@ local function push_npc(npc)
 	local tg = time_global()
 	if next_npc[id] and tg < next_npc[id] then return end
 	next_npc[id] = tg + 500
-	local lok, lerr = pcall(learn, npc) -- B8: which xr_meet rules does the running game apply
+	local lok, lerr = pcall(learn, npc) -- which xr_meet rules does the running game apply
 	if not lok then report("talk rules", lerr) end
 	local pos = npc:position()
 	local r2 = TALK_RADIUS * TALK_RADIUS
@@ -585,7 +583,7 @@ local function push_npc(npc)
 	end
 end
 
--- A player's avatar is no talk partner (live 2026-10-24: "[F] Talk: <a random stalker name>" on a client's character):
+-- A player's avatar is no talk partner (else a client's character shows "[F] Talk: <a random stalker name>"):
 -- G.A.M.M.A.'s xr_meet switches talk on for everybody, and the hint of its HUD marks follows the flag.
 local function mute_avatar(obj)
 	if obj:is_talk_enabled() then obj:disable_talk() end
@@ -600,12 +598,12 @@ local function process_npc_usability(npc)
 		if P.active() then return end -- storage torn down by a level change: the stock code would crash
 	end
 	orig.usability(npc)
-	if host_on and npc:alive() then push_npc(npc) end
+	if P.host_on() and npc:alive() then push_npc(npc) end
 end
 
 local function patched_safemode(actor, npc)
-	if host_on and actor and actor:id() ~= 0 and P.is_proxy(actor) then
-		-- the player's own "weapon lowered" state (C1.9, W5); nil = unknown (older sender): the weapon in hands
+	if P.host_on() and actor and actor:id() ~= 0 and P.is_proxy(actor) then
+		-- the player's own "weapon lowered" state; nil = unknown: the weapon in hands
 		local api = rawget(_G, "coop")
 		if api and api.player_safemode and api.peer_of_avatar then
 			local ok, peer = pcall(api.peer_of_avatar, actor:id())
@@ -623,9 +621,9 @@ end
 -------------------------------------------------------------------------------
 -- Client: apply the host's flags; help-wounded goes to the host
 -------------------------------------------------------------------------------
--- Live 2026-10-24: "I cannot talk to anybody on the client; the host walked up - now he can". xr_meet runs on the host for
--- the NPCs near the host's actor only, so a far NPC's flag never came and the client had no hint and no talk. A client's
--- NPC near him is talkable unless the host said no (host_no); the host's lock decides for this player (talk_verdict, B8).
+-- xr_meet runs on the host for the NPCs near the host's actor only, so a far NPC's flag never comes and the client would
+-- have no hint and no talk. A client's NPC near him is talkable unless the host said no (host_no); the host's lock decides
+-- for this player (talk_verdict).
 local host_no = {} -- local id -> true: the host sent "no talk" for this NPC
 local TALK_NEAR = 12 -- m around the client's actor
 
@@ -748,9 +746,9 @@ local function actor_on_update()
 	next_tick = now + 250
 	for _, obj in ipairs(P.others()) do mute_avatar(obj) end -- a client's puppets of players run no xr_meet of their own
 	if P.client_live() then client_talk_near() end
-	local was = host_on
-	host_on = installed and P.host_with_clients()
-	if was and not host_on then sent_talk, sent_wnd = {}, {} end
+	local on = installed and P.host_on()
+	if was_on and not on then sent_talk, sent_wnd = {}, {} end
+	was_on = on
 	if now >= next_clean then
 		next_clean = now + 60000
 		for id in pairs(next_npc) do
@@ -768,12 +766,12 @@ function print_status()
 	log("installed %s | greetings for proxies %d | talk flags out %d in %d, wounded out %d in %d, help-wounded out %d in %d | errors %d",
 		tostring(installed), stats.greet, stats.talk_out, stats.talk_in, stats.wnd_out, stats.wnd_in, stats.heal_out,
 		stats.heal_in, P.error_count(TAG))
-	log("W11: proxies seen by meeting NPCs %d, meetings with a client %d, held for a client's talk %d, own meet defaults %d",
+	log("proxies seen by meeting NPCs %d, meetings with a client %d, held for a client's talk %d, own meet defaults %d",
 		stats.seen, stats.met, stats.talks, stats.own_cfg)
-	log("B8: stock use rules for clients: %s (window %d samples, %d against use = false)",
+	log("stock use rules for clients: %s (window %d samples, %d against use = false)",
 		soft.mode == "ignored" and "ignored (the running xr_meet does not apply them)"
 		or soft.mode == "stock" and "applied (the running xr_meet applies them)" or "not known yet, applied", soft.n, soft.votes)
-	-- coop_main lists the npc modules by name: the W11 combat module reports from here.
+	-- coop_main lists the npc modules by name: the combat module reports from here.
 	local combat = rawget(_G, "coop_npc_combat")
 	if combat and combat.print_status then
 		local ok, err = pcall(combat.print_status)
@@ -782,6 +780,7 @@ function print_status()
 end
 
 function on_game_start()
+	coop_util.add_status("coop_npc_meet", 150)
 	P = coop_npc_players
 	if not rawget(_G, "coop") then return end
 	if not installed then
@@ -794,7 +793,6 @@ function on_game_start()
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 end
 
-function _set_host_on(v) host_on = v end
 function _stats() return stats end
 function _soft() return soft end
 function _client_on_talk(t) client_on_talk(t) end

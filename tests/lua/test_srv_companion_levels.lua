@@ -667,6 +667,9 @@ print("== the logic of a companion: 'the actor' is its leader, the infos of a co
 do
 	local W = stand({ dedicated = true, env = logic_env })
 	local H, Mk, A, B = W.K, W.Mk, W.A, W.B
+	-- the logic reads the identity a mod set through coop_mods_core, which ships with it
+	if not H.env.coop_mods_core then load_script(H, "coop_mods_core") end
+	if not Mk.env.coop_mods_core then load_script(Mk, "coop_mods_core") end
 	W.LH = load_script(H, "coop_npc_logic")
 	W.LM = load_script(Mk, "coop_npc_logic")
 	W.LH.on_game_start()

@@ -31,7 +31,6 @@ end
 local function install(M)
 	local K = load_script(M, "coop_npc_compat")
 	K.on_game_start()
-	K._set_host_on(true)
 	return K
 end
 

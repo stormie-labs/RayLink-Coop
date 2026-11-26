@@ -78,7 +78,7 @@ if have_gamma then
 end
 local K = load_script(H, "coop_npc_compat")
 K.on_game_start()
-K._set_host_on(true)
+H.env.coop_npc_players.host_on = function() return true end
 
 local function monster(id, section) return H.add(make_obj(id, 50, 0, 0, { _name = "m" .. id, _section = section, _monster = true })) end
 local function stalker(id) return H.add(make_obj(id, 55, 0, 0, { _name = "npc" .. id })) end
@@ -338,7 +338,7 @@ E.db.storage[611] = { object = mon }
 E.db.storage[0] = { object = host_actor }
 local K2 = load_script(H, "coop_npc_compat")
 K2.on_game_start()
-K2._set_host_on(true)
+H.env.coop_npc_players.host_on = function() return true end
 local function aim_at(target)
 	local gun = setmetatable({ st = { target_id = target:id() } }, { __index = cls })
 	cls.aim(gun, target)
@@ -349,7 +349,7 @@ check(math.abs(dy - 1) <= 0.011, "a client's proxy: aimed at 1 m (chest), not at
 check(math.abs(aim_at(npc) - 0.1) <= 0.001, "an NPC: stock, 0.1 m")
 check(math.abs(aim_at(mon) - 0.5) <= 0.011, "a monster: stock, 0.5 m")
 check(math.abs(aim_at(host_actor) - 1) <= 0.011, "the host's actor: stock, 1 m")
-K2._set_host_on(false)
+H.env.coop_npc_players.host_on = function() return false end
 check(math.abs(aim_at(proxy) - 0.1) <= 0.001, "no clients: the stock aim")
 
 -- Live 2026-11-16 (build 51): stalkers, a base commander and sergeant Loshkin did not die from clients' fire. G.A.M.M.A.'s ballistics

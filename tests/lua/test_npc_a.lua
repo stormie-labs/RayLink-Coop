@@ -110,7 +110,7 @@ do
 	end
 	if not S.env.coop_trust then load_script(S, "coop_trust") end
 	local P = load_script(S, "coop_npc_players")
-	check(not P.active() and not P.is_host() and not P.is_client(), "no session: no role")
+	check(not P.active() and not P.host_on() and not P.is_client(), "no session: no role")
 	check(#P.others() == 0, "no session: nobody else")
 	check(#P.everyone() == 1 and P.everyone()[1]:id() == 0, "no session: everyone = the actor")
 	check(P.is_player_id(0) and not P.is_player_id(500), "no session: only id 0 is a player")
@@ -130,7 +130,7 @@ if not H.env.coop_mode then
 end
 if not H.env.coop_trust then load_script(H, "coop_trust") end
 local P = load_script(H, "coop_npc_players")
-check(P.is_host() and P.host_with_clients(), "host role, has a client")
+check(P.host_on(), "host role, has a client")
 check(#P.others() == 1 and P.others()[1] == proxy, "others = the client's proxy")
 check(#P.everyone() == 2, "everyone = actor + proxy")
 check(P.peer_of(500) == 1 and P.peer_of(0) == 0 and P.peer_of(proxy) == 1, "peer_of proxy/actor")
@@ -143,11 +143,11 @@ check(P.any_within(vec(12, 0, 0), 3) and not P.any_within(vec(30, 0, 0), 3), "an
 do
 	local api = H.env.coop
 	local ded, ms = api.is_dedicated, api.is_map_server
-	check(P.actor_is_nobody() == false, "a playing host's actor is somebody")
+	check((not H.env.coop_mode.actor_is_player()) == false, "a playing host's actor is somebody")
 	api.is_dedicated = function() return true end
-	check(P.actor_is_nobody() == true, "a dedicated world server's actor is nobody")
+	check((not H.env.coop_mode.actor_is_player()) == true, "a dedicated world server's actor is nobody")
 	api.is_dedicated, api.is_map_server = ded, function() return true end
-	check(P.actor_is_nobody() == true, "a map server's actor is nobody")
+	check((not H.env.coop_mode.actor_is_player()) == true, "a map server's actor is nobody")
 	api.is_map_server = ms
 end
 local inside_actor, inside_story
@@ -194,7 +194,7 @@ local R = restrictor(H, 100, 50, SCENE_INI, "sr_idle@a")
 local T = restrictor(H, 101, -50, TUTOR_INI, "sr_idle@t")
 L.on_game_start()
 H.fire("actor_on_update")
-check(L._state().host_on, "host_on with a client")
+check(H.env.coop_npc_players.host_on(), "host_on with a client")
 H.env.xr_logic.initialize_obj(R, H.env.db.storage[100], true, H.env.db.actor, 4)
 H.env.xr_logic.initialize_obj(T, H.env.db.storage[101], true, H.env.db.actor, 4)
 check(L.is_replicated(100) and not L.is_replicated(101), "scene replicated, tutorial local")

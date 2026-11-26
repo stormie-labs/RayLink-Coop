@@ -384,7 +384,7 @@ section("== items 4, L3: lifts and levers (ph_* logic)", function()
 	check(ran(H, "disable_ui_only") == 1 and H.env.db.storage[620].coop_press == nil and LH.user_of(valve) == nil, "an NPC's use is no press")
 
 	-- session without clients: stock
-	LH._set_host_on(false)
+	H.env.coop_npc_players.host_on = function() return false end
 	H.env.db.storage[620].active_section = "ph_button@ready"
 	H.fx_runs = {}
 	use(H, valve, H.env.db.actor)

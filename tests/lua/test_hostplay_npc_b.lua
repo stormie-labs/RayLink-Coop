@@ -555,12 +555,12 @@ H.env.xr_corpse_detection = { near_actor = function(obj) return obj:position():d
 H.env.xr_gather_items = { near_actor = function() return false end }
 local KL = load_script(H, "coop_npc_compat")
 KL.on_game_start()
-KL._set_host_on(true)
+H.env.coop_npc_players.host_on = function() return true end
 local body = H.add(make_obj(777, proxy:position().x + 3, 0, proxy:position().z, { _name = "corpse" }))
 check(H.env.xr_corpse_detection.near_actor(body) == true, "a corpse 3 m from a client's character is 'near the player'")
 local far_body = H.add(make_obj(778, proxy:position().x + 300, 0, proxy:position().z, { _name = "far corpse" }))
 check(H.env.xr_corpse_detection.near_actor(far_body) == false, "far from every player: lootable")
-KL._set_host_on(false)
+H.env.coop_npc_players.host_on = function() return false end
 check(H.env.xr_corpse_detection.near_actor(body) == false, "no clients: the stock rule alone")
 H.env.xr_corpse_detection, H.env.xr_gather_items, H.env.ui_options = nil, nil, nil
 
@@ -576,7 +576,7 @@ H.env.sim_squad_scripted = { sim_squad_scripted = SQ }
 H.env.smart_terrain = { se_smart_terrain = SM }
 local KS = load_script(H, "coop_npc_compat")
 KS.on_game_start()
-KS._set_host_on(true)
+H.env.coop_npc_players.host_on = function() return true end
 H.env.db.actor._pos = vector():set(5000, 0, 5000) -- the host far away: only the client's character can keep the squad off
 local squad = { online = false, position = vector():set(proxy:position().x + 20, 0, proxy:position().z) }
 SQ.check_online_status(squad)
@@ -613,7 +613,7 @@ H.env.xr_combat_ignore = { ignore_enemy_by_overrides = function() return false e
 H.env.alife_object = function(id) return id == 900 and { community = "army" } or nil end
 local KH = load_script(H, "coop_npc_compat")
 KH.on_game_start()
-KH._set_host_on(true)
+H.env.coop_npc_players.host_on = function() return true end
 local heli_obj = make_obj(900, 0, 50, 0, { _name = "heli" })
 local hc = setmetatable({ object = heli_obj, st = {}, actor_always_enemy = false }, { __index = HC })
 check(HC.is_enemy(hc, proxy) == false, "a client's character is no enemy without his flag or actor_always_enemy")
@@ -631,9 +631,9 @@ proxy._wounded = nil
 local n = H.stock_heli_enemy or 0
 local npc_b = make_obj(300, 5, 0, 5)
 check(HC.is_enemy(hc, npc_b) == "stock" and H.stock_heli_enemy == n + 1, "an NPC goes to the stock rule")
-KH._set_host_on(false)
+H.env.coop_npc_players.host_on = function() return false end
 check(HC.is_enemy(hc, proxy) == "stock", "single player / no clients: the stock rule")
-KH._set_host_on(true)
+H.env.coop_npc_players.host_on = function() return true end
 
 H.env.db.actor._pos = vector():set(3000, 0, 3000) -- the host far away, the client's character near the heli
 HC.set_enemy_from_custom_data(hc, "actor")
@@ -732,7 +732,7 @@ local bodies = {
 H.env.alife = function() return { object = function(_, id) return bodies[id] end } end
 local KB = load_script(H, "coop_npc_compat")
 KB.on_game_start()
-KB._set_host_on(true)
+H.env.coop_npc_players.host_on = function() return true end
 H.env.db.actor._pos = vector():set(5000, 0, 5000)
 local rb = setmetatable({ release_objects_table = { [801] = true, [802] = true }, size = 6, released = {} }, { __index = RB })
 RB.clear(rb)
@@ -752,7 +752,7 @@ check(#rb.released == 0, "a body within the option's distance of a client stays"
 H.env.ui_options = nil
 RB.clear(rb)
 check(#rb.released == 1 and rb.released[1] == 803, "no option: the stock's 75 m")
-KB._set_host_on(false)
+H.env.coop_npc_players.host_on = function() return false end
 rb.release_objects_table, rb.released = { [801] = true }, {}
 RB.clear(rb, true)
 check(#rb.released == 1, "clear(all) with no other player: the stock's")

@@ -1,7 +1,5 @@
 --[[
-	Anomaly Coop - NPC group (W4 "npc"): faction disguise for every player (SPEC R-3.4).
-	Port of the behaviour of xrRazom 1.4 xrr_patch_disguise (own code, our event API; xrRazom did the
-	suspicion in its engine, here it is Lua on the host).
+	Anomaly Coop - NPC group: faction disguise for every player. The suspicion runs in Lua on the host.
 
 	Stock gameplay_disguise splits into the player's side (outfit swap -> community, equipment, speed,
 	sudden actions, HUD bar) and the NPC side (npc_on_update: does this NPC see the player, how suspicious
@@ -38,7 +36,6 @@ local TIME_F = 6
 local ZONES = { "bar_arena_surge_hide_a1", "bar_arena_ug_surge_hide_a1" } -- stock: no suspicion inside
 
 local installed = false
-local host_on = false
 local orig = {}
 local stats = { reports_out = 0, reports_in = 0, exposed = 0, meters = 0 }
 
@@ -242,12 +239,6 @@ local function host_on_state(t, from, authenticated)
 end
 
 local function install_state_event()
-	local tasks = coop_tasks
-	if not (coop_mode and tasks and tasks.send_personal) then
-		-- Suspicion can run without the personal-statistics channel.
-		P.on(EV_STATE, host_on_state, "host", TAG)
-		return
-	end
 	coop_mode.on_level_request(EV_STATE, function(payload, from)
 		if not coop_mode.leads_here() then return end
 		local ok, err = pcall(host_on_state, P.decode(payload), from, true)
@@ -275,7 +266,7 @@ local function expose(s, peer, npc, comm, is_enem)
 			game_relations.change_faction_relations(comm, s.def, c.relation_hit)
 		end
 		-- the community's goodwill to this player's character (stock passes the community name as the object
-		-- id there: no luabind overload, a crash on the host, W5)
+		-- id there: no luabind overload, a crash on the host)
 		local who = P.object_of_peer(peer)
 		if who then game_relations.change_factions_community_num(comm, who:id(), c.goodwill_hit) end
 		rep = math.floor(c.reputation_hit)
@@ -307,8 +298,11 @@ local function dist_factor(d)
 	return d < f and f / d or 1
 end
 
+-- whether the script that keeps companions from blowing a disguise is there: a file does not come or go in a game
+local tosox = nil
 local function tosox_enabled()
-	return coop_mods_core and coop_mods_core.mod("z_companions_dont_blow_disguises") ~= nil
+	if tosox == nil then tosox = coop_util.module("z_companions_dont_blow_disguises") ~= nil end
+	return tosox
 end
 
 local function is_companion(npc)
@@ -355,20 +349,45 @@ local function credit_minute(s, peer, proxy, npc, comm, now)
 		return
 	end
 	s.last_min_scan = now
-	tasks.with_character(character, tasks.send_personal, { k = "stat", f = "minutes_disguised" })
+	tasks.with_character(character, coop_tasks_rewards.send_personal, { k = "stat", f = "minutes_disguised" })
+end
+
+-- The character id of a tracked player here, kept for this frame: npc_on_update runs for every NPC, the answer is one per
+-- frame. Inputs: the players' characters (coop_npc_players.object_of_peer); reset: the next frame (time_global moves). A
+-- player first asked about inside the frame is looked up then. Ids, not objects: an object is looked up again where it is
+-- used, so a character released this frame is not used.
+local proxy_ids = {} -- peer -> character id, false: none here (or this process's own actor)
+local proxy_ids_at = nil
+
+local function proxy_id_of(peer)
+	local now = time_global()
+	if now ~= proxy_ids_at then
+		proxy_ids_at = now
+		proxy_ids = {}
+	end
+	local id = proxy_ids[peer]
+	if id == nil then
+		local proxy = P.object_of_peer(peer)
+		id = proxy and proxy:id()
+		id = id ~= nil and id ~= 0 and id
+		proxy_ids[peer] = id
+	end
+	return id
 end
 
 local function npc_on_update(npc)
-	if not host_on or next(players_state) == nil or not (npc and npc:alive()) then return end
+	if not P.host_on() or next(players_state) == nil or not (npc and npc:alive()) then return end
 	local g = gd()
 	if not g then return end
 	local id = npc:id()
 	local tosox = tosox_enabled()
 	local ignored = tosox and is_companion(npc)
 	local comm = character_community(npc)
+	local game_now = nil -- the game time of this call, read once when it is needed
 	for peer, s in pairs(players_state) do
-		local proxy = P.object_of_peer(peer)
-		if proxy and proxy:id() ~= 0 then
+		local proxy_id = proxy_id_of(peer)
+		local proxy = proxy_id and level.object_by_id(proxy_id)
+		if proxy then
 			if ignored and (s.mem[id] or s.high.id == id) then forget_companions(s, id) end
 			local m = s.mem[id]
 			if not ignored and npc:see(proxy) and not in_disguise_zone(proxy) then
@@ -380,7 +399,8 @@ local function npc_on_update(npc)
 						awareness = g.get_npc_awareness and g.get_npc_awareness(npc:section()) or 1 }
 					s.mem[id] = m
 				end
-				local now = game.get_game_time()
+				game_now = game_now or game.get_game_time()
+				local now = game_now
 				m.first = m.first or now
 				m.last = now
 				if s.d and not game_relations.is_factions_enemies(s.c, comm) then
@@ -403,7 +423,8 @@ local function npc_on_update(npc)
 				end
 			elseif m then
 				m.first = nil
-				if m.last and game.get_game_time():diffSec(m.last) > m.memo then s.mem[id] = nil end
+				game_now = game_now or game.get_game_time()
+				if m.last and game_now:diffSec(m.last) > m.memo then s.mem[id] = nil end
 			end
 		end
 	end
@@ -448,8 +469,7 @@ local function actor_on_update()
 	local now = time_global()
 	if now < next_tick then return end
 	next_tick = now + 250
-	host_on = installed and P.host_with_clients()
-	if host_on then
+	if P.host_on() then
 		local ok, err = pcall(host_tick, now)
 		if not ok then report("host tick", err) end
 	elseif P.client_live() then
@@ -461,6 +481,7 @@ local function actor_on_update()
 end
 
 local function guarded_npc_update(npc)
+	if next(players_state) == nil then return end
 	local ok, err = pcall(npc_on_update, npc)
 	if not ok then report("npc update", err) end
 end
@@ -475,7 +496,7 @@ function print_status()
 		tostring(installed), stats.reports_out, stats.reports_in, n, stats.meters, stats.exposed, P.error_count(TAG))
 end
 
--- F5-REV-1 S4: the faction player `peer` is disguised as, from his last report (npc.disg) to this process, which leads his map; nil
+-- The faction player `peer` is disguised as, from his last report (npc.disg) to this process, which leads his map; nil
 -- when he is not disguised or nothing was reported here. coop_progress_community answers the keeper's community check with it.
 function disguised_as(peer)
 	local s = players_state[peer]
@@ -484,6 +505,7 @@ function disguised_as(peer)
 end
 
 function on_game_start()
+	coop_util.add_status("coop_npc_disguise", 170)
 	P = coop_npc_players
 	if not rawget(_G, "coop") then return end
 	if not installed then
@@ -501,7 +523,6 @@ function on_game_start()
 	RegisterScriptCallback("actor_on_weapon_zoom_in", on_zoom)
 end
 
-function _set_host_on(v) host_on = v end
 function _players_state() return players_state end
 function _mine() return mine end
 function _npc_on_update(npc) return npc_on_update(npc) end

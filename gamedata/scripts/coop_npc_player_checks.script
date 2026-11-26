@@ -1,5 +1,5 @@
 -- Ядро: без проверок режима (docs/MODES.md)
--- Dev 57 G13-3: actor checks in the Facer, panic and bribe schemes.
+-- Actor checks in the Facer, panic and bribe schemes.
 local TAG = "npc-player-checks"
 local PANIC = "npc_player_checks_panic"
 local WARNING = "npc_player_checks_bribe_warning"

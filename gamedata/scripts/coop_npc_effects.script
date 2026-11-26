@@ -1,8 +1,7 @@
 --[[
-	Anomaly Coop - NPC group (W4 "npc"): what the host's world logic shows and plays reaches the players.
-	Port of the behaviour of xrRazom 1.4 xrr_patch_effects, the anabiotic part of xrr_patch_weather and
-	xrr_patch_arszi_psy (own code, our event API). Time, weather, emission and psi-storm phases are covered
-	by coop_worldstate (C++) and coop_main (Lua); sleep requests by coop_worldstate.
+	Anomaly Coop - NPC group: relay the sounds and effects of the host's world logic to the players.
+	coop_worldstate (C++) and coop_main (Lua) cover time, weather, emission and psi-storm phases.
+	coop_worldstate handles sleep requests.
 
 	Host:
 	  - NPC and object voices started by Lua (xr_sound.set_sound_play: meet greetings, wounded calls, camp
@@ -53,12 +52,11 @@ local function log(fmt, ...) P.log(TAG, fmt, ...) end
 local function report(what, err) P.report(TAG, what, err) end
 
 local EV_SND, EV_LOOP, EV_CFX, EV_LOOPS = "npc.snd", "npc.loop", "npc.cfx", "npc.loops"
--- client -> host { on = bool }: this player sleeps on an anabiotic (per-player emission immunity, W5;
+-- client -> host { on = bool }: this player sleeps on an anabiotic (per-player emission immunity;
 -- coop_main's host kill check asks is_anabiotic(peer))
 local EV_ANA = "npc.anabiotic"
 
 local installed = false
-local host_on = false
 local orig = {}
 local stats = { snd_out = 0, snd_in = 0, snd_stop_in = 0, loop_out = 0, loop_in = 0, cfx_out = 0, cfx_in = 0, anabiotic = 0, psy_floor = 0 }
 
@@ -135,7 +133,7 @@ local function patch_sounds()
 	if type(set_play) == "function" and not orig.set_play then
 		orig.set_play = set_play
 		xs.set_sound_play = function(npc_id, sound, faction, point)
-			if not (host_on and type(npc_id) == "number" and npc_id ~= 0) then
+			if not (P.host_on() and type(npc_id) == "number" and npc_id ~= 0) then
 				return set_play(npc_id, sound, faction, point)
 			end
 			local before = xs.sound_table[npc_id]
@@ -167,10 +165,10 @@ local function patch_sounds()
 	if type(loop_play) == "function" and not orig.loop_play then
 		orig.loop_play = loop_play
 		xs.play_sound_looped = function(npc_id, sound)
-			local t = host_on and type(npc_id) == "number" and xs.looped_sound[npc_id]
+			local t = P.host_on() and type(npc_id) == "number" and xs.looped_sound[npc_id]
 			local was = t and t[sound] ~= nil
 			local r = loop_play(npc_id, sound)
-			if host_on and npc_id ~= 0 and not was then
+			if P.host_on() and npc_id ~= 0 and not was then
 				local now = xs.looped_sound[npc_id]
 				if now and now[sound] ~= nil and P.send(EV_LOOP, { i = npc_id, s = sound, on = true }, -1) then
 					stats.loop_out = stats.loop_out + 1
@@ -183,7 +181,7 @@ local function patch_sounds()
 	if type(loop_stop) == "function" and not orig.loop_stop then
 		orig.loop_stop = loop_stop
 		xs.stop_sound_looped = function(npc_id, sound)
-			local busy = host_on and type(npc_id) == "number" and npc_id ~= 0 and xs.looped_sound[npc_id] ~= nil
+			local busy = P.host_on() and type(npc_id) == "number" and npc_id ~= 0 and xs.looped_sound[npc_id] ~= nil
 			local r = loop_stop(npc_id, sound)
 			if busy and P.send(EV_LOOP, { i = npc_id, s = type(sound) == "string" and sound or "", on = false }, -1) then
 				stats.loop_out = stats.loop_out + 1
@@ -234,7 +232,7 @@ local function host_loops_tick()
 	end
 	table.sort(list)
 	local sig = table.concat(list, ",")
-	if coop_mode.leads_here() and not coop_mode.decides_world() then return tell_loops(sync, list, sig) end
+	if coop_mode.leads_for_world_elsewhere() then return tell_loops(sync, list, sig) end
 	if sig ~= loops_sent and sync.set("session", KEY_LOOPS, list) == true then loops_sent = sig end
 end
 
@@ -336,8 +334,8 @@ local function client_on_snd(t)
 		as = setmetatable({ select_next_sound = function() return n end }, { __index = th, __newindex = th })
 		sound_theme.theme[t.s] = as
 	end
-	-- its subtitle news (news_manager.send_sound) comes from the host as core.news (coop_core_world): not
-	-- twice (W5)
+	-- its subtitle news (news_manager.send_sound) comes from the host as core.news (coop_core_world_news): not
+	-- twice
 	local nm = rawget(_G, "news_manager")
 	local send = nm and nm.send_sound
 	if type(send) == "function" then nm.send_sound = function() return false end end
@@ -381,7 +379,7 @@ end
 -- Host: cosmetic actor effects
 -------------------------------------------------------------------------------
 local function relay_fx(npc, t)
-	if not host_on then return end
+	if not P.host_on() then return end
 	if db.actor and db.actor:is_talking() and not spares_host(npc) then return end
 	if send_scoped(EV_CFX, t, npc) then stats.cfx_out = stats.cfx_out + 1 end
 end
@@ -401,8 +399,8 @@ local function patch_effects()
 		orig["fx_" .. name] = f
 		xe[name] = function(actor, npc, p, ...)
 			local r
-			if not (host_on and spares_host(npc)) then r = f(actor, npc, p, ...) end
-			if host_on then
+			if not (P.host_on() and spares_host(npc)) then r = f(actor, npc, p, ...) end
+			if P.host_on() then
 				local ok, err = pcall(after, npc, p)
 				if not ok then report("relay " .. name, err) end
 			end
@@ -470,8 +468,8 @@ local ana_peers = {} -- host: peer -> time_global() until which that player coun
 local ANA_USE_MS = 15000 -- use -> first callback: the stock camera effector runs 10 s
 local ANA_MAX_MS = 300000 + ANA_USE_MS + 30000 -- the owner's cap, the effector and a margin
 
--- Client: the info portion is this player's own (C1.2 coop.story_hold_infos keeps it off the host's story).
--- Without that engine function it stays the group's story, as before W5.
+-- Client: the info portion is this player's own (coop.story_hold_infos keeps it off the host's story).
+-- Without that engine function it stays the group's story.
 local function hold_local(fn, ...)
 	local api = rawget(_G, "coop")
 	local hold = P.is_client() and api and api.story_hold_infos
@@ -629,12 +627,11 @@ local function actor_on_update()
 	local now = time_global()
 	if now < next_tick then return end
 	next_tick = now + 500
-	host_on = installed and P.host_with_clients()
 	if not P.active() then return end
 	local ok, err = pcall(loops_tick, now)
 	if not ok then report("loops", err) end
 	-- host: a save made during the hold comes back with anabiotic_in_process set and no hold in this Lua
-	-- state; the poll clears it after the emission (or 20 s), or the host would be immune for good (W5)
+	-- state; the poll clears it after the emission (or 20 s), or the host would be immune for good
 	if not ana.on and coop_mode.decides_world() and has_alife_info("anabiotic_in_process") then
 		ana.on, ana.t0, ana.seen, ana.next_check = true, now, false, 0
 	end
@@ -649,6 +646,7 @@ function print_status()
 end
 
 function on_game_start()
+	coop_util.add_status("coop_npc_effects", 140)
 	P = coop_npc_players
 	if not rawget(_G, "coop") then return end
 	if not installed then
@@ -676,5 +674,4 @@ function on_game_start()
 	RegisterScriptCallback("coop_actor_revived", engine_revived)
 end
 
-function _set_host_on(v) host_on = v end
 function _stats() return stats end

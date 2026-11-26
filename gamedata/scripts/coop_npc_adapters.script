@@ -17,19 +17,19 @@ local function private_callback(C, m, name, callback, make)
 	return true
 end
 
-local function ai(C, P, active)
+local function ai(C, P)
 	local m = C.mod("schemes_ai_gamma")
 	local verification = m and C.find_local(m, "verification_npc")
 	if type(verification) ~= "table" then return false end
 	return private_callback(C, m, "npc_on_hit_callback", "npc_on_hit_callback", function(old)
 		-- Return all values, including nils, from the original private callback.
 		local function finish(npc, who, ...)
-			if active() and npc and who and P.is_proxy(who) then verification[npc:id()] = 0 end
+			if P.host_on() and npc and who and P.is_proxy(who) then verification[npc:id()] = 0 end
 			return ...
 		end
 		return function(npc, amount, direction, who, bone, ...)
 			-- Callback routes also declare this wrapper host-only. Keep direct invocations
-			-- safe: active()==false on a client must not fall through to host world code.
+			-- safe: host_on() is false on a client, which must not fall through to host world code.
 			if P.is_client() then return end
 			return finish(npc, who, old(npc, amount, direction, who, bone, ...))
 		end
@@ -39,9 +39,9 @@ end
 local corpse_said = 0 -- log lines of the rule below
 
 -- xr_danger's corpse action is a file local that only the method action_danger:execute captures. action_danger is a
--- luabind class, a userdata: find_local cannot list its methods (pairs() fails on it), so in the game it found nothing
--- and the rule below was never installed, in any build since it was written (found by the build 57 sweep). The class
--- gives a method by name (luabind class_rep::static_class_gettable; a name it lacks raises, so C.fn reads it under pcall).
+-- luabind class, a userdata: find_local cannot list its methods (pairs() fails on it), so in the game it finds nothing.
+-- The class gives a method by name (luabind class_rep::static_class_gettable; a name it lacks raises, so C.fn reads it
+-- under pcall).
 local function corpse_local(C, m)
 	local old, holder, index = C.find_local(m, "script_action_danger_corpse")
 	if holder then return old, holder, index end
@@ -49,11 +49,11 @@ local function corpse_local(C, m)
 	return C.upvalue(C.fn(cls, "execute"), "script_action_danger_corpse")
 end
 
-local function corpse(C, P, active)
+local function corpse(C, P)
 	local old, holder, index = corpse_local(C, C.mod("xr_danger"))
 	if type(old) ~= "function" or not holder then return false end
 	debug.setupvalue(holder, index, function(npc, st, danger, object, dependent, kind, ...)
-		if active() and npc and st then
+		if P.host_on() and npc and st then
 			local body = object or dependent
 			local storage = body and db.storage[body:id()]
 			local killer_storage = storage and storage.death_by_id and db.storage[storage.death_by_id]
@@ -88,7 +88,7 @@ local function corpse(C, P, active)
 	return true
 end
 
-local function stealth(C, P, active)
+local function stealth(C, P)
 	if not C.mod("stealth_mcm") then return false end
 	local m = C.mod("visual_memory_manager")
 	local visible, hit = m and m.get_visible_value, m and m.npc_on_before_hit
@@ -134,12 +134,12 @@ local function stealth(C, P, active)
 		return finish(bank, saved, pcall(f, ...))
 	end
 	m.get_visible_value = function(npc, who, ...)
-		if not active() then return visible(npc, who, ...) end
+		if not P.host_on() then return visible(npc, who, ...) end
 		return scoped(who, true, visible, npc, who, ...)
 	end
 	local wrapped = function(npc, h, ...)
 		if P.is_client() then return end
-		if not active() then return hit(npc, h, ...) end
+		if not P.host_on() then return hit(npc, h, ...) end
 		return scoped(h and h.draftsman, false, hit, npc, h, ...)
 	end
 	m.npc_on_before_hit = wrapped
@@ -147,13 +147,13 @@ local function stealth(C, P, active)
 	return true
 end
 
-local function trader(C, P, active)
+local function trader(C, P)
 	if not C.mod("trader_autoinject") then return false end
 	local m = C.mod("trade_manager")
 	local old = m and m.update
 	if type(old) ~= "function" then return false end
 	m.update = function(npc, ...)
-		if active() and npc and npc:alive() and not P.in_identity() then
+		if P.host_on() and npc and npc:alive() and not P.in_identity() then
 			local name = npc:name()
 			if name == "esc_m_trader" or name == "red_m_lesnik" then
 				-- Select a nearby real player, then enter the existing complete wrapper chain
@@ -167,12 +167,13 @@ local function trader(C, P, active)
 		return old(npc, ...)
 	end
 	-- trader_autoinject's restock reads the supply level from "the actor" (goodwill, heavy pockets) a moment later, on a timer: on a map
-	-- server that is its ghost. The nearest player reads it, as trade_manager.update does for him (coop_core_world host_on_trader_req).
+	-- server that is its ghost. The nearest player reads it, as trade_manager.update does for him
+	-- (coop_core_world_trader host_on_trader_req).
 	local ti = C.mod("trader_autoinject")
 	local timed = ti and ti.timed_update
 	if type(timed) == "function" then
 		ti.timed_update = function(npc, ...)
-			if coop_mode.leads_here() and not coop_mode.decides_world() and npc and not P.in_identity() then
+			if coop_mode.leads_for_world_elsewhere() and npc and not P.in_identity() then
 				local near = P.nearest(npc)
 				if near then return P.with_identity(near, timed, npc, ...) end
 			end
@@ -204,15 +205,15 @@ end
 
 -- G.A.M.M.A. No NPC Friendly Fire zeroes a hit between friendly or neutral NPCs and resets their relation unless the
 -- shooter is db.actor. On the host a client's character is an NPC of his faction, so his shots at friendly and neutral
--- NPCs did no damage and the NPCs never turned on him (live 2026-10-29). A player's character shoots like the actor;
+-- NPCs would do no damage and the NPCs would never turn on him. A player's character shoots like the actor;
 -- NPC-to-NPC friendly fire stays off.
-local function friendly_fire(C, P, active)
+local function friendly_fire(C, P)
 	local m = C.mod("grok_no_npc_friendly_fire")
 	local hit = m and m.npc_on_before_hit
 	if type(hit) ~= "function" then return false end
 	local wrapped = function(npc, h, ...)
 		if P.is_client() then return end
-		local who = active() and h and h.draftsman
+		local who = P.host_on() and h and h.draftsman
 		if who and P.is_player_id(who:id()) then return end
 		return hit(npc, h, ...)
 	end
@@ -221,14 +222,14 @@ local function friendly_fire(C, P, active)
 	return true
 end
 
-function install(P, active, applied)
+function install(P, applied)
 	if installed then return end
 	local C = coop_mods_core
 	if not (C and type(C.find_local) == "function") then return end
 	installed = true
 	for _, spec in ipairs({ { "ai_hit", ai }, { "danger_corpse", corpse }, { "stealth", stealth }, { "trader", trader },
 		{ "trade_scheme", trade_scheme }, { "friendly_fire", friendly_fire } }) do
-		local ok, result = pcall(spec[2], C, P, active)
+		local ok, result = pcall(spec[2], C, P)
 		if not ok then
 			P.report("compat", "native " .. spec[1], result)
 		elseif result then

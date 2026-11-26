@@ -47,7 +47,7 @@ local function nearest_story_distance(se)
 			end
 		end
 	end
-	for _, row in ipairs(coop_npc_players.players()) do
+	for _, row in ipairs(coop_util.players()) do
 		if coop_mode.where(row.id) == "away" then
 			local p = coop_npc_players.player(row.id)
 			local body = p and p.standing and p.level == map and p.character and alife_object(p.character)

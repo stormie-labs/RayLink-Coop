@@ -122,7 +122,7 @@ local function silent_case(set, local_killer, split)
 	local world = load_script(M, "coop_npc_world")
 	world.on_game_start()
 	if not local_killer then sk.on_game_start() end
-	world._set_host_on(set == "hostplay" or set == "srv_map")
+	M.env.coop_npc_players.host_on = function() return set == "hostplay" or set == "srv_map" end
 
 	local case = set .. (local_killer and " host kill" or " proxy kill")
 	local flags = { ret_value = true }
@@ -192,7 +192,7 @@ local function phantoms_case(set, scenario)
 	end
 	xcv.on_game_start()
 	local applied = {}
-	load_script(M, "coop_npc_phantoms").install(E.coop_npc_players, function() return set ~= "none" end, applied)
+	load_script(M, "coop_npc_phantoms").install(E.coop_npc_players, applied)
 	local label = set .. "/" .. scenario
 	local routed = E.coop_route.handlers_of("actor_on_update", "xcv_phantoms_fix")
 	check(#routed == 1 and routed[1] == xcv.actor_on_update, label .. ": one handler keeps the override's route")
@@ -259,7 +259,7 @@ local function unlocalized_case(set)
 	end
 	xcv.on_game_start()
 	local applied = {}
-	load_script(M, "coop_npc_phantoms").install(E.coop_npc_players, function() return set ~= "none" end, applied)
+	load_script(M, "coop_npc_phantoms").install(E.coop_npc_players, applied)
 	local warned = false
 	for _, line in ipairs(M.log) do
 		if tostring(line):find("cannot resolve private XCV spawn settings", 1, true) then warned = true end

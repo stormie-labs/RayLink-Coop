@@ -183,7 +183,7 @@ local function boot(set, install)
 	if install then
 		K = load_script(M, "coop_npc_compat")
 		K.on_game_start()
-		K._set_host_on(true)
+		M.env.coop_npc_players.host_on = function() return true end
 	end
 	-- the squad at the body: 20 sees it, 21 is his squad mate; 30 is the body
 	M.squad, M.squad_ids = { [20] = true, [21] = true }, { 20, 21 }

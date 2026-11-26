@@ -25,13 +25,14 @@ local function lines_with(text)
 	return n, last
 end
 
-local NOW, HOST, CALLBACKS = 1000, true, {}
+local NOW, HOST, DEBUG, CALLBACKS = 1000, true, true, {}
+coop_debug_server = { debug_on = function() return DEBUG end }
 time_global = function() return NOW end
 RegisterScriptCallback = function(name, f) CALLBACKS[name] = f end
 coop = {} -- the engine namespace: an exe with co-op
 local PLAYERS = { [900] = true }
 coop_npc_players = {
-	host_with_clients = function() return HOST end,
+	host_on = function() return HOST end,
 	is_proxy = function(id) return PLAYERS[id] == true end,
 	report = function(tag, what, err) error(tostring(what) .. ": " .. tostring(err)) end,
 }
@@ -123,6 +124,15 @@ local before = #LOGS
 tick()
 check(#LOGS == before, "no new line")
 guard._alive = true
+
+print("-- only while the session's debug is on")
+DEBUG = false
+PERSONAL["103>900"] = -1000
+bandit._enemy = player
+tick()
+check(lines_with("bandit_1") == 0, "debug off: no scan, no line")
+DEBUG = true
+bandit._enemy = nil
 
 print("-- only where the AI runs with a client in the session")
 HOST = false

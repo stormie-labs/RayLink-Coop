@@ -135,7 +135,7 @@ do
 	check(MH.talk_verdict(npcs[1], proxy) == true, "lock-time verdict for the client's character: allowed")
 	MH.print_status()
 	local said = false
-	for _, line in ipairs(H.log) do if line:find("B8: stock use rules for clients: ignored", 1, true) then said = true end end
+	for _, line in ipairs(H.log) do if line:find("stock use rules for clients: ignored", 1, true) then said = true end end
 	check(said, "coop_status says which rules apply")
 
 	-- an enemy faction alone is not a reason (the host would talk to him), the engine relation plus a fight is

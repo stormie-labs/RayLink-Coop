@@ -32,7 +32,8 @@ end
 local function install(M, on)
 	local K = load_script(M, "coop_npc_phantoms")
 	local applied = {}
-	K.install(M.env.coop_npc_players, function() return on ~= false end, applied)
+	if on == false then M.env.coop_npc_players.host_on = function() return false end end
+	K.install(M.env.coop_npc_players, applied)
 	return applied
 end
 
@@ -358,7 +359,8 @@ for _, on in ipairs({ true, false }) do
 	xcv.release_phantoms = function(obj) seen[#seen + 1] = E.db.actor:id() end
 	xcv.on_game_start()
 	local applied = {}
-	load_script(M, "coop_npc_phantoms").install(E.coop_npc_players, function() return on end, applied)
+	if not on then E.coop_npc_players.host_on = function() return false end end
+	load_script(M, "coop_npc_phantoms").install(E.coop_npc_players, applied)
 	local has = {}
 	for _, a in ipairs(applied) do has[a] = true end
 	check(has["native:phantom_contact"], label .. ": native:phantom_contact applied")

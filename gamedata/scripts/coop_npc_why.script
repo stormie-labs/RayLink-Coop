@@ -1,14 +1,11 @@
 --[[
-	Anomaly Coop - NPC group, diagnostics: why does an NPC fight a player or a stalker of its own faction.
+	Anomaly Coop - NPC group, diagnostics: why does an NPC fight a player or a stalker of its own faction. A hostility
+	made where the AI runs leaves no trace in the world's save (the relations there can be neutral and friendly), so
+	this says what the attitude was made of at the moment it showed.
 
-	Live 2026-11-12, the first test of the hidden world server (G.A.M.M.A., a new world, a new loner at the Clear Sky
-	base in the Great Swamp): in the first minute the base killed itself (every body was Clear Sky) and shot the
-	player three times, the technician and the barman too. The world's save knew no reason: Clear Sky is neutral to
-	loners, friendly to itself, no faction held a grudge against anybody. The hostility was made on the level's map
-	server, after the load, and no line of any log said by what.
-
-	Where the AI runs (the world server, or the map server of the level) and a client is in the session, once a second
-	the best enemy of every online stalker is looked at. The first time an NPC has a player's character, or a stalker
+	Only while the session's debug is on (coop_debug, coop_debug_server.debug_on), where the AI runs (the world server,
+	or the map server of the level) and a client is in the session: once a second the best enemy of every online stalker
+	is looked at. The first time an NPC has a player's character, or a stalker
 	of its own faction, for an enemy, one line says what the attitude is made of:
 
 	  [coop-npc:why] fights a player: <npc> [<section>] (id, faction, squad <section>) -> <enemy> [<section>] (id, faction)
@@ -89,7 +86,7 @@ local function actor_on_update()
 	local now = time_global()
 	if now < next_scan then return end
 	next_scan = now + EVERY_MS
-	if lines >= LINES or not P.host_with_clients() then return end
+	if lines >= LINES or not coop_debug_server.debug_on() or not P.host_on() then return end
 	local ok, err = pcall(scan)
 	if not ok then P.report("why", "scan", err) end
 end

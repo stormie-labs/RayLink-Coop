@@ -32,7 +32,7 @@ E.state_mgr = { set_state = function() end }
 npc.set_desired_direction = function() end
 local meet = load_script(H, "coop_npc_meet")
 meet.on_game_start()
-meet._set_host_on(true)
+E.coop_npc_players.host_on = function() return true end
 local action = { object = npc, a = { gtfo = true, can_gtfo = "true", stage = 0, meet_manager = {} } }
 local a, b, c = E.xr_meet.action_meet_wait.execute(action)
 check(calls == 1 and seen == proxy:id(), "retreat delegates once to the mod's action for the nearest player")
@@ -53,7 +53,7 @@ check(calls == before and base_calls == 1, "client talking cancels retreat witho
 check(action.a.gtfo == nil and action.a.vertex_id == nil and action.a.stage == 0 and reset_vertex == 7,
 	"client talk clears retreat and returns to the current accessible vertex")
 
-meet._set_host_on(false)
+E.coop_npc_players.host_on = function() return false end
 E.xr_meet.action_meet_wait.execute(action)
 check(calls == before + 1 and seen == 0, "outside host co-op original action runs with the original actor")
 

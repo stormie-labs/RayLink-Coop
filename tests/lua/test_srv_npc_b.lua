@@ -26,7 +26,7 @@ H.env.sim_squad_scripted = { sim_squad_scripted = SQ }
 H.env.smart_terrain = { se_smart_terrain = SM }
 local KS = load_script(H, "coop_npc_compat")
 KS.on_game_start()
-KS._set_host_on(true)
+H.env.coop_npc_players.host_on = function() return true end
 local LEVEL_OF = { [1] = 1, [2] = 2 } -- game vertex -> level
 H.env.game_graph = function() return { vertex = function(_, v) return { level_id = function() return LEVEL_OF[v] end } end } end
 local RECORD = { m_game_vertex_id = 2, position = vector():set(7000, 0, 7000) }
@@ -57,7 +57,7 @@ H.env.se_actor = { se_actor = {
 } }
 KS = load_script(H, "coop_npc_compat")
 KS.on_game_start()
-KS._set_host_on(true)
+H.env.coop_npc_players.host_on = function() return true end
 H.env.db.actor._pos = vector():set(5000, 0, 5000) -- where the ghost stands
 local at_ghost = { online = false, position = vector():set(5010, 0, 5000) }
 SQ.check_online_status(at_ghost)
@@ -96,7 +96,7 @@ local bodies = {
 H.env.alife = function() return { object = function(_, id) return bodies[id] end } end
 local KB = load_script(H, "coop_npc_compat")
 KB.on_game_start()
-KB._set_host_on(true)
+H.env.coop_npc_players.host_on = function() return true end
 H.env.db.actor._pos = vector():set(5000, 0, 5000)
 local rb = setmetatable({ release_objects_table = { [801] = true, [802] = true }, size = 6, released = {} }, { __index = RB })
 RB.clear(rb)

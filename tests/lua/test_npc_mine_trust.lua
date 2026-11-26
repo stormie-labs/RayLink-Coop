@@ -1,7 +1,7 @@
--- Anomaly Coop test (TZ v2 6.4 row 5, 2026-11-18): a client's mine. The request names the mine item; the host checks it is
--- this player's (in his inventory, or on the ground at his feet: Interaction Dot Marks plants a mine lying there) and of the
--- planted section (coop_trust "mine_item"), removes it itself and answers; the client removes the item only when the host
--- did not. A build 56 request without the id goes through as before (coop_trust "mine_item_id"). Not shipped.
+-- Anomaly Coop test: a client's mine. The request names the mine item; the host checks it is this player's (in his
+-- inventory, or on the ground at his feet: Interaction Dot Marks plants a mine lying there) and of the planted section
+-- (coop_trust "mine_item"), removes it itself and answers; the client removes the item only when the host did not. A
+-- request without the id fails that check like any other wrong id. Not shipped.
 -- Run: tools\test_lua.cmd npc_mine_trust
 dofile("tests/lua/support/harness_npc.lua")
 local modes = dofile("tests/lua/support/modes.lua")
@@ -168,14 +168,14 @@ pump()
 check(has(C.released, 786), "the client removes its copy, as build 56 did")
 
 -------------------------------------------------------------------------------
-print("== a build 56 client: no id, removes the item himself")
+print("== a request without the item id: the item check fails, logged; let through in log mode")
 setup()
 C.env.coop_npc_players.send("npc.mine", { s = "mine_new", m = 1, d = 10, x = 10, y = 0, z = 0, lv = 1, gv = 1 }, 0)
 pump()
-check(H.created[1] == "mine_new_blow", "let through as today")
+check(H.created[1] == "mine_new_blow", "log mode lets it through")
 check(#H.released == 0, "the host removes nothing")
-check(counters(H, "mine_item_id").failed == 1 and trust_log(H, "mine_item_id") ~= nil, "logged as a request without the item id")
-check(counters(H, "mine_item").checked == 0, "no item check without an id")
+check(counters(H, "mine_item").failed == 1 and trust_log(H, "mine_item") ~= nil, "logged as a failed item check")
+check(counters(H, "mine_item_id").failed == 0, "no separate rule for a missing id")
 
 -------------------------------------------------------------------------------
 print("== a build 56 host: no answer, the client removes the item itself")

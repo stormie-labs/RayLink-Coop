@@ -1,5 +1,5 @@
 --[[
-	Anomaly Coop - NPC group (W4 "npc"): player helpers shared by every coop_npc_* script.
+	Anomaly Coop - NPC group: player helpers shared by every coop_npc_* script.
 
 	Stock world logic (xr_logic, xr_meet, xr_conditions, restrictors, mods) assumes ONE player: db.actor.
 	In a session the host runs that logic, and every other player exists on the host as a stalker of
@@ -9,11 +9,13 @@
 	Outside a session every helper degrades to the single-player answer (db.actor only).
 
 	API (module coop_npc_players):
-	  active() is_host() is_client() client_live() host_with_clients()
-	  is_host() means this process decides the world or leads its map.
-	  is_world_server() means it decides the world, is_map_server() means it leads a map whose world is decided elsewhere.
-	  self_peer() players() to_host(id) to_local(id)
+	  active() is_client() client_live()
+	  host_on()               -> this process decides the world or leads its map, and another player is in the session
+	                             (kept for one frame)
+	  is_world_server() means it decides the world.
+	  self_peer() to_host(id) to_local(id)
 	  others()                -> { game_object, ... } other players' characters here (alive, cached per frame)
+	  is_other_here(id)       -> id is one of others() (one table lookup)
 	  everyone()              -> db.actor (if alive) + others() (cached per frame, do not modify)
 	  peer_of(obj_or_id)      -> peer id of the player that object stands for, or nil
 	  object_of_peer(peer)    -> that player's character on this machine (db.actor for self), or nil
@@ -22,7 +24,6 @@
 	                             link ("local" | "net"), standing, object() }: one player for every command (DEBUG_DESIGN B.4);
 	                             nil for nobody, so a dedicated host's ghost is never a player
 	  player_by_name("@Bob" | "@2" | "@#2") -> player(peer) | nil (nick in any case)
-	  actor_is_nobody()       -> this process's actor is a ghost (a dedicated host or a map server): no rank, goodwill, name
 	  is_player_id(id)        -> true for the local actor and for any player avatar
 	  nearest(pos)            -> nearest player object, squared distance (math.huge if nobody)
 	  nearest_dist_sqr(pos)   -> squared distance to the nearest player
@@ -77,10 +78,6 @@ function is_world_server()
 	return active() and coop_mode.decides_world()
 end
 
-function is_host()
-	return active() and (coop_mode.decides_world() or coop_mode.leads_here())
-end
-
 function is_client()
 	return coop_mode.is_player_mirror()
 end
@@ -89,34 +86,32 @@ function client_live()
 	return is_client() and api.is_live() == true
 end
 
--- Compatibility for callers that still use the old role helpers.
-function is_map_server()
-	return active() and coop_mode.leads_here() and not coop_mode.decides_world()
-end
-
-function actor_is_nobody()
-	return not coop_mode.actor_is_player()
-end
-
 function self_peer()
 	if not api then return 0 end
 	local ok, v = pcall(api.self_id)
 	return ok and tonumber(v) or 0
 end
 
-function players()
-	if not api then return {} end
-	local ok, list = pcall(api.players)
-	return ok and type(list) == "table" and list or {}
-end
+-- host_on() is asked on every hooked NPC call, so it is kept for one frame. Inputs: the session (active), the facade's
+-- decides_world and leads_here, the engine's player list; reset: the next frame (time_global moves) or invalidate().
+local host_on_at = nil
+local host_on_value = false
 
--- Host with at least one other player in the session.
-function host_with_clients()
+local function host_with_clients()
 	if not (active() and (coop_mode.decides_world() or coop_mode.leads_here())) then return false end
-	for _, p in ipairs(players()) do
+	for _, p in ipairs(coop_util.players()) do
 		if not p.is_self then return true end
 	end
 	return false
+end
+
+function host_on()
+	local now = time_global()
+	if now ~= host_on_at then
+		host_on_at = now
+		host_on_value = host_with_clients()
+	end
+	return host_on_value
 end
 
 function to_host(id)
@@ -147,6 +142,7 @@ local cache_at = -1
 local cache_others = {}
 local cache_everyone = {}
 local cache_peer_by_id = {}
+local cache_other_ids = {} -- id -> true for every character in cache_others
 
 local function refresh()
 	local now = time_global()
@@ -155,10 +151,11 @@ local function refresh()
 	cache_others = {}
 	cache_everyone = {}
 	cache_peer_by_id = {}
+	cache_other_ids = {}
 	local a = real_actor()
 	if a and a:alive() and coop_mode.actor_is_player() then cache_everyone[1] = a end
 	if not active() then return end
-	for _, p in ipairs(players()) do
+	for _, p in ipairs(coop_util.players()) do
 		if not p.is_self and type(p.avatar_id) == "number" then
 			cache_peer_by_id[p.avatar_id] = p.id
 			local obj = level.object_by_id(p.avatar_id)
@@ -167,15 +164,18 @@ local function refresh()
 				if ok and alive then
 					cache_others[#cache_others + 1] = obj
 					cache_everyone[#cache_everyone + 1] = obj
+					cache_other_ids[p.avatar_id] = true
 				end
 			end
 		end
 	end
 end
 
--- Drops the per-frame cache (tests, session changes inside one frame).
+-- Drops the per-frame caches of this file (tests, session changes inside one frame). The engine's player list stays the
+-- frame's one (coop_util.players): a roster change shows from the next frame.
 function invalidate()
 	cache_at = -1
+	host_on_at = nil
 end
 
 function others()
@@ -187,6 +187,12 @@ end
 function everyone()
 	refresh()
 	return cache_everyone
+end
+
+-- Asked for every enemy candidate of every NPC: a non-player costs one table lookup.
+function is_other_here(id)
+	refresh()
+	return cache_other_ids[id] == true
 end
 
 local function id_of(x)
@@ -222,7 +228,7 @@ end
 -- That player's character here, on whatever level it stands: its id from the list of players, which needs no object on this level.
 function avatar_of_peer(peer)
 	if type(peer) ~= "number" then return nil end
-	for _, p in ipairs(players()) do
+	for _, p in ipairs(coop_util.players()) do
 		if p.id == peer then return type(p.avatar_id) == "number" and p.avatar_id or nil end
 	end
 	return nil
@@ -258,7 +264,7 @@ end
 function player(peer)
 	if type(peer) ~= "number" or not active() then return nil end
 	if peer == self_peer() and not coop_mode.actor_is_player() then return nil end
-	for _, p in ipairs(players()) do
+	for _, p in ipairs(coop_util.players()) do
 		if p.id == peer then
 			local character = p.avatar_id
 			if type(character) ~= "number" and api.avatar_of then
@@ -288,7 +294,7 @@ function player_by_name(name)
 	local n = tonumber(s)
 	if n then return player(n) end
 	s = s:lower()
-	for _, p in ipairs(players()) do
+	for _, p in ipairs(coop_util.players()) do
 		if type(p.nick) == "string" and p.nick:lower() == s then return player(p.id) end
 	end
 	return nil
@@ -387,7 +393,7 @@ local function request_sender(name, from)
 end
 
 -- who: "host" = handled on the process that leads the sender's level, sender must be a client; "client" = handled on a client, sender
--- must be the host; nil = any machine, any sender. Errors are logged, never thrown (R-11.4).
+-- must be the host; nil = any machine, any sender. Errors are logged, never thrown.
 function on(name, f, who, tag)
 	local m = cmain()
 	if not (m and m.add_event_handler) then
