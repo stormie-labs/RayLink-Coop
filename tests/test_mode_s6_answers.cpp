@@ -206,7 +206,8 @@ void s6_check_real(const char* cls_name)
 	const std::string code =
 	    s6_code(s6_read(src + (coop ? "/xrGame/coop/hostplay/coop_hostplay_mode.cpp" : "/xrGame/coop/srv/coop_srv_mode.cpp")));
 	REQUIRE(!code.empty());
-	const std::string cls = s6_class(code, cls_name);
+	// both co-op modes answer what they share in their common base (CoopModeBase), after their own overrides
+	const std::string cls = s6_class(code, cls_name) + (coop ? s6_class(code, "CoopModeBase") : std::string());
 	REQUIRE(!cls.empty());
 	const HookRow& want = s6_real_rows().at(cls_name);
 	REQUIRE(want.size() == kS6HookCount);

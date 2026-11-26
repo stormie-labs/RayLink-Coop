@@ -71,11 +71,11 @@ TEST(mode_operator_real_modes_answer_per_kind)
 	}
 	const std::string coop = game_source("hostplay/coop_hostplay_mode.cpp");
 	REQUIRE(!coop.empty());
-	for (const char* kind : {"class CoopHostMode final", "class CoopClientMode final"})
-	{
-		const auto mode = section(coop, kind, "\n};");
-		CHECK(has(mode, "OperatorSend send_operator_command(const std::string&) override { return OperatorSend::Unreachable; }"));
-	}
+	// both co-op modes answer it in their common base
+	const auto base = section(coop, "class CoopModeBase : public ModeWithAnswers", "\n};");
+	CHECK(has(base, "OperatorSend send_operator_command(const std::string&) override { return OperatorSend::Unreachable; }"));
+	for (const char* kind : {"class CoopHostMode final : public CoopModeBase", "class CoopClientMode final : public CoopModeBase"})
+		CHECK(!has(section(coop, kind, "\n};"), "send_operator_command"));
 }
 
 TEST(mode_operator_core_validates_nothing_itself)

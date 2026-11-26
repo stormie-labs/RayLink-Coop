@@ -88,13 +88,13 @@ void connect_one(Side& host, Side& cl, uint16_t port, net::PeerHandle* host_side
 // when it hands out the DISCONNECT): B would take it, and what the owner still sends "to A" would reach B.
 TEST(transport_helper_keeps_a_left_peers_slot_until_the_owner_saw_it_leave)
 {
-	constexpr uint16_t kPort = 37901;
+	const uint16_t kPort = t::port(37901);
 	Side host, a, b;
 	net::PeerHandle on_a = nullptr, a_peer = nullptr;
 	connect_one(host, a, kPort, &on_a, &a_peer);
 
 	host.pump(); // the owner's last frame for now
-	net::Transport::disconnect_now(a_peer);
+	a.tr.disconnect_now(a_peer);
 	std::this_thread::sleep_for(std::chrono::milliseconds(100)); // the host's helper took A's goodbye
 	std::string err;
 	REQUIRE(b.tr.connect("127.0.0.1", kPort, &err) != nullptr);
@@ -118,7 +118,7 @@ TEST(transport_helper_keeps_a_left_peers_slot_until_the_owner_saw_it_leave)
 // them with the peer's queues: the owner must not get them after the reset.
 TEST(transport_helper_inbox_forgets_a_peer_the_owner_reset)
 {
-	constexpr uint16_t kPort = 37902;
+	const uint16_t kPort = t::port(37902);
 	Side host, a;
 	net::PeerHandle on_a = nullptr, a_peer = nullptr;
 	connect_one(host, a, kPort, &on_a, &a_peer);
@@ -128,7 +128,7 @@ TEST(transport_helper_inbox_forgets_a_peer_the_owner_reset)
 		REQUIRE(a.tr.send(a_peer, Lane::Reliable, small_packet(uint16_t(0x7010 + i))));
 	a.tr.flush();
 	others_for({&a}, 150); // the host's helper took them
-	net::Transport::reset(on_a);
+	host.tr.reset(on_a);
 	host.pump();
 	CHECK_EQ(host.count(net::Event::Type::Receive), size_t(0));
 }
@@ -137,7 +137,7 @@ TEST(transport_helper_inbox_forgets_a_peer_the_owner_reset)
 // delivered at the owner's next frame, in order, and nothing is lost or duplicated.
 TEST(transport_helper_hands_over_packets_in_order)
 {
-	constexpr uint16_t kPort = 37903;
+	const uint16_t kPort = t::port(37903);
 	Side host, a;
 	net::PeerHandle on_a = nullptr, a_peer = nullptr;
 	connect_one(host, a, kPort, &on_a, &a_peer);
@@ -164,7 +164,7 @@ TEST(transport_helper_hands_over_packets_in_order)
 // packet before the goodbye came: the owner gets it, then the DISCONNECT (vault ENet gotcha 10: the goodbye wiped it).
 TEST(transport_helper_hands_over_a_leaving_peers_last_packet)
 {
-	constexpr uint16_t kPort = 37904;
+	const uint16_t kPort = t::port(37904);
 	Side host, a;
 	net::PeerHandle on_a = nullptr, a_peer = nullptr;
 	connect_one(host, a, kPort, &on_a, &a_peer);
@@ -173,7 +173,7 @@ TEST(transport_helper_hands_over_a_leaving_peers_last_packet)
 	REQUIRE(a.tr.send(a_peer, Lane::Reliable, small_packet(0x7201)));
 	a.tr.flush();
 	others_for({&a}, 100); // the host's helper took it
-	net::Transport::disconnect_now(a_peer);
+	a.tr.disconnect_now(a_peer);
 	std::this_thread::sleep_for(std::chrono::milliseconds(100)); // and the goodbye
 	REQUIRE(pump_until({&host}, 2000, [&] { return host.count(net::Event::Type::Disconnect) == 1; }));
 	REQUIRE(host.count(net::Event::Type::Receive) == 1);

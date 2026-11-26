@@ -192,7 +192,7 @@ const char* const kStockHooks[] = {"/xrGame/alife_switch_manager.cpp", "/xrGame/
 const char* const kHooks[] = {"online_elsewhere", "binder_may_update", "held_update", "switched_offline", "takes_own_ids",
     "own_free_id"};
 // A mode without a map server's transfers: the answers of xrCoop/coop_mode.h NoneMode.
-const char* const kEmpty[] = {"return false;", "return true;", "", "", "return false;", "return 0xffff;"};
+const char* const kEmpty[] = {"return false;", "return true;", "", "", "return false;", "return kNoId;"};
 } // namespace
 
 // Rule 7 (critique H5): no stock hook reaches a server function; each asks the session's mode.
@@ -322,7 +322,7 @@ TEST(mode_hooks_each_mode_answers_its_own)
 	REQUIRE(!srv.empty() && !coop.empty());
 	const std::map<std::string, std::vector<std::string>> want = {
 		{"WorldServerMode",
-		    {"return levels::online_at_server(id);", "return true;", "", "", "return false;", "return 0xffff;"}},
+		    {"return levels::online_at_server(id);", "return true;", "", "", "return false;", "return kNoId;"}},
 		{"MapServerMode",
 		    {"return false;", "return levels::logic_may_update(object);", "levels::xfer_scheduled();",
 		        "levels::xfer_on_switched_offline(id);", "return true;", "return levels::leader_free_id();"}},
@@ -332,7 +332,9 @@ TEST(mode_hooks_each_mode_answers_its_own)
 	};
 	for (const auto& w : want)
 	{
-		const std::string cls = class_body(w.first.rfind("Coop", 0) == 0 ? coop : srv, w.first);
+		// both co-op modes answer these in their common base (CoopModeBase), after their own overrides
+		const bool co = w.first.rfind("Coop", 0) == 0;
+		const std::string cls = co ? class_body(coop, w.first) + class_body(coop, "CoopModeBase") : class_body(srv, w.first);
 		REQUIRE(!cls.empty());
 		for (size_t i = 0; i < w.second.size(); ++i)
 		{

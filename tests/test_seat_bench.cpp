@@ -32,7 +32,7 @@ Writer packet_body(size_t packet_bytes)
 TEST(seat_bench_transport_counts_exact_bytes_and_resets_reused_slot)
 {
 	using namespace net;
-	constexpr uint16_t port = 38930;
+	const uint16_t port = t::port(38930);
 	Transport host, client;
 	REQUIRE(host.listen(port, 1, nullptr));
 	const auto connect = [&] {
@@ -107,7 +107,7 @@ TEST(seat_bench_transport_counts_exact_bytes_and_resets_reused_slot)
 	CHECK_EQ(expired.in_5s, uint64_t(0));
 	CHECK_EQ(expired.out_bytes, uint64_t(12));
 
-	Transport::disconnect_now(client_peer);
+	client.disconnect_now(client_peer);
 	const auto end = Clock::now() + std::chrono::seconds(5);
 	Event ev;
 	do
@@ -124,21 +124,28 @@ TEST(seat_bench_transport_counts_exact_bytes_and_resets_reused_slot)
 	CHECK_EQ(fresh.out_5s, uint64_t(0));
 	CHECK_EQ(fresh.in_5s, uint64_t(0));
 
-	// Both peers have slot zero on different ENet hosts. A send through the foreign handle
-	// still queues on its link, but must not count toward this transport's own slot zero.
-	REQUIRE(host.send(reused.second, Lane::Reliable,
+	// Both peers have slot zero on different ENet hosts. A transport takes only its own peers (each has a lock of its own,
+	// another host's peer is another lock's): a send through the foreign handle is refused and counts toward neither slot zero.
+	CHECK(!host.send(reused.second, Lane::Reliable,
 		Transport::make_packet(Lane::Reliable, 0x100, payload.data(), 3, nullptr, 0, nullptr)));
 	CHECK_EQ(single(host, reused.first).out_bytes, uint64_t(0));
+	CHECK_EQ(single(client, reused.second).out_bytes, uint64_t(0));
+
+	// A valid send on the same reliable lane must arrive without the rejected packet preceding it.
+	REQUIRE(client.send(reused.second, Lane::Reliable,
+		Transport::make_packet(Lane::Reliable, 0x100, payload.data(), payload.size(), nullptr, 0, nullptr)));
 	host_received = false;
 	REQUIRE(t::pump_until({}, 5000, [&] {
-		pump_pair();
+		client.service(ev);
+		receive(host, host_received, payload.size() + 2);
 		return host_received;
 	}));
+	CHECK_EQ(single(host, reused.first).in_bytes, uint64_t(payload.size() + 2));
 }
 
 TEST(seat_bench_coop_session_peer_traffic_counts_both_directions)
 {
-	constexpr uint16_t port = 38931;
+	const uint16_t port = t::port(38931);
 	t::Node host("Boss", port), client("Alice", port);
 	host.cfg.mode = SessionMode::Coop;
 	unsigned host_received = 0, client_received = 0;
@@ -179,7 +186,7 @@ TEST(seat_bench_coop_session_peer_traffic_counts_both_directions)
 
 TEST(seat_bench_server_sixteen_clients_ten_seconds)
 {
-	constexpr uint16_t port = 38932;
+	const uint16_t port = t::port(38932);
 	constexpr size_t seats = 16, unreliable_bytes = 1100, reliable_bytes = 200;
 	constexpr unsigned seconds = 10, frames_hz = 60, unreliable_hz = 15, reliable_hz = 5;
 	constexpr unsigned frames = seconds * frames_hz;
