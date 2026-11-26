@@ -100,19 +100,70 @@ function Test-StandNpeReAddFrame([Microsoft.PowerShell.Commands.MatchInfo]$Hit) 
     return $false
 }
 
-$script:StandLuaContext = 8 # the debug header in b56/b57 has up to seven [LUA] lines before its [SCRIPT ERROR] report
+# Stock death of a stalker in an animpoint with its animation item in hand: xr_motivator death_callback releases the item
+# (death_manager keep_item, IsItem "anim"), then resets the state manager, whose detach (state_mgr_animation
+# process_special_action) releases the same item again; _g alife_release prints its callstack and "no server object" and
+# goes on (single player and a Coop host do the same). On a map server the death callback runs through our pcall wrappers
+# (coop_reputation, coop_client_binders), so our frames are in that stack. A frame is noise only when the lines before it,
+# read back, are frames of one callstack up to its opening rule, and that stack's two top frames are that release and that
+# detach.
+$script:StandStackHeader = '^~ (?:\[[0-9:.]+\] +)?STACK TRACEBACK:\s*$'
+$script:StandStackFrame = '^\t(?:[^\r\n]*\(line: \d+\) in function|\[C\]: in function)'
+$script:StandAnimRelease = '[\\/]_g\.script \(line: \d+\) in function ''alife_release_id''\s*$'
+$script:StandAnimDetach = '\bstate_mgr_animation\.script \(line: \d+\) in function ''process_special_action''\s*$'
+
+function Test-StandAnimReleaseFrame([Microsoft.PowerShell.Commands.MatchInfo]$Hit) {
+    if ($Hit.Line -notmatch $script:StandStackFrame) { return $false }
+    $pre = @($Hit.Context.PreContext)
+    for ($i = $pre.Count - 1; $i -ge 0; $i--) {
+        $line = $pre[$i]
+        if ($line -match $script:StandStackRule) {
+            # the opening rule has the callstack's header right under it; any other rule closed a block before this frame
+            if ($i + 1 -ge $pre.Count -or $pre[$i + 1] -notmatch $script:StandStackHeader) { return $false }
+            $top = [Collections.Generic.List[string]]::new()
+            for ($k = $i + 2; $k -lt $pre.Count -and $top.Count -lt 2; $k++) {
+                if ($pre[$k] -match $script:StandStackFrame) { $top.Add($pre[$k]) }
+            }
+            # the hit itself is a caller below both
+            return ($top.Count -eq 2 -and $top[0] -match $script:StandAnimRelease -and $top[1] -match $script:StandAnimDetach)
+        }
+        if ($line -notmatch $script:StandStackLine) { return $false }
+    }
+    return $false
+}
+
+$script:StandLuaContext = 8 # the debug header has up to seven [LUA] lines before its [SCRIPT ERROR] report (axr_main on_game_start: 3 frames, the detail, 3 frames)
+# A report the end of the file cut anywhere after its tag; the text so far is in `text`.
+$script:StandLuaReportCut = $script:StandBang + '\[SCRIPT ERROR\](?::(?: (?<text>.*))?)?$'
+
+# -Live: the file's last line is a [SCRIPT ERROR] report the game is still writing: its text so far begins the message of a
+# known GAMMA load error whose detail is the line above its frames. The log reaches the file in 4 KB pieces between the log
+# thread's flushes (engine xrCore\log.cpp), so a read can end anywhere in a line.
+function Test-StandGammaReportCut([Microsoft.PowerShell.Commands.MatchInfo]$Hit) {
+    if ($Hit.Line -notmatch $script:StandLuaReportCut) { return $false }
+    $text = [string]$Matches.text
+    $pre = @($Hit.Context.PreContext)
+    for ($i = $pre.Count - 1; $i -ge 0; $i--) {
+        if ($pre[$i] -match $script:StandLuaFrame) { continue }
+        return ($pre[$i] -match $script:StandGammaDetail -and $Matches.source.StartsWith($text, [StringComparison]::Ordinal))
+    }
+    return $false
+}
 
 # -Live: the log is read while the game writes it (a scenario polling its logs). A header block the end of the file cuts
-# before a decision (a line cut short, a report not written yet) is left for the next read: the b57 stand's progress_group
-# failed on the header of a known GAMMA load error read before its report (2026-11-21). The final read (no -Live) flags it.
+# before a decision (a line cut short, a report not written yet) is left for the next read, and so is a cut report of a
+# known GAMMA load error. The final read (no -Live) flags both.
 function Test-StandLogNoise([Microsoft.PowerShell.Commands.MatchInfo]$Hit, [switch]$Live) {
     if ($Hit.Line -match $script:StandNoise) { return $true }
     if (Test-StandNpeReAddFrame $Hit) { return $true }
+    if (Test-StandAnimReleaseFrame $Hit) { return $true }
+    $post = @($Hit.Context.PostContext)
+    if ($Live -and $post.Count -eq 0 -and (Test-StandGammaReportCut $Hit)) { return $true }
     if ($Hit.Line -notmatch $script:StandLuaHeader) { return $false }
     # CScriptStorage prints the error detail, then repeats it in the [SCRIPT ERROR] report.
     # Suppress the bare header only when both lines identify the same known load error.
-    $post = @($Hit.Context.PostContext)
-    $cut = $Live -and $post.Count -lt $script:StandLuaContext # the file ended inside this block's context
+    # The context reads one line past the longest block: fewer means the file ended inside this block, its report too.
+    $cut = $Live -and $post.Count -le $script:StandLuaContext
     $detail = $null
     for ($i = 0; $i -lt $post.Count; $i++) {
         $line = $post[$i]
@@ -131,7 +182,7 @@ function Select-StandLogLine([string]$Path, [string]$Pattern = '', [int]$Last = 
     $patterns = @($script:ErrorPattern)
     if ($Pattern) { $patterns += $Pattern }
     $select = {
-        Select-String -LiteralPath $Path -Pattern $patterns -Context $script:StandStackContext, $script:StandLuaContext |
+        Select-String -LiteralPath $Path -Pattern $patterns -Context $script:StandStackContext, ($script:StandLuaContext + 1) |
             Where-Object { -not (Test-StandLogNoise $_ -Live:$Live) }
     }
     if ($Last -le 0) { & $select; return }

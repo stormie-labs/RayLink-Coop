@@ -205,6 +205,96 @@ def test_live_read_waits_for_a_block_the_game_is_still_writing(tmp_path: Path, t
     assert header in final, final
 
 
+STAMP = re.compile(r"\[\d{2}:\d{2}:\d{2}\.\d{3}\] +")
+LOAD_FRAMES = (
+    "! [LUA]  0 : [C  ] __index",
+    r"! [LUA]  1 : [Lua] ...inkgames/gamma/game-dev\gamedata\scripts\axr_main.script(325) : on_game_start",
+    r"! [LUA]  2 : [Lua] e:/raylinkgames/gamma/game-dev\gamedata\scripts\_g.script(82) : ",
+)
+OWN_REPORT = r"! [SCRIPT ERROR]: ...\gamedata\scripts\coop_tasks.script:41: attempt to index a nil value"
+
+
+def load_error_block(report: str, timestamped: bool) -> list[str]:
+    """A load error the way the game prints it at axr_main on_game_start (dev65b world servers and Coop hosts): the header,
+    three frames, the detail, the same three frames and the report, eight lines after the header."""
+    report = STAMP.sub("", report)
+    kind = "SYNTAX" if "unexpected symbol" in report else "RUNTIME"
+    lines = [f"! [LUA] SCRIPT {kind} ERROR", *LOAD_FRAMES, report.replace("[SCRIPT ERROR]:", "[LUA]"), *LOAD_FRAMES, report]
+    if timestamped:
+        lines = [line.replace("! ", "! [10:15:39.236]  ", 1) for line in lines]
+    return lines
+
+
+def report_cut(report: str, cut: str) -> str:
+    tag = "[SCRIPT ERROR]"
+    return {
+        "in-tag": report[:report.index(tag) + len(tag)],
+        "after-tag": report[:report.index(tag) + len(tag) + 2],
+        "mid": report[:len(report) // 2],
+        "last-char": report[:-1],
+    }[cut]
+
+
+def test_live_read_waits_for_the_report_line_of_a_full_load_error_block(tmp_path: Path):
+    """Dev 65 Server stand (dev65 weather_server, vehicle_server; dev65b cover_server, vehicle_server): a scenario polled the
+    world log while the world server was loading GAMMA's scripts and failed on "! [LUA] SCRIPT RUNTIME ERROR" of a known
+    GAMMA load error; the whole log has nothing to flag. The log reaches the file in 4 KB pieces (engine log.cpp), so a read
+    can end inside the report line, the eighth line after the header. -Live leaves that block and its cut report for the
+    next read; the final read (no -Live) still flags them. One PowerShell run reads every case."""
+    headers = {}
+    for timestamped in (False, True):
+        for kind, report in (("runtime", GAMMA_REPORTS[0]), ("syntax", GAMMA_REPORTS[3])):
+            for cut in ("in-tag", "after-tag", "mid", "last-char"):
+                lines = load_error_block(report, timestamped)
+                lines[-1] = report_cut(lines[-1], cut)
+                name = f"{'host' if timestamped else 'world'}-{kind}-{cut}"
+                (tmp_path / f"{name}.log").write_text("\n".join(["* loading script utils_data.script", *lines]),
+                                                      encoding="ascii")
+                headers[name] = lines[0]
+    folder = str(tmp_path).replace("'", "''")
+    output = run_powershell(
+        rf"Get-ChildItem -LiteralPath '{folder}' -Filter *.log | Sort-Object Name | ForEach-Object {{ "
+        r"$live = @(Select-StandLogLine $_.FullName -Live).Count; "
+        r"$final = @(Select-StandLogLine $_.FullName | ForEach-Object Line) -join '|'; "
+        r"'{0} {1} {2}' -f $_.BaseName, $live, $final }"
+    )
+    seen = {}
+    for row in output:
+        name, live, final = row.split(" ", 2)
+        seen[name] = (int(live), final.split("|"))
+    assert sorted(seen) == sorted(headers), output
+    for name, (live, final) in seen.items():
+        assert live == 0, (name, output)
+        assert headers[name] in final, (name, output)
+
+
+@pytest.mark.parametrize(("tail", "flagged"), [
+    # a whole GAMMA block, then the next line or nothing: noise in both reads
+    ("gamma-block-then-line", False),
+    ("gamma-block-at-end", False),
+    # our own load error with its report cut: flagged at once, the way its complete report is
+    ("own-report-cut", True),
+    # a GAMMA detail, then a report that is not the detail's text: flagged
+    ("other-report-cut", True),
+])
+def test_live_read_of_a_full_load_error_block(tmp_path: Path, tail: str, flagged: bool):
+    block = load_error_block(GAMMA_REPORTS[1], False)
+    own = load_error_block(OWN_REPORT, False)
+    tails = {
+        "gamma-block-then-line": [*block, "! [ERROR] --- Failed to load script mags_patches"],
+        "gamma-block-at-end": block,
+        "own-report-cut": [*own[:-1], OWN_REPORT[:50]],
+        "other-report-cut": [*block[:-1], OWN_REPORT[:50]],
+    }
+    log = tmp_path / "game.log"
+    log.write_text("\n".join(["* loading script magnifier_switch.script", *tails[tail]]), encoding="ascii")
+    path = str(log).replace("'", "''")
+    live = run_powershell(rf"Select-StandLogLine '{path}' -Live | ForEach-Object Line")
+    assert bool(live) is flagged, live
+    if not flagged:
+        assert run_powershell(rf"Select-StandLogLine '{path}' | ForEach-Object Line") == []
+
+
 NPE_READD = (
     "! [13:36:29.210] [axr_main callback_add] callback fft_tutorial_on_actor_unlock_fast_travel already exists!",
     "~ [13:36:29.210]  ------------------------------------------------------------------------",
@@ -260,4 +350,59 @@ def test_npe_callback_readd_stack_is_noise(tmp_path: Path, case: str, flagged: b
     output = run_powershell(rf"Select-StandLogLine '{path}' -Live | ForEach-Object Line")
     coop = [line for line in output if "coop_" in line and "coop_route" not in line and "coop-settings" not in line]
     assert bool(coop) is flagged, output
+
+
+# dev65b phantoms_server, map server 1: a stalker dies in an animpoint with its animation item in hand. Stock
+# xr_motivator death_callback releases the item first (death_manager.keep_item: IsItem "anim"), then resets the state
+# manager, whose detach releases the same item again: _g alife_release prints its callstack and "no server object" and goes
+# on (a Coop host prints the same stack). On a map server the death callback runs through our pcall wrappers.
+ANIM_RELEASE = (
+    "~ ------------------------------------------------------------------------",
+    "~ STACK TRACEBACK:",
+    "",
+    "\te:/raylinkgames/gamma/game-dev\\gamedata\\scripts\\_g.script (line: 2206) in function 'alife_release_id'",
+    "\t... state_mgr_animation.script (line: 497) in function 'process_special_action'",
+    "\t... state_mgr_animation.script (line: 171) in function 'set_state'",
+    "\t... xr_motivator.script (line: 375) in function <... xr_motivator.script:319>",
+    "\t[C]: in function 'pcall'",
+    "\t... coop_client_binders.script (line: 147) in function <... coop_client_binders.script:145>",
+    "\t[C]: in function 'pcall'",
+    "\t... coop_reputation.script (line: 168) in function <... coop_reputation.script:155>",
+    "~ ------------------------------------------------------------------------",
+    "Time continual is:81384",
+    "!ERROR: alife_release | no server object!",
+)
+ANIM_COOP_FRAMES = [line for line in ANIM_RELEASE if "coop_" in line]
+
+
+@pytest.mark.parametrize(("case", "flagged"), [
+    ("anim-release-map-server", False),
+    ("anim-release-client", False),
+    ("release-by-our-code", True),
+    ("other-top-frame", True),
+    ("no-traceback-header", True),
+    ("frames-after-the-block", True),
+])
+def test_animation_item_double_release_stack_is_noise(tmp_path: Path, case: str, flagged: bool):
+    """Only that block is noise: our frames under a release our own code asked for, under another top frame, in a block
+    that is not a callstack, or after the block's closing rule are still errors."""
+    lines = list(ANIM_RELEASE)
+    if case == "anim-release-client":
+        lines = [line.replace("~ ", "~ [10:53:39.927]  ", 1) if line.startswith("~ ") else line for line in lines]
+        lines[2] = "[10:53:39.927] "
+    elif case == "release-by-our-code":
+        lines[4] = "\t... coop_tasks.script (line: 99) in function 'remove_item'"
+    elif case == "other-top-frame":
+        lines[3] = "\t... coop_tasks.script (line: 81) in function 'give_task'"
+    elif case == "no-traceback-header":
+        lines[1] = "~ some other block:"
+    elif case == "frames-after-the-block":
+        lines += ["~ STACK TRACEBACK:", *ANIM_COOP_FRAMES]
+    log = tmp_path / "game.log"
+    log.write_text("\n".join(["[ph] ms squad 37013 [simulation_psysucker] at -200.9 -20.3 -168.0", *lines]), encoding="ascii")
+    path = str(log).replace("'", "''")
+    for live in ("", " -Live"):
+        output = run_powershell(rf"Select-StandLogLine '{path}'{live} | ForEach-Object Line")
+        coop = [line for line in output if "coop_" in line]
+        assert bool(coop) is flagged, output
 
