@@ -1,8 +1,7 @@
 -- Сервер (srv): один мозг мира — цели отрядов, тайники, приказы между сервером мира и серверами карт (docs/MODES.md)
 --[[
-	Anomaly Coop - split levels: one brain of the world (docs\SPLIT_LEVELS.md, plan T15; gamedata\scripts\coop_srv_levels_brain.script,
-	coop_levels_brain before step S4). It registers its events and callbacks and patches the stock board from coop_mode.when_srv
-	only: nothing of it runs in the co-op. The Core asks caches_now() through coop_quests_core.part("brain").
+	Anomaly Coop - split levels: one brain of the world (docs\SPLIT_LEVELS.md). It registers its events and callbacks and patches
+	the stock board from coop_mode.when_srv only: nothing of it runs in the co-op. The Core asks caches_now() through coop_quests_core.part("brain").
 
 	The world server alone decides where squads go, also those a map server holds online. Once a second it picks the
 	targets of a few of them with the stock board (their ALife records are the world's) and tells that map server; there
@@ -53,18 +52,7 @@ local function levels()
 	return api and api.levels
 end
 
-local function split()
-	local l = levels()
-	return l ~= nil and l.split ~= nil and l.split() == true
-end
-
-local function map_server()
-	return api ~= nil and api.is_map_server ~= nil and api.is_map_server() == true
-end
-
-local function world_server()
-	return api ~= nil and api.is_host() == true
-end
+local split, map_server, world_server = coop_srv_roles.split, coop_srv_roles.map_server, coop_srv_roles.world_server
 
 local function order_row(squad)
 	return tostring(squad.scripted_target or "") .. "|" .. (squad.rush_to_target and 1 or 0) .. "|" .. (squad.force_online and 1 or 0)
@@ -297,9 +285,6 @@ function left(id)
 	if squad and squad.smart_id and SIMBOARD then SIMBOARD:assign_squad_to_smart(squad, nil) end
 end
 
-function _targets() return targets end
-function _tick() next_tick = 0; on_update() end
-
 function on_game_start()
 	if not api then return end
 	coop_mode.when_srv(function()
@@ -320,3 +305,12 @@ function on_game_start()
 		coop_quests_core.set_part("brain", coop_srv_levels_brain)
 	end)
 end
+
+-- tests only
+_test = {
+	targets = function() return targets end,
+	tick = function()
+		next_tick = 0
+		on_update()
+	end,
+}

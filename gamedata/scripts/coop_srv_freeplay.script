@@ -1,5 +1,5 @@
 -- Сервер: окно эвакуации у выбранного игрока, решение у сервера мира (docs/MODES.md)
--- Dev 57 G15-2, s41:1. The map reports the scene and its user; the world has the roster and the story registry.
+-- The map reports the scene and its user; the world has the roster and the story registry.
 local TAG = "srv_freeplay"
 local OFFER = "fp_offer"
 local CHOICE = "st_freeplay_text_yes_no"
@@ -30,7 +30,7 @@ local function scene_context(actor, npc)
 	local scene_level = level_of(npc)
 	if scene_level then return scene_level, peer end
 	-- The world has no loaded player map. Only the scene object or a known player's seat can identify its map.
-	for _, p in ipairs(C.players()) do
+	for _, p in ipairs(coop_util.players()) do
 		if level_number(p.level) and player_peer(p.id) and (p.id == peer or coop_mode.where(p.id) == "here") then
 			return p.level, peer
 		end
@@ -39,7 +39,7 @@ end
 
 local function choose_player(scene_level, preferred)
 	local first
-	for _, p in ipairs(coop_mods_core.players()) do
+	for _, p in ipairs(coop_util.players()) do
 		if player_peer(p.id) and p.level == scene_level then
 			if p.id == preferred then return p.id end
 			first = first or p.id
@@ -60,11 +60,9 @@ local function ask_on_world(id, scene_level, preferred)
 end
 
 local function receive_offer(t, from)
-	-- Map bridges have reserved transport identities (coop_mapserver_rules.h).
-	local bridge = type(from) == "number" and from > 0x100 and from <= 0x107 and from % 1 == 0
-	local ok = bridge and (t.id == CHOICE or t.id == ACK) and level_number(t.level)
+	local ok = coop_mode.from_level(from) and (t.id == CHOICE or t.id == ACK) and level_number(t.level)
 		and (t.peer == nil or player_peer(t.peer))
-	if not coop_trust.pass(OFFER, ok, "invalid freeplay scene from peer %s", tostring(from)) or not ok then return end
+	if not coop_trust.guard(OFFER, ok, "invalid freeplay scene from peer %s", tostring(from)) then return end
 	ask_on_world(t.id, t.level, t.peer)
 end
 

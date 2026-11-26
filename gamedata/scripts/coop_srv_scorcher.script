@@ -1,23 +1,22 @@
 -- Сервер (srv): Выжигатель мозгов для двух сторон в мире с картами по серверам (docs/MODES.md)
 --[[
-	Anomaly Coop - the Brain Scorcher for two sides (gamedata\scripts\coop_srv_scorcher.script, coop_scorcher before step S4)
-	Plan docs\plans\2026-11-16-storylines-per-faction.md section 4 (stage 5). Owner 2026-11-16: in a world with split levels one side
-	switches the Brain Scorcher off (the stock task, Sakharov), Monolith switches it back on (a task from Charon, the leader of
-	Monolith). A world without split levels, a sandbox and single player stay the stock game: every condition below answers what
-	keeps the stock behaviour there, and every logic file the mod edits (DLTX mod_*_coop_scorcher.ltx beside the stock ones) puts
-	the stock outcome in the FIRST branch under a negated condition, so a missing function (xr_logic.pick_section_from_condlist
-	skips an unknown condition, it does not fail it) also lands on the stock outcome.
+	Anomaly Coop - the Brain Scorcher for two sides (docs\plans\2026-11-16-storylines-per-faction.md section 4). In a world with
+	split levels one side switches the Brain Scorcher off (the stock task, Sakharov), Monolith switches it back on (a task from
+	Charon, the leader of Monolith). A world without split levels, a sandbox and single player stay the stock game: every condition
+	below answers what keeps the stock behaviour there, and every logic file the mod edits (DLTX mod_*_coop_scorcher.ltx beside the
+	stock ones) puts the stock outcome in the FIRST branch under a negated condition, so a missing function
+	(xr_logic.pick_section_from_condlist skips an unknown condition, it does not fail it) also lands on the stock outcome.
 
 	State (the world's): on (the Scorcher works), flips (how many times a switch was turned in this world), last (game seconds of
 	the last flip), locked (after MAX_FLIPS the switch stays as it is for good; both tasks fail by their own condlists).
-	  - The world server (coop.is_host() and not a map server; at the load of its save, before its session, the -coop_dedicated
-	    process: A-S4D) keeps it in its save (m_data.coop_scorcher) and is the only place it
+	  - The world server (coop_srv_roles.world_server; at the load of its save, before its session, the process started as the
+	    world server) keeps it in its save (m_data.coop_scorcher) and is the only place it
 	    changes. It changes when the world server's own switch logic flips it, or when the map server that leads the X10 level
-	    (SWITCH_LEVEL) reports a flip it made (coop_levels_share "scorcher" up). The world checks the report: the reporting map
+	    (SWITCH_LEVEL) reports a flip it made (the share "scorcher" up). The world checks the report: the reporting map
 	    server's level must be SWITCH_LEVEL (the level comes from the bridge, not from the payload), it must be made on top of the
 	    world's current flip count, it must change the state, and the cooldown and the lock must allow it. Anything else is refused
 	    and the next "down" puts the reporting map server back to the world's state.
-	  - Map servers get the state down (coop_levels_share "scorcher" down), set their own actor's bar_deactivate_radar_done to it
+	  - Map servers get the state down (the share "scorcher" down), set their own actor's bar_deactivate_radar_done to it
 	    (the condlists of their level read it) and re-arm the objects that were saved dead (rearm()).
 	  - Players' machines get the state from peer 0 only (event EV, read-only); it feeds the dialog preconditions. A player's
 	    message never changes the state: there is no verb for it.
@@ -85,28 +84,16 @@ SWITCH_FILE = "scripts\\bunker\\bunker_primary_switcher.ltx"
 -------------------------------------------------------------------------------
 -- Who we are
 -------------------------------------------------------------------------------
-local function call(f, ...)
-	if type(f) ~= "function" then return nil end
-	local ok, v = pcall(f, ...)
-	if ok then return v end
-	return nil
-end
-
-local function active() return api ~= nil and call(api.is_active) == true end
-local function is_host() return active() and call(api.is_host) == true end
-local function is_map_server() return active() and call(api.is_map_server) == true end
-local function is_dedicated() return active() and call(api.is_dedicated) == true end
-local function authority() return is_host() and not is_map_server() end
--- The process whose save keeps the world's state: the authority, and a world server (-coop_dedicated) before its session too. It
--- loads its save before the session starts (its world comes first), and its server layer answers from the start (coop_srv_mode).
-local function keeper() return authority() or (api ~= nil and call(api.is_dedicated) == true) end
+local call = coop_util.call
+local authority, is_map_server, dedicated = coop_srv_roles.world_server, coop_srv_roles.map_server, coop_srv_roles.dedicated
+-- The process whose save keeps the world's state: the authority, and the world server before its session too. It loads its save
+-- before the session starts (its world comes first), and its server layer answers from the start (coop_srv_mode).
+local function keeper() return authority() or dedicated() end
 
 local function split()
 	local f = rawget(_G, "coop_faction")
 	if type(f) == "table" and type(f.split_mode) == "function" then return call(f.split_mode) == true end
-	if not active() then return false end
-	local l = api.levels
-	return type(l) == "table" and call(l.split) == true
+	return coop_util.active() and coop_srv_roles.split()
 end
 
 local stats = { flips = 0, refused = 0, forged = 0, mirrored = 0, rearmed = 0, told = 0, errors = 0 }
@@ -243,7 +230,7 @@ function apply_flip(on)
 	return true
 end
 
--- coop_levels_share "scorcher" up, on the world server: a map server's flip. `lvl` is the level of the bridge it came over.
+-- the share "scorcher" up, on the world server: a map server's flip. `lvl` is the level of the bridge it came over.
 function on_report(v, lvl)
 	if not (authority() and split()) then return end
 	if lvl ~= SWITCH_LEVEL or type(v) ~= "table" or type(v.on) ~= "boolean" or tonumber(v.base) ~= S.flips then
@@ -258,7 +245,7 @@ local function down_get()
 	return state()
 end
 
--- coop_levels_share "scorcher" down, on a map server
+-- the share "scorcher" down, on a map server
 function on_down(v)
 	if not is_map_server() then return end
 	local t = clean(v)
@@ -296,7 +283,7 @@ function c_locked() return split() and S.locked == true end
 
 -- this machine's actor is a player of Monolith (a map server's or a dedicated world server's actor is nobody)
 function c_actor_monolith()
-	if not split() or is_map_server() or (is_host() and is_dedicated()) then return false end
+	if not split() or is_map_server() or (authority() and dedicated()) then return false end
 	local f = rawget(_G, "get_actor_true_community")
 	return call(f) == "monolith"
 end
@@ -396,33 +383,12 @@ function print_status()
 		stats.flips, stats.refused, stats.forged, stats.mirrored, stats.rearmed, stats.told, stats.errors)
 end
 
-function _stats() return stats end
-function _reset() S.on, S.flips, S.last, S.locked = nil, 0, nil, false; pending.n, pending.on, pending.base = 0, nil, nil end
-
-local function step(what, f)
-	local ok, err = pcall(f)
-	if not ok then printf("! [coop_scorcher] %s failed: %s", what, tostring(err)) end
-end
+local function step(what, f) coop_util.start_step("coop_scorcher", what, f) end
 
 -- Everything below runs from coop_mode.when_srv: in the co-op and in single player the stock answers of coop_conditions_stock stand.
 function on_game_start()
 	if not api then return end
 	coop_mode.when_srv(function()
-		-- fn at the actor's first update, also when that was over before this process's server layer answered (the world
-		-- server's session starts after its world is up): then at the next update
-		local function at_first_update(fn)
-			local seen = false
-			local function late()
-				UnregisterScriptCallback("actor_on_update", late)
-				if not seen then fn() end
-			end
-			RegisterScriptCallback("actor_on_first_update", function()
-				seen = true
-				fn()
-			end)
-			RegisterScriptCallback("actor_on_update", late)
-		end
-
 		step("condlist functions", function()
 			local xc = rawget(_G, "xr_conditions") or xr_conditions
 			local xe = rawget(_G, "xr_effects") or xr_effects
@@ -444,16 +410,12 @@ function on_game_start()
 		step("save", function()
 			RegisterScriptCallback("save_state", save_state)
 			RegisterScriptCallback("load_state", load_state)
-			-- what a save loaded before this ran brought (as coop_srv_task_audience): the world server's flips, lock and last flip
-			-- were lost at every restart of it (A-S4ML review)
-			local asm = rawget(_G, "alife_storage_manager")
-			local m = asm and type(asm.get_state) == "function" and asm.get_state() or nil
-			if type(m) == "table" then load_state(m) end
+			-- what a save loaded before this ran brought: the world server's flips, lock and last flip
+			coop_mode.late_load(load_state)
 		end)
 		step("share", function()
-			local share = coop_srv_levels_share
-			share.up(SHARE, up_get, on_report, 2000)
-			share.down(SHARE, down_get, on_down, 5000)
+			coop_mode.share_up(SHARE, up_get, on_report, 2000)
+			coop_mode.share_down(SHARE, down_get, on_down, 5000)
 		end)
 		step("events", function()
 			local cm = rawget(_G, "coop_main") or coop_main
@@ -464,7 +426,16 @@ function on_game_start()
 		end)
 		step("callbacks", function()
 			RegisterScriptCallback("actor_on_update", on_update)
-			at_first_update(function() step("re-arm", rearm) end)
+			coop_mode.at_first_update(function() step("re-arm", rearm) end)
 		end)
 	end)
 end
+
+-- tests only
+_test = {
+	stats = function() return stats end,
+	reset = function()
+		S.on, S.flips, S.last, S.locked = nil, 0, nil, false
+		pending.n, pending.on, pending.base = 0, nil, nil
+	end,
+}

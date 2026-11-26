@@ -92,7 +92,7 @@ print("== outside a scope nil still means offline")
 stock_again("before")
 
 print("== inside: the level of the player")
-far._names_of()[2] = { a = { field_1 = 600 }, z = { zone_there = 600 } }
+far._test.names_of()[2] = { a = { field_1 = 600 }, z = { zone_there = 600 } }
 local inside = {}
 local r1, r2 = qc.with_level_of(1, function(a, b)
 	inside.name = level.name()
@@ -255,7 +255,7 @@ end)
 coroutine.resume(co)
 check(level.name() == "k00_marsh", "a coroutine left the scope open")
 capture_log()
-far._tick()
+far._test.tick()
 printf = real_printf
 for _, l in ipairs(logged) do leaked = leaked or l:find("scope leaked by player 1", 1, true) ~= nil end
 check(leaked, "the frame says so")
@@ -282,11 +282,11 @@ o:kill()
 check(#SENT == before + 1 and SENT[#SENT].name == "quests.far_do" and SENT[#SENT].target == 0x101, "a kill goes to the map server of its level")
 check(far.orders_held() == 1, "and is held")
 CLOCK = CLOCK + 4000
-far._tick()
+far._test.tick()
 check(#SENT == before + 2, "no answer: it goes again")
 for _ = 1, 5 do
 	CLOCK = CLOCK + 4000
-	far._tick()
+	far._test.tick()
 end
 check(far.orders_held() == 0, "after the last try it is carried out here")
 check(SIM.killed == 600 and SIM.kill_entity_called == nil, "on the record, through srv.kill_record, never alife():kill_entity")
@@ -297,7 +297,7 @@ qc.send = function(name, t) sent_order = t return true end
 qc.with_level_of(1, function() o:set_relation(3, ACTOR) end)
 qc.send = real_send
 check(sent_order and sent_order.v == "relation" and sent_order.b == 500, "the player's avatar, not the ghost")
-far._orders_clear()
+far._test.orders_clear()
 
 print("== an order for an object that is no more")
 o:give_info_portion("x")
@@ -305,7 +305,7 @@ check(far.orders_held() == 1, "held")
 local rec = RECORDS[600]
 RECORDS[600] = nil
 capture_log()
-far._tick()
+far._test.tick()
 printf = real_printf
 RECORDS[600] = rec
 check(far.orders_held() == 0, "dropped")
@@ -314,7 +314,7 @@ check(logged[1] and logged[1]:find("order info on 600 dropped", 1, true) ~= nil,
 print("== its map server is gone")
 o:give_info_portion("y")
 coop.levels.map_servers = function() return {} end
-far._tick()
+far._test.tick()
 check(far.orders_held() == 0 and SIM.given and SIM.given[2] == "y", "the world server gives the info to the record itself")
 
 print("== the engine's \"no object\" id is not asked of the world")

@@ -3,8 +3,8 @@
 -- A map asks for {c,e}. The keeper replies with {c,e,g,q,s}: assignment generation,
 -- last merged batch number and checked skills. A data batch {c,e,g,q,t} advances q by one.
 -- The keeper says nothing of a character to a map before that map asked for him: until his body is in its world the map
--- has no row for him and refuses the word (progress_skills_route, b57b ms_crash_server: a player loading onto a running map).
--- INTEG-C: a reply with f = 1 asks the map to flush now; a map with nothing pending answers {c,e}.
+-- has no row for him and refuses the word (progress_skills_route: a player loading onto a running map).
+-- A reply with f = 1 asks the map to flush now; a map with nothing pending answers {c,e}.
 -- The batches of an assignment that closed (the player moved or left) still merge for ROW_TIMEOUT.
 
 local api = rawget(_G, "coop")
@@ -40,10 +40,9 @@ local function amount_ok(spec, amount)
 	return in_range(amount, 0, limit, spec[3])
 end
 
--- Transport identity, routing and wire bounds have no usable value when invalid,
--- even while coop_trust is auditing gameplay checks in log mode.
+-- Transport identity, routing and wire bounds have no usable value when invalid: such an event is dropped in every trust mode.
 local function required(name, ok, from)
-	return coop_trust.pass(name, ok, "invalid progress event from peer %s", tostring(from)) and ok
+	return coop_trust.guard(name, ok, "invalid progress event from peer %s", tostring(from))
 end
 
 local function fields_ok(t, fields)
@@ -117,7 +116,7 @@ function on_game_start()
 		end
 		if coop_mode.decides_world() then
 			-- closing: the routes of assignments that ended, open for their final batches until `closes`;
-			-- held: disputed Haru reports waiting for their map's flush (INTEG-C, rv_F5-PRG-4 blockers 3 and 4)
+			-- held: disputed Haru reports waiting for their map's flush.
 			local routes, closing, held, generation = {}, {}, {}, 0
 			local epoch = nil
 			local function reset()
@@ -126,7 +125,7 @@ function on_game_start()
 			end
 			local function load(m)
 				reset()
-				if C.active() then return end -- the Core restores active loads itself
+				if coop_util.active() then return end -- the Core restores active loads itself
 				P.clear()
 				local records = type(m) == "table" and m.coop_mods_pdata
 				if type(records) ~= "table" then return end
@@ -141,8 +140,8 @@ function on_game_start()
 				if epoch ~= current_epoch() then reset() end
 				local bridge_of = coop_mode.hook("levels.bridge_of_player")
 				local live = {}
-				if bridge_of and C.active() and in_range(epoch, 0, MAX_U32, true) then
-					for _, player in ipairs(C.players()) do
+				if bridge_of and coop_util.active() and in_range(epoch, 0, MAX_U32, true) then
+					for _, player in ipairs(coop_util.players()) do
 						local c = player.avatar_id -- the keeper's IDs already are in host numbering
 						local bridge = bridge_of(player.id)
 						if character_id(c) and bridge then
@@ -275,8 +274,8 @@ function on_game_start()
 					and in_range(q, 1, MAX_U32, true) and in_range(delta, -MAX_COUNT, MAX_COUNT, true) and delta ~= 0
 				if not required("progress_fight_payload", valid, from) then return false end
 				local route = routes[c]
-				-- A fight just before a move: the map he left still tells it while its assignment closes
-				-- (INTEG-C), in that assignment's own order, never after ROW_TIMEOUT.
+				-- The previous map can report a fight from just before the move while its assignment closes, in that assignment's own order.
+				-- ROW_TIMEOUT bounds that reporting window.
 				if not (route and route.bridge == from) then
 					local old = closing[c]
 					if old and old.bridge == from then route = old end
@@ -292,7 +291,7 @@ function on_game_start()
 				return true
 			end
 			-- The engine drops its reservations with each session (coop_script.cpp on_session_end):
-			-- reserved at load and again at every session's first update (INTEG-C).
+			-- reserve at load and again at every session's first update.
 			local reserved = false
 			local function reserve()
 				reserved = api.reserve_world_event and api.reserve_world_event("mods." .. SKILLS) == true
@@ -313,7 +312,7 @@ function on_game_start()
 				C.wrap(P, "filter", "srv_progress.filter", function(orig)
 					return function(character, peer, clean, previous)
 						local report = type(clean) == "table" and clean.skills_levels
-						if report == nil or not C.active() then return orig(character, peer, clean, previous) end
+						if report == nil or not coop_util.active() then return orig(character, peer, clean, previous) end
 						local pending = held[character]
 						held[character] = nil -- a newer skills report supersedes an older one
 						if type(report) ~= "table" or not awaits_tally(character, peer, report) then
@@ -347,7 +346,7 @@ function on_game_start()
 				C.wrap(P, "check", "srv_progress.check", function(orig)
 					return function(character, ...)
 						local accepted, reasons = orig(character, ...)
-						if #reasons == 0 and C.active() then step("checked record", function() send_accepted(character) end) end
+						if #reasons == 0 and coop_util.active() then step("checked record", function() send_accepted(character) end) end
 						return accepted, reasons
 					end
 				end)
@@ -356,7 +355,7 @@ function on_game_start()
 				RegisterScriptCallback("load_state", load)
 				local was_active = false
 				RegisterScriptCallback("actor_on_update", function()
-					local active = C.active()
+					local active = coop_util.active()
 					if active and (not was_active or not reserved) then reserve() end
 					was_active = active
 					refresh()
@@ -375,7 +374,7 @@ function on_game_start()
 			end
 			local function sync_world()
 				if epoch ~= current_epoch() then reset() end
-				return C.active() and coop_mode.leads_here() and in_range(epoch, 0, MAX_U32, true)
+				return coop_util.active() and coop_mode.leads_here() and in_range(epoch, 0, MAX_U32, true)
 			end
 			local function row_of(c, now)
 				if not rows[c] then rows[c] = { pending = {}, next = now + INTERVAL, retry = now } end
@@ -408,7 +407,7 @@ function on_game_start()
 			local function update()
 				if not sync_world() then return end
 				local now, present = time_global(), {}
-				for _, player in ipairs(C.players()) do
+				for _, player in ipairs(coop_util.players()) do
 					local c = local_character(player.avatar_id)
 					if c then
 						present[c] = true

@@ -1,7 +1,7 @@
 -- Server (srv): coop_srv_tasks.script, the task code only a server runs (step S5, unit A-S5T; docs\MODES.md, the build 57 plan).
 --   - co-op: none of it starts (coop_mode.when_srv never runs there);
 --   - a world hurt by a give that died on a world server (builds 45-49): its dialog's info is taken back, once a world
---     (was coop_tasks heal_lost_gives / _heal_once, tested in test_srv_far_tasks);
+--     (heal_once, tested in test_srv_far_tasks too);
 --   - a map server's personal effects pass through the world server to the player's machine once; the map server sends them again
 --     until the world server answers (was coop_tasks' coop_rep_map / coop_rep_map_ack, tested in test_tasks_sync);
 --   - character 0 on a server is the world server's seat, which plays no character: its effects are nobody's, the map server drops
@@ -214,10 +214,10 @@ do
 		"the half-made task leaves the journal and its dialog offers it again")
 	pstor.coop_lost_gives = nil -- a world of an older build
 	Hm.infos.fanat_training_start_done = true
-	T._heal_once()
+	T._test.heal_once()
 	check(Hm.infos.fanat_training_start_done == nil and pstor.coop_lost_gives == true, "an older world is looked at once")
 	Hm.infos.fanat_training_start_done = true
-	T._heal_once()
+	T._test.heal_once()
 	NOW = NOW + 1000
 	fire(Hm, "actor_on_update")
 	check(Hm.infos.fanat_training_start_done == true, "and not again in this world")
@@ -258,7 +258,7 @@ do
 	if packet then Hm.handlers.coop_rep_map(packet, BRIDGE); pump() end
 	check(Cm.rept == before - 25, "the duplicate check survives the world server's save and load")
 	local pending = 0
-	for _, list in pairs(Ms.env.coop_tasks.fx_pending()) do pending = pending + #list end
+	for _, list in pairs(Ms.env.coop_tasks_rewards.fx_pending()) do pending = pending + #list end
 	check(pending == 0, "the world server's answer took it off the map server's list")
 	-- inside a story condlist of the map server's level (was test_quests: "not swallowed by the shared story relay")
 	local r0 = Cm.rept
@@ -356,32 +356,32 @@ do
 	check(Hm.env.coop_quests_core.part("talk") == nil, "the old talk part is no longer installed")
 	partner_of[1] = 777
 	check(facts_of(1).partner == 777, "his partner as his map server says (coop.levels.talk_partner)")
-	check(not T._talk_vague(1) and T._spoke_to(1, 777) and not T._spoke_to(1, 778), "only the reported partner was spoken to")
+	check(not Hm.env.coop_tasks_requests.talk_vague(1) and Hm.env.coop_tasks_requests.spoke_to(1, 777) and not Hm.env.coop_tasks_requests.spoke_to(1, 778), "only the reported partner was spoken to")
 	partner_of[1] = nil
-	check(facts_of(1).partner == false and not T._talk_vague(1), "nobody is a definite answer")
-	check(T._spoke_to(1, 777), "a confirmed talk stays recent after the dialog closes")
+	check(facts_of(1).partner == false and not Hm.env.coop_tasks_requests.talk_vague(1), "nobody is a definite answer")
+	check(Hm.env.coop_tasks_requests.spoke_to(1, 777), "a confirmed talk stays recent after the dialog closes")
 	NOW = NOW + 16000
-	check(not T._spoke_to(1, 777), "the recent talk expires after fifteen seconds")
+	check(not Hm.env.coop_tasks_requests.spoke_to(1, 777), "the recent talk expires after fifteen seconds")
 	for _, id in ipairs({ 0, 1.5, 65535 }) do
 		partner_of[1] = id
 		check(facts_of(1).partner == nil, "the facade drops invalid partner id " .. id)
-		check(not T._talk_vague(1) and not T._spoke_to(1, 777), "an invalid partner is a definite rejection: " .. id)
+		check(not Hm.env.coop_tasks_requests.talk_vague(1) and not Hm.env.coop_tasks_requests.spoke_to(1, 777), "an invalid partner is a definite rejection: " .. id)
 	end
 	partner_of[1] = 65534
-	check(T._spoke_to(1, 65534), "the highest valid NPC id can be a partner")
+	check(Hm.env.coop_tasks_requests.spoke_to(1, 65534), "the highest valid NPC id can be a partner")
 	partner_of[1] = nil
 	local read_partner = Hm.env.coop.levels.talk_partner
 	Hm.env.coop.levels.talk_partner = nil
 	Hm.env.coop.levels.talking = function() return true end
-	check(T._talk_vague(1) and T._spoke_to(1, 777), "a missing partner callback falls back to the general dialog fact")
+	check(Hm.env.coop_tasks_requests.talk_vague(1) and Hm.env.coop_tasks_requests.spoke_to(1, 777), "a missing partner callback falls back to the general dialog fact")
 	local delivery = Hm.env.coop_quests_core.part("task_delivery")
 	local binding_available = delivery.has_talk_partner
 	delivery.has_talk_partner = function() error("no partner report") end
-	local ok, vague, spoke = pcall(function() return T._talk_vague(1), T._spoke_to(1, 777) end)
+	local ok, vague, spoke = pcall(function() return Hm.env.coop_tasks_requests.talk_vague(1), Hm.env.coop_tasks_requests.spoke_to(1, 777) end)
 	check(ok and vague and spoke, "a throwing partner callback still falls back to the general dialog fact")
 	delivery.has_talk_partner = binding_available
 	Hm.env.coop.levels.talk_partner = function() error("engine partner binding failed") end
-	check(not T._talk_vague(1) and not T._spoke_to(1, 777), "a failed engine partner read stays a definite answer, as at HEAD")
+	check(not Hm.env.coop_tasks_requests.talk_vague(1) and not Hm.env.coop_tasks_requests.spoke_to(1, 777), "a failed engine partner read stays a definite answer, as at HEAD")
 	Hm.env.coop.levels.talk_partner = read_partner
 	Hm.env.coop.levels.talking = function(peer) return partner_of[peer] ~= nil end
 	check(Ms.env.coop_mode.facts_of(1) == nil and Cm.env.coop_mode.facts_of(1) == nil,
@@ -399,7 +399,7 @@ do
 	boot(Old)
 	local old_talk = Old.env.coop_mode.facts_of(1)
 	check(old_talk and old_talk.partner == nil and old_talk.talking, "an older engine reports the general dialog fact only")
-	check(Old.env.coop_tasks._talk_vague(1) and Old.env.coop_tasks._spoke_to(1, 777), "an older engine still accepts the general dialog fact")
+	check(Old.env.coop_tasks_requests.talk_vague(1) and Old.env.coop_tasks_requests.spoke_to(1, 777), "an older engine still accepts the general dialog fact")
 	drop_machine(Old)
 end
 
@@ -514,9 +514,9 @@ end
 print("== one step per talk: the map server tells the world server each talk it grants (review A-REV-E-2 finding 5)")
 do
 	local T = Hm.env.coop_tasks
-	local real = T.far_talk_new
+	local real = Hm.env.coop_tasks_requests.far_talk_new
 	local heard = {}
-	T.far_talk_new = function(p, n)
+	Hm.env.coop_tasks_requests.far_talk_new = function(p, n)
 		heard[#heard + 1] = tostring(p) .. ":" .. tostring(n)
 		if real then return real(p, n) end
 	end
@@ -585,7 +585,7 @@ do
 		"task_map_ack_payload", "task_talk_new_sender", "task_talk_new_payload" }) do
 		check(text:match("\n" .. name .. "%s*=%s*(%w+)") == "refuse", "the shipped policy refuses the dropped check " .. name)
 	end
-	T.far_talk_new = real
+	Hm.env.coop_tasks_requests.far_talk_new = real
 	Ms.env.coop_npc_meet, Ms.env.coop.talk_lock_of = nil, nil
 end
 

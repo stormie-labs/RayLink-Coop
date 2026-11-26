@@ -131,7 +131,10 @@ coop_npc_players = {
 for _, mode in ipairs(modes.names()) do
 	MODE = mode == "none" and "sp" or "host"
 	local facade = load_script("coop_mode")
-	modes.install(facade, mode)
+	-- the world server here has two map servers (coop.levels.map_servers below): both are levels it hears from
+	modes.install(facade, mode, mode == "srv_world" and {
+		from_level = function(from) return from == 0x101 or from == 0x102 end,
+	} or nil)
 	coop.is_host = function() return MODE == "host" and mode ~= "srv_map" end
 	coop.is_map_server = function() return mode == "srv_map" end
 	coop.is_dedicated = function() return mode == "srv_world" end
@@ -238,7 +241,7 @@ for _, mode in ipairs(modes.names()) do
 		hit("idiots_point", t, 0)
 		check(#moves == 1 and moves[1].id == 201 and states[201].combat.guard and not states[201].movement.wait,
 			"m21:3 the map server applies options using the transport-relayed player identity")
-		coop_srv_levels_share._tick()
+		coop_srv_levels_share._test.tick()
 		local t = sent("coop_share")
 		local rows = t and t.k == "idiots_state" and coop_quests_core.des(t.d)
 		check(rows and rows[201] and rows[201].states.combat.guard and rows[202] and rows[202].beh.keepType == "from-map-202",

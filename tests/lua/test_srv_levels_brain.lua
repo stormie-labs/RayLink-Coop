@@ -58,6 +58,8 @@ coop.send_event = function(name, payload, target)
 end
 
 print("== levels_brain")
+-- coop_main.on_game_start asks the facade; the stand-in below replaces this one
+coop_mode = { decides_world = function() return true end }
 load_coop_main()
 coop_main.on_game_start()
 -- step S4: the co-op first: the script is there, nothing of it starts (the board is the stock's, no event, no callback)
@@ -65,26 +67,28 @@ local WAITING, PARTS = {}, {}
 coop_mode = { when_srv = function(fn) WAITING[#WAITING + 1] = fn return true end }
 coop_quests_core = { set_part = function(name, t) PARTS[name] = t end }
 local stock_target = sim_board.simulation_board.get_squad_target
+load_script_file("coop_util")
+load_script_file("coop_srv_roles")
 load_script_file("coop_srv_levels_brain")
 coop_srv_levels_brain.on_game_start()
 check(#WAITING == 1 and sim_board.simulation_board.get_squad_target == stock_target and PARTS.brain == nil,
 	"S4: the co-op: when_srv waits, the stock board is untouched, no part for the Core")
-check(coop_main.on_event("coop_brain", "300:41", 0) == nil and coop_srv_levels_brain._targets()[300] == nil,
+check(coop_main.on_event("coop_brain", "300:41", 0) == nil and coop_srv_levels_brain._test.targets()[300] == nil,
 	"S4: the co-op: an event of the brain finds no handler")
 -- the server layer answers: what waited runs
 WAITING[1]()
 check(sim_board.simulation_board.get_squad_target ~= stock_target and PARTS.brain == coop_srv_levels_brain,
 	"S4: split: the board is patched and the Core gets its part")
 
-coop_srv_levels_brain._tick()
+coop_srv_levels_brain._test.tick()
 local last = SENT[#SENT]
 check(last and last.name == "coop_brain" and last.to == 0x101, "the targets go to the map server that holds the squads")
 check(last and last.payload == "300:50,310:50", "every squad it holds, with the world's board's answer")
 local n = #SENT
-coop_srv_levels_brain._tick()
+coop_srv_levels_brain._test.tick()
 check(#SENT == n, "a target that was just decided is not decided again")
 NOW = NOW + 31000
-coop_srv_levels_brain._tick()
+coop_srv_levels_brain._test.tick()
 check(#SENT == n + 1, "it is looked at again later")
 
 asked = {}
@@ -96,7 +100,7 @@ check(sim_board.simulation_board.get_squad_target(SIMBOARD, BODIES[300]).id == 5
 check(sim_board.simulation_board.get_squad_target(SIMBOARD, BODIES[310]).id == 41, "nothing decided yet: the squad stays at its smart")
 check(#asked == 0, "its own board decides nothing")
 coop_main.on_event("coop_brain", "310:50", 7)
-check(coop_srv_levels_brain._targets()[310] == nil, "only the world server decides")
+check(coop_srv_levels_brain._test.targets()[310] == nil, "only the world server decides")
 
 LOGIC.game_object[201] = { active = "beh@guard" }
 coop_srv_levels_brain.logic_of(201)
@@ -159,7 +163,7 @@ print("== orders of a held squad go to its map server as they change")
 SQUADS = { 402 }
 SENT = {}
 NOW = NOW + 2000
-coop_srv_levels_brain._tick()
+coop_srv_levels_brain._test.tick()
 local function sent_orders()
 	for i = #SENT, 1, -1 do
 		if SENT[i].name == "coop_orders" then return SENT[i] end
@@ -169,11 +173,11 @@ local told = sent_orders()
 check(told and told.to == 0x101 and told.payload == "402|newer_order|0|1", "its orders")
 SENT = {}
 NOW = NOW + 2000
-coop_srv_levels_brain._tick()
+coop_srv_levels_brain._test.tick()
 check(sent_orders() == nil, "nothing changed: nothing goes")
 home.scripted_target, home.force_online, home.rush_to_target = nil, nil, true
 NOW = NOW + 2000
-coop_srv_levels_brain._tick()
+coop_srv_levels_brain._test.tick()
 told = sent_orders()
 check(told and told.payload == "402||1|0", "a change goes")
 SQUADS = { 300, 310 }
@@ -220,19 +224,19 @@ local function caches_sent()
 end
 SENT = {}
 NOW = NOW + 5000
-coop_srv_levels_brain._tick()
+coop_srv_levels_brain._test.tick()
 local first = caches_sent()
 check(first and first.to == 0x101, "the world server tells a map server the stashes of its level")
 check(first and first.payload:find("600|s|wpn_pm,bandage", 1, true) and first.payload:find("601|t|", 1, true) and first.payload:find("602|f|", 1, true), "all of them the first time")
 check(first and not first.payload:find("700|", 1, true), "not those of other levels")
 SENT = {}
 coop_srv_levels_brain.caches_now()
-coop_srv_levels_brain._tick()
+coop_srv_levels_brain._test.tick()
 check(caches_sent() == nil, "nothing changed: nothing goes")
 treasure_manager.caches[603] = "ammo_9x18"
 treasure_manager.caches[600] = nil
 coop_srv_levels_brain.caches_now()
-coop_srv_levels_brain._tick()
+coop_srv_levels_brain._test.tick()
 local change = caches_sent()
 check(change and change.payload:find("603|s|ammo_9x18", 1, true) and change.payload:find("600|n|", 1, true), "a new stash and one that is gone go")
 SENT = {}
@@ -240,7 +244,7 @@ treasure_manager.caches[603] = true
 coop_main.on_event("coop_caches", "603|t|;602|s|bread", 0x101)
 check(treasure_manager.caches[602] == "bread", "what a map server filled comes to the world server's table")
 coop_srv_levels_brain.caches_now()
-coop_srv_levels_brain._tick()
+coop_srv_levels_brain._test.tick()
 check(caches_sent() == nil, "and is not told back to it")
 coop_main.on_event("coop_caches", "602|f|", 5)
 check(treasure_manager.caches[602] == "bread", "a player is no map server")
@@ -250,21 +254,21 @@ MAP_SERVER = true
 coop.is_host = function() return false end
 treasure_manager.caches = { [800] = "wpn_pm", [801] = true }
 coop_srv_levels_brain.caches_now()
-coop_srv_levels_brain._tick()
+coop_srv_levels_brain._test.tick()
 SENT = {}
 coop_srv_levels_brain.caches_now()
-coop_srv_levels_brain._tick()
+coop_srv_levels_brain._test.tick()
 check(caches_sent() == nil, "a map server starts from its save: nothing to say")
 treasure_manager.caches[800] = true
 coop_srv_levels_brain.caches_now()
-coop_srv_levels_brain._tick()
+coop_srv_levels_brain._test.tick()
 local up = caches_sent()
 check(up and up.to == 0 and up.payload == "800|t|", "a box it filled goes up")
 SENT = {}
 coop_main.on_event("coop_caches", "801|f|;802|s|bread", 0)
 check(treasure_manager.caches[801] == false and treasure_manager.caches[802] == "bread", "the world's word goes into its copy")
 coop_srv_levels_brain.caches_now()
-coop_srv_levels_brain._tick()
+coop_srv_levels_brain._test.tick()
 check(caches_sent() == nil, "and is not told back")
 coop_main.on_event("coop_caches", "801|t|", 7)
 check(treasure_manager.caches[801] == false, "only the world server says")

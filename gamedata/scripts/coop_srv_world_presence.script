@@ -11,7 +11,7 @@ end
 local function player_on(se, standing_only)
 	local level_id = level_of(se)
 	if level_id == nil then return false end
-	for _, player in ipairs(coop_mods_core.players()) do
+	for _, player in ipairs(coop_util.players()) do
 		-- The engine roster omits transport bridges and the world server's ghost.
 		if player.level == level_id and player.avatar_id
 			and (not standing_only or coop_npc_players.standing(player.avatar_id)) then

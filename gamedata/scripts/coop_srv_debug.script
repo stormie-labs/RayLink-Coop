@@ -4,9 +4,8 @@
 
 local api = rawget(_G, "coop")
 local EV_RUN, EV_DONE, EV_NOTE = "coop.dbg.run", "coop.dbg.done", "coop.dbg.note"
-local PENDING_MS = 60000 -- a pending request older than this is swept by the next forward (HEAD: never on its result)
+local PENDING_MS = 60000 -- a pending request older than this is swept by the next forward, never on its result
 local MAX_REQUEST_ID = 0xffffffff
-local LAST_PLAYER_PEER = 16 -- kMaxPeerSlots - 1 (coop_protocol.h)
 local MAX_OBJECT_ID = 65534 -- 65535 is the engine's invalid id
 local MAX_RESULT_BYTES = 2048 -- coop_debug_server MAX_SAY_BYTES: a longer announcement is dropped by every receiver
 -- The refusal codes a map's on_run can send back: coop_debug_cmds.validate, coop_debug_server.execute and the commands'
@@ -19,11 +18,7 @@ local RESULT_CODES = { debug_off = true, old_client = true, unknown_cmd = true, 
 local pending = {}
 local next_rid = 0
 
-local function call(fn, ...)
-	if type(fn) ~= "function" then return nil end
-	local ok, result = pcall(fn, ...)
-	if ok then return result end
-end
+local call = coop_util.call
 
 local function bounded_int(value, lo, hi)
 	local n = tonumber(value)
@@ -90,17 +85,17 @@ local function on_run(payload, player, relayed)
 	-- on_level_request has verified the world sender and extracted the player on this process.
 	local t = coop_npc_players.decode(payload)
 	local id, rid = t._c, bounded_int(t._rid, 1, MAX_REQUEST_ID)
-	local peer = bounded_int(player, 0, LAST_PLAYER_PEER)
+	local peer = bounded_int(player, 0, coop_util.MAX_PEER)
 	local c = coop_debug_cmds.get(id)
 	local valid = relayed and peer ~= nil and rid ~= nil and c ~= nil and c.where ~= "ws"
-	if not coop_trust.pass("debug_level_run", valid, "invalid debug run %s, rid %s for peer %s", tostring(id),
-		tostring(t._rid), tostring(player)) or not valid then return end
+	if not coop_trust.guard("debug_level_run", valid, "invalid debug run %s, rid %s for peer %s", tostring(id),
+		tostring(t._rid), tostring(player)) then return end
 	if peer == 0 then peer = nil end
 
 	local ok, a = coop_debug_cmds.validate(id, t)
 	log("%s rid %d for peer %s taken from the world server", id, rid, tostring(peer))
 	local res_ok, r = false, a
-	if coop_trust.pass("debug_level_args", ok, "%s rid %d: invalid arguments (%s)", id, rid, tostring(not ok and a or "")) and ok then
+	if coop_trust.guard("debug_level_args", ok, "%s rid %d: invalid arguments (%s)", id, rid, tostring(not ok and a or "")) then
 		res_ok, r = coop_debug_server.execute(c, id, a, peer, "#" .. tostring(peer), rid)
 	end
 	local done = { rid = rid, ok = res_ok == true }
@@ -116,18 +111,18 @@ end
 
 local function on_done(payload, from)
 	local trusted = type(from) == "number" and coop_mode.from_level(from)
-	if not coop_trust.pass("debug_level_sender", trusted, "invalid debug completion sender %s", tostring(from)) or not trusted then return end
+	if not coop_trust.guard("debug_level_sender", trusted, "invalid debug completion sender %s", tostring(from)) then return end
 	local t = coop_npc_players.decode(payload)
 	local rid = bounded_int(t.rid, 1, MAX_REQUEST_ID)
 	local p = rid and pending[rid]
-	-- No age check here (HEAD's parity): a late result of the dispatched bridge still finishes its request until the next
+	-- No age check here: a late result of the dispatched bridge still finishes its request until the next
 	-- forward sweeps it. Every field is checked before the request is consumed, so a malformed result cannot use it up.
 	local valid = p ~= nil and p.bridge == from and type(t.ok) == "boolean"
 		and (t.id == nil or bounded_int(t.id, 0, MAX_OBJECT_ID) ~= nil)
 		and (t.msg == nil or (type(t.msg) == "string" and #t.msg <= MAX_RESULT_BYTES))
 		and (t.code == nil or (type(t.code) == "string" and RESULT_CODES[t.code] == true))
-	if not coop_trust.pass("debug_level_done", valid, "unexpected debug completion rid %s from #%s", tostring(t.rid),
-		tostring(from)) or not valid then return end
+	if not coop_trust.guard("debug_level_done", valid, "unexpected debug completion rid %s from #%s", tostring(t.rid),
+		tostring(from)) then return end
 
 	pending[rid] = nil
 	local ok = t.ok

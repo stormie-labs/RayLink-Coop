@@ -8,6 +8,7 @@
 
 local TAG = "companions"
 local P, C -- player helpers and the shared companion state
+local world_server, map_server = coop_srv_roles.world_server, coop_srv_roles.map_server
 local EV_FOLLOW, EV_ADOPT, EV_DROP, EV_RECALL = "npc.comp_follow", "npc.comp_adopt", "npc.comp_drop", "npc.comp_recall"
 local RECALLED, RECALL_AGAIN_MS = "recalled", 20000
 local far, far_last = {}, {} -- level id -> leader and previous-leader tables
@@ -57,7 +58,7 @@ local function sort_loaded_leaders()
 		if squad then level_id, at = C.level_of_squad(squad) end
 		if at and at ~= level.name() then
 			leaders[squad_id] = nil
-			if P.is_world_server() then note_far(level_id, squad_id, lead) end
+			if world_server() then note_far(level_id, squad_id, lead) end
 		end
 	end
 end
@@ -218,7 +219,7 @@ end
 -- World server: the map server of the level this squad stands on, and that level's id.
 local function map_server_of(squad)
 	local l = split_levels()
-	if not (l and P.is_world_server()) then return nil end
+	if not (l and world_server()) then return nil end
 	local id = C.level_of_squad(squad)
 	for _, ms in ipairs(l.map_servers()) do
 		if ms.level == id then return ms.bridge, id end
@@ -258,7 +259,7 @@ local function send_adopt(delivery, bridge)
 	send_word(EV_ADOPT, delivery.word, bridge)
 end
 
--- own_row: the stock row is this process's own (a task claimed the squad here, HEAD kept it: task scripts ask it), not the handoff's.
+-- own_row keeps the stock row for task scripts that query squads claimed by this process.
 local function begin_adopt(bridge, level_id, squad, lead, peer, rows, own_row)
 	local m = C.marks_of(squad)
 	local carried = {}
@@ -299,7 +300,7 @@ local function all_home(squad, l)
 end
 
 local function world_peer(character)
-	for _, p in ipairs(P.players()) do
+	for _, p in ipairs(coop_util.players()) do
 		if p.avatar_id == character then return p.id end
 	end
 end
@@ -334,9 +335,8 @@ local function follow_home(l)
 		elseif destination and not all_home(squad, l) then
 			ask_recall(l, squad_id, squad, f)
 		elseif destination and C.may_follow(squad) then
-			-- The world server has no level of a player: while the map server of his new level is still starting (b57b stand: 39 s)
-			-- there is nobody to tell, and the squad waits offline. Taken here it was lost: follow_tick put it back on `followers`, the
-			-- next round found it on his level already and forgot it, with no comp_adopt to anybody and no owner in the save.
+			-- Keep the squad offline in `followers` until the destination map server can receive comp_adopt.
+			-- Moving it sooner makes follow_tick clear the entry on the next pass without an adoption or a saved owner.
 			local bridge = l.bridge_of_player(peer)
 			local body = bridge and alife_object(f.l)
 			if body then
@@ -406,7 +406,7 @@ local function follow_tick()
 	local leaders = C.leaders()
 	local l = split_levels()
 	if not l then return end
-	local resolve_peer = P.is_world_server() and world_peer or P.peer_of
+	local resolve_peer = world_server() and world_peer or P.peer_of
 	for squad_id, lead in pairs(leaders) do
 		local peer = resolve_peer(lead)
 		local there = peer and l.level_name(l.level_of_player(peer))
@@ -417,7 +417,7 @@ local function follow_tick()
 				leaving[squad_id] = nil
 			end
 		elseif there and there ~= level.name() and (not squad or C.may_follow(squad)) then
-			if P.is_map_server() then
+			if map_server() then
 				-- the squad goes when the engine gives it back (nothing of it online here); a friend by it keeps it here, so the owner stays
 				next_transfer = next_transfer + 1
 				leaving[squad_id] = send_word(EV_FOLLOW, { s = squad_id, p = peer, l = lead,
@@ -428,7 +428,7 @@ local function follow_tick()
 			end
 		end
 	end
-	if P.is_world_server() then
+	if world_server() then
 		left_behind(l)
 		follow_home(l)
 		retry_adoptions(l)
@@ -468,18 +468,13 @@ local function entity_id(value)
 	return integer_in(value, 1, 0xfffe) -- 0 is the actor, 0xffff is the engine's invalid id
 end
 
--- F5-SEAT-2: a server's players are its clients 1 .. the session's seats; an engine that says none: the server's 16
+-- A server's players are its clients 1 .. the session's seats; an engine that says none: the server's 16
 -- (srv/coop_srv_mode.cpp starts it with kMaxPlayers), not the co-op's 8.
 local SERVER_SEATS = 16
 local function player_peer(value)
 	local api = rawget(_G, "coop")
 	local info = api and api.session_info and api.session_info()
 	return integer_in(value, 1, info and tonumber(info.max_players) or SERVER_SEATS)
-end
-
-local function transfer_word(name, ok, from)
-	-- Transport roles and well-formed wire fields are prerequisites even while trust is in log mode.
-	return coop_trust.pass(name, ok, "invalid companion transfer from peer %s", tostring(from)) and ok
 end
 
 local function valid_word_rows(t)
@@ -509,9 +504,9 @@ local function collect_word(t, from, pending)
 end
 
 local function on_follow(t, from)
-	local ok = P.is_world_server() and integer_in(from, 0x101, 0x107) -- engine map server slots
+	local ok = world_server() and coop_mode.from_level(from)
 		and entity_id(t.s) and entity_id(t.l) and player_peer(t.p) and valid_word_rows(t)
-	if not transfer_word("comp_follow", ok, from) then return end
+	if not coop_trust.guard("comp_follow", ok, "invalid companion transfer from peer %s", tostring(from)) then return end
 	-- On its way to a map server: only that map server may let it go. It lets go only a squad it leads, and its leader share leaves
 	-- out a squad on its way, so this word is its acknowledgement of the adopt too (the leader left again before that share).
 	local delivery = deliveries[t.s]
@@ -530,10 +525,10 @@ local function on_follow(t, from)
 end
 
 local function on_adopt(t, from)
-	local ok = P.is_map_server() and from == 0 and entity_id(t.s) and entity_id(t.l)
+	local ok = map_server() and from == 0 and entity_id(t.s) and entity_id(t.l)
 		and (t.p == nil or player_peer(t.p)) and (t.d == nil or type(t.d) == "boolean")
 		and (t.c == nil or type(t.c) == "boolean") and valid_word_rows(t)
-	if not transfer_word("comp_adopt", ok, from) then return end
+	if not coop_trust.guard("comp_adopt", ok, "invalid companion transfer from peer %s", tostring(from)) then return end
 	if t.g and adopted[t.s] == t.g then return end
 	t = collect_word(t, from, adopt_parts)
 	if not t then return end
@@ -547,8 +542,8 @@ end
 -- A task of the world server lets a squad go that a map server holds (Hidden Threat, the player left the station): the NPC is there.
 local function on_drop(t, from)
 	local leaders = C.leaders()
-	local ok = P.is_map_server() and from == 0 and entity_id(t.s) and (t.m == nil or type(t.m) == "boolean")
-	if not transfer_word("comp_drop", ok, from) then return end
+	local ok = map_server() and from == 0 and entity_id(t.s) and (t.m == nil or type(t.m) == "boolean")
+	if not coop_trust.guard("comp_drop", ok, "invalid companion transfer from peer %s", tostring(from)) then return end
 	local recalled = leaving[t.s] == RECALLED
 	leaders[t.s], adopting[t.s], adopted[t.s], leaving[t.s] = nil, nil, nil, nil
 	adopt_parts[t.s] = nil
@@ -566,8 +561,8 @@ end
 -- word comes with his peer, never 0 (coop_script.cpp server_on_script_event), and the engine's recall is a map server's alone.
 local function on_recall(t, from)
 	local l = split_levels()
-	local ok = l and l.recall and P.is_map_server() and from == 0 and entity_id(t.s)
-	if not transfer_word("comp_recall", ok, from) then return end
+	local ok = l and l.recall and map_server() and from == 0 and entity_id(t.s)
+	if not coop_trust.guard("comp_recall", ok, "invalid companion transfer from peer %s", tostring(from)) then return end
 	if not leaving[t.s] then return end
 	local squad = alife_object(t.s)
 	if squad and C.may_follow(squad) and l.recall(t.s) then

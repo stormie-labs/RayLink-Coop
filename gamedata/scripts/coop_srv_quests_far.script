@@ -1,9 +1,9 @@
 -- Сервер (srv): сервер мира смотрит на карту, которую ведёт сервер карты, и слышит её смерти (docs/MODES.md)
 --[[
-	Anomaly Coop - split levels: the world server looks at a level a map server leads (docs\SPLIT_LEVELS.md 7a "Дальний вид";
-	gamedata\scripts\coop_srv_quests_far.script, coop_quests_far before step S4). Its callbacks, events, shared tables, the patches
-	of the stock and what swaps the stock's globals for a far view are set up from coop_mode.when_srv only: nothing of it runs in the
-	co-op. The Core reaches it through coop_quests_core.part("far") (with_level_of, with_target, at_home, in_scope, object, ...).
+	Anomaly Coop - split levels: the world server looks at a level a map server leads (docs\SPLIT_LEVELS.md 7a "Дальний вид"). Its
+	callbacks, events, shared tables, the patches of the stock and what swaps the stock's globals for a far view are set up from
+	coop_mode.when_srv only: nothing of it runs in the co-op. The Core reaches it through coop_quests_core.part("far")
+	(with_level_of, with_target, at_home, in_scope, object, ...).
 	The world, the save, the task manager and the modules of the tasks live on the world server; what a task asks about stands on another
 	process. Status functors stay here, their state is here. Two ways of one idea:
 
@@ -16,7 +16,7 @@
 
 	An order is held here until the map server answers. When that server is gone, or the object went home, the world server carries it out
 	on its own record; for an object that is no more it is dropped with a line in the log. One order is held per (object, verb,
-	arguments): a task check that asks the same again while it is held adds nothing (P45b); give_money adds up and is never merged; a
+	arguments): a task check that asks the same again while it is held adds nothing; give_money adds up and is never merged; a
 	setting (info/uninfo of a name, health, place, ...) holds only its newest order for retry or carry-out.
 	Inside a scope the task sound constructors, the direct dialog and effect constructors, and get_safe_sound_object take a
 	stand-in as no owner.
@@ -35,8 +35,6 @@
 		object(id)                              a stand-in of id
 		note_fail(task_id)                      what a task that failed in a scope looked for and what it got
 		order(id, verb, a, b, c)                a change to a far object; true while it (or the same one before it) is held
-		add_death_listener(callback, f)         a coop script's handler for the relay (coop_* are view: they do not pass by domain); the
-		                                        Core keeps the list (coop_quests_core.add_death_listener)
 		on_death(victim, killer)                the engine
 		host_handlers(callback)                 the handlers the relay calls (tests, coop_status)
 --]]
@@ -65,14 +63,7 @@ local function log(fmt, ...)
 	local ok, line = pcall(string.format, fmt, ...)
 	printf("[coop] far: %s", ok and line or tostring(fmt))
 end
-
-local function split()
-	local l = levels()
-	return l ~= nil and l.split ~= nil and l.split() == true
-end
-
-local function world_server() return api ~= nil and qc().is_host() end
-local function map_server() return api ~= nil and qc().is_map_server() end
+local split, world_server, map_server = coop_srv_roles.split, coop_srv_roles.world_server, coop_srv_roles.map_server
 
 local stats = { scopes = 0, orders = 0, repeats = 0, superseded = 0, acks = 0, on_record = 0, dropped = 0, deaths = 0,
 	hits_out = 0, hits_in = 0, leaks = 0 }
@@ -93,7 +84,7 @@ end
 
 -- The ALife record of id; nil for what is no id at all. 65535 is the engine's "no object" (a task with no giver, a squad with no
 -- target): the stock alife_object answers it with "ALIFE OBJECT ID IS 65535!" and a call stack in the log, and a condlist of a far
--- level asks for whatever its section names (live build 46, the world server's console).
+-- level asks for whatever its section names.
 local NO_ID = 65535
 local function record(id)
 	if type(id) ~= "number" or id < 0 or id >= NO_ID then return nil end
@@ -237,7 +228,7 @@ function class:active_item()
 	if not sec then return nil end
 	return setmetatable({ item_id = 0, item_section = sec, item_condition = 1, item_owner = self }, item_class)
 end
--- P45b: the infos the far view's orders gave or took, by object. The world's record does not learn an info a map server gives (no
+-- The infos the far view's orders gave or took, by object. The world's record does not learn an info a map server gives (no
 -- caller of LevelSide::level_info_up yet), and the stock's guard (tasks_recover_item_on_corpse kill_if_online_mutant: has_info, then
 -- give_info_portion and a hit) gave and hit again at every check once the map server had answered. The last order's word stands, as
 -- the stock's give_info_portion counts at once; the record answers the rest. Forgotten with the record (on_unregister).
@@ -359,7 +350,7 @@ local function object_there(s, id)
 	if cached ~= nil then return cached or nil end
 	-- What this scope (or the one it was opened from) made a moment ago has not spawned anywhere: the stock sees no game object and no
 	-- store of it. A stand-in here made the smart terrain set the logic of a new squad's member (select_npc_job -> setup_logic) and the
-	-- give of task_fanat_training_1 died in xr_logic (the world server's log, 2026-11-13).
+	-- give of task_fanat_training_1 died in xr_logic.
 	local up = s
 	while up do
 		if up.born[id] then
@@ -447,7 +438,7 @@ local function sim_view(s, real_alife)
 	end })
 end
 
--- TZ P45 (RL-89RT-DQYR #1664): the hit a task makes inside a scope. The engine's hit takes only a game object as its draftsman, and what
+-- The hit a task makes inside a scope. The engine's hit takes only a game object as its draftsman, and what
 -- level.object_by_id answers here is a stand-in: tasks_recover_item_on_corpse kill_if_online_mutant (h.draftsman = o) failed with
 -- "luabind: the value at stack #3 is a table" at every check of its task, and the task never reached its next stage. Inside a scope a
 -- hit is a table with the engine's fields and defaults (script_hit_inline.h), as a relayed one is (on_hit); a stand-in's hit(h) orders
@@ -473,7 +464,7 @@ local function far_hit_of(stock)
 	})
 end
 
--- FP45b: a sound a task plays inside a scope on a stand-in. The engine's sound_object takes only its own game object as the owner
+-- A sound a task plays inside a scope on a stand-in. The engine's sound_object takes only its own game object as the owner
 -- (script_sound_script.cpp: play(game_object[, float[, int]])), and luabind refused the stand-in before the rest of the stock function
 -- ran: tasks_mystery_of_the_swamps.spawn_garbage_ghost, run as the nearest standing player (coop_mods_nta install_mystery, then
 -- coop_mods_core.as_player: db.actor is his stand-in), plays its 2D hit sound on db.actor and never reached its blow, which class:hit
@@ -686,12 +677,12 @@ local next_order = 0
 local done = {} -- map server: number -> true, the last ones
 local done_list = {}
 
--- P45b (RL-89RT-DQYR #1664): one held order per (object, verb, arguments). A task check runs again and again while the world's
+-- One held order per (object, verb, arguments). A task check runs again and again while the world's
 -- record has not changed yet: tasks_recover_item_on_corpse kill_if_online(corpse) and kill_if_online_mutant(critter) at every
 -- check, the stock's set_health_ex at every relayed hit of the_living_fire. Each call was a new order with up to MAX_SENDS sends.
 -- A repeat while one is held adds nothing; once it is answered, carried out or dropped, a new one may be made. A sum is never
 -- merged: two payments of the same amount are two.
--- A setting merges with its newest order only (FP45b): info and uninfo of one name are one setting, a relation and a goodwill one per
+-- A setting merges with its newest order only: info and uninfo of one name are one setting, a relation and a goodwill one per
 -- the other side, a community goodwill one per community, health, place and the community one each. A different value retires
 -- the old order, so it cannot be retried or carried out on the record. A, B, A makes three orders and keeps only the last A.
 local newest = {} -- world server: setting of a held order -> the number of its newest order
@@ -807,7 +798,7 @@ local DO = {
 -- On the record alone: the object has no body anywhere now.
 local ON_RECORD = {
 	release = function(se) alife():release(se, true) end,
-	-- TZ P45 (RL-89RT-DQYR #1664): as the world applies a death a map server reports (the engine's srv.kill_record: levels::host_apply_death,
+	-- As the world applies a death a map server reports (the engine's srv.kill_record: levels::host_apply_death,
 	-- then the death goes to the players and the map servers). Never alife():kill_entity: it detaches the inventory, which the stock does
 	-- not do for a stalker (detach_all is empty), and its R_ASSERT(children.empty()) stopped the world server on the corpse of a
 	-- recover-item task with the quest item inside. An exe without the binding: the order is reported, nothing changes.
@@ -851,7 +842,7 @@ local function carry_out(q, o, why)
 end
 
 -- The orders of this tick, oldest first: carrying one out runs the stock (on_death and the tasks' relay, the unregister callbacks), which
--- may give new ones, and a table must not grow while pairs walks it (TZ P45). A new one waits for the next tick.
+-- may give new ones, and a table must not grow while pairs walks it. A new one waits for the next tick.
 local function orders_tick(now)
 	local due = {}
 	for q in pairs(orders) do due[#due + 1] = q end
@@ -908,7 +899,7 @@ local function on_do(t, from)
 end
 
 local function on_ack(t, from)
-	if not world_server() or type(from) ~= "number" or from < 0x100 then return end
+	if not (world_server() and coop_mode.from_level(from)) then return end
 	local q = tonumber(t.q)
 	local o = q and orders[q]
 	if not o then return end
@@ -971,9 +962,6 @@ end
 -------------------------------------------------------------------------------
 local heard = {} -- world server: id -> true: its death was told here
 
--- the Core keeps the coop scripts' handlers (coop_quests_core.add_death_listener): a Core script never names this one
-function add_death_listener(callback, f) qc().add_death_listener(callback, f) end
-
 function host_handlers(callback)
 	local r = rawget(_G, "coop_route")
 	local out = r and r.domain_handlers and r.domain_handlers(callback, "host") or {}
@@ -1022,7 +1010,7 @@ local function on_unregister(se)
 end
 
 local function on_vehicle_death(t, from)
-	if not world_server() or type(from) ~= "number" or from < 0x100 then return end
+	if not (world_server() and coop_mode.from_level(from)) then return end
 	local id = tonumber(t.i)
 	local o = id and object(id)
 	if not o then return end
@@ -1091,7 +1079,7 @@ local function monster_on_before_hit(obj, h, bone) pass_hit("monster_on_before_h
 local function npc_on_before_hit(obj, h, bone) pass_hit("npc_on_before_hit", obj, h, bone) end
 
 local function on_hit(t, from)
-	if not world_server() or type(from) ~= "number" or from < 0x100 then return end
+	if not (world_server() and coop_mode.from_level(from)) then return end
 	local id = tonumber(t.i)
 	local victim = id and object(id)
 	if not victim then return end
@@ -1104,7 +1092,7 @@ local function on_hit(t, from)
 end
 
 -------------------------------------------------------------------------------
--- Quest spawns a map server's own logic made (round 5, S2 of the round 4 review)
+-- Quest spawns a map server's own logic made
 -------------------------------------------------------------------------------
 -- The condlists of a level run on its map server, and coop_quests_story notes there a counted effect they ran (a quest item, the
 -- ambush mine, the barrier's first wave: coop_quests_trust.note_run). A client's ask of the same effect is decided on the world
@@ -1123,7 +1111,7 @@ local function pass_quest_run(f, t)
 end
 
 local function on_quest_run(t, from)
-	if not world_server() or type(from) ~= "number" or from < 0x100 or type(t.f) ~= "string" then return end
+	if not (world_server() and coop_mode.from_level(from)) or type(t.f) ~= "string" then return end
 	local qt = q_mod("coop_quests_trust")
 	if qt and type(qt.note_run) == "function" then qt.note_run(t.f, t) end
 end
@@ -1162,30 +1150,10 @@ function print_status()
 		stats.deaths, stats.hits_out, stats.hits_in, stats.leaks)
 end
 
-function _tick() next_tick = 0; tick() end
-function _orders_clear() orders, newest = {}, {} end
-function _stats() return stats end
-function _names_of() return names_of end
-
 -- Everything that registers, patches the stock or swaps its globals runs from coop_mode.when_srv: nothing of it in the co-op.
 function on_game_start()
 	if not api then return end
 	coop_mode.when_srv(function()
-		-- fn at the actor's first update, also when that was over before this process's server layer answered (the world
-		-- server's session starts after its world is up): then at the next update
-		local function at_first_update(fn)
-			local seen = false
-			local function late()
-				UnregisterScriptCallback("actor_on_update", late)
-				if not seen then fn() end
-			end
-			RegisterScriptCallback("actor_on_first_update", function()
-				seen = true
-				fn()
-			end)
-			RegisterScriptCallback("actor_on_update", late)
-		end
-
 		set_world = function(anomalies, inside_zones, alife_fn, cte, hit_fn)
 			db.anomaly_by_name = anomalies
 			db.actor_inside_zones = inside_zones
@@ -1208,7 +1176,7 @@ function on_game_start()
 		end
 
 		local function patch_world_calls()
-			set_quest_runs() -- round 5 (S2): a map server's own quest spawns, noted on the world server
+			set_quest_runs() -- a map server's own quest spawns, noted on the world server
 			-- The logic of a companion is an NPC's on the level he stands on: tasks_agent_rescue makes the spy one from a status functor.
 			local ac = q_mod("axr_companions")
 			local setup = ac and ac.setup_companion_logic
@@ -1257,13 +1225,13 @@ function on_game_start()
 					return a_release_id(id, ...)
 				end
 			end
-			-- FP45b: a sound object handed out inside a scope takes a stand-in as no owner (far_sound); outside one it is the stock's.
+			-- A sound object handed out inside a scope takes a stand-in as no owner (far_sound); outside one it is the stock's.
 			-- coop_world_fx's stand-in of xr_sound (TASK_SCRIPTS) asks this module's function at each call, so it gets the same.
 			local xs = q_mod("xr_sound")
 			local get_safe = xs and xs.get_safe_sound_object
 			if type(get_safe) == "function" then xs.get_safe_sound_object = scoped_sound_factory(get_safe) end
-			-- The dedicated world's first update can precede the session in which is_host becomes true.
-			if world_server() or (api.is_dedicated and api.is_dedicated()) then
+			-- The world server's first update can precede its session: asked of the process, not of the session.
+			if coop_srv_roles.dedicated() then
 				local fx = q_mod("coop_world_fx")
 				if fx and type(fx.new_sound_object) == "function" then
 					fx.new_sound_object = scoped_sound_factory(fx.new_sound_object)
@@ -1322,7 +1290,7 @@ function on_game_start()
 		end
 
 		local q = qc()
-		at_first_update(patch_world_calls)
+		coop_mode.at_first_update(patch_world_calls)
 		q.on("far_do", on_do, TAG)
 		q.on("far_ack", on_ack, TAG)
 		q.on("far_car", on_vehicle_death, TAG)
@@ -1333,22 +1301,30 @@ function on_game_start()
 		RegisterScriptCallback("monster_on_before_hit", monster_on_before_hit)
 		RegisterScriptCallback("npc_on_before_hit", npc_on_before_hit)
 		RegisterScriptCallback("vehicle_on_death_callback", vehicle_died)
-		local share = rawget(_G, "coop_srv_levels_share") or coop_srv_levels_share
-		if share then
-			-- a map server's anomalies and zones: what a task looks for by name on the world server
-			share.up("names", names_tick, function(t, lid)
-				if type(t) == "table" then names_of[lid] = t end
-			end)
-			-- who stands in them: xr_conditions.actor_in_zone / actor_inside_zone of a task check in the far view
-			share.up("zones_in", zones_in_tick, function(t, lid)
-				if type(t) == "table" and lid ~= nil then zones_in[lid] = t end
-			end, ZONES_MS)
-			share.down("hit_list", hit_list, function(t)
-				if type(t) == "table" then
-					wanted.ids, wanted.sections = t.ids or {}, t.sections or {}
-				end
-			end, HITS_MS)
-		end
+		-- a map server's anomalies and zones: what a task looks for by name on the world server
+		coop_mode.share_up("names", names_tick, function(t, lid)
+			if type(t) == "table" then names_of[lid] = t end
+		end)
+		-- who stands in them: xr_conditions.actor_in_zone / actor_inside_zone of a task check in the far view
+		coop_mode.share_up("zones_in", zones_in_tick, function(t, lid)
+			if type(t) == "table" and lid ~= nil then zones_in[lid] = t end
+		end, ZONES_MS)
+		coop_mode.share_down("hit_list", hit_list, function(t)
+			if type(t) == "table" then
+				wanted.ids, wanted.sections = t.ids or {}, t.sections or {}
+			end
+		end, HITS_MS)
 		q.set_part("far", coop_srv_quests_far)
 	end)
 end
+
+-- tests only
+_test = {
+	tick = function()
+		next_tick = 0
+		tick()
+	end,
+	orders_clear = function() orders, newest = {}, {} end,
+	stats = function() return stats end,
+	names_of = function() return names_of end,
+}

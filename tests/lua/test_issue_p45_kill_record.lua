@@ -159,7 +159,7 @@ local function far_do(v)
 	return out
 end
 local function tick()
-	local ok, err = pcall(far._tick)
+	local ok, err = pcall(far._test.tick)
 	return ok, err
 end
 
@@ -252,7 +252,7 @@ on_kill = nil
 check(ok, "the tick ends: " .. tostring(err))
 check(#KILLS == 1, "the kill was carried out")
 check(far.orders_held() == 40, "the orders given by the death wait for the next tick: " .. far.orders_held())
-far._orders_clear()
+far._test.orders_clear()
 
 print("== the same for a release on the record (the stock unregister callbacks)")
 on_release = function()
@@ -264,7 +264,7 @@ on_release = nil
 check(ok, "the tick ends: " .. tostring(err))
 check(RECORDS[610] == nil, "the box is released")
 check(far.orders_held() == 40, "the orders given by the release wait for the next tick: " .. far.orders_held())
-far._orders_clear()
+far._test.orders_clear()
 RECORDS[610] = { id = 610, position = vec(9, 0, 9), m_level_vertex_id = 9, m_game_vertex_id = 20, parent_id = 65535, online = false }
 
 print("== a hit a task makes inside a scope takes a stand-in as its draftsman (the flood before the crash)")
@@ -292,7 +292,7 @@ check(#kills == 1 and kills[1].i == 600 and kills[1].a == 600, "the corpse: a ki
 check(#infos == 1 and infos[1].i == 650 and infos[1].a == "mutant_to_kill", "the critter: the info order")
 check(#hits == 1 and hits[1].i == 650 and hits[1].a == 10 and hits[1].b == STOCK_HIT.wound and hits[1].c == 650,
 	"the critter: the hit order, power 10, a wound, struck by itself")
-far._orders_clear()
+far._test.orders_clear()
 
 print("== a hit made outside a scope is the engine's")
 local h = hit()

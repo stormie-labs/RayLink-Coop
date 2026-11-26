@@ -249,7 +249,7 @@ check(Ms.env.death_manager.get_items_by_npc(700) ~= nil, "the answer is kept whe
 
 print("== give_npc: under the far view")
 Hm.created = nil
-Hm.env.coop_tasks.party_take = function() return 1 end
+Hm.env.coop_tasks_items.party_take = function() return 1 end
 Hm.env.ini_sys.section_exist = function() return true end
 Hm.env.alife_create_item = function(sec, place) Hm.created = { sec = sec, far = type(place) == "table" and place.far, id = place[4] } end
 Cm.env.coop_quests_core.request_host_action("give_npc", { s = "bread", n = 700, c = 1 })
@@ -261,9 +261,9 @@ Hm.ini.logic_task = {}
 local T = Hm.env.coop_tasks
 Ms.env.coop.send_event("coop_tq", "", 0) -- nothing: a bad request must not break the handler
 step()
-check(T.player_of_request(BRIDGE, "logic_task") == 1, "the player of its level stands for it")
-check(T.player_of_request(1, "logic_task") == 1, "a player is himself")
-check(T.player_of_request(0x102, "logic_task") == 0, "a bridge with no level: the host")
+check(Hm.env.coop_tasks_requests.player_of_request(BRIDGE, "logic_task") == 1, "the player of its level stands for it")
+check(Hm.env.coop_tasks_requests.player_of_request(1, "logic_task") == 1, "a player is himself")
+check(Hm.env.coop_tasks_requests.player_of_request(0x102, "logic_task") == 0, "a bridge with no level: the host")
 
 print("== a task check looks at the level of its target")
 Hm.ini.far_task = { status_functor = "far_sf" }
@@ -424,7 +424,7 @@ check(far.orders_held() == held + 1, "an NPC not online there yet: the order wai
 Ms.new_obj(701, "stalker_far", vec(300, 0, 300), { _stalker = true })
 killed = 0
 NOW = NOW + 4000
-Hm.env.coop_srv_quests_far._tick()
+Hm.env.coop_srv_quests_far._test.tick()
 pump()
 check(killed == 1 and far.orders_held() == held, "it came online: the next try finds it")
 
@@ -920,10 +920,10 @@ do
 	check(pstor.coop_lost_gives == true, "the world server looked when it started, and the world keeps that")
 	pstor.coop_lost_gives = nil -- a world of an older build
 	Hm.infos.fanat_training_start_done = true
-	T._heal_once()
+	T._test.heal_once()
 	check(Hm.infos.fanat_training_start_done == nil and pstor.coop_lost_gives == true, "an older world is looked at once")
 	Hm.infos.fanat_training_start_done = true
-	T._heal_once()
+	T._test.heal_once()
 	check(Hm.infos.fanat_training_start_done == true, "and not again in this world")
 	Hm.infos.fanat_training_start_done = nil
 end
@@ -932,7 +932,7 @@ print("== roles")
 check(Ms.env.coop_quests_core.host_party() == true, "a map server's logic pays players")
 local Q = Ms.env.coop_tasks
 Ms.env.coop.money_grant = function(peer, n) Ms.granted = { peer, n } return true end
-Q.give_to_peer(1, 0, { "bread" })
+Ms.env.coop_tasks_items.give_to_peer(1, 0, { "bread" })
 check(Ms.created == nil or Ms.created[1].owner == 500, "give_to_peer on a map server: into his avatar, not its ghost")
 
 print(string.format("%d passed, %d failed", PASSES, FAILS))

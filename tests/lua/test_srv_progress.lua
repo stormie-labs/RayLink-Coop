@@ -10,7 +10,7 @@ local TALLY, SKILLS = "mods.prg_tally", "mods.prg_skills"
 local skill_names = { "endurance", "strength", "survival", "scavenging" }
 local bridge, on_map, epoch = A, true, 1
 local active = mode ~= "none" and mode ~= "srv_world"
-local reservations, credits, fights = {}, {}, {}
+local reservations, fights = {}, {}
 local apply_fight = true
 coop.is_active = function() return active end
 coop.is_map_server = function() return mode == "srv_map" end
@@ -22,10 +22,7 @@ coop.levels = {
 	bridge_of_player = function(peer) if peer == 1 then return bridge elseif peer == 2 then return UNRELATED end end,
 	map_servers = function() return { { bridge = A }, { bridge = B }, { bridge = UNRELATED } } end,
 }
-coop.progress = { budget = function(peer, rank, rep)
-	credits[#credits + 1] = { peer, rank, rep }
-	return true
-end, apply_verified_fight = function(peer, character, delta)
+coop.progress = { apply_verified_fight = function(peer, character, delta)
 	if not apply_fight then return false end
 	fights[#fights + 1] = { peer, character, delta }
 	return true
@@ -154,15 +151,11 @@ if mode == "srv_world" then
 		"a restarted map learns the keeper's exact cursor for its current assignment")
 	tally(A, CHARACTER, 3, { fight_reputation = 35 })
 	tally(A, CHARACTER, 4, { fight_reputation = 35 })
-	check(#credits == 0 and select(2, P.rank_budget(CHARACTER)) == rep,
+	check(select(2, P.rank_budget(CHARACTER)) == rep,
 		"the assigned bridge cannot grant fight credit with distinct tally numbers")
-	local budget = coop.progress.budget
-	local refused_pushes = 0
-	coop.progress.budget = function() refused_pushes = refused_pushes + 1; return false end
 	tally(A, CHARACTER, 5, { fight_reputation = 35 })
-	check(refused_pushes == 0 and select(2, P.rank_budget(CHARACTER)) == rep,
+	check(select(2, P.rank_budget(CHARACTER)) == rep,
 		"a fight tally cannot fall back to the Lua reputation ledger")
-	coop.progress.budget = budget
 	local kill_stats = { actor_statistics = { killed_stalkers = 3, killed_stalkers_e = 3 } }
 	tally(UNRELATED, OTHER, 1, { kill_stalker_veteran = 3 })
 	local lines_before_kills = trust_lines()
@@ -203,7 +196,8 @@ if mode == "srv_world" then
 		"the previous bridge cannot merge a tally once its closing window is over")
 	before = settled
 	event(TALLY, { c = CHARACTER, q = 4, t = assert(C.ser({ kill_monster = 999 })), _peer = B }, 1)
-	check(P.rank_budget(CHARACTER) == before and T.status().progress_tally_sender.refused == 1,
+	local sender = T.status().progress_tally_sender
+	check(P.rank_budget(CHARACTER) == before and sender.guard == true and sender.failed == 1,
 		"a payload peer cannot override the non-bridge transport sender")
 	T.reset_for_test({ default = "log" })
 	tally(UNRELATED, CHARACTER, 4, { kill_monster = 999 })
@@ -244,7 +238,7 @@ if mode == "srv_world" then
 		"the native entry audits stale epochs, invalid ids and invalid signed deltas")
 	apply_fight = false
 	check(not verified_fight(epoch, 1, B, CHARACTER, 35) and #fights == 0
-		and #credits == 0 and select(2, P.rank_budget(CHARACTER)) == rep,
+		and select(2, P.rank_budget(CHARACTER)) == rep,
 		"failed native application creates no alternate credit")
 	apply_fight = true
 	local positive = verified_fight(epoch, 1, B, CHARACTER, 35)

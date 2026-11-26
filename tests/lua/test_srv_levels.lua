@@ -18,6 +18,10 @@ level = { name = function() return "l01_escape" end }
 game = { translate_string = function(id) return tr[id] or id end }
 function alife() return { level_name = function(_, id) return names[id] end } end
 
+-- the Core's helpers the script names at load
+coop_util = setmetatable({}, { __index = _G })
+setfenv(assert(loadfile("gamedata/scripts/coop_util.script")), coop_util)()
+
 local labels = setmetatable({}, { __index = _G })
 setfenv(assert(loadfile(path)), labels)()
 check(labels.name("l13u_warlab") == "Warlab" and labels.name("l99_unknown") == "l99_unknown", "translated name or id")

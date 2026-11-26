@@ -163,9 +163,10 @@ local function machine(role, map, map_id)
 		end,
 	}
 	env.coop_trust = { pass = function(_, ok) m.trust = ok and "ok" or "bad"; return true end }
-	env.coop_srv_levels_share = {
-		up = function(name, get, set) m.shares.up[name] = { get = get, set = set } end,
-		down = function(name, get, set) m.shares.down[name] = { get = get, set = set } end,
+	-- the Core keeps the shares: coop_mode.share_up / share_down hand them to coop_quests_core
+	env.coop_quests_core = {
+		share_up = function(name, get, set) m.shares.up[name] = { get = get, set = set } end,
+		share_down = function(name, get, set) m.shares.down[name] = { get = get, set = set } end,
 	}
 	function m.share(dir, dest, id)
 		for name, row in pairs(m.shares[dir]) do
@@ -179,6 +180,8 @@ local function machine(role, map, map_id)
 		local modes = dofile("tests/lua/support/modes.lua")
 		modes.live(env.coop_mode, load)
 		load("coop_mods_core")
+		load("coop_util")
+		load("coop_srv_roles")
 		load("coop_srv_levels_brain")
 		local function stock()
 			env.txr_paid_companions.on_game_start()

@@ -59,6 +59,8 @@ e.coop.story_resend_tasks = function(peer)
 	return true
 end
 e.AddScriptCallback = function() end
+-- the router's declare (coop_route.script): every machine of this test finds it
+coop_route = { declare = function() return true end }
 
 -- coop_faction's contract (gamedata\scripts\coop_faction.script header): split_mode, faction_of_character
 e.coop_faction = {

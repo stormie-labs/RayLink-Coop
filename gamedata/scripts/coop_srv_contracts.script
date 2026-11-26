@@ -406,11 +406,12 @@ function on_game_start()
 					end
 				end)
 			end
-			coop_srv_levels_share.up(PAID_KEY, up_get, up_set, 1000)
-			coop_srv_levels_share.down(PAID_KEY, down_get, down_set, 1000)
+			coop_mode.share_up(PAID_KEY, up_get, up_set, 1000)
+			coop_mode.share_down(PAID_KEY, down_get, down_set, 1000)
 			if coop_mode.decides_world() then
 				RegisterScriptCallback("save_state", save_paid)
 				RegisterScriptCallback("load_state", load_paid)
+				-- Resolve alife_storage_manager through the script loader to read the world save.
 				local data = alife_storage_manager.get_state()
 				if type(data) == "table" then load_paid(data) end
 			end
@@ -421,7 +422,7 @@ function on_game_start()
 			retire(randomizer, TAG .. ".transition_start", function()
 				detach("actor_on_first_update", randomizer.disable_transitions)
 			end)
-			coop_srv_levels_share.down(TRANSITIONS, transition_get, transition_set, 1000)
+			coop_mode.share_down(TRANSITIONS, transition_get, transition_set, 1000)
 			if coop_mode.decides_world() then
 				RegisterScriptCallback("load_state", function() choice = nil end)
 			end

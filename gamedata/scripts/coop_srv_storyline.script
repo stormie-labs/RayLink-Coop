@@ -1,8 +1,7 @@
 -- Сервер (srv): своя цепочка сюжетных заданий DRX у каждой фракции в мире с картами по серверам (docs/MODES.md)
 --[[
-	Anomaly Coop - one DRX questlines chain per faction (gamedata\scripts\coop_srv_storyline.script, coop_storyline before step S4)
-	Plan: docs\plans\2026-11-16-storylines-per-faction.md, sections 1-2, stage 2. Its callbacks, events, wrappers and its writes into
-	the stock's globals and the save start from coop_mode.when_srv only. The dialog gates and coop_tasks' questions are functions
+	Anomaly Coop - one DRX questlines chain per faction (docs\plans\2026-11-16-storylines-per-faction.md, sections 1-2). Its
+	callbacks, events, wrappers and its writes into the stock's globals and the save start from coop_mode.when_srv only. The dialog gates and coop_tasks' questions are functions
 	of coop_conditions_stock (the stock answers there); this script puts its own over them from when_srv. A world played without
 	per-faction chains gets the stock keys back in coop_conditions_stock (the co-op host's first update), not here.
 
@@ -60,7 +59,7 @@
 		dlg_leader / dlg_cf_free / dlg_story_ll / dlg_story_ms / dlg_story_oa: DXML preconditions (modxml_coop_storyline names
 		coop_conditions_stock's; these go over them from when_srv)
 		owner_of_task(lttz_ll_* / lttz_ms_* / lttz_oa_*) = the faction that started that story, lttz_hb_* = isg
-	Not here: the Brain Scorcher (stage 5, coop_srv_scorcher: its ending_ok(faction) is used by the ending test when present).
+	Not here: the Brain Scorcher (coop_srv_scorcher: its ending_ok(faction) is used by the ending test when present).
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
@@ -106,33 +105,14 @@ local function log(fmt, ...)
 	printf("%s %s", TAG, ok and line or tostring(fmt))
 end
 
-local function mod(name)
-	local m = rawget(_G, name)
-	if m == nil then
-		local ok, r = pcall(function() return _G[name] end)
-		m = ok and r or nil
-	end
-	return type(m) == "table" and m or nil
-end
-
-local function call(f, ...)
-	if type(f) ~= "function" then return nil end
-	local ok, v = pcall(f, ...)
-	return ok and v or nil
-end
-
-local function now() return time_global() end
+local mod, call = coop_util.module, coop_util.call
 local function known(f) return type(f) == "string" and FACTIONS[f] == true end
 
 -------------------------------------------------------------------------------
 -- Who we are
 -------------------------------------------------------------------------------
-local function active() return api ~= nil and call(api.is_active) == true end
-local function is_host() return active() and call(api.is_host) == true end
-local function is_client() return active() and call(api.is_client) == true end
-local function is_map_server() return api ~= nil and call(api.is_map_server) == true end
-local function is_dedicated() return api ~= nil and call(api.is_dedicated) == true end
-local function authority() return is_host() and not is_map_server() end
+local authority, is_map_server, is_dedicated = coop_srv_roles.world_server, coop_srv_roles.map_server, coop_srv_roles.dedicated
+local function is_client() return coop_util.active() and call(api.is_client) == true end
 
 local function split_mode()
 	local cf = mod("coop_faction")
@@ -270,7 +250,7 @@ end
 -------------------------------------------------------------------------------
 -- Owners and claims (authority)
 -------------------------------------------------------------------------------
--- the main stories (stage 4): lttz_<k>_* tasks, the info their start gives; Hollow Boundaries (hb) is ISG's
+-- the main stories: lttz_<k>_* tasks, the info their start gives; Hollow Boundaries (hb) is ISG's
 local STORIES = { ll = "living_legend", ms = "mortal_sin", oa = "operation_afterglow" }
 local STORY_KEY = "drx_sl_coop_story_" -- + ll | ms | oa: the authority's copy of a story's owner for the clients' gates
 
@@ -294,7 +274,7 @@ local function set_owner(id, f)
 	s.owner[id] = f
 	recent[id] = nil
 	local ti = task_info()
-	if not (ti and ti[id] ~= nil) then pending[id] = now() else pending[id] = nil end
+	if not (ti and ti[id] ~= nil) then pending[id] = time_global() else pending[id] = nil end
 end
 
 function owner_of_task(id)
@@ -369,7 +349,7 @@ local function sweep()
 	local s = store(false)
 	local ti = task_info()
 	if not (s and ti) then return end
-	local t = now()
+	local t = time_global()
 	for id, f in pairs(s.owner) do
 		if ti[id] == nil and not (pending[id] and t - pending[id] < OWNER_GRACE_MS) then
 			s.owner[id] = nil
@@ -390,7 +370,7 @@ end
 -------------------------------------------------------------------------------
 -- The chain's stock steps for one faction (authority, inside with_chain)
 -------------------------------------------------------------------------------
--- xr_effects.drx_sl_meet_random_honcho (temp/gamma_ref/scripts/xr_effects.script:700-779), its logic as it is, with the
+-- xr_effects.drx_sl_meet_random_honcho, its logic as it is, with the
 -- enemy test made against the chain's faction (stock: alife():actor():community()) and leaders claimed by another faction
 -- skipped. With nobody free the chain keeps its current leader, as the stock does.
 local function meet_body(f)
@@ -741,10 +721,10 @@ local function as_player(from, fn, ...)
 end
 
 local function host_on_req(payload, from)
-	if not is_host() or type(from) ~= "number" or from <= 0 then return end
+	if not authority() or type(from) ~= "number" or from <= 0 then return end
 	if not auth_on() then return end
 	stats.requests = stats.requests + 1
-	local t = now()
+	local t = time_global()
 	local last = last_req[from]
 	if last and t >= last and t - last < REQ_GAP_MS then return refuse(from, "too often") end
 	last_req[from] = t
@@ -884,8 +864,7 @@ local function talkers_task(id, f)
 	return o == nil or o == f
 end
 
--- axr_task_manager.drx_sl_get_finished_task (temp/stock_scripts/scripts/axr_task_manager.script:560-614, the commented "old
--- code" left out) with `mine(task_id)` added to both tests: a task of another faction's chain is not the talker's to turn in
+-- axr_task_manager.drx_sl_get_finished_task (the commented "old code" left out) with `mine(task_id)` added to both tests: a task of another faction's chain is not the talker's to turn in
 local function finished_body(npc, is_sim, mine)
 	local CFG_CACHE = axr_task_manager.CFG_CACHE
 	local tm = task_manager.get_task_manager( )
@@ -935,7 +914,7 @@ local function scorcher_ok(f)
 	return has_alife_info( "bar_deactivate_radar_done" ) == true
 end
 
--- dialogs.drx_sl_is_endgame (temp/gamma_ref/scripts/dialogs.script:156-164) with the Scorcher rule of faction f; runs
+-- dialogs.drx_sl_is_endgame with the Scorcher rule of faction f; runs
 -- inside as_talker (the two keys are f's)
 local function endgame_body(f)
 	if ( (load_var( db.actor, "drx_sl_current_task_number", 1 ) >= load_var( db.actor, "drx_sl_total_task_number", 1 )) and scorcher_ok( f ) ) then
@@ -1335,11 +1314,7 @@ end
 local install_vars = nil
 
 local function step(what, f)
-	local ok, err = pcall(f)
-	if not ok then
-		stats.errors = stats.errors + 1
-		printf("! [coop_storyline] %s failed: %s", what, tostring(err))
-	end
+	if not coop_util.start_step("coop_storyline", what, f) then stats.errors = stats.errors + 1 end
 end
 
 local function install()
@@ -1357,17 +1332,17 @@ end
 -- Start
 -------------------------------------------------------------------------------
 local function first_update()
-	local t = now()
+	local t = time_global()
 	if installed or (next_tick and t < next_tick) then return end
 	next_tick = t + TICK_MS
 	if split_mode() and story() then
 		install()
-		next_tick = now() + FIRST_TICK_MS
+		next_tick = time_global() + FIRST_TICK_MS
 	end
 end
 
 local function on_update()
-	local t = now()
+	local t = time_global()
 	if next_tick and t < next_tick then return end
 	if not installed then
 		first_update()
@@ -1392,25 +1367,10 @@ function print_status()
 end
 
 -- Everything that registers or writes the stock's globals and the save runs from coop_mode.when_srv: nothing of it in the co-op.
--- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop (W5)
+-- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop
 function on_game_start()
 	if not api then return end
 	coop_mode.when_srv(function()
-		-- fn at the actor's first update, also when that was over before this process's server layer answered (the world
-		-- server's session starts after its world is up): then at the next update
-		local function at_first_update(fn)
-			local seen = false
-			local function late()
-				UnregisterScriptCallback("actor_on_update", late)
-				if not seen then fn() end
-			end
-			RegisterScriptCallback("actor_on_first_update", function()
-				seen = true
-				fn()
-			end)
-			RegisterScriptCallback("actor_on_update", late)
-		end
-
 		put_store = function(m, s) m[STORE] = s end
 
 		client_run = function(fn, ...)
@@ -1476,7 +1436,7 @@ function on_game_start()
 		end)
 		step("callbacks", function()
 			local changed_registered = false
-			at_first_update(function()
+			coop_mode.at_first_update(function()
 				-- here, not at once: coop_faction declares the callback in its on_game_start (a callback registered before it is
 				-- declared is dropped by axr_main)
 				if not changed_registered then

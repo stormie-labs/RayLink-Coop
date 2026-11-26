@@ -24,6 +24,8 @@ for _, m in ipairs({ W, A, B }) do
 	load_script(m, "coop_economy_mdata").on_game_start()
 	load_script(m, "coop_npc_players")
 	load_script(m, "coop_npc_companions")
+	load_script(m, "coop_util")
+	load_script(m, "coop_srv_roles")
 	load_script(m, "coop_srv_companions").on_game_start()
 end
 

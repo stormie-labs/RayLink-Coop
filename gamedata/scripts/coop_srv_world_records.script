@@ -1,4 +1,4 @@
--- Server layer: map facts for mines and distance-based bribe cancellations (Dev 57 G16-4).
+-- Server layer: map facts for mines and distance-based bribe cancellations.
 -- Co-op already ticks and saves these records in the same host process. In Server,
 -- the map owns the live mine and distance checks, and the world owns the save.
 
@@ -209,9 +209,8 @@ function on_game_start()
 	coop_mode.when_srv(function()
 		if not (coop_mode.decides_world() or on_map()) then return end
 		step("mine share", function()
-			local share = coop_quests_core.share()
-			share.up(MINE_SHARE, map_mines_get, world_mines_set, POLL_MS)
-			share.down(MINE_SHARE, world_mines_get, map_mines_set, POLL_MS)
+			coop_mode.share_up(MINE_SHARE, map_mines_get, world_mines_set, POLL_MS)
+			coop_mode.share_down(MINE_SHARE, world_mines_get, map_mines_set, POLL_MS)
 		end)
 		if coop_mode.decides_world() then
 			step("mine save", function() RegisterScriptCallback("save_state", save_state) end)
@@ -219,7 +218,7 @@ function on_game_start()
 		end
 		step("bribe wrapper", install_bribe)
 		step("bribe share", function()
-			coop_quests_core.share().up(BRIBE_SHARE, bribe_cancels_get, bribe_cancels_set, POLL_MS)
+			coop_mode.share_up(BRIBE_SHARE, bribe_cancels_get, bribe_cancels_set, POLL_MS)
 		end)
 	end)
 end

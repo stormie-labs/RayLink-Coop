@@ -124,7 +124,7 @@ end
 local function defense_tick(mod, expired)
 	if not world_live() or not db.actor then return end
 	-- A file local of tasks_defense.script, or the module field G.A.M.M.A.'s emission_fix_task_defense_mdata.ltx
-	-- ([tasks_defense] MDATA) has the engine make of it (stand, build 57: no Barrier defense offer from the world server).
+	-- ([tasks_defense] MDATA) has the engine make of it: without it the world server offers no Barrier defense.
 	local data = coop_mods_core.upvalue(mod.save_state, "MDATA")
 	if data == nil then data = rawget(mod, "MDATA") end
 	if not data then return end
@@ -276,8 +276,8 @@ local function install_north_picker(C, world)
 	return reset_roster
 end
 
--- Review A-REV-E-2 finding 4 (world server): a given task whose give brought no task var is prepared again by its on_job_descr
--- (coop_quests_offer host_after_give). Since A-S5S-offer the map server of the player's map made the offer, so this process's vendor
+-- World server: a given task whose give brought no task var is prepared again by its on_job_descr
+-- (coop_quests_offer host_after_give). The map server of the player's map made the offer, so this process's vendor
 -- cache never held its pick: an assault would hold no squad, a stash would roll another. Before that run the entry of the task is
 -- filled from the offer he was made (coop_quests_offer prime_rerun; the map server passes its offers up, coop_srv_tasks), as a
 -- co-op host's own cache holds it. Only the vendors whose setup the task's on_job_descr names, only whole ids.

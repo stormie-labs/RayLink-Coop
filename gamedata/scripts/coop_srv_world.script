@@ -13,15 +13,10 @@ local function reaches_here()
 	return level_open(level.name())
 end
 
-local function players()
-	local ok, list = pcall(api.players)
-	return ok and list or {}
-end
-
 local function open_level_of_a_player()
 	local l = api.levels
 	if not (l and l.level_of_player and l.level_name) then return end
-	for _, p in ipairs(players()) do
+	for _, p in ipairs(coop_util.players()) do
 		local id = not p.is_self and l.level_of_player(p.id)
 		local name = id and l.level_name(id)
 		if name and level_open(name) then return name end
@@ -32,7 +27,7 @@ local function publish_phase(phase)
 	-- Players use their own cover for the mirror. Map servers get shelter for their ghost.
 	phase.own = true
 	local player_phase = coop_main.encode(phase)
-	for _, p in ipairs(players()) do
+	for _, p in ipairs(coop_util.players()) do
 		if not p.is_self then api.send_event("coop_env", player_phase, p.id) end
 	end
 	phase.own = nil
@@ -49,8 +44,7 @@ local function relay_report(name, report, peer)
 	local l = api.levels
 	local bridge = l and l.bridge_of_player and l.bridge_of_player(peer)
 	local valid = type(bridge) == "number" and bridge > 0
-	if not coop_trust.pass("env_report_map", valid, "peer %d has no map server", peer) then return end
-	if not valid then return end
+	if not coop_trust.guard("env_report_map", valid, "peer %d has no map server", peer) then return end
 	report.peer = peer -- transport sender, as received by the world server
 	api.send_event(name, coop_main.encode(report), bridge)
 end
@@ -58,8 +52,7 @@ end
 local function report_peer(from, report)
 	local peer = tonumber(report.peer)
 	local trusted = from == 0 and peer ~= nil
-	if not coop_trust.pass("env_map_relay", trusted, "invalid relay from peer %s", tostring(from)) then return end
-	if trusted then return peer end
+	if coop_trust.guard("env_map_relay", trusted, "invalid relay from peer %s", tostring(from)) then return peer end
 end
 
 local function outdoor_forecast(select_weather, wm, ...)
@@ -142,6 +135,6 @@ function on_game_start()
 		elseif coop_mode.leads_here() then
 			policy.report_peer = report_peer
 		end
-		coop_main.set_env_policy(policy)
+		coop_env.set_policy(policy)
 	end)
 end

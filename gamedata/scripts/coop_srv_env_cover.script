@@ -1,4 +1,4 @@
--- Server (srv): deliver the map's emission and psi-storm cover decisions to its players (F5-COV-3).
+-- Server (srv): deliver the map's emission and psi-storm cover decisions to its players.
 
 local api = rawget(_G, "coop")
 

@@ -1,4 +1,4 @@
--- Server: GAMMA Scorcher ceasefire and southern NPC exclusions (Dev 57, G13-5).
+-- Server: GAMMA Scorcher ceasefire and southern NPC exclusions.
 -- Co-op keeps GAMMA's shared-faction rules: the host has both the map and the group's faction.
 -- Server: the world owns task recipients and their true factions. It applies the ceasefire
 -- once per eligible faction and sends each map's roster through the existing level share.
@@ -38,7 +38,7 @@ local function apply_ceasefire()
 			relations.save_relation("stalker", faction, 2000)
 			relations.save_relation("actor_stalker", faction, 2000)
 			relations.save_relation("stalker", "actor_" .. faction, 2000)
-			coop_core_world.in_world_scope(relations.send_news, "stalker", faction, "st_relations_cease_fire", nil)
+			coop_core_world_news.in_world_scope(relations.send_news, "stalker", faction, "st_relations_cease_fire", nil)
 		end
 	end
 end

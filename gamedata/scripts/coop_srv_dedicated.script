@@ -1,6 +1,5 @@
 -- Сервер (srv): половина сервера мира без игрока в Lua — новый мир, тестовая карта, мир из файла, проверка сейва (docs/MODES.md)
---[[ Anomaly Coop: the dedicated host's half in Lua (gamedata\scripts\coop_srv_dedicated.script, coop_dedicated before step S4;
-	 docs/DEDICATED_HOST.md). The process has a whole game's Lua and a ghost for an actor on the service level fake_start, and no screen
+--[[ Anomaly Coop: the dedicated host's half in Lua (docs/DEDICATED_HOST.md). The process has a whole game's Lua and a ghost for an actor on the service level fake_start, and no screen
 	 where somebody chooses a new game.
 
 	 A new world: the stock new game reads [character_creation] of axr_options.ltx, which the faction-select screen writes. Without a faction
@@ -11,12 +10,12 @@
 	 Test map: stock IsTestMode() means "the actor is on fake_start", the empty level of a test or of the moment before a new game moves on. Here
 	 it is where the actor stands for good, and the one-time setup of a new world (game_setup, itms_manager) must not take this for a test.
 
-	 Step S4 (A-S4D): both run from coop_mode.when_srv. The server layer answers in a -coop_dedicated process from its start, before its
+	 Both run from coop_mode.when_srv. The server layer answers in a -coop_dedicated process from its start, before its
 	 session (coop_srv_mode), so the function runs in axr_main's loop of on_game_start (when coop_srv_mode installs the layer), before the
 	 stock reads [character_creation] or IsTestMode (on_game_load, actor_on_first_update). Elsewhere the srv layer answers (a map server, a
 	 player's machine of a server world) it does nothing; in the co-op it never runs.
 	 Called by the engine by name (coop_dedicated.cpp, layer srv): stage_new_world, load_allowed. The creator's facts of a staged world read the
-	 record only and the Core asks them: coop_game_settings.creator / creator_facts / creator_made (moved there in step S4).
+	 record only and the Core asks them: coop_game_settings.creator / creator_facts / creator_made.
 ]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
@@ -60,7 +59,7 @@ local function record()
 	return ok and type(r) == "table" and r or nil
 end
 
--- Plan 2026-11-12 stage 5: a world staged from coop_new_world.ltx is the creator's choice, and the record that came with it (the engine
+-- A world staged from coop_new_world.ltx is the creator's choice, and the record that came with it (the engine
 -- carried it over the restart of Lua at the world start: coop.game.stage_new) says so. Without a record: NEW_WORLD as always.
 local function world_settings()
 	local r = record()
@@ -95,7 +94,7 @@ function new_world_settings()
 end
 
 -------------------------------------------------------------------------------
--- Plan 2026-11-12 stage 5: a new world from coop_new_world.ltx (-coop_stage, xrCoop\coop_world_stage.h)
+-- A new world from coop_new_world.ltx (-coop_stage, xrCoop\coop_world_stage.h)
 -------------------------------------------------------------------------------
 local FACTOR_SOURCES = { g = true, e = true, s = true }
 
@@ -133,9 +132,9 @@ function stage_new_world(path, stage)
 		end
 	end
 	-- A world a world server stages is a world of split levels by what it is (its maps are its map servers'). The record says so
-	-- whatever the file does: the game's card and the launcher's send "Continue" of it to a world server again (live 2026-11-13:
-	-- a file without [values] gave a card with "split": false).
-	-- It is also a world of the new mode (owner 2026-11-13): c|coop_world_server on, so Continue of it starts a world server.
+	-- whatever the file does (a file without [values] would give a card with "split": false), and the game's card and the launcher's
+	-- send "Continue" of it to a world server again. It is also a world server's world: c|coop_world_server on, so Continue of it
+	-- starts a world server.
 	for _, key in ipairs({ "c|coop_split_levels", "c|coop_world_server" }) do
 		local on = record_value(key, "1")
 		if on == nil or on == false then on = "1" end
@@ -163,8 +162,8 @@ function stage_new_world(path, stage)
 end
 
 -- May a world server load this save? Not a world of a host who plays in it: that save's actor is the host's own character, and a
--- world server turns the save's actor into its ghost, so he would lose his character without a word (owner 2026-11-13: the old
--- split mode stays, old worlds are not carried over). A world made for a world server says so in its record
+-- world server turns the save's actor into its ghost, so he would lose his character without a word; worlds a playing host made
+-- are not carried over. A world made for a world server says so in its record
 -- (c|coop_world_server, set by stage_new_world). A save without a game record passes: nothing says whose it is (a server's own
 -- world made without a staging file has none). The guard never stops a server by its own error.
 -- -> true | false, why. Called by the engine before it loads a save (coop_dedicated.cpp start_world).

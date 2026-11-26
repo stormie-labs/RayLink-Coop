@@ -5,7 +5,7 @@
 -- (temp\stock_configs\configs\scripts\...) the way engine\src\xrCore\Xr_ini.cpp merges them (an ![section] overrides keys,
 -- a [section] is new and must not exist in the base). Condlists are parsed and picked by the stock xr_logic code, copied below.
 -- Machines: a world server, the map server of X10 and a player, each its own sealed copy of the script and of the Core's
--- coop_conditions_stock; the transport (coop_srv_levels_share up/down, events) is played by the test. Step S4: the script starts
+-- coop_conditions_stock; the transport (the shares up/down, events) is played by the test. Step S4: the script starts
 -- from coop_mode.when_srv (the machine's stand-in runs it in split mode only); in a group world and without co-op the stock
 -- answers are coop_conditions_stock's. Not shipped. Run: tools\test_lua.cmd srv_scorcher
 local PASSES, FAILS = 0, 0
@@ -512,7 +512,6 @@ local function machine(role, mode, faction, opts)
 		end,
 		coop = api,
 		coop_main = { encode = encode, decode = decode, add_event_handler = function(n, f) m.events[n] = f end },
-		coop_srv_levels_share = { up = function(n, g, s) m.ups[n] = { get = g, set = s } end, down = function(n, g, s) m.downs[n] = { get = g, set = s } end },
 		-- the facade: the server layer answers in a split world (an active session with split levels), never in a group one
 		coop_mode = {
 			when_srv = function(fn)
@@ -524,10 +523,37 @@ local function machine(role, mode, faction, opts)
 			end,
 			decides_world = function() return role == "world" and mode ~= "none" end,
 			group_travels = function() return mode == "group" end,
+			share_up = function(n, g, s) m.ups[n] = { get = g, set = s } return true end,
+			share_down = function(n, g, s) m.downs[n] = { get = g, set = s } return true end,
 		},
 	}
 	if mode ~= "none" then env.coop_faction = { split_mode = function() return mode == "split" end } end
 	env._G = env
+	-- the facade's two start helpers as coop_mode.script has them, over this machine's callbacks and save
+	env.coop_mode.at_first_update = function(fn)
+		local seen = false
+		local function late()
+			env.UnregisterScriptCallback("actor_on_update", late)
+			if not seen then fn() end
+		end
+		env.RegisterScriptCallback("actor_on_first_update", function()
+			seen = true
+			fn()
+		end)
+		env.RegisterScriptCallback("actor_on_update", late)
+	end
+	env.coop_mode.late_load = function(load_state)
+		local saved = env.alife_storage_manager.get_state()
+		if type(saved) == "table" then load_state(saved) end
+	end
+	-- the helpers the script names, the real files in this machine's environment
+	for _, name in ipairs({ "coop_util", "coop_srv_roles" }) do
+		local hf = assert(loadfile("gamedata/scripts/" .. name .. ".script"))
+		local henv = setmetatable({}, { __index = env })
+		setfenv(hf, henv)
+		hf()
+		env[name] = henv
+	end
 	-- the Core's stock answers first (axr_main runs the scripts by name: coop_conditions_stock before coop_srv_scorcher)
 	local cenv = setmetatable({}, { __index = env })
 	local cf = assert(loadstring(STOCK, "=coop_conditions_stock.script"))
@@ -543,7 +569,7 @@ local function machine(role, mode, faction, opts)
 	return m
 end
 
--- coop_srv_levels_share: up from a map server (its level is the bridge's), down to it
+-- the shares: up from a map server (its level is the bridge's), down to it
 local function up(map, world)
 	local v = map.ups.scorcher and map.ups.scorcher.get()
 	if v then world.ups.scorcher.set(v, map.level) end
@@ -565,7 +591,7 @@ local W = machine("world", "split")
 W.infos[FLAG] = true -- a Monolith world: the Scorcher starts off
 check(W.env.state().on == false and W.env.state().flips == 0, "start: off (from the flag), no flips")
 check(W.env.apply_flip(true) == true and W.env.state().on == true and not W.infos[FLAG], "off -> on: the flip counts, the flag is dropped")
-check(W.env.apply_flip(false) == false and W.env._stats().refused == 1, "a flip inside the cooldown is refused")
+check(W.env.apply_flip(false) == false and W.env._test.stats().refused == 1, "a flip inside the cooldown is refused")
 GAME_SEC = W.env.COOLDOWN_SEC - 60
 check(W.env.apply_flip(false) == false, "one minute before three game days: still refused (a month's end is crossed)")
 GAME_SEC = W.env.COOLDOWN_SEC
@@ -644,7 +670,7 @@ down(Wd, Z)
 Z.env.xr_effects.coop_scorcher_flipped(nil, nil, { "off" })
 GAME_SEC = 10 * Wd.env.COOLDOWN_SEC
 up(Z, Wd)
-check(Wd.env.state().on == true and Wd.env._stats().forged >= 1, "a report from another level's map server is ignored")
+check(Wd.env.state().on == true and Wd.env._test.stats().forged >= 1, "a report from another level's map server is ignored")
 Wd.ups.scorcher.set({ on = false, base = 0 }, "l10u_bunker")
 check(Wd.env.state().on == true, "a report made on an old state (base 0) is ignored")
 Wd.ups.scorcher.set({ on = "off", base = 1 }, "l10u_bunker")

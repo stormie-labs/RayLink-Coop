@@ -13,7 +13,8 @@ local BRIDGE = 0x101
 
 local function world(M)
 	local e = M.env
-	e.coop.levels = { split = function() return false end }
+	-- the world server's map server: the one on BRIDGE
+	e.coop.levels = { split = function() return false end, map_servers = function() return { { bridge = BRIDGE, level = 2 } } end }
 	M.spawned = {}
 	local POS = { drx_x8_documents = true, wpn_gauss_quest = true }
 	e.xr_effects.spawn_item_at_pos = function(actor, npc, p)

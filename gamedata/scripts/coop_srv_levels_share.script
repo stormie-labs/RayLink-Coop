@@ -1,13 +1,11 @@
 -- Сервер (srv): таблицы, которые сервер мира и серверы карт видят одинаково (docs/MODES.md)
 --[[
 	Anomaly Coop - split levels: tables of the stock and of the mods that the world server and a map server must see alike
-	(docs\SPLIT_LEVELS.md 7a; gamedata\scripts\coop_srv_levels_share.script, coop_levels_share before step S4). A process holds its Lua
-	state alone and only the world server saves, so a table a map server writes never reached the save, and a table the world server
-	writes never reached a map server started before.
+	(docs\SPLIT_LEVELS.md 7a). A process holds its Lua state alone and only the world server saves, so a table a map server writes
+	never reached the save, and a table the world server writes never reached a map server started before.
 
-		coop_quests_core.share_up(name, get, set[, every_ms])     get() on a map server, set(value, level) on the world server
-		coop_quests_core.share_down(name, get, set[, every_ms])   get() on the world server, set(value) on a map server
-		share.up / share.down                                     the same, for the server's scripts
+		coop_mode.share_up(name, get, set[, every_ms])     get() on a map server, set(value, level) on the world server
+		coop_mode.share_down(name, get, set[, every_ms])   get() on the world server, set(value) on a map server
 
 	The Core keeps what is registered (it never names this script, check_layers L3); this script carries it, from
 	coop_mode.when_srv on: nothing of it runs in the co-op. get answers a table of strings, numbers and booleans
@@ -32,14 +30,8 @@ local state = setmetatable({}, { __mode = "k" })
 
 local function qc() return coop_quests_core end
 local function levels() return api and api.levels end
-local function split()
-	local l = levels()
-	return l ~= nil and l.split ~= nil and l.split() == true
-end
+local split, world_server, map_server = coop_srv_roles.split, coop_srv_roles.world_server, coop_srv_roles.map_server
 local function cm() return rawget(_G, "coop_main") or coop_main end
-
-function up(name, get, set, every) qc().share_up(name, get, set, every) end
-function down(name, get, set, every) qc().share_down(name, get, set, every) end
 
 local function ups() return qc().shared().up end
 local function downs() return qc().shared().down end
@@ -134,14 +126,14 @@ end
 local function on_part(payload, from)
 	if type(from) ~= "number" or not split() then return end
 	local q = qc()
-	local world = q.is_host()
+	local world = world_server()
 	local e
 	local t = cm().decode(payload)
 	local name = t.k
 	if world then
-		if from < 0x100 then return end
+		if not coop_mode.from_level(from) then return end
 		e = ups()[name]
-	elseif q.is_map_server() then
+	elseif map_server() then
 		if from ~= 0 then return end
 		e = downs()[name]
 	end
@@ -186,19 +178,16 @@ end
 local function on_update()
 	if not (api and split()) then return end
 	local now = time_global()
-	local q = qc()
-	if q.is_map_server() then
+	if map_server() then
 		if not said_hello then
 			said_hello = true
 			api.send_event(EV, cm().encode({ k = HELLO }), 0)
 		end
 		tick_up(now)
-	elseif q.is_host() then
+	elseif world_server() then
 		tick_down(now)
 	end
 end
-
-function _tick() on_update() end
 
 function on_game_start()
 	if not api then return end
@@ -208,3 +197,8 @@ function on_game_start()
 		RegisterScriptCallback("coop_world_back", on_world_back)
 	end)
 end
+
+-- tests only
+_test = {
+	tick = on_update,
+}

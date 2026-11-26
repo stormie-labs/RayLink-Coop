@@ -1,33 +1,34 @@
--- Server (srv): the task code that only a server runs (step S5, unit A-S5T; docs/MODES.md, coop_tasks.script is the Core).
+-- Server (srv): the task code that only a server runs (docs/MODES.md; coop_tasks.script is the Core).
 --[[
 	Everything registers inside coop_mode.when_srv: in the co-op and in single player none of it runs.
 
-	World server (review A-REV-E-2, findings 4 and 5):
+	World server:
 	  - the offers a map server makes and drops (event quests.offer_up, from the bridge of that player's map only) are kept as the
 	    world server's own (coop_quests_offer note_offer / forget_offers): a give is judged by them, a task prepared again is filled
 	    from them;
 	  - a map server's word that it granted a player a new talk (coop_talk_new, the same bridge rule): one step per talk sees a dialog
-	    closed and opened again between two of its body reports (coop_tasks.far_talk_new).
-	World server:
-	  - a world hurt by a give that died (builds 45-49): a task whose on_init made a squad next to the player died on the world
+	    closed and opened again between two of its body reports (coop_tasks_requests.far_talk_new).
+	  - a world hurt by a give that died: a task whose on_init made a squad next to the player died on the world
 	    server, and the dialog phrase had given its info already, so the dialog was closed for good. Its info is taken back once a
-	    world (heal_lost_gives, at the first update; the world keeps that it looked: pstor coop_lost_gives). Was coop_tasks.
+	    world (heal_lost_gives, at the first update; the world keeps that it looked: pstor coop_lost_gives).
 	  - a map server's personal effects (event coop_rep_map, from a map server's bridge only): run once per map server, effect epoch
-	    and number (coop_tasks.map_seen, in the save) for the player whose character it names, then answered (coop_rep_map_ack).
-	    Character 0 is the world server's seat, which plays no character: answered, run for nobody. Was coop_tasks.
+	    and number (coop_tasks_rewards.map_seen, in the save) for the player whose character it names, then answered
+	    (coop_rep_map_ack).
+	    Character 0 is the world server's seat, which plays no character: answered, run for nobody.
 	  - the recipients of task events sent by or to map servers.
-	  - four effects of a task's end that landed on the world server's ghost (the quest audit 2026-11-13, temp/quest-audit/
-	    functions.md rows 13-16; TZ section 2 "four small cases"):
-	      play_sound_on_actor    (2 tasks, lttz_ms)        the player's machine plays it (coop_tasks.forward_fx)
+	  - four effects of a task's end that would land on the world server's ghost:
+	      play_sound_on_actor    (2 tasks, lttz_ms)        the player's machine plays it (coop_tasks_rewards.forward_fx)
 	      actor_surge_immuned    (faction_base_defense)    task-end clear only; the level logic still sets the map server's flag
 	      stalker_ceasefire      (2 tasks, lttz_ll, ...)   the truce with the player's faction, not the ghost's
 	      is_faction_friend_to_actor (an offer's precondition, 1 task) the player's goodwill in the offer made on his level (the world
-	                                                         server's far view, or the map server of his level: A-REV-E-2 F1)
+	                                                         server's far view, or the map server of his level)
 	Map server:
 	  - the offers it makes and drops go up (quests.offer_up), each talk lock it grants a player as a new talk (coop_talk_new);
-	  - its own personal effects (coop_tasks send_effect sends them up) go up again once a second until the world server answers.
+	  - its own personal effects (coop_tasks_rewards send_effect sends them up) go up again once a second until the
+	    world server answers.
 	  - the first two effects above, in a reward scope of its level's logic, go up the same way.
-	A player's machine of a server: takes the two forwarded effects from the world server (coop_tasks.forward_allow).
+	A player's machine of a server: takes the two forwarded effects from the world server
+	(coop_tasks_rewards.forward_allow).
 --]]
 local api = rawget(_G, "coop")
 
@@ -37,7 +38,7 @@ local MAX_PEER = 0xffff
 local MAX_PAYLOAD = 15800
 local MAX_PARAM = 256
 
--- Split levels, builds 45-49 (coop_srv_quests_far object_there handed the stock smart terrain a stand-in of the new squad). `info` is
+-- Gives that died on the world server when a task's on_init met a stand-in of the new squad in the far view. `info` is
 -- taken back when the task is not on and none of the infos its own run sets (`ran`) is here. Once a world: a task dropped later is
 -- the player's choice.
 local LOST_GIVES = {
@@ -77,10 +78,7 @@ local function send(name, payload, target)
 	return ok and sent == true
 end
 
-local function is_map_server()
-	local ok, yes = pcall(function() return api.is_map_server ~= nil and api.is_map_server() == true end)
-	return ok and yes == true
-end
+local is_map_server = coop_srv_roles.map_server
 
 -- this process's own actor is no player (a world server's and a map server's ghost)
 local function ghost()
@@ -111,7 +109,8 @@ local function bridges()
 	return out
 end
 
--- The taker of this map server's task, or a player standing on its map.
+-- A player's request keeps its sender. A map server's request uses the taker on its map or another player there.
+-- Return 0 when no player can be resolved for the bridge.
 local function player_of_request(from, taker)
 	if type(from) ~= "number" or from < 0x100 then return from end
 	local lid
@@ -173,7 +172,7 @@ function heal_lost_gives()
 	return healed
 end
 
-function _heal_once()
+local function heal_once()
 	if not (db.actor and coop_mode.decides_world()) then return end
 	if load_var(db.actor, "coop_lost_gives", false) then return end
 	save_var(db.actor, "coop_lost_gives", true)
@@ -210,7 +209,7 @@ local function stat_value(v)
 	return type(v) == "number" and v >= -2147483648 and v <= 2147483647
 end
 
-local function valid_effect(effect, ct)
+local function valid_effect(effect)
 	if not (text_field(effect.f, 1, 80) and text_field(effect.e, 1, 100) and whole(effect.q, 1, 2 ^ 31)
 		and whole(effect.i, 0, 65534) and (effect.t == nil or text_field(effect.t, 0, 128))) then return false end
 	local keys = { k = true, f = true, e = true, q = true, i = true, t = true }
@@ -222,7 +221,7 @@ local function valid_effect(effect, ct)
 			if (effect.r ~= nil and not stat_value(effect.r)) or (effect.p ~= nil and not stat_value(effect.p)) then return false end
 			keys.r, keys.p = true, true
 		end
-	elseif effect.k == "fx" and ct.forward_allowed(effect.f) then
+	elseif effect.k == "fx" and coop_tasks_rewards.forward_allowed(effect.f) then
 		for i = 1, 4 do
 			local key = "p" .. i
 			if effect[key] ~= nil and not text_field(effect[key], 0, MAX_PARAM) then return false end
@@ -242,24 +241,24 @@ end
 -- World server: event coop_rep_map from a map server's bridge (the sender comes from the transport): k = "stat" | "fx" (an effect
 -- a player's machine runs), f its name, e the map server's epoch, q its number, i the character; the rest as coop_tasks sends it.
 local function on_map_effect(payload, from)
-	local sender = whole(from, 0x100, MAX_PEER) and coop_mode.from_level(from)
+	local sender = coop_mode.from_level(from)
 	if not coop_trust.pass("task_map_effect_sender", sender, "task effect from unexpected peer %s", tostring(from))
 		or not sender then return end
 	local size = type(payload) == "string" and #payload > 0 and #payload <= MAX_PAYLOAD
 	if not coop_trust.pass("task_map_effect_size", size, "invalid task effect size from peer %s", tostring(from))
 		or not size then return end
 	local ct = tasks()
-	local effect = ct.decode_payload(payload)
-	local valid = valid_effect(effect, ct)
+	local effect = coop_tasks_base.unpack_payload(payload)
+	local valid = valid_effect(effect)
 	if not coop_trust.pass("task_map_effect_payload", valid, "invalid task effect from peer %s", tostring(from))
 		or not valid then return end
 	local q = effect.q
 	local key = tostring(from) .. ":" .. effect.e .. ":" .. tostring(q)
-	local seen = ct.map_seen()
+	local seen = coop_tasks_rewards.map_seen()
 	if not seen[key] and member(effect.i) then
 		ct.with_character(effect.i, function()
 			effect.q, effect.e, effect.i = nil, nil, nil
-			ct.send_personal(effect)
+			coop_tasks_rewards.send_personal(effect)
 		end)
 		seen[key] = true
 	end
@@ -276,7 +275,7 @@ local function on_map_effect_ack(payload, from)
 	local valid = whole(q, 1, 2 ^ 31)
 	if not coop_trust.pass("task_map_ack_payload", valid, "invalid task effect ACK from peer %s", tostring(from))
 		or not valid then return end
-	for _, wait in pairs(tasks().fx_pending()) do
+	for _, wait in pairs(coop_tasks_rewards.fx_pending()) do
 		for i, e in ipairs(wait) do
 			if e.q == q then
 				table.remove(wait, i)
@@ -287,7 +286,7 @@ local function on_map_effect_ack(payload, from)
 end
 
 -------------------------------------------------------------------------------
--- One step per talk across processes (review A-REV-E-2 finding 5)
+-- One step per talk across processes
 -------------------------------------------------------------------------------
 -- Map server: the engine asks coop_npc_meet.talk_verdict before it grants a player's talk lock (coop_dialog.cpp host_try_lock); an
 -- answer that is not false grants it now. A grant that is no repeat of the lock he holds is a new talk: the world server hears it
@@ -318,7 +317,7 @@ end
 
 -- World server: a map server's word of a new talk. The sender is the transport's; only the bridge of that player's map counts.
 local function on_talk_new(payload, from)
-	local sender = whole(from, 0x100, MAX_PEER) and coop_mode.from_level(from)
+	local sender = coop_mode.from_level(from)
 	if not coop_trust.pass("task_talk_new_sender", sender, "talk report from unexpected peer %s", tostring(from))
 		or not sender then return end
 	local peer, npc
@@ -331,13 +330,13 @@ local function on_talk_new(payload, from)
 	local valid = whole(peer, 1, MAX_PEER) and whole(npc, 1, 65534) and okb and bridge == from
 	if not coop_trust.pass("task_talk_new_payload", valid, "invalid talk report from peer %s", tostring(from))
 		or not valid then return end
-	tasks().far_talk_new(peer, npc)
+	coop_tasks_requests.far_talk_new(peer, npc)
 end
 
 -------------------------------------------------------------------------------
--- The offers a map server makes go to the world server, which runs the give (review A-REV-E-2 finding 4)
+-- The offers a map server makes go to the world server, which runs the give
 -------------------------------------------------------------------------------
--- Since A-S5S-offer the map server of a player's map builds his offers (coop_quests_offer offer_here) and keeps them, while the world
+-- The map server of a player's map builds his offers (coop_quests_offer offer_here) and keeps them, while the world
 -- server gives the task (coop_tasks ops.give). Each offer it notes (note_offer) and each it drops (forget_offers: a refusal, his
 -- machine makes that NPC's offers itself) goes up as event quests.offer_up { p peer, n NPC, i task, v vars (coop_quests_core.ser),
 -- bt bounty target | f = 1: forget }; the world server keeps the same record (its offers_of judges his give, check task_give_offer,
@@ -375,7 +374,7 @@ end
 
 -- World server: a map server's offer record. The sender is the transport's; only the bridge of that player's map counts.
 local function on_offer_up(t, from)
-	local sender = whole(from, 0x100, MAX_PEER) and coop_mode.from_level(from)
+	local sender = coop_mode.from_level(from)
 	if not coop_trust.pass("task_offer_up_sender", sender, "offer record from unexpected peer %s", tostring(from))
 		or not sender then return end
 	t = type(t) == "table" and t or {}
@@ -404,7 +403,7 @@ local function map_retry()
 	local t = time_global()
 	if t < state.retry_at then return end
 	state.retry_at = t + RETRY_MS
-	for _, wait in pairs(tasks().fx_pending()) do
+	for _, wait in pairs(coop_tasks_rewards.fx_pending()) do
 		for _, e in ipairs(wait) do send("coop_rep_map", e.s, 0) end
 	end
 end
@@ -412,21 +411,21 @@ end
 local function actor_on_update()
 	if is_map_server() then
 		map_retry()
-		if state.map_hooks then state.map_hooks() end -- A-REV-E-2 F4, F5: once each, as soon as the modules are there
+		if state.map_hooks then state.map_hooks() end -- once each, as soon as the modules are there
 	end
 	if not state.healed and coop_mode.decides_world() and db.actor then
 		state.healed = true
-		_heal_once()
+		heal_once()
 	end
 end
 
 -------------------------------------------------------------------------------
--- The four effects that landed on the ghost
+-- The four effects that would land on the ghost
 -------------------------------------------------------------------------------
 -- The character of the player the work being run now is for: a task's reward scope (coop_tasks.personal_character), else the far
 -- view's scope of his level (an offer the world server makes for him, coop_srv_quests_far), else, on the map server that leads his
--- map, the player whose offer it builds now (coop_quests_offer.requester, set only while offer_here generates: A-S5S-offer moved the
--- offer there, review A-REV-E-2 finding 1); nil: nobody's (the ghost's own). The world server keeps its two answers.
+-- map, the player whose offer it builds now (coop_quests_offer.requester, set only while offer_here generates); nil: nobody's
+-- (the ghost's own). The world server keeps its two answers.
 local function player_character()
 	local ct = tasks()
 	local ok, id = pcall(ct.personal_character)
@@ -449,7 +448,7 @@ end
 
 function print_status()
 	local pending = 0
-	local ok, list = pcall(function() return tasks().fx_pending() end)
+	local ok, list = pcall(function() return coop_tasks_rewards.fx_pending() end)
 	for _, wait in pairs(ok and type(list) == "table" and list or {}) do pending = pending + #wait end
 	log("server: started %s, lost gives looked at %s, effects waiting for the world server %d, errors %d", tostring(state.started),
 		tostring(state.healed), pending, state.errors)
@@ -463,10 +462,9 @@ function on_game_start()
 	coop_mode.when_srv(function()
 		if state.started then return end
 		state.started = true
-		local ct = tasks()
 		local world = coop_mode.decides_world()
 		local map = is_map_server()
-		for _, fname in ipairs(FORWARDED) do ct.forward_allow(fname) end
+		for _, fname in ipairs(FORWARDED) do coop_tasks_rewards.forward_allow(fname) end
 		coop_quests_core.set_part("task_delivery", {
 			bridges = bridges,
 			player_of_request = player_of_request,
@@ -485,7 +483,7 @@ function on_game_start()
 			log("! coop_main.add_event_handler not found: a map server's personal effects are not taken")
 		end
 		if world then coop_quests_core.on(OFFER_UP, on_offer_up, "srv tasks offer up") end
-		-- A map server (review A-REV-E-2 findings 4, 5): the talks it grants and the offers it makes and drops go up to the world
+		-- A map server: the talks it grants and the offers it makes and drops go up to the world
 		-- server. Each wrapper once, as soon as its module is there (here, and from actor_on_update).
 		if map then
 			state.map_hooks = function()
@@ -528,7 +526,7 @@ function on_game_start()
 			local stock = xe[fname]
 			if type(stock) == "function" then
 				xe[fname] = function(actor, npc, p)
-					if ct.forward_fx(fname, p) then return end
+					if coop_tasks_rewards.forward_fx(fname, p) then return end
 					return stock(actor, npc, p)
 				end
 			end
@@ -555,3 +553,8 @@ function on_game_start()
 		end
 	end)
 end
+
+-- tests only
+_test = {
+	heal_once = heal_once,
+}

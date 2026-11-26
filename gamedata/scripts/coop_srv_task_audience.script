@@ -1,9 +1,9 @@
 -- Сервер (srv): кто видит задание в мире с картами по серверам (docs/MODES.md)
 --[[
-	Anomaly Coop - who sees a task in a world with split levels (gamedata\scripts\coop_srv_task_audience.script, coop_task_audience
-	before step S4). Plan docs\plans\2026-11-16-task-audience.md, section A. Test: tests\lua\test_srv_task_audience.lua. World server
-	only. Its callbacks, its save and its part for the Core (coop_quests_core.part("audience"): coop_tasks, coop_quests_trust) come
-	from coop_mode.when_srv: in the co-op there is no part, and every task is everybody's.
+	Anomaly Coop - who sees a task in a world with split levels (docs\plans\2026-11-16-task-audience.md, section A). Test:
+	tests\lua\test_srv_task_audience.lua. World server only. Its callbacks, its save and its part for the Core
+	(coop_quests_core.part("audience"): coop_tasks, coop_quests_trust) come from coop_mode.when_srv: in the co-op there is no part,
+	and every task is everybody's.
 
 	In a split-levels world players may be in different factions. When a task is given it gets an AUDIENCE: the characters
 	who see it. Decided once, per character, kept for the task's life:
@@ -49,7 +49,7 @@ local TAG = "[coop-audience]"
 local STORE = "coop_task_audience" -- m_data key
 local CHANGED = "coop_faction_changed" -- coop_faction's script callback (peer, character_id, old, new)
 local ENEMIES_DEFAULT = -1000 -- game_relations.ENEMIES (stock game_relations.script:34-36)
--- gameplay_disguise.possible_factions (temp/gamma_ref/scripts/gameplay_disguise.script:166-179), as coop_faction FACTIONS
+-- gameplay_disguise.possible_factions, as coop_faction FACTIONS
 local FACTIONS = {
 	army = true, bandit = true, csky = true, dolg = true, ecolog = true, freedom = true, killer = true, monolith = true,
 	stalker = true, renegade = true, greh = true, isg = true,
@@ -70,21 +70,8 @@ local function log(fmt, ...)
 	printf("%s %s", TAG, ok and line or tostring(fmt))
 end
 
--- Script module by name, or nil (loaded by _G.__index on the first use).
-local function mod(name)
-	local m = rawget(_G, name)
-	if m == nil then
-		local ok, r = pcall(function() return _G[name] end)
-		m = ok and r or nil
-	end
-	return type(m) == "table" and m or nil
-end
-
-local function call(f, ...)
-	if type(f) ~= "function" then return nil end
-	local ok, v = pcall(f, ...)
-	return ok and v or nil
-end
+local mod, call = coop_util.module, coop_util.call
+local world_server = coop_srv_roles.world_server
 
 local function engine_ok()
 	return api ~= nil and type(api.story_task_audience) == "function"
@@ -92,8 +79,7 @@ end
 
 -- The authority of a split-levels world with an engine that filters.
 function on()
-	if not (api and call(api.is_active) == true and call(api.is_host) == true) then return false end
-	if call(api.is_map_server) == true then return false end
+	if not world_server() then return false end
 	local cf = mod("coop_faction")
 	if not (cf and call(cf.split_mode) == true) then return false end
 	if not engine_ok() then
@@ -370,9 +356,9 @@ local function on_faction_changed(peer, c, old, new)
 		end
 	end
 	if changed and type(peer) == "number" and peer > 0 then
-		local ct = mod("coop_tasks")
-		if ct and type(ct.audience_resync) == "function" then
-			local ok, err = pcall(ct.audience_resync, peer)
+		local mirror = mod("coop_tasks_mirror")
+		if mirror and type(mirror.audience_resync) == "function" then
+			local ok, err = pcall(mirror.audience_resync, peer)
 			if not ok then log("! resync of #%s: %s", tostring(peer), tostring(err)) end
 		end
 	end
@@ -389,7 +375,7 @@ local function keys(set)
 end
 
 local function save_state(m_data)
-	if not (api and call(api.is_host) == true) or call(api.is_map_server) == true then return end
+	if not world_server() then return end
 	local kept = {}
 	for id, rec in pairs(aud) do
 		kept[id] = { k = rec.k, gf = rec.gf, sf = rec.sf, t = rec.t, i = keys(rec.inn), o = keys(rec.out),
@@ -453,25 +439,10 @@ function on_game_start()
 		log("the engine has no coop.story_task_audience: every task is shown to everybody")
 	end
 	coop_mode.when_srv(function()
-		-- fn at the actor's first update, also when that was over before this process's server layer answered (the world
-		-- server's session starts after its world is up): then at the next update
-		local function at_first_update(fn)
-			local seen = false
-			local function late()
-				UnregisterScriptCallback("actor_on_update", late)
-				if not seen then fn() end
-			end
-			RegisterScriptCallback("actor_on_first_update", function()
-				seen = true
-				fn()
-			end)
-			RegisterScriptCallback("actor_on_update", late)
-		end
-
 		local function listen()
 			if listening then return end
 			listening = true
-			-- coop_faction declares it too: the second declaration is a warning with a stack traceback in every log (coop_route.declare)
+			-- coop_route.declare avoids a duplicate warning when coop_faction also declares CHANGED.
 			local okr, route = pcall(function() return coop_route end)
 			if not (okr and type(route) == "table" and type(route.declare) == "function" and pcall(route.declare, CHANGED)) then
 				local add = rawget(_G, "AddScriptCallback") or AddScriptCallback
@@ -483,12 +454,10 @@ function on_game_start()
 		RegisterScriptCallback("save_state", save_state)
 		RegisterScriptCallback("load_state", load_state)
 		-- the world server loads its save before its session starts, and so before this: what that save brought
-		local asm = rawget(_G, "alife_storage_manager")
-		local m = asm and type(asm.get_state) == "function" and asm.get_state() or nil
-		if type(m) == "table" then load_state(m) end
+		coop_mode.late_load(load_state)
 		RegisterScriptCallback("actor_on_update", actor_on_update)
 		-- coop_faction declares its callback in its own on_game_start: listen once the game runs, whatever the order of scripts
-		at_first_update(listen)
+		coop_mode.at_first_update(listen)
 		coop_quests_core.set_part("audience", coop_srv_task_audience)
 	end)
 end

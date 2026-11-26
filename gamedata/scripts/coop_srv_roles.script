@@ -1,0 +1,26 @@
+-- Сервер (srv): роль этого процесса в сессии сервера — сервер мира, сервер карты, разные карты (docs/MODES.md)
+--[[
+	Anomaly Coop - the roles the server's scripts ask, one copy each (docs\CODE_RULES.md LAYER-5).
+
+	They answer inside a session only. The facade already says decides_world on the world server before its session starts
+	(coop_mode.decides_world); these say false then, so the ticks and handlers that ask them wait for the session.
+
+		world_server()   in a session, this process is the world server
+		map_server()     in a session, this process is a map server
+		split()          the session's players stand on different maps
+		dedicated()      this process was started as the world server, in a session or not
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+local call = coop_util.call
+
+local function asks(f) return api ~= nil and call(f) == true end
+
+function map_server() return asks(api and api.is_active) and asks(api.is_map_server) end
+function world_server() return asks(api and api.is_active) and asks(api.is_host) and not asks(api.is_map_server) end
+function dedicated() return asks(api and api.is_dedicated) end
+
+function split()
+	local l = api and api.levels
+	return l ~= nil and asks(l.split)
+end

@@ -1,8 +1,8 @@
 -- Сервер (srv): таблицы стока и GAMMA, которые сервер карты делит с сервером мира (docs/MODES.md)
 --[[
-	Anomaly Coop - split levels: the tables of the stock and of GAMMA a map server has to share with the world server (coop_srv_levels_share;
-	gamedata\scripts\coop_srv_levels_tables.script, coop_levels_tables before step S4). Everything that registers, wraps or writes a
-	table of the stock or of GAMMA is done from coop_mode.when_srv: nothing of it runs in the co-op.
+	Anomaly Coop - split levels: the tables of the stock and of GAMMA a map server has to share with the world server (coop_srv_levels_share).
+	Everything that registers, wraps or writes a table of the stock or of GAMMA is done from coop_mode.when_srv: nothing of it runs in
+	the co-op.
 
 	trade_manager: when a trader was restocked. A map server restocks the traders of its level; the save is the world server's. Without this
 	every new map server found the old time and restocked them again, which takes away what the players sold.
@@ -24,12 +24,7 @@ local EV_DAO = "coop_dao"
 
 local function qc() return coop_quests_core end
 local function levels() return api and api.levels end
-local function map_server() return api ~= nil and qc().is_map_server() end
-local function world_server() return api ~= nil and qc().is_host() end
-local function split()
-	local l = levels()
-	return l ~= nil and l.split ~= nil and l.split() == true
-end
+local split, world_server, map_server = coop_srv_roles.split, coop_srv_roles.world_server, coop_srv_roles.map_server
 
 local function mod(name) return qc().mod(name) end
 
@@ -168,21 +163,6 @@ end
 function on_game_start()
 	if not api then return end
 	coop_mode.when_srv(function()
-		-- fn at the actor's first update, also when that was over before this process's server layer answered (the world
-		-- server's session starts after its world is up): then at the next update
-		local function at_first_update(fn)
-			local seen = false
-			local function late()
-				UnregisterScriptCallback("actor_on_update", late)
-				if not seen then fn() end
-			end
-			RegisterScriptCallback("actor_on_first_update", function()
-				seen = true
-				fn()
-			end)
-			RegisterScriptCallback("actor_on_update", late)
-		end
-
 		-- f with drx_da_main's table cut to the levels keep(name) says, the rows it did not get as they were.
 		local function with_levels(da, keep, f, ...)
 			local all = da.updated_anomaly_levels
@@ -274,15 +254,14 @@ function on_game_start()
 			end
 		end
 
-		local share = coop_srv_levels_share
-		share.up("trade", trade_rows, trade_merge, 10000)
-		share.up("dao", dao_row, dao_merge, 5000)
-		share.up("artefacts", artefacts_get, artefacts_spent, 1000)
-		share.up("boxes", boxes_get, boxes_merge, 15000)
-		share.down("logic", logic_get, logic_set)
-		share.down("guards", guards_get, guards_set, 15000)
+		coop_mode.share_up("trade", trade_rows, trade_merge, 10000)
+		coop_mode.share_up("dao", dao_row, dao_merge, 5000)
+		coop_mode.share_up("artefacts", artefacts_get, artefacts_spent, 1000)
+		coop_mode.share_up("boxes", boxes_get, boxes_merge, 15000)
+		coop_mode.share_down("logic", logic_get, logic_set)
+		coop_mode.share_down("guards", guards_get, guards_set, 15000)
 		coop_main.add_event_handler(EV_DAO, on_dao)
 		patch_artefacts()
-		at_first_update(patch_dao)
+		coop_mode.at_first_update(patch_dao)
 	end)
 end

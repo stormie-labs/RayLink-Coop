@@ -72,6 +72,7 @@ local Ms = machine("client", BRIDGE)
 Hm.my_level, Ms.my_level = 1, 2
 world(Hm); world(Ms)
 Ms.env.coop.is_map_server = function() return true end
+Hm.env.coop.is_dedicated = function() return true end -- the world server (-coop_dedicated): it hears its map servers
 
 local ZONE = "jup_a9_cam_2"
 local function rec(id, pos, extra)
@@ -126,7 +127,7 @@ end
 
 print("== the map server tells who stands in its zones")
 share()
-check(Hm.env.coop_srv_quests_far._names_of()[2] ~= nil, "the names of its zones reach the world server")
+check(Hm.env.coop_srv_quests_far._test.names_of()[2] ~= nil, "the names of its zones reach the world server")
 check(in_view(1, "actor_in_zone", ZONE) == true, "actor_in_zone: player 1 stands in it, his scope says yes")
 check(in_view(1, "actor_inside_zone", ZONE) == true, "actor_inside_zone: db.actor_inside_zones answers for him")
 check(in_view(2, "actor_in_zone", ZONE) == false, "player 2 of the same level is not in it: his scope says no")
