@@ -31,7 +31,8 @@ TEST(rep_log_coop_silence_cleanup_does_not_claim_the_host_replied)
 	const std::string src = game_source("coop/coop_manager.cpp");
 	const std::string disconnect = section(src, "session.on_disconnected = ", "session.on_chat = ");
 	const std::string step = section(src, "void host_silence_step()", "void Manager::frame()");
-	CHECK(disconnect.find("host_silence_off(SilenceEnd::StoppedWaiting)") != std::string::npos);
+	const std::string session_end = section(src, "void Manager::set_phase(Phase p)", "const char* Manager::build_id()");
+	CHECK(session_end.find("host_silence_off(SilenceEnd::StoppedWaiting)") != std::string::npos);
 	const std::regex recovery_line(R"(if \(reason == SilenceEnd::HostAnswered\)\s*::Msg\("\[coop\] the host answers again)");
 	CHECK(std::regex_search(src, recovery_line));
 	CHECK(step.find("SilenceEnd::HostAnswered") != std::string::npos);

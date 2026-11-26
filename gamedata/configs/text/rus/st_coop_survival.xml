@@ -48,6 +48,9 @@
 	<string id="st_coop_hud_newchar">
 		<text>Новый персонаж...</text>
 	</string>
+	<string id="st_coop_hud_reviving">
+		<text>Поднимаешь %s...</text>
+	</string>
 	<string id="st_coop_feed_you_down">
 		<text>Ты при смерти! Товарищ может поднять тебя аптечкой (%d с).</text>
 	</string>

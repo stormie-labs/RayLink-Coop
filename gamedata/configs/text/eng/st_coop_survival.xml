@@ -48,6 +48,9 @@
 	<string id="st_coop_hud_newchar">
 		<text>New character...</text>
 	</string>
+	<string id="st_coop_hud_reviving">
+		<text>Reviving %s...</text>
+	</string>
 	<string id="st_coop_feed_you_down">
 		<text>You are down! A teammate can revive you with a medkit (%d s).</text>
 	</string>
