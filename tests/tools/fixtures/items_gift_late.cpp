@@ -6,6 +6,7 @@
 // g_proxy_items list still has it): his report is dropped silently and counted. The giver's g_left entry must survive the
 // recipient's host_push whatever order the peers' slots are walked in.
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -104,7 +105,7 @@ struct AI
 	Alife alife() { return {}; }
 };
 AI ai() { return {}; }
-CSE_Abstract* find_entity(u16 id) { return id == gun.ID ? &gun : nullptr; }
+namespace world { CSE_Abstract* alife_entity(u16 id) { return id == gun.ID ? &gun : nullptr; } }
 CInventoryItem* find_item(u16 id) { return id == gun.ID ? &gun_item : nullptr; }
 void capture_object(CInventoryItem*, ItemData& d, bool = true) { d.condition = 1; }
 bool capture_entity(CSE_Abstract*, ItemData& d, bool = true)
@@ -131,7 +132,13 @@ struct Left
 	u64 time = 0;
 };
 xr_map<u16, Left> g_left;
-xr_map<u16, xr_vector<u16>> g_proxy_items;
+struct ProxyItems
+{
+	xr_vector<u16> children;
+	xr_vector<u16> sorted;
+};
+xr_map<u16, ProxyItems> g_proxy_items;
+xr_vector<u16> g_track_sorted;
 struct Stream
 {
 	u32 stream = 0;

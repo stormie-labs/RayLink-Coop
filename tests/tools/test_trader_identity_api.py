@@ -1,40 +1,27 @@
 """Exercise the registered identity API and its existing digest access rules in Lua."""
-import os
-from pathlib import Path
 import re
 import subprocess
-import uuid
 
-from test_client_ammo_reload import definition
-
-ROOT = Path(__file__).resolve().parents[2]
+import check_gates
+from native_slice import ROOT, build, definition
 
 
-def test_registered_player_digest_uses_existing_identity_and_access_rules():
+def test_registered_player_digest_uses_existing_identity_and_access_rules(work):
     text = (ROOT / "engine/src/xrGame/coop/coop_sync_api.cpp").read_text(encoding="utf-8-sig")
     registration = definition(text, "void register_lua(")
     assert '{"player_digest", &l_player_digest}' in registration
     methods = "\n".join(definition(text, name) for name in (
         "bool client(", "PeerId self_peer(", "const std::string& own_digest(", "bool peer_digest(",
-        "bool arg_number(", "bool arg_whole(", "int l_player_digest("))
+        "int l_player_digest("))
     functions = set(re.findall(r'\{"[^"\n]+", &(l_\w+)\}', registration))
-    functions.add("l_saving_for_join")
     stubs = "\n".join(f"int {name}(lua_State*) {{ return 0; }}" for name in sorted(functions - {"l_player_digest"}))
     source = HARNESS.replace("// METHODS", methods).replace("// OTHER_API", stubs).replace("// REGISTER", registration)
-    work = ROOT / "temp/trader_identity" / uuid.uuid4().hex[:8]
-    work.mkdir(parents=True)
-    fixture, runner = work / "identity.cpp", work / "identity.exe"
+    fixture = work / "identity.cpp"
     fixture.write_text(source, encoding="utf-8")
-    lib = Path(os.environ.get("LUA51_LIB", str(ROOT / "engine/_build/_game/bin_dbg/x64/Release-AVX/lua51.lib")))
-    assert lib.is_file(), "Set LUA51_LIB to the engine's built lua51.lib"
-    include = ROOT / "engine/src/3rd party/luajit-2/src"
-    command = work / "compile.cmd"
-    command.write_text(
-        '@echo off\ncall "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat" >nul\n'
-        f'if errorlevel 1 exit /b 1\ncl /nologo /MD /EHsc /std:c++17 /utf-8 /I"{include}" "{fixture}" "{lib}" /Fe"{runner}"\n'
-        'exit /b %ERRORLEVEL%\n', encoding="utf-8")
-    built = subprocess.run(["cmd", "/d", "/c", str(command)], cwd=work, capture_output=True, text=True, errors="replace", timeout=120)
-    assert built.returncode == 0, built.stdout + built.stderr
+    lib = check_gates.lua51_lib(ROOT)
+    assert lib.is_file(), f"the engine's lua51.lib is required (LUA51_LIB): {lib}"
+    runner = build(work, "cl /nologo /MD /EHsc /std:c++17 /utf-8", [fixture], work / "identity.exe",
+                   includes=[ROOT / "engine/src/3rd party/luajit-2/src", ROOT / "engine/src/xrGame/coop"], libs=[lib])
     result = subprocess.run([str(runner), str(ROOT)], capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -52,6 +39,8 @@ extern "C" {
 #include "lauxlib.h"
 #include "lualib.h"
 }
+#include "coop_lua.h"
+namespace lua_api = coop::lua_api;
 using PeerId = uint16_t;
 constexpr PeerId kHostPeer=0, kInvalidPeer=65535;
 struct PeerInfo { std::string key; bool joined=true; };
@@ -124,6 +113,7 @@ int main(int argc, char** argv) {
             setfenv(assert(loadfile(test_root.."/gamedata/scripts/"..name..".script")),env)()
             return env
         end
+        module("coop_util")
         module("coop_trader_state")
         local reputation=module("coop_trader_reputation")
         reputation.refresh()

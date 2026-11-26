@@ -1,6 +1,6 @@
 """List the engine functions Lua can call and check the call classes of the call router (F2 T12, MOD_LAYER.md §2.3).
 
-The call router (engine/src/xrCoop/coop_calls.h) gives every engine export a script can reach a class: world, owner,
+The call router (engine/src/xrCoop/coop_calls_table.inl, used by coop_calls.h) gives every engine export a script can reach a class: world, owner,
 view or read. Names are "<namespace>:<name>", the namespace being the Lua class or module:
   alife:<f>          a method of alife() (class_<CALifeSimulator>("alife_simulator"))
   game_object:<f>    a method or property of a game object (class_<CScriptGameObject>("game_object"))
@@ -46,7 +46,7 @@ ROOT = Path(__file__).resolve().parent.parent
 ENGINE = ROOT / "engine" / "src"
 DEFINES = ENGINE / "build_config_defines.h"
 MACROS = ENGINE / "xrServerEntities" / "xrServer_script_macroses.h"
-TABLE = ENGINE / "xrCoop" / "coop_calls.h"
+TABLE = ENGINE / "xrCoop" / "coop_calls_table.inl"
 LIST = ROOT / "tests" / "lua_exports.txt"
 PROJECT_MACROS = {"XRGAME_EXPORTS"}  # xrGame.vcxproj PreprocessorDefinitions
 
@@ -292,7 +292,7 @@ def sorted_names(names):
 
 
 def table():
-    """(rows of kCalls as [(name, class)], {macro virtual: class}) from coop_calls.h."""
+    """(rows of kCalls as [(name, class)], {macro virtual: class}) from coop_calls_table.inl."""
     if not TABLE.exists():
         print(f"missing table: {TABLE}")
         sys.exit(2)

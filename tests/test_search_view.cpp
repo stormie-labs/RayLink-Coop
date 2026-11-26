@@ -1,4 +1,4 @@
-// Anomaly Coop unit tests: when the host hears of a search in the Lua inventory (xrCoop/coop_search_view.h; coop_trade.cpp search_frame sends
+// Anomaly Coop unit tests: when the host hears of a search in the Lua inventory (xrCoop/coop_search_view.h; coop_trade_views.cpp search_frame sends
 // what these answers ask for).
 #include "test_util.h"
 

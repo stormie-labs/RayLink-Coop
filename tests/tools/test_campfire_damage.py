@@ -1,30 +1,13 @@
 """Execute engine zone transitions and hit creation with a local-server transport stub."""
-import os
-from pathlib import Path
-import re
-import shutil
 import subprocess
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
+from native_slice import ROOT, build, definition
 
 
-def definition(source, signature):
-    start = source.index(signature)
-    depth = 0
-    for match in re.finditer(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|[{}]', source[start:], re.DOTALL):
-        if match.group() == "{":
-            depth += 1
-        elif match.group() == "}":
-            depth -= 1
-            if depth == 0:
-                return source[start:start + match.end()]
-    raise ValueError(signature)
-
-
-@pytest.fixture(scope="function")
-def campfire_runner(work):
+@pytest.fixture(scope="module")
+def campfire_runner(module_work):
     game = ROOT / "engine/src/xrGame"
     rules = game.parent / "xrCoop"
     custom = (game / "CustomZone.cpp").read_text(encoding="utf-8-sig")
@@ -39,25 +22,10 @@ def campfire_runner(work):
     methods += [definition(fire, f"void CZoneCampfire::{name}(") for name in overrides]
     declarations = "\n".join(f"void {name}(EZoneState) override;" for name in overrides)
     source = HARNESS.replace("// FIRE_DECLARATIONS", declarations).replace("// ENGINE_METHODS", "\n".join(methods))
-    fixture = work / "campfire.cpp"
+    fixture = module_work / "campfire.cpp"
     fixture.write_text(source, encoding="utf-8")
-    runner = work / ("campfire.exe" if os.name == "nt" else "campfire")
-    if os.name == "nt":
-        vcvars = Path(os.environ.get("VCVARS", r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"))
-        assert vcvars.exists(), "MSVC Build Tools required for this regression"
-        command = work / "compile.cmd"
-        command.write_text(
-            f'@echo off\ncall "{vcvars}" >nul\nif errorlevel 1 exit /b 1\n'
-            f'cl /nologo /EHsc /std:c++17 /Od /utf-8 /I"{rules}" "{fixture}" /Fe"{runner}"\n'
-            'exit /b %ERRORLEVEL%\n', encoding="utf-8")
-        build = ["cmd", "/d", "/c", str(command)]
-    else:
-        compiler = shutil.which("c++")
-        assert compiler, "C++17 compiler required for this regression"
-        build = [compiler, "-std=c++17", "-I", str(rules), str(fixture), "-o", str(runner)]
-    result = subprocess.run(build, cwd=work, capture_output=True, text=True, errors="replace", timeout=120)
-    assert result.returncode == 0, result.stdout + result.stderr
-    return runner
+    return build(module_work, "cl /nologo /EHsc /std:c++17 /Od /utf-8", [fixture], module_work / "campfire.exe",
+                 includes=[rules])
 
 
 @pytest.mark.parametrize("mode", ["mirror", "host", "map-server", "single", "ordinary-zone"])

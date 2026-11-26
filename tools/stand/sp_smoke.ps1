@@ -35,7 +35,7 @@ function New-Profile([string]$letter) {
     New-Item -ItemType Directory -Force -Path $appdata | Out-Null
     Copy-StandTree -From (Join-Path $Stand 'appdata_t') -To $appdata -ExcludeFiles @('coop_player.key', 'axr_options.ltx') -ExcludeDirs @('savedgames', 'logs', 'raylink', 'screenshots')
     # The stand runs unattended: nobody presses a key. Stock's "press any key" screen after a load (keypress_on_start,
-    # GamePersistent game_loaded: "device pause on: tutorial_start") held the single player game paused, and the probe's
+    # GamePersistent game_loaded: the pause reason "tutorial_start") held the single player game paused, and the probe's
     # steps never came (2026-11-21, five runs). A session skips that screen itself (coop::skip_keypress_on_load).
     # g_always_active: a window without the focus stays active (a locked desktop), as ms_crash_server sets it.
     $user = Join-Path $appdata 'user.ltx'

@@ -359,7 +359,9 @@ TEST(vehicle_departure_real_answers)
 	};
 	for (const auto& w : want)
 	{
-		const std::string cls = dep_class(*w.second.first, w.first);
+		// both co-op modes answer it in their common base (CoopModeBase), after their own overrides
+		const std::string own = dep_class(*w.second.first, w.first);
+		const std::string cls = own.empty() || w.first.rfind("Coop", 0) != 0 ? own : own + dep_class(coop, "CoopModeBase");
 		if (cls.empty())
 		{
 			t::report_failure(__FILE__, __LINE__, "no class " + w.first);

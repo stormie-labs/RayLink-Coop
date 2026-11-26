@@ -172,15 +172,15 @@ TEST(operator_command_rate_row)
 TEST(operator_loopback_token_makes_the_operator)
 {
 	const op::Token tok = token_of(5);
-	Node host("server", 38201), creator("Creator", 38201), friend_("Friend", 38201);
+	Node host("server", t::port(38201)), creator("Creator", t::port(38201)), friend_("Friend", t::port(38201));
 	host.cfg.host_plays = false;
 	SessionSrv(host.s).arm_operator(tok);
 	present(creator, tok);
 	std::string err;
 	host.cfg.mode = SessionMode::Server;
 	REQUIRE(host.host(&err));
-	REQUIRE(join(host, creator, 38201));
-	REQUIRE(join(host, friend_, 38201, &creator.s));
+	REQUIRE(join(host, creator, t::port(38201)));
+	REQUIRE(join(host, friend_, t::port(38201), &creator.s));
 	REQUIRE(t::pump_until({&host.s, &creator.s, &friend_.s}, 5000,
 	    [&] { return creator.s.peers().size() == 2 && friend_.s.peers().size() == 2 && creator.s.self_host_rights(); }));
 
@@ -209,14 +209,14 @@ TEST(operator_loopback_token_makes_the_operator)
 
 TEST(operator_wrong_token_is_an_ordinary_player)
 {
-	Node host("server", 38202), c("Guess", 38202);
+	Node host("server", t::port(38202)), c("Guess", t::port(38202));
 	host.cfg.host_plays = false;
 	SessionSrv(host.s).arm_operator(token_of(5));
 	present(c, token_of(6));
 	std::string err;
 	host.cfg.mode = SessionMode::Server;
 	REQUIRE(host.host(&err));
-	REQUIRE(join(host, c, 38202));
+	REQUIRE(join(host, c, t::port(38202)));
 	t::pump_for({&host.s, &c.s}, 200);
 	CHECK(!c.rejected);
 	CHECK(c.s.is_active());
@@ -229,14 +229,14 @@ TEST(operator_wrong_token_is_an_ordinary_player)
 TEST(operator_no_token_on_the_server_makes_nobody_operator)
 {
 	// A server started without -coop_operator: a player's zeros, or any token, give nothing.
-	Node host("server", 38203), zeros("Zeros", 38203), any("Any", 38203);
+	Node host("server", t::port(38203)), zeros("Zeros", t::port(38203)), any("Any", t::port(38203));
 	host.cfg.host_plays = false;
 	present(any, token_of(9));
 	std::string err;
 	host.cfg.mode = SessionMode::Server;
 	REQUIRE(host.host(&err));
-	REQUIRE(join(host, zeros, 38203));
-	REQUIRE(join(host, any, 38203, &zeros.s));
+	REQUIRE(join(host, zeros, t::port(38203)));
+	REQUIRE(join(host, any, t::port(38203), &zeros.s));
 	t::pump_for({&host.s, &zeros.s, &any.s}, 200);
 	for (const PeerInfo& p : host.s.peers())
 		CHECK(!p.host_rights);
@@ -246,7 +246,7 @@ TEST(operator_no_token_on_the_server_makes_nobody_operator)
 TEST(operator_token_binds_to_the_first_key)
 {
 	const op::Token tok = token_of(7);
-	Node host("server", 38204), creator("Creator", 38204), thief("Thief", 38204);
+	Node host("server", t::port(38204)), creator("Creator", t::port(38204)), thief("Thief", t::port(38204));
 	host.cfg.host_plays = false;
 	SessionSrv(host.s).arm_operator(tok);
 	present(creator, tok);
@@ -254,8 +254,8 @@ TEST(operator_token_binds_to_the_first_key)
 	std::string err;
 	host.cfg.mode = SessionMode::Server;
 	REQUIRE(host.host(&err));
-	REQUIRE(join(host, creator, 38204));
-	REQUIRE(join(host, thief, 38204, &creator.s));
+	REQUIRE(join(host, creator, t::port(38204)));
+	REQUIRE(join(host, thief, t::port(38204), &creator.s));
 	REQUIRE(t::pump_until({&host.s, &creator.s, &thief.s}, 5000, [&] { return thief.s.peers().size() == 2; }));
 	CHECK(!thief.rejected); // an ordinary player, not a refusal
 	CHECK(!thief.s.self_host_rights());
@@ -269,7 +269,7 @@ TEST(operator_comes_back_with_his_key)
 {
 	// The creator's game crashed and he connects again: same key, same token, the rights again.
 	const op::Token tok = token_of(8);
-	Node host("server", 38205), creator("Creator", 38205), again("Creator", 38205);
+	Node host("server", t::port(38205)), creator("Creator", t::port(38205)), again("Creator", t::port(38205));
 	host.cfg.host_plays = false;
 	SessionSrv(host.s).arm_operator(tok);
 	present(creator, tok);
@@ -278,9 +278,9 @@ TEST(operator_comes_back_with_his_key)
 	std::string err;
 	host.cfg.mode = SessionMode::Server;
 	REQUIRE(host.host(&err));
-	REQUIRE(join(host, creator, 38205));
+	REQUIRE(join(host, creator, t::port(38205)));
 	t::pump_for({&host.s}, 4300); // his game is gone (silent longer than kReplaceSilentLinkMs)
-	REQUIRE(join(host, again, 38205));
+	REQUIRE(join(host, again, t::port(38205)));
 	REQUIRE(t::pump_until({&host.s, &again.s}, 5000, [&] { return again.s.self_host_rights(); }));
 	REQUIRE(host_side(host, again.welcome.slot) != nullptr);
 	CHECK(host_side(host, again.welcome.slot)->host_rights);
@@ -289,7 +289,7 @@ TEST(operator_comes_back_with_his_key)
 TEST(operator_command_reaches_the_hook)
 {
 	const op::Token tok = token_of(4);
-	Node host("server", 38206), creator("Creator", 38206);
+	Node host("server", t::port(38206)), creator("Creator", t::port(38206));
 	host.cfg.host_plays = false;
 	SessionSrv(host.s).arm_operator(tok);
 	present(creator, tok);
@@ -298,7 +298,7 @@ TEST(operator_command_reaches_the_hook)
 	std::string err;
 	host.cfg.mode = SessionMode::Server;
 	REQUIRE(host.host(&err));
-	REQUIRE(join(host, creator, 38206));
+	REQUIRE(join(host, creator, t::port(38206)));
 	REQUIRE(t::pump_until({&host.s, &creator.s}, 5000, [&] { return creator.s.self_host_rights(); }));
 	CHECK(creator.s.send_operator_command("coop_status"));
 	CHECK(creator.s.send_operator_command("quit")); // the client sends; the server is the judge
@@ -317,7 +317,7 @@ TEST(operator_command_reaches_the_hook)
 TEST(operator_command_from_a_non_operator_is_refused)
 {
 	const op::Token tok = token_of(4);
-	Node host("server", 38207), creator("Creator", 38207), other("Other", 38207);
+	Node host("server", t::port(38207)), creator("Creator", t::port(38207)), other("Other", t::port(38207));
 	host.cfg.host_plays = false;
 	SessionSrv(host.s).arm_operator(tok);
 	present(creator, tok);
@@ -326,8 +326,8 @@ TEST(operator_command_from_a_non_operator_is_refused)
 	std::string err;
 	host.cfg.mode = SessionMode::Server;
 	REQUIRE(host.host(&err));
-	REQUIRE(join(host, creator, 38207));
-	REQUIRE(join(host, other, 38207, &creator.s));
+	REQUIRE(join(host, creator, t::port(38207)));
+	REQUIRE(join(host, other, t::port(38207), &creator.s));
 	CHECK(other.s.send_operator_command("coop_kick 1"));
 	t::pump_for({&host.s, &creator.s, &other.s}, 300);
 	CHECK(cmds.got.empty());
@@ -340,7 +340,7 @@ TEST(operator_command_from_a_non_operator_is_refused)
 TEST(operator_command_rate_and_length)
 {
 	const op::Token tok = token_of(2);
-	Node host("server", 38208), creator("Creator", 38208);
+	Node host("server", t::port(38208)), creator("Creator", t::port(38208));
 	host.cfg.host_plays = false;
 	SessionSrv(host.s).arm_operator(tok);
 	present(creator, tok);
@@ -351,7 +351,7 @@ TEST(operator_command_rate_and_length)
 	std::string err;
 	host.cfg.mode = SessionMode::Server;
 	REQUIRE(host.host(&err));
-	REQUIRE(join(host, creator, 38208));
+	REQUIRE(join(host, creator, t::port(38208)));
 	REQUIRE(t::pump_until({&host.s, &creator.s}, 5000, [&] { return creator.s.self_host_rights(); }));
 
 	// the length first, alone in its bucket's time: over kMaxLine is refused (and takes a token)
@@ -374,7 +374,7 @@ TEST(operator_command_needs_a_joined_client)
 {
 	Session s;
 	CHECK(!s.send_operator_command("coop_status")); // not connected
-	Node host("Boss", 38209);
+	Node host("Boss", t::port(38209));
 	std::string err;
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host(&err));
@@ -435,7 +435,7 @@ TEST(operator_token_is_not_in_a_logged_command_line)
 TEST(operator_keeps_his_place_in_a_full_session)
 {
 	const op::Token tok = token_of(11);
-	Node host("server", 38210), a("A", 38210), b("B", 38210), creator("Creator", 38210);
+	Node host("server", t::port(38210)), a("A", t::port(38210)), b("B", t::port(38210)), creator("Creator", t::port(38210));
 	host.cfg.host_plays = false;
 	host.cfg.max_players = 2; // two seats that play, the server's own is not one of them
 	SessionSrv(host.s).arm_operator(tok);
@@ -443,15 +443,15 @@ TEST(operator_keeps_his_place_in_a_full_session)
 	std::string err;
 	host.cfg.mode = SessionMode::Server;
 	REQUIRE(host.host(&err));
-	REQUIRE(join(host, a, 38210));
-	CHECK(!join(host, b, 38210, &a.s)); // the last place waits for the token's holder
+	REQUIRE(join(host, a, t::port(38210)));
+	CHECK(!join(host, b, t::port(38210), &a.s)); // the last place waits for the token's holder
 	CHECK(b.rejected);
-	REQUIRE(join(host, creator, 38210, &a.s));
+	REQUIRE(join(host, creator, t::port(38210), &a.s));
 	REQUIRE(host_side(host, creator.welcome.slot) != nullptr);
 	CHECK(host_side(host, creator.welcome.slot)->host_rights);
 	// he is in: the session is full for everybody now, and nobody else is turned away earlier than that
-	Node c("C", 38210);
-	CHECK(!join(host, c, 38210, &a.s));
+	Node c("C", t::port(38210));
+	CHECK(!join(host, c, t::port(38210), &a.s));
 	CHECK(c.rejected);
 }
 
@@ -460,7 +460,7 @@ TEST(operator_keeps_his_place_in_a_full_session)
 TEST(operator_keeps_his_place_among_eight_clients)
 {
 	const op::Token tok = token_of(12);
-	Node host("server", 38225);
+	Node host("server", t::port(38225));
 	host.cfg.host_plays = false; // max_players: the test Node's 8 (test_main.cpp; a world server's mode says 16)
 	SessionSrv(host.s).arm_operator(tok);
 	std::string err;
@@ -468,33 +468,33 @@ TEST(operator_keeps_his_place_among_eight_clients)
 	REQUIRE(host.host(&err));
 	std::vector<std::unique_ptr<Node>> others;
 	for (int i = 0; i < 8; ++i)
-		others.emplace_back(new Node("P" + std::to_string(i), 38225));
+		others.emplace_back(new Node("P" + std::to_string(i), t::port(38225)));
 	for (int i = 0; i < 7; ++i)
-		REQUIRE(join(host, *others[size_t(i)], 38225, i ? &others[0]->s : nullptr));
-	CHECK(!join(host, *others[7], 38225, &others[0]->s));
+		REQUIRE(join(host, *others[size_t(i)], t::port(38225), i ? &others[0]->s : nullptr));
+	CHECK(!join(host, *others[7], t::port(38225), &others[0]->s));
 	CHECK(others[7]->rejected);
-	Node creator("Creator", 38225);
+	Node creator("Creator", t::port(38225));
 	present(creator, tok);
-	REQUIRE(join(host, creator, 38225, &others[0]->s));
+	REQUIRE(join(host, creator, t::port(38225), &others[0]->s));
 	CHECK_EQ(creator.welcome.slot, PeerId(8));
 	REQUIRE(host_side(host, creator.welcome.slot) != nullptr);
 	CHECK(host_side(host, creator.welcome.slot)->host_rights);
 	CHECK_EQ(host.s.peers().size(), size_t(8));
-	Node late("Late", 38225);
-	CHECK(!join(host, late, 38225, &others[0]->s));
+	Node late("Late", t::port(38225));
+	CHECK(!join(host, late, t::port(38225), &others[0]->s));
 	CHECK(late.rejected);
 }
 
 TEST(operator_place_is_nobodys_without_a_token)
 {
-	Node host("server", 38211), a("A", 38211), b("B", 38211);
+	Node host("server", t::port(38211)), a("A", t::port(38211)), b("B", t::port(38211));
 	host.cfg.host_plays = false;
 	host.cfg.max_players = 2;
 	std::string err;
 	host.cfg.mode = SessionMode::Server;
 	REQUIRE(host.host(&err));
-	REQUIRE(join(host, a, 38211));
-	REQUIRE(join(host, b, 38211, &a.s)); // no operator to wait for: both places are for players
+	REQUIRE(join(host, a, t::port(38211)));
+	REQUIRE(join(host, b, t::port(38211), &a.s)); // no operator to wait for: both places are for players
 }
 
 // ============================================================================ security review 2026-11-12, stages 3 and 6a

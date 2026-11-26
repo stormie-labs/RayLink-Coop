@@ -229,7 +229,7 @@ TEST(levels_audit_round_wire_refuses_malformed_extensions)
 
 TEST(levels_audit_round_transport_disconnect_clears_the_challenged_bridge_slot)
 {
-	constexpr uint16_t port = 39357;
+	const uint16_t port = t::port(39357);
 	t::Node world("world", port), first("first", port), replacement("replacement", port);
 	world.cfg.host_plays = false;
 	srv::SessionSrv bridges(world.s);

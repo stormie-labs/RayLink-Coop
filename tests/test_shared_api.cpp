@@ -50,7 +50,7 @@ TEST(shared_api_writer_patch_and_varu_size)
 
 TEST(shared_api_for_each_joined_walks_peers_in_order)
 {
-	const uint16_t port = 39873;
+	const uint16_t port = t::port(39873);
 	t::Node host("host", port), a("alice", port), b("bob", port);
 	host.cfg.mode = SessionMode::Coop;
 	std::string err;

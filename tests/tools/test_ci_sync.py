@@ -2,13 +2,13 @@
 import importlib.util
 import contextlib
 import io
-import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[2]
+from native_slice import ROOT, scratch
+
 SPEC = importlib.util.spec_from_file_location("raylink_ci_sync", ROOT / "tools" / "ci_sync.py")
 ci_sync = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ci_sync)
@@ -28,8 +28,7 @@ class CiSyncSourceTests(unittest.TestCase):
                 number.assert_not_called()
 
     def test_sound_source_and_interface_are_found_after_commit(self):
-        (ROOT / "temp").mkdir(exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="ci-sync-test-", dir=ROOT / "temp") as directory:
+        with scratch("ci_sync") as directory:
             main = Path(directory) / "engine"
             ci = Path(directory) / "engine-ci"
             changed = {"src/xrSound/Sound.h", "src/xrSound/SoundRender_Emitter_FSM.cpp"}
@@ -63,8 +62,7 @@ class CiSyncBuildNumberTests(unittest.TestCase):
         return main, ci
 
     def test_number_written_only_when_it_changes(self):
-        (ROOT / "temp").mkdir(exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="ci-sync-build-", dir=ROOT / "temp") as directory:
+        with scratch("ci_sync") as directory:
             main, ci = self.tree(directory)
             target = ci / ci_sync.BUILD_HEADER
             with patch.object(ci_sync, "MAIN", main), patch.object(ci_sync, "CI", ci):
@@ -87,8 +85,7 @@ class CiSyncBuildNumberTests(unittest.TestCase):
 
     def test_header_copy_is_left_to_the_build_number(self):
         # the main tree's raylink_build.h (0) must not be copied over a numbered CI tree by the copy loop
-        (ROOT / "temp").mkdir(exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="ci-sync-build-", dir=ROOT / "temp") as directory:
+        with scratch("ci_sync") as directory:
             main, ci = self.tree(directory)
             with patch.object(ci_sync, "MAIN", main), patch.object(ci_sync, "CI", ci), \
                     patch.object(ci_sync.subprocess, "run", return_value=SimpleNamespace(stdout="")), \

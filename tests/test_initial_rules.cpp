@@ -177,8 +177,7 @@ TEST(initial_rules_only_an_eatable_class_has_uses)
 		CHECK(initial::is_eatable_class(c));
 	for (const char* c : {"WP_AK74", "W_AK74", "AMMO", "D_PDA", "D_CUSTOM", "ARTEFACT", "II_DOC", "II_ATTCH", "", "II_FOO", "ii_food"})
 		CHECK(!initial::is_eatable_class(c));
-	// Each eatable class is an item class of the game, with a plain item entity (coop_spawn.h, checked against the object factory
-	// by tools/check_spawn_classes.py).
+	// Each eatable class has an entry in coop_spawn.h with a plain item entity.
 	for (const char* c : {"II_MEDKI", "II_BANDG", "II_ANTIR", "II_FOOD", "II_BOTTL", "S_FOOD"})
 	{
 		const spawn::ClassRule* rule = spawn::class_rule(c);

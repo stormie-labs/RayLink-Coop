@@ -240,18 +240,34 @@ void run(const std::string& mode) {
 
 namespace mirror_test {
 enum class Step { Wait, Fail, Done };
-struct Fvector {void set(float,float,float){}};
+struct Fvector {
+    float x = 0, y = 0, z = 0;
+    Fvector& set(float new_x, float new_y, float new_z) {
+        x = new_x;
+        y = new_y;
+        z = new_z;
+        return *this;
+    }
+};
 struct ParentTarget {u16 parent=0; u64 since=0; bool dump_asked=false,extended=false,failed=false,online=true,exact_pos=false; Fvector pos;};
 std::map<u16,ParentTarget> g_parent_targets;
 bool g_pGameLevel=true;
 struct AI { bool get_alife(){return true;} }; AI ai(){return {};}
 u64 clock_ms=100;
-struct Manager { u64 now_ms(){return clock_ms;} }; Manager mgr(){return {};}
+struct Manager {
+    u64 now_ms() const { return clock_ms; }
+    bool is_live_client() const { return true; }
+};
+Manager& mgr() { static Manager manager; return manager; }
 constexpr u64 kDumpAfterMs=1000,kPendingTimeoutMs=5000,kExtendMs=10000;
-struct Counters {u64 parent_timeouts=0,parent_failed=0,parent_applied=0;} g_c;
+struct Counters {u64 parent_timeouts=0,parent_failed=0,parent_applied=0,dropped_before_live=0;} g_c;
 struct Obj {const std::string& cNameSect(){static std::string s="wpn_sil_9mm";return s;}} object;
 using CGameObject=Obj;
-Obj* find_entity(u16){return &object;} Obj* find_go(u16){return &object;}
+using CSE_Abstract=Obj;
+namespace world {
+CSE_Abstract* server_entity(u16) { return &object; }
+CGameObject* object_here(u16) { return &object; }
+}
 const char* entity_name(u16){return "wpn_sil_9mm";}
 Step next_step=Step::Fail;
 Step step_parent(u16,const ParentTarget&){return next_step;}
@@ -267,7 +283,7 @@ struct Reader {
     uint8_t u8(){return 0;} bool ok(){return true;}
 };
 enum class Msg {StateDumpRequest,EntityParent};
-bool before_live(Msg){return false;}
+namespace rules { bool live_only(Msg type) { return type == Msg::EntityParent; } }
 namespace entities {void client_on_holder_changed(u16,u16,bool){}}
 std::vector<Writer> requests;
 namespace net {void client_send(Msg,const Writer& w){requests.push_back(w);}}
@@ -304,7 +320,8 @@ constexpr u64 kCallbackWaitMs=3000, kCallbackRepairWaitMs=45000, kPendingWarnMs=
 u64 now=4000;
 u16 holder=10;
 u32 callbacks=0;
-u64 now_ms(){return now;}
+struct Manager { u64 now_ms() const { return now; } };
+Manager& mgr() { static Manager manager; return manager; }
 void search_frame(){} void client_sync_world(){} void request_rebuild(u64){}
 bool is_mirror(){return true;} bool is_live_mirror(){return true;}
 u16 local_parent(u16){return holder;}
@@ -344,17 +361,22 @@ namespace request_test {
 using xr_string = std::string;
 enum class Reason;
 struct Fvector;
+struct CSE_Abstract;
 Reason admitted_move(u16 item, u16 src, u16 dst, const Fvector* drop_pos, xr_string& refused);
+namespace world { CSE_Abstract* server_entity(u16 id); }
 
 bool is_map_authority();
 struct Mode {
     bool decides_world() const { return is_map_authority(); }
     bool leads_level() const { return is_map_authority(); }
+    bool decides_here() const { return decides_world() || leads_level(); }
 };
-Mode mode() { return {}; }
+Mode& mode() { static Mode mode; return mode; }
 }
 #include "request_move_fixture.h"
 namespace request_test {
+namespace world { CSE_Abstract* server_entity(u16 id) { return events::find_entity(id); } }
+
 // These gifts have no container rule. Keep the real ownership checks and rollback.
 Reason admitted_move(u16 item, u16 src, u16 dst, const Fvector* drop_pos, xr_string&)
 {
@@ -423,12 +445,15 @@ namespace dialog { u16 host_lock_of(PeerId) { return talk_lock; } bool host_talk
 namespace talks { constexpr u32 kTradeAfterTalkMs = 100; }
 trade_permit::Book book;
 trade_permit::Book& permits() { return book; }
-u64 now_ms() { return 1000; }
 void host_sync_world() {}
 const char* result_name(u8) { return "?"; }
 struct PeerInfo { std::string nick = "player"; };
 struct Session { const PeerInfo* peer(PeerId) const { static PeerInfo p; return &p; } };
-struct Manager { Session s; Session& session() { return s; } };
+struct Manager {
+    Session s;
+    Session& session() { return s; }
+    u64 now_ms() const { return 1000; }
+};
 Manager& mgr() { static Manager m; return m; }
 u64 g_host_deals = 0, g_host_ok = 0, g_host_rejected = 0;
 void host_broadcast_trader_money(CInventoryOwner*, PeerId except) { require(except == kPlayer, "the broadcast skips the dealer"); ++broadcasts; }

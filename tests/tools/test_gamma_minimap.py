@@ -9,12 +9,11 @@ The round map has a diameter of height * H (CUIMiniMap::Draw scales its x by kx)
 everything that is seen scales with the screen height, so the frame centre must keep its margins in screen heights.
 """
 import xml.etree.ElementTree as ET
-from pathlib import Path
 
+import check_gates
 from conftest import ROOT
 
 UI = ROOT / "gamedata_gamma" / "configs" / "ui"
-GAMMA_16 = Path(r"E:\RayLink2\gamma-dev\gamedata\configs\ui\zone_map_16.xml")  # read-only reference stand, if present
 
 REF_X, REF_Y = 1.242, 0.8673  # GAMMA's zone_map_16.xml level_frame
 REF_ASPECT = 16 / 9
@@ -77,12 +76,14 @@ def test_overrides_are_gammas_16_file_but_x():
     for root in (a, b):
         root.find("minimap/level_frame").set("x", "X")
     assert ET.tostring(a) == ET.tostring(b)
-    if GAMMA_16.exists():  # the reference stand of this machine; CI has no GAMMA
-        g = parse(GAMMA_16.read_bytes())
-        assert float(g.find("minimap/level_frame").get("x")) == REF_X
-        assert float(g.find("minimap/level_frame").get("y")) == REF_Y
-        g.find("minimap/level_frame").set("x", "X")
-        assert ET.tostring(g) == ET.tostring(a)
+    # G.A.M.M.A.'s own 16:9 file, in the tree check_gates names (GAMMA_SCRIPTS, else the stand's)
+    scripts = check_gates.gamma_scripts()
+    assert scripts, "the G.A.M.M.A. scripts are required (GAMMA_SCRIPTS)"
+    g = parse((scripts.parent / "configs" / "ui" / "zone_map_16.xml").read_bytes())
+    assert float(g.find("minimap/level_frame").get("x")) == REF_X
+    assert float(g.find("minimap/level_frame").get("y")) == REF_Y
+    g.find("minimap/level_frame").set("x", "X")
+    assert ET.tostring(g) == ET.tostring(a)
 
 
 def test_overrides_keep_crlf_and_ascii():

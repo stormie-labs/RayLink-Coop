@@ -51,10 +51,10 @@ TEST(link_hold_lasts_until_the_machine_plays_normally)
 
 TEST(first_frames_after_a_load_keep_the_link_until_live)
 {
-	Node host("Boss", 37210), cl("Alice", 37210);
+	Node host("Boss", t::port(37210)), cl("Alice", t::port(37210));
 	host.cfg.peer_timeout_ms = 1500;
 	cl.cfg.peer_timeout_ms = 1500;
-	join_one(host, cl, 37210);
+	join_one(host, cl, t::port(37210));
 
 	// The load: a stage armed the hold, the client's main thread does not pump.
 	cl.s.hold_connection(link_hold::kLoadHoldMs);
@@ -107,10 +107,10 @@ TEST(link_hold_covers_the_first_stretch_after_live)
 
 TEST(a_long_frame_soon_after_live_keeps_the_link)
 {
-	Node host("Boss", 37290), cl("Alice", 37290);
+	Node host("Boss", t::port(37290)), cl("Alice", t::port(37290));
 	host.cfg.peer_timeout_ms = 1500;
 	cl.cfg.peer_timeout_ms = 1500;
-	join_one(host, cl, 37290);
+	join_one(host, cl, t::port(37290));
 
 	// Live 11 s: the frame pump arms the hold, then the frame (the level's NPCs coming online) outlasts the host's timeout.
 	link_hold::FrameState settling;
@@ -148,10 +148,10 @@ TEST(link_hold_never_again_after_a_crash)
 
 TEST(a_crash_while_coming_up_is_silence)
 {
-	Node host("Boss", 37211), cl("Alice", 37211);
+	Node host("Boss", t::port(37211)), cl("Alice", t::port(37211));
 	host.cfg.peer_timeout_ms = 1500;
 	cl.cfg.peer_timeout_ms = 1500;
-	join_one(host, cl, 37211);
+	join_one(host, cl, t::port(37211));
 
 	// The client loads (held), then crashes on a worker thread: on_crash releases the hold ...
 	cl.s.hold_connection(link_hold::kLoadHoldMs);
@@ -229,10 +229,10 @@ TEST(link_hold_seal_wins_every_race)
 
 TEST(a_crash_between_the_check_and_the_hold_is_silence)
 {
-	Node host("Boss", 37212), cl("Alice", 37212);
+	Node host("Boss", t::port(37212)), cl("Alice", t::port(37212));
 	host.cfg.peer_timeout_ms = 1500;
 	cl.cfg.peer_timeout_ms = 1500;
-	join_one(host, cl, 37212);
+	join_one(host, cl, t::port(37212));
 
 	// A frame (or a load stage) read "not crashed" ...
 	link_hold::FrameState fs;

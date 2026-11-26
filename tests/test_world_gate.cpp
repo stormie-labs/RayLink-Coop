@@ -249,8 +249,8 @@ TEST(hold_queue_skips_a_sender_who_left)
 
 TEST(world_gate_host_holds_a_request_until_the_world_is_back)
 {
-	Node host("Boss", 37400), cl("Alice", 37400);
-	join_one(host, cl, 37400);
+	Node host("Boss", t::port(37400)), cl("Alice", t::port(37400));
+	join_one(host, cl, t::port(37400));
 	World world = World::Hole;
 	host.s.set_world_gate([&] { return world; });
 	std::vector<uint16_t> got;
@@ -283,8 +283,8 @@ TEST(world_gate_host_holds_a_request_until_the_world_is_back)
 
 TEST(world_gate_host_drops_a_snapshot_in_a_hole_and_never_replays_it)
 {
-	Node host("Boss", 37401), cl("Alice", 37401);
-	join_one(host, cl, 37401);
+	Node host("Boss", t::port(37401)), cl("Alice", t::port(37401));
+	join_one(host, cl, t::port(37401));
 	World world = World::Hole;
 	host.s.set_world_gate([&] { return world; });
 	std::vector<uint16_t> got;
@@ -309,8 +309,8 @@ TEST(world_gate_a_replaced_world_voids_what_waited_for_the_old_one)
 {
 	// The level change of the live crash: requests of the old level arrive while the new one is built; the host's world
 	// epoch moves on when the new world exists (join::on_world_created) and they must never touch it.
-	Node host("Boss", 37402), cl("Alice", 37402);
-	join_one(host, cl, 37402);
+	Node host("Boss", t::port(37402)), cl("Alice", t::port(37402));
+	join_one(host, cl, t::port(37402));
 	World world = World::Hole;
 	host.s.set_world_gate([&] { return world; });
 	int ran = 0;
@@ -331,8 +331,8 @@ TEST(world_gate_a_replaced_world_voids_what_waited_for_the_old_one)
 TEST(world_gate_a_join_step_runs_in_a_hole)
 {
 	// The join lifecycle answers a missing world itself (host_can_start kicks with a reason): the session must not hide it.
-	Node host("Boss", 37403), cl("Alice", 37403);
-	join_one(host, cl, 37403);
+	Node host("Boss", t::port(37403)), cl("Alice", t::port(37403));
+	join_one(host, cl, t::port(37403));
 	host.s.set_world_gate([] { return World::Hole; });
 	int ran = 0;
 	host.s.on(Msg::JoinRequest, [&](PeerId, Reader&) { ++ran; });
@@ -344,8 +344,8 @@ TEST(world_gate_a_join_step_runs_in_a_hole)
 
 TEST(world_gate_a_sender_who_left_takes_his_waiting_requests_with_him)
 {
-	Node host("Boss", 37404), cl("Alice", 37404);
-	join_one(host, cl, 37404);
+	Node host("Boss", t::port(37404)), cl("Alice", t::port(37404));
+	join_one(host, cl, t::port(37404));
 	World world = World::Hole;
 	host.s.set_world_gate([&] { return world; });
 	int ran = 0;
@@ -362,8 +362,8 @@ TEST(world_gate_a_sender_who_left_takes_his_waiting_requests_with_him)
 
 TEST(world_gate_a_client_without_a_world_drops_what_needs_one_and_keeps_the_join)
 {
-	Node host("Boss", 37405), cl("Alice", 37405);
-	join_one(host, cl, 37405);
+	Node host("Boss", t::port(37405)), cl("Alice", t::port(37405));
+	join_one(host, cl, t::port(37405));
 	World world = World::Absent; // in the main menu, choosing a character, loading
 	cl.s.set_world_gate([&] { return world; });
 	std::vector<std::string> got;
@@ -394,8 +394,8 @@ TEST(world_gate_a_client_without_a_world_drops_what_needs_one_and_keeps_the_join
 
 TEST(world_gate_without_a_gate_every_message_runs)
 {
-	Node host("Boss", 37406), cl("Alice", 37406);
-	join_one(host, cl, 37406);
+	Node host("Boss", t::port(37406)), cl("Alice", t::port(37406));
+	join_one(host, cl, t::port(37406));
 	int ran = 0;
 	host.s.on(Msg::ReqSpawn, [&](PeerId, Reader&) { ++ran; });
 	host.s.on(Msg::PlayerVitals, [&](PeerId, Reader&) { ++ran; });
@@ -407,8 +407,8 @@ TEST(world_gate_without_a_gate_every_message_runs)
 
 TEST(world_gate_the_queue_is_dropped_with_the_session)
 {
-	Node host("Boss", 37407), cl("Alice", 37407);
-	join_one(host, cl, 37407);
+	Node host("Boss", t::port(37407)), cl("Alice", t::port(37407));
+	join_one(host, cl, t::port(37407));
 	host.s.set_world_gate([] { return World::Hole; });
 	host.s.on(Msg::ReqTake, [](PeerId, Reader&) {});
 	cl.s.send(kHostPeer, Lane::Reliable, Msg::ReqTake, one_u16(5));

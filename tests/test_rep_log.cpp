@@ -44,11 +44,11 @@ TEST(rep_log_coop_silence_cleanup_does_not_claim_the_host_replied)
 TEST(rep_log_server_world_bye_is_a_plain_client_line)
 {
 	using namespace coop;
-	t::Node world("World", 37290), player("Player", 37290);
+	t::Node world("World", t::port(37290)), player("Player", t::port(37290));
 	world.cfg.mode = SessionMode::Server;
 	world.cfg.host_plays = false;
 	REQUIRE(world.host());
-	REQUIRE(player.connect(37290));
+	REQUIRE(player.connect(t::port(37290)));
 	REQUIRE(t::pump_until({&world.s, &player.s}, 5000, [&] { return player.welcomed; }));
 	world.s.shutdown("world stopped");
 	REQUIRE(t::pump_until({&player.s}, 3000, [&] { return player.disconnected; }));

@@ -770,7 +770,7 @@ TEST(owner_glue_only_the_writer_pushes_and_the_owner_takes_the_decider_path)
 	CHECK_EQ(count_of(code, "host_push_decider("), size_t(3));
 	const std::string wrote = body_of(code, R"(void\s+decider_wrote)");
 	before("decider_wrote", wrote, "if (!writing::writes(id)) return;", "host_push_decider(id, peer, mask);");
-	before("decider_wrote", wrote, "if (!(mode().decides_world() || mode().leads_level())) return;", "host_push_decider(id, peer, mask);");
+	before("decider_wrote", wrote, "if (!mode().decides_here()) return;", "host_push_decider(id, peer, mask);");
 	at("decider_wrote", wrote, "g_uses_history[id].record(latest.get(itemtags::Uses), int(now.uses) - int(before.uses));");
 	const std::string push = body_of(code, R"(void\s+host_push_decider)");
 	at("host_push_decider", push, "uses_history_in(id).delta_of(d.versions.get(itemtags::Uses), delta)");

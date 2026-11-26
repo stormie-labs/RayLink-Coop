@@ -100,17 +100,17 @@ TEST(seats_client_capacity_per_mode)
 
 TEST(seats_server_takes_sixteen_clients_and_refuses_the_seventeenth)
 {
-	Node host("server", 38901);
+	Node host("server", t::port(38901));
 	host.cfg.host_plays = false; // the server's start
 	host.cfg.max_players = kServerSeats;
 	host.cfg.mode = SessionMode::Server;
 	std::vector<std::unique_ptr<Node>> clients;
 	for (uint32_t i = 0; i < kServerSeats + 1; ++i)
-		clients.emplace_back(new Node("C" + std::to_string(i), 38901));
+		clients.emplace_back(new Node("C" + std::to_string(i), t::port(38901)));
 	std::string err;
 	REQUIRE(host.host(&err));
 	CHECK_EQ(host.s.max_players(), kServerSeats); // its own config
-	CHECK_EQ(fill_seats(host, clients, 38901), size_t(16));
+	CHECK_EQ(fill_seats(host, clients, t::port(38901)), size_t(16));
 	CHECK(clients.back()->rejected);
 	CHECK(clients.back()->reject.reason == RejectReason::SessionFull);
 	std::set<PeerId> slots;
@@ -136,8 +136,8 @@ TEST(seats_server_takes_sixteen_clients_and_refuses_the_seventeenth)
 	const PeerId freed = clients[3]->welcome.slot;
 	clients[3]->s.shutdown("leaves");
 	REQUIRE(t::pump_until({&host.s}, 5000, [&] { return host.s.peers().size() == 15; }));
-	Node late("Late", 38901);
-	REQUIRE(late.connect(38901, &err));
+	Node late("Late", t::port(38901));
+	REQUIRE(late.connect(t::port(38901), &err));
 	REQUIRE(t::pump_until({&host.s, &late.s}, 5000, [&] { return late.welcomed || late.rejected; }));
 	CHECK(late.welcomed);
 	CHECK_EQ(late.welcome.slot, freed);
@@ -148,17 +148,17 @@ TEST(seats_server_takes_sixteen_clients_and_refuses_the_seventeenth)
 
 TEST(seats_coop_refuses_the_eighth_client)
 {
-	Node host("Boss", 38902);
+	Node host("Boss", t::port(38902));
 	host.cfg.host_plays = true; // the co-op start
 	host.cfg.max_players = kCoopSeats;
 	host.cfg.mode = SessionMode::Coop;
 	std::vector<std::unique_ptr<Node>> clients;
 	for (uint32_t i = 0; i < kCoopSeats; ++i)
-		clients.emplace_back(new Node("C" + std::to_string(i), 38902));
+		clients.emplace_back(new Node("C" + std::to_string(i), t::port(38902)));
 	std::string err;
 	REQUIRE(host.host(&err));
 	CHECK_EQ(host.s.max_players(), kCoopSeats);
-	CHECK_EQ(fill_seats(host, clients, 38902), size_t(7));
+	CHECK_EQ(fill_seats(host, clients, t::port(38902)), size_t(7));
 	CHECK(clients.back()->rejected);
 	CHECK(clients.back()->reject.reason == RejectReason::SessionFull);
 	for (size_t i = 0; i < kCoopSeats - 1; ++i)
@@ -177,7 +177,7 @@ TEST(seats_a_host_whose_mode_said_no_seats_is_refused)
 	// SessionConfig::max_players has no default: a start that forgot to say it hosts nothing (and says why)
 	SessionConfig cfg;
 	CHECK_EQ(cfg.max_players, uint32_t(0));
-	Node host("Boss", 38903);
+	Node host("Boss", t::port(38903));
 	host.cfg.max_players = 0;
 	std::string err;
 	host.cfg.mode = SessionMode::Coop;
@@ -186,7 +186,7 @@ TEST(seats_a_host_whose_mode_said_no_seats_is_refused)
 	CHECK(host.s.role() == Role::None);
 	CHECK_EQ(host.s.max_players(), uint32_t(0));
 	// a number past the wire is cut to the wire's 16
-	Node big("Big", 38904);
+	Node big("Big", t::port(38904));
 	big.cfg.host_plays = false;
 	big.cfg.max_players = 100;
 	big.cfg.mode = SessionMode::Server;
@@ -197,13 +197,13 @@ TEST(seats_a_host_whose_mode_said_no_seats_is_refused)
 
 TEST(seats_a_client_knows_no_seats_before_its_welcome)
 {
-	Node host("Boss", 38905), cl("Alice", 38905);
+	Node host("Boss", t::port(38905)), cl("Alice", t::port(38905));
 	host.cfg.max_players = kCoopSeats;
 	std::string err;
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host(&err));
 	CHECK_EQ(cl.s.max_players(), uint32_t(0)); // no session
-	REQUIRE(cl.connect(38905, &err));
+	REQUIRE(cl.connect(t::port(38905), &err));
 	CHECK_EQ(cl.s.max_players(), uint32_t(0)); // connecting: no Welcome yet
 	REQUIRE(t::pump_until({&host.s, &cl.s}, 5000, [&] { return cl.welcomed; }));
 	CHECK_EQ(cl.s.max_players(), kCoopSeats);
@@ -218,7 +218,7 @@ TEST(seats_a_map_servers_level_has_its_worlds_seats)
 	std::array<uint8_t, kHelloTokenSize> token{};
 	for (size_t i = 0; i < token.size(); ++i)
 		token[i] = uint8_t(7 + 3 * i);
-	Node world("world", 38906), ms("ms", 38906);
+	Node world("world", t::port(38906)), ms("ms", t::port(38906));
 	world.cfg.host_plays = false;
 	world.cfg.max_players = kServerSeats;
 	std::string err;
@@ -229,10 +229,10 @@ TEST(seats_a_map_servers_level_has_its_worlds_seats)
 	srv::SessionSrv(level).level_through(ms.s);
 	ms.cfg.hello_role = kHelloRoleMapServer;
 	ms.cfg.hello_token = token;
-	REQUIRE(ms.connect(38906, &err));
+	REQUIRE(ms.connect(t::port(38906), &err));
 	SessionConfig cfg = ms.cfg;
 	cfg.mode = SessionMode::Server;
-	cfg.port = 38907; // a level hosted through its bridge listens nowhere
+	cfg.port = t::port(38907); // a level hosted through its bridge listens nowhere
 	cfg.max_players = kCoopSeats; // not its number: a carried host's seats are its carrier's
 	REQUIRE(level.host(cfg, &err));
 	REQUIRE(t::pump_until({&world.s, &ms.s, &level}, 5000, [&] { return ms.s.is_active(); }));

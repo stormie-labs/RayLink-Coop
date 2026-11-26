@@ -64,16 +64,16 @@ TEST(session_reconnect_same_key)
 {
 	// Alice's game crashed or was restarted: she joins again with the same key while the host still holds her old
 	// link (it is only dropped after the silence timeout). The old link is silent: the new connection replaces it.
-	Node host("Boss", 37101), alice("Alice", 37101), bob("Bob", 37101), again("Alice", 37101);
+	Node host("Boss", t::port(37101)), alice("Alice", t::port(37101)), bob("Bob", t::port(37101)), again("Alice", t::port(37101));
 	again.cfg.key = alice.cfg.key;
-	host_and_join(host, {&alice, &bob}, 37101);
+	host_and_join(host, {&alice, &bob}, t::port(37101));
 	REQUIRE(alice.s.self() == PeerId(1));
 
 	// The old process is silent from now on (not pumped), its link is still up on the host.
 	t::pump_for({&host.s, &bob.s}, kSilentMs);
 	REQUIRE(host.s.peers().size() == 2);
 	std::string err;
-	REQUIRE(again.connect(37101, &err));
+	REQUIRE(again.connect(t::port(37101), &err));
 	REQUIRE(t::pump_until({&host.s, &bob.s, &again.s}, 5000, [&] { return again.welcomed || again.rejected; }));
 	CHECK(again.welcomed);
 	CHECK(!again.rejected);
@@ -115,13 +115,13 @@ TEST(session_same_key_while_the_old_link_is_live_is_refused)
 {
 	// Ruling 10: Alice's game is alive and talking (a second game started from the same folder, or a copy of it):
 	// the new connection is refused, Alice keeps her place.
-	Node host("Boss", 37104), alice("Alice", 37104), again("Alice", 37104);
+	Node host("Boss", t::port(37104)), alice("Alice", t::port(37104)), again("Alice", t::port(37104));
 	again.cfg.key = alice.cfg.key;
-	host_and_join(host, {&alice}, 37104);
+	host_and_join(host, {&alice}, t::port(37104));
 	t::pump_for({&host.s, &alice.s}, 600); // a ping round on an idle link
 
 	std::string err;
-	REQUIRE(again.connect(37104, &err));
+	REQUIRE(again.connect(t::port(37104), &err));
 	REQUIRE(t::pump_until({&host.s, &alice.s, &again.s}, 5000, [&] { return again.welcomed || again.rejected; }));
 	CHECK(again.rejected);
 	CHECK(!again.welcomed);
@@ -140,14 +140,14 @@ TEST(session_same_key_while_the_old_link_is_live_is_refused)
 TEST(session_reconnect_same_key_into_a_full_session)
 {
 	// The session is full, but a reconnect takes the player's own place: no SessionFull.
-	Node host("Boss", 37102), alice("Alice", 37102), again("Alice", 37102);
+	Node host("Boss", t::port(37102)), alice("Alice", t::port(37102)), again("Alice", t::port(37102));
 	host.cfg.max_players = 2; // host + one client
 	again.cfg.key = alice.cfg.key;
-	host_and_join(host, {&alice}, 37102);
+	host_and_join(host, {&alice}, t::port(37102));
 	t::pump_for({&host.s}, kSilentMs); // Alice's game is gone
 
 	std::string err;
-	REQUIRE(again.connect(37102, &err));
+	REQUIRE(again.connect(t::port(37102), &err));
 	REQUIRE(t::pump_until({&host.s, &again.s}, 5000, [&] { return again.welcomed || again.rejected; }));
 	CHECK(again.welcomed);
 	CHECK(!again.rejected);
@@ -159,19 +159,19 @@ TEST(session_mismatched_game_with_a_players_key_does_not_kick_him)
 {
 	// Build and content are checked before the key: a game that cannot join never replaces a player, even one whose
 	// link is silent long enough to be replaced.
-	Node host("Boss", 37105), alice("Alice", 37105), c1("C1", 37105), c2("C2", 37105);
+	Node host("Boss", t::port(37105)), alice("Alice", t::port(37105)), c1("C1", t::port(37105)), c2("C2", t::port(37105));
 	c1.cfg.key = alice.cfg.key;
 	c1.cfg.build_id = "some-other-build";
 	c2.cfg.key = alice.cfg.key;
 	c2.cfg.manifest.clear();
-	host_and_join(host, {&alice}, 37105);
+	host_and_join(host, {&alice}, t::port(37105));
 	t::pump_for({&host.s}, kSilentMs);
 
 	std::string err;
-	REQUIRE(c1.connect(37105, &err));
+	REQUIRE(c1.connect(t::port(37105), &err));
 	REQUIRE(t::pump_until({&host.s, &c1.s}, 5000, [&] { return c1.rejected || c1.welcomed; }));
 	CHECK(c1.reject.reason == RejectReason::BuildMismatch);
-	REQUIRE(c2.connect(37105, &err));
+	REQUIRE(c2.connect(t::port(37105), &err));
 	REQUIRE(t::pump_until({&host.s, &c2.s}, 5000, [&] { return c2.rejected || c2.welcomed; }));
 	CHECK(c2.reject.reason == RejectReason::ContentMismatch);
 	CHECK(host.left.empty());
@@ -188,12 +188,12 @@ TEST(session_duplicate_key_for_the_hosts_key)
 {
 	// The host's own key from a client = a game folder copied from the host: refused, without advice to delete
 	// the key (a deleted key is a lost character).
-	Node host("Boss", 37103), cl("Alice", 37103);
+	Node host("Boss", t::port(37103)), cl("Alice", t::port(37103));
 	cl.cfg.key = host.cfg.key;
 	std::string err;
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host(&err));
-	REQUIRE(cl.connect(37103, &err));
+	REQUIRE(cl.connect(t::port(37103), &err));
 	REQUIRE(t::pump_until({&host.s, &cl.s}, 5000, [&] { return cl.rejected || cl.welcomed; }));
 	CHECK(cl.rejected);
 	CHECK(cl.reject.reason == RejectReason::DuplicateKey);
@@ -472,9 +472,9 @@ TEST(limits_blob_kind)
 	// R1 I3: a client could announce 4 x 256 MB and the host would buffer it. The host takes only the blob kinds its
 	// game accepts from clients, each at most 1 MiB; the boundary is exact.
 	static_assert(kMaxClientBlobBytes == 1024u * 1024u, "brief: 1 MiB per blob from a client");
-	Node host("Boss", 37110), a("Alice", 37110), b("Bob", 37110), c("Carl", 37110);
+	Node host("Boss", t::port(37110)), a("Alice", t::port(37110)), b("Bob", t::port(37110)), c("Carl", t::port(37110));
 	host.s.accept_client_blob(kBlobOk);
-	host_and_join(host, {&a, &b, &c}, 37110);
+	host_and_join(host, {&a, &b, &c}, t::port(37110));
 
 	// Exactly 1 MiB of an accepted kind: taken.
 	const std::vector<uint8_t> limit = t::random_bytes(size_t(kMaxClientBlobBytes), 11);
@@ -503,8 +503,8 @@ TEST(limits_blob_kind)
 	CHECK_EQ(host.progress.size(), size_t(16)); // Alice's 1 MiB in 64 KiB chunks, not a byte of the others
 
 	// A host whose game takes nothing from clients (the default) refuses every kind.
-	Node bare("Boss", 37111), d("Dan", 37111);
-	host_and_join(bare, {&d}, 37111);
+	Node bare("Boss", t::port(37111)), d("Dan", t::port(37111));
+	host_and_join(bare, {&d}, t::port(37111));
 	REQUIRE(d.s.send_blob(kHostPeer, kBlobOk, std::vector<uint8_t>(10, 1)) != 0);
 	REQUIRE(t::pump_until({&bare.s, &d.s}, 10000, [&] { return d.disconnected; }));
 	CHECK(kicked(d, "not accepted from clients"));
@@ -516,7 +516,7 @@ TEST(limits_blob_kind_bytes_in_flight)
 	// R1 I3: announced but unfinished blobs of one client may hold at most 4 MiB on the host (a Session sends its
 	// blobs one after another; a modified client announces several and never finishes them).
 	static_assert(kMaxClientBlobBytesInFlight == 4u * 1024u * 1024u, "brief: 4 MiB in flight per client");
-	Node host("Boss", 37112);
+	Node host("Boss", t::port(37112));
 	host.s.accept_client_blob(kBlobOk);
 	std::string err;
 	host.cfg.mode = SessionMode::Coop;
@@ -524,7 +524,7 @@ TEST(limits_blob_kind_bytes_in_flight)
 
 	// Four blobs of exactly 1 MiB in flight = 4 MiB: still fine.
 	RawClient full;
-	REQUIRE(raw_join(full, host, 37112));
+	REQUIRE(raw_join(full, host, t::port(37112)));
 	REQUIRE(full.find(Msg::Welcome) != nullptr);
 	for (uint32_t id = 1; id <= 4; ++id)
 		full.blob_begin(id, kBlobOk, kMaxClientBlobBytes, 0);
@@ -542,7 +542,7 @@ TEST(limits_blob_kind_bytes_in_flight)
 
 	// The count of unfinished blobs stays limited too (a fifth empty one adds no bytes).
 	RawClient many;
-	REQUIRE(raw_join(many, host, 37112));
+	REQUIRE(raw_join(many, host, t::port(37112)));
 	REQUIRE(many.find(Msg::Welcome) != nullptr);
 	for (uint32_t id = 1; id <= 4; ++id)
 		many.blob_begin(id, kBlobOk, kMaxClientBlobBytes, 0);
@@ -555,7 +555,7 @@ TEST(limits_blob_kind_bytes_in_flight)
 
 	// A kind the game does not take, announced raw.
 	RawClient other;
-	REQUIRE(raw_join(other, host, 37112));
+	REQUIRE(raw_join(other, host, t::port(37112)));
 	other.blob_begin(1, kBlobOk + 1, 10, 0);
 	REQUIRE(t::pump_until({&host.s}, 3000, [&] {
 		other.service();
@@ -571,8 +571,8 @@ TEST(limits_blob_replaced_by_newer_of_the_same_kind)
 {
 	// R1 I4: a newer blob of the same kind to the same peer replaces the one still queued or streaming (the host
 	// never holds two world saves for one player); other kinds are not touched.
-	Node host("Boss", 37113), a("Alice", 37113);
-	host_and_join(host, {&a}, 37113);
+	Node host("Boss", t::port(37113)), a("Alice", t::port(37113));
+	host_and_join(host, {&a}, t::port(37113));
 	const std::vector<uint8_t> old_world = t::random_bytes(6u * 1024 * 1024, 21);
 	const uint32_t old_id = host.s.send_blob(1, 1, old_world);
 	REQUIRE(old_id != 0);
@@ -654,12 +654,12 @@ TEST(limits_join_rate)
 TEST(limits_message_rate)
 {
 	// R2 I4: heavy requests of a client (StateDumpRequest) are rate limited per client before their handler.
-	Node host("Boss", 37114), a("Alice", 37114), b("Bob", 37114);
+	Node host("Boss", t::port(37114)), a("Alice", t::port(37114)), b("Bob", t::port(37114));
 	host.s.limit_rate(Msg::StateDumpRequest, 4, 1000); // 4 at once, one more every second
 	std::vector<PeerId> dumps, others;
 	host.s.on(Msg::StateDumpRequest, [&](PeerId from, Reader&) { dumps.push_back(from); });
 	host.s.on(Msg::ScriptEvent, [&](PeerId from, Reader&) { others.push_back(from); });
-	host_and_join(host, {&a, &b}, 37114);
+	host_and_join(host, {&a, &b}, t::port(37114));
 
 	for (int i = 0; i < 10; ++i)
 	{
@@ -761,12 +761,12 @@ TEST(limits_rate_drops_equip_burst)
 {
 	// F2 T3: with the game's table a client's PlayerEquip passes 8 in a row, then one per 400 ms. An honest client sends
 	// one per 500 ms at most (coop_equip.cpp kEquipCheckMs: a change, or the refresh every 5 s).
-	Node host("Boss", 37119), a("Alice", 37119);
+	Node host("Boss", t::port(37119)), a("Alice", t::port(37119));
 	for (const limits::RateRule& rule : limits::kClientRateRules)
 		host.s.limit_rate(rule.type, rule.burst, rule.refill_ms);
 	size_t equips = 0;
 	host.s.on(Msg::PlayerEquip, [&](PeerId, Reader&) { ++equips; });
-	host_and_join(host, {&a}, 37119);
+	host_and_join(host, {&a}, t::port(37119));
 	const auto stats = [&] { return host.s.stats(uint16_t(Msg::PlayerEquip)); };
 
 	// F2 T3 fix round 1: the host's clock is the test's (Session::update takes the time from its caller), so its token
@@ -842,7 +842,7 @@ TEST(limits_new_characters_per_session)
 	// `setting`: the console value).
 	static_assert(limits::kNewCharactersDefault == 8 && limits::kNewCharactersMin == 1 && limits::kNewCharactersMax == 64,
 	    "coop_max_new_characters: default 8, 1..64");
-	constexpr uint16_t kPort = 37121;
+	const uint16_t kPort = t::port(37121);
 	Node host("Boss", kPort), p1("P1", kPort), p2("P2", kPort), p3("P3", kPort), p3_again("P3", kPort), back("P1", kPort);
 	back.cfg.key = p1.cfg.key;
 	p3_again.cfg.key = p3.cfg.key;
@@ -926,7 +926,7 @@ TEST(world_epoch)
 	// R2 I1: a load or a level change on the host replaces the world. What a client made in the old world
 	// (WorldLoaded, JoinRequest, any request) is dropped after the change, the new world's messages do not reach
 	// a client still in the old one, and a blob of an old world is not taken by a client already in the new one.
-	Node host("Boss", 37115), a("Alice", 37115);
+	Node host("Boss", t::port(37115)), a("Alice", t::port(37115));
 	std::vector<uint16_t> at_host, at_client;
 	std::vector<uint32_t> resets;
 	auto record = [](std::vector<uint16_t>& into, Msg type) {
@@ -945,7 +945,7 @@ TEST(world_epoch)
 		a.s.set_world_epoch(epoch);
 		a.s.send(kHostPeer, Lane::Reliable, Msg::JoinRequest, Writer());
 	});
-	host_at_epoch_and_join(host, a, 37115, 1);
+	host_at_epoch_and_join(host, a, t::port(37115), 1);
 	CHECK_EQ(host.s.world_epoch(), uint32_t(1));
 	CHECK_EQ(a.welcome.world_epoch, uint32_t(1));
 	CHECK_EQ(a.s.world_epoch(), uint32_t(1));
@@ -1004,8 +1004,8 @@ TEST(world_epoch)
 TEST(world_epoch_cancels_the_old_worlds_blob)
 {
 	// R2 I1, R1 I4: the world save of a world that is gone is not streamed any further.
-	Node host("Boss", 37116), a("Alice", 37116);
-	host_at_epoch_and_join(host, a, 37116, 1);
+	Node host("Boss", t::port(37116)), a("Alice", t::port(37116));
+	host_at_epoch_and_join(host, a, t::port(37116), 1);
 	CHECK_EQ(a.s.world_epoch(), uint32_t(1));
 	const std::vector<uint8_t> old_world = t::random_bytes(6u * 1024 * 1024, 41);
 	REQUIRE(host.s.send_blob(1, 1, old_world) != 0);
@@ -1021,7 +1021,7 @@ TEST(world_epoch_cancels_the_old_worlds_blob)
 TEST(world_epoch_from_the_future_is_malformed)
 {
 	// A client tells the host which world it is in; it cannot be in one the host has not made yet.
-	Node host("Boss", 37117);
+	Node host("Boss", t::port(37117));
 	host.s.set_world_epoch(3);
 	std::string err;
 	host.cfg.mode = SessionMode::Coop;
@@ -1029,7 +1029,7 @@ TEST(world_epoch_from_the_future_is_malformed)
 	CHECK_EQ(host.s.world_epoch(), uint32_t(0)); // a new session starts over; the game sets it after host()
 	host.s.set_world_epoch(3);
 	RawClient raw;
-	REQUIRE(raw_join(raw, host, 37117));
+	REQUIRE(raw_join(raw, host, t::port(37117)));
 	const RawClient::Message* wm = raw.find(Msg::Welcome);
 	REQUIRE(wm != nullptr);
 	WelcomeMsg welcome;
@@ -1071,8 +1071,8 @@ TEST(lifecycle_messages_go_one_way)
 	// owner's change the host relays): their handlers check the sender.
 	for (Msg m : {Msg::ScriptEvent, Msg::PlayerState, Msg::TradeOp, Msg::MapSpot, Msg::InfoPortion})
 		CHECK(msg_sender(m) == MsgSender::Either);
-	Node host("Boss", 37118), a("Al", 37118), b("Bo", 37118), c("Cy", 37118), d("Di", 37118), e("Ed", 37118),
-	    f("Fay", 37118);
+	Node host("Boss", t::port(37118)), a("Al", t::port(37118)), b("Bo", t::port(37118)), c("Cy", t::port(37118)), d("Di", t::port(37118)), e("Ed", t::port(37118)),
+	    f("Fay", t::port(37118));
 	Node* senders[] = {&a, &b, &c, &d, &e};
 	std::vector<uint16_t> at_host, at_fay;
 	auto record = [](std::vector<uint16_t>& into, Msg type) {
@@ -1088,7 +1088,7 @@ TEST(lifecycle_messages_go_one_way)
 		host.s.on(m, record(at_host, m));
 		f.s.on(m, record(at_fay, m));
 	}
-	host_and_join(host, {&a, &b, &c, &d, &e, &f}, 37118);
+	host_and_join(host, {&a, &b, &c, &d, &e, &f}, t::port(37118));
 	REQUIRE(f.s.self() == PeerId(6));
 
 	// Five clients, each sends one message only the host sends: each is kicked, no handler at the host runs.
@@ -1310,7 +1310,7 @@ TEST(game_messages_the_wrong_way_are_refused)
 {
 	// F2 T3: the directions beyond the join lifecycle hold on receipt. A client that sends a message of the host's
 	// world (a forged EntitySpawn) is kicked before any handler sees it; a client ignores what only clients send.
-	Node host("Boss", 37120), a("Al", 37120), b("Bo", 37120);
+	Node host("Boss", t::port(37120)), a("Al", t::port(37120)), b("Bo", t::port(37120));
 	std::vector<uint16_t> at_host, at_b;
 	auto record = [](std::vector<uint16_t>& into, Msg type) {
 		return [&into, type](PeerId, Reader&) { into.push_back(uint16_t(type)); };
@@ -1320,7 +1320,7 @@ TEST(game_messages_the_wrong_way_are_refused)
 		host.s.on(m, record(at_host, m));
 		b.s.on(m, record(at_b, m));
 	}
-	host_and_join(host, {&a, &b}, 37120);
+	host_and_join(host, {&a, &b}, t::port(37120));
 	REQUIRE(b.s.self() == PeerId(2));
 
 	a.s.send(kHostPeer, Lane::Reliable, Msg::EntitySpawn, Writer());
@@ -1346,10 +1346,10 @@ TEST(trunk_only_messages_are_refused_from_everybody_else)
 	// ignored (logged), as for ClientOnly. It must not pass like Either.
 	const Msg trunk[] = {Msg::LevelSnapshot, Msg::LevelEntity, Msg::LevelXferUp, Msg::LevelHash, Msg::MapServerState};
 	constexpr size_t kSenders = sizeof(trunk) / sizeof(trunk[0]);
-	Node host("Boss", 37137), b("Bo", 37137);
+	Node host("Boss", t::port(37137)), b("Bo", t::port(37137));
 	std::vector<std::unique_ptr<Node>> senders; // one client per message: the host kicks the first one that sends
 	for (size_t i = 0; i < kSenders; ++i)
-		senders.push_back(std::make_unique<Node>("Al" + std::to_string(i), uint16_t(37137)));
+		senders.push_back(std::make_unique<Node>("Al" + std::to_string(i), uint16_t(t::port(37137))));
 	std::vector<uint16_t> at_host, at_b;
 	for (const Msg m : trunk)
 	{
@@ -1381,7 +1381,7 @@ TEST(trunk_only_messages_are_refused_from_everybody_else)
 		everybody.push_back(n.get());
 	for (Node* n : everybody)
 	{
-		REQUIRE(n->connect(37137, &err));
+		REQUIRE(n->connect(t::port(37137), &err));
 		++expected;
 		REQUIRE(pump_all(5000, [&] { return n->s.is_active() && host.s.peers().size() == expected; }));
 	}
@@ -1417,7 +1417,7 @@ TEST(character_choice_messages_go_one_way)
 	// Protocol 8: the offer of a new character comes from the host only (a client that sends one is kicked before any
 	// handler), the choice from clients only (a client ignores one from the host). The choice is rate limited at the
 	// host like every other request (limits_client_rate_rules): an honest player sends one per press of Done.
-	Node host("Boss", 37136), a("Al", 37136), b("Bo", 37136);
+	Node host("Boss", t::port(37136)), a("Al", t::port(37136)), b("Bo", t::port(37136));
 	std::vector<uint16_t> at_host, at_b;
 	auto record = [](std::vector<uint16_t>& into, Msg type) {
 		return [&into, type](PeerId, Reader&) { into.push_back(uint16_t(type)); };
@@ -1427,7 +1427,7 @@ TEST(character_choice_messages_go_one_way)
 		host.s.on(m, record(at_host, m));
 		b.s.on(m, record(at_b, m));
 	}
-	host_and_join(host, {&a, &b}, 37136);
+	host_and_join(host, {&a, &b}, t::port(37136));
 	REQUIRE(b.s.self() == PeerId(2));
 
 	CharOfferMsg forged;
@@ -1646,31 +1646,31 @@ void check_honest(Msg type, uint16_t port, const std::vector<uint64_t>& arrivals
 
 // ---- bursts: one per new row
 
-BURST_TEST(TaskUpdate, 37300)
-BURST_TEST(Relation, 37301)
-BURST_TEST(Progress, 37302)
-BURST_TEST(PlayerShot, 37303)
-BURST_TEST(ItemState, 37304)
-BURST_TEST(TradeOp, 37305)
-BURST_TEST(EntityEvent, 37306)
-BURST_TEST(ReqSpawn, 37307)
-BURST_TEST(ReqDestroy, 37308)
-BURST_TEST(ReqUse, 37309)
-BURST_TEST(ReqTake, 37310)
-BURST_TEST(ReqDrop, 37311)
-BURST_TEST(ReqTransfer, 37312)
-BURST_TEST(ReqHit, 37313)
-BURST_TEST(ReqItemEvent, 37314)
-BURST_TEST(ReqLaunch, 37315)
-BURST_TEST(ReqContainer, 37316)
+BURST_TEST(TaskUpdate, t::port(37300))
+BURST_TEST(Relation, t::port(37301))
+BURST_TEST(Progress, t::port(37302))
+BURST_TEST(PlayerShot, t::port(37303))
+BURST_TEST(ItemState, t::port(37304))
+BURST_TEST(TradeOp, t::port(37305))
+BURST_TEST(EntityEvent, t::port(37306))
+BURST_TEST(ReqSpawn, t::port(37307))
+BURST_TEST(ReqDestroy, t::port(37308))
+BURST_TEST(ReqUse, t::port(37309))
+BURST_TEST(ReqTake, t::port(37310))
+BURST_TEST(ReqDrop, t::port(37311))
+BURST_TEST(ReqTransfer, t::port(37312))
+BURST_TEST(ReqHit, t::port(37313))
+BURST_TEST(ReqItemEvent, t::port(37314))
+BURST_TEST(ReqLaunch, t::port(37315))
+BURST_TEST(ReqContainer, t::port(37316))
 // F2 T3c: the player stream and the life states (Chat is a core message: its own tests below)
-BURST_TEST(PlayerState, 37340)
-BURST_TEST(PlayerWounded, 37341)
-BURST_TEST(PlayerRevive, 37342)
-BURST_TEST(PlayerDied, 37343)
+BURST_TEST(PlayerState, t::port(37340))
+BURST_TEST(PlayerWounded, t::port(37341))
+BURST_TEST(PlayerRevive, t::port(37342))
+BURST_TEST(PlayerDied, t::port(37343))
 // F3a: the two requests a player sends (test_protocol_f3a.cpp protocol_f3a_client_rate_rows)
-BURST_TEST(LevelMove, 37352)
-BURST_TEST(LoadReady, 37353)
+BURST_TEST(LevelMove, t::port(37352))
+BURST_TEST(LoadReady, t::port(37353))
 
 // ---- honest streams: one per sender
 
@@ -1681,7 +1681,7 @@ TEST(limits_honest_task_update)
 	// 96, three times the host's burst, are wanted at once, and the pacer must hold them back, not the host drop them.
 	Sends want;
 	want.burst(0, 96).steady(10000, 40000, 1);
-	check_honest(Msg::TaskUpdate, 37320, over_the_network(paced_by_the_pacer(Msg::TaskUpdate, want, 90000), 20000, 20400));
+	check_honest(Msg::TaskUpdate, t::port(37320), over_the_network(paced_by_the_pacer(Msg::TaskUpdate, want, 90000), 20000, 20400));
 }
 
 TEST(limits_honest_relation)
@@ -1691,7 +1691,7 @@ TEST(limits_honest_relation)
 	// the host's burst, must come out paced.
 	Sends want;
 	want.burst(0, 192).steady(5000, 25000, 3).burst(12000, 15);
-	check_honest(Msg::Relation, 37321, over_the_network(paced_by_the_pacer(Msg::Relation, want, 60000), 10000, 10400));
+	check_honest(Msg::Relation, t::port(37321), over_the_network(paced_by_the_pacer(Msg::Relation, want, 60000), 10000, 10400));
 }
 
 TEST(limits_honest_progress)
@@ -1700,7 +1700,7 @@ TEST(limits_honest_progress)
 	// One a second for a minute, and a lag spike of 3 s in which three of them arrive together.
 	Sends s;
 	s.steady(0, 60000, 1);
-	check_honest(Msg::Progress, 37322, over_the_network(s, 20000, 23000));
+	check_honest(Msg::Progress, t::port(37322), over_the_network(s, 20000, 23000));
 }
 
 TEST(limits_honest_player_shot)
@@ -1710,7 +1710,7 @@ TEST(limits_honest_player_shot)
 	// second), plus one event for a reload (poll_reload :385). 20 s of fire, a lag spike of 0.8 s (16 arrive together).
 	Sends s;
 	s.steady(0, 20000, 20).burst(10000, 1);
-	check_honest(Msg::PlayerShot, 37323, over_the_network(s, 8000, 8800));
+	check_honest(Msg::PlayerShot, t::port(37323), over_the_network(s, 8000, 8800));
 }
 
 TEST(limits_honest_item_state)
@@ -1721,7 +1721,7 @@ TEST(limits_honest_item_state)
 	// otherwise, :49-50), estimate: a weapon and its ammo box in a reload, 20 a second. A lag spike of 0.4 s.
 	Sends s;
 	s.burst(0, 1000).steady(1000, 21000, 20);
-	check_honest(Msg::ItemState, 37324, over_the_network(s, 5000, 5400));
+	check_honest(Msg::ItemState, t::port(37324), over_the_network(s, 5000, 5400));
 }
 
 TEST(limits_honest_item_state_whole_inventory_of_4096)
@@ -1733,14 +1733,14 @@ TEST(limits_honest_item_state_whole_inventory_of_4096)
 	CHECK(rule->burst >= 4096);
 	Sends s;
 	s.burst(0, 4096).steady(2000, 12000, 20);
-	check_honest(Msg::ItemState, 37337, over_the_network(s, 6000, 6400));
+	check_honest(Msg::ItemState, t::port(37337), over_the_network(s, 6000, 6400));
 }
 
 TEST(limits_drops_are_logged_first_and_every_hundredth)
 {
 	// F2 T3b (Ruling F2-33): a message the rate limit drops must be seen. The host logs the first drop of a type from each
 	// client, then every 100th drop of the type (all clients together), with the message, the player and the count.
-	constexpr uint16_t kPort = 37338;
+	const uint16_t kPort = t::port(37338);
 	Node host("Boss", kPort), alice("Alice", kPort), bob("Bob", kPort);
 	install_game_rates(host);
 	const limits::RateRule* rule = limits::client_rule(Msg::Progress);
@@ -1805,7 +1805,7 @@ TEST(limits_honest_trade_op)
 	// 20 s. A lag spike of 1 s.
 	Sends s;
 	s.burst(0, 8).steady(2000, 22000, 5);
-	check_honest(Msg::TradeOp, 37325, over_the_network(s, 10000, 11000));
+	check_honest(Msg::TradeOp, t::port(37325), over_the_network(s, 10000, 11000));
 }
 
 TEST(limits_honest_entity_event)
@@ -1816,46 +1816,46 @@ TEST(limits_honest_entity_event)
 	// are single presses. 20 s, a lag spike of 0.5 s.
 	Sends s;
 	s.burst(0, 8).steady(500, 20500, 30);
-	check_honest(Msg::EntityEvent, 37326, over_the_network(s, 10000, 10500));
+	check_honest(Msg::EntityEvent, t::port(37326), over_the_network(s, 10000, 10500));
 }
 
 TEST(limits_honest_req_spawn)
 {
 	// coop_requests.cpp:446 (send_action Spawn). The host's own bucket for spawns (:772-773) is 40 in a row, then 20 a
 	// second; what it refuses it answers (ReqResult RateLimited), so the session must never drop before it.
-	check_honest(Msg::ReqSpawn, 37327, over_the_network(at_the_host_bucket(40, 20, 12000), 6000, 6500));
+	check_honest(Msg::ReqSpawn, t::port(37327), over_the_network(at_the_host_bucket(40, 20, 12000), 6000, 6500));
 }
 
 TEST(limits_honest_req_destroy)
 {
 	// coop_requests.cpp:457 (Destroy). The host's bucket for destroys (shared with ReqUse, :772-773): 60 in a row, then 30
 	// a second.
-	check_honest(Msg::ReqDestroy, 37328, over_the_network(at_the_host_bucket(60, 30, 12000), 6000, 6500));
+	check_honest(Msg::ReqDestroy, t::port(37328), over_the_network(at_the_host_bucket(60, 30, 12000), 6000, 6500));
 }
 
 TEST(limits_honest_req_use)
 {
 	// coop_requests.cpp:457 (Use): the destroy bucket, as ReqDestroy.
-	check_honest(Msg::ReqUse, 37329, over_the_network(at_the_host_bucket(60, 30, 12000), 6000, 6500));
+	check_honest(Msg::ReqUse, t::port(37329), over_the_network(at_the_host_bucket(60, 30, 12000), 6000, 6500));
 }
 
 TEST(limits_honest_req_take)
 {
 	// coop_requests.cpp:480 (Move, a take from the ground): the host's bucket for moves (shared with ReqDrop and
 	// ReqTransfer): 60 in a row (a stash taken in one go), then 30 a second.
-	check_honest(Msg::ReqTake, 37330, over_the_network(at_the_host_bucket(60, 30, 12000), 6000, 6500));
+	check_honest(Msg::ReqTake, t::port(37330), over_the_network(at_the_host_bucket(60, 30, 12000), 6000, 6500));
 }
 
 TEST(limits_honest_req_drop)
 {
 	// coop_requests.cpp:480 (Move, a drop): the moves bucket, as ReqTake.
-	check_honest(Msg::ReqDrop, 37331, over_the_network(at_the_host_bucket(60, 30, 12000), 6000, 6500));
+	check_honest(Msg::ReqDrop, t::port(37331), over_the_network(at_the_host_bucket(60, 30, 12000), 6000, 6500));
 }
 
 TEST(limits_honest_req_transfer)
 {
 	// coop_requests.cpp:480 (Move between holders: loot, trade moves): the moves bucket, as ReqTake.
-	check_honest(Msg::ReqTransfer, 37332, over_the_network(at_the_host_bucket(60, 30, 12000), 6000, 6500));
+	check_honest(Msg::ReqTransfer, t::port(37332), over_the_network(at_the_host_bucket(60, 30, 12000), 6000, 6500));
 }
 
 TEST(limits_honest_req_hit)
@@ -1863,14 +1863,14 @@ TEST(limits_honest_req_hit)
 	// coop_requests.cpp:496 (Hit), one per bullet or blow of the player on a host creature or object (coop_events.cpp:295).
 	// The host's bucket for hits: 160 in a row, then 80 a second (:772-773); an automatic shotgun does 40 a second
 	// (estimate).
-	check_honest(Msg::ReqHit, 37333, over_the_network(at_the_host_bucket(160, 80, 8000), 4000, 4300));
+	check_honest(Msg::ReqHit, t::port(37333), over_the_network(at_the_host_bucket(160, 80, 8000), 4000, 4300));
 }
 
 TEST(limits_honest_req_item_event)
 {
 	// coop_requests.cpp:512 (ItemEvent: an upgrade installed). The host's bucket for the rest (:772-773): 40 in a row,
 	// then 20 a second.
-	check_honest(Msg::ReqItemEvent, 37334, over_the_network(at_the_host_bucket(40, 20, 12000), 6000, 6500));
+	check_honest(Msg::ReqItemEvent, t::port(37334), over_the_network(at_the_host_bucket(40, 20, 12000), 6000, 6500));
 }
 
 TEST(limits_honest_req_launch)
@@ -1880,17 +1880,17 @@ TEST(limits_honest_req_launch)
 	// the start).
 	Sends s;
 	s.burst(0, 2).steady(0, 12000, 10);
-	check_honest(Msg::ReqLaunch, 37335, over_the_network(s, 6000, 6500));
+	check_honest(Msg::ReqLaunch, t::port(37335), over_the_network(s, 6000, 6500));
 }
 
 TEST(limits_honest_req_container)
 {
-	// coop_trade.cpp:772 (send_container), one on showing and one on hiding a trade or loot window
+	// coop_trade_views.cpp (send_container), one on showing and one on hiding a trade or loot window
 	// (on_actor_menu_shown :948-981). A human opening and closing windows: four messages a second (estimate), eight at the
 	// start. A lag spike of 1 s.
 	Sends s;
 	s.burst(0, 8).steady(2000, 22000, 4);
-	check_honest(Msg::ReqContainer, 37336, over_the_network(s, 10000, 11000));
+	check_honest(Msg::ReqContainer, t::port(37336), over_the_network(s, 10000, 11000));
 }
 
 // ============================================================================ F2 T3c: the player stream, life states, chat
@@ -1904,7 +1904,7 @@ TEST(limits_honest_player_state)
 	// together. 20 s.
 	Sends s;
 	s.steady(0, 20000, 20);
-	check_honest(Msg::PlayerState, 37344, over_the_network(s, 10000, 11500));
+	check_honest(Msg::PlayerState, t::port(37344), over_the_network(s, 10000, 11500));
 }
 
 TEST(limits_honest_player_wounded)
@@ -1915,7 +1915,7 @@ TEST(limits_honest_player_wounded)
 	// rate is below one a second: here one a second for 30 s after the four. A lag spike of 3 s.
 	Sends s;
 	s.burst(0, 4).steady(2000, 32000, 1);
-	check_honest(Msg::PlayerWounded, 37345, over_the_network(s, 10000, 13000));
+	check_honest(Msg::PlayerWounded, t::port(37345), over_the_network(s, 10000, 13000));
 }
 
 TEST(limits_honest_player_revive)
@@ -1925,7 +1925,7 @@ TEST(limits_honest_player_revive)
 	// rate). A lag spike of 3 s.
 	Sends s;
 	s.burst(0, 2).steady(1000, 31000, 1);
-	check_honest(Msg::PlayerRevive, 37346, over_the_network(s, 12000, 15000));
+	check_honest(Msg::PlayerRevive, t::port(37346), over_the_network(s, 12000, 15000));
 }
 
 TEST(limits_honest_player_died)
@@ -1935,7 +1935,7 @@ TEST(limits_honest_player_died)
 	// times the likely rate. A lag spike of 3 s.
 	Sends s;
 	s.burst(0, 2).steady(1000, 31000, 1);
-	check_honest(Msg::PlayerDied, 37347, over_the_network(s, 12000, 15000));
+	check_honest(Msg::PlayerDied, t::port(37347), over_the_network(s, 12000, 15000));
 }
 
 namespace
@@ -2001,7 +2001,7 @@ TEST(limits_chat_burst)
 	// (on_chat), not sent to the others. Counted and logged as the other rows (first drop, then every hundredth).
 	const limits::RateRule* rule = limits::client_rule(Msg::Chat);
 	REQUIRE(rule != nullptr);
-	ChatRig rig(37348);
+	ChatRig rig(t::port(37348));
 	uint64_t host_ms = t::now_ms();
 
 	rig.say(rig.alice, host_ms, rule->burst + 3);
@@ -2044,7 +2044,7 @@ TEST(limits_honest_chat)
 	Sends s;
 	s.burst(0, 5).steady(1000, 31000, 2);
 	const std::vector<uint64_t> arrivals = over_the_network(s, 12000, 13000);
-	ChatRig rig(37349);
+	ChatRig rig(t::port(37349));
 	const uint64_t base = t::now_ms();
 	for (size_t i = 0; i < arrivals.size();)
 	{
@@ -2067,7 +2067,7 @@ TEST(limits_chat_control_characters_are_cleaned)
 	// or a bell reached the console and the HUD. A tab and the line breaks become a space, the other control characters
 	// (below 0x20 and DEL) go; the rest, UTF-8 included, is as sent. The host cleans what it receives and passes on, and a
 	// client cleans what the host sends it.
-	ChatRig rig(37350);
+	ChatRig rig(t::port(37350));
 	const uint64_t host_ms = t::now_ms();
 	const std::string forged = std::string("hi\n[coop] <Boss> forged\r\n") + "\x1b[2Jbell\x07\x7f end";
 	const std::string cleaned = "hi [coop] <Boss> forged  [2Jbell end";
@@ -2093,7 +2093,7 @@ TEST(limits_chat_of_control_characters_only_is_not_passed_on)
 {
 	// A line that nothing is left of after the cleaning is no line: not given to the game, not sent to the others (and it
 	// is not the end of the stream: the next one passes).
-	ChatRig rig(37351);
+	ChatRig rig(t::port(37351));
 	const uint64_t host_ms = t::now_ms();
 	rig.alice.s.send_chat("\x01\x02\n\r\x7f");
 	rig.alice.s.send_chat("ok");
@@ -2159,16 +2159,16 @@ size_t fill(Node& host, std::vector<std::unique_ptr<Node>>& clients, uint16_t po
 TEST(limits_session_without_a_playing_host_seat_takes_one_more_client)
 {
 	// A world server (host_plays false) with max_players 3: three clients, the fourth is refused SessionFull.
-	Node host("server", 38221);
+	Node host("server", t::port(38221));
 	host.cfg.max_players = 3;
 	host.cfg.host_plays = false;
 	std::vector<std::unique_ptr<Node>> clients;
 	for (int i = 0; i < 4; ++i)
-		clients.emplace_back(new Node("C" + std::to_string(i), 38221));
+		clients.emplace_back(new Node("C" + std::to_string(i), t::port(38221)));
 	std::string err;
 	host.cfg.mode = SessionMode::Server;
 	REQUIRE(host.host(&err));
-	CHECK_EQ(fill(host, clients, 38221), size_t(3));
+	CHECK_EQ(fill(host, clients, t::port(38221)), size_t(3));
 	CHECK(clients[3]->rejected);
 	CHECK(clients[3]->reject.reason == RejectReason::SessionFull);
 	CHECK(!(clients[0]->welcome.flags & WelcomeMsg::HostSeatPlays));
@@ -2177,15 +2177,15 @@ TEST(limits_session_without_a_playing_host_seat_takes_one_more_client)
 
 TEST(limits_session_with_a_playing_host_seat_counts_it)
 {
-	Node host("Boss", 38222);
+	Node host("Boss", t::port(38222));
 	host.cfg.max_players = 3;
 	std::vector<std::unique_ptr<Node>> clients;
 	for (int i = 0; i < 3; ++i)
-		clients.emplace_back(new Node("C" + std::to_string(i), 38222));
+		clients.emplace_back(new Node("C" + std::to_string(i), t::port(38222)));
 	std::string err;
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host(&err));
-	CHECK_EQ(fill(host, clients, 38222), size_t(2));
+	CHECK_EQ(fill(host, clients, t::port(38222)), size_t(2));
 	CHECK(clients[2]->rejected);
 	CHECK(clients[2]->reject.reason == RejectReason::SessionFull);
 	CHECK(clients[0]->welcome.flags & WelcomeMsg::HostSeatPlays);
@@ -2197,16 +2197,16 @@ TEST(limits_session_with_a_playing_host_seat_counts_it)
 TEST(limits_world_server_full_house)
 {
 	// A world server with 8 seats: 8 playing clients, the 9th is refused (owner 2026-11-13; the server's 16: tests/test_seats.cpp).
-	Node host("server", 38223);
+	Node host("server", t::port(38223));
 	host.cfg.host_plays = false;
 	host.cfg.max_players = 8;
 	std::vector<std::unique_ptr<Node>> clients;
 	for (uint32_t i = 0; i < 9; ++i)
-		clients.emplace_back(new Node("C" + std::to_string(i), 38223));
+		clients.emplace_back(new Node("C" + std::to_string(i), t::port(38223)));
 	std::string err;
 	host.cfg.mode = SessionMode::Server;
 	REQUIRE(host.host(&err));
-	CHECK_EQ(fill(host, clients, 38223), size_t(8));
+	CHECK_EQ(fill(host, clients, t::port(38223)), size_t(8));
 	CHECK(clients.back()->rejected);
 	CHECK(clients.back()->reject.reason == RejectReason::SessionFull);
 	std::set<PeerId> slots;
@@ -2232,15 +2232,15 @@ TEST(limits_world_server_full_house)
 TEST(limits_ordinary_host_full_house_stays_host_plus_seven)
 {
 	// A co-op host (its seat plays) with co-op's 8 seats: 7 clients, the 8th is refused; no client has slot 8.
-	Node host("Boss", 38224);
+	Node host("Boss", t::port(38224));
 	host.cfg.max_players = 8;
 	std::vector<std::unique_ptr<Node>> clients;
 	for (uint32_t i = 0; i < 8; ++i)
-		clients.emplace_back(new Node("C" + std::to_string(i), 38224));
+		clients.emplace_back(new Node("C" + std::to_string(i), t::port(38224)));
 	std::string err;
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host(&err));
-	CHECK_EQ(fill(host, clients, 38224), size_t(7));
+	CHECK_EQ(fill(host, clients, t::port(38224)), size_t(7));
 	CHECK(clients.back()->rejected);
 	CHECK(clients.back()->reject.reason == RejectReason::SessionFull);
 	for (size_t i = 0; i < 7; ++i)

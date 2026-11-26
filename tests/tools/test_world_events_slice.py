@@ -1,20 +1,18 @@
 """Exercise the production world-event relay, Lua registration, and session cleanup."""
-import os
 from pathlib import Path
-import shutil
 import subprocess
-from uuid import uuid4
 
 import pytest
 
-from test_client_ammo_reload import ROOT, definition
+from native_slice import ROOT, build, declaration, definition
 
 
 def build_runner(work: Path, source: str) -> Path:
     # Keep the relay, parsing, and queueing code together. Only their engine boundaries are stubbed.
-    types = (definition(source, signature) + ";" for signature in ("struct Incoming", "struct Stats"))
+    types = [definition(source, signature) + ";" for signature in ("struct Incoming", "struct Stats")]
+    types.append(declaration(source, "constexpr u64 kLogBurst"))
     methods = (definition(source, signature) for signature in (
-        "bool log_allowed(", "bool valid_name(", "void write_event(", "void deliver_later(",
+        "bool valid_name(", "void write_event(", "void deliver_later(",
         "void host_relay(", "bool read_event(", "void server_on_script_event(",
         "int l_reserve_world_event(", "void on_session_end(",
     ))
@@ -23,41 +21,14 @@ def build_runner(work: Path, source: str) -> Path:
 
     fixture = Path(__file__).with_name("fixtures") / "world_events_slice.cpp"
     engine = ROOT / "engine/src"
-    wire = engine / "xrCoop/coop_wire.cpp"
-    runner = work / ("world_events_slice.exe" if os.name == "nt" else "world_events_slice")
-    if os.name == "nt":
-        vcvars = Path(os.environ.get(
-            "VCVARS", r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-        ))
-        assert vcvars.exists(), "MSVC Build Tools are required"
-        command = work / "compile.cmd"
-        command.write_text(
-            f'@echo off\ncall "{vcvars}" >nul\nif errorlevel 1 exit /b 1\n'
-            f'cl /nologo /EHsc /std:c++17 /Od /utf-8 /I"{work}" /I"{engine}" '
-            f'"{fixture}" "{wire}" /Fe"{runner}"\nexit /b %ERRORLEVEL%\n', encoding="utf-8"
-        )
-        build = ["cmd", "/d", "/c", str(command)]
-    else:
-        compiler = shutil.which("c++")
-        assert compiler, "A C++17 compiler is required"
-        build = [compiler, "-std=c++17", "-pthread", f"-I{work}", f"-I{engine}",
-                 str(fixture), str(wire), "-o", str(runner)]
-    result = subprocess.run(build, cwd=work, capture_output=True, text=True, errors="replace", timeout=120)
-    assert result.returncode == 0, result.stdout + result.stderr
-    return runner
+    return build(work, "cl /nologo /EHsc /std:c++17 /Od /utf-8", [fixture, engine / "xrCoop/coop_wire.cpp"],
+                 work / "world_events_slice.exe", includes=[work, engine])
 
 
 @pytest.fixture(scope="module")
-def world_events_runner():
-    # Match the tools' work fixture: inherit the workspace ACL on Windows.
-    work = (ROOT / "temp" / f"world_events_slice_{uuid4().hex}").resolve()
-    assert work.is_relative_to(ROOT)
-    work.mkdir()
+def world_events_runner(module_work):
     source = ROOT / "engine/src/xrGame/coop/coop_script.cpp"
-    try:
-        yield build_runner(work, source.read_text(encoding="utf-8-sig"))
-    finally:
-        shutil.rmtree(work)
+    return build_runner(module_work, source.read_text(encoding="utf-8-sig"))
 
 
 @pytest.mark.parametrize("scenario", [

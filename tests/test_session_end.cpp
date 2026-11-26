@@ -19,8 +19,8 @@ void join(t::Node& host, t::Node& cl, uint16_t port)
 
 TEST(session_end_host_quit_on_purpose)
 {
-	t::Node host("Boss", 37220), cl("Alice", 37220);
-	join(host, cl, 37220);
+	t::Node host("Boss", t::port(37220)), cl("Alice", t::port(37220));
+	join(host, cl, t::port(37220));
 	host.s.shutdown("left the session");
 	REQUIRE(t::pump_until({&cl.s}, 3000, [&] { return cl.disconnected; }));
 	CHECK_EQ(cl.s.end_code(), std::string(kEndHostLeft));
@@ -29,17 +29,17 @@ TEST(session_end_host_quit_on_purpose)
 
 TEST(session_end_host_silent_is_a_lost_connection)
 {
-	t::Node host("Boss", 37221), cl("Alice", 37221);
+	t::Node host("Boss", t::port(37221)), cl("Alice", t::port(37221));
 	cl.cfg.peer_timeout_ms = 800;
-	join(host, cl, 37221);
+	join(host, cl, t::port(37221));
 	REQUIRE(t::pump_until({&cl.s}, 15000, [&] { return cl.disconnected; })); // the host's process stands still
 	CHECK_EQ(cl.s.end_code(), std::string(kEndLost));
 }
 
 TEST(session_end_kick_keeps_the_reason)
 {
-	t::Node host("Boss", 37222), cl("Alice", 37222);
-	join(host, cl, 37222);
+	t::Node host("Boss", t::port(37222)), cl("Alice", t::port(37222));
+	join(host, cl, t::port(37222));
 	host.s.kick(cl.s.self(), RejectReason::Kicked, "ask the host why");
 	REQUIRE(t::pump_until({&host.s, &cl.s}, 3000, [&] { return cl.disconnected; }));
 	CHECK_EQ(cl.s.end_code(), std::string(reject_reason_name(RejectReason::Kicked)));
@@ -48,8 +48,8 @@ TEST(session_end_kick_keeps_the_reason)
 
 TEST(session_end_a_refusal_after_joining_is_named_by_its_reason)
 {
-	t::Node host("Boss", 37223), cl("Alice", 37223);
-	join(host, cl, 37223);
+	t::Node host("Boss", t::port(37223)), cl("Alice", t::port(37223));
+	join(host, cl, t::port(37223));
 	host.s.kick(cl.s.self(), RejectReason::HostNotReady, "host is not in a game right now, try again later");
 	REQUIRE(t::pump_until({&host.s, &cl.s}, 3000, [&] { return cl.disconnected; }));
 	CHECK_EQ(cl.s.end_code(), std::string(reject_reason_name(RejectReason::HostNotReady)));
@@ -57,12 +57,12 @@ TEST(session_end_a_refusal_after_joining_is_named_by_its_reason)
 
 TEST(session_end_a_refusal_at_the_door_still_goes_to_on_rejected)
 {
-	t::Node host("Boss", 37224), cl("Alice", 37224);
+	t::Node host("Boss", t::port(37224)), cl("Alice", t::port(37224));
 	cl.cfg.build_id = "another-build";
 	std::string err;
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host(&err));
-	REQUIRE(cl.connect(37224, &err));
+	REQUIRE(cl.connect(t::port(37224), &err));
 	REQUIRE(t::pump_until({&host.s, &cl.s}, 3000, [&] { return cl.rejected || cl.disconnected; }));
 	CHECK(cl.rejected); // the version mismatch has its own window (coop_ui.on_rejected), with the reason of the host
 	CHECK(!cl.disconnected);
@@ -71,8 +71,8 @@ TEST(session_end_a_refusal_at_the_door_still_goes_to_on_rejected)
 
 TEST(session_end_a_client_lets_a_silent_host_go_at_its_own_limit)
 {
-	t::Node host("Boss", 37225), cl("Alice", 37225);
-	join(host, cl, 37225); // peer_timeout_ms is 15 s here: ENet alone would wait for all of it
+	t::Node host("Boss", t::port(37225)), cl("Alice", t::port(37225));
+	join(host, cl, t::port(37225)); // peer_timeout_ms is 15 s here: ENet alone would wait for all of it
 	const uint64_t t0 = t::now_ms();
 	cl.s.drop_silent_host();
 	CHECK(cl.disconnected); // at once: the manager calls it from its frame, between pumps
@@ -84,8 +84,8 @@ TEST(session_end_a_client_lets_a_silent_host_go_at_its_own_limit)
 
 TEST(session_end_a_host_has_no_host_to_lose)
 {
-	t::Node host("Boss", 37226), cl("Alice", 37226);
-	join(host, cl, 37226);
+	t::Node host("Boss", t::port(37226)), cl("Alice", t::port(37226));
+	join(host, cl, t::port(37226));
 	host.s.drop_silent_host();
 	CHECK(host.s.is_active());
 	t::pump_for({&host.s, &cl.s}, 100);
@@ -95,15 +95,15 @@ TEST(session_end_a_host_has_no_host_to_lose)
 
 TEST(session_end_a_new_session_forgets_the_last_end)
 {
-	t::Node host("Boss", 37227), cl("Alice", 37227);
-	join(host, cl, 37227);
+	t::Node host("Boss", t::port(37227)), cl("Alice", t::port(37227));
+	join(host, cl, t::port(37227));
 	host.s.shutdown("left the session");
 	REQUIRE(t::pump_until({&cl.s}, 3000, [&] { return cl.disconnected; }));
 	std::string err;
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host(&err));
 	cl.disconnected = false;
-	REQUIRE(cl.connect(37227, &err));
+	REQUIRE(cl.connect(t::port(37227), &err));
 	REQUIRE(t::pump_until({&host.s, &cl.s}, 5000, [&] { return cl.s.is_active() && host.s.peers().size() == 1; }));
 	CHECK_EQ(cl.s.end_code(), std::string(kEndLost)); // what a session that is cut off later reports unless it knows better
 }

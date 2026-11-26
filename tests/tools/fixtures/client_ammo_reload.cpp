@@ -216,6 +216,7 @@ struct LevelSide { void level_item_facts_up(u16) {} }; // coop_mode.h: a map ser
 struct Mode {
     bool decides_world() const { return host; }
     bool leads_level() const { return host; }
+    bool decides_here() const { return decides_world() || leads_level(); }
     LevelSide* level() const { return nullptr; } // Coop: the co-op host and client have no level side (coop_mode.h Mode::level)
 };
 Mode mode() { return {}; }
@@ -227,7 +228,7 @@ bool same_str(const shared_str& a, const char* b) { return a == shared_str(b); }
 std::map<u16, PIItem> objects, client_objects, host_objects;
 std::map<u16, CSE_Abstract*> entities, client_entities, host_entities;
 PIItem find_item(u16 id) { auto it = objects.find(id); return it == objects.end() ? nullptr : it->second; }
-CSE_Abstract* find_entity(u16 id) { auto it = entities.find(id); return it == entities.end() ? nullptr : it->second; }
+namespace world { CSE_Abstract* alife_entity(u16 id) { auto it = entities.find(id); return it == entities.end() ? nullptr : it->second; } }
 u16 entity_root(CSE_Abstract* e) { return e->root; }
 namespace join { u16 to_host(u16 n) { return n; } u16 to_local(u16 n) { return n; } u16 proxy_of_peer(PeerId) { return 10; } }
 namespace sync { bool host_peer_joining(PeerId) { return false; } }

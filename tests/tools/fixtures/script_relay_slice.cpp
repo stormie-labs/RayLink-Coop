@@ -1,9 +1,8 @@
-// Anomaly Coop, B-REV F7 (FIX-NIMBLE): runs the production relay of the world server, coop_script.cpp
-// server_on_script_event (with read_event, host_relay, deliver_later, write_event, log_allowed and valid_name of the same file,
-// extracted by tests/tools/test_script_relay_slice.py), over stubs of the session and the transport.
+// Runs the production script relay over session and transport stubs.
 // A map server's event to everybody (target -1) reaches the players only, each with his own copy (origin 0, his id as the
 // target, what the map server's own flush_outbox would have sent), never the other map servers; a player's and the host
 // player's event to everybody, a map server's event to one player, to the world and to another map server are unchanged.
+#include "xrCoop/coop_lua_errors.h"
 #include "xrCoop/coop_protocol.h"
 #include "xrCoop/coop_wire.h"
 

@@ -69,7 +69,7 @@ bool world_ready = true; // lease_world_ready: a live mirror, the world up, its 
 u32 syncs = 0;
 void lease_sync_world_locked() { ++syncs; }
 bool lease_world_ready() { return world_ready; }
-bool log_allowed() { return true; }
+struct { bool allow() { return true; } } g_log;
 
 CSE_ALifeDynamicObject zone; // the zone this client made (local_zone_create), registered in its ALife copy
 bool registered = true;

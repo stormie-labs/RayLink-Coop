@@ -2,6 +2,7 @@
 #include "test_util.h"
 #include "support/fake_mode.h"
 #include "coop_limits.h"
+#include "coop_lua_errors.h"
 #include "srv/coop_mapserver_rules.h"
 #include "coop_roster.h"
 #include "../engine/src/xrGame/coop/coop_net.h"
@@ -151,6 +152,7 @@ void client_send(Msg type, const Writer& w, Lane lane)
 namespace syncapi
 {
 constexpr size_t kMaxOutbox = 1024;
+constexpr u64 kLogBurst = 10;
 // PRODUCTION_SYNCAPI_TYPES
 std::deque<Out> g_out, g_level_out;
 Stats g_stats;
@@ -163,6 +165,7 @@ constexpr size_t kMaxPayload = 16 * 1024;
 constexpr size_t kMaxOutbox = 512;
 constexpr size_t kMaxInbox = 4096, kMaxInboxBytes = 4 * 1024 * 1024;
 constexpr s32 kTargetAll = -1;
+constexpr u64 kLogBurst = 10;
 // PRODUCTION_SCRIPT_TYPES
 Stats g_stats;
 WorldEventReservations g_world_events;

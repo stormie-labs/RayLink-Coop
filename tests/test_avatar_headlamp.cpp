@@ -61,7 +61,8 @@ TEST(avatar_head_torch_is_drawn_at_the_head_where_the_player_looks)
 	CHECK(frame.find("g_head_lights") != npos);
 	CHECK(frame.find("it.second.torch") != npos);
 	CHECK(frame.find("e->second.torch") != npos); // goes out with the owner's torch
-	CHECK(frame.find("make_head_light(av)") != npos);
+	CHECK(frame.find("make_head_light_once(it.first, av)") != npos);
+	CHECK(between(src, "HandLight* make_head_light_once(", "\n}\n").find("make_head_light(av)") != npos);
 
 	const std::string make = between(src, "HandLight* make_head_light(", "\n}\n");
 	REQUIRE(!make.empty());

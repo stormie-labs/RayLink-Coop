@@ -83,7 +83,7 @@ void receive_at(Node& node, std::vector<Event>& inbox)
 
 TEST(world_events_server_relay_preserves_sender_rules)
 {
-	constexpr uint16_t port = 38951;
+	const uint16_t port = t::port(38951);
 	Node world("World", port), map("Map", port), sender("Sender", port), listener("Listener", port);
 	world.cfg.host_plays = false;
 	world.cfg.mode = SessionMode::Server;
@@ -137,7 +137,7 @@ TEST(world_events_server_relay_preserves_sender_rules)
 
 TEST(world_events_coop_relay_preserves_player_and_host)
 {
-	constexpr uint16_t port = 38952;
+	const uint16_t port = t::port(38952);
 	Node host("Host", port), sender("Sender", port), listener("Listener", port);
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host());

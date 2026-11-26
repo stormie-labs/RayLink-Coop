@@ -115,7 +115,7 @@ TEST(host_sends_the_visual_of_a_creature_only)
 	REQUIRE(src.size() > 10000);
 	const std::string hook = between(src, "void host_on_visual(u16 id)", "\n}\n");
 	REQUIRE(!hook.empty());
-	CHECK(hook.find("if (!(mode().decides_world() || mode().leads_level()) || id == kActor)") != npos);
+	CHECK(hook.find("if (!mode().decides_here() || id == kActor)") != npos);
 	CHECK(hook.find("g_lock") != npos); // xrServer hooks may run on a game thread
 
 	const std::string send = between(src, "void host_send_visual(u16 id)", "\n}\n");
@@ -134,7 +134,7 @@ TEST(client_changes_the_puppet_as_the_host_lua_did)
 	REQUIRE(src.size() > 10000);
 	const std::string apply = between(src, "void client_on_entity_visual(", "\n}\n");
 	REQUIRE(!apply.empty());
-	CHECK(apply.find("before_live(Msg::EntityVisual)") != npos);
+	CHECK(apply.find("dropped_before_live(Msg::EntityVisual, g_c.dropped_before_live)") != npos);
 	CHECK(apply.find("m.read(r)") != npos);
 	CHECK(apply.find("join::to_local(m.object)") != npos);
 	CHECK(apply.find("world::is_player_character(obj)") != npos);

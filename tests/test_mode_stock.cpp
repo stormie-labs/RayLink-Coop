@@ -59,7 +59,12 @@ void check_stock_mode(const StockCase& kind)
 {
 	CHECK_EQ(coop::dedicated::has_key(kind.command_line), kind.console_boot);
 	const std::string source = stock_source(kind.source);
-	const auto mode = block(source, std::string("class ") + kind.mode + " final", "\n};");
+	// both co-op modes answer it in their common base (CoopModeBase)
+	const bool co = std::string_view(kind.mode).rfind("Coop", 0) == 0;
+	if (co)
+		CHECK(contains(source, std::string("class ") + kind.mode + " final : public CoopModeBase"));
+	const auto mode = co ? block(source, "class CoopModeBase : public ModeWithAnswers", "\n};") :
+	                       block(source, std::string("class ") + kind.mode + " final", "\n};");
 	const auto answer = block(mode, "bool online_elsewhere(", "\n");
 	CHECK(contains(answer,
 	    kind.consults_transfer_book ? "return levels::online_at_server(id);" : "return false;"));

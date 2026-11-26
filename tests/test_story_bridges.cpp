@@ -55,7 +55,7 @@ bool join(Node& host, Node& c, uint16_t port)
 // Server: the world server's session has a map server's bridge and a player; only the bridge is a connection that is no player.
 TEST(story_bridges_a_bridge_is_the_world_servers_connection_that_is_no_player)
 {
-	Node world("world", 38771), ms("ms", 38771), player("Ann", 38771);
+	Node world("world", t::port(38771)), ms("ms", t::port(38771)), player("Ann", t::port(38771));
 	world.cfg.host_plays = false; // its seat plays no character
 	std::string err;
 	world.cfg.mode = SessionMode::Server;
@@ -64,8 +64,8 @@ TEST(story_bridges_a_bridge_is_the_world_servers_connection_that_is_no_player)
 	ms.cfg.hello_role = kHelloRoleMapServer;
 	const Token tok = token_of(11);
 	std::memcpy(ms.cfg.hello_token.data(), tok.data(), tok.size());
-	REQUIRE(join(world, ms, 38771));
-	REQUIRE(join(world, player, 38771));
+	REQUIRE(join(world, ms, t::port(38771)));
+	REQUIRE(join(world, player, t::port(38771)));
 	REQUIRE(t::pump_until({&world.s, &ms.s, &player.s}, 5000,
 	    [&] { return world.s.joined(mapserver::bridge_peer(2)) && world.s.peer(player.s.self()) != nullptr; }));
 	const PeerId bridge = mapserver::bridge_peer(2);
@@ -88,11 +88,11 @@ TEST(story_bridges_a_bridge_is_the_world_servers_connection_that_is_no_player)
 // Co-op: a co-op host's session has players only; a player who left is no connection at all.
 TEST(story_bridges_a_coop_host_has_no_connection_that_is_no_player)
 {
-	Node host("host", 38772), ann("Ann", 38772);
+	Node host("host", t::port(38772)), ann("Ann", t::port(38772));
 	std::string err;
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host(&err));
-	REQUIRE(join(host, ann, 38772));
+	REQUIRE(join(host, ann, t::port(38772)));
 	const PeerId slot = ann.s.self();
 	REQUIRE(t::pump_until({&host.s, &ann.s}, 5000, [&] { return host.s.peer(slot) != nullptr; }));
 	for (uint32_t id = 0; id <= 0x1ffu; ++id)

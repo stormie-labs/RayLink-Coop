@@ -99,7 +99,7 @@ struct Manager
 	u64 now_ms() const { return now; }
 } g_mgr;
 Manager& mgr() { return g_mgr; }
-bool log_allowed() { return true; }
+struct { bool allow() { return true; } } g_log;
 
 // Where a held move stands (coop_requests.cpp admission_track): every held move of this world has left its container.
 admission::Track admission_track(u16, u16) { return admission::Track::Gone; }

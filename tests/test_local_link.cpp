@@ -70,7 +70,7 @@ TEST(link_order_per_lane)
 
 	// Through a hosting session, both ways, two lanes interleaved: the host player's messages reach the server's handlers
 	// and the server's reach his, each lane in the order it was sent.
-	Node host("Boss", 37501);
+	Node host("Boss", t::port(37501));
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host());
 	host.s.attach_local(&link);
@@ -106,7 +106,7 @@ TEST(link_order_per_lane)
 TEST(link_from_is_host_player)
 {
 	LocalLink link; // outlives the session it is attached to
-	Node host("Boss", 37502);
+	Node host("Boss", t::port(37502));
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host());
 	host.s.attach_local(&link);
@@ -195,7 +195,7 @@ TEST(link_no_reentrancy)
 	// A ping-pong through a hosting session: the server answers every request of the host player, he asks again at every
 	// answer. A send from inside a handler is never delivered inside it, and the game moves by one hop per update.
 	LocalLink link;
-	Node host("Boss", 37503);
+	Node host("Boss", t::port(37503));
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host());
 	host.s.attach_local(&link);
@@ -242,7 +242,7 @@ TEST(link_no_reentrancy)
 TEST(players_includes_local_peers_not)
 {
 	LocalLink link;
-	Node host("Boss", 37504), cl("Alice", 37504);
+	Node host("Boss", t::port(37504)), cl("Alice", t::port(37504));
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host());
 
@@ -250,7 +250,7 @@ TEST(players_includes_local_peers_not)
 	CHECK(host.s.players().empty());
 
 	host.s.attach_local(&link);
-	REQUIRE(cl.connect(37504));
+	REQUIRE(cl.connect(t::port(37504)));
 	REQUIRE(t::pump_until({&host.s, &cl.s}, 5000, [&] { return cl.s.is_active() && host.s.peers().size() == 1; }));
 
 	// players(): the host player (peer 0, local) and the client
@@ -292,7 +292,7 @@ TEST(players_includes_local_peers_not)
 TEST(link_world_epoch_old_packets_dropped)
 {
 	LocalLink link;
-	Node host("Boss", 37505);
+	Node host("Boss", t::port(37505));
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host());
 	host.s.attach_local(&link);
@@ -326,7 +326,7 @@ TEST(link_world_epoch_old_packets_dropped)
 TEST(link_trunk_only_refused)
 {
 	LocalLink link;
-	Node host("Boss", 37506);
+	Node host("Boss", t::port(37506));
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host());
 	host.s.attach_local(&link);
@@ -349,7 +349,7 @@ TEST(link_trunk_only_refused)
 TEST(link_world_gate_toward_player)
 {
 	LocalLink link;
-	Node host("Boss", 37507);
+	Node host("Boss", t::port(37507));
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host());
 	host.s.attach_local(&link);

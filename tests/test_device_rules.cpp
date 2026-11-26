@@ -1,5 +1,5 @@
 // Anomaly Coop unit tests: the pause stock puts on a single player level that finished loading in a window without the focus
-// (coop_device_rules.h, xrEngine/device.cpp "device pause on: application start").
+// (coop_device_rules.h, xrEngine/device.cpp Pause(..., "application start")).
 // b57j stand, sp_smoke (2026-11-21): the new game loaded behind another window and stood paused for 2.5 minutes with
 // g_always_active on; the probe's steps never came. Always-active keeps a window without the focus running everywhere else
 // (CRenderDevice::OnWM_Activate), and now at the start too, with the same exception: fullscreen (g_screenmode 2).

@@ -259,16 +259,16 @@ Writer sample_payload()
 
 TEST(handshake_accepted)
 {
-	Node host("Boss", 37001), cl("Alice", 37001);
+	Node host("Boss", t::port(37001)), cl("Alice", t::port(37001));
 	std::string err;
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host(&err));
 	CHECK(host.s.role() == Role::Host);
 	CHECK_EQ(host.s.self(), kHostPeer);
 	CHECK(host.s.is_active());
-	CHECK(host.logged("[coop] host: listening on 0.0.0.0:37001"));
+	CHECK(host.logged(("[coop] host: listening on 0.0.0.0:" + std::to_string(t::port(37001)))));
 
-	REQUIRE(cl.connect(37001, &err));
+	REQUIRE(cl.connect(t::port(37001), &err));
 	CHECK(cl.s.role() == Role::Client);
 	CHECK_EQ(cl.s.self(), kInvalidPeer);
 	CHECK(!cl.s.is_active());
@@ -322,7 +322,7 @@ TEST(handshake_accepted)
 
 TEST(host_port_busy_fails_with_error)
 {
-	Node a("A", 37002), b("B", 37002);
+	Node a("A", t::port(37002)), b("B", t::port(37002));
 	std::string err;
 	a.cfg.mode = SessionMode::Coop;
 	REQUIRE(a.host(&err));
@@ -363,12 +363,12 @@ void expect_reject(Node& host, Node& cl, uint16_t port, RejectReason reason)
 
 TEST(reject_protocol_mismatch_raw_client)
 {
-	Node host("Boss", 37003);
+	Node host("Boss", t::port(37003));
 	std::string err;
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host(&err));
 	RawPeer raw;
-	REQUIRE(raw_join(raw, host, 37003, 999));
+	REQUIRE(raw_join(raw, host, t::port(37003), 999));
 	const RawPeer::Message* rj = raw.find(Msg::Reject);
 	REQUIRE(rj != nullptr);
 	RejectMsg rm;
@@ -387,16 +387,16 @@ TEST(reject_protocol_mismatch_raw_client)
 
 TEST(reject_build_mismatch)
 {
-	Node host("Boss", 37004), cl("Alice", 37004);
+	Node host("Boss", t::port(37004)), cl("Alice", t::port(37004));
 	cl.cfg.build_id = "some-other-build";
-	expect_reject(host, cl, 37004, RejectReason::BuildMismatch);
+	expect_reject(host, cl, t::port(37004), RejectReason::BuildMismatch);
 	CHECK(cl.reject.text.find("some-other-build") != std::string::npos);
 	CHECK(cl.reject.text.find("test-build-1") != std::string::npos);
 }
 
 TEST(reject_content_mismatch_diff_names_exact_files)
 {
-	Node host("Boss", 37005), cl("Alice", 37005);
+	Node host("Boss", t::port(37005)), cl("Alice", t::port(37005));
 	// Host has: system.ltx, bind_stalker.script, stalker_hero.ogf (see sample_manifest).
 	cl.cfg.manifest = {
 		{"gamedata\\configs\\system.ltx", 0x1111111111111111ull}, // same
@@ -404,7 +404,7 @@ TEST(reject_content_mismatch_diff_names_exact_files)
 		{"gamedata\\textures\\extra_mod.dds", 5}, // client only
 		// stalker_hero.ogf missing here
 	};
-	expect_reject(host, cl, 37005, RejectReason::ContentMismatch);
+	expect_reject(host, cl, t::port(37005), RejectReason::ContentMismatch);
 	REQUIRE(cl.reject.host_manifest.size() == 3);
 	CHECK(manifest_fingerprint(cl.reject.host_manifest) == manifest_fingerprint(host.cfg.manifest));
 	REQUIRE(cl.diff.differ.size() == 1);
@@ -417,14 +417,14 @@ TEST(reject_content_mismatch_diff_names_exact_files)
 
 TEST(reject_content_mismatch_large_manifest)
 {
-	Node host("Boss", 37006), cl("Alice", 37006);
+	Node host("Boss", t::port(37006)), cl("Alice", t::port(37006));
 	Manifest big;
 	for (int i = 0; i < 60000; ++i)
 		big.push_back({"gamedata\\textures\\mod_pack\\texture_" + std::to_string(i) + ".dds", uint64_t(i) * 11400714819323198485ull});
 	host.cfg.manifest = big;
 	cl.cfg.manifest = big;
 	cl.cfg.manifest[41234].hash ^= 1; // exactly one file differs
-	expect_reject(host, cl, 37006, RejectReason::ContentMismatch);
+	expect_reject(host, cl, t::port(37006), RejectReason::ContentMismatch);
 	CHECK_EQ(cl.reject.host_manifest.size(), big.size());
 	REQUIRE(cl.diff.differ.size() == 1);
 	CHECK_EQ(cl.diff.differ[0], big[41234].path);
@@ -433,21 +433,21 @@ TEST(reject_content_mismatch_large_manifest)
 
 TEST(reject_duplicate_key_equal_to_host_key)
 {
-	Node host("Boss", 37007), cl("Alice", 37007);
+	Node host("Boss", t::port(37007)), cl("Alice", t::port(37007));
 	cl.cfg.key = host.cfg.key;
-	expect_reject(host, cl, 37007, RejectReason::DuplicateKey);
+	expect_reject(host, cl, t::port(37007), RejectReason::DuplicateKey);
 	CHECK(cl.reject.text.find("coop_player.key") != std::string::npos);
 	CHECK(cl.reject.text.find("copied") != std::string::npos);
 }
 
 TEST(reject_duplicate_key_between_two_clients)
 {
-	Node host("Boss", 37008), a("Alice", 37008), b("Bob", 37008);
+	Node host("Boss", t::port(37008)), a("Alice", t::port(37008)), b("Bob", t::port(37008));
 	b.cfg.key = a.cfg.key;
 	host.cfg.mode = SessionMode::Coop;
-	start_and_join(host, {&a}, 37008);
+	start_and_join(host, {&a}, t::port(37008));
 	std::string err;
-	REQUIRE(b.connect(37008, &err));
+	REQUIRE(b.connect(t::port(37008), &err));
 	REQUIRE(t::pump_until({&host.s, &a.s, &b.s}, 5000, [&] { return b.rejected; }));
 	CHECK(b.reject.reason == RejectReason::DuplicateKey);
 	CHECK(b.reject.text.find("coop_player.key") != std::string::npos);
@@ -461,14 +461,14 @@ TEST(reject_duplicate_key_between_two_clients)
 
 TEST(reject_session_full_and_slot_reuse)
 {
-	Node host("Boss", 37009), a("Alice", 37009), b("Bob", 37009), c("Carl", 37009);
+	Node host("Boss", t::port(37009)), a("Alice", t::port(37009)), b("Bob", t::port(37009)), c("Carl", t::port(37009));
 	host.cfg.max_players = 2; // host + one client
 	host.cfg.mode = SessionMode::Coop;
-	start_and_join(host, {&a}, 37009);
+	start_and_join(host, {&a}, t::port(37009));
 	CHECK_EQ(a.s.self(), PeerId(1));
 
 	std::string err;
-	REQUIRE(b.connect(37009, &err));
+	REQUIRE(b.connect(t::port(37009), &err));
 	REQUIRE(t::pump_until({&host.s, &a.s, &b.s}, 5000, [&] { return b.rejected; }));
 	CHECK(b.reject.reason == RejectReason::SessionFull);
 	CHECK(!b.reject.text.empty());
@@ -477,7 +477,7 @@ TEST(reject_session_full_and_slot_reuse)
 	// Alice leaves: the slot is free again and the next client gets the lowest free slot (1).
 	a.s.shutdown("alice leaves");
 	REQUIRE(t::pump_until({&host.s}, 5000, [&] { return host.s.peers().empty(); }));
-	REQUIRE(c.connect(37009, &err));
+	REQUIRE(c.connect(t::port(37009), &err));
 	REQUIRE(t::pump_until({&host.s, &c.s}, 5000, [&] { return c.welcomed; }));
 	CHECK_EQ(c.welcome.slot, PeerId(1));
 	CHECK_EQ(c.welcome.max_players, uint32_t(2));
@@ -485,45 +485,45 @@ TEST(reject_session_full_and_slot_reuse)
 
 TEST(reject_check_order_protocol_build_content_key_full)
 {
-	Node host("Boss", 37010);
+	Node host("Boss", t::port(37010));
 	host.cfg.max_players = 2;
 	std::string err;
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host(&err));
 
-	Node a("Alice", 37010); // joins and fills the host
-	REQUIRE(a.connect(37010, &err));
+	Node a("Alice", t::port(37010)); // joins and fills the host
+	REQUIRE(a.connect(t::port(37010), &err));
 	REQUIRE(t::pump_until({&host.s, &a.s}, 5000, [&] { return a.s.is_active(); }));
 
 	// build wrong + content wrong + duplicate key + full  -> BuildMismatch
-	Node c1("C1", 37010);
+	Node c1("C1", t::port(37010));
 	c1.cfg.build_id = "x";
 	c1.cfg.manifest.clear();
 	c1.cfg.key = a.cfg.key;
-	REQUIRE(c1.connect(37010, &err));
+	REQUIRE(c1.connect(t::port(37010), &err));
 	REQUIRE(t::pump_until({&host.s, &c1.s}, 5000, [&] { return c1.rejected; }));
 	CHECK(c1.reject.reason == RejectReason::BuildMismatch);
 
 	// content wrong + duplicate key + full -> ContentMismatch
-	Node c2("C2", 37010);
+	Node c2("C2", t::port(37010));
 	c2.cfg.manifest.clear();
 	c2.cfg.key = a.cfg.key;
-	REQUIRE(c2.connect(37010, &err));
+	REQUIRE(c2.connect(t::port(37010), &err));
 	REQUIRE(t::pump_until({&host.s, &c2.s}, 5000, [&] { return c2.rejected; }));
 	CHECK(c2.reject.reason == RejectReason::ContentMismatch);
 
 	// duplicate key + full -> DuplicateKey
 	// (R1 I2: the host's key; Alice's key would depend on how long Alice, not pumped here, has been silent —
 	// a silent player's key reconnects, see test_session_limits)
-	Node c3("C3", 37010);
+	Node c3("C3", t::port(37010));
 	c3.cfg.key = host.cfg.key;
-	REQUIRE(c3.connect(37010, &err));
+	REQUIRE(c3.connect(t::port(37010), &err));
 	REQUIRE(t::pump_until({&host.s, &c3.s}, 5000, [&] { return c3.rejected; }));
 	CHECK(c3.reject.reason == RejectReason::DuplicateKey);
 
 	// only full -> SessionFull
-	Node c4("C4", 37010);
-	REQUIRE(c4.connect(37010, &err));
+	Node c4("C4", t::port(37010));
+	REQUIRE(c4.connect(t::port(37010), &err));
 	REQUIRE(t::pump_until({&host.s, &c4.s}, 5000, [&] { return c4.rejected; }));
 	CHECK(c4.reject.reason == RejectReason::SessionFull);
 
@@ -536,9 +536,9 @@ TEST(reject_check_order_protocol_build_content_key_full)
 
 TEST(game_message_routing_client_host_broadcast)
 {
-	Node host("Boss", 37011), a("Alice", 37011), b("Bob", 37011);
+	Node host("Boss", t::port(37011)), a("Alice", t::port(37011)), b("Bob", t::port(37011));
 	host.cfg.mode = SessionMode::Coop;
-	start_and_join(host, {&a, &b}, 37011);
+	start_and_join(host, {&a, &b}, t::port(37011));
 	CHECK_EQ(a.s.self(), PeerId(1));
 	CHECK_EQ(b.s.self(), PeerId(2));
 
@@ -611,9 +611,9 @@ TEST(game_message_routing_client_host_broadcast)
 
 TEST(unregistered_game_type_counted_logged_once_and_dropped)
 {
-	Node host("Boss", 37012), a("Alice", 37012);
+	Node host("Boss", t::port(37012)), a("Alice", t::port(37012));
 	host.cfg.mode = SessionMode::Coop;
-	start_and_join(host, {&a}, 37012);
+	start_and_join(host, {&a}, t::port(37012));
 	host.log.clear();
 	Writer w;
 	w.u32(1);
@@ -640,9 +640,9 @@ TEST(unregistered_game_type_counted_logged_once_and_dropped)
 
 TEST(client_send_to_non_host_is_logged_noop)
 {
-	Node host("Boss", 37013), a("Alice", 37013), b("Bob", 37013);
+	Node host("Boss", t::port(37013)), a("Alice", t::port(37013)), b("Bob", t::port(37013));
 	host.cfg.mode = SessionMode::Coop;
-	start_and_join(host, {&a, &b}, 37013);
+	start_and_join(host, {&a, &b}, t::port(37013));
 	std::vector<Received> b_got;
 	b.s.on(Msg::ScriptEvent, collect(b_got));
 	a.log.clear();
@@ -658,9 +658,9 @@ TEST(client_send_to_non_host_is_logged_noop)
 
 TEST(stats_count_sent_and_received_exactly)
 {
-	Node host("Boss", 37014), a("Alice", 37014);
+	Node host("Boss", t::port(37014)), a("Alice", t::port(37014));
 	host.cfg.mode = SessionMode::Coop;
-	start_and_join(host, {&a}, 37014);
+	start_and_join(host, {&a}, t::port(37014));
 	t::pump_for({&host.s, &a.s}, 100);
 	host.s.reset_stats();
 	a.s.reset_stats();
@@ -700,9 +700,9 @@ TEST(stats_count_sent_and_received_exactly)
 
 TEST(three_party_peerlist_leave_reasons)
 {
-	Node host("Boss", 37015), a("Alice", 37015), b("Bob", 37015);
+	Node host("Boss", t::port(37015)), a("Alice", t::port(37015)), b("Bob", t::port(37015));
 	host.cfg.mode = SessionMode::Coop;
-	start_and_join(host, {&a, &b}, 37015);
+	start_and_join(host, {&a, &b}, t::port(37015));
 
 	// Alice learned about Bob through the PeerList, Bob about Alice, the host fired joined for both.
 	REQUIRE(a.joined.size() == 1);
@@ -736,16 +736,16 @@ TEST(three_party_peerlist_leave_reasons)
 	a.welcomed = false;
 	a.disconnected = false;
 	std::string err;
-	REQUIRE(a.connect(37015, &err));
+	REQUIRE(a.connect(t::port(37015), &err));
 	REQUIRE(t::pump_until({&host.s, &a.s, &b.s}, 5000, [&] { return a.welcomed && b.joined.size() == 2; }));
 	CHECK_EQ(a.welcome.slot, PeerId(1));
 }
 
 TEST(host_shutdown_sends_bye_reason_to_clients)
 {
-	Node host("Boss", 37016), a("Alice", 37016), b("Bob", 37016);
+	Node host("Boss", t::port(37016)), a("Alice", t::port(37016)), b("Bob", t::port(37016));
 	host.cfg.mode = SessionMode::Coop;
-	start_and_join(host, {&a, &b}, 37016);
+	start_and_join(host, {&a, &b}, t::port(37016));
 	host.s.shutdown("server closing");
 	CHECK(host.s.role() == Role::None);
 	REQUIRE(t::pump_until({&a.s, &b.s}, 5000, [&] { return a.disconnected && b.disconnected; }));
@@ -761,9 +761,9 @@ TEST(host_shutdown_sends_bye_reason_to_clients)
 
 TEST(host_kick_reaches_client_with_text)
 {
-	Node host("Boss", 37017), a("Alice", 37017), b("Bob", 37017);
+	Node host("Boss", t::port(37017)), a("Alice", t::port(37017)), b("Bob", t::port(37017));
 	host.cfg.mode = SessionMode::Coop;
-	start_and_join(host, {&a, &b}, 37017);
+	start_and_join(host, {&a, &b}, t::port(37017));
 	host.s.kick(1, RejectReason::Kicked, "behave yourself");
 	REQUIRE(t::pump_until({&host.s, &a.s, &b.s}, 5000, [&] { return a.disconnected && !b.left.empty(); }));
 	CHECK(a.disc_reason.find("behave yourself") != std::string::npos);
@@ -781,9 +781,9 @@ TEST(host_kick_reaches_client_with_text)
 
 TEST(chat_client_host_rebroadcast_and_host_to_all)
 {
-	Node host("Boss", 37018), a("Alice", 37018), b("Bob", 37018);
+	Node host("Boss", t::port(37018)), a("Alice", t::port(37018)), b("Bob", t::port(37018));
 	host.cfg.mode = SessionMode::Coop;
-	start_and_join(host, {&a, &b}, 37018);
+	start_and_join(host, {&a, &b}, t::port(37018));
 	a.s.send_chat("hello zone");
 	REQUIRE(t::pump_until({&host.s, &a.s, &b.s}, 5000, [&] { return !host.chat.empty() && !b.chat.empty(); }));
 	t::pump_for({&host.s, &a.s, &b.s}, 100);
@@ -804,13 +804,13 @@ TEST(chat_client_host_rebroadcast_and_host_to_all)
 
 TEST(peer_silence_timeout_drops_vanished_client)
 {
-	Node host("Boss", 37019);
+	Node host("Boss", t::port(37019));
 	host.cfg.peer_timeout_ms = 1500;
 	std::string err;
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host(&err));
 	RawPeer raw;
-	REQUIRE(raw_join(raw, host, 37019));
+	REQUIRE(raw_join(raw, host, t::port(37019)));
 	REQUIRE(raw.find(Msg::Welcome) != nullptr);
 	REQUIRE(t::pump_until({&host.s}, 3000, [&] {
 		raw.service();
@@ -830,12 +830,12 @@ TEST(peer_silence_timeout_drops_vanished_client)
 
 TEST(malformed_core_message_from_joined_client_kicks)
 {
-	Node host("Boss", 37020);
+	Node host("Boss", t::port(37020));
 	std::string err;
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host(&err));
 	RawPeer raw;
-	REQUIRE(raw_join(raw, host, 37020));
+	REQUIRE(raw_join(raw, host, t::port(37020)));
 	REQUIRE(raw.find(Msg::Welcome) != nullptr);
 	REQUIRE(t::pump_until({&host.s}, 3000, [&] {
 		raw.service();
@@ -865,7 +865,7 @@ TEST(malformed_core_message_from_joined_client_kicks)
 
 TEST(malformed_truncated_hello_and_short_packet_and_early_game_message)
 {
-	Node host("Boss", 37021);
+	Node host("Boss", t::port(37021));
 	std::string err;
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host(&err));
@@ -873,7 +873,7 @@ TEST(malformed_truncated_hello_and_short_packet_and_early_game_message)
 	// Hello that ends after the protocol field.
 	{
 		RawPeer raw;
-		REQUIRE(raw.connect(37021));
+		REQUIRE(raw.connect(t::port(37021)));
 		REQUIRE(t::pump_until({&host.s}, 3000, [&] {
 			raw.service();
 			return raw.connected;
@@ -893,7 +893,7 @@ TEST(malformed_truncated_hello_and_short_packet_and_early_game_message)
 	// A one-byte packet.
 	{
 		RawPeer raw;
-		REQUIRE(raw.connect(37021));
+		REQUIRE(raw.connect(t::port(37021)));
 		REQUIRE(t::pump_until({&host.s}, 3000, [&] {
 			raw.service();
 			return raw.connected;
@@ -908,7 +908,7 @@ TEST(malformed_truncated_hello_and_short_packet_and_early_game_message)
 	// A game message before the handshake.
 	{
 		RawPeer raw;
-		REQUIRE(raw.connect(37021));
+		REQUIRE(raw.connect(t::port(37021)));
 		REQUIRE(t::pump_until({&host.s}, 3000, [&] {
 			raw.service();
 			return raw.connected;
@@ -924,7 +924,7 @@ TEST(malformed_truncated_hello_and_short_packet_and_early_game_message)
 	// Second Hello from a joined client.
 	{
 		RawPeer raw;
-		REQUIRE(raw_join(raw, host, 37021));
+		REQUIRE(raw_join(raw, host, t::port(37021)));
 		REQUIRE(raw.find(Msg::Welcome) != nullptr);
 		HelloMsg h;
 		h.build_id = host.cfg.build_id;
@@ -945,13 +945,13 @@ TEST(malformed_truncated_hello_and_short_packet_and_early_game_message)
 
 TEST(blob_crc_mismatch_dropped_then_good_blob_from_client_arrives)
 {
-	Node host("Boss", 37022);
+	Node host("Boss", t::port(37022));
 	host.s.accept_client_blob(77); // R1 I3: the host takes only kinds its game accepts from clients
 	std::string err;
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host(&err));
 	RawPeer raw;
-	REQUIRE(raw_join(raw, host, 37022));
+	REQUIRE(raw_join(raw, host, t::port(37022)));
 	REQUIRE(t::pump_until({&host.s}, 3000, [&] {
 		raw.service();
 		return host.joined.size() == 1;
@@ -995,11 +995,11 @@ TEST(blob_crc_mismatch_dropped_then_good_blob_from_client_arrives)
 
 TEST(connect_to_dead_port_times_out)
 {
-	Node cl("Alice", 37023);
+	Node cl("Alice", t::port(37023));
 	cl.cfg.connect_timeout_ms = 1500;
 	std::string err;
 	const uint64_t t0 = t::now_ms();
-	REQUIRE(cl.connect(37023, &err)); // nobody listens there
+	REQUIRE(cl.connect(t::port(37023), &err)); // nobody listens there
 	REQUIRE(t::pump_until({&cl.s}, 6000, [&] { return cl.disconnected; }));
 	const uint64_t took = cl.disc_at - t0;
 	CHECK(cl.disc_reason.find("timeout") != std::string::npos);
@@ -1009,11 +1009,11 @@ TEST(connect_to_dead_port_times_out)
 	CHECK(!cl.welcomed && !cl.rejected);
 	CHECK(all_lines_prefixed(cl));
 	// The session is reusable after the failure: a real host can be joined now.
-	Node host("Boss", 37023);
+	Node host("Boss", t::port(37023));
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host(&err));
 	cl.disconnected = false;
-	REQUIRE(cl.connect(37023, &err));
+	REQUIRE(cl.connect(t::port(37023), &err));
 	REQUIRE(t::pump_until({&host.s, &cl.s}, 5000, [&] { return cl.welcomed; }));
 }
 
@@ -1073,19 +1073,19 @@ void run_blob_transfer(uint16_t port, size_t size, bool sim, uint32_t timeout_ms
 
 TEST(blob_20mb_host_to_client_intact)
 {
-	run_blob_transfer(37024, 20u * 1024 * 1024, false, 60000);
+	run_blob_transfer(t::port(37024), 20u * 1024 * 1024, false, 60000);
 }
 
 TEST(blob_20mb_host_to_client_with_netsim_lag_and_loss)
 {
-	run_blob_transfer(37025, 20u * 1024 * 1024, true, 120000);
+	run_blob_transfer(t::port(37025), 20u * 1024 * 1024, true, 120000);
 }
 
 TEST(blob_edge_sizes_queued_together_arrive_in_order)
 {
-	Node host("Boss", 37026), cl("Alice", 37026);
+	Node host("Boss", t::port(37026)), cl("Alice", t::port(37026));
 	host.cfg.mode = SessionMode::Coop;
-	start_and_join(host, {&cl}, 37026);
+	start_and_join(host, {&cl}, t::port(37026));
 	const size_t sizes[] = {0, 1, 65535, 65536, 65537, 131072, 200000};
 	std::vector<std::vector<uint8_t>> sent;
 	std::vector<uint32_t> ids;
@@ -1120,9 +1120,9 @@ TEST(blob_edge_sizes_queued_together_arrive_in_order)
 
 TEST(blob_does_not_starve_reliable_lane)
 {
-	Node host("Boss", 37027), cl("Alice", 37027);
+	Node host("Boss", t::port(37027)), cl("Alice", t::port(37027));
 	host.cfg.mode = SessionMode::Coop;
-	start_and_join(host, {&cl}, 37027);
+	start_and_join(host, {&cl}, t::port(37027));
 	std::vector<Received> got;
 	cl.s.on(Msg::ScriptEvent, collect(got));
 	host.s.send_blob(1, 1, t::random_bytes(30u * 1024 * 1024, 3));
@@ -1184,7 +1184,7 @@ size_t run_loss_round(uint16_t port, float loss, size_t* reliable_out, bool on_r
 TEST(netsim_loss_half_drops_unreliable_only)
 {
 	size_t reliable = 0;
-	const size_t got = run_loss_round(37028, 0.5f, &reliable);
+	const size_t got = run_loss_round(t::port(37028), 0.5f, &reliable);
 	std::printf("    unreliable delivered %zu of 1000, reliable %zu of 1000\n", got, reliable);
 	CHECK(got >= 300 && got <= 700);
 	CHECK_EQ(reliable, size_t(1000));
@@ -1193,12 +1193,12 @@ TEST(netsim_loss_half_drops_unreliable_only)
 TEST(netsim_loss_zero_delivers_everything_and_loss_is_deterministic)
 {
 	size_t reliable = 0;
-	const size_t all = run_loss_round(37029, 0.f, &reliable);
+	const size_t all = run_loss_round(t::port(37029), 0.f, &reliable);
 	CHECK_EQ(all, size_t(1000));
 
 	size_t r1 = 0, r2 = 0;
-	const size_t a = run_loss_round(37030, 0.3f, &r1);
-	const size_t b = run_loss_round(37031, 0.3f, &r2);
+	const size_t a = run_loss_round(t::port(37030), 0.3f, &r1);
+	const size_t b = run_loss_round(t::port(37031), 0.3f, &r2);
 	std::printf("    loss 0.3 twice with the same keys: %zu and %zu delivered\n", a, b);
 	CHECK_EQ(a, b); // same keys -> same seed -> same drops
 	CHECK(a > 600 && a < 800);
@@ -1206,9 +1206,9 @@ TEST(netsim_loss_zero_delivers_everything_and_loss_is_deterministic)
 
 TEST(netsim_delay_applied_and_order_kept_under_jitter)
 {
-	Node host("Boss", 37032), cl("Alice", 37032);
+	Node host("Boss", t::port(37032)), cl("Alice", t::port(37032));
 	host.cfg.mode = SessionMode::Coop;
-	start_and_join(host, {&cl}, 37032);
+	start_and_join(host, {&cl}, t::port(37032));
 	std::vector<Received> got;
 	cl.s.on(Msg::ScriptEvent, collect(got));
 
@@ -1266,27 +1266,27 @@ TEST(session_destroy_and_shutdown_are_safe_in_any_state)
 		idle.shutdown("nothing");
 	}
 	{
-		Node host("Boss", 37033), cl("Alice", 37033);
+		Node host("Boss", t::port(37033)), cl("Alice", t::port(37033));
 		std::string err;
 		host.cfg.mode = SessionMode::Coop;
 		REQUIRE(host.host(&err));
-		REQUIRE(cl.connect(37033, &err)); // destroyed while still connecting
+		REQUIRE(cl.connect(t::port(37033), &err)); // destroyed while still connecting
 	}
 	{
-		Node host("Boss", 37033), cl("Alice", 37033);
+		Node host("Boss", t::port(37033)), cl("Alice", t::port(37033));
 		host.cfg.mode = SessionMode::Coop;
-		start_and_join(host, {&cl}, 37033);
+		start_and_join(host, {&cl}, t::port(37033));
 		host.s.send_blob(1, 1, t::random_bytes(5u * 1024 * 1024, 1)); // destroyed mid-transfer
 		t::pump_for({&host.s, &cl.s}, 30);
 	}
 	// Callback that shuts the session down from inside itself.
 	{
-		Node host("Boss", 37034), cl("Alice", 37034);
+		Node host("Boss", t::port(37034)), cl("Alice", t::port(37034));
 		std::string err;
 		host.cfg.mode = SessionMode::Coop;
 		REQUIRE(host.host(&err));
 		cl.s.on_welcome = [&cl](const WelcomeMsg&) { cl.s.shutdown("self-shutdown in callback"); };
-		REQUIRE(cl.connect(37034, &err));
+		REQUIRE(cl.connect(t::port(37034), &err));
 		REQUIRE(t::pump_until({&host.s, &cl.s}, 5000, [&] { return !host.left.empty(); }));
 		CHECK(cl.s.role() == Role::None);
 		CHECK_EQ(host.left[0].second, std::string("self-shutdown in callback"));
@@ -1296,7 +1296,7 @@ TEST(session_destroy_and_shutdown_are_safe_in_any_state)
 TEST(netsim_loss_applies_on_receive_side_too)
 {
 	size_t reliable = 0;
-	const size_t got = run_loss_round(37035, 0.5f, &reliable, true);
+	const size_t got = run_loss_round(t::port(37035), 0.5f, &reliable, true);
 	std::printf("    receiver-side loss: unreliable delivered %zu of 1000, reliable %zu\n", got, reliable);
 	CHECK(got >= 300 && got <= 700);
 	CHECK_EQ(reliable, size_t(1000));
@@ -1306,9 +1306,9 @@ TEST(netsim_loss_applies_on_receive_side_too)
 
 TEST(unreliable_lane_large_packets_arrive_whole)
 {
-	Node host("Boss", 37036), cl("Alice", 37036);
+	Node host("Boss", t::port(37036)), cl("Alice", t::port(37036));
 	host.cfg.mode = SessionMode::Coop;
-	start_and_join(host, {&cl}, 37036);
+	start_and_join(host, {&cl}, t::port(37036));
 	std::vector<Received> got;
 	cl.s.on(Msg::EntitySnapshot, collect(got));
 	std::vector<std::vector<uint8_t>> sent;
@@ -1336,12 +1336,12 @@ TEST(connect_timeout_when_host_never_welcomes)
 {
 	RawHost fake;
 	fake.answer_hello = false;
-	REQUIRE(fake.listen(37037));
-	Node cl("Alice", 37037);
+	REQUIRE(fake.listen(t::port(37037)));
+	Node cl("Alice", t::port(37037));
 	cl.cfg.connect_timeout_ms = 1200;
 	std::string err;
 	const uint64_t t0 = t::now_ms();
-	REQUIRE(cl.connect(37037, &err));
+	REQUIRE(cl.connect(t::port(37037), &err));
 	REQUIRE(t::pump_until({&cl.s}, 6000, [&] {
 		fake.service();
 		return cl.disconnected;
@@ -1356,11 +1356,11 @@ TEST(connect_timeout_when_host_never_welcomes)
 TEST(client_detects_vanished_host_by_silence_timeout)
 {
 	RawHost fake;
-	REQUIRE(fake.listen(37038));
-	Node cl("Alice", 37038);
+	REQUIRE(fake.listen(t::port(37038)));
+	Node cl("Alice", t::port(37038));
 	cl.cfg.peer_timeout_ms = 1500;
 	std::string err;
-	REQUIRE(cl.connect(37038, &err));
+	REQUIRE(cl.connect(t::port(37038), &err));
 	REQUIRE(t::pump_until({&cl.s}, 5000, [&] {
 		fake.service();
 		return cl.welcomed;
@@ -1378,13 +1378,13 @@ TEST(client_detects_vanished_host_by_silence_timeout)
 
 TEST(host_drops_transport_connection_that_never_says_hello)
 {
-	Node host("Boss", 37039);
+	Node host("Boss", t::port(37039));
 	host.cfg.connect_timeout_ms = 800;
 	std::string err;
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host(&err));
 	RawPeer raw;
-	REQUIRE(raw.connect(37039));
+	REQUIRE(raw.connect(t::port(37039)));
 	const uint64_t t0 = t::now_ms();
 	REQUIRE(t::pump_until({&host.s}, 5000, [&] {
 		raw.service();
@@ -1397,10 +1397,10 @@ TEST(host_drops_transport_connection_that_never_says_hello)
 
 TEST(nicknames_are_sanitized)
 {
-	Node host("", 37040), a("\x01" "Al\x07" "ice\x7F", 37040), b("", 37040), c("", 37040), d("Bo\"b", 37040);
+	Node host("", t::port(37040)), a("\x01" "Al\x07" "ice\x7F", t::port(37040)), b("", t::port(37040)), c("", t::port(37040)), d("Bo\"b", t::port(37040));
 	c.cfg.nick = std::string(47, 'a') + "\xD0\xBF"; // 49 bytes, the last character would be cut in half
 	host.cfg.mode = SessionMode::Coop;
-	start_and_join(host, {&a, &b, &c, &d}, 37040);
+	start_and_join(host, {&a, &b, &c, &d}, t::port(37040));
 	CHECK_EQ(a.welcome.host_nick, std::string("Host")); // empty host nick gets a default
 	REQUIRE(host.joined.size() == 4);
 	CHECK_EQ(host.joined[0].nick, std::string("Alice"));
@@ -1413,9 +1413,9 @@ TEST(nicknames_are_sanitized)
 
 TEST(peer_info_reports_rtt_and_loss)
 {
-	Node host("Boss", 37041), cl("Alice", 37041);
+	Node host("Boss", t::port(37041)), cl("Alice", t::port(37041));
 	host.cfg.mode = SessionMode::Coop;
-	start_and_join(host, {&cl}, 37041);
+	start_and_join(host, {&cl}, t::port(37041));
 	t::pump_for({&host.s, &cl.s}, 800);
 	const auto hp = host.s.peers();
 	REQUIRE(hp.size() == 1);
@@ -1429,7 +1429,7 @@ TEST(peer_info_reports_rtt_and_loss)
 TEST(callbacks_may_use_the_session_freely)
 {
 	// on_peer_joined sends, broadcasts and kicks from inside the callback; on_peer_left connects nothing.
-	Node host("Boss", 37042), a("Alice", 37042), b("Bob", 37042);
+	Node host("Boss", t::port(37042)), a("Alice", t::port(37042)), b("Bob", t::port(37042));
 	std::vector<Received> a_got;
 	a.s.on(Msg::JoinComplete, collect(a_got));
 	host.s.on_peer_joined = [&host](const PeerInfo& p) {
@@ -1443,9 +1443,9 @@ TEST(callbacks_may_use_the_session_freely)
 	std::string err;
 	host.cfg.mode = SessionMode::Coop;
 	REQUIRE(host.host(&err));
-	REQUIRE(a.connect(37042, &err));
+	REQUIRE(a.connect(t::port(37042), &err));
 	REQUIRE(t::pump_until({&host.s, &a.s}, 5000, [&] { return !a_got.empty(); }));
-	REQUIRE(b.connect(37042, &err));
+	REQUIRE(b.connect(t::port(37042), &err));
 	REQUIRE(t::pump_until({&host.s, &a.s, &b.s}, 5000, [&] { return b.disconnected; }));
 	CHECK(b.disc_reason.find("no bobs") != std::string::npos);
 	CHECK_EQ(host.s.peers().size(), size_t(1));
@@ -1461,11 +1461,11 @@ TEST(held_link_survives_a_long_owner_stall)
 	// A client loading a level does not pump the network for many seconds. While it holds the link, the
 	// transport's helper thread keeps answering, the host does not drop it, and what the host sent meanwhile
 	// is delivered once the client pumps again.
-	Node host("Boss", 37043), cl("Alice", 37043);
+	Node host("Boss", t::port(37043)), cl("Alice", t::port(37043));
 	host.cfg.peer_timeout_ms = 1500;
 	cl.cfg.peer_timeout_ms = 1500;
 	host.cfg.mode = SessionMode::Coop;
-	start_and_join(host, {&cl}, 37043);
+	start_and_join(host, {&cl}, t::port(37043));
 	cl.s.hold_connection(10000);
 	host.s.send_chat("while you were loading");
 	t::pump_for({&host.s}, 4000); // the client's owner thread is "blocked": only the host pumps
@@ -1485,10 +1485,10 @@ TEST(stall_without_hold_or_after_it_expired_drops_the_peer)
 {
 	// A crashed client (stuck on an error dialog) pumps nothing and holds nothing: dropped by the silence
 	// timeout. A hold is bounded: once it expires the same happens.
-	Node host("Boss", 37044), cl("Alice", 37044);
+	Node host("Boss", t::port(37044)), cl("Alice", t::port(37044));
 	host.cfg.peer_timeout_ms = 1500;
 	host.cfg.mode = SessionMode::Coop;
-	start_and_join(host, {&cl}, 37044);
+	start_and_join(host, {&cl}, t::port(37044));
 	cl.s.hold_connection(700);
 	const uint64_t t0 = t::now_ms();
 	REQUIRE(t::pump_until({&host.s}, 15000, [&] { return !host.left.empty(); }));
@@ -1517,11 +1517,11 @@ std::array<uint8_t, kHelloTokenSize> bridge_token()
 
 TEST(mode_coop_host_says_coop_in_its_welcome)
 {
-	Node host("Boss", 37951), cl("Alice", 37951);
+	Node host("Boss", t::port(37951)), cl("Alice", t::port(37951));
 	host.cfg.mode = SessionMode::Coop; // the co-op start sets it with the seat (coop_manager start_host)
 	CHECK(host.s.session_mode() == SessionMode::None); // no session yet
 	CHECK(cl.s.session_mode() == SessionMode::None);
-	start_and_join(host, {&cl}, 37951);
+	start_and_join(host, {&cl}, t::port(37951));
 	CHECK(host.s.session_mode() == SessionMode::Coop);
 	CHECK(cl.welcome.mode == SessionMode::Coop);
 	CHECK(cl.welcome.flags & WelcomeMsg::HostSeatPlays);
@@ -1531,10 +1531,10 @@ TEST(mode_coop_host_says_coop_in_its_welcome)
 
 TEST(mode_world_server_says_server_in_its_welcome)
 {
-	Node host("server", 37952), cl("Alice", 37952);
+	Node host("server", t::port(37952)), cl("Alice", t::port(37952));
 	host.cfg.host_plays = false; // -coop_dedicated: its own seat plays no character
 	host.cfg.mode = SessionMode::Server;
-	start_and_join(host, {&cl}, 37952);
+	start_and_join(host, {&cl}, t::port(37952));
 	CHECK(host.s.session_mode() == SessionMode::Server);
 	CHECK(cl.welcome.mode == SessionMode::Server);
 	CHECK(!(cl.welcome.flags & WelcomeMsg::HostSeatPlays));
@@ -1546,7 +1546,7 @@ TEST(mode_map_server_gets_server_from_its_world_server)
 {
 	// A map server knows its own kind from its command line; the Welcome of its world server (to a bridge, Hello role
 	// MapServer) says the session's mode as to any player. The host of its level (no transport) answers its world's mode.
-	Node world("server", 37953), ms("ms", 37953);
+	Node world("server", t::port(37953)), ms("ms", t::port(37953));
 	world.cfg.host_plays = false;
 	world.cfg.mode = SessionMode::Server;
 	std::string err;
@@ -1555,7 +1555,7 @@ TEST(mode_map_server_gets_server_from_its_world_server)
 	ms.cfg.hello_role = kHelloRoleMapServer;
 	ms.cfg.hello_token = bridge_token();
 	ms.cfg.mode = SessionMode::Server;
-	REQUIRE(ms.connect(37953, &err));
+	REQUIRE(ms.connect(t::port(37953), &err));
 	Session level;
 	REQUIRE(srv::SessionSrv(level).host_virtual(ms.cfg, ms.s, &err));
 	CHECK(level.session_mode() == SessionMode::None); // the level waits for its world's Welcome
@@ -1572,7 +1572,7 @@ TEST(mode_is_known_before_the_first_game_handler)
 {
 	// The host sends a game message at once, from its on_peer_joined (the update that sent the Welcome): on the client the
 	// Welcome's callback runs first and the mode is known in both.
-	Node host("server", 37954), cl("Alice", 37954);
+	Node host("server", t::port(37954)), cl("Alice", t::port(37954));
 	host.cfg.host_plays = false;
 	host.cfg.mode = SessionMode::Server;
 	host.s.on_peer_joined = [&host](const PeerInfo& p) {
@@ -1594,7 +1594,7 @@ TEST(mode_is_known_before_the_first_game_handler)
 	});
 	std::string err;
 	REQUIRE(host.host(&err));
-	REQUIRE(cl.connect(37954, &err));
+	REQUIRE(cl.connect(t::port(37954), &err));
 	REQUIRE(t::pump_until({&host.s, &cl.s}, 5000, [&] { return order.size() >= 2; }));
 	REQUIRE(order.size() == 2);
 	CHECK_EQ(order[0], std::string("welcome"));
@@ -1605,12 +1605,12 @@ TEST(mode_is_known_before_the_first_game_handler)
 
 TEST(mode_protocol_32_client_is_refused)
 {
-	Node host("Boss", 37955);
+	Node host("Boss", t::port(37955));
 	host.cfg.mode = SessionMode::Coop;
 	std::string err;
 	REQUIRE(host.host(&err));
 	RawPeer raw;
-	REQUIRE(raw_join(raw, host, 37955, 32));
+	REQUIRE(raw_join(raw, host, t::port(37955), 32));
 	const RawPeer::Message* rj = raw.find(Msg::Reject);
 	REQUIRE(rj != nullptr);
 	RejectMsg rm;
@@ -1628,10 +1628,10 @@ TEST(mode_protocol_32_host_welcome_is_refused)
 	// A host of protocol 32 never gets that far (it refuses the 33 Hello), but its Welcome, without the mode, is no Welcome.
 	RawHost fake;
 	fake.welcome_cut = 1;
-	REQUIRE(fake.listen(37956));
-	Node cl("Alice", 37956);
+	REQUIRE(fake.listen(t::port(37956)));
+	Node cl("Alice", t::port(37956));
 	std::string err;
-	REQUIRE(cl.connect(37956, &err));
+	REQUIRE(cl.connect(t::port(37956), &err));
 	REQUIRE(t::pump_until({&cl.s}, 5000, [&] {
 		fake.service();
 		return cl.disconnected;
@@ -1681,7 +1681,7 @@ TEST(mode_that_contradicts_the_seat_is_refused_by_host)
 	};
 	for (const Case c : {Case{SessionMode::Coop, false}, Case{SessionMode::Server, true}, Case{static_cast<SessionMode>(9), true}})
 	{
-		Node host("Boss", 37959);
+		Node host("Boss", t::port(37959));
 		host.cfg.mode = c.mode;
 		host.cfg.host_plays = c.plays;
 		std::string err;
@@ -1691,7 +1691,7 @@ TEST(mode_that_contradicts_the_seat_is_refused_by_host)
 		CHECK(host.s.session_mode() == SessionMode::None);
 	}
 	// the pair that agrees hosts on the same port
-	Node host("server", 37959);
+	Node host("server", t::port(37959));
 	host.cfg.mode = SessionMode::Server;
 	host.cfg.host_plays = false;
 	std::string err;
@@ -1702,11 +1702,11 @@ TEST(mode_that_contradicts_the_seat_is_refused_by_host)
 TEST(mode_is_forgotten_when_the_session_ends)
 {
 	// A player's process may host, leave and join a server in one run: a session's mode goes with it.
-	Node coop_host("Boss", 37960), server("server", 37961), cl("Alice", 37960);
+	Node coop_host("Boss", t::port(37960)), server("server", t::port(37961)), cl("Alice", t::port(37960));
 	coop_host.cfg.mode = SessionMode::Coop;
 	server.cfg.host_plays = false;
 	server.cfg.mode = SessionMode::Server;
-	start_and_join(coop_host, {&cl}, 37960);
+	start_and_join(coop_host, {&cl}, t::port(37960));
 	CHECK(cl.s.session_mode() == SessionMode::Coop);
 	cl.s.shutdown("leaving");
 	CHECK(cl.s.session_mode() == SessionMode::None);
@@ -1715,7 +1715,7 @@ TEST(mode_is_forgotten_when_the_session_ends)
 	std::string err;
 	REQUIRE(server.host(&err));
 	cl.welcomed = false;
-	REQUIRE(cl.connect(37961, &err));
+	REQUIRE(cl.connect(t::port(37961), &err));
 	REQUIRE(t::pump_until({&server.s, &cl.s}, 5000, [&] { return cl.welcomed && cl.s.is_active(); }));
 	CHECK(cl.s.session_mode() == SessionMode::Server);
 }
@@ -1795,7 +1795,7 @@ TEST(part_is_made_once_kept_by_its_kind_and_asked_at_its_points)
 	CHECK(&part.owner->session() == &s);
 
 	// a host() that goes ahead tells it once; one that is refused does not; the end of the session tells it once
-	Node host("A", 37962);
+	Node host("A", t::port(37962));
 	CHECK(host.s.part(CountingPart::kind(), &CountingPart::make) != nullptr);
 	CountingPart& hp = *static_cast<CountingPart*>(host.s.part(CountingPart::kind(), nullptr));
 	std::string err;
@@ -1809,19 +1809,19 @@ TEST(part_is_made_once_kept_by_its_kind_and_asked_at_its_points)
 	CHECK(host.s.part(CountingPart::kind(), nullptr) == &hp); // kept for the life of the Session
 	REQUIRE(host.host(&err));
 	CHECK_EQ(hp.starts, 2);
-	CHECK(host.logged("listening on 0.0.0.0:37962")); // a part with no carrier: a host with its own transport
+	CHECK(host.logged(("listening on 0.0.0.0:" + std::to_string(t::port(37962))))); // a part with no carrier: a host with its own transport
 }
 
 // Co-op (a session without a part, what both modes have): a Hello of another role is refused, a token presented by a player gives no
 // rights, a console line is refused as from a player without them; nobody is kicked. The same answers and lines as before A-S4Sb.
 TEST(part_none_refuses_another_role_gives_no_rights_runs_no_line)
 {
-	Node host("Boss", 37963), pal("Pal", 37963), ms("ms", 37963);
+	Node host("Boss", t::port(37963)), pal("Pal", t::port(37963)), ms("ms", t::port(37963));
 	std::string err;
 	for (uint8_t i = 0; i < kHelloTokenSize; ++i)
 		pal.cfg.hello_token[i] = uint8_t(i + 1);
 	host.cfg.mode = SessionMode::Coop;
-	start_and_join(host, {&pal}, 37963);
+	start_and_join(host, {&pal}, t::port(37963));
 	CHECK(!pal.s.self_host_rights());
 	REQUIRE(host.s.peer(pal.welcome.slot) != nullptr);
 	CHECK(!host.s.peer(pal.welcome.slot)->host_rights);
@@ -1832,7 +1832,7 @@ TEST(part_none_refuses_another_role_gives_no_rights_runs_no_line)
 
 	ms.cfg.hello_role = kHelloRoleMapServer;
 	ms.cfg.hello_token = pal.cfg.hello_token;
-	REQUIRE(ms.connect(37963, &err));
+	REQUIRE(ms.connect(t::port(37963), &err));
 	REQUIRE(t::pump_until({&host.s, &pal.s, &ms.s}, 5000, [&] { return ms.rejected || ms.welcomed; }));
 	CHECK(ms.rejected);
 	CHECK(ms.reject.reason == RejectReason::Kicked);

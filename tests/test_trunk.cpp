@@ -165,14 +165,14 @@ Writer payload(uint32_t v)
 
 TEST(trunk_hello_only_loopback_token)
 {
-	Trunk k(37201);
+	Trunk k(t::port(37201));
 	REQUIRE(k.start());
 	// a token the session did not issue
-	Node stranger("x", 37201);
+	Node stranger("x", t::port(37201));
 	stranger.cfg.hello_role = kHelloRoleMapServer;
 	stranger.cfg.hello_token = token_of(9);
 	std::string err;
-	REQUIRE(stranger.connect(37201, &err));
+	REQUIRE(stranger.connect(t::port(37201), &err));
 	const auto both = [&] {
 		k.host.s.update(t::now_ms());
 		stranger.s.update(t::now_ms());
@@ -199,14 +199,14 @@ TEST(trunk_hello_only_loopback_token)
 
 TEST(trunk_a_token_is_good_once)
 {
-	Trunk k(37202);
+	Trunk k(t::port(37202));
 	REQUIRE(k.start());
 	REQUIRE(k.connect_server());
-	Node again("x", 37202);
+	Node again("x", t::port(37202));
 	again.cfg.hello_role = kHelloRoleMapServer;
 	again.cfg.hello_token = token_of(7);
 	std::string err;
-	REQUIRE(again.connect(37202, &err));
+	REQUIRE(again.connect(t::port(37202), &err));
 	CHECK(k.pump(5000, [&] {
 		again.s.update(t::now_ms());
 		return again.rejected;
@@ -216,15 +216,15 @@ TEST(trunk_a_token_is_good_once)
 
 TEST(trunk_a_revoked_token_is_no_token)
 {
-	Trunk k(37203);
+	Trunk k(t::port(37203));
 	REQUIRE(k.start());
 	SessionSrv(k.host.s).issue_bridge(kMs, token_of(7));
 	SessionSrv(k.host.s).revoke_bridge(kMs);
-	Node late("x", 37203);
+	Node late("x", t::port(37203));
 	late.cfg.hello_role = kHelloRoleMapServer;
 	late.cfg.hello_token = token_of(7);
 	std::string err;
-	REQUIRE(late.connect(37203, &err));
+	REQUIRE(late.connect(t::port(37203), &err));
 	CHECK(k.pump(5000, [&] {
 		late.s.update(t::now_ms());
 		return late.rejected;
@@ -234,13 +234,13 @@ TEST(trunk_a_revoked_token_is_no_token)
 
 TEST(trunk_a_map_server_takes_no_player_slot)
 {
-	Trunk k(37204);
+	Trunk k(t::port(37204));
 	k.host.cfg.max_players = 2;
 	REQUIRE(k.start());
 	k.add_client("Al");
-	Node late("Bo", 37204); // the session is full ...
+	Node late("Bo", t::port(37204)); // the session is full ...
 	std::string err;
-	REQUIRE(late.connect(37204, &err));
+	REQUIRE(late.connect(t::port(37204), &err));
 	CHECK(k.pump(5000, [&] {
 		late.s.update(t::now_ms());
 		return late.rejected;
@@ -252,7 +252,7 @@ TEST(trunk_a_map_server_takes_no_player_slot)
 
 TEST(trunk_a_lost_bridge_is_told_and_a_new_process_takes_its_number)
 {
-	Trunk k(37205);
+	Trunk k(t::port(37205));
 	std::vector<PeerId> came, went;
 	SessionSrv(k.host.s).on_bridge_joined([&](PeerId id) { came.push_back(id); });
 	SessionSrv(k.host.s).on_bridge_left([&](PeerId id, const std::string&) { went.push_back(id); });
@@ -264,11 +264,11 @@ TEST(trunk_a_lost_bridge_is_told_and_a_new_process_takes_its_number)
 	CHECK(k.pump(5000, [&] { return went.size() == 1; }));
 	CHECK(SessionSrv(k.host.s).bridges().empty());
 	SessionSrv(k.host.s).issue_bridge(kMs, token_of(40));
-	Node next("ms", 37205);
+	Node next("ms", t::port(37205));
 	next.cfg.hello_role = kHelloRoleMapServer;
 	next.cfg.hello_token = token_of(40);
 	std::string err;
-	REQUIRE(next.connect(37205, &err));
+	REQUIRE(next.connect(t::port(37205), &err));
 	CHECK(k.pump(5000, [&] {
 		next.s.update(t::now_ms());
 		return next.s.is_active();
@@ -278,7 +278,7 @@ TEST(trunk_a_lost_bridge_is_told_and_a_new_process_takes_its_number)
 
 TEST(trunk_seven_map_servers_stand_beside_a_full_session)
 {
-	Trunk k(37209);
+	Trunk k(t::port(37209));
 	REQUIRE(k.start());
 
 	for (int i = 0; i < 7; ++i)
@@ -288,10 +288,10 @@ TEST(trunk_seven_map_servers_stand_beside_a_full_session)
 	for (uint32_t n = 1; n <= mapserver::kMaxBridges; ++n)
 	{
 		SessionSrv(k.host.s).issue_bridge(n, token_of(uint8_t(20 + n)));
-		servers.push_back(std::make_unique<Node>("ms", uint16_t(37209)));
+		servers.push_back(std::make_unique<Node>("ms", uint16_t(t::port(37209))));
 		servers.back()->cfg.hello_role = kHelloRoleMapServer;
 		servers.back()->cfg.hello_token = token_of(uint8_t(20 + n));
-		REQUIRE(servers.back()->connect(37209, &err));
+		REQUIRE(servers.back()->connect(t::port(37209), &err));
 	}
 	CHECK(k.pump(10000, [&] {
 		for (auto& s : servers)
@@ -307,7 +307,7 @@ TEST(trunk_seven_map_servers_stand_beside_a_full_session)
 
 TEST(trunk_only_messages_pass_from_a_bridge_and_kick_anybody_else)
 {
-	Trunk k(37206);
+	Trunk k(t::port(37206));
 	std::vector<PeerId> at_host;
 	k.host.s.on(Msg::LevelXferUp, [&at_host](PeerId from, Reader&) { at_host.push_back(from); });
 	REQUIRE(k.start());
@@ -327,7 +327,7 @@ TEST(trunk_only_messages_pass_from_a_bridge_and_kick_anybody_else)
 
 TEST(trunk_a_tunnel_from_a_player_is_refused)
 {
-	Trunk k(37207);
+	Trunk k(t::port(37207));
 	bool ran = false;
 	REQUIRE(k.start());
 	k.host.s.on(Msg::Tunnel, [&ran](PeerId, Reader&) { ran = true; });
@@ -344,7 +344,7 @@ TEST(trunk_a_tunnel_from_a_player_is_refused)
 
 TEST(trunk_a_bridge_is_not_filtered_nor_limited)
 {
-	Trunk k(37208);
+	Trunk k(t::port(37208));
 	uint32_t heard = 0;
 	k.host.s.on(Msg::LevelHash, [&heard](PeerId, Reader&) { ++heard; });
 	k.host.s.limit_rate(Msg::LevelHash, 1, 100000);
@@ -357,7 +357,7 @@ TEST(trunk_a_bridge_is_not_filtered_nor_limited)
 
 TEST(trunk_a_bridge_knows_the_players_and_the_players_do_not_know_it)
 {
-	Trunk k(37219);
+	Trunk k(t::port(37219));
 	REQUIRE(k.start());
 	REQUIRE(k.connect_server());
 	Node& a = k.add_client("Al");
@@ -370,7 +370,7 @@ TEST(trunk_a_bridge_knows_the_players_and_the_players_do_not_know_it)
 
 TEST(virtual_a_players_map_message_runs_on_the_map_server_as_his)
 {
-	Trunk k(37210);
+	Trunk k(t::port(37210));
 	std::vector<uint32_t> at_map;
 	std::vector<PeerId> from_map;
 	bool here = false;
@@ -393,7 +393,7 @@ TEST(virtual_a_players_map_message_runs_on_the_map_server_as_his)
 
 TEST(virtual_what_the_map_server_sends_reaches_the_player_from_the_host)
 {
-	Trunk k(37211);
+	Trunk k(t::port(37211));
 	REQUIRE(k.start());
 	REQUIRE(k.connect_server());
 	Node& a = k.add_client("Al");
@@ -413,7 +413,7 @@ TEST(virtual_what_the_map_server_sends_reaches_the_player_from_the_host)
 
 TEST(virtual_two_clients_on_one_level_see_each_other_through_the_map_server)
 {
-	Trunk k(37212);
+	Trunk k(t::port(37212));
 	k.map.on(Msg::PlayerShot, [&k](PeerId from, Reader& r) {
 		Writer w;
 		w.u32(r.u32());
@@ -438,7 +438,7 @@ TEST(virtual_two_clients_on_one_level_see_each_other_through_the_map_server)
 
 TEST(virtual_an_unreliable_stream_keeps_its_lane)
 {
-	Trunk k(37213);
+	Trunk k(t::port(37213));
 	REQUIRE(k.start());
 	REQUIRE(k.connect_server());
 	Node& a = k.add_client("Al");
@@ -452,7 +452,7 @@ TEST(virtual_an_unreliable_stream_keeps_its_lane)
 
 TEST(virtual_it_asks_the_world_server_as_a_client)
 {
-	Trunk k(37214);
+	Trunk k(t::port(37214));
 	std::vector<PeerId> from;
 	k.host.s.on(Msg::ReqMoney, [&from](PeerId f, Reader&) { from.push_back(f); });
 	REQUIRE(k.start());
@@ -464,7 +464,7 @@ TEST(virtual_it_asks_the_world_server_as_a_client)
 
 TEST(virtual_a_player_who_left_is_nobody_here)
 {
-	Trunk k(37215);
+	Trunk k(t::port(37215));
 	uint32_t ran = 0;
 	k.map.on(Msg::PlayerShot, [&ran](PeerId, Reader&) { ++ran; });
 	REQUIRE(k.start());
@@ -490,7 +490,7 @@ TEST(virtual_a_player_who_left_is_nobody_here)
 
 TEST(virtual_a_message_only_the_host_sends_is_ignored_and_nobody_is_kicked)
 {
-	Trunk k(37216);
+	Trunk k(t::port(37216));
 	uint32_t ran = 0;
 	k.map.on(Msg::ReqResult, [&ran](PeerId, Reader&) { ++ran; });
 	REQUIRE(k.start());
@@ -506,7 +506,7 @@ TEST(virtual_a_message_only_the_host_sends_is_ignored_and_nobody_is_kicked)
 
 TEST(virtual_the_epoch_is_the_worlds)
 {
-	Trunk k(37217);
+	Trunk k(t::port(37217));
 	k.host.s.set_world_epoch(4);
 	REQUIRE(k.start());
 	k.host.s.set_world_epoch(4);
@@ -528,7 +528,7 @@ TEST(virtual_the_epoch_is_the_worlds)
 
 TEST(virtual_a_broadcast_of_the_world_reaches_the_bridge_and_a_stream_does_not)
 {
-	Trunk k(37218);
+	Trunk k(t::port(37218));
 	uint32_t world = 0, stream = 0;
 	k.world.s.on(Msg::TimeSync, [&world](PeerId, Reader&) { ++world; });
 	k.world.s.on(Msg::EntitySnapshot, [&stream](PeerId, Reader&) { ++stream; });

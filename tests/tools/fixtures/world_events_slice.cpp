@@ -1,4 +1,5 @@
 // Run the production script event handler with in-process Lua and transport stubs.
+#include "xrCoop/coop_lua_errors.h"
 #include "xrCoop/coop_protocol.h"
 #include "xrCoop/coop_wire.h"
 

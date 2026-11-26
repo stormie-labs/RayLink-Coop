@@ -887,7 +887,6 @@ debt R1 l_zone_path
 debt R1 zone_path
 debt R1 coop_zone_path_rules
 debt R2 to_computer
-debt R2 lua_trade_computer
 debt R2 call_trade_computer
 debt R2 computer engine/src/xrCoop/coop_trade_permit.h
 debt R2 computer engine/src/xrGame/coop/coop_trade.cpp
