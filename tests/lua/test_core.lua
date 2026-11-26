@@ -117,7 +117,8 @@ local CUIScriptWnd = { OnKeyboard = function() return false end, Update = functi
 local ROUTE_RULES = { dynamic_news_manager = "host", tasks_defense = "host", tasks_pump_station_defense = "host",
 	tasks_guide = "host", operacia_monolith = "host", surge_manager = "host", tasks_skyfall = "host", game_relations = "host",
 	dialogs_bar = "host", xr_effects_lines = "host", tasks_assault = "host", game_statistics = "owner", utils_slht = "view",
-	closecaption = "view", coop_stub_line = "view", coop_core_world = "view" }
+	closecaption = "view", coop_stub_line = "view", coop_core_world_mloot = "view", coop_core_world_news = "view", coop_core_world_stash = "view",
+	coop_core_world_trader = "view" }
 local function route_of(callback, f)
 	local script = (debug.getinfo(f, "S").source or ""):lower():match("([^\\/]+)%.script$") or "?"
 	local d = ROUTE_RULES[script]
@@ -126,7 +127,8 @@ local function route_of(callback, f)
 end
 
 -- ---------------------------------------------------------------- one machine
-local SCRIPTS = { "coop_mode", "coop_hostplay_mode", "coop_srv_mode", "coop_main", "coop_core_chat", "coop_core_hud", "coop_core_player", "coop_core_world",
+local SCRIPTS = { "coop_util", "coop_hud_kit", "coop_hud_hold", "coop_mode", "coop_hostplay_mode", "coop_srv_mode", "coop_main", "coop_world_events", "coop_env", "coop_core_chat", "coop_core_hud", "coop_core_player",
+	"coop_core_world_mloot", "coop_core_world_news", "coop_core_world_stash", "coop_core_world_trader", "coop_trust",
 	"coop_allies", "coop_allies_map", "modxml_coop_allies", "coop_hud_layout" }
 
 local function machine(role, peer, nick, opts)
@@ -398,7 +400,7 @@ local function machine(role, peer, nick, opts)
 		is_live = function() return M.active ~= false end,
 		self_id = function() return peer end,
 		players = function() return M.players end,
-		route = { of = route_of },
+		route = { of = function(...) M.routed = (M.routed or 0) + 1 return route_of(...) end, rule_of = route_of },
 		avatar_of = function(p)
 			for _, x in ipairs(M.players) do if x.id == p then return x.avatar_id end end
 		end,
@@ -438,7 +440,25 @@ local function machine(role, peer, nick, opts)
 	}
 
 	-- stock news scripts (stand-ins with the stock call flow); some copy send_tip into a local when they load
-	env.coop_route = { handler_domain = function(f) return M.handlers[f] end }
+	-- the router as coop_main uses it, without axr_main's callback table: declare adds a callback, nothing is wrapped
+	-- every keeps a tick for run_ticks below (the router's tick service), one entry per function
+	M.ticks = {}
+	env.coop_route = { handler_domain = function(f) return M.handlers[f] end,
+		every = function(ms, fn)
+			for _, e in ipairs(M.ticks) do
+				if e.fn == fn then
+					e.ms = ms
+					return true
+				end
+			end
+			M.ticks[#M.ticks + 1] = { fn = fn, ms = ms, due = 0 }
+			return true
+		end,
+		declare = function(name)
+			local add = rawget(env, "AddScriptCallback")
+			if type(add) == "function" then add(name) end
+		end,
+		intercepts = function() end, wrapper_of = function() end, script_of = function() return "?" end }
 	local NEWS_STOCK = dofile("tests/lua/fixtures/news_stock.lua")
 	local function load_stock(name, as_script)
 		local mod = setmetatable({}, { __index = env })
@@ -479,12 +499,12 @@ local function machine(role, peer, nick, opts)
 	end
 	load_stock("news_manager_lines", "news_manager")
 	load_stock("game_statistics_lines", "game_statistics")
-	if opts.gamma then -- loaded after coop_core_world, alphabetically
+	if opts.gamma then -- loaded after coop_core_world_news, alphabetically
 		load_stock("dynamic_news_manager_patch_dmg")
 		load_stock("zzz_tasks_guide")
 	end
-	M.main, M.chat, M.hud_m, M.player, M.world =
-		env.coop_main, env.coop_core_chat, env.coop_core_hud, env.coop_core_player, env.coop_core_world
+	M.main, M.chat, M.hud_m, M.player, M.news, M.mloot =
+		env.coop_main, env.coop_core_chat, env.coop_core_hud, env.coop_core_player, env.coop_core_world_news, env.coop_core_world_mloot
 	return M
 end
 
@@ -497,8 +517,20 @@ local function start(M)
 	MACHINES[#MACHINES + 1] = M
 end
 
+-- coop_route's tick service as the game runs it: one actor_on_update handler, registered after the core group's (the
+-- router's on_game_start comes after theirs), calls each tick that is due
+local function run_ticks(M)
+	for _, e in ipairs(M.ticks) do
+		if NOW >= e.due then
+			e.due = NOW + e.ms
+			e.fn()
+		end
+	end
+end
+
 local function fire(M, name, ...)
 	for _, f in ipairs(M.cb[name] or {}) do f(...) end
+	if name == "actor_on_update" then run_ticks(M) end
 end
 
 local function pump()
@@ -666,7 +698,7 @@ tick(600)
 check(C.ui_reg.UICoopChat == nil, "W8: stale chat UI registration removed on the next tick")
 -- feed
 local feed
-for wd in pairs(C.hud) do if wd.rows and not wd.cards then feed = wd end end
+for wd in pairs(C.hud) do if wd.rows and not wd.team_panel then feed = wd end end
 check(feed ~= nil, "chat feed on the HUD")
 feed.next_at = 0
 tick(0)
@@ -953,17 +985,14 @@ check(#(C.cb.on_before_save_input or {}) == 0 and #(C.cb.on_before_load_input or
 	"the core scripts register no save or load gate on the client")
 check(#(H.cb.on_before_save_input or {}) == 0 and #(H.cb.on_before_load_input or {}) == 0,
 	"nor on the host")
--- transition vote
+-- /go: the engine's accept command at once; the group's move and its fade are the engine's (coop_hud_transition)
 print("== level move")
-H.main.on_transition_vote("bob")
-check(has(H.news, "st_coop_core_vote"), "host told about the vote")
 local nconsole = #H.console
-H.player.accept_transition()
+check(H.player.accept_transition() == true, "the host accepts /go")
+check(#H.console == nconsole + 1 and H.console[#H.console] == "coop_accept_transition", "... the engine's accept command runs at once")
 pump()
-check(C.fade == "sleep_fade.ppe" and has(C.msgs, "st_coop_core_moving"), "client fades before the move")
-check(#H.console == nconsole, "accept waits a moment")
-tick(1000)
-check(H.console[#H.console] == "coop_accept_transition", "then the host accepts")
+check(C.fade == nil and not has(C.msgs, "st_coop_core_moving"), "nothing is sent to the client for it")
+check(C.player.accept_transition() == false, "a client cannot accept the move of the group")
 
 -- ================================================================ news
 print("== news")
@@ -1166,6 +1195,7 @@ check(#C.tips == nshown, "only the host, only known kinds, bounded text, complet
 tick(11000)
 local players = H.players
 H.players = { { id = 0, nick = "hosty", avatar_id = 0, rtt = 0, is_self = true } }
+tick(1) -- the next frame: the player list is read once per frame (coop_util.players)
 local q0 = #QUEUE
 hi:GossipWeather()
 hi:TickNews()
@@ -1203,9 +1233,63 @@ check(count_log(H, "news sent (dyn): gossip: rain") >= 1 and count_log(H, "news 
 check(count_log(H, "news relay: senders wrapped, DynamicNewsManager partly patched (11/16 methods), world aliases handed over 3") == 1
 	and count_log(H, "! news: DynamicNewsManager.GossipAlphaSquad not patched") == 1,
 	"the install report: senders, the 11 methods the stand-in has (of 16), 3 aliases; a missing method is named")
-H.world.print_status()
-C.world.print_status()
+check(H.routed == nil and C.routed == nil, "the news ask the router about scripts and route no handler (route.rule_of, not route.of)")
+H.news.print_status()
+C.news.print_status()
 check(count_log(H, "world: news out ") == 1 and count_log(C, "world: news out ") == 1, "print_status works on both sides")
+
+-- coop_status prints the core group's lines in one order, whatever order the scripts start in: the trust checks, the chat,
+-- the HUD, the player, then the world's news, mutant loot, stashes and traders
+do
+	local HEADS = { "[coop-trust] ", "[coop-chat] chat: ", "[coop-hud] hud: ", "[coop-player] player: ",
+		"[coop-world] world: news out ", "[coop-world] world: mutant loot: requests ", "[coop-world] world: stashes found ",
+		"[coop-world] world: traders: asked " }
+	local from = #H.log
+	H.main.print_status()
+	local at, times = {}, {}
+	for i = from + 1, #H.log do
+		for k, head in ipairs(HEADS) do
+			if H.log[i]:sub(1, #head) == head then
+				at[k] = at[k] or (i - from)
+				times[k] = (times[k] or 0) + 1
+			end
+		end
+	end
+	local in_order, once, seen = true, true, {}
+	for k = 1, #HEADS do
+		in_order = in_order and at[k] ~= nil and (k == 1 or (at[k - 1] ~= nil and at[k - 1] < at[k]))
+		once = once and (k < 5 or times[k] == 1)
+		seen[k] = tostring(at[k])
+	end
+	check(in_order, "coop_status: trust, chat, hud, player, then the world's news, mutant loot, stashes, traders (lines "
+		.. table.concat(seen, ", ") .. ")")
+	check(once, "coop_status: each of the four world lines once")
+end
+
+-- one actor_on_update registration for the world scripts (the mutant loot's); the news tick is the tick service's
+do
+	local function written_in(f, script)
+		local src = type(f) == "function" and debug.getinfo(f, "S").source or ""
+		return src:lower():match("([^\\/]+)%.script$") == script
+	end
+	local own = {}
+	for _, f in ipairs(H.cb.actor_on_update or {}) do
+		for _, part in ipairs({ "mloot", "news", "stash", "trader" }) do
+			if written_in(f, "coop_core_world_" .. part) then own[part] = (own[part] or 0) + 1 end
+		end
+	end
+	-- the tick service carries other scripts' ticks too (the emission's): the world scripts have this one
+	local ticks, world_ticks = 0, 0
+	for _, e in ipairs(H.ticks) do
+		if written_in(e.fn, "coop_core_world_news") and e.ms == 500 then ticks = ticks + 1 end
+		for _, part in ipairs({ "mloot", "news", "stash", "trader" }) do
+			if written_in(e.fn, "coop_core_world_" .. part) then world_ticks = world_ticks + 1 end
+		end
+	end
+	check(own.mloot == 1 and own.news == nil and own.stash == nil and own.trader == nil,
+		"the world scripts register one actor_on_update, the mutant loot's")
+	check(ticks == 1 and world_ticks == 1, "the news tick is the router's, every 500 ms")
+end
 
 -- no session: the stock behaviour, nothing sent
 H.active = false
@@ -1432,7 +1516,7 @@ pump()
 check(has(H.tips, "cs_task1_news") and has(C.tips, "cs_task1_news"), "the host's own identity changes nothing")
 fresh()
 H.env.coop_npc_players.peer_of = function() return 1 end
-H.world.in_world_scope(H.env.operacia_monolith.actor_on_update)
+H.news.in_world_scope(H.env.operacia_monolith.actor_on_update)
 pump()
 check(has(H.tips, "cs_task1_news") and has(C.tips, "cs_task1_news"), "a world scope is world under an identity too")
 fresh()
@@ -1543,7 +1627,7 @@ H.se["700looted"] = false
 H.main.on_event("core.mloot_open", H.main.encode({ id = 700 }), 2)
 QUEUE = {}
 check(H.se["700looted"] == true, "player 2 holds it")
-H.world.on_peer_left(2)
+H.mloot.on_peer_left(2)
 check(H.se["700looted"] == false, "lock released when the player left")
 pump()
 

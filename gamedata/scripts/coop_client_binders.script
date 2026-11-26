@@ -1,38 +1,49 @@
+-- Ядро: без проверок режима (docs/MODES.md)
 --[[
-	Anomaly Coop - object binders on a co-op CLIENT, Lua half (gamedata\scripts\coop_client_binders.script; W10, F2 T11)
+	Anomaly Coop - object binders on a co-op CLIENT, Lua half (gamedata\scripts\coop_client_binders.script)
+
+	"A client" here is a process of a session whose world another process decides (coop_util.follows_world): a player's
+	machine, or a map server. A map server computes its level, so what "a client does not do" holds only on a player's
+	machine (coop_mode.is_player_mirror); the guards hold on both.
 
 	Background. The engine suspends only the binders of remote CREATURES (C++ coop_remote::suspend_binder, update only).
 	Every other object binder (a Lua class derived from object_binder) runs on a client exactly as in single player, and
 	the callback router of coop_route covers callbacks (RegisterScriptCallback / AddUniqueCall / CreateTimeEvent), not
 	binder methods. A binder that does world work then runs on the client against a frozen ALife mirror: alife():create /
 	alife_create_item / SIMBOARD:create_squad answer nil there (the host creates world objects) and the stock code
-	indexes the answer -> a Lua error inside a binder method is FATAL (live case 2026-10-20: smart_terrain_binder:update
-	-> create_squad, patched in coop_main).
+	indexes the answer -> a Lua error inside a binder method is FATAL (smart_terrain_binder:update -> create_squad).
 
-	F2 T11 moved the one thing the ENGINE can decide to the engine: CScriptBinder (script_binder.cpp) asks the binder router
+	The one thing the ENGINE can decide is the engine's: CScriptBinder (script_binder.cpp) asks the binder router
 	(coop_router.cpp) before every call, keyed by the object's script_binding, and configs\coop_route_binders.ltx
 	[binder_host] lists the methods a client does not call (faction, camp and heli update). Nothing about those is here.
 
-	Ruling F2-35: everything that must survive a Lua error is HERE. The Release engine has no C++ exceptions, a Lua error
-	in a luabind call ends in Debug.fatal, so the only way to keep a client alive is a Lua pcall around the method (the
-	first T11 version swapped luabind's global callbacks from C++; the review found it unsafe and too wide).
+	Everything that must survive a Lua error is HERE. The Release engine has no C++ exceptions, a Lua error in a luabind
+	call ends in Debug.fatal, so the only way to keep a client alive is a Lua pcall around the method (swapping luabind's
+	global callbacks from C++ would be unsafe and too wide).
+
+	Smart terrains (built in below, not in the ltx): the online binder runs the server object's update every tick (jobs,
+	respawn -> SIMBOARD:create_squad). On a player's mirror that is world simulation: alife():create is refused there
+	(nil) and the stock sim_board.create_squad indexes the result -> FATAL in a binder update, so a mirror runs only
+	object_binder.update. A map server runs the jobs of its level's smarts (the NPCs there are its own), but who respawns
+	where stays the world's: its offline world creates the squads, and they come over through the transfers.
 
 	What this script reads: the Lua sections of the same configs\coop_route_binders.ltx, `script.class = method, method`
-	(client only; nothing on the host, in single player or on an exe without co-op - the patches are installed from
-	coop_main.install_client_patches and every wrapper asks coop.is_client() again):
-		[binder_lua_skip]   the method returns at once on a client: methods other Lua code calls
+	(for a client; nothing in single player or on an exe without co-op. coop_main installs the patches where
+	coop_util.follows_world() holds when it asks, and every wrapper asks the role again when it is called: on a process that
+	decides the world a patch is the stock method):
+		[binder_lua_skip]   the method returns at once on a player's machine: methods other Lua code calls
 		                    (anomaly_zone_binder:spawn_artefact_randomly / turn_off - artefact spawn and release;
 		                    xr_box ph_item_box:spawn_items - box loot, called from generic_physics_binder death).
-		[binder_lua_fix]    a preparation built in below (FIXES) runs first, then the stock method:
+		[binder_lua_fix]    a preparation built in below (FIXES) runs first on a player's machine, then the stock method:
 		                    crow_binder:update does not try to release a dead crow (the host does).
 		[binder_lua_guard]  the method runs in pcall: a Lua error is logged and counted (coop_status) instead of FATAL, like
-		                    owner/view callbacks (R-11.4). The update of the 15 binders that keep running on a client (actor,
+		                    owner/view callbacks. The update of the 15 binders that keep running on a client (actor,
 		                    restrictor, physic object, car, container, crow, doors, bridge, lights, dynamo, items, artefacts,
 		                    devices) and the death, hit and use callbacks of the creature binders: the engine reaches those
 		                    through set_callback, not through the binder, and does not catch their errors in Release
 		                    (script_callback_ex.h process_error is empty without XRAY_EXCEPTIONS). Applied after the fix,
 		                    so the crow's fix runs inside its guard.
-	Left alone (verdicts in the vault note W10 client binders): smart_terrain_binder (coop_main), restrictor_binder logic
+	Left alone: restrictor_binder logic
 	(coop_npc_logic), campfires and anomaly fields (coop_objects ZoneState + coop_npc_world), creature binders (C++
 	suspend), visual/local ones (lights, doors, bridge, flare, dynamo, level changer, smart cover).
 
@@ -47,9 +58,8 @@
 	methods go to [binder_host] of its coop_compat_<mod>.ltx instead). Absent scripts/classes are skipped silently (listed
 	in coop_status).
 
-	API: install() -> number of patches, idempotent, client only; print_status() (hooked into coop_main's
-	coop_status by install(); STATUS_MODULES would also do, the lines are printed once). The engine's half is in
-	coop_status too: the `[coop] binders` lines.
+	API: install() -> number of patches, idempotent, client only; print_status() (in coop_status once install() ran).
+	The engine's half is in coop_status too: the `[coop] binders` lines.
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
@@ -58,26 +68,14 @@ local tostring, type, pairs, ipairs, pcall = tostring, type, pairs, ipairs, pcal
 
 local INI = "coop_route_binders.ltx"
 
-local function log(fmt, ...)
-	local ok, line = pcall(string.format, fmt, ...)
-	printf("[coop-binders] %s", ok and line or tostring(fmt))
-end
-
-local function on_client()
-	return api ~= nil and api.is_client()
-end
-
--- F3a: a map server computes its level: what "a client does not do" does not hold for it, the guards do.
-local function on_mirror()
-	return on_client() and (api.is_mirror == nil or api.is_mirror())
-end
+local log = coop_util.logger("[coop-binders]")
 
 -------------------------------------------------------------------------------
 -- Policy: the Lua sections of the ltx
 -------------------------------------------------------------------------------
 -- section of the ltx -> kind of the patch
---   noop    the method returns at once on a client
---   pre     FIXES[label](self) runs first on a client, then the stock method
+--   noop    the method returns at once on a player's machine
+--   pre     FIXES[label](self) runs first on a player's machine, then the stock method
 --   guard   the stock method runs in pcall on a client
 local SECTIONS = {
 	{ "binder_lua_skip", "noop" },
@@ -95,14 +93,12 @@ local FIXES = {
 -- State
 -------------------------------------------------------------------------------
 local installed = false
-local status_hooked = false
 local applied = {} -- { label, kind }
 local absent = {} -- "script.class" of classes that are not there (mods) or have no such method
 local absent_seen = {}
 local skipped = {} -- label -> client calls that did not reach the stock method
 local errors = {} -- label -> Lua errors caught by a guard
 local total_errors = 0
-local in_status_hook, printed_in_hook = false, false
 
 local function note_error(label, err)
 	local n = (errors[label] or 0) + 1
@@ -116,12 +112,12 @@ local function note_error(label, err)
 end
 
 -------------------------------------------------------------------------------
--- Wrappers (each asks coop.is_client() at call time: a session that ended leaves the stock behaviour)
+-- Wrappers (each asks the role at call time: a session that ended leaves the stock behaviour)
 -------------------------------------------------------------------------------
 local function make_noop(label)
 	return function(orig)
 		return function(self, ...)
-			if on_mirror() then
+			if coop_mode.is_player_mirror() then
 				skipped[label] = (skipped[label] or 0) + 1
 				return
 			end
@@ -134,7 +130,7 @@ local function make_pre(_, entry)
 	local pre = entry.pre
 	return function(orig)
 		return function(self, ...)
-			if on_mirror() then pre(self) end
+			if coop_mode.is_player_mirror() then pre(self) end
 			return orig(self, ...)
 		end
 	end
@@ -143,7 +139,7 @@ end
 local function make_guard(label)
 	return function(orig)
 		return function(self, ...)
-			if not on_client() then return orig(self, ...) end
+			if not coop_util.follows_world() then return orig(self, ...) end
 			local ok, err = pcall(orig, self, ...)
 			if not ok then note_error(label, err) end
 		end
@@ -157,22 +153,11 @@ local MAKERS = {
 }
 
 -------------------------------------------------------------------------------
--- Lookup (a missing script answers nil silently: the engine's auto-load is process_file_if_exists)
+-- Lookup (a missing script answers nil silently)
 -------------------------------------------------------------------------------
-local function module_of(name)
-	local m = rawget(_G, name)
-	if m == nil then
-		local ok, r = pcall(function() return _G[name] end)
-		m = ok and r or nil
-	end
-	local t = type(m)
-	if t == "table" or t == "userdata" then return m end
-	return nil
-end
-
 -- A luabind class is userdata, a stub class is a table.
 local function class_of(script, class)
-	local m = module_of(script)
+	local m = coop_util.module(script)
 	if not m then return nil end
 	local ok, c = pcall(function() return m[class] end)
 	if not ok then return nil end
@@ -278,8 +263,7 @@ end
 -- Status (coop_status)
 -------------------------------------------------------------------------------
 function print_status()
-	if in_status_hook then printed_in_hook = true end
-	local role = not api and "no engine API" or api.is_host() and "host" or api.is_client() and "client" or "off"
+	local role = not api and "no engine API" or coop_util.follows_world() and "client" or coop_util.active() and "host" or "off"
 	local counts = {}
 	for _, a in ipairs(applied) do counts[a.kind] = (counts[a.kind] or 0) + 1 end
 	local total_skipped = 0
@@ -295,20 +279,30 @@ function print_status()
 	if #absent > 0 then log("  not present (mods absent or no such method): %s", table.concat(absent, ", ")) end
 end
 
--- coop_main.print_status lists fixed modules: add this one without touching that file (printed once).
-local function hook_status()
-	if status_hooked then return end
-	local cm = module_of("coop_main")
-	local prev = cm and cm.print_status
-	if type(prev) ~= "function" then return end
-	status_hooked = true
-	cm.print_status = function(...)
-		in_status_hook, printed_in_hook = true, false
-		local ok, err = pcall(prev, ...)
-		in_status_hook = false
-		if not printed_in_hook then pcall(print_status) end
-		if not ok then error(err, 0) end
+-------------------------------------------------------------------------------
+-- Smart terrains
+-------------------------------------------------------------------------------
+local function patch_smart_terrain_binder()
+	local m = bind_smart_terrain
+	local cls = m and m.smart_terrain_binder
+	if not (cls and type(cls.update) == "function") then return end
+	local orig = cls.update
+	cls.update = function(self, delta)
+		if coop_mode.is_player_mirror() then
+			object_binder.update(self, delta)
+			return
+		end
+		return orig(self, delta)
 	end
+	local se = smart_terrain and smart_terrain.se_smart_terrain
+	if se and type(se.try_respawn) == "function" then
+		local orig_respawn = se.try_respawn
+		se.try_respawn = function(self, ...)
+			if coop_mode.leads_for_world_elsewhere() then return end
+			return orig_respawn(self, ...)
+		end
+	end
+	log("smart terrain binder: the world update (jobs, respawn) runs on the host only")
 end
 
 -------------------------------------------------------------------------------
@@ -316,8 +310,11 @@ end
 -------------------------------------------------------------------------------
 function install()
 	if installed then return #applied end
-	if not on_client() then return 0 end -- host, single player, exe without co-op: stock behaviour
+	if not coop_util.follows_world() then return 0 end -- host, single player, exe without co-op: stock behaviour
 	installed = true
+
+	local ok_st, err_st = pcall(patch_smart_terrain_binder)
+	if not ok_st then coop_main.report_error("coop_client_binders", "smart terrain patch", err_st) end
 
 	local entries, seen = {}, {}
 	ltx_entries(entries)
@@ -330,7 +327,7 @@ function install()
 			if not ok then log("! %s.%s:%s: %s", e.script, e.class, e.method, tostring(err)) end
 		end
 	end
-	hook_status()
+	coop_util.add_status("coop_client_binders", 250)
 	log("client: %d binder patch(es) installed, %d class(es)/method(s) not present", #applied, #absent)
 	return #applied
 end

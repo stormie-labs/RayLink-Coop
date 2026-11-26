@@ -3,7 +3,8 @@ local modes = dofile("tests/lua/support/modes.lua")
 local open_maps = { l01_escape = true, l02_garbage = true }
 local warning_verb = "mods.preblowout_warning"
 
-local function start(role, map, mirror, install_news)
+-- prepare(sm): the surge manager and its script as this case has them, before the co-op scripts start
+local function start(role, map, mirror, install_news, prepare)
 	local passed, failed = PASSES or 0, FAILS or 0
 	MODE = (mirror or role == "srv_map") and "client" or "host"
 	dofile("tests/lua/support/stubs.lua")
@@ -62,6 +63,7 @@ local function start(role, map, mirror, install_news)
 	surge_manager.play_sound_radius = function(sound, radius, low, high)
 		fx.crow[#fx.crow + 1] = { sound = sound, x = db.actor:position().x, radius = radius, low = low, high = high }
 	end
+	if prepare then prepare(sm) end
 
 	local pda = { charged = mirror == true, displayed = {} }
 	item_device = { is_pda_charged = function() return pda.charged end }
@@ -104,8 +106,12 @@ local function start(role, map, mirror, install_news)
 	}
 	modes.install(coop_mode, role, overrides)
 	coop_main.on_game_start()
+	coop_env.on_game_start()
+	coop_route.on_game_start() -- the tick service runs the emission tick
+	load_script_file("coop_mods_preblowout").on_game_start()
 	load_script_file("coop_srv_world").on_game_start()
-	load_script_file("coop_core_world").on_game_start()
+	load_script_file("coop_trust")
+	load_script_file("coop_core_world_news").on_game_start()
 	return sm, fx, news, pda
 end
 
@@ -405,11 +411,14 @@ local function validation_cases(role)
 	local valid_warning = coop_main.encode({ cycle = cycle, stage = 1 })
 	local function audit()
 		local refused = 0
-		coop_trust = { pass = function(_, ok, fmt)
+		local function count(ok, fmt)
 			assert(type(fmt) == "string")
 			if not ok then refused = refused + 1 end
-			return true -- trust log mode
-		end }
+		end
+		coop_trust = {
+			pass = function(_, ok, fmt) count(ok, fmt) return true end, -- trust log mode
+			guard = function(_, ok, fmt) count(ok, fmt) return ok == true end, -- dropped in every mode
+		}
 		return function() return refused end
 	end
 	for _, row in ipairs({
@@ -448,7 +457,7 @@ local function validation_cases(role)
 	if role == "srv_map" then
 		start("srv_world", "fake_start")
 		local refused = audit()
-		local ingress = coop_main.allow_world_event or function() return true end
+		local ingress = coop_world_events.allows
 		check(not ingress(warning_verb, 0x101) and not ingress("coop_env", 0x101) and refused() == 2,
 			"m25:2 ingress contract rejects and audits raw bridge origin before it can become peer zero")
 		check(ingress(warning_verb, 0) and ingress("coop_env", 0) and ingress("coop_env_cover", 0x101),
@@ -525,8 +534,89 @@ local function flat_host_queue_cases()
 	end
 end
 
+-- The adapter and the mod's script. The mod replaces the stock surge_manager, so the script is always there:
+--   the mod as it is      the crow sounds and play_sound_radius (every case above)
+--   the mod changed       the crow sounds without play_sound_radius: what needs only the sounds still applies (the mirror
+--                         fixes), and the adapter says once, in the log and in coop_status, that it did not attach
+--   the stock script      neither: nothing applies and nothing is said
+-- The warning is the world's word in every one of them.
+local MISS = "no function play_sound_radius, the adapter did not attach (preblowout.play_sound_radius)"
+
+local function said(text)
+	local n = 0
+	for _, line in ipairs(LOG) do
+		if line:find(text, 1, true) then n = n + 1 end
+	end
+	return n
+end
+
+local function changed_mod(sm)
+	surge_manager.play_sound_radius = nil
+	surge_manager.SurgeManager = sm -- the script's own variable, as get_surge_manager leaves it
+end
+
+local function stock_script(sm)
+	changed_mod(sm)
+	sm.blowout_sounds = { siren = "siren" }
+end
+
+-- A mirror that takes up an emission 130 stock seconds in, as a load after the second wave's sound does.
+local function take_up_emission(sm)
+	sm.started, sm.finished, sm.blowout_sound, sm.effector_set, sm.task_given = true, false, true, true, true
+	sm.stages = {}
+	phase(true, 130)
+	tick()
+end
+
+local function attachment_cases(mode, mirror_role)
+	local map = mode == "hostplay" and "l01_escape" or "fake_start"
+
+	local sm, fx = start(mirror_role, "l01_escape", true, nil, changed_mod)
+	check(coop_world_events.allows(warning_verb, 9) == false and coop_world_events.allows(warning_verb, 0) == true,
+		"the mod changed: the warning is still the world's word alone")
+	take_up_emission(sm)
+	check(fx.shock_factor == 0.3 and fx.rumble_volume == 1,
+		"the mod changed: a mirror with the crow sounds still gets the held psychic strength and the rumble's volume")
+	check(said(MISS) == 1, "the mod changed: a player's machine says that the adapter did not attach")
+	receive({ name = warning_verb, payload = coop_main.encode({ stage = 1, cycle = "2012-7-3T0:0:0.0/1000" }) })
+	phase(false, 0)
+	tick()
+	tick()
+	check(#fx.crow == 0 and said(MISS) == 1 and said("lua error") == 0, "the mod changed: no warning plays, nothing raises, one line")
+	LOG = {}
+	coop_mods_core.print_status()
+	check(said(MISS) == 1, "the mod changed: coop_status repeats the line")
+
+	sm, fx = start(mode, map, false, nil, changed_mod)
+	sm.last_surge_time, sm._delta = game.get_game_time(), 1000
+	for _, remaining in ipairs({ 355, 295 }) do
+		GAME_MS = (2000 - remaining) * 1000
+		tick()
+	end
+	check(#capture(warning_verb) == 0 and said(MISS) == 1, "the mod changed: the world publishes no warning and says so once")
+
+	sm, fx = start(mirror_role, "l01_escape", true, nil, stock_script)
+	check(coop_world_events.allows(warning_verb, 9) == false, "the stock script: the warning is still the world's word alone")
+	take_up_emission(sm)
+	check(fx.shock_factor == 0 and fx.rumble_volume == 0.25, "the stock script: the mirror is left as the stock plays it")
+	check(said(MISS) == 0, "the stock script: the mod is not installed, nothing is said")
+	sm, fx = start(mode, map, false, nil, stock_script)
+	sm.last_surge_time, sm._delta = game.get_game_time(), 1000
+	GAME_MS = (2000 - 355) * 1000
+	tick()
+	check(#capture(warning_verb) == 0 and said(MISS) == 0, "the stock script: the world publishes nothing and says nothing")
+
+	sm, fx = start(mirror_role, "l01_escape", true, nil, function(m) surge_manager.SurgeManager = m end)
+	take_up_emission(sm)
+	LOG = {}
+	coop_mods_core.print_status()
+	check(fx.shock_factor == 0.3 and said(MISS) == 0 and said("preblowout.play_sound_radius") == 1,
+		"the mod as it is: attached, listed once in coop_status")
+end
+
 for _, mode in ipairs(modes.names()) do
 	if mode == "hostplay" or mode == "srv_world" then
+		attachment_cases(mode, mode == "hostplay" and "hostplay" or "srv_map")
 		local warnings, news = authority_cases(mode)
 		local mirror_role = mode == "hostplay" and "hostplay" or "srv_map"
 		mirror_cases(mirror_role, "l01_escape", warnings, news)

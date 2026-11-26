@@ -1,0 +1,145 @@
+-- Ядро: без проверок режима (docs/MODES.md)
+--[[
+	Anomaly Coop - Preblowout Murder (its surge_manager.script) in a session (gamedata\scripts\coop_mods_preblowout.script)
+
+	The warning: the mod plays five pairs of crow sounds around the actor in the six minutes before an emission, from its
+	own schedule (_delta since last_surge_time). Only the process that decides the world has that schedule, so it says which
+	pair is due (mods.preblowout_warning, once a second while one is), even to a player who joins late, and every player
+	places that pair around his own actor with the mod's play_sound_radius.
+
+	The mirror (coop_env): a player's mirror that takes up a running emission sets what the mod's update would have set by
+	then: the last psychic strength held between the waves, the rumble stopped after the end, and the rumble's volume
+	brought back while it plays.
+
+	Joins coop_env through its hooks. The mod replaces the stock surge_manager script, so that script is always there: the
+	mod is told by the crow sounds its manager carries, and each part asks for what it needs when it runs. A manager with
+	the crow sounds in a script without play_sound_radius is the mod changed: the adapter says so through
+	coop_mods_core.wrap, in the log and in coop_status. The stock script has neither, and nothing here does anything.
+--]]
+
+local core = coop_mods_core
+
+local VERB = "preblowout_warning"
+local EVENT = "mods.preblowout_warning" -- the verb as coop_mods_core sends it
+local PLAY = "play_sound_radius" -- the mod's function that places a sound around the actor
+
+-- The mod's five sound pairs, 60 in-game seconds apart: the two sounds and the angle range around the actor.
+local CROW_WARNING = {
+	{ "crow5", "crow4", 140, 220 }, { "crow3", "crow2", 100, 260 }, { "crow1", "crow0", 0, 360 },
+	{ "crow2", "crow3", 280, 440 }, { "crow4", "crow5", 320, 400 },
+}
+
+local warning_next = 0 -- the world: the next publish
+local warning = nil -- a player: the pair the world says is due now, { cycle, stage, at }
+local warning_played = nil -- a player: the last pair played
+local restore_rumble = false -- a player's mirror took up an emission while its rumble plays
+
+-------------------------------------------------------------------------------
+-- The attachment point
+-------------------------------------------------------------------------------
+local function has_crow_sounds(sm)
+	return (sm.blowout_sounds and sm.blowout_sounds.crow0) and true or false
+end
+
+local function keep(orig) return orig end -- the adapter calls the mod's function, it does not change it
+
+-- Looked at once per Lua state, when the surge manager is first there: the one a hook was handed, else the script's own
+-- variable SurgeManager, read as it is (get_surge_manager() would create the manager).
+local attach_looked = false
+
+local function attach(sm)
+	if attach_looked then return end
+	local mod = core.mod("surge_manager")
+	sm = sm or (mod and mod.SurgeManager)
+	if not (mod and sm) then return end
+	attach_looked = true
+	if not has_crow_sounds(sm) then return end -- the stock script: the mod is not installed
+	-- nothing more on a miss: the warning asks for the function each time it needs it
+	core.wrap(mod, PLAY, "preblowout." .. PLAY, keep)
+end
+
+-------------------------------------------------------------------------------
+-- The warning
+-------------------------------------------------------------------------------
+-- The world: the pair that is due now, once a second.
+local function publish_warning(tg)
+	if tg < warning_next then return end
+	warning_next = tg + 1000
+	attach()
+	local mod = core.mod("surge_manager")
+	if not (mod and mod[PLAY] and coop_util.option("alife/event/emission_state", true)) then return end
+	local sm = mod.get_surge_manager and mod.get_surge_manager()
+	if not (sm and sm._state_loaded and not sm.started and not sm.time_forwarded and sm.last_surge_time
+		and type(sm._delta) == "number" and has_crow_sounds(sm)) then return end
+	local now = game.get_game_time()
+	local remaining = sm._delta - now:diffSec(sm.last_surge_time)
+	if remaining <= 0 or remaining >= 360 then return end
+	local stage = math.min(#CROW_WARNING, math.ceil((360 - remaining) / 60))
+	-- The saved schedule identifies the warning across a restart of the world's Lua state.
+	local y, mo, d, h, mi, s, ms = sm.last_surge_time:get(0, 0, 0, 0, 0, 0, 0)
+	local cycle = string.format("%d-%d-%dT%d:%d:%d.%d/%d", y, mo, d, h, mi, s, ms, sm._delta)
+	core.publish(VERB, { cycle = cycle, stage = stage })
+end
+
+local function on_warning(payload)
+	if not coop_trust.guard("env_warning_size", type(payload) == "string" and #payload <= 96,
+		"invalid crow warning packet size") then return end
+	local t = coop_main.decode(payload)
+	local valid = coop_util.in_range(t.stage, 1, #CROW_WARNING) and t.stage % 1 == 0
+		and type(t.cycle) == "string" and #t.cycle <= 48
+		and t.cycle:match("^%d%d%d%d%-%d%d?%-%d%d?T%d%d?:%d%d?:%d%d?%.%d%d?%d?/%d+$") ~= nil
+		and coop_main.encode({ cycle = t.cycle, stage = t.stage }) == payload
+	if not coop_trust.guard("env_warning_payload", valid, "invalid crow warning fields") then return end
+	if not coop_mode.is_player_mirror() then return end
+	warning = { cycle = t.cycle, stage = t.stage, at = time_global() }
+end
+
+-- A player: the pair the world said is due, once per pair of a cycle, while no emission runs here.
+local function play_warning(tg)
+	attach()
+	local w = warning
+	if not w or not db.actor then return end
+	warning = nil
+	if coop_env.mirrors_surge() or tg - w.at > 2000 or not coop_env.reaches_here() then return end
+	local levels = level_weathers and level_weathers.valid_levels
+	if levels and levels[level.name()] ~= true then return end
+	local played = warning_played
+	if played and played.cycle == w.cycle and played.stage >= w.stage then return end
+	local mod = core.mod("surge_manager")
+	local sm = mod and mod.get_surge_manager and mod.get_surge_manager()
+	local sounds = sm and sm.blowout_sounds
+	local stage = CROW_WARNING[w.stage]
+	if not (mod and mod[PLAY] and sounds and sounds[stage[1]] and sounds[stage[2]]) then return end
+	warning_played = w
+	mod[PLAY](sounds[stage[1]], 1000, stage[3], stage[4])
+	mod[PLAY](sounds[stage[2]], 1000, stage[3], stage[4])
+end
+
+-------------------------------------------------------------------------------
+-- The mirror
+-------------------------------------------------------------------------------
+local function surge_enter(sm, sec)
+	attach(sm)
+	restore_rumble = false
+	if not has_crow_sounds(sm) then return end
+	if sec >= 120 and sec < 210 then sm.hitFactor = 0.3 end
+	if sec >= 214 then sm.stages.rumble = false end
+	restore_rumble = sec > 75 and sec < 200
+end
+
+local function surge_entered(sm)
+	if restore_rumble and sm.blowout_sound then
+		xr_sound.set_volume_sound_looped(AC_ID, "blowout_rumble", 1)
+	end
+	restore_rumble = false
+end
+
+function on_game_start()
+	if not rawget(_G, "coop") then return end
+	coop_world_events.reserve(EVENT)
+	coop_main.add_event_handler(EVENT, on_warning)
+	coop_env.add_hook("world_tick", publish_warning)
+	coop_env.add_hook("mirror_tick", play_warning)
+	coop_env.add_hook("surge_enter", surge_enter)
+	coop_env.add_hook("surge_entered", surge_entered)
+end

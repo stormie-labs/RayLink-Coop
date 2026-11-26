@@ -1,8 +1,9 @@
+-- Ядро: без проверок режима (docs/MODES.md)
 --[[
-	Anomaly Coop - Lua layer (gamedata\scripts\coop_main.script)
+	Anomaly Coop - the event bus of the Lua layer (gamedata\scripts\coop_main.script)
 
 	Engine API (namespace `coop`, nil on an exe without co-op):
-		coop.is_active() coop.is_host() coop.is_client() coop.is_live() coop.self_id()
+		coop.is_active() coop.is_live() coop.self_id()
 		coop.players()            -> { {id, nick, avatar_id (local id or nil), rtt, is_self}, ... }
 		coop.avatar_of(peer)      -> local object id of that player's character, or nil
 		coop.peer_of_avatar(id)   -> peer id, or nil
@@ -14,54 +15,47 @@
 
 	Called by the engine:
 		coop_main.on_event(name, payload, from)   a Msg::ScriptEvent arrived
-		coop_main.on_chat(nick, text)             a chat line (ours included) -> coop_core_chat
-		coop_main.on_transition_vote(nick)        host: a player at a level exit asks to move the group
-		                                          (requested from the engine, W4 core) -> coop_core_player
+		coop_main.on_chat(nick, text, from)       a chat line (ours included) -> coop_core_chat
+		coop_main.on_world_leaving(epoch)         a client: the load that starts now continues this world
 		coop_main.print_status()                  part of the coop_status console command
 
 	For addons:
 		coop_main.add_event_handler(name, func)  -- func(payload, from, name)
+		coop_main.add_level_handler(name, func)  -- func(payload, from): a request to the logic of the player's map
 		coop_main.remove_event_handler(name, func)
 		coop_main.encode(flat_table) / coop_main.decode(string)   -- safe flat key/value payloads
+		coop_main.callback_registered(name, f)   -- is f registered for that callback (itself or its router wrapper)
+		coop_main.report_error(script, what, err) -- a Lua error caught on behalf of `script`, counted in coop_status
 		RegisterScriptCallback("coop_on_event", func(name, payload, from))
-		RegisterScriptCallback("coop_on_chat", func(nick, text))
+		RegisterScriptCallback("coop_on_chat", func(nick, text, from))
 
-	Callback routes (F2 T10, docs\MOD_LAYER.md 2.2), on every machine with the engine API: this script installs
-	the router shim (scripts\coop_route.script) when it loads. Every function registered through
-	RegisterScriptCallback, AddUniqueCall or CreateTimeEvent gets its domain from the engine (coop.route,
-	configs\coop_route*.ltx), by its callback and its script; host handlers are skipped on a client, none
-	handlers everywhere in a session, and a client runs the others inside pcall (R-11.4).
+	Callback routes (docs\MOD_LAYER.md 2.2), on every machine with the engine API: this script installs the router
+	(scripts\coop_route.script) when it loads. Every function registered through RegisterScriptCallback, AddUniqueCall or
+	CreateTimeEvent gets its domain from the engine (coop.route, configs\coop_route*.ltx), by its callback and its script.
 
-	What this script does on a co-op CLIENT (nothing of it runs on the host or in single player):
-	1. (moved: the client domain filter is the engine's callback router now, see above)
-	2. Restrictions: debug spawner / debug menu are disabled. Saving and loading by hand are refused by
-	   coop_saves alone (one gate, one hint).
-	3. Emission and psi-storm (R-10.1): the client's own managers never start by themselves. The host
-	   sends the phase (started, elapsed game seconds, time factor) and its cover verdict for this
-	   player; the client runs the stock update() with that phase to get the same visuals and sounds,
-	   with NPC killing, task giving and the final kill switched off. The final kill comes from the host
-	   as an event when the player's character is outside a shelter at the host's kill moment.
-	4. Chat lines from the engine go to coop_core_chat (PDA news if it is missing).
-	The core group's other scripts (W4): coop_core_hud (status, party panel, PDA markers),
-	coop_core_player (own Lua state kept by the host, join/leave notices, quicksave, level moves),
-	coop_core_world (host news, mutant loot, stashes, trader profiles).
+	Restrictions, in a session on every machine: the stock debug tools never run and debug mode (-dbg) is off. A process
+	whose world is decided elsewhere also gets the binder patches of coop_client_binders. Saving and loading by hand are
+	refused by coop_saves alone (one gate, one hint).
+
+	The launcher's error reports read the context line this script writes to the log once a minute.
+
+	The emission and the psi storm are coop_env's; the script events only the world sends, coop_world_events'.
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace
+
+local route = coop_route -- the callback router, loaded with this script
+
+local log = coop_util.logger("[coop-lua]")
 
 local string_format = string.format
 local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
 
 -------------------------------------------------------------------------------
--- Logging and counters
+-- Errors and counters
 -------------------------------------------------------------------------------
-local function log(fmt, ...)
-	local ok, line = pcall(string_format, fmt, ...)
-	printf("[coop-lua] %s", ok and line or tostring(fmt))
-end
-
 local stats = {
-	errors = 0, -- Lua errors caught by this script: event handlers, chat, patches (R-11.4)
+	errors = 0, -- Lua errors caught on behalf of a script: event handlers, chat, patches
 	events_in = 0,
 	event_errors = 0,
 	chat = 0,
@@ -70,7 +64,7 @@ local stats = {
 -- script name -> Lua errors caught (the log says the first three, then every 100th)
 local seen = {}
 
-local function report_error(script, what, err)
+function report_error(script, what, err)
 	local n = (seen[script] or 0) + 1
 	seen[script] = n
 	stats.errors = stats.errors + 1
@@ -79,12 +73,14 @@ local function report_error(script, what, err)
 	end
 end
 
--------------------------------------------------------------------------------
--- Public helpers
--------------------------------------------------------------------------------
-function is_active() return api ~= nil and api.is_active() end
-function is_client() return api ~= nil and api.is_client() end
+local function try(what, f)
+	local ok, err = pcall(f)
+	if not ok then report_error("coop_main", what, err) end
+end
 
+-------------------------------------------------------------------------------
+-- Codec
+-------------------------------------------------------------------------------
 local function esc(s)
 	return (tostring(s):gsub("[%%;=]", function(c) return string_format("%%%02X", c:byte()) end))
 end
@@ -137,34 +133,6 @@ function decode(str)
 end
 
 -------------------------------------------------------------------------------
--- Callback routes (F2 T10, docs\MOD_LAYER.md 2.2). The domain filter that lived here is the engine's router now
--- (coop_router.cpp, configs\coop_route*.ltx); scripts\coop_route.script wraps the handlers on every machine.
--------------------------------------------------------------------------------
-local client_mode = false -- true while this machine is a co-op client; refreshed every frame
-
--- The router shim (coop_route.script), nil where it cannot load (a test harness without it).
-local function shim()
-	local ok, m = pcall(function() return coop_route end)
-	return ok and type(m) == "table" and m or nil
-end
-
--- Script key of the file that defines f (coop.route.of), "?" if unknown. For error lines.
-local function script_of(f)
-	local r = shim()
-	if not (r and r.script_of) then return "?" end
-	local ok, s = pcall(r.script_of, f)
-	return ok and s or "?"
-end
-
--- axr_main's local callback table (found by the shim), nil if not reachable.
-local function get_intercepts()
-	local r = shim()
-	if not (r and r.intercepts) then return nil end
-	local ok, t = pcall(r.intercepts)
-	return ok and type(t) == "table" and t or nil
-end
-
--------------------------------------------------------------------------------
 -- Messages on screen
 -------------------------------------------------------------------------------
 local function hud_msg(text)
@@ -189,11 +157,12 @@ function add_event_handler(name, func)
 	return true
 end
 
--- A request to the logic of the player's map. Keep the original two arguments to the handler.
+-- A request to the logic of the player's map. The handler gets the original two arguments (payload, from), not the
+-- facade's third one.
 function add_level_handler(name, func)
 	if type(func) ~= "function" then return false end
 	local function run(payload, from)
-		if api then return func(payload, from) end
+		return func(payload, from)
 	end
 	if coop_mode then return coop_mode.on_level_request(name, run) end
 	-- Standalone addons and test harnesses can use the event bus without the mode facade.
@@ -204,39 +173,32 @@ function remove_event_handler(name, func)
 	if handlers[name] then handlers[name][func] = nil end
 end
 
--- Is f registered for the callback `name` (itself, or the router shim's wrapper of it)? nil = unknown.
+-- Is f registered for the callback `name` (itself, or the router's wrapper of it)? nil = unknown.
 function callback_registered(name, f)
-	local t = get_intercepts()
+	local t = route.intercepts()
 	if type(t) ~= "table" or type(t[name]) ~= "table" or f == nil then return nil end
 	if t[name][f] then return true end
-	local r = shim()
-	local w = r and r.wrapper_of and r.wrapper_of(name, f)
+	local w = route.wrapper_of(name, f)
 	return w ~= nil and t[name][w] ~= nil
 end
 
 local function callback_exists(name)
-	local t = get_intercepts()
+	local t = route.intercepts()
 	return t ~= nil and t[name] ~= nil
 end
 
-local function ensure_callback(name)
-	if callback_exists(name) then return end
-	if type(rawget(_G, "AddScriptCallback")) == "function" then
-		pcall(AddScriptCallback, name)
-	end
-end
-
--- Engine entry: a Msg::ScriptEvent for this machine. `from` is the sender's peer id (0 = host).
+-- Engine entry: a Msg::ScriptEvent for this machine. `from` is the sender's peer id (0 = host). The transport calls this
+-- with the original peer, before any relay changes the origin to zero.
 function on_event(name, payload, from)
 	stats.events_in = stats.events_in + 1
-	if not allow_world_event(name, from) then return end
+	if not coop_world_events.allows(name, from) then return end
 	local hs = handlers[name]
 	if hs then
 		for f in pairs(hs) do
 			local ok, err = pcall(f, payload, from, name)
 			if not ok then
 				stats.event_errors = stats.event_errors + 1
-				report_error(script_of(f), "event " .. tostring(name), err)
+				report_error(route.script_of(f), "event " .. tostring(name), err)
 			end
 		end
 	end
@@ -246,8 +208,8 @@ function on_event(name, payload, from)
 	end
 end
 
--- Engine entry: a chat line (R-1.7), ours included. Shown in the chat (coop_core_chat: window, HUD feed,
--- history); a PDA news line if that script is missing.
+-- Engine entry: a chat line, ours included. Shown in the chat (coop_core_chat: window, HUD feed, history); a PDA news line
+-- if that script is missing.
 -- `from`: the sender's peer id (0 = the host or the world server); nil from an engine that does not name it.
 function on_chat(nick, text, from)
 	stats.chat = stats.chat + 1
@@ -279,16 +241,10 @@ function on_chat(nick, text, from)
 	end
 end
 
--- Lua side of coop_main.say: same as the coop_chat console command.
-function say(text)
-	if api and type(text) == "string" and text ~= "" then return api.send_chat(text) end
-	return false
-end
-
--- Engine entry (a client, build 56; coop_join.cpp world_leaving): the load that starts now continues this world (a
--- transition's save), and the old world is still up. What a script carries per player goes with him as it is this moment,
--- the way a single player's save has it at a level change: whoever keeps such state hears coop_on_world_leaving(epoch of
--- the world that comes) and may bring its keys up to date, then coop_mods_pdata keeps the registered keys for this load.
+-- Engine entry (a client, coop_join.cpp world_leaving): the load that starts now continues this world (a transition's
+-- save), and the old world is still up. What a script carries per player goes with him as it is this moment, the way a
+-- single player's save has it at a level change: whoever keeps such state hears coop_on_world_leaving(epoch of the world
+-- that comes) and may bring its keys up to date, then coop_mods_pdata keeps the registered keys for this load.
 function on_world_leaving(epoch)
 	if callback_exists("coop_on_world_leaving") then
 		local ok, err = pcall(SendScriptCallback, "coop_on_world_leaving", epoch)
@@ -301,818 +257,14 @@ function on_world_leaving(epoch)
 	end
 end
 
--- Engine entry (host, requested from coop_join: host_on_transition_vote): a player stands at a level exit and
--- asks the group to move. coop_core_player shows it and arms /go.
-function on_transition_vote(nick)
-	local pl = rawget(_G, "coop_core_player")
-	if pl and pl.on_transition_vote then
-		local ok, err = pcall(pl.on_transition_vote, tostring(nick))
-		if ok then return end
-		report_error("coop_core_player", "transition vote", err)
-	end
-	hud_msg("Co-op: " .. tostring(nick) .. " wants to move the group (console: coop_accept_transition)")
-end
-
 -------------------------------------------------------------------------------
--- Emission and psi-storm (R-10.1)
--------------------------------------------------------------------------------
-local surge_cls_patched, host_hooks = false, false
-local env_host = { sig = nil, next_send = 0, serial = 0, kill_sent = {}, cover_rep = {}, npc_kill_at = {} }
-local env_cl = { have = false, s = false, sg = 0, p = false, pg = 0, tf = nil, cover = true, at = 0,
-	next_tick = 0, req_at = 0, mirror_errors = 0, cover_at = 0 }
-
--- A mode can supply phase delivery, the reach of the phase on this map, and routing for player reports.
-local env_policy = {}
-function set_env_policy(policy)
-	env_policy = policy
-end
-
-local function actor_plays()
-	return not coop_mode or coop_mode.actor_is_player()
-end
-
-local function env_reaches_here()
-	return not env_policy.reaches_here or env_policy.reaches_here()
-end
-
-local function surge_mgr()
-	local mod = rawget(_G, "surge_manager") or surge_manager
-	return mod and mod.get_surge_manager and mod.get_surge_manager()
-end
-
-local function psi_mgr()
-	local mod = rawget(_G, "psi_storm_manager") or psi_storm_manager
-	return mod and mod.get_psi_storm_manager and mod.get_psi_storm_manager()
-end
-
--- Started?, game seconds since the start.
-local function env_phase(m)
-	if not (m and m.started == true and m.inited_time) then return false, 0 end
-	local ok, gs = pcall(function() return game.get_game_time():diffSec(m.inited_time) end)
-	return true, (ok and gs) or 0
-end
-
--- Reports are compared with the shelter at this player's body on the level that leads him.
-local COVER_FRESH_MS = 3000
-local function reported_cover(peer)
-	local rep = env_host.cover_rep[peer]
-	if not rep then return nil end
-	local age = time_global() - rep.at
-	if age >= 0 and age <= COVER_FRESH_MS then return rep end
-	env_host.cover_rep[peer] = nil
-end
-
-local function player_in_cover(player, obj, active)
-	local rep = reported_cover(player.id)
-	if coop_env_cover then return coop_env_cover.decide(player.id, obj, rep, player.nick, active) end
-	-- Standalone loaders without the cover module still use the stock shelter check.
-	if rep then return rep.c end
-	if not obj then return nil end
-	local sm = surge_mgr()
-	if not sm then return true end
-	if sm.init_surge_covers then sm:init_surge_covers() end
-	return sm:pos_in_cover(obj:position()) == true
-end
-
-local function players()
-	if not api then return {} end
-	local ok, list = pcall(api.players)
-	return ok and list or {}
-end
-
-function env_host.player_here(p)
-	if p.is_self then return actor_plays() end
-	return not coop_mode or coop_mode.where(p.id) ~= "away"
-end
-
-function env_host.body(p)
-	if p.is_self then return db.actor end
-	return p.avatar_id and level.object_by_id(p.avatar_id)
-end
-
-function env_host.sample_cover(active)
-	if not coop_env_cover or not coop_mode or not coop_mode.leads_here() then return end
-	if active then
-		for _, p in ipairs(players()) do
-			if env_host.player_here(p) then player_in_cover(p, env_host.body(p), true) end
-		end
-	elseif env_host.cover_active then
-		coop_env_cover.reset()
-	end
-	env_host.cover_active = active
-end
-
--- Host: the stock surge decided to kill unsheltered people now (2nd wave or the end). Same verdict for
--- every remote player's character, once per emission. The wave position is not used for proxies.
--- A remote player sleeping through the emission on an anabiotic (coop_npc_effects keeps it per player, W5).
--- The stock survive condition ({+anabiotic_in_process}) is the HOST actor's and no longer spares everybody.
-local function anabiotic(peer)
-	local fx = rawget(_G, "coop_npc_effects")
-	if not (fx and fx.is_anabiotic) then return false end
-	local ok, r = pcall(fx.is_anabiotic, peer)
-	return ok and r == true
-end
-
-local function host_surge_kill_check()
-	if not api.is_active() or env_policy.publish then return end
-	local active = env_phase(surge_mgr()) or env_phase(psi_mgr())
-	-- audit E3: the host's story immunity (surge_immuned) is his own; a client's is checked on his machine (coop_env_kill)
-	for _, p in ipairs(players()) do
-		if not p.is_self and env_host.kill_sent[p.id] ~= env_host.serial and anabiotic(p.id) then
-			-- spared at this kill moment only: one who wakes before the next one is judged then
-			log("emission: %s (#%d) sleeps on an anabiotic, spared", tostring(p.nick), p.id)
-		elseif not p.is_self and env_host.kill_sent[p.id] ~= env_host.serial and env_host.player_here(p) then
-			local obj = env_host.body(p)
-			-- Without a body, a fresh negative report still exposes him; his machine checks he is alive.
-			local exposed = (not obj or obj:alive()) and player_in_cover(p, obj, active) == false
-			if exposed then
-				env_host.kill_sent[p.id] = env_host.serial
-				api.send_event("coop_env_kill", encode({ kind = "surge" }), p.id)
-				log("emission: %s (#%d) is outside a shelter, kill sent", tostring(p.nick), p.id)
-			end
-		end
-	end
-end
-
-local function install_host_hooks()
-	host_hooks = true
-	local mod = rawget(_G, "surge_manager") or surge_manager
-	local cls = mod and mod.CSurgeManager
-	if not cls then
-		log("! surge_manager.CSurgeManager not found, emission kills are not sent to clients")
-		return
-	end
-	for _, fname in ipairs({ "kill_actor_at_pos", "kill_all_unhided" }) do
-		local ok, orig = pcall(function() return cls[fname] end)
-		if ok and type(orig) == "function" then
-			cls[fname] = function(self, ...)
-				-- the end of an emission that runs elsewhere reaches nobody on a level it does not reach
-				if not env_reaches_here() then return end
-				local r = orig(self, ...)
-				local okc, err = pcall(host_surge_kill_check)
-				if not okc then report_error("coop_main", "surge kill check", err) end
-				return r
-			end
-		end
-	end
-end
-
-local function host_env_tick()
-	local s_on, s_gs = env_phase(surge_mgr())
-	local p_on, p_gs = env_phase(psi_mgr())
-	local sig = (s_on and "s" or "-") .. (p_on and "p" or "-")
-	local tg = time_global()
-	if sig ~= env_host.sig then
-		if s_on and not (env_host.sig or ""):find("s", 1, true) then
-			env_host.serial = env_host.serial + 1 -- a new emission: everybody can be caught again
-		end
-		env_host.sig = sig
-		env_host.next_send = 0
-	end
-	if tg < env_host.next_send then return end
-	local active = s_on or p_on
-	env_host.next_send = tg + (active and 1000 or 10000)
-	local phase = { s = s_on, sg = s_gs, p = p_on, pg = p_gs, tf = level.get_time_factor(), c = true }
-	if env_policy.publish then return env_policy.publish(phase) end
-	if not active and env_host.cover_active then coop_env_cover.reset() end
-	env_host.cover_active = active and coop_env_cover ~= nil
-	for _, p in ipairs(players()) do
-		if not p.is_self then
-			local cover = true
-			if active and env_host.player_here(p) then
-				cover = player_in_cover(p, env_host.body(p), true) ~= false
-			end
-			phase.c = cover
-			api.send_event("coop_env", encode(phase), p.id)
-		elseif active and coop_env_cover and env_host.player_here(p) then
-			player_in_cover(p, env_host.body(p), true)
-		end
-	end
-end
-
--- Audit E2 (2026-10-24), client: the stock kill of the people a wave / vortex reaches (kill_objects_at_pos) goes to the
--- host with where it is (surge: the wave's z, false = everybody unhidden; psi storm: the vortex). Once a second for
--- the wave (the stock calls it every 5 game seconds), every vortex.
-local NPC_KILL_WAVE_MS = 1000
-local npc_kill_cl = { wave_at = -NPC_KILL_WAVE_MS }
-local function forward_npc_kill(cls, kind)
-	if not cls then return 0 end
-	local ok, orig = pcall(function() return cls.kill_objects_at_pos end)
-	if not (ok and type(orig) == "function") then return 0 end
-	cls.kill_objects_at_pos = function(self, pos)
-		if not (api and api.is_client()) then return end
-		local t = { k = kind }
-		if kind == "p" then
-			if type(pos) ~= "userdata" and type(pos) ~= "table" then return end
-			t.x, t.y, t.z = pos.x, pos.y, pos.z
-		else
-			local tg = time_global()
-			if tg - npc_kill_cl.wave_at < NPC_KILL_WAVE_MS then return end
-			npc_kill_cl.wave_at = tg
-			t.z = tonumber(pos) -- nil: everybody unhidden around him
-		end
-		api.send_event("coop_env_npc_kill", encode(t), 0)
-	end
-	return 1
-end
-
--- Audit E2, client: the hide task is this player's own. Its id is made personal (coop_tasks.set_local_task: never
--- sent to the host, never mirrored), then the stock gives it here; its condition ({=surge_complete}) reads the
--- mirrored phase, so it is done when the host's emission ends here.
-local function personal_hide_task(cls, fname, field, default_id)
-	if not cls then return 0 end
-	local ok, orig = pcall(function() return cls[fname] end)
-	if not (ok and type(orig) == "function") then return 0 end
-	cls[fname] = function(self, ...)
-		local sect = self[field]
-		if sect == "empty" then return end
-		local id = (sect == nil or sect == "") and default_id or sect
-		local ct = rawget(_G, "coop_tasks")
-		if not (ct and type(ct.set_local_task) == "function" and ct.set_local_task(id)) then
-			log("! hide task '%s' cannot be personal here: not given", tostring(id))
-			return
-		end
-		return orig(self, ...)
-	end
-	return 1
-end
-
--- Client: stop the parts of the stock managers that change the world or decide the actor's death.
-local function patch_env_classes_for_client()
-	if surge_cls_patched then return end
-	surge_cls_patched = true
-	local function neutralize(cls, names)
-		if not cls then return 0 end
-		local n = 0
-		for _, fname in ipairs(names) do
-			local ok, f = pcall(function() return cls[fname] end)
-			if ok and type(f) == "function" then
-				cls[fname] = function() end
-				n = n + 1
-			end
-		end
-		return n
-	end
-	local sm_mod = rawget(_G, "surge_manager") or surge_manager
-	local pm_mod = rawget(_G, "psi_storm_manager") or psi_storm_manager
-	if not actor_plays() then
-		-- An authority without a player runs the consequences and has no HUD or personal tasks.
-		local n = neutralize(sm_mod and sm_mod.CSurgeManager, { "give_surge_hide_task", "displayIndicators" })
-		n = n + neutralize(pm_mod and pm_mod.CPsiStormManager, { "give_psi_storm_hide_task", "displayIndicators" })
-		install_host_hooks()
-		log("emission/psi-storm: applying consequences locally (%d hud method(s) off)", n)
-		return
-	end
-	-- R5 I2: launch_rockets (signal lights) is the host's too: the psi storm calls it unconditionally
-	local n = neutralize(sm_mod and sm_mod.CSurgeManager, { "kill_crows_at_pos",
-		"turn_to_zombie", "explode", "kill_actor_at_pos", "kill_all_unhided", "launch_rockets" })
-	n = n + neutralize(pm_mod and pm_mod.CPsiStormManager, { "kill_crows_at_pos", "launch_rockets" })
-	-- Audit E2: the people this player's wave / vortex reaches die on the host (the stock kill there, kept to his
-	-- area); his hide task is his own (a personal task, finished when the host's phase ends here).
-	local f = 0
-	f = f + forward_npc_kill(sm_mod and sm_mod.CSurgeManager, "s")
-	f = f + forward_npc_kill(pm_mod and pm_mod.CPsiStormManager, "p")
-	f = f + personal_hide_task(sm_mod and sm_mod.CSurgeManager, "give_surge_hide_task", "surge_task_sect", "hide_from_surge")
-	f = f + personal_hide_task(pm_mod and pm_mod.CPsiStormManager, "give_psi_storm_hide_task", "psi_storm_task_sect",
-		"hide_from_psi_storm")
-	log("emission/psi-storm: %d world-changing method(s) disabled, %d routed (kills to the host, personal hide tasks), "
-		.. "phases follow the host", n, f)
-end
-
--- R5 I2: a client never ends an emission / psi storm by itself. The stock update() ends it when the elapsed
--- seconds reach surge_time (psi storm: psi_storm_duration); the mirror's clock is extrapolated and can get there
--- before the host's "ended" state arrives, and client_env_tick would then start a fresh mirror: repeated start/end
--- events and +rank per cycle. On a client both limits are "never"; only the host's phase ends the mirror
--- (client_env_tick -> end_surge / finish). initialize() resets the stock value, so it is set again after it and
--- before every update.
-local NEVER_ENDS = 1e9
-
-local function set_inited(m, game_sec)
-	local now = game.get_game_time()
-	local d = game.CTime()
-	d:setHMSms(0, 0, math.max(0, math.floor(game_sec)), 0)
-	now:sub(d)
-	m.inited_time = now
-end
-
--- Runs fn with the host's cover verdict as this actor's "current_safe_cover".
-local function with_cover(cover, fn, what)
-	local saved = GetEvent("current_safe_cover")
-	SetEvent("current_safe_cover", cover and true or false)
-	local ok, err = pcall(fn)
-	SetEvent("current_safe_cover", saved)
-	if not ok then
-		env_cl.mirror_errors = env_cl.mirror_errors + 1
-		report_error("coop_main", what, err)
-	end
-end
-
-local function mirror_start_surge(m, previous_factor)
-	if not m._state_loaded then
-		m:initialize()
-		m._state_loaded = true
-	end
-	m.surge_time = NEVER_ENDS -- R5 I2
-	m.game_time_factor = previous_factor
-	if m.finalize then m:finalize() end
-	m.started, m.finished = true, false
-	-- false: the stock neither starts nor fades these, quake_step plays them
-	m.blowout_waves, m.objects_to_kill, m.body_tears = {}, {}, {}
-	m.stages = { quake20 = false, quake40 = false, quake60 = false, quake80 = false, quake100 = false }
-	m.hitFactor, m.zombie_count = 0, 0
-	m.effector_set, m.second_message_given, m.ui_disabled = false, false, false
-	m.task_given = false -- audit E2: the stock update gives this player's personal hide task at its moment
-	m.blowout_sound, m.wave_sound = false, false
-	env_host.serial = env_host.serial + 1 -- a map server: a new emission, everybody on its level can be caught again
-	pcall(SendScriptCallback, "actor_on_interaction", "anomalies", nil, "emission_start")
-	log("emission started by the host")
-end
-
-local function mirror_start_psi(m, previous_factor)
-	surge_mgr() -- psi initialize() reads surge_manager.SurgeManager.ini
-	if not m._state_loaded then
-		m:initialize()
-		m._state_loaded = true
-	end
-	m.psi_storm_duration = NEVER_ENDS -- R5 I2
-	m.game_time_factor = previous_factor
-	if m.finalize then m:finalize() end
-	m.started, m.finished = true, false
-	m.hitFactor = 0
-	m.stages, m.vortexes, m.humanParticles = {}, {}, {}
-	m.next_vortex_at = nil
-	m.task_given = false -- audit E2: a personal hide task, given by the stock update
-	pcall(SendScriptCallback, "actor_on_interaction", "anomalies", nil, "psi_storm_start")
-	log("psi-storm started by the host")
-end
-
-local function follow_env_factor()
-	if level.get_time_factor() ~= env_cl.tf then level.set_time_factor(env_cl.tf) end
-end
-
-local function mirror_update(m, game_sec, what, limit_field)
-	m.first_update = true -- the host already validated level and options
-	m[limit_field] = NEVER_ENDS -- R5 I2: only the host ends the emission / psi storm
-	set_inited(m, game_sec)
-	follow_env_factor()
-	with_cover(env_cl.cover, function() m:update() end, what)
-end
-
--- A mirror that starts late (the player joined during it): the stock update plays every stage that is due at once. A
--- stage is over this many stock seconds in. The rumble is not listed: it is on now, and it ends later.
--- Stock Anomaly and Preblowout Murder use these same thresholds in CSurgeManager:update().
-local SURGE_STAGES_OVER = { siren = 25, impact = 47, ["1stwavesnd"] = 108,
-	["1stwave"] = 120, ["2ndwavesnd"] = 156, ["2ndwave"] = 168, endsnd = 220 }
-local PSI_STAGES_OVER = { beginning = 5, siren = 15 }
-
--- The quake on a client (live 2026-11-01: the emission ran and nothing shook, the cause not found by reading): the stock's ladder
--- of surge_manager.update, played here from the host's clock with an effector id of its own, each step in the log. A mirror that
--- starts late comes in on the step of that moment. Stock seconds; the last row of each pair of lines is the fade.
-local QUAKE_CAM = 39571 -- free in the stock, next to the contusion's 39570
-local QUAKE = { { 80, "earthquake_20" }, { 100, "earthquake_40" }, { 102, "earthquake_60" }, { 104, "earthquake_80" },
-	{ 106, "earthquake" }, { 200, "earthquake_80" }, { 202, "earthquake_60" }, { 206, "earthquake_40" }, { 209, "earthquake_20" } }
-local quake_on = nil
-
-local function quake_stop()
-	if not quake_on then return end
-	quake_on = nil
-	pcall(level.remove_cam_effector, QUAKE_CAM)
-end
-
-local function quake_step(sec)
-	if sec >= 214 then return quake_stop() end
-	local name = nil
-	for _, row in ipairs(QUAKE) do
-		if sec >= row[1] then name = row[2] end
-	end
-	if not name or name == quake_on then return end
-	quake_stop()
-	local ok, res = pcall(level.add_cam_effector, "camera_effects\\" .. name .. ".anm", QUAKE_CAM, true, "", 0, false)
-	quake_on = name
-	log("emission quake: %s at %d s, %s", name, sec, ok and ("runs " .. tostring(res) .. " s") or tostring(res))
-end
-
-local function skip_stages_over(m, over, sec)
-	for stage, at in pairs(over) do
-		if sec >= at then m.stages[stage] = true end
-	end
-end
-
--- Live 2026-11-08 (Banan4ik, client): after a psi storm the client kept the storm's HUD for good (G.A.M.M.A.'s cover bar).
--- The stock writes its "running" flags only inside update(): psi_storm_manager.script L278 SetEvent("psi_storm", "state",
--- self.started), L351 / L367 "vortex"; surge_manager.script L571 SetEvent("surge", "state", self.started) (G.A.M.M.A.: L297,
--- L370 / L386, L606). finish() and end_surge() never write them. The host and single player call update() every second after
--- the end as well (surge_manager main_loop), so their next call writes "state" false. A client calls update() only in the mirror
--- while the host's phase runs (the stock loop is host, coop_route.ltx), so the flags stayed as its last update left them: on.
--- Their readers run on a client: dynamic_emission_cover_mcm (the cover bar), item_device (NVG / PDA glitch), item_radio,
--- ui_dosimeter, level_environment (light flicker). So the local state follows the host's phase as a level, every tick: "not
--- running here" (the host's end, or a level the world's emission does not reach) ends whatever of it is on and writes the flags
--- as the stock's next update would. A flag left on with nothing running (a load or a level change mid-storm, an end that
--- raised) is a disagreement with the host: corrected, one log line.
-local ENV_LOCAL = {
-	surge = { name = "emission", stop = function(m) m:end_surge() end },
-	psi_storm = { name = "psi-storm", stop = function(m) m:finish() end, vortex = true },
-}
-
-local function have_events()
-	return type(rawget(_G, "GetEvent")) == "function" and type(rawget(_G, "SetEvent")) == "function"
-end
-
--- What of a stock manager's run is on here; nil: nothing.
-local function env_left_on(m, key)
-	local on = {}
-	if m.started == true then on[#on + 1] = "running" end
-	if have_events() then
-		if GetEvent(key, "state") then on[#on + 1] = "hud flag" end
-		if ENV_LOCAL[key].vortex and GetEvent(key, "vortex") then on[#on + 1] = "vortex flag" end
-	end
-	return on[1] and table.concat(on, ", ") or nil
-end
-
--- Client: the host's phase is "not running" here. `why`: nil for the host's end, else why it is not running here.
-local function env_off_here(m, key, why)
-	if key == "surge" then env_cl.surge_mirror = nil end
-	if not m then return end
-	local e = ENV_LOCAL[key]
-	if key == "surge" then quake_stop() end
-	local left = env_left_on(m, key)
-	if not left then return end
-	if m.started == true then
-		with_cover(true, function() e.stop(m) end, e.name .. " end")
-		if why then log("%s ended here: %s", e.name, why) else log("%s ended by the host", e.name) end
-	else
-		log("%s: my local state (%s) disagrees with the host's (not running%s), corrected", e.name, left,
-			why and (", " .. why) or "")
-	end
-	if not have_events() then return end
-	SetEvent(key, "state", false) -- the stock's next update after its end
-	if e.vortex then
-		SetEvent(key, "vortex", false)
-		-- the vortex hit's psi_fade.ppe / electro_fade.ppe (psi_storm_manager vortex_actor_hit)
-		pcall(level.remove_pp_effector, 666)
-		pcall(level.remove_pp_effector, 667)
-	end
-end
-
-local function client_env_tick()
-	if not env_cl.have or not db.actor then return end
-	local tg = time_global()
-	if tg < env_cl.next_tick then return end
-	env_cl.next_tick = tg + 1000
-	if tg - env_cl.at > 15000 then return end -- the host is silent: hold the current phase
-	if not env_reaches_here() then
-		-- under ground the emission of the world is not felt: nothing of it stays on here either
-		env_off_here(surge_mgr(), "surge", "this level is not reached by the world's emission")
-		env_off_here(psi_mgr(), "psi_storm", "this level is not reached by the world's emission")
-		env_host.sample_cover(false)
-		if coop_env_cover then coop_env_cover.clear_client_verdict() end
-		return
-	end
-	local previous_factor = level.get_time_factor()
-	local dt = (tg - env_cl.at) / 1000 * env_cl.tf
-	if env_cl.own then
-		local cover = coop_env_cover and coop_env_cover.client_verdict()
-		if cover == nil then
-			local ok, c = pcall(env_own_cover)
-			cover = ok and c == true
-		end
-		env_cl.cover = cover
-	end
-	local ghost = not actor_plays()
-
-	local sm = surge_mgr()
-	if sm then
-		if env_cl.s then
-			local game_sec = env_cl.sg + dt
-			-- set_inited uses whole game seconds. The manager rounds that clock up after dividing by the factor.
-			local sec = math.ceil(math.floor(game_sec) / env_cl.tf)
-			local entering = not rawequal(env_cl.surge_mirror, sm) or not sm.started
-			local restore_rumble = false
-			if entering then
-				-- A save can say the surge is active without having started any effects on this machine.
-				mirror_start_surge(sm, previous_factor)
-				skip_stages_over(sm, SURGE_STAGES_OVER, sec)
-				-- Keep the opening cue on the first phase packet, which may reach an existing player a few seconds in.
-				if sec >= 5 then
-					sm.stages.beginning = true
-					-- The manager starts the weather and plays the opening cue in the same stage.
-					if (not ghost or coop_mode.leads_here()) and level.get_time_hours and level.set_weather_fx then
-						local hour = level.get_time_hours()
-						level.set_weather_fx(hour >= 5 and hour <= 20 and "fx_blowout_day" or "fx_blowout_night")
-					end
-				end
-				if not ghost and sm.blowout_sounds and sm.blowout_sounds.crow0 then
-					-- Preblowout Murder holds the last psychic strength between the waves.
-					if sec >= 120 and sec < 210 then sm.hitFactor = 0.3 end
-					if sec >= 214 then sm.stages.rumble = false end
-					restore_rumble = sec > 75 and sec < 200
-				end
-				env_cl.surge_mirror = sm
-			end
-			env_host.sample_cover(true)
-			mirror_update(sm, game_sec, "emission mirror", "surge_time")
-			if restore_rumble and sm.blowout_sound then
-				xr_sound.set_volume_sound_looped(AC_ID, "blowout_rumble", 1)
-			end
-			if not ghost then quake_step(sec) end
-		else
-			env_off_here(sm, "surge")
-		end
-	end
-	local pm = psi_mgr()
-	if pm then
-		if env_cl.p then
-			if not pm.started then
-				mirror_start_psi(pm, previous_factor)
-				skip_stages_over(pm, PSI_STAGES_OVER, (env_cl.pg + dt) / env_cl.tf)
-			end
-			if not (env_cl.s and sm) then env_host.sample_cover(true) end
-			mirror_update(pm, env_cl.pg + dt, "psi-storm mirror", "psi_storm_duration")
-		else
-			env_off_here(pm, "psi_storm")
-		end
-	end
-	if not (env_cl.s or env_cl.p) then env_host.sample_cover(false) end
-
-	-- After start/stop (they remember the factor to restore), follow the host's time factor.
-	follow_env_factor()
-end
-
--- Invalid data stays refused in trust log mode.
-local function env_request_ok(name, ok, fmt, ...)
-	if coop_trust and not coop_trust.pass(name, ok, fmt, ...) then return false end
-	return ok
-end
-
-local PREBLOWOUT_WARNING = "mods.preblowout_warning"
-local world_events = { [PREBLOWOUT_WARNING] = true, coop_env = true }
-
-function reserve_world_event(name)
-	world_events[name] = true
-end
-
--- The transport must call this with the original peer before any relay changes the origin to zero.
-function allow_world_event(name, from)
-	if not world_events[name] then return true end
-	return env_request_ok("env_world_sender", from == 0, "event %s from peer %s is reserved for the world",
-		name, tostring(from))
-end
-
-local function bounded_env_number(value, min, max)
-	return type(value) == "number" and value >= min and value <= max
-end
-
-add_event_handler("coop_env", function(payload)
-	if not (api and api.is_client()) then return end
-	if not env_request_ok("env_phase_size", type(payload) == "string" and #payload <= 256,
-		"invalid environment phase packet size") then return end
-	local t = decode(payload)
-	-- The mirror passes elapsed game seconds to CTime and divides by the time factor.
-	if not env_request_ok("env_phase_payload",
-		encode({ s = t.s, p = t.p, sg = t.sg, pg = t.pg, tf = t.tf, c = t.c, own = t.own }) == payload
-		and (t.s == nil or type(t.s) == "boolean") and (t.p == nil or type(t.p) == "boolean")
-		and (t.c == nil or type(t.c) == "boolean") and (t.own == nil or type(t.own) == "boolean")
-		and ((t.sg == nil and t.s ~= true) or bounded_env_number(t.sg, 0, 86400))
-		and ((t.pg == nil and t.p ~= true) or bounded_env_number(t.pg, 0, 86400))
-		and bounded_env_number(t.tf, 0.01, 1000), "invalid environment phase fields") then return end
-	local s, p = t.s == true, t.p == true
-	if s ~= env_cl.s or p ~= env_cl.p or not env_cl.have then
-		env_cl.next_tick = 0 -- a phase change is applied on the next frame, not after the 1 s step
-	end
-	env_cl.s, env_cl.sg = s, t.sg or 0
-	env_cl.p, env_cl.pg = p, t.pg or 0
-	env_cl.tf = t.tf
-	env_cl.cover = t.c ~= false
-	env_cl.own = t.own == true -- phase carries no decision for this player; his level can send one separately
-	if not (s or p) and coop_env_cover then coop_env_cover.clear_client_verdict() end
-	env_cl.at = time_global()
-	env_cl.have = true
-end)
-
-local function env_peer_ok(peer)
-	return type(peer) == "number" and peer > 0 and peer < 0xffffffff and peer % 1 == 0
-end
-
-add_event_handler("coop_env_req", function(_, from)
-	if not env_request_ok("env_phase_sender", env_peer_ok(from), "invalid phase requester %s", tostring(from)) then return end
-	if api and api.is_active() and coop_mode and coop_mode.decides_world() then env_host.next_send = 0 end
-end)
-
--- Host: a client's own shelter, reported while an emission or a psi storm runs (player_in_cover).
--- Audit E2, host: a client's wave / vortex reached the people around him. The stock kill runs here (the host's online
--- NPCs), for the psi storm at that vortex (near his character), for the emission only among the NPCs within
--- NPC_KILL_RADIUS of his character (the wave is a plane across the level from where each player stands: his must not
--- reach the host's people before the host's own wave does). Only while that phase runs here; a few per second.
-local NPC_KILL_RADIUS = 250
-local NPC_KILL_MIN_MS = 200
-local MAX_ENV_COORD = 1000000
-
-local function env_coord(n)
-	return n ~= nil and math.abs(n) <= MAX_ENV_COORD
-end
-
-local function npc_kill_report(t, peer)
-	local x, y, z = tonumber(t.x), tonumber(t.y), tonumber(t.z)
-	local valid = t.k == "s" and (t.z == nil or env_coord(z))
-		or t.k == "p" and env_coord(x) and env_coord(y) and env_coord(z)
-	if not env_request_ok("env_npc_kill_payload", valid, "peer %s, invalid wave or vortex", tostring(peer)) then return end
-	if t.k == "s" then return { k = "s", z = z } end
-	return { k = "p", x = x, y = y, z = z }
-end
-
-local function cover_report(t, peer)
-	if not env_request_ok("env_cover_payload", type(t.c) == "boolean", "peer %s, invalid cover", tostring(peer)) then return end
-	return { c = t.c }
-end
-
-local function dist_xz(a, b)
-	local dx, dz = a.x - b.x, a.z - b.z
-	return math.sqrt(dx * dx + dz * dz)
-end
-
-local function avatar_of(peer)
-	for _, p in ipairs(players()) do
-		if p.id == peer and not p.is_self then return p.avatar_id and level.object_by_id(p.avatar_id) end
-	end
-end
-
--- Runs fn with db.OnlineStalkers holding only the NPCs within radius of pos (the stock kill walks that list).
-local function with_online_near(pos, radius, fn)
-	local all = db.OnlineStalkers or {}
-	local near = {}
-	for i = 1, #all do
-		local id = all[i]
-		local npc = db.storage and db.storage[id] and db.storage[id].object or level.object_by_id(id)
-		local ok, p = pcall(function() return npc and npc:position() end)
-		if ok and p and dist_xz(p, pos) <= radius then near[#near + 1] = id end
-	end
-	db.OnlineStalkers = near
-	local ok, err = pcall(fn)
-	db.OnlineStalkers = all
-	if not ok then report_error("coop_main", "emission kill near a player", err) end
-end
-
-local function option(name, def)
-	local uo = rawget(_G, "ui_options")
-	local ok, v = pcall(function() return uo and uo.get(name) end)
-	if ok and v ~= nil then return v end
-	return def
-end
-
-local function apply_npc_kill(t, from)
-	local tg = time_global()
-	local ready = tg - (env_host.npc_kill_at[from] or -NPC_KILL_MIN_MS) >= NPC_KILL_MIN_MS
-	if not env_request_ok("env_npc_kill_rate", ready, "peer %d, wave or vortex too soon", from) then return end
-	local obj = avatar_of(from)
-	if not env_request_ok("env_npc_kill_avatar", obj ~= nil, "peer %d has no character here", from) then return end
-	local apos = obj:position()
-	if t.k == "p" then
-		local pm = psi_mgr()
-		local running = pm ~= nil and pm.started == true
-		if not env_request_ok("env_npc_kill_phase", running, "peer %d, no psi-storm here", from) then return end
-		local near = dist_xz(t, apos) <= NPC_KILL_RADIUS
-		if not env_request_ok("env_npc_kill_range", near, "peer %d, vortex too far from his character", from) then return end
-		env_host.npc_kill_at[from] = tg
-		local pos = vector():set(t.x, t.y, t.z)
-		local okc, err = pcall(pm.kill_crows_at_pos, pm, pos)
-		if not okc then report_error("coop_main", "psi-storm crows near a player", err) end
-		local fate = option("alife/event/psi_storm_fate", "kill_at_vortex")
-		if fate ~= "unhurt" then
-			local okk, errk = pcall(pm.kill_objects_at_pos, pm, pos, fate)
-			if not okk then report_error("coop_main", "psi-storm kill near a player", errk) end
-		end
-	else
-		local sm = surge_mgr()
-		local running = sm ~= nil and sm.started == true
-		if not env_request_ok("env_npc_kill_phase", running, "peer %d, no emission here", from) then return end
-		env_host.npc_kill_at[from] = tg
-		local fate = option("alife/event/emission_fate", "kill_at_wave")
-		with_online_near(apos, NPC_KILL_RADIUS, function() sm:kill_objects_at_pos(t.z or false, fate) end)
-	end
-end
-
-local function on_env_report(name, read, apply)
-	add_event_handler(name, function(payload, from)
-		if not api or not api.is_active() then return end
-		if coop_mode then
-			local leads = coop_mode.leads_here()
-			if not leads and not env_policy.relay_report then return end
-		elseif api.is_client() then
-			return
-		end
-		local t = decode(payload)
-		if env_policy.report_peer then
-			from = env_policy.report_peer(from, t)
-			if not from then return end
-		end
-		if not env_request_ok("env_report_sender", env_peer_ok(from), "invalid report sender %s", tostring(from)) then return end
-		local report = read(t, from)
-		if not report then return end
-		if env_policy.relay_report then return env_policy.relay_report(name, report, from) end
-		apply(report, from)
-	end)
-end
-
-on_env_report("coop_env_npc_kill", npc_kill_report, apply_npc_kill)
-on_env_report("coop_env_cover", cover_report, function(t, from)
-	env_host.cover_rep[from] = { c = t.c, at = time_global() }
-end)
-
--- Client: this machine's view of its shelter. Any of: the underground flag, the cover this machine's scripts keep in
--- "current_safe_cover" (G.A.M.M.A.'s dynamic cover; with_cover only lends it the host's verdict while the mirror runs
--- and gives it back), the static covers of the surge script.
-local function own_cover()
-	if GetEvent and GetEvent("underground") then return true end
-	if GetEvent and GetEvent("current_safe_cover") == true then return true end
-	local sm, actor = surge_mgr(), db.actor
-	if not (sm and actor) then return false end
-	if sm.init_surge_covers then sm:init_surge_covers() end
-	return sm:pos_in_cover(actor:position()) == true
-end
-env_own_cover = own_cover
-
-add_event_handler("coop_env_kill", function(payload, from)
-	if from ~= 0 or not (api and api.is_client()) then return end
-	local actor = db.actor
-	if not (actor and actor:alive()) then return end
-	if load_var and load_var(actor, "surge_immuned", false) == true then return end
-	local fx = rawget(_G, "coop_npc_effects")
-	if fx and fx.anabiotic_self then
-		local ok, sleeping = pcall(fx.anabiotic_self)
-		if ok and sleeping then
-			log("emission kill ignored: this player sleeps on an anabiotic")
-			return
-		end
-	end
-	log("caught outside a shelter by the emission (host decision)")
-	actor:kill(actor)
-end)
-
--- Preblowout Murder's five sound pairs are spaced by 60 in-game seconds. The world supplies the
--- current pair even to late joiners. Each player places it around their own actor with the mod's helper.
-local CROW_WARNING = {
-	{ "crow5", "crow4", 140, 220 }, { "crow3", "crow2", 100, 260 }, { "crow1", "crow0", 0, 360 },
-	{ "crow2", "crow3", 280, 440 }, { "crow4", "crow5", 320, 400 },
-}
-
-local function publish_crow_warning(tg)
-	if not (coop_mods_core and coop_mode and coop_mode.decides_world()) then return end
-	if tg < (env_host.warning_next or 0) then return end
-	env_host.warning_next = tg + 1000
-	local mod = coop_mods_core.mod("surge_manager")
-	if not (mod and mod.play_sound_radius and option("alife/event/emission_state", true)) then return end
-	local sm = surge_mgr()
-	if not (sm and sm._state_loaded and not sm.started and not sm.time_forwarded and sm.last_surge_time
-		and type(sm._delta) == "number" and sm.blowout_sounds and sm.blowout_sounds.crow0) then return end
-	local now = game.get_game_time()
-	local remaining = sm._delta - now:diffSec(sm.last_surge_time)
-	if remaining <= 0 or remaining >= 360 then return end
-	local stage = math.min(#CROW_WARNING, math.ceil((360 - remaining) / 60))
-	-- The saved schedule identifies the warning across a restart of the world's Lua state.
-	local y, mo, d, h, mi, s, ms = sm.last_surge_time:get(0, 0, 0, 0, 0, 0, 0)
-	local cycle = string_format("%d-%d-%dT%d:%d:%d.%d/%d", y, mo, d, h, mi, s, ms, sm._delta)
-	coop_mods_core.publish(PREBLOWOUT_WARNING:sub(6), { cycle = cycle, stage = stage })
-end
-
-add_event_handler(PREBLOWOUT_WARNING, function(payload)
-	if not env_request_ok("env_warning_size", type(payload) == "string" and #payload <= 96,
-		"invalid crow warning packet size") then return end
-	local t = decode(payload)
-	local valid = bounded_env_number(t.stage, 1, #CROW_WARNING) and t.stage % 1 == 0
-		and type(t.cycle) == "string" and #t.cycle <= 48
-		and t.cycle:match("^%d%d%d%d%-%d%d?%-%d%d?T%d%d?:%d%d?:%d%d?%.%d%d?%d?/%d+$") ~= nil
-		and encode({ cycle = t.cycle, stage = t.stage }) == payload
-	if not env_request_ok("env_warning_payload", valid, "invalid crow warning fields") then return end
-	if not (coop_mode and coop_mode.is_player_mirror()) then return end
-	env_cl.warning = { cycle = t.cycle, stage = t.stage, at = time_global() }
-end)
-
-local function play_crow_warning(tg)
-	local warning = env_cl.warning
-	if not warning or not db.actor then return end
-	env_cl.warning = nil
-	if env_cl.s or tg - warning.at > 2000 or not env_reaches_here() then return end
-	local levels = level_weathers and level_weathers.valid_levels
-	if levels and levels[level.name()] ~= true then return end
-	local played = env_cl.warning_played
-	if played and played.cycle == warning.cycle and played.stage >= warning.stage then return end
-	local mod = coop_mods_core.mod("surge_manager")
-	local sm = surge_mgr()
-	local sounds = sm and sm.blowout_sounds
-	local stage = CROW_WARNING[warning.stage]
-	if not (mod and mod.play_sound_radius and sounds and sounds[stage[1]] and sounds[stage[2]]) then return end
-	env_cl.warning_played = warning
-	mod.play_sound_radius(sounds[stage[1]], 1000, stage[3], stage[4])
-	mod.play_sound_radius(sounds[stage[2]], 1000, stage[3], stage[4])
-end
-
--------------------------------------------------------------------------------
--- Restrictions: the stock debug tools, the client's world update. Saving and loading by hand are refused by coop_saves
--- alone, on every machine: a second gate here would show the player a second hint for the same key.
+-- Restrictions: the stock debug tools, the binders of a process whose world is decided elsewhere. Saving and loading by
+-- hand are refused by coop_saves alone, on every machine: a second gate here would show the player a second hint for the
+-- same key.
 -------------------------------------------------------------------------------
 local client_patched = false
 
--- [route_none_functions] of configs\coop_route*.ltx (was [blocked_functions]), read by the engine.
+-- [route_none_functions] of configs\coop_route*.ltx, read by the engine.
 local function none_functions()
 	local r = api and api.route
 	if not (r and type(r.none_functions) == "function") then return {} end
@@ -1120,14 +272,9 @@ local function none_functions()
 	return ok and type(list) == "table" and list or {}
 end
 
-local function session_on()
-	if not api then return false end
-	local ok, on = pcall(api.is_active)
-	return ok and on == true
-end
-
--- DEBUG_DESIGN B.8: in any session, the host's too, the stock debug tools never run: every debug action goes through the
--- server (F7 is the co-op window, coop_debug_ui). Outside a session the stock function runs. Installed once per Lua state.
+-- In any session, the host's too, the stock debug tools never run: every debug action goes through the server (F7 is
+-- the co-op window, coop_debug_ui; docs\DEBUG_DESIGN.md B.8). Outside a session the stock function runs. Installed once
+-- per Lua state.
 local stubs_installed = false
 local function stub_blocked_functions()
 	if stubs_installed then return end
@@ -1140,7 +287,7 @@ local function stub_blocked_functions()
 			if ok and type(mod) == "table" and type(mod[fname]) == "function" then
 				local orig = mod[fname]
 				mod[fname] = function(...)
-					if session_on() then
+					if coop_util.active() then
 						hud_msg("Co-op: in a session the debug window is F7, the server carries out its actions")
 						return
 					end
@@ -1153,13 +300,13 @@ local function stub_blocked_functions()
 	if n > 0 then log("%d stock debug tool entry point(s) disabled while a session is on", n) end
 end
 
--- R-6.6 on every machine (DEBUG_DESIGN B.8): while a session is on, DEV_DEBUG and DEV_DEBUG_DEV are off, the host's too: under
--- them stock code acts locally (fast travel to any mark, debug map marks, debug_mode_flag_on). The values before the session
--- come back when it ends. Checked at load and on every update tick: a session can start or end in this Lua state.
+-- While a session is on, DEV_DEBUG and DEV_DEBUG_DEV are off on every machine, the host's too (docs\DEBUG_DESIGN.md B.8):
+-- under them stock code acts locally (fast travel to any mark, debug map marks, debug_mode_flag_on). The values before the
+-- session come back when it ends. Checked at load and on every update tick: a session can start or end in this Lua state.
 local dev_debug_kept = nil -- { d, dd } while a session holds them off
 
-function debug_gate_tick()
-	local on = session_on()
+local function debug_gate_tick()
+	local on = coop_util.active()
 	if on and not dev_debug_kept then
 		dev_debug_kept = { d = rawget(_G, "DEV_DEBUG"), dd = rawget(_G, "DEV_DEBUG_DEV") }
 		if dev_debug_kept.d or dev_debug_kept.dd then
@@ -1178,47 +325,16 @@ function debug_gate_tick()
 	end
 end
 
--- Smart terrains: the online binder runs the server object's update every tick (jobs, respawn ->
--- SIMBOARD:create_squad). That is world simulation, the host's job: on a client alife():create is refused
--- (nil) and the stock sim_board.create_squad indexes the result -> FATAL in a binder update. Binders are
--- object classes, not callbacks, so the domain filter does not cover them.
--- F3a (docs\SPLIT_LEVELS.md section 4): a map server runs the jobs of its level's smarts, the NPCs there are its own; who respawns
--- where stays the world server's: its offline world creates the squads, and they come over through the transfers.
-local function patch_smart_terrain_binder()
-	local m = bind_smart_terrain
-	local cls = m and m.smart_terrain_binder
-	if not (cls and type(cls.update) == "function") then return end
-	local orig = cls.update
-	cls.update = function(self, delta)
-		if coop_mode and coop_mode.is_player_mirror() then
-			object_binder.update(self, delta)
-			return
-		end
-		return orig(self, delta)
-	end
-	local se = smart_terrain and smart_terrain.se_smart_terrain
-	if se and type(se.try_respawn) == "function" then
-		local orig_respawn = se.try_respawn
-		se.try_respawn = function(self, ...)
-			if coop_mode and coop_mode.leads_here() and not coop_mode.decides_world() then return end
-			return orig_respawn(self, ...)
-		end
-	end
-	log("smart terrain binder: the world update (jobs, respawn) runs on the host only")
-end
-
+-- For a process whose world another process decides (coop_util.follows_world).
 local function install_client_patches()
 	if client_patched then return end
 	client_patched = true
-	local ok_st, err_st = pcall(patch_smart_terrain_binder)
-	if not ok_st then report_error("coop_main", "smart terrain patch", err_st) end
-	local ok_cb, err_cb = pcall(function() return coop_client_binders.install() end) if not ok_cb then report_error("coop_main", "client binders patch", err_cb) end -- W10: the other object binders
-	local ok, err = pcall(stub_blocked_functions)
-	if not ok then report_error("coop_main", "debug tools patch", err) end
+	try("client binders patch", function() return coop_client_binders.install() end)
+	try("debug tools patch", stub_blocked_functions)
 end
 
 -------------------------------------------------------------------------------
--- Update
+-- Context line
 -------------------------------------------------------------------------------
 -- The launcher's error reports read the last of these lines from the log: no nicks, no ids of players, no addresses.
 local CONTEXT_MS = 60000
@@ -1233,11 +349,11 @@ function context_line(t)
 end
 
 local function context_now()
-	local answer = coop_mode and coop_mode.hook("context")
+	local answer = coop_mode.hook("context")
 	local mode_context = answer and answer()
-	local role = mode_context and mode_context.role or (coop_mode and coop_mode.decides_world() and "host" or "client")
+	local role = mode_context and mode_context.role or (coop_mode.decides_world() and "host" or "client")
 	local list = {}
-	if not (coop_mode and coop_mode.leads_here() and not coop_mode.decides_world()) then -- the map only has copies
+	if not coop_mode.leads_for_world_elsewhere() then -- the map only has copies
 		local tm = rawget(_G, "task_manager") or task_manager
 		local mgr = tm and tm.get_task_manager and tm.get_task_manager()
 		if mgr and type(mgr.task_info) == "table" then
@@ -1245,7 +361,7 @@ local function context_now()
 			table.sort(list)
 		end
 	end
-	return { role = role, level = level.name(), players = #(api.players() or {}), split = mode_context and mode_context.split,
+	return { role = role, level = level.name(), players = #coop_util.players(), split = mode_context and mode_context.split,
 		protocol = api.protocol and api.protocol() or 0, quests = list }
 end
 
@@ -1261,81 +377,33 @@ local function context_tick(tg)
 	end
 end
 
+-------------------------------------------------------------------------------
+-- Update
+-------------------------------------------------------------------------------
 local next_tick = 0
 
 local function actor_on_update()
-	if not api then return end
-	client_mode = api.is_client()
 	local tg = time_global()
 	context_tick(tg)
 	if tg < next_tick then return end
 	next_tick = tg + 250
 	debug_gate_tick()
-	local plays = actor_plays()
-	if api.is_active() and coop_mode and coop_mode.decides_world() then
-		if not host_hooks then install_host_hooks() end
-		host_env_tick()
-		publish_crow_warning(tg)
-	elseif api.is_client() and api.is_live() then
-		if not client_patched then install_client_patches() end
-		-- All scripts have registered their answers by the first live tick.
-		if not surge_cls_patched then
-			local ok, err = pcall(patch_env_classes_for_client)
-			if not ok then report_error("coop_main", "emission patch", err) end
-		end
-		if not env_cl.have and tg >= env_cl.req_at then
-			env_cl.req_at = tg + 15000
-			api.send_event("coop_env_req", "", 0)
-		end
-		client_env_tick()
-		play_crow_warning(tg)
-		if plays and (env_cl.s or env_cl.p) and tg >= env_cl.cover_at then
-			env_cl.cover_at = tg + 1000
-			local ok, c = pcall(own_cover)
-			api.send_event("coop_env_cover", encode({ c = ok and c == true }), 0)
-		end
-	end
+	-- All scripts have registered their answers by the first live tick.
+	if not client_patched and coop_util.follows_world() and api.is_live() then install_client_patches() end
 end
 
 -------------------------------------------------------------------------------
 -- Diagnostics (coop_status)
 -------------------------------------------------------------------------------
-STATUS_MODULES = {
-	"coop_route",
-	"coop_trust", -- TZ v2 6.4: the checks of a client's request that log before they refuse
-	"coop_core_chat", "coop_core_hud", "coop_core_player", "coop_core_world",
-	"coop_world_weather", "coop_world_fx", "coop_world_fight", "coop_world_compat",
-	"coop_economy_core",
-	"coop_npc_logic", "coop_npc_effects", "coop_npc_meet", "coop_npc_companions", "coop_npc_disguise",
-	"coop_npc_world", "coop_npc_compat",
-	"coop_tasks",
-	"coop_loot_claim",
-	"coop_mods_core",
-	"coop_mods_actor_voice",
-}
-
+-- This script's line, then the lines of every module that registered itself (coop_util.add_status), each at the place it
+-- named. coop_settings is printed by the engine itself.
 function print_status()
-	local decides = api and api.is_active() and coop_mode and coop_mode.decides_world()
-	local role = not api and "no engine API" or decides and "host" or api.is_client() and "client" or "off"
-	-- the callback router's counters are the engine's ([coop] routes lines), the shim's own line is coop_route's
+	local decides = api ~= nil and api.is_active() and coop_mode.decides_world()
+	local role = not api and "no engine API" or decides and "host" or api.is_active() and "client" or "off"
+	-- the callback router's counters are the engine's ([coop] routes lines), the router's own line is coop_route's
 	log("role %s, client mode %s | caught lua errors %d, events in %d (%d handler errors), chat %d",
-		role, tostring(client_mode), stats.errors, stats.events_in, stats.event_errors, stats.chat)
-	if decides then
-		log("emission sync: phase '%s', emission #%d", tostring(env_host.sig), env_host.serial)
-	elseif env_cl.have then
-		log("emission mirror: emission %s (%.0f game s), psi-storm %s (%.0f game s), cover %s, last state %d ms ago, errors %d",
-			tostring(env_cl.s), env_cl.sg, tostring(env_cl.p), env_cl.pg, tostring(env_cl.cover),
-			time_global() - env_cl.at, env_cl.mirror_errors)
-	end
-	-- every group's own lines (W5): core, economy (all its modules), npc, quests (coop_tasks -> coop_quests_*),
-	-- mods (all families). coop_settings is printed by the engine itself.
-	for _, name in ipairs(STATUS_MODULES) do
-		local m = rawget(_G, name)
-		if m and m.print_status then
-			local ok, err = pcall(m.print_status)
-			if not ok then log("! %s.print_status: %s", name, tostring(err)) end
-		end
-	end
+		role, tostring(role == "client"), stats.errors, stats.events_in, stats.event_errors, stats.chat)
+	coop_util.print_statuses(log)
 end
 
 -------------------------------------------------------------------------------
@@ -1344,50 +412,50 @@ end
 function on_game_start()
 	if not api then return end
 	RegisterScriptCallback("actor_on_update", actor_on_update)
-	if client_mode then install_client_patches() end
+	-- Now, before the level's objects exist: a binder must find its patch at its first update. A world server asked here in
+	-- its session, before its layer is in the facade, gets them too (coop_util.follows_world): each asks again when called.
+	if coop_util.follows_world() then install_client_patches() end
 	-- every machine: the stubs check the session when they are called (single player keeps the stock tools)
-	local ok, err = pcall(stub_blocked_functions)
-	if not ok then report_error("coop_main", "debug tools patch", err) end
+	try("debug tools patch", stub_blocked_functions)
 end
 
--- Loaded by axr_main.on_game_start() before any script's on_game_start runs, so the router shim sees
--- (almost) every registration; earlier ones it routes in place. The Lua state is recreated for every
--- loaded world, and on a client that happens while the engine is in the "loading the host's world" phase.
+-- Loaded by axr_main.on_game_start() before any script's on_game_start runs, so the router sees (almost) every
+-- registration; earlier ones it routes in place. The Lua state is recreated for every loaded world, and on a client that
+-- happens while the engine is in the "loading the host's world" phase.
 
+-- The callbacks exist on any exe, one without co-op too: a script that registers for one of them must find it there.
 -- Created at load time (like dxml_core does) so addons can register in their own on_game_start.
-ensure_callback("coop_on_event")
-ensure_callback("coop_on_chat")
--- Fired by the engine (W5), subscribed by coop_npc_effects / coop_mods_core:
---   coop_actor_revived(reviver_peer, medkit_section)   revived player's machine (C1.6)
---   coop_on_container_opened(peer, container_id)       host, a client opened a box or a corpse (C1.8)
---   coop_avatar_step(avatar_id, material, power, move_state)   any machine, a player's proxy stepped (C2.2)
-ensure_callback("coop_actor_revived")
-ensure_callback("coop_on_container_opened")
-ensure_callback("coop_avatar_step")
-ensure_callback("coop_respawned") -- coop_death adds it at its own start: a subscriber that starts earlier would be lost
--- Fired by the engine (parity audit D10) when a queue of events dropped some on this machine: coop_events_lost(count).
--- Events are for effects, state goes over coop.sync; a script with a resync of its own asks for it here (coop_tasks).
-ensure_callback("coop_events_lost")
--- Fired by the engine (xrCoop/coop_soft_move.h) on who stays in his world through the host's move, a player or a map server: the world
--- server is away, the world server is back. On the world server: _back, its new Lua is up and its connections open again.
--- Fired by coop_main.on_world_leaving (build 56) on a client when a load that continues this world starts: (epoch).
-ensure_callback("coop_on_world_leaving")
-ensure_callback("coop_world_away")
-ensure_callback("coop_world_back")
+route.declare("coop_on_event")
+route.declare("coop_on_chat")
+-- Fired by the engine, subscribed by coop_npc_effects / coop_mods_core:
+--   coop_actor_revived(reviver_peer, medkit_section)   revived player's machine
+--   coop_on_container_opened(peer, container_id)       host, a client opened a box or a corpse
+--   coop_avatar_step(avatar_id, material, power, move_state)   any machine, a player's proxy stepped
+route.declare("coop_actor_revived")
+route.declare("coop_on_container_opened")
+route.declare("coop_avatar_step")
+route.declare("coop_respawned") -- coop_death adds it at its own start: a subscriber that starts earlier would be lost
+-- Fired by the engine when a queue of events dropped some on this machine: coop_events_lost(count). Events are for
+-- effects, state goes over coop.sync; a script with a resync of its own asks for it here (coop_tasks).
+route.declare("coop_events_lost")
+-- Fired by the engine (xrCoop/coop_soft_move.h) on who stays in his world through the host's move, a player or a map
+-- server: the world server is away, the world server is back. On the world server: _back, its new Lua is up and its
+-- connections open again. Fired by on_world_leaving on a client when a load that continues this world starts: (epoch).
+route.declare("coop_on_world_leaving")
+route.declare("coop_world_away")
+route.declare("coop_world_back")
 -- Fired by the engine (coop::debug, docs\DEBUG_DESIGN.md B.2) on every machine when the server's debug state changes:
 -- coop_debug_changed(on, source). Subscribers: coop_debug_server (marks the world), the F7 window.
-ensure_callback("coop_debug_changed")
+route.declare("coop_debug_changed")
 
--- The callback router's Lua half on every machine with the engine API, the host and single player too: a session
--- can start in this Lua state, and none holds on the host as well (F2 T10).
 if api then
-	local ok, err = pcall(function() return coop_route.install() end)
+	-- The callback router's Lua half on every machine with the engine API, the host and single player too: a session can
+	-- start in this Lua state, and none holds on the host as well. Protected: this script must load whatever the router
+	-- does.
+	local ok, err = pcall(route.install)
 	if not ok then log("! callback router shim failed to install: %s", tostring(err)) end
-end
 
-if api and api.is_client() then
-	client_mode = true
+	-- Debug mode is a cheat menu in Anomaly (spawner, teleports): off in a session on every machine, the host's too. Now,
+	-- before the stock scripts' on_game_start reads it, and on every update after.
+	debug_gate_tick()
 end
--- Debug mode is a cheat menu in Anomaly (spawner, teleports): off in a session on every machine, the host's too (R-6.6,
--- DEBUG_DESIGN B.8). Now, before the stock scripts' on_game_start reads it, and on every update after.
-debug_gate_tick()

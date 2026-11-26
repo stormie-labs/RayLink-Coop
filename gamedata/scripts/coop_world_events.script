@@ -1,7 +1,23 @@
 -- Ядро: без проверок режима (docs/MODES.md)
+--[[
+	Anomaly Coop - the script events only the world says (gamedata\scripts\coop_world_events.script): one list.
+
+	For every name on it the engine refuses a map server's event before the world's relay would rewrite its sender to 0
+	(coop.reserve_world_event), and the event bus drops it from any sender but the world, peer 0 (coop_main.on_event).
+
+	A name belongs here only when every sender of it is the process that decides the world. What a player's machine or
+	a map server sends, a request or a report (coop_env_req, core.news_up, mods.bounty_req), stays off the list: the bus
+	would drop it. tests\lua\test_world_events_senders.lua names the senders of every name and pins both sides.
+
+		reserve(name)              a script's own world-only event, added to the list and reserved with the engine now
+		allows(name, from) -> bool false: a reserved event from another sender, dropped (trust check env_world_sender)
+		on_game_start()            reserves the whole list with the engine; the engine calls it again when it hosts again in
+		                           the same Lua state, after the end of a session cleared its reservations
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
 
 local names = {
-	"mods.preblowout_warning",
 	"coop_env",
 	"srv.news_sample",
 	"mods.bounty_t",
@@ -23,18 +39,40 @@ local names = {
 	"coop_dao",
 	"coop_sl_news",
 	"coop_fac",
-	-- the player-facing news (coop_core_world): a map server reports its news as core.news_up to the world's Lua, which
-	-- checks it and sends core.news; reserved here so that every hosting (a rehost too) refuses a bridge's core.news
+	-- the player-facing news (coop_core_world_news): a map server reports its news as core.news_up to the world's Lua,
+	-- which checks it and sends core.news; reserved here so that every hosting (a rehost too) refuses a bridge's
+	-- core.news
 	"core.news",
 	"core.actor_voice",
 }
 
-function on_game_start()
-	local api = rawget(_G, "coop")
-	if not api or type(api.reserve_world_event) ~= "function" then return end
-	for _, name in ipairs(names) do
-		if not api.reserve_world_event(name) then
-			printf("! [coop] could not reserve world script event '%s'", name)
-		end
+local reserved = {}
+for _, name in ipairs(names) do reserved[name] = true end
+
+local function reserve_in_engine(name)
+	if not api.reserve_world_event(name) then
+		printf("! [coop] could not reserve world script event '%s'", name)
 	end
+end
+
+local function engine_reserves()
+	return api ~= nil and type(api.reserve_world_event) == "function"
+end
+
+function reserve(name)
+	if type(name) ~= "string" or reserved[name] then return end
+	reserved[name] = true
+	names[#names + 1] = name
+	if engine_reserves() then reserve_in_engine(name) end
+end
+
+function allows(name, from)
+	if not reserved[name] then return true end
+	return coop_trust.guard("env_world_sender", from == 0, "event %s from peer %s is reserved for the world",
+		name, tostring(from))
+end
+
+function on_game_start()
+	if not engine_reserves() then return end
+	for _, name in ipairs(names) do reserve_in_engine(name) end
 end

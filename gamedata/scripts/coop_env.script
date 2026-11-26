@@ -1,0 +1,800 @@
+-- Ядро: без проверок режима (docs/MODES.md)
+--[[
+	Anomaly Coop - emission and psi-storm across the processes of a session (gamedata\scripts\coop_env.script)
+
+	The process that decides the world runs the stock managers and sends the phase (started, elapsed game seconds, time
+	factor) with its cover verdict to every player. A process whose world is decided elsewhere never starts or ends an
+	emission or a psi storm by itself: it runs the stock update() with the phase it was sent, for the same visuals and
+	sounds, with the world-changing parts switched off. The people its wave or vortex reaches die where the map is led
+	(coop_env_npc_kill), its hide task is the player's own, and the final kill comes as an event (coop_env_kill) when the
+	player's character is outside a shelter at the kill moment.
+
+	API:
+		set_policy(policy)        the mode's part: { publish(phase), reaches_here(), relay_report(name, report, from),
+		                          report_peer(from, t) }, each optional
+		add_hook(kind, fn)        a mod's adapter joins the emission, every 250 ms (the router's tick service):
+		                            "world_tick"(tg)          on the process that decides the world
+		                            "mirror_tick"(tg)         on a process whose world is decided elsewhere
+		                          and when a player's mirror takes up an emission that runs:
+		                            "surge_enter"(sm, sec)    before its first update (stock seconds since the start)
+		                            "surge_entered"(sm, sec)  after it
+		mirrors_surge() -> bool   the world's emission runs in this process's mirror
+		reaches_here() -> bool    the world's emission and psi storm reach this map
+		print_status()            the coop_status lines
+	Events: coop_env (phase), coop_env_req, coop_env_cover, coop_env_npc_kill, coop_env_kill.
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local log = coop_util.logger("[coop-lua]")
+local players, player_row = coop_util.players, coop_util.player_row
+
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+
+local surge_cls_patched, host_hooks = false, false
+-- The judge of the players on this map: the process that decides the world, or the one that leads a map of it.
+local env_judge = { sig = nil, next_send = 0, serial = 0, kill_sent = {}, cover_rep = {}, npc_kill_at = {} }
+local env_cl = { have = false, s = false, sg = 0, p = false, pg = 0, tf = nil, cover = true, at = 0,
+	next_tick = 0, req_at = 0, mirror_errors = 0, cover_at = 0 }
+
+-------------------------------------------------------------------------------
+-- The mode's policy and the adapters' hooks
+-------------------------------------------------------------------------------
+local env_policy = {}
+
+function set_policy(policy)
+	env_policy = policy
+end
+
+local hooks = { world_tick = {}, mirror_tick = {}, surge_enter = {}, surge_entered = {} }
+
+function add_hook(kind, fn)
+	if not hooks[kind] or type(fn) ~= "function" then return false end
+	local list = hooks[kind]
+	list[#list + 1] = fn
+	return true
+end
+
+local function run_hooks(kind, ...)
+	local list = hooks[kind]
+	for i = 1, #list do
+		local ok, err = pcall(list[i], ...)
+		if not ok then coop_main.report_error("coop_env", kind .. " hook", err) end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- The stock managers
+-------------------------------------------------------------------------------
+function reaches_here()
+	return not env_policy.reaches_here or env_policy.reaches_here()
+end
+
+function mirrors_surge()
+	return env_cl.s == true
+end
+
+local function surge_mgr()
+	local mod = rawget(_G, "surge_manager") or surge_manager
+	return mod and mod.get_surge_manager and mod.get_surge_manager()
+end
+
+local function psi_mgr()
+	local mod = rawget(_G, "psi_storm_manager") or psi_storm_manager
+	return mod and mod.get_psi_storm_manager and mod.get_psi_storm_manager()
+end
+
+-- Started?, game seconds since the start.
+local function env_phase(m)
+	if not (m and m.started == true and m.inited_time) then return false, 0 end
+	local ok, gs = pcall(function() return game.get_game_time():diffSec(m.inited_time) end)
+	return true, (ok and gs) or 0
+end
+
+-------------------------------------------------------------------------------
+-- The judge: shelters and the kill moment
+-------------------------------------------------------------------------------
+-- Reports are compared with the shelter at this player's body on the level that leads him.
+local COVER_FRESH_MS = 3000
+local function reported_cover(peer)
+	local rep = env_judge.cover_rep[peer]
+	if not rep then return nil end
+	local age = time_global() - rep.at
+	if age >= 0 and age <= COVER_FRESH_MS then return rep end
+	env_judge.cover_rep[peer] = nil
+end
+
+local function player_in_cover(player, obj, active)
+	local rep = reported_cover(player.id)
+	if coop_env_cover then return coop_env_cover.decide(player.id, obj, rep, player.nick, active) end
+	-- Standalone loaders without the cover module still use the stock shelter check.
+	if rep then return rep.c end
+	if not obj then return nil end
+	local sm = surge_mgr()
+	if not sm then return true end
+	if sm.init_surge_covers then sm:init_surge_covers() end
+	return sm:pos_in_cover(obj:position()) == true
+end
+
+function env_judge.player_here(p)
+	if p.is_self then return coop_mode.actor_is_player() end
+	return coop_mode.where(p.id) ~= "away"
+end
+
+function env_judge.body(p)
+	if p.is_self then return db.actor end
+	return p.avatar_id and level.object_by_id(p.avatar_id)
+end
+
+function env_judge.sample_cover(active)
+	if not coop_env_cover or not coop_mode.leads_here() then return end
+	if active then
+		for _, p in ipairs(players()) do
+			if env_judge.player_here(p) then player_in_cover(p, env_judge.body(p), true) end
+		end
+	elseif env_judge.cover_active then
+		coop_env_cover.reset()
+	end
+	env_judge.cover_active = active
+end
+
+-- A player sleeping through the emission on an anabiotic (coop_npc_effects keeps it per player). The stock survive
+-- condition ({+anabiotic_in_process}) is this process's actor's and spares nobody else.
+local function anabiotic(peer)
+	local fx = rawget(_G, "coop_npc_effects")
+	if not (fx and fx.is_anabiotic) then return false end
+	local ok, r = pcall(fx.is_anabiotic, peer)
+	return ok and r == true
+end
+
+-- The stock surge decided to kill unsheltered people now (2nd wave or the end). Same verdict for every other player's
+-- character, once per emission; the wave position is not used for them. Story immunity (surge_immuned) is each player's
+-- own and is checked on his machine (coop_env_kill).
+local function judge_surge_kill()
+	if not api.is_active() or env_policy.publish then return end
+	local active = env_phase(surge_mgr()) or env_phase(psi_mgr())
+	for _, p in ipairs(players()) do
+		if not p.is_self and env_judge.kill_sent[p.id] ~= env_judge.serial and anabiotic(p.id) then
+			-- spared at this kill moment only: one who wakes before the next one is judged then
+			log("emission: %s (#%d) sleeps on an anabiotic, spared", tostring(p.nick), p.id)
+		elseif not p.is_self and env_judge.kill_sent[p.id] ~= env_judge.serial and env_judge.player_here(p) then
+			local obj = env_judge.body(p)
+			-- Without a body, a fresh negative report still exposes him; his machine checks he is alive.
+			local exposed = (not obj or obj:alive()) and player_in_cover(p, obj, active) == false
+			if exposed then
+				env_judge.kill_sent[p.id] = env_judge.serial
+				api.send_event("coop_env_kill", coop_main.encode({ kind = "surge" }), p.id)
+				log("emission: %s (#%d) is outside a shelter, kill sent", tostring(p.nick), p.id)
+			end
+		end
+	end
+end
+
+local function install_judge_hooks()
+	host_hooks = true
+	local mod = rawget(_G, "surge_manager") or surge_manager
+	local cls = mod and mod.CSurgeManager
+	if not cls then
+		log("! surge_manager.CSurgeManager not found, emission kills are not sent to clients")
+		return
+	end
+	for _, fname in ipairs({ "kill_actor_at_pos", "kill_all_unhided" }) do
+		local ok, orig = pcall(function() return cls[fname] end)
+		if ok and type(orig) == "function" then
+			cls[fname] = function(self, ...)
+				-- the end of an emission that runs elsewhere reaches nobody on a level it does not reach
+				if not reaches_here() then return end
+				local r = orig(self, ...)
+				local okc, err = pcall(judge_surge_kill)
+				if not okc then coop_main.report_error("coop_env", "surge kill check", err) end
+				return r
+			end
+		end
+	end
+end
+
+local function world_env_tick()
+	local s_on, s_gs = env_phase(surge_mgr())
+	local p_on, p_gs = env_phase(psi_mgr())
+	local sig = (s_on and "s" or "-") .. (p_on and "p" or "-")
+	local tg = time_global()
+	if sig ~= env_judge.sig then
+		if s_on and not (env_judge.sig or ""):find("s", 1, true) then
+			env_judge.serial = env_judge.serial + 1 -- a new emission: everybody can be caught again
+		end
+		env_judge.sig = sig
+		env_judge.next_send = 0
+	end
+	if tg < env_judge.next_send then return end
+	local active = s_on or p_on
+	env_judge.next_send = tg + (active and 1000 or 10000)
+	local phase = { s = s_on, sg = s_gs, p = p_on, pg = p_gs, tf = level.get_time_factor(), c = true }
+	if env_policy.publish then return env_policy.publish(phase) end
+	if not active and env_judge.cover_active then coop_env_cover.reset() end
+	env_judge.cover_active = active and coop_env_cover ~= nil
+	for _, p in ipairs(players()) do
+		if not p.is_self then
+			local cover = true
+			if active and env_judge.player_here(p) then
+				cover = player_in_cover(p, env_judge.body(p), true) ~= false
+			end
+			phase.c = cover
+			api.send_event("coop_env", coop_main.encode(phase), p.id)
+		elseif active and coop_env_cover and env_judge.player_here(p) then
+			player_in_cover(p, env_judge.body(p), true)
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- The mirror: the stock managers of a process whose world is decided elsewhere
+-------------------------------------------------------------------------------
+-- The stock kill of the people a wave or a vortex reaches (kill_objects_at_pos) goes to the map's leader with where it is
+-- (surge: the wave's z, false = everybody unhidden; psi storm: the vortex). Once a second for the wave (the stock calls it
+-- every 5 game seconds), every vortex.
+local NPC_KILL_WAVE_MS = 1000
+local npc_kill_cl = { wave_at = -NPC_KILL_WAVE_MS }
+local function forward_npc_kill(cls, kind)
+	if not cls then return 0 end
+	local ok, orig = pcall(function() return cls.kill_objects_at_pos end)
+	if not (ok and type(orig) == "function") then return 0 end
+	cls.kill_objects_at_pos = function(self, pos)
+		if not coop_mode.is_player_mirror() then return end
+		local t = { k = kind }
+		if kind == "p" then
+			if type(pos) ~= "userdata" and type(pos) ~= "table" then return end
+			t.x, t.y, t.z = pos.x, pos.y, pos.z
+		else
+			local tg = time_global()
+			if tg - npc_kill_cl.wave_at < NPC_KILL_WAVE_MS then return end
+			npc_kill_cl.wave_at = tg
+			t.z = tonumber(pos) -- nil: everybody unhidden around him
+		end
+		api.send_event("coop_env_npc_kill", coop_main.encode(t), 0)
+	end
+	return 1
+end
+
+-- The hide task is this player's own. Its id is made personal (coop_tasks.set_local_task: never sent to the world, never
+-- mirrored), then the stock gives it here; its condition ({=surge_complete}) reads the mirrored phase, so it is done when
+-- the world's emission ends here.
+local function personal_hide_task(cls, fname, field, default_id)
+	if not cls then return 0 end
+	local ok, orig = pcall(function() return cls[fname] end)
+	if not (ok and type(orig) == "function") then return 0 end
+	cls[fname] = function(self, ...)
+		local sect = self[field]
+		if sect == "empty" then return end
+		local id = (sect == nil or sect == "") and default_id or sect
+		local ct = rawget(_G, "coop_tasks")
+		if not (ct and type(ct.set_local_task) == "function" and ct.set_local_task(id)) then
+			log("! hide task '%s' cannot be personal here: not given", tostring(id))
+			return
+		end
+		return orig(self, ...)
+	end
+	return 1
+end
+
+-- Stop the parts of the stock managers that change the world or decide the actor's death.
+local function patch_env_classes_for_mirror()
+	if surge_cls_patched then return end
+	surge_cls_patched = true
+	local function neutralize(cls, names)
+		if not cls then return 0 end
+		local n = 0
+		for _, fname in ipairs(names) do
+			local ok, f = pcall(function() return cls[fname] end)
+			if ok and type(f) == "function" then
+				cls[fname] = function() end
+				n = n + 1
+			end
+		end
+		return n
+	end
+	local sm_mod = rawget(_G, "surge_manager") or surge_manager
+	local pm_mod = rawget(_G, "psi_storm_manager") or psi_storm_manager
+	if not coop_mode.actor_is_player() then
+		-- An authority without a player runs the consequences and has no HUD or personal tasks.
+		local n = neutralize(sm_mod and sm_mod.CSurgeManager, { "give_surge_hide_task", "displayIndicators" })
+		n = n + neutralize(pm_mod and pm_mod.CPsiStormManager, { "give_psi_storm_hide_task", "displayIndicators" })
+		install_judge_hooks()
+		log("emission/psi-storm: applying consequences locally (%d hud method(s) off)", n)
+		return
+	end
+	-- launch_rockets (signal lights) is the world's too: the psi storm calls it unconditionally
+	local n = neutralize(sm_mod and sm_mod.CSurgeManager, { "kill_crows_at_pos",
+		"turn_to_zombie", "explode", "kill_actor_at_pos", "kill_all_unhided", "launch_rockets" })
+	n = n + neutralize(pm_mod and pm_mod.CPsiStormManager, { "kill_crows_at_pos", "launch_rockets" })
+	-- The people this player's wave or vortex reaches die where the map is led (the stock kill there, kept to his area);
+	-- his hide task is his own (a personal task, finished when the world's phase ends here).
+	local f = 0
+	f = f + forward_npc_kill(sm_mod and sm_mod.CSurgeManager, "s")
+	f = f + forward_npc_kill(pm_mod and pm_mod.CPsiStormManager, "p")
+	f = f + personal_hide_task(sm_mod and sm_mod.CSurgeManager, "give_surge_hide_task", "surge_task_sect", "hide_from_surge")
+	f = f + personal_hide_task(pm_mod and pm_mod.CPsiStormManager, "give_psi_storm_hide_task", "psi_storm_task_sect",
+		"hide_from_psi_storm")
+	log("emission/psi-storm: %d world-changing method(s) disabled, %d routed (kills to the host, personal hide tasks), "
+		.. "phases follow the host", n, f)
+end
+
+-- A mirror never ends an emission or a psi storm by itself. The stock update() ends it when the elapsed seconds reach
+-- surge_time (psi storm: psi_storm_duration); the mirror's clock is extrapolated and can get there before the world's
+-- "ended" state arrives, and mirror_env_tick would then start a fresh mirror: repeated start/end events and +rank per
+-- cycle. In a mirror both limits are "never"; only the world's phase ends it (mirror_env_tick -> end_surge / finish).
+-- initialize() resets the stock value, so it is set again after it and before every update.
+local NEVER_ENDS = 1e9
+
+local function set_inited(m, game_sec)
+	local now = game.get_game_time()
+	local d = game.CTime()
+	d:setHMSms(0, 0, math.max(0, math.floor(game_sec)), 0)
+	now:sub(d)
+	m.inited_time = now
+end
+
+-- Runs fn with the judge's cover verdict as this actor's "current_safe_cover".
+local function with_cover(cover, fn, what)
+	local saved = GetEvent("current_safe_cover")
+	SetEvent("current_safe_cover", cover and true or false)
+	local ok, err = pcall(fn)
+	SetEvent("current_safe_cover", saved)
+	if not ok then
+		env_cl.mirror_errors = env_cl.mirror_errors + 1
+		coop_main.report_error("coop_env", what, err)
+	end
+end
+
+local function mirror_start_surge(m, previous_factor)
+	if not m._state_loaded then
+		m:initialize()
+		m._state_loaded = true
+	end
+	m.surge_time = NEVER_ENDS
+	m.game_time_factor = previous_factor
+	if m.finalize then m:finalize() end
+	m.started, m.finished = true, false
+	-- false: the stock neither starts nor fades these, quake_step plays them
+	m.blowout_waves, m.objects_to_kill, m.body_tears = {}, {}, {}
+	m.stages = { quake20 = false, quake40 = false, quake60 = false, quake80 = false, quake100 = false }
+	m.hitFactor, m.zombie_count = 0, 0
+	m.effector_set, m.second_message_given, m.ui_disabled = false, false, false
+	m.task_given = false -- the stock update gives this player's personal hide task at its moment
+	m.blowout_sound, m.wave_sound = false, false
+	env_judge.serial = env_judge.serial + 1 -- a map's leader: a new emission, everybody on its level can be caught again
+	pcall(SendScriptCallback, "actor_on_interaction", "anomalies", nil, "emission_start")
+	log("emission started by the host")
+end
+
+local function mirror_start_psi(m, previous_factor)
+	surge_mgr() -- psi initialize() reads surge_manager.SurgeManager.ini
+	if not m._state_loaded then
+		m:initialize()
+		m._state_loaded = true
+	end
+	m.psi_storm_duration = NEVER_ENDS
+	m.game_time_factor = previous_factor
+	if m.finalize then m:finalize() end
+	m.started, m.finished = true, false
+	m.hitFactor = 0
+	m.stages, m.vortexes, m.humanParticles = {}, {}, {}
+	m.next_vortex_at = nil
+	m.task_given = false -- a personal hide task, given by the stock update
+	pcall(SendScriptCallback, "actor_on_interaction", "anomalies", nil, "psi_storm_start")
+	log("psi-storm started by the host")
+end
+
+local function follow_env_factor()
+	if level.get_time_factor() ~= env_cl.tf then level.set_time_factor(env_cl.tf) end
+end
+
+local function mirror_update(m, game_sec, what, limit_field)
+	m.first_update = true -- the world already validated level and options
+	m[limit_field] = NEVER_ENDS -- only the world ends the emission / psi storm
+	set_inited(m, game_sec)
+	follow_env_factor()
+	with_cover(env_cl.cover, function() m:update() end, what)
+end
+
+-- A mirror that starts late (the player joined during it): the stock update plays every stage that is due at once. A
+-- stage is over this many stock seconds in (CSurgeManager:update()). The rumble is not listed: it is on now, and it ends
+-- later.
+local SURGE_STAGES_OVER = { siren = 25, impact = 47, ["1stwavesnd"] = 108,
+	["1stwave"] = 120, ["2ndwavesnd"] = 156, ["2ndwave"] = 168, endsnd = 220 }
+local PSI_STAGES_OVER = { beginning = 5, siren = 15 }
+
+-- The quake in a mirror: the stock's ladder of surge_manager.update, played here from the world's clock with an effector
+-- id of its own, each step in the log. A mirror that starts late comes in on the step of that moment. Stock seconds; the
+-- last row of each pair of lines is the fade.
+local QUAKE_CAM = 39571 -- free in the stock, next to the contusion's 39570
+local QUAKE = { { 80, "earthquake_20" }, { 100, "earthquake_40" }, { 102, "earthquake_60" }, { 104, "earthquake_80" },
+	{ 106, "earthquake" }, { 200, "earthquake_80" }, { 202, "earthquake_60" }, { 206, "earthquake_40" }, { 209, "earthquake_20" } }
+local quake_on = nil
+
+local function quake_stop()
+	if not quake_on then return end
+	quake_on = nil
+	pcall(level.remove_cam_effector, QUAKE_CAM)
+end
+
+local function quake_step(sec)
+	if sec >= 214 then return quake_stop() end
+	local name = nil
+	for _, row in ipairs(QUAKE) do
+		if sec >= row[1] then name = row[2] end
+	end
+	if not name or name == quake_on then return end
+	quake_stop()
+	local ok, res = pcall(level.add_cam_effector, "camera_effects\\" .. name .. ".anm", QUAKE_CAM, true, "", 0, false)
+	quake_on = name
+	log("emission quake: %s at %d s, %s", name, sec, ok and ("runs " .. tostring(res) .. " s") or tostring(res))
+end
+
+local function skip_stages_over(m, over, sec)
+	for stage, at in pairs(over) do
+		if sec >= at then m.stages[stage] = true end
+	end
+end
+
+-- The stock writes its "running" flags only inside update(): SetEvent("surge", "state", self.started),
+-- SetEvent("psi_storm", "state", self.started) and "vortex". finish() and end_surge() never write them; the world calls
+-- update() every second after the end as well (surge_manager main_loop), so its next call writes "state" false. A mirror
+-- calls update() only while the world's phase runs (the stock loop is the world's, coop_route.ltx), so the flags would stay
+-- as its last update left them: on. Their readers run in a mirror (the cover bar, item_device, item_radio, ui_dosimeter,
+-- level_environment). So the local state follows the world's phase as a level, every tick: "not running here" (the world's
+-- end, or a level the world's emission does not reach) ends whatever of it is on and writes the flags as the stock's next
+-- update would. A flag left on with nothing running (a load or a level change mid-storm, an end that raised) is a
+-- disagreement with the world: corrected, one log line.
+local ENV_LOCAL = {
+	surge = { name = "emission", stop = function(m) m:end_surge() end },
+	psi_storm = { name = "psi-storm", stop = function(m) m:finish() end, vortex = true },
+}
+
+local function have_events()
+	return type(rawget(_G, "GetEvent")) == "function" and type(rawget(_G, "SetEvent")) == "function"
+end
+
+-- What of a stock manager's run is on here; nil: nothing.
+local function env_left_on(m, key)
+	local on = {}
+	if m.started == true then on[#on + 1] = "running" end
+	if have_events() then
+		if GetEvent(key, "state") then on[#on + 1] = "hud flag" end
+		if ENV_LOCAL[key].vortex and GetEvent(key, "vortex") then on[#on + 1] = "vortex flag" end
+	end
+	return on[1] and table.concat(on, ", ") or nil
+end
+
+-- The world's phase is "not running" here. `why`: nil for the world's end, else why it is not running here.
+local function env_off_here(m, key, why)
+	if key == "surge" then env_cl.surge_mirror = nil end
+	if not m then return end
+	local e = ENV_LOCAL[key]
+	if key == "surge" then quake_stop() end
+	local left = env_left_on(m, key)
+	if not left then return end
+	if m.started == true then
+		with_cover(true, function() e.stop(m) end, e.name .. " end")
+		if why then log("%s ended here: %s", e.name, why) else log("%s ended by the host", e.name) end
+	else
+		log("%s: my local state (%s) disagrees with the host's (not running%s), corrected", e.name, left,
+			why and (", " .. why) or "")
+	end
+	if not have_events() then return end
+	SetEvent(key, "state", false) -- the stock's next update after its end
+	if e.vortex then
+		SetEvent(key, "vortex", false)
+		-- the vortex hit's psi_fade.ppe / electro_fade.ppe (psi_storm_manager vortex_actor_hit)
+		pcall(level.remove_pp_effector, 666)
+		pcall(level.remove_pp_effector, 667)
+	end
+end
+
+-- This machine's view of its shelter. Any of: the underground flag, the cover this machine's scripts keep in
+-- "current_safe_cover" (with_cover only lends it the judge's verdict while the mirror runs and gives it back), the static
+-- covers of the surge script.
+local function own_cover()
+	if GetEvent and GetEvent("underground") then return true end
+	if GetEvent and GetEvent("current_safe_cover") == true then return true end
+	local sm, actor = surge_mgr(), db.actor
+	if not (sm and actor) then return false end
+	if sm.init_surge_covers then sm:init_surge_covers() end
+	return sm:pos_in_cover(actor:position()) == true
+end
+
+local function mirror_env_tick()
+	if not env_cl.have or not db.actor then return end
+	local tg = time_global()
+	if tg < env_cl.next_tick then return end
+	env_cl.next_tick = tg + 1000
+	if tg - env_cl.at > 15000 then return end -- the world is silent: hold the current phase
+	if not reaches_here() then
+		-- under ground the emission of the world is not felt: nothing of it stays on here either
+		env_off_here(surge_mgr(), "surge", "this level is not reached by the world's emission")
+		env_off_here(psi_mgr(), "psi_storm", "this level is not reached by the world's emission")
+		env_judge.sample_cover(false)
+		if coop_env_cover then coop_env_cover.clear_client_verdict() end
+		return
+	end
+	local previous_factor = level.get_time_factor()
+	local dt = (tg - env_cl.at) / 1000 * env_cl.tf
+	if env_cl.own then
+		local cover = coop_env_cover and coop_env_cover.client_verdict()
+		if cover == nil then
+			local ok, c = pcall(own_cover)
+			cover = ok and c == true
+		end
+		env_cl.cover = cover
+	end
+	local ghost = not coop_mode.actor_is_player()
+
+	local sm = surge_mgr()
+	if sm then
+		if env_cl.s then
+			local game_sec = env_cl.sg + dt
+			-- set_inited uses whole game seconds. The manager rounds that clock up after dividing by the factor.
+			local sec = math.ceil(math.floor(game_sec) / env_cl.tf)
+			local entering = not rawequal(env_cl.surge_mirror, sm) or not sm.started
+			if entering then
+				-- A save can say the surge is active without having started any effects on this machine.
+				mirror_start_surge(sm, previous_factor)
+				skip_stages_over(sm, SURGE_STAGES_OVER, sec)
+				-- Keep the opening cue on the first phase packet, which may reach an existing player a few seconds in.
+				if sec >= 5 then
+					sm.stages.beginning = true
+					-- The manager starts the weather and plays the opening cue in the same stage.
+					if (not ghost or coop_mode.leads_here()) and level.get_time_hours and level.set_weather_fx then
+						local hour = level.get_time_hours()
+						level.set_weather_fx(hour >= 5 and hour <= 20 and "fx_blowout_day" or "fx_blowout_night")
+					end
+				end
+				if not ghost then run_hooks("surge_enter", sm, sec) end
+				env_cl.surge_mirror = sm
+			end
+			env_judge.sample_cover(true)
+			mirror_update(sm, game_sec, "emission mirror", "surge_time")
+			if entering and not ghost then run_hooks("surge_entered", sm, sec) end
+			if not ghost then quake_step(sec) end
+		else
+			env_off_here(sm, "surge")
+		end
+	end
+	local pm = psi_mgr()
+	if pm then
+		if env_cl.p then
+			if not pm.started then
+				mirror_start_psi(pm, previous_factor)
+				skip_stages_over(pm, PSI_STAGES_OVER, (env_cl.pg + dt) / env_cl.tf)
+			end
+			if not (env_cl.s and sm) then env_judge.sample_cover(true) end
+			mirror_update(pm, env_cl.pg + dt, "psi-storm mirror", "psi_storm_duration")
+		else
+			env_off_here(pm, "psi_storm")
+		end
+	end
+	if not (env_cl.s or env_cl.p) then env_judge.sample_cover(false) end
+
+	-- After start/stop (they remember the factor to restore), follow the world's time factor.
+	follow_env_factor()
+end
+
+-------------------------------------------------------------------------------
+-- Events
+-------------------------------------------------------------------------------
+local in_range = coop_util.in_range
+
+local function on_phase(payload)
+	if not coop_util.follows_world() then return end
+	if not coop_trust.guard("env_phase_size", type(payload) == "string" and #payload <= 256,
+		"invalid environment phase packet size") then return end
+	local t = coop_main.decode(payload)
+	-- The mirror passes elapsed game seconds to CTime and divides by the time factor.
+	if not coop_trust.guard("env_phase_payload",
+		coop_main.encode({ s = t.s, p = t.p, sg = t.sg, pg = t.pg, tf = t.tf, c = t.c, own = t.own }) == payload
+		and (t.s == nil or type(t.s) == "boolean") and (t.p == nil or type(t.p) == "boolean")
+		and (t.c == nil or type(t.c) == "boolean") and (t.own == nil or type(t.own) == "boolean")
+		and ((t.sg == nil and t.s ~= true) or in_range(t.sg, 0, 86400))
+		and ((t.pg == nil and t.p ~= true) or in_range(t.pg, 0, 86400))
+		and in_range(t.tf, 0.01, 1000), "invalid environment phase fields") then return end
+	local s, p = t.s == true, t.p == true
+	if s ~= env_cl.s or p ~= env_cl.p or not env_cl.have then
+		env_cl.next_tick = 0 -- a phase change is applied on the next frame, not after the 1 s step
+	end
+	env_cl.s, env_cl.sg = s, t.sg or 0
+	env_cl.p, env_cl.pg = p, t.pg or 0
+	env_cl.tf = t.tf
+	env_cl.cover = t.c ~= false
+	env_cl.own = t.own == true -- phase carries no decision for this player; his level can send one separately
+	if not (s or p) and coop_env_cover then coop_env_cover.clear_client_verdict() end
+	env_cl.at = time_global()
+	env_cl.have = true
+end
+
+local function env_peer_ok(peer)
+	return type(peer) == "number" and peer > 0 and peer < 0xffffffff and peer % 1 == 0
+end
+
+local function on_phase_request(_, from)
+	if not coop_trust.guard("env_phase_sender", env_peer_ok(from), "invalid phase requester %s", tostring(from)) then return end
+	if api.is_active() and coop_mode.decides_world() then env_judge.next_send = 0 end
+end
+
+-- A player's wave or vortex reached the people around him. The stock kill runs where his map is led (its online NPCs),
+-- for the psi storm at that vortex (near his character), for the emission only among the NPCs within NPC_KILL_RADIUS of
+-- his character (the wave is a plane across the level from where each player stands: his must not reach the leader's
+-- people before the leader's own wave does). Only while that phase runs here; a few per second.
+local NPC_KILL_RADIUS = 250
+local NPC_KILL_MIN_MS = 200
+local MAX_ENV_COORD = 1000000
+
+local function env_coord(n)
+	return n ~= nil and math.abs(n) <= MAX_ENV_COORD
+end
+
+local function npc_kill_report(t, peer)
+	local x, y, z = tonumber(t.x), tonumber(t.y), tonumber(t.z)
+	local valid = t.k == "s" and (t.z == nil or env_coord(z))
+		or t.k == "p" and env_coord(x) and env_coord(y) and env_coord(z)
+	if not coop_trust.guard("env_npc_kill_payload", valid, "peer %s, invalid wave or vortex", tostring(peer)) then return end
+	if t.k == "s" then return { k = "s", z = z } end
+	return { k = "p", x = x, y = y, z = z }
+end
+
+-- A player's own shelter, reported while an emission or a psi storm runs (player_in_cover).
+local function cover_report(t, peer)
+	if not coop_trust.guard("env_cover_payload", type(t.c) == "boolean", "peer %s, invalid cover", tostring(peer)) then return end
+	return { c = t.c }
+end
+
+local function dist_xz(a, b)
+	local dx, dz = a.x - b.x, a.z - b.z
+	return math.sqrt(dx * dx + dz * dz)
+end
+
+local function avatar_of(peer)
+	local p = player_row(peer)
+	if p and not p.is_self then return p.avatar_id and level.object_by_id(p.avatar_id) end
+end
+
+-- Runs fn with db.OnlineStalkers holding only the NPCs within radius of pos (the stock kill walks that list).
+local function with_online_near(pos, radius, fn)
+	local all = db.OnlineStalkers or {}
+	local near = {}
+	for i = 1, #all do
+		local id = all[i]
+		local npc = db.storage and db.storage[id] and db.storage[id].object or level.object_by_id(id)
+		local ok, p = pcall(function() return npc and npc:position() end)
+		if ok and p and dist_xz(p, pos) <= radius then near[#near + 1] = id end
+	end
+	db.OnlineStalkers = near
+	local ok, err = pcall(fn)
+	db.OnlineStalkers = all
+	if not ok then coop_main.report_error("coop_env", "emission kill near a player", err) end
+end
+
+local function apply_npc_kill(t, from)
+	local tg = time_global()
+	local ready = tg - (env_judge.npc_kill_at[from] or -NPC_KILL_MIN_MS) >= NPC_KILL_MIN_MS
+	if not coop_trust.guard("env_npc_kill_rate", ready, "peer %d, wave or vortex too soon", from) then return end
+	local obj = avatar_of(from)
+	if not coop_trust.guard("env_npc_kill_avatar", obj ~= nil, "peer %d has no character here", from) then return end
+	local apos = obj:position()
+	if t.k == "p" then
+		local pm = psi_mgr()
+		local running = pm ~= nil and pm.started == true
+		if not coop_trust.guard("env_npc_kill_phase", running, "peer %d, no psi-storm here", from) then return end
+		local near = dist_xz(t, apos) <= NPC_KILL_RADIUS
+		if not coop_trust.guard("env_npc_kill_range", near, "peer %d, vortex too far from his character", from) then return end
+		env_judge.npc_kill_at[from] = tg
+		local pos = vector():set(t.x, t.y, t.z)
+		local okc, err = pcall(pm.kill_crows_at_pos, pm, pos)
+		if not okc then coop_main.report_error("coop_env", "psi-storm crows near a player", err) end
+		local fate = coop_util.option("alife/event/psi_storm_fate", "kill_at_vortex")
+		if fate ~= "unhurt" then
+			local okk, errk = pcall(pm.kill_objects_at_pos, pm, pos, fate)
+			if not okk then coop_main.report_error("coop_env", "psi-storm kill near a player", errk) end
+		end
+	else
+		local sm = surge_mgr()
+		local running = sm ~= nil and sm.started == true
+		if not coop_trust.guard("env_npc_kill_phase", running, "peer %d, no emission here", from) then return end
+		env_judge.npc_kill_at[from] = tg
+		local fate = coop_util.option("alife/event/emission_fate", "kill_at_wave")
+		with_online_near(apos, NPC_KILL_RADIUS, function() sm:kill_objects_at_pos(t.z or false, fate) end)
+	end
+end
+
+-- The handler of a player's report: read(t, from) checks it, apply(report, from) uses it where his map is led.
+local function on_env_report(name, read, apply)
+	return function(payload, from)
+		if not api.is_active() then return end
+		if not coop_mode.leads_here() and not env_policy.relay_report then return end
+		local t = coop_main.decode(payload)
+		if env_policy.report_peer then
+			from = env_policy.report_peer(from, t)
+			if not from then return end
+		end
+		if not coop_trust.guard("env_report_sender", env_peer_ok(from), "invalid report sender %s", tostring(from)) then return end
+		local report = read(t, from)
+		if not report then return end
+		if env_policy.relay_report then return env_policy.relay_report(name, report, from) end
+		apply(report, from)
+	end
+end
+
+local function apply_cover(t, from)
+	env_judge.cover_rep[from] = { c = t.c, at = time_global() }
+end
+
+local function on_kill(payload, from)
+	if from ~= 0 or not coop_util.follows_world() then return end
+	local actor = db.actor
+	if not (actor and actor:alive()) then return end
+	if load_var and load_var(actor, "surge_immuned", false) == true then return end
+	local fx = rawget(_G, "coop_npc_effects")
+	if fx and fx.anabiotic_self then
+		local ok, sleeping = pcall(fx.anabiotic_self)
+		if ok and sleeping then
+			log("emission kill ignored: this player sleeps on an anabiotic")
+			return
+		end
+	end
+	log("caught outside a shelter by the emission (host decision)")
+	actor:kill(actor)
+end
+
+-------------------------------------------------------------------------------
+-- Update: every TICK_MS on the router's tick service
+-------------------------------------------------------------------------------
+local TICK_MS = 250
+
+local function tick()
+	local tg = time_global()
+	local plays = coop_mode.actor_is_player()
+	if api.is_active() and coop_mode.decides_world() then
+		if not host_hooks then install_judge_hooks() end
+		world_env_tick()
+		run_hooks("world_tick", tg)
+	elseif api.is_active() and api.is_live() then
+		-- All scripts have registered their answers by the first live tick.
+		if not surge_cls_patched then
+			local ok, err = pcall(patch_env_classes_for_mirror)
+			if not ok then coop_main.report_error("coop_env", "emission patch", err) end
+		end
+		if not env_cl.have and tg >= env_cl.req_at then
+			env_cl.req_at = tg + 15000
+			api.send_event("coop_env_req", "", 0)
+		end
+		mirror_env_tick()
+		run_hooks("mirror_tick", tg)
+		if plays and (env_cl.s or env_cl.p) and tg >= env_cl.cover_at then
+			env_cl.cover_at = tg + 1000
+			local ok, c = pcall(own_cover)
+			api.send_event("coop_env_cover", coop_main.encode({ c = ok and c == true }), 0)
+		end
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Diagnostics (coop_status)
+-------------------------------------------------------------------------------
+function print_status()
+	if api.is_active() and coop_mode.decides_world() then
+		log("emission sync: phase '%s', emission #%d", tostring(env_judge.sig), env_judge.serial)
+	elseif env_cl.have then
+		log("emission mirror: emission %s (%.0f game s), psi-storm %s (%.0f game s), cover %s, last state %d ms ago, errors %d",
+			tostring(env_cl.s), env_cl.sg, tostring(env_cl.p), env_cl.pg, tostring(env_cl.cover),
+			time_global() - env_cl.at, env_cl.mirror_errors)
+	end
+end
+
+function on_game_start()
+	if not api then return end
+	coop_main.add_event_handler("coop_env", on_phase)
+	coop_main.add_event_handler("coop_env_req", on_phase_request)
+	coop_main.add_event_handler("coop_env_npc_kill", on_env_report("coop_env_npc_kill", npc_kill_report, apply_npc_kill))
+	coop_main.add_event_handler("coop_env_cover", on_env_report("coop_env_cover", cover_report, apply_cover))
+	coop_main.add_event_handler("coop_env_kill", on_kill)
+	coop_route.every(TICK_MS, tick)
+	coop_util.add_status("coop_env", 10)
+end

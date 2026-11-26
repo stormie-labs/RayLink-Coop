@@ -1,5 +1,5 @@
 local expected = {
-	"mods.preblowout_warning", "coop_env", "srv.news_sample", "mods.bounty_t",
+	"coop_env", "srv.news_sample", "mods.bounty_t",
 	"coop.op.answer", "coop.dbg.run", "coop.dbg.note", "coop.dbg.say", "coop.dbg.order",
 	"coop_scorch", "mods.rf_freq_r", "coop_rep_map_ack", "npc.comp_recall",
 	"coop_set", "quests.far_do", "npc.comp_adopt", "npc.comp_drop",
@@ -80,6 +80,36 @@ if env then
 	check(ok, "registration failure leaves startup running: " .. tostring(err))
 	check(attempts == #expected, "registration continues after a refusal")
 	check(warnings == 1 and warning:find(expected[1], 1, true), "the refused name is logged once")
+end
+
+-- A script's own world-only event (an adapter's): on the one list, reserved with the engine at once and at every hosting.
+do
+	local got = {}
+	local env = load_script({ reserve_world_event = function(name)
+		got[#got + 1] = name
+		return true
+	end })
+	if env then
+		env.reserve("mods.test_world_only")
+		check(#got == 1 and got[1] == "mods.test_world_only", "reserve: the engine reserves the name at once")
+		env.reserve("mods.test_world_only")
+		check(#got == 1, "reserve: a name already on the list is not reserved again")
+		got = {}
+		env.on_game_start()
+		check(#got == #expected + 1 and got[#got] == "mods.test_world_only", "reserve: hosting again reserves it with the rest")
+		-- the event bus asks allows(): a reserved event only from the world
+		local guarded = {}
+		env.coop_trust = { guard = function(name, ok)
+			guarded[#guarded + 1] = name
+			return ok == true
+		end }
+		check(env.allows("mods.test_world_only", 0) == true, "allows: the world's own event")
+		check(env.allows("mods.test_world_only", 3) == false and env.allows("coop_env", 0x101) == false,
+			"allows: a reserved event from any other sender is dropped")
+		check(env.allows("coop_env_cover", 3) == true, "allows: an event that is not reserved passes unchecked")
+		check(#guarded == 3 and guarded[1] == "env_world_sender" and guarded[3] == "env_world_sender",
+			"allows: every reserved event is checked as env_world_sender")
+	end
 end
 
 print(string.format("%d passed, %d failed", passed, failed))
