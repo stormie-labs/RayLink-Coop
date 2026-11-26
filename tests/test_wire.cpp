@@ -784,7 +784,6 @@ TEST(snapshot_aim_quaternion_components_round_trip)
 	CHECK_EQ(pack_unit(1.5f), int16_t(32767));
 	CHECK_EQ(pack_unit(-7.f), int16_t(-32767));
 	CHECK_EQ(unpack_unit(int16_t(-32768)), -1.f);
-	static_assert(kSnapshotAimBytes == 24, "3 quaternions x 4 components x int16");
 }
 
 TEST(protocol_version_bumped_for_c2)

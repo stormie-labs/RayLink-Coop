@@ -7,7 +7,7 @@
 #include "srv/coop_levels_keeper.h"
 #include "coop_levels_rules.h"
 #include "coop_roles.h"
-#include "srv/coop_scope.h"
+#include "support/scope_listed.h"
 
 #include <vector>
 
@@ -222,39 +222,6 @@ TEST(passes_another_level_gets_the_world_and_the_registry_not_the_stream)
 	// the sky is the authority's of each level: one cycle, but a cellar has no sun
 	CHECK(!level_passes(Msg::WeatherSync, true, false));
 	CHECK(!level_passes(Msg::Thunderbolt, true, false));
-}
-
-TEST(takes_split_off_every_message_as_before)
-{
-	for (uint32_t v = 0; v <= 0xffff; ++v)
-		if (scope_listed(Msg(uint16_t(v))))
-			CHECK(level_takes(Msg(uint16_t(v)), false, false));
-}
-
-TEST(takes_a_player_on_another_level_is_heard_for_the_world_and_his_own_data)
-{
-	// his body is no object here: a shot, a hit or a request of his would act on the host's level at his coordinates
-	CHECK(!level_takes(Msg::PlayerState, true, false));
-	CHECK(!level_takes(Msg::PlayerShot, true, false));
-	CHECK(!level_takes(Msg::PlayerHit, true, false));
-	CHECK(!level_takes(Msg::ReqTake, true, false));
-	CHECK(!level_takes(Msg::DialogLock, true, false));
-	CHECK(!level_takes(Msg::TradeOp, true, false));
-	// the world is one, he is a client of it
-	CHECK(level_takes(Msg::InfoPortion, true, false));
-	CHECK(level_takes(Msg::ReqMoney, true, false));
-	CHECK(level_takes(Msg::JoinRequest, true, false));
-	CHECK(level_takes(Msg::LevelMove, true, false));
-	CHECK(level_takes(Msg::CheckpointClaim, true, false));
-	// the trunk: scope Trunk is the session's business (a player who sends it is kicked before this question)
-	CHECK(level_takes(Msg::LevelXferUp, true, false));
-	CHECK(level_takes(Msg::LevelEntity, true, false));
-	// his own data, for the save
-	CHECK(level_takes(Msg::PlayerVitals, true, false));
-	CHECK(level_takes(Msg::ItemState, true, false));
-	CHECK(level_takes(Msg::StateDumpRequest, true, false));
-	// on the host's level nothing changes
-	CHECK(level_takes(Msg::PlayerShot, true, true));
 }
 
 // ---------------------------------------------------------------- the vote

@@ -123,7 +123,7 @@ TEST(vehicle_state_quantization_of_the_stock_fields)
 	CHECK_EQ(v::rpm_byte(std::nanf(""), 600.f), uint8_t(0));
 	CHECK_EQ(v::rpm_byte(300.f, 0.f), uint8_t(0)); // no max: nothing to measure against
 	for (float rpm = 0.f; rpm <= 600.f; rpm += 7.3f)
-		CHECK(std::fabs(v::rpm_of(v::rpm_byte(rpm, 600.f), 600.f) - rpm) <= 600.f / 255.f / 2.f + 1e-3f);
+		CHECK(std::fabs(v::fraction_of(v::rpm_byte(rpm, 600.f)) * 600.f - rpm) <= 600.f / 255.f / 2.f + 1e-3f);
 	// health of 1.0
 	CHECK_EQ(v::health_byte(1.f), uint8_t(255));
 	CHECK_EQ(v::health_byte(0.5f), uint8_t(128));
@@ -859,9 +859,9 @@ TEST(vehicle_state_rate_rows_are_twice_the_honest_rate)
 	CHECK(bucket_drops(*req, flood) > 0);
 }
 
-TEST(vehicle_state_rate_row_vehicle_req_on_a_session) { check_row_on_a_session(Msg::VehicleReq, 39410); }
+TEST(vehicle_state_rate_row_vehicle_req_on_a_session) { check_row_on_a_session(Msg::VehicleReq, t::port(39410)); }
 
-TEST(vehicle_state_rate_row_vehicle_input_on_a_session) { check_row_on_a_session(Msg::VehicleInput, 39411); }
+TEST(vehicle_state_rate_row_vehicle_input_on_a_session) { check_row_on_a_session(Msg::VehicleInput, t::port(39411)); }
 
 // ---------------------------------------------------------------- the link gap
 

@@ -88,21 +88,20 @@ TEST(spawn_request_state_size_limits)
 
 TEST(spawn_request_raw_and_truncated)
 {
-	// The old layout with raw M_SPAWN bytes (marker 0xC5) is recognised and never parsed.
+	// A marker that is no layout (0xC5, the raw M_SPAWN bytes of no current client) is never parsed.
 	Writer w;
 	w.u32(9);
-	w.u8(spawn::kMarkerRaw);
+	w.u8(0xC5);
 	w.u16(3);
 	const float pos[3] = {0.f, 0.f, 0.f};
 	w.vec3(pos);
 	w.u16(4);
 	w.u32(0xDEADBEEF);
-	REQUIRE(spawn::detect(w.ptr(), w.size()) == spawn::Layout::Raw);
-	CHECK(spawn::has_seq(spawn::Layout::Raw));
+	REQUIRE(spawn::detect(w.ptr(), w.size()) == spawn::Layout::Unknown);
 	Reader rr(w.ptr(), w.size());
 	rr.u32();
 	spawn::Request q;
-	CHECK(!spawn::read_body(rr, spawn::Layout::Raw, q));
+	CHECK(!spawn::read_body(rr, spawn::Layout::Unknown, q));
 
 	// Cut inside the section name.
 	const std::vector<uint8_t> full = state_request(1, 2, "medkit_army", 0);
@@ -113,12 +112,9 @@ TEST(spawn_request_raw_and_truncated)
 	cr.u32();
 	CHECK(!spawn::read_body(cr, spawn::Layout::State, q));
 
-	// Too short to hold a marker: the legacy layout, which then fails on its own.
+	// Too short to hold a marker: refused.
 	const uint8_t tiny[3] = {2, 'a', 'b'};
-	CHECK(spawn::detect(tiny, sizeof(tiny)) == spawn::Layout::Legacy);
-	CHECK(!spawn::has_seq(spawn::Layout::Legacy));
-	Reader tr(tiny, sizeof(tiny));
-	CHECK(!spawn::read_body(tr, spawn::Layout::Legacy, q));
+	CHECK(spawn::detect(tiny, sizeof(tiny)) == spawn::Layout::Unknown);
 }
 
 TEST(spawn_request_legacy)
@@ -128,14 +124,12 @@ TEST(spawn_request_legacy)
 	w.u16(42);
 	const float pos[3] = {4.f, 5.f, 6.f};
 	w.vec3(pos);
-	REQUIRE(spawn::detect(w.ptr(), w.size()) == spawn::Layout::Legacy);
+	// The layout without a seq and a marker (str section, u16 parent, vec3 pos) is no layout: refused, nothing is read.
+	REQUIRE(spawn::detect(w.ptr(), w.size()) == spawn::Layout::Unknown);
 	Reader r(w.ptr(), w.size());
 	spawn::Request q;
-	REQUIRE(spawn::read_body(r, spawn::Layout::Legacy, q));
-	CHECK(q.section == "bread");
-	CHECK_EQ(q.parent, 42);
-	CHECK(q.pos[2] == 6.f);
-	CHECK_EQ(q.state_size, size_t(0));
+	CHECK(!spawn::read_body(r, spawn::Layout::Unknown, q));
+	CHECK(q.section.empty());
 }
 
 TEST(spawn_class_lines)

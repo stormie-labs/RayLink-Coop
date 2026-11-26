@@ -1,14 +1,12 @@
-// Anomaly Coop unit tests: one writer per object (TZ Р32, temp/r30/design/R32-final.md §1 W1, W2a, W4, W6; §8 the frozen
-// interface): the pure rules of xrCoop/coop_writer_rules.h and the Mode's writer answer of xrCoop/coop_mode.h.
+// Anomaly Coop unit tests: one writer per object: the pure rules of xrCoop/coop_writer_rules.h and the Mode's writer answer of xrCoop/coop_mode.h.
 //
 // - writer_of for the six process kinds (the co-op host H, a co-op client C, the world server WS, the map server of the root's map,
 //   the map server of another map, no session) against every kind of root: a character placed, loading, mid-move; a unit held,
 //   held from its birth, at home; a squad member through its squad (root_of); a resident on a led, a starting and an unled map;
 //   an object of no map; the ghost;
 // - fence_admits, same_object on a reused id;
-// - the W2a gate table row by row, then under the hostplay, srv and none answer sets (tests/support/fake_mode.h, MODE_CASES);
-// - the carry rule of W6 (merge on the world, apply at a load, the writer filter);
-// - the Mode's new members (none's answers, the fake's answers through the pure rule) and the EntityUp kinds of §8.
+// - the gate table row by row, then under the hostplay, srv and none answer sets (tests/support/fake_mode.h, MODE_CASES);
+// - the Mode's new members (none's answers, the fake's answers through the pure rule) and the EntityUp kinds.
 #include "test_util.h"
 #include "coop_writer_rules.h"
 #include "coop_levels_rules.h"
@@ -188,8 +186,8 @@ TEST(writer_of_member_through_its_squad)
 	CHECK_EQ(int(w::root_of(0x410, parent_of, squad_of)), 0x310); // a lone creature's item: the creature
 	CHECK_EQ(int(w::root_of(0x420, parent_of, squad_of)), 0x420); // a ground item: itself
 	CHECK_EQ(int(w::root_of(0x430, parent_of, squad_of)), 0); // the ghost's item: the ghost
-	// at most kRootHops hops up, as host_apply_release walks (srv/coop_levels_alife.cpp:406-409)
-	static_assert(w::kRootHops == 8, "host_apply_release walks 8 hops");
+	// at most kRootHops hops up
+	static_assert(w::kRootHops == 8, "root_of walks 8 hops");
 	CHECK_EQ(int(w::root_of(0x500, parent_of, squad_of)), 0x508);
 	CHECK_EQ(int(w::root_of(0x501, parent_of, squad_of)), 0x509);
 
@@ -453,56 +451,6 @@ TEST(writer_gate_under_the_answer_sets)
 				GATE_IS((at + " ghost").c_str(), run(ghost, op, s, true), at_ghost);
 			}
 	}
-}
-
-// ------------------------------------------------------------------------------------------------- the carry rule of W6
-
-TEST(writer_carry_merge_chains_or_keeps)
-{
-	w::CarryEntry e;
-	// nothing kept for this path yet: the leaf is kept
-	CHECK(w::carry_merge(e, "a", "b") == w::CarryMerge::Stored);
-	CHECK(e.set);
-	CHECK_EQ(e.base, std::string("a"));
-	CHECK_EQ(e.value, std::string("b"));
-	// a later leaf made on what is kept: it chains, the first base stays
-	CHECK(w::carry_merge(e, "b", "c") == w::CarryMerge::Chained);
-	CHECK_EQ(e.base, std::string("a"));
-	CHECK_EQ(e.value, std::string("c"));
-	// the same value again (a repeat): nothing changes
-	CHECK(w::carry_merge(e, "b", "c") == w::CarryMerge::Same);
-	CHECK_EQ(e.base, std::string("a"));
-	CHECK_EQ(e.value, std::string("c"));
-	// a leaf made on another value (two servers changed it): the kept value stays
-	CHECK(w::carry_merge(e, "x", "y") == w::CarryMerge::Conflict);
-	CHECK_EQ(e.base, std::string("a"));
-	CHECK_EQ(e.value, std::string("c"));
-}
-
-TEST(writer_carry_apply_at_a_load)
-{
-	w::CarryEntry e;
-	CHECK(w::carry_merge(e, "a", "c") == w::CarryMerge::Stored);
-	// the module still has the base: the new value is set
-	CHECK(w::carry_apply("a", e) == w::CarryApply::Set);
-	// it has the new value already: done
-	CHECK(w::carry_apply("c", e) == w::CarryApply::Done);
-	// something else changed it since: dropped (one log line, the caller's)
-	CHECK(w::carry_apply("z", e) == w::CarryApply::Dropped);
-	// nothing kept: nothing to apply
-	CHECK(w::carry_apply("a", w::CarryEntry{}) == w::CarryApply::Done);
-}
-
-TEST(writer_carry_row_only_from_its_writer)
-{
-	// a row about a live world object comes only from that object's writer (as the world server answers it)
-	CHECK(w::carry_admits(true, w::other(kBridgeA), kBridgeA));
-	CHECK(!w::carry_admits(true, w::other(kBridgeA), kBridgeB));
-	CHECK(!w::carry_admits(true, w::this_process(), kBridgeA)); // the world writes it: no map server's row changes it
-	CHECK(!w::carry_admits(true, w::nobody(), kBridgeA));
-	// any other leaf comes from whoever carries it
-	CHECK(w::carry_admits(false, w::this_process(), kBridgeB));
-	CHECK(w::carry_admits(false, w::other(kBridgeA), kBridgeB));
 }
 
 // ------------------------------------------------------------------------------------------------- the Mode's members

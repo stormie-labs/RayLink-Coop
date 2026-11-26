@@ -2,6 +2,7 @@
 // who is choosing on the host and for how long, the choice as the window gives it, where the character may appear.
 #include "test_util.h"
 #include "coop_newchar.h"
+#include "srv/coop_world_stage.h"
 
 #include <algorithm>
 #include <iterator>

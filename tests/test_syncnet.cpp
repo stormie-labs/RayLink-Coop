@@ -6,6 +6,7 @@
 
 #include "coop_limits.h"
 #include "coop_syncnet.h"
+#include "support/syncstore_values.h"
 
 #include <algorithm>
 #include <cstdint>

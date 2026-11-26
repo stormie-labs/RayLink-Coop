@@ -197,16 +197,11 @@ TEST(table_all_on_a_level)
 
 TEST(gate_fold)
 {
-	// Split levels on (the server): the gate stands, but nobody is waited for: Together is only a suggestion (owner
-	// 2026-11-18: no "story maps together", each player moves alone).
-	CHECK(effective_gate(Gate::Free, true) == Gate::Free);
-	CHECK(effective_gate(Gate::BetterTogether, true) == Gate::BetterTogether);
-	CHECK(effective_gate(Gate::Together, true) == Gate::BetterTogether);
-	CHECK(effective_gate(static_cast<Gate>(7), true) == static_cast<Gate>(7)); // decide_move refuses it
-
-	// Split levels off (the co-op): the group moves as one through the waiting point at every exit.
-	for (Gate g : {Gate::Free, Gate::BetterTogether, Gate::Together, static_cast<Gate>(7)})
-		CHECK(effective_gate(g, false) == Gate::Together);
+	// The gate stands, but nobody is waited for: Together is only a suggestion, each player moves alone.
+	CHECK(effective_gate(Gate::Free) == Gate::Free);
+	CHECK(effective_gate(Gate::BetterTogether) == Gate::BetterTogether);
+	CHECK(effective_gate(Gate::Together) == Gate::BetterTogether);
+	CHECK(effective_gate(static_cast<Gate>(7)) == static_cast<Gate>(7)); // decide_move refuses it
 }
 
 TEST(gate_names)
@@ -267,10 +262,8 @@ TEST(decide_move_together)
 	CHECK(decide_move(Gate::BetterTogether, true, 0, 3) == MoveVerdict::Go);
 	CHECK(decide_move(Gate::BetterTogether, false, 0, 3) == MoveVerdict::Go);
 
-	// With split levels off every gate is Together (effective_gate) and so every move waits at the board.
-	CHECK(decide_move(effective_gate(Gate::Free, false), true, 3, 3) == MoveVerdict::Board);
-	// With split levels a Together level is only a suggestion: the move goes.
-	CHECK(decide_move(effective_gate(Gate::Together, true), false, 0, 3) == MoveVerdict::Go);
+	// A Together level is only a suggestion: the move goes.
+	CHECK(decide_move(effective_gate(Gate::Together), false, 0, 3) == MoveVerdict::Go);
 }
 
 // ---------------------------------------------------------------- the life of one map server

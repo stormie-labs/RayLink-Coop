@@ -20,6 +20,16 @@ PeerInfo seat(PeerId id, const char* nick, bool plays = true, bool rights = fals
 	p.host_rights = rights;
 	return p;
 }
+
+// The seats of a list that are listed, in its order.
+std::vector<PeerInfo> listed_only(const std::vector<PeerInfo>& seats)
+{
+	std::vector<PeerInfo> out;
+	for (const PeerInfo& p : seats)
+		if (roster::listed(p))
+			out.push_back(p);
+	return out;
+}
 } // namespace
 
 TEST(roster_defaults_play_without_rights)
@@ -34,7 +44,7 @@ TEST(roster_an_ordinary_host)
 	// The host plays (seat 0 is his character), two friends: three players, the star on seat 0.
 	const std::vector<PeerInfo> seats = {seat(0, "Boss"), seat(1, "Alice"), seat(2, "Bob")};
 	CHECK_EQ(roster::player_count(seats), uint32_t(3));
-	CHECK_EQ(roster::listed_only(seats).size(), size_t(3));
+	CHECK_EQ(listed_only(seats).size(), size_t(3));
 	CHECK(roster::host_plays_in(seats, false));
 	CHECK(roster::host_badge(seats[0], true));
 	CHECK(!roster::host_badge(seats[1], true));
@@ -49,7 +59,7 @@ TEST(roster_a_world_server_with_an_operator)
 	const bool plays = roster::host_plays_in(seats, true);
 	CHECK(!roster::listed(seats[0]));
 	CHECK_EQ(roster::player_count(seats), uint32_t(2));
-	const std::vector<PeerInfo> listed = roster::listed_only(seats);
+	const std::vector<PeerInfo> listed = listed_only(seats);
 	REQUIRE(listed.size() == 2);
 	CHECK_EQ(listed[0].nick, std::string("Creator"));
 	CHECK_EQ(listed[1].nick, std::string("Friend"));

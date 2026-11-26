@@ -199,7 +199,7 @@ Mk идут обратно с указанием полосы. Мировые р
 бессмертен, без столкновений. ИИ его не видит и не слышит (`npc_ai::ghost`). Не наблюдатель (`observer_distance`), не зритель (`viewers_frame`),
 не цель (`nearest_player`). Потока о себе не шлёт, `net::client_send` режет всё области Map. Наблюдатели на Mk только из игроков его карты.
 
-**Что осталось от прежней работы:** реестр `Table` и `LevelMap`, фильтры `level_passes` и `level_takes`, `Keeper` и `Holder` поверх `coop_xfer`, `LevelEntity`, срезы id
+**Что осталось от прежней работы:** реестр `Table` и `LevelMap`, фильтр `level_passes`, `Keeper` и `Holder` поверх `coop_xfer`, `LevelEntity`, срезы id
 (теперь по номеру Mk), поток состояния раз в 3 с, ревизор, разделение `is_mirror` и `is_client`. Ведущий клиент прошлой версии перенесён на Mk.
 
 **Переход игрока:** `LevelMove` → реестр → проверка ворот и предела → при нужде запуск Mk → прокси на новой карте → перезагрузка клиента путём
@@ -267,7 +267,7 @@ Mk идут обратно с указанием полосы. Мировые р
 - **Повторный запуск логики на СМ.** Хост, пришедший на карту, и новый Mk грузят `client_data`: `loaded = true`, эффектов первой секции нет. `story_squad_stands` в `create_squad` остаётся страховкой на падение Mk.
 - **Падение Mk:** теряется то, что не успел сказать последний раунд, до 15 с. Выход `coop_split_levels 0`: Mk нет, код не выполняется.
 
-**Что где исполняется.** На Mk `trader_autoinject`, `exo_loot`, `axr_trade_manager`, `safe_release_manager`, `release_body_manager`, `release_item_manager`, `logic_enforcer`, правила GAMMA для NPC (`grok_*`, No NPC Friendly Fire), фантомы, обёртки `coop_npc_adapters` и `coop_npc_phantoms`, спавнер артефактов. Действия игрока: `box`, `trade` идут на Mk, остальные `quests.act` исполняются на СМ в дальнем виде, чтобы их данные (`xr_bribe`, проводник, тайники) оставались в сейве СМ. Глаголы `coop_economy_intent` идут авторитету карты. Логика Mk не игрок: задание из неё получает взявшего или игрока этой карты (`player_of_request`), награды condlist на Mk уходят на СМ в `share_reward`.
+**Что где исполняется.** На Mk `trader_autoinject`, `exo_loot`, `axr_trade_manager`, `safe_release_manager`, `release_body_manager`, `release_item_manager`, `logic_enforcer`, правила GAMMA для NPC (`grok_*`, No NPC Friendly Fire), фантомы, обёртки `coop_npc_adapters` и `coop_npc_phantoms`, спавнер артефактов. Действия игрока: `box`, `trade` идут на Mk, остальные `quests.act` исполняются на СМ в дальнем виде, чтобы их данные (`xr_bribe`, проводник, тайники) оставались в сейве СМ. Логика Mk не игрок: задание из неё получает взявшего или игрока этой карты (`player_of_request`), награды condlist на Mk уходят на СМ в `share_reward`.
 
 **Что Mk говорит игрокам своей карты** (протокол 28). Для мира Mk клиент, поэтому `coop.sync.set` областей `session` и `world` ему отказан, а `coop.sync.broadcast` идёт: `sn::may_broadcast` спрашивает авторитет карты, адресаты это узлы сессии его карты, отправка `net::host_send` вниз по туннелю из `frame()` (`g_level_out`, Lua может идти не на главном потоке). `mode All` на Mk значит «его карта», сам Mk не получатель: его актёр призрак.
 - Точка лежит на одной карте. `Radius` на СМ берёт только игроков его карты (`sn::cast_reaches`), запись тела на другой карте с близкими числами больше не проходит. Дальний вид называет свою карту: `coop_world_fx.cast` кладёт `level = scope.id`. `{level = id}` без точки это все на карте, так идёт дым ракеты выброса. `All` остаётся у групповых `TASK_SCRIPTS`; у `EFFECT_SCRIPTS` только частицы и следы, это всегда точки.

@@ -879,22 +879,20 @@ TEST(cp_wire_rejects_bad_content)
 	}
 }
 
-// Split levels: the host's level change writes the point of arrival of who goes with him. The rest keep their camps: a dead one's
-// respawn looks for a record on HIS level.
+// The host's level change writes the point of arrival of who goes with him. When the group does not travel together the rest keep
+// their camps: a dead one's respawn looks for a record on HIS level.
 TEST(checkpoint_arrival_rides_with_the_host)
 {
 	constexpr uint16_t target = 7, other = 3;
-	// One level for everybody: everybody goes.
-	CHECK(rides_with_host(false, false, other, target));
-	CHECK(rides_with_host(false, false, kNoSeat, target));
+	// The group travels together: everybody goes.
+	CHECK(rides_with_host(true, other, target));
+	CHECK(rides_with_host(true, kNoSeat, target));
 	// His seat is where the host goes: a trip of the whole group seats everybody before the save.
-	CHECK(rides_with_host(true, false, target, target));
+	CHECK(rides_with_host(false, target, target));
 	// He stays where he is: the host alone, a map server goes on leading his level.
-	CHECK(!rides_with_host(true, false, other, target));
-	CHECK(!rides_with_host(true, true, other, target));
-	CHECK(!rides_with_host(true, true, target, target));
+	CHECK(!rides_with_host(false, other, target));
 	// Not seated: nothing tells him apart from the group (levels::on_host_level says the same).
-	CHECK(rides_with_host(true, false, kNoSeat, target));
+	CHECK(rides_with_host(false, kNoSeat, target));
 }
 
 // Split levels: a player on a map server's level has no object here, his place is the record of his body.

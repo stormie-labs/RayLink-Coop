@@ -3,6 +3,7 @@
 #include "test_util.h"
 
 #include "srv/coop_mapserver_rules.h"
+#include "support/scope_listed.h"
 
 #include <string>
 #include <vector>

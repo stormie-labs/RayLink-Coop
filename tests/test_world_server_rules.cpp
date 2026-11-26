@@ -6,7 +6,7 @@
 #include "srv/coop_dedicated_rules.h"
 #include "srv/coop_operator.h"
 #include "srv/coop_token.h"
-#include "srv/coop_world_server_rules.h"
+#include "srv/coop_world_parent_rules.h"
 
 #include <string>
 #include <vector>

@@ -4,6 +4,7 @@
 
 #include "coop_session.h" // kKeyDigestHexDigits
 #include "coop_syncstore.h"
+#include "support/syncstore_values.h"
 
 #include <cstdint>
 #include <limits>
@@ -624,8 +625,6 @@ TEST(sync_store_pool_and_count_limits)
 		// the host's scopes still have their room
 		CHECK(s.set(ScopeId::world(), "k", big, ++version) == SetResult::Ok);
 		CHECK(s.set(ScopeId::session(), "k", big, ++version) == SetResult::Ok);
-		static_assert(ss::kMaxTotalBytes == ss::kMaxWorldBytes + ss::kMaxSessionBytes + ss::kMaxPoolBytes,
-		    "the total is the host's own scopes plus the pool");
 	}
 }
 

@@ -35,9 +35,10 @@ unsigned shedule_interval_ms(unsigned t_min, unsigned t_max, float scale)
 }
 
 // CCustomMonster::UpdateCL moves an NPC by min(time since its last UpdateCL, 100 ms) of walking each time it runs.
+constexpr unsigned kMovementStepCapMs = 100;
 float walking_share(unsigned update_cl_period_ms)
 {
-	return std::min(1.f, float(viewers::kMovementStepCapMs) / float(update_cl_period_ms));
+	return std::min(1.f, float(kMovementStepCapMs) / float(update_cl_period_ms));
 }
 } // namespace
 

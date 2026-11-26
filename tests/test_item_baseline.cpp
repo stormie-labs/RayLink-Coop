@@ -23,6 +23,18 @@ using namespace coop;
 
 namespace
 {
+// The client_data of a held eatable read back field by field.
+bool read_held_eatable(const std::vector<std::uint8_t>& cd, initial::HeldEatable& h)
+{
+	if (!initial::is_held_eatable(cd))
+		return false;
+	h.enable_state = cd[0];
+	h.place = std::uint16_t(cd[initial::kPlaceAt] | (std::uint16_t(cd[initial::kPlaceAt + 1]) << 8));
+	std::memcpy(&h.condition, &cd[initial::kConditionAt], sizeof(float));
+	h.uses = cd[initial::kUsesAt];
+	return true;
+}
+
 struct StockPacket // the part of NET_Packet the save uses
 {
 	std::vector<std::uint8_t> B;
@@ -126,7 +138,7 @@ TEST(item_baseline_client_data_round_trips_through_the_stock_load)
 	CHECK(loaded.has_parent);
 	CHECK_EQ(int(loaded.st_enable_state), int(initial::kEnableNotDefinite));
 	initial::HeldEatable back;
-	CHECK(initial::read_held_eatable(cd, back));
+	CHECK(read_held_eatable(cd, back));
 	CHECK_EQ(int(back.uses), 2);
 	CHECK_EQ(back.place, std::uint16_t(0x0123));
 }
@@ -360,7 +372,7 @@ TEST(item_baseline_the_world_stages_uses_its_entity_cannot_keep)
 	const std::string src = engine_src_dir();
 	const std::string items = text_of(src + "/xrGame/coop/coop_items.cpp");
 	const std::string facts = function_body(items, R"(bool\s+host_take_item_facts)");
-	const size_t decide = where_in(facts, "const initial::UsesStore how = initial::uses_store(cd, stock, facts.uses, e->ID_Parent != 0xffff, may_make);");
+	const size_t decide = where_in(facts, "const initial::UsesStore how = initial::uses_store(cd, stock, facts.uses, e->ID_Parent != kNoId, may_make);");
 	const size_t stage = where_in(facts, "stage = !initial::store_uses(cd, how, stock, facts.uses, &cond, may_make);");
 	const size_t first_apply = where_in(facts, "apply_entity(e, facts, false);");
 	const size_t staged = where_in(facts, "if (store && stage) stage_uses(id, facts.uses); else if (store) {");

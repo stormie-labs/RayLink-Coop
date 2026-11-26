@@ -17,6 +17,23 @@ using namespace coop::death;
 
 namespace
 {
+// The owner of a bag as the host's Lua reads back what stash_owner_to_ini wrote: false if its custom data names none (an older bag, or none was known). The nick comes without
+// the quotes it was written in; a key that is not a key digest reads as none.
+bool stash_owner_from_ini(const std::string& text, std::string& nick, std::string& key)
+{
+	std::string n, k;
+	if (coop::checkpoint::ini_get(text, kStashIniSection, kStashIniNick, n) && n.size() >= 2 && n.front() == '"' &&
+		n.back() == '"')
+		n = n.substr(1, n.size() - 2);
+	if (!coop::checkpoint::ini_get(text, kStashIniSection, kStashIniKey, k) || !detail::is_key_digest(k))
+		k.clear();
+	if (n.empty() && k.empty())
+		return false;
+	nick = n;
+	key = k;
+	return true;
+}
+
 ItemFacts item(uint16_t id, const char* kind)
 {
 	ItemFacts f;

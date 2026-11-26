@@ -84,7 +84,6 @@ TEST(cpsrc_settings_defaults)
 	CHECK_EQ(s.tent_sections[1], std::string("ph_sleepbag"));
 	CHECK_EQ(s.tent_rest_radius, 2.0f);
 	CHECK_EQ(s.tent_claim_radius, 4.0f);
-	CHECK_EQ(s.tent_claim_ms, 15000u);
 	CHECK_EQ(s.cover_list, std::string("misc\\surge_manager.ltx"));
 	// round 1 (Ruling F3-6, I-1): what the host puts up, and where the items it takes for it are listed
 	CHECK_EQ(s.tent_section, std::string("ph_tent"));
@@ -93,7 +92,6 @@ TEST(cpsrc_settings_defaults)
 	CHECK(name_listed(s.sleepbag_section, s.tent_sections));
 	CHECK(!name_listed("ph_tent_x", s.tent_sections));
 	CHECK_EQ(s.item_lists, std::string("items\\settings\\itms_manager.ltx"));
-	CHECK(claim_period_ok(double(s.tent_claim_ms)));
 }
 
 TEST(cpsrc_bounds)
@@ -110,19 +108,6 @@ TEST(cpsrc_bounds)
 	CHECK(!period_ok(double(kMaxSourcePeriodMs) + 1.0));
 	CHECK(!period_ok(-1.0));
 	CHECK(!period_ok(std::numeric_limits<double>::quiet_NaN()));
-}
-
-TEST(cpsrc_claim_period_bounds)
-{
-	// R1 M-11: a claim that expires before the next scan never finds its tent
-	CHECK(!claim_period_ok(0.0));
-	CHECK(!claim_period_ok(double(kMinClaimMs) - 1.0));
-	CHECK(claim_period_ok(double(kMinClaimMs)));
-	CHECK(claim_period_ok(15000.0));
-	CHECK(claim_period_ok(double(kMaxSourcePeriodMs)));
-	CHECK(!claim_period_ok(double(kMaxSourcePeriodMs) + 1.0));
-	CHECK(!claim_period_ok(15000.5));
-	CHECK(!claim_period_ok(std::numeric_limits<double>::quiet_NaN()));
 }
 
 TEST(cpsrc_split_names)

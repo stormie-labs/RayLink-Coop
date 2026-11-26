@@ -20,6 +20,9 @@ using spawn::SpawnVerdict;
 
 namespace
 {
+constexpr uint8_t kCseClassCount = uint8_t(CseClass::Temporary) + 1;
+constexpr uint8_t kGameClassCount = uint8_t(spawn::GameClass::WeaponRPG7) + 1;
+
 bool has_line(const std::vector<const char*>& lines, const char* name)
 {
 	return std::find_if(lines.begin(), lines.end(), [&](const char* s) { return std::string(s) == name; }) !=
@@ -115,7 +118,7 @@ TEST(spawn_class_table)
 TEST(spawn_required_lines)
 {
 	// CSE_ALifeInventoryItem reads inv_weight and cost for every item.
-	for (uint8_t i = 0; i < spawn::kCseClassCount; ++i)
+	for (uint8_t i = 0; i < kCseClassCount; ++i)
 	{
 		const std::vector<const char*> lines = spawn::required_lines(CseClass(i));
 		CHECK(has_line(lines, "inv_weight"));
@@ -486,7 +489,7 @@ TEST(spawn_game_classes)
 	CHECK_EQ(game_of("DET_ELIT"), int(GameClass::CustomDetector));
 
 	// Every group: the item's lines first; every line cites its read.
-	for (uint8_t g = 0; g < spawn::kGameClassCount; ++g)
+	for (uint8_t g = 0; g < kGameClassCount; ++g)
 	{
 		const std::vector<spawn::GameLine> lines = spawn::game_lines(spawn::GameClass(g));
 		REQUIRE(lines.size() >= std::size(spawn::kInventoryItemLines));
@@ -954,7 +957,7 @@ TEST(spawn_rocket_not_into_character)
 {
 	using spawn::GameClass;
 	CHECK(!spawn::character_takes(GameClass::ExplosiveRocket));
-	for (uint8_t g = 0; g < spawn::kGameClassCount; ++g)
+	for (uint8_t g = 0; g < kGameClassCount; ++g)
 		if (GameClass(g) != GameClass::ExplosiveRocket)
 			CHECK(spawn::character_takes(GameClass(g)));
 	const spawn::ClassRule* rocket = spawn::class_rule("G_RPG7");

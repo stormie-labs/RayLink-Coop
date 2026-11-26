@@ -970,18 +970,6 @@ TEST(cp_base_retry_after_failed_write)
 	CHECK(step(v, k, false, false, 20000, 3000) == Step::OnBase);
 }
 
-// Build 57 round 2 (lead's ruling on review S4 of the compile review): a map server forgets the base of a player who is no
-// longer on its level.
-TEST(cp_base_forget_absent)
-{
-	std::map<uint16_t, Key> current = {{uint16_t(5), Key(10)}, {uint16_t(6), Key(11)}, {uint16_t(7), start_key(0)}};
-	forget_absent(current, std::vector<uint16_t>{7, 5, 99});
-	CHECK_EQ(current.size(), size_t(2));
-	CHECK(current.count(5) == 1 && current.count(7) == 1 && current.count(6) == 0);
-	forget_absent(current, std::vector<uint16_t>{});
-	CHECK(current.empty());
-}
-
 // Build 57 round 3 (lead's ruling on review S3): an arrival onto a base. The base's record takes the place of an Arrival record
 // of its level that lies on its ground; prev (the record before the arrival) is kept. Anything else is set() as before.
 TEST(cp_base_arrival_onto_base)

@@ -12,7 +12,7 @@
 #include "coop_zone_path_rules.h"
 #include "srv/coop_levels_audit.h"
 #include "srv/coop_levels_logic.h"
-#include "srv/coop_levels_wire.h"
+#include "srv/coop_journal_wire.h"
 #include "srv/coop_xfer_base.h"
 
 #include <cstdint>

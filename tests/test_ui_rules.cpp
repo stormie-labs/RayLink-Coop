@@ -7,6 +7,12 @@
 
 using namespace coop::ui_rules;
 
+namespace
+{
+constexpr int kLoadScreenRenderPriority = 0; // CLoadScreenRenderer
+constexpr int kCursorRenderPriority = -3; // CUICursor
+} // namespace
+
 TEST(ui_cursor_goes_with_the_level)
 {
 	CHECK(!cursor_outlives_level(false)); // the PDA was open at the go: its window dies without closing, the sprite must not stay

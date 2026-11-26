@@ -4,7 +4,7 @@
 // test on every cell.
 #include "test_util.h"
 #include "coop_protocol.h"
-#include "srv/coop_scope.h"
+#include "support/scope_listed.h"
 
 #include <algorithm>
 #include <cstring>
@@ -399,7 +399,6 @@ TEST(scope_r32_the_coop_rows_are_unchanged)
 	    std::string("CheckpointClaim, PlayerDied, PlayerRevive, PlayerWounded, RestRequest"));
 	// co-op: every message goes and is taken as always, wherever the player stands
 	CHECK(names_where([](Msg m) { return !level_passes(m, false, false) || !level_passes(m, false, true); }).empty());
-	CHECK(names_where([](Msg m) { return !level_takes(m, false, false) || !level_takes(m, false, true); }).empty());
 	// the four messages of R32 keep their scope, their route and their rows for the players
 	for (const Msg m : {Msg::EntityDied, Msg::EntityHash, Msg::StateDumpRequest, Msg::EntityResync})
 	{
@@ -409,9 +408,9 @@ TEST(scope_r32_the_coop_rows_are_unchanged)
 	}
 	CHECK(!level_passes(Msg::EntityDied, true, false)); // a player on another level hears a death from the map server of his own
 	CHECK(!level_passes(Msg::EntityHash, true, false));
-	CHECK(level_takes(Msg::StateDumpRequest, true, false)); // his repair: kept (P99: answered here only while his map server is not
-	                                                        // connected, mapserver::route_incoming; test_srv_repair_answer.cpp)
-	CHECK(!level_takes(Msg::EntityResync, true, false));
+	CHECK(kept_from_every_level(Msg::StateDumpRequest)); // his repair: kept (answered here only while his map server is not
+	                                                     // connected, mapserver::route_incoming; test_srv_repair_answer.cpp)
+	CHECK(!kept_from_every_level(Msg::EntityResync));
 	// the journal is the trunk's: never a player's, never on a co-op player's way
 	for (const Msg m : {Msg::LevelJournal, Msg::LevelJournalAck})
 	{

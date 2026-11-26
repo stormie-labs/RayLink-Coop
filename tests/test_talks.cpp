@@ -141,14 +141,13 @@ TEST(talks_lock_result_wire)
 	CHECK_EQ(m.result, uint8_t(lock::NotWilling));
 	CHECK(m.reason == Reason::Combat);
 
-	// NotWilling from a host that sent no reason byte: "does not want to"
+	// NotWilling without its reason byte is a cut message: refused
 	Writer old;
 	old.u16(7);
 	old.u8(lock::NotWilling);
 	Reader ro(old.ptr(), old.size());
 	LockResultMsg mo;
-	CHECK(read_lock_result(ro, mo));
-	CHECK(mo.reason == Reason::Unwilling);
+	CHECK(!read_lock_result(ro, mo));
 
 	// a cut message is refused
 	Writer cut;

@@ -423,7 +423,6 @@ TEST(lease_spawn_request_layout)
 	// ReqSpawn with a leased id: marker 0xC7, then parent, id, source (0xffff: no clone) and the State fields.
 	const std::vector<uint8_t> msg = leased_request(77, 0x1234, 4321, lease::kNoId, "medkit", 3);
 	REQUIRE(spawn::detect(msg.data(), msg.size()) == spawn::Layout::Leased);
-	CHECK(spawn::has_seq(spawn::Layout::Leased));
 	Reader r(msg.data(), msg.size());
 	CHECK_EQ(r.u32(), 77u);
 	spawn::Request q;

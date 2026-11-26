@@ -11,7 +11,7 @@
 //           to a map server or to a player of another level.
 #include "test_util.h"
 #include "coop_protocol.h"
-#include "srv/coop_scope.h"
+#include "support/scope_listed.h"
 #include "srv/coop_mapserver_rules.h"
 #include "coop_world_gate.h"
 
@@ -180,7 +180,7 @@ TEST(protocol_f5_server_the_world_server_tunnels_and_never_handles)
 		CHECK(!mapserver::map_server_sends(m.type));
 		// the world server's filters for a player on another level (split on, not the same level)
 		CHECK(!level_passes(m.type, true, false));
-		CHECK(!level_takes(m.type, true, false));
+		CHECK(!kept_from_every_level(m.type));
 	}
 	CHECK(msg_sender(Msg::Tunnel) == MsgSender::Either); // the carrier both ways
 }
@@ -194,7 +194,6 @@ TEST(protocol_f5_coop_the_host_handles_all_four)
 		CHECK_EQ(std::string(m.name) + (go.here ? " is handled here" : " is not handled here") + (go.tunnel ? ", tunneled" : ", not tunneled"),
 		    std::string(m.name) + " is handled here, not tunneled");
 		CHECK(level_passes(m.type, false, false));
-		CHECK(level_takes(m.type, false, false));
 		// a player on the level the receiving process leads is handled there too (the rule, whatever the mode)
 		const mapserver::Incoming same = mapserver::route_incoming(m.type, true, true, true);
 		CHECK(same.here && !same.tunnel);
@@ -219,7 +218,7 @@ TEST(protocol_f5_session_enforces_the_directions)
 {
 	// The host takes a player's VehicleReq / VehicleInput and he takes its VehicleSeat / VehicleState; a client that forges the
 	// decider's VehicleSeat is kicked before any handler; a client ignores (and logs) a VehicleReq that comes from the host.
-	t::Node host("Boss", 37590), a("Al", 37590), b("Bo", 37590);
+	t::Node host("Boss", t::port(37590)), a("Al", t::port(37590)), b("Bo", t::port(37590));
 	std::vector<uint16_t> at_host, at_b;
 	for (const F5Msg& m : kF5)
 	{
@@ -232,7 +231,7 @@ TEST(protocol_f5_session_enforces_the_directions)
 	REQUIRE(host.host(&err));
 	for (t::Node* c : {&a, &b})
 	{
-		REQUIRE(c->connect(37590, &err));
+		REQUIRE(c->connect(t::port(37590), &err));
 		REQUIRE(t::pump_until({&host.s, &a.s, &b.s}, 5000, [&] { return c->s.is_active(); }));
 	}
 	REQUIRE(t::pump_until({&host.s, &a.s, &b.s}, 5000, [&] { return host.s.peers().size() == 2 && b.s.peers().size() == 2; }));

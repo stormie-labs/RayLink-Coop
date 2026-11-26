@@ -3,7 +3,7 @@
 #include "test_util.h"
 
 #include "srv/coop_dedicated_rules.h"
-#include "srv/coop_world_server_rules.h"
+#include "srv/coop_world_parent_rules.h"
 
 #include <cstring>
 #include <string>

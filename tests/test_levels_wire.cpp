@@ -3,7 +3,7 @@
 // is cut, and what a reader bounds (counts, ids, enums, floats, strings) is refused at the limit and accepted at the last
 // good value.
 #include "test_util.h"
-#include "srv/coop_levels_wire.h"
+#include "srv/coop_journal_wire.h"
 #include "coop_protocol.h"
 #include "coop_spawn.h" // kMaxItemState: the bound of an ItemFacts blob
 #include "srv/coop_mapserver_rules.h" // R32: where the journal and its Ack go (map_server_sends, bridge_takes)

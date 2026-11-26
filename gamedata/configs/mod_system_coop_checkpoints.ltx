@@ -1,4 +1,4 @@
-; Anomaly Coop - where a player's checkpoint (camp) may come from (F3, docs/CHECKPOINTS_DEATH.md par. 2.2). Merged into
+; Anomaly Coop - where a player's checkpoint (camp) may come from (docs/CHECKPOINTS_DEATH.md par. 2.2). Merged into
 ; system.ltx (DLTX); read by the engine on the host (coop_checkpoint_sources.cpp) when a session starts.
 ;   campfire  - a lit campfire within campfire_radius, stood next to it campfire_dwell_ms and not in a fight
 ;               (an enemy within combat_radius picked him); a fight restarts the count;
@@ -9,7 +9,7 @@
 ;               "pack" gives that item back. His tent within tent_rest_radius is also a rest place;
 ;   rest      - inside a stock sleep zone ([coop_rest_zones]) or a surge cover ([list] of cover_list), when he lies down;
 ;   mod       - an object a mod declares with coop.checkpoint.register_source(id, radius), as a campfire;
-;   base      - Build 57 (owner 2026-11-18: "on any base the respawn must be at the bed, not at the campfire"): a player on
+;   base      - on any base the respawn is at the bed, not at the campfire: a player on
 ;               the ground of a base of [coop_bases] that is not hostile to him (hostile: the FIRST owner of its row, the
 ;               holder whose guards hold the place, is his enemy, or every owner the game knows is; the same level, within
 ;               its radius and 10 m in height; he leaves
@@ -20,16 +20,15 @@
 ;               bed belongs to a base hostile to him now takes the record before it on his level unless that one is a
 ;               hostile base's too; without one he comes back as a player without a checkpoint does. A hostile base is no
 ;               base for him: its campfires work as before.
-;               Build 57 (owner 2026-11-18: "for the bases that are not covered, just put the point at the place of the
-;               first spawn on that base"; the lead: real bases without a sleeping place, not every start location): a
-;               row of [coop_start_bases] is a base too, with the owners of its row, at the point of that start location
+;               A real base without a sleeping place takes the place of the first spawn on it (not every start
+;               location): a row of [coop_start_bases] is a base too, with the owners of its row, at the point of that start location
 ;               in base_start_locations, within base_start_radius; its record is kind "rest" without an object ("Camp
 ;               updated: a base."). Two bases of one level whose ground overlaps are one: the engine reads a section's
 ;               lines sorted by name (CInifile), so the row whose NAME comes first alphabetically stays and the other is
 ;               dropped (the log names both), whatever the order of the lines here; [coop_bases] rows come before
-;               [coop_start_bases] ones. In the Server mode ("in split maps in the console form this must be done too") the map
+;               [coop_start_bases] ones. In the Server mode the map
 ;               server of the level says on which base's ground a player stands, the world server decides as above.
-; A radius is in metres, 0 < r <= 500; a time is in ms, 0..600000 (tent_claim_ms 5000..600000). A value outside falls
+; A radius is in metres, 0 < r <= 500; a time is in ms, 0..600000. A value outside falls
 ; back to the one below; tent_section / sleepbag_section must spawn and be in tent_sections, else clients get none.
 ; Mod packs change them or add rest zones with DLTX (![coop_checkpoints], ![coop_rest_zones]).
 
@@ -42,13 +41,12 @@ tent_section      = ph_tent       ; put up for a client's tent claim (stock itm_
 sleepbag_section  = ph_sleepbag   ; put up for a client's sleeping bag claim (stock itm_sleepbag placeable_section)
 tent_rest_radius  = 2
 tent_claim_radius = 4
-tent_claim_ms     = 15000
 cover_list        = misc\surge_manager.ltx   ; section [list]: stock surge covers (264)
 item_lists        = items\settings\itms_manager.ltx   ; [tent_i_bag_sections], [sleeping_bag_sections]: what pays
-base_dwell_ms     = 3000   ; Build 57: on a base this long, not in a fight, and its bed is the checkpoint
-base_leave_margin = 10     ; Build 57: once on a base he is on it until its radius + this
-base_start_locations = plugins\new_game_start_locations.ltx   ; Build 57: the points of [coop_start_bases] (empty: none)
-base_start_radius = 50     ; Build 57: the ground of a start location base
+base_dwell_ms     = 3000   ; on a base this long, not in a fight, and its bed is the checkpoint
+base_leave_margin = 10     ; once on a base he is on it until its radius + this
+base_start_locations = plugins\new_game_start_locations.ltx   ; the points of [coop_start_bases] (empty: none)
+base_start_radius = 50     ; the ground of a start location base
 
 [coop_rest_zones]   ; stock sleep restrictors, ui_sleep_dialog.script:292-318
 actor_surge_hide_2
@@ -77,9 +75,9 @@ yan_bunker_sleep_restrictor
 zat_a2_sr_sleep
 pol_secret_sleep
 
-; Build 57 (owner 2026-11-18): the bases whose bed is the checkpoint (see "base" at the top). One row per stock sleep zone
+; The bases whose bed is the checkpoint (see "base" at the top). One row per stock sleep zone
 ; of [coop_rest_zones] that stands in a real base: <sleep zone> = <radius of its ground in m>, <holder>[, <owner>...] (up to
-; 6) or none. Round 3 (the lead 2026-11-18, review B1): the FIRST owner is the holder, the faction whose guards hold the
+; 6) or none. The FIRST owner is the holder, the faction whose guards hold the
 ; place; the others are the factions its smart terrain also admits. A base is hostile to a player when its holder is his
 ; enemy, or when every owner the game knows is (Rookie Village is hostile to a mercenary: its stalker guards shoot him,
 ; though csky and ecolog would not). An owner that is no community of the game is logged once and not counted; a first
@@ -87,17 +85,16 @@ pol_secret_sleep
 ; community (his own actor_<faction>, the column the guards judge an actor by) + standing with it is an enemy's (relation +
 ; goodwill <= -1000, the stock game_relations.ENEMIES). 14 rows: the 25 stock sleep zones less the five secret hideouts
 ; below, the five wilderness camps (ros_vagon_sleep, val_vagon_sleep, val_abandoned_house_sleep, ds_farmhouse_sleep,
-; mil_smart_terran_2_4_sleep: no base, they stay rest places of [coop_rest_zones]) and agr_sr_sleep_tunnel (round 3: a
+; mil_smart_terran_2_4_sleep: no base, they stay rest places of [coop_rest_zones]) and agr_sr_sleep_tunnel (a
 ; second zone of the Agroprom stalker camp; it stays a rest place). The five secret hideouts (esc_secret_sleep,
 ; actor_surge_hide_2, pol_secret_sleep, pri_room27_sleep, rad_sleep_room) are no bases. Owners from the game's own data
-; (configs\misc\simulation_objects_props.ltx of the G.A.M.M.A. stand: the factions of the camp's smart terrain, checked by
-; the lead 2026-11-18; the holder by the squads its smart terrain spawns, configs\scripts\<level>\smart\<smart>.ltx) and the
+; (configs\misc\simulation_objects_props.ltx: the factions of the camp's smart terrain; the holder by the squads its smart terrain spawns, configs\scripts\<level>\smart\<smart>.ltx) and the
 ; zone names. Two rows whose ground overlaps are one base: the engine reads
 ; the lines sorted by name, the row whose zone name comes first alphabetically stays (agr_army_sleep before
 ; agr_sr_sleep_wagon), and the log names the dropped one.
 ; Mod packs change rows or add bases with DLTX (![coop_bases]).
-; gar_dolg_sleep (Garbage, the Duty post) lies on the ground of gar_angar_sleep: the engine dropped it with a warning on
-; every start of the Garbage (b57 stand, 2026-11-21), so it is not listed; gar_angar_sleep is that base.
+; gar_dolg_sleep (Garbage, the Duty post) lies on the ground of gar_angar_sleep: the engine would drop it with a warning on
+; every start of the Garbage, so it is not listed; gar_angar_sleep is that base.
 [coop_bases]
 esc_basement_sleep_area     = 50, stalker, csky, ecolog   ; Cordon, Rookie Village (esc_smart_terrain_2_12: spawns stalker squads)
 bar_actor_sleep_zone        = 50, dolg      ; Rostok, the Bar (every base smart of l05_bar has dolg; bar_dolg_*, bar_zastava* only dolg)
@@ -108,20 +105,18 @@ yan_bunker_sleep_restrictor = 50, ecolog, stalker, csky   ; Yantar, the scientis
 mil_freedom_sleep           = 50, freedom   ; Army Warehouses, Freedom base (its name; mil_smart_terrain_7_7: freedom 5 only)
 gar_angar_sleep             = 50, dolg      ; Garbage, the hangar (gar_smart_terrain_5_2: spawns Duty squads only, stalker_sim_dolg_post, duty_sim_squad_*)
 agr_army_sleep              = 50, army      ; Agroprom, the institute (its name; agr_smart_terrain_1_6 and its near_* smarts: army only)
-agr_sr_sleep_wagon          = 50, stalker, csky, ecolog   ; Agroprom, the stalker camp (props: stalker 2; spawns: 4_4 duty + renegade, near_1 renegade, near_2/3 stalker + csky; to check live, TESTERS К-26)
+agr_sr_sleep_wagon          = 50, stalker, csky, ecolog   ; Agroprom, the stalker camp (props: stalker 2; spawns: 4_4 duty + renegade, near_1 renegade, near_2/3 stalker + csky)
 cit_merc_sleep              = 50, killer    ; Dead City, the mercenaries (its name; cit_killers: killer 5 only)
 pri_a16_sr_sleep            = 50, stalker, bandit, csky, dolg, freedom   ; Pripyat, the stalkers' base (pri_a16: spawns stalker squads)
 pri_monolith_sleep          = 50, monolith  ; Pripyat, Monolith (its name; smart pri_monolith)
 
-; Build 57 round 2 (the lead 2026-11-18; the owner's "for the bases that are not covered, just put the point at the place of
-; the first spawn on that base" means real bases without a sleeping place, not every start location). Opt-in: only a start
+; Real bases without a sleeping place, not every start location. Opt-in: only a start
 ; location of base_start_locations named here is a base: <start location id> = <holder>[, <owner>...] (up to 6) or none.
 ; Its owners come from this row (the faction that holds the place in the game), never from the factions whose new-game
-; lists name it; as in [coop_bases] the first owner is the holder (round 3; every row below has the one owner that holds the
+; lists name it; as in [coop_bases] the first owner is the holder (every row below has the one owner that holds the
 ; place). Its point from its own section in base_start_locations. Rows are read sorted by id: of two start locations whose
 ; ground overlaps, the one whose id comes first alphabetically is the base. A row whose id has no section there is
-; logged once and skipped; an owner that is no community is logged once and counted as none (never an assert). Curated by
-; the lead. Some of them may fall on the ground of a zone base of [coop_bases]: those make no base of their own, and the log
+; logged once and skipped; an owner that is no community is logged once and counted as none (never an assert). Some of them may fall on the ground of a zone base of [coop_bases]: those make no base of their own, and the log
 ; of the host (world server, map server) names them when a level is loaded ("start location(s) of [coop_start_bases] on
 ; the ground of another base of this level"). Mod packs change rows with DLTX (![coop_start_bases]).
 [coop_start_bases]
