@@ -5,14 +5,14 @@ the original engine sources from HEAD without changing the working tree.
 """
 
 import argparse
-import os
 from pathlib import Path
 import subprocess
-
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests" / "tools"))
+from native_slice import block, build, scratch  # noqa: E402
 ENGINE = ROOT / "engine"
-OUT = ROOT / "temp" / "A-S6-E-surv2b"
 
 
 def source(name, head):
@@ -24,12 +24,12 @@ def source(name, head):
 
 
 def function(code, signature):
-    start = code.index("\n" + signature + "\n{") + 1
-    return code[start:code.index("\n}", start) + 2]
+    return block(code, signature)
 
 
 HARNESS = r'''
 #include "coop_checkpoint_base_rules.h"
+#include "coop_lua_errors.h"
 #include "coop_revive_hold.h"
 #include "support/fake_mode.h"
 
@@ -110,9 +110,10 @@ u16 character_of_peer(PeerId from)
 struct CGameObject {};
 CGameObject local;
 bool object_present, living, parked, on_friendly_base;
-const CGameObject* object_here(u16 id) { return id == 42 && object_present ? &local : nullptr; }
-bool log_allowed(unsigned) { return false; }
-namespace world { bool is_parked(u16) { return parked; } }
+namespace world {
+CGameObject* object_here(u16 id) { return id == 42 && object_present ? &local : nullptr; }
+bool is_parked(u16) { return parked; }
+}
 namespace net { void host_broadcast(Msg, Writer&, Lane, PeerId) {} }
 namespace survival {
 enum class Life : u8 { Alive, Wounded, Dead, Spectating, Respawning };
@@ -152,6 +153,7 @@ using checkpoint::StoryFrom;
 using checkpoint::kNoSource;
 struct { std::vector<u16> in_world{42}; } g_host;
 struct { unsigned stories = 0; } g_stat;
+constexpr u64 kLogBurst = 10;
 StoryFrom written;
 bool far_write;
 Kind written_kind;
@@ -370,20 +372,12 @@ def main():
            .replace("@MAP_STATE@", state)
            .replace("@SCAN@", function(sources, "void map_server_scan(u64 now_ms)"))
            .replace("@STORY@", function(checkpoints, "bool host_story(const char* reason)")))
-    OUT.mkdir(parents=True, exist_ok=True)
-    (OUT / "paths.cpp").write_text(cpp, encoding="utf-8")
-    vcvars = os.environ.get("VCVARS", r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat")
-    (OUT / "paths.cmd").write_text(
-        '@echo off\n'
-        f'call "{vcvars}" >nul\n'
-        'if errorlevel 1 exit /b 2\n'
-        f'cl /nologo /std:c++17 /EHsc /utf-8 /I"{ROOT / "tests"}" /I"{ENGINE / "src/xrCoop"}" '
-        f'paths.cpp "{ENGINE / "src/xrCoop/coop_wire.cpp"}" /Fe:paths.exe\n'
-        'if errorlevel 1 exit /b 2\n'
-        'paths.exe\n',
-        encoding="utf-8",
-    )
-    return subprocess.call(["cmd", "/d", "/c", "paths.cmd"], cwd=OUT)
+    coop = ENGINE / "src/xrCoop"
+    with scratch("survival_paths") as work:
+        (work / "paths.cpp").write_text(cpp, encoding="utf-8")
+        runner = build(work, "cl /nologo /std:c++17 /EHsc /utf-8", [work / "paths.cpp", coop / "coop_wire.cpp"],
+                       work / "paths.exe", includes=[ROOT / "tests", coop])
+        return subprocess.run([str(runner)], cwd=work, timeout=30).returncode
 
 
 if __name__ == "__main__":

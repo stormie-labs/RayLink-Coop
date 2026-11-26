@@ -3,15 +3,17 @@ rem Anomaly Coop: N and L of docs/MODES.md section 10 in one run, and the gate m
 rem   tools\run_all_tests.cmd          (no arguments: always the full suites)
 rem 1. python -I tools\check_gates.py --tests-mark begin: drops the old tests.ok, records both HEAD ids and how many
 rem    uncommitted files the tests read (product, tests\, the runners) into temp\gates\tests.state
-rem 2. tools\build_tests.cmd and tools\test_luajit.cmd (the native tests: xrCoop, and the engine's own LuaJIT) and
-rem    tools\test_lua.cmd (the Lua tests); build_tests.cmd and test_lua.cmd start with tools\check_layers.py.
-rem    The executed engine-slice test of the move rules wiring (tests\tools\test_move_admission_wiring.py, R32 8a A24:
-rem    admitted_move and player_move cut out of coop_requests.cpp and run over stubs) counts as a native test.
-rem 3. python -I tools\check_gates.py --tests-mark write: tests.ok (mode=tests, both HEAD ids, dirty=0, native=0, lua=0)
-rem    only when both exit 0, the tree was clean before and after, neither HEAD moved, and the Lua runner
-rem    temp\lua\runlua.exe holds the stamp of the sources now (review 4, B5: when tools\test_lua.cmd cannot rebuild it,
-rem    it runs the old runner and still exits 0). tools\check_gates.py demands tests.ok of the same HEADs for a release
-rem    (the release rule).
+rem 2. G once: tools\check_layers.py (the layer border, docs/MODES.md section 5). When it passes, the runners below skip
+rem    their own copy of it (COOP_LAYERS_CHECKED=1); when it refuses, they refuse too (exit 254) and no test runs there.
+rem 3. N, the native tests: tools\build_tests.cmd (xrCoop), tools\test_luajit.cmd (the engine's own LuaJIT), every
+rem    engine slice (a Python test that cuts engine functions out of engine\src and runs them over stubs: the ones in
+rem    tests\tools through pytest, the scripts in tests\ one by one; a slice file that is missing fails N). Then L,
+rem    tools\test_lua.cmd (the Lua tests). build_tests.cmd also runs the static checks of the sources.
+rem 4. python -I tools\check_gates.py --tests-mark write: tests.ok (mode=tests, both HEAD ids, dirty=0, native=0, lua=0)
+rem    only when N and L exit 0, the tree was clean before and after, neither HEAD moved, and the Lua runner
+rem    temp\lua\runlua.exe holds the stamp of its sources and its lua51.lib now (when tools\test_lua.cmd cannot rebuild
+rem    it, it runs the old runner and still exits 0). The gate reads exit codes only. tools\check_gates.py demands
+rem    tests.ok of the same HEADs for a release (the release rule).
 rem COOP_SKIP_LAYERS=1 (the lead's emergency, see build_tests.cmd) runs the tests but writes no tests.ok.
 rem Exit code: 0 when both suites passed (and the mark was written, or refused with its reason printed), else 1;
 rem 2 when the HEADs could not be read.
@@ -30,22 +32,52 @@ if errorlevel 1 (
 )
 type "%STATE%"
 
+set "COOP_LAYERS_CHECKED="
+if /i "%COOP_SKIP_LAYERS%"=="1" goto layers_done
+python -I "%ROOT%\tools\check_layers.py" --root "%ROOT%"
+if not errorlevel 1 set "COOP_LAYERS_CHECKED=1"
+:layers_done
+
 call "%ROOT%\tools\build_tests.cmd"
 set "NRC=%ERRORLEVEL%"
-rem The engine's own LuaJIT (tests\luajit, build 57's lua_setupvalue barrier) counts as a native test.
+rem The tests of the engine's own LuaJIT (tests\luajit) count as native tests.
 call "%ROOT%\tools\test_luajit.cmd"
 set "JRC=%ERRORLEVEL%"
 if not "%JRC%"=="0" if "%NRC%"=="0" set "NRC=%JRC%"
-rem (a copy of this runner in a test repository without the file skips it)
-set "PRC=0"
-if exist "%ROOT%\tests\tools\test_move_admission_wiring.py" (
-	python -B -m pytest -q -p no:cacheprovider "%ROOT%\tests\tools\test_move_admission_wiring.py"
-	if errorlevel 1 set "PRC=1"
-)
-if not "%PRC%"=="0" if "%NRC%"=="0" set "NRC=%PRC%"
+rem The engine slices, every one of them (tests\tools\test_gates.py fails when a slice under tests\ is not named here).
+set "SRC=0"
+python -B -m pytest -q -p no:cacheprovider ^
+	"%ROOT%\tests\tools\test_campfire_damage.py" ^
+	"%ROOT%\tests\tools\test_client_ammo_reload.py" ^
+	"%ROOT%\tests\tools\test_clone_pending_fire.py" ^
+	"%ROOT%\tests\tools\test_clone_placement_hooks.py" ^
+	"%ROOT%\tests\tools\test_container_reject.py" ^
+	"%ROOT%\tests\tools\test_items_gift_late.py" ^
+	"%ROOT%\tests\tools\test_local_zone_release.py" ^
+	"%ROOT%\tests\tools\test_move_admission_wiring.py" ^
+	"%ROOT%\tests\tools\test_proxy_ammo_supply.py" ^
+	"%ROOT%\tests\tools\test_script_relay_slice.py" ^
+	"%ROOT%\tests\tools\test_silencer_detach.py" ^
+	"%ROOT%\tests\tools\test_texture_descr_slice.py" ^
+	"%ROOT%\tests\tools\test_trade_delivery.py" ^
+	"%ROOT%\tests\tools\test_trader_identity_api.py" ^
+	"%ROOT%\tests\tools\test_weapon_brief_info.py" ^
+	"%ROOT%\tests\tools\test_weapon_clone_wgl.py" ^
+	"%ROOT%\tests\tools\test_native_build.py" ^
+	"%ROOT%\tests\tools\test_world_events_slice.py"
+if errorlevel 1 set "SRC=1"
+python -I "%ROOT%\tests\test_s6_hub_paths.py"
+if errorlevel 1 set "SRC=1"
+python -I "%ROOT%\tests\test_s6_npc_paths.py"
+if errorlevel 1 set "SRC=1"
+python -I "%ROOT%\tests\test_story_worldstate.py"
+if errorlevel 1 set "SRC=1"
+python -I "%ROOT%\tests\test_survival_s6_paths.py"
+if errorlevel 1 set "SRC=1"
+if not "%SRC%"=="0" if "%NRC%"=="0" set "NRC=%SRC%"
 call "%ROOT%\tools\test_lua.cmd"
 set "LRC=%ERRORLEVEL%"
-echo [run_all_tests] native tests: exit %NRC% (LuaJIT tests: exit %JRC%, move wiring: exit %PRC%); Lua tests: exit %LRC%
+echo [run_all_tests] native tests: exit %NRC% (LuaJIT tests: exit %JRC%, engine slices: exit %SRC%); Lua tests: exit %LRC%
 
 if /i "%COOP_SKIP_LAYERS%"=="1" (
 	echo [run_all_tests] ******************************************************************************************

@@ -2358,7 +2358,9 @@ false end return ok` — запрос отброшен, а журнал пише
 
 **Хорошо:** будет: `python -I tools\check_gates.py --lua-stamp` как единственный расчёт, а тест — assert (пакет F11).
 
-**Проверка:** `test: tests/tools/test_gates.py` — штамп `check_gates` равен выводу `runlua.exe -stamp`, без skip (F11).
+**Проверка:** `test: tests/tools/test_gates.py` — `tests.ok` не пишется, когда штамп в `runlua.exe` не равен целиком
+`check_gates.lua_stamp` (другая `lua51.lib`, штамп с лишней частью), без skip; `test: tests/tools/test_lua_runners.py` —
+`tools\test_lua.cmd` собирает прогонщик со штампом и библиотекой, которые печатает `check_gates.py --lua-stamp`.
 
 ### TEST-2. Каждый тест входит в T
 **Правило.** Каждый тест и каждая статическая проверка репозитория запускается из `tools\run_all_tests.cmd` (T) или из G и
@@ -2374,8 +2376,9 @@ false end return ok` — запрос отброшен, а журнал пише
 
 **Хорошо:** `tests/test_calls.cpp:464-479` `calls_export_list_is_live` запускает `tools/list_exports.py --check` внутри N.
 
-**Проверка:** будет: тест «каждый `tests/**/test_*.py` и `tools/check_*.py` назван в `run_all_tests.cmd` или в наборе, который
-он запускает» (F11).
+**Проверка:** `test: tests/tools/test_gates.py` `test_every_engine_slice_runs_in_run_all_tests` — каждый движковый срез
+`tests/**/test_*.py` (шаг сборки `cl /nologo`) назван в `tools\run_all_tests.cmd`; остальные `tests/**/test_*.py` и
+`tools/check_*.py` — ревью.
 
 ### TEST-3. Внешние входы теста: один резолвер; нет входа — тест падает
 **Правило.** Каждый внешний вход теста (`lua51.lib`, LuaJIT, `vcvars64.bat`, скрипты G.A.M.M.A., деревья сравнения) находит один

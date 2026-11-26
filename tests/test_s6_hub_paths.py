@@ -1,39 +1,24 @@
 """Compile the hub's production functions against native per-process fixtures."""
 
 import argparse
-import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
-from uuid import uuid4
-
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests" / "tools"))
+from native_slice import block, build, scratch  # noqa: E402
 ENGINE = ROOT / "engine"
 SOURCE = ENGINE / "src/xrGame/coop"
 COOP = ENGINE / "src/xrCoop"
 FIXTURE = Path(__file__).with_suffix(".inc")
 
 
-def definitions(source, *prefixes, optional=()):
-    parts = []
-    for prefix in prefixes:
-        match = re.search(r"^" + re.escape(prefix), source, re.MULTILINE)
-        if match is None and prefix in optional:
-            continue
-        assert match is not None, prefix
-        start = match.start()
-        first_end = source.index("\n", start)
-        if source[first_end - 1] != "}":
-            assert source.startswith("\n{", first_end), prefix
-            end = source.index("\n}", first_end) + 2
-            if source[end:end + 1] == ";":
-                end += 1
-        else:
-            end = first_end
-        parts.append(source[start:end])
-    return "\n\n".join(parts)
+def definitions(source, *heads, optional=()):
+    """The blocks of `heads`, in order; a head in `optional` that the source lacks is left out."""
+    present = [h for h in heads if h not in optional or re.search("^" + re.escape(h), source, re.M)]
+    return "\n\n".join(block(source, head) for head in present)
 
 
 def fixture(read, head):
@@ -47,13 +32,13 @@ def fixture(read, head):
         "SYNC": definitions(read("coop_sync.cpp"), "bool alife_frozen("),
         "SYNCAPI_TYPES": definitions(syncapi, "struct Out\n", "struct Stats\n"),
         "SYNCAPI": definitions(
-            syncapi, "bool log_allowed(", "bool decides_sync_store(", "bool client(", "bool in_world(",
+            syncapi, "bool decides_sync_store(", "bool client(", "bool in_world(",
             "void push_out(", "void out_to(", "void cast_to(", "void level_flush(", "void host_flush(",
             optional=("bool decides_sync_store(",),
         ),
         "SCRIPT_TYPES": definitions(script, "struct Outgoing\n", "struct Incoming\n", "struct Stats\n"),
         "SCRIPT": definitions(
-            script, "bool log_allowed(", "bool valid_name(", "bool decides_world()", "bool lua_ready()",
+            script, "bool valid_name(", "bool decides_world()", "bool lua_ready()",
             "void write_event(", "void deliver_later(", "void host_relay(", "bool read_event(",
             "void server_on_script_event(", "void client_on_script_event(", "void flush_outbox(",
             "bool host_seat_plays(", "PeerInfo self_row(", "int fail2(lua_State* L, const char* why)\n",
@@ -69,22 +54,11 @@ def fixture(read, head):
     return ("#define COOP_HUB_BASELINE\n" if head else "") + code
 
 
-def build(work, code):
+def build_runner(work, code):
     cpp = work / "hub_paths.cpp"
     cpp.write_text(code, encoding="utf-8")
-    wire = COOP / "coop_wire.cpp"
-    runner = work / "hub_paths.exe"
-    vcvars = os.environ.get(
-        "VCVARS", r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat",
-    )
-    (work / "compile.cmd").write_text(
-        f'@echo off\ncall "{vcvars}" >nul\nif errorlevel 1 exit /b 1\n'
-        f'cl /nologo /std:c++17 /EHsc /utf-8 /W4 /I"{ROOT / "tests"}" /I"{COOP}" '
-        f'"{cpp}" "{wire}" /Fe:"{runner}"\nexit /b %ERRORLEVEL%\n', encoding="utf-8",
-    )
-    env = os.environ | {"TEMP": str(work), "TMP": str(work)}
-    subprocess.run(["cmd", "/d", "/c", "compile.cmd"], cwd=work, env=env, check=True, timeout=180)
-    return runner
+    return build(work, "cl /nologo /std:c++17 /EHsc /utf-8 /W4", [cpp, COOP / "coop_wire.cpp"], work / "hub_paths.exe",
+                 includes=[ROOT / "tests", COOP])
 
 
 def main():
@@ -100,16 +74,9 @@ def main():
         return (SOURCE / name).read_text(encoding="utf-8-sig")
 
     code = fixture(read, args.head)
-    temp_root = (ROOT / "temp").resolve()
-    work = (temp_root / f"A-S6-E-hub-paths-{uuid4().hex}").resolve()
-    if work.parent != temp_root:
-        raise RuntimeError(f"Scratch directory is outside the workspace temp directory: {work}")
-    work.mkdir()
-    try:
-        runner = build(work, code)
+    with scratch("hub_paths") as work:
+        runner = build_runner(work, code)
         return subprocess.run([str(runner)], cwd=work, timeout=30).returncode
-    finally:
-        shutil.rmtree(work)
 
 
 if __name__ == "__main__":

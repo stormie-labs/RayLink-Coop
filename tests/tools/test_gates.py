@@ -87,7 +87,6 @@ MOD_FILES = {
     "docs/NOTES.md": "notes\n",
     "tests/test_items.cpp": "TEST(a)\n{\n}\nTEST(b)\n{\n}\n",
     "tests/lua/test_items.lua": "-- t\n",
-    "tests/test_story_worldstate.py": "# Stub the isolated native slice in fake repositories.\n",
 }
 
 
@@ -591,10 +590,11 @@ def test_progress_stand_expects_only_its_own_budget_failure(name, work):
     assert "excerpt second_failure flagged=1 kept=0" in result.stdout, result.stdout
 
 
-# A scenario of tools/stand that no runner runs is one the gate never demands (the review of round 7, R7:
-# phantoms_server.ps1 of S3 and companions_group.ps1 of F5-CMP-1). Only these are run by no runner, with the reason.
+# A scenario of tools/stand that no runner runs is one the gate never demands. Only these are run by no gate runner, each
+# with the reason; any other scenario belongs to tools/stand_<mode>.ps1.
 NOT_A_GATED_SCENARIO = {
     "soak_hour_server": "one hour: weekly batch, run alone through tools\\stand\\run_guarded.ps1",
+    "perf": "a measurement (docs/MEASURE.md), run by hand before and after an optimization: it measures, it judges nothing",
     "run_guarded": "the guard every scenario runs under (tools/stand_common.ps1 Invoke-Scenario)",
     "hybrid_save": "the hybrid's save scenario: the hybrid is removed (docs/plans/2026-11-18-two-modes.md), so is it",
 }
@@ -1271,31 +1271,26 @@ def test_tests_mark_does_not_count_unless_clean_green_and_of_both_heads(repos, c
     assert code == 1 and "tests.ok does not count" in out and why in out, out
 
 
-@pytest.mark.parametrize(("body", "native", "expected"), [
-    (None, 0, 1),
-    ("raise SystemExit(17)\n", 0, 1),
-    ("print('worldstate slice ran')\n", 0, 0),
-    ("print('worldstate slice ran')\n", 1, 1),
-])
-def test_tests_mark_requires_the_native_worldstate_slice(work, monkeypatch, capfd, body, native, expected):
-    root = work
-    path = root / "tests" / "test_story_worldstate.py"
-    if body is not None:
-        write(root, "tests/test_story_worldstate.py", body)
-    monkeypatch.setattr(gates, "tests_state", lambda _root: {"mod_head": "a" * 40, "engine_head": "b" * 40,
-                                                          "dirty": "0", "first_dirty": ""})
-    fake_lua_runner(root)
-    marks = root / "temp" / "gates"
-    marks.mkdir(parents=True, exist_ok=True)
-    state = marks / "tests.state"
-    assert gates.tests_mark(root, marks, "begin", None, None, None) == 0
-    state.write_text(capfd.readouterr().out, encoding="utf-8")
-    code = gates.tests_mark(root, marks, "write", state, native, 0)
-    out = capfd.readouterr().out
-    assert code == expected and (marks / "tests.ok").exists() == (expected == 0), out
-    if native == 0 and expected:
-        assert "test_story_worldstate.py" in out
-    assert ("worldstate slice ran" in out) == (expected == 0), out
+def engine_slices() -> list[str]:
+    """The engine slices of this repository: the Python tests under tests/ that cut engine functions out of engine/src
+    and build them over stubs with MSVC (their compile step runs cl /nologo). This file names the pattern itself."""
+    this = Path(__file__).resolve()
+    return sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "tests").rglob("test_*.py")
+                  if p.resolve() != this and "cl /nologo" in p.read_text(encoding="utf-8", errors="replace"))
+
+
+def gate_slices() -> set[str]:
+    """The tests/ files tools/run_all_tests.cmd runs, as repository paths."""
+    text = (ROOT / "tools" / "run_all_tests.cmd").read_text(encoding="utf-8")
+    return {m.replace("\\", "/") for m in re.findall(r'"%ROOT%\\(tests\\[\w\\]+\.py)"', text)}
+
+
+def test_every_engine_slice_runs_in_run_all_tests():
+    # a slice outside tools\run_all_tests.cmd is run by nobody, and a regression in its engine path ships
+    slices = engine_slices()
+    assert slices, "no engine slice found under tests/"
+    missing = [s for s in slices if s not in gate_slices()]
+    assert not missing, f"tools\\run_all_tests.cmd does not run {len(missing)} engine slice(s): {', '.join(missing)}"
 
 
 def test_tests_mark_is_written_only_after_a_clean_green_run_of_both_heads(repos, capsys):
@@ -1346,6 +1341,12 @@ def test_run_all_tests_cmd_writes_tests_ok_only_when_both_suites_pass(repos):
     write(root, "tools/build_tests.cmd", "@exit /b 0\n")
     write(root, "tools/test_lua.cmd", "@exit /b %STUB_LUA%\n")
     write(root, "tools/test_luajit.cmd", "@exit /b %STUB_LUAJIT%\n")
+    # every engine slice of this repository as a stub that fails when STUB_SLICE names it (run by pytest or as a script)
+    slices = engine_slices()
+    for rel in slices:
+        fails = f"os.environ.get('STUB_SLICE') == {posixpath.basename(rel)[:-3]!r}"
+        write(root, rel, f"import os\nimport sys\n\n\ndef test_slice():\n    assert not {fails}\n\n\n"
+                         f"if __name__ == '__main__':\n    sys.exit(3 if {fails} else 0)\n")
     commit(root, "the runners")
     fake_lua_runner(root)
     env = dict(os.environ, PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", ""))
@@ -1360,6 +1361,12 @@ def test_run_all_tests_cmd_writes_tests_ok_only_when_both_suites_pass(repos):
     done = subprocess.run(["cmd", "/c", str(root / "tools" / "run_all_tests.cmd")], capture_output=True, text=True,
                           env=dict(env, STUB_LUA="0", STUB_LUAJIT="4"))
     assert done.returncode == 1 and not mark_path.exists(), done.stdout + done.stderr
+    # so does every engine slice: one under tests/tools (pytest) and one under tests/ (a script)
+    for failing in (min(s for s in slices if s.startswith("tests/tools/")),
+                    min(s for s in slices if not s.startswith("tests/tools/"))):
+        done = subprocess.run(["cmd", "/c", str(root / "tools" / "run_all_tests.cmd")], capture_output=True, text=True,
+                              env=dict(env, STUB_LUA="0", STUB_SLICE=posixpath.basename(failing)[:-3]))
+        assert done.returncode == 1 and not mark_path.exists(), failing + ": " + done.stdout + done.stderr
     done = subprocess.run(["cmd", "/c", str(root / "tools" / "run_all_tests.cmd")], capture_output=True, text=True,
                           env=dict(env, STUB_LUA="3"))
     assert done.returncode == 1 and not mark_path.exists(), done.stdout + done.stderr
@@ -3181,7 +3188,7 @@ def test_exe_source_compares_the_sdk(repos, case, why):
     assert source == "" and any(why in p for p in problems), problems
 
 
-# --- review 4, B5: tests.ok never comes from a stale Lua runner ---------------------------------------------------------
+# --- tests.ok never comes from a stale Lua runner (its sources or its lua51.lib changed) ------------------------------
 
 def fake_lua_runner(root: Path, stamp: str = "") -> Path:
     """temp/lua/runlua.exe as tools/test_lua.cmd builds it: the source stamp is a string inside the exe."""
@@ -3191,35 +3198,85 @@ def fake_lua_runner(root: Path, stamp: str = "") -> Path:
     return exe
 
 
-def test_lua_stamp_is_the_one_test_lua_cmd_builds(work):
+def run_tests_mark(root: Path, capsys) -> tuple[int, str]:
+    """--tests-mark begin, then write after green suites: the exit code of write and what it printed."""
+    state = root / "temp" / "gates" / "tests.state"
+    assert gates.main(["--root", str(root), "--tests-mark", "begin"]) == 0
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(capsys.readouterr().out, encoding="utf-8")
+    code = gates.main(["--root", str(root), "--tests-mark", "write", "--state", str(state), "--native", "0",
+                       "--lua", "0"])
+    return code, capsys.readouterr().out
+
+
+def test_lua_stamp_is_the_one_test_lua_cmd_builds(work, monkeypatch):
     root = work / "mod"
     write(root, "tests/lua/runlua.c", "int main() { return 0; }\n")
     write(root, "tests/lua/native_coop.cpp", "#include \"lua.hpp\"\n#include \"coop_routes.h\"\n#include <string>\n"
                                              "  #include \"coop_indented.h\"\n#include \"coop_lua_fn.h\" // a comment\n")
     write(root, "engine/src/xrCoop/coop_routes.h", "#pragma once\n")
     write(root, "engine/src/xrCoop/coop_lua_fn.h", "#pragma once\nint f();\n")
-    write(root, "engine/src/xrCoop/coop_indented.h", "#pragma once\n")  # findstr /b: an indented line is not read
+    write(root, "engine/src/xrCoop/coop_indented.h", "#pragma once\n")  # only a line that starts with #include
     write(root, "tools/test_lua.cmd", "@echo off\n")
-    sha = lambda rel: hashlib.sha1((root / rel).read_bytes()).hexdigest()[:8]  # noqa: E731
-    assert gates.lua_stamp(root) == "".join(sha(r) for r in ("tests/lua/runlua.c", "tests/lua/native_coop.cpp",
-                                                             "engine/src/xrCoop/coop_routes.h",
-                                                             "engine/src/xrCoop/coop_lua_fn.h", "tools/test_lua.cmd"))
+    write(work, "lib/lua51.lib", "!<arch>\nthe engine's LuaJIT\n")
+    monkeypatch.setenv("LUA51_LIB", str(work / "lib" / "lua51.lib"))
+    sha = lambda path: hashlib.sha1(path.read_bytes()).hexdigest()[:8]  # noqa: E731
+    assert gates.lua_stamp(root) == "".join(sha(root / r) for r in (
+        "tests/lua/runlua.c", "tests/lua/native_coop.cpp", "engine/src/xrCoop/coop_routes.h",
+        "engine/src/xrCoop/coop_lua_fn.h", "tools/test_lua.cmd")) + sha(work / "lib" / "lua51.lib")
 
 
-def test_lua_stamp_of_this_repository_is_the_runners_when_it_is_fresh():
+def test_lua51_lib_is_the_variable_or_engine_ci_build(work, monkeypatch):
+    # one place resolves the lib the runner links, and no old build stands in for a missing one
+    root = work / "mod"
+    built = ("_build", "_game", "bin_dbg", "x64", "Release-AVX", "lua51.lib")
+    write(root, "/".join(("engine",) + built), "!<arch>\nan old build\n")
+    monkeypatch.delenv("LUA51_LIB", raising=False)
+    ci = root.joinpath("engine-ci", *built)
+    assert gates.lua51_lib(root) == ci
+    assert gates.lua_stamp(root).endswith("missing0")
+    write(root, "/".join(("engine-ci",) + built), "!<arch>\nengine-ci's build\n")
+    assert gates.lua_stamp(root).endswith(hashlib.sha1(ci.read_bytes()).hexdigest()[:8])
+    monkeypatch.setenv("LUA51_LIB", str(work / "gone.lib"))
+    assert gates.lua51_lib(root) == work / "gone.lib" and gates.lua_stamp(root).endswith("missing0")
+
+
+def test_lua_stamp_prints_the_lib_and_the_stamp_test_lua_cmd_reads(monkeypatch, capsys):
+    # tests/tools/test_lua_runners.py builds a runner from these two lines
+    monkeypatch.setenv("LUA51_LIB", str(ROOT / "tools" / "check_gates.py"))  # any file: only its bytes are hashed
+    assert gates.main(["--root", str(ROOT), "--lua-stamp"]) == 0
+    assert capsys.readouterr().out.splitlines() == [f"lib={ROOT / 'tools' / 'check_gates.py'}",
+                                                    f"stamp={gates.lua_stamp(ROOT)}"]
+
+
+def test_lj_vm_obj_is_the_variable_else_engine_ci_else_engine(work, monkeypatch, capsys):
+    # one place resolves the LuaJIT VM object tools/test_luajit.cmd packs; with none, engine-ci's path is named
+    root = work / "mod"
+    rel = ("src", "3rd party", "luajit-2", "src", "lj_vm.obj")
+    ci, own = root.joinpath("engine-ci", *rel), root.joinpath("engine", *rel)
+    monkeypatch.delenv("LJ_VM_OBJ", raising=False)
+    assert gates.lj_vm_obj(root) == ci
+    write(root, "/".join(("engine",) + rel), "the VM object gen_luajit_artifacts.bat made in engine\n")
+    assert gates.lj_vm_obj(root) == own
+    write(root, "/".join(("engine-ci",) + rel), "the VM object of the engine build\n")
+    assert gates.lj_vm_obj(root) == ci
+    monkeypatch.setenv("LJ_VM_OBJ", str(work / "named.obj"))
+    assert gates.lj_vm_obj(root) == work / "named.obj"
+    assert gates.main(["--root", str(root), "--lj-vm"]) == 0
+    assert capsys.readouterr().out.splitlines() == [f"lj_vm={work / 'named.obj'}"]
+
+
+def test_lua_runner_of_this_repository_counts_exactly_when_it_says_the_stamp_of_check_gates():
+    # the stamp the gate wants is the string the runner prints for -stamp, whole: never a part of it
     exe = ROOT.joinpath(*gates.LUA_RUNNER)
-    if not exe.is_file():
-        pytest.skip("no temp\\lua\\runlua.exe here")
-    said = subprocess.run([str(exe), "-stamp"], capture_output=True, text=True).stdout.strip()
-    if said != gates.lua_stamp(ROOT):
-        pytest.skip("the shared runner is stale right now (another run rebuilds it)")
-    assert gates.lua_runner_stale(ROOT) is None
+    said = subprocess.run([str(exe), "-stamp"], capture_output=True, text=True).stdout.strip() if exe.is_file() else ""
+    want = gates.lua_stamp(ROOT)
+    assert (gates.lua_runner_stale(ROOT) is None) == (said == want), f"the runner says {said}, check_gates wants {want}"
 
 
 def test_tests_mark_refuses_a_run_on_a_stale_lua_runner(repos, capsys):
     root, engine, _ = repos
     marks = root / "temp" / "gates"
-    state = marks / "tests.state"
     write(root, "tests/lua/runlua.c", "int main() { return 0; }\n")
     write(root, "tests/lua/native_coop.cpp", "#include \"coop_routes.h\"\n")
     write(engine, "src/xrCoop/coop_routes.h", "#pragma once\n")
@@ -3229,19 +3286,39 @@ def test_tests_mark_refuses_a_run_on_a_stale_lua_runner(repos, capsys):
     write(engine, "src/xrCoop/coop_routes.h", "#pragma once\nint changed();\n")
     commit(engine, "the header changed: the runner must be rebuilt")
 
-    def run_once() -> tuple[int, str]:
-        assert gates.main(["--root", str(root), "--tests-mark", "begin"]) == 0
-        state.parent.mkdir(parents=True, exist_ok=True)
-        state.write_text(capsys.readouterr().out, encoding="utf-8")
-        code = gates.main(["--root", str(root), "--tests-mark", "write", "--state", str(state), "--native", "0",
-                           "--lua", "0"])
-        return code, capsys.readouterr().out
-
-    code, out = run_once()  # test_lua.cmd could not rebuild (vcvars / lua51.lib missing): it ran the old runner, exit 0
+    code, out = run_tests_mark(root, capsys)  # test_lua.cmd could not rebuild: it ran the old runner, exit 0
     assert code == 1 and "stale runner" in out and not (marks / "tests.ok").exists(), out
     fake_lua_runner(root)  # rebuilt from the sources now
-    code, out = run_once()
+    code, out = run_tests_mark(root, capsys)
     assert code == 0 and (marks / "tests.ok").exists(), out
     (root.joinpath(*gates.LUA_RUNNER)).unlink()
-    code, out = run_once()
+    code, out = run_tests_mark(root, capsys)
     assert code == 1 and "no temp\\lua\\runlua.exe" in out, out
+
+
+def test_tests_mark_refuses_a_runner_linked_to_another_lua51_lib(repos, capsys, monkeypatch):
+    root, engine, _ = repos
+    marks = root / "temp" / "gates"
+    monkeypatch.delenv("LUA51_LIB", raising=False)
+    lib = root.joinpath("engine-ci", "_build", "_game", "bin_dbg", "x64", "Release-AVX", "lua51.lib")
+    lib.parent.mkdir(parents=True)
+    lib.write_bytes(b"!<arch>\nthe LuaJIT of the engine build\n")
+    write(root, "tests/lua/runlua.c", "int main() { return 0; }\n")
+    write(root, "tests/lua/native_coop.cpp", "#include \"coop_routes.h\"\n")
+    write(engine, "src/xrCoop/coop_routes.h", "#pragma once\n")
+    commit(root, "runner sources")
+    commit(engine, "a header")
+    fake_lua_runner(root)
+    code, out = run_tests_mark(root, capsys)
+    assert code == 0 and (marks / "tests.ok").exists(), out
+    # engine-ci was built again: the runner still holds the LuaJIT it was linked with
+    lib.write_bytes(b"!<arch>\nthe LuaJIT of a newer engine build\n")
+    code, out = run_tests_mark(root, capsys)
+    assert code == 1 and "stale runner" in out and not (marks / "tests.ok").exists(), out
+    # a runner stamp that only starts with the gate's (one part more, as a lib the gate did not hash) is another stamp
+    fake_lua_runner(root, gates.lua_stamp(root) + "a6a7dcdf")
+    code, out = run_tests_mark(root, capsys)
+    assert code == 1 and "stale runner" in out and not (marks / "tests.ok").exists(), out
+    fake_lua_runner(root)  # rebuilt with the new lib
+    code, out = run_tests_mark(root, capsys)
+    assert code == 0 and (marks / "tests.ok").exists(), out

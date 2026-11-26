@@ -4,6 +4,7 @@
                                  [--root DIR] [--marks DIR] [--exe PATH] [--stand DIR] [--ci DIR]
   python -I tools/check_gates.py --exe-source [--exe PATH] [--ci DIR]
   python -I tools/check_gates.py --tests-mark begin | write --state FILE --native N --lua N
+  python -I tools/check_gates.py --lua-stamp [--root DIR]
 
 RANGE is a git range of this repository (`dev-57..HEAD`), --engine-range one of engine/ (its own repository; the
 default is RANGE: release tags exist in both repositories; when the engine does not know them, pass --engine-range).
@@ -71,10 +72,11 @@ E:\\RayLinkGames\\GAMMA\\game-dev: a run on another folder does not count), exe_
 stand_fingerprint equal to the stand's now, scenarios_sha256 equal to the digest of HEAD's blobs of SCENARIO_PATHS
 (the scenarios, the runners, and check_gates.py / check_layers.py, which the runner imports), gamedata_sha256 equal to
 the digest of HEAD's deployable gamedata (gamedata, gamedata_gamma, the engine's gamedata) and profile_sha256 equal to
-the digest of HEAD's tools/stand/stand_profile.ltx. tests.ok, written by tools/run_all_tests.cmd when tools/build_tests.cmd
-and tools/test_lua.cmd both passed, counts with mode=tests, dirty=0 before and after the run, native=0, lua=0 and the
-same two HEAD ids. Uncommitted product changes are never covered by a mark (the stand ran HEAD's build; its runner
-refuses to start on a dirty tree).
+the digest of HEAD's tools/stand/stand_profile.ltx. tests.ok, written by tools/run_all_tests.cmd when the native tests
+(tools/build_tests.cmd, tools/test_luajit.cmd, every engine slice) and tools/test_lua.cmd passed and the Lua runner
+holds the stamp of its sources and its lua51.lib now (--lua-stamp), counts with mode=tests, dirty=0 before and after
+the run, native=0, lua=0 and the same two HEAD ids. Uncommitted product changes are never covered by a mark (the stand
+ran HEAD's build; its runner refuses to start on a dirty tree).
 
 exe_source (C12): the exe is engine-ci's build (byte for byte its _build/_game/bin_dbg/AnomalyDX11AVX.exe) and was built
 from engine HEAD: engine/src has no uncommitted file, every file of engine HEAD's src/ is in engine-ci with HEAD's
@@ -750,13 +752,81 @@ def tests_state(root: pathlib.Path) -> dict[str, str]:
 
 
 LUA_RUNNER = ("temp", "lua", "runlua.exe")
+# the engine's static LuaJIT in engine-ci's build, the one build of the current engine sources
+CI_LUA51 = ("_build", "_game", "bin_dbg", "x64", "Release-AVX", "lua51.lib")
+
+
+def lua51_lib(root: pathlib.Path) -> pathlib.Path:
+    """The lua51.lib the Lua runner and the native Lua tests link: LUA51_LIB when it is set, else engine-ci's build.
+    There is no second choice: an older build (engine/_build) would test a LuaJIT the game no longer runs."""
+    named = os.environ.get("LUA51_LIB")
+    return pathlib.Path(named).absolute() if named else root.joinpath("engine-ci", *CI_LUA51)
+
+
+# the engine's LuaJIT sources, the same path in engine/ and engine-ci/
+LUAJIT_SRC = ("src", "3rd party", "luajit-2", "src")
+
+
+def lj_vm_obj(root: pathlib.Path) -> pathlib.Path:
+    """The LuaJIT VM object tools/test_luajit.cmd packs with the LuaJIT it compiles: LJ_VM_OBJ when it is set, else
+    engine-ci's (the engine build generates it there from engine HEAD's LuaJIT sources), else the one
+    gen_luajit_artifacts.bat generated in engine/ (git ignores it, so a fresh engine/ has none). When neither exists it is
+    engine-ci's path: the runner names it and stops."""
+    named = os.environ.get("LJ_VM_OBJ")
+    if named:
+        return pathlib.Path(named).absolute()
+    places = [root.joinpath(tree, *LUAJIT_SRC, "lj_vm.obj") for tree in ("engine-ci", "engine")]
+    return next((path for path in places if path.is_file()), places[0])
+
+
+def luajit_stamp(root: pathlib.Path) -> str:
+    """The stamp of the LuaJIT library tools/test_luajit.cmd builds: the SHA-1 of every file of the engine's LuaJIT
+    sources folder it compiles or includes (*.c, *.h, by name), the lj_vm.obj it packs (lj_vm_obj) and test_luajit.cmd
+    itself. The runner builds the library again only when the stamp beside it differs."""
+    digest = hashlib.sha1()
+    src = root.joinpath("engine", *LUAJIT_SRC)
+    for path in sorted([*src.glob("*.c"), *src.glob("*.h")]) + [lj_vm_obj(root), root / "tools" / "test_luajit.cmd"]:
+        digest.update(path.name.encode("utf-8"))
+        try:
+            digest.update(path.read_bytes())
+        except OSError:
+            digest.update(b"missing")
+    return digest.hexdigest()[:16]
+
+
+def vcvars() -> Optional[pathlib.Path]:
+    """vcvars64.bat of the MSVC every native test builds with (the runners and the engine slices): VCVARS when it is
+    set, else the newest Visual Studio or Build Tools with the x64 C++ tools, as vswhere (the installer's locator, in
+    its fixed place under %ProgramFiles(x86)%) finds it. None when there is no such install: the caller names VCVARS."""
+    named = os.environ.get("VCVARS")
+    if named:
+        return pathlib.Path(named).absolute()
+    vswhere = pathlib.Path(os.environ.get("ProgramFiles(x86)", "")) / "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
+    try:
+        found = subprocess.run([str(vswhere), "-latest", "-products", "*", "-requires",
+                                "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-find",
+                                r"VC\Auxiliary\Build\vcvars64.bat"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    lines = found.stdout.strip().splitlines()
+    return pathlib.Path(lines[0].strip()) if lines else None
+
+
+def gamma_scripts() -> Optional[pathlib.Path]:
+    """The real G.A.M.M.A. scripts the Lua tests and their helpers read: GAMMA_SCRIPTS when it is set, else the stand's
+    (DEFAULT_STAND, the one place that names it). None when neither is there: the tests that need them fail and name
+    GAMMA_SCRIPTS."""
+    named = os.environ.get("GAMMA_SCRIPTS")
+    scripts = pathlib.Path(named).absolute() if named else DEFAULT_STAND / "gamedata" / "scripts"
+    return scripts if scripts.is_dir() else None
 
 
 def lua_stamp(root: pathlib.Path) -> str:
-    """The source stamp tools/test_lua.cmd builds temp/lua/runlua.exe with (RUNLUA_STAMP): the first 8 hex digits of the
-    SHA-1 of tests/lua/runlua.c, tests/lua/native_coop.cpp, every engine/src/xrCoop file native_coop.cpp names in a line
-    that starts with #include (its second word, quotes off, when that file exists) and tools/test_lua.cmd, in that order
-    ("missing0" for a file that cannot be read)."""
+    """The stamp tools/test_lua.cmd builds temp/lua/runlua.exe with (RUNLUA_STAMP; the cmd takes it from --lua-stamp):
+    the first 8 hex digits of the SHA-1 of tests/lua/runlua.c, tests/lua/native_coop.cpp, every engine/src/xrCoop file
+    native_coop.cpp names in a line that starts with #include (its second word, quotes off, when that file exists),
+    tools/test_lua.cmd and the lua51.lib it links (lua51_lib), in that order ("missing0" for a file that cannot be
+    read). The lib is part of it: a runner linked to another LuaJIT tests another VM."""
     def part(path: pathlib.Path) -> str:
         try:
             return hashlib.sha1(path.read_bytes()).hexdigest()[:8]
@@ -781,37 +851,32 @@ def lua_stamp(root: pathlib.Path) -> str:
             if exists:
                 parts.append(part(header))
     parts.append(part(root / "tools" / "test_lua.cmd"))
+    parts.append(part(lua51_lib(root)))
     return "".join(parts)
 
 
 def lua_runner_stale(root: pathlib.Path) -> Optional[str]:
-    """Why the shared Lua runner was not built from the sources now (review 4, B5: tools/test_lua.cmd runs the old
-    temp/lua/runlua.exe and exits 0 when it cannot rebuild it), or None. The stamp is a string in the exe."""
+    """Why the shared Lua runner was not built from the sources and the lua51.lib now, or None. tools/test_lua.cmd runs
+    the old temp/lua/runlua.exe and exits 0 when it cannot rebuild it, so the gate looks at the exe itself: its stamp
+    must be lua_stamp, the whole string, not a longer one that starts with it."""
     exe = root.joinpath(*LUA_RUNNER)
     if not exe.is_file():
         return "there is no temp\\lua\\runlua.exe"
     want = lua_stamp(root)
-    data = exe.read_bytes()
-    if want.encode("ascii") not in data and want.upper().encode("ascii") not in data:
-        return (f"temp\\lua\\runlua.exe was not built from the sources now (stamp {want[:16]}...): tools\\test_lua.cmd "
-                "could not rebuild it and ran a stale runner (fix the build, or wait for another Lua run to end)")
+    # RUNLUA_STAMP is a C string in the exe's data: no printable byte before it, its NUL after it
+    whole = re.compile(rb"(?<![\x21-\x7e])" + re.escape(want.encode("ascii")) + rb"\x00", re.I)
+    if not whole.search(exe.read_bytes()):
+        return (f"temp\\lua\\runlua.exe was not built from the sources and the lua51.lib now (stamp {want[:16]}...): "
+                "tools\\test_lua.cmd could not rebuild it and ran a stale runner (fix the build, or wait for another "
+                "Lua run to end)")
     return None
-
-
-def native_python_failure(root: pathlib.Path) -> Optional[str]:
-    """Run the isolated native receiver checks before certifying the full test run."""
-    rel = "tests/test_story_worldstate.py"
-    try:
-        done = subprocess.run([sys.executable, "-I", str(root / rel)], cwd=root, timeout=180)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        return f"{rel} could not complete ({error})"
-    return f"{rel} failed ({done.returncode})" if done.returncode else None
 
 
 def tests_mark(root: pathlib.Path, marks: pathlib.Path, command: str, state_file: Optional[pathlib.Path],
                native: Optional[int], lua: Optional[int]) -> int:
-    """begin: drop the old tests.ok, print the state (both HEADs, dirty) for `write`. write: tests.ok when both suites
-    and the isolated native Python checks passed, the tree was clean and neither HEAD moved."""
+    """begin: drop the old tests.ok, print the state (both HEADs, dirty) for `write`. write: tests.ok when the native
+    tests (tools/build_tests.cmd, tools/test_luajit.cmd and the engine slices) and the Lua tests passed on a fresh Lua
+    runner, the tree was clean and neither HEAD moved. The gate reads exit codes only; it runs no test itself."""
     mark = marks / f"{TESTS}.ok"
     if command == "begin":
         if mark.exists():
@@ -830,7 +895,7 @@ def tests_mark(root: pathlib.Path, marks: pathlib.Path, command: str, state_file
     now = tests_state(root)
     why = []
     if native != 0:
-        why.append(f"tools\\build_tests.cmd failed ({native})")
+        why.append(f"the native tests failed ({native})")
     if lua != 0:
         why.append(f"tools\\test_lua.cmd failed ({lua})")
     else:
@@ -845,13 +910,6 @@ def tests_mark(root: pathlib.Path, marks: pathlib.Path, command: str, state_file
             why.append(f"{key} moved during the run ({short(before.get(key))} -> {short(now[key])})")
     if why:
         print("gates: no tests.ok: " + "; ".join(why))
-        return 1
-    native_failure = native_python_failure(root)
-    if native_failure:
-        print(f"gates: no tests.ok: {native_failure}")
-        return 1
-    if tests_state(root) != now:
-        print("gates: no tests.ok: the tree changed during the native Python checks")
         return 1
     marks.mkdir(parents=True, exist_ok=True)
     lines = [f"mode={TESTS}", f"mod_head={now['mod_head']}", f"engine_head={now['engine_head']}",
@@ -1059,12 +1117,38 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--exe-source", action="store_true", help="print the engine HEAD the exe was built from, or why not")
     ap.add_argument("--tests-mark", choices=["begin", "write"], help="tools/run_all_tests.cmd: the tests mark")
     ap.add_argument("--state", help="--tests-mark write: the file --tests-mark begin printed into")
-    ap.add_argument("--native", type=int, help="--tests-mark write: the exit code of tools/build_tests.cmd")
+    ap.add_argument("--native", type=int,
+                    help="--tests-mark write: the exit code of the native tests (build_tests, test_luajit, slices)")
     ap.add_argument("--lua", type=int, help="--tests-mark write: the exit code of tools/test_lua.cmd")
+    ap.add_argument("--lua-stamp", action="store_true",
+                    help="print lib=<the lua51.lib the Lua runner links> and stamp=<the stamp it is built with> "
+                         "(tools/test_lua.cmd)")
+    ap.add_argument("--lj-vm", action="store_true",
+                    help="print lj_vm=<the LuaJIT VM object tools/test_luajit.cmd packs>")
+    ap.add_argument("--luajit-stamp", action="store_true",
+                    help="print luajit_stamp=<the stamp of the LuaJIT library tools/test_luajit.cmd builds>")
+    ap.add_argument("--vcvars", action="store_true",
+                    help="print vcvars=<the vcvars64.bat the native tests build with> (empty when there is none)")
+    ap.add_argument("--gamma-scripts", action="store_true",
+                    help="print gamma=<the G.A.M.M.A. scripts the Lua tests read> (empty when there are none)")
     args = ap.parse_args(argv)
     root = pathlib.Path(args.root).resolve()
     marks = pathlib.Path(args.marks) if args.marks else root / "temp" / "gates"
     ci = pathlib.Path(args.ci) if args.ci else root / "engine-ci"
+    # the runners' inputs, printed as name=value lines for a cmd "for /f"; several may be asked at once
+    if args.lua_stamp or args.lj_vm or args.luajit_stamp or args.vcvars or args.gamma_scripts:
+        if args.lua_stamp:
+            print(f"lib={lua51_lib(root)}")
+            print(f"stamp={lua_stamp(root)}")
+        if args.lj_vm:
+            print(f"lj_vm={lj_vm_obj(root)}")
+        if args.luajit_stamp:
+            print(f"luajit_stamp={luajit_stamp(root)}")
+        if args.vcvars:
+            print(f"vcvars={vcvars() or ''}")
+        if args.gamma_scripts:
+            print(f"gamma={gamma_scripts() or ''}")
+        return 0
     try:
         if args.tests_mark:
             return tests_mark(root, marks, args.tests_mark, pathlib.Path(args.state) if args.state else None,

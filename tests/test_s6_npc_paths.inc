@@ -2,8 +2,10 @@
 // ALife storage and logging are local. Routing, queue writes, and the spawn handler come from production.
 #include "test_util.h"
 #include "support/fake_mode.h"
+#include "srv/coop_levels_journal.h"
 #include "srv/coop_levels_wire.h"
 #include "coop_mirror.h"
+#include "coop_reconcile.h"
 
 #include <algorithm>
 #include <limits>
@@ -28,6 +30,7 @@ using string64 = char[64];
 template <typename T> using xr_vector = std::vector<T>;
 namespace wire = coop::levels::wire;
 namespace mirror = coop::mirror;
+namespace reconcile = coop::reconcile;
 
 constexpr u16 kActor = 0, kNoId = 0xffff;
 constexpr u16 kSpawn = 100, kReleased = 101, kItem = 102, kOldParent = 103, kNewParent = 104, kVictim = 105, kKiller = 106;
@@ -54,6 +57,7 @@ struct CSE_ALifeDynamicObject : CSE_Abstract
 	u16 ID = kNoId, ID_Parent = kNoId, m_tGraphID = kNoId;
 	u32 m_tNodeID = 0;
 	bool m_bOnline = false;
+	std::string s_name = "fixture";
 	Fvector o_Position, o_Angle;
 	xr_vector<u16> children;
 	const char* name_replace() const { return "fixture"; }
@@ -106,23 +110,10 @@ struct Manager
 	unsigned now_ms() const { return 0; }
 };
 Manager& mgr() { static Manager manager; return manager; }
-bool is_map_authority() { return coop::has(mgr().roles, coop::ProcessRole::MapAuthority); }
 bool is_map_server() { return coop::has(mgr().roles, coop::ProcessRole::MapServer); }
 bool is_mirror() { return coop::has(mgr().roles, coop::ProcessRole::Mirror); }
 bool dedicated = false;
 bool ghost_actor() { return dedicated || is_map_server(); }
-
-// Legacy level facts are provided independently for the HEAD comparison.
-bool host_level_is_here = false;
-std::set<PeerId> away_peers;
-namespace levels
-{
-namespace wire = npc_fixture::wire;
-inline bool on_host_level(PeerId peer) { return !away_peers.count(peer); }
-inline u16 level_of_player(PeerId) { return host_level_is_here ? 1 : 2; }
-inline u16 my_level() { return 1; }
-inline bool online_at_server(u16) { return false; }
-}
 
 namespace join
 {
@@ -145,18 +136,43 @@ struct xrCriticalSectionGuard { explicit xrCriticalSectionGuard(xrCriticalSectio
 namespace entities
 {
 int g_applying = 0;
+struct ClientApply { ClientApply(); ~ClientApply(); };
 // PRODUCTION_APPLY
 }
 
 namespace levels
 {
+namespace journal = coop::levels::journal;
+namespace wire = npc_fixture::wire;
 struct State
 {
 	// PRODUCTION_UP_RECORD
 	std::vector<Up> up;
+	journal::HeldMemory memory;
+	std::set<u16> quiet;
+	journal::ReleasesUnderWay releasing;
+	u32 parents_unregistered = 0;
 	xrCriticalSection lock;
 } g;
+// The fixture's objects are no creatures of a squad: the head carries the id alone, a death or a release goes at the end
+journal::ObjectHead head_of(u16 local_id)
+{
+	journal::ObjectHead h;
+	h.id = local_id;
+	return h;
+}
+journal::ObjectHead head_before_move(u16 item, const journal::ParentBefore&) { return head_of(item); }
+journal::CreaturePlace place_of_creature(u16, journal::ObjectHead&)
+{
+	journal::CreaturePlace p;
+	p.at = g.up.size();
+	return p;
+}
+void client_unadopt(u16) { CHECK(false); }
 // PRODUCTION_UP_HOOKS
+void up_member(u16, u16, bool) {}
+void up_item_facts(u16) {}
+u16 echo_now() { return reconcile::kNoEcho; }
 }
 
 struct LevelSide
@@ -166,6 +182,7 @@ struct LevelSide
 };
 struct MapLevelSide final : LevelSide
 {
+	u32 m_nameless_infos = 0;
 	// PRODUCTION_LEVEL_DISPATCH
 } map_side;
 
@@ -183,9 +200,18 @@ Mode& mode() { static Mode current; return current; }
 // PRODUCTION_OBSERVER
 
 namespace script { void note_released(u16) {} }
-namespace items { void forget_item(u16) {} }
+namespace items
+{
+void forget_item(u16) {}
+bool read_initial(Reader&, CSE_Abstract*) { return true; } // the fixture's spawns carry no item state
+}
 namespace syncapi { void on_entity_destroyed(u16) {} }
-namespace world { bool is_player_proxy(u16 id) { return id == kOldParent; } }
+namespace world
+{
+bool is_player_proxy(u16 id) { return id == kOldParent; }
+bool is_player_character(const CSE_Abstract*) { return false; }
+}
+namespace writing { bool writes(u16) { return false; } }
 namespace net { void client_send(coop::Msg, const Writer&) {} }
 namespace requests
 {
@@ -198,7 +224,7 @@ void clone_finish(u16, bool) {}
 namespace entities
 {
 enum class HostEventKind { Registered, Released };
-struct HostEvent { HostEventKind kind; u16 id; bool online; };
+struct HostEvent { HostEventKind kind; u16 id; bool online; bool applied = false; };
 std::vector<HostEvent> g_host_events;
 // PRODUCTION_ENTITY_HOOKS
 
@@ -210,12 +236,16 @@ void F_entity_Destroy(CSE_Abstract* e) { CHECK(e == nullptr); }
 void apply_update(CSE_ALifeDynamicObject*, const NET_Packet&) {}
 void bring_child_online(CSE_ALifeDynamicObject* e) { alife.switch_online(e); }
 void client_on_destroy(PeerId, Reader&) { CHECK(false); }
+// every fixture spawn is new here: nothing is replaced, every clone state is empty
+bool game_object_here(u16) { return false; }
+void client_remove(u16) { CHECK(false); }
+void squads_made_whole(const CSE_ALifeDynamicObject*) {}
 bool mirror_log_allowed() { return false; }
 bool log_allowed(unsigned&) { return false; }
 struct { void add(u16, unsigned) {} void done(u16) {} } g_id_retry;
 std::set<u16> g_refetched, g_online;
 unsigned g_missing, g_mirror_stale, g_mirror_log_info, g_mirror_online_now, g_mirror_with_holder, g_mirror_broken_holder,
-    g_client_spawns;
+    g_client_spawns, g_stale_spawns, g_replaced;
 
 // PRODUCTION_SPAWN
 }
@@ -224,8 +254,10 @@ namespace events
 {
 u16 root_of(u16 id) { return id; }
 xrCriticalSection g_lock;
-std::map<u16, u16> g_parent_changes, g_last_holder;
-std::vector<std::pair<u16, u16>> g_deaths;
+// PRODUCTION_EVENT_RECORDS
+std::map<u16, ParentChange> g_parent_changes;
+std::map<u16, u16> g_last_holder;
+std::vector<Death> g_deaths;
 // PRODUCTION_EVENT_HOOKS
 }
 
@@ -235,8 +267,6 @@ void process(const char* name, bool active)
 	mgr() = {active, active ? c.answers.roles : u8{0}};
 	mode().answers.emplace(c);
 	dedicated = std::string_view(name) == "world_server";
-	host_level_is_here = std::string_view(name) == "coop_client";
-	away_peers = dedicated ? std::set<PeerId>{3} : std::set<PeerId>{};
 	mode().answers->place(2, t::Spot::Joining);
 	mode().answers->place(3, t::Spot::Elsewhere);
 	alife = {};
@@ -295,8 +325,10 @@ void check_reports(bool record_local, bool report_up)
 	events::g_deaths.clear();
 	levels::g.up.clear();
 
-	CSE_ALifeDynamicObject spawned;
+	CSE_ALifeDynamicObject spawned, item;
 	spawned.ID = kSpawn;
+	item.ID = kItem;
+	alife.registered[kItem] = &item; // a map server journals the moves of its own ALife's objects only
 	entities::host_on_entity_registered(&spawned);
 	entities::host_on_entity_released(kReleased);
 	events::host_on_parent_changed(kItem, kOldParent, kNewParent);
@@ -310,10 +342,12 @@ void check_reports(bool record_local, bool report_up)
 		REQUIRE(entities::g_host_events.size() == 2);
 		CHECK_EQ(entities::g_host_events[0].kind, entities::HostEventKind::Registered);
 		CHECK_EQ(entities::g_host_events[0].id, kSpawn);
+		CHECK(!entities::g_host_events[0].applied);
 		CHECK_EQ(entities::g_host_events[1].kind, entities::HostEventKind::Released);
 		CHECK_EQ(entities::g_host_events[1].id, kReleased);
-		CHECK(events::g_parent_changes.count(kItem) && events::g_parent_changes.at(kItem) == kOldParent);
-		CHECK(events::g_deaths.size() == 1 && events::g_deaths.front() == std::make_pair(kVictim, kKiller));
+		CHECK(events::g_parent_changes.count(kItem) && events::g_parent_changes.at(kItem).old_parent == kOldParent);
+		CHECK(events::g_deaths.size() == 1 && events::g_deaths.front().victim == kVictim &&
+		    events::g_deaths.front().killer == kKiller);
 	}
 	const levels::State::Up expected[] = {
 	    {wire::LevelEntityHead::Spawn, kSpawn, kNoId},
@@ -373,7 +407,7 @@ TEST(npc_s6_reports_map_server_during_world_apply)
 {
 	process("map_server", true);
 	{
-		entities::ApplyGuard apply;
+		entities::ClientApply apply;
 		check_reports(false, false);
 	}
 	check_reports(true, true);
