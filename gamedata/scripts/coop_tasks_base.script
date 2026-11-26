@@ -1,0 +1,360 @@
+-- Ядро: без проверок режима (docs/MODES.md)
+--[[
+	coop_tasks and its parts share the task events, helpers and state declared here.
+	coop_srv_tasks calls unpack_payload to decode the task effects reported by map servers.
+		EV_*                        the task events on the wire
+		log, stats, report          the "[coop-tasks]" log line, the counters coop_status prints, a fault counted and logged
+		world_active, mirrors_tasks, client_live, is_task, self_peer, players, to_host_id, to_local_id, tmgr, now
+		pack, unpack_payload, esc, unesc, digest
+		                            the payload codec: "k=v;k=v" of scalars, a value may be one level of flat table
+		var_value_ok, actor_pstor, is_task_key, task_vars, local_tasks, is_local, bounties, is_shared_key
+		                            task vars in the actor's pstor, personal tasks, bounty targets, the group's shared keys
+		host                        the host's state of the group's tasks (one table every part writes)
+		far_of, avatar_obj, has_clients, send, ledger_money, is_my_actor, reward_mode, EVERYONE_SHARED, EVERYONE_FULL
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace (nil on an exe without co-op)
+
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+local string_format, string_char, table_concat, table_sort = string.format, string.char, table.concat, table.sort
+local active = coop_util.active
+
+EV_REQ = "coop_tq" -- client -> host: task operation
+EV_STATE = "coop_tl" -- host -> client(s): Lua state of one task
+EV_LIST = "coop_tl_list" -- host -> client(s): ids + digests of all tasks
+EV_SYNC = "coop_tl_req" -- client -> host: send me everything
+EV_REWARD = "coop_trw" -- host -> one client: money / news / personal effect for this player
+EV_NEWS = "coop_tn" -- host -> clients: a task line (new / updated / complete / fail / reversed) and who caused it
+EV_VARS = "coop_tv" -- host -> client(s): the group's shared task bookkeeping vars (whole set)
+EV_VAR = "coop_tvd" -- client -> host: this client's dialog changed one of them
+EV_ACK = "coop_trw_ok" -- client -> host: the effect of a coop_trw event ran here
+
+-- Actor pstor keys that are task bookkeeping of the whole group (DRX storyline: givers with outstanding
+-- tasks, current storyline task, ...). Written by the giving dialog on whichever machine, read by dialog
+-- preconditions everywhere, cleared by on_complete on the host. Host-owned, mirrored, client writes routed.
+-- Later ones: the escort tasks' target anomaly, its level and analyzed flag | Warfare escort's target smart (read by the
+-- companion tasks' "arrived" test) | the counters of the Zaton b33 and Jupiter b200 dialog quests (several players count them)
+local SHARED_PREFIXES = { "drx_sl_", "task_target_anomaly", "warfare_escort_", "zat_b33_", "jup_b200_" }
+
+-------------------------------------------------------------------------------
+-- Logging, roles
+-------------------------------------------------------------------------------
+log = coop_util.logger("[coop-tasks]")
+
+stats = {
+	req_out = 0, req_in = 0, refused = 0, state_out = 0, state_in = 0, lists = 0, syncs = 0,
+	rewards_routed = 0, rewards_in = 0, party_moves = 0, party_releases = 0, stage_by_party = 0, errors = 0,
+	news_out = 0, news_in = 0, news_swallowed = 0, news_limited = 0,
+	-- host: ends of tasks a player did not take that his own stock logic sent (check task_auto_end),
+	-- counted without a line each; how many of them it refused
+	auto_end = 0, auto_end_refused = 0,
+}
+
+function report(what, err)
+	stats.errors = stats.errors + 1
+	if stats.errors <= 10 or stats.errors % 100 == 0 then
+		log("! %s: %s", tostring(what), tostring(err))
+	end
+end
+
+function world_active() return active() and coop_mode.decides_world() end
+-- A map server mirrors the world's task state even while it leads its own level.
+function mirrors_tasks() return active() and not coop_mode.decides_world() end
+-- A task of the stock manager is a luabind object, type() says "userdata"; a client's mirror stub is a Lua table.
+function is_task(t)
+	local kind = type(t)
+	return kind == "userdata" or kind == "table"
+end
+function client_live() return mirrors_tasks() and api.is_live() == true end
+
+function self_peer()
+	local ok, v = pcall(api.self_id)
+	return ok and tonumber(v) or 0
+end
+
+function players()
+	if not api then return {} end
+	local ok, list = pcall(api.players)
+	return ok and type(list) == "table" and list or {}
+end
+
+function to_host_id(id)
+	if not (api and api.to_host_id and type(id) == "number") then return id end
+	return api.to_host_id(id) or id
+end
+function to_local_id(id)
+	if not (api and api.to_local_id and type(id) == "number") then return id end
+	return api.to_local_id(id) or id
+end
+
+function tmgr()
+	local mod = rawget(_G, "task_manager") or task_manager
+	if not (mod and mod.get_task_manager) then return nil end
+	local ok, tm = pcall(mod.get_task_manager)
+	return ok and tm or nil
+end
+
+function now() return time_global() end
+
+-------------------------------------------------------------------------------
+-- Payloads: "k=v;k=v" of scalars, values may be one level of flat table ("t" + "k:v,k:v").
+-- No code is ever loaded from the network.
+-------------------------------------------------------------------------------
+function esc(s)
+	return (tostring(s):gsub("[%%;=,:]", function(c) return string_format("%%%02X", c:byte()) end))
+end
+function unesc(s)
+	return (s:gsub("%%(%x%x)", function(h) return string_char(tonumber(h, 16)) end))
+end
+
+local function enc_scalar(v)
+	local tv = type(v)
+	if tv == "number" then
+		if v ~= v or v == math.huge or v == -math.huge then return nil end
+		return "n" .. string_format("%.17g", v)
+	elseif tv == "boolean" then
+		return v and "b1" or "b0"
+	elseif tv == "string" then
+		return "s" .. v
+	end
+	return nil
+end
+
+local function dec_scalar(v)
+	local tag, body = v:sub(1, 1), v:sub(2)
+	if tag == "n" then return tonumber(body) end
+	if tag == "b" then return body == "1" end
+	if tag == "s" then return body end
+	return nil
+end
+
+-- flat table of scalars -> "k:v,..." (keys typed: "$" string, "#" number); nil if it holds anything else
+local function enc_flat(t)
+	local out = {}
+	for k, v in pairs(t) do
+		local ek
+		if type(k) == "string" then
+			ek = "$" .. k
+		elseif type(k) == "number" then
+			ek = "#" .. string_format("%.17g", k)
+		end
+		local ev = enc_scalar(v)
+		if not (ek and ev) then return nil end
+		out[#out + 1] = esc(ek) .. ":" .. esc(ev)
+	end
+	table_sort(out)
+	return table_concat(out, ",")
+end
+
+local function dec_flat(s)
+	local t = {}
+	for pair in s:gmatch("[^,]+") do
+		local k, v = pair:match("^([^:]*):(.*)$")
+		if k then
+			k = unesc(k)
+			local tag, body = k:sub(1, 1), k:sub(2)
+			local key = (tag == "#" and tonumber(body)) or (tag == "$" and body) or nil
+			local val = dec_scalar(unesc(v))
+			if key ~= nil and val ~= nil then t[key] = val end
+		end
+	end
+	return t
+end
+
+function pack(t, allow_tables)
+	local out = {}
+	for k, v in pairs(t) do
+		if type(k) == "string" then
+			local ev
+			if type(v) == "table" then
+				if allow_tables then
+					local f = enc_flat(v)
+					ev = f and ("t" .. f) or nil
+				end
+			else
+				ev = enc_scalar(v)
+			end
+			if ev then out[#out + 1] = esc(k) .. "=" .. esc(ev) end
+		end
+	end
+	table_sort(out)
+	return table_concat(out, ";")
+end
+
+function unpack_payload(s)
+	local t = {}
+	if type(s) ~= "string" then return t end
+	for pair in s:gmatch("[^;]+") do
+		local k, v = pair:match("^([^=]*)=(.*)$")
+		if k then
+			k, v = unesc(k), unesc(v)
+			if v:sub(1, 1) == "t" then
+				t[k] = dec_flat(v:sub(2))
+			else
+				local val = dec_scalar(v)
+				if val ~= nil then t[k] = val end
+			end
+		end
+	end
+	return t
+end
+
+function digest(s)
+	local h = 5381
+	for i = 1, #s do h = (h * 33 + s:byte(i)) % 4294967296 end
+	return string_format("%08x", h)
+end
+
+-- Task vars a dialog or a task script keeps in the actor's pstor: keys that start with the task id
+-- (fetch item "<id>_fetch", counts, stash/delivery tables saved under "<id>").
+function var_value_ok(v)
+	local tv = type(v)
+	if tv == "number" or tv == "string" or tv == "boolean" then return true end
+	return tv == "table" and enc_flat(v) ~= nil
+end
+
+function actor_pstor(create)
+	local actor = db and db.actor
+	local st = actor and db.storage and db.storage[actor:id()]
+	if not st then return nil end
+	if not st.pstor and create then st.pstor = {} end
+	return st.pstor
+end
+
+-- The task's own vars: the key is the task id or starts with "<id>_" (not "<id>0", another task's).
+function is_task_key(k, id)
+	if type(k) ~= "string" then return false end
+	local n = #id
+	if k:sub(1, n) ~= id then return false end
+	return #k == n or k:sub(n + 1, n + 1) == "_"
+end
+
+function task_vars(id)
+	local out = {}
+	local ps = actor_pstor(false)
+	if not ps then return out end
+	for k, v in pairs(ps) do
+		if is_task_key(k, id) and var_value_ok(v) then out[k] = v end
+	end
+	return out
+end
+
+-- Personal tasks (xrRazom xrr_local_tasks): never routed to the host, never mirrored.
+local_tasks = {}
+function is_local(id) return type(id) == "string" and local_tasks[id] == true end
+
+-- Bounty targets are chosen while the dialog builds its text (setup_bounty_task) and kept in
+-- axr_task_manager.bounties_by_id, not in the pstor: they travel with the task too.
+function bounties()
+	local atm = rawget(_G, "axr_task_manager") or axr_task_manager
+	local t = atm and atm.bounties_by_id
+	return type(t) == "table" and t or nil
+end
+
+function is_shared_key(k)
+	if type(k) ~= "string" then return false end
+	for _, p in ipairs(SHARED_PREFIXES) do
+		if k:sub(1, #p) == p then return true end
+	end
+	return false
+end
+
+-- A player on another level, as coop_quests_core answers for him.
+function far_of(peer, id)
+	local qc = rawget(_G, "coop_quests_core") or coop_quests_core
+	return qc and qc.far_body and qc.far_body(peer, id) or nil
+end
+
+-------------------------------------------------------------------------------
+-- Host state
+-------------------------------------------------------------------------------
+host = {
+	sent = {}, -- id -> last broadcast state string
+	taker = {}, -- id -> peer that took the task (0 = host)
+	finisher = {}, -- id -> peer that turned it in / cancelled it, until the task callback uses it
+	taker_note = {}, -- id -> peer told by the engine (coop_story) right before the give
+	given_by = {}, -- id -> peer whose action gave the task (0 = the host's dialog); nil: a script gave it (news only)
+	news_seen = {}, -- "<kind> <id>" -> time of the last tn event sent (dedupe)
+	news_count = 0,
+	exec_peer = nil, -- peer whose request is being executed
+	giver = nil, -- giver (npc id) of the client's give request being run
+	take_asked = nil, -- id whose give ops.give runs now, coop_conditions_stock.may_take asked already
+	next_scan = 0,
+	next_list = 0,
+	shared = {}, -- key -> encoded "k=v" pair of a shared var as the clients have it
+	shared_long = {}, -- key -> true: its value does not fit a message, the clients keep what they have
+	shared_gen = 0, -- number of the last full set
+	list_gen = 0, -- number of the last digest list
+	active = {}, -- peer -> the task that client has as his active one
+	fx_seq = 0,
+	fx_wait = {}, -- effect_key(peer) -> { { q, s }, ... } effects his machine has not answered yet
+	char_of = {}, -- peer -> his character (it outlives the peer: a player who left, a reconnect)
+	taker_char = {}, -- task -> persistent character; a reconnect can reuse the peer slot
+	participants = {}, -- task -> character ids captured when the task is accepted
+	rep_party = {}, -- task -> character ids in game at the accept, always (the session rule rep_share)
+	failure_participants = {}, -- a missed deadline is a group consequence even with individual item rewards
+	map_seen = {},
+	fines = {}, -- character -> pending guide fine; never a reusable peer slot
+	give_near = nil, -- object of the condlist effect that is giving a task
+	next_dead_update = 0,
+	talks = {}, -- peer -> the talks the host saw of a player who stepped a stage (host.talk_look)
+	stage_used = {}, -- peer -> task -> talk key -> number of the talk a stage step used (host.stage_note)
+	talk_starts = {}, -- peer -> how many talk locks the host granted him (host.watch_talks)
+	held_at = {}, -- "<task>|<section>" -> when the group last held an item a dialog turn-in hands over (host.watch_held)
+	far_talk = {}, -- peer -> { now = in a dialog now (his map server's word), at = when it last said so } (Server)
+	gives_own = 0, -- gives with no offer of their giver whose vars the stock generator could have made (no line)
+	given_at = {}, -- task -> { peer, at }: the last give of the task a client's request ran (host.dialog_turn_in, fresh)
+	esc_own = {}, -- escort key -> { v }: the value the host's own logic (or a map server's) wrote last (host.esc_value)
+	esc_ready = false, -- the escort keys a load brought are taken as the host's (host.esc_init)
+	ctx = nil, -- { task, rcpt (peer), share, owner } while a task callback hands out rewards
+	raw_create = nil, -- alife_create_item without the reward redirect
+}
+
+-- Host: the setting coop_share_rewards. 0 the finisher, 1 money split online, 2 and 3 see coop_reward_group.script.
+EVERYONE_SHARED, EVERYONE_FULL = 2, 3
+
+function reward_mode()
+	local ok, v = pcall(function() return get_console():get_integer("coop_share_rewards") end)
+	return ok and tonumber(v) or 0
+end
+
+-- Host: character of a peer (0 = the host's actor), the far_body of one on another level; nil: he left the game.
+function avatar_obj(peer)
+	if peer == nil then return nil end
+	if peer == 0 or peer == self_peer() then return db.actor end
+	local ok, id = pcall(api.avatar_of, peer)
+	return ok and id and (level.object_by_id(id) or far_of(peer, id)) or nil
+end
+
+function has_clients()
+	for _, p in ipairs(players()) do
+		if not p.is_self then return true end
+	end
+	return false
+end
+
+function send(name, payload, target)
+	local ok, sent = pcall(api.send_event, name, payload, target)
+	return ok and sent == true
+end
+
+-- Host: a player's balance on the host ledger (coop.money_of), nil when the ledger does not answer.
+function ledger_money(peer)
+	local fn = api and api.money_of
+	if type(fn) ~= "function" then return nil end
+	local ok, n = pcall(fn, peer)
+	return ok and type(n) == "number" and n or nil
+end
+
+local function id_of(obj)
+	local f = obj.id
+	if type(f) == "function" then return obj:id() end
+	return f
+end
+
+-- Is `obj` this process's actor (inside coop_npc_players.with_identity: the player it stands for)? Every save_var asks it.
+function is_my_actor(obj)
+	if obj == nil or not db.actor then return false end -- compared by id below: game_object has no == in luabind
+	local ok, id = pcall(id_of, obj)
+	return ok and id == db.actor:id()
+end

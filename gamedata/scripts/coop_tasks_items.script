@@ -1,0 +1,444 @@
+-- Ядро: без проверок режима (docs/MODES.md)
+--[[
+	Anomaly Coop - quest items of the whole group (gamedata\scripts\coop_tasks_items.script): a task counts and takes its items
+	from every player's character, the player who turned it in first.
+--]]
+
+local tostring, tonumber, type, ipairs, pcall = tostring, tonumber, type, ipairs, pcall
+local math_floor = math.floor
+local active = coop_util.active
+local B = coop_tasks_base
+local avatar_obj, far_of, has_clients, host, log, players = B.avatar_obj, B.far_of, B.has_clients, B.host, B.log, B.players
+local report, self_peer, stats, world_active = B.report, B.self_peer, B.stats, B.world_active
+local reward_peer = coop_tasks.reward_peer
+
+local CONTAINERS = { "lead_box", "af_aam", "af_aac", "af_iam" } -- artefact containers (stock suffixes)
+local FETCH_MIN_COND = { -- stock actor_has_fetch_item asks for a minimal condition on these two
+	esc_2_12_stalker_nimble_task_1 = 0.9,
+	jup_b220_trapper_task_3 = 0.9,
+}
+
+-------------------------------------------------------------------------------
+-- Group inventories
+-------------------------------------------------------------------------------
+-- Characters of the group on this machine: own actor first, then the other connected players, those on another level as far_body.
+local function party()
+	local out = {}
+	-- the actor of a dedicated host or of a map server is nobody's character
+	if db and db.actor and coop_mode.actor_is_player() then out[1] = { obj = db.actor, peer = self_peer(), self = true } end
+	if not active() then return out end
+	for _, p in ipairs(players()) do
+		if not p.is_self and p.avatar_id then
+			local o = level.object_by_id(p.avatar_id) or far_of(p.id, p.avatar_id)
+			if o then out[#out + 1] = { obj = o, peer = p.id } end
+		end
+	end
+	return out
+end
+
+local function uses_of(sec)
+	return IsItem and IsItem("multiuse", sec) or nil
+end
+
+-- Units of `sec` in one inventory (multi-use items count their uses, like utils_item.get_amount mode 1).
+local function count_in(obj, sec, min_cond)
+	local n = 0
+	local multi = uses_of(sec)
+	local ok, err = pcall(function()
+		obj:iterate_inventory(function(_, item)
+			if item:section() == sec and (not min_cond or (item:condition() or 1) >= min_cond) then
+				n = n + (multi and item:get_remaining_uses() or 1)
+			end
+		end, nil)
+	end)
+	if not ok then report("count " .. tostring(sec), err) end
+	return n
+end
+
+function party_count(section, min_cond)
+	if type(section) ~= "string" or section == "" then return 0 end
+	local n = 0
+	for _, h in ipairs(party()) do n = n + count_in(h.obj, section, min_cond) end
+	return n
+end
+
+function party_has(section, count, min_cond)
+	return party_count(section, min_cond) >= (tonumber(count) or 1)
+end
+
+-- An item of `section` in another player's character on this machine (not the own actor), or nil.
+function party_object(section)
+	if type(section) ~= "string" or not active() then return nil end
+	for _, h in ipairs(party()) do
+		if not h.self then
+			local ok, o = pcall(h.obj.object, h.obj, section)
+			if ok and o then return o end
+		end
+	end
+	return nil
+end
+
+-- True if the item `item_id` (of `section`, if given) is held by a player character on this machine.
+function party_holds_id(item_id, section)
+	if type(item_id) ~= "number" then return false end
+	local o = level.object_by_id(item_id)
+	local pid
+	if o then
+		if section and o:section() ~= section then return false end
+		local ok, p = pcall(o.parent, o)
+		if not (ok and p) then return false end
+		pid = p:id()
+	else -- on another level: the record says who has it
+		local se = alife_object(item_id)
+		if not se or (section and se:section_name() ~= section) then return false end
+		pid = se.parent_id
+	end
+	for _, h in ipairs(party()) do
+		if h.obj:id() == pid then return true end
+	end
+	return false
+end
+
+-- Units of a fetch task's item the group holds (every player's character; an artefact asked for without a minimal
+-- condition also counts in its containers), and how many the task asks for. nil when the task has no fetch item. The
+-- host's own record of the item and its count (host.fact_of), whatever a client's coop_tvd write left in the pstor; an item that is
+-- only a client's word: 0 of 1 ("foreign" third value).
+function host.fetch_units(task_id)
+	local sec, foreign = host.fact_of(task_id .. "_fetch")
+	if foreign then return 0, 1, true end
+	if type(sec) ~= "string" then return nil end
+	local need = tonumber((host.fact_of(task_id .. "_fetch_count"))) or 1
+	local min_cond = FETCH_MIN_COND[task_id]
+	local n = party_count(sec, min_cond)
+	if not min_cond and sec:find("af_", 1, true) then
+		for _, cont in ipairs(CONTAINERS) do n = n + party_count(sec .. "_" .. cont) end
+	end
+	return n, need
+end
+
+-------------------------------------------------------------------------------
+-- Host: quest items of any group member
+-------------------------------------------------------------------------------
+-- Holders to take items from: the player who turned the task in first, then the host, then the rest.
+local function holders()
+	local list, rest = {}, {}
+	local rc = reward_peer()
+	local mine
+	for _, h in ipairs(party()) do
+		if h.self then
+			mine = h
+		elseif rc and h.peer == rc then
+			list[#list + 1] = h
+		else
+			rest[#rest + 1] = h
+		end
+	end
+	if mine then list[#list + 1] = mine end
+	for _, h in ipairs(rest) do list[#list + 1] = h end
+	return list
+end
+
+-- Releases up to `amt` items of `sec` held by h (each item counts 1, like xr_effects.remove_item).
+local function release_from(h, sec, amt)
+	local ids = {}
+	pcall(function()
+		h.obj:iterate_inventory(function(_, item)
+			if #ids < amt and item:section() == sec then ids[#ids + 1] = item:id() end
+		end, nil)
+	end)
+	for _, id in ipairs(ids) do alife_release_id(id) end
+	if not h.self then stats.party_releases = stats.party_releases + #ids end
+	return #ids
+end
+
+-- Moves up to `units` of `sec` from h to the host's actor (they arrive before a delayed stock reward runs).
+local function move_from(h, sec, units)
+	local moved = 0
+	local multi = uses_of(sec)
+	local items = {}
+	pcall(function()
+		h.obj:iterate_inventory(function(_, item)
+			if moved < units and item:section() == sec then
+				items[#items + 1] = item
+				moved = moved + (multi and item:get_remaining_uses() or 1)
+			end
+		end, nil)
+	end)
+	for _, item in ipairs(items) do h.obj:transfer_item(item, db.actor) end
+	stats.party_moves = stats.party_moves + #items
+	return moved
+end
+
+local function container_of(h, sec)
+	for _, cont in ipairs(CONTAINERS) do
+		local c = h.obj:object(sec .. "_" .. cont)
+		if c then return c, cont end
+	end
+	return nil
+end
+
+-- Spawn without the reward redirect (the item goes exactly where asked).
+local function create_plain(sec, obj, reward)
+	local f = host.raw_create or rawget(_G, "alife_create_item")
+	local se = f(sec, obj)
+	if se and reward and coop_item_entity_state then coop_item_entity_state.roll_reward(sec, se) end
+	return se
+end
+
+local function count_items(obj, sec) -- items, not uses
+	local n = 0
+	pcall(function()
+		obj:iterate_inventory(function(_, item)
+			if item:section() == sec then n = n + 1 end
+		end, nil)
+	end)
+	return n
+end
+
+local function party_remove(sec, amt)
+	local left = amt
+	for _, h in ipairs(holders()) do
+		if left <= 0 then break end
+		left = left - release_from(h, sec, left)
+	end
+	local removed = amt - left
+	if removed > 0 then news_manager.relocate_item(db.actor, "out", sec, removed) end
+	if left > 0 then log("! group had %d x %s less than the task takes", left, sec) end
+	return removed
+end
+
+-- Host: takes up to `amt` items of `sec` from the group (the player the effects are keyed to first,
+-- then the host, then the others). Returns how many were taken.
+function party_take(sec, amt)
+	if not world_active() or type(sec) ~= "string" then return 0 end
+	amt = tonumber(amt) or 1
+	if amt <= 0 then return 0 end
+	local ok, n = pcall(party_remove, sec, amt)
+	if not ok then
+		report("party_take " .. sec, n)
+		return 0
+	end
+	return n or 0
+end
+
+-- Host: a db.actor:iterate_inventory for ONE call (coop_quests_core.with_actor) that walks every player's character: the
+-- turning-in player's first, then the host's, then the rest. Stock tasks_multifetch counts, pays for and takes items through
+-- db.actor:iterate_inventory and releases them by id, so the group's items count and go like the host's own.
+-- real = the plain method of db.actor. f(item_owner, item) returning true stops the walk, as in the engine.
+function party_inventory_walker(real)
+	return function(me, f, x)
+		local stop = false
+		local function g(owner, item)
+			local r = f(owner, item)
+			if r == true then stop = true end
+			return r
+		end
+		for _, h in ipairs(holders()) do
+			if h.self then real(me, g, x) else h.obj:iterate_inventory(g, x) end
+			if stop then return end
+		end
+	end
+end
+
+-- Host: money and items for one player (0 = the host's own actor). Items are spawned by the host into
+-- that player's character; the player sees the news on its own machine. `effect`: the stock effect that made the reward;
+-- a copy is rolled only when that effect rolls (coop_item_entity_state.effect_rolls), a caller naming none keeps the roll.
+function give_to_peer(peer, money, sections, effect)
+	if not active() or not (coop_mode.decides_world() or coop_mode.leads_here()) then return end
+	peer = tonumber(peer) or 0
+	money = math_floor(tonumber(money) or 0)
+	local mine = peer == 0 or peer == self_peer()
+	if money ~= 0 then
+		if mine then
+			if money > 0 then dialogs.relocate_money(db.actor, money, "in") else db.actor:give_money(money) end
+		else
+			coop_tasks_rewards.grant_money(peer, money)
+		end
+	end
+	if type(sections) == "table" then
+		local obj = mine and db.actor or avatar_obj(peer)
+		for _, sec in ipairs(sections) do
+			if type(sec) == "string" and sec ~= "" and obj then
+				create_plain(sec, obj, effect == nil or (coop_item_entity_state ~= nil
+					and coop_item_entity_state.effect_rolls(effect)))
+				if mine then
+					news_manager.relocate_item(db.actor, "in", sec, 1)
+				else
+					coop_tasks_rewards.send_reward(peer, { k = "news", ty = "in", s = sec, n = 1 })
+				end
+			end
+		end
+	end
+end
+
+-- Fetch reward (stock: one second later, from the host's inventory): bring the items to the host's actor,
+-- the turning-in player's own items first.
+local function gather_fetch(var)
+	local sec = load_var(db.actor, var)
+	if type(sec) ~= "string" then return end
+	local need = tonumber(load_var(db.actor, var .. "_count")) or 1
+	local left = need
+	local rc = reward_peer()
+	local list = holders()
+	if rc and list[1] and list[1].peer == rc then left = left - move_from(list[1], sec, left) end
+	left = left - count_in(db.actor, sec)
+	for _, h in ipairs(list) do
+		if left <= 0 then break end
+		if not h.self and h.peer ~= rc then left = left - move_from(h, sec, left) end
+	end
+	-- an artefact asked for may sit in a container another player carries
+	if left > 0 and sec:find("af_", 1, true) then
+		for _, h in ipairs(list) do
+			if left <= 0 then break end
+			if not h.self then
+				local c, cont = container_of(h, sec)
+				if c then
+					alife_release_id(c:id())
+					create_plain(sec, db.actor)
+					create_plain(cont, h.obj) -- the empty container stays with its owner
+					left = left - 1
+				end
+			end
+		end
+	end
+end
+
+function patch_party_items()
+	local xe = rawget(_G, "xr_effects") or xr_effects
+	if not xe then return end
+
+	local remove_item = xe.remove_item
+	if type(remove_item) == "function" then
+		xe.remove_item = function(actor, npc, p)
+			if not (world_active() and has_clients() and type(p) == "table" and type(p[1]) == "string") then
+				return remove_item(actor, npc, p)
+			end
+			local amt = tonumber(p[2]) or 1
+			if not reward_peer() and count_items(db.actor, p[1]) >= amt then return remove_item(actor, npc, p) end
+			local ok, err = pcall(party_remove, p[1], amt)
+			if not ok then
+				report("remove_item " .. p[1], err)
+				return remove_item(actor, npc, p)
+			end
+		end
+	end
+
+	local remove_fetch = xe.remove_fetch_item
+	if type(remove_fetch) == "function" then
+		xe.remove_fetch_item = function(actor, npc, p)
+			if not (world_active() and has_clients() and type(p) == "table" and p[1]) then return remove_fetch(actor, npc, p) end
+			local sec = load_var(db.actor, p[1])
+			if type(sec) ~= "string" then return remove_fetch(actor, npc, p) end
+			local amt = tonumber(p[2]) or tonumber(load_var(db.actor, p[1] .. "_count")) or 1
+			if not reward_peer() and count_items(db.actor, sec) >= amt then return remove_fetch(actor, npc, p) end
+			local ok, err = pcall(party_remove, sec, amt)
+			if not ok then
+				report("remove_fetch_item " .. sec, err)
+				return remove_fetch(actor, npc, p)
+			end
+		end
+	end
+
+	local remove_art = xe.remove_artefact_item
+	if type(remove_art) == "function" then
+		-- true when one artefact (or its container) was taken from somebody in the group
+		local function party_remove_art(sec)
+			for _, h in ipairs(holders()) do
+				if release_from(h, sec, 1) > 0 then
+					news_manager.relocate_item(db.actor, "out", sec, 1)
+					return true
+				end
+				local c, cont = container_of(h, sec)
+				if c then
+					alife_release_id(c:id())
+					create_plain(cont, h.obj) -- the empty container stays with its owner
+					news_manager.relocate_item(db.actor, "out", sec, 1)
+					return true
+				end
+			end
+			return false
+		end
+		xe.remove_artefact_item = function(actor, npc, p)
+			if not (world_active() and has_clients() and type(p) == "table" and p[1]) then return remove_art(actor, npc, p) end
+			local sec = load_var(db.actor, p[1])
+			if type(sec) ~= "string" then return remove_art(actor, npc, p) end
+			local mine = { obj = db.actor, self = true }
+			if not reward_peer() and (db.actor:object(sec) or container_of(mine, sec)) then return remove_art(actor, npc, p) end
+			local ok, done = pcall(party_remove_art, sec)
+			if not ok then report("remove_artefact_item " .. sec, done) end
+			if ok and done then return end
+			return remove_art(actor, npc, p)
+		end
+	end
+
+	-- tasks_multifetch: its effects count and take through db.actor:iterate_inventory (the check is in coop_quests_party)
+	for _, name in ipairs({ "multifetch_remove", "multifetch_task_trigger_extra_items_condlist" }) do
+		local stock = xe[name]
+		if type(stock) == "function" then
+			xe[name] = function(...)
+				local qc = rawget(_G, "coop_quests_core")
+				local qp = rawget(_G, "coop_quests_party")
+				if not (world_active() and has_clients() and db.actor and qc and type(qc.with_actor) == "function")
+					or (qp and type(qp.checking_task) == "function" and qp.checking_task()) then
+					return stock(...)
+				end
+				local fields = { iterate_inventory = party_inventory_walker(db.actor.iterate_inventory) }
+				local res = { qc.with_actor(fields, stock, ...) }
+				if not res[1] then error(res[2], 0) end
+				return unpack(res, 2)
+			end
+		end
+	end
+
+	local fetch_reward = xe.fetch_reward_and_remove
+	if type(fetch_reward) == "function" then
+		xe.fetch_reward_and_remove = function(actor, npc, p)
+			if world_active() and has_clients() and type(p) == "table" and p[1] then
+				local ok, err = pcall(gather_fetch, p[1])
+				if not ok then report("fetch gather " .. tostring(p[1]), err) end
+			end
+			return fetch_reward(actor, npc, p)
+		end
+	end
+
+	-- status functors: the task is ready to turn in when the group has the items
+	local tsf = rawget(_G, "task_status_functor")
+	if type(tsf) ~= "table" then
+		log("! task_status_functor not found: quest items count only from the host's inventory")
+		return
+	end
+	local function wrap_status(name, after)
+		local orig = tsf[name]
+		if type(orig) ~= "function" then return end
+		tsf[name] = function(tsk, task_id)
+			local r = orig(tsk, task_id)
+			if r == nil and world_active() and has_clients() and tsk and tsk.stage ~= 1 then
+				local ok, err = pcall(after, tsk, task_id)
+				if not ok then report("status " .. name, err) end
+			end
+			return r
+		end
+	end
+	wrap_status("actor_has_fetch_item", function(tsk, task_id)
+		local n, need = host.fetch_units(task_id)
+		if n and n >= need then
+			tsk.stage = 1
+			stats.stage_by_party = stats.stage_by_party + 1
+		end
+	end)
+	wrap_status("actor_has_fetch_weapon_warfare", function(tsk, task_id)
+		local sec = load_var(db.actor, task_id .. "_fetch")
+		if type(sec) == "string" and party_count(sec, 0.6) > 0 then
+			tsk.stage = 1
+			stats.stage_by_party = stats.stage_by_party + 1
+		end
+	end)
+	wrap_status("drx_sl_quest_item_task_status", function(tsk, task_id)
+		local var = load_var(db.actor, task_id)
+		if type(var) == "table" and var.stash_created and var.stash_type
+			and party_count("drx_sl_quest_item_" .. tostring(var.stash_type)) > 0 then
+			tsk.stage = 1
+			stats.stage_by_party = stats.stage_by_party + 1
+		end
+	end)
+end

@@ -109,7 +109,11 @@ end
 -- ------------------------------------------------------------------ one machine
 function machine(role, self_peer)
 	local M = { role = role, self_peer = self_peer, log = {}, handlers = {}, sent = {}, callbacks = {}, timers = {} }
-	local env = setmetatable({}, { __index = _G })
+	-- the engine loads a script on the first use of its name: the Core's helper modules come that way here, into this machine
+	local env = setmetatable({}, { __index = function(_, k)
+		if k == "coop_util" or k == "coop_srv_roles" or k:find("^coop_tasks_") then return load_script(M, k) end
+		return _G[k]
+	end })
 	env._G = env
 	M.env = env
 	M.active = true
@@ -356,6 +360,39 @@ function machine(role, self_peer)
 			return dedicated() or (c.is_active() == true and c.is_host() == true and not ms)
 		end,
 		group_travels = function() return env.coop.is_active() == true and not srv_applies() end,
+		-- as coop_srv_mode: a world server in its session, `from` one of its map servers' bridges
+		from_level = function(from)
+			local c = env.coop
+			if type(from) ~= "number" or c.is_active() ~= true or c.is_host() ~= true then return false end
+			if type(c.is_map_server) == "function" and c.is_map_server() == true then return false end
+			local l = c.levels
+			if not (type(l) == "table" and type(l.map_servers) == "function") then return false end
+			for _, ms in ipairs(l.map_servers()) do
+				if ms.bridge == from then return true end
+			end
+			return false
+		end,
+		-- the start helpers as coop_mode.script has them, over this machine's callbacks and save
+		at_first_update = function(fn)
+			local seen = false
+			local function late()
+				env.UnregisterScriptCallback("actor_on_update", late)
+				if not seen then fn() end
+			end
+			env.RegisterScriptCallback("actor_on_first_update", function()
+				seen = true
+				fn()
+			end)
+			env.RegisterScriptCallback("actor_on_update", late)
+		end,
+		late_load = function(load_state)
+			local asm = env.alife_storage_manager
+			local saved = asm and type(asm.get_state) == "function" and asm.get_state() or nil
+			if type(saved) == "table" then load_state(saved) end
+		end,
+		-- as coop_mode.share_up / share_down: the Core keeps the table (this machine's coop_quests_core)
+		share_up = function(name, get, set, every) return env.coop_quests_core.share_up(name, get, set, every) ~= false end,
+		share_down = function(name, get, set, every) return env.coop_quests_core.share_down(name, get, set, every) ~= false end,
 	}
 	M.money_calls = {} -- the host ledger: every coop.money_* call of this machine
 	install_money_stubs(env.coop, { calls = M.money_calls, is_host = function() return role == "host" end })

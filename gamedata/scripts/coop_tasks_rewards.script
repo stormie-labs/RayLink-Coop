@@ -1,0 +1,750 @@
+-- Ядро: без проверок режима (docs/MODES.md)
+--[[
+	Anomaly Coop - what a task's end hands out (gamedata\scripts\coop_tasks_rewards.script): money, items, goodwill and the effects
+	on the character of the player who turned it in, run on his machine and kept until it answers.
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace (nil on an exe without co-op)
+local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
+local math_floor = math.floor
+local B = coop_tasks_base
+local EVERYONE_FULL, EVERYONE_SHARED, EV_REWARD, far_of, host, is_my_actor = B.EVERYONE_FULL, B.EVERYONE_SHARED, B.EV_REWARD, B.far_of, B.host, B.is_my_actor
+local is_task, ledger_money, log, pack, players, report = B.is_task, B.ledger_money, B.log, B.pack, B.players, B.report
+local reward_mode, send, stats, tmgr, world_active = B.reward_mode, B.send, B.stats, B.tmgr, B.world_active
+local T = coop_tasks
+local character_of, each_personal, participant_ids, peer_for_character = T.character_of, T.each_personal, T.participant_ids, T.peer_for_character
+local recipient, recipient_body, reward_peer = T.recipient, T.recipient_body, T.reward_peer
+
+-- Effects that change the turning-in player's own character: run on that player's machine.
+local FORWARD_EFFECTS = { drx_sl_change_factions = true }
+-- game_statistics counters of a task's end. With rank and reputation they are the character's of the player who turned
+-- the task in, for every coop_share_rewards.
+local TASK_STATS = { tasks_completed = true, tasks_failed = true, tasks_cancelled = true }
+
+-------------------------------------------------------------------------------
+-- Host: rewards to the player who turned the task in
+-------------------------------------------------------------------------------
+-- Host: the session rule rep_share (docs\GAME_SETTINGS.md). "everyone" (default): the personal effects of a completed
+-- task (statistics, reputation, faction goodwill) go in full to every character in game at the accept or at the end;
+-- "taker": only to the player who took / turned it in. Money and items stay with coop_share_rewards.
+local function rep_share_rule()
+	local ok, v = pcall(function()
+		local core = _G.coop_economy_core
+		return core and core.rule and core.rule("rep_share")
+	end)
+	return ok and v == "taker" and "taker" or "everyone"
+end
+
+function send_reward(peer, t)
+	if t.t == nil and host.ctx then t.t = host.ctx.task end
+	if send(EV_REWARD, pack(t), peer) then stats.rewards_routed = stats.rewards_routed + 1 end
+end
+
+-- The key of a player's waiting effects is his character, never a reusable peer slot.
+local function effect_key(peer)
+	return character_of(peer)
+end
+
+-- Host: an effect on a player's own character, run by his machine. It waits for his answer and goes out again on his next
+-- sync: a level change or a reconnect right after the turn-in would lose it (client_on_reward needs an actor), and money
+-- may already have been taken for it. The host's save keeps what waits (save_effects).
+local function send_effect(peer, t)
+	local key = effect_key(peer)
+	if key == nil then report("effect", "recipient character is unknown"); return end
+	-- split levels: the world records a player's own faction change itself (coop_faction.on_forward; nothing on a map server)
+	local cf = t.k == "fx" and _G.coop_faction
+	if type(cf) == "table" and type(cf.on_forward) == "function" then
+		local ok, err = pcall(cf.on_forward, key, t, peer)
+		if not ok then report("faction record", err) end
+	end
+	host.fx_seq = host.fx_seq + 1
+	t.q = host.fx_seq
+	if t.t == nil and host.ctx then t.t = host.ctx.task end
+	local delivery = host.task_delivery()
+	local event, target
+	if delivery then event, target = delivery.effect_route(t, key) end
+	local s = pack(t)
+	local wait = host.fx_wait[key]
+	if not wait then
+		wait = {}
+		host.fx_wait[key] = wait
+	end
+	wait[#wait + 1] = { q = t.q, s = s }
+	if event then send(event, s, target); return end
+	local online = peer_for_character(key)
+	if online and online ~= 0 and send(EV_REWARD, s, online) then stats.rewards_routed = stats.rewards_routed + 1 end
+end
+
+function host_on_effect_ack(payload, from)
+	if not world_active() or type(from) ~= "number" or from == 0 then return end
+	local q = tonumber(payload)
+	local wait = host.fx_wait[effect_key(from)]
+	if not (q and wait) then return end
+	for i, e in ipairs(wait) do
+		if e.q == q then
+			table.remove(wait, i)
+			return
+		end
+	end
+end
+
+function host_resend_effects(peer)
+	local wait = host.fx_wait[effect_key(peer)]
+	if not wait then return end
+	for _, e in ipairs(wait) do send(EV_REWARD, e.s, peer) end
+end
+
+-- Host: effect `fname` on the own character of the player the effects being run now belong to (FORWARD_EFFECTS), params p: it goes
+-- to his machine (send_effect, k = "fx"), which runs it there. -> true: his (sent, or skipped: the task was not paid, or it is
+-- nobody's, character 0 where seat 0 plays none); false: run it here. The server's part
+-- (coop_srv_tasks, from coop_mode.when_srv) uses these functions too.
+function forward_fx(fname, p)
+	local peer = reward_peer()
+	if host.ctx and host.ctx.character == 0 then
+		local away, seat = host.char0_elsewhere()
+		if away then
+			if seat == nil then return true end -- nobody's: not run on this process's ghost either
+			peer = seat
+		end
+	end
+	if peer and host.ctx.unpaid then
+		log("'%s': %s skipped, the task was not paid", tostring(host.ctx.task), fname)
+		return true
+	end
+	-- a world without split levels changes faction as a group: the host runs it once for all (coop_faction)
+	local cf = _G.coop_faction
+	local together = type(cf) == "table" and type(cf.group_mode) == "function" and cf.group_mode() == true
+	if peer and type(p) == "table" and not together then
+		local t = { k = "fx", f = fname }
+		for i = 1, 4 do
+			if p[i] ~= nil then t["p" .. i] = tostring(p[i]) end
+		end
+		send_effect(peer, t)
+		return true
+	end
+	return false
+end
+
+-- A server's part adds an effect a player's machine runs for the world (its name in FORWARD_EFFECTS: his machine takes it
+-- from the host, the world server takes it from a map server). Whoever wraps it calls forward_fx. Nothing adds one in the co-op.
+function forward_allow(fname)
+	if type(fname) ~= "string" or fname == "" or #fname > 80 then return false end
+	FORWARD_EFFECTS[fname] = true
+	return true
+end
+
+function forward_allowed(fname) return type(fname) == "string" and FORWARD_EFFECTS[fname] == true end
+
+-- Host: personal effect `t` (k = "stat" | "fx") for the player the effects being run now belong to (with_character): it waits for
+-- his machine's answer as a reward's does (send_effect). -> false outside such a scope.
+function send_personal(t)
+	if not (host.ctx and type(t) == "table") then return false end
+	send_effect(host.ctx.rcpt, t)
+	return true
+end
+
+-- The effects of players this process sent and nobody answered yet: character -> { { q, s }, ... } (a map server sends its own up
+-- again until the world server answers, coop_srv_tasks). The table itself: a load replaces it.
+function fx_pending() return host.fx_wait end
+
+-- The map servers' effects the host ran already: "<bridge>:<epoch>:<number>" -> true (kept in the save, save_effects).
+function map_seen() return host.map_seen end
+
+-- Host: money for (or from, n < 0) a client's character. The money is the host ledger's: coop.money_grant
+-- changes the character's money (never below 0) and the engine sends the client its new balance. A client's own
+-- Lua never adds it: the engine would count that as the client's income, limited by the Script allowance, and a
+-- reward above it would be lost. The client only gets the news line (event coop_trw, k = mn).
+function grant_money(peer, n)
+	local whole = n >= 0 and math_floor(n) or -math_floor(-n)
+	if whole ~= whole or whole == 0 or whole == math.huge or whole == -math.huge then return false end
+	local grant = api and api.money_grant
+	if type(grant) ~= "function" then
+		report("grant_money", "coop.money_grant is missing")
+		return false
+	end
+	local called, ok, why = pcall(grant, peer, whole)
+	if not (called and ok) then
+		log("money %d for #%s refused: %s", whole, tostring(peer), tostring(called and why or ok))
+		return false
+	end
+	send_reward(peer, { k = "mn", n = whole })
+	return true
+end
+
+function flush_fines()
+	if not world_active() then return end
+	for id, owed in pairs(host.fines) do
+		local peer = peer_for_character(id)
+		local balance = peer ~= nil and api.money_of and api.money_of(peer)
+		if type(balance) == "number" then
+			local amount = math.min(owed, math.max(0, balance))
+			if amount == 0 or grant_money(peer, -amount) then host.fines[id] = nil end
+		end
+	end
+end
+
+-- Offline guide fines wait for that character; another player reusing his peer pays nothing.
+function fine_character(id, amount)
+	if not world_active() or type(id) ~= "number" or id < 0 or id >= 65535 or id % 1 ~= 0
+		or type(amount) ~= "number" or amount ~= amount or amount <= 0 or amount == math.huge then return false end
+	host.fines[id] = (host.fines[id] or 0) + math_floor(amount)
+	flush_fines()
+	return true
+end
+
+-- Host: the "money received" line on a player's machine for money the host changed outside a task reward (achievement
+-- money, coop_quests_pda); the money itself is the ledger's.
+function money_line(peer, n)
+	if not world_active() then return false end
+	n = tonumber(n)
+	if not (n and peer ~= nil and tonumber(peer) ~= 0) then return false end
+	send_reward(tonumber(peer), { k = "mn", n = n })
+	return true
+end
+
+local function online_peers()
+	-- peer 0 is the host player's character. A world server whose seat plays no character has only its ghost there: no share for it
+	-- (with coop_share_rewards 1 the ghost took a part of every reward).
+	local list = (coop_mode.decides_world() and not coop_mode.seat_plays(0)) and {} or { 0 }
+	for _, p in ipairs(players()) do
+		if not p.is_self and p.avatar_id and (level.object_by_id(p.avatar_id) or far_of(p.id, p.avatar_id)) then list[#list + 1] = p.id end
+	end
+	if #list == 0 then list[1] = host.ctx and host.ctx.rcpt or 0 end -- nobody in the world to share with: the one who earned it
+	return list
+end
+
+-- Host, in a reward scope: pays n to the player who turned the task in, or splits it over the online players
+-- (coop_share_rewards 1). The remainder goes to the player it is for when he shares, else to the first sharer: a world
+-- server's seat 0 and a player off the level do not share, and the parts must add up to n. give(peer, amount) pays one share,
+-- peer 0 = the host.
+local function split_money(n, give)
+	if host.ctx.group then
+		local rg = coop_reward_group
+		for _, e in ipairs(rg.money_plan(n, host.ctx.group, host.ctx.rcpt, host.ctx.full)) do
+			if e.m.in_world then give(e.m.peer, e.n) else rg.pay_absent(e.m, e.n) end
+		end
+		return
+	end
+	local list = { host.ctx.rcpt }
+	if host.ctx.share then
+		list = {}
+		for _, peer in ipairs(online_peers()) do -- a task with an audience: only those who see it
+			if host.aud_sees(host.ctx.task, peer) then list[#list + 1] = peer end
+		end
+		if #list == 0 then list[1] = host.ctx.rcpt end
+	end
+	local part = math_floor(n / #list)
+	local rest = n - part * #list
+	local rest_to = list[1]
+	for _, peer in ipairs(list) do
+		if peer == host.ctx.rcpt then rest_to = peer end
+	end
+	for _, peer in ipairs(list) do
+		local amount = part + (peer == rest_to and rest or 0)
+		if amount > 0 then give(peer, amount) end
+	end
+end
+
+-- Stock payouts that do not go through dialogs.relocate_money but call db.actor:give_money themselves
+-- (tasks_multifetch.remove_items_and_pay from multifetch_remove, tasks_defense.barrier_defense_*_complete) would put the
+-- money on the HOST's actor whoever turned the task in. Their file cannot change, so the wrapper
+-- (redirect_payout) measures what the call adds to the host's money, takes it back and pays it as every other task
+-- money: to the player who turned the task in through the host ledger, or split with coop_share_rewards 1. The host
+-- keeps it only when it turned the task in itself. While the call runs, the stock "money received" line for the host's
+-- actor is swallowed (payout_scope): the player who gets the money sees his own line.
+local payout_scope = false
+local news_money = nil -- news_manager.relocate_money as it was before patch_rewards
+
+local function redirect_payout(orig)
+	return function(...)
+		if not (host.ctx and (host.ctx.rcpt ~= 0 or host.ctx.share) and world_active() and db.actor) then return orig(...) end
+		local before = db.actor:money()
+		local prev = payout_scope
+		payout_scope = true
+		local res = { pcall(orig, ...) }
+		payout_scope = prev
+		local gained = db.actor:money() - before
+		if gained > 0 and host.ctx then
+			db.actor:give_money(-gained)
+			split_money(gained, function(peer, amount)
+				if peer == 0 then
+					db.actor:give_money(amount)
+					if news_money then news_money(db.actor, "in", amount) end
+				else
+					grant_money(peer, amount)
+				end
+			end)
+		end
+		if not res[1] then error(res[2], 0) end
+		return unpack(res, 2)
+	end
+end
+
+local FETCH_EFFECTS = { "fetch_reward_and_remove", "remove_fetch_item", "remove_artefact_item" }
+
+-- Host: one unit of a group reward (coop_share_rewards 2, 3). The stock code that asked gets the item of the player who
+-- turned the task in, if he got one.
+local function give_to_group(create, section, t)
+	local rg = coop_reward_group
+	local res, copies = nil, {}
+	for _, m in ipairs(rg.item_targets(host.ctx.group, host.ctx.full)) do
+		local owner = rg.holder(m)
+		local se = owner and create(section, owner, t)
+		if se then
+			local g = host.ctx.given[m.id]
+			if not g then
+				g = { m = m, items = {} }
+				host.ctx.given[m.id] = g
+			end
+			g.items[section] = (g.items[section] or 0) + 1
+			host.ctx.counted[section] = true
+			copies[#copies + 1] = se
+			if res == nil or m.peer == host.ctx.rcpt then res = se end
+		end
+	end
+	local state = coop_item_entity_state
+	if res and state then state.roll_group(section, copies, res, t, host.ctx.stock_item) end
+	return res
+end
+
+-- Host, when (a part of) a group reward was handed out: one line per player and section, however many units the stock
+-- code made. A player who is away gets a note instead.
+local news_item = nil -- news_manager.relocate_item as it was before patch_rewards
+
+local function group_lines(c)
+	if not c.group then return end
+	local rg = coop_reward_group
+	for _, g in pairs(c.given) do
+		for section, n in pairs(g.items) do
+			if not g.m.in_world then
+				rg.note_item(g.m.id, section, n)
+			elseif g.m.peer == 0 then
+				if news_item then news_item(db.actor, "in", section, n) end
+			else
+				send_reward(g.m.peer, { k = "news", ty = "in", s = section, n = n, t = c.task })
+			end
+		end
+	end
+	c.given = {}
+	if c.noted then return end
+	c.noted = true
+	for _, m in ipairs(c.group) do
+		if not m.in_world then rg.note(m.id, "c", 1) end
+	end
+end
+
+function host_task_callback(orig, tsk, state)
+	local okid, id = pcall(function() return tsk:get_id() end)
+	if not (world_active() and okid and type(id) == "string") or not (state == task.completed or state == task.fail) then
+		return orig(tsk, state)
+	end
+	local rcpt = recipient(id)
+	local swapped = not host.aud_sees(id, rcpt) -- a recipient out of the task's audience: its taker instead
+	if swapped then rcpt = host.aud_taker_peer(id) end
+	local owner = rcpt -- statistics, rank and reputation: his, also when he has left (they wait for him)
+	-- messages: the player who asked for this result (nil: a script, a timer), and whether it was a cancel
+	local by = host.finisher[id]
+	local tm = tmgr()
+	local rtask = tm and tm.task_info and tm.task_info[id]
+	local cancelled = is_task(rtask) and rtask.cancelled_by_actor == true
+	host.finisher[id] = nil
+	local mode = state == task.completed and reward_mode() or 0
+	local share = mode ~= 0
+	local everyone = mode == EVERYONE_SHARED or mode == EVERYONE_FULL
+	-- Also for the host's own task (rcpt 0): without the reward scope the story wrapper
+	-- (coop_quests_story) took its on_complete rewards for a story condlist and paid every client too
+	local prev = host.ctx
+	host.ctx = { task = id, rcpt = rcpt, share = share, by = by, cancelled = cancelled, owner = owner }
+	host.ctx.aud = host.aud_rec(id)
+	host.ctx.character = (swapped or by == nil) and host.taker_char[id] or character_of(rcpt)
+	if not cancelled then
+		if state == task.fail then
+			host.ctx.personal = host.failure_participants[id]
+		elseif rep_share_rule() == "everyone" then
+			-- each character once: the taker, who was in game at the accept, who is in game now
+			local ids, seen = {}, {}
+			local function put(list)
+				for _, c in ipairs(list or {}) do
+					if type(c) == "number" and not seen[c] then ids[#ids + 1], seen[c] = c, true end
+				end
+			end
+			put({ host.taker_char[id] })
+			put(host.rep_party[id] or host.participants[id])
+			put(participant_ids())
+			host.ctx.personal = #ids > 0 and ids or nil
+		end
+		if host.ctx.personal == nil and host.taker_char[id] ~= nil then host.ctx.personal = { host.taker_char[id] } end
+		host.ctx.personal = host.aud_cut(id, host.ctx.personal) -- a task with an audience: only those who see it
+	end
+	if everyone then
+		host.ctx.group, host.ctx.full = host.aud_group(id, coop_reward_group.list()), mode == EVERYONE_FULL
+		host.ctx.given, host.ctx.counted = {}, {}
+	end
+	local this = host.ctx
+	-- The stock end of a task (on_complete, on_fail, on_cancel and what they call) reads the world around "the actor": the giver's
+	-- game object (goodwill by the tasker), the quest item to take away, the actor's faction (the next DRX giver), the first target of
+	-- the task it gives next. On a world server that world is a map server's level, and "at home" none of it was found. The end runs in the far view of the level of the player it is for - he stands at the giver when he turns
+	-- the task in - and, with nobody to name (a timer, a script), on the level of what the task is about. Without split levels the
+	-- far view is no view: the call is the stock's.
+	local qc = rawget(_G, "coop_quests_core")
+	local ok, err
+	if not (qc and qc.with_level_of and qc.with_target) then
+		ok, err = pcall(orig, tsk, state)
+	elseif rcpt ~= 0 then
+		ok, err = pcall(qc.with_level_of, rcpt, orig, tsk, state)
+	else
+		local about = is_task(rtask) and (type(rtask.current_target) == "number" and rtask.current_target or rtask.task_giver_id) or nil
+		ok, err = pcall(qc.with_target, about, 0, id, orig, tsk, state)
+	end
+	host.ctx = prev
+	group_lines(this)
+	host.given_by[id] = nil
+	if not ok then report("task callback " .. id, err) end
+	if rcpt ~= 0 then log("rewards of '%s' go to #%s%s", id, tostring(rcpt), share and " (money shared)" or "") end
+end
+
+-- Character 0 is seat 0's player (the host's; a world server's seat plays none). Where this process's own actor is no player (a
+-- server's ghost: a map server, a world server), character 0 is not this actor. -> true and the peer whose it is: 0 when seat 0 plays
+-- a character, nil when it plays none (nobody's). false: this actor is a player (the co-op host), or no mode facade here.
+-- An effect for character 0 of a seat that plays none goes nowhere: a world server would drop it without an answer, and a map
+-- server would send it up again every second for good.
+function host.char0_elsewhere()
+	local m = coop_mode
+	if not (type(m) == "table" and type(m.actor_is_player) == "function" and m.actor_is_player() == false) then return false end
+	return true, (type(m.seat_plays) == "function" and m.seat_plays(0) == true) and 0 or nil
+end
+
+-- The client whose character the rank and reputation being changed now belong to, or nil: the host's.
+local function stat_peer()
+	-- character 0 where this process's actor is no player: seat 0's player, or nobody's (host.char0_elsewhere)
+	if host.ctx and host.ctx.character == 0 then
+		local away, seat = host.char0_elsewhere()
+		if away then return seat end
+	end
+	local p = rawget(_G, "coop_npc_players")
+	if host.ctx == nil and p and p.in_identity and p.in_identity() then
+		local peer = p.peer_of(db.actor)
+		if peer ~= nil then return peer ~= 0 and peer or nil end
+	end
+	if host.ctx == nil then return nil end
+	if host.ctx.owner ~= nil and host.ctx.owner ~= 0 then return host.ctx.owner end
+	return reward_peer()
+end
+
+-- Stock effects read the actor of the machine they run on: statistics, rank and reputation of a task (the counters of
+-- task_manager.task_callback, increase_rank and the like in on_complete, tasks_guide) would all land on the host's actor.
+function patch_statistics()
+	local gs = rawget(_G, "game_statistics") or game_statistics
+	if type(gs) ~= "table" then
+		log("! game_statistics not found: a task's rank and reputation stay on the host's actor")
+		return
+	end
+	-- what is no player's here would land on the ghost actor of a map server or of a world server whose seat plays
+	-- no character (coop_quests_core.actor_is_nobody): dropped. An ordinary host's actor is its player: unchanged.
+	local count = gs.increment_statistic
+	if type(count) == "function" then
+		gs.increment_statistic = function(name, custom_rank, custom_rept)
+			if TASK_STATS[name] and each_personal(gs.increment_statistic, name, custom_rank, custom_rept) then return end
+			local peer = stat_peer()
+			if not peer and not coop_mode.actor_is_player() then return end
+			if not peer then return count(name, custom_rank, custom_rept) end
+			send_effect(peer, { k = "stat", f = name, r = tonumber(custom_rank), p = tonumber(custom_rept) })
+		end
+	end
+	for fname, what in pairs({ increment_rank = "rank", increment_reputation = "rept" }) do
+		local orig = gs[fname]
+		if type(orig) == "function" then
+			gs[fname] = function(value)
+				if what == "rept" and each_personal(gs[fname], value) then return end
+				local peer = stat_peer()
+				if not peer and not coop_mode.actor_is_player() then return end
+				if not peer then return orig(value) end
+				send_effect(peer, { k = "stat", f = what, n = tonumber(value) or 0 })
+			end
+		end
+	end
+end
+
+-- The "stash coordinates" line of a task's reward is the player's who turned it in (the spot is everybody's). The line
+-- is shown inside set_random_stash; a mod's override may add a text, the client computes that one in its own language.
+function patch_stash_line()
+	local tm = rawget(_G, "treasure_manager") or treasure_manager
+	if not (type(tm) == "table" and type(tm.set_random_stash) == "function") then
+		log("! treasure_manager.set_random_stash not found: stash lines of task rewards stay on the host")
+		return
+	end
+	local orig = tm.set_random_stash
+	tm.set_random_stash = function(no_spot, hint, bonus, id, dbg)
+		local peer = reward_peer()
+		local nm = rawget(_G, "news_manager") or news_manager
+		local stock = nm and nm.send_treasure
+		if not (peer and type(stock) == "function") then return orig(no_spot, hint, bonus, id, dbg) end
+		local told = false
+		nm.send_treasure = function(param, text)
+			if param == 0 or param == nil then told = true else return stock(param, text) end
+		end
+		local res = { pcall(orig, no_spot, hint, bonus, id, dbg) }
+		nm.send_treasure = stock
+		if not res[1] then error(res[2], 0) end
+		local qc = rawget(_G, "coop_quests_core")
+		if told and type(qc) == "table" then qc.send("treasure", { p = 0, b = tonumber(res[2]) or tonumber(id) }, peer) end
+		return unpack(res, 2)
+	end
+end
+
+function patch_rewards()
+	-- a restrictor's condlist gives a task: the effect knows the zone (nearest_taker)
+	local xfx = rawget(_G, "xr_effects") or xr_effects
+	if xfx and type(xfx.reward_item) == "function" then
+		local reward = xfx.reward_item
+		xfx.reward_item = function(actor, npc, p, ...)
+			local group = host.ctx and host.ctx.group and host.ctx
+			if not group then return reward(actor, npc, p, ...) end
+			local previous = group.stock_item
+			group.stock_item = p and p[1]
+			local result = { pcall(reward, actor, npc, p, ...) }
+			group.stock_item = previous
+			if not result[1] then error(result[2], 0) end
+			return unpack(result, 2)
+		end
+	end
+	if xfx and type(xfx.give_task) == "function" then
+		local give = xfx.give_task
+		xfx.give_task = function(actor, obj, p)
+			local prev = host.give_near
+			host.give_near = obj
+			local res = { pcall(give, actor, obj, p) }
+			host.give_near = prev
+			if not res[1] then error(res[2], 0) end
+			return unpack(res, 2)
+		end
+	end
+
+	-- money
+	local dlg = rawget(_G, "dialogs") or dialogs
+	if dlg and type(dlg.relocate_money) == "function" then
+		local orig = dlg.relocate_money
+		dlg.relocate_money = function(victim, num, typ)
+			local n = tonumber(num)
+			if not (host.ctx and typ == "in" and n and n > 0) then return orig(victim, num, typ) end
+			split_money(n, function(peer, amount)
+				if peer == 0 then
+					orig(victim, amount, "in")
+				else
+					grant_money(peer, amount)
+				end
+			end)
+		end
+	else
+		log("! dialogs.relocate_money not found: task money is not routed")
+	end
+
+	-- items into the turning-in player's character (host-authoritative spawn)
+	local create = rawget(_G, "alife_create_item")
+	if type(create) == "function" then
+		host.raw_create = create
+		_G.alife_create_item = function(section, obj, t)
+			if host.ctx and host.ctx.group and not host.ctx.returns and is_my_actor(obj) and coop_reward_group.shareable(section) then
+				return give_to_group(create, section, t)
+			end
+			local peer = reward_peer()
+			if peer and is_my_actor(obj) then
+				local o = recipient_body(peer)
+				if o then return create(section, o, t) end
+				report("item reward", "recipient character unavailable: " .. tostring(character_of(peer)))
+				return -- never create a client's item in the host's inventory
+			end
+			return create(section, obj, t)
+		end
+	else
+		log("! alife_create_item not found: task items are not routed")
+	end
+
+	-- xr_effects.give_actor (the PDA of a task, in its on_init) makes the item with alife_create(section, ..., AC_ID): past the
+	-- redirect above, into the host's own inventory, which on a world server is its ghost's. For a
+	-- task of another player the item is made the routed way; the host's own task is the stock's.
+	local xe = rawget(_G, "xr_effects") or xr_effects
+	if xe and type(xe.give_actor) == "function" then
+		local stock_give = xe.give_actor
+		xe.give_actor = function(actor, npc, p)
+			if not (reward_peer() and type(p) == "table") then return stock_give(actor, npc, p) end
+			local news = rawget(_G, "news_manager") or news_manager
+			for _, section in pairs(p) do
+				alife_create_item(section, db.actor)
+				if news and news.relocate_item then news.relocate_item(db.actor, "in", section) end
+			end
+		end
+	end
+
+	-- xr_effects.inc_goodwill_by_tasker_comm takes the giver's faction from the task's var (task_giver_comm: only the delivery
+	-- tasks write it) or from the NPC the actor talks to. A task a client turns in ends in the host's task callback, where nobody
+	-- talks: 15 tasks gave no goodwill. The faction of the task's giver, from his record, stands
+	-- in the var for this one call; a faction the task wrote itself and the host's own talk are the stock's.
+	local stock_comm = xe and xe.inc_goodwill_by_tasker_comm
+	if type(stock_comm) == "function" then
+		xe.inc_goodwill_by_tasker_comm = function(actor, npc, p)
+			local id = type(p) == "table" and p[1]
+			local tm = type(id) == "string" and world_active() and tmgr() or nil
+			local tsk = tm and tm.task_info and tm.task_info[id]
+			if not (tsk and db.actor) or db.actor:is_talking() then return stock_comm(actor, npc, p) end
+			local had = load_var(db.actor, id)
+			if type(had) == "table" and had.task_giver_comm then return stock_comm(actor, npc, p) end
+			local se = tsk.task_giver_id and rawget(_G, "alife_object") and alife_object(tsk.task_giver_id)
+			local ok, comm = pcall(function() return se and se:community() end)
+			if not (ok and type(comm) == "string" and comm ~= "") then return stock_comm(actor, npc, p) end
+			local with = {}
+			if type(had) == "table" then
+				for k, v in pairs(had) do with[k] = v end
+			end
+			with.task_giver_comm = comm
+			host.var_quiet = true -- a stand-in for one call, the var back as it was: its facts unchanged
+			save_var(db.actor, id, with)
+			host.var_quiet = nil
+			local res = { pcall(stock_comm, actor, npc, p) }
+			host.var_quiet = true
+			save_var(db.actor, id, had)
+			host.var_quiet = nil
+			if not res[1] then error(res[2], 0) end
+			return unpack(res, 2)
+		end
+	end
+
+	-- item news to the player who gets / gives the items
+	local nm = rawget(_G, "news_manager") or news_manager
+	if nm and type(nm.relocate_item) == "function" then
+		local orig = nm.relocate_item
+		news_item = orig
+		nm.relocate_item = function(actor, typ, item, amount)
+			if host.ctx and host.ctx.group and host.ctx.counted[item] and typ == "in" and is_my_actor(actor) then return true end -- group_lines
+			local peer = reward_peer()
+			if peer and is_my_actor(actor) then
+				send_reward(peer, { k = "news", ty = tostring(typ), s = tostring(item), n = tonumber(amount) or 1 })
+				return true
+			end
+			return orig(actor, typ, item, amount)
+		end
+	end
+
+	if nm and type(nm.relocate_money) == "function" then
+		news_money = nm.relocate_money
+		nm.relocate_money = function(actor, typ, amount)
+			if payout_scope and is_my_actor(actor) then return true end -- the player who gets the money sees the line
+			return news_money(actor, typ, amount)
+		end
+	end
+
+	-- goodwill rewards / penalties keyed to the player's own character
+	local xe = rawget(_G, "xr_effects") or xr_effects
+	if xe then
+		for _, fname in ipairs({ "inc_faction_goodwill_to_actor", "dec_faction_goodwill_to_actor" }) do
+			local orig = xe[fname]
+			if type(orig) == "function" then
+				xe[fname] = function(actor, npc, p)
+					if is_my_actor(actor) and each_personal(xe[fname], actor, npc, p) then return end
+					local peer = reward_peer()
+					if peer and type(p) == "table" and is_my_actor(actor) then
+						local o = recipient_body(peer)
+						if o then
+							local r = orig(o, npc, { p[1], p[2] }) -- no message on the host
+							if p[3] and p[1] then
+								send_reward(peer, { k = "gw", c = tostring(p[1]),
+									g = fname == "inc_faction_goodwill_to_actor" and (tonumber(p[2]) or 0) > 0 })
+							end
+							return r
+						end
+						report("goodwill", "recipient character unavailable: " .. tostring(character_of(peer)))
+						return
+					end
+					return orig(actor, npc, p)
+				end
+			end
+		end
+		-- payment for a money task: taken from the player who turned it in
+		local pay = xe.drx_sl_money_task_payment
+		if type(pay) == "function" then
+			xe.drx_sl_money_task_payment = function(actor, npc, p)
+				local peer = reward_peer()
+				if peer and type(p) == "table" and p[1] ~= nil then
+					local money = tonumber(load_var(db.actor, p[1], 0)) or 0
+					local have = money > 0 and ledger_money(peer) or nil
+					if have and have < money then
+						-- spent since the turn-in: the ledger would stop at 0 and the faction change would be free
+						host.ctx.unpaid = true
+						log("'%s': #%s has %d RU, the task takes %d: not paid", tostring(host.ctx.task), tostring(peer), have, money)
+						return
+					end
+					if money > 0 then grant_money(peer, -money) end
+					return
+				end
+				return pay(actor, npc, p)
+			end
+		end
+		-- Stock fetch effects take the player's goods and hand back what is left of them: the artefact out of its container,
+		-- the empty container, the leftover uses. That is no reward: the group gets no copies of it.
+		local fetch_module = _G.tasks_fetch -- it adds these effects to xr_effects when it loads: loads it now
+		for _, fname in ipairs(FETCH_EFFECTS) do
+			local orig = fetch_module ~= false and xe[fname]
+			if type(orig) == "function" then
+				xe[fname] = function(...)
+					if not (host.ctx and host.ctx.group) then return orig(...) end
+					local c, prev = host.ctx, host.ctx.returns
+					c.returns = true
+					local res = { pcall(orig, ...) }
+					c.returns = prev
+					if not res[1] then error(res[2], 0) end
+					return unpack(res, 2)
+				end
+			end
+		end
+		-- tasks_multifetch pays on_complete with db.actor:give_money (the host's actor): to the one who turned it in
+		if type(xe.multifetch_remove) == "function" then xe.multifetch_remove = redirect_payout(xe.multifetch_remove) end
+		-- effects on the player's own character run on that player's machine (forward_fx)
+		for fname in pairs(FORWARD_EFFECTS) do
+			local orig = xe[fname]
+			if type(orig) == "function" then
+				xe[fname] = function(actor, npc, p)
+					if forward_fx(fname, p) then return end
+					return orig(actor, npc, p)
+				end
+			end
+		end
+	end
+
+	-- Freedom barrier defense pays 40 000 / 25 000 with db.actor:give_money from a dialog action (the speaker's
+	-- machine). A client's own run is not touched (the engine ledger takes its change); when the host runs it for a
+	-- player (with_recipient) the money goes to that player. The host's own talk pays the host.
+	local td = rawget(_G, "tasks_defense") or tasks_defense
+	if type(td) == "table" then
+		for _, fname in ipairs({ "barrier_defense_monolith_complete", "barrier_defense_zombie_complete" }) do
+			if type(td[fname]) == "function" then td[fname] = redirect_payout(td[fname]) end
+		end
+	end
+
+	-- delayed rewards (fetch pays one second later) keep the context
+	local cte = rawget(_G, "CreateTimeEvent")
+	if type(cte) == "function" then
+		_G.CreateTimeEvent = function(ev_id, act_id, timer, f, ...)
+			if host.ctx and type(f) == "function" then
+				local c, f0, returns = host.ctx, f, host.ctx.returns
+				f = function(...)
+					local prev = host.ctx
+					host.ctx = c
+					-- the group may have changed since the task was turned in; a return stays one a second later
+					local prev_returns = c.returns
+					c.returns = returns
+					if c.group then c.group = host.aud_group(c.task, coop_reward_group.list()) end
+					local res = { pcall(f0, ...) }
+					c.returns = prev_returns
+					host.ctx = prev
+					group_lines(c)
+					if not res[1] then
+						report("delayed task reward", res[2])
+						return true
+					end
+					return unpack(res, 2)
+				end
+			end
+			return cte(ev_id, act_id, timer, f, ...)
+		end
+	end
+end

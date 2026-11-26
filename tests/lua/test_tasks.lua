@@ -24,7 +24,11 @@ local next_item_id = 1000
 -- ---------------------------------------------------------------- one machine
 local function machine(role, self_peer)
 	local M = { role = role, self_peer = self_peer, log = {}, handlers = {}, sent = {} }
-	local env = setmetatable({}, { __index = _G })
+	-- the engine loads a script on the first use of its name: coop_util and the parts of coop_tasks come that way, into this machine
+	local env = setmetatable({}, { __index = function(_, k)
+		if type(k) == "string" and (k == "coop_util" or k:find("^coop_tasks_")) then return M.load(k) end
+		return _G[k]
+	end })
 	env._G = env
 	M.env = env
 
@@ -478,7 +482,7 @@ check(C.env.task_manager.task_complete("fetch_1") == false and C.env.task_manage
 print("== quest items in another player's inventory (R-7.5)")
 H.give_item(proxy_on_host, "medkit")
 H.give_item(proxy_on_host, "medkit")
-check(H.mod.party_count("medkit") == 2 and H.mod.party_has("medkit", 2), "party_count sees the proxy inventory")
+check(H.env.coop_tasks_items.party_count("medkit") == 2 and H.env.coop_tasks_items.party_has("medkit", 2), "party_count sees the proxy inventory")
 H.tm:update()
 check(H.tm.task_info.fetch_1.stage == 1, "fetch status functor completes from the group inventory")
 tick(H)
@@ -1136,13 +1140,14 @@ do
 	check(bt.forced_status == nil, "the verdict itself changes no task")
 
 	-- the engine's handler asks before it notes the finisher or changes the task, on both branches (explicit or not)
-	local ef = io.open("engine/src/xrGame/coop/coop_story.cpp", "r")
+	local ef = io.open("engine/src/xrGame/coop/coop_story_tasks.cpp", "r")
 	local esrc = ef and ef:read("*a") or ""
 	if ef then ef:close() end
 	local body = esrc:match("void host_on_task_state%(PeerId from, Reader& r%)(.-)\n}\n") or ""
 	local ask = body:find("lua_task_state_ok(", 1, true)
 	local fin = body:find("g_finisher[id] = from", 1, true)
-	check(ask ~= nil and fin ~= nil and ask < fin, "coop_story.cpp host_on_task_state asks lua_task_state_ok before the finisher note")
+	check(ask ~= nil and fin ~= nil and ask < fin,
+		"coop_story_tasks.cpp host_on_task_state asks lua_task_state_ok before the finisher note")
 	H.players[#H.players] = nil
 	H.env.coop_trust = nil
 	for i = #MACHINES, 1, -1 do if MACHINES[i] == C2 then table.remove(MACHINES, i) end end
@@ -1358,15 +1363,15 @@ do
 	check(V("cord_2", 2, 0x100, true, false, true) == true,
 		"a map server's turn-in: the facts of the task are on its level, the world server does not judge them (ok)")
 	-- the engine passes the explicit flag
-	local ef = io.open("engine/src/xrGame/coop/coop_story.cpp", "r")
+	local ef = io.open("engine/src/xrGame/coop/coop_story_tasks.cpp", "r")
 	local esrc = ef and ef:read("*a") or ""
 	if ef then ef:close() end
-	check(esrc:find("local id, st, peer, bridge, timed_out, explicit = ...", 1, true) ~= nil
-		and esrc:find("m.host_state_verdict, id, st, peer, bridge, timed_out, explicit)", 1, true) ~= nil
+	local call = 'luafn::call_named(ai().script_engine().lua(), "coop_tasks", "host_state_verdict", nullptr,'
+	check(esrc:find(call, 1, true) ~= nil
 		and esrc:find("lua_pushboolean(L, explicit_call ? 1 : 0);", 1, true) ~= nil
-		and esrc:find("lua_pcall(L, 6, 1, 0)", 1, true) ~= nil
+		and esrc:find("return 6;", 1, true) ~= nil
 		and esrc:find("task_time_ran_out(t), explicit_call))", 1, true) ~= nil,
-		"coop_story.cpp gives host_state_verdict the explicit flag")
+		"coop_story_tasks.cpp gives host_state_verdict the explicit flag")
 
 	-- F2: a stage goes only up, one step at a time (check task_stage). Round 3 (R2-S2): a step also needs his talk a moment ago,
 	-- which the host saw, with the task's giver or with the NPC the task points to now (its target, the NPC or his squad):
@@ -1861,17 +1866,17 @@ do
 	req("stage", "s5_talk", ";st=n2;sp=n777")
 	check(tk.stage == 1 and failed("task_stage") == s0 + 1, "(the talk with 777 a step used: a second step is refused)")
 	local T = H.env.coop_tasks
-	check(type(T.far_talk_new) == "function", "the Core takes a map server's word of a new talk (coop_tasks.far_talk_new)")
-	if type(T.far_talk_new) == "function" then
+	check(type(H.env.coop_tasks_requests.far_talk_new) == "function", "the Core takes a map server's word of a new talk (coop_tasks_requests.far_talk_new)")
+	if type(H.env.coop_tasks_requests.far_talk_new) == "function" then
 		for _, junk in ipairs({ { 1, 0 }, { 1, 65535 }, { 1, 1.5 }, { 1, "777" }, { 0, 777 }, { 2, 777 }, { "1", 777 }, { 1.5, 777 } }) do
-			T.far_talk_new(junk[1], junk[2])
+			H.env.coop_tasks_requests.far_talk_new(junk[1], junk[2])
 		end
 		req("stage", "s5_talk", ";st=n2;sp=n777")
 		check(tk.stage == 1 and failed("task_stage") == s0 + 2, "a word with junk ids or of another player renews nothing")
-		T.far_talk_new(1, 779)
+		H.env.coop_tasks_requests.far_talk_new(1, 779)
 		req("stage", "s5_talk", ";st=n2;sp=n777")
 		check(tk.stage == 1 and failed("task_stage") == s0 + 3, "a new talk with another NPC renews nothing with 777")
-		T.far_talk_new(1, 777)
+		H.env.coop_tasks_requests.far_talk_new(1, 777)
 		req("stage", "s5_talk", ";st=n2;sp=n777")
 		check(tk.stage == 2 and failed("task_stage") == s0 + 3, "a step in the talk with 777 his map server granted again: ok")
 		req("stage", "s5_talk", ";st=n3;sp=n777")
@@ -2072,11 +2077,11 @@ do
 		and rolls[b:id()] == nil and draws == 3, "a plain create at a task's end rolls no copy: the stock path rolls none")
 	-- a story share (coop_quests_story share_reward -> give_to_peer) is rolled only when the stock effect that made it rolls
 	local held = #guest._inv
-	host.mod.give_to_peer(1, 0, { "bandage_pack" }, "give_actor")
+	host.env.coop_tasks_items.give_to_peer(1, 0, { "bandage_pack" }, "give_actor")
 	local given = guest._inv[held + 1]
 	check(given and given:section() == "bandage_pack" and rolls[given:id()] == nil and draws == 3,
 		"a client's copy of a give_actor share is made as stock makes it: no roll")
-	host.mod.give_to_peer(1, 0, { "bandage_pack" }, "reward_item")
+	host.env.coop_tasks_items.give_to_peer(1, 0, { "bandage_pack" }, "reward_item")
 	given = guest._inv[held + 2]
 	check(given and rolls[given:id()] ~= nil and draws == 4, "a client's copy of a reward_item share gets the stock roll")
 end

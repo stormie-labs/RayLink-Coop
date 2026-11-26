@@ -1,0 +1,1379 @@
+-- Ядро: без проверок режима (docs/MODES.md)
+--[[
+	Anomaly Coop - a player's task requests on the deciding process (gamedata\scripts\coop_tasks_requests.script): give, stage,
+	turn-in, fail and cancel, judged by the host's own state of the task before they run.
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace (nil on an exe without co-op)
+local tostring, tonumber, type, pairs, ipairs, pcall, next = tostring, tonumber, type, pairs, ipairs, pcall, next
+local string_format, table_sort, math_floor = string.format, table.sort, math.floor
+local B = coop_tasks_base
+local EV_REWARD, EV_STATE, actor_pstor, bounties, far_of, host = B.EV_REWARD, B.EV_STATE, B.actor_pstor, B.bounties, B.far_of, B.host
+local is_task, is_task_key, ledger_money, log, now, pack = B.is_task, B.is_task_key, B.ledger_money, B.log, B.now, B.pack
+local players, report, send, stats, task_vars, tmgr = B.players, B.report, B.send, B.stats, B.task_vars, B.tmgr
+local unpack_payload, var_value_ok, world_active = B.unpack_payload, B.var_value_ok, B.world_active
+local character_of, peer_for_character = coop_tasks.character_of, coop_tasks.peer_for_character
+
+local MONEY_FUNCTOR = "drx_sl_money_task_status" -- DRX money tasks (faction change): the finisher pays from his own money
+local WAIT_FUNCTOR = "check_if_enough_time_passed" -- tm_yantar: Sakharov's helmet upgrade, a wait counted from the give
+
+local function task_known(id)
+	local ini = task_manager and task_manager.task_ini
+	local ok, yes = pcall(function() return ini and ini:section_exist(id) end)
+	return ok and yes == true
+end
+
+local function engine_task_running(id)
+	local ok, t = pcall(function() return db.actor:get_task(id, true) end)
+	return ok and t ~= nil
+end
+
+-- True if `peer` cannot pay the DRX money task `id` (its price is the task var "<id>_fetch": the host's own record of
+-- it, host.fact_of; a price that is only a client's word is not paid with nothing).
+local function money_short(tm, id, peer)
+	local tsk = tm.task_info[id]
+	if not (is_task(tsk) and tsk.status_functor == MONEY_FUNCTOR) then return false end
+	local have = ledger_money(peer)
+	local price, foreign = host.fact_of(id .. "_fetch", 0)
+	if foreign then return have ~= nil end
+	return have ~= nil and have < (tonumber(price) or 0)
+end
+
+-- Why a client's turn-in of a task he hands something over for cannot go through, or nil. Whatever his dialog said, the host looks at
+-- its own view of the group's characters (the parcel was with a player, the rest of the group went by word):
+--   delivery_task (stock tasks_delivery): THIS task's parcel (var.item_1_id, of var.item_1_sec) is in a player's character;
+--   actor_has_fetch_item (stock tasks_fetch): the group holds as many as the task asks for.
+-- Money tasks: money_short. The take itself is the on_complete's (coop_quests_party: the parcel by its id).
+function host.item_short(tm, id)
+	local tsk = tm.task_info[id]
+	if not is_task(tsk) then return nil end
+	local sf = tsk.status_functor
+	if sf == "delivery_task" then
+		-- the stock delivery functor saves the table again with item_1_id: the host's own write (host.fact_of)
+		local var = host.fact_of(id)
+		if type(var) ~= "table" or type(var.item_1_id) ~= "number" then return "the task has no parcel" end
+		if not coop_tasks_items.party_holds_id(var.item_1_id, var.item_1_sec) then return "nobody of the group holds its parcel" end
+	elseif sf == "actor_has_fetch_item" then
+		local n, need, foreign = host.fetch_units(id)
+		if foreign then return "its fetch item is a client's word, not the host's" end
+		if n and n < need then return string_format("the group holds %d of %d", n, need) end
+	end
+	return nil
+end
+
+-- The wait of a "check_if_enough_time_passed" task is counted from the give. Its giving dialog saves the time right after
+-- give_task, in the pstor of the machine that talks: a client's, where the host never sees it (a CTime cannot travel) and
+-- the wait would end at once. The host stamps the give itself (over a time an earlier give of the client left in the vars).
+-- (G.A.M.M.A. sets the wait of the helmet upgrade to 0; the stock task waits two days.)
+local function stamp_wait(id, tsk)
+	if not is_task(tsk) or tsk.status_functor ~= WAIT_FUNCTOR then return end
+	local save_time = rawget(_G, "save_ctime")
+	if type(save_time) == "function" then save_time(db.actor, id, game.get_game_time()) end
+end
+
+-- Client request handlers (host). Return true when accepted; the state is then broadcast by the scan.
+local ops = {}
+
+-- The player a request of a map server's logic belongs to: who took the task, else a player of its level. It is no player itself.
+function player_of_request(from, id)
+	local delivery = host.task_delivery()
+	return delivery and delivery.player_of_request(from, host.taker[id]) or from
+end
+
+-- Host: did player `from` talk to NPC `nid` a moment ago? The talk lock of a player on a map server's level is on that map server,
+-- which reports it with his place (as coop_quests_missions talked_recently). An engine without the talk locks: yes.
+function host.talk_facts(from)
+	local qc = rawget(_G, "coop_quests_core")
+	if type(qc) == "table" and type(qc.is_far_peer) == "function" and qc.is_far_peer(from) == true then
+		local facts = coop_mode.facts_of(from)
+		-- The facade drops invalid ids. Only engines without a partner binding use the vague dialogue check.
+		if facts and facts.partner == nil then
+			local delivery = host.task_delivery()
+			if delivery then
+				local ok, available = pcall(delivery.has_talk_partner)
+				if ok and available then facts.partner = false end
+			end
+		end
+		return facts, true
+	end
+	return nil, false
+end
+
+function spoke_to(from, nid)
+	local facts, far = host.talk_facts(from)
+	if far then
+		if facts and facts.partner ~= nil then return host.far_with(from, facts.partner, nid) end
+		-- Older engines report only that he holds a dialog lock. Keep the same 15 s window.
+		return host.far_said(from, facts == nil or facts.talking ~= false)
+	end
+	local recent = api.talk_recent
+	if type(recent) ~= "function" then return true end
+	return recent(from, nid, 15000) == true
+end
+
+-- Player `from`'s map server says he is in a dialog now (`live`): noted; -> he was within the last 15 s.
+function host.far_said(from, live)
+	local ft = host.far_talk[from]
+	if not ft then
+		ft = { now = false, at = nil }
+		host.far_talk[from] = ft
+	end
+	ft.now = live == true
+	if ft.now then ft.at = now() end
+	return ft.now or (ft.at ~= nil and now() - ft.at <= 15000)
+end
+
+-- Player `from` talks to NPC `with` now (false: to nobody), as his map server names him: noted with the time. -> he talked to
+-- NPC `nid` now or in the last 15 s (the co-op's talk_recent window); nid 0 / nil: only noted, false. host.far_talk[from].with:
+-- NPC -> when last named; older than 15 s is forgotten.
+function host.far_with(from, with, nid)
+	local ft = host.far_talk[from]
+	if not ft then
+		ft = { now = false, at = nil }
+		host.far_talk[from] = ft
+	end
+	local t = now()
+	ft.with = ft.with or {}
+	for npc, at in pairs(ft.with) do
+		if t - at > 15000 then ft.with[npc] = nil end
+	end
+	ft.now = with ~= false
+	if with then ft.at, ft.with[with] = t, t end
+	nid = tonumber(nid)
+	if not nid or nid <= 0 then return false end
+	return ft.with[nid] ~= nil
+end
+
+-- The scan's look at the dialogs of the players on a map server's level (host.far_said keeps when each was last in one);
+-- a player who left is forgotten.
+function host.far_watch()
+	local qc = rawget(_G, "coop_quests_core")
+	if not (type(qc) == "table" and type(qc.is_far_peer) == "function") then return end
+	local here = {}
+	for _, p in ipairs(players()) do
+		here[p.id] = true
+		local okf, far = pcall(qc.is_far_peer, p.id)
+		if not p.is_self and okf and far == true then spoke_to(p.id, 0) end
+	end
+	for peer in pairs(host.far_talk) do
+		if not here[peer] then host.far_talk[peer] = nil end
+	end
+end
+
+-- Host: true when spoke_to's answer for player `from` names no partner. The talk of a player on a map server's
+-- level is that server's word "he is in some dialog" (LevelBodyFacts.talking, one byte in coop_levels_wire.h). The engine
+-- also reports the NPC (LevelBodyFacts.partner), which can explicitly say he is talking to nobody.
+function talk_vague(from)
+	local facts, far = host.talk_facts(from)
+	return far and (facts == nil or facts.partner == nil)
+end
+
+function ops.give(tm, id, t, from)
+	if tm.task_info[id] ~= nil and engine_task_running(id) then return false end
+	-- split levels: a main story belongs to the faction that started it, and a player holds one change-faction task at a time
+	-- (coop_conditions_stock.may_take, a server's storyline over it, is the world's side of the dialog gates of modxml_coop_storyline)
+	local sl = rawget(_G, "coop_conditions_stock")
+	if type(sl) == "table" and type(sl.may_take) == "function" and sl.may_take(id, from) == false then
+		log("#%s may not take '%s': another faction's main story or a second change-faction task", tostring(from), id)
+		return false
+	end
+	local got_vars = {}
+	local vars = {}
+	if type(t.v) == "string" then
+		for k, v in pairs(unpack_payload(t.v)) do
+			if is_task_key(k, id) and var_value_ok(v) then vars[k] = v end
+		end
+	end
+	host.his_vars(id, vars)
+	-- the bounty target his dialog chose: an object id (a number of no id is no target)
+	local bt = tonumber(t.bt)
+	if bt and not (bt > 0 and bt < 65535 and bt == math_floor(bt)) then bt = nil end
+	-- the vars of the give the host runs are its facts (coop_quests_trust.note_own),
+	-- as far as they are what the host offered him (host.give_offer, check task_give_offer); the bounty target
+	-- too, only the offers of his giver, and with no offer, a pick the task's own generator can make (host.give_own)
+	local own, put, gbt, drop = host.give_offer(id, from, vars, t, bt)
+	for k, v in pairs(put) do
+		host.give_vars, host.var_foreign = own[k] == true, own[k] ~= true
+		save_var(db.actor, k, v)
+		got_vars[k] = true
+	end
+	for k in pairs(drop) do
+		host.give_vars, host.var_foreign = false, true
+		save_var(db.actor, k, nil) -- no value of his there: none of this task's facts
+	end
+	host.give_vars, host.var_foreign = nil, nil
+	local b = bounties()
+	if b and gbt ~= nil then b[id] = gbt or nil end
+	local giver = tonumber(t.g) -- host numbering == local numbering on the host
+	host.taker[id] = from
+	host.given_by[id] = from
+	host.given_at[id] = { peer = from, at = now() }
+	host.finisher[id] = nil
+	host.giver = giver
+	-- The NPC the player talks to is the speaker while the task starts: an on_init asks get_speaker() for him (setup_fetch_task of
+	-- lttz_ll_medical_supplies died on nil). His word counts only if the host saw the talk.
+	local sp = tonumber(t.sp)
+	local npc = sp and sp ~= 0 and (db.storage[sp] and db.storage[sp].object or level.object_by_id(sp)) or nil
+	if npc and not spoke_to(from, sp) then npc = nil end
+	local stock_speaker = rawget(_G, "get_speaker")
+	if npc then _G.get_speaker = function() return npc end end
+	host.take_asked = id -- may_take was asked above: the patched give_task does not ask again for this id
+	local gave, gerr = pcall(tm.give_task, tm, id, giver)
+	host.take_asked = nil
+	if npc then _G.get_speaker = stock_speaker end
+	host.giver = nil
+	if not gave then
+		-- The stock puts the task object into task_info BEFORE its give_task runs on_init and gives the task to the actor
+		-- (CRandomTask:give_task). An on_init that died leaves the object behind: a task of the journal that is no task of the
+		-- engine. It was sent to every player as given and never judged ("the KMB does not update").
+		if tm.task_info[id] ~= nil and not engine_task_running(id) then tm.task_info[id] = nil end
+		error(gerr, 0)
+	end
+	local given = tm.task_info[id] ~= nil
+	if given then
+		local qo = rawget(_G, "coop_quests_offer")
+		stamp_wait(id, tm.task_info[id])
+		-- host-side parts of the offer the client's dialog prepared (pinned target squads, ...)
+		if type(qo) == "table" and type(qo.host_after_give) == "function" then
+			local ok, err = pcall(qo.host_after_give, id, from, giver, got_vars)
+			if not ok then report("after give " .. id, err) end
+		end
+		-- his offers of this task are spent by the give, after host_after_give read the one he took (A-REV-E-2 F4)
+		if type(qo) == "table" and type(qo.offer_given) == "function" then pcall(qo.offer_given, from, id) end
+	end
+	return given
+end
+
+local function finish(method)
+	return function(tm, id, t, from)
+		if tm.task_info[id] == nil or not engine_task_running(id) then return false end
+		-- the facts the money and item checks read below: the live pstor in "log", the host's record in
+		-- "refuse" (check task_var_write); a difference is its line (host.fact_line)
+		if method == "set_task_completed" then host.fact_line(tm, id, from) end
+		if method == "set_task_completed" and money_short(tm, id, from) then
+			log("#%s cannot turn in '%s': not enough money", tostring(from), id)
+			return false
+		end
+		local short = method == "set_task_completed" and host.item_short(tm, id) or nil
+		if short then
+			log("#%s cannot turn in '%s': %s", tostring(from), id, short)
+			return false
+		end
+		-- the host's own state of a task that is not about items (task_complete_state)
+		if method == "set_task_completed" and not host.complete_state(tm, id, from, t) then return false end
+		-- and the talk it is turned in (check task_complete_talk)
+		if method == "set_task_completed" and not host.complete_talk(tm, id, t, from) then return false end
+		if host.finisher[id] == nil then host.finisher[id] = from end
+		tm[method](tm, id)
+		return "pending" -- the task callback follows when the host checks its tasks
+	end
+end
+ops.complete = finish("set_task_completed")
+ops.fail = finish("set_task_failed")
+ops.cancel = finish("set_task_cancelled")
+
+function ops.stage(tm, id, t, from)
+	local tsk = tm.task_info[id]
+	local st = tonumber(t.st)
+	-- a stage is a byte of the task object; 255 is the repeat timeout the host itself sets
+	if tsk == nil or not st or st < 0 or st >= 255 or st ~= math_floor(st) then return false end
+	-- A dialog moves a stage on, one step at a time (aysd: stage + 1); the host's status functors
+	-- move it any way they like on the host itself, which is no request. A map server's (its level's logic, the facts are
+	-- there): not judged here.
+	-- A step also needs a talk a moment ago, which the host saw, with
+	-- the NPC the task points to now, and at most one step per talk (host.stage_talk). The same stage again changes nothing and
+	-- needs none.
+	local cur = tonumber(tsk.stage) or 0
+	local bridge = (tonumber(host.req_from) or 0) >= 0x100
+	local ok, why, talk = st == cur, "a stage goes only up, one step at a time", nil
+	if st == cur + 1 and not bridge then ok, why, talk = host.stage_talk(id, tsk, from, t.sp) end
+	-- a step that reaches the task's stage_complete turns it in; the host takes it
+	-- only where its own state says the objective is reached (host.done_here)
+	if ok and st == cur + 1 and not bridge and st == host.stage_complete(id) then ok, why = host.done_here(tm, id, tsk) end
+	if not bridge and not host.trust("task_stage", ok, "player %s (#%s), task %s: stage %d asked, the host's is %d: %s",
+		host.nick(from), tostring(from), id, st, cur, tostring(why)) then
+		return false
+	end
+	tsk.stage = st
+	if talk then host.stage_note(id, from, talk) end
+	return true
+end
+
+-- May player `from` move task `id` (object tsk) one stage on in his
+-- talk with NPC `sp` (host numbering)? -> ok, why not, and the talk the step uses ({ key, n }, for host.stage_note).
+-- The honest steps are a dialog's: aysd (Ashot and Yar, the only stage write of a client in the scripts) moves +1 in a talk with
+-- Ashot while the task points to Ashot's squad, and with Yar, its giver, while it points to Yar's. So:
+--   - the NPC is the one the task points to now (the NPC, or a member of the squad); the giver counts only for a task without a
+--     target (a task that points to its giver has him as the target); a task with neither takes only an NPC its own target
+--     condlist names (host.condlist_names), else nobody. Where the task points now is its target functor's word (the host's own
+--     look runs every 0.5-1 s: right after a step it still points to the last NPC); without one, the host's last look;
+--   - the host saw the talk a moment ago (spoke_to: its talk locks, 15 s);
+--   - one step per talk: a talk a step used moves nothing more; a new step needs a new talk (host.talk_of).
+-- Server: his map server names the NPC of his talk (LevelBodyFacts.partner, the part "talk"): judged as
+-- above. An engine that does not name him says only "in some dialog" (talk_vague): a step is then judged ok only for a task with
+-- neither a giver nor a target, at an NPC its condlist names, one step per dialog.
+function host.stage_talk(id, tsk, from, sp)
+	sp = tonumber(sp)
+	if not sp or sp <= 0 or sp >= 65535 or sp ~= math_floor(sp) then return false, "a step, and no talk named" end
+	local okg, giver = pcall(function() return tonumber(tsk.task_giver_id) end)
+	if not (okg and giver and giver > 0 and giver < 65535) then giver = nil end
+	local target = host.target_now(id, tsk)
+	if (giver ~= nil or target ~= nil) and talk_vague(from) then
+		return false, string_format("Server: his map server says only that he is in some dialog, not with whom (giver %s, target "
+			.. "%s): a step of a task with a giver or a target is not judged ok there", tostring(giver), tostring(target))
+	end
+	if spoke_to(from, sp) ~= true then return false, string_format("a step in a talk with NPC %d the host did not see", sp) end
+	local fits, who
+	if target ~= nil then
+		fits, who = target == sp or host.squad_of(sp) == target, "where it points"
+	elseif giver ~= nil then
+		-- a member of the giver's squad is the giver (DRX gives with the squad's id)
+		fits, who = host.is_giver(giver, sp), "its giver (it points nowhere)"
+	else
+		fits, who = host.condlist_names(tsk, sp), "an NPC its target condlist names (no giver, no target)"
+	end
+	if not fits then
+		return false, string_format("a step in a talk with NPC %d, who is not %s; giver %s, target %s", sp, who, tostring(giver),
+			tostring(target))
+	end
+	local talk = host.talk_of(from, sp)
+	local used = talk and host.stage_used[from] and host.stage_used[from][id]
+	if used and used[talk.key] == talk.n then
+		return false, string_format("one step per talk: the talk with NPC %d moved this task a stage already", sp), talk
+	end
+	return true, nil, talk
+end
+
+-- The Lua turn-in (ops.complete) checks money and items; may player `from` also turn task
+-- `id` in, in the talk his request names (t.sp)? Check task_complete_talk, "log" first. A talk with the giver alone cannot be
+-- asked for: the honest turn-ins are a dialog's with the giver (axr_task_manager.set_finished_task_complete, DRX's
+-- drx_sl_set_finished_task_complete, z_gavrilenko_tasks_fix a second later, dialogs_yantar's psi helmet at Sakharov), with the
+-- NPC the task points to (tasks_delivery complete_simulation_task: the parcel's receiver), or with an NPC of a task without a
+-- giver (dialogs_lostzone's story tasks, tasks_defense barrier_defense_*_complete). So: the host saw a talk a moment ago
+-- (spoke_to) with the giver (or a member of the giver's squad), with the NPC the task points to now (or a member of
+-- its squad), or, for a task without a giver, with any NPC. Server: his map server names the NPC of his talk (the part
+-- "talk"): judged the same; an engine that does not name him says only "in some dialog" (talk_vague): that is enough. A map
+-- server's turn-in is its level's logic: not judged.
+function host.complete_talk(tm, id, t, from)
+	if (tonumber(host.req_from) or 0) >= 0x100 then return true end
+	local tsk = tm.task_info[id]
+	local sp = type(t) == "table" and tonumber(t.sp) or nil
+	local ok, why = false, "no talk named"
+	-- a turn-in outside any dialog (bind_heli.heli_die of a client's mirror of the helicopter, a
+	-- client's condlist with xr_effects.set_task_completed) names no talk; it holds when the host's own check of the task says it is
+	-- done (the host's own logic would complete it the same: only who turned it in differs)
+	if not (sp and sp > 0) and host.still_running(tm, id) == nil then ok, why = true, nil end
+	if sp and sp > 0 and sp < 65535 and sp == math_floor(sp) then
+		local okg, giver = pcall(function() return tonumber(tsk.task_giver_id) end)
+		if not (okg and giver and giver > 0 and giver < 65535) then giver = nil end
+		if spoke_to(from, sp) ~= true then
+			why = string_format("the host did not see a talk with NPC %d", sp)
+		elseif giver == nil or host.is_giver(giver, sp) or talk_vague(from) or host.dialog_npc(id, sp) then
+			-- or the NPC of the dialog that completes it (host.DIALOG_TURN_INS: Nimble for the owl's PDA, an escort's
+			-- companion), who is neither its giver nor where it points
+			ok = true
+		else
+			local target = host.target_now(id, tsk)
+			ok = target ~= nil and (target == sp or host.squad_of(sp) == target)
+			why = string_format("in a talk with NPC %d, who is neither its giver (%d) nor where it points (%s)", sp, giver,
+				tostring(target))
+		end
+	end
+	return host.trust("task_complete_talk", ok, "player %s (#%s) turned task %s in: %s", host.nick(from), tostring(from), id,
+		tostring(why))
+end
+
+-- Is NPC `sp` task giver `giver` (an NPC's id or a squad's)? DRX gives with the squad's id
+-- (dialogs.drx_sl_give_sl_task: giver_id = se_obj.group_id) and its stock turn-in takes any member of that squad
+-- (axr_task_manager.get_first_finished_task): the NPC himself, or a member of the squad the giver is.
+function host.is_giver(giver, sp)
+	return giver ~= nil and sp ~= nil and (giver == sp or host.squad_of(sp) == giver)
+end
+
+-- The Lua turn-in (ops.complete) of a task whose objective is not about items asks the
+-- host's own state of the task, as the engine path does (host.still_running). Check task_complete_state, "log" first. Item tasks
+-- are judged by the money and item checks before it (a DRX money task, a delivery, a fetch task with its item: host.items_judged).
+-- The honest Lua turn-ins of the others (traced in the stock and the G.A.M.M.A. scripts):
+--   - the turn-in dialogs (axr_task_manager set_finished_task_complete through get_first_finished_task, DRX's
+--     drx_sl_set_finished_task_complete / _cf_task_complete, z_gavrilenko_tasks_fix one second after the dialog opens) turn in a
+--     task only at its stage_complete (the task ini, 254 without one); the client's stub has the host's stage;
+--   - a status functor or a condlist ended it on the host (last_check_task, forced_status: host.still_running);
+--   - a dialog completes one named task directly, its own precondition being the objective (host.DIALOG_TURN_INS).
+-- Co-op: the host's task objects. Server: the world server's, whose status functors run over the far view. A map server's turn-in
+-- is its level's logic: not judged.
+-- A stage the client stepped to stage_complete is no objective (host.done_here for
+-- a bounty), and a task of host.DIALOG_TURN_INS asks its own dialog's condition (host.dialog_turn_in), not any stage. `t`: the
+-- request (the NPC of his talk, t.sp).
+function host.complete_state(tm, id, from, t)
+	if (tonumber(host.req_from) or 0) >= 0x100 then return true end
+	local tsk = tm.task_info[id]
+	if not is_task(tsk) or host.items_judged(tsk, id) then return true end
+	local ok, why = host.still_running(tm, id) == nil, nil
+	local spec = host.DIALOG_TURN_INS[id]
+	if not ok and type(spec) == "table" then
+		ok, why = host.dialog_turn_in(id, tsk, from, type(t) == "table" and t.sp or nil, spec)
+	elseif not ok then
+		local need = host.stage_complete(id)
+		local okst, stage = pcall(function() return tonumber(tsk.stage) end)
+		stage = okst and stage or nil
+		ok = stage ~= nil and stage == need
+		why = string_format("its stage is %s, a turn-in asks for its stage_complete %s, and the host's own check says it is still "
+			.. "running", tostring(stage), tostring(need))
+		local okf, sf = pcall(function() return tsk.status_functor end)
+		if ok and okf and sf == "bounty_task" then ok, why = host.done_here(tm, id, tsk) end
+	end
+	return host.trust("task_complete_state", ok, "player %s (#%s) turned task %s in: %s", host.nick(from), tostring(from), id,
+		tostring(why))
+end
+
+-- Does the host's own state of task `id` (object tsk) say its objective is reached?
+-- -> ok, why not. A bounty (status functor bounty_task, stage_complete 1, the client's step 0 -> 1 at its living, maybe neutral
+-- target): its target (axr_task_manager.bounties_by_id) is dead in this process's ALife. Co-op: the host's objects. Server: the
+-- world server's records, which a map server's death report updates (coop_srv_quests_far on_death): a death it has not reported yet
+-- reads as alive (the world server's own functor moves the stage a moment later). Any other task: the host's own check found it
+-- done (host.still_running). The only honest stage write of a client (aysd, Ashot and Yar) never reaches stage_complete (254).
+function host.done_here(tm, id, tsk)
+	local okf, sf = pcall(function() return tsk.status_functor end)
+	if okf and sf == "bounty_task" then
+		local b = bounties()
+		local target = b and tonumber(b[id])
+		if not target then return false, "a bounty with no target the host knows" end
+		local f = rawget(_G, "alife_object")
+		local oks, se = pcall(function() return type(f) == "function" and f(target) or nil end)
+		if not (oks and se) then return false, string_format("its target %d is no object here (the host's check fails it)", target) end
+		local okl, alive = pcall(function() return se:alive() end)
+		if okl and alive == false then return true, nil end
+		return false, string_format("its target %d is alive here", target)
+	end
+	if host.still_running(tm, id) == nil then return true, nil end
+	return false, "a step to its stage_complete, and the host's own check says it is still running"
+end
+
+-- Is task `id` (object tsk) one the money and item checks of ops.complete judge? A DRX money task, a delivery (its
+-- parcel), a fetch task that has its item.
+function host.items_judged(tsk, id)
+	local okf, sf = pcall(function() return tsk.status_functor end)
+	sf = okf and sf or nil
+	if sf == MONEY_FUNCTOR or sf == "delivery_task" then return true end
+	local sec, foreign = host.fact_of(id .. "_fetch")
+	return sf == "actor_has_fetch_item" and (foreign or type(sec) == "string")
+end
+
+-- The stage a turn-in asks of task `id`: its ini's stage_complete, 254 without one (axr_task_manager CFG_CACHE).
+function host.stage_complete(id)
+	local mod = rawget(_G, "task_manager") or task_manager
+	local ok, n = pcall(function() return mod.task_ini:r_float_ex(id, "stage_complete") end)
+	return ok and tonumber(n) or 254
+end
+
+-- The tasks a dialog completes directly with set_task_completed, its own precondition being the objective. Stock:
+-- dialogs_escape (the owl's and the Clear Sky trader's escorts), dialogs_marsh, dialogs_darkvalley, dialogs_jupiter (the ecologists'
+-- escorts), tasks_top_10; G.A.M.M.A. (merged corpus): dialogs_lostzone (the story tasks), dialogs_yantar (the psi helmet),
+-- tasks_defense (the barrier), tasks_the_living_fire. tasks_delivery's is a delivery (an item task); tasks_mystery_of_the_swamps
+-- completes from its status functor on the host.
+-- What each dialog asks, as the host can see it (host.dialog_turn_in; the dialogs and
+-- the task files read in the stock, the merged corpus and the stand's configs):
+--   npc / squad  the talk is with that dialog's own NPC (story ids; a squad: any member), not the giver;
+--   items        the group holds them (the task's on_complete takes them); recent: or held them in the last 15 s (the dialog
+--                hands the item over in the same action that completes the task, and the release may reach the host first);
+--   info         the world has that info portion (a phrase's has_info, the task's own condlist);
+--   stage        the task's stage is at least that (its status functor's);
+--   near         the turning-in player's character is within 50 m of that smart (the escort's destination: the dialog's
+--                check_nearest_smart_dist_le 40, the warfare escort's smart when one is set), and no escort anomaly is pending;
+--   loot         the companion squad's members (online here) looted at least that many (dialogs_darkvalley).
+-- Server: the partner of his talk as his map server names it (the part "talk"; an older engine: not reported, talk_vague), the
+-- rest is the world server's view (far bodies, its records).
+host.DIALOG_TURN_INS = (function() -- (a function: the chunk has no room for more locals)
+	local DLG_ISG = { npc = { "jup_depo_isg_leader" }, squad = { "jup_depo_isg_leader_squad" } }
+	local DLG_OWL = { npc = { "esc_2_12_stalker_nimble" }, items = { "mar_base_owl_stalker_trader_task_1_pda" }, recent = true }
+	local DLG_ECO1 = { squad = { "ecolog_companion_task_1" }, near = "mar_smart_terrain_base", escort = true }
+	local DLG_ECO2 = { squad = { "ecolog_companion_task_2" }, near = "jup_b41", escort = true }
+	local DLG_BANDIT = { squad = { "bandit_companion_task_1" }, loot = 9, escort = true }
+	return {
+	-- dialogs_lostzone_ll.xml living_legend_strelok_answers (has_info lttz_ll_crucible_task_done), at Strelok
+	lttz_ll_answers = { npc = { "lost_stalker_strelok" }, info = "lttz_ll_crucible_task_done" },
+	-- Hollow Boundaries: at the ISG leader (the tasks' target), each on_complete takes its items
+	lttz_hb_task_1_2_recruit = { npc = DLG_ISG.npc, squad = DLG_ISG.squad, items = { "hb_isg_dushman_intel" } },
+	lttz_hb_task_2_1_guarded_secrets = { stage = 2, items = { "jupiter_documents" } }, -- its dialog's NPC: not found (partly)
+	lttz_hb_task_2_2_breakthrough = { npc = DLG_ISG.npc, squad = DLG_ISG.squad, items = { "main_story_6_jup_ug_documents" } },
+	lttz_hb_task_3_8_handle_docs = { npc = DLG_ISG.npc, squad = DLG_ISG.squad, items = { "main_story_1_quest_case",
+		"main_story_2_lab_x18_documents", "main_story_3_lab_x16_documents", "main_story_4_lab_x10_documents",
+		"main_story_5_lab_x8_documents" } },
+	lttz_hb_task_4_1_crossfire = { npc = DLG_ISG.npc, squad = DLG_ISG.squad, items = { "strelok_pendrive" } },
+	-- dialogs_yantar.xml yan_stalker_sakharov_good_psi_helmet / _bad_psi_helmet: at Sakharov.
+	-- at its stage 2 (actor_has_good_psi_helmet_task_completed: the wait is over), or right after its give by the same player (the
+	-- paid good helmet: G.A.M.M.A.'s phrase 122 runs take_money_good_psi_helmet, which gives it, and give_player_good_psi_helmet,
+	-- which completes it, in one action)
+	yan_stalker_sakharov_psi_helmet_upgrade = { npc = { "yan_stalker_sakharov" }, stage = 2, fresh = 15000 },
+	-- tasks_defense: the turn-in is relayed to the host (coop_quests_missions); the task's own condlist_0 gives the info when
+	-- all_attackers_dead holds. The engine applies an info a client gives (coop_story
+	-- InfoPortion), so the host also asks its own record of the attackers (tasks_defense all_attackers_dead)
+	barrier_defense_monolith = { info = "barrier_defense_monolith_finished", attackers = true },
+	barrier_defense_zombie = { info = "barrier_defense_zombie_finished", attackers = true },
+	-- dialogs_new_tasks_addon.xml yan_stalker_sakharov_the_living_fire_5 (has_info the_living_fire_prometheus_killed_gg)
+	bar_informator_mlr_task_the_living_fire = { npc = { "yan_stalker_sakharov" }, info = "the_living_fire_prometheus_killed_gg" },
+	-- dialogs_bar.xml top_10_task_finish_dialog: tasks_top_10.almost_done_task_top_10 (stage 10)
+	snitch_top_10_task = { stage = 10 },
+	-- dialogs_escape.xml esc_2_12_stalker_nimble_about_quest: the owl's PDA to Nimble
+	mar_base_owl_stalker_trader_task_1 = DLG_OWL, sim_default_csky_trader_task_1 = DLG_OWL,
+	-- dialogs_marsh.xml ecolog_companion_task_1_dialog, dialogs_jupiter.xml ecolog_companion_task_2_dialog: the ecologist escorted
+	mar_base_owl_stalker_trader_task_3 = DLG_ECO1, sim_default_csky_trader_task_3 = DLG_ECO1,
+	sim_default_ecolog_trader_task_1 = DLG_ECO2, yan_stalker_sakharov_task_2 = DLG_ECO2, jup_b6_scientist_tech_task_1 = DLG_ECO2,
+	-- dialogs_darkvalley.xml: the bandit escort's loot
+	sim_default_bandit_trader_task_4 = DLG_BANDIT, val_smart_terrain_7_4_bandit_trader_stalker_task_3 = DLG_BANDIT,
+}
+end)()
+
+-- The object id of story id `sid` here, nil: none.
+function host.story_id(sid)
+	local f = rawget(_G, "get_story_object_id")
+	local ok, id = pcall(function() return type(f) == "function" and f(sid) or nil end)
+	return ok and tonumber(id) or nil
+end
+
+-- Is NPC `sp` (host numbering) the NPC of the dialog that completes task `id` (spec of host.DIALOG_TURN_INS), or a member
+-- of its squad? false when the spec names none.
+function host.dialog_npc(id, sp, spec)
+	spec = spec or host.DIALOG_TURN_INS[id]
+	sp = tonumber(sp)
+	if type(spec) ~= "table" or not sp then return false end
+	for _, sid in ipairs(spec.npc or {}) do
+		if host.story_id(sid) == sp then return true end
+	end
+	local squad = (spec.squad and spec.squad[1]) and host.squad_of(sp) or nil
+	for _, sid in ipairs(spec.squad or {}) do
+		local sq = host.story_id(sid)
+		if sq and squad == sq then return true end
+	end
+	return false
+end
+
+-- The character of player `peer` as this process sees it (Co-op: the host's object; Server: his far body), nil: none.
+function host.body_of(peer)
+	local c = character_of(peer)
+	return c and (level.object_by_id(c) or far_of(peer, c)) or nil
+end
+
+-- May player `from` turn in task `id` (object tsk), which its own dialog completes
+-- directly, in his talk with NPC `sp`? spec: host.DIALOG_TURN_INS[id]. -> ok, why not. What cannot be read here is no refusal.
+function host.dialog_turn_in(id, tsk, from, sp, spec)
+	sp = tonumber(sp)
+	if (spec.npc or spec.squad) and not talk_vague(from) then
+		if not (sp and sp > 0 and sp < 65535 and sp == math_floor(sp) and spoke_to(from, sp) == true) then
+			return false, "its dialog's NPC: the host saw no talk"
+		end
+		if not host.dialog_npc(id, sp, spec) then
+			return false, string_format("a talk with NPC %d, who is not the NPC of the dialog that completes it", sp)
+		end
+	end
+	if spec.stage then
+		local okst, stage = pcall(function() return tonumber(tsk.stage) end)
+		-- fresh = a dialog that gives the task and completes it in one action (his give a moment ago)
+		local g = host.given_at[id]
+		local fresh = spec.fresh and type(g) == "table" and g.peer == from and now() - g.at <= spec.fresh
+		if okst and stage and stage < spec.stage and not fresh then
+			return false, string_format("its stage is %d, its dialog asks for %d", stage, spec.stage)
+		end
+	end
+	if spec.info then
+		local f = rawget(_G, "has_alife_info")
+		local ok, yes = pcall(f, spec.info)
+		if ok and yes == false then return false, string_format("the world has no info %s", spec.info) end
+	end
+	if spec.attackers then
+		-- the host's own record of the attackers it spawned (MDATA of tasks_defense); not readable here: no verdict
+		local xc = rawget(_G, "xr_conditions")
+		local f = type(xc) == "table" and xc.all_attackers_dead
+		local ok, dead = false, nil
+		if type(f) == "function" then ok, dead = pcall(f, nil, nil, { id }) end
+		if ok and dead == false then return false, "its attackers are not all dead here (tasks_defense all_attackers_dead)" end
+	end
+	if spec.escort then
+		local why = host.escort_gone(spec)
+		if why then return false, why end
+	end
+	for _, sec in ipairs(spec.items or {}) do
+		if coop_tasks_items.party_count(sec) < 1 and not (spec.recent and now() - (host.held_at[id .. "|" .. sec] or -1e9) <= 15000) then
+			return false, string_format("nobody of the group holds %s", sec)
+		end
+	end
+	if spec.near then
+		-- the escort's end and its pending anomaly as the host's own logic wrote them
+		-- (host.esc_value), never a client's coop_tvd write; the warfare smart only in warfare (only setup_companion_task writes it,
+		-- under _G.WARFARE); a smart not known here is no end (a made-up name failed the distance and passed)
+		local warfare = rawget(_G, "WARFARE") and true or false
+		local smart = warfare and host.esc_value("warfare_escort_task_smart") or spec.near
+		local sb = rawget(_G, "SIMBOARD")
+		local smarts = type(sb) == "table" and type(sb.smarts_by_names) == "table" and sb.smarts_by_names or nil
+		local s = smarts and smarts[smart] or nil
+		if smarts and s == nil then return false, string_format("its end %s is no smart known here", tostring(smart)) end
+		local body = host.body_of(from)
+		local okp, d = pcall(function() return body:position():distance_to(s.position) end)
+		if okp and type(d) == "number" and d > 50 then
+			return false, string_format("his character is %.0f m from %s, the escort's end", d, tostring(smart))
+		end
+		-- xr_conditions.has_task_target_anomaly, over the host's record
+		local pending
+		if warfare then
+			pending = host.esc_value("task_target_anomaly_analyzed") == "not_analyzed"
+		else
+			pending = host.esc_value("task_target_anomaly") ~= nil
+		end
+		if pending then return false, "an anomaly of the escort is still to be analyzed" end
+	end
+	if spec.loot then
+		local n, seen = 0, false
+		local f = rawget(_G, "get_story_squad")
+		pcall(function()
+			local squad = f(spec.squad[1])
+			for k in squad:squad_members() do
+				local st = db.storage[k.id]
+				if st and st.object then
+					seen = true
+					n = n + (tonumber(load_var(st.object, "s_loot_count")) or 0)
+				end
+			end
+		end)
+		if seen and n < spec.loot then
+			return false, string_format("the companions looted %d of %d", n, spec.loot)
+		end
+	end
+	return true, nil
+end
+
+-- The keys the escorts' end reads (dialogs_marsh / dialogs_jupiter / dialogs_darkvalley:
+-- warfare_escort_task_smart; xr_conditions.has_task_target_anomaly: task_target_anomaly, in warfare task_target_anomaly_analyzed).
+-- They carry shared prefixes ("warfare_escort_", "task_target_anomaly"): a client's coop_tvd writes them into the host's pstor, and
+-- no check judged them. Their honest writers are the host's own logic (axr_companions.setup_companion_task,
+-- xr_effects.setup_task_target_anomaly / reset_task_target_anomaly / reset_warfare_escort_task: on_init, on_complete, the companion's
+-- logic, beh_companion) and, in a server, that logic on a map server (its coop_tvd, a peer >= 0x100). The host keeps the value those
+-- wrote last (host.var_own, host_on_var); the values a load brought are taken as its own before the first client write lands.
+host.ESC_KEYS = { warfare_escort_task_smart = true, task_target_anomaly = true, task_target_anomaly_analyzed = true }
+
+function host.esc_init()
+	if host.esc_ready or not db.actor then return end
+	host.esc_ready = true
+	for k in pairs(host.ESC_KEYS) do
+		if host.esc_own[k] == nil then host.esc_own[k] = { v = load_var(db.actor, k) } end
+	end
+end
+
+-- Escort key `k` as the host's own logic wrote it last (nil: nothing).
+function host.esc_value(k)
+	host.esc_init()
+	local r = host.esc_own[k]
+	return r and r.v
+end
+
+-- An escort (spec.escort) is turned in with its companions: their squad (its story id) has a living member in
+-- this process's ALife (Co-op: the host's; Server: the world server's records, which a map server's death report updates). Server:
+-- the talk with a member is not reported there, so this is the only check of the companions; where they stand is not (the world
+-- server's record of an NPC on a map server's level is no position to judge by). -> why not, nil: ok or not readable here.
+function host.escort_gone(spec)
+	local f = rawget(_G, "get_story_squad")
+	local sid = spec.squad and spec.squad[1]
+	if type(f) ~= "function" or not sid then return nil end
+	local oks, squad = pcall(f, sid)
+	if not oks then return nil end
+	if squad == nil then return string_format("the escort's companions (%s) are gone here", sid) end
+	local seen, alive = 0, 0
+	pcall(function()
+		for k in squad:squad_members() do
+			seen = seen + 1
+			local se = alife_object(k.id)
+			local okl, al = pcall(function() return se:alive() end)
+			if se and (not okl or al ~= false) then alive = alive + 1 end
+		end
+	end)
+	if seen > 0 and alive == 0 then return string_format("the escort's companions (%s) are dead here", sid) end
+	return nil
+end
+
+-- The scan notes when the group held an item a running dialog turn-in asks for (spec.recent), for the 15 s after.
+function host.watch_held()
+	local tm = tmgr()
+	local info = tm and tm.task_info
+	if type(info) ~= "table" then return end
+	for id, spec in pairs(host.DIALOG_TURN_INS) do
+		if spec.recent and info[id] ~= nil then
+			for _, sec in ipairs(spec.items or {}) do
+				if coop_tasks_items.party_count(sec) > 0 then host.held_at[id .. "|" .. sec] = now() end
+			end
+		end
+	end
+end
+
+-- The squad of NPC `sp` (its ALife record's group_id), nil: none known.
+function host.squad_of(sp)
+	local f = rawget(_G, "alife_object")
+	local oks, se = pcall(function() return type(f) == "function" and f(sp) or nil end)
+	local okq, squad = pcall(function() return oks and se and se.group_id or nil end)
+	return okq and tonumber(squad) or nil
+end
+
+-- Does the target condlist of task object tsk (its ini line "target", what the stock target_condlist reads) name NPC
+-- `sp` or his squad in any branch? Its sections are story ids (get_story_object_id).
+function host.condlist_names(tsk, sp)
+	local okt, text = pcall(function() return tsk.target end)
+	local f = rawget(_G, "get_story_object_id")
+	if not (okt and type(text) == "string" and type(f) == "function") then return false end
+	local squad = host.squad_of(sp)
+	text = text:gsub("%b{}", " "):gsub("%%[^%%]*%%", " ")
+	for name in text:gmatch("[^,%s]+") do
+		local ok, oid = pcall(f, name)
+		oid = ok and tonumber(oid) or nil
+		if oid and (oid == sp or oid == squad) then return true end
+	end
+	return false
+end
+
+-- The talks the host saw, to tell one talk of a player from the next. Co-op: the talk lock he holds (coop.talk_lock_of),
+-- a new lock is a new talk. Server: his map server's word "in some dialog" (spoke_to), a new dialog is a new talk (key "?").
+-- host.talks[peer] = { held = what he holds now (false: nothing), n = the last number, of = key -> number of his last talk }.
+-- Numbers are kept only for the keys a step used (host.talk_of); a talk the looks never saw gets one at the step that names
+-- it. Looked at by the scan (host.talk_watch) and at each step. nil: no talk facts here (an engine without the talk locks).
+function host.talk_look(from)
+	local facts, far = host.talk_facts(from)
+	local cur = facts and facts.partner
+	if cur ~= nil then
+		-- The NPC his map server names, as the co-op's talk lock; a new NPC is a new talk
+		host.far_with(from, cur, 0)
+	elseif far then
+		local live = facts == nil or facts.talking ~= false
+		host.far_said(from, live)
+		cur = live and "?" or false
+	else
+		local f = api and api.talk_lock_of
+		if type(f) ~= "function" then return nil end
+		local ok, npc = pcall(f, from)
+		cur = ok and tonumber(npc) or false
+	end
+	local t = host.talks[from]
+	local starts = host.talk_starts[from] or 0
+	if not t then
+		t = { held = false, n = 0, of = {}, starts = starts }
+		host.talks[from] = t
+	end
+	-- a lock the host granted him since the last look is a new talk, also with the NPC he
+	-- held then (a dialog closed and opened again between two looks of the scan)
+	local fresh = starts ~= t.starts
+	t.starts = starts
+	if cur and (cur ~= t.held or fresh) and t.of[cur] ~= nil then
+		t.n = t.n + 1
+		t.of[cur] = t.n
+	end
+	t.held = cur
+	return t
+end
+
+-- The talks the host grants. The engine asks coop_npc_meet.talk_verdict before it grants a
+-- client's talk lock (coop_dialog.cpp host_try_lock, B8; it exposes no start time of a lock): an answer that is not false grants
+-- the lock now. A lock he asks for again while he holds it is no new talk (a client that only repeats the request); a dialog
+-- closed and opened again with the same NPC between two looks of the scan is. Counted in host.talk_starts, read by
+-- host.talk_look. Installed by the scan (host.talk_watch): coop_npc_meet is loaded at the game's start (its on_game_start).
+function host.watch_talks()
+	local m = rawget(_G, "coop_npc_meet")
+	if not (type(m) == "table" and type(m.talk_verdict) == "function") or rawget(m, "_coop_talk_starts") then return end
+	local verdict = m.talk_verdict
+	rawset(m, "_coop_talk_starts", true)
+	m.talk_verdict = function(npc, who, ...)
+		local yes, why = verdict(npc, who, ...)
+		if yes ~= false then pcall(host.talk_started, npc, who) end
+		return yes, why
+	end
+end
+
+-- The host grants a talk lock of NPC `npc` to the player whose character is `who` (host objects).
+function host.talk_started(npc, who)
+	local peer = peer_for_character(who:id())
+	if type(peer) ~= "number" or peer == 0 then return end
+	local f = api and api.talk_lock_of
+	if type(f) == "function" and tonumber(f(peer)) == npc:id() then return end -- he holds it already: no new talk
+	host.talk_starts[peer] = (host.talk_starts[peer] or 0) + 1
+end
+
+-- Review A-REV-E-2 finding 5: the process that leads player `peer`'s map granted him a new talk lock of NPC `npc` (host numbering;
+-- coop_srv_tasks hears it from his map server's bridge). The talk a step used with that NPC is over: the next step with him is a step
+-- of a new talk. The map server's body reports (LevelBodyFacts.partner, about one a second) miss a dialog closed and opened again
+-- between two of them; this word does not. A talk no step used yet needs nothing: the step that names it numbers it (host.talk_of).
+function far_talk_new(peer, npc)
+	if not (type(peer) == "number" and peer >= 1 and peer <= 0xffff and peer == math_floor(peer)) then return end
+	if not (type(npc) == "number" and npc >= 1 and npc <= 65534 and npc == math_floor(npc)) then return end
+	local t = host.talks[peer]
+	if not t then return end
+	for _, key in ipairs({ npc, "?" }) do -- "?": an engine that says only "in some dialog" (talk_vague)
+		if t.of[key] ~= nil then
+			t.n = t.n + 1
+			t.of[key] = t.n
+		end
+	end
+end
+
+-- The talk of player `from` with NPC `sp` that a step names now: { key, n }, nil: no talk facts here.
+function host.talk_of(from, sp)
+	local t = host.talk_look(from)
+	if not t then return nil end
+	local key = talk_vague(from) and "?" or sp
+	if t.of[key] == nil then
+		t.n = t.n + 1
+		t.of[key] = t.n
+	end
+	return { key = key, n = t.of[key] }
+end
+
+-- Step of task `id` by player `from` used talk { key, n }.
+function host.stage_note(id, from, talk)
+	local mine = host.stage_used[from]
+	if not mine then
+		mine = {}
+		host.stage_used[from] = mine
+	end
+	local used = mine[id] or {}
+	mine[id] = used
+	used[talk.key] = talk.n
+end
+
+-- The scan's look at the talks of the players who stepped a stage (host.talk_look); a player who left is forgotten with
+-- his steps (his peer slot may come back as another player), a task that is gone with its steps.
+function host.talk_watch()
+	host.watch_talks() -- the talks the host grants
+	host.far_watch() -- when the players of a map server's level were last in a dialog
+	host.watch_held() -- when the group last held what a dialog turn-in hands over
+	if next(host.talks) == nil and next(host.stage_used) == nil and next(host.talk_starts) == nil then return end
+	local here = {}
+	for _, p in ipairs(players()) do here[p.id] = true end
+	for peer in pairs(host.talk_starts) do
+		if not here[peer] then host.talk_starts[peer] = nil end
+	end
+	local tm = tmgr()
+	for peer, mine in pairs(host.stage_used) do
+		for id in pairs(mine) do
+			if not (tm and tm.task_info and tm.task_info[id] ~= nil) then mine[id] = nil end
+		end
+		if not here[peer] or next(mine) == nil then host.stage_used[peer] = nil end
+	end
+	for peer in pairs(host.talks) do
+		if here[peer] and host.stage_used[peer] then host.talk_look(peer) else host.talks[peer] = nil end
+	end
+end
+
+-- Where task `id` points now (an object id: an NPC, a squad, a place), nil: nowhere.
+function host.target_now(id, tsk)
+	local tf = rawget(_G, "task_functor")
+	local okf, name = pcall(function() return tsk.target_functor end)
+	local f = okf and type(tf) == "table" and type(name) == "string" and tf[name]
+	if type(f) == "function" then
+		local ok, t = pcall(function() return f(id, "target", tsk.target, tsk) end)
+		if ok then return tonumber(t) end
+	end
+	local okc, cur = pcall(function() return tsk.current_target end)
+	return okc and tonumber(cur) or nil
+end
+
+-- A client's active task (C8): check_level below brings the guide marker of his task.
+function ops.active(tm, id, t, from)
+	host.active[from] = not t.off and id or nil
+	return "pending"
+end
+
+-------------------------------------------------------------------------------
+-- Host: checks of a client's word, verdicts through coop_trust. In "log" a failed check is logged and the request goes on
+-- exactly as before.
+-------------------------------------------------------------------------------
+-- coop_trust.pass(name, ok, fmt, ...); no coop_trust: through.
+function host.trust(name, ok, fmt, ...)
+	local okm, t = pcall(function() return coop_trust end)
+	if not (okm and type(t) == "table" and type(t.pass) == "function") then return true end
+	local good, res = pcall(t.pass, name, ok, fmt, ...)
+	return not good or res ~= false
+end
+
+-- coop_trust's setting of check `name` ("log" | "refuse" | "off"); no coop_trust: "log".
+function host.trust_mode(name)
+	local okm, t = pcall(function() return coop_trust end)
+	if not (okm and type(t) == "table" and type(t.mode_of) == "function") then return "log" end
+	local good, mode = pcall(t.mode_of, name)
+	return good and (mode == "refuse" or mode == "off") and mode or "log"
+end
+
+-- An object id a client's request names: a whole number 1..65534 (an engine object id; 65535
+-- is the engine's "none"), else nil. Infinities, NaN, fractions and negative numbers never reach level.object_by_id or alife_object.
+function host.obj_id(x)
+	x = tonumber(x)
+	if x and x >= 1 and x <= 65534 and x == math_floor(x) then return x end
+	return nil
+end
+
+function host.nick(peer)
+	for _, p in ipairs(players()) do
+		if p.id == peer then return tostring(p.nick or "?") end
+	end
+	return peer == 0 and "host" or "?"
+end
+
+-- A deleted fact still needs recording when the previous value identifies it as a fact.
+local function note_own_if_fact(qt, k, v, old)
+	local is_fact = qt.is_fact
+	if type(is_fact) ~= "function" or not (is_fact(k, v) or is_fact(k, old)) then return end
+	qt.note_own(k, v, old, host.give_vars == true, host.var_foreign == true)
+end
+
+-- This process's own save_var of key `k` of its actor's pstor (every machine: only
+-- the deciding one asks). coop_quests_trust keeps the values that are its own: the checks read a quest fact only with one of
+-- them. A client's coop_tvd write is no save_var here (host_on_var writes the pstor itself).
+function host.var_own(k, v)
+	if host.making and type(k) == "string" then host.making[k] = { v = v } end -- host.give_own's own generation
+	if host.ESC_KEYS[k] then host.esc_own[k] = { v = v } end -- the escort's end (host.esc_value)
+	if host.var_quiet then return end
+	local qt = rawget(_G, "coop_quests_trust")
+	if type(qt) ~= "table" or type(qt.note_own) ~= "function" then return end
+	local ps = actor_pstor(false)
+	local old = ps and ps[k]
+	-- Quest fact tracking cannot interrupt the stock save_var write.
+	pcall(note_own_if_fact, qt, k, v, old)
+end
+
+-- Do two task vars hold the same value? Compared as the payload codec writes them (numbers to their last bit, a flat
+-- table by its sorted pairs).
+function host.same_var(a, b)
+	return pack({ x = a }, true) == pack({ x = b }, true)
+end
+
+-- A task fact a client's coop_tvd wrote into the host's pstor before the give (DRX's dialog writes its drx_sl_ keys there
+-- at once; a running task is judged by task_var_write, one not given yet is not) is his word as much as the give's vars: added to
+-- `vars` where the give does not carry the key and the host has no value of its own there (coop_quests_trust.recorded).
+function host.his_vars(id, vars)
+	local qt = rawget(_G, "coop_quests_trust")
+	if type(qt) ~= "table" or type(qt.record_of) ~= "function" or type(qt.is_fact) ~= "function" then return end
+	for k, v in pairs(task_vars(id)) do
+		if vars[k] == nil then
+			local ok, mine = pcall(qt.record_of, k) -- the record itself, whatever check task_var_write's mode
+			local okf, fact = pcall(qt.is_fact, k, v)
+			if ok and mine == nil and okf and fact == true then vars[k] = v end
+		end
+	end
+end
+
+-- The vars of player `from`'s give of task `id` (vars: his pstor's, his dialog prepared
+-- them) count as the host's own facts (coop_quests_trust note_own) only where they are what the host offered him. The host keeps
+-- its offers per player, task and NPC (coop_quests_offer offers_of: the host of a co-op, the world server of a server).
+--   - only the offers of his giver t.g count (or an NPC of the giver's squad; a give with no giver: any).
+--     The PDA board's row and a dialog both show the offer of the NPC that then gives the task;
+--   - judged: every var an offer of his giver has, and the bounty target t.bt against the one the offer named; a fact
+--     var none of them has (a fetch, its count, a target: coop_quests_trust is_fact) is a leftover of an older offer in his pstor
+--     (put_vars never deletes one): out of the judgement, not written;
+--   - no offer of his giver: host.give_own.
+-- Check task_give_offer: a judged var differs: "log" writes his vars as before, as facts; "refuse" writes the newest offer's
+-- values instead (a var it has not: nothing), the host's own facts.
+-- A map server's give is its level's logic: its vars are the host's. -> own (var -> true: what is written is a fact), put (var ->
+-- value to write), the bounty target to keep (nil: none named, false: none), drop (var -> true: delete it, no fact of his there)
+function host.give_offer(id, from, vars, t, bt)
+	local own, put, drop = {}, {}, {}
+	for k, v in pairs(vars) do own[k], put[k] = true, v end
+	if (tonumber(host.req_from) or 0) >= 0x100 then return own, put, bt, drop end
+	t = type(t) == "table" and t or {}
+	local qo, qt = rawget(_G, "coop_quests_offer"), rawget(_G, "coop_quests_trust")
+	local giver = tonumber(t.g)
+	local oko, offers, meta = pcall(function() return qo.offers_of(from, id) end)
+	local mine = {}
+	for i, o in ipairs(oko and type(offers) == "table" and offers or {}) do
+		local m = type(meta) == "table" and type(meta[i]) == "table" and meta[i] or {}
+		if giver == nil or host.is_giver(giver, tonumber(m.npc)) then mine[#mine + 1] = { vars = o, bt = tonumber(m.bt) } end
+	end
+	if #mine == 0 then return host.give_own(id, from, vars, t, bt, own, put, drop) end
+	local judged, seen = {}, {}
+	for _, o in ipairs(mine) do
+		for k in pairs(o.vars) do
+			if not seen[k] and is_task_key(k, id) then
+				seen[k] = true
+				judged[#judged + 1] = k
+			end
+		end
+	end
+	for k, v in pairs(vars) do
+		local okf, fact = pcall(function() return qt.is_fact(k, v) end)
+		if not seen[k] and okf and fact == true then put[k], own[k], drop[k] = nil, nil, true end
+	end
+	local bt_judged = bt ~= nil
+	for _, o in ipairs(mine) do if o.bt ~= nil then bt_judged = true end end
+	if #judged == 0 and not bt_judged then return own, put, bt, drop end
+	table_sort(judged)
+	local ok, why = false, nil
+	for i, o in ipairs(mine) do
+		local bad = nil
+		for _, k in ipairs(judged) do
+			if not host.same_var(vars[k], o.vars[k]) then bad = bad or k end
+		end
+		if not bad and bt_judged and bt ~= o.bt then bad = "bt" end
+		if not bad then
+			ok = true
+			break
+		end
+		if i == 1 and bad == "bt" then
+			why = string_format("his bounty target is %s, the host's offer named %s", tostring(bt), tostring(o.bt))
+		elseif i == 1 then
+			why = string_format("his %s is %s, the host offered %s", bad, host.var_text(vars[bad]), host.var_text(o.vars[bad]))
+		end
+	end
+	if not ok and host.own_fits(id, vars, bt, drop, judged, bt_judged, mine[1]) then
+		ok = true
+		host.gives_own = host.gives_own + 1
+	end
+	if host.trust("task_give_offer", ok, "player %s (#%s) took task %s from NPC %s: %s", host.nick(from), tostring(from), id,
+		tostring(giver), tostring(why)) then
+		return own, put, bt, drop
+	end
+	local o = mine[1]
+	for _, k in ipairs(judged) do
+		own[k], put[k], drop[k] = o.vars[k] ~= nil or nil, o.vars[k], o.vars[k] == nil or nil
+	end
+	return own, put, o.bt or false, drop
+end
+
+-- His give differs from every offer of his giver t.g, yet his machine may have made the pick
+-- itself: his dialog ran before the host's answer came, or after an empty list over the far view while the host kept an older offer
+-- of that NPC. A pick the task's own generator can make (coop_quests_offer.own_pick) then holds, as on a give with no offer: a client
+-- that never asks for an offer is judged so anyway, so an offer bounds nothing beyond it. Every key where his give differs from the
+-- newest offer `o` (and the bounty target, where it differs) must be one the generator makes ("fetch" / "job"); the leftovers the
+-- caller drops are left out. -> true: no line, counted as a give of no offer.
+function host.own_fits(id, vars, bt, drop, judged, bt_judged, o)
+	local qo = rawget(_G, "coop_quests_offer")
+	if type(qo) ~= "table" or type(qo.own_pick) ~= "function" or type(o) ~= "table" then return false end
+	local his = {}
+	for k, v in pairs(vars) do
+		if not drop[k] then his[k] = v end
+	end
+	local okp, ok, _, parts = pcall(qo.own_pick, id, his, bt)
+	if not (okp and ok == true and type(parts) == "table") then return false end
+	for _, k in ipairs(judged) do
+		if not host.same_var(vars[k], o.vars[k]) and parts[k] ~= "fetch" and parts[k] ~= "job" then return false end
+	end
+	return not (bt_judged and bt ~= o.bt and parts.bt == nil)
+end
+
+-- A give with no offer of its giver. His machine made the vars itself: DRX's
+-- storyline, mechanic and change-faction dialogs (the host never offers them), an offer the host refused or that expired, an
+-- empty list over the far view (Server). The stock picks at random, so the host judges whether the task's own generator can make
+-- his pick (coop_quests_offer.own_pick: the fetch lists, a bounty's factions and its living target). Check task_give_offer:
+--   - a pick it can make: his vars as the host's facts, no line (counted: coop_status "gives of no offer");
+--   - one it cannot make, or a generator not known here: "log" writes his vars as before, as facts, with a line; "refuse" has the
+--     host make its own (coop_quests_offer.host_make: the task's fetch_func / on_job_descr with the NPC of his talk, checked
+--     against the giver, else the giver) and writes those, the host's facts. The task's state carries them to his machine, which
+--     uses them (its journal shows the host's pick, which may differ from what his dialog said). Nothing made (no NPC of the give
+--     here, the generator failed): a pick it cannot make is not written; a generator not known here keeps his vars (no knowledge
+--     is no refusal).
+function host.give_own(id, from, vars, t, bt, own, put, drop)
+	local qo = rawget(_G, "coop_quests_offer")
+	if type(qo) ~= "table" or type(qo.own_pick) ~= "function" then return own, put, bt, drop end
+	local okp, ok, why, judged, want = pcall(qo.own_pick, id, vars, bt)
+	if not okp or type(judged) ~= "table" or next(judged) == nil then return own, put, bt, drop end
+	-- a fact key the task's on_init writes itself ("init": a DRX money task's price his pstor keeps
+	-- from the last run) is out of the judgement: written as before, as his word, never as the host's fact (its on_init writes the
+	-- host's own right after the give)
+	for k, part in pairs(judged) do
+		if part == "init" then own[k] = nil end
+	end
+	if ok == true then
+		host.gives_own = host.gives_own + 1
+		return own, put, bt, drop
+	end
+	if host.trust("task_give_offer", false, "player %s (#%s) took task %s from NPC %s with no offer of the host: %s",
+		host.nick(from), tostring(from), id, tostring(t.g), tostring(why)) then
+		return own, put, bt, drop
+	end
+	want = type(want) == "table" and want or {}
+	if want.no_bt then bt = false end
+	for k, part in pairs(judged) do
+		if part == "none" then put[k], own[k], drop[k] = nil, nil, true end -- a fact no generator of the task makes
+	end
+	if not (want.fetch or want.job) then return own, put, bt, drop end
+	host.making = {} -- what the host's own generation writes (host.var_own)
+	local okm, made = pcall(qo.host_make, id, host.give_npc(from, t), tonumber(t.g), want)
+	local wrote = host.making
+	host.making = nil
+	-- only the part of the generation that his pick fails is the host's (a fetch, a bounty)
+	if not (okm and type(made) == "table") then
+		if ok == nil then return own, put, bt, drop end
+		for k, part in pairs(judged) do
+			if k ~= "bt" and want[part] then put[k], own[k], drop[k] = nil, nil, true end
+		end
+		-- No bounty target when the host's own run is a bounty's ("job"): not his (`want.job and false
+		-- or bt` was always bt), not the last run's (false clears it, ops.give)
+		if want.job then return own, put, false, drop end
+		return own, put, bt, drop
+	end
+	for k, part in pairs(judged) do
+		if k ~= "bt" and want[part] then put[k], own[k], drop[k] = nil, nil, true end
+	end
+	for k, w in pairs(wrote) do
+		if is_task_key(k, id) then own[k], put[k], drop[k] = w.v ~= nil or nil, w.v, w.v == nil or nil end
+	end
+	-- his dialog said another item or target; the host's own pick goes to his machine with the
+	-- task's state, and its lines ("needs: X", the bounty's target) to him now, so his dialog and journal agree
+	if type(qo.tell_made) == "function" then pcall(qo.tell_made, from, id, made) end
+	if want.job then return own, put, made.bounty or false, drop end
+	return own, put, bt, drop
+end
+
+-- The NPC whose talk a give names (t.sp), when the host saw that talk and he is the giver t.g or a member of its squad
+-- (or the task has no giver); nil otherwise (coop_quests_offer.host_make then takes the giver).
+function host.give_npc(from, t)
+	local sp, giver = tonumber(t.sp), tonumber(t.g)
+	if not (sp and sp > 0 and sp < 65535 and sp == math_floor(sp)) or spoke_to(from, sp) ~= true then return nil end
+	if giver ~= nil and not host.is_giver(giver, sp) then return nil end
+	return sp
+end
+
+-- A task var for the log line ("a table" for a table).
+function host.var_text(v)
+	if type(v) == "table" then return "a table" end
+	return v == nil and "nothing" or tostring(v)
+end
+
+-- May client `from` write shared key `k` through coop_tvd? The quest facts the host
+-- holds are taken first (coop_quests_trust.facts_ready), so the write cannot become one of them. A fetch / target key of a
+-- running task ("<id>", "<id>_fetch", "<id>_fetch_count", "<id>_target_id") written by a client is check task_var_write,
+-- by its taker too (his rewrite of his own DRX fetch or money task's price decided the turn-in).
+-- No honest writer writes one of a running task: the stock writes them in the offer, before the give (tasks_fetch fetch_func,
+-- tasks_delivery on_job_descr: the host's offer, else the stock local generation on the client, whose drx_sl_ keys come here
+-- then; a running task is offered to nobody), on_init, on_complete and the status functors run on the host. "log": written as
+-- before; the turn-in reads the host's own record of the key anyway (host.fact_of).
+function host.var_write_ok(k, from)
+	local qt = rawget(_G, "coop_quests_trust")
+	if type(qt) == "table" and type(qt.facts_ready) == "function" then pcall(qt.facts_ready) end
+	local tm = tmgr()
+	local info = tm and tm.task_info
+	if type(info) ~= "table" or type(k) ~= "string" then return true end
+	local id = nil
+	for _, suffix in ipairs({ "_fetch_count", "_fetch", "_target_id", "" }) do
+		local cand = k
+		if suffix ~= "" then cand = #k > #suffix and k:sub(-#suffix) == suffix and k:sub(1, -#suffix - 1) or nil end
+		local tsk = cand and info[cand]
+		local okr, over = pcall(function() return tsk.stage == 255 or tsk.status == "completed" or tsk.status == "fail" end)
+		if is_task(tsk) and okr and not over then
+			id = cand
+			break
+		end
+	end
+	if not id then return true end
+	local mine, want = host.is_taker(id, from)
+	return host.trust("task_var_write", false, "player %s (#%s) wrote %s of running task %s through a shared var (%s); taker %s",
+		host.nick(from), tostring(from), k, id, mine and "his own task" or "another player's task", host.taker_text(id, want))
+end
+
+-- The value of task fact `key` a turn-in is judged by: the host's own record of it
+-- (coop_quests_trust.recorded: what it wrote itself last), not what a client's coop_tvd write left in the live pstor since.
+-- -> value (default when none), foreign: true when the live pstor holds a value the host has no record of as its own (a
+-- client's word). No record at all (a key no check names, a save without the list): the live pstor, as before.
+-- Recorded answers only where check
+-- task_var_write is "refuse". "log" / "off": the live pstor (money_short, host.item_short, the readiness of a
+-- fetch task); host.fact_line writes the line at the turn-in when the record differs.
+function host.fact_of(key, default)
+	local qt = rawget(_G, "coop_quests_trust")
+	local live = load_var(db.actor, key)
+	local ok, v, known = pcall(function() return qt.recorded(key) end)
+	if not (ok and known) then
+		if live == nil then return default, false end
+		return live, false
+	end
+	if v == nil then return default, live ~= nil end
+	return v, false
+end
+
+-- A turn-in of task `id` by player `who` is judged by its facts (money_short, host.item_short: a DRX money task's price, a
+-- fetch task's item and count, a delivery's parcel). Does the live pstor hold what the host recorded (coop_quests_trust.record_of)?
+-- It differs after a client's coop_tvd write "log" let through (his own running task's fact too) and where the host has no record of
+-- the value (no_fact: a give whose var it did not take, a fact key missing from its save's list). Check task_var_write: "log" writes
+-- the line and the turn-in reads the live pstor; "refuse" writes it and the turn-in reads the host's record
+-- (host.fact_of). A map server's turn-in is its level's logic: not judged.
+function host.fact_line(tm, id, who)
+	if (tonumber(host.req_from) or 0) >= 0x100 then return end
+	local qt = rawget(_G, "coop_quests_trust")
+	if type(qt) ~= "table" or type(qt.record_of) ~= "function" then return end
+	local tsk = tm.task_info[id]
+	local okf, sf = pcall(function() return tsk.status_functor end)
+	sf = okf and sf or nil
+	local keys = nil
+	if sf == MONEY_FUNCTOR then
+		keys = { id .. "_fetch" }
+	elseif sf == "actor_has_fetch_item" then
+		keys = { id .. "_fetch", id .. "_fetch_count" }
+	elseif sf == "delivery_task" then
+		keys = { id }
+	end
+	for _, k in ipairs(keys or {}) do
+		local live = load_var(db.actor, k)
+		local ok, v, known = pcall(qt.record_of, k)
+		if ok and known and not host.same_var(v, live) then
+			host.trust("task_var_write", false, "player %s (#%s) turned task %s in: its %s is %s, the host recorded %s; judged by %s",
+				host.nick(who), tostring(who), id, k, host.var_text(live), host.var_text(v),
+				host.trust_mode("task_var_write") == "refuse" and "the host's record" or "the live value, as before")
+			return
+		end
+	end
+end
+
+-- Did player `peer` take task `id`? The taker's character (host.taker_char: written at the give, kept in the host's save, a
+-- reconnect keeps it) against the requester's. No verdict without knowledge, true: no record (a save from before it), a
+-- record of the host's character on a seat that plays none (a world server's), a requester whose character is unknown.
+-- Second value: the taker's character, for the log.
+function host.is_taker(id, peer)
+	local want = host.taker_char[id]
+	if want == nil then return true, nil end
+	if want == 0 then
+		local plays = false
+		for _, p in ipairs(players()) do if p.is_self then plays = true end end
+		if not plays then return true, want end
+	end
+	local have = character_of(peer)
+	if have == nil then return true, want end
+	return have == want, want
+end
+
+-- The text of a taker for the log: "nick (#peer, character c)".
+function host.taker_text(id, want)
+	local tp = host.taker[id]
+	return string_format("%s (#%s, character %s)", tp ~= nil and host.nick(tp) or "?", tostring(tp), tostring(want))
+end
+
+-- Did player `from` talk a moment ago to NPC `sp` (host numbering), the one his request names, and is that NPC the
+-- task's giver? A task with no giver (a story task of dialogs_lostzone.give_task) takes the NPC of his dialog: the crossfire
+-- of the Hidden Base is given by Hernandez and failed at Strelok. The talk is the host's word (spoke_to: its talk locks; a
+-- player on a map server's level, that server's).
+function host.talked_for(id, from, sp)
+	sp = tonumber(sp)
+	if not sp or sp <= 0 or sp >= 65535 or sp ~= math_floor(sp) then return false end
+	local tm = tmgr()
+	local tsk = tm and tm.task_info and tm.task_info[id]
+	local ok, giver = pcall(function() return is_task(tsk) and tonumber(tsk.task_giver_id) or nil end)
+	giver = ok and giver or nil
+	local has_giver = giver ~= nil and giver > 0 and giver < 65535
+	if has_giver and not host.is_giver(giver, sp) then return false end -- or a member of the giver's squad
+	-- Server: his map server says only "he is in some dialog", any dialog: for a task with a giver that cannot
+	-- tell the giver's talk from another, so the exception holds only for a task without a giver
+	if has_giver and talk_vague(from) then return false end
+	return spoke_to(from, sp) == true
+end
+
+-- An end of task `id` that the stock logic of a player's own machine sends for tasks he did not take: a faction
+-- change cancels every DRX task there (xr_effects.drx_sl_cancel_questlines writes forced_status "fail" and cancelled_by_actor:
+-- a fail and a cancel per task), and surge_manager's level change cancels faction_base_defense.
+function host.auto_end(id)
+	return type(id) == "string" and (id:sub(1, 7) == "drx_sl_" or id == "faction_base_defense")
+end
+
+-- The refused player's news line "only <taker> can cancel this task" (the text is his machine's: the nick goes
+-- only as an argument, never as the format).
+function host.tell_only_taker(peer, id)
+	if type(peer) ~= "number" or peer <= 0 or peer >= 0x100 then return end
+	local tp = host.taker[id]
+	local nick = tp ~= nil and host.nick(tp) or nil
+	send(EV_REWARD, pack({ k = "only", n = nick ~= "?" and nick or nil, t = id }), peer)
+end
+
+-- Fail / cancel of a running task only by the player who took it. `from` is the transport's sender; one of a map server
+-- (>= 0x100) is its level's logic (a timer, a target that died there), no player: ok. `t`: the request (Lua path), with the
+-- NPC of his talk (sp).
+function host.may_end(op, id, from, why, t)
+	local ok, want = true, nil
+	if from < 0x100 then ok, want = host.is_taker(id, from) end
+	-- his choice in a dialog with the task's giver, a moment ago (dialogs.npc_cancel_task, a story fail phrase)
+	if not ok and type(t) == "table" and host.talked_for(id, from, t.sp) then ok = true end
+	if not ok and host.auto_end(id) then
+		-- his own machine's stock logic: its own check "task_auto_end", counted without a line each (a faction
+		-- change sends a fail and a cancel for every DRX task). "log": through, as without the check; "refuse": refused, the
+		-- requester gets the host's state back; "off": through, not counted. Not a task_fail / task_cancel failure.
+		local mode = host.trust_mode("task_auto_end")
+		if mode == "off" then return true end
+		stats.auto_end = stats.auto_end + 1
+		if mode ~= "refuse" then return true end
+		stats.auto_end_refused = stats.auto_end_refused + 1
+		return false
+	end
+	local pass = host.trust("task_" .. op, ok, "player %s (#%s), task %s: %s by a player who did not take it; taker %s",
+		host.nick(from), tostring(from), id, why or op, host.taker_text(id, want))
+	if not pass then host.tell_only_taker(from, id) end
+	return pass
+end
+
+-- What the host's own check of task `id` says (the stock CRandomTask:task_complete reads the same fields): nil
+-- when it found the task complete (last_check_task) or a turn-in on the host forced it; else why it is still running.
+function host.still_running(tm, id)
+	local tsk = tm.task_info[id]
+	local ok, done = pcall(function() return tsk.last_check_task == "complete" or tsk.forced_status == "complete" end)
+	if not ok or done then return nil end
+	return "the host's own check of the task says it is still running"
+end
+
+-- Why player `who` cannot turn in task `id` now (the checks of ops.complete: money, items), or nil.
+function host.turn_in_short(tm, id, who)
+	if money_short(tm, id, who) then
+		local price, foreign = host.fact_of(id .. "_fetch", 0)
+		return string_format("not enough money: has %s, the task asks %s", tostring(ledger_money(who)),
+			foreign and "a price that is a client's word" or tostring(price))
+	end
+	return host.item_short(tm, id)
+end
+
+function host_on_request(payload, from)
+	if not world_active() or type(from) ~= "number" or from == 0 then return end
+	stats.req_in = stats.req_in + 1
+	local t = unpack_payload(payload)
+	-- every object id his request names (the giver, the NPC of his talk, a bounty target) is a
+	-- whole number 1..65534 or none, before any use (level.object_by_id, alife_object, give_task, host_make)
+	t.g, t.sp, t.bt = host.obj_id(t.g), host.obj_id(t.sp), host.obj_id(t.bt)
+	local id, op = t.i, t.op
+	local fn = type(op) == "string" and ops[op]
+	if type(id) ~= "string" or id == "" or not fn or not task_known(id) then
+		stats.refused = stats.refused + 1
+		log("! bad task request from #%s: %s %s", tostring(from), tostring(op), tostring(id))
+		if type(id) == "string" and id ~= "" and #id <= 128 then coop_tasks_mirror.host_send_state(id, from) end
+		return
+	end
+	local tm = tmgr()
+	if not tm then return end
+	-- a player out of the task's audience can neither take, turn in, cancel nor stage it; for him it is not there. A map server's
+	-- logic is no player: not gated (what it causes is cut at the rewards). A finished task keeps its record (the engine keeps
+	-- it in the journal): a give of an id that is not running is a new task, judged anew by its give (as the engine's give).
+	if from < 0x100 and not host.aud_sees(id, from) and not (op == "give" and tm.task_info[id] == nil) then
+		stats.refused = stats.refused + 1
+		log("#%s: %s '%s' refused: not his task", tostring(from), tostring(op), id)
+		send(EV_STATE, pack(op == "give" and { i = id, d = true, r = 1 } or { i = id, d = true }), from)
+		stats.state_out = stats.state_out + 1
+		return
+	end
+	-- A running group task is failed or cancelled only by the player who took it
+	if (op == "fail" or op == "cancel") and tm.task_info[id] ~= nil and engine_task_running(id)
+		and not host.may_end(op, id, from, nil, t) then
+		stats.refused = stats.refused + 1
+		coop_tasks_mirror.host_send_state(id, from) -- his view back
+		return
+	end
+	local who = player_of_request(from, id)
+	host.exec_peer = who
+	host.req_from = from -- the transport's sender (ops.stage: a map server's is not judged)
+	local qc = rawget(_G, "coop_quests_core")
+	local ok, res
+	if qc and qc.with_level_of then
+		ok, res = pcall(qc.with_level_of, who, fn, tm, id, t, who) -- his dialog, his NPC, his level
+	else
+		ok, res = pcall(fn, tm, id, t, who)
+	end
+	host.exec_peer = nil
+	host.req_from = nil
+	if not ok then report("request " .. op .. " " .. id, res) end
+	if not ok or not res then
+		stats.refused = stats.refused + 1
+		if op == "give" and tm.task_info[id] == nil then
+			-- A give this host could not do (its on_init died, the task said no) and no such task here: "not given" by name. The
+			-- requester tells its player and frees the dialog that asked; a plain removal would drop his stub in silence.
+			send(EV_STATE, pack({ i = id, d = true, r = 1 }), from)
+			stats.state_out = stats.state_out + 1
+		else
+			coop_tasks_mirror.host_send_state(id, from) -- the requester is behind: put its view back
+		end
+		return
+	end
+	log("#%s: %s '%s'", tostring(from), op, id)
+	if res ~= "pending" then coop_tasks_mirror.host_scan(false) end
+end
