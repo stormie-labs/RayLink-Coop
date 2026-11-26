@@ -55,7 +55,7 @@ TEST(npc_s6_placement_and_hashes_consume_mode_answers)
 	const auto spawn = body(entities, "void client_on_spawn(");
 	CHECK(spawn.find("levels::wire::kSpawnOnlineAtYourLevel || mode().where(kHostPeer) == Where::Here") != std::string::npos);
 	CHECK(spawn.find("in_level_registry, flag_of_this_level, switches_alone") != std::string::npos);
-	CHECK(body(entities, "void host_reconcile(").find("mode().reaches(p.id, Msg::EntityHash)") != std::string::npos);
+	CHECK(body(source("coop_roster.cpp"), "void host_reconcile(").find("mode().reaches(p.id, Msg::EntityHash)") != std::string::npos);
 }
 
 TEST(npc_s6_world_authority_and_level_bridge_keep_their_paths)
@@ -65,7 +65,7 @@ TEST(npc_s6_world_authority_and_level_bridge_keep_their_paths)
 	         "coop_players.cpp", "coop_presence.cpp"})
 	{
 		const auto code = source(file);
-		CHECK(code.find(authority) != std::string::npos);
+		CHECK(code.find(authority) != std::string::npos || code.find("mode().decides_here()") != std::string::npos);
 		CHECK(code.find("is_map_authority()") == std::string::npos);
 	}
 	const auto events = source("coop_events.cpp");

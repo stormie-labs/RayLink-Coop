@@ -1,4 +1,4 @@
-// Anomaly Coop unit tests: the head torch of an NPC puppet on a client (coop_entities.cpp), read in the engine source.
+// Anomaly Coop unit tests: the head torch of an NPC puppet on a client (coop_snapshots.cpp), read in the engine source.
 // Found 2026-10-30 with the avatar headlamp (b29): the host's Lua (sr_light) spawns a device_torch into the NPC and wears
 // it (enable_attachable_item -> CObjectHandler::attach, which lights it); the snapshot carries only "lit". A puppet runs
 // no binder, so its copy of the torch was never attached: the light went on in the backpack, where the item gets no head
@@ -42,7 +42,7 @@ constexpr size_t npos = std::string::npos;
 
 TEST(puppet_torch_is_one_the_npc_can_wear)
 {
-	const std::string src = game_source("coop/coop_entities.cpp");
+	const std::string src = game_source("coop/coop_snapshots.cpp");
 	REQUIRE(src.size() > 10000);
 	const std::string pick = between(src, "CTorch* puppet_torch(", "\n}\n");
 	REQUIRE(!pick.empty());
@@ -58,7 +58,7 @@ TEST(puppet_torch_is_one_the_npc_can_wear)
 
 TEST(puppet_wears_the_torch_the_host_lights)
 {
-	const std::string src = game_source("coop/coop_entities.cpp");
+	const std::string src = game_source("coop/coop_snapshots.cpp");
 	REQUIRE(src.size() > 10000);
 	const std::string apply = between(src, "bool apply_creature_flags(", "\n}\n");
 	REQUIRE(!apply.empty());

@@ -4,7 +4,7 @@
 // A: the host holds and straps a rifle while the puppet still has its pistol active: the forced global Strapped
 //    property left the planner only "unstrapping", which waits for a torso animation callback a puppet never gets.
 // B: the host holds nothing: the puppet's pistol waits for a hide that may never finish on a puppet.
-// The engine side (coop_entities.cpp apply_creature_flags, drive_mirror) is checked in its source text at the end.
+// The engine side (coop_snapshots.cpp apply_creature_flags, drive_mirror) is checked in its source text at the end.
 #include "test_util.h"
 
 #include "coop_hands_rules.h"
@@ -245,7 +245,7 @@ static_assert(kHideGraceMs >= 300u && kHideGraceMs <= 1000u, "the put-away grace
 // checks; it gives the wall clock at the last check.
 namespace
 {
-constexpr uint32_t kHandsRetry = 100; // coop_entities.cpp kHandsRetryMs: the retry of a wait under way
+constexpr uint32_t kHandsRetry = 100; // coop_snapshots.cpp kHandsRetryMs: the retry of a wait under way
 
 uint32_t run(Wait& w, uint32_t gap_ms, uint32_t due_ms, uint32_t limit, uint32_t frames = 1)
 {
@@ -397,7 +397,7 @@ static_assert(kWaitStepMs == (1000u + 250u) / 2u, "a step is a creature's slowes
 // end of the hide, a held item that is not here yet resets the clocks, and a hands-only wait retries shortly.
 TEST(npc_hands_engine_wiring_follows_the_rule)
 {
-	const std::string src = project_file("engine/src/xrGame/coop/coop_entities.cpp");
+	const std::string src = project_file("engine/src/xrGame/coop/coop_snapshots.cpp");
 	CHECK(!src.empty());
 	const std::string fn = between(src, "bool apply_creature_flags(", "\nbool apply_attachments(");
 	CHECK(!fn.empty());
@@ -422,14 +422,14 @@ TEST(npc_hands_engine_wiring_follows_the_rule)
 // with no sample (interpolate) cannot cut a wait short; a copy waits between checks only for its own update.
 TEST(npc_hands_engine_a_wait_always_has_a_sample)
 {
-	const std::string src = project_file("engine/src/xrGame/coop/coop_entities.cpp");
+	const std::string src = project_file("engine/src/xrGame/coop/coop_snapshots.cpp");
 	size_t pops = 0;
 	for (size_t at = src.find("samples.pop_front()"); at != std::string::npos; at = src.find("samples.pop_front()", at + 1))
 		++pops;
 	CHECK(pops == 1u);
 	CHECK(src.find("while (t.samples.size() > 24)\n\t\t\tt.samples.pop_front();") != std::string::npos);
 	CHECK(src.find("samples.clear()") == std::string::npos);
-	const std::string interp = between(src, "bool interpolate(MirrorTrack& t,", "\n}\n");
+	const std::string interp = between(src, "bool interpolate(const MirrorTrack& t,", "\n}\n");
 	CHECK(interp.find("if (t.samples.empty())\n\t\treturn false;") != std::string::npos);
 }
 
@@ -438,7 +438,7 @@ TEST(npc_hands_engine_a_wait_always_has_a_sample)
 // plain lines.
 TEST(npc_hands_engine_error_line_only_for_a_stuck_wait)
 {
-	const std::string src = project_file("engine/src/xrGame/coop/coop_entities.cpp");
+	const std::string src = project_file("engine/src/xrGame/coop/coop_snapshots.cpp");
 	const std::string fn = between(src, "bool apply_creature_flags(", "\nbool apply_attachments(");
 	CHECK(!fn.empty());
 	CHECK(fn.find("hands::wait_check(track.wait, gap, due, frames, seen.ms_wrong_item_visible)") != std::string::npos);
@@ -457,7 +457,7 @@ TEST(npc_hands_engine_error_line_only_for_a_stuck_wait)
 	CHECK(end.find("\"[coop-hands] npc %u %s after %u ms, %u checks") != std::string::npos);
 	CHECK(end.find("\"hands as the host's\"") != std::string::npos);
 	CHECK(src.find("\"[coop-hands] npc %u had no snapshot for %u ms after it came here without one") != std::string::npos);
-	const std::string status = between(src, "void print_status()", "\n}\n");
+	const std::string status = between(src, "void print_snapshot_status()", "\n}\n");
 	CHECK(status.find("NPC hands (R71): ") != std::string::npos);
 	CHECK(status.find("%llu slow (%llu ended") != std::string::npos);
 	CHECK(status.find("%llu dropped; %llu ended unseen; %llu under way") != std::string::npos);
@@ -468,11 +468,11 @@ TEST(npc_hands_engine_error_line_only_for_a_stuck_wait)
 // (HandsTrack's destructor; a HandsTrack is never copied). Stalls and starvation are counted apart.
 TEST(npc_hands_engine_every_slow_wait_is_counted_at_its_end)
 {
-	const std::string src = project_file("engine/src/xrGame/coop/coop_entities.cpp");
+	const std::string src = project_file("engine/src/xrGame/coop/coop_snapshots.cpp");
 	const std::string end = between(src, "void end_wait(", "\n}\n");
 	CHECK(end.find("++g_hands_slow_ended;") != std::string::npos);
 	CHECK(end.find("++g_hands_slow_dropped;") != std::string::npos);
-	const std::string track = between(src, "struct HandsTrack\n", "\n};\n");
+	const std::string track = between(project_file("engine/src/xrGame/coop/coop_entities_impl.h"), "struct HandsTrack\n", "\n};\n");
 	CHECK(track.find("HandsTrack(const HandsTrack&) = delete;") != std::string::npos);
 	CHECK(track.find("if (waiting && slow)\n\t\t\t++g_hands_slow_unseen;") != std::string::npos);
 	const std::string fn = between(src, "bool apply_creature_flags(", "\nbool apply_attachments(");
@@ -484,13 +484,13 @@ TEST(npc_hands_engine_every_slow_wait_is_counted_at_its_end)
 // The first snapshot's wait starts when the copy is driven without a track and ends at its first check on a track.
 TEST(npc_hands_engine_first_snapshot_wait_starts_without_a_track)
 {
-	const std::string src = project_file("engine/src/xrGame/coop/coop_entities.cpp");
+	const std::string src = project_file("engine/src/xrGame/coop/coop_snapshots.cpp");
 	const std::string drive = between(src, "bool drive_mirror(", "\n}\n");
 	CHECK(drive.find("if (!track)\n\t\t\tnote_trackless(obj, now);") != std::string::npos);
 	CHECK(drive.find("note_first_snapshot(obj, track, book.since_ms, now)") != std::string::npos);
 	const std::string note = between(src, "void note_first_snapshot(", "\n}\n");
 	CHECK(note.find("hands::first_snapshot_wait_ms(appeared_at, trackless_at, track.first_sample_at)") != std::string::npos);
 	CHECK(note.find("g_hands_trackless.erase(it)") != std::string::npos);
-	const std::string reset = between(src, "\nvoid reset()", "\n}\n");
+	const std::string reset = between(src, "\nvoid reset_snapshots()", "\n}\n");
 	CHECK(reset.find("g_hands_trackless.clear();") != std::string::npos);
 }

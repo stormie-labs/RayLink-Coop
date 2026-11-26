@@ -3,7 +3,8 @@
 // the bind pose of GAMMA's stalker models (CCharacterPhysicsSupport::in_NetSpawn); on a copy only drive_mirror replaces it, so
 // a partition no usable host motion reached stayed in it, and the 26fe5b0b line never fired (death_init counted as a live
 // motion; a copy with no snapshot returned before the line). xrCoop/coop_mirror_pose_rules.h decides when the copy plays its
-// own idle and when a line names the trigger; coop_entities.cpp, coop_remote.cpp and coop_dialog.cpp wire it (pins below).
+// own idle and when a line names the trigger; coop_snapshots.cpp, coop_pose_diag.cpp, coop_remote.cpp and coop_dialog.cpp wire
+// it (pins below).
 // The rules are Ядро: the same in Coop (the host decides) and Server (the map server of the level decides).
 #include "test_util.h"
 
@@ -313,15 +314,15 @@ TEST(mirror_pose_premise_every_live_npc_spawns_in_death_init)
 
 TEST(mirror_pose_drive_mirror_uses_the_rules)
 {
-	const std::string src = game_source("coop/coop_entities.cpp");
-	const std::string drive = between(src, "bool drive_mirror(CGameObject* obj, mirror_pose::Book& book)", "\nvoid frame()");
+	const std::string src = game_source("coop/coop_snapshots.cpp");
+	const std::string drive = between(src, "bool drive_mirror(CGameObject* obj, mirror_pose::Book& book)", "\n}\n");
 	CHECK(!drive.empty());
 	// No snapshot: the parts and the line before the return (before P101 it returned at once, silently).
 	const std::string none = between(drive, "if (it == g_tracks.end() || !interpolate(", "return false;");
 	CHECK(none.find("drive_parts(obj, ka, book, nullptr, track, now);") != npos);
 	CHECK(none.find("watch_pose(obj, ka, book, track, nullptr, now);") != npos);
-	CHECK(drive.find("drive_parts(obj, ka, book, &s, &track, now);") != npos);
-	CHECK(drive.find("watch_pose(obj, ka, book, &track, &s, now);") != npos);
+	CHECK(drive.find("drive_parts(obj, ka, book, s.sample, &track, now);") != npos);
+	CHECK(drive.find("watch_pose(obj, ka, book, &track, s.sample, now);") != npos);
 	CHECK(drive.find("plays no base motion") == npos); // the 26fe5b0b line is replaced
 	const std::string parts = between(src, "void drive_parts(", "\n}\n");
 	CHECK(parts.find("switch (mirror_pose::part_play(f, settled))") != npos);
@@ -334,7 +335,7 @@ TEST(mirror_pose_drive_mirror_uses_the_rules)
 	CHECK(idle.find("if (!obj->cast_stalker() || !(parts_of(ka) & b))") != npos); // no null partition, stalkers only
 	CHECK(idle.find("mirror_pose::fallback_motion(") != npos);
 	CHECK(idle.find("ka->ID_Cycle_Safe(name)") != npos); // by name in this model, never a host id
-	const std::string watch = between(src, "void watch_pose(", "\n}\n");
+	const std::string watch = between(game_source("coop/coop_pose_diag.cpp"), "void watch_pose(", "\n}\n");
 	CHECK(watch.find("mirror_pose::cause_of(f)") != npos);
 	CHECK(watch.find("mirror_pose::say_now(book, cause, mirror_pose::settled(book, now))") != npos);
 	CHECK(watch.find("mirror_pose::line_allowed(g_pose_lines)") != npos);
@@ -355,10 +356,10 @@ TEST(mirror_pose_the_copy_book_starts_with_each_skeleton)
 
 TEST(mirror_pose_decider_lines_are_wired)
 {
-	const std::string src = game_source("coop/coop_entities.cpp");
+	const std::string src = game_source("coop/coop_pose_diag.cpp");
 	// A round every kRoundMs, off the 66 ms snapshot path (host_send_snapshots is as before P101).
-	CHECK(between(src, "void host_send_snapshots()", "\n}\n").find("watch_") == npos);
-	CHECK(between(src, "void frame()", "\n}\n").find("watch_decider(mgr().now_ms());") != npos);
+	CHECK(between(game_source("coop/coop_snapshots.cpp"), "void host_send_snapshots()", "\n}\n").find("watch_") == npos);
+	CHECK(between(game_source("coop/coop_entities.cpp"), "void frame()", "\n}\n").find("watch_decider(mgr().now_ms());") != npos);
 	// Only a process that has the level loaded (the Coop host, a map server) has game objects to compare with.
 	const std::string round = between(src, "void watch_decider(u64 now)", "\n}\n");
 	CHECK(round.find("if (!mode().leads_level() ||") != npos);
@@ -386,21 +387,23 @@ TEST(mirror_pose_decider_lines_are_wired)
 
 TEST(mirror_pose_stream_stamp_and_session_reset_are_wired)
 {
-	const std::string src = game_source("coop/coop_entities.cpp");
+	const std::string src = game_source("coop/coop_snapshots.cpp");
+	const std::string diag = game_source("coop/coop_pose_diag.cpp");
 	// The stream's time is a sample taken (client_on_snapshot), and watch_pose asks the rule with it.
 	const std::string in = between(src, "void client_on_snapshot(PeerId, Reader& r)", "\n}\n");
-	const size_t taken = in.find("t.samples.push_back(s);");
+	const size_t taken = in.find("t.samples.push_back(std::move(s));");
 	const size_t stamp = in.find("g_snapshot_in_at = now;");
 	CHECK(taken != npos);
 	CHECK(stamp != npos);
 	CHECK(taken < stamp);
 	CHECK(in.find("g_pose_gap_said = false;") != npos);
-	const std::string watch = between(src, "void watch_pose(", "\n}\n");
+	const std::string watch = between(diag, "void watch_pose(", "\n}\n");
 	CHECK(watch.find("f.stream = mirror_pose::stream_reaches(g_snapshot_in_at, book.since_ms, now);") != npos);
 	CHECK(watch.find("if (cause == mirror_pose::Cause::NoStream)") != npos);
 	CHECK(watch.find("mirror_pose::line_allowed(g_pose_gap_lines)") != npos);
-	// The counters, books and line budgets are the session's (entities::reset).
-	const std::string reset = between(src, "\nvoid reset()\n{", "\n}\n");
+	// The counters, books and line budgets are the session's (entities::reset: reset_snapshots, reset_pose_diag).
+	const std::string reset = between(src, "\nvoid reset_snapshots()\n{", "\n}\n") +
+	    between(diag, "\nvoid reset_pose_diag()\n{", "\n}\n");
 	for (const char* line : {"g_pose_fallbacks = 0;", "g_pose_lines = g_copy_state_lines = g_pose_gap_lines = 0;",
 	                         "g_snapshot_in_at = 0;", "g_pose_gap_said = false;", "g_decider_round_at = 0;",
 	                         "g_decider_unposed.clear();", "g_decider_rootctl.clear();", "g_bodiless.clear();",
