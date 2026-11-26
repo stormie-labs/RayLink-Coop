@@ -1,6 +1,6 @@
 --[[
 	Anomaly Coop - mission glue of the quests group (gamedata\scripts\coop_quests_missions.script).
-	Mission audits B findings 4 and 6, A items 6, 8 and T4 (2026-10-31). Built on coop_quests_core (host actions) and
+	Built on coop_quests_core (host actions) and
 	coop_tasks (the player a call is run for).
 
 	Dialog actions of host-domain task modules. A dialog runs on the talker's machine; the module's state (a task's table, a
@@ -42,14 +42,14 @@
 	of lttz_ms_decisive_blow / _endgame, Sabaoth's psi death) kills the host's actor only. The host passes it on to every
 	client (quests.kill), at most once in 2 s per player: the functor repeats it on every check until the task is over.
 
-	Semenov's tissue samples (yan_ecolog_semenov_task_1). The kill counter lives in grok_loot_claim, which a session turns
-	off for everybody (coop_compat_loot_claim.ltx). The host counts a mutant any player killed while the task needs samples.
+	Semenov's tissue samples (yan_ecolog_semenov_task_1). A session disables the local kill counter, so the host counts
+	mutants killed by any player while the task needs samples.
 
 	The guide job (tasks_guide) is no task of the task manager: a timer offers it, two tables of the module hold the offer and
 	the running job, and the dialog reads them on the talker's machine. The host sends the tables to every client (quests.guide)
 	with the offer's news, a client's take and turn-in are relayed, the job remembers its taker: his pay, and his fine when it
 	runs late. The offer's line is for a stranger: a companion of the group with no running job does not get it again and
-	again (live 2026-11-01).
+	again.
 
 	NPE tutorials: one task id and its text in module locals, so a tutorial is personal: given and checked on its machine.
 --]]
@@ -82,8 +82,7 @@ local function open_task(id)
 end
 
 -- A table local of tasks_guide (nil without the mod), or the module field an unlocalizer makes of it before the script
--- compiles: G.A.M.M.A.'s tasks_guide_unlocalizer_tasks_guide_spot.ltx lists [tasks_guide] guid and unlocalizer_idiots.ltx
--- curr_guid (stand, build 57: the host refused a client's guide, no guide news or dialogue in any session).
+-- compiles (an unlocalizer's .ltx can list [tasks_guide] guid and curr_guid).
 local function guide_table(name)
 	local m = qc.mod("tasks_guide")
 	if not m then return nil end
@@ -137,7 +136,7 @@ local START_TASKS = {
 	["ah_dialogs.juk_give_quest3"] = "ah_juk_quest3",
 	["ah_dialogs.vorobushkin_give_quest1"] = "ah_vorobushkin_quest1", ["ah_dialogs.vorobushkin_give_quest2"] = "ah_vorobushkin_quest2",
 }
--- dialogs.script (GAMMA): xr_effects.scenario_autosave(db.actor, nil, { "st_..." }) and nothing else
+-- These dialog actions only call xr_effects.scenario_autosave(db.actor, nil, { "st_..." }).
 local CHECKPOINTS = { "leave_zone_save", "save_uni_travel_zat_to_jup", "save_uni_travel_zat_to_pri", "save_uni_travel_jup_to_zat",
 	"save_uni_travel_jup_to_pri", "save_uni_travel_pri_to_zat", "save_uni_travel_pri_to_jup", "save_jup_b218_travel_jup_to_pas",
 	"save_pri_a17_hospital_start", "save_jup_a10_gonna_return_debt", "save_jup_b6_arrived_to_fen", "save_jup_b6_arrived_to_ash_heap",
@@ -179,7 +178,7 @@ local RELAY = {
 		local hostages = axr_task_manager and axr_task_manager.hostages_by_id
 		return type(hostages) == "table" and hostages[npc:id()] ~= nil
 	end,
-	-- the reward of Hidden Threat's third task is rolled into utils_slht.reward_table when the task starts: the host's table
+	-- The third story task rolls its reward when it starts, so the host owns the reward table.
 	["hidden_threat.sl_hidden_threat_task_3"] = function() return not has_alife_info("hidden_threat_task_3_start") end,
 	["dialogs_hidden_threat.postcond_dialog_jurov_4"] = function() return bribe_left("stalker") <= 0 end,
 }
@@ -577,7 +576,7 @@ end
 -- Host: the target's squad was kept out of offline combat for the delivery (tasks_delivery.script)
 local function host_delivery(from, t)
 	local npc = talk_partner(from, tonumber(t.n), "delivery")
-	-- TZ v2 6.4 row 4: the NPC is the target of a running delivery (coop_quests_trust)
+	-- the NPC is the target of a running delivery (coop_quests_trust)
 	local qt = npc and qc.mod("coop_quests_trust")
 	if qt and not qt.check_delivery(from, npc) then return end
 	local squad = npc and get_object_squad(npc)
@@ -585,8 +584,8 @@ local function host_delivery(from, t)
 	if squad and soc and type(soc.task_squads) == "table" then soc.task_squads[squad.id] = nil end
 end
 
--- Hidden Threat: the reward of a task is rolled into utils_slht.reward_table, which the dialogs that pay read. The host rolls
--- it (the relay above) and sends the table (a world key of coop_economy_mdata); a client reads the host's copy.
+-- The host rolls story rewards at task start and publishes the reward table through coop_economy_mdata so payment
+-- dialogs on clients read the same roll.
 local SLHT_READERS = { "postcond_dialog_kuznetsov_d4_1", "postcond_dialog_kuznetsov_d5_3", "postcond_dialog_degtyarev_d2" }
 
 local function slht_table() -- the live copy in m_data that the economy script keeps for the world key
@@ -719,16 +718,15 @@ end
 
 local function receive_guide_map(t, from)
 	-- Client packets cannot stand in for a map's authoritative observation, even in trust log mode.
-	-- These are the transport's reserved map connections (coop_mapserver_rules.h).
-	local from_map = type(from) == "number" and from > 0x100 and from <= 0x107 and from % 1 == 0
+	local from_map = coop_mode.from_level(from)
 	local peer = t.p
-	local valid = type(peer) == "number" and peer > 0 and peer < 0x100 and peer % 1 == 0
+	local valid = type(peer) == "number" and peer > 0 and peer <= coop_util.MAX_PEER and peer % 1 == 0
 		and type(t.l) == "number" and t.l >= 0 and t.l < 65535 and t.l % 1 == 0 and object_id(t.n)
 	local player = valid and coop_npc_players.player(peer)
 	-- A client's packet that stands in for a map server: a check of a request, logged before a switch to refuse.
 	if not coop_trust.pass("g14_guide_map", from_map, "a map guide fact from #%s, not a map server", tostring(from))
 		or not from_map then return end
-	-- A map server's fact about a player who is no longer on its level (his level change in flight: the stand, build 57):
+	-- A map server's fact about a player who is no longer on its level (his level change in flight):
 	-- dropped in every mode, a guard; honest play hits it, so it is counted (coop_status) with no line.
 	local ok = player and player.level == t.l and coop_mode.where(peer) == "away"
 	if not coop_trust.guard("g14_guide_map_stale", ok == true) then return end
@@ -801,8 +799,7 @@ local function patch_guide_search()
 			if not ok then
 				qc.report(TAG, "prepare guide", err)
 				-- The stock's check_timers stops the offer timer before this call, and the stock re-arms it in 15 game
-				-- minutes on every failed search: an error here would switch the offers off for the session and the save
-				-- (build 57 stand, the world server).
+				-- minutes on every failed search: an error here would switch the offers off for the session and the save.
 				if type(m.g_start_timer) == "function" then
 					pcall(m.g_start_timer, "guid_msg", 0, 0, 15, "tasks_guide", "prepare_follower")
 				end
@@ -914,7 +911,9 @@ local function patch_guide_timers()
 				local relocate = dl.relocate_money
 				dl.relocate_money = function(who, n, typ, ...)
 					if typ ~= "out" then return relocate(who, n, typ, ...) end
-					if not ct().fine_character(character, n) then qc.report(TAG, name, "missing fine recipient") end
+					if not coop_tasks_rewards.fine_character(character, n) then
+						qc.report(TAG, name, "missing fine recipient")
+					end
 				end
 				local ok, err = qc.with_actor({ money = function()
 					-- The ledger is read on reconnect if the taker is offline. Stock still resolves the job now.
@@ -933,7 +932,7 @@ local function actor_on_update()
 		local ok, err = pcall(host_guide_tick)
 		if not ok then qc.report(TAG, "guide", err) end
 	end
-	if coop_mode and qc.active() and coop_mode.leads_here() and not coop_mode.decides_world() then
+	if coop_mode and qc.active() and coop_mode.leads_for_world_elsewhere() then
 		local ok, err = pcall(report_guide_map)
 		if not ok then qc.report(TAG, "guide map", err) end
 	end

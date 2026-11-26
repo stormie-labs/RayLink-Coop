@@ -11,7 +11,6 @@ local SNITCH = "bar_informator_mlr"
 local reply, next_request, next_probe
 local installed
 
-local function C() return coop_mods_core end
 
 local function start_step(what, fn, ...)
 	local ok, err = pcall(fn, ...)
@@ -19,7 +18,7 @@ local function start_step(what, fn, ...)
 end
 
 local function player(peer)
-	local players = C().mod("coop_npc_players")
+	local players = coop_util.module("coop_npc_players")
 	return players and players.player(peer)
 end
 
@@ -40,11 +39,11 @@ local function read_rankings(p)
 end
 
 local function rankings()
-	local p = C().mod("pda")
+	local p = coop_util.module("pda")
 	if not (p and p.calculate_rankings and p.get_coc_ranking_list) then return {} end
 	-- A give can be inside the claimant's map view, where ALife substitutes
 	-- its actor. Offers and gives both need the world ranking.
-	local quests = C().mod("coop_quests_core")
+	local quests = coop_util.module("coop_quests_core")
 	if quests and quests.at_home then return quests.at_home(read_rankings, p) end
 	return read_rankings(p)
 end
@@ -78,7 +77,7 @@ local function claimant_place(peer)
 	local where = coop_mode.where(peer)
 	local claimant = player(peer)
 	local map = claimant and claimant.level
-	if where == "here" and peer == C().self_peer() and coop_mode.actor_is_player() then
+	if where == "here" and peer == coop_mods_core.self_peer() and coop_mode.actor_is_player() then
 		return rank_place(0), map
 	end
 	if where ~= "here" and not (where == "away" and map ~= nil and coop_mode.decider(peer) == "other") then
@@ -95,7 +94,7 @@ end
 
 local function may_take(peer)
 	local place = claimant_place(peer)
-	if peer == C().self_peer() and coop_mode.actor_is_player() then return eligible(place) end
+	if peer == coop_mods_core.self_peer() and coop_mode.actor_is_player() then return eligible(place) end
 	return coop_trust.pass("task_top_10_take", eligible(place), "peer %s, place %s",
 		tostring(peer), tostring(place))
 end
@@ -107,7 +106,7 @@ local function on_rank_req(_, from)
 	if not coop_trust.pass("task_top_10_offer", place ~= nil, "peer %s: no ranked character in place", tostring(from)) then
 		return
 	end
-	C().to_peer(from, RANK_REPLY, { place = place or 0, map = map })
+	coop_mods_core.to_peer(from, RANK_REPLY, { place = place or 0, map = map })
 end
 
 local function on_rank(t)
@@ -120,27 +119,27 @@ end
 
 local function request_rank()
 	local now = time_global()
-	local me = player(C().self_peer())
+	local me = player(coop_mods_core.self_peer())
 	local map = me and me.level
 	if reply and (reply.map ~= map or now < reply.at) then
 		reply, next_request = nil, nil
 	end
 	if not next_request or now >= next_request then
 		next_request = now + REQUEST_MS
-		C().to_host(RANK_REQ, {})
+		coop_mods_core.to_host(RANK_REQ, {})
 	end
 	return reply ~= nil and now - reply.at <= REPLY_MS and eligible(reply.place)
 end
 
 local function dialog_eligible()
 	if coop_mode.is_player_mirror() then return request_rank() end
-	return coop_mode.leads_here() and coop_mode.actor_is_player() and eligible(claimant_place(C().self_peer()))
+	return coop_mode.leads_here() and coop_mode.actor_is_player() and eligible(claimant_place(coop_mods_core.self_peer()))
 end
 
 -- The dialog can build its first menu before a request from its precondition
 -- has returned. Ask while the player is approaching the stock giver.
 local function prefetch_rank()
-	if not (C().active() and coop_mode.is_player_mirror() and db.actor) then return end
+	if not (coop_util.active() and coop_mode.is_player_mirror() and db.actor) then return end
 	local now = time_global()
 	if next_probe and now < next_probe then return end
 	next_probe = now + 500
@@ -187,21 +186,21 @@ local function skip_saved_player_targets(id)
 end
 
 local function install_issue_gate()
-	local tasks = C().mod("coop_tasks")
-	local manager = C().mod("task_manager")
+	local tasks = coop_util.module("coop_tasks")
+	local manager = coop_util.module("task_manager")
 	-- The Lua give sets exec_peer; the native give passes its transport peer
 	-- to host_note. Read that short-lived scope before the manager consumes it.
-	local requests = tasks and C().upvalue(tasks.host_note, "host")
+	local requests = tasks and coop_mods_core.upvalue(tasks.host_note, "host")
 	if not (manager and type(requests) == "table" and type(requests.taker_note) == "table") then
-		C().log(TAG, "! task issue scope unavailable")
+		coop_mods_core.log(TAG, "! task issue scope unavailable")
 		return
 	end
 	local function gate(orig)
 		return function(self, id, ...)
-			if id == TOP and C().active() and coop_mode.decides_world() then
+			if id == TOP and coop_util.active() and coop_mode.decides_world() then
 				local peer = requests.exec_peer or requests.taker_note[id]
 				if peer == nil and coop_mode.leads_here() and coop_mode.actor_is_player() then
-					peer = C().self_peer()
+					peer = coop_mods_core.self_peer()
 				end
 				if peer ~= nil and not may_take(peer) then
 					requests.taker_note[id] = nil -- a refused engine request must not tag the next give
@@ -212,38 +211,38 @@ local function install_issue_gate()
 		end
 	end
 	local label = TAG .. ".top_10_take"
-	local ok, wrapped = pcall(C().wrap, manager.CRandomTask, "give_task", label, gate)
+	local ok, wrapped = pcall(coop_mods_core.wrap, manager.CRandomTask, "give_task", label, gate)
 	if ok and wrapped then return end
-	if not C().wrap(manager.get_task_manager(), "give_task", label, gate) then
-		C().log(TAG, "! task issue gate unavailable")
+	if not coop_mods_core.wrap(manager.get_task_manager(), "give_task", label, gate) then
+		coop_mods_core.log(TAG, "! task issue gate unavailable")
 	end
 end
 
 local function install_top_10()
-	local top = C().mod("tasks_top_10")
+	local top = coop_util.module("tasks_top_10")
 	if not top then return end
-	C().wrap(C().mod("xr_effects"), "setup_top_10_task", TAG .. ".setup_top_10_task", function(orig)
+	coop_mods_core.wrap(coop_util.module("xr_effects"), "setup_top_10_task", TAG .. ".setup_top_10_task", function(orig)
 		return function(...)
-			if not C().active() then return orig(...) end
+			if not coop_util.active() then return orig(...) end
 			return setup_top(...)
 		end
 	end)
-	C().wrap(C().mod("task_status_functor"), "top_10_task_status_functor", TAG .. ".top_10_status", function(orig)
+	coop_mods_core.wrap(coop_util.module("task_status_functor"), "top_10_task_status_functor", TAG .. ".top_10_status", function(orig)
 		return function(tsk, id, ...)
-			if C().active() and coop_mode.decides_world() then skip_saved_player_targets(id) end
+			if coop_util.active() and coop_mode.decides_world() then skip_saved_player_targets(id) end
 			return orig(tsk, id, ...)
 		end
 	end)
-	C().wrap(top, "actor_is_not_top_10", TAG .. ".actor_is_not_top_10", function(orig)
+	coop_mods_core.wrap(top, "actor_is_not_top_10", TAG .. ".actor_is_not_top_10", function(orig)
 		return function(...)
-			if not C().active() then return orig(...) end
+			if not coop_util.active() then return orig(...) end
 			return dialog_eligible()
 		end
 	end)
 	start_step("task issue", install_issue_gate)
-	C().set_limit(RANK_REQ, 2, 0.5)
-	C().on(RANK_REQ, on_rank_req, "world")
-	C().on(RANK_REPLY, on_rank, "player")
+	coop_mods_core.set_limit(RANK_REQ, 2, 0.5)
+	coop_mods_core.on(RANK_REQ, on_rank_req, "world")
+	coop_mods_core.on(RANK_REPLY, on_rank, "player")
 	RegisterScriptCallback("actor_on_update", prefetch_rank)
 end
 
@@ -252,9 +251,9 @@ local function normalize(side)
 end
 
 local function owner_side(id)
-	local tasks = C().mod("coop_tasks")
+	local tasks = coop_util.module("coop_tasks")
 	local owner = tasks and tasks.taker_character(id)
-	local faction = C().mod("coop_faction")
+	local faction = coop_util.module("coop_faction")
 	return owner ~= nil and faction and faction.faction_of_character(owner) or nil
 end
 
@@ -266,18 +265,18 @@ end
 
 local function assault_side(id)
 	if coop_mode.leads_here() and coop_mode.actor_is_player() then
-		local faction = C().mod("coop_faction")
+		local faction = coop_util.module("coop_faction")
 		return faction and faction.group_faction()
 	end
 	return owner_side(id)
 end
 
 local function wrap_capture(module_name, functor, side_of)
-	local module = C().mod(module_name)
+	local module = coop_util.module(module_name)
 	if not module then return end
-	C().wrap(C().mod("task_status_functor"), functor, TAG .. "." .. functor, function(orig)
+	coop_mods_core.wrap(coop_util.module("task_status_functor"), functor, TAG .. "." .. functor, function(orig)
 		return function(task, id, ...)
-			if not C().active() or not (coop_mode.decides_world() or coop_mode.leads_here()) then
+			if not coop_util.active() or not (coop_mode.decides_world() or coop_mode.leads_here()) then
 				return orig(task, id, ...)
 			end
 			local prior, stock_community = rawget(module, "character_community"), module.character_community

@@ -1,22 +1,19 @@
 --[[
 	Anomaly Coop - world group: small fixes of mods whose route alone cannot do it (gamedata\scripts\coop_world_compat.script)
 
-	- TB Coordinate Based Safe Zones runs on a client since configs\coop_compat_tb.ltx: his machine must know he stands in a
-	  safe zone (coop_main's cover report). Its map icons and the tiny cubes they hang on stay the host's: the cubes are world
-	  objects, and the icons of the shared PDA come from the host (coop_story).
+	- The client checks coordinate-based safe zones for its own cover report. The host owns the world objects and supplies
+	  their icons to the shared PDA.
 	- info_portions is host-only, and it is what refreshes the PDA rankings when the PDA is raised. A client asks here;
 	  coop_quests_pda's calculate_rankings turns that into a request to the host.
 	- Companion hotkeys: axr_companions runs on the host and its cycles walk the host's companion list. On a client the same
 	  keys walk the companions this player leads with the dialog actions, which coop_npc_companions sends to the host.
-	- Remote mine planting of ui_hud_dotmarks creates the bomb itself, which a client cannot: it goes the way of
-	  txr_mines.plant_bomb (coop_npc_world asks the host).
-	- A player is nobody to talk to: no mark of ui_hud_dotmarks on a player's character (the dot and "[F] Talk: <nick>", owner
-	  2026-11-01). Muting him is not enough: the mod reads the flag on a throttled check and keeps the prompt of the object it
+	- Remote mine planting uses the same request as ordinary mine planting because the host owns creation of the bomb.
+	- Suppress the dot and talk prompt on player characters because they are not dialogue targets.
+	  Muting him is not enough: the mod reads the flag on a throttled check and keeps the prompt of the object it
 	  has locked on. A mark made before the character was known goes on the next tick.
-	- An open stash, corpse or companion follows what other players do (owner 2026-11-01: "I take something and it stays with
-	  the others"). GAMMA's window for them is the Lua ui_inventory, the engine's menu with its live refresh
-	  (coop_trade refresh_actor_menu) never shows. LMode_RefreshInventories is the stock's own step after a move: it adds and
-	  removes cells by id, so it runs here on a timer, not while the player holds an item or its menu is open.
+	- An open stash, corpse or companion follows what other players do: what one player takes leaves every open window.
+	  The modpack uses the Lua inventory instead of the engine menu. LMode_RefreshInventories adds and removes cells by id,
+	  so run it on a timer and pause it while the player holds an item or its menu is open.
 	Everything here is a no-op outside a co-op session, on the host the stock code runs.
 --]]
 
@@ -29,26 +26,19 @@ local P -- coop_npc_players
 
 local function report(what, err) P.report(TAG, what, err) end
 
-local stats = { rankings = 0, hotkeys = 0, mines = 0, marks = 0, loot_refreshes = 0 }
+local stats = { rankings = 0, hotkeys = 0, mines = 0, marks = 0 }
 local AVATAR = "coop_player_avatar"
 local MARKS_EVERY_MS = 1000
-local dotmarks = nil -- ui_hud_dotmarks with what drop_player_marks needs
+local dotmarks = nil -- optional targeting HUD used by drop_player_marks
 local next_marks = 0
 local LOOT_EVERY_MS = 250
 local next_loot = 0
-
-local function module_of(name)
-	local m = rawget(_G, name)
-	if m ~= nil then return m end
-	local ok, r = pcall(function() return coop_mods_core.mod(name) end)
-	return ok and r or nil
-end
 
 -------------------------------------------------------------------------------
 -- TB safe zones
 -------------------------------------------------------------------------------
 local function patch_tb()
-	local tb = module_of("tb_coordinate_based_safe_zones") or module_of("TB_Coordinate_Based_Safe_Zones")
+	local tb = coop_util.module("tb_coordinate_based_safe_zones") or coop_util.module("TB_Coordinate_Based_Safe_Zones")
 	if type(tb) ~= "table" then return end
 	for _, name in ipairs({ "add_tiny_cubes_to_world", "remove_tiny_cubes_from_world", "addsafeicons", "removesafeicons" }) do
 		local f = tb[name]
@@ -66,7 +56,7 @@ end
 -------------------------------------------------------------------------------
 local function actor_on_info_callback(actor, info)
 	if info ~= "ui_pda" or not P.client_live() then return end
-	local p = module_of("pda")
+	local p = coop_util.module("pda")
 	if p and p.calculate_rankings then
 		stats.rankings = stats.rankings + 1
 		local ok, err = pcall(p.calculate_rankings)
@@ -87,7 +77,7 @@ local CYCLES = {
 
 local function own_companions()
 	local list = {}
-	local comp = module_of("coop_npc_companions")
+	local comp = coop_util.module("coop_npc_companions")
 	for _, id in pairs(db.OnlineStalkers or {}) do
 		local npc = level.object_by_id(id)
 		if npc and npc:alive() and npc:has_info("npcx_is_companion") and (not comp or comp.held_here(npc)) then
@@ -106,7 +96,7 @@ local function on_key_release(key)
 			if #npcs == 0 then return end
 			c.at = c.at % #c.states + 1
 			local state = c.states[c.at]
-			local dialogs = module_of("dialogs_axr_companion")
+			local dialogs = coop_util.module("dialogs_axr_companion")
 			if not (dialogs and dialogs[state]) then return end
 			for _, npc in ipairs(npcs) do dialogs[state](db.actor, npc) end
 			actor_menu.set_msg(1, game.translate_string("st_" .. state), 8)
@@ -125,7 +115,7 @@ local function patch_mines(dm)
 	dm.replace_invitem_with_bomb = function(used_id, mode, delay)
 		if not P.client_live() then return f(used_id, mode, delay) end
 		local obj = level.object_by_id(used_id)
-		local tm = module_of("txr_mines")
+		local tm = coop_util.module("txr_mines")
 		if not (obj and mode and tm and tm.plant_bomb) then return end
 		stats.mines = stats.mines + 1
 		return tm.plant_bomb(obj, mode, delay)
@@ -149,7 +139,7 @@ local function patch_marks(dm)
 end
 
 local function patch_dotmarks()
-	local dm = module_of("ui_hud_dotmarks")
+	local dm = coop_util.module("ui_hud_dotmarks")
 	if type(dm) ~= "table" then return end
 	patch_mines(dm)
 	patch_marks(dm)
@@ -159,13 +149,12 @@ local function refresh_open_loot()
 	local now = time_global()
 	if now < next_loot or not P.active() then return end
 	next_loot = now + LOOT_EVERY_MS
-	local inv = module_of("ui_inventory")
+	local inv = coop_util.module("ui_inventory")
 	local gui = type(inv) == "table" and inv.GUI
 	if not gui then return end
 	local ok, err = pcall(function()
 		if not (gui:IsShown() and gui.mode == "loot" and gui:GetPartner()) then return end
 		if gui.item_in_hold or gui.item_props:IsShown() or gui.box_init_update.state then return end
-		stats.loot_refreshes = stats.loot_refreshes + 1
 		gui:LMode_RefreshInventories()
 	end)
 	if not ok then report("open container", err) end
@@ -193,6 +182,7 @@ function print_status()
 end
 
 function on_game_start()
+	coop_util.add_status("coop_world_compat", 110)
 	P = coop_npc_players
 	if not api then return end
 	for _, c in ipairs(CYCLES) do c.at = 0 end

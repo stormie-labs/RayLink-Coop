@@ -1,7 +1,7 @@
 -- Ядро: без проверок режима (docs/MODES.md)
 --[[
-	Anomaly Coop - fetch tasks of the Tasks QoL Pack (tasks_fetch.script) in a session (gamedata\scripts\coop_quests_fetch.script).
-	F4 unit G14-2: review m15:1 and m15:2 (docs\reports\2026-11-18-f4-gamma-review.md, group G14). The mod's file is not changed.
+	In a session, fetch tasks count and take eligible items from the group.
+	The mod's file is not changed.
 
 	m15:1  xr_effects.fetch_reward_and_remove pays one second after the hand-over: CreateTimeEvent(0, "delay_reward", 1, timer).
 	       The queue of the build keeps one event per key (_g_patches.script CreateTimeEvent: a key it holds is not taken again),
@@ -20,7 +20,7 @@
 	         - the collection: the delayed reward moves the acceptable items of the other players into this process's actor (the
 	           turning-in player's first), the mod's timer then sees them first and nothing it may not take.
 	       A quick slot holds a section, not an item: there is no quick-slot item to leave out (the mod leaves out the belt only).
-	       The take goes through coop_quests_trust.check_take / note_take (coop_trust check quest_take, "log" in build 57).
+	       The take goes through coop_quests_trust.check_take / note_take (coop_trust check quest_take).
 
 	Who decides and what it lacks, per mode:
 	  Co-op:  the host's process ends the tasks. Every player's character and items are game objects there, its own player's belt
@@ -71,13 +71,7 @@ local expired_asks = {} -- ask id -> { peer, until_at }
 local belts = {} -- character -> section -> { at, ids = set of local ids }: the last report of his machine
 local asked_at = {} -- "<character>|<section>" -> when the readiness check asked last
 
-local function C() return coop_mods_core end
-local function ct() return C().mod("coop_tasks") end
-
-local function active()
-	local ok, yes = pcall(function() return C().active() end)
-	return ok and yes == true
-end
+local function ct() return coop_util.module("coop_tasks") end
 
 -- This process's world is a copy (a player's machine): the mod's effects and timers stay as they are there. The router keeps
 -- tasks_fetch's timer on the deciding side (coop_route_stock.ltx: tasks_fetch = host, time_event); a timer of this script would
@@ -85,11 +79,6 @@ end
 local function mirror()
 	local ok, yes = pcall(function() return coop_mode.is_player_mirror() end)
 	return ok and yes == true
-end
-
-local function now()
-	local ok, t = pcall(time_global)
-	return ok and tonumber(t) or 0
 end
 
 -- A whole number lo..hi, else nil (a client's number).
@@ -140,7 +129,7 @@ local function fact_of(key)
 	if not a then return nil, false end
 	local okl, live = pcall(load_var, a, key)
 	live = okl and live or nil
-	local qt = C().mod("coop_quests_trust")
+	local qt = coop_util.module("coop_quests_trust")
 	local ok, v, known = pcall(function() return qt.recorded(key) end)
 	if ok and known then
 		if v == nil then return nil, live ~= nil end
@@ -205,7 +194,7 @@ end
 -- The group's characters here (coop_quests_core.bodies: own actor when it is a player's, the others as objects or records), the
 -- player `first` first, then this process's own, then the rest (coop_tasks' order: the turning-in player's items go first).
 local function holders(first)
-	local qc = C().mod("coop_quests_core")
+	local qc = coop_util.module("coop_quests_core")
 	local ok, list = pcall(function() return qc.bodies() end)
 	if not (ok and type(list) == "table") then return {} end
 	local out, own, rest = {}, nil, {}
@@ -243,7 +232,7 @@ local function belt_of(h, sec, ho)
 	if ho then return ho.belts[h.id] end
 	local per = belts[h.id]
 	local b = per and per[sec]
-	if b and now() - b.at <= READY_MS then return b.ids end
+	if b and time_global() - b.at <= READY_MS then return b.ids end
 	return nil
 end
 
@@ -251,7 +240,7 @@ end
 -- m15:2 - asks and reports
 -------------------------------------------------------------------------------
 local function prune()
-	local t = now()
+	local t = time_global()
 	for op, a in pairs(asks) do
 		if t - a.at > ASK_TTL_MS then
 			asks[op] = nil
@@ -295,17 +284,17 @@ local function ask(h, sec, task, ho)
 	if ask_n >= MAX_ASKS then return false end
 	ask_seq = ask_seq % MAX_OP + 1
 	local op = ask_seq
-	if not C().to_peer(h.peer, "fetch_belt_ask", { o = op, s = sec, t = task }) then return false end
-	asks[op] = { peer = h.peer, char = h.id, sec = sec, task = task, at = now(), ho = ho }
+	if not coop_mods_core.to_peer(h.peer, "fetch_belt_ask", { o = op, s = sec, t = task }) then return false end
+	asks[op] = { peer = h.peer, char = h.id, sec = sec, task = task, at = time_global(), ho = ho }
 	ask_n = ask_n + 1
-	asked_at[tostring(h.id) .. "|" .. sec] = now()
+	asked_at[tostring(h.id) .. "|" .. sec] = time_global()
 	stats.asks = stats.asks + 1
 	return true
 end
 
 -- The readiness check keeps a holder's report fresh: an ask when it is older than ASK_MS and none went out since.
 local function refresh(h, sec, task)
-	local t = now()
+	local t = time_global()
 	local per = belts[h.id]
 	local b = per and per[sec]
 	if b and t - b.at < ASK_MS then return end
@@ -325,7 +314,7 @@ local function on_ask(t, from)
 	pcall(function()
 		a:iterate_belt(function(_, item)
 			if n < MAX_BELT and item:section() == sec then
-				local id = C().hid(item:id())
+				local id = coop_mods_core.hid(item:id())
 				if type(id) == "number" then
 					n = n + 1
 					out["i" .. n] = id
@@ -334,7 +323,7 @@ local function on_ask(t, from)
 		end)
 	end)
 	out.n = n
-	C().to_host("fetch_belt", out)
+	coop_mods_core.to_host("fetch_belt", out)
 end
 
 -- The owner of the world data: a player's report. Only the answer to an open ask of his counts; the sender is the transport's.
@@ -348,7 +337,7 @@ local function on_report(t, from)
 		return
 	end
 	local fresh = a ~= nil and a.peer == from and t.t == a.task
-	local tr = C().mod("coop_trust")
+	local tr = coop_util.module("coop_trust")
 	if tr and type(tr.pass) == "function" then
 		tr.pass("fetch_belt_fresh", fresh, "player #%d: dropped a belt report answering no open ask of his (ask %d)",
 			tonumber(from) or -1, op or 0)
@@ -363,12 +352,12 @@ local function on_report(t, from)
 	local n = whole(t.n, 0, MAX_BELT) or 0
 	for i = 1, n do
 		local id = whole(t["i" .. i], 1, 65534)
-		local l = id and C().lid(id)
+		local l = id and coop_mods_core.lid(id)
 		if type(l) == "number" then ids[l] = true end
 	end
 	stats.reports = stats.reports + 1
 	belts[a.char] = belts[a.char] or {}
-	belts[a.char][a.sec] = { at = now(), ids = ids }
+	belts[a.char][a.sec] = { at = time_global(), ids = ids }
 	local ho = a.ho
 	if ho then
 		if ho.done then
@@ -420,10 +409,10 @@ end
 
 local function make_ready(orig)
 	return function(tsk, task_id, ...)
-		if not (active() and type(task_id) == "string" and tsk ~= nil) or mirror() then return orig(tsk, task_id, ...) end
+		if not (coop_util.active() and type(task_id) == "string" and tsk ~= nil) or mirror() then return orig(tsk, task_id, ...) end
 		local ok, n, need = pcall(verdict, task_id)
 		if not ok then
-			C().report(TAG, "readiness", n)
+			coop_mods_core.report(TAG, "readiness", n)
 			return orig(tsk, task_id, ...)
 		end
 		if n == nil then return orig(tsk, task_id, ...) end
@@ -436,7 +425,7 @@ end
 local function make_units(orig)
 	return function(task_id, ...)
 		local n, need, foreign = orig(task_id, ...)
-		if not active() or n == nil or foreign then return n, need, foreign end
+		if not coop_util.active() or n == nil or foreign then return n, need, foreign end
 		local ok, mine = pcall(verdict, task_id)
 		if ok and type(mine) == "number" then return mine, need, foreign end
 		return n, need, foreign
@@ -465,7 +454,7 @@ local function move_from(h, ho, left, moved)
 	if belt == nil then
 		if has_loose(h.obj, sec) then
 			stats.unknown = stats.unknown + 1
-			C().log(TAG, "hand-over %d of task %s: no fresh belt report from #%s in %d ms: his items of %s stay with him", ho.id,
+			coop_mods_core.log(TAG, "hand-over %d of task %s: no fresh belt report from #%s in %d ms: his items of %s stay with him", ho.id,
 				ho.task, tostring(h.peer), WAIT_MS, sec)
 		end
 		return 0
@@ -524,7 +513,7 @@ local function gather(ho, need)
 					alife_create_item(sec, db.actor)
 					alife_create_item(cont, h.obj)
 				end)
-				if not ok then C().report(TAG, "container", err) end
+				if not ok then coop_mods_core.report(TAG, "container", err) end
 				left = left - 1
 			end
 		end
@@ -535,7 +524,7 @@ end
 -- f(...) with db.actor:iterate_inventory showing the items moved for it first, then this actor's own acceptable ones, and no
 -- other item of the section: the mod's timer takes exactly what the criterion allows.
 local function with_order(ho, moved, f, ...)
-	local qc = C().mod("coop_quests_core")
+	local qc = coop_util.module("coop_quests_core")
 	local a = db.actor
 	if not (a and qc and type(qc.with_actor) == "function") then return f(...) end
 	local real = a.iterate_inventory
@@ -566,13 +555,13 @@ local function finish(ho, f, ...)
 	ho.done = true
 	if not ho.sec then return f(...) end
 	local need = math_max(1, tonumber((fact_of(ho.var .. "_count"))) or ho.need or 1)
-	local qt = C().mod("coop_quests_trust")
+	local qt = coop_util.module("coop_quests_trust")
 	local ticket = nil
 	if qt and type(qt.check_take) == "function" then
 		local okc, pass, tk = pcall(qt.check_take, ho.peer or 0, ho.sec, need, "quest_take")
 		if okc and pass == false then
 			stats.refused = stats.refused + 1
-			C().log(TAG, "hand-over %d of task %s: the take of %d x %s is refused (coop_trust quest_take)", ho.id, ho.task, need,
+			coop_mods_core.log(TAG, "hand-over %d of task %s: the take of %d x %s is refused (coop_trust quest_take)", ho.id, ho.task, need,
 				ho.sec)
 			return true
 		end
@@ -596,7 +585,7 @@ end
 -- then runs in its context.
 local function delayed(ho, f)
 	return function(...)
-		if ho.waiting > 0 and now() - ho.at < WAIT_MS then return false end
+		if ho.waiting > 0 and time_global() - ho.at < WAIT_MS then return false end
 		return run_for(ho, finish, ho, f, ...)
 	end
 end
@@ -610,7 +599,7 @@ end
 -- inner(actor, npc, p) with the mod's CreateTimeEvent(0, KEY, ...) given its own key and context. The mod's chunk looks its
 -- globals up in its own module table first (CScriptStorage): a field there for the length of the call reaches only the mod.
 local function with_own_key(ho, inner, ...)
-	local fm = C().mod("tasks_fetch")
+	local fm = coop_util.module("tasks_fetch")
 	if type(fm) ~= "table" then return inner(...) end
 	local prev = rawget(fm, "CreateTimeEvent")
 	rawset(fm, "CreateTimeEvent", function(ev, act, t, f, ...)
@@ -633,20 +622,20 @@ local function make_handover(orig)
 	-- worn ones included, before any report could come: the collection above does it when they are in, so the hand-over calls
 	-- the function that wrapper calls (its upvalue fetch_reward). Without it the hand-over goes through that wrapper as before.
 	local inner = orig
-	local g, nxt = C().upvalue(orig, "gather_fetch"), C().upvalue(orig, "fetch_reward")
+	local g, nxt = coop_mods_core.upvalue(orig, "gather_fetch"), coop_mods_core.upvalue(orig, "fetch_reward")
 	if type(g) == "function" and type(nxt) == "function" then
 		inner = nxt
 	else
-		C().log(TAG, "! coop_tasks' gathering wrapper not found: other players' worn items may be gathered at a hand-over")
+		coop_mods_core.log(TAG, "! coop_tasks' gathering wrapper not found: other players' worn items may be gathered at a hand-over")
 	end
 	return function(actor, npc, p)
-		if not (active() and type(p) == "table" and type(p[1]) == "string") or mirror() then return orig(actor, npc, p) end
+		if not (coop_util.active() and type(p) == "table" and type(p[1]) == "string") or mirror() then return orig(actor, npc, p) end
 		handover_seq = handover_seq + 1
 		stats.handovers = stats.handovers + 1
 		local t = ct()
 		local okr, rp = pcall(function() return t.reward_peer() end)
 		local sec = fact_of(p[1])
-		local ho = { id = handover_seq, var = p[1], task = task_of(p[1]), char = scope_character(), at = now(),
+		local ho = { id = handover_seq, var = p[1], task = task_of(p[1]), char = scope_character(), at = time_global(),
 			peer = okr and tonumber(rp) or nil, sec = type(sec) == "string" and sec ~= "" and sec or nil, belts = {}, waiting = 0 }
 		if ho.sec then
 			ho.need = tonumber((fact_of(p[1] .. "_count"))) or 1
@@ -666,16 +655,16 @@ local installed = false
 local function install()
 	if installed then return end
 	installed = true
-	if not C().mod("tasks_fetch") then return end -- the mod is not in this build: nothing to do
+	if not coop_util.module("tasks_fetch") then return end -- the mod is not in this build: nothing to do
 	local xe = rawget(_G, "xr_effects") or xr_effects
-	C().wrap(xe, "fetch_reward_and_remove", "tasks_fetch.fetch_reward_and_remove (coop_quests_fetch)", make_handover)
+	coop_mods_core.wrap(xe, "fetch_reward_and_remove", "tasks_fetch.fetch_reward_and_remove (coop_quests_fetch)", make_handover)
 	local tsf = rawget(_G, "task_status_functor") or task_status_functor
-	C().wrap(tsf, "actor_has_fetch_item", "task_status_functor.actor_has_fetch_item (coop_quests_fetch)", make_ready)
-	local host = C().find_local(ct(), "host")
+	coop_mods_core.wrap(tsf, "actor_has_fetch_item", "task_status_functor.actor_has_fetch_item (coop_quests_fetch)", make_ready)
+	local host = coop_mods_core.find_local(ct(), "host")
 	if type(host) == "table" then
-		C().wrap(host, "fetch_units", "coop_tasks host.fetch_units (coop_quests_fetch)", make_units)
+		coop_mods_core.wrap(host, "fetch_units", "coop_tasks host.fetch_units (coop_quests_fetch)", make_units)
 	else
-		C().log(TAG, "! coop_tasks' host table not found: a client's turn-in is checked by coop_tasks' own count")
+		coop_mods_core.log(TAG, "! coop_tasks' host table not found: a client's turn-in is checked by coop_tasks' own count")
 	end
 end
 
@@ -686,21 +675,16 @@ local function status_text()
 		stats.unknown)
 end
 
-local function start_step(what, f)
-	local ok, err = pcall(f)
-	if not ok then printf("! [coop_quests_fetch] %s failed: %s", what, tostring(err)) end
-end
-
 function on_game_start()
 	if not rawget(_G, "coop") then return end
-	start_step("events", function()
-		C().on("fetch_belt_ask", on_ask, "player")
-		C().on("fetch_belt", on_report, "world")
-		C().set_limit("fetch_belt", 16, 8)
+	coop_util.start_step("coop_quests_fetch", "events", function()
+		coop_mods_core.on("fetch_belt_ask", on_ask, "player")
+		coop_mods_core.on("fetch_belt", on_report, "world")
+		coop_mods_core.set_limit("fetch_belt", 16, 8)
 	end)
 	-- after every on_game_start: coop_tasks wraps the same functions there, these wrappers go around them
-	start_step("callback", function()
-		RegisterScriptCallback("actor_on_first_update", function() start_step("install", install) end)
+	coop_util.start_step("coop_quests_fetch", "callback", function()
+		RegisterScriptCallback("actor_on_first_update", function() coop_util.start_step("coop_quests_fetch", "install", install) end)
 	end)
-	start_step("status", function() C().status_line(TAG, status_text) end)
+	coop_util.start_step("coop_quests_fetch", "status", function() coop_mods_core.status_line(TAG, status_text) end)
 end

@@ -3,13 +3,13 @@
 	Spec: docs\CHECKPOINTS_DEATH.md section 2. The engine keeps the checkpoints (coop_checkpoints.cpp, host decides) and puts
 	tents up for clients (coop_checkpoint_sources.cpp); this script is what the player sees and the thing that asks.
 	Runs on every machine (a "view" script in configs\coop_domains_checkpoints.ltx). The item_tent side of the tents
-	(wrappers of the stock functions; F3a task 7: the host player claims like any player) is coop_tent_guard.script.
+	(wrappers of the stock functions; the host player claims like any player) is coop_tent_guard.script.
 
-	1. Tips and PDA spots (engine callback coop_checkpoint_changed(local_id, kind, source, rollback, level, base); base,
-	   Build 57 round 3: "bed" | "base" | "none" | nil, what the engine of this machine says the record is - update_key).
+	1. Tips and PDA spots (engine callback coop_checkpoint_changed(local_id, kind, source, rollback, level, base); base:
+	   "bed" | "base" | "none" | nil, what the engine of this machine says the record is - update_key).
 	   The player's own camp: a tip st_coop_cp_updated_<kind> (st_coop_cp_rollback when the camp was lost and the previous one
-	   is used again; Build 57: kind rest without an object is a base without a sleeping place, st_coop_cp_updated_base, and
-	   has no spot, as arrival and story; round 2: kind rest whose object is a sleep zone of [coop_bases] is the bed of a base,
+	   is used again; kind rest without an object is a base without a sleeping place, st_coop_cp_updated_base, and
+	   has no spot, as arrival and story; kind rest whose object is a sleep zone of [coop_bases] is the bed of a base,
 	   st_coop_cp_updated_bed, any other rest place keeps the generic st_coop_cp_updated_rest - update_key) and a PDA spot (ui_pda2_actor_sleep_location, as the stock tent has) on its source. An ally's camp (the
 	   host shares them: coop_checkpoints_group): the same spot with his nick, no tip. A spot is moved when the source
 	   changes; one source has one spot however many players camp there. Arrival points and story checkpoints have no spot
@@ -17,14 +17,14 @@
 	   replicated one) is left as it is and not removed.
 	   The spots are NOT serializable (level.map_add_object_spot, not _ser): they are not in the save, so a loaded world never
 	   carries the spots of old camps, and what the entry finds of this type is not ours. The camps are read again at the entry
-	   and the spots set anew (review I-1).
+	   and the spots set anew.
 	   NOTE: the engine shares every map spot that is not of a "coop_*" type (coop_story.cpp, spot_type_local), so these
 	   spots reach the other players whatever the group setting says.
 	   The callback queue of the engine is shared and bounded, a lost callback is not sent again: when a world is entered
 	   (actor_on_first_update) all checkpoints are read again with coop.checkpoint.get. The host's list that follows the
 	   entry repeats what is known, so for 6 s (ENTRY_QUIET_MS) the first record of a player and an unchanged one are no news
 	   (no tip, no panel mark). Every incoming player also gets coop_checkpoint_changed(0, "none", -1, ...): normal.
-   Build 57 (owner 2026-11-18): at any time a record of the same place as the one known (the kind, the object and the level;
+   At any time a record of the same place as the one known (the kind, the object and the level;
    without an object the level and 10 m, its position from coop.checkpoint.get) is no news either, unless it is a rollback:
    the host resends whole lists (the group view switched, a client's "loading" flag), and the tip came every N-th time.
 
@@ -74,10 +74,7 @@ local SPOT_KINDS = { campfire = true, rest = true, tent = true, mod = true } -- 
 local REASONS = { dead = true, far = true, combat = true, limit = true, no_item = true, failed = true }
 local WHATS = { tent = true, sleepbag = true, pack = true }
 
-local function log(fmt, ...)
-	local ok, line = pcall(string_format, fmt, ...)
-	printf("[coop-checkpoints] %s", ok and line or tostring(fmt))
-end
+local log = coop_util.logger("[coop-checkpoints]")
 
 -------------------------------------------------------------------------------
 -- Session
@@ -96,12 +93,6 @@ end
 local function checkpoint_api()
 	local cp = api and api.checkpoint
 	return type(cp) == "table" and cp or nil
-end
-
-local function players()
-	if not api then return {} end
-	local ok, list = pcall(api.players)
-	return ok and type(list) == "table" and list or {}
 end
 
 -------------------------------------------------------------------------------
@@ -214,7 +205,7 @@ local refs = {} -- source id -> { owners = { [local id] = true }, added = bool, 
 local quiet_until = 0 -- time_global() until which the host's list after a world entry is no news
 
 local function nick_of(lid)
-	for _, p in ipairs(players()) do
+	for _, p in ipairs(coop_util.players()) do
 		if p.avatar_id == lid then return tostring(p.nick or "?") end
 	end
 	return "?"
@@ -239,7 +230,7 @@ local function spot_exists(id)
 end
 
 local function add_spot(id, hint)
-	-- not map_add_object_spot_ser: that spot is saved and would outlive the camp (review I-1); an exe without the plain call
+	-- not map_add_object_spot_ser: that spot is saved and would outlive the camp; an exe without the plain call
 	-- falls back to the saved one
 	local f = level and (level.map_add_object_spot or level.map_add_object_spot_ser)
 	if type(f) ~= "function" then return false end
@@ -312,7 +303,7 @@ local function put_record(lid, kind, source, lvl, pos)
 	if lid == 0 and kind == "tent" and source then remember_mine(source) end
 	local old = recs[lid]
 	if old and old.spot and source and old.spot == source and SPOT_KINDS[kind] then
-		old.kind, old.level, old.pos = kind, lvl, pos -- the same place again: the spot stays where it is (review M-4)
+		old.kind, old.level, old.pos = kind, lvl, pos -- the same place again: the spot stays where it is
 		return
 	end
 	unlink(lid)
@@ -343,7 +334,7 @@ function last_update(local_id)
 	return updated[local_id]
 end
 
--- Build 57 (owner 2026-11-18): "checkpoint updated" came every N-th time at one and the same campfire. The engine no longer
+-- "checkpoint updated" came every N-th time at one and the same campfire. The engine no longer
 -- writes the same place again, but the host resends whole lists on other occasions too (the group view switched, a
 -- client's "loading" flag), so a record is news only when the place changed: the kind, the object and the level; for a
 -- record without an object (arrival, story) the level and not farther than SAME_PLACE_M.
@@ -359,7 +350,7 @@ local function position_of(lid, kind, lvl)
 	return { x = x, y = y, z = z }
 end
 
--- Build 57 round 2 (the lead 2026-11-18, review S6): the name of a record's object, the server object first (the host),
+-- The name of a record's object, the server object first (the host),
 -- else the online object (a client has no alife()); nil when neither is there.
 local function object_name(id)
 	local ok, name = pcall(function()
@@ -372,10 +363,10 @@ local function object_name(id)
 	return ok and type(name) == "string" and name or nil
 end
 
--- The tip of an own record: st_coop_cp_updated_<kind>, but a rest record is told apart (Build 57 round 2, review S6):
+-- The tip of an own record: st_coop_cp_updated_<kind>, but a rest record is told apart:
 -- without an object a base without a sleeping place ("a base"), with a sleep zone of [coop_bases] as its object the bed of a
 -- base ("a sleeping place"), any other rest place (a surge cover, a rest zone of no base, the object or the section not
--- found) the generic text ("a resting place"). Round 3 (the lead 2026-11-18, review S6): the engine says it (`base`, the sixth
+-- found) the generic text ("a resting place"). The engine says it (`base`, the sixth
 -- argument of coop_checkpoint_changed: "bed" | "base" | "none"), so a client needs no alife() and no online zone object; nil
 -- (an older exe, or an object this machine does not hold) keeps the lookup below.
 local BASE_KEYS = { bed = "updated_bed", base = "updated_base", none = "updated_rest" }
@@ -428,7 +419,7 @@ local function own_key()
 end
 
 -- Client: is tent / sleeping bag object `id` one I put up? A camp of mine, or - after a load, when only the camp is known - an
--- object whose owner key ([coop_tent] owner, written by the host, F3 T7) is the key of my own character. Nothing is
+-- object whose owner key ([coop_tent] owner, written by the host) is the key of my own character. Nothing is
 -- guessed: no key to compare means "not mine". The host decides again when he is asked to pack it (by his key book).
 function is_mine_tent(id, obj)
 	if type(id) ~= "number" then return false end
@@ -489,7 +480,7 @@ local function send_claim(my)
 	end
 end
 
--- Player (the host player too, F3a T6): ask the world server to put a tent / sleeping bag up or to pack mine up, after
+-- Player (the host player too): ask the world server to put a tent / sleeping bag up or to pack mine up, after
 -- `delay_ms` (the put-up animation). The item stays where it is: the world server takes it when it has put the tent up. False
 -- when something is still waiting for the world server, or the engine has no claims. The host player's claim is the same
 -- coop.checkpoint.claim_tent a remote client sends (the engine's CheckpointClaim from node 0).
@@ -534,7 +525,7 @@ end
 -------------------------------------------------------------------------------
 -- The camp of a player changed: coop_checkpoint_changed(local_id, kind, source local id or -1, rollback, level or nil,
 -- base or nil). kind "none": he has none (rolled back to nothing, gone, no longer shared; also the first message of every
--- player who comes into the world). base (Build 57 round 3): what the record is for the text, update_key.
+-- player who comes into the world). base: what the record is for the text, update_key.
 local function on_changed(lid, kind, source, rollback, lvl, base)
 	if type(lid) ~= "number" or type(kind) ~= "string" then return end
 	rollback = rollback == true
@@ -556,7 +547,7 @@ local function on_changed(lid, kind, source, rollback, lvl, base)
 		return
 	end
 	if not rollback and same_place(old, kind, source, lvl, pos) then
-		-- Build 57: the same place again (a resent list, a repeat): no tip, the panel's "just updated" mark stays
+		-- the same place again (a resent list, a repeat): no tip, the panel's "just updated" mark stays
 		put_record(lid, kind, source, lvl, old.pos) -- the place keeps where it was first made, as the engine's record does
 		return
 	end
@@ -604,7 +595,7 @@ local function on_first_update()
 	recs, updated, refs, pending = {}, {}, {}, nil
 	mine, mine_count = {}, 0
 	quiet_until = time_global() + ENTRY_QUIET_MS
-	-- Build 57: a record without an object keeps its position, the "same place" of on_changed compares with it
+	-- a record without an object keeps its position, the "same place" of on_changed compares with it
 	local function pos_of(r)
 		if r.source ~= nil then return nil end
 		local x, y, z = tonumber(r.x), tonumber(r.y), tonumber(r.z)
@@ -612,7 +603,7 @@ local function on_first_update()
 	end
 	local own = read_record(0)
 	if own then put_record(0, own.kind, tonumber(own.source), own.level, pos_of(own)) end
-	for _, p in ipairs(players()) do
+	for _, p in ipairs(coop_util.players()) do
 		local lid = p.avatar_id
 		if not p.is_self and type(lid) == "number" and lid > 0 then
 			local r = read_record(lid)
@@ -625,7 +616,7 @@ end
 -------------------------------------------------------------------------------
 -- Story checkpoints
 -------------------------------------------------------------------------------
-local story_ours = {} -- the wrappers this script made: never wrapped again (review M-1)
+local story_ours = {} -- the wrappers this script made: never wrapped again
 
 local function cmain()
 	return rawget(_G, "coop_main") or coop_main

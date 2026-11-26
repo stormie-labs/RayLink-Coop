@@ -148,6 +148,9 @@ local function machine(opts)
 		end
 		dofile("tests/lua/support/modes.lua").live(load_mode_script("coop_mode"), load_mode_script)
 	end
+	local util = setmetatable({}, { __index = env }) -- the engine loads coop_util on the first use of its name
+	env.coop_util = util
+	setfenv(assert(loadstring(readfile(ROOT .. "scripts/coop_util.script"), "@coop_util.script")), util)()
 	local src = readfile(ROOT .. "scripts/coop_transition_route.script")
 	local mod = setmetatable({}, { __index = env })
 	env.coop_transition_route = mod
@@ -354,12 +357,15 @@ do
 	t = trip(10, true)
 	check(t and t.anim == true, "a free level: the stock fade: he goes alone")
 	Mc.split, Mc.players = false, { { id = 0 }, { id = 1 } }
+	NOW = NOW + 1 -- a new frame: coop_util reads the player list once a frame
 	t = trip(10, true)
 	check(t and not t.anim, "no split levels: the group goes together wherever it goes")
 	Mc.players = { { id = 0 } }
+	NOW = NOW + 1 -- a new frame: coop_util reads the player list once a frame
 	t = trip(10, true)
 	check(t and t.anim == true, "nobody else in the session: the stock change")
 	Mc.players = { { id = 0 }, { id = 1 } }
+	NOW = NOW + 1 -- a new frame: coop_util reads the player list once a frame
 	Mc.active = false
 	t = trip(10, true)
 	check(t and t.anim == true, "outside a session: the stock change")

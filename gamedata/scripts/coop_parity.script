@@ -50,15 +50,7 @@ local MAX_ERRORS = 16
 local PLAYER = "@player"
 
 -- Anomaly's printf substitutes %s only.
-local function log(fmt, ...)
-	printf("[coop-parity] %s", string_format(fmt, ...))
-end
-
-local function active()
-	if not api then return false end
-	local ok, v = pcall(api.is_active)
-	return ok and v == true
-end
+local log = coop_util.logger("[coop-parity]")
 
 -------------------------------------------------------------------------------
 -- Digest
@@ -401,7 +393,7 @@ end
 
 -- Host: this machine and every client dump now. The tag used, or nil if this machine is not a session's host.
 function request(tag)
-	if not (active() and coop_mode.decides_world()) then return nil end
+	if not (coop_util.active() and coop_mode.decides_world()) then return nil end
 	local ok, now = pcall(game_seconds)
 	if not ok then
 		log("! no game time: %s", tostring(now))
@@ -416,7 +408,7 @@ end
 
 -- Engine entry: the console command coop_parity [tag].
 function command(args)
-	if not active() then
+	if not coop_util.active() then
 		log("no co-op session")
 	elseif not coop_mode.decides_world() then
 		log("host only: run coop_parity on the host, every machine dumps")
@@ -426,7 +418,7 @@ function command(args)
 end
 
 local function on_dump_event(payload, from)
-	if from ~= 0 or not active() or coop_mode.decides_world() then return end
+	if from ~= 0 or not coop_util.active() or coop_mode.decides_world() then return end
 	local t = coop_main.decode(payload)
 	dump(clean_tag(t.tag) or "untagged", tonumber(t.t))
 end

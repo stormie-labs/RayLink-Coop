@@ -1,7 +1,7 @@
 -- Ядро: без проверок режима (docs/MODES.md)
 --[[
 	Anomaly Coop - the stock answers of the server's condlist functions and dialogs (gamedata\scripts\coop_conditions_stock.script),
-	step S4 of docs\plans\2026-11-18-two-modes.md, docs\MODES.md section 4 ("the co-op answers of the condition functions go to
+	docs\MODES.md section 4 ("the co-op answers of the condition functions go to
 	the Core: they are the stock's answers").
 
 	The logic files, the dialog XML and coop_tasks name the functions of this script, never a server script (check_layers L3).
@@ -23,13 +23,12 @@
 		may_take(task_id, peer)                coop_tasks: true
 	The stock chain back: the process that decides a world whose group travels together (the co-op host) gives the
 	stock its bare chain keys and its change-faction lock again at the first update, when the world was played with
-	per-faction chains once (a world of the hybrid of build 56 and older, docs\MODES.md section 7). The server never does it.
+	per-faction chains once (a save that holds them, docs\MODES.md section 7). The server never does it.
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
 
 local type, pairs, ipairs, pcall, tostring = type, pairs, ipairs, pcall, tostring
-local string_format = string.format
 
 local FLAG = "bar_deactivate_radar_done" -- the stock's mark that the Brain Scorcher is off
 local STORY_KEY = "drx_sl_coop_story_" -- + ll | ms | oa: the world's copy of a story's owner (coop_srv_storyline)
@@ -42,27 +41,7 @@ local FACTIONS = {
 	stalker = true, renegade = true, greh = true, isg = true,
 }
 
-local function mod(name)
-	local m = rawget(_G, name)
-	if m == nil then
-		local ok, r = pcall(function() return _G[name] end)
-		m = ok and r or nil
-	end
-	return type(m) == "table" and m or nil
-end
-
-local function call(f, ...)
-	if type(f) ~= "function" then return nil end
-	local ok, v = pcall(f, ...)
-	return ok and v or nil
-end
-
 local function known(f) return type(f) == "string" and FACTIONS[f] == true end
-
-local function log(tag, fmt, ...)
-	local ok, line = pcall(string_format, fmt, ...)
-	printf("%s %s", tag, ok and line or tostring(fmt))
-end
 
 -------------------------------------------------------------------------------
 -- The Brain Scorcher: what the stock's logic files and dialogs ask
@@ -114,11 +93,11 @@ function may_take(id, peer) return true end
 -------------------------------------------------------------------------------
 -- The stock chain back (a world once played with per-faction chains, now by a group that travels together)
 -------------------------------------------------------------------------------
-local TAG = "[coop-storyline]" -- the lines of coop_srv_storyline, which wrote them before step S4
+local log = coop_util.logger("[coop-storyline]") -- the head coop_srv_storyline's lines have too
 
 local function store()
-	local asm = mod("alife_storage_manager")
-	local m = asm and call(asm.get_state)
+	local asm = coop_util.module("alife_storage_manager")
+	local m = asm and coop_util.call(asm.get_state)
 	local s = type(m) == "table" and m[STORE] or nil
 	if type(s) ~= "table" then return nil end
 	if type(s.chains) ~= "table" then s.chains = {} end
@@ -127,10 +106,10 @@ local function store()
 end
 
 local function world_faction()
-	local gs = mod("coop_game_settings")
-	local f = gs and call(gs.world_faction)
+	local gs = coop_util.module("coop_game_settings")
+	local f = gs and coop_util.call(gs.world_faction)
 	if known(f) then return f end
-	f = call(api and api.game and api.game.world_faction)
+	f = coop_util.call(api and api.game and api.game.world_faction)
 	return known(f) and f or nil
 end
 
@@ -143,8 +122,8 @@ local function raw_pstor()
 end
 
 local function task_info()
-	local tm = mod("task_manager")
-	local m = tm and call(tm.get_task_manager)
+	local tm = coop_util.module("task_manager")
+	local m = tm and coop_util.call(tm.get_task_manager)
 	local ok, ti = pcall(function() return m.task_info end)
 	return ok and type(ti) == "table" and ti or nil
 end
@@ -164,7 +143,7 @@ local function unmigrate()
 	end
 	s.migrated = false
 	s.chains[w] = nil
-	log(TAG, "no split levels: the %s chain is the world's chain again", w)
+	log("no split levels: the %s chain is the world's chain again", w)
 end
 
 -- the stock lock comes back while a change-faction task is open
@@ -175,7 +154,7 @@ local function cf_lock_restore()
 	for id in pairs(task_info() or {}) do
 		if type(id) == "string" and id:sub(1, 7) == "drx_sl_" and id:find("_cf_task_", 1, true) then
 			give_info(CF_INFO)
-			log(TAG, "no split levels: the change-faction lock is the world's again")
+			log("no split levels: the change-faction lock is the world's again")
 			return
 		end
 	end
@@ -195,12 +174,12 @@ local function step(what, f)
 	if not ok then printf("! [coop_conditions_stock] %s failed: %s", what, tostring(err)) end
 end
 
--- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop (W5)
+-- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop
 function on_game_start()
 	step("condlist functions", install_condlists) -- every process, an exe without co-op too
 	if not api then return end
 	RegisterScriptCallback("actor_on_first_update", function()
 		local ok, err = pcall(first_update)
-		if not ok then log(TAG, "! first update: %s", tostring(err)) end
+		if not ok then log("! first update: %s", tostring(err)) end
 	end)
 end

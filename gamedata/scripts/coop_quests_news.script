@@ -46,14 +46,7 @@ local PLAIN_CAPTIONS = {
 
 local stats = { task_lines = 0, plain_lines = 0, article_lines = 0, article_sums = 0 }
 
-local function tr(id, fallback)
-	local g = rawget(_G, "game")
-	if g and g.translate_string then
-		local ok, s = pcall(g.translate_string, id)
-		if ok and type(s) == "string" and s ~= "" and s ~= id then return s end
-	end
-	return fallback or id
-end
+local tr = coop_util.tr_nonempty
 
 -- string.format with the translated text; a stray % in a translation cannot break the line
 local function fill(id, fallback, ...)

@@ -53,6 +53,7 @@ do
 	trust.reset_for_test({ default = "log" })
 	load("coop_mods_core")
 	load("coop_quests_core")
+	load("coop_arena")
 	load("coop_encounters").on_game_start()
 	local function tell(from, t)
 		for _, handle in ipairs(M.handlers["mods.enc_arena"] or {}) do

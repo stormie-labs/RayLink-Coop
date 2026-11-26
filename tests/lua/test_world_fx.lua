@@ -50,7 +50,7 @@ local function engine_fx(M)
 	E.level.vertex_id = function() return 77 end
 	E.dynamic_news_helper = { send_tip = function(m) M.news[#M.news + 1] = m return true end }
 	E.news_manager = { send_tip = function(a, id) M.news[#M.news + 1] = id return true end, other = "kept" }
-	E.coop_core_world = { in_world_scope = function(f, ...)
+	E.coop_core_world_news = { in_world_scope = function(f, ...)
 		M.world_scope = (M.world_scope or 0) + 1
 		return f(...)
 	end }
@@ -126,7 +126,7 @@ end]])
 	local FH, FC = load_script(H, "coop_world_fx"), load_script(C, "coop_world_fx")
 	FH.on_game_start()
 	FC.on_game_start()
-	FH._set_host_on(true)
+	H.env.coop_npc_players.host_on = function() return true end
 	return H, C, FH, FC
 end
 
@@ -285,7 +285,7 @@ function signal_light_binder:stop_light() end
 	local FH, FC = load_script(H, "coop_world_fx"), load_script(C, "coop_world_fx")
 	FH.on_game_start()
 	FC.on_game_start()
-	FH._set_host_on(true)
+	H.env.coop_npc_players.host_on = function() return true end
 	local trail = {}
 	local copy = make_obj(900, 0, 50, 0)
 	function copy:start_particles(name, bone) trail[#trail + 1] = "on " .. name .. " " .. bone end
@@ -314,7 +314,7 @@ end
 print("== alone, single player, client")
 do
 	local H, C, FH = stage()
-	FH._set_host_on(false)
+	H.env.coop_npc_players.host_on = function() return false end
 	H.env.grok_bo.hit(vec(1, 0, 0), vec(0, 1, 0))
 	H.env.tasks_dead_night.tip()
 	world_pump()

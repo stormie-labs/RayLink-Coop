@@ -1,5 +1,5 @@
 -- Ядро: без проверок режима (docs/MODES.md)
--- Dev 57 G15-2. The player shows the stock window; its issuer consumes one answer.
+-- The player shows the stock window; its issuer consumes one answer.
 local TAG = "quests_freeplay"
 local ASK, ANSWER = "fp_ask", "fp_answer"
 local BOX = {
@@ -55,7 +55,7 @@ local function show(t)
 end
 
 function ask(peer, dialog_id, cb)
-	if not (coop_mods_core.active() and type(peer) == "number" and peer >= 0 and peer < 0x100 and peer % 1 == 0
+	if not (coop_mods_core.active() and type(peer) == "number" and peer >= 0 and peer <= coop_util.MAX_PEER and peer % 1 == 0
 		and box_of(dialog_id) and type(cb) == "function") then return false end
 	if pending[dialog_id] or answered[dialog_id] then return false end
 	pending[dialog_id] = { peer = peer, cb = cb }

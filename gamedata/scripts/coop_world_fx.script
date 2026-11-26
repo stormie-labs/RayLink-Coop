@@ -3,8 +3,7 @@
 
 	particles_object():play_at_pos, a sound with no owner, level.add_cam_effector are View calls: nothing stops them, they
 	simply run where the script runs. For scripts that run on the host (npc_on_before_hit handlers, status functors of
-	tasks, their timers) that is the host alone: the engine relays a creature's own sound and nothing else (parity audit
-	W4, sound M4, tasks audit X2).
+	tasks, their timers) that is the host alone: the engine relays a creature's own sound and nothing else.
 
 	The scripts keep their code. A script's global names resolve through its own module table first, so a stand-in put
 	into that table by name changes that one script, its closures and timers included, and no other:
@@ -14,12 +13,11 @@
 	                                                 those near the point; 2D: all); the volume a script writes after
 	                                                 play goes with it: the sends wait for the next frame
 	  level                                          camera, postprocess and complex effectors and their removers
-	  dynamic_news_helper, news_manager              send_tip runs in a world scope of coop_core_world (core.news)
+	  dynamic_news_helper, news_manager              send_tip runs in a world scope of coop_core_world_news (core.news)
 	Outside a session, on a client and for a host alone every stand-in is the stock call and nothing else.
 
 	Which script gets which: EFFECT_SCRIPTS (the hit effects of mods), TASK_SCRIPTS (group tasks: everything).
-	Mute: nta_utils.teleport_visual is the screen of the player who moves, and the earthquake of The Living Fire is sent by
-	coop_mods_nta already.
+	Keep teleport visuals on the moving player's screen. The task adapter relays its earthquake separately.
 	Blood pools need no relay: the mod draws from death callbacks a client has too (configs\coop_compat_blood_pool.ltx).
 	The emission's body tear (CSurgeManager.explode) is neutralized on a client (coop_main): the host sends it.
 
@@ -44,40 +42,28 @@ local math_min = math.min
 local TAG = "fx"
 local P -- coop_npc_players
 
-local function log(fmt, ...) P.log(TAG, fmt, ...) end
 local function report(what, err) P.report(TAG, what, err) end
 
 local EV_PART, EV_MARK, EV_SND, EV_CFX, EV_FLARE = "world.part", "world.mark", "world.snd", "world.cfx", "world.flare"
 local FLARE_TRAIL = "weapons\\light_signal"
 
 local PARTICLE_RADIUS, SOUND_RADIUS = 120, 300
-local TICK_MS = 500
 local MAX_NAME = 192
 -- Per hit effects of a firefight are the only flood: effects sent, as a bucket (burst, per second).
 local BURST, PER_SEC = 40, 20
 local KEEP_PARTICLES = 48 -- client: stock scripts hold a particle that must play out, a lost reference ends it
 
--- The hit effects of mods: GBOOBS armor sparks and head bursts, Eidolon's shield, Fuji's teleports, mutant bleeding.
+-- Relay armor sparks, head bursts, shield and teleport effects, and mutant bleeding.
 local EFFECT_SCRIPTS = { "grok_bo", "fuji_magician", "arszi_mutant_bleeding" }
--- Group tasks (New Tasks Addon, Hidden Threat, Operation Monolith): their tips, sounds, effectors and particles are the
--- group's, whatever pass of the task's functor made them.
+-- Relay group task tips, sounds, effectors and particles regardless of which task functor pass produces them.
 local TASK_SCRIPTS = { "nta_utils", "new_tasks_addon_tasks_utils", "tasks_baba_yaga", "tasks_big_game", "tasks_brain_game",
 	"tasks_dead_night", "tasks_gambling_with_life", "tasks_hold_the_ground", "tasks_house_of_horrors",
 	"tasks_intercept_artifact", "tasks_mirage", "tasks_mystery_of_the_swamps", "tasks_no_step_back", "tasks_nta_stash",
 	"tasks_skyfall", "tasks_the_living_fire", "tasks_urgent_orders", "tasks_vengence_amplified", "z_nta_xr_effects",
 	"hidden_threat", "task_functor_hidden_threat", "utils_slht", "operacia_monolith" }
 
-local host_on = false -- a host with at least one client
 local muted = 0
 local stats = { parts = 0, sounds = 0, effectors = 0, limited = 0, parts_in = 0, sounds_in = 0, effectors_in = 0, scripts = 0 }
-
--- Script module by name, or nil (coop_mods_core: the file is checked before _G is touched).
-local function module_of(name)
-	local m = rawget(_G, name)
-	if m ~= nil then return m end
-	local ok, r = pcall(function() return coop_mods_core.mod(name) end)
-	return ok and r or nil
-end
 
 local function plain_name(s)
 	return type(s) == "string" and #s > 0 and #s <= MAX_NAME
@@ -130,7 +116,7 @@ local function cast_level(name, args)
 	return told(s.broadcast(name, args, id and { level = id } or nil))
 end
 
-local function relaying() return host_on and muted == 0 end
+local function relaying() return P.host_on() and muted == 0 end
 
 local function send_particle(name, pos, dir)
 	if not (relaying() and plain_name(name) and pos and allowed()) then return end
@@ -343,8 +329,8 @@ end
 local function world_news(real)
 	return setmetatable({
 		send_tip = function(...)
-			local w = rawget(_G, "coop_core_world")
-			if host_on and w and w.in_world_scope then return w.in_world_scope(real.send_tip, ...) end
+			local w = rawget(_G, "coop_core_world_news")
+			if P.host_on() and w and w.in_world_scope then return w.in_world_scope(real.send_tip, ...) end
 			return real.send_tip(...)
 		end,
 	}, { __index = real })
@@ -370,10 +356,9 @@ local function hand_out_all(mod)
 	give(mod, "news_manager", world_news)
 end
 
--- tasks_mirage made its loop's particle and sound at load, into file locals: they get their stand-ins through any
--- function that shares the upvalues.
+-- The looping particle and sound are captured at load. Substitute them through functions that share those upvalues.
 local function hand_out_mirage()
-	local m = module_of("tasks_mirage")
+	local m = coop_util.module("tasks_mirage")
 	local f = m and rawget(m, "actor_on_update")
 	if type(f) ~= "function" or not debug then return end
 	for i = 1, 60 do
@@ -406,7 +391,7 @@ end
 
 -- The emission's body tear: coop_main neutralizes explode on a client, the host's particle and sound stay there.
 local function wrap_explode()
-	local sm = module_of("surge_manager")
+	local sm = coop_util.module("surge_manager")
 	local cls = sm and sm.CSurgeManager
 	if not cls then return end
 	local orig = cls.explode
@@ -430,12 +415,12 @@ end
 -- An emission flare's binder runs on the host (launch_rockets): it rises on the host's poses, the smoke is a client's own.
 local flares = {} -- host: object id -> true while its smoke is on
 local function wrap_flares()
-	local m = module_of("bind_signal_light")
+	local m = coop_util.module("bind_signal_light")
 	local class = type(m) == "table" and m.signal_light_binder
 	if not class then return end
 	local launch, slow_fly, stop_light = class.launch, class.slow_fly, class.stop_light
 	local function send(self, on)
-		if host_on then cast_level(EV_FLARE, { i = self.object:id(), on = on }) end
+		if P.host_on() then cast_level(EV_FLARE, { i = self.object:id(), on = on }) end
 	end
 	class.launch = function(self, ...)
 		local started = launch(self, ...)
@@ -461,14 +446,14 @@ end
 local function install()
 	local n = 0
 	for _, name in ipairs(EFFECT_SCRIPTS) do
-		local m = module_of(name)
+		local m = coop_util.module(name)
 		if type(m) == "table" then
 			hand_out_effects(m)
 			n = n + 1
 		end
 	end
 	for _, name in ipairs(TASK_SCRIPTS) do
-		local m = module_of(name)
+		local m = coop_util.module(name)
 		if type(m) == "table" then
 			hand_out_all(m)
 			n = n + 1
@@ -476,9 +461,9 @@ local function install()
 	end
 	stats.scripts = n
 	hand_out_mirage()
-	wrap_mute(module_of("nta_utils"), "teleport_visual")
-	wrap_mute(module_of("new_tasks_addon_tasks_utils"), "teleport_visual")
-	wrap_mute(module_of("tasks_the_living_fire"), "earthquake_effect")
+	wrap_mute(coop_util.module("nta_utils"), "teleport_visual")
+	wrap_mute(coop_util.module("new_tasks_addon_tasks_utils"), "teleport_visual")
+	wrap_mute(coop_util.module("tasks_the_living_fire"), "earthquake_effect")
 	wrap_explode()
 	wrap_flares()
 end
@@ -559,10 +544,27 @@ local function on_effect(f, what)
 end
 
 -------------------------------------------------------------------------------
+-- The anomaly pulse light: one look for every pulse drawn here (stock bind_anomaly_field strikes, a mod's pulses)
+--   pulse_light() -> script_light   a new light, dim, not enabled
+--   pulse_light_step(light, flash)  dim (false) or at the pulse's flash (true); the caller updates it
+-------------------------------------------------------------------------------
+function pulse_light_step(light, flash)
+	light.lanim_brightness = flash and 0.2 or 0.025
+	light.volumetric_distance = flash and 1 or 0.25
+	light.volumetric_intensity = flash and 0.1 or 0.05
+end
+
+function pulse_light()
+	local light = script_light()
+	light.range, light.lanim = 100, "koster_01_electra"
+	light.volumetric, light.volumetric_quality = true, 1
+	pulse_light_step(light, false)
+	return light
+end
+
+-------------------------------------------------------------------------------
 -- Install, update
 -------------------------------------------------------------------------------
-local next_tick = 0
-
 local function actor_on_update()
 	if #queue > 0 then
 		local ok, err = pcall(flush_sounds)
@@ -571,19 +573,16 @@ local function actor_on_update()
 			queue = {}
 		end
 	end
-	local now = time_global()
-	if now < next_tick then return end
-	next_tick = now + TICK_MS
-	host_on = P.host_with_clients()
 end
 
 function print_status()
-	log("%d scripts relayed | out: particles %d, sounds %d, effectors %d, over the limit %d | in: particles %d, sounds %d, "
+	P.log(TAG, "%d scripts relayed | out: particles %d, sounds %d, effectors %d, over the limit %d | in: particles %d, sounds %d, "
 		.. "effectors %d | errors %d", stats.scripts, stats.parts, stats.sounds, stats.effectors, stats.limited, stats.parts_in,
 		stats.sounds_in, stats.effectors_in, P.error_count(TAG))
 end
 
 function on_game_start()
+	coop_util.add_status("coop_world_fx", 90)
 	P = coop_npc_players
 	if not (api and api.sync) then return end
 	local ok, err = pcall(install)
@@ -596,5 +595,4 @@ function on_game_start()
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 end
 
-function _set_host_on(v) host_on = v end
 function _stats() return stats end

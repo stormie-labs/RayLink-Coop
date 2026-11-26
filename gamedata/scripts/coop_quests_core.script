@@ -1,6 +1,6 @@
 -- Ядро: общие правила заданий и ответы слоя карты (docs/MODES.md)
 --[[
-	Anomaly Coop - quests group core (gamedata\scripts\coop_quests_core.script), W4 "quests".
+	Anomaly Coop - quests group core (gamedata\scripts\coop_quests_core.script).
 
 	Helpers shared by coop_tasks.script and the coop_quests_* scripts:
 	  - roles and logging;
@@ -37,10 +37,6 @@ function active()
 	local ok, v = pcall(api.is_active)
 	return ok and v == true
 end
--- Compatibility for coop_loot_claim; its callers will migrate in their own unit.
-function is_host() return active() and api.is_host() == true end
--- F3a: a map server is no player: its logic is its level's (the stock effects run there), it asks nobody for them
-function is_map_server() return active() and api.is_map_server ~= nil and api.is_map_server() == true end
 function is_client() return coop_mode.is_player_mirror() end
 function client_live() return is_client() and api.is_live() == true end
 
@@ -461,7 +457,7 @@ end
 function far_body_class:transfer_item(item, to)
 	alife_release_id(item:id())
 	-- as worn as the one that went: the stock pays a fetch task by the item's condition (tasks_fetch: cost * con^2), and a new
-	-- whole item was paid as a new one (the quest audit, 2026-11-13)
+	-- whole item would be paid as a new one
 	local cond = item:condition()
 	itms_manager.create_item(item:section(), to, type(cond) == "number" and cond < 1 and { cond = cond } or nil)
 end
@@ -705,7 +701,7 @@ local function install_condlist_tracker()
 	end
 	local orig = xl.pick_section_from_condlist
 	-- hot path (every condlist of every NPC on the host): fixed signature, no table per call; the stock
-	-- function returns one value (W5)
+	-- function returns one value
 	xl.pick_section_from_condlist = function(obj, npc, condlist, ...)
 		if not active() then return orig(obj, npc, condlist, ...) end
 		if condlist_depth == 0 and not holding_infos and api.story_hold_infos and is_client()
@@ -721,7 +717,7 @@ local function install_condlist_tracker()
 			pcall(api.story_hold_infos, false)
 		end
 		if not ok then
-			-- live 2026-11-01: the task list opened on a client, a mod's condition asked for the host's simulation. What a client
+			-- A mod's condition can ask for the host's simulation on a client (the task list opened there). What a client
 			-- reads here decides nothing: it is no reason to end his game.
 			if not is_client() then error(r, 0) end
 			report("core", "a condlist on a client", r)
@@ -841,12 +837,7 @@ end
 
 local started = false
 -- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
--- error here would skip all the scripts after this one, single player included (W5).
-local function start_step(what, f)
-	local ok, err = pcall(f)
-	if not ok then printf("! [coop_quests_core] %s failed: %s", what, tostring(err)) end
-end
-
+-- error here would skip all the scripts after this one, single player included.
 if api then
 	local ok, err = pcall(install_level_view)
 	if not ok then printf("! [coop_quests_core] the far view: %s", tostring(err)) end
@@ -855,7 +846,7 @@ end
 function on_game_start()
 	if not api or started then return end
 	started = true
-	start_step("install_condlist_tracker", install_condlist_tracker)
-	start_step("install_sim_view", install_sim_view)
+	coop_util.start_step("coop_quests_core", "install_condlist_tracker", install_condlist_tracker)
+	coop_util.start_step("coop_quests_core", "install_sim_view", install_sim_view)
 	on("act", host_on_action, "core")
 end

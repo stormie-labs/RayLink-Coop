@@ -10,11 +10,13 @@ local function test(name, fn)
 	if ok then passed = passed + 1 else failed = failed + 1; print("FAIL " .. name .. ": " .. tostring(why)) end
 end
 local function eq(a, b, what) assert(a == b, (what or "") .. ": " .. tostring(a) .. " ~= " .. tostring(b)) end
-local function load_module(name)
+local load_module
+function load_module(name)
 	local f = io.open("gamedata/scripts/" .. name .. ".script", "rb")
 	assert(f, "missing script: " .. name)
 	local s = f:read("*a"); f:close()
 	local env = setmetatable({}, { __index = _G })
+	if name ~= "coop_util" then env.coop_util = load_module("coop_util") end -- the engine loads it on its first use
 	setfenv(assert(loadstring(s, "@" .. name)), env)(); return env
 end
 
@@ -24,7 +26,7 @@ for _, name in ipairs(modes.names()) do
 	local set = modes.set(name)
 	-- the facade as the set answers it (the script asks these two questions only)
 	coop_mode = { decides_world = set.decides_world, decider = set.decider }
-	coop = { progress = { budget = function() return true end } }
+	coop = { progress = {} }
 	local record = { [CHAR] = "stalker" } -- character -> his faction in the coop_faction record
 	coop_faction = { faction_of_character = function(id) return record[id] end }
 	local disguise = {} -- peer -> the faction the process that leads his map sees him disguised as
@@ -42,7 +44,6 @@ for _, name in ipairs(modes.names()) do
 
 	test(name .. ": set where the engine asks, next to the engine's own fields", function()
 		eq(type(ok), "function", "community_ok")
-		eq(type(coop.progress.budget), "function", "budget kept")
 	end)
 
 	test(name .. ": his coop_faction record", function()

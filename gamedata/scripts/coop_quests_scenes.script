@@ -1,14 +1,13 @@
 -- Ядро: без проверок режима (docs/MODES.md)
 --[[
-	Anomaly Coop - two story moments one player decides for the group (gamedata\scripts\coop_quests_scenes.script), from the
-	mission audit of 2026-10-31.
+	Anomaly Coop - two story moments one player decides for the group (gamedata\scripts\coop_quests_scenes.script).
 
 	Wish Granter (sar_monolith.ltx: on_use = %=make_a_wish%). A client's use runs where his map is led (coop_objects.cpp
 	host_on_use: the co-op host; in the server mode the map server of that level), so the stock window opened on that screen.
 	Here xr_effects.make_a_wish still runs there, but the window goes to the player who pressed; his choice comes back and runs
 	on the keeper of the world (quests.act "wish": the co-op host, the world server). Choice 1 is error() in stock, which would
 	end the session for everybody: in a session it spends the wish and tells every player, and the group plays on.
-	Dev 57 G15-1 (m09:1, G.A.M.M.A. Quests Rebalance xr_effects.script:5586): the wish is the presser's. The CHARACTER who
+	The wish is the presser's (xr_effects.script:5586). The CHARACTER who
 	pressed is kept with the window and the choice runs for him (as_character): the riches are made in his inventory and the
 	delayed backpack removal takes his backpack, the immortality's own consequences are his (no profile of the host or of a
 	server's ghost is rewritten, the level change is made by his machine: mods.qsc_go), its goodwill goes to his character.
@@ -373,7 +372,7 @@ end
 
 local function host_oso_decline(from)
 	if not level.patrol_path_exists(OSO_WALK) then return end
-	-- TZ v2 6.4 row 4: he stands before Osoznanie, or where his own decline put him (coop_quests_trust)
+	-- he stands before Osoznanie, or where his own decline put him (coop_quests_trust)
 	local qt = qc.mod("coop_quests_trust")
 	if qt and not qt.check_oso(from, OSO_WALK) then return end
 	move_here()

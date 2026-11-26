@@ -1,6 +1,6 @@
 -- Ядро: без проверок режима (docs/MODES.md)
 --[[
-	Anomaly Coop - the keeper's answer about a player's community (F5-REV-1 should-fix S4; F5-PRG-2, temp/b58/f5_plan.md section 6).
+	Anomaly Coop - the keeper's answer about a player's community.
 
 	The engine's progress check (coop_progress.cpp lua_community_ok) asks coop.progress.community_ok(peer, name, index, character)
 	where the player's record is kept, when the community he told is neither the stored one nor his record's ("actor_X" and "X" are
@@ -11,28 +11,11 @@
 	  nil   - not known here, not checked: this process does not keep the world; no name; no record of his faction and no disguise;
 	          his map is led by another process, which has his disguise (the world server of the Server mode: it answers true for
 	          his record and nil for anything else, as the disguise state does not reach it).
-	What a false answer does is coop_trust's progress_community (build 57 ships "log": the line and the counter, the value as told).
+	What a false answer does is coop_trust's progress_community (in "log": the line and the counter, the value as told).
 --]]
 
 local api = rawget(_G, "coop") -- the engine's namespace, nil on an exe without co-op
 local type, pcall = type, pcall
-
--- "actor_X" and "X" are one faction; nil for anything that is not a name
-local function bare(f)
-	if type(f) ~= "string" then return nil end
-	f = f:gsub("^actor_", "")
-	return f ~= "" and f or nil
-end
-
--- a script module by name, or nil (loaded by _G.__index on its first use)
-local function mod(name)
-	local m = rawget(_G, name)
-	if m == nil then
-		local ok, r = pcall(function() return _G[name] end)
-		m = ok and r or nil
-	end
-	return type(m) == "table" and m or nil
-end
 
 local function ask(m, fn, ...)
 	if not m or type(m[fn]) ~= "function" then return nil end
@@ -44,12 +27,12 @@ end
 function community_ok(peer, name, index, character)
 	if not (coop_mode and coop_mode.decides_world()) then return nil end
 	if type(peer) ~= "number" or type(character) ~= "number" then return nil end
-	local told = bare(name)
+	local told = coop_util.bare_faction(name)
 	if not told then return nil end
-	local record = bare(ask(mod("coop_faction"), "faction_of_character", character))
+	local record = coop_util.bare_faction(ask(coop_util.module("coop_faction"), "faction_of_character", character))
 	if record == told then return true end
 	if coop_mode.decider(peer) ~= "this" then return nil end -- his map is led elsewhere: so is his disguise
-	if bare(ask(mod("coop_npc_disguise"), "disguised_as", peer)) == told then return true end
+	if coop_util.bare_faction(ask(coop_util.module("coop_npc_disguise"), "disguised_as", peer)) == told then return true end
 	if record == nil then return nil end
 	return false
 end

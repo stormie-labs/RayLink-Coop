@@ -1,5 +1,5 @@
 --[[
-	Anomaly Coop - a fight nobody is at any more (gamedata\scripts\coop_encounters.script), encounter audit of 2026-10-31.
+	Anomaly Coop - a fight nobody is at any more (gamedata\scripts\coop_encounters.script).
 	The checkpoint death mode only (coop_death_mode checkpoint): hardcore has no way back, rollback reloads the save.
 
 	A respawn leaves the group far from its fight, and a stock task was written for a player who reloads. The wipe table
@@ -16,7 +16,7 @@
 	  heal(tsk, e)   -> ids of what is left of the enemies: back at full health the moment each is online. What is dead stays
 	                 dead, for tasks that count deaths (night hunts, Lost to the Zone, the BTR hunt, Baba Yaga, Mirage).
 	Scene rules outside the table: the Pripyat evacuation helis wait for a standing player in the zone they wait at (the timers
-	that make them leave stand still); the Impending Doom deadline does not run while no player stands; the Hidden Threat's
+	that make them leave stand still); the Impending Doom deadline does not run while no player stands;
 	Degtyarev is not hurt while nobody is near him (his death ends the storyline; offline the mod itself leaves him alone).
 	The Bar arena takes a fighter's whole inventory into a box and has no way out but winning: the fight ends by the rule
 	(its fighter's gear, the bets and the way out are coop_arena's).
@@ -43,7 +43,6 @@ local BIG_GAME = "jup_b220_trapper_task_big_game"
 local BTR_HUNT = "mil_smart_terrain_7_7_freedom_leader_stalker_task_9"
 
 local P -- coop_npc_players
-local function C() return coop_mods_core end
 
 local entries = {}
 local by_id = {}
@@ -54,7 +53,6 @@ local arena_back = nil -- map server: the fight the world server rolled back: it
 local map_ruled = false -- map server: the world server's rule is on
 local stats = { rollbacks = 0, healed = 0, doom_seconds = 0, guarded_hits = 0, errors = 0 }
 
-local function log(fmt, ...) P.log(TAG, fmt, ...) end
 local function report(what, err)
 	stats.errors = stats.errors + 1
 	P.report(TAG, what, err)
@@ -173,7 +171,7 @@ end
 
 local function roll_back(e, tsk)
 	stats.rollbacks = stats.rollbacks + 1
-	log("%s: nobody there, rolled back (stage %s)", e.id, tostring(tsk and tsk.stage))
+	P.log(TAG, "%s: nobody there, rolled back (stage %s)", e.id, tostring(tsk and tsk.stage))
 	if e.reset then e.reset(tsk, e) end
 	if e.heal then
 		for _, id in ipairs(e.heal(tsk, e) or {}) do wounded[id] = e.car and "car" or true end
@@ -206,9 +204,9 @@ end
 -- Entries: what a task keeps
 -------------------------------------------------------------------------------
 local function module_local(mod_name, name)
-	local m = C().mod(mod_name)
+	local m = coop_util.module(mod_name)
 	if not m then return nil end
-	local v = C().find_local(m, name)
+	local v = coop_mods_core.find_local(m, name)
 	return v, m
 end
 
@@ -335,60 +333,34 @@ end
 
 local function arena_on() return arena_fight() ~= nil end
 
-local function arena_trigger()
-	for _, zone in pairs(db.zone_by_name or {}) do
-		local st = db.storage[zone:id()]
-		if st and st.ini and st.active_section == "sr_idle@wait_finish" and st.ini:section_exist("sr_cutscene@fight_1") then
-			return zone, st
-		end
-	end
-	return nil
-end
-
--- What stands on the Bar: its authority does this.
-local function arena_clear()
-	for _, id in pairs(db.OnlineStalkers or {}) do
-		local o = level.object_by_id(id)
-		if o and o:section():find("bar_arena_stalker", 1, true) == 1 then safe_release_manager.release({ id = id }) end
-	end
-	local xz = C().mod("xr_zones")
-	if xz and xz.purge_arena_items then xz.purge_arena_items("bar_arena") end
-	local ar = C().mod("coop_arena") -- the fight is off: its fighter record goes, his gear waits for him (coop_arena)
-	if ar and ar.fight_over then ar.fight_over() end
-end
-
-local function arena_to_start()
-	local zone, st = arena_trigger()
-	if zone then xr_logic.switch_to_section(zone, st.ini, "sr_idle@idle") end
-end
-
+-- What stands on the Bar is coop_arena's (clear, to_start): the authority of the Bar does it.
 local function arena_reset()
 	local n = arena_fight()
 	local bridge = level.name() ~= ARENA_LEVEL and bridge_of(ARENA_LEVEL) or nil
-	if bridge then C().send("enc_arena", { n = n }, bridge) else arena_clear() end
+	if bridge then coop_mods_core.send("enc_arena", { n = n }, bridge) else coop_arena.clear() end
 	disable_info("bar_arena_fight_begin")
 	if n then
 		disable_info("bar_arena_fight_" .. n)
 		for i = 1, ARENA_OPPONENTS do disable_info(string.format("bar_arena_fight_%d_stalker_%d_die", n, i)) end
 	end
-	if not bridge then arena_to_start() end
+	if not bridge then coop_arena.to_start() end
 end
 
 -- A map server: the fight is off. The infos come by another road: back at sr_idle@idle with one of them still here the trigger would start
 -- the fight again.
 local function on_arena_rolled(t, from)
 	local n = t.n
-	local valid = from == 0 and coop_mode.leads_here() and not coop_mode.decides_world() and level.name() == ARENA_LEVEL
+	local valid = from == 0 and coop_mode.leads_for_world_elsewhere() and level.name() == ARENA_LEVEL
 		and (n == nil or (type(n) == "number" and n >= 1 and n <= ARENA_FIGHTS and n % 1 == 0))
 	if not coop_trust.pass("enc_arena", valid, "invalid arena rollback from peer %s", tostring(from)) or not valid then return end
-	arena_clear()
+	coop_arena.clear()
 	arena_back = n or 0
 end
 
 local function arena_back_tick()
 	if arena_back and not has_alife_info("bar_arena_fight_" .. arena_back) then
 		arena_back = nil
-		arena_to_start()
+		coop_arena.to_start()
 	end
 end
 
@@ -400,7 +372,7 @@ local function install_entries()
 		live = function(tsk) return tsk.stage == 1 or tsk.stage == 2 end })
 	add({ id = "baba_yaga", task = "bar_visitors_barman_stalker_trader_task_baba_yaga", level = "l02_garbage",
 		zone = function()
-			local cfg = C().mod("baba_yaga_configs")
+			local cfg = coop_util.module("baba_yaga_configs")
 			return cfg and cfg.teleport_to_location and cfg.teleport_to_location.vector, 100
 		end,
 		live = function(tsk) return tsk.stage == 2 end,
@@ -410,7 +382,7 @@ local function install_entries()
 		end })
 	add({ id = "mirage", task = "zat_a2_stalker_barmen_task_mirage", level = "zaton",
 		zone = function()
-			local cfg = C().mod("mirage_configs")
+			local cfg = coop_util.module("mirage_configs")
 			return cfg and cfg.teleport_activator_center_point, cfg and cfg.teleport_activation_distance
 		end,
 		live = function(tsk) return tsk.stage > 0 and tsk.stage < 7 end,
@@ -492,8 +464,8 @@ local function doom_tick()
 	stats.doom_seconds = stats.doom_seconds + whole
 end
 
--- Hidden Threat, task 5: Degtyarev's death fails the storyline for good. Offline the mod's own ignore list keeps him out of
--- the offline combat; online, while the whole group is down or gone from him, he takes no damage.
+-- Degtyarev's death fails the storyline. The ignore list keeps him out of offline combat. While online he takes no damage
+-- when no active player is near him.
 local HT_TASK = "sl_hidden_threat_task_5"
 local HT_SQUAD = "pri_b35_mercs_ht_degtyarev_squad"
 local HT_RADIUS = 200
@@ -547,7 +519,7 @@ local function actor_on_update()
 	local now = time_global()
 	if now < next_tick then return end
 	next_tick = now + TICK_MS
-	if coop_mode.leads_here() and not coop_mode.decides_world() then
+	if coop_mode.leads_for_world_elsewhere() then
 		arena_back_tick()
 		if map_ruled then
 			local ok, err = pcall(evac_tick)
@@ -586,8 +558,8 @@ function on_game_start()
 		local p = patrol(ARENA_POINT):point(0)
 		return { x = p.x, y = p.y, z = p.z }
 	end, function(t) arena_at = t end, 30000)
-	C().on("enc_arena", on_arena_rolled)
+	coop_mods_core.on("enc_arena", on_arena_rolled)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("npc_on_before_hit", npc_on_before_hit)
-	C().status_line(TAG, print_status)
+	coop_mods_core.status_line(TAG, print_status)
 end

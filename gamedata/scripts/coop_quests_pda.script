@@ -1,5 +1,5 @@
 --[[
-	Anomaly Coop - PDA of the group (gamedata\scripts\coop_quests_pda.script), W4 "quests".
+	Anomaly Coop - PDA of the group (gamedata\scripts\coop_quests_pda.script).
 	Ports xrRazom's xrr_patch_pda, xrr_patch_encyclopedia, xrr_patch_encyclopedia_messages_restored
 	and xrr_achievement_sync on our events.
 
@@ -14,15 +14,15 @@
 	content, quests.act "stash_reveal"; "stash" is a reward's new stash, coop_quests_missions). Opening a stash box on a client asks the host to fill it
 	(treasure_manager.try_spawn_treasure, host-domain callback that does not run on a client).
 	Encyclopedia: an article or note one player unlocks is unlocked for everybody (articles without the stock news,
-	notes with the PDA note signal). Encyclopedia Messages Restored is kept quiet for those. An article another player
+	notes with the PDA note signal). Local unlock notifications are muted for replicated unlocks. An article another player
 	opened is announced by coop_quests_news.show_article ("New article: ... (opened by <nick>)"), not while this machine
 	is still loading the host's world (docs\MESSAGES.md).
 	Achievements: an achievement one player earns is earned by everybody, with its rewards on each
 	player's own machine (faction unlocks of the local config, rank / reputation); the stashes
-	of "Tourist" are created by the host only. Money is the host's (F2 T6, the host ledger): the stock reward
+	of "Tourist" are created by the host only. Money is the host's (the host ledger): the stock reward
 	(iron_curtain: db.actor:give_money(40000)) is dropped on a client, which still gets the earned callback and its
 	news, and the host grants it with coop.money_grant to every player who earned the achievement (event achv_got,
-	and achv from the earner), once per character. F2 T6b: the host pays only if it has the achievement itself and
+	and achv from the earner), once per character. The host pays only if it has the achievement itself and
 	answers a claim it paid (achv_ack); a client repeats its claim until the answer, once in 5 s, at most 10 times.
 --]]
 
@@ -148,8 +148,8 @@ local function own_entry()
 end
 
 -- A client of a world server never shows the stock list: its own ALife holds the server's ghost as "the host's avatar" (the role
--- swap of the join), and the stock list would rank it under the server's name until the server's answer comes (owner 2026-11-13:
--- the server must exist nowhere). An ordinary host's client shows the stock list meanwhile, as before.
+-- swap of the join), and the stock list would rank it under the server's name until the server's answer comes (the
+-- server must exist nowhere). An ordinary host's client shows the stock list meanwhile.
 function stock_ranks_allowed()
 	local api = qc.engine()
 	local ok, link = pcall(function() return api and api.server_link and api.server_link() end)
@@ -193,7 +193,7 @@ local function patch_rankings()
 	local can_show = p.coc_rankings_can_show
 	if type(can_show) == "function" then
 		p.coc_rankings_can_show = function(index, ...)
-			if not qc.active() then return can_show(index, ...) end -- single player: the stock, untouched (W5)
+			if not qc.active() then return can_show(index, ...) end -- single player: the stock, untouched
 			if not coop_mode.actor_is_player() then return false end
 			if not cached() then return stock_entry_ok(index) and can_show(index, ...) or false end
 			if has_alife_info("ui_pda_hide") then return false end
@@ -211,7 +211,7 @@ local function patch_rankings()
 	local set_name = p.coc_rankings_set_name
 	if type(set_name) == "function" then
 		p.coc_rankings_set_name = function(index, ...)
-			if not qc.active() then return set_name(index, ...) end -- single player: the stock, untouched (W5)
+			if not qc.active() then return set_name(index, ...) end -- single player: the stock, untouched
 			if not coop_mode.actor_is_player() then return "" end
 			if not cached() then return stock_entry_ok(index) and set_name(index, ...) or "" end
 			local e = entry(index)
@@ -223,7 +223,7 @@ local function patch_rankings()
 	local set_desc = p.coc_rankings_set_description
 	if type(set_desc) == "function" then
 		p.coc_rankings_set_description = function(index, ...)
-			if not qc.active() then return set_desc(index, ...) end -- single player: the stock, untouched (W5)
+			if not qc.active() then return set_desc(index, ...) end -- single player: the stock, untouched
 			if not coop_mode.actor_is_player() then return "" end
 			if not cached() then return stock_entry_ok(index) and set_desc(index, ...) or "" end
 			local e = entry(index)
@@ -236,7 +236,7 @@ local function patch_rankings()
 	local set_hint = p.coc_rankings_set_hint
 	if type(set_hint) == "function" then
 		p.coc_rankings_set_hint = function(index, ...)
-			if not qc.active() then return set_hint(index, ...) end -- single player: the stock, untouched (W5)
+			if not qc.active() then return set_hint(index, ...) end -- single player: the stock, untouched
 			if not coop_mode.actor_is_player() then return "" end
 			if not cached() then return stock_entry_ok(index) and set_hint(index, ...) or "" end
 			return ""
@@ -245,7 +245,7 @@ local function patch_rankings()
 	local set_icon = p.coc_rankings_set_icon
 	if type(set_icon) == "function" then
 		p.coc_rankings_set_icon = function(index, ...)
-			if not qc.active() then return set_icon(index, ...) end -- single player: the stock, untouched (W5)
+			if not qc.active() then return set_icon(index, ...) end -- single player: the stock, untouched
 			if not coop_mode.actor_is_player() then return "" end
 			if not cached() then return stock_entry_ok(index) and set_icon(index, ...) or "" end
 			local e = entry(index)
@@ -257,7 +257,7 @@ local function patch_rankings()
 	local border = p.coc_rankings_show_border
 	if type(border) == "function" then
 		p.coc_rankings_show_border = function(index, ...)
-			if not qc.active() then return border(index, ...) end -- single player: the stock, untouched (W5)
+			if not qc.active() then return border(index, ...) end -- single player: the stock, untouched
 			if not coop_mode.actor_is_player() then return false end
 			if not cached() then return stock_entry_ok(index) and border(index, ...) or false end
 			if index == size_of() + 1 then return true end
@@ -489,8 +489,7 @@ local function host_stash(from, t)
 end
 
 -- Client: the host revealed the stash this player's PDA message points to, or a task's reward did (coop_tasks). b: the stash
--- in host numbering. A mod's override of the line may show where it is (Descriptive Stash Coordinates): in this machine's
--- language, from the stock point names.
+-- in host numbering. A notification override can describe the stash using stock point names in this machine's language.
 local function client_on_treasure(t, from)
 	if from ~= 0 or not qc.is_client() then return end
 	local nm = qc.mod("news_manager")
@@ -533,10 +532,8 @@ end
 -------------------------------------------------------------------------------
 local ency = { orig_note = nil, orig_article = nil, applying = false, mutes = {} }
 
--- VAR's voice decorator requires create_interaction's temporary key/section, which a
--- replicated article does not have. Keep its saved unlock and all other decorators;
--- only remote application skips the local interaction's speech (VAR lines 4-8, 13-15).
--- VAR's unlock_article decorator -> the function it wraps (its upvalue), or nil for any other function.
+-- The article voice decorator needs the local interaction's temporary key and section. Replicated unlocks skip only the
+-- speech, keeping the saved unlock and other decorators. This function returns the decorator's wrapped function or nil.
 local function var_wrapped(fn)
 	local info = debug.getinfo(fn, "S")
 	if not (info and type(info.source) == "string" and info.source:match("ui_pda_encyclopedia_tab_varefined%.script$")) then
@@ -563,7 +560,7 @@ local function adapt_article_voice(fn, seen)
 		seen[fn] = adapted
 		return adapted
 	end
-	-- Another mod may have wrapped VAR first. Adapt that captured function in place
+	-- An outer wrapper can capture the voice decorator. Adapt the captured function in place
 	-- so its outer wrapper still runs for local and replicated unlocks alike.
 	for i = 1, 255 do
 		local name, value = debug.getupvalue(fn, i)
@@ -573,9 +570,8 @@ local function adapt_article_voice(fn, seen)
 			if adapted ~= value then debug.setupvalue(fn, i, adapted) end
 		end
 	end
-	-- A wrapper may keep VAR in a global of its own module instead of an upvalue: GAMMA's Encyclopedia Messages
-	-- Restored (zz_Encyclopedia_messages_restored.script:95 `base_unlock_article = ui_pda_encyclopedia_tab.unlock_article`,
-	-- loaded after VAR) calls it as base_unlock_article(section). Replace that field with the adapted VAR.
+	-- A notification wrapper can store the voice decorator in its module table instead of capturing it as an upvalue.
+	-- Replace that field too so the notification wrapper keeps using the adapted unlock.
 	local ok, env = pcall(getfenv, fn)
 	if ok and type(env) == "table" and env ~= _G then
 		for key, value in pairs(env) do
@@ -714,7 +710,7 @@ local function level_nick()
 end
 
 -- The name of what the host's own logic earned: the host player's nick (peer 0); a world server's seat plays no character and is
--- in no row (plan 2026-11-12): "World"
+-- in no row: "World"
 local function host_nick()
 	if coop_mode.decides_world() and not coop_mode.seat_plays(0) then
 		local okt, s = pcall(function() return game.translate_string("st_coop_core_chat_world") end)
@@ -745,7 +741,7 @@ local function announce_ency(s)
 	if ency.applying or not qc.active() then return end
 	if coop_mode.is_player_mirror() then
 		if qc.client_live() then qc.send("ency", { s = s }, 0) end
-	elseif coop_mode.leads_here() and not coop_mode.decides_world() then
+	elseif coop_mode.leads_for_world_elsewhere() then
 		qc.send("ency", { s = s, n = level_nick() }, 0)
 	elseif qc.host_party() then
 		qc.send("ency", { s = s, n = host_nick() }, -1)
@@ -847,7 +843,7 @@ local function has_achv(name)
 end
 
 -- Host: the money of an achievement for a client who earned it. The ledger (coop.money_grant) does the rest. Only if the
--- host has the achievement itself (F2 T6b: a claim is not proof). True when the character has been paid for it, now or
+-- host has the achievement itself (a claim is not proof). True when the character has been paid for it, now or
 -- before: that is what the host answers (achv_ack); false (no answer) leaves the claim to be repeated.
 local function grant_achv_money(peer, name)
 	local money = ACHV_MONEY[name]
@@ -874,8 +870,8 @@ local function grant_achv_money(peer, name)
 		achv_paid[key] = true
 		stats.achv_paid = stats.achv_paid + 1
 		-- the "money received" line on his machine (the ledger sends only the balance)
-		local tasks = qc.mod("coop_tasks")
-		if tasks and tasks.money_line then pcall(tasks.money_line, peer, money.amount) end
+		local rewards = qc.mod("coop_tasks_rewards")
+		if rewards and rewards.money_line then pcall(rewards.money_line, peer, money.amount) end
 		return true
 	end
 	qc.log(TAG, "! %s money for #%d refused: %s", name, peer, tostring(called and why or ok))
@@ -894,9 +890,9 @@ local function send_claim(name, c)
 	qc.send("achv_got", { a = name }, 0)
 end
 
--- Who the claims are for (T6b review M3): the host (its nick) and our own peer id. A claim made in one session is not sent to
+-- Who the claims are for: the host (its nick) and our own peer id. A claim made in one session is not sent to
 -- the host of another one, which would pay it for an achievement this client never earned in its world.
--- plan 2026-11-12: the host is the client's link (coop.server_link: a world server's seat is in no row); its nick is the nick of row 0
+-- The host is the client's link (coop.server_link: a world server's seat is in no row); its nick is the nick of row 0
 -- of an ordinary session, so the key is the same there. An older engine: row 0.
 local function session_key()
 	local api = qc.engine()
@@ -987,7 +983,7 @@ local function on_earned(name)
 	if achv_applying or type(name) ~= "string" or not qc.active() then return end
 	if coop_mode.is_player_mirror() then -- as announce_ency (A-S5S)
 		if qc.client_live() then qc.send("achv", { a = name }, 0) end
-	elseif coop_mode.leads_here() and not coop_mode.decides_world() then
+	elseif coop_mode.leads_for_world_elsewhere() then
 		qc.send("achv", { a = name, n = level_nick() }, 0)
 	elseif qc.host_party() then
 		qc.send("achv", { a = name, n = host_nick() }, -1)

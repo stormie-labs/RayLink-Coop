@@ -57,6 +57,7 @@ local function process(set_name, coop)
 	env.task_manager = { get_task_manager = function() return { task_info = P.task_info } end }
 	env.coop_game_settings = { world_faction = function() return "stalker" end }
 	env.give_info = function(n) P.infos[n] = true end
+	module(env, "coop_util", read("gamedata/scripts/coop_util.script"))
 	P.facade = module(env, "coop_mode", FACADE)
 	if set_name then modes.install(P.facade, set_name) else P.facade.uninstall("hostplay") P.facade.uninstall("srv") end
 	P.cs = module(env, "coop_conditions_stock", STOCK)

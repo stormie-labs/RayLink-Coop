@@ -1,8 +1,7 @@
 -- Ядро: без проверок режима (docs/MODES.md)
 --[[
-	Anomaly Coop - the robber's punch lands on the player he robs (gamedata\scripts\coop_quests_punch.script), Dev 57 G15-1,
-	findings m09:8 (G.A.M.M.A. Quests Rebalance xr_effects.script:2686) and s39:3 (state_mgr_animation_list.script:336,
-	state_mgr_animation.script:518).
+	Anomaly Coop - the robber's punch lands on the player he robs (gamedata\scripts\coop_quests_punch.script):
+	xr_effects.script:2686, state_mgr_animation_list.script:336, state_mgr_animation.script:518.
 
 	xr_effects.actor_punch puts the punch on db.actor: the input lock (30 s), the camera (camera_effects\fusker.anm) and the
 	weapon in hand dropped. Two ways call it:
@@ -49,8 +48,6 @@ local seq = 0
 local installed = false
 
 stats = { kept = 0, sent = 0, own = 0, landed = 0, again = 0, far = 0, nobody = 0, elsewhere = 0, copy = 0 }
-
-local function log(fmt, ...) coop_mods_core.log(TAG, fmt, ...) end
 
 local function id_of(o)
 	if o == nil then return nil end
@@ -215,13 +212,13 @@ local function effect(a, b, ...)
 	return judge(a, "anim")
 end
 
--- s39:3: the special action of the punch animation (state_mgr_animation:process_special_action: action_table.f(self.npc))
+-- the special action of the punch animation (state_mgr_animation:process_special_action: action_table.f(self.npc))
 local function anim(npc, ...)
 	if not coop_mods_core.active() then return stock_punch(npc, ...) end
 	return judge(npc, "anim")
 end
 
--- s39:3: an NPC is put in the "punch" state (xr_abuse: look_object = db.actor; xr_remark: its target): its victim is chosen now
+-- an NPC is put in the "punch" state (xr_abuse: look_object = db.actor; xr_remark: its target): its victim is chosen now
 -- and kept for the animation and the condlist that follow. The state's look_object when it is a player's character, else the
 -- player nearest to the NPC (a server's ghost is nobody's).
 local function assign(npc, target)
@@ -298,7 +295,7 @@ local function install()
 		return effect
 	end)
 	if not ok then
-		log("! xr_effects.actor_punch not found: the punch stays the stock one")
+		coop_mods_core.log(TAG, "! xr_effects.actor_punch not found: the punch stays the stock one")
 		return
 	end
 	local punches = chain_of(stock_punch)
@@ -311,25 +308,20 @@ local function install()
 	end
 	local sm = coop_mods_core.mod("state_mgr")
 	local kept_ok = sm and coop_mods_core.wrap(sm, "set_state", "state_mgr.set_state (the punch's victim)", set_state_of)
-	log("the punch lands on the robbed player: %d entries of the animation lists%s", patched,
+	coop_mods_core.log(TAG, "the punch lands on the robbed player: %d entries of the animation lists%s", patched,
 		kept_ok and "" or ", ! state_mgr.set_state not found: no victim is kept")
-end
-
-local function start_step(what, f)
-	local ok, err = pcall(f)
-	if not ok then printf("! [coop_quests_punch] %s failed: %s", what, tostring(err)) end
 end
 
 function on_game_start()
 	if not coop_mods_core.engine() then return end
-	start_step("the order", function() coop_mods_core.on(ORDER, land, "player") end)
-	start_step("status", function()
+	coop_util.start_step("coop_quests_punch", "the order", function() coop_mods_core.on(ORDER, land, "player") end)
+	coop_util.start_step("coop_quests_punch", "status", function()
 		coop_mods_core.status_line(TAG, function()
 			return string_format("kept %d, sent %d, own %d, landed %d (again %d), far %d, nobody %d, elsewhere %d, copy %d",
 				stats.kept, stats.sent, stats.own, stats.landed, stats.again, stats.far, stats.nobody, stats.elsewhere, stats.copy)
 		end)
 	end)
-	start_step("install", function()
+	coop_util.start_step("coop_quests_punch", "install", function()
 		RegisterScriptCallback("actor_on_first_update", function()
 			local ok, err = pcall(install)
 			if not ok then coop_mods_core.report(TAG, "install", err) end

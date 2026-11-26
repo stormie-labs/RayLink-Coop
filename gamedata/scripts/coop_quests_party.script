@@ -1,6 +1,6 @@
 --[[
 	Anomaly Coop - quest items and positions of the whole group (gamedata\scripts\coop_quests_party.script),
-	W4 "quests". Ports the "team pass" half of xrRazom's xrr_patch_quests, the party parts of
+	Ports the "team pass" half of xrRazom's xrr_patch_quests, the party parts of
 	xrr_patch_task_guards (barrier defense) and the host-side fixes of its tasks_stash.script /
 	tasks_pump_station_defense.script replacements (wrapped here, the stock files stay as they are).
 	SPEC R-7.5 (quest items count from any player), R-7.6.
@@ -11,7 +11,7 @@
 	  - db.actor:object(section) also finds the item in another player's character, and
 	    utils_item.has_item_by_id(nil, id) is true when any player character holds that item: status and
 	    target functors that ask "does the actor have it" count the group (fetch, delivery, fate, measure,
-	    anomaly scanner, DRX retrieve, ...);
+	    anomaly scanner, quest item retrieval, ...);
 	  - effects keyed to the actor go to the player who took the task (coop_tasks.with_task_owner): a
 	    measuring device or a detector handed out on the first check lands in that player's character;
 	  - for the task types that measure "is the actor there" (measure, fate, anomaly scanner, pump station
@@ -19,7 +19,7 @@
 	    to the task target, so whoever goes there advances the task (and ambushes spawn around that player).
 	    Pump station stage 2 checks every living player on the station's map against the sniper trigger.
 	Per type: recover mutant data / recover item on corpse / chimera scan / delivery package / Agroprom
-	underground documents / barrier distance count the group; DRX quest stash target follows the quest
+	underground documents / barrier distance count the group; the quest stash target follows the quest
 	item; a stash whose item already exists is not created again; pump station guards a missing trigger.
 	Conditions actor_has_item / _amount / _count count the group on every machine.
 	Client: the anomaly measurement HUD runs on the player who stands there with the device (the host's
@@ -42,7 +42,7 @@ local CHIMERA_RANGE = 20
 
 -- Status functors that compare the actor's position with the task target: name -> reference
 -- (true = the task's current target, a string = that smart terrain).
--- DRX money tasks (faction change) read db.actor:money(): the taker's ledger balance, not the host's.
+-- Faction-change money tasks read db.actor:money(), which must be the taker's ledger balance.
 local MONEY_FUNCTOR = "drx_sl_money_task_status"
 -- tasks_multifetch counts through db.actor:iterate_inventory: every player's character.
 local PARTY_INVENTORY_FUNCTORS = { multifetch_status_functor = true }
@@ -83,7 +83,7 @@ end
 
 -- True if a character other than this machine's actor holds an item of `sec`.
 local function other_holds(sec)
-	local t = ct()
+	local t = coop_tasks_items
 	return t and t.party_object and t.party_object(sec) ~= nil or false
 end
 
@@ -145,15 +145,15 @@ local function patch_check_task()
 			object = function(me, sec, ...)
 				local o = real_object(me, sec, ...)
 				if o or type(sec) ~= "string" then return o end
-				return ct().party_object(sec)
+				return coop_tasks_items.party_object(sec)
 			end,
 		}
 		if self.status_functor == MONEY_FUNCTOR then
 			local money = ct().taker_money and ct().taker_money(self.id)
 			if money then fields.money = function() return money end end
 		end
-		if PARTY_INVENTORY_FUNCTORS[self.status_functor] and ct().party_inventory_walker then
-			fields.iterate_inventory = ct().party_inventory_walker(a.iterate_inventory)
+		if PARTY_INVENTORY_FUNCTORS[self.status_functor] and coop_tasks_items.party_inventory_walker then
+			fields.iterate_inventory = coop_tasks_items.party_inventory_walker(a.iterate_inventory)
 		end
 		local ref = POSITION_FUNCTORS[self.status_functor]
 		if ref and not (self.status_functor == "gd_task_status_functor" and self.stage == 2) then
@@ -209,7 +209,7 @@ local function patch_has_item_by_id()
 	ui.has_item_by_id = function(npc, id, section, ...)
 		local r = orig(npc, id, section, ...)
 		if r or npc ~= nil or not qc.active() then return r end
-		return ct().party_holds_id(id, section)
+		return coop_tasks_items.party_holds_id(id, section)
 	end
 end
 
@@ -231,7 +231,7 @@ local function patch_conditions()
 			local r = amount(actor, npc, p, ...)
 			if r or not qc.active() or type(p) ~= "table" or type(p[1]) ~= "string" then return r end
 			local need = tonumber(p[2])
-			return need ~= nil and ct().party_count(p[1]) >= need
+			return need ~= nil and coop_tasks_items.party_count(p[1]) >= need
 		end
 	end
 	local count = xc.actor_has_item_count
@@ -551,7 +551,7 @@ local function patch_task_types()
 
 	-- Delivery: the package may be in another player's character. The stock takes "the actor's" first item of the section, and
 	-- quest_package_1..8 are also A-Life Quests courier parcels and other deliveries: THIS task's parcel (var.item_1_id) is taken
-	-- from the player who holds it (owner 2026-11-16, build 51). The host's own parcel in the host's own dialog goes to the NPC it
+	-- from the player who holds it. The host's own parcel in the host's own dialog goes to the NPC it
 	-- talks to, as in the stock.
 	local xe = qc.mod("xr_effects")
 	if xe and type(xe.remove_delivery_item) == "function" then
@@ -577,7 +577,7 @@ local function patch_task_types()
 					return
 				end
 				if type(sec) == "string" and not db.actor:object(sec) and other_holds(sec) then
-					stats.takes = stats.takes + ct().party_take(sec, 1)
+					stats.takes = stats.takes + coop_tasks_items.party_take(sec, 1)
 					return
 				end
 			end
@@ -585,7 +585,7 @@ local function patch_task_types()
 		end
 	end
 
-	-- DRX quest stash (stock tasks_stash.script, fixes of xrRazom's replacement)
+	-- Quest stash checks reuse the existing quest item's target to avoid creating another stash.
 	if type(tsf) == "table" and type(tsf.drx_sl_quest_item_task_status) == "function" then
 		local orig = tsf.drx_sl_quest_item_task_status
 		tsf.drx_sl_quest_item_task_status = function(tsk, task_id, ...)
@@ -699,7 +699,7 @@ end
 
 -- What itms_manager.relocate_item_from_actor counts in the speaker's inventory: the uses of a multi-use item, else one an item.
 -- The dialogs that call it check the same (mlr_utils.have_item, utils_item.get_amount mode 1): a speaker who covers the amount with
--- uses asks the group for nothing (round 3: 3 bottles of 2 uses gave 3 and asked the group for 2 more, a quest_give_npc line).
+-- uses asks the group for nothing.
 local function units_own(sec)
 	local okm, multi = pcall(IsItem, "multiuse", sec)
 	local n = 0
@@ -727,7 +727,7 @@ function give_to_npc(sec, npc, count)
 	if mine > 0 then itms_manager.relocate_item_from_actor(db.actor, npc, sec, mine) end
 	local given = mine
 	for _ = 1, count - mine do
-		if ct().party_take(sec, 1) > 0 then
+		if coop_tasks_items.party_take(sec, 1) > 0 then
 			alife_create_item(sec, npc)
 			given = given + 1
 		end
@@ -742,7 +742,7 @@ local function host_give_npc(from, t)
 	if not (count >= 1 and count <= 50) then return end
 	local who = qc.avatar_obj(from)
 	if who and npc:position():distance_to_sqr(who:position()) > 900 then return end
-	-- TZ v2 6.4 row 2 (the review of round 1, B1): the group's items leave it here as in "take" - the same verdict and the same
+	-- the group's items leave it here as in "take" - the same verdict and the same
 	-- ledger, under its own name (a test that loads no coop_quests_trust gives as before)
 	local qt = qc.mod("coop_quests_trust")
 	local pass, ticket = true, nil
@@ -798,13 +798,13 @@ end
 local function host_take(from, t)
 	local n = math.floor(tonumber(t.n) or 0)
 	if not (type(t.s) == "string" and n > 0 and n <= 50 and ini_sys:section_exist(t.s)) then return end
-	-- TZ v2 6.4 row 2: only what a running task he sees asks for, and not more than it still lacks (coop_quests_trust)
+	-- only what a running task he sees asks for, and not more than it still lacks (coop_quests_trust)
 	-- (the module is always in the game; a test that loads none runs the take as before)
 	local qt = qc.mod("coop_quests_trust")
 	local pass, task = true, nil
 	if qt then pass, task = qt.check_take(from, t.s, n) end
 	if not pass then return end
-	local got = ct().with_recipient(from, ct().party_take, t.s, n) or 0
+	local got = ct().with_recipient(from, coop_tasks_items.party_take, t.s, n) or 0
 	stats.takes = stats.takes + got
 	if qt then qt.note_take(task, t.s, got) end
 end

@@ -107,6 +107,7 @@ local function machine(opts)
 		setfenv(f, mod)()
 		return mod
 	end
+	load_script("coop_util")
 	M.mode = load_script("coop_mode")
 	M.R = load_script("coop_transition_route")
 	M.R.on_game_start()

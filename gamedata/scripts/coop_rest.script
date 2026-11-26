@@ -9,7 +9,7 @@
 	   engine without coop.rest every one of them calls the stock function):
 	     UISleep:TestAndShow     no shelter check (the host looks at the rest place when the player lies down: shelter, tent,
 	                             sleeping bag, campfire); bleeding and radiation still forbid the sleep; the sleepiness
-	                             veto of GAMMA (inside the stock TestAndShow) stays, so the stock is called with force = true
+	                             veto still runs inside TestAndShow when called with force = true
 	                             after our own checks. sleep_active (given by sleep_in_zone before the dialog) is taken off
 	                             at once: it freezes every CreateTimeEvent of the machine, the host's too.
 	     UISleep:OnButtonSleep   the slider's hours go to coop.rest.lie_down(hours, false), the doze window opens. The stock
@@ -34,8 +34,8 @@
 	   callback actor_on_sleep(hours) for every mod that listens, the waking animation; at the end of the second (dream_end)
 	   the UI on, the sound back, the infos off. dream_end alone does everything dream_mid has not done yet. A dream whose
 	   effector callbacks never come ends by itself after 60 s. The engine says "awake" about 12 s after the start: the dream
-	   is closed by dream_end, never by that state. GAMMA's get_immersive_sleep_hours is not called: its random early
-	   wake-up would give this machine other hours than the world skipped. At dream_end one line "slept N h: health a -> b,
+	   is closed by dream_end. Skip random early wake-ups so local sleepers use the duration the world skips.
+	   At dream_end one line "slept N h: health a -> b,
 	   satiety, thirst, sleepiness, radiation, bleeding" (before = the last second he only rested). While he only rests a
 	   bleeding or a radiation ends the rest (the stock checks them seconds before its skip; here the skip may come minutes
 	   after the lie-down, and the engine puts all its hours on the body in one step).
@@ -43,7 +43,7 @@
 	   world (emission / psi-storm time_forwarded, level_weathers' forced weather change) is done then, before their next
 	   update, as the stock does it in the call that moves the clock.
 
-	4. The offer (owner 2026-11-07, live report from vanilla: "there was no window to accept the time skip"): an ally lies
+	4. The offer: an ally lies
 	   down -> every other awake player gets the window UICoopInvite "<nick> is going to sleep for N h. Lie down too?" with
 	   Lie down too / Not now (ESC = Not now). Once per rest of an ally; not while I rest myself (my doze window names who is
 	   awake); one window for all who rest (when the one it names gets up, it names another who still rests, else it
@@ -55,8 +55,8 @@
 	   of the group fights; the sleep cannot begin anyway), I was hit or shot within INVITE_QUIET_MS, the HUD is not free
 	   (actor_menu.is_hud_free: inventory, a dialogue, a registered window) or the PDA is open, there is only a tip "... the
 	   offer opens when the fight is over and the menus are closed" and the window opens at the first free second (a hit
-	   while it is up puts it back to waiting). No hotkey: G.A.M.M.A. hands keys to on_before_key_press first and a mod may
-	   take them there (coop_hud_transition HOLD_GAP_MS), and the offer must not wait for a key the player may not know.
+	   while it is up puts it back to waiting). Open the offer without a hotkey because other scripts can consume key presses
+	   first and the player may not know the key.
 	   A window that cannot be made falls back to the old tip "<nick> is tired, rest too". The party panel line is
 	   coop_allies.rest_mark.
 
@@ -91,10 +91,7 @@ local CAM_ID, PPE_ID = 10, 11 -- the stock ids of the sleep effectors
 
 local BLOCK_KEYS = { combat = "block_combat", world = "block_world", dead = "block_dead" }
 
-local function log(fmt, ...)
-	local ok, line = pcall(string_format, fmt, ...)
-	printf("[coop-rest] %s", ok and line or tostring(fmt))
-end
+local log = coop_util.logger("[coop-rest]")
 
 -- a step that may fail must not stop the ones after it (a dream that is half set up still has to end)
 local function try(what, f)
@@ -196,15 +193,6 @@ local function info_off(id)
 	if a then pcall(a.disable_info_portion, a, id) end
 end
 
-local function mod(name)
-	local m = rawget(_G, name)
-	if m == nil then
-		local ok, r = pcall(function() return _G[name] end) -- _G.__index loads gamedata\scripts\<name>.script
-		m = ok and r or nil
-	end
-	return type(m) == "table" and m or nil
-end
-
 local function register_ui(name, path)
 	local f = rawget(_G, "Register_UI")
 	if f then pcall(f, name, path) end
@@ -255,13 +243,8 @@ end
 -- Who is waited for, what holds the sleep
 -------------------------------------------------------------------------------
 local function nick_of(id)
-	if api then
-		local ok, list = pcall(api.players)
-		if ok and type(list) == "table" then
-			for _, p in ipairs(list) do
-				if p.avatar_id == id then return tostring(p.nick or "?") end
-			end
-		end
+	for _, p in ipairs(coop_util.players()) do
+		if p.avatar_id == id then return tostring(p.nick or "?") end
 	end
 	return "?"
 end
@@ -289,7 +272,7 @@ end
 -- The emission and the psi-storm hold the sleep (the world server's world; surge_manager / psi_storm_manager.is_started()).
 local function emission_running()
 	for _, name in ipairs({ "surge_manager", "psi_storm_manager" }) do
-		local m = mod(name)
+		local m = coop_util.module(name)
 		local f = m and m.is_started
 		if type(f) == "function" then
 			local ok, started = pcall(f)
@@ -412,13 +395,13 @@ local function close_doze()
 	end
 end
 
--- The position of the sleeping bag the player sleeps at, when it is one of his to fold: a player (the host player too, F3a T6:
+-- The position of the sleeping bag the player sleeps at, when it is one of his to fold: a player (the host player too:
 -- he asks the world server with a pack claim like a remote client), a placed ph_sleepbag of the world within reach.
 local function fold_target()
 	if not is_player() then return nil end
 	local id = st.bag
 	if type(id) ~= "number" then return nil end
-	local ck = mod("coop_checkpoints")
+	local ck = coop_util.module("coop_checkpoints")
 	if not (ck and type(ck.object_kind) == "function" and type(ck.request) == "function") then return nil end
 	local ok, at = pcall(function()
 		local obj = level.object_by_id(id)
@@ -444,11 +427,10 @@ local function local_refusal()
 	return nil
 end
 
--- The player's needs around a sleep (owner 2026-11-08: "can HP drop after a sleep?"): the engine's health, satiety, radiation and
--- bleeding, GAMMA's thirst (actor_status_thirst) and sleepiness (actor_status_sleep) when those modules are on; nil fields are
--- not known here.
+-- Read the player's health, satiety, radiation and bleeding from the engine. Thirst and sleepiness are available only
+-- when their modules are active. An unavailable field stays nil.
 local function module_value(name, fn)
-	local m = mod(name)
+	local m = coop_util.module(name)
 	local f = m and m[fn]
 	if type(f) ~= "function" then return nil end
 	local ok, v = pcall(f)
@@ -521,7 +503,7 @@ local function poll(now)
 		close_doze() -- got up, woken (a fight, a wound), the group woke
 		return
 	elseif now - st.asked >= ASK_GRACE_MS then
-		rest_call("get_up") -- T14 review I-2: a lie-down that reaches the host late must not leave us resting unseen
+		rest_call("get_up") -- a lie-down that reaches the host late must not leave us resting unseen
 		close_doze() -- the engine never took the lie-down
 		tell("refused_lost")
 		reoffer("refused_lost")
@@ -529,7 +511,7 @@ local function poll(now)
 	end
 	-- The stock looks at bleeding and radiation seconds before its time skip (TestAndShow, then the dream). Here the skip comes
 	-- when the whole group rests, minutes after this lie-down may be, and the engine puts all its hours on the body in one step
-	-- (CEntityCondition::UpdateConditionTime): GAMMA's radiation_health_v_sleep 0.0012 x radiation x 32400 s of a 9 h sleep is
+	-- (CEntityCondition::UpdateConditionTime). At a sleep radiation rate of 0.0012, the health loss over 9 hours is
 	-- 0.4 of the health at radiation 0.01. So a rest that is not a faint ends as soon as he bleeds or is irradiated, while he
 	-- only rests ("sleeping": the group's skip has come, he sleeps it through like the stock).
 	if state ~= "sleeping" and not st.forced then
@@ -556,7 +538,7 @@ fold = function()
 	local at = st.bag_at
 	get_up()
 	if not at then return end
-	local ck = mod("coop_checkpoints")
+	local ck = coop_util.module("coop_checkpoints")
 	if ck and type(ck.request) == "function" then
 		local ok, err = pcall(ck.request, "pack", 0, at) -- the claim goes to the host with the bag's position
 		if not ok then log("! the pack claim failed: %s", tostring(err)) end
@@ -566,11 +548,10 @@ end
 -------------------------------------------------------------------------------
 -- The sleep effects (coop_rest_sleep)
 -------------------------------------------------------------------------------
--- T14 review I-1: GAMMA's Immersive Sleep (ui_sleep_dialog.get_immersive_sleep_hours) sets the rest per hour by comfort
--- before the stock sleep. The co-op sleep does not call it (its random early wake-up would not match the time the group
--- slept), so the same rates are set here: 980 an hour, 1120 in a sleeping bag, 1400 in a bag with a bedspread.
+-- Set the comfort-based rest rate here because a random early wake-up would disagree with the group sleep duration.
+-- The rates are 980 an hour, 1120 in a sleeping bag, and 1400 in a bag with a bedspread.
 local function set_rest_rate(in_bag)
-	local usd, ass = mod("ui_sleep_dialog"), mod("actor_status_sleep")
+	local usd, ass = coop_util.module("ui_sleep_dialog"), coop_util.module("actor_status_sleep")
 	if not (usd and type(usd.get_immersive_sleep_hours) == "function") then return end
 	if not (ass and type(ass.set_rest_per_hour) == "function") then return end
 	local rate = 980
@@ -656,17 +637,17 @@ end
 local function on_skipped(hours)
 	if not in_session() or not coop_mode.decides_world() then return end
 	try("surge time_forwarded", function()
-		local m = mod("surge_manager")
+		local m = coop_util.module("surge_manager")
 		local s = m and type(m.get_surge_manager) == "function" and m.get_surge_manager() or nil
 		if s then s.time_forwarded = true end
 	end)
 	try("psi-storm time_forwarded", function()
-		local m = mod("psi_storm_manager")
+		local m = coop_util.module("psi_storm_manager")
 		local s = m and type(m.get_psi_storm_manager) == "function" and m.get_psi_storm_manager() or nil
 		if s then s.time_forwarded = true end
 	end)
 	try("forced weather change", function()
-		local m = mod("level_weathers")
+		local m = coop_util.module("level_weathers")
 		local wm = m and type(m.get_weather_manager) == "function" and m.get_weather_manager() or nil
 		if wm and type(wm.forced_weather_change) == "function" then wm:forced_weather_change() end
 	end)
@@ -717,10 +698,8 @@ end
 
 -- A world is entered (a load, a level change): what was open belongs to the old one.
 local function on_first_update()
-	-- G.A.M.M.A.'s "no rest from this sleep" marks (actor_status_sleep, actor_status_thirst) are given and taken away in one
-	-- call. Until build 55 a client's mark went to the host and from it to everybody, and stayed there (in the saves too):
-	-- a sleep lowered nobody's need for sleep. One that is held when a world starts is such a left-over. The engine keeps
-	-- them on this machine now (coop_rules.h, is_machine_info), so this take-away is local, in a session and without one.
+	-- Sleep and thirst scripts use these marks within a single call. Clear any loaded marks locally to prevent a stale
+	-- mark from affecting the next sleep.
 	info_off("force_slp2")
 	info_off("force_slp")
 	if not rest_session() then return end
@@ -801,8 +780,7 @@ local function wrap_test_and_show(orig)
 			put_tip(why)
 			return
 		end
-		-- the shelter is the host's business now (it looks at the rest place when the player lies down); the rest of the stock
-		-- dialog (and GAMMA's sleepiness veto) is the stock's
+		-- Bypass the dialog's shelter check because the host checks the rest place. Keep the dialog's own sleepiness check.
 		return orig(self, true, ...)
 	end
 end
@@ -853,7 +831,7 @@ local function wrap_bag(orig)
 	end
 end
 
--- coop_objects.cpp client_intercept_use (live 2026-10-25: "F does not press" on a sleeping bag on a client: the bag's
+-- coop_objects.cpp client_intercept_use (a sleeping bag on a client: the bag's
 -- ph_idle logic runs on the host, and a Use sent there never opens this player's window). The use stays here and opens
 -- the stock sleep dialog for the bag, as item_tent's physic_object_on_use_callback does; the host decides the sleep (the
 -- rest place, one sleeper per bag: refusal "occupied").
@@ -861,7 +839,7 @@ function use_sleep_place(obj)
 	if obj == nil then return false end
 	local ok, id, sec = pcall(function() return obj:id(), obj:section() end)
 	if not (ok and type(id) == "number") then return false end
-	local m = mod("ui_sleep_dialog")
+	local m = coop_util.module("ui_sleep_dialog")
 	if not (m and type(m.sleep_bag) == "function") then return false end
 	if type(hide_hud_inventory) == "function" then pcall(hide_hud_inventory) end
 	return (pcall(m.sleep_bag, id, sec))
@@ -877,7 +855,7 @@ local function wrap(tbl, key, make)
 end
 
 local function install_wrappers()
-	local m = mod("ui_sleep_dialog")
+	local m = coop_util.module("ui_sleep_dialog")
 	if not m then
 		log("! ui_sleep_dialog is missing: the sleep stays the stock one")
 		return
@@ -966,7 +944,7 @@ function invite_window()
 end
 
 -- The window goes; the offer itself stays (waiting for a free moment) unless drop_invite follows.
--- No Lua window lives through a level change (live 2026-11-08, RL-AMY4-AZXY: a window open through a level change, heap corruption
+-- No Lua window lives through a level change (a window open through a level change corrupts the heap
 -- on the new level's script start): both windows go when the level is left; the engine ends the rest itself.
 local hide_invite
 local function on_level_leave()
@@ -1138,15 +1116,10 @@ end
 -------------------------------------------------------------------------------
 -- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an error here would
 -- skip all the scripts after this one, single player included.
-local function start_step(what, f)
-	local ok, err = pcall(f)
-	if not ok then printf("! [coop_rest] %s failed: %s", what, tostring(err)) end
-end
-
 function on_game_start()
 	if not api then return end -- an exe without co-op: nothing of this runs
-	start_step("wrappers", install_wrappers)
-	start_step("callbacks", function()
+	coop_util.start_step("coop_rest", "wrappers", install_wrappers)
+	coop_util.start_step("coop_rest", "callbacks", function()
 		AddScriptCallback("coop_rest_changed") -- fired by the engine (coop_rest.cpp)
 		AddScriptCallback("coop_rest_sleep")
 		AddScriptCallback("coop_rest_refused")

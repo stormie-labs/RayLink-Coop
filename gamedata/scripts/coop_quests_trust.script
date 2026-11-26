@@ -1,7 +1,7 @@
 --[[
 	Anomaly Coop - the host's checks of a client's quest actions (gamedata\scripts\coop_quests_trust.script).
-	TZ v2 section 6.4 rows 2, 3, 4 (owner 2026-11-18: the Lua channels stay, every place where the host believes a client on his
-	word is closed). Each verdict goes through coop_trust (configs\mod_system_coop_trust.ltx: "log" in build 57, "refuse" later).
+	Every place where the host would believe a client on his word is checked here. Each verdict goes through coop_trust
+	(configs\mod_system_coop_trust.ltx: "log" or "refuse").
 
 	Layer: the Core. It runs where the request is decided (the host of a co-op, the world server of a server) and asks no mode:
 	every fact it reads is either there (then it decides) or not (then the verdict is ok: no refusal for lack of knowledge).
@@ -16,9 +16,9 @@
 	                            on_complete, "actor_has_item(sec)" of a target / title, "actor_has_item_amount(sec:n)"), n or one;
 	                          - DIALOG_TAKES: a stock dialog takes it and no task line names it. Only while the info that opens the
 	                            dialog is held, and at most its number for each player (his character); the count is in the save.
-	                        "Still lacks": what this check let the group give up for that task before (round 5: kept per task
+	                        "Still lacks": what this check let the group give up for that task before (kept per task
 	                        id and its taker's character; a new give of the id starts at zero after a run that was turned in,
-	                        a cancelled or failed run's count carries over for 10 minutes, round 6; round 7: until the task's
+	                        a cancelled or failed run's count carries over for 10 minutes, or until the task's
 	                        repeat_timeout passed, when it has one). Only what the check let through is
 	                        counted, so a "log" build writes exactly the lines a "refuse" build would refuse.
 	  quest_give_npc        quests.act "give_npc" (coop_quests_party.host_give_npc): a dialog hands the group's items to an NPC
@@ -29,13 +29,13 @@
 	                        effect without its parameter (missing, empty, over 64 characters) is refused. The list is the host's
 	                        m_data.coop_quest_spawns (save_state / load_state): it is in the host's save of a co-op and in the world
 	                        server's save of a server, and comes back with a load; a save without it means nothing was made. A key
-	                        is noted only after the effect returned without an error: a failed spawn can be asked again. Round 4:
-	                        the host's own run of a counted effect (its condlists, its player's dialog) is noted too (note_run).
+	                        is noted only after the effect returned without an error: a failed spawn can be asked again. The
+	                        host's own run of a counted effect (its condlists, its player's dialog) is noted too (note_run).
 	                        spawn_item_at_pos counts only the 10 sections it makes (xr_effects pos_itms); an ask of any other
 	                        section makes nothing and is neither counted nor kept. The list is capped (1024 keys, 192 of them
 	                        from a client's parameter) for the save's sake; a new key that cannot be kept is refused, never let
 	                        through unrecorded. Honest play keeps a few dozen keys.
-	  quest_effect_once     quests.act "fx" of the rest of the white list that makes things (EFFECT_ONCE): Hidden Threat's ambush
+	  quest_effect_once     quests.act "fx" of the rest of the white list that makes things (EFFECT_ONCE): the ambush
 	                        mine, the Jupiter b219 gate, Crossfire's companion squad, once per world (the same saved list); the
 	                        barrier's first wave once per run of its task, and only while that task runs. Not counted, they repeat
 	                        in honest play: the Red Forest bridge (bridge_down / _up / _stop, the tutorial's lever) moves the bridge
@@ -48,8 +48,8 @@
 	  quest_delivery_place  quests.act "delivery" (coop_quests_missions.host_delivery, after talk_partner): the NPC is the target
 	                        (var.target_id) of a running delivery task. The host's (world server's) task manager and pstor.
 
-	The pstor facts (a fetch, its count, a delivery's parcel and target) count only with a value the host wrote itself (round 4,
-	"The task facts the host wrote itself" below): a client's coop_tvd write of a shared key never makes one.
+	The pstor facts (a fetch, its count, a delivery's parcel and target) count only with a value the host wrote itself
+	("The task facts the host wrote itself" below): a client's coop_tvd write of a shared key never makes one.
 
 	A task runs while its object is in task_info and has not ended: a task with a repeat timeout keeps its object there after its end
 	(task_manager.task_callback: stage 255, status "completed" / "fail"). One that ended in the last 10 s still counts: a dialog
@@ -82,27 +82,26 @@ local DIALOG_TAKES = {
 	-- another player holds goes to the boss through give_npc)
 	main_story_1_quest_case = { n = 1, info = "agr_u_bandit_boss_ask" },
 }
--- The calls of a task's condlists that ask for an item (sec[:count]); every one the task files of the build use
--- (misc\task\tm_*.ltx, stock and G.A.M.M.A.). A reward (reward_item, reward_random_item) is no ask.
+-- These condlist calls ask a player for an item (sec[:count]) in stock and modpack task files. Reward calls grant items.
 local ASK_CALLS = { remove_item = true, actor_has_item = true, actor_has_item_amount = true }
 
 -- The fx effects that make a quest item (coop_quests_story HOST_EFFECTS and its extras): true = one item, "name" = its first
 -- parameter names a set of items (mlr_utils.spawn_item: a key of its SPWN table; a name outside it raises, so nothing is kept),
 -- a table = its first parameter is the section, and the effect makes only the sections of the table.
 local SPAWN_ITEMS = {
-	-- xr_effects.spawn_item_at_pos makes the sections of its pos_itms table and only prints an error for any other (merged
-	-- G.A.M.M.A. corpus = G.A.M.M.A. Quests Rebalance = the stand, 2026-11-18): any other section makes nothing and is not counted
+	-- xr_effects.spawn_item_at_pos makes the sections of its pos_itms table and only prints an error for any other: any other
+	-- section makes nothing and is not counted
 	spawn_item_at_pos = { drx_x8_documents = true, drx_x16_documents = true, drx_x18_documents = true, drx_x19_documents = true,
 		drx_agr_u_documents = true, drx_jup_u_documents = true, lx8_history_documents = true, lx8_history_2_documents = true,
 		lx8_history_3_documents = true, wpn_gauss_quest = true },
 	mlr_spawn_item = "name",
 	spawn_strelok_notes = true, spawn_x8_documents = true, spawn_monolith_shard = true, spawn_stitch_decoder = true,
 	spawn_contact_lost_pda = true, spawn_jupiter_documents = true, fanat_training_2 = true,
-	ht_init_second_task_2 = true, -- utils_slht: the quest package sl_ht_spooner_quest_package and a dead courier
+	ht_init_second_task_2 = true, -- creates the quest package and a dead courier
 }
 -- The rest of the white list that makes things: true = once per world; a table = once per run of a task, the parameter picks it.
 local EFFECT_ONCE = {
-	ht_add_mine = true, -- utils_slht: the ambush mine tch_ht_quest_mine_blow beside a player
+	ht_add_mine = true, -- places an ambush mine beside the player
 	jup_b219_restore_gate = true, -- xr_effects: the gate at its saved place, each call one more
 	isg_companion_squad = true, -- dialogs_lostzone.spawn_pass_hall_isg_companion_squad: Crossfire's companions
 	-- tasks_defense: STARTING_SQUADS attacker squads of barrier_defense_<monolith|zombie> (its task's condlist_2, on the host)
@@ -110,11 +109,11 @@ local EFFECT_ONCE = {
 }
 
 local ENDED_MS = 10000 -- a task that ended this long ago still counts: the dialog that ends it may take the item a moment later
-local CARRY_MS = 600000 -- round 6: a failed or cancelled run's take count carries over to the next run this long after its end
+local CARRY_MS = 600000 -- a failed or cancelled run's take count carries over to the next run this long after its end
 local LOOK_MS = 1000
 
 -- task id -> taker key -> { run = weak set of the task object counted for, done = { [section] = items given up }, completed }
--- (round 5, A6 of the round 4 review; see "quest_take, quest_give_npc" below)
+-- (see "quest_take, quest_give_npc" below)
 local ledger = {}
 local made_for = setmetatable({}, { __mode = "k" }) -- task object -> { [effect key] = true }: made for this run of the task
 local seen = {} -- task id -> task object, running at the last look
@@ -146,7 +145,7 @@ local function actor_var(key)
 end
 
 -------------------------------------------------------------------------------
--- The task facts the host wrote itself (round 4, blocker 3 of the round 3 review)
+-- The task facts the host wrote itself
 -------------------------------------------------------------------------------
 -- coop_tvd (coop_tasks host_on_var) lets a client write the host's pstor keys of the shared prefixes (drx_sl_, ...), among them
 -- "<task>_fetch", "_fetch_count" and the task's own table (item_1_sec, target_id). The checks read such a fact only when its
@@ -155,13 +154,13 @@ end
 -- offers it makes for a client: tasks_fetch fetch_func, tasks_delivery on_job_descr; on_init, on_complete, status functors) and
 -- the gives it runs with the vars of the taker's request (ops.give: his dialog prepared them, from the host's offer or from the
 -- stock local generation). A value a client wrote stays no fact until the host writes the key again.
--- The host's save lists the keys whose value is its own (m_data.coop_task_facts); a save without the list (before round 4)
+-- The host's save lists the keys whose value is its own (m_data.coop_task_facts); a save without the list
 -- means no knowledge: every value of its pstor counts. Before the first look at them (a check, a client's write) the values
 -- loaded with the save are taken by that list.
 local own = {} -- fact key -> the value this process wrote last
 local own_saved = nil -- the keys of the save's list (nil: no list)
 local own_ready = false
--- round 6: fact key -> true: the host wrote nil there itself, or it holds a client's value the host did not take (note_own
+-- fact key -> true: the host wrote nil there itself, or it holds a client's value the host did not take (note_own
 -- foreign); recorded() then knows there is no fact. A key the host writes again leaves the set.
 local no_fact = {}
 
@@ -182,7 +181,7 @@ local function own_init()
 			if own_saved == nil or own_saved[k] then
 				own[k] = v
 			else
-				no_fact[k] = true -- round 6: the save says this value is not the host's (a client's coop_tvd write)
+				no_fact[k] = true -- the save says this value is not the host's (a client's coop_tvd write)
 			end
 		end
 	end
@@ -195,7 +194,7 @@ end
 
 -- coop_tasks: this process's save_var of key `k` of the actor's pstor, `old` its value before. from_give: a var of a give this
 -- process runs (ops.give). A table saved again after a field of it changed (the stock delivery functor's item_1_id, a stash
--- flag) keeps what it was: its own, or a client's. foreign (round 5): the host writes a client's value it does not take as its
+-- flag) keeps what it was: its own, or a client's. foreign: the host writes a client's value it does not take as its
 -- own (a give's var task_give_offer refused): the key holds no fact of the host's until the host writes it again.
 function note_own(k, v, old, from_give, foreign)
 	if not (fact_key(k, v) or fact_key(k, old)) then return end
@@ -209,16 +208,16 @@ function note_own(k, v, old, from_give, foreign)
 	end
 end
 
--- Round 5 (blocker 1 of the round 4 review): is key `k` (value v) one of the task facts the checks read? coop_tasks ops.give judges
+-- Is key `k` (value v) one of the task facts the checks read? coop_tasks ops.give judges
 -- these vars of a client's give against the host's offer (check task_give_offer).
 function is_fact(k, v)
 	return fact_key(k, v)
 end
 
--- Round 6 (blocker 3 of the round 5 review): what the host recorded for task fact `key`, whatever a client's coop_tvd write left in
+-- What the host recorded for task fact `key`, whatever a client's coop_tvd write left in
 -- the live pstor since. Returns the value and known: known = the host has a record of the key (the value it wrote itself last; nil:
 -- it wrote nil, or the key holds a client's value it did not take as its own); not known = no record at all (a key no fact names, a
--- save from before round 4).
+-- save without the list).
 function record_of(key)
 	if type(key) ~= "string" then return nil, false end
 	own_init()
@@ -227,10 +226,9 @@ function record_of(key)
 	return nil, false
 end
 
--- Round 7 (the review of round 6: a turn-in judged by the record refused in every mode, "log" too, with no line): the record a
--- judgement of a turn-in uses (coop_tasks host.fact_of: the fetch item, its count, a money task's price; coop_quests_fetch: the
+-- The record a judgement of a turn-in uses (coop_tasks host.fact_of: the fetch item, its count, a money task's price; coop_quests_fetch: the
 -- readiness, the hand-over). Only where coop_trust's check "task_var_write" (may a client's write of a running task's fact count)
--- is "refuse": then record_of. "log" / "off": not known, so the caller reads the live pstor exactly as build 56 did, a write "log"
+-- is "refuse": then record_of. "log" / "off": not known, so the caller reads the live pstor as the stock does, a write "log"
 -- let through included (coop_tasks writes the line at the turn-in, host.fact_line).
 function recorded(key)
 	if type(key) ~= "string" then return nil, false end
@@ -256,7 +254,7 @@ end
 -- Can key `key` go into the made list (or is it there)? A key with ":" holds a client's parameter: those are capped on their own.
 -- The caps bound the save and the memory only: honest play keeps a handful of keys (10 sections of spawn_item_at_pos, the 14
 -- sets of mlr_utils, a dozen fixed keys, 3 dialog takes per character). A key that cannot be kept is refused by its check
--- (round 3, R2-B1: a full list used to let every new key through, made and unrecorded).
+-- (a full list must not let every new key through, made and unrecorded).
 local function room_for(key)
 	if made[key] then return true end
 	if made_n >= MAX_MADE then return false end
@@ -345,14 +343,14 @@ local function on_task_end(tsk, state)
 	if obj == nil then return end
 	ended[id] = { tsk = obj, till = now_ms() + ENDED_MS }
 	seen[id] = nil
-	-- round 5 (A6): a run turned in took what it asked for; the next run of the task starts its take anew
+	-- a run turned in took what it asked for; the next run of the task starts its take anew
 	for _, e in pairs(ledger[id] or {}) do
 		if e.run[obj] then
 			if state == task.completed then
 				e.completed = true
 			else
-				e.ended = now_ms() -- round 6: when it failed
-				-- round 7: and its repeat timeout, from its end in game time (ledger_of)
+				e.ended = now_ms() -- when it failed
+				-- and its repeat timeout, from its end in game time (ledger_of)
 				local okr, rep = pcall(function() return obj.repeat_timeout end)
 				local okg, at = pcall(function() return game.get_game_time() end)
 				e.repeat_s, e.ended_game = okr and tonumber(rep) or nil, okg and at or nil
@@ -409,9 +407,9 @@ end
 -------------------------------------------------------------------------------
 -- quest_take, quest_give_npc
 -------------------------------------------------------------------------------
--- Round 5 (A6 of the round 4 review): what the check let go is counted per task id and the character of its taker, not per task
+-- What the check let go is counted per task id and the character of its taker, not per task
 -- object. The stock makes a new object at every give, so give -> take -> cancel -> give again asked the group for the same items
--- again and again (the review's probe: 4 cycles took 8 medkits of a task that asks for 2). A new run of the task starts at zero
+-- again and again (4 cycles took 8 medkits of a task that asks for 2). A new run of the task starts at zero
 -- only when the run before it was turned in (completed: its turn-in took what it asked for); after a cancel or a fail the count
 -- carries over. Not in the save: a load starts it anew (as before).
 local function taker_key(id)
@@ -421,7 +419,7 @@ local function taker_key(id)
 	return (ok and c ~= nil) and ("c" .. tostring(c)) or "?"
 end
 
--- Round 7 (the review of round 6): has the repeat timeout of a run that ended (ledger entry e, noted by on_task_end) passed? The stock
+-- Has the repeat timeout of a run that ended (ledger entry e, noted by on_task_end) passed? The stock
 -- offers a task with a repeat_timeout again only after it (task_manager: the object waits at stage 255, CRandomTask:update drops it):
 -- an honest next run comes after it, a give / cancel loop before it. nil: the run had none, or its game time cannot be read here.
 local function repeat_over(e)
@@ -433,10 +431,10 @@ local function repeat_over(e)
 end
 
 -- The ledger entry of task `id` (object tsk) for its taker `who`, moved to this run; nil when there is none (and not `create`).
--- Round 6 (S1 of the round 5 review): a failed or cancelled run's count carries over to the next run for CARRY_MS after that run's
+-- A failed or cancelled run's count carries over to the next run for CARRY_MS after that run's
 -- end (its last take when the end was not seen), then the next run starts anew. The loop the carry-over stops (give, take,
 -- cancel, give again) takes seconds; an honest run after a fail comes later, and the items of the first run were used up.
--- Round 7: a run of a task with a repeat_timeout carries over until that timeout passed (game time), not CARRY_MS: no honest run
+-- A run of a task with a repeat_timeout carries over until that timeout passed (game time), not CARRY_MS: no honest run
 -- comes before it, and every run after it starts anew.
 local function ledger_of(id, who, tsk, create)
 	local per = ledger[id]
@@ -519,7 +517,7 @@ local function dialog_verdict(peer, sec, n)
 	if used + n > d.n then
 		return false, string.format("a stock dialog takes %d of it from each player, %d taken from him already", d.n, used)
 	end
-	-- its count must be kept, or the take could be asked again and again (round 3, R2-B1)
+	-- its count must be kept, or the take could be asked again and again
 	if not room_for(dialog_key(sec, who, used + n)) then return false, full_text() end
 	return true, string.format("a stock dialog takes %d of it from each player", d.n), { dialog = sec, who = who, most = d.n }
 end
@@ -591,7 +589,7 @@ local function count_of(f, t)
 	if kind then
 		local sec = param_of(t)
 		if not sec then return "quest_spawn_once", nil, nil, "its parameter is missing or longer than 64 characters" end
-		-- a section the effect does not make: it makes nothing, nothing is counted or kept (round 3, R2-B1)
+		-- a section the effect does not make: it makes nothing, nothing is counted or kept
 		if type(kind) == "table" and not kind[sec] then return nil end
 		return "quest_spawn_once", f .. ":" .. sec
 	end
@@ -651,18 +649,18 @@ end
 
 local run_listeners = {}
 
--- Round 5 (S2 of the round 4 review): fn(f, t) hears every counted effect this process's own logic ran (note_run). In a server the
+-- fn(f, t) hears every counted effect this process's own logic ran (note_run). In a server the
 -- condlists of a level run on its map server; coop_srv_quests_far passes such a run to the world server, whose list a client's ask is
 -- judged by. This module asks no mode: it only tells who listens.
 function on_run(fn)
 	if type(fn) == "function" then run_listeners[#run_listeners + 1] = fn end
 end
 
--- Round 4 (S2 of the round 3 review): this process's own logic ran counted effect `f` (parameters t: p1..) without an error,
+-- This process's own logic ran counted effect `f` (parameters t: p1..) without an error,
 -- outside a client's request (a condlist, the host player's dialog, an on_init): its key is noted as a client's ask notes it, so a
 -- client cannot have the same thing made again. A section the effect does not make, a missing parameter: nothing. Noted on the
--- process that ran it: the host of a co-op (its save keeps it), the world server of a server, and the listeners hear it (round 5:
--- a map server's run reaches the world server's list through coop_srv_quests_far, event far_qnote).
+-- process that ran it: the host of a co-op (its save keeps it), the world server of a server, and the listeners hear it (a
+-- map server's run reaches the world server's list through coop_srv_quests_far, event far_qnote).
 function note_run(f, t)
 	local name, key, tid, bad = count_of(f, t)
 	if not name or not key or bad then return end
@@ -688,7 +686,7 @@ local function save_state(m)
 	if type(m) ~= "table" then return end
 	local core = qc()
 	if not (core and core.active() and coop_mode.decides_world()) then return end
-	-- round 4: the keys whose value is the host's own (an empty list too: it says no other value is)
+	-- the keys whose value is the host's own (an empty list too: it says no other value is)
 	own_init()
 	local facts = {}
 	for k, v in pairs(own) do
@@ -797,7 +795,7 @@ function delivery_verdict(peer, npc)
 	local info = tasks_now()
 	if not info then return true, "no task manager here" end
 	for id in pairs(info) do
-		local var = fact(id) -- round 4: a target only as the host wrote it
+		local var = fact(id) -- a target only as the host wrote it
 		if type(var) == "table" and var.target_id == nid then return true, "the target of " .. id end
 	end
 	return false, "no running delivery is for him"

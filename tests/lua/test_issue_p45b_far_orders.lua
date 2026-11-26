@@ -176,6 +176,7 @@ local function boot(set)
 	load_script_file("coop_srv_quests_far")
 	load_script_file("coop_mods_core")
 	coop.sync = { on = function() end }
+	load_script_file("coop_npc_players")
 	load_script_file("coop_world_fx").on_game_start()
 	local qc, far = coop_quests_core, coop_srv_quests_far
 	qc.on_game_start()
@@ -303,7 +304,7 @@ local function superseded_settings(far)
 	local function online_retry(verb, newest, apply)
 		SENT = {}
 		CLOCK = CLOCK + 4000
-		far._tick()
+		far._test.tick()
 		local sends = far_do(verb, 620)
 		-- Deliver the retries newest first to expose any stale setting that can still overwrite it.
 		for i = #sends, 1, -1 do
@@ -318,12 +319,12 @@ local function superseded_settings(far)
 	local map_npc = engine_object(620)
 	local a = offline_send(function() npc:set_health_ex(1) end)
 	local b = offline_send(function() npc:set_health_ex(0.5) end)
-	check(far.orders_held() == 1 and far._stats().superseded == 1, "health A was superseded once")
+	check(far.orders_held() == 1 and far._test.stats().superseded == 1, "health A was superseded once")
 	far.print_status()
 	check(LOG[#LOG]:find("superseded 1", 1, true) ~= nil, "far status counts superseded orders")
-	local acked = far._stats().acks
+	local acked = far._test.stats().acks
 	ack(a, 0)
-	check(far._stats().acks == acked and far.orders_held() == 1, "late r = 0 of health A is ignored")
+	check(far._test.stats().acks == acked and far.orders_held() == 1, "late r = 0 of health A is ignored")
 	online_retry("health", b, function(p) map_npc:set_health_ex(p.a) end)
 	check(map_npc.health == 0.5 and far.orders_held() == 0, "map server ends on health B and answers it")
 
@@ -336,47 +337,47 @@ local function superseded_settings(far)
 		if p.v == "info" then map_npc:give_info_portion(p.a) else map_npc:disable_info_portion(p.a) end
 	end)
 	check(not map_npc:has_info(name), "map server ends on uninfo")
-	far._orders_clear()
+	far._test.orders_clear()
 
 	print("== srv_world: A, B, A makes a new A and retires both earlier orders")
 	a = offline_send(function() npc:set_health_ex(1) end)
 	b = offline_send(function() npc:set_health_ex(0.5) end)
 	local last = offline_send(function() npc:set_health_ex(1) end)
 	check(last.q ~= a.q and last.q ~= b.q, "last A is a new order")
-	acked = far._stats().acks
+	acked = far._test.stats().acks
 	ack(a, 1)
-	check(far._stats().acks == acked, "late r = 1 of the first A is ignored")
-	local sent_count, repeats = #SENT, far._stats().repeats
-	check(far.order(620, "health", 1) == true and #SENT == sent_count and far._stats().repeats == repeats + 1,
+	check(far._test.stats().acks == acked, "late r = 1 of the first A is ignored")
+	local sent_count, repeats = #SENT, far._test.stats().repeats
+	check(far.order(620, "health", 1) == true and #SENT == sent_count and far._test.stats().repeats == repeats + 1,
 		"repeating the newest A merges")
 	online_retry("health", last, function(p) map_npc:set_health_ex(p.a) end)
 	check(map_npc.health == 1 and far.orders_held() == 0, "map server ends on the last A")
 
 	print("== srv_world: money and kill still have independent orders")
-	local n = far._stats().superseded
+	local n = far._test.stats().superseded
 	SENT = {}
 	local kill = offline_send(function() npc:kill(npc) end)
 	offline_send(function() npc:give_money(100) end)
 	offline_send(function() npc:give_money(100) end)
 	check(#far_do("money", 620) == 2 and qs(far_do("money", 620)) == 2 and far.orders_held() == 3
-		and far._stats().superseded == n, "two identical payments and the kill are all held")
+		and far._test.stats().superseded == n, "two identical payments and the kill are all held")
 	offline_send(function() npc:set_health_ex(0.5) end)
 	offline_send(function() npc:set_health_ex(1) end)
 	SENT = {}
 	CLOCK = CLOCK + 4000
-	far._tick()
+	far._test.tick()
 	local kills = far_do("kill", 620)
 	check(#kills == 1 and kills[1].q == kill.q and #far_do("money", 620) == 2, "setting changes do not retire kill or money")
-	far._orders_clear()
+	far._test.orders_clear()
 
 	print("== srv_world: a map server gone, only the last info setting is carried out on the ALife record")
 	SIM:give_info(620, name)
 	offline_send(function() npc:give_info_portion(name) end)
 	offline_send(function() npc:disable_info_portion(name) end)
-	local carried = far._stats().on_record
+	local carried = far._test.stats().on_record
 	MAP_SERVERS = {}
-	far._tick()
-	check(far._stats().on_record == carried + 1 and not SIM:has_info(620, name) and far.orders_held() == 0,
+	far._test.tick()
+	check(far._test.stats().on_record == carried + 1 and not SIM:has_info(620, name) and far.orders_held() == 0,
 		"only uninfo was carried out on the record")
 	MAP_SERVERS = { { bridge = 0x101, level = 2 } }
 	SENT = {}
@@ -408,7 +409,7 @@ local function world_server()
 	print("== the resends between the checks: at most five sends of each, then the record takes them")
 	for _ = 1, 6 do
 		CLOCK = CLOCK + 4000
-		local okt, errt = pcall(far._tick)
+		local okt, errt = pcall(far._test.tick)
 		check(okt, "the tick ends: " .. tostring(errt))
 		for _ = 1, N do task_check(qc) end
 	end
@@ -445,14 +446,14 @@ local function world_server()
 	far.object(660):give_info_portion("mutant_to_kill")
 	SendScriptCallback("server_entity_on_unregister", RECORDS[660])
 	check(not far.object(660):has_info("mutant_to_kill"), "the record unregistered: the far view forgets what it gave")
-	far._orders_clear()
+	far._test.orders_clear()
 
 	print("== the hits a task waits for, relayed: the stock's set_health_ex at each one is one held order (tasks_the_living_fire)")
 	SENT = {}
 	qc.add_death_listener("npc_on_before_hit", function(npc, h) npc:set_health_ex(1) end)
 	for _ = 1, N do HANDLERS["quests.far_hit"]({ c = "npc_on_before_hit", i = 620, k = 500, p = 1, t = 5 }, 0x101) end
 	check(#far_do("health", 620) == 1 and far.orders_held() == 1, "one health order: " .. #far_do("health", 620))
-	far._orders_clear()
+	far._test.orders_clear()
 
 	print("== answered, carried out or dropped: a new one may be made")
 	SENT = {}
@@ -464,35 +465,35 @@ local function world_server()
 	s:give_info_portion("p45b_a")
 	check(#far_do("info", 620) == 2 and qs(far_do("info", 620)) == 2 and far.orders_held() == 1, "the next one is a new order")
 	MAP_SERVERS = {}
-	pcall(far._tick)
+	pcall(far._test.tick)
 	check(far.orders_held() == 0 and SIM:has_info(620, "p45b_a"), "its map server is gone: carried out on the record")
 	MAP_SERVERS = { { bridge = 0x101, level = 2 } }
 	s:give_info_portion("p45b_a")
 	check(far.orders_held() == 1 and qs(far_do("info", 620)) == 3, "and after that a new one again")
-	far._orders_clear()
+	far._test.orders_clear()
 	RECORDS[630] = { id = 630, position = vec(9, 0, 9), m_level_vertex_id = 9, m_game_vertex_id = 20, parent_id = 65535, online = true,
 		alive = alive_fn(true) }
 	for _ = 1, 3 do far.object(630):kill() end
 	check(far.orders_held() == 1, "a kill on a record: held once")
-	local kill_dropped, log_from = far._stats().dropped, #LOG
+	local kill_dropped, log_from = far._test.stats().dropped, #LOG
 	RECORDS[630] = nil
 	CLOCK = CLOCK + 4000
-	pcall(far._tick)
+	pcall(far._test.tick)
 	check(far.orders_held() == 0, "the record is no more: the order is dropped")
-	check(far._stats().dropped == kill_dropped + 1 and LOG[log_from + 1]
+	check(far._test.stats().dropped == kill_dropped + 1 and LOG[log_from + 1]
 		and LOG[log_from + 1]:find("far: order kill on 630 dropped: the object is no more", 1, true),
 		"a missing kill target still counts as dropped and logs why")
 	far.order(630, "kill")
 	check(far.orders_held() == 1, "after the drop a new one may be made")
-	far._orders_clear()
+	far._test.orders_clear()
 
 	print("== srv_world: a held release whose record is gone is done silently")
 	RECORDS[630] = { id = 630, m_game_vertex_id = 20, parent_id = 65535 }
 	check(far.order(630, "release") and far.orders_held() == 1, "the release waits for its map server")
-	local carried, dropped, release_log_from = far._stats().on_record, far._stats().dropped, #LOG
+	local carried, dropped, release_log_from = far._test.stats().on_record, far._test.stats().dropped, #LOG
 	RECORDS[630] = nil
-	far._tick()
-	check(far.orders_held() == 0 and far._stats().on_record == carried + 1 and far._stats().dropped == dropped,
+	far._test.tick()
+	check(far.orders_held() == 0 and far._test.stats().on_record == carried + 1 and far._test.stats().dropped == dropped,
 		"the gone release is cleared and counts as carried out")
 	check(#LOG == release_log_from, "the gone release writes no log line: " .. tostring(LOG[release_log_from + 1]))
 
@@ -515,12 +516,12 @@ local function world_server()
 	}
 	for _, c in ipairs(calls) do
 		SENT = {}
-		far._orders_clear()
+		far._test.orders_clear()
 		for _ = 1, 5 do c[2]() end
 		check(#far_do(c[1], 620) == 1 and far.orders_held() == 1, c[1] .. ": one order: " .. #far_do(c[1], 620))
 	end
 	SENT = {}
-	far._orders_clear()
+	far._test.orders_clear()
 	s:give_info_portion("p45b_x")
 	s:give_info_portion("p45b_y")
 	s:give_info_portion("p45b_x")
@@ -528,10 +529,10 @@ local function world_server()
 	s:kill(s)
 	check(far.orders_held() == 4 and #far_do() == 4, "another info, another killer: their own orders: " .. far.orders_held())
 	SENT = {}
-	far._orders_clear()
+	far._test.orders_clear()
 	for _ = 1, 3 do s:give_money(100) end
 	check(#far_do("money", 620) == 3 and far.orders_held() == 3, "give_money adds up: three payments, three orders")
-	far._orders_clear()
+	far._test.orders_clear()
 
 	print("== a setting given A, B, A while A is held: the map server ends on the last call, as before P45b (FP45b)")
 	-- the merge is with the newest order of the same setting only: info and uninfo of one name are one setting, a relation and a
@@ -558,7 +559,7 @@ local function world_server()
 	}
 	for _, c in ipairs(settings) do
 		SENT = {}
-		far._orders_clear()
+		far._test.orders_clear()
 		c[3]()
 		c[4]()
 		c[3]()
@@ -570,7 +571,7 @@ local function world_server()
 	check(far.object(620):has_info("p45b_z") and not far.object(620):dont_has_info("p45b_z"),
 		"the stand-in answers the last call, the one the map server ends on")
 	SENT = {}
-	far._orders_clear()
+	far._test.orders_clear()
 	s:set_health_ex(1)
 	s:set_health_ex(0.5)
 	s:set_health_ex(0.5)
@@ -582,7 +583,7 @@ local function world_server()
 	HANDLERS["quests.far_ack"]({ q = far_do("health", 620)[2].q, r = 1 }, 0x101)
 	s:set_health_ex(0.5)
 	check(sent_values("health") == "1,0.5,0.5", "the newest answered: the same value again is a new order")
-	far._orders_clear()
+	far._test.orders_clear()
 	return qc, far
 end
 
@@ -621,7 +622,7 @@ local function mystery_ghost(qc, far)
 	check(#PLAYS == 1 and PLAYS[1].owner == nil and PLAYS[1].flags == sound_object.s2d,
 		"its 2D sound plays on the world server as one of nobody (a stand-in is no owner of the engine's): " .. #PLAYS)
 	check(#ACTOR.hits == 0, "the ghost is not hit")
-	far._orders_clear()
+	far._test.orders_clear()
 
 	print("== srv_world: nobody stands on that level: no player is meant, no order, the ghost is not hit")
 	local life_of = coop.life_of

@@ -417,7 +417,7 @@ do
 	E.xr_logic = { switch_to_section = function(_, _, s) SWITCHED = s end }
 	E.db.zone_by_name.trigger = make_obj(310, 0, 0, 0)
 	local OVER = false
-	E.coop_arena = { fight_over = function() OVER = true end }
+	load_script(M, "coop_arena").fight_over = function() OVER = true end
 	E.db.storage[310] = { active_section = "sr_idle@wait_finish", ini = { section_exist = function(_, s) return s == "sr_cutscene@fight_1" end } }
 	E.db.actor._pos = vec(5, 0, 5)
 	run_for(M, 40)
@@ -481,6 +481,7 @@ do
 	Mk.add(make_obj(301, 5, 0, 5, { _section = "stalker_bartender" }))
 	F.db.zone_by_name.trigger = make_obj(310, 0, 0, 0)
 	F.db.storage[310] = { active_section = "sr_idle@wait_finish", ini = { section_exist = function(_, s) return s == "sr_cutscene@fight_1" end } }
+	load_script(Mk, "coop_arena")
 	for _, env in ipairs({ E, F }) do env.INFOS.bar_arena_fight_begin, env.INFOS.bar_arena_fight_3 = true, true end
 	local function both(seconds)
 		for _ = 1, seconds do

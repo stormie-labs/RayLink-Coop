@@ -1,6 +1,6 @@
 --[[
 	Anomaly Coop - story effects, story dialogs and task guards (gamedata\scripts\coop_quests_story.script),
-	W4 "quests". Ports xrRazom's xrr_patch_quest_story_effects, xrr_patch_quest_story_dialogs,
+	Ports xrRazom's xrr_patch_quest_story_effects, xrr_patch_quest_story_dialogs,
 	xrr_patch_quest_spawns, the client guards of xrr_patch_task_guards, xrr_patch_quest_drx (what our
 	routing does not cover already), xrr_patch_drx_da and xrr_patch_new_storylines (mine).
 	SPEC R-7.6, R-7.7, R-8.3, R-11.1.
@@ -25,9 +25,8 @@
 	client; the host sets such a task up itself when the client takes it (coop_quests_offer).
 	Yantar psi helmets: when one player gets a helmet from Sakharov, every player gets the same helmet
 	(the psi field checks the local actor).
-	Mod patches (only with the mod installed): Dynamic Anomalies Overhaul flash mine - the time jump is the
-	host's, once per mine, a client's hit asks the host; New Storylines mine - beside the player nearest to
-	the restrictor, not beside the host.
+	The host applies one time jump per flash mine, including a client's requested hit. An ambush mine spawns beside the
+	player nearest the restrictor.
 --]]
 
 local qc = coop_quests_core
@@ -36,7 +35,7 @@ local math_floor, math_random, math_ceil = math.floor, math.random, math.ceil
 
 local TAG = "story"
 
--- Names below are the original xr_effects / dialogs / DRX effect API, not private implementations.
+-- The names below are the effect and dialog entry points called by task conditions.
 -- Skipped on a client inside a condlist: the host's run of the same logic counts.
 local SUPPRESS_ON_CLIENT = {
 	"reward_money", "reward_random_money", "reward_random_money_by_dist", "reward_item_cost_mult_and_remove",
@@ -177,7 +176,8 @@ local function share_reward(name, p)
 		else
 			local ok, money, items = pcall(rule, p)
 			if ok then
-				ct().give_to_peer(peer, money or 0, items, name) -- rolled only when the stock effect `name` rolls
+				-- rolled only when the stock effect `name` rolls
+				coop_tasks_items.give_to_peer(peer, money or 0, items, name)
 			else
 				qc.report(TAG, "share " .. name, money)
 			end
@@ -201,7 +201,7 @@ local function patch_condlist_effects()
 					end
 					return orig(actor, npc, p, ...)
 				end
-				if coop_mode.leads_here() and not coop_mode.decides_world() and (SHARE[name] ~= nil or PERSONAL_STORY[name]) then
+				if coop_mode.leads_for_world_elsewhere() and (SHARE[name] ~= nil or PERSONAL_STORY[name]) then
 					-- its actor is a ghost: the reward of the group is the world server's to hand out
 					if qc.in_condlist() and story_scope() then
 						qc.send("share", params_flat(p, { f = name }), 0)
@@ -281,9 +281,9 @@ local function npc_host_id(actor, npc)
 	return nil
 end
 
--- Round 4 (S2 of the round 3 review): `fn` run by this process's own logic (not a client's ask: host_fx runs fx_orig): a counted
+-- `fn` run by this process's own logic (not a client's ask: host_fx runs fx_orig): a counted
 -- effect that returned without an error is noted (coop_quests_trust.note_run), so a client cannot have it made again.
--- Round 5 (S6 of the round 4 review): the effects of NOTE_ON_ERROR are noted even when they raise, as host_fx notes a client's ask
+-- The effects of NOTE_ON_ERROR are noted even when they raise, as host_fx notes a client's ask
 -- of them: Crossfire's companion squad exists before its effect can raise (add_task_companion after create_squad). Any other
 -- effect that raised made nothing that counts: it can be made later.
 local NOTE_ON_ERROR = { isg_companion_squad = true }
@@ -382,19 +382,18 @@ local function host_fx(from, t)
 		qc.log(TAG, "! host effect '%s' from #%s refused", tostring(t.f), tostring(from))
 		return
 	end
-	-- round 7 (the review of round 6: bounds on every number from a client): the NPC is a whole object id 1..65534, else none
+	-- the NPC is a whole object id 1..65534, else none
 	local nid = tonumber(t.n)
 	if not (nid and nid >= 1 and nid <= 65534 and nid == math_floor(nid)) then nid = nil end
 	local npc = nid and level.object_by_id(nid) or nil
-	-- TZ v2 6.4 row 3: a quest item of the white list is made once per world, the other things it makes once per world or per run
+	-- a quest item of the white list is made once per world, the other things it makes once per world or per run
 	-- of their task (coop_quests_trust; the host's save keeps the list). Noted after the effect returned without an error.
 	local qt = qc.mod("coop_quests_trust")
 	local isg = t.f == "isg_companion_squad"
 	-- nothing on the host stops a repeat of this client's dialog action: never twice in this Lua state, also while the check only
-	-- logs (the guard from before round 1). Asked before the check (round 3, R2-S4), so the check writes no "let through" line for
-	-- what is refused here anyway. Round 4 (S3 of the round 3 review): after a load the squad made before is the saved list's
-	-- (coop_quests_trust), and refusing it is the check's, quest_effect_once: "log" lets it through and logs it (as before round 1,
-	-- whose guard a load reset), "refuse" refuses it.
+	-- logs. Asked before the check, so the check writes no "let through" line for what is refused here anyway. After a load
+	-- the squad made before is the saved list's (coop_quests_trust), and refusing it is the check's, quest_effect_once: "log"
+	-- lets it through and logs it, "refuse" refuses it.
 	if isg and isg_squad_made then
 		stats.isg_again = stats.isg_again + 1
 		if stats.isg_again <= 8 or stats.isg_again % 64 == 0 then
@@ -407,7 +406,7 @@ local function host_fx(from, t)
 	if qt then pass, ticket = qt.check_spawn(from, t.f, t) end
 	if not pass then return end
 	stats.fx_run = stats.fx_run + 1
-	-- round 4 (S3): the squad's guard closes before the squad is made (as before round 1), and its key is noted even when the
+	-- the squad's guard closes before the squad is made, and its key is noted even when the
 	-- effect raises: an error after the squad exists (add_task_companion after create_squad) must not leave it open. Any other
 	-- effect is noted only when it returned without an error (a failed spawn can be asked again).
 	if isg then isg_squad_made = true end
@@ -472,7 +471,7 @@ local function host_share_helmet(kind, except)
 	if not sec then return end
 	for _, c in ipairs(qc.bodies()) do
 		if c.peer ~= except and not has_helmet(c.obj, sec) then
-			ct().give_to_peer(c.peer == qc.self_peer() and 0 or c.peer, 0, { sec })
+			coop_tasks_items.give_to_peer(c.peer == qc.self_peer() and 0 or c.peer, 0, { sec })
 			stats.helmets = stats.helmets + 1
 		end
 	end
@@ -502,7 +501,7 @@ local function host_helmet(from, t)
 end
 
 -------------------------------------------------------------------------------
--- New Storylines (Hidden Threat): the ambush mine beside the player nearest to the restrictor
+-- Place an ambush mine beside the player nearest to the restrictor.
 -------------------------------------------------------------------------------
 local function patch_new_storylines()
 	local xe = qc.mod("xr_effects")
@@ -517,8 +516,8 @@ local function patch_new_storylines()
 		alife_create("tch_ht_quest_mine_blow", vector():set(wp.x - 1, wp.y, wp.z), who:level_vertex_id(), who:game_vertex_id())
 	end
 	fx_orig.ht_add_mine = mine
-	-- Its restrictor cutscene effects act on db.actor: they go to the restrictor's audience (coop_npc_logic,
-	-- W5). Not the MOVES one (ht_ds_domik_st_prestart_cut_scene teleports and spawns: stays the host's).
+	-- Its restrictor cutscene effects act on db.actor: they go to the restrictor's audience
+	-- (coop_npc_logic). Not the MOVES one (ht_ds_domik_st_prestart_cut_scene teleports and spawns: stays the host's).
 	local nl = rawget(_G, "coop_npc_logic")
 	if nl and type(nl.register_actor_effect) == "function" then
 		for _, e in ipairs({ { "ht_pri_b35_teleport_actor" }, { "ht_pri_a17_play_sound" }, { "ht_run_postprocess" },
@@ -527,7 +526,7 @@ local function patch_new_storylines()
 		end
 	end
 	local client_side = xe.ht_add_mine
-	local own_mine = noted_run("ht_add_mine", mine) -- round 4 (S2): the host's own mine counts once per world
+	local own_mine = noted_run("ht_add_mine", mine) -- the host's own mine counts once per world
 	xe.ht_add_mine = function(actor, npc, p, ...)
 		if qc.is_client() then return client_side(actor, npc, p, ...) end
 		return own_mine(actor, npc, p)
@@ -535,7 +534,7 @@ local function patch_new_storylines()
 end
 
 -------------------------------------------------------------------------------
--- Dynamic Anomalies Overhaul: flash mine time jump
+-- Flash mine time jump
 -------------------------------------------------------------------------------
 local FLASH_DEDUPE_MS = 10000
 local flash_seen = {} -- zone host id -> time
@@ -560,7 +559,7 @@ local function host_flash(zone_id, d, h, m)
 	local t = time_global()
 	if zone_id and flash_seen[zone_id] and t - flash_seen[zone_id] < FLASH_DEDUPE_MS then return false end
 	if zone_id then flash_seen[zone_id] = t end
-	-- the real one: inside with_time_jump level.change_game_time is the jump itself (W5: it recursed into
+	-- the real one: inside with_time_jump level.change_game_time is the jump itself (it recursed into
 	-- this function, hit the dedupe and the clock never moved). Numbers only: luabind has no nil overload.
 	local cgt = real_cgt or level.change_game_time
 	cgt(math_floor(tonumber(d) or 0), math_floor(tonumber(h) or 0), math_floor(tonumber(m) or 0))
@@ -571,16 +570,12 @@ local function host_flash(zone_id, d, h, m)
 	return true
 end
 
-local dao_hits = nil -- DAO's actor hit table, when the mod is installed
-local dao = nil -- drx_da_main, when the mod is installed
+local dao_hits = nil -- optional actor hit handlers by anomaly section
+local dao = nil -- optional anomaly behaviour module
 
--- Audit C2 (2026-10-24): on a client DAO's behaviours near this player's actor do run (the anomaly binder's update is
--- not routed), but what they leave running - handlers they register (drx_da_main.register_callback) and their timed
--- effects - were host-domain handlers of drx_da_main, skipped here: a sphere's bullet resistance, a springboard's
--- camera, a green dragon's slow-down, the detector beeps of an anomaly never happened to a client. On a client such a
--- handler is registered through a function of this script (view: it runs on this player's machine, for his actor),
--- and the timed effects are driven from here (client_dao_update). The ones registered before this patch (the
--- anomalies spawned with the level) are registered again the same way. The host keeps DAO's own.
+-- Nearby anomaly binders update on the client, but their handlers and timed effects use host-domain functions. Register
+-- the handlers through this script so they run for the local player, including handlers registered during level load.
+-- Drive timed effects locally for the same reason. The host keeps the original handlers.
 local function on_this_machine(fn)
 	local inner = fn
 	return function(...) return inner(...) end
@@ -615,7 +610,7 @@ local function patch_dao_behaviours(da)
 	qc.log(TAG, "Dynamic Anomalies Overhaul: its behaviours' handlers run for this player (%d registered again)", #again)
 end
 
--- Client: DAO's timed effects (its actor_on_update, a host-domain handler skipped here), for this player's actor.
+-- Run the anomaly module's host-domain update for the client's own actor.
 local function client_dao_update()
 	if dao and type(dao.actor_on_update) == "function" and qc.client_live() then dao.actor_on_update() end
 end
@@ -653,8 +648,7 @@ local function patch_dao()
 	qc.log(TAG, "Dynamic Anomalies Overhaul: the flash mine time jump is the host's")
 end
 
--- Client: DAO's own hit callback is host-domain (skipped here); the local actor's anomaly hits go
--- through its table from here.
+-- The client's own anomaly hits use the module's handler table because its hit callback runs in the host domain.
 local function client_before_hit(s_hit, bone_id, flags)
 	if not dao_hits or not qc.client_live() or not (s_hit and s_hit.draftsman) then return end
 	local f = dao_hits[s_hit.draftsman:section()]

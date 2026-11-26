@@ -1,4 +1,4 @@
--- Dev 57 K-65/K-66: PDA info stays local and one observed death gives one personal kill.
+-- PDA info stays local and one observed death gives one personal kill.
 local modes = dofile("tests/lua/support/modes.lua")
 local EVENT = "mods.pda_stat"
 local PROXY, PEER, BRIDGE = 500, 1, 0x101
@@ -64,7 +64,7 @@ local function new_machine(role, set)
 			return "stock"
 		end,
 	}
-	-- The stock binder branches on the remapped killer ID. G9-1 guards only its counter and keeps the death callback.
+	-- The stock binder branches on the remapped killer ID. Guard only its counter and keep the death callback.
 	e.bind_monster = { generic_object_binder = { death_callback = function(_, _, killer)
 		if killer:id() == 0 then
 			e.game_statistics.increment_statistic("killed_monsters")
@@ -83,6 +83,9 @@ local function new_machine(role, set)
 		load_in(path, module)
 		return module
 	end
+	load("coop_util") -- the engine loads it on the first use of its name
+	load("coop_route") -- coop_main takes the router when it loads
+	load("coop_world_events") -- and asks the world-only event list on every event
 	load("coop_main")
 	load("coop_mode")
 	local answers = mirror and {
@@ -119,6 +122,7 @@ local function parity_info(m, load)
 	e.io = { open = function()
 		return { write = function(_, text) written = text end, close = function() end }
 	end }
+	load("coop_util")
 	local probe = load("coop_parity")
 	probe.dump("pda_close")
 	check(written and not written:find("infos\tui_pda_hide\t", 1, true), "PDA close stays out of the parity dump")

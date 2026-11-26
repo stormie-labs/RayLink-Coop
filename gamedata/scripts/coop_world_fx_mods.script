@@ -1,5 +1,5 @@
 -- Ядро: без проверок режима (docs/MODES.md)
--- G11-1. The level authority has the NPCs, corpses and binders; the world authority has the story flags.
+-- The level authority has the NPCs, corpses and binders; the world authority has the story flags.
 -- Keep only ongoing state for late viewers. The stock scripts still drive the gameplay and local effects.
 
 local EVENT, CUT = "fxm_show", "fxm_skin_take"
@@ -135,16 +135,11 @@ local function tick_pulses(now)
 			local_pulses[id] = nil
 		elseif age >= t.on then
 			if not light then
-				light = script_light()
-				light.range, light.lanim = 100, "koster_01_electra"
-				light.volumetric, light.volumetric_quality = true, 1
+				light = coop_world_fx.pulse_light()
 				light:set_position(point(t))
 				state.light = light
 			end
-			local flash = age >= t.flash
-			light.lanim_brightness = flash and 0.2 or 0.025
-			light.volumetric_distance = flash and 1 or 0.25
-			light.volumetric_intensity = flash and 0.1 or 0.05
+			coop_world_fx.pulse_light_step(light, age >= t.flash)
 			light.enabled = true
 			light:update()
 		end
@@ -531,7 +526,7 @@ local function install_skinning()
 	local load_bones = C().fn(mod, "loadBones")
 	if not (load_bones and loot and loot.UIMutantLoot) then return end
 	local class = loot.UIMutantLoot
-	local world = C().mod("coop_core_world")
+	local world = C().mod("coop_core_world_mloot")
 	local close = world and C().upvalue(world.on_game_start, "on_mloot_close")
 	local locks = C().upvalue(close, "locks")
 	local used = setmetatable({}, { __mode = "k" })

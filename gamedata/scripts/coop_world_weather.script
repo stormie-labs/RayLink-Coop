@@ -1,19 +1,16 @@
 --[[
 	Anomaly Coop - world group: the script side of the weather (gamedata\scripts\coop_world_weather.script)
 
-	The engine (coop_worldstate, WeatherSync) keeps every machine's sky on the host's. level_weathers keeps a second,
-	script-side state of the same weather (cycle, preset, weather file, current and next weather). It came with the join
-	save and then every machine went its own way: bind_stalker's actor_binder.update runs on a client too, and at every
-	game hour change_period and select_weather rolled with math.random. level.set_weather* is refused on a client, so the
-	sky stayed and the private state moved on. What reads it there: level_environment (fog, mist, storm leaves, radiation
-	by weather), set_brightness_boosts (night brightness), meteorites, GAMMA's weather file table of get_curr_weather.
+	The engine keeps every machine's sky in sync with the host. The script-side weather also drives fog, storms, radiation,
+	night brightness, meteorites and the modpack's current-weather lookup. Sync that state separately because weather selection
+	can change its script fields even when the engine refuses a client's sky changes.
 
 	1. The manager. The host writes that state into coop.sync (session scope: a joining player has it before his world)
-	   when it changes. A client takes it once a second and when the stock code would select a weather; change_period and
-	   select_weather roll nothing there (select_custom_weather of GAMMA's aaaa_script_fixes_mp neither). update,
-	   meteorites and distant_storm stay on: with the host's fields they answer the same on every machine, and the
+	   when it changes. A client takes it once a second and during weather selection. The client uses the snapshot in
+	   change_period, select_weather and select_custom_weather instead of rolling. The update, meteorite and distant storm
+	   routines keep running with the host's values, and the
 	   meteor shower is drawn over each player. Until the first state arrives a client keeps the stock code.
-	2. Wetness (SSS puddles, level.rain_wetness). The engine adds to it per frame and starts from zero at every load, and
+	2. Wetness (puddle rendering, level.rain_wetness). The engine adds to it per frame and starts from zero at every load, and
 	   Lua has no way to set it: a client that joins a long rain stays dry, at 144 fps it gets wet 3.6 times as fast as a
 	   host at 40. The host writes its value; a client outside a small band steers its own with the two console rates of
 	   ssfx_wetness_multiplier (x build-up in rain, y drying), and puts the player's numbers back inside the band and
@@ -29,7 +26,6 @@ local math_abs, math_min, string_format = math.abs, math.min, string.format
 local TAG = "weather"
 local P -- coop_npc_players
 
-local function log(fmt, ...) P.log(TAG, fmt, ...) end
 local function report(what, err) P.report(TAG, what, err) end
 
 local SCOPE, KEY_STATE, KEY_WET = "session", "world.weather", "world.wet"
@@ -38,7 +34,7 @@ local TICK_MS = 1000
 -- wire name -> field of the manager
 local FIELDS = { c = "cycle", p = "preset", f = "weather_file", lf = "last_weather_file", lc = "last_cycle",
 	cw = "curr_weather", nw = "next_weather", lw = "levelWeather" }
--- A field the host may not have yet is left as it is here, except these: nil means something (get_curr_weather of GAMMA).
+-- An absent value usually leaves the local field alone. Clear these fields because the weather lookup distinguishes nil.
 local MAY_BE_EMPTY = { last_weather_file = true, last_cycle = true }
 
 local weather_policy = {}
@@ -150,7 +146,7 @@ local function patch_class()
 		end
 	end
 	patch_method(cls, "select_weather", selecting)
-	patch_method(cls, "select_custom_weather", selecting) -- GAMMA's, called by its reset
+	patch_method(cls, "select_custom_weather", selecting) -- the modpack calls this during a weather reset
 end
 
 -------------------------------------------------------------------------------
@@ -272,11 +268,12 @@ local function actor_on_net_destroy()
 end
 
 function print_status()
-	log("manager: written %d, fields taken %d | wetness: written %d, rates set %d, correcting %s | errors %d",
+	P.log(TAG, "manager: written %d, fields taken %d | wetness: written %d, rates set %d, correcting %s | errors %d",
 		stats.sent, stats.applied, stats.wet_sent, stats.wet_rates, tostring(own ~= nil), P.error_count(TAG))
 end
 
 function on_game_start()
+	coop_util.add_status("coop_world_weather", 80)
 	P = coop_npc_players
 	if not api then return end
 	local ok, err = pcall(patch_class)

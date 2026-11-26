@@ -8,6 +8,9 @@ local modes = dofile("tests/lua/support/modes.lua")
 
 local PROXY = 500
 local BRIDGE = 0x101
+-- coop_debug (coop_debug_server.debug_on): off unless a test turns it on
+ARENA_DEBUG = false
+coop_debug_server = { debug_on = function() return ARENA_DEBUG end }
 local BOX1, BOX2, TRIG, MANAGER, COMMENT, TOTAL, OPPONENT, BODY = 900, 901, 910, 920, 911, 912, 300, 777
 local SR, SPAM = 913, 914 -- Arnie's monster fight (the old arena): restrictors bar_arena_sr and bar_arena_spam
 local THIRD = 501 -- a third player's character (group entry)
@@ -1932,7 +1935,24 @@ do
 		"the client fought the snork: his 1000 x 2 (" .. granted_to(H, 1) .. ")")
 end
 
-print("== a reputation change of a player during an arena fight goes into his log with its source")
+print("== coop_debug off: no reputation line during an arena fight, the stock call stays unwrapped")
+do
+	local _, cgs = stats_setup()
+	local stock = cgs.increment_reputation
+	W.talked[1] = NOW
+	start(3)
+	W.infos.bar_arena_fight = nil
+	Cm.log = {}
+	cgs.npc_on_death_callback(H.objects[OPPONENT], Cm.env.db.actor)
+	Cm.env.db.actor._rep = 175
+	tick(Cm)
+	local any = false
+	for _, l in ipairs(Cm.log) do if l:find("reputation", 1, true) then any = true end end
+	check(not any and cgs.increment_reputation == stock, "no line, game_statistics.increment_reputation is the stock's")
+end
+
+print("== coop_debug on: a reputation change of a player during an arena fight goes into his log with its source")
+ARENA_DEBUG = true
 do
 	local _, cgs = stats_setup()
 	W.talked[1] = NOW
@@ -1957,6 +1977,7 @@ do
 	for _, l in ipairs(Cm.log) do if l:find("reputation", 1, true) then any = true end end
 	check(not any, "no change: no line")
 end
+ARENA_DEBUG = false
 
 print("== the arena's prizes and reputation lines: single player is stock")
 do
