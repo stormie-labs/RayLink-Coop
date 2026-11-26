@@ -157,6 +157,9 @@ function fn(tbl, key)
 end
 
 wrapped = {} -- labels of everything wrapped, for the report and coop_status
+-- tbl -> { key -> label } of everything wrapped (weak: a wrapped object can go); coop_route's timing swaps them for timed
+-- copies while it is on
+timing_sites = setmetatable({}, { __mode = "k" })
 
 -- tbl[key] = make(orig). Returns true, orig; false when there is nothing to wrap.
 function wrap(tbl, key, label, make)
@@ -166,6 +169,12 @@ function wrap(tbl, key, label, make)
 	if type(w) ~= "function" then return false end
 	tbl[key] = w
 	wrapped[#wrapped + 1] = label
+	local keys = timing_sites[tbl]
+	if not keys then
+		keys = {}
+		timing_sites[tbl] = keys
+	end
+	keys[key] = label
 	return true, orig
 end
 

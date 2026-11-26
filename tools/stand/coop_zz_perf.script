@@ -1,0 +1,58 @@
+-- Stand-only probe of the measurement scenario (tools\stand\perf.ps1, docs\MEASURE.md); never shipped: perf.ps1 copies it into
+-- the stand's gamedata\scripts and removes it after the run.
+-- A game started with -coop_perf switches the engine's stat timers on ("rs_stats on") once it has been in the world for
+-- FIRST_MS and then writes coop_mapserver_stats to the log every 10 s: the frame's average and worst and where the frame goes
+-- by the engine's own timers; coop_status every 30 s. With -coop_perf_lua also the Lua timing of coop_route (every routed
+-- handler and every wrapped mod function), switched on at the same moment, so its window is the
+-- frame's; coop_status prints its top lines.
+
+local FIRST_MS = 20000 -- the level's own start-up is not what is measured
+local EVERY_MS = 10000
+local started, next_at, n = nil, nil, 0
+
+local function has_key(key)
+	local ok, line = pcall(command_line)
+	return ok and type(line) == "string" and line:find(key, 1, true) ~= nil
+end
+
+local function run(cmd)
+	pcall(function() get_console():execute(cmd) end)
+end
+
+local function arm_lua_timing()
+	if not has_key("-coop_perf_lua") then return end
+	local route = rawget(_G, "coop_route")
+	if not (route and route.timing and route.timing(true)) then
+		printf("[coop-perf] ! Lua timing unavailable")
+		return
+	end
+	printf("[coop-perf] Lua timing on")
+end
+
+local function actor_on_update()
+	local now = time_global()
+	started = started or now
+	if not next_at then
+		if now - started < FIRST_MS then return end
+		run("rs_stats on")
+		run("coop_mapserver_stats") -- starts the window of the first sample
+		arm_lua_timing()
+		next_at = now + EVERY_MS
+		printf("[coop-perf] armed")
+		return
+	end
+	if now < next_at then return end
+	next_at = now + EVERY_MS
+	n = n + 1
+	printf("[coop-perf] sample %d", n)
+	run("coop_mapserver_stats")
+	if n % 3 == 0 then run("coop_status") end -- the scripts' own lines: hud frame, route timing
+	if n == 1 then run("coop_ini_stats") end -- where the items of the configs live
+	if n == 2 then run("coop_memory_map") end -- what the process's memory is made of
+	run("flush")
+end
+
+function on_game_start()
+	if not has_key("-coop_perf") then return end
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+end

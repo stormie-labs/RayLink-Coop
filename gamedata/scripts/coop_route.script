@@ -49,7 +49,12 @@
 		coop_route.handler_domain(fn) -> domain of a function registered as a handler, nil for any other function
 		coop_route.kept_scope(setter, own) -> the scope a time event or unique call runs under (R32 W2a)
 		coop_route.scope_now() -> the scope of the running code: the innermost wrapper's ("?" for an unknown one), nil outside
-		coop_route.print_status()
+		coop_route.print_status()                      with the timing lines when any clock has calls
+		coop_route.timing(on) -> bool                  opt-in timing of handlers and of the timing_sites of coop_mods_core, coop_mode;
+		                                               on starts a new window
+		coop_route.timing_reset()                      every clock back to zero, a new window
+		coop_route.timing_top(n, by) -> { {group, key, calls, ms}, ... }   by "ms" (default) or "calls"
+		coop_route.print_timing(n)                     the first n by time and by calls (docs\MEASURE.md)
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace
@@ -89,6 +94,49 @@ local uc_add_w, uc_rem_w -- our current replacements of the unique call globals
 local counts = { host = 0, owner = 0, view = 0, none = 0, level = 0 } -- wrappers made, by domain
 local stats = { rewrapped = 0, unrouted = 0, errors = 0 }
 local err_seen = {} -- script -> Lua errors caught on this machine
+
+-------------------------------------------------------------------------------
+-- Timing (opt-in): calls and time of every routed handler and of the functions a watched module lists, for finding what
+-- costs a frame.
+-------------------------------------------------------------------------------
+-- Off, nothing of it is on a call's path: a handler's wrapper tests one upvalue, every other function is the one the game
+-- has. On, a wrapper calls its handler through a timed copy, and the functions the watched modules list in their
+-- timing_sites (tbl -> { key -> label }) are swapped for timed copies until timing goes off. The clock is the engine's profile_timer (CPU ticks): a function's time includes what it
+-- calls, a call inside a call of the same clock counts once in the time. A timed copy calls its function under pcall and
+-- raises the same error again, so a failing function cannot leave its clock running.
+local WATCHED = { { "coop_mods_core", "mods" }, { "coop_mode", "mode" } } -- module, clock group
+local timing_on = false
+local timing_since, timing_until -- time_global() of the window: switched on or reset, switched off
+local clocks = {} -- group -> key -> { n = calls, t = profile_timer }
+local swapped = {} -- { tbl, key, fn = the function it had, timed = its timed copy } while timing is on
+
+local function clock(group, key)
+	local g = clocks[group]
+	if not g then
+		g = {}
+		clocks[group] = g
+	end
+	local c = g[key]
+	if not c then
+		c = { n = 0, t = profile_timer() }
+		g[key] = c
+	end
+	return c
+end
+
+local function stopped(c, ok, ...)
+	c.t:stop()
+	if not ok then error((...), 0) end
+	return ...
+end
+
+local function timed(c, f)
+	return function(...)
+		c.n = c.n + 1
+		c.t:start()
+		return stopped(c, pcall(f, ...))
+	end
+end
 
 -------------------------------------------------------------------------------
 -- Wrappers
@@ -194,20 +242,26 @@ function scope_now()
 end
 
 local function guard(f, d, script, what, skip_ret, err_ret)
+	local timed_f -- f through its clock, made when it first runs with timing on
 	local w = function(...)
 		if not runs(d) or orphaned(d) then
 			note(d, "skipped", script, what) -- per (callback, script): review M2
 			return skip_ret
 		end
 		note(d, "ran")
+		local h = f
+		if timing_on then
+			timed_f = timed_f or timed(clock("route", what .. "@" .. script), f)
+			h = timed_f
+		end
 		local rotate = (d == "host" or d == "level") and what == "actor_on_update" and ROTATE[script]
 		if client then
-			if rotate then return finish(d, script, what, err_ret, pcall(as_player_in_turn, script, f, ...)) end
-			return finish(d, script, what, err_ret, pcall(f, ...))
+			if rotate then return finish(d, script, what, err_ret, pcall(as_player_in_turn, script, h, ...)) end
+			return finish(d, script, what, err_ret, pcall(h, ...))
 		end
 		-- no tail call: this wrapper stays on the stack while the handler runs (its scope, R32 W2a); no pcall: the stock behaviour
-		if rotate then return pass(as_player_in_turn(script, f, ...)) end
-		return pass(f(...))
+		if rotate then return pass(as_player_in_turn(script, h, ...)) end
+		return pass(h(...))
 	end
 	wrappers[w] = true
 	mark(w, d)
@@ -606,4 +660,114 @@ function print_status()
 	log("shim %s on this %s | wrappers host %d, owner %d, view %d, none %d, level %d | routed in place %d, not routed %d, "
 		.. "lua errors caught %d", installed and "on" or "off", client and "client" or "host or single player",
 		counts.host, counts.owner, counts.view, counts.none, counts.level, stats.rewrapped, stats.unrouted, caught)
+	if next(clocks) then print_timing(10) end
+end
+
+-------------------------------------------------------------------------------
+-- Timing: switch, report
+-------------------------------------------------------------------------------
+local function get(tbl, key) return tbl[key] end
+local function set(tbl, key, v) tbl[key] = v end
+
+local function swap_in(tbl, key, group, label)
+	local ok, fn = pcall(get, tbl, key)
+	if not (ok and type(fn) == "function") then return end
+	local copy = timed(clock(group, label), fn)
+	if pcall(set, tbl, key, copy) then swapped[#swapped + 1] = { tbl = tbl, key = key, fn = fn, timed = copy } end
+end
+
+local function swap_all()
+	for _, w in ipairs(WATCHED) do
+		local m = rawget(_G, w[1])
+		local sites = type(m) == "table" and rawget(m, "timing_sites")
+		if type(sites) == "table" then
+			for tbl, keys in pairs(sites) do
+				for key, label in pairs(keys) do swap_in(tbl, key, w[2], label) end
+			end
+		end
+	end
+end
+
+-- A function somebody replaced again while timing was on keeps the replacement (its timed copy then stays inside it).
+local function swap_out()
+	for i = #swapped, 1, -1 do
+		local s = swapped[i]
+		local ok, now = pcall(get, s.tbl, s.key)
+		if ok and now == s.timed then pcall(set, s.tbl, s.key, s.fn) end
+		swapped[i] = nil
+	end
+end
+
+local function now_ms()
+	local tg = rawget(_G, "time_global")
+	return tg and tg() or nil
+end
+
+-- timing(true | false) -> whether timing is on now; timing() only asks. On starts a new window (timing_reset). Off without the
+-- engine's profile_timer.
+function timing(on)
+	if on == nil then return timing_on end
+	on = on == true
+	if on == timing_on then return timing_on end
+	if on then
+		if type(rawget(_G, "profile_timer")) ~= "function" then
+			log("! timing: no profile_timer in this exe")
+			return false
+		end
+		timing_on = true
+		timing_reset()
+		swap_all()
+	else
+		timing_on = false
+		timing_until = now_ms()
+		swap_out()
+	end
+	log("timing %s", timing_on and "on" or "off")
+	return timing_on
+end
+
+-- Every clock back to zero, kept where a timed copy holds it.
+function timing_reset()
+	for _, g in pairs(clocks) do
+		for _, c in pairs(g) do
+			c.n = 0
+			c.t = profile_timer()
+		end
+	end
+	timing_since = now_ms()
+	timing_until = nil
+end
+
+-- The clocks with calls, the first n by "ms" (total time, the default) or by "calls": { {group, key, calls, ms}, ... }
+function timing_top(n, by)
+	local list = {}
+	for group, g in pairs(clocks) do
+		for key, c in pairs(g) do
+			if c.n > 0 then list[#list + 1] = { group = group, key = key, calls = c.n, ms = c.t:time() / 1000 } end
+		end
+	end
+	local field = by == "calls" and "calls" or "ms"
+	table.sort(list, function(a, b)
+		if a[field] ~= b[field] then return a[field] > b[field] end
+		if a.group ~= b.group then return a.group < b.group end
+		return a.key < b.key
+	end)
+	for i = #list, (tonumber(n) or #list) + 1, -1 do list[i] = nil end
+	return list
+end
+
+-- The first n by time and the first n by calls, one line each (a log line stays short: the engine's log ends the process on
+-- a line over 4 KB).
+function print_timing(n)
+	n = tonumber(n) or 10
+	local till = timing_until or now_ms()
+	local secs = till and timing_since and (till - timing_since) / 1000 or 0
+	log("timing %s, window %.1f s", timing_on and "on" or "off", secs)
+	for _, by in ipairs({ "ms", "calls" }) do
+		for i, e in ipairs(timing_top(n, by)) do
+			local per_s = secs > 0 and string_format(", %.3f ms/s, %.1f calls/s", e.ms / secs, e.calls / secs) or ""
+			log("timing by %s #%d %s %s: %.3f ms, %d calls, %.2f us/call%s", by, i, e.group, e.key, e.ms, e.calls,
+				e.ms * 1000 / e.calls, per_s)
+		end
+	end
 end
