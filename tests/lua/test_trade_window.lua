@@ -1,7 +1,7 @@
--- Anomaly Coop (TZ R90): a player's trade window is the host's window. On a player's copy the Lua inventory window of Anomaly
+-- A player's trade window is the host's window. On a player's copy the Lua inventory window of Anomaly
 -- (ui_inventory, G.A.M.M.A.'s copy) opens as on the host, and scripts\coop_trade_window.script turns its Sell, Buy and Donate into one
 -- deal for the decider (coop.trade_deal): no transfer_item, no give_money on the copy. Every other process keeps the stock window
--- untouched. TZ R92: the deal goes at the sums the window showed; the decider counts the same formula as for itself (host_price: no
+-- untouched. The deal goes at the sums the window shows; the decider counts the same formula as for itself (host_price: no
 -- with_identity, the functions utils_ui sums with, WPO by any player's hands through coop_mods_wpo_holder), and a refusal for its
 -- price (code 10) makes the window tell so (on the HUD when it is closed), take the trader's profile again and draw itself anew
 -- without closing the trader's view; no price of the decider is kept, and a press goes only at the sum its label shows.
@@ -85,7 +85,7 @@ function utils_item.get_item_trade_status(obj, profile)
 end
 ]]
 local function load_wpo()
-	load_script("coop_mods_wpo_holder")
+	load_script("coop_mods_wpo_holder").on_game_start() -- its install runs before every pricing (before_pricing)
 	local f = assert(loadstring("local this = {} a_wpo_parts = this setmetatable(this, {__index = _G}) setfenv(1, this) " .. WPO_SRC,
 		"@a_wpo_parts.script"))
 	f()
@@ -114,7 +114,7 @@ utils_item = {
 }
 
 -- G.A.M.M.A.'s utils_ui: file locals of utils_item's two functions taken when it loads (utils_ui.script:93-94), and
--- UICellContainer:GetCellCost summing a cell with them (:1994-2014), not with what utils_item holds now.
+-- UICellContainer:GetCellCost sums a cell with its captured functions even if utils_item changes.
 local function load_utils_ui()
 	local get_item_trade_status = utils_item.get_item_trade_status
 	local get_item_cost = utils_item.get_item_cost
@@ -341,7 +341,7 @@ local COPY = {
 
 -- loaded and started once, as axr_main does in a Lua state; each set below gets a fresh window class
 local tw = load_script("coop_trade_window")
-local settings = load_script("coop_settings") -- TZ R92 (W6): apply_factor_table tells an open trade window
+local settings = load_script("coop_settings") -- apply_factor_table tells an open trade window
 tw.on_game_start()
 
 modes.each(coop_mode, function(name)
@@ -370,7 +370,7 @@ modes.each(coop_mode, function(name)
 	SendScriptCallback("GUI_on_hide", "UIInventory", "ui_inventory")
 	check(#VIEWS == 2 and VIEWS[2].id == "none", name .. ": and its close")
 
-	-- host_price (TZ R92): the decider's sums of a Lua window's deal, counted as for itself: no with_identity, the lists set up by this
+	-- host_price computes the sums as for the decider itself, without with_identity. The lists are set up by this
 	-- machine's own actor (the co-op host's; a map server's service actor, no player), the functions utils_ui sums with
 	local _, char = spawn("coop_player_avatar", vec3(2, 0, 0), nil, { id = 500, kind = "stalker" })
 	TM[trader:id()] = { cfg_ltx = CFG.name }
@@ -404,7 +404,7 @@ modes.each(coop_mode, function(name)
 	local s4, w4 = tw.host_price(500, trader:id(), { s1:id() }, {})
 	check(s4 == nil and type(w4) == "string", name .. ": and with utils_ui's get_item_trade_status (" .. tostring(w4) .. ")")
 	set_upvalue(cell_cost, "get_item_trade_status", held_status)
-	-- the counting wrapper stays on with_identity until the WPO checks below are done (review of 2026-11-25, tests#5)
+	-- Keep counting with_identity calls through the WPO checks below.
 	local none_s, none_b = tw.host_price(500, trader:id(), {}, {})
 	check(none_s == 0 and none_b == 0, name .. ": empty lists cost nothing")
 	s2._status = 2
@@ -428,7 +428,7 @@ modes.each(coop_mode, function(name)
 	r, w = tw.host_price(500, trader:id(), { theirs:id() }, {})
 	check(r == nil and type(w) == "string", name .. ": the player sells only what his character holds (" .. tostring(w) .. ")")
 
-	-- TZ R92: G.A.M.M.A.'s Weapon Parts Overhaul looks at who holds an item (a_wpo_parts.script:8 a part not held by the actor goes at
+	-- G.A.M.M.A.'s Weapon Parts Overhaul checks the holder (a_wpo_parts.script:8 prices a part outside the actor at
 	-- the mechanic's list, :25 a weapon not held by the actor skips its busted-parts check). coop_mods_wpo_holder makes it "any
 	-- player's hands": on the decider the player's character holds what he sells, and the decider counts what his window shows.
 	local base_cost, base_status = utils_item.get_item_cost, utils_item.get_item_trade_status
@@ -452,7 +452,7 @@ modes.each(coop_mode, function(name)
 		"offer it (" .. tostring(r_ak) .. ", " .. tostring(w_ak) .. ")")
 	PARTS_OF[ak:id()] = { prt_w_barrel_ak = 0.9 }
 	check(tw.host_price(500, trader:id(), { ak:id() }, {}) == 5000 * 0.5, name .. ": a weapon whose parts are whole is")
-	-- review of 2026-11-25 (tests#5): every host_price above, the WPO ones too, ran under the counting wrapper
+	-- The wrapper counts with_identity calls from all host_price cases, including WPO.
 	check(identity_calls == 0 and db.actor == real_actor, name .. ": no host_price of the WPO path put anyone in for the player (" ..
 		tostring(identity_calls) .. ")")
 	coop_npc_players.with_identity = saved_identity
@@ -468,8 +468,8 @@ modes.each(coop_mode, function(name)
 	load_utils_ui()
 	for _, o in ipairs({ barrel, his, ak, theirs }) do release_id(o:id()) end
 
-	-- TZ R92 (W6): coop_settings sets the economy factor buy or sell anew while a trade window is open: the window copied the trader's
-	-- discounts when it opened, and reads his profile again (any process, the same under every set)
+	-- coop_settings can change the buy or sell factor while the window is open: the window copies the trader's
+	-- discounts at open and reads the profile again on any process.
 	local ECO = { buy = 1, sell = 1, goodwill = 1 }
 	game_difficulties = {
 		get_eco_factor = function(k) return ECO[k] end, set_eco_factor = function(k, v) ECO[k] = v end,
@@ -498,12 +498,12 @@ modes.each(coop_mode, function(name)
 	------------------------------------------------------------------------------------------------------- the player's machine
 	modes.install(coop_mode, name, COPY)
 
-	-- R90 review 1: G.A.M.M.A. binds Sell and Buy once, when the window is made at the first open of the inventory, long before the
+	-- G.A.M.M.A. binds Sell and Buy when the inventory window first opens, before the
 	-- first trade; callbacks_gameobject has wrapped both before that. ready() comes with the trade, after the binding.
 	UI = fresh_ui()
 	gameobject_wraps(UI)
 	trader._money, db.actor._money = 5000, 1000
-	local early = window("inventory", trader) -- the player opened his inventory: UIInventory() bound the buttons now
+	local early = window("inventory", trader) -- UIInventory() binds the buttons when the player opens the inventory
 	local stale_sell, stale_buy = bound(early, "sell"), bound(early, "buy")
 	check(stale_sell == UI.TMode_Sell, name .. " copy: the window's Sell is bound to the class's function of that moment")
 	ok, why = tw.ready() -- he talks to a trader: StartTrade -> lua_trade_window_allowed -> ready()
@@ -512,7 +512,7 @@ modes.each(coop_mode, function(name)
 		name .. " copy: ready() binds the open window's Sell and Buy again")
 	local e1 = item("medkit", 0, 100)
 	local e2 = item("vodka", trader:id(), 300)
-	window("trade", trader, { { e1 } }, { { e2 } }, early) -- TMode_Init: the same window, now with the trader
+	window("trade", trader, { { e1 } }, { { e2 } }, early) -- TMode_Init opens the trader in the same window
 	SendScriptCallback("GUI_on_show", "UIInventory", "ui_inventory")
 	DEALS, TRANSFERS, MONEY_CALLS = {}, 0, 0
 	press(early, "sell")
@@ -670,11 +670,11 @@ modes.each(coop_mode, function(name)
 	tw.on_result(DEALS[1].seq, 0, -300, "ok") -- a late answer to a forgotten deal: nothing happens
 	run(600)
 
-	-- TZ R92: the decider counts the purchase above what the window showed, beyond the tolerance: refused for its price (code 10, the
+	-- The decider counts a purchase above the shown sum beyond the tolerance: refuse for its price (code 10, the
 	-- decider's sums in the tail, for the log). Nothing agrees to the decider's price: the window tells so, takes the trader's profile
-	-- again at once and draws itself anew; the next press sends what the window shows then. Review of 2026-11-25 (lua_flow#1): the
-	-- trader's money and his items' states came ahead of the answer (coop_trade.cpp host_send_trader_view), so the trader's view is
-	-- neither closed nor opened again: a close would revoke a trading computer's permit on the decider, whose grant is taken once.
+	-- again at once and draws itself anew. The next press sends the sum the window shows. coop_trade.cpp
+	-- host_send_trader_view sends the trader's money and item states before the answer. Keep the view open because
+	-- closing it revokes the trading computer's permit, whose grant is taken once.
 	trader._money, db.actor._money = 5000, 1000
 	local n1 = item("medkit", 0, 100)
 	local n2 = item("vodka", trader:id(), 300)
@@ -683,7 +683,7 @@ modes.each(coop_mode, function(name)
 	gui:UpdateInfo(true)
 	check(gui.npc_trade_price.text == "300 RU" and gui.player_trade_price.text == "100 RU",
 		name .. " copy: the window shows its own prices (" .. gui.npc_trade_price.text .. ", " .. gui.player_trade_price.text .. ")")
-	local world = coop_core_world
+	local world = coop_core_world_trader
 	local saved_ask = world.ask_trader
 	local ASKED = {}
 	world.ask_trader = function(npc, now) ASKED[#ASKED + 1] = { id = npc:id(), now = now } end
@@ -725,9 +725,8 @@ modes.each(coop_mode, function(name)
 	check(#DEALS == 2 and DEALS[2].ss == 100, name .. " copy: and the next Sell sends the window's 100 RU at once")
 	tw.on_result(DEALS[2].seq, 5, 0, "no money")
 
-	-- Review of 2026-11-25 (lua_flow#3): an item's state comes after the labels were drawn (another player, the decider) and
-	-- G.A.M.M.A. draws them only on its own events. The player pays exactly the sum he sees: a press whose sum moved since its label
-	-- was drawn sends nothing and draws the window anew; the next press sends the sum the label shows then.
+	-- Another player or the decider can send item state after G.A.M.M.A. draws the labels. If the price differs
+	-- from the label at the press, redraw the window and send nothing. The next press sends the newly shown sum.
 	DEALS = {}
 	gui:UpdateInfo(true)
 	n2._cost = 400 -- the trader's vodka: its new state came, the label still shows 300 RU
@@ -751,8 +750,8 @@ modes.each(coop_mode, function(name)
 	gui:UpdateInfo(true)
 	check(gui.npc_trade_price.text == "300 RU" and gui.player_trade_price.text == "100 RU",
 		name .. " copy: watching the labels changes none of them: the window draws its own sums")
-	-- Re-review of 2026-11-25: the only item of the list became untradable after its label was drawn (its state came: too worn) — the
-	-- list's sum fell to 0 while the label still shows 300 RU. The press is not swallowed silently: the window draws 0 RU, nothing goes.
+	-- Wear makes the list's only item untradable after the label is drawn. The press redraws the sum as 0 RU
+	-- and sends no deal while the label still shows 300 RU.
 	DEALS = {}
 	n2._status = 2
 	gui:TMode_Buy()
@@ -762,8 +761,8 @@ modes.each(coop_mode, function(name)
 	gui:UpdateInfo(true)
 	check(gui.npc_trade_price.text == "300 RU", name .. " copy: and drawn back when the item is tradable again")
 
-	-- Review of 2026-11-25 (lua_flow#2): the window is closed when the refusal for its price comes: told once on the HUD (the engine
-	-- tells no text for a Lua window's deal), nothing is asked for, the closed view stays closed
+	-- With the window closed, a price refusal appears once on the HUD (the engine is silent for Lua window deals).
+	-- The closed view stays closed and no new view is requested.
 	DEALS, VIEWS, ASKED, HUDS, MSGBOX = {}, {}, {}, {}, nil
 	gui:TMode_Buy()
 	gui:Close()
@@ -775,7 +774,7 @@ modes.each(coop_mode, function(name)
 	check(#ASKED == 0, name .. " copy: a refusal for its price without a window asks for nothing")
 	run(600)
 	check(#VIEWS == after_close and VIEWS[after_close].id == "none", name .. " copy: a closed window's view stays closed")
-	-- the window shows another trader by now: the same
+	-- The window shows another trader when the refusal arrives: the same
 	local _, trader3 = spawn("trader_three", vec3(4, 0, 0), nil, { kind = "stalker" })
 	gui = window("trade", trader, { { n1 } }, { { n2 } }, gui)
 	gui:UpdateInfo(true)
@@ -786,7 +785,7 @@ modes.each(coop_mode, function(name)
 	check(#HUDS == 1 and MSGBOX == nil and #ASKED == 0,
 		name .. " copy: a refusal for its price while the window shows another trader is one line on the HUD too")
 
-	-- Review of 2026-11-25 (lua_flow#1): a window opened through a trading computer (no talk: its view carries the decider's permit,
+	-- A trading computer opens the window without talk: its view carries the decider's permit,
 	-- whose grant is taken once). A refusal for its price keeps that view open, so the next deal in the window still goes.
 	gui = window("trade", trader, { { n1 } }, { { n2 } }, gui)
 	VIEWS, ASKED, DEALS, HUDS, MSGBOX = {}, {}, {}, {}, nil
@@ -835,7 +834,7 @@ modes.each(coop_mode, function(name)
 	check(C.donate == 1, name .. " copy: outside a trade window the stock runs")
 	ui_inventory.GUI = gui
 
-	-- TZ R92 (W4 of the review): the deal's ids, its item prices and its sum go through the functions the window sums with (utils_ui's
+	-- The deal's ids, item prices and sum use the functions the window sums with (utils_ui's
 	-- file locals): a mod that replaced utils_item.get_item_cost after utils_ui loaded changes none of them
 	local w1 = item("medkit", 0, 100)
 	local w2 = item("bread", 0, 50)
@@ -919,15 +918,15 @@ modes.each(coop_mode, function(name)
 	done("trade window (" .. name .. ")")
 end)
 
--- coop_core_world hands the late profile to the window and lets it ask for one without a talk
+-- coop_core_world_trader hands the late profile to the window and lets it ask for one without a talk
 do
-	local fh = assert(io.open("gamedata/scripts/coop_core_world.script", "r"))
+	local fh = assert(io.open("gamedata/scripts/coop_core_world_trader.script", "r"))
 	local src = fh:read("*a")
 	fh:close()
-	check(src:find("module_of(\"coop_trade_window\")", 1, true) ~= nil and src:find("on_profile", 1, true) ~= nil,
-		"coop_core_world: the profile from the decider reaches an open Lua trade window")
+	check(src:find("coop_util.module(\"coop_trade_window\")", 1, true) ~= nil and src:find("on_profile", 1, true) ~= nil,
+		"coop_core_world_trader: the profile from the decider reaches an open Lua trade window")
 	check(src:find("\nfunction ask_trader(npc, now)", 1, true) ~= nil and src:find("if not now and trader_asked[id]", 1, true) ~= nil,
-		"coop_core_world: ask_trader(npc, now) for a window opened without a talk, at once after a refusal for its price (TZ R92)")
+		"coop_core_world_trader: ask_trader(npc, now) for a window opened without a talk, at once after a refusal for its price (TZ R92)")
 	local sh = assert(io.open("gamedata/scripts/coop_settings.script", "r"))
 	local settings_src = sh:read("*a")
 	sh:close()
@@ -939,13 +938,13 @@ do
 	check(window_src:find("with_identity(", 1, true) == nil and window_src:find("as_actors", 1, true) == nil
 		and window_src:find("agreed", 1, true) == nil and window_src:find("guards.TMode_UpdatePrice", 1, true) == nil,
 		"coop_trade_window: no stand-in for the player, no price of the decider kept or shown (TZ R92)")
-	-- review of 2026-11-25 (tests#5): nor in the Weapon Parts Overhaul compatibility the decider prices through
+	-- Weapon Parts Overhaul pricing also preserves the actor's identity.
 	local hh = assert(io.open("gamedata/scripts/coop_mods_wpo_holder.script", "r"))
 	local holder_src = hh:read("*a")
 	hh:close()
 	check(#holder_src > 500 and holder_src:find("with_identity(", 1, true) == nil and holder_src:find("as_actors", 1, true) == nil,
 		"coop_mods_wpo_holder: no stand-in for the player either (TZ R92)")
-	-- review of 2026-11-25 (lua_flow#1): a refusal for its price does not close the trader's view (a trading computer's permit)
+	-- A price refusal keeps the trader's view open to preserve a trading computer's permit.
 	check(window_src:find("REOPEN_MS", 1, true) == nil and window_src:find("api.search_window()\n\t\treopen", 1, true) == nil,
 		"coop_trade_window: the trader's view is not closed and opened again after a refusal for its price")
 end
@@ -976,7 +975,7 @@ do
 		"G.A.M.M.A. ui_inventory: the profile host_price rebuilds (TMode_InitProfile)")
 	check(has(cells, "function UICellContainer:GetCellCost(ci)") and has(cells, "function UICellContainer:GetCell_ID(id, only_indx)")
 		and has(cells, "self.indx_id[id] = indx"), "G.A.M.M.A. utils_ui: the cell container the adapter reads")
-	-- R90 review 1: the buttons are bound when the window is made; ready() binds them again
+	-- The window binds the buttons at creation; ready() binds them again.
 	check(has(inv, 'self:AddCallback("sell", ui_events.BUTTON_CLICKED, self.TMode_Sell, self)')
 		and has(inv, 'self:AddCallback("buy"  , ui_events.BUTTON_CLICKED, self.TMode_Buy, self)'),
 		"G.A.M.M.A. ui_inventory: Sell and Buy are bound in InitCallbacks")
@@ -1006,7 +1005,7 @@ do
 		and has(inv, 'self:TMode_UpdatePrice(self.npc_trade_price, self.npc_trade_buy, "npc_trade")')
 		and has(inv, 'ele_txt:SetText(tot_cost .. " RU")') and has(inv, "ele_btn:Enable( tot_cost > 0 )"),
 		"G.A.M.M.A. ui_inventory: both prices are set by TMode_UpdatePrice from UpdateInfo")
-	-- TZ R92: the window sums with utils_ui's file locals of utils_item's two functions; host_price and the deal's prices read them there
+	-- host_price and the deal use the same utils_item functions captured by utils_ui's window formula.
 	check(has(cells, "local get_item_trade_status = utils_item.get_item_trade_status")
 		and has(cells, "local get_item_cost         = utils_item.get_item_cost")
 		and has(cells, "if obj and (get_item_trade_status(obj, self.trade_profile) == 4) then")

@@ -52,6 +52,9 @@ local function setup(role, peer, answer, map, map_by_peer, players)
 		is_player_mirror = function() return true end,
 	} or answer == "srv_map" and {
 		where = function(id) return map_by_peer[id] == map and "here" or "away" end,
+	} or answer == "srv_world" and {
+		-- the world server's layer knows a map server by its link in coop.levels.map_servers: both maps' servers here
+		from_level = function(from) return from == 0x101 or from == 0x102 end,
 	} or nil)
 	e.level.name = function() return MAP[m.view] end
 	e.level.map_add_object_spot_ser = function() end
@@ -223,7 +226,9 @@ for _, name in ipairs(modes.names()) do
 			m.env.coop.route = { of = function(_, f)
 				return "host", debug.getinfo(f, "S").source:match("([%w_]+)%.script$")
 			end }
-			load_script(m, "coop_core_world").on_game_start()
+			local route = load_script(m, "coop_route") -- the tick service the news tick runs on
+			load_script(m, "coop_core_world_news").on_game_start()
+			route.on_game_start()
 		end
 		world.candidate, world.candidate_player, world.charged, client.charged = true, 0, true, true
 		world.env.tasks_guide.prepare_follower()

@@ -544,8 +544,7 @@ end
 -- Sending
 -------------------------------------------------------------------------------
 -------------------------------------------------------------------------------
--- A spawn into my inventory, counted (live 2026-11-08: 10 medkits asked on a map server's level, 20 in the inventory, the
--- window "give" counted 20): what this machine had and has of the section, with the ids, when the answer comes and a few
+-- A spawn into my inventory, counted: what this machine had and has of the section, with the ids, when the answer comes and a few
 -- seconds later (the world server's copy of a map server's spawn reaches every player after it). Only the log; nothing
 -- changes.
 -------------------------------------------------------------------------------
@@ -577,9 +576,8 @@ local function ranges(ids)
 	return #out > 0 and table.concat(out, ",") or "none"
 end
 
--- Live, build 54 (RL-BWXX-F77V): a silencer that fits a gun the player held never came into his bag (wpn_sil_vihr with
--- wpn_vihr, wpn_sil_gemtech with wpn_fnp45), one that fits none of his guns came. Who takes it away is not known yet.
--- For the log only: the guns here that take this section as their silencer, and whether one is on them now.
+-- A silencer that fits a gun the player holds can miss his bag while one that fits none of his guns comes; who takes it
+-- away is not known. For the log only: the guns here that take this section as their silencer, and whether one is on them now.
 local function fitting_guns(sec)
 	local out = {}
 	pcall(function()
@@ -608,7 +606,7 @@ local function watch_line(w, source, when)
 	end
 	local delta = #now_ids - #w.before
 	-- The answer can come before the item (a client: the decider's copy is still on its way), so at the answer only more
-	-- than asked is a fault; the second look (`when`) decides a missing one too (stand, build 57: "have 0", then "have 1").
+	-- than asked is a fault; the second look (`when`) decides a missing one too ("have 0", then "have 1").
 	local overlap = w.overlap or open_watches[w.sec].count > 1
 	local wrong = not (overlap or w.money) and (delta > w.n or (when ~= nil and delta ~= w.n))
 	local details = (overlap and "; other requests of it overlap" or "") ..
@@ -795,8 +793,8 @@ function on_note(payload, from)
 end
 
 -- No Lua window may live through a level change: its script object dies with the old Lua state while the UI still holds it.
--- Live 2026-11-08 (RL-AMY4-AZXY): the window stayed open through a debug level change to the Bar, and the game died of heap
--- corruption (0xC0000374) on the new level's script start. Closed before the order's jump and on both stock level-change callbacks
+-- A window open through a level change kills the game with heap corruption (0xC0000374) on the new level's script start.
+-- Closed before the order's jump and on both stock level-change callbacks
 -- (a level changer walked with the window open, a story teleport).
 function close_window()
 	target_id, previous_id = nil, nil

@@ -1,11 +1,14 @@
--- RayLink co-op: one place for the host's checks of a client's request that were added by TZ v2 section 6.4 (owner
--- 2026-11-18: "do the weak places of phase 2"). A check that fails is counted and logged. Whether the request is then
--- refused is a setting, so that a new check runs for one Dev build in "log" (it says what it would have refused and lets
--- the request through), and is switched to "refuse" after a look at the hosts' logs: honest play and mods get no sudden
--- refusals.
+-- Ядро: без проверок режима (docs/MODES.md)
+-- RayLink co-op: one place for the decider's checks of a player's request. A check that fails is counted and logged.
+--   pass(name, ok, fmt, ...)   a check of a request: whether a failure is refused is a setting, so that a new check runs
+--                              for one Dev build in "log" (it says what it would have refused and lets the request
+--                              through), and is switched to "refuse" after a look at the hosts' logs: honest play and mods
+--                              get no sudden refusals.
+--   guard(name, ok, fmt, ...)  a check whose failure is always dropped (a malformed or unauthorized packet, data that does
+--                              not hold): its line says "dropped".
 --
--- Layer: the Core. It runs on the machine that decides (the host of a co-op, the world server of a server) and never asks
--- which mode it is in: the caller is the handler of the request.
+-- It runs on the machine that decides (the host of a co-op, the world server of a server) and never asks which mode it is
+-- in: the caller is the handler of the request.
 --
 --   if not coop_trust.pass("task_complete", ok, "player %s, task %s: no such running task", nick, id) then return end
 --
@@ -73,9 +76,9 @@ function pass(name, ok, fmt, ...)
 	return not refuse
 end
 
--- Round 6 (S5 of the round 5 review): an always-on guard of data, not a check of a client's request. What fails is dropped in
--- every mode, so its line says "dropped", never "would be refused: let through" (that would mislead the look at the [coop-trust]
--- lines before a switch to "refuse"). Returns `ok`. Counted under `name` (status, coop_status: "[guard]"); "off" counts nothing.
+-- An always-on guard of data, not a check of a player's request. What fails is dropped in every mode, so its line says
+-- "dropped", never "would be refused: let through" (that would mislead the look at the [coop-trust] lines before a switch
+-- to "refuse"). Returns `ok`. Counted under `name` (status, coop_status: "[guard]"); "off" counts nothing.
 -- Without `fmt` a failure is only counted, with no line: a guard that fails in honest play (an object id the engine gave to
 -- another object) would write one line a second.
 function guard(name, ok, fmt, ...)
@@ -96,6 +99,10 @@ end
 
 function status()
 	return counters
+end
+
+function on_game_start()
+	coop_util.add_status("coop_trust", 30)
 end
 
 function print_status()

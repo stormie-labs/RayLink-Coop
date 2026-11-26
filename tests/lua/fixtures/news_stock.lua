@@ -140,7 +140,7 @@ function xr_effects.barrier_defense_news(a, b, c)
 	send_tip("lukash " .. tostring(c and c[1]), "Lukash", nil, nil, "ui_inGame2_lukash", nil, "npc")
 end
 ]],
-	-- GAMMA's Dynamic News Manager Fixes: defines its own dynamic_news_helper.send_tip when it loads, after coop_core_world
+	-- GAMMA's Dynamic News Manager Fixes: defines its own dynamic_news_helper.send_tip when it loads, after coop_core_world_news
 	dynamic_news_manager_patch_dmg = [[
 function dynamic_news_helper.send_tip(m, h, to, st, s, snd, ib)
 	return stock_dyn_show(m, h, to, st, s, snd, ib)

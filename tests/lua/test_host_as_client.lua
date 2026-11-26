@@ -57,7 +57,6 @@ local function set_role(name)
 	coop.is_world_server = answer(r.world)
 	coop.is_player = answer(r.player)
 	coop.is_mirror = answer(r.mirror)
-	coop.is_map_authority = answer(r.world)
 	coop.is_dedicated = answer(r.dedicated == true)
 	coop.is_map_server = answer(r.map_server == true)
 	coop.levels = r.split and { split = answer(true) } or nil
@@ -548,29 +547,12 @@ case("core_player: who the Lua state belongs to, who announces what", function()
 	check(STASH.coop_core_session == nil and not log_has("hosting"), "a world server with no player has no one to tell")
 end)
 
-case("core_player: the group move and /go", function()
-	local cm
-	for _, role in ipairs({ "client", "hostplayer" }) do
-		load_player(role)
-		cm = rawget(_G, "coop_main")
-		cm.on_event("core.moving", cm.encode({ nick = "x" }), 0)
-		check(count_of(PPES, function(p) return p.name == "sleep_fade.ppe" end) == 1,
-			role .. ": the move of the group fades this player's screen")
-	end
-	load_player("dedicated")
-	cm = rawget(_G, "coop_main")
-	cm.on_event("core.moving", cm.encode({ nick = "x" }), 0)
-	check(#PPES == 0, "a world server with no player has no screen to fade")
-
+case("core_player: /go", function()
 	load_player("names_world")
 	check(coop_core_player.accept_transition() == true, "/go on the world server: accepted (old name says no)")
 	check(count_of(EXEC, function(c) return c == "coop_accept_transition" end) == 1,
-		"... nobody is known to wait: the engine's accept command runs, once, and answers itself")
-	EXEC = {}
-	coop_core_player.on_transition_vote("Wolf")
-	check(coop_core_player.accept_transition() == true and sent_count("core.moving") == 1, "... a waiting player: the move is announced to the others")
-	run_time_events(1000)
-	check(count_of(EXEC, function(c) return c == "coop_accept_transition" end) == 1, "... then the engine moves the group")
+		"... the engine's accept command runs, once, and answers itself")
+	check(sent_count("core.moving") == 0, "... nothing of its own is sent: the engine moves the group")
 	load_player("not_world")
 	check(coop_core_player.accept_transition() == true, "the playing co-op host accepts /go even when is_world_server says no")
 	check(count_of(EXEC, function(c) return c == "coop_accept_transition" end) == 1, "... and runs the engine command once")

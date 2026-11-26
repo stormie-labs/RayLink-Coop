@@ -93,7 +93,7 @@ local function boot(role, peer, map, roster, legacy_first)
 	end
 	load_script(M, "coop_mode")
 	modes.live(e.coop_mode, function(name) return load_script(M, name) end)
-	for _, name in ipairs({ "coop_mods_core", "coop_npc_players", "coop_core_world", "coop_tasks",
+	for _, name in ipairs({ "coop_mods_core", "coop_npc_players", "coop_core_world_news", "coop_tasks",
 		"coop_faction", "coop_srv_faction", "coop_quests_core", "coop_srv_levels_share" }) do load_script(M, name) end
 	e.coop_srv_faction.on_game_start()
 	e.coop_srv_levels_share.on_game_start()
@@ -118,7 +118,7 @@ end
 
 local function tick()
 	NOW = NOW + 1500
-	for _, M in pairs(MACHINES) do M.env.coop_srv_levels_share._tick() end
+	for _, M in pairs(MACHINES) do M.env.coop_srv_levels_share._test.tick() end
 	pump()
 end
 

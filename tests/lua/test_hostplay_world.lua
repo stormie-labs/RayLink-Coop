@@ -5,13 +5,14 @@ local modes = dofile("tests/lua/support/modes.lua")
 modes.live(load_script_file("coop_mode"))
 load_coop_main()
 load_script_file("coop_trust").reset_for_test({ default = "log" })
-load_script_file("coop_core_world").on_game_start()
+load_script_file("coop_core_world_news").on_game_start()
 
 local news = coop_main.encode({ k = "tip", id = "st_test_news" })
 coop_main.on_event("core.news", news, 0x101)
 check(#SENT == 0, "a co-op player's high peer id cannot relay world news")
-local sender = coop_trust.status().world_news_sender
+local sender = coop_trust.status().env_world_sender
 check(sender and sender.failed == 1, "a refused sender is audited in log mode")
+check(sender and sender.guard == true, "... as a guard: a news from a wrong sender is dropped whatever the trust mode")
 
 local cast
 coop.sync = {
@@ -29,10 +30,9 @@ alife = function()
 end
 local cls = { launch = function() return true end, slow_fly = function() end, stop_light = function() end }
 bind_signal_light = { signal_light_binder = cls }
-load_script_file("coop_npc_players")
+load_script_file("coop_npc_players").host_on = function() return true end -- a host with a client
 local fx = load_script_file("coop_world_fx")
 fx.on_game_start()
-fx._set_host_on(true)
 local binder = { object = { id = function() return 34 end } }
 cls.launch(binder)
 check(cast and cast.name == "world.flare" and cast.opts and cast.opts.level == 0,

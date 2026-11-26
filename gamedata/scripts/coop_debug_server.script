@@ -43,7 +43,6 @@ local HANDLERS = {
 }
 local EV_SAY = "coop.dbg.say"
 local DEBUG_INFO = "debug_mode_flag_on"
-local LAST_PLAYER_PEER = 16 -- kMaxPeerSlots - 1 (coop_protocol.h)
 local MAX_NICK_BYTES = 128
 local MAX_SAY_BYTES = 2048
 
@@ -52,9 +51,7 @@ local function fmt(f, ...)
 	return ok and s or tostring(f)
 end
 
-local function log(f, ...)
-	printf("[coop-dbg] %s", fmt(f, ...))
-end
+local log = coop_util.logger("[coop-dbg]")
 
 local function R() return rawget(_G, "coop_debug_cmds") or coop_debug_cmds end
 local function P() return rawget(_G, "coop_npc_players") or coop_npc_players end
@@ -88,14 +85,8 @@ end
 -------------------------------------------------------------------------------
 -- Announcements (B.5): everybody sees who did what, like sv_cheats
 -------------------------------------------------------------------------------
-local function tr(id, fallback)
-	local ok, s = pcall(game.translate_string, id)
-	if not ok or type(s) ~= "string" or s == id then return fallback end
-	return s
-end
-
 local function show(nick, text)
-	local line = fmt("%s %s: %s", tr("st_coop_dbg_say_prefix", "[debug]"), tostring(nick), tostring(text))
+	local line = fmt("%s %s: %s", coop_util.tr("st_coop_dbg_say_prefix", "[debug]"), tostring(nick), tostring(text))
 	local chat = rawget(_G, "coop_core_chat") or coop_core_chat
 	if chat and chat.system then
 		pcall(chat.system, line)
@@ -111,11 +102,11 @@ end
 
 local function on_say(payload, from)
 	local trusted = from == 0
-	if not coop_trust.pass("debug_say_sender", trusted, "debug announcement from peer %s", tostring(from)) or not trusted then return end
+	if not coop_trust.guard("debug_say_sender", trusted, "debug announcement from peer %s", tostring(from)) then return end
 	local t = P().decode(payload)
 	local valid = type(t.nick) == "string" and #t.nick <= MAX_NICK_BYTES and R().get(t.cmd) ~= nil
 		and type(t.text) == "string" and #t.text <= MAX_SAY_BYTES
-	if not coop_trust.pass("debug_say_payload", valid, "invalid debug announcement from peer %s", tostring(from)) or not valid then return end
+	if not coop_trust.guard("debug_say_payload", valid, "invalid debug announcement from peer %s", tostring(from)) then return end
 	show(t.nick, t.text)
 end
 
@@ -126,13 +117,6 @@ local function result_of(ok, r, x)
 	if not ok then return false, r, x end
 	if type(r) == "table" then return true, r end
 	return true, { msg = tostring(r), id = x }
-end
-
--- target kind checks on the authority, where the object is online
-local function kind_ok(kind, obj)
-	if kind == "npc" then return obj ~= nil and ((IsStalker and IsStalker(obj)) or (IsMonster and IsMonster(obj))) and true or false end
-	if kind == "stalker" then return obj ~= nil and IsStalker and IsStalker(obj) and true or false end
-	return true
 end
 
 local function object_here(id)
@@ -160,8 +144,7 @@ local function role_name()
 	return "this process"
 end
 
--- Live 2026-11-08 (10 medkits asked on a map server's level, 20 in the client's inventory): what a spawn made, on the machine
--- that made it, with the request's number on the world server (rid) - one line per run, so a repeat shows who made how many.
+-- What a spawn made, on the machine that made it, with the request's number on the world server (rid) - one line per run, so a repeat shows who made how many.
 local function log_made(ctx, id, rid)
 	local made = ctx.made
 	if type(made) ~= "table" then return end
@@ -179,7 +162,7 @@ function execute(c, id, a, peer, by, rid)
 		ctx.obj = object_here(a.t)
 		if c.target then
 			if c.target ~= "object" and not ctx.obj then return false, "bad_target" end
-			if not kind_ok(c.target, ctx.obj) then return false, "bad_target" end
+			if not coop_debug_cmds.kind_ok(c.target, ctx.obj) then return false, "bad_target" end
 		end
 	end
 	if c.args.t2 then
@@ -274,7 +257,7 @@ end
 -- Requests of the players (B.5)
 -------------------------------------------------------------------------------
 local function refuse_request(class, from, code)
-	coop_trust.pass("debug_request", false, "%s request from peer %s refused: %s", class, tostring(from), code)
+	coop_trust.guard("debug_request", false, "%s request from peer %s refused: %s", class, tostring(from), code)
 	return false, code
 end
 
@@ -286,7 +269,7 @@ function serve(class, from, args)
 	local id = args.cmd
 	local c = R().get(id)
 	if not c or c.class ~= class then return refuse_request(class, from, "unknown_cmd") end
-	if type(from) ~= "number" or from < 0 or from > LAST_PLAYER_PEER or from % 1 ~= 0 then
+	if type(from) ~= "number" or from < 0 or from > coop_util.MAX_PEER or from % 1 ~= 0 then
 		return refuse_request(class, from, "no_player")
 	end
 	local pl = P().player(from)
@@ -399,7 +382,7 @@ local function class_of(word)
 	return c and c.class or nil
 end
 
--- op: nil for the server's console; { peer, nick } for the operator of a world server (plan 2026-11-12 §2.3): his peer is the
+-- op: nil for the server's console; { peer, nick } for the operator of a world server: his peer is the
 -- requester and, without @player, the player a personal command is for
 local function run_console(line, op)
 	local p, why = parse(line)
@@ -466,7 +449,7 @@ local function run_operator(line, parsed, peer)
 	return run_console(line, { peer = peer, nick = pl.nick or ("#" .. tostring(peer)) })
 end
 
--- the engine's coop_dbg of the operator of a world server (coop_debug.cpp operator_dbg; plan 2026-11-12 §2.3): line and parsed as
+-- the engine's coop_dbg of the operator of a world server (coop_debug.cpp operator_dbg): line and parsed as
 -- console() gets them, peer the operator's. What is said here goes back to him (the engine catches coop.debug.say of this call).
 function operator_console(line, parsed, peer)
 	local ok, out = pcall(run_operator, line, parsed, peer)

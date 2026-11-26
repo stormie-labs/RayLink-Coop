@@ -1,0 +1,367 @@
+-- Ядро: без проверок режима (docs/MODES.md)
+--[[
+	Anomaly Coop - core group: cutting up a mutant (gamedata\scripts\coop_core_world_mloot.script)
+
+	Only one player at a time may cut up a mutant, and a looted mutant stays looted for everybody. A player asks the process
+	that leads the map ("core.mloot_open"); it locks the corpse for him and answers with what is left (or "roll it
+	yourself", "nothing to loot", "decayed", "busy"); the player's window then works as usual, and on close he gives the
+	rest back ("core.mloot_close"). Any change of the looted flag there (its own player, its NPCs, a player's machine) goes
+	to all players ("core.mloot_edge").
+	FDDA (if installed): its HUD animation prefetch is skipped on a player's machine (it crashed the first update of a
+	joining player), and a granted window waits for the skinning animation before it counts as never opened.
+	Everything here is a no-op outside a co-op session.
+
+	For other scripts:
+		coop_core_world_mloot.on_peer_left(peer)   that player left: the corpses he held are free again
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local tostring, tonumber, type, pairs, pcall = tostring, tonumber, type, pairs, pcall
+
+local EV_MLOOT_OPEN = "core.mloot_open" -- player -> leader: id
+local EV_MLOOT_STATE = "core.mloot_state" -- leader -> player: id, v (0 rest follows, 1 nothing, 2 decayed, 3 busy, 4 roll), i:<sec>=count
+local EV_MLOOT_CLOSE = "core.mloot_close" -- player -> leader: id, m (more loot left), n (never rolled) | i:<sec>=count
+local EV_MLOOT_EDGE = "core.mloot_edge" -- leader -> players: id, l (looted)
+
+local TICK_MS = 500
+local MLOOT_PENDING_MS = 5000 -- an unanswered open request is forgotten
+local MLOOT_UI_WAIT_MS = 2000 -- granted, but the loot window did not open: give the lock back
+local MLOOT_UI_WAIT_EA_MS = 20000 -- the same with FDDA (the window opens after the animation)
+local MLOOT_LOCK_MS = 300000 -- leader: a lock nobody gave back
+
+local log = coop_util.logger("[coop-world]")
+
+local function msg(text)
+	local am = rawget(_G, "actor_menu")
+	if am and am.set_msg then pcall(am.set_msg, 1, text, 4) end
+end
+
+local function host_id(local_id)
+	return api.to_host_id(local_id) or local_id
+end
+
+local function local_id(id)
+	return api.to_local_id(id) or id
+end
+
+local stats = { mloot_req = 0, mloot_granted = 0, mloot_denied = 0, mloot_closed = 0, mloot_edges = 0 }
+
+local ml = rawget(_G, "ui_mutant_loot") -- set in install_mutant_loot
+local orig_start -- the start() found at install (FDDA may have wrapped it already)
+local locks = {} -- leader: corpse id -> { peer, at }
+local pending = {} -- player: local corpse id -> time of the request
+local granted = {} -- player: local corpse id -> { at, shown }
+local decay_s = nil
+
+local function decay_time()
+	if not decay_s then
+		local ok, v = pcall(function()
+			return ini_file("items\\settings\\mutant_loot.ltx"):r_float_ex("mutant_loot_mod", "decay_time")
+		end)
+		decay_s = ok and tonumber(v) or 7200
+	end
+	return decay_s
+end
+
+local function loot_to_flat(loot, t)
+	if type(loot) ~= "table" then return t end
+	for sec, v in pairs(loot) do
+		local c = type(v) == "table" and tonumber(v.count) or nil
+		if type(sec) == "string" and c and c > 0 then t["i:" .. sec] = c end
+	end
+	return t
+end
+
+local function flat_to_loot(t)
+	local loot = {}
+	for k, v in pairs(t) do
+		if type(k) == "string" and k:sub(1, 2) == "i:" then
+			local sec, c = k:sub(3), tonumber(v)
+			if c and c > 0 and c < 1000 and ini_sys:section_exist(sec) then loot[sec] = { count = math.floor(c) } end
+		end
+	end
+	return loot
+end
+
+local function set_looted_local(obj, looted)
+	se_save_var(obj:id(), obj:name(), "looted", looted and true or false)
+	save_var(obj, "looted", looted and true or nil)
+end
+
+-- Leader: the looted flag of a corpse changed; every player takes it over.
+local function edge(id, looted)
+	if not coop_util.decides_in_session() then return end
+	if api.send_event(EV_MLOOT_EDGE, coop_main.encode({ id = id, l = looted and true or false }), -1) then
+		stats.mloot_edges = stats.mloot_edges + 1
+	end
+end
+
+local function host_mloot_reply(to, id, v, loot)
+	local t = loot_to_flat(loot, { id = id, v = v })
+	if v == 0 or v == 4 then stats.mloot_granted = stats.mloot_granted + 1 else stats.mloot_denied = stats.mloot_denied + 1 end
+	api.send_event(EV_MLOOT_STATE, coop_main.encode(t), to)
+end
+
+local function host_grant(to, id, obj)
+	local loot = load_var(obj, "loot", nil)
+	if loot then host_mloot_reply(to, id, 0, loot) else host_mloot_reply(to, id, 4) end
+end
+
+local function on_mloot_open(payload, from)
+	if not coop_util.decides_in_session() then return end
+	stats.mloot_req = stats.mloot_req + 1
+	local id = tonumber(coop_main.decode(payload).id)
+	local obj = id and level.object_by_id(id)
+	if not (obj and IsMonster(obj) and not obj:alive()) then
+		host_mloot_reply(from, id or 0, 1)
+		return
+	end
+	local lock = locks[id]
+	if lock and lock.peer == from then -- a repeat of our own open: same answer
+		host_grant(from, id, obj)
+		return
+	end
+	if lock then
+		host_mloot_reply(from, id, 3)
+		return
+	end
+	local gui = ml and ml.GUI
+	if gui and gui:IsShown() and gui.id == id then -- the host player has it open
+		host_mloot_reply(from, id, 3)
+		return
+	end
+	local name = obj:name()
+	if se_load_var(id, name, "looted") then
+		host_mloot_reply(from, id, 1)
+		return
+	end
+	local st = db.storage[id]
+	if st and st.death_time and game.get_game_time():diffSec(st.death_time) > decay_time() then
+		se_save_var(id, name, "looted", true)
+		pcall(xr_corpse_detection.set_valuable_loot, id, false)
+		edge(id, true)
+		host_mloot_reply(from, id, 2)
+		return
+	end
+	-- Locked for this player: the host's own player and NPCs see it as looted until it comes back.
+	se_save_var(id, name, "looted", true)
+	save_var(obj, "looted", true)
+	pcall(xr_corpse_detection.set_valuable_loot, id, false)
+	locks[id] = { peer = from, at = time_global() }
+	host_grant(from, id, obj)
+end
+
+local function host_release(id, more, loot)
+	local obj = level.object_by_id(id)
+	if not obj then return end
+	if loot then save_var(obj, "loot", loot) end
+	se_save_var(id, obj:name(), "looted", not more)
+	save_var(obj, "looted", (not more) and true or nil)
+	pcall(xr_corpse_detection.set_valuable_loot, id, more and true or false)
+	edge(id, not more)
+end
+
+local function on_mloot_close(payload, from)
+	if not coop_util.decides_in_session() then return end
+	local t = coop_main.decode(payload)
+	local id = tonumber(t.id)
+	local lock = id and locks[id]
+	if not (lock and lock.peer == from) then return end -- stale or not this player's
+	locks[id] = nil
+	stats.mloot_closed = stats.mloot_closed + 1
+	host_release(id, t.m == true, (t.n ~= true) and flat_to_loot(t) or nil)
+end
+
+-- Leader: a player left or a lock was never given back: the corpse is free again.
+local function release_locks(pred)
+	for id, lock in pairs(locks) do
+		if pred(lock) then
+			locks[id] = nil
+			pcall(host_release, id, true, nil)
+		end
+	end
+end
+
+function on_peer_left(peer)
+	if coop_util.decides_in_session() then release_locks(function(l) return l.peer == peer end) end
+end
+
+local function client_open(obj)
+	local id = obj:id()
+	se_save_var(id, obj:name(), "looted", false) -- the use callback marked it: the leader decides
+	local tg = time_global()
+	if pending[id] and tg - pending[id] < MLOOT_PENDING_MS then return end
+	pending[id] = tg
+	api.send_event(EV_MLOOT_OPEN, coop_main.encode({ id = host_id(id) }), 0)
+end
+
+local function on_mloot_state(payload, from)
+	if from ~= 0 or not coop_util.live_mirror() then return end
+	local t = coop_main.decode(payload)
+	local id = tonumber(t.id) and local_id(tonumber(t.id))
+	local v = tonumber(t.v)
+	if not (id and v) then return end
+	pending[id] = nil
+	local obj = level.object_by_id(id)
+	if not obj then
+		if v == 0 or v == 4 then -- granted, but the corpse is gone here: give the lock back
+			api.send_event(EV_MLOOT_CLOSE, coop_main.encode({ id = host_id(id), m = true, n = true }), 0)
+		end
+		return
+	end
+	if v == 0 or v == 4 then
+		if v == 0 then
+			save_var(obj, "loot", flat_to_loot(t)) -- what is left: FillList shows it instead of rolling
+		else
+			save_var(obj, "loot", nil) -- nothing stored by the leader: FillList rolls here, for this looter
+		end
+		save_var(obj, "looted", nil)
+		se_save_var(id, obj:name(), "looted", true)
+		granted[id] = { at = time_global(), shown = false }
+		ml.start(obj, id, obj:section(), obj:clsid()) -- through the module: other wrappers (FDDA) stay in
+	elseif v == 1 or v == 2 then
+		save_var(obj, "loot", {})
+		set_looted_local(obj, true)
+		if v == 1 then
+			msg(coop_util.tr("st_body_useless", "Nothing useful"))
+		else
+			msg(coop_util.tr("st_body_decayed", "The body has decayed"))
+		end
+	elseif v == 3 then
+		msg(coop_util.tr("st_coop_core_mloot_busy", "Another player is cutting up this body."))
+	end
+end
+
+local function on_mloot_edge(payload, from)
+	if from ~= 0 or not coop_util.live_mirror() then return end
+	local t = coop_main.decode(payload)
+	local id = tonumber(t.id) and local_id(tonumber(t.id))
+	local obj = id and level.object_by_id(id)
+	if not obj or granted[id] then return end
+	set_looted_local(obj, t.l == true)
+end
+
+local function client_mloot_tick(tg)
+	for id, at in pairs(pending) do
+		if tg - at > MLOOT_PENDING_MS then pending[id] = nil end
+	end
+	local gui = ml and ml.GUI
+	local wait = rawget(_G, "enhanced_animations") and MLOOT_UI_WAIT_EA_MS or MLOOT_UI_WAIT_MS
+	for id, g in pairs(granted) do
+		if gui and gui:IsShown() and gui.id == id then
+			g.shown = true
+		elseif not g.shown and tg - g.at > wait then
+			-- The window never opened: give the lock back with what the cache holds now.
+			granted[id] = nil
+			local obj = level.object_by_id(id)
+			local left = obj and load_var(obj, "loot", nil)
+			local more = left == nil or not is_empty(left)
+			if obj then se_save_var(id, obj:name(), "looted", not more) end
+			local t = { id = host_id(id), m = more }
+			if left == nil then t.n = true else loot_to_flat(left, t) end
+			api.send_event(EV_MLOOT_CLOSE, coop_main.encode(t), 0)
+		end
+	end
+end
+
+local function install_mutant_loot()
+	ml = rawget(_G, "ui_mutant_loot") or ui_mutant_loot
+	if not (ml and type(ml.start) == "function" and ml.UIMutantLoot) or ml.__coop_core then
+		return
+	end
+	ml.__coop_core = true
+	orig_start = ml.start
+	ml.start = function(obj, ...)
+		if obj == nil or type(obj) == "number" or not coop_util.live_mirror() then return orig_start(obj, ...) end
+		local id = obj:id()
+		if granted[id] or obj:clsid() == clsid.crow then
+			return orig_start(obj, ...) -- the leader said yes (or FDDA re-enters); crows are not shared
+		end
+		client_open(obj)
+	end
+
+	local cls = ml.UIMutantLoot
+	local orig_set = cls.SetMutantState
+	cls.SetMutantState = function(self, is_more_loot, obj_mutant)
+		orig_set(self, is_more_loot, obj_mutant)
+		if not coop_util.active() then return end
+		local id = self.id
+		local ok, err = pcall(function()
+			if coop_mode.is_player_mirror() then
+				if not (id and granted[id]) then return end
+				granted[id] = nil
+				local more = is_more_loot
+				if more == nil then more = not is_empty(self.loot) end
+				local t = loot_to_flat(self.loot, { id = host_id(id), m = more and true or false })
+				api.send_event(EV_MLOOT_CLOSE, coop_main.encode(t), 0)
+			elseif coop_mode.decides_world() then
+				local obj = obj_mutant or level.object_by_id(id)
+				if obj then edge(id, se_load_var(id, obj:name(), "looted") and true or false) end
+			end
+		end)
+		if not ok then log("! mutant loot close: %s", tostring(err)) end
+	end
+
+	local orig_loot = ml.loot_mutant
+	ml.loot_mutant = function(section, cls_id, loot_table, npc, dont_create, victim)
+		local r = orig_loot(section, cls_id, loot_table, npc, dont_create, victim)
+		if coop_util.decides_in_session() and victim and npc and not dont_create and npc:id() ~= AC_ID then
+			pcall(edge, victim:id(), true) -- an NPC cut it up; the caller sets "looted" right after this
+		end
+		return r
+	end
+end
+
+-- FDDA's HUD animation prefetch (only if the addon is installed) is off on a player's machine. At load: it must be off
+-- before axr_main starts it, and the mode facade has no answer before its layers install.
+local function guard_fdda_prefetch()
+	if not (api and api.is_client()) then return end
+	local ok, m = pcall(function() return _G.ea_prefetcher end) -- loads the addon's script if it exists
+	if not (ok and type(m) == "table" and type(m.on_game_start) == "function") or m.__coop_core then return end
+	m.__coop_core = true
+	m.on_game_start = function()
+		log("FDDA animation prefetch skipped on a co-op client")
+	end
+end
+
+-------------------------------------------------------------------------------
+-- Update, callbacks
+-------------------------------------------------------------------------------
+local next_tick = 0
+
+local function actor_on_update()
+	if not coop_util.active() then return end
+	local tg = time_global()
+	if tg < next_tick then return end
+	next_tick = tg + TICK_MS
+	if coop_util.decides_in_session() then
+		release_locks(function(l) return tg - l.at > MLOOT_LOCK_MS end)
+	elseif api.is_live() then
+		local ok, err = pcall(client_mloot_tick, tg)
+		if not ok then log("! mutant loot tick: %s", tostring(err)) end
+	end
+end
+
+function print_status()
+	local n = 0
+	for _ in pairs(locks) do n = n + 1 end
+	local g = 0
+	for _ in pairs(granted) do g = g + 1 end
+	log("world: mutant loot: requests %d, granted %d, denied %d, closed %d, edges %d, locks %d, open here %d",
+		stats.mloot_req, stats.mloot_granted, stats.mloot_denied, stats.mloot_closed, stats.mloot_edges, n, g)
+end
+
+function on_game_start()
+	if not api then return end -- an exe without co-op: nothing of this runs
+	coop_util.add_status("coop_core_world_mloot", 72)
+	local ok, err = pcall(install_mutant_loot)
+	if not ok then log("! mutant loot sharing not installed: %s", tostring(err)) end
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	coop_main.add_level_handler(EV_MLOOT_OPEN, on_mloot_open)
+	coop_main.add_event_handler(EV_MLOOT_STATE, on_mloot_state)
+	coop_main.add_level_handler(EV_MLOOT_CLOSE, on_mloot_close)
+	coop_main.add_event_handler(EV_MLOOT_EDGE, on_mloot_edge)
+end
+
+guard_fdda_prefetch()

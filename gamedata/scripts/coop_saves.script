@@ -1,6 +1,7 @@
+-- Ядро: без проверок режима (docs/MODES.md)
 --[[
-	Anomaly Coop - saves in a co-op session (gamedata\scripts\coop_saves.script), F3 task 17.
-	Spec: docs\CHECKPOINTS_DEATH.md section 7. Recon: docs\research\2026-10-22-f3-saves-sleep-recon.md section A.
+	Anomaly Coop - saves in a co-op session (gamedata\scripts\coop_saves.script).
+	Spec: docs\CHECKPOINTS_DEATH.md section 7.
 
 	In a session NOBODY saves or loads by hand, the host included. The world is saved by the host's engine (emergency
 	autosaves, a ring per game: coop_auto_<game>_<N>, or coop_auto_<N> of a world without a game; rotation rules in
@@ -47,7 +48,7 @@
 	  coop_saves.open_restore(owner) -> window       opens the list over the Co-op window `owner`
 	  coop_saves.text(key, ...)                      the string st_coop_saves_<key> with %s filled in order
 
-	While the restore window is open the host's autosave timer is paused (coop.autosave.suspend, F3 T12 review I1): the
+	While the restore window is open the host's autosave timer is paused (coop.autosave.suspend): the
 	window renews the pause every frame (UICoopRestore:Update) and lets it go on Back and after the load command; a window
 	closed any other way stops renewing it and the engine ends it by itself after 3 seconds.
 --]]
@@ -65,19 +66,7 @@ local MAX_SLOT_DIGITS = 9
 -- or a power loss is often less. The header check of valid_saved_game only looks at the first 8 bytes.
 local MIN_SAVE_BYTES = 65536
 
-local function log(fmt, ...)
-	local ok, line = pcall(string_format, fmt, ...)
-	printf("[coop-saves] %s", ok and line or tostring(fmt))
-end
-
--------------------------------------------------------------------------------
--- Session
--------------------------------------------------------------------------------
-local function in_session()
-	if not api then return false end
-	local ok, active = pcall(api.is_active)
-	return ok and active == true
-end
+local log = coop_util.logger("[coop-saves]")
 
 -------------------------------------------------------------------------------
 -- Texts
@@ -175,7 +164,7 @@ end
 -- Stock: level_input.action_quick_save (F5, type 2) and the menu's F5 / F6 / Save (types 2, 3, 1) send this before they
 -- save; flags.ret = true stops them.
 local function on_before_save_input(flags, typ, label)
-	if type(flags) ~= "table" or not in_session() then return end
+	if type(flags) ~= "table" or not coop_util.active() then return end
 	if saves_open() then
 		if rollback_on_its_way() then
 			flags.ret = true
@@ -194,7 +183,7 @@ end
 
 -- Stock: level_input.action_quick_load (F7). Note the argument order.
 local function on_before_load_input(dik, bind, flags)
-	if type(flags) ~= "table" or not in_session() then return end
+	if type(flags) ~= "table" or not coop_util.active() then return end
 	if saves_open() then
 		if coop_mode.decides_world() and not rollback_on_its_way() then return end
 		flags.ret = true
@@ -228,7 +217,7 @@ local function wrap_main_menu()
 		local ok, orig = pcall(function() return cls[fname] end)
 		if ok and type(orig) == "function" and menu_wrappers[fname] ~= orig then
 			local function wrapper(self, ...)
-				if in_session() and (not (saves_open() and coop_mode.decides_world()) or rollback_on_its_way()) then
+				if coop_util.active() and (not (saves_open() and coop_mode.decides_world()) or rollback_on_its_way()) then
 					hint(saves_open() and "host_only" or refusal_key(kind), self)
 					return
 				end
@@ -265,7 +254,7 @@ local function wrap_autosave()
 	if mod.autosave == autosave_wrapper then return true end
 	local orig = mod.autosave
 	local function wrapper(...)
-		if in_session() then
+		if coop_util.active() then
 			-- what the stock tick does when it does not save: look again in a minute
 			ResetTimeEvent("actor", "autosave_new", 60)
 			return false
@@ -283,7 +272,7 @@ end
 local was_in_session = false
 
 local function actor_on_update()
-	local now = in_session()
+	local now = coop_util.active()
 	if was_in_session and not now then
 		local mod = stock_autosave_module()
 		if mod and type(mod.option_updated) == "function" then pcall(mod.option_updated) end
@@ -405,26 +394,21 @@ function details(e)
 end
 
 -- The host's autosave timer must not write while the Restore window is open: it writes into the oldest slot, which is
--- often the one the host is about to pick (F3 T12 review I1). coop.autosave.suspend(true) is a pause with a short lease
+-- often the one the host is about to pick. coop.autosave.suspend(true) is a pause with a short lease
 -- that the open window renews every frame (UICoopRestore:Update), so a window closed in any way, a button, Escape or the
 -- main menu switched off, ends it by itself a moment later; suspend(false) lets it go on purpose, and the engine then
 -- starts the interval afresh (the first frame after a load must not write over a slot). An exe without the call: nothing.
-local function hold_autosaves(on)
+function hold(on)
 	local a = api and api.autosave
 	if type(a) ~= "table" or type(a.suspend) ~= "function" then return end
 	local ok, err = pcall(a.suspend, on)
 	if not ok then log("! cannot %s the autosaves: %s", on and "pause" or "resume", tostring(err)) end
 end
 
--- For a confirmation of another window: the same lease, renewed every frame while it is open.
-function hold(on)
-	hold_autosaves(on)
-end
-
 -- Host in a session, a real autosave (or, with game_id, a save of that game) that is in the folder and not damaged: the
 -- same command the stock Load dialog gives in a running game.
 function restore(name, game_id)
-	if not (in_session() and coop_mode.decides_world()) then return false, "not_host" end
+	if not (coop_util.active() and coop_mode.decides_world()) then return false, "not_host" end
 	local slot = parse_slot(name)
 	if not slot and not (game_id and save_of_game(name, game_id)) then return false, "bad_name" end
 	local e = slot and find_autosave(name) or (not slot and find_save(name)) or nil
@@ -434,7 +418,7 @@ function restore(name, game_id)
 	if not (ok and valid == true) then return false, "damaged" end
 	log("the host restores %s", name)
 	exec_console_cmd("load " .. name)
-	hold_autosaves(false)
+	hold(false)
 	return true
 end
 
@@ -471,9 +455,6 @@ function UICoopRestore:__init(owner) super()
 	self.selected = nil
 	self:InitControls()
 	self:InitCallBacks()
-end
-
-function UICoopRestore:__finalize()
 end
 
 function UICoopRestore:InitControls()
@@ -520,12 +501,12 @@ end
 -- GoBack / the load stops renewing it, and the engine lets the pause lapse by itself.
 function UICoopRestore:Update()
 	CUIScriptWnd.Update(self)
-	if self:IsShown() then hold_autosaves(true) end
+	if self:IsShown() then hold(true) end
 end
 
 -- Reads the folder; called every time the window opens.
 function UICoopRestore:Reset()
-	hold_autosaves(true)
+	hold(true)
 	self.selected = nil
 	self.entries = {}
 	local ok, list = pcall(list_autosaves)
@@ -585,7 +566,7 @@ end
 function UICoopRestore:GoBack()
 	if self:IsShown() then self:HideDialog() end
 	self:Show(false)
-	hold_autosaves(false)
+	hold(false)
 	local owner = self.owner
 	if owner then
 		pcall(function()
@@ -627,25 +608,19 @@ end
 function print_status()
 	local wrapped = 0
 	for _ in pairs(menu_wrappers) do wrapped = wrapped + 1 end
-	local active = in_session()
+	local active = coop_util.active()
 	log("saves: session %s, host %s | autosave wrapper %s, menu entries wrapped %d",
 		active and "yes" or "no", active and coop_mode.decides_world() and "yes" or "no",
 		autosave_wrapper and "on" or "off", wrapped)
 end
 
--- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an error here
--- would skip all the scripts after this one, single player included.
-local function start_step(what, f)
-	local ok, err = pcall(f)
-	if not ok then printf("! [coop_saves] %s failed: %s", what, tostring(err)) end
-end
-
 function on_game_start()
 	if not api then return end -- an exe without co-op: nothing of this runs
+	coop_util.add_status("coop_saves")
 	RegisterScriptCallback("on_before_save_input", on_before_save_input)
 	RegisterScriptCallback("on_before_load_input", on_before_load_input)
 	RegisterScriptCallback("main_menu_on_keyboard", on_main_menu_keyboard)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
-	start_step("wrap_main_menu", wrap_main_menu)
-	start_step("wrap_autosave", wrap_autosave)
+	coop_util.start_step("coop_saves", "wrap_main_menu", wrap_main_menu)
+	coop_util.start_step("coop_saves", "wrap_autosave", wrap_autosave)
 end

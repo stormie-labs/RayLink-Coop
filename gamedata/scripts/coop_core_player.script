@@ -1,3 +1,4 @@
+-- Ядро: без проверок режима (docs/MODES.md)
 --[[
 	Anomaly Coop - core group: the player's own Lua state, who comes and goes, and level moves
 	(gamedata\scripts\coop_core_player.script)
@@ -9,21 +10,20 @@
 	     anomaly maps, the rank/reputation baseline of the rank news. Achievements are NOT per player: the quests
 	     group shares them with the whole group (coop_quests_pda), so the host's set from the save is right.
 	   - the host's active boosters (drinks, drugs) that came with its save, instead of the player's own.
-	   Both go through the mods group's per-player channel (coop_mods_pdata: the host keeps every player's keys in
+	   - the slot in the player's hands.
+	   They go through the mods group's per-player channel (coop_mods_pdata: the host keeps every player's keys in
 	   its save, a client gets its own back right after the save is read, before any load_state; a new player
 	   starts fresh). Statistics: key "game_statistics" (its own save_state/load_state, without achievements).
 	   Boosters: key "coop_core_boosters_v2" ("type,seconds,value|...", the seconds left and the value as the engine has
-	   them), applied to the actor once it is live. ("_v2", build 56: the engine's ClearAllBoosters cleared a copy of the
-	   list up to build 55, the host's boosters stayed in a client's list and went into his record; those records are
-	   not read.)
+	   them), applied to the actor once it is live. The records of key "coop_core_boosters" hold the host's boosters as well
+	   (an engine that kept them in a client's list) and are not read.
 	   The rank news are re-baselined after a world load, so the restored rank does not pop "rank increased".
 	2. Join/leave notices on every machine (PDA tip + chat line), the session start notice once per session.
 	3. Level exits: the group waits at the exit (the waiting point of a level change: the engine's board, the placard and the
-	   feed are scripts\coop_hud_transition.script; the rule is engine\src\xrCoop\coop_transition.h). Only the fallbacks stay
-	   here: /go in the chat = coop_accept_transition = the group goes now through the exit somebody waits at; the older engine
-	   notice (coop_main.on_transition_vote, no longer sent by the engine) and the fade of the clients before a move.
-	F3 task 17: the client's quicksave request to the host is gone. Nobody saves by hand in a session, the host included
-	(scripts\coop_saves.script); the host's engine writes the emergency autosaves.
+	   feed are scripts\coop_hud_transition.script; the rule is engine\src\xrCoop\coop_transition.h). Here only /go in the
+	   chat = coop_accept_transition = the group goes now through the exit somebody waits at.
+	Nobody saves by hand in a session, the host included (scripts\coop_saves.script); the host's engine writes the
+	emergency autosaves.
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
@@ -31,37 +31,22 @@ local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
 local string_format = string.format
 local tostring, tonumber, type, ipairs, pairs, pcall = tostring, tonumber, type, ipairs, pairs, pcall
 
-local EV_MOVING = "core.moving" -- host -> clients: the group moves to another level now
-
 local ROSTER_MS = 1000
 local STASH_SEEN = "coop_core_session" -- coop.stash: the session-start notice was shown
 local KEY_STATS = "game_statistics"
 local KEY_BOOSTERS = "coop_core_boosters_v2"
-local KEY_SLOT = "coop_core_slot" -- the slot in the player's hands (build 56), see own_slot
+local KEY_SLOT = "coop_core_slot" -- the slot in the player's hands, see own_slot
 -- game_statistics parts that belong to the player (actor_achievements are the group's)
 local STATS_SUBS = { "actor_statistics", "actor_visited_levels", "actor_visited_smarts", "actor_artefacts",
 	"actor_anomaly_maps", "actor_miscellaneous" }
 local MAX_BOOSTER_TYPE = 16 -- eBoostHpRestore..eBoostWoundImmunity; the engine hits NODEFAULT on anything else
 
-local function log(fmt, ...)
-	local ok, line = pcall(string_format, fmt, ...)
-	printf("[coop-player] %s", ok and line or tostring(fmt))
-end
+local log = coop_util.logger("[coop-player]")
+local tr = coop_util.tr
 
-local function tr(id, fallback)
-	local ok, s = pcall(game.translate_string, id)
-	if not ok or type(s) ~= "string" or s == id then return fallback or id end
-	return s
-end
-
-local function codec()
-	return rawget(_G, "coop_main") or coop_main
-end
-
--- F3a task 6 (docs/plans/2026-10-24-f3a-split-levels.md 1.1, 1.2): what this process is. The host process is the world server
--- AND a player (the host player, a client of its own server over the internal channel); a remote client is a player and a
--- mirror of the host's world. `new_name` is the engine's role function, `old_name` what a build without it has (the old pair
--- says the same today); a name the build lacks answers no.
+-- What this process is. The host process is the world server AND a player (the host player, a client of its own server
+-- over the internal channel); a remote client is a player and a mirror of the host's world. `new_name` is the engine's role
+-- function, `old_name` what an exe without it has (the old pair says the same); a name the exe lacks answers no.
 local function role(new_name, old_name)
 	if not (api and api.is_active()) then return false end
 	local f = type(api[new_name]) == "function" and api[new_name] or api[old_name]
@@ -70,30 +55,22 @@ local function role(new_name, old_name)
 	return ok and yes == true
 end
 
-local function is_player() return role("is_player", "is_client") end -- the player's own screen: the fade of a group move
 local function is_mirror() return role("is_mirror", "is_client") end -- the Lua state is a copy of the host's
 
--- A player is in the world: the host player (the host is live as soon as its world is up) or a live remote client. A build
+-- A player is in the world: the host player (the host is live as soon as its world is up) or a live remote client. An exe
 -- without coop.is_player() has only players in a session.
 local function live()
 	return api ~= nil and api.is_active() and role("is_player", "is_active") and api.is_live()
 end
 
-local function players()
-	if not api then return {} end
-	local ok, list = pcall(api.players)
-	return ok and type(list) == "table" and list or {}
-end
-
 local function nick_of(peer)
-	for _, p in ipairs(players()) do
-		if p.id == peer then return tostring(p.nick) end
-	end
+	local p = coop_util.player_row(peer)
+	if p then return tostring(p.nick) end
 	return "#" .. tostring(peer)
 end
 
--- Whose session this client joined (plan 2026-11-12 s.1.2 #3): the playing host (peer 0); on a world server, whose seat plays no
--- character, the player with the host's badge (the operator) when that is somebody else, else "World".
+-- Whose session this client joined: the playing host (peer 0); on a world server, whose seat plays no character, the player
+-- with the host's badge (the operator) when that is somebody else, else "World".
 local function session_owner()
 	local link
 	if type(api.server_link) == "function" then
@@ -101,7 +78,7 @@ local function session_owner()
 		link = ok and type(l) == "table" and l or nil
 	end
 	if not (link and link.plays == false) then return nick_of(0) end
-	for _, p in ipairs(players()) do
+	for _, p in ipairs(coop_util.players()) do
 		if p.is_host == true and not p.is_self then return tostring(p.nick) end
 	end
 	return tr("st_coop_core_chat_world", "World")
@@ -120,12 +97,6 @@ local function notice(text, icon)
 	log("%s", text)
 end
 
-local function hud_msg(text)
-	local am = rawget(_G, "actor_menu")
-	if am and am.set_msg then pcall(am.set_msg, 1, text, 4) end
-	log("%s", text)
-end
-
 local stats = { boosters_applied = 0 }
 
 -------------------------------------------------------------------------------
@@ -140,9 +111,9 @@ local function actor_conditions()
 	return a and a:conditions()
 end
 
--- Current boosters of the local actor: "type,seconds,value|...": the seconds left and the value as the engine has them
--- (live 2026-11-18, "exactly as in a usual game": they were rounded up to 10 s and to 4 digits). nil on a mirror until this
--- player's own boosters are in: the list is the host's until then (from his save), not this player's to report.
+-- Current boosters of the local actor: "type,seconds,value|...": the seconds left and the value exactly as the engine has
+-- them, as in a usual game. nil on a mirror until this player's own boosters are in: the list is the host's until then
+-- (from his save), not this player's to report.
 local function boosters_string()
 	if is_mirror() and not after_load_done then return nil end
 	local cond = actor_conditions()
@@ -159,10 +130,10 @@ local function boosters_string()
 	return table.concat(list, "|")
 end
 
--- Build 56 (review of 2026-11-18): the stock actor binder saves the slot in the player's hands with the save
--- (m_data.game_object[0].actor_binder.active_slot) and activates it at its first update. A client loads the HOST's save, so
--- he came out of every load holding the weapon of the host's slot number. The slot the player holds now, as a per-player key
--- (nil on a mirror until his own state is in: until then it is the host's).
+-- The stock actor binder saves the slot in the player's hands with the save (m_data.game_object[0].actor_binder.active_slot)
+-- and activates it at its first update. A client loads the HOST's save, so he would come out of every load holding the weapon
+-- of the host's slot number. The slot the player holds now, as a per-player key (nil on a mirror until his own state is in:
+-- until then it is the host's).
 local function own_slot()
 	if is_mirror() and not after_load_done then return nil end
 	local actor = db.actor
@@ -195,8 +166,8 @@ local function apply_boosters(s)
 	local cond = actor_conditions()
 	if not cond then return false end
 	cond:ClearAllBoosters()
-	-- Live 2026-11-18 (build 55): every exe up to build 55 subtracts the boosters' effects here and leaves them in the list;
-	-- each is subtracted again when it runs out, and the player's health restore, weight and protections stay negative.
+	-- An exe that subtracts the boosters' effects here and leaves them in the list subtracts each again when it runs out:
+	-- the player's health restore, weight and protections stay negative.
 	local left = boosters_count(cond)
 	if left > 0 then
 		log("! this engine did not take the host's boosters away (%d left in the list): they will count twice, the game needs build 56 or newer",
@@ -244,9 +215,9 @@ end
 -- player's Lua state is its own (the save it loaded is its), so there is nothing to put back for it.
 local function client_after_load()
 	after_load_done = true
-	-- Build 56: in a load that continues his world (a group transition, the host going alone, his own exit) the engine holds
-	-- the player's whole condition through it and puts it back with its own save/load: wounds, alcohol, boosters with the
-	-- seconds they had. Then there is nothing to replace here; the list below is for a join, a rejoin and a rolled back world.
+	-- In a load that continues his world (a group transition, the host going alone, his own exit) the engine holds the
+	-- player's whole condition through it and puts it back with its own save/load: wounds, alcohol, boosters with the seconds
+	-- they had. Then there is nothing to replace here; the list below is for a join, a rejoin and a rolled back world.
 	local carried = false
 	if api.condition_carried then
 		local ok, yes = pcall(api.condition_carried)
@@ -268,9 +239,8 @@ local roster = nil -- peer id -> { nick, joined }; nil until the first look in t
 local roster_owners = false -- the last look knew who plays each character (coop.owners_known)
 local next_roster = 0
 
--- F0 final review (task 8): a client knows who plays each character (avatar_id) from the host's first owners table,
--- a moment after it is in the world: the players already there must not show up as "joined" then. An engine
--- without coop.owners_known: known.
+-- A client knows who plays each character (avatar_id) from the host's first owners table, a moment after it is in the world:
+-- the players already there must not show up as "joined" then. An engine without coop.owners_known: known.
 local function owners_known()
 	if not api.owners_known then return true end
 	local ok, known = pcall(api.owners_known)
@@ -279,7 +249,7 @@ end
 
 local function roster_tick()
 	local now = {}
-	for _, p in ipairs(players()) do
+	for _, p in ipairs(coop_util.players()) do
 		if not p.is_self and type(p.id) == "number" then
 			now[p.id] = { nick = tostring(p.nick), joined = p.avatar_id ~= nil }
 		end
@@ -316,8 +286,8 @@ local function roster_tick()
 	for id, old in pairs(roster) do
 		if not now[id] then
 			notice(string_format(tr("st_coop_core_left", "%s left the game."), old.nick))
-			local world = rawget(_G, "coop_core_world")
-			if world and world.on_peer_left then pcall(world.on_peer_left, id) end
+			local mloot = rawget(_G, "coop_core_world_mloot")
+			if mloot and mloot.on_peer_left then pcall(mloot.on_peer_left, id) end
 		end
 	end
 	roster = now
@@ -326,37 +296,12 @@ end
 -------------------------------------------------------------------------------
 -- 3. Level exits
 -------------------------------------------------------------------------------
-local vote = nil -- host: { nick, at } of the last transition vote the engine reported
-
--- Host, coop_main.on_transition_vote: a player stands at a level exit. (The engine's waiting point does not call it any more:
--- every machine's placard and feed say it; kept for an older engine and for other scripts.)
-function on_transition_vote(nick)
-	vote = { nick = tostring(nick or "?"), at = time_global() }
-	notice(string_format(tr("st_coop_core_vote", "%s stands at a level exit. Type /go in the chat to move the group."),
-		vote.nick))
-end
-
 -- Host: /go in the chat: the group goes now through the exit somebody waits at (the engine's coop_accept_transition says
 -- when nobody does).
 function accept_transition()
 	if not (api and api.is_active() and coop_mode.decides_world()) then return false end
-	if vote and time_global() - vote.at < 600000 then
-		api.send_event(EV_MOVING, codec().encode({ nick = vote.nick }), -1)
-		vote = nil
-		CreateTimeEvent("coop_core_player", "accept_transition", 0.6, function()
-			exec_console_cmd("coop_accept_transition")
-			return true
-		end)
-	else
-		exec_console_cmd("coop_accept_transition") -- the engine knows whether one is pending (console answer)
-	end
+	exec_console_cmd("coop_accept_transition")
 	return true
-end
-
-local function on_moving(payload, from)
-	if from ~= 0 or not is_player() or not db.actor then return end
-	hud_msg(tr("st_coop_core_moving", "The group moves to another level..."))
-	pcall(level.add_pp_effector, "sleep_fade.ppe", 1313, false)
 end
 
 -------------------------------------------------------------------------------
@@ -370,7 +315,7 @@ local function actor_on_update()
 		return
 	end
 	if not live() and not coop_mode.decides_world() then return end -- a dedicated host plays nothing and still keeps the roster
-	if is_mirror() and not after_load_done and db.actor then
+	if not after_load_done and db.actor and is_mirror() then
 		local ok, err = pcall(client_after_load)
 		if not ok then log("! own state after the world load: %s", tostring(err)) end
 	end
@@ -387,25 +332,13 @@ function print_status()
 		pdata_ok and "registered" or "not registered", stats.boosters_applied)
 end
 
--- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
--- error here would skip all the scripts after this one, single player included (W5).
-local function start_step(what, f)
-	local ok, err = pcall(f)
-	if not ok then printf("! [coop_core_player] %s failed: %s", what, tostring(err)) end
-end
-
 function on_game_start()
 	if not api then return end -- an exe without co-op: nothing of this runs
-	start_step("register_pdata", register_pdata) -- before the save is read
+	coop_util.add_status("coop_core_player", 60)
+	coop_util.start_step("coop_core_player", "register_pdata", register_pdata) -- before the save is read
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("actor_on_first_update", function()
 		local ok, err = pcall(actor_on_first_update)
 		if not ok then log("! the slot in hands after the world load: %s", tostring(err)) end
 	end)
-	local cm = codec()
-	if not (cm and cm.add_event_handler) then
-		log("! coop_main.add_event_handler not found: player events are not handled")
-		return
-	end
-	cm.add_event_handler(EV_MOVING, on_moving)
 end

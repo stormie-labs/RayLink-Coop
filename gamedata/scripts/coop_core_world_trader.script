@@ -1,0 +1,116 @@
+-- Ядро: без проверок режима (docs/MODES.md)
+--[[
+	Anomaly Coop - core group: a trader's profile on a player's machine (gamedata\scripts\coop_core_world_trader.script)
+
+	NPC logic does not run on a player's machine, so a trader's price conditions are never set there and the trade window
+	would price with the defaults. When a player starts talking to an NPC, its trade profile is applied from the save and
+	asked from the process that leads the map, which also runs the stock restock check now ("core.trader_req" ->
+	"core.trader_cfg"). Restocked items reach the players as normal world items.
+	Everything here is a no-op outside a co-op session.
+
+	For other scripts:
+		coop_core_world_trader.ask_trader(npc[, now])   the profile of `npc` from the save at once, and the leader's asked for
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local tostring, tonumber, type, pcall = tostring, tonumber, type, pcall
+
+local EV_TRADER_REQ = "core.trader_req" -- player -> leader: id
+local EV_TRADER_CFG = "core.trader_cfg" -- leader -> player: id, cfg
+
+local TRADER_GAP_MS = 15000
+
+local log = coop_util.logger("[coop-world]")
+
+local stats = { trader_req = 0, trader_applied = 0 }
+
+local trader_asked = {} -- player: local npc id -> time
+
+local function valid_cfg(cfg)
+	return type(cfg) == "string" and #cfg <= 160 and cfg:match("^[%w_\\/%.%-]+%.ltx$") ~= nil
+		and getFS():exist("$game_config$", cfg) ~= nil
+end
+
+-- Player: trade profile (config + buy/sell conditions for this player) on the NPC object here.
+local function apply_profile(npc, cfg)
+	local tm = rawget(_G, "trade_manager") or trade_manager
+	if not (tm and npc) then return false end
+	local id = npc:id()
+	cfg = cfg or tm.get_trade_profile(id, "cfg_ltx")
+	if not valid_cfg(cfg) then return false end
+	tm.trade_init(npc, cfg)
+	local config = tm.get_trade_cfg(cfg)
+	if not config then return false end
+	tm.setup_buy_sell_conditions(npc, id, config)
+	stats.trader_applied = stats.trader_applied + 1
+	return true
+end
+
+-- Player: the trade profile of `npc` from the save at once, and the decider's current one asked for. A trade window with that
+-- trader opened: the stock asks through the talk (on_menu_mode); a player's Lua trade window opened without a talk (a trading
+-- computer) asks through coop_trade_window. Once per trader in TRADER_GAP_MS; `now` asks past that gap (the decider refused a
+-- deal of the window for its price, and the window takes the trader's data again at once).
+function ask_trader(npc, now)
+	if not npc then return end
+	local ok, err = pcall(apply_profile, npc, nil) -- from the save, at once
+	if not ok then log("! trade profile not applied: %s", tostring(err)) end
+	local id = npc:id()
+	local tg = time_global()
+	if not now and trader_asked[id] and tg - trader_asked[id] < TRADER_GAP_MS then return end
+	trader_asked[id] = tg
+	stats.trader_req = stats.trader_req + 1
+	api.send_event(EV_TRADER_REQ, coop_main.encode({ id = api.to_host_id(id) or id }), 0)
+end
+
+local function on_menu_mode(mode)
+	if not (coop_util.live_mirror() and (mode == 10 or mode == 2) and db.actor) then return end
+	local npc = db.actor:get_talking_npc()
+	if not npc then return end
+	ask_trader(npc)
+end
+
+local function host_on_trader_req(payload, from)
+	if not coop_util.decides_in_session() then return end
+	local id = tonumber(coop_main.decode(payload).id)
+	local npc = id and level.object_by_id(id)
+	local tm = rawget(_G, "trade_manager") or trade_manager
+	if not (npc and tm and npc:alive()) then return end
+	-- the stock restock check, now: the player trades the current stock. The supply level reads "the actor" (goodwill, heavy
+	-- pockets): the player at the trader, not this machine's actor (a map server's is a ghost).
+	local P = coop_mode.leads_for_world_elsewhere() and coop_util.module("coop_npc_players")
+	local who = P and P.object_of_peer(from)
+	if who then
+		pcall(P.with_identity, who, tm.update, npc, false)
+	else
+		pcall(tm.update, npc, false)
+	end
+	local cfg = tm.get_trade_profile(id, "cfg_ltx")
+	if type(cfg) ~= "string" then return end
+	api.send_event(EV_TRADER_CFG, coop_main.encode({ id = id, cfg = cfg }), from)
+end
+
+local function on_trader_cfg(payload, from)
+	if from ~= 0 or not coop_util.live_mirror() then return end
+	local t = coop_main.decode(payload)
+	local wire = tonumber(t.id)
+	local id = wire and (api.to_local_id(wire) or wire)
+	local npc = id and level.object_by_id(id)
+	if npc and valid_cfg(t.cfg) and apply_profile(npc, t.cfg) then
+		-- a Lua trade window already open with this trader reads the profile again (it came after the window opened)
+		local window = coop_util.module("coop_trade_window")
+		if window and type(window.on_profile) == "function" then pcall(window.on_profile, npc) end
+	end
+end
+
+function print_status()
+	log("world: traders: asked %d, applied %d", stats.trader_req, stats.trader_applied)
+end
+
+function on_game_start()
+	if not api then return end -- an exe without co-op: nothing of this runs
+	coop_util.add_status("coop_core_world_trader", 76)
+	RegisterScriptCallback("ActorMenu_on_mode_changed", on_menu_mode)
+	coop_main.add_level_handler(EV_TRADER_REQ, host_on_trader_req)
+	coop_main.add_event_handler(EV_TRADER_CFG, on_trader_cfg)
+end

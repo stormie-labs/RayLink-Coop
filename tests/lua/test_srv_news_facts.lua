@@ -88,6 +88,7 @@ local function machine(role, map, name)
 	news_mod.update_settings()
 	e.dynamic_news_manager = news_mod
 
+	e.load_script_file("coop_util")
 	e.load_script_file("coop_mode")
 	e.load_coop_main()
 	e.load_script_file("coop_mods_core")
@@ -103,9 +104,13 @@ local function machine(role, map, name)
 		assert(type(fmt) == "string")
 		if not ok then e.refusals = e.refusals + 1 end
 		return true -- log mode
+	end, guard = function(_, ok, fmt)
+		assert(type(fmt) == "string")
+		if not ok then e.refusals = e.refusals + 1 end
+		return ok == true -- dropped in every mode
 	end }
 	e.coop_main.on_game_start()
-	e.load_script_file("coop_core_world").on_game_start()
+	e.load_script_file("coop_core_world_news").on_game_start()
 	local file = io.open("gamedata/scripts/coop_srv_news_facts.script", "rb")
 	if file then
 		file:close()

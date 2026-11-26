@@ -152,7 +152,7 @@ local function name_of(v)
 	return v
 end
 
--- F5-SEAT-2: the highest peer id a player of this session can have. The co-op's seats are the host's 0 and clients 1 .. 7; a
+-- The highest peer id a player of this session can have. The co-op's seats are the host's 0 and clients 1 .. 7; a
 -- server's 16 seats are all clients, 1 .. 16 (its own seat 0 plays no one: coop_mode.seat_plays(0) is false). The seats come
 -- from the session (coop.session_info().max_players); an engine that says none (outside a session) gets the co-op's 0 .. 7.
 COOP_MAX_PEER = 7
@@ -217,8 +217,13 @@ local function name_of_obj(o)
 	return ok and tostring(n) or "?"
 end
 
-local function npc_ok(o) return o and ((IsStalker and IsStalker(o)) or (IsMonster and IsMonster(o))) and true or false end
-local function stalker_ok(o) return o and IsStalker and IsStalker(o) and true or false end
+-- the kind a command's target must have (its spec's target): "npc" a stalker or a mutant, "stalker" a stalker; any other
+-- kind takes every object. Checked by the authority, where the object is online.
+function kind_ok(kind, o)
+	if kind == "npc" then return o ~= nil and ((IsStalker and IsStalker(o)) or (IsMonster and IsMonster(o))) and true or false end
+	if kind == "stalker" then return o ~= nil and IsStalker and IsStalker(o) and true or false end
+	return true
+end
 
 -- the stock {pos, lvid, gvid} of an object
 local function place_of(o)
@@ -274,7 +279,7 @@ local function call(o, m, ...)
 	return nil
 end
 
--- Live 2026-11-16 (build 51, a stalker in a T-pose on a client): what the host's game knows of the figure, in one line. The host
+-- What the host's game knows of a figure (a stalker in a T-pose on a client), in one line. The host
 -- drives every creature the clients draw (coop_entities.cpp capture_anims -> drive_mirror), so its state is the one to read: online
 -- there or not, the state_mgr state (ALQ's probe_*/scaner_* hold a detector), the script animations queued, the item in hands and
 -- the best weapon with their animation_slot (the stalker's torso tables are indexed by it), a critical wound (the global animation
@@ -328,7 +333,7 @@ cmds.obj_info = {
 			if okh and type(hp) == "number" then r.health = hp end
 			local st = db and db.storage and db.storage[id]
 			r.logic = st and st.active_section or nil
-			if stalker_ok(o) then
+			if kind_ok("stalker", o) then
 				r.community = o:character_community()
 				r.rank = o.character_rank and o:character_rank() or nil
 				r.reputation = o.character_reputation and o:character_reputation() or nil
@@ -625,8 +630,7 @@ cmds.spawn_item = {
 			t = { where[1], where[2], where[3], me:id() }
 		end
 		local last, count = nil, 0
-		-- live 2026-11-08 (10 asked, 20 in the client's inventory on a map server's level): the ids made here go to the log
-		-- (coop_debug_server.execute), so a repeat shows which machine made how many
+		-- the ids made here go to the log (coop_debug_server.execute), so a repeat shows which machine made how many
 		ctx.made = {}
 		for _ = 1, a.n do
 			local se = alife_create_item(a.sec, { t[1], t[2], t[3], t[4] })
@@ -816,7 +820,7 @@ cmds.relation = {
 	stock = "S/ui_debug_launcher.script 239-248", help = "t=<id> [t2=<id>] r=friend|neutral|enemy: relation to t2 or you (T11-13)",
 	run = function(ctx)
 		local two = ctx.obj2
-		if not stalker_ok(two) then return false, "bad_target" end
+		if not kind_ok("stalker", two) then return false, "bad_target" end
 		ctx.obj:set_relation(game_object[ctx.a.r], two)
 		return true, fmt("%s relation to %s: %s", name_of_obj(ctx.obj), name_of_obj(two), ctx.a.r)
 	end,
@@ -828,7 +832,7 @@ cmds.goodwill = {
 	stock = "S/ui_debug_launcher.script 250-260", help = "t=<id> [t2=<id>] g=-5000..5000: goodwill to t2 or you (T14-16)",
 	run = function(ctx)
 		local two = ctx.obj2
-		if not stalker_ok(two) then return false, "bad_target" end
+		if not kind_ok("stalker", two) then return false, "bad_target" end
 		ctx.obj:force_set_goodwill(ctx.a.g, two)
 		return true, fmt("%s goodwill to %s: %d", name_of_obj(ctx.obj), name_of_obj(two), ctx.a.g)
 	end,
@@ -840,7 +844,7 @@ cmds.squad_goodwill = {
 	stock = "S/ui_debug_launcher.script 262-280", help = "t=<id> [t2=<id>] g=: goodwill of his whole squad (T17-19)",
 	run = function(ctx)
 		local two = ctx.obj2
-		if not stalker_ok(two) then return false, "bad_target" end
+		if not kind_ok("stalker", two) then return false, "bad_target" end
 		local squad = get_object_squad(ctx.obj)
 		if not squad then return false, "bad_target" end -- the stock fails here (270)
 		local sim, c = alife(), 0

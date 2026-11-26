@@ -411,7 +411,7 @@ local cp = load_module("coop_core_player")
 cp.on_game_start()
 check(cp.request_quicksave == nil, "coop_core_player has no request_quicksave")
 check(HANDLERS["core.save_req"] == nil and HANDLERS["core.save_res"] == nil, "the events core.save_req / core.save_res are not handled")
-check(type(HANDLERS["core.moving"]) == "function", "the level-move event is still handled")
+check(HANDLERS["core.moving"] == nil, "coop_core_player sends no level-move event of its own: the engine moves the group")
 check(pcall(cp.print_status), "print_status still works")
 local opts = load_module("coop_menu_options")
 local have_quicksave = false

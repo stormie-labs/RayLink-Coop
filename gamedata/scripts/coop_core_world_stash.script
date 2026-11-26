@@ -1,0 +1,72 @@
+-- Ядро: без проверок режима (docs/MODES.md)
+--[[
+	Anomaly Coop - core group: a stash found (gamedata\scripts\coop_core_world_stash.script)
+
+	A player's machine skips treasure_manager (world logic). Filling a stash a player opens is coop_quests_pda's (quests
+	group). Here: the first item a player takes from a filled stash counts it as found for him ("core.box_take" ->
+	"core.stash_found": statistic + stock "stash found" news), the world decider clears the cache and removes the PDA mark
+	(replicated by coop_story).
+	Everything here is a no-op outside a co-op session.
+--]]
+
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
+
+local tonumber, ipairs, pcall = tonumber, ipairs, pcall
+
+local EV_BOX_TAKE = "core.box_take" -- player -> world: id
+local EV_STASH_FOUND = "core.stash_found" -- world -> player
+
+local BOX_GAP_MS = 10000 -- a "found" report per box at most this often
+
+local log = coop_util.logger("[coop-world]")
+
+local stats = { stashes_found = 0 }
+
+local take_sent = {} -- player: local box id -> time
+
+local function on_box_take(box, item)
+	if not (coop_util.live_mirror() and box and IsInvbox(box)) then return end
+	local id = box:id()
+	local tg = time_global()
+	if take_sent[id] and tg - take_sent[id] < BOX_GAP_MS then return end
+	take_sent[id] = tg
+	api.send_event(EV_BOX_TAKE, coop_main.encode({ id = api.to_host_id(id) or id }), 0)
+end
+
+-- The world server's whichever level the box stands on: its marks, its radio, its table (a map server tells it a box was filled).
+local function host_on_box_take(payload, from)
+	if not (coop_util.active() and coop_mode.decides_world()) then return end
+	local id = tonumber(coop_main.decode(payload).id)
+	local tm = rawget(_G, "treasure_manager") or treasure_manager
+	if not (id and tm and type(tm.caches) == "table" and tm.caches[id] == true) then return end
+	tm.caches[id] = false
+	for _, spot in ipairs({ "treasure", "treasure_searched", "treasure_unique" }) do
+		if level.map_has_object_spot(id, spot) ~= 0 then level.map_remove_object_spot(id, spot) end
+	end
+	pcall(function()
+		local se = alife_object(id)
+		if se and item_radio and item_radio.clear_stash then
+			item_radio.clear_stash(alife():level_name(coop_util.level_of_gvid(se.m_game_vertex_id)), id)
+		end
+	end)
+	stats.stashes_found = stats.stashes_found + 1
+	api.send_event(EV_STASH_FOUND, "", from)
+end
+
+local function on_stash_found(payload, from)
+	if from ~= 0 or not coop_util.live_mirror() then return end
+	pcall(game_statistics.increment_statistic, "stashes_found")
+	pcall(news_manager.send_treasure, 1)
+end
+
+function print_status()
+	log("world: stashes found %d", stats.stashes_found)
+end
+
+function on_game_start()
+	if not api then return end -- an exe without co-op: nothing of this runs
+	coop_util.add_status("coop_core_world_stash", 74)
+	RegisterScriptCallback("actor_on_item_take_from_box", on_box_take)
+	coop_main.add_event_handler(EV_BOX_TAKE, host_on_box_take)
+	coop_main.add_event_handler(EV_STASH_FOUND, on_stash_found)
+end

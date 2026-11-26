@@ -5,6 +5,9 @@ dofile("tests/lua/support/stubs.lua")
 dofile("tests/lua/support/fake_sync.lua")
 
 AddScriptCallback("save_state") -- the stock axr_main has it; the stub knows only a few callbacks
+-- the real layers answer who decides the world (fake_sync.as switches the host and the client)
+local modes = dofile("tests/lua/support/modes.lua")
+modes.live(load_script_file("coop_mode"))
 local shim = load_script_file("coop_sync")
 local vector = fake_sync.vector
 
@@ -107,7 +110,7 @@ do
 	fake_sync.pump()
 	check(answers.op and answers.op.ok == true and answers.op.result.got == 5 and answers.op.result.from == client.peer,
 		"the handler's ok, result reach the client")
-	check(answers.err and answers.err.ok == false and answers.err.result == "handler error: test_sync_shim.lua:94: boom",
+	check(answers.err and answers.err.ok == false and answers.err.result == "handler error: test_sync_shim.lua:97: boom",
 		"a handler error: ok = false, and the first line of the error (coop_lua_fn.h first_line)")
 	check(client.stats.lua_errors == 0, "no Lua error on the client")
 	check(host.stats.lua_errors == 1 and host.stats.handler_errors == 1, "the host counts the handler's error")
@@ -310,6 +313,56 @@ do
 	check(ok == true and n == 1, "a broadcast reaches only this machine")
 	local host, c1 = install_sync_stubs(t, { session = true })
 	check(t.sync == host.sync and host.host and not host.single and c1 and c1.peer == 1, "a session: the host, then the client")
+end
+
+-- ---------------------------------------------------------------- sync_shim_engine_states
+-- The real layers over the engine's predicates, one row per process and phase as the engine answers them: the roles come
+-- with the session's phase and are none outside it (Manager::set_phase), coop.is_map_server() needs the session, and
+-- coop.levels.split() is the dedicated key on the process that hosts and the Welcome's mode on a client of the world.
+-- coop.is_client() is the engine's own "a client of the world": the script keeps coop.sync out of the save exactly there.
+-- The last block: the stand-ins stay as the rows leave them.
+do
+	print("sync_shim_engine_states")
+	-- { the process and its phase, is_active, is_host, is_client, is_map_server, is_dedicated, levels.split }
+	local STATES = {
+		{ "single player", false, false, false, false, false, false },
+		{ "the co-op host", true, true, false, false, false, false },
+		{ "a co-op player's machine", true, false, true, false, false, false },
+		{ "the world server loading its world, before its session", false, false, false, false, true, true },
+		{ "the world server", true, true, false, false, true, true },
+		{ "a map server before its session starts", false, false, false, false, false, false },
+		{ "a map server", true, false, true, true, false, true },
+		{ "a player's machine of a server world", true, false, true, false, false, true },
+	}
+	for _, row in ipairs(STATES) do
+		local what, client = row[1], row[4]
+		coop.is_active = function() return row[2] end
+		coop.is_host = function() return row[3] end
+		coop.is_client = function() return client end
+		coop.is_map_server = function() return row[5] end
+		coop.is_dedicated = function() return row[6] end
+		coop.levels = { split = function() return row[7] end }
+		coop.saving_for_join = function() return false end
+		local calls = { exported = 0, cleared = 0, loaded = 0 }
+		coop.sync = {
+			export = function()
+				calls.exported = calls.exported + 1
+				return { scopes = 0 }
+			end,
+			import = function(saved)
+				if saved == nil then calls.cleared = calls.cleared + 1 else calls.loaded = calls.loaded + 1 end
+				return true
+			end,
+		}
+		shim.on_game_start()
+		SendScriptCallback("load_state", { coop_sync = { scopes = 1 } })
+		local m_data = {}
+		SendScriptCallback("save_state", m_data)
+		local keeps = client and 0 or 1
+		check(calls.cleared == keeps and calls.loaded == keeps and calls.exported == keeps and (m_data.coop_sync ~= nil) == not client,
+			what .. ": " .. (client and "a client of the world clears, loads and saves nothing"
+				or "clears for a new world, loads and saves coop.sync"))
+	end
 end
 
 print(string.format("SYNC_SHIM: %d passed, %d failed", PASSES, FAILS))

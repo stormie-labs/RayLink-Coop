@@ -12,7 +12,7 @@ level.name = function() return "fake_start" end
 modes.live(load_script_file("coop_mode"))
 load_coop_main()
 load_script_file("coop_trust").reset_for_test({ default = "log" })
-load_script_file("coop_core_world").on_game_start()
+load_script_file("coop_core_world_news").on_game_start()
 coop_main.on_game_start()
 SendScriptCallback("actor_on_update")
 
@@ -103,7 +103,7 @@ vector = function() return { set = function(self) return self end } end
 load_script_file("coop_npc_players")
 local fx = load_script_file("coop_world_fx")
 fx.on_game_start()
-fx._set_host_on(true)
+coop_npc_players.host_on = function() return true end
 -- The view can become available after the core script was loaded.
 local scope = { id = 2 }
 coop_srv_quests_far = { in_scope = function() return scope end }
@@ -148,7 +148,7 @@ coop.players = function()
 	return rows
 end
 news_manager = { send_tip = function() return true end }
-coop_core_world.on_game_start()
+coop_core_world_news.on_game_start()
 SENT = {}
 news_manager.send_tip(actor, "st_personal_news")
 local upload = SENT[1]
