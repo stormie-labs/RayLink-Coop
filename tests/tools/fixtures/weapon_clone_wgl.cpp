@@ -81,8 +81,8 @@ struct CSE_ALifeItemWeapon : CSE_ALifeInventoryItem {
 struct CSE_ALifeItemWeaponMagazined : CSE_ALifeItemWeapon { u8 m_u8CurFireMode = 0; };
 struct CSE_ALifeItemWeaponShotGun : CSE_ALifeItemWeaponMagazined { std::vector<u8> m_AmmoIDs; };
 struct CSE_ALifeItemWeaponMagazinedWGL : CSE_ALifeItemWeaponMagazined { bool m_bGrenadeMode = false; };
-struct CInventoryItem {
-    virtual ~CInventoryItem() = default;
+struct CGameObject { virtual ~CGameObject() = default; };
+struct CInventoryItem : CGameObject {
     float GetCondition() const { return 0.83f; }
     UpgradeList get_upgrades() const { return {}; }
     void SetCondition(float) {}
@@ -128,17 +128,18 @@ struct CWeaponMagazinedWGrenade : CWeaponMagazined {
 };
 struct CEatableItem : CInventoryItem { u8 GetRemainingUses() const { return 0; } u8 GetMaxUses() const { return 4; } void SetRemainingUses(u8) {} };
 std::map<u16, CInventoryItem*> objects;
-CInventoryItem* find_item(u16 id) {
+namespace coop::world {
+CGameObject* object_here(u16 id) {
     auto it = objects.find(id);
     return it == objects.end() ? nullptr : it->second;
 }
-CInventoryItem* find_go(u16 id) { return find_item(id); }
+}
+namespace world = coop::world;
 u16 quant(float value) { return u16(std::lround(value * 65535.f)); }
 float dequant(u16 value) { return value / 65535.f; }
-bool is_map_authority() { return false; }
 enum class EntityUp : uint8_t { Spawned, Released, Parent, Died };
 struct LevelSide { void level_entity_up(EntityUp, uint16_t, uint16_t) {} };
-struct Mode { bool decides_world() const { return false; } bool leads_level() const { return false; } LevelSide* level() const { return nullptr; } };
+struct Mode { bool decides_here() const { return false; } LevelSide* level() const { return nullptr; } };
 Mode mode() { return {}; }
 // ITEM_DATA
 UpgradeList spawn_upgrade_list(const std::string&, const UpgradeList& list, bool) { return list; }
@@ -153,7 +154,8 @@ std::map<u16,int> g_sent, g_pending, g_take_base, g_owned, g_left, g_unload_used
 std::map<u16,int> g_detached_silencers;
 std::set<u16> g_releasing;
 std::set<u32> g_logged_tags;
-std::map<u16,std::vector<u16>> g_proxy_items;
+// PROXY_ITEMS
+std::map<u16, ProxyItems> g_proxy_items;
 // TZ R32 W8 (coop_items.cpp): the decider's and the owner's field versions, the uses history, staged uses, the facts source.
 std::map<u16, itemtags::FieldVersions> g_versions, g_applied;
 std::map<u16, owner::CounterHistory> g_uses_history;
@@ -166,11 +168,11 @@ void restore_item_state(CSE_Abstract*, const Blob&, CInventoryItem* object = nul
 }
 struct Lock {} g_out_lock;
 struct xrCriticalSectionGuard { explicit xrCriticalSectionGuard(Lock&) {} };
-struct LeasedTemp { u16 id, source; };
+struct LeasedTemp { u16 id = kNoId, source = kNoId; };
 std::vector<CSE_Abstract*> g_lua_temps;
 std::map<CSE_Abstract*, LeasedTemp> g_temp_leases;
 std::map<u16, replacement::Snapshot> g_clone_prepared;
-std::map<std::pair<u16, u16>, std::vector<u8>> g_clone_committed;
+std::map<std::pair<PeerId, u16>, std::vector<u8>> g_clone_committed;
 std::set<u16> g_clone_confirmed, g_clone_canonical;
 bool mirror_role = true;
 bool is_live_mirror() { return mirror_role; }
@@ -186,7 +188,12 @@ struct Alife { AlifeObjects held; AlifeObjects& objects() { return held; } } ali
 struct Ai { ScriptEngine& script_engine() { return ::script_engine; } Alife& alife() { return alife_state; } } ai_state;
 Ai& ai() { return ai_state; }
 std::map<u16, CSE_Abstract*> entities;
-namespace events { CSE_Abstract* find_entity(u16 id) { auto it=entities.find(id); return it == entities.end() ? nullptr : it->second; } }
+namespace coop::world {
+CSE_Abstract* server_entity(u16 id) {
+    auto it = entities.find(id);
+    return it == entities.end() ? nullptr : it->second;
+}
+}
 bool clone_export(u16, std::string&, const char* stamp = nullptr);
 bool clone_stage(u16, u16, const char*, const std::string&, int, const std::string&);
 bool write_clone_initial(Writer&, CSE_Abstract*);
@@ -230,9 +237,10 @@ Reason host_spawn(CSE_Abstract* entity, u16, u16& created, u16 target) {
     spawned.push_back(std::move(weapon));
     return Reason::Ok;
 }
-struct { int clones_refused = 0, not_variant = 0, temps = 0; } g_lc;
+struct LeaseCounters { u64 clones_refused = 0, not_variant = 0, temps = 0; } g_lc;
 void temps_sync_world() {}
-bool lease_waiting(u16) { return false; }
+namespace coop::requests { bool client_lease_waiting(u16) { return false; } }
+using coop::requests::client_lease_waiting;
 bool clone_variant(const char*, const char*) { return true; }
 CSE_Abstract* make_temp(const char*, const Fvector&, u32, u16, u16) {
     if (shotgun_target) return new CSE_ALifeItemWeaponShotGun;
@@ -245,7 +253,6 @@ namespace callgate { bool is_own(u16) { return true; } }
 u16 take_lease(const char*, u16) { return 900; }
 bool create_leased(CSE_Abstract*, u16, u16) { return false; }
 void return_unused_lease(u16) {}
-void lua_forward(CSE_Abstract*, const char*) {}
 // CLONE_METHOD
 
 using LPCSTR = const char*;
