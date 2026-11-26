@@ -4,8 +4,9 @@ dofile("tests/lua/support/stubs_mods.lua")
 local modes = dofile("tests/lua/support/modes.lua")
 local ORDER, WOUND = "mods.voice_fx_order", "mods.voice_fx_wound"
 
-local function corpus(name, env, extract)
-    local file = assert(io.open("temp/review/corpus/merged/" .. name .. ".script", "r"))
+-- A script's chunk, or only its top-level function `extract`, run in `env`. `dir`: the script's folder, the mod corpus by default.
+local function corpus(name, env, extract, dir)
+    local file = assert(io.open((dir or "temp/review/corpus/merged/") .. name .. ".script", "r"))
     local source = file:read("*a")
     file:close()
     if extract then
@@ -43,12 +44,30 @@ local function case(name)
         if peer == SELF then return 0 end
         if peer >= 1 and peer <= 3 then return 500 + peer end
     end
+    coop.peer_of_avatar = function(id)
+        if id == 0 then return SELF end
+        if id >= 501 and id <= 503 then return id - 500 end
+    end
     local actor = make_actor()
     npc("initiator", 501, 30)
     npc("observer", 502, 32)
     npc("other_map", 503, 34)
     local companion = npc("companion", 45, 35)
     companion:give_info_portion("npcx_is_companion")
+    local mate = npc("observer_companion", 48, 37) -- led by the observer
+    mate:give_info_portion("npcx_is_companion")
+    local own = npc("own_companion", 49, 31.5) -- no leader on this map; the observer stands nearest to it
+    own:give_info_portion("npcx_is_companion")
+    -- The real coop_npc_companions.leader_of and follows over this test's squads: whom a companion takes for its player.
+    local squads = { [45] = { id = 9045 }, [48] = { id = 9048 }, [49] = { id = 9049 } }
+    local companions = {
+        leaders = { [9045] = 501, [9048] = 502 },
+        P = coop_npc_players,
+        squad_of = function(obj) return squads[obj:id()] end,
+        is_companion_squad = function(squad) return squad ~= nil end,
+    }
+    corpus("coop_npc_companions", companions, "leader_of", "gamedata/scripts/")
+    coop_npc_companions = corpus("coop_npc_companions", companions, "follows", "gamedata/scripts/")
     local recruit = npc("recruit", 46, 36)
     local enemy = npc("enemy", 47, 38)
     local lines, intensity, prefix, shouts = {}, 0, "authority/", true
@@ -135,8 +154,23 @@ local function case(name)
         deliver({ name = "npc.comp", payload = coop_main.encode({ i = id or target, k = action, _peer = peer }) },
             source or (name == "srv_map" and 0 or 1))
     end
-    local function hit()
-        SendScriptCallback("npc_on_hit_callback", companion, 0.2, vector(), enemy, 1)
+    local function hit(who)
+        SendScriptCallback("npc_on_hit_callback", who or companion, 0.2, vector(), enemy, 1)
+    end
+    local function wounds_since(mark)
+        local out = {}
+        for i = mark + 1, #SENT do
+            if SENT[i].name == WOUND then out[#out + 1] = SENT[i] end
+        end
+        return out
+    end
+    -- The adapter's table of last lines (companion id -> time) and the number of companions in it.
+    local function remembered()
+        local install = coop_mods_core.upvalue(coop_mods_voice_fx.on_game_start, "install_wounds")
+        local at = coop_mods_core.upvalue(coop_mods_core.upvalue(install, "on_npc_hit"), "wound_at")
+        local count = 0
+        for _ in pairs(at or {}) do count = count + 1 end
+        return at and count, at
     end
     local function expect(condition, what) check(condition, name .. " " .. what) end
     local function check_servos(process, keep_owner)
@@ -187,14 +221,65 @@ local function case(name)
         for _, event in ipairs(orders) do private = private and event.target == 1 end
         expect(private, "m12:2 only the transport initiator receives the order voice")
 
+        -- Stock VAR voices the line only for the hit companion's own player; the authority sends one line per companion in 3500 ms.
         lines = {}
+        local mark = #SENT
         hit()
-        local wounds, same_map = {}, true
-        for _, event in ipairs(SENT) do
-            if event.name == WOUND then wounds[#wounds + 1] = event; same_map = same_map and event.target <= 2 end
+        local wounds = wounds_since(mark)
+        expect(#wounds == 1 and wounds[1].target == 1, "a companion's wound goes to its leader alone")
+        expect(#lines == 0 and intensity == 0, "the authority stays silent for another player's companion")
+        mark = #SENT
+        NOW = NOW + 3499
+        hit()
+        hit()
+        expect(#wounds_since(mark) == 0, "further hits on that companion within 3500 ms send nothing")
+        hit(mate)
+        local other = wounds_since(mark)
+        expect(#other == 1 and other[1].target == 2, "another companion's wound is throttled on its own and goes to its leader")
+        NOW = NOW + 1
+        mark = #SENT
+        hit()
+        local again = wounds_since(mark)
+        expect(#again == 1 and again[1].target == 1, "3500 ms after the first line the leader hears the next hit")
+        -- A companion with no leader here: its player is whom coop_npc_companions.follows names.
+        mark = #SENT
+        hit(own)
+        hit(own)
+        local orphan = wounds_since(mark)
+        if name == "hostplay" then
+            expect(#orphan == 0 and #lines == 1 and intensity == 0, "a companion with no leader speaks once on the playing host alone")
+        else
+            expect(#orphan == 1 and orphan[1].target == 2 and #lines == 0 and intensity == 0,
+                "a companion with no leader here speaks once to the nearest player of the map alone")
         end
-        expect(#wounds == 2 and same_map and wounds[1].target ~= wounds[2].target, "m12:3 one hit notification per same-map remote player")
-        expect(#lines == (name == "hostplay" and 1 or 0) and intensity == 0, "m12:3 only a playing authority reacts locally to the wound")
+        expect(remembered() == 3, "three companions were hit within the last 3500 ms")
+        -- The leader's character is not on this map (he left the game, or it is still on its way): only the observer's is.
+        local characters = { [501] = OBJ[501], [502] = OBJ[502], [503] = OBJ[503] }
+        OBJ[501], OBJ[503] = nil, nil
+        coop_npc_players.invalidate()
+        NOW = NOW + 3500
+        lines, mark = {}, #SENT
+        hit()
+        local away = wounds_since(mark)
+        if name == "hostplay" then
+            expect(#away == 0 and #lines == 1 and intensity == 0,
+                "with its leader's character away a companion's line is the playing host's")
+        else
+            expect(#away == 1 and away[1].target == 2 and #lines == 0 and intensity == 0,
+                "with its leader's character away a companion's line goes to the nearest player here alone")
+        end
+        local count, last_lines = remembered()
+        expect(count == 1 and last_lines[45] == NOW, "a companion not hit for 3500 ms leaves the table of last lines")
+        -- No player's character on this map: nobody to follow.
+        OBJ[502] = nil
+        coop_npc_players.invalidate()
+        lines, mark = {}, #SENT
+        hit(own)
+        expect(#wounds_since(mark) == 0 and #lines == (name == "hostplay" and 1 or 0) and intensity == 0,
+            "with no player's character on the map only a playing authority speaks")
+        for id, obj in pairs(characters) do OBJ[id] = obj end
+        coop_npc_players.invalidate()
+        lines = {}
 
         MODE, SELF, prefix = "client", 1, "initiator/"
         modes.install(coop_mode, name, {

@@ -4,8 +4,16 @@
 -- Players choose the actual VAR sound locally. No save data.
 
 local ORDER, WOUND = "voice_fx_order", "voice_fx_wound"
+-- The level decider sends the "squadmate hit" line once per companion in this many ms: the bound on messages while a
+-- companion is under fire. It is also the cooldown VAR starts on the player when the line plays, so after a line that
+-- played the gap drops only hits VAR would refuse as well. VAR's cooldown is one for all the actor's lines and starts
+-- only when a line plays: a try VAR refuses (another line's cooldown, a dialog, the MCM chance) is repeated in single
+-- player by the very next hit, and here by the first hit after the gap. So after a refused try that companion's line
+-- comes up to this much later than in single player, or not at all when no hit follows the gap.
+local WOUND_GAP_MS = 3500
 local pending, command_range
 local started = false
+local wound_at = {} -- companion id -> time_global of its last line; only companions hit within WOUND_GAP_MS stay in it
 
 -- Only these voice-only VAR helpers may be selected by an order acknowledgement.
 local commands = {
@@ -175,21 +183,28 @@ end
 local function play_wound()
 	if not player_can_speak() then return end
 	local v = coop_mods_core.mod("agdd_voiced_actor")
-	if v then v.actor_speak_default(v.squad_with_lang_muffle("squadmate_hit"), 1.0, 3500, 100) end
+	if v then v.actor_speak_default(v.squad_with_lang_muffle("squadmate_hit"), 1.0, WOUND_GAP_MS, 100) end
 end
 
+-- As in single player, only the hit companion's own player hears it. That is the player the companion takes for the
+-- actor here (coop_npc_companions.follows): its leader on this map, and with no leader here the nearest player of a
+-- map whose own actor is nobody's. Nobody named: the companion acts for this process's player, and play_wound stays
+-- silent where that actor is nobody's.
 local function on_npc_hit(npc, amount, _, attacker)
 	if not coop_mods_core.active() or not coop_mode.leads_here() then return end
 	if not (npc and attacker and type(amount) == "number" and amount > 0 and npc:has_info("npcx_is_companion")) then return end
-	local me = coop_mods_core.self_peer()
-	local message = { m = level.name() }
-	for _, p in ipairs(coop_mods_core.players()) do
-		if p.id ~= me and coop_mode.where(p.id) == "here" then
-			local avatar = coop_mods_core.avatar(p.id)
-			if avatar and avatar:alive() then coop_mods_core.to_peer(p.id, WOUND, message) end
-		end
+	local id, now = npc:id(), time_global()
+	local last = wound_at[id]
+	if last and now - last < WOUND_GAP_MS then return end
+	-- An entry as old as the gap decides nothing, so a companion that died or left the map does not stay in the table.
+	for other, at in pairs(wound_at) do
+		if now - at >= WOUND_GAP_MS then wound_at[other] = nil end
 	end
-	play_wound()
+	wound_at[id] = now
+	local player = coop_npc_companions.follows(npc)
+	if not player then return play_wound() end
+	local peer = coop_mods_core.peer_of(player:id())
+	if peer then coop_mods_core.to_peer(peer, WOUND, { m = level.name() }) end
 end
 
 local function install_wounds()
