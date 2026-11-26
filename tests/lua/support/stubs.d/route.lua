@@ -3,8 +3,10 @@
 -- and the counters are the engine's own C++ (coop_routes.h). Not shipped.
 --   coop.route.of(callback, func) -> domain, script   script key of debug.getinfo(func, "S").source; "[C]" for a C
 --                                                     function, "?" for a non-function
+--   coop.route.rule_of(callback, func) -> domain, script   as of, without counting
 --   coop.route.runs(domain) -> bool                   outside a session (is_active() false) every domain runs
 --   coop.route.note(domain, outcome[, script[, callback]])   outcome "ran" | "skipped" | "error" (coop_native.note)
+--   coop.route.note_batch({ {domain, outcome, count[, script[, callback]]}, ... }) -> rows counted
 --   coop.route.none_functions() -> {"module.function", ...}
 -- The overrides are the real gamedata\configs\coop_route.ltx, then every coop_route_*.ltx and coop_compat_*.ltx by
 -- name, read on the first of() / none_functions() like the engine's load_overrides. route_stub_load() forces that read
@@ -12,7 +14,7 @@
 -- ROUTE_CALLS counts the calls of each function. ROUTE_SKIP_FILES = { ["name.ltx"] = true } leaves files out (set it
 -- before the load; tools\gen_route_gamma.lua leaves out its own output). After a load ROUTE_SCRIPT_RULES maps every
 -- [route_scripts] key (lowercase, a prefix with its *) to its domain, ROUTE_FORCED every forced callback to its domain.
-ROUTE_CALLS = { of = 0, runs = 0, note = 0, none_functions = 0 }
+ROUTE_CALLS = { of = 0, runs = 0, note = 0, note_batch = 0, none_functions = 0 }
 ROUTE_NONE_FUNCTIONS = {}
 ROUTE_FILES = {}
 ROUTE_ERRORS = {}
@@ -145,6 +147,13 @@ function install_route_stubs(c, opts)
 			local script = script_of(f)
 			return coop_native.route(callback, script), script
 		end,
+		-- the same answer as of, asked by a script about itself: not counted as a routed handler
+		rule_of = function(callback, f)
+			if type(callback) ~= "string" then return nil end
+			if not loaded then route_stub_load() end
+			local script = script_of(f)
+			return coop_native.route(callback, script), script
+		end,
 		runs = function(domain)
 			ROUTE_CALLS.runs = ROUTE_CALLS.runs + 1
 			if not is_active() then return true end
@@ -153,6 +162,16 @@ function install_route_stubs(c, opts)
 		note = function(domain, outcome, script, callback)
 			ROUTE_CALLS.note = ROUTE_CALLS.note + 1
 			coop_native.note(domain, outcome, script, callback)
+		end,
+		-- each row {domain, outcome, count[, script[, callback]]} counts as `count` calls of note; returns the rows counted
+		note_batch = function(rows)
+			ROUTE_CALLS.note_batch = ROUTE_CALLS.note_batch + 1
+			local n = 0
+			for _, r in ipairs(rows) do
+				for _ = 1, r[3] do coop_native.note(r[1], r[2], r[4], r[5]) end
+				n = n + 1
+			end
+			return n
 		end,
 		none_functions = function()
 			if not loaded then route_stub_load() end

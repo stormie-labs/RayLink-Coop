@@ -1,16 +1,14 @@
 -- Кооп (hostplay): ответы режима «Кооп» для фасада coop_mode (docs/MODES.md, раздел 4)
 --[[
-	Anomaly Coop - the co-op mode's answers (gamedata\scripts\coop_hostplay_mode.script), step S4, layer hostplay.
-	Contract: temp\b58\contracts\coop_mode_api.md; the facade: scripts\coop_mode.script.
+	Anomaly Coop - the co-op mode's answers (gamedata\scripts\coop_hostplay_mode.script), layer hostplay.
+	Contract: docs\contracts\coop_mode_api.md; the facade: scripts\coop_mode.script.
 
 	The co-op: the host plays and everybody is on one map, the host's. The host's process has every player's map loaded
 	and decides for all of them; a client mirrors it. This layer answers in such a session only: an active session
 	that is neither a map server, nor a world server without a player (-coop_dedicated), nor split into maps. A player's
-	machine in a server world knows it from its first level map (step S3 moves that into Welcome); until then it is
-	answered here, as today's code does.
+	machine in a server world knows it from its first level map; until then it is answered here.
 
-	Reads today's engine predicates (coop.is_active / is_host / is_map_server / is_dedicated / levels.split); in step S4
-	the server ones move to the table srv.* (docs\MODES.md section 4).
+	Reads the engine's predicates (coop.is_active / is_host / is_map_server / is_dedicated / levels.split).
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
@@ -91,16 +89,16 @@ LAYER = {
 	from_level = function() return false end,
 	publish_to = function() return -1 end, -- the session's broadcast, as coop_mods_core.to_all
 	level_request = level_request,
-	-- A-S6-IF (S6): one map, the host's. No server's script to ask (F-HOOK), every body is read where it stands (F-BODY), and
+	-- One map, the host's. No server's script to ask (F-HOOK), every body is read where it stands (F-BODY), and
 	-- no map of another process to look at: the facade's stub runs everything here (F-FAR)
 	hook = function() return nil end,
 	facts_of = function() return nil end,
 	far = function() return nil end,
-	-- R32 W1: the host writes everything, a client nothing (the engine's Mode::writer_of says the same: This / Other(host))
+	-- the host writes everything, a client nothing (the engine's Mode::writer_of says the same: This / Other(host))
 	writes = function() return host() end,
-	-- R32 W10 (WP15 counts the clients too): until then the stock code counts the host's actor
+	-- nobody counted around a place yet: the stock code counts the host's actor
 	presence = function() return nil end,
-	-- R32 W7: one process keeps the world: the module's own save records its op
+	-- one process keeps the world: the module's own save records its op
 	op_done = function() return false end,
 }
 

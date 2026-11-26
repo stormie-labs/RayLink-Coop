@@ -1,29 +1,27 @@
 -- Сервер (srv): ответы режима «Сервер» для фасада coop_mode (docs/MODES.md, раздел 4)
 --[[
-	Anomaly Coop - the server mode's answers (gamedata\scripts\coop_srv_mode.script), step S4, layer srv.
-	Contract: temp\b58\contracts\coop_mode_api.md; the facade: scripts\coop_mode.script.
+	Anomaly Coop - the server mode's answers (gamedata\scripts\coop_srv_mode.script), layer srv.
+	Contract: docs\contracts\coop_mode_api.md; the facade: scripts\coop_mode.script.
 
 	The server: a world server process without a player's map (-coop_dedicated, its actor a ghost on fake_start) and a
 	map server per map with players (-coop_mapserver, its actor a ghost too); the players stand on different maps. The
-	world server decides the world, the map server of a player's map decides for him there. Processes this layer
-	answers in:
-	  world server   coop.is_dedicated(): a process started with -coop_dedicated, from its start (step S4, A-S4D): it
-	                 loads its world first and starts its session after it (HostAutostart), and its srv scripts register
-	                 from when_srv at load, before the stock reads [character_creation] and before the save's load_state.
-	                 Before the session the engine gives it no role (is_host false), no seat and no rows: its answers
-	                 do not depend on them. Also coop.is_host() in an active session: until step S2 a host whose
-	                 session is split into maps (the hybrid: it plays and leads its own map, which today's predicates
-	                 give without code of its own)
+	world server decides the world, the map server of a player's map decides for him there and leads that map. Processes
+	this layer answers in:
+	  world server   coop.is_dedicated(): a process started with -coop_dedicated, from its start: it loads its world
+	                 first and starts its session after it (HostAutostart), and its srv scripts register from when_srv at
+	                 load, before the stock reads [character_creation] and before the save's load_state. Before the
+	                 session the engine gives it no role (is_host false), no seat and no rows: its answers do not depend
+	                 on them
 	  map server     coop.is_map_server(), in an active session
-	  player         a player's machine in a split session: it knows from its first level map (step S3 moves that into
-	                 Welcome); until then the co-op layer answers for it
+	  player         a player's machine in a split session: it knows from its first level map; until then the co-op layer
+	                 answers for it
 	A player's request to the logic of his map: the world server passes it to the map server of his map with his peer
 	in it (`_peer`), the map server takes it only from the world server and runs it as his. World data a map server
 	changed goes to the world server; the world server's to everybody (the engine adds the bridges).
 
-	Reads today's engine predicates (coop.is_active / is_host / is_map_server / is_dedicated / self_id / players and
-	coop.levels.split / bridge_of_player); in step S4 they move to the table srv.* (docs\MODES.md section 4). A srv
-	script calls nothing at load but coop_mode.when_srv (check_layers L9): this layer goes to the facade that way.
+	Reads the engine's predicates (coop.is_active / is_map_server / is_dedicated / self_id / players and coop.levels.split /
+	bridge_of_player). A srv script calls nothing at load but coop_mode.when_srv (check_layers L9): this layer goes to the
+	facade that way.
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
@@ -46,20 +44,19 @@ local function levels()
 end
 
 local function map_server() return engine("is_map_server") end
--- -coop_dedicated: the world server without a player, for the whole life of the process (before its session too)
-local function dedicated() return engine("is_dedicated") end
-local function world_server() return dedicated() or (engine("is_host") and not map_server()) end
+-- -coop_dedicated: the world server, without a player, for the whole life of the process (before its session too)
+local function world_server() return engine("is_dedicated") end
 
 local function applies()
-	if dedicated() then return true end -- from the process's start: its session comes after its world is up
+	if world_server() then return true end -- from the process's start: its session comes after its world is up
 	if not engine("is_active") then return false end
 	if map_server() then return true end
 	local l = levels()
 	return l ~= nil and call(l.split) == true
 end
 
--- this process's own actor is no player: a map server's and a world server's without a player are ghosts
-local function ghost() return map_server() or dedicated() end
+-- this process's own actor is no player: a map server's and the world server's are ghosts
+local function ghost() return map_server() or world_server() end
 
 local function self_peer()
 	local v = api and tonumber(call(api.self_id))
@@ -76,11 +73,6 @@ local function row(peer)
 	return nil
 end
 
-local function leads_here()
-	if map_server() then return true end
-	return world_server() and not dedicated() -- fake_start: a world server without a player leads no map
-end
-
 local function where(peer)
 	if peer == self_peer() then
 		if ghost() then return "away" end -- no player of this process stands anywhere
@@ -89,7 +81,7 @@ local function where(peer)
 	local p = row(peer)
 	if not p then return "away" end
 	if p.level == nil then return "joining" end -- in the world, not placed on a map yet
-	if dedicated() then return "away" end -- the world server has no player's map
+	if world_server() then return "away" end -- the world server has no player's map
 	return p.elsewhere == true and "away" or "here"
 end
 
@@ -99,7 +91,7 @@ local function decider(peer)
 	elseif not row(peer) then
 		return "nobody"
 	end
-	if where(peer) == "here" and leads_here() then return "this" end
+	if where(peer) == "here" and map_server() then return "this" end
 	return "other"
 end
 
@@ -109,7 +101,7 @@ local function seat_plays(peer)
 end
 
 local function from_level(from)
-	if not (engine("is_active") and dedicated() and not map_server()) then return false end
+	if not (engine("is_active") and world_server() and not map_server()) then return false end
 	local l = levels()
 	local bridges = l and call(l.map_servers)
 	if type(bridges) ~= "table" then return false end
@@ -130,7 +122,7 @@ local function main()
 end
 
 -------------------------------------------------------------------------------
--- A-S6-IF (S6): the answers the S6 groups ask (docs\contracts\coop_mode_api.md section 7)
+-- The answers of section 7 of docs\contracts\coop_mode_api.md: hooks, reported body facts, the far view
 -------------------------------------------------------------------------------
 -- a script module by name, loaded through _G when it is not yet (nil when there is none)
 local function mod(name)
@@ -149,12 +141,12 @@ local HOOK_OF_SCRIPT = {
 	["task_audience.sees_character"] = { "coop_srv_task_audience", "sees_character" },
 	["brain.caches_now"] = { "coop_srv_levels_brain", "caches_now" },
 	["levels.elsewhere_text"] = { "coop_srv_levels", "elsewhere_text" },
-	["world.creator"] = { "coop_game_settings", "creator" }, -- the record's creator (A-S4D moved it out of coop_dedicated)
+	["world.creator"] = { "coop_game_settings", "creator" }, -- the record's creator
 }
 local HOOK_OF_ENGINE = { -- coop.levels.*
 	["levels.level_of_player"] = "level_of_player",
 	["levels.far_place"] = "far_place",
-	["levels.bridge_of_player"] = "bridge_of_player", -- B-REV F5: the bridge of a player's map (the world server's answer)
+	["levels.bridge_of_player"] = "bridge_of_player", -- the bridge of a player's map (the world server's answer)
 }
 local HOOK_MADE = {
 	-- the server's level names and gates (coop_srv_levels: name, elsewhere, map_of, ...)
@@ -229,8 +221,8 @@ local function level_request(name, payload, from)
 	return "here", payload, from, false
 end
 
--- R32 W7 (§5 Done = 17 {u32 origin, u32 op, str answer}): a map server's answer of a numbered op goes up with its effect, a
--- Done entry of its level journal (the engine's srv.journal_done(origin, seq, answer) -> bool, WP4). true: the world keeps it
+-- A map server's answer of a numbered op (a Done entry {u32 origin, u32 op, str answer}) goes up with its effect, a
+-- Done entry of its level journal (the engine's srv.journal_done(origin, seq, answer) -> bool). true: the world keeps it
 -- and hands it to the next map server of the level. false: not recorded up (no binding in this exe, it refused, or this
 -- process is the world server, whose ledger is its own save, or a player's machine): coop_ops_done keeps it here.
 local function op_done(op, answer)
@@ -241,7 +233,7 @@ local function op_done(op, answer)
 	return call(journal, op.origin, op.seq, coop_main.encode(answer)) == true
 end
 
--- R32 W7: coop_op_done(origin, seq, answer), raised by the engine when the world applies a map server's Done entry, and on a
+-- coop_op_done(origin, seq, answer), raised by the engine when the world applies a map server's Done entry, and on a
 -- starting map server for each record of its level the world hands it: the ledger takes the record, so a retry of that op
 -- gets the recorded answer and runs nothing. A record already there keeps its first answer. A new record is told to the
 -- ledger's listeners (coop_ops_done.heard; Nimble's keeper takes a commit from it).
@@ -257,7 +249,7 @@ LAYER = {
 	decider = decider,
 	actor_is_player = function() return not ghost() end,
 	decides_world = world_server,
-	leads_here = leads_here,
+	leads_here = map_server, -- the world server's fake_start world is no map it leads
 	is_player_mirror = function() return not (map_server() or world_server()) end,
 	seat_plays = seat_plays,
 	group_travels = function() return false end, -- each player walks his own way
@@ -267,14 +259,14 @@ LAYER = {
 	hook = hook,
 	facts_of = facts_of,
 	far = far,
-	-- R32 W1: the engine's writer rule (who leads the object's map, who holds its unit); a player's machine writes nothing
+	-- the engine's writer rule (who leads the object's map, who holds its unit); a player's machine writes nothing
 	writes = function(id)
 		if not (map_server() or world_server()) then return false end
 		return api ~= nil and call(api.writes, id) == true
 	end,
-	-- R32 W10 (WP13 fills it from the world's presence): nil until then
+	-- nobody counted around a place yet: the stock code counts its own actor
 	presence = function() return nil end,
-	-- R32 W7: a map server's Done entry (op_done above)
+	-- a map server's Done entry (op_done above)
 	op_done = op_done,
 }
 
@@ -285,7 +277,7 @@ end
 function on_game_start()
 	coop_mode.when_srv(function()
 		started()
-		-- raised by the engine (srv/coop_levels_xfer.cpp, journal Done; R32 W7); declared here, its only subscriber
+		-- raised by the engine (srv/coop_levels_xfer.cpp, journal Done); declared here, its only subscriber
 		local add = rawget(_G, "AddScriptCallback")
 		if type(add) == "function" then add("coop_op_done") end
 		RegisterScriptCallback("coop_op_done", op_done_heard)

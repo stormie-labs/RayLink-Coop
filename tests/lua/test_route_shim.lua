@@ -233,7 +233,7 @@ check(coop_route.handler_domain(PRE.obj.actor_on_update) ~= nil, "... of an obje
 check(coop_route.handler_domain(print) == nil and coop_route.handler_domain(nil) == nil, "... nil for anything else")
 check(coop_route.install() == true and axr_main.count("actor_on_update") == 4, "a second install changes nothing")
 
--- coop_core_world tells a script with a rule of its own from one that follows its callback by these two callbacks: their
+-- coop_core_world_news tells a script with a rule of its own from one that follows its callback by these two callbacks: their
 -- defaults differ, and the shipped rules must not touch them
 print("== route_shim_rule_probe")
 for script, rule in pairs({ treasure_manager = "host", dynamic_news_manager = "host", tasks_defense = "host", xr_effects = "host",
@@ -562,8 +562,9 @@ do
 		.. " generated keys (" .. table.concat(hits, ", ") .. ")")
 end
 
--- Review M6: coop_route.script loaded a second time in the same Lua state (a script reload) installs over the first
--- one: a handler is still guarded once (one runs / note per call), unregisters, and nothing recurses.
+-- coop_route.script loaded a second time in the same Lua state (a script reload) installs over the first one: a handler
+-- is still guarded once, unregisters, and nothing recurses. A guard the first load added would be counted by the first
+-- load, in the domain of the second load's wrapper: both loads hand over their counts, and every domain is summed.
 print("== route_shim_reload")
 boot("client")
 local first = coop_route
@@ -571,17 +572,27 @@ load_script_file("coop_route")
 check(coop_route ~= first and coop_route.install() == true, "the second load installs")
 local hud = from_script("some_addon_hud", "return function() RAN.hud = (RAN.hud or 0) + 1 end")
 RegisterScriptCallback("actor_on_update", hud)
-local runs_before = ROUTE_CALLS.runs
+local function guards_ran() -- every guard that ran, and those of the owner domain among them
+	first.print_status() -- each load hands its counted runs to the engine
+	coop_route.print_status()
+	local all = 0
+	for _, domain in ipairs({ "owner", "view", "host", "level", "none" }) do all = all + (coop_native.counts(domain) or 0) end
+	return all, (coop_native.counts("owner"))
+end
+local all_before, owner_before = guards_ran()
 local ok_send = pcall(SendScriptCallback, "actor_on_update")
 check(ok_send and RAN.hud == 1, "after a reload a handler runs once, no stack overflow")
-check(ROUTE_CALLS.runs - runs_before == 1, "and is guarded once (runs asked " .. (ROUTE_CALLS.runs - runs_before) .. "x)")
+local all_now, owner_now = guards_ran()
+check(owner_now - owner_before == 1 and all_now - all_before == 1,
+	"and is guarded once (owner " .. (owner_now - owner_before) .. "x, all domains " .. (all_now - all_before) .. "x)")
 UnregisterScriptCallback("actor_on_update", hud)
 check(axr_main.count("actor_on_update") == 0, "and unregisters")
 local uc = from_script("some_addon_hud", "return function() RAN.uc_reload = (RAN.uc_reload or 0) + 1 return false end")
 AddUniqueCall(uc)
-runs_before = ROUTE_CALLS.runs
+all_before, owner_before = guards_ran()
 UNIQUE[#UNIQUE]()
-check(RAN.uc_reload == 1 and ROUTE_CALLS.runs - runs_before == 1,
+all_now, owner_now = guards_ran()
+check(RAN.uc_reload == 1 and owner_now - owner_before == 1 and all_now - all_before == 1,
 	"a unique call after a reload runs once and is wrapped once (owner, like the script's callbacks)")
 local n_uc = #UNIQUE
 RemoveUniqueCall(uc)

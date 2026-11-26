@@ -1,12 +1,13 @@
 --[[
-	Anomaly Coop - callback router, Lua half (gamedata\scripts\coop_route.script; F2 T10, docs\MOD_LAYER.md 2.2)
+	Anomaly Coop - callback router, Lua half (gamedata\scripts\coop_route.script; docs\MOD_LAYER.md 2.2)
 
 	Anomaly's callback dispatcher is Lua (axr_main.callback_set / make_callback), so a thin shim stays here. It wraps
-	every handler once, when it is registered, with the domain the engine gives it (coop.route.of, coop_router.cpp),
-	and asks the engine on every call whether that domain runs on this machine (coop.route.runs). The rules are the
-	engine's (xrCoop\coop_routes.h, configs\coop_route*.ltx): nothing here decides a domain.
+	every handler once, when it is registered, with the domain the engine gives it (coop.route.of, coop_router.cpp).
+	The rules are the engine's (xrCoop\coop_routes.h, configs\coop_route*.ltx): nothing here decides a domain.
 		host  - only on the host        owner, view - everywhere        none - nowhere in a session (the host too)
-	Outside a session every handler runs (single player is the stock game).
+	Outside a session every handler runs (single player is the stock game). An owner or view handler runs on every
+	machine in every phase (routes::runs_here), so its wrapper does not ask; a host, level or none handler asks the
+	engine on every call whether its domain runs on this machine (coop.route.runs).
 
 	Installed on every machine with the engine API, the host and single player included (a session can start in this
 	Lua state): coop_main calls install() when it loads, which axr_main.on_game_start does before any script's
@@ -22,18 +23,25 @@
 	- a table or userdata handler is called obj[name](obj, ...), the method looked up on every call;
 	- make_callback is not replaced: coop_sound.cpp reads its upvalue `intercepts`.
 	On a co-op client a handler that runs is called under pcall: a Lua error is logged (the first three per script,
-	then every 100th) and counted, the session goes on (R-11.4); a failed unique call or time event returns true, so
+	then every 100th) and counted, the session goes on; a failed unique call or time event returns true, so
 	it is not called again. The 30th error of a script is told to the player once, as news (st_coop_route_mod_failing).
 	The host and single player keep the stock behaviour (no pcall).
-	Every call is counted by the engine (coop.route.note: ran, skipped, error per domain; skips per script), shown by
-	coop_status.
+	Every call is counted by the engine's router counters, shown by coop_status: ran, skipped, error per domain, skips per
+	script. A skip and an error are told at once (coop.route.note); the runs of owner and view handlers are counted here and
+	handed over in one call (coop.route.note_batch) once a second and before this file's status line, so the engine's ran
+	counts of those two domains lag by at most a second.
 
-	Code scope (R32 W2a, temp\r30\design\R32-final.md): the engine's writer gate asks which code a script write comes from. Every
+	Code scope: the engine's writer gate asks which code a script write comes from. Every
 	wrapper is registered with the engine (coop.route.scoped(wrapper, domain)) and stays on the Lua stack while its handler runs
 	(no tail call, also on the host), so the engine reads the scope from the live stack: the innermost registered wrapper. A
 	handler's wrapper has the handler's domain. A time event and a unique call keep the scope of the code that set them
 	(kept_scope: host where either the setter or the function's own domain is host; the setter's level, owner or view domain
 	where the function also runs on a map server; else "?", unknown). An error leaves nothing stale: the scope is the stack.
+
+	Tick service: every(ms, fn) runs fn every ms milliseconds of game time from one actor_on_update of this file, which reads
+	the clock once per frame. fn keeps everything its own actor_on_update registration would give it: it is routed by its
+	own script and domain (coop.route.of("actor_on_update", fn)), called through its own wrapper (its scope, its skips and
+	errors per script, the client's pcall), and runs on its first frame. A frame where it is not due costs it nothing.
 
 	API:
 		coop_route.install() -> bool                   idempotent; false on an exe without coop.route
@@ -47,9 +55,14 @@
 		coop_route.script_of(fn) -> script key ("?" without the router)
 		coop_route.inherit_source(wrapper, fn)         route a compatibility wrapper as the handler it replaces
 		coop_route.handler_domain(fn) -> domain of a function registered as a handler, nil for any other function
-		coop_route.kept_scope(setter, own) -> the scope a time event or unique call runs under (R32 W2a)
+		coop_route.kept_scope(setter, own) -> the scope a time event or unique call runs under
 		coop_route.scope_now() -> the scope of the running code: the innermost wrapper's ("?" for an unknown one), nil outside
-		coop_route.print_status()                      with the timing lines when any clock has calls
+		coop_route.every(ms, fn) -> bool               fn() every ms (> 0) of time_global, routed as fn's own actor_on_update
+		                                               handler; the same fn again changes its period
+		coop_route.declare(name) -> bool               AddScriptCallback(name) unless it is declared already
+		coop_route.handlers_from(callback, script) -> { fn, ... }   the handlers written in that script file, in priority order
+		coop_route.domain_handlers(callback, domain) -> { fn, ... } what runs for a callback in that domain, as plain functions
+		coop_route.print_status()                      hands over the counted runs; with the timing lines when any clock has calls
 		coop_route.timing(on) -> bool                  opt-in timing of handlers and of the timing_sites of coop_mods_core, coop_mode;
 		                                               on starts a new window
 		coop_route.timing_reset()                      every clock back to zero, a new window
@@ -68,14 +81,14 @@ local function log(fmt, ...)
 end
 
 local route -- coop.route once installed
-local runs, note -- coop.route.runs / coop.route.note
-local scoped, scope -- coop.route.scoped / coop.route.scope (R32 W2a); nil on an exe without them
+local runs, note, note_batch -- coop.route.runs / note / note_batch
+local scoped, scope -- coop.route.scoped / coop.route.scope; nil on an exe without them
 local installed = false
 local client = false -- this Lua state is a co-op client's (a client's state never becomes the host's)
 local cb_table -- axr_main's local `intercepts`
 
--- Our wrapper objects -> true. Shared through _G by every load of this script (review M6): a second load in the same
--- Lua state wraps the first one's wrappers of callback_set and the globals, and sees the first one's handler wrappers
+-- Our wrapper objects -> true. Shared through _G by every load of this script: a second load in the same Lua state (a
+-- script reload) wraps the first one's wrappers of callback_set and the globals, and sees the first one's handler wrappers
 -- as done, so a handler is still guarded once.
 local wrappers = rawget(_G, "_coop_route_wrappers")
 if type(wrappers) ~= "table" then
@@ -94,6 +107,27 @@ local uc_add_w, uc_rem_w -- our current replacements of the unique call globals
 local counts = { host = 0, owner = 0, view = 0, none = 0, level = 0 } -- wrappers made, by domain
 local stats = { rewrapped = 0, unrouted = 0, errors = 0 }
 local err_seen = {} -- script -> Lua errors caught on this machine
+
+-- The domains that run on every machine in every phase (routes::runs_here): their wrappers count their runs here, in
+-- `ran`, and flush() hands the counts to the engine.
+local EVERYWHERE = { owner = true, view = true }
+local ran = { owner = 0, view = 0 }
+local kRowMax = 1048576 -- the most calls one row of coop.route.note_batch counts (coop_router.cpp kNoteBatchMax)
+local kFlushMs = 1000
+
+local function flush()
+	if not installed then return end
+	local rows = {}
+	for d, c in pairs(ran) do
+		ran[d] = 0
+		while c > 0 do
+			local part = c < kRowMax and c or kRowMax
+			rows[#rows + 1] = { d, "ran", part }
+			c = c - part
+		end
+	end
+	if rows[1] then note_batch(rows) end
+end
 
 -------------------------------------------------------------------------------
 -- Timing (opt-in): calls and time of every routed handler and of the functions a watched module lists, for finding what
@@ -141,8 +175,8 @@ end
 -------------------------------------------------------------------------------
 -- Wrappers
 -------------------------------------------------------------------------------
--- A script that keeps failing is told to the player once, as news (live 2026-10-23: FDDA failed every frame on a
--- client and left the backpack in the hands; the owner took it for a lost session).
+-- A script that keeps failing is told to the player once, as news: a mod that fails every frame on a client leaves its
+-- effect half done (an animation's item stays in the hands), which the player otherwise takes for a lost session.
 local kTellAt = 30
 local function tell(script, n)
 	local tr = game and game.translate_string
@@ -173,11 +207,9 @@ local function finish(d, script, what, err_ret, ok, ...)
 	return err_ret
 end
 
--- f runs where domain d runs. skip_ret: returned when it does not run here; err_ret: returned when its protected call
--- failed on a client.
--- Audit C1 / M3 (2026-10-24): a host script that makes things happen around "the player" (G.A.M.M.A.'s phantoms and
--- psy hits around db.actor) runs its actor_on_update as each player in turn - one call per tick, the identity rotating
--- (coop_npc_players.with_identity), so its own timers stay as they are and the clients get it too.
+-- A host script that makes things happen around "the player" (phantoms and psy hits around db.actor) runs its
+-- actor_on_update as each player in turn - one call per tick, the identity rotating (coop_npc_players.with_identity), so
+-- its own timers stay as they are and the clients get it too.
 local ROTATE = { xcv_phantoms = true, xcv_phantoms_fix = true, more_dangerous_phantoms = true }
 local turn = {}
 
@@ -203,9 +235,8 @@ function _rotate_turn(script) return turn[script] end
 
 -- A client's Lua state outlives its session. When the host is lost the engine has no session and says that every domain runs
 -- (coop_router.cpp runs_now: single player). But the world of this state is still the host's MIRROR, with no simulation of its
--- own, and the host-side scripts died on it: owner 2026-11-16, build 51, the host's game crashed, squads_filler's daily pass
--- called squad:update() on his client -> "Busy Hands" in sim_squad_scripted.script:561 (add_location_type). What runs only on
--- the host, or nowhere, in a session stays off in a client's state until that state is gone.
+-- own, and the host-side scripts fail on it (a squad's daily pass calls squad:update() on objects the mirror never set up).
+-- What runs only on the host, or nowhere, in a session stays off in a client's state until that state is gone.
 local ORPHAN_OFF = { host = true, level = true, none = true }
 local function orphaned(d)
 	if not (client and ORPHAN_OFF[d]) then return false end
@@ -213,7 +244,7 @@ local function orphaned(d)
 	return not (ok and on == true)
 end
 
--- R32 W2a: the scope of the running code. The engine keeps every wrapper's domain (coop.route.scoped) and reads the scope from the
+-- The scope of the running code. The engine keeps every wrapper's domain (coop.route.scoped) and reads the scope from the
 -- live Lua stack (coop.route.scope: the innermost registered wrapper), so a wrapper must stay on the stack while its handler runs.
 local UNKNOWN_SCOPE = "?" -- a time event or unique call set by code of no known scope (coop_calls.h kUnknownScope)
 local LEVELISH = { level = true, owner = true, view = true } -- domains that run on a map server too
@@ -241,25 +272,31 @@ function scope_now()
 	return type(d) == "string" and d or nil
 end
 
+-- f runs where domain d runs. skip_ret: returned when it does not run here; err_ret: returned when its protected call
+-- failed on a client.
 local function guard(f, d, script, what, skip_ret, err_ret)
 	local timed_f -- f through its clock, made when it first runs with timing on
+	local everywhere = EVERYWHERE[d] == true
+	local rotate = (d == "host" or d == "level") and what == "actor_on_update" and ROTATE[script]
 	local w = function(...)
-		if not runs(d) or orphaned(d) then
-			note(d, "skipped", script, what) -- per (callback, script): review M2
+		if everywhere then
+			ran[d] = ran[d] + 1
+		elseif not runs(d) or orphaned(d) then
+			note(d, "skipped", script, what) -- per (callback, script)
 			return skip_ret
+		else
+			note(d, "ran")
 		end
-		note(d, "ran")
 		local h = f
 		if timing_on then
 			timed_f = timed_f or timed(clock("route", what .. "@" .. script), f)
 			h = timed_f
 		end
-		local rotate = (d == "host" or d == "level") and what == "actor_on_update" and ROTATE[script]
 		if client then
 			if rotate then return finish(d, script, what, err_ret, pcall(as_player_in_turn, script, h, ...)) end
 			return finish(d, script, what, err_ret, pcall(h, ...))
 		end
-		-- no tail call: this wrapper stays on the stack while the handler runs (its scope, R32 W2a); no pcall: the stock behaviour
+		-- no tail call: this wrapper stays on the stack while the handler runs (its scope); no pcall: the stock behaviour
 		if rotate then return pass(as_player_in_turn(script, h, ...)) end
 		return pass(h(...))
 	end
@@ -421,7 +458,7 @@ local function wrap_once(cache, f, what, skip_ret)
 end
 
 -- AddUniqueCall: one wrapper per function (the call is unique by its function), its scope the one kept from the code that added
--- it last (R32 W2a).
+-- it last.
 local function wrap_unique(f)
 	local w = wrap_once(uc_wrap, f, "unique_call", false)
 	if w then mark(w, kept_scope(scope_now(), origin[w].domain)) end
@@ -514,42 +551,113 @@ local function wrap_globals()
 end
 
 -------------------------------------------------------------------------------
+-- Tick service
+-------------------------------------------------------------------------------
+local ticks = {} -- { fn, ms, due, w = fn's wrapper (fn itself without the router) }, in the order every() first saw them
+local tick_of = {} -- fn -> its entry
+local tick_runner_on = false
+
+-- one clock read per frame; an entry's wrapper is called only when it is due
+local function run_ticks()
+	local now = time_global()
+	for i = 1, #ticks do
+		local e = ticks[i]
+		if now >= e.due then
+			e.due = now + e.ms
+			e.w()
+		end
+	end
+end
+wrappers[run_ticks] = true -- registered as it is: each tick runs through its own wrapper
+
+local function tick_wrapper(fn)
+	if not installed then return fn end
+	local d, script = route_of("actor_on_update", fn)
+	if not d then return fn end
+	handler_dom[fn] = d
+	local w = guard(fn, d, script, "actor_on_update", nil, nil)
+	remember(w, fn, d, script, "actor_on_update")
+	return w
+end
+
+-------------------------------------------------------------------------------
 -- API
 -------------------------------------------------------------------------------
 function install()
 	if installed then return true end
 	local r = api and api.route
 	if not (type(r) == "table" and type(r.of) == "function" and type(r.runs) == "function"
-		and type(r.note) == "function") then
+		and type(r.note) == "function" and type(r.note_batch) == "function") then
 		log("! coop.route missing (an exe without the callback router): callbacks are not routed")
 		return false
 	end
-	route, runs, note = r, r.runs, r.note
+	route, runs, note, note_batch = r, r.runs, r.note, r.note_batch
 	if type(r.scoped) == "function" and type(r.scope) == "function" then scoped, scope = r.scoped, r.scope end
 	local ok, is_client = pcall(api.is_client)
 	client = ok and is_client == true
 	installed = true
 	wrap_axr()
 	wrap_globals()
+	for i = 1, #ticks do -- a tick taken before the router was there gets the wrapper its registration would have
+		ticks[i].w = tick_wrapper(ticks[i].fn)
+	end
 	log("installed on a %s: %d handler(s) registered earlier routed in place", client and "client" or "host or single player",
 		stats.rewrapped)
+	return true
+end
+
+-- Runs fn every ms milliseconds through the wrapper its own actor_on_update registration would get. A script may ask
+-- while it is being loaded: install() routes the ticks taken before it. A tick is not a handler axr_main lists:
+-- handlers_of, handlers_from and domain_handlers do not return it.
+function every(ms, fn)
+	if type(ms) ~= "number" or not (ms > 0) or type(fn) ~= "function" then return false end
+	local e = tick_of[fn]
+	if e then
+		e.ms = ms
+		return true
+	end
+	e = { fn = fn, ms = ms, due = 0, w = tick_wrapper(fn) }
+	tick_of[fn] = e
+	ticks[#ticks + 1] = e
 	return true
 end
 
 -- axr_main calls every script's on_game_start after all scripts are loaded: a CreateTimeEvent replaced since install
 -- (_g_patches.script) is wrapped again.
 function on_game_start()
-	if installed then wrap_globals() end
+	if installed then
+		wrap_globals()
+		every(kFlushMs, flush)
+	end
+	if not tick_runner_on then
+		tick_runner_on = true
+		RegisterScriptCallback("actor_on_update", run_ticks)
+	end
 end
 
-function handlers_of(callback, script)
+local function by_priority(a, b) return a.v < b.v end
+
+-- What pick(key) gives for each handler of a callback that it keeps (key: what axr_main's table holds, a wrapper or a
+-- handler; nil drops it), in the order axr_main calls them.
+local function sorted_handlers(callback, pick)
 	local out = {}
 	local t = intercepts()
 	local list = t and t[callback]
-	if type(list) ~= "table" or type(script) ~= "string" then return out end
-	script = script:lower()
+	if type(list) ~= "table" then return out end
 	local found = {}
 	for k, v in pairs(list) do
+		local fn = pick(k)
+		if fn ~= nil then found[#found + 1] = { fn = fn, v = tonumber(v) or 0 } end
+	end
+	table.sort(found, by_priority)
+	for i, e in ipairs(found) do out[i] = e.fn end
+	return out
+end
+
+function handlers_of(callback, script)
+	if type(script) ~= "string" then return {} end
+	script = script:lower()
+	return sorted_handlers(callback, function(k)
 		local o = origin[k]
 		local fn, sc = k, nil
 		if o then
@@ -562,17 +670,14 @@ function handlers_of(callback, script)
 			end
 			if type(f) == "function" then sc = select(2, route_of(callback, f)) end
 		end
-		if sc == script then found[#found + 1] = { fn = fn, v = tonumber(v) or 0 } end
-	end
-	table.sort(found, function(a, b) return a.v < b.v end)
-	for i, e in ipairs(found) do out[i] = e.fn end
-	return out
+		if sc == script then return fn end
+		return nil
+	end)
 end
 
 -- Declares a script callback unless somebody has declared it already. axr_main's callback_add prints a warning with a stack
 -- traceback for a second declaration, and which script comes first is not ours to say: game_fast_travel declares
--- on_before_fast_travel in its file body, two of our scripts declare coop_faction_changed (owner's logs of build 51, at every
--- load). true when it was declared here.
+-- on_before_fast_travel in its file body, two of our scripts declare coop_faction_changed. true when it was declared here.
 function declare(name)
 	if type(name) ~= "string" or name == "" then return false end
 	local t = intercepts()
@@ -587,54 +692,35 @@ end
 -- routes is found too. In the order axr_main calls them, and as their script registered them (never the wrapper).
 -- coop_game_settings runs game_difficulties' on_game_load once more on a new world with it.
 function handlers_from(callback, script)
-	local out = {}
-	local t = intercepts()
-	local list = t and t[callback]
-	if type(list) ~= "table" or type(script) ~= "string" or script == "" then return out end
+	if type(script) ~= "string" or script == "" then return {} end
 	local tail = script:lower() .. ".script"
-	local found = {}
-	for k, v in pairs(list) do
+	return sorted_handlers(callback, function(k)
 		local o = origin[k]
 		local fn = o and o.fn or k
-		if type(fn) == "function" then
-			local ok, info = pcall(debug.getinfo, fn, "S")
-			local src = ok and type(info) == "table" and type(info.source) == "string" and info.source:lower() or ""
-			local before = #src - #tail
-			if before >= 0 and src:sub(before + 1) == tail and (before == 0 or src:sub(before, before):find("[\\/@]") ~= nil) then
-				found[#found + 1] = { fn = fn, v = tonumber(v) or 0 }
-			end
+		if type(fn) ~= "function" then return nil end
+		local ok, info = pcall(debug.getinfo, fn, "S")
+		local src = ok and type(info) == "table" and type(info.source) == "string" and info.source:lower() or ""
+		local before = #src - #tail
+		if before >= 0 and src:sub(before + 1) == tail and (before == 0 or src:sub(before, before):find("[\\/@]") ~= nil) then
+			return fn
 		end
-	end
-	table.sort(found, function(a, b) return a.v < b.v end)
-	for i, e in ipairs(found) do out[i] = e.fn end
-	return out
+		return nil
+	end)
 end
 
 -- What runs for a callback in that domain, as plain functions: a handler object is called as axr_main calls it. The death relay
 -- (coop_srv_quests_far) tells these by hand: on the world server they did not hear the death of a map server's level.
 function domain_handlers(callback, domain)
-	local out = {}
-	local t = intercepts()
-	local list = t and t[callback]
-	if type(list) ~= "table" then return out end
-	local found = {}
-	for k, v in pairs(list) do
+	return sorted_handlers(callback, function(k)
 		local o = origin[k]
-		if o and o.domain == domain then found[#found + 1] = { fn = o.fn, v = tonumber(v) or 0 } end
-	end
-	table.sort(found, function(a, b) return a.v < b.v end)
-	for i, e in ipairs(found) do
-		local fu = e.fn
-		if type(fu) == "function" then
-			out[i] = fu
-		else
-			out[i] = function(...)
-				local m = fu[callback]
-				if m then return m(fu, ...) end
-			end
+		if not (o and o.domain == domain) then return nil end
+		local fu = o.fn
+		if type(fu) == "function" then return fu end
+		return function(...)
+			local m = fu[callback]
+			if m then return m(fu, ...) end
 		end
-	end
-	return out
+	end)
 end
 
 function wrapper_of(callback, fn)
@@ -648,13 +734,14 @@ function script_of(fn)
 	return ok and script or "?"
 end
 
--- On the host a guard leaves the stack by a tail call and the handler stays on it: this tells the code a handler runs
--- under where it runs (coop_core_world, news).
+-- The domain of a function registered as a handler (an axr_main callback, a unique call, a time event, a tick of every),
+-- nil for any other function: coop_core_world's news reads it for the handler it finds on the stack.
 function handler_domain(fn)
 	return fn ~= nil and handler_dom[fn] or nil
 end
 
 function print_status()
+	flush()
 	local caught = 0
 	for _, n in pairs(err_seen) do caught = caught + n end
 	log("shim %s on this %s | wrappers host %d, owner %d, view %d, none %d, level %d | routed in place %d, not routed %d, "

@@ -367,6 +367,7 @@ do
 	local B = machine("client", 2, { [0] = 501, [1] = 500, [2] = 0 })
 	B.to_host, B.to_local = swap(0, 501), swap(0, 501)
 	Mk.env.coop.is_map_server = function() return true end
+	H.env.coop.is_dedicated = function() return true end -- the engine splits the levels of a -coop_dedicated world only
 	Mk.env.coop.is_mirror = function() return false end
 	Mk.env.level.name = function() return NAMES[2] end
 	for _, M in ipairs({ H, Mk, B }) do

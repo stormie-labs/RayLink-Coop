@@ -90,6 +90,7 @@ local function boot(M)
 end
 
 local Hm = machine("host", 0)
+Hm.env.coop.is_dedicated = function() return true end -- the engine splits the levels of a -coop_dedicated world only
 local Ms = machine("client", BRIDGE)
 Hm.my_level, Ms.my_level = 1, 2
 Hm.level_name, Ms.level_name = "fake_start", "k00_marsh"

@@ -1,7 +1,7 @@
 -- Ядро: без проверок режима (docs/MODES.md)
 --[[
-	Anomaly Coop - the mode facade (gamedata\scripts\coop_mode.script), docs\MODES.md section 4 "Lua", step S4.
-	Frozen contract: temp\b58\contracts\coop_mode_api.md (after the W0 gate it changes only through the lead).
+	Anomaly Coop - the mode facade (gamedata\scripts\coop_mode.script), docs\MODES.md section 4 "Lua".
+	Contract: docs\contracts\coop_mode_api.md (it changes only through the lead).
 
 	The Core never asks which mode it runs in. It asks this facade about a player, a level or its own actor, and the
 	answer comes from the layer of the mode this process runs in:
@@ -24,18 +24,18 @@
 		from_level(from)    the transport sender is a registered map-server bridge on the active Server world
 		facts_of(peer)       { talking = bool|nil, partner = id|false|nil }: what the map server of that player's map
 		                     reported of his body, where it is reported to this process (the world server); nil: the
-		                     body is read here, or nobody reports it (F-BODY, A-S6-IF; the C++ twin is Mode::facts_of)
+		                     body is read here, or nobody reports it (F-BODY; the C++ twin is Mode::facts_of)
 		hook(name)           a function of the server's scripts by its name (the list: docs\contracts\coop_mode_api.md
 		                     section 7), or nil: the co-op and single player have none. Asked when it is needed, never kept
 		far()                the far view (the server's coop_srv_quests_far, which looks at the maps of other processes),
 		                     or the stub of the co-op and single player: no scope, everything runs here. Always a table
 		                     with in_scope level_of_id order fallback with_level_of with_target at_home object note_fail
 		                     print_status add_death_listener (a function the layer's view lacks is the stub's)
-		writes(id)           R32 W1: this process writes the object (creates under it, releases it, changes it): the co-op host
+		writes(id)           this process writes the object (creates under it, releases it, changes it): the co-op host
 		                     and single player always; a player's machine never; a world server or a map server by the writer
 		                     rule (who leads the object's map, who holds its unit). A process that does not write it asks.
-		presence(level, pos) R32 W10: the players around a place, {peer, ...}; nil: none to count here (single player: stock)
-		op_done(op, answer)  R32 W7: an op that consumes or pays ran; the server puts its answer in the level journal (WP4),
+		presence(level, pos) the players around a place, {peer, ...}; nil: none to count here (single player: stock)
+		op_done(op, answer)  an op that consumes or pays ran; the server puts its answer in the level journal,
 		                     the co-op and single player keep it in the module's own save
 		share_up(name, get, set[, every])    a table a map server tells the world server (F-SHARE): kept by
 		share_down(name, get, set[, every])  coop_quests_core in every process, carried by the server's share
@@ -74,7 +74,7 @@ local ACTIONS = { here = true, pass = true, drop = true }
 -- every function a layer has (applies() says whether it answers now)
 local FIELDS = { "applies", "where", "decider", "actor_is_player", "decides_world", "leads_here", "is_player_mirror",
 	"seat_plays", "group_travels", "from_level", "publish_to", "level_request" }
--- A-S6-IF: functions a layer may have; a layer without one is answered as none answers (a layer table of the tests)
+-- functions a layer may have; a layer without one is answered as none answers (a layer table of the tests)
 local OPTIONAL = { hook = true, facts_of = true, far = true, writes = true, presence = true, op_done = true }
 
 local function log(fmt, ...)
@@ -115,11 +115,11 @@ local NONE = {
 	publish_to = function() return nil end,
 	-- nothing arrives without a session; whatever does is this process's own business
 	level_request = function(name, payload, from) return "here", payload, from, false end,
-	-- A-S6-IF: no server's script, no body reported from elsewhere, no far view (the stub below)
+	-- no server's script, no body reported from elsewhere, no far view (the stub below)
 	hook = function() return nil end,
 	facts_of = function() return nil end,
 	far = function() return nil end,
-	-- R32: single player writes everything; nobody else to count around a place (stock code keeps db.actor); an op's
+	-- single player writes everything; nobody else to count around a place (stock code keeps db.actor); an op's
 	-- answer is the module's own business
 	writes = function() return true end,
 	presence = function() return nil end,
@@ -330,20 +330,20 @@ function seat_plays(peer)
 	return peer ~= nil and ask("seat_plays", peer) == true
 end
 
--- R32 W1: does this process write object `id` (its own numbering)?
+-- does this process write object `id` (its own numbering)?
 function writes(id)
 	local n = tonumber(id)
 	if type(id) ~= "number" or n ~= n or n < 0 or n >= 65535 or n % 1 ~= 0 then return false end
 	return ask("writes", n) == true
 end
 
--- R32 W10: the players around a place ({peer, ...}), nil when there are none to count here (stock code then counts db.actor)
+-- the players around a place ({peer, ...}), nil when there are none to count here (stock code then counts db.actor)
 function presence(level, pos)
 	local v = ask("presence", level, pos)
 	return type(v) == "table" and v or nil
 end
 
--- R32 W7: an op (a table {origin, seq}) that consumes or pays ran with `answer`; true when the layer recorded it
+-- an op (a table {origin, seq}) that consumes or pays ran with `answer`; true when the layer recorded it
 function op_done(op, answer)
 	if type(op) ~= "table" then return false end
 	return ask("op_done", op, answer) == true
@@ -356,7 +356,7 @@ function from_level(from)
 end
 
 -------------------------------------------------------------------------------
--- A-S6-IF (S6): the answers the S6 groups ask (docs\contracts\coop_mode_api.md section 7)
+-- The answers of section 7 of docs\contracts\coop_mode_api.md: reported body facts, hooks, the far view
 -------------------------------------------------------------------------------
 local function object_id(v)
 	return type(v) == "number" and v == v and v > 0 and v < 65535 and v % 1 == 0
@@ -525,7 +525,7 @@ function late_load(load_state)
 	if type(m) == "table" then load_state(m) end
 end
 
--- A player's machine learns the server mode from its first level map (step S3 moves that into Welcome): the waiting
+-- A player's machine learns the server mode from its first level map: the waiting
 -- when_srv functions run on the first frame the srv layer answers, if no question came before.
 local function actor_on_update()
 	if pending[1] and not flushing then current() end
