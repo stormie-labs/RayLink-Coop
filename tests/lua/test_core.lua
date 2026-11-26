@@ -946,20 +946,13 @@ do
 	look()
 	check(has(N.news, "st_coop_core_left"), "newcomer: a player who leaves 'left'")
 end
--- quicksave. F3 task 17: a client no longer asks the host to quicksave (coop_saves refuses every save in a session,
--- tests/lua/test_saves.lua); coop_main's own gate still blocks the client locally until Task 18 removes it.
+-- quicksave: saving and loading by hand are refused by coop_saves alone (tests/lua/test_saves.lua, test_saves_gate.lua);
+-- none of the core scripts gates them a second time.
 print("== quicksave")
-local flags = { ret = false }
-local sent_before = C.sent_count or 0
-for _, f in ipairs(C.cb.on_before_save_input or {}) do f(flags, 2, "save") end
-check(flags.ret == true, "client save blocked locally")
-pump()
-check((C.sent_count or 0) == sent_before and H.saved == nil, "a client quicksave asks the host for nothing")
-check(not has(C.msgs, "st_coop_core_save_asked") and not has(C.msgs, "Asked the host to quicksave"),
-	"and says nothing about asking the host")
-flags = { ret = false }
-for _, f in ipairs(C.cb.on_before_save_input or {}) do f(flags, 1, "save") end
-check(flags.ret == true and has(C.msgs, "Co-op: only the host saves the game"), "a normal save stays host-only")
+check(#(C.cb.on_before_save_input or {}) == 0 and #(C.cb.on_before_load_input or {}) == 0,
+	"the core scripts register no save or load gate on the client")
+check(#(H.cb.on_before_save_input or {}) == 0 and #(H.cb.on_before_load_input or {}) == 0,
+	"nor on the host")
 -- transition vote
 print("== level move")
 H.main.on_transition_vote("bob")

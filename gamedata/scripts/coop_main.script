@@ -34,9 +34,8 @@
 
 	What this script does on a co-op CLIENT (nothing of it runs on the host or in single player):
 	1. (moved: the client domain filter is the engine's callback router now, see above)
-	2. Restrictions: save/load UI paths answer "host only" (R-9.2; the engine gates the console
-	   commands too), a quicksave is asked from the host instead (coop_core_player); debug spawner /
-	   debug menu are disabled (R-6.6).
+	2. Restrictions: debug spawner / debug menu are disabled. Saving and loading by hand are refused by
+	   coop_saves alone (one gate, one hint).
 	3. Emission and psi-storm (R-10.1): the client's own managers never start by themselves. The host
 	   sends the phase (started, elapsed game seconds, time factor) and its cover verdict for this
 	   player; the client runs the stock update() with that phase to get the same visuals and sounds,
@@ -1108,52 +1107,10 @@ local function play_crow_warning(tg)
 end
 
 -------------------------------------------------------------------------------
--- Client restrictions (R-9.2 saves, R-6.6 debug tools)
+-- Restrictions: the stock debug tools, the client's world update. Saving and loading by hand are refused by coop_saves
+-- alone, on every machine: a second gate here would show the player a second hint for the same key.
 -------------------------------------------------------------------------------
 local client_patched = false
-
-local function on_before_save_input(flags, typ, text)
-	if client_mode and type(flags) == "table" then
-		flags.ret = true
-		-- A quicksave (type 2: F5, the menu's quicksave) is asked from the host (coop_core_player).
-		local pl = rawget(_G, "coop_core_player")
-		if typ == 2 and pl and pl.request_quicksave then
-			local ok, asked = pcall(pl.request_quicksave)
-			if ok and asked then return end
-		end
-		hud_msg("Co-op: only the host saves the game")
-	end
-end
-
-local function on_before_load_input(dik, bind, flags)
-	if client_mode and type(flags) == "table" then
-		flags.ret = true
-		hud_msg("Co-op: loading is disabled while connected (coop_disconnect first)")
-	end
-end
-
-local function patch_main_menu()
-	local mod = rawget(_G, "ui_main_menu") or ui_main_menu
-	local cls = mod and mod.main_menu
-	if not cls then return end
-	local texts = {
-		OnButton_save_clicked = "Co-op: only the host saves the game",
-		OnButton_load_clicked = "Co-op: loading is disabled while connected (coop_disconnect first)",
-		OnButton_last_save = "Co-op: loading is disabled while connected (coop_disconnect first)",
-	}
-	for fname, text in pairs(texts) do
-		local ok, orig = pcall(function() return cls[fname] end)
-		if ok and type(orig) == "function" then
-			cls[fname] = function(self, ...)
-				if client_mode then
-					hud_msg(text)
-					return
-				end
-				return orig(self, ...)
-			end
-		end
-	end
-end
 
 -- [route_none_functions] of configs\coop_route*.ltx (was [blocked_functions]), read by the engine.
 local function none_functions()
@@ -1256,9 +1213,7 @@ local function install_client_patches()
 	local ok_st, err_st = pcall(patch_smart_terrain_binder)
 	if not ok_st then report_error("coop_main", "smart terrain patch", err_st) end
 	local ok_cb, err_cb = pcall(function() return coop_client_binders.install() end) if not ok_cb then report_error("coop_main", "client binders patch", err_cb) end -- W10: the other object binders
-	local ok, err = pcall(patch_main_menu)
-	if not ok then report_error("coop_main", "main menu patch", err) end
-	ok, err = pcall(stub_blocked_functions)
+	local ok, err = pcall(stub_blocked_functions)
 	if not ok then report_error("coop_main", "debug tools patch", err) end
 end
 
@@ -1389,8 +1344,6 @@ end
 function on_game_start()
 	if not api then return end
 	RegisterScriptCallback("actor_on_update", actor_on_update)
-	RegisterScriptCallback("on_before_save_input", on_before_save_input)
-	RegisterScriptCallback("on_before_load_input", on_before_load_input)
 	if client_mode then install_client_patches() end
 	-- every machine: the stubs check the session when they are called (single player keeps the stock tools)
 	local ok, err = pcall(stub_blocked_functions)

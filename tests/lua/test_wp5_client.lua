@@ -79,15 +79,7 @@ local te_host = from_script("death_manager", "return function() bump('te_host') 
 CreateTimeEvent("x", "y", 1, te_host)
 check(TIMEEV[#TIMEEV].f() == true and C.te_host == nil, "host time event skipped and removed")
 
--- save / load / debug gates
-local flags = { ret = false }
-SendScriptCallback("on_before_save_input", flags, 1, "save")
-check(flags.ret == true, "save input blocked")
-flags = { ret = false }
-SendScriptCallback("on_before_load_input", 1, 2, flags)
-check(flags.ret == true, "quick load blocked")
-ui_main_menu.main_menu.OnButton_save_clicked({})
-check(SAVED_DIALOG == nil, "main menu save button blocked")
+-- debug gate (saving and loading are coop_saves': tests/lua/test_saves_gate.lua)
 ui_debug_launcher.start_debug_main()
 check(DEBUG_OPENED == nil, "debug menu entry stubbed")
 
