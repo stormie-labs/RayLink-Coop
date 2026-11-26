@@ -742,46 +742,11 @@ local function fire(name, ...)
 	end
 end
 
-local revive = { last = -100000, low_since = nil, engine = false, by_poll = false }
-
+-- A revive is only what the engine reports on the revived player's machine (coop_actor_revived): health alone looks the
+-- same after a medkit used near zero or a respawn, and the listeners undo what being downed left on the player.
 function on_actor_revived(reviver_peer, medkit_section)
 	if not active() then return end
-	revive.last = time_global()
-	revive.by_poll = false
-	fire("actor_revived", reviver_peer, medkit_section)
-end
-
--- The engine's callback (C1.6, W5): from now on the health poll below is off. A revive the poll already
--- reported in the last 3 s is not reported twice.
-local function engine_revived(reviver_peer, medkit_section)
-	revive.engine = true
-	revive.low_since = nil
-	if revive.by_poll and time_global() - revive.last < 3000 then
-		revive.by_poll = false
-		return
-	end
-	on_actor_revived(tonumber(reviver_peer), type(medkit_section) == "string" and medkit_section or nil)
-end
-
--- Until the engine reports revives: a downed player's health is pinned just above zero and the revive sets
--- it in one step, so "near zero for a while, then at least 0.1" counts as a revive (healing up from near
--- zero counts too; the listeners only lift values that are at zero).
-local function revive_poll()
-	if revive.engine or not (listeners.actor_revived and db.actor) then return end
-	local tg = time_global()
-	local h = db.actor.health
-	if type(h) ~= "number" then return end
-	if h < 0.03 then
-		revive.low_since = revive.low_since or tg
-	elseif revive.low_since then
-		local was = revive.low_since
-		revive.low_since = nil
-		if h >= 0.1 and tg - was > 1000 and tg - revive.last > 3000 then
-			revive.last = tg
-			revive.by_poll = true
-			fire("actor_revived", nil, nil)
-		end
-	end
+	fire("actor_revived", tonumber(reviver_peer), type(medkit_section) == "string" and medkit_section or nil)
 end
 
 -- A fresh body after a death (live 2026-11-08: a G.A.M.M.A. player killed by psi stood up with the psy health and the body
@@ -882,10 +847,7 @@ local function on_tp(t, from)
 end
 
 local function actor_on_update()
-	if active() then
-		revive_poll()
-		respawn_poll()
-	end
+	if active() then respawn_poll() end
 end
 
 function on_game_start()
@@ -895,7 +857,7 @@ function on_game_start()
 	-- coop_status: coop_main.print_status calls print_status above (W5)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	-- engine notifications (W5); coop_main creates the callback names at load
-	RegisterScriptCallback("coop_actor_revived", engine_revived)
+	RegisterScriptCallback("coop_actor_revived", on_actor_revived)
 	RegisterScriptCallback("coop_respawned", on_actor_respawned)
 	RegisterScriptCallback("coop_on_container_opened", on_container_opened)
 	RegisterScriptCallback("coop_avatar_step", on_avatar_step)
