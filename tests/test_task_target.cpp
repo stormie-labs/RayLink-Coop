@@ -153,7 +153,7 @@ TEST(task_target_unknown_log_requires_a_local_task_but_always_counts)
 {
 	std::string path = __FILE__;
 	path.resize(path.find_last_of("\\/") + 1);
-	std::ifstream in(path + "../engine/src/xrGame/coop/coop_story.cpp", std::ios::binary);
+	std::ifstream in(path + "../engine/src/xrGame/coop/coop_story_targets.cpp", std::ios::binary);
 	REQUIRE(in.good());
 	const std::string src((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 	const size_t first = src.find("void log_unknown_target(");

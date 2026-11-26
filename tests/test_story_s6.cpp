@@ -55,12 +55,14 @@ MODE_CASES(STORY_MODE_TEST)
 TEST(story_s6_routes_story_hashes_tasks_and_ghost_words_through_mode)
 {
 	const auto story = source("coop_story.cpp");
+	const auto tasks = source("coop_story_tasks.cpp");
+	const auto relations = source("coop_story_relations.cpp");
 	CHECK(story.find("!mode().reaches(p.id, Msg::StoryHash)") != std::string::npos);
-	CHECK(story.find("mode().reaches(p.id, type) && may_see(p.id, id)") != std::string::npos);
-	CHECK(story.find("mode().deliver_links(type, w, Lane::Reliable)") != std::string::npos);
+	CHECK(tasks.find("mode().reaches(p.id, type) && may_see(p.id, id)") != std::string::npos);
+	CHECK(tasks.find("mode().deliver_links(type, w, Lane::Reliable)") != std::string::npos);
 	CHECK(story.find("mode().deliver_links(Msg::StoryHash, w, Lane::Reliable)") != std::string::npos);
-	CHECK(story.find("if (!mode().ghost_said(s))") != std::string::npos);
-	CHECK(story.find("g_action_depth > 0 && !mode().leads_level()") != std::string::npos);
+	CHECK(relations.find("if (!mode().ghost_said(s))") != std::string::npos);
+	CHECK(relations.find("g_action_depth > 0 && !mode().leads_level()") != std::string::npos);
 }
 
 TEST(story_s6_keeps_world_and_level_authority)

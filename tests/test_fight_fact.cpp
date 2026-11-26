@@ -136,18 +136,20 @@ TEST(fight_fact_goes_up_only_from_a_level_side)
 
 TEST(fight_fact_engine_wiring)
 {
-	const std::string story = game_source("coop_story.cpp");
-	REQUIRE(!story.empty());
-	const auto flush = section(story, "void host_flush_rep_deltas()", "\n}");
+	const std::string relations = game_source("coop_story_relations.cpp");
+	REQUIRE(!relations.empty());
+	const auto flush = section(relations, "void host_flush_rep_deltas()", "\n}");
 	const size_t side = at(flush, "if (LevelSide* l = mode().level())");
 	const size_t up = at(flush, "l->level_fight_reputation(it.first, it.second)");
 	const size_t own = at(flush, "host_apply_fight(peer, it.first, it.second)");
 	CHECK(side < up);
 	CHECK(up < own);
-	const auto request = section(story, "void host_on_relation_request(PeerId from, u8 op, Reader& r)", "\n}");
+	const auto request = section(relations, "void host_on_relation_request(PeerId from, u8 op, Reader& r)", "\n}");
 	at(request, "case RelUpFightFact:");
 	at(request, "progress::host_fight_fact(from, f.epoch, f.fact, f.character, f.delta)");
-	const auto apply = section(story, "bool host_apply_fight(PeerId peer, u16 character, int delta)", "\n}");
+	const std::string story_progress = game_source("coop_story_progress.cpp");
+	REQUIRE(!story_progress.empty());
+	const auto apply = section(story_progress, "bool host_apply_fight(PeerId peer, u16 character, int delta)", "\n}");
 	const size_t base = at(apply, "host_add_reported_reputation(peer, delta)");
 	const size_t tell = at(apply, "net::host_send(peer, Msg::Relation, w)");
 	CHECK(base < tell);
