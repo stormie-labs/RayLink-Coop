@@ -582,28 +582,18 @@ TEST(srv_o6_memory_guard_glue)
 
 // ================================================================ 4: the needs-data refusals carry their data
 
-TEST(srv_o6_uses_refusal_tells_the_branch)
+TEST(srv_o6_uses_the_store_cannot_keep_are_staged)
 {
-	// the two ways the world's uses store refuses (coop_initial_rules.h uses_store -> Refuse), told apart by the world's client_data
+	// the two cases the uses store cannot keep (coop_initial_rules.h uses_store -> Refuse): the world stages the uses (coop_items.cpp
+	// host_take_item_facts), so neither refuses an ItemFacts: a map server's loot on the ground (drinks and kits of a scripted section)
 	const std::vector<uint8_t> none;
 	std::vector<uint8_t> ground(initial::kHeldEatableSize + 4, 0);
 	ground[initial::kSyncItemsAt] = 1; // an item on the ground writes its physics state after a non-zero count
 	CHECK(initial::uses_store(none, nullptr, 2, true, false) == initial::UsesStore::Refuse); // a scripted section, no writer's bytes
 	CHECK(initial::uses_store(ground, nullptr, 2, false, true) == initial::UsesStore::Refuse); // bytes here of an item on the ground
-	CHECK(journal::uses_refusal_of(!none.empty()) == journal::UsesRefusal::NoBytes);
-	CHECK(journal::uses_refusal_of(!ground.empty()) == journal::UsesRefusal::NotHeld);
-	const std::string no_bytes = journal::uses_refusal_text(journal::UsesRefusal::NoBytes);
-	const std::string not_held = journal::uses_refusal_text(journal::UsesRefusal::NotHeld);
-	CHECK(no_bytes != not_held);
-	CHECK(o6_has(no_bytes, "scripted section"));
-	CHECK(o6_has(not_held, "ground"));
-	CHECK(no_bytes.rfind(journal::kUsesRefusedPrefix, 0) == 0 && not_held.rfind(journal::kUsesRefusedPrefix, 0) == 0);
-	// the world's item engine says so with one text for both (coop_items.cpp, not this package's): the prefix finds it
-	CHECK(journal::is_uses_refusal("the uses cannot be stored (a scripted section and no bytes of the writer's object, or an item on the ground)"));
-	CHECK(!journal::is_uses_refusal("another section"));
-	CHECK(!journal::is_uses_refusal(nullptr));
 	const std::string items = o6_read(o6_src() + "/xrGame/coop/coop_items.cpp");
-	CHECK(o6_has(items, std::string("why = \"") + journal::kUsesRefusedPrefix));
+	CHECK(!o6_has(items, "the uses cannot be stored"));
+	CHECK(o6_has(items, "stage_uses(id, facts.uses);"));
 }
 
 TEST(srv_o6_object_note)
@@ -630,10 +620,6 @@ TEST(srv_o6_refusal_lines_carry_data)
 	CHECK(o6_has(refuse, "seen.move, seen.to"));
 	CHECK(o6_has(refuse, "here->ID_Parent"));
 	CHECK(o6_has(refuse, "\"! [coop] levels: %s of object %u from map server %u refused (%u so far): %s%s%s; %s\""));
-	// the ItemFacts uses refusal: one text per branch, by the client_data the world's object has (the item engine's text is one)
-	CHECK(o6_before(refuse, "const CSE_ALifeDynamicObject* here = ",
-	    "if (op == wire::LevelEntityHead::Item && journal::is_uses_refusal(detail)) detail = journal::uses_refusal_text(journal::uses_refusal_of(here && !here->client_data.empty()));"));
-	CHECK(o6_before(refuse, "journal::is_uses_refusal(detail)", "::Msg("));
 	const std::string entry = o6_body(alife, R"(ApplyVerdict\s+apply_entry)");
 	REQUIRE(!entry.empty());
 	CHECK(o6_has(o6_flat(entry), "Seen seen; seen.crc = h.crc;"));

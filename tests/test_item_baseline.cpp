@@ -261,7 +261,7 @@ TEST(item_baseline_a_scripted_eatable_with_empty_client_data_takes_the_writers_b
 
 TEST(item_baseline_without_the_writers_bytes_a_scripted_eatable_is_refused)
 {
-	// The old way (and an older map server): nothing can be stored, and the world must say so (Refused), not Applied.
+	// Nothing can be stored in the client_data: the store says Refuse and leaves it as it was (the caller stages the uses).
 	std::vector<std::uint8_t> cd;
 	CHECK(initial::uses_store(cd, nullptr, 3, true, false) == initial::UsesStore::Refuse);
 	CHECK(!initial::store_uses(cd, initial::UsesStore::Refuse, nullptr, 3, nullptr, false));
@@ -352,21 +352,24 @@ size_t where_in(const std::string& body, const std::string& what)
 }
 } // namespace
 
-TEST(item_baseline_the_world_refuses_uses_it_cannot_store_before_it_changes_anything)
+TEST(item_baseline_the_world_stages_uses_its_entity_cannot_keep)
 {
-	// host_take_item_facts decides the store first and returns false (Refused) with nothing written; the journal's case H::Item turns
-	// that false into a refusal row (no Applied for a half-applied fact).
+	// host_take_item_facts decides the store before anything is written. What the entity cannot keep (a scripted section with no
+	// client_data, an item on the ground: the map servers' loot of G.A.M.M.A. drinks and kits) waits in g_staged_uses for the item's
+	// next spawn, as apply_to_entity does; the entry is taken, not refused, and the entity's client_data stays as it was.
 	const std::string src = engine_src_dir();
 	const std::string items = text_of(src + "/xrGame/coop/coop_items.cpp");
 	const std::string facts = function_body(items, R"(bool\s+host_take_item_facts)");
 	const size_t decide = where_in(facts, "const initial::UsesStore how = initial::uses_store(cd, stock, facts.uses, e->ID_Parent != 0xffff, may_make);");
-	const size_t refuse = where_in(facts, "if (!initial::store_uses(cd, how, stock, facts.uses, &cond, may_make)) {");
-	const size_t give_up = facts.find("return false;", refuse == std::string::npos ? 0 : refuse);
+	const size_t stage = where_in(facts, "stage = !initial::store_uses(cd, how, stock, facts.uses, &cond, may_make);");
 	const size_t first_apply = where_in(facts, "apply_entity(e, facts, false);");
+	const size_t staged = where_in(facts, "if (store && stage) stage_uses(id, facts.uses); else if (store) {");
 	const size_t store = where_in(facts, "e->client_data.assign(cd.begin(), cd.end());");
-	CHECK(decide < refuse);
-	CHECK(give_up != std::string::npos && give_up < first_apply);
-	CHECK(first_apply < store);
+	CHECK(decide < stage);
+	CHECK(stage < first_apply);
+	CHECK(first_apply < staged);
+	CHECK(staged < store);
+	CHECK(facts.find("the uses cannot be stored") == std::string::npos);
 	where_in(facts, "const std::vector<u8>* stock = d.has_client_data ? &d.client_data : nullptr;");
 	// The map server sends its held eatable's own bytes with the facts.
 	const std::string state = function_body(items, R"(bool\s+level_item_state)");
