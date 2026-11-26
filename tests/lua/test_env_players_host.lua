@@ -30,6 +30,8 @@ print("== env_players_host")
 dofile("tests/lua/support/modes.lua").live(load_script_file("coop_mode"))
 load_coop_main()
 coop_main.on_game_start()
+coop_env.on_game_start()
+coop_route.on_game_start() -- the tick service runs the emission tick
 local sm = surge_manager.get_surge_manager()
 local pm = psi_storm_manager.get_psi_storm_manager()
 local function kill(t, from) coop_main.on_event("coop_env_npc_kill", coop_main.encode(t), from or 1) end

@@ -57,13 +57,13 @@ local function log(fmt, ...)
 	if pf then pcall(pf, "[coop-npc:idiots] %s", ok and line or tostring(fmt)) end
 end
 
--- Only the host extends the actor rule to real player proxies. No cached predicate:
--- leaving a session or changing roles must immediately restore the upstream classification.
+-- The NPC authority extends the actor rule to player proxies while other players are connected.
+-- Use the shared per-frame answer so session and role changes make the proxy rule expire with it.
 _G.coop_idiots_player_id = function(id)
 	if id == 0 then return true end
 	local ok, P = pcall(function() return coop_npc_players end)
-	return ok and type(P) == "table" and type(P.host_with_clients) == "function"
-		and P.host_with_clients() and P.is_player_id(id) == true or false
+	return ok and type(P) == "table" and type(P.host_on) == "function"
+		and P.host_on() and P.is_player_id(id) == true or false
 end
 
 -- Small lexical scanner, not a Lua reformatter: retain byte offsets and leave the rest of

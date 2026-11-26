@@ -22,6 +22,8 @@ local function scenario(server)
 	if cover.on_game_start then cover.on_game_start() end
 	load_script_file("coop_srv_world").on_game_start()
 	coop_main.on_game_start()
+	coop_env.on_game_start()
+	coop_route.on_game_start() -- the tick service runs the emission tick
 
 	local function event(name, data, from)
 		coop_main.on_event(name, coop_main.encode(data), from or 0)

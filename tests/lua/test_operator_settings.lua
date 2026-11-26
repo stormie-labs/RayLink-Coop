@@ -125,7 +125,6 @@ coop.game = {
 		for _ in pairs(t) do n = n + 1 end
 		return n, GAME.refused
 	end,
-	release_cvars = function() return 0 end,
 	machine_cvar = function(name) return GAME.machine[name] end,
 	set_world_faction = function(f) GAME.faction = f; return true end,
 	world_faction = function() return GAME.faction end,

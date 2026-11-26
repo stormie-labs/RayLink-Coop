@@ -186,13 +186,14 @@ for _, name in ipairs(modes.names()) do
 			coop_main.on_event("mods.rf_big", coop_main.encode({ k = "unexpected", i = 1, n = 1, d = "{}" }), 1)
 			check(coop_mods_core.stats.big_in == before, "m21:9 the authority admits no player RF snapshot chunks")
 		end
+		SENT = {}
 		ir.add_target(1210, 155, 200, { "radio\\custom_a", "radio\\custom_b" })
 		local _, legacy = sent("quests.rf")
 		check(legacy and coop_main.decode(legacy.payload).s ~= nil, "m21:9 quest RF producer includes sound description")
-		SENT = {} tick()
+		-- the deciding process sends its diff at once from the add_target hook, not at the next 2 s tick
 		local snap, wire = sent("mods.rf")
 		if name ~= "srv_map" then
-			check(snap and snap.d ~= nil, "m21:9 RF diff includes sound description")
+			check(snap and snap.d ~= nil, "m21:9 RF diff includes sound description, sent at once")
 			ir.RF_targets[1210].snd[2] = "radio\\changed"
 			SENT = {} tick()
 			check(sent("mods.rf") ~= nil, "m21:9 sound-only change is broadcast")
@@ -294,6 +295,18 @@ for _, name in ipairs(modes.names()) do
 			modes.install(coop_mode, name, { seat_plays = function(peer) return peer == 1 or peer == 2 end })
 			if cancellation then deliver(cancellation, 257) end
 			check(ir.RF_targets[1260] == nil, "m21:7 map quest cleanup also retires the world source")
+			-- The radio adapter hooks add_target itself: with no legacy quest message at all, the map still registers it.
+			source(1261, "fate_quest_item_two")
+			modes.install(coop_mode, "srv_map")
+			local legacy_send = coop_quests_core.send
+			coop_quests_core.send = function() end
+			SENT = {}
+			ir.add_target(1261, 272, 200, "radio\\map_quest")
+			tick()
+			coop_quests_core.send = legacy_send
+			local own, own_raw = sent("mods.rf_target")
+			check(own_raw and own_raw.target == 0 and tonumber(own.i) == 1261 and tonumber(own.f) == 272,
+				"the radio registers a map quest's RF source by its own hook on add_target")
 		end
 
 		-- A later full snapshot repairs a joined player's stale save, including on a different map.

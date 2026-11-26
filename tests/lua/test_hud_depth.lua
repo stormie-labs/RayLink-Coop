@@ -45,7 +45,11 @@ function device()
 	return dev
 end
 function RegisterScriptCallback(name, fn) callbacks[name] = fn end
-coop_main = { STATUS_MODULES = {} }
+local status_names = {}
+coop_util = { add_status = function(name) -- once per name, as coop_util's registry
+	for _, n in ipairs(status_names) do if n == name then return end end
+	status_names[#status_names + 1] = name
+end }
 local status
 function printf(fmt, ...) status = string.format(fmt, ...) end
 coop_mode = load_script("coop_mode")
@@ -195,7 +199,7 @@ local function test_player_depth()
 	broken = false
 	depth.print_status()
 	check(ok and at_rest(depth) and status:find("errors 1", 1, true), "engine error clears depth and is counted in coop_status")
-	check(#coop_main.STATUS_MODULES == 1 and coop_main.STATUS_MODULES[1] == "coop_hud_depth",
+	check(#status_names == 1 and status_names[1] == "coop_hud_depth",
 		"depth diagnostics are registered once")
 
 	tick(45)

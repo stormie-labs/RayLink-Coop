@@ -21,7 +21,7 @@ check(coop_main.decode(passed).a == "5" or coop_main.decode(passed).a == 5, "wit
 HANDLED = {}
 coop_main.on_event("mods.wld_req", coop_main.encode({ a = 7 }), 1)
 check(#HANDLED == 1 and HANDLED[1].from == 1, "\"world\": on the world server, wherever he stands")
-check(C.is_bridge(0x101) == true and C.is_bridge(1) == false, "is_bridge knows a map server from a player")
+check(coop_mode.from_level(0x101) == true and coop_mode.from_level(1) == false, "the facade knows a map server from a player")
 
 HANDLED = {}
 MODE = "client"

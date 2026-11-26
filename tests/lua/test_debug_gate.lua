@@ -15,6 +15,7 @@ DEV_DEBUG, DEV_DEBUG_DEV = true, true
 coop.route = coop.route or {}
 coop.route.none_functions = function() return { "ui_debug_launcher.start_debug_main" } end
 
+dofile("tests/lua/support/modes.lua").live(load_script_file("coop_mode"))
 load_coop_main()
 check(DEV_DEBUG == false and DEV_DEBUG_DEV == false, "host in a session: DEV_DEBUG is off (R-6.6 on every machine)")
 coop_main.on_game_start()

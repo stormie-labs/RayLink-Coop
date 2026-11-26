@@ -80,6 +80,8 @@ local function start(role, map)
 	coop_trust.reset_for_test({ default = "log" })
 	load_coop_main()
 	coop_main.on_game_start()
+	coop_env.on_game_start()
+	coop_route.on_game_start() -- the tick service runs the emission tick
 	modes.live(coop_mode)
 	load_script_file("coop_npc_players")
 	load_script_file("coop_world_weather").on_game_start()

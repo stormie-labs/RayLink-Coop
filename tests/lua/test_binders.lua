@@ -150,8 +150,23 @@ local function new_world(role, opts)
 	}) }
 	W.monster = MODS.bind_monster.generic_object_binder
 
-	-- coop_main with the status list
-	MODS.coop_main = { print_status = function() count("main.print_status") W.logs[#W.logs + 1] = "[coop-lua] main status" end }
+	-- the Core's helpers (coop_util): the log line, the module lookup and the coop_status registry
+	W.statuses = {}
+	MODS.coop_util = {
+		logger = function(head) return function(fmt, ...) G.printf("%s %s", head, string.format(fmt, ...)) end end,
+		module = function(name)
+			local m = MODS[name]
+			return type(m) == "table" and m or nil
+		end,
+		add_status = function(name) W.statuses[#W.statuses + 1] = name end,
+		-- the session roles as this world's role has them: "client" is a player's machine, with W.map_server a map server
+		active = function() return api ~= nil and W.role ~= "single" end,
+		follows_world = function() return api ~= nil and W.role == "client" end,
+	}
+	MODS.coop_mode = {
+		is_player_mirror = function() return api ~= nil and W.role == "client" and not W.map_server end,
+		leads_for_world_elsewhere = function() return false end,
+	}
 
 	local sections = opts.ltx or SHIPPED
 	if opts.no_ltx then
@@ -237,12 +252,12 @@ do
 		check(W.calls[mod .. ".update"] == 1 and inst.updates == 1 and rv == nil, "guard: a healthy " .. mod .. " update runs the stock code once (no return value through the guard)")
 	end
 	-- F3a: a map server is a client of the world and no mirror: what "a client does not do" runs again, the guards stay
-	W.api.is_mirror = function() return false end
+	W.map_server = true
 	W.calls = {}
 	local lead_zone = W.new(W.zone)
 	check(lead_zone:spawn_artefact_randomly() == "spawned" and W.calls["zone.spawn"] == 1, "a map server runs what a mirror skips")
 	check(pcall(function() W.new(W.guard.bind_stalker):update(1) end), "a map server keeps the guard")
-	W.api.is_mirror = nil
+	W.map_server = nil
 	-- the binder stays: one failed update does not stop the next ones, the instance keeps its state
 	local it = W.new(W.guard.bind_item)
 	it.fail_once = true
@@ -305,11 +320,8 @@ do
 	local upd = W.zone.turn_off
 	check(W.mod.install() == n and W.zone.turn_off == upd, "install twice: no double wrapping")
 
-	-- status: coop_main.print_status now prints our block once
-	W.logs = {}
-	W.MODS.coop_main.print_status()
-	check(logs_with(W, "[coop-binders] role client") == 1, "status: our summary line printed once through coop_main.print_status")
-	check(logs_with(W, "main status") == 1, "status: coop_main's own lines still printed")
+	-- status: install registered the module with coop_status once (coop_util.add_status)
+	check(#W.statuses == 1 and W.statuses[1] == "coop_client_binders", "status: registered once for coop_status")
 	W.logs = {}
 	W.mod.print_status()
 	check(logs_with(W, "[coop-binders] role client") == 1, "status: a direct call prints once")
@@ -334,15 +346,36 @@ do
 end
 
 -------------------------------------------------------------------------------
-print("== 1b. status hook with a coop_main that already lists the module")
+print("== 1b. smart terrains: a player's mirror runs the base update only, a map server respawns nothing")
 do
 	local W = new_world("client")
-	-- coop_main.print_status prints every module of STATUS_MODULES, ours included
-	W.MODS.coop_main.print_status = function() W.mod.print_status() end
+	local answers = { mirror = true, elsewhere = false }
+	W.MODS.coop_mode = {
+		is_player_mirror = function() return answers.mirror end,
+		leads_for_world_elsewhere = function() return answers.elsewhere end,
+	}
+	local smart = W.class({ update = function(self, d) W.count("smart.update") end })
+	W.MODS.bind_smart_terrain = { smart_terrain_binder = smart }
+	local se = W.class({ try_respawn = function(self) W.count("smart.respawn") return "respawned" end })
+	W.MODS.smart_terrain = { se_smart_terrain = se }
 	W.mod.install()
-	W.logs = {}
-	W.MODS.coop_main.print_status()
-	check(logs_with(W, "[coop-binders] role client") == 1, "status: listed in STATUS_MODULES and hooked -> still one block (" .. logs_with(W, "[coop-binders] role client") .. ")")
+	local s = W.new(smart)
+	s:update(1)
+	check(W.calls["smart.update"] == nil and s.base_updated == 1, "mirror: object_binder.update only")
+	answers.mirror = false
+	s:update(1)
+	check(W.calls["smart.update"] == 1, "not a mirror: the stock update")
+	answers.elsewhere = true
+	check(W.new(se):try_respawn() == nil and W.calls["smart.respawn"] == nil, "a map server: no respawn")
+	answers.elsewhere = false
+	check(W.new(se):try_respawn() == "respawned", "the world's own process: the stock respawn")
+	check(logs_with(W, "[coop-binders] smart terrain binder: the world update") == 1, "one log line")
+	local H = new_world("host")
+	H.MODS.bind_smart_terrain = { smart_terrain_binder = W.class({ update = function() end }) }
+	local upd = H.MODS.bind_smart_terrain.smart_terrain_binder.update
+	H.mod.install()
+	check(H.MODS.bind_smart_terrain.smart_terrain_binder.update == upd and #H.statuses == 0,
+		"host: the smart terrain binder stays stock, no coop_status block")
 end
 
 -------------------------------------------------------------------------------

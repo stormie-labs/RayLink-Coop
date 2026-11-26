@@ -4,8 +4,8 @@
 ; A client never creates an item in the shared world by itself: it asks the host (ReqSpawn) - an item from its
 ; inventory work (unloading a magazine, detaching a scope, crafting, a script's alife():create), a grenade's or a
 ; launcher's rocket. The host creates it only if, in this order:
-;   1. the section's `class` is an item class of the game (the table in engine/src/xrCoop/coop_spawn.h, checked by
-;      tools/check_spawn_classes.py): stalkers, monsters, anomalies, physics objects, boxes are refused;
+;   1. the section's `class` appears in kClassRules (engine/src/xrCoop/coop_spawn.h). The host refuses stalkers,
+;      monsters, anomalies, physics objects and boxes;
 ;   2. the section has every line its server entity and game object read unchecked (a missing one would be FATAL on
 ;      the host);
 ;   3. into one of the player's items only what that item takes, while it has room: a launcher its rocket (an RG-6

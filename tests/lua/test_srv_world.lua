@@ -43,6 +43,8 @@ local function start(role)
 	local stock_start = CSurge.start
 	load_coop_main()
 	coop_main.on_game_start()
+	coop_env.on_game_start()
+	coop_route.on_game_start() -- the tick service runs the emission tick
 	if role == "srv_player" then modes.live(coop_mode)
 	else modes.install(coop_mode, role) end
 	coop_mode.on_game_start()

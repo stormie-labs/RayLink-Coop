@@ -2,6 +2,7 @@
 -- and routes the FDDA scripts as owner on a client.
 MODE = "client"
 dofile("tests/lua/support/stubs.lua")
+dofile("tests/lua/support/modes.lua").live(load_script_file("coop_mode"))
 load_coop_main()
 local ea = from_script("enhanced_animations", "return function() EA_RAN = (EA_RAN or 0) + 1 end")
 local eap = from_script("ea_callbacks", "return function() EAP_RAN = (EAP_RAN or 0) + 1 end")

@@ -33,7 +33,115 @@ fake_mod_a = { f = function() return 1 end }
 check(C.mod("fake_mod_a") == fake_mod_a, "present mod found")
 local ok, orig = C.wrap(fake_mod_a, "f", "fake_mod_a.f", function(o) return function() return o() + 1 end end)
 check(ok and orig ~= nil and fake_mod_a.f() == 2, "wrap keeps and calls the original")
-check(C.wrap(fake_mod_a, "missing", "x", function(o) return o end) == false, "wrap of a missing function is a no-op")
+
+-- attachment points: an adapter that does not find the function of its mod says so once, in the log and in coop_status
+do
+	local function same(o) return o end
+	local function lines(text)
+		local n = 0
+		for _, line in ipairs(LOG) do
+			if line:find(text, 1, true) then n = n + 1 end
+		end
+		return n
+	end
+	local function status_lines(text)
+		LOG = {}
+		C.print_status()
+		return lines(text)
+	end
+	local LOUD = "[coop-mods] [core] ! "
+	check(#C.unattached == 0, "nothing is missed before an adapter misses")
+
+	LOG = {}
+	check(C.wrap(fake_mod_a, "missing", "fake_mod_a.missing", same) == false and fake_mod_a.missing == nil,
+		"wrap of a missing function attaches nothing")
+	local miss = "mod fake_mod_a changed: no function missing, the adapter did not attach (fake_mod_a.missing)"
+	check(lines(LOUD .. miss) == 1, "a mod without the wrapped function says so in the log")
+	local e = C.unattached[1]
+	check(#C.unattached == 1 and e.label == "fake_mod_a.missing" and e.key == "missing" and e.waits == nil,
+		"and the point is kept for coop_status")
+
+	-- an adapter that installs from a timer tries the same point again and again
+	for _ = 1, 500 do C.wrap(fake_mod_a, "missing", "fake_mod_a.missing", same) end
+	check(lines(miss) == 1, "a repeated miss is one line in the log, however often it is tried")
+	check(#C.unattached == 1, "and one entry")
+	check(status_lines(LOUD .. miss) == 1, "coop_status prints the adapter that did not attach, once")
+
+	LOG = {}
+	check(C.wrap(nil, "f", "absent_mod.f", same) == false and #LOG == 0 and #C.unattached == 1,
+		"a mod that is not installed is no news: no line, no entry")
+
+	fake_mod_r = { new_name = function() return 1 end }
+	LOG = {}
+	for _ = 1, 3 do C.wrap(fake_mod_r, "old_name", "fake_mod_r.old_name", same) end
+	check(lines(LOUD .. "mod fake_mod_r changed: no function old_name, the adapter did not attach (fake_mod_r.old_name)") == 1
+		and #C.unattached == 2, "a renamed function is said once")
+
+	-- the list is as long as the attachment points, not as the tries or the tables tried
+	LOG = {}
+	for _ = 1, 200 do C.wrap({}, "hit", "an adapter's own slot", same) end
+	check(#C.unattached == 3 and lines("did not attach") == 1, "one entry per attachment point, whatever table each try brings")
+
+	-- a later try finds the function: the entry goes and the line is taken back
+	fake_mod_a.missing = function() return 5 end
+	LOG = {}
+	check(C.wrap(fake_mod_a, "missing", "fake_mod_a.missing", function(o) return function() return o() + 1 end end) == true
+		and fake_mod_a.missing() == 6, "a later try attaches")
+	check(#C.unattached == 2 and C.unattached[1].label == "fake_mod_r.old_name", "and its entry goes")
+	check(lines("[coop-mods] [core] mod fake_mod_a: function missing is there now, the adapter attached (fake_mod_a.missing)") == 1,
+		"the log takes the line back")
+	check(status_lines(miss) == 0, "coop_status no longer names it")
+
+	-- A function a mod adds to another script's table (xr_effects, task_status_functor): the adapter names the mod's script.
+	-- These three scripts are on the disk and not loaded; no_such_mod_xyz is not installed.
+	local real_fs = getFS
+	local ON_DISK = { ["fake_late_a.script"] = true, ["fake_late_b.script"] = true, ["fake_late_c.script"] = true }
+	getFS = function()
+		local fs = real_fs()
+		local exist = fs.exist
+		fs.exist = function(self, alias, file)
+			if alias == "$game_scripts$" and ON_DISK[file] then return {} end
+			return exist(self, alias, file)
+		end
+		return fs
+	end
+	fake_shared = {}
+	LOG = {}
+	check(C.wrap(fake_shared, "added", "fake_shared.added", same, "no_such_mod_xyz") == false and #LOG == 0 and #C.unattached == 2,
+		"the mod that adds the function is not installed: no line, no entry")
+
+	-- its script is not loaded yet: the adapter waits, nothing is said aloud
+	LOG = {}
+	for _ = 1, 50 do C.wrap(fake_shared, "late_a", "fake_shared.late_a", same, "fake_late_a") end
+	check(#LOG == 0, "a miss while the mod's script is not loaded is not said aloud")
+	check(#C.unattached == 3 and C.unattached[3].waits == "fake_late_a", "it is one entry that waits for the script")
+	check(status_lines("[coop-mods] [core] waiting for script fake_late_a: function late_a (fake_shared.late_a)") == 1
+		and lines("fake_late_a changed") == 0, "coop_status says what the adapter waits for")
+	fake_late_a = {}
+	fake_shared.late_a = function() return "a" end
+	LOG = {}
+	check(C.wrap(fake_shared, "late_a", "fake_shared.late_a", same, "fake_late_a") == true and #C.unattached == 2 and #LOG == 0,
+		"the script came with the function: attached, the entry goes, there was no line to take back")
+
+	-- the script came without the function: the mod changed
+	LOG = {}
+	C.wrap(fake_shared, "late_b", "fake_shared.late_b", same, "fake_late_b")
+	check(#LOG == 0 and C.unattached[3].waits == "fake_late_b", "the second point waits as well")
+	fake_late_b = {}
+	for _ = 1, 3 do C.wrap(fake_shared, "late_b", "fake_shared.late_b", same, "fake_late_b") end
+	local changed = "mod fake_late_b changed: no function late_b, the adapter did not attach (fake_shared.late_b)"
+	check(lines(LOUD .. changed) == 1 and #C.unattached == 3 and C.unattached[3].waits == nil,
+		"the script is there and the function is not: said once, and the line names the mod's script")
+
+	-- the adapter stops waiting: a try without the script is its last word
+	LOG = {}
+	C.wrap(fake_shared, "late_c", "fake_shared.late_c", same, "fake_late_c")
+	check(#LOG == 0 and #C.unattached == 4 and C.unattached[4].waits == "fake_late_c", "the third point waits")
+	for _ = 1, 3 do C.wrap(fake_shared, "late_c", "fake_shared.late_c", same) end
+	check(lines(LOUD .. "mod fake_late_c changed: no function late_c, the adapter did not attach (fake_shared.late_c)") == 1
+		and #C.unattached == 4 and C.unattached[4].waits == nil, "an adapter that gives up says so once")
+	getFS = real_fs
+end
 
 -- upvalue helpers
 local hidden = { 5 }
@@ -119,8 +227,15 @@ db.actor._tp = nil
 deliver(s0, 1)
 check(db.actor._tp == nil, "an order from a client moves nobody")
 -- The actor and world answers come from the facade, even if the transport still looks like the host.
+check(C.is_world_server == nil and C.is_bridge == nil, "the adapters' core keeps no role question of its own")
+local real_levels = coop.levels
+coop.levels = { map_servers = function() return { { bridge = 1, level = 2 } } end } -- the engine's list is not what answers
 for _, name in ipairs(modes.names()) do
 	modes.install(coop_mode, name)
+	-- who decides the world, and whether a sender is the process of a level: an adapter asks the facade
+	check(coop_mode.decides_world() == (name == "hostplay" or name == "srv_world"), name .. ": the facade says who decides the world")
+	check(coop_mode.from_level(0x101) == (name == "srv_world") and coop_mode.from_level(1) == false and coop_mode.from_level(0) == false,
+		name .. ": the facade knows a level's process from a player")
 	local playing = name == "hostplay" or name == "none"
 	check(C.is_player(0) == playing, name .. ": actor 0 is a player only when the mode says it plays")
 	local listed = false
@@ -132,6 +247,7 @@ for _, name in ipairs(modes.names()) do
 	deliver(s0, 0)
 	check((db.actor._tp ~= nil) == (name == "hostplay"), name .. ": peer 0 order moves only a playing session seat")
 end
+coop.levels = real_levels
 modes.live(coop_mode, load_script)
 SENT = {}
 check(C.teleport(nil, vec3(1, 1, 1)) == false and #SENT == 0, "no peer: nothing sent (not a broadcast)")
@@ -145,8 +261,8 @@ check(#SENT == 0, "path with .. refused")
 coop_main.print_status()
 check(log_has("[coop-mods] [core] role host") ~= nil, "status appended to coop_status")
 
--- Live build 47: coop_status on a world server with a player in the world. The list of the wrapped functions made one log line of
--- over 4 KB, and the engine's log ends the process on such a line with nothing written. A status line is a kilobyte at most.
+-- coop_status prints the list of the wrapped functions. The engine's log ends the process on a line of over 4 KB with nothing
+-- written, so a status line is a kilobyte at most.
 do
 	local before = #C.wrapped
 	for i = 1, 400 do C.wrapped[#C.wrapped + 1] = "some_module_of_a_mod.a_function_number_" .. i end
@@ -161,6 +277,55 @@ do
 	check(seen == 400, "and every wrapped function is still named (" .. seen .. ")")
 	check(log_has("a_function_number_400") ~= nil and log_has("[coop-mods] [core] ") ~= nil, "each piece carries the tag")
 	for i = #C.wrapped, before + 1, -1 do C.wrapped[i] = nil end
+end
+
+-- ids: one validator with each caller's bounds
+check(C.object_id(1) == 1 and C.object_id(65534) == 65534, "object_id: 1..65534")
+check(C.object_id(0) == nil and C.object_id(0, true) == 0, "object_id: 0 only with allow_zero")
+check(C.object_id(65535) == nil and C.object_id(-1, true) == nil and C.object_id(1.5) == nil, "object_id: out of range or a fraction")
+check(C.object_id(0 / 0) == nil and C.object_id(math.huge) == nil and C.object_id(-math.huge, true) == nil, "object_id: NaN and inf")
+check(C.object_id("12") == nil and C.object_id("12", false, true) == 12 and C.object_id("x", false, true) == nil,
+	"object_id: a string only with coerce")
+check(C.wire_id(12) == 12 and C.wire_id(0) == nil and C.wire_id("12") == nil and C.wire_id(65535) == nil, "wire_id: 1..65534")
+
+-- pack and near
+local pk = C.pack(1, nil, 3, nil)
+check(pk.n == 4 and pk[1] == 1 and pk[2] == nil and pk[3] == 3, "pack keeps the count with nils")
+local a_obj, b_obj = { position = function() return vec3(0, 0, 0) end }, { position = function() return vec3(3, 4, 0) end }
+check(C.near(a_obj, b_obj, 5) == true and C.near(a_obj, b_obj, 4.9) == false and C.near(a_obj, nil, 100) == false,
+	"near: within the distance; a missing object is not near")
+
+-- install: a fault is counted and reported, the start goes on
+local errors_before = C.stats.errors
+LOG = {}
+local ok_i, r_i = C.install("t", "good step", function(x) return x * 2 end, 21)
+local bad_i = C.install("t", "bad step", function() error("boom", 0) end)
+check(ok_i == true and r_i == 42 and bad_i == false, "install runs the step and returns its result")
+check(C.stats.errors == errors_before + 1 and log_has("[coop-mods] [t] ! bad step failed (#1): boom") ~= nil,
+	"install reports a fault through the error counter")
+
+-- the flood guard keeps a sender's buckets only while he is in the session
+do
+	C.set_limit("p32_limit", 1, 0)
+	local got = 0
+	C.on("p32_limit", function() got = got + 1 end, "host")
+	local function from(peer)
+		SENT = {}
+		C.to_all("p32_limit", { a = 1 })
+		local s = SENT[1]
+		SENT = {}
+		deliver(s, peer)
+	end
+	if coop_mode.decides_world() or coop_mode.leads_here() then
+		from(1); from(1)
+		check(got == 1, "the limit holds a sender to his burst")
+		local real = coop.players
+		coop.players = function() return {} end -- peer 1 left
+		from(7) -- the first word of a new sender drops the buckets of those who left
+		coop.players = real
+		from(1)
+		check(got == 3, "a sender who left starts with a full burst (his bucket went with him)")
+	end
 end
 
 -- single player: everything inert

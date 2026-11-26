@@ -357,6 +357,6 @@ load_script("coop_world_events").on_game_start()
 check(reserved[VOICE], "transport reserves the relay for the world before rewriting bridge senders")
 if name == "hostplay" or name == "srv_world" then
 	coop_main.print_status()
-	check(log_has("actor voice:") and log_has("rate"), "coop_status reports actor voice counters")
+	check(log_has("[coop-mods] [actor_voice] sent ") and log_has("rate"), "coop_status reports actor voice counters")
 end
 done("actor voice share " .. name)

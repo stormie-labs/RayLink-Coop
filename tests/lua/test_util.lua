@@ -1,6 +1,7 @@
 -- coop_util (Core, docs\CODE_RULES.md LUA-1): each helper answers what the copies it replaces answer. The old copies are
 -- written out below as the oracles (golden), and every helper is compared with them on the same inputs. Runs under every
--- test answer set (tests\lua\support\modes.lua, COOP_LUA_MODE): the helpers never ask the facade.
+-- test answer set (tests\lua\support\modes.lua, COOP_LUA_MODE): the helpers never ask the facade, except the two session
+-- roles (decides_in_session, live_mirror), which are compared with their copies under each set's answers.
 -- Not shipped. Run: tools\test_lua.cmd test_util
 MODE = "host"
 dofile("tests/lua/support/stubs_mods.lua")
@@ -105,6 +106,16 @@ function old.mod(name)
 	end
 	return type(m) == "table" and m or nil
 end
+-- leads_level of the world scripts (coop_core_world_news, _mloot, _trader); coop_quests_missions:515 and coop_arena:153
+-- (authority) ask the same three questions
+function old.leads_level()
+	return (coop ~= nil and coop.is_active()) and (coop_mode.decides_world() or coop_mode.leads_here())
+end
+-- live_player of the world scripts (coop_core_world_news, _mloot, _stash, _trader); coop_mods_core:135 live_client asks the
+-- same three questions
+function old.live_player()
+	return (coop ~= nil and coop.is_active()) and coop_mode.is_player_mirror() and coop.is_live()
+end
 -- coop_tasks:4141 nick_of (a nick, else "#peer"), coop_arena:1135 (by character id)
 function old.nick_of(peer, list)
 	for _, p in ipairs(list) do
@@ -170,6 +181,47 @@ local function run(name)
 	check(U.active() == false, "no session: not active")
 	MODE = was
 	check(U.active() == true, "a session: active")
+
+	print("== " .. name .. ": session roles")
+	-- every answer of the set's layer, a player's machine (the set with is_player_mirror) and a faulting layer; each with
+	-- and without a session, in the world and not yet in it
+	local real_live = coop.is_live
+	local mirror = { decides_world = function() return false end, leads_here = function() return false end,
+		is_player_mirror = function() return true end }
+	local faulty = { decides_world = function() error("layer fault") end, leads_here = function() error("layer fault") end,
+		is_player_mirror = function() error("layer fault") end }
+	same = true
+	local asked = 0
+	for _, overrides in ipairs({ {}, mirror, faulty }) do
+		modes.install(facade, name, overrides)
+		for _, mode in ipairs({ "host", "client", "sp" }) do
+			MODE = mode
+			for _, live in ipairs({ true, false }) do
+				coop.is_live = function() return live end
+				same = same and U.decides_in_session() == old.leads_level() and U.live_mirror() == old.live_player()
+				asked = asked + 1
+			end
+		end
+	end
+	check(same and asked == 18, "decides_in_session = the world scripts' leads_level, live_mirror = their live_player")
+	coop.is_live = real_live
+	modes.install(facade, name)
+	local decides = { hostplay = true, srv_world = true, srv_map = true, none = false }
+	MODE = "host"
+	check(U.decides_in_session() == decides[name] and U.live_mirror() == false,
+		"a session: the world's decider and a map's leader decide in it, neither is a player's machine")
+	MODE = "sp"
+	check(U.decides_in_session() == false and U.live_mirror() == false, "no session: nobody decides, whatever the layer answers")
+	modes.install(facade, name, mirror)
+	MODE = "client"
+	check(U.decides_in_session() == false and U.live_mirror() == (name ~= "none"), "a player's machine in the world: a live mirror")
+	coop.is_live = function() return false end
+	check(U.live_mirror() == false, "a player's machine before it is in the world: not live")
+	coop.is_live = real_live
+	MODE = "sp"
+	check(U.live_mirror() == false, "no session: no live mirror")
+	MODE = was
+	modes.install(facade, name)
 
 	print("== " .. name .. ": players")
 	NOW = NOW + 1

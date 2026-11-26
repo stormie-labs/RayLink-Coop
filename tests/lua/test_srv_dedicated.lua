@@ -61,6 +61,7 @@ local function fresh(dedicated, new_world, p)
 		players = function() return {} end,
 		levels = { split = function() return p.split == true end },
 	}
+	module("coop_util") -- coop_mode registers its coop_status lines there
 	local facade, script, layer = module("coop_mode"), module("coop_srv_dedicated"), module("coop_srv_mode")
 	facade.on_game_start()
 	script.on_game_start()

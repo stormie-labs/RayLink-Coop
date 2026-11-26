@@ -1,5 +1,5 @@
 -- Ядро: без проверок режима (docs/MODES.md)
--- Dev 57 G4-3: Dot Marks defuse and itms_manager placement use the G4 exchange on the player's map.
+-- Dot Marks defuse and itms_manager placement use the G4 exchange on the player's map.
 -- Co-op: the playing host has the objects, character positions and inventory.
 -- Server: the world server relays the request; the authority of the player's map checks those same facts.
 -- The engine replicates the resulting ALife changes. No saved state or additional wire verbs.
@@ -12,8 +12,8 @@ local PLACE_RANGE_SQ = 3 ^ 2 -- original offset (1.2 m forward, 1 m up) plus roo
 local MAX_COORD = 100000
 local MAX_HEADING = 1.5 * math.pi + 1e-6 -- getH spans -pi/2 to 3*pi/2, with float rounding
 
-local function C() return coop_mods_core end
-local function X() return coop_mods_xchg end
+local core = coop_mods_core
+local xchg = coop_mods_xchg
 
 local function present(from, who)
 	return who and coop_mode.where(from) == "here" and who:alive()
@@ -27,7 +27,7 @@ local function mine_reward(dm, section)
 	local cfg = dm.cfg
 	if cfg and cfg.disarmables and next(cfg.disarmables) then return cfg.disarmables[section] end
 	-- The HUD may not have loaded its presets yet. This is the table its parse_file_data inverts.
-	local tm = C().mod("txr_mines")
+	local tm = core.mod("txr_mines")
 	if tm and type(tm.EXPLOSIVE_SECTION_LOOKUP) == "table" then
 		for item, mine in pairs(tm.EXPLOSIVE_SECTION_LOOKUP) do
 			if mine == section then return item end
@@ -37,7 +37,7 @@ end
 
 local function mine_target(dm, t, from, who)
 	if not present(from, who) then return nil, "no_character_here" end
-	local id = X().wire_id(t.i)
+	local id = core.wire_id(t.i)
 	local se = id and alife_object(id)
 	local obj = se and level.object_by_id(id)
 	if not (obj and placed_on_ground(se, obj:section())) then return nil, "no_world_mine" end
@@ -52,7 +52,7 @@ local function clean_stock_mine(tm, id)
 end
 
 local function clear_mine(token)
-	local tm = C().mod("txr_mines")
+	local tm = core.mod("txr_mines")
 	local registry = coop_npc_world._mines()
 	token.stock = tm and tm._mines
 	token.coop = registry
@@ -72,15 +72,15 @@ end
 -- The dispatcher waits for deletion before completing. A separate cleanup only runs if the deletion never happened.
 local function release(id, on_stuck)
 	if alife_release_id(id) == false then return false, "release" end
-	X().after_gone(id, function(gone)
+	xchg.after_gone(id, function(gone)
 		if not gone and alife_object(id) then on_stuck() end
 	end)
 	return true
 end
 
 local function install_mines(dm)
-	if not (C().fn(dm, "remove_bomb") and C().fn(dm, "unregister_scanned_entity")) then return end
-	X().serve(BOMB, {
+	if not (core.fn(dm, "remove_bomb") and core.fn(dm, "unregister_scanned_entity")) then return end
+	xchg.serve(BOMB, {
 		check = function(t, from, who)
 			local token, why = mine_target(dm, t, from, who)
 			if not token then return false, why end
@@ -103,19 +103,19 @@ local function install_mines(dm)
 			return true
 		end,
 	})
-	X().set_timeout(BOMB, 15000)
-	C().wrap(dm, "remove_bomb", "xchg_world.remove_bomb", function(orig)
+	xchg.set_timeout(BOMB, 15000)
+	core.wrap(dm, "remove_bomb", "xchg_world.remove_bomb", function(orig)
 		return function(mark, ...)
-			if not C().active() then return orig(mark, ...) end
+			if not core.active() then return orig(mark, ...) end
 			local id = mark and mark.is_disarmable and mark.id
-			local key = id and C().hid(id)
-			if key and not X().busy(BOMB, key) then
-				X().ask(BOMB, { key = key, i = key }, function(ok)
+			local key = id and core.hid(id)
+			if key and not xchg.busy(BOMB, key) then
+				xchg.ask(BOMB, { key = key, i = key }, function(ok)
 					if not ok then return end
-					local get_mark = C().fn(dm, "get_mark")
+					local get_mark = core.fn(dm, "get_mark")
 					local current = get_mark and get_mark(id)
 					if current and current ~= mark then return end
-					clean_stock_mine(C().mod("txr_mines"), id)
+					clean_stock_mine(core.mod("txr_mines"), id)
 					dm.unregister_scanned_entity(id)
 				end)
 			end
@@ -139,7 +139,7 @@ end
 
 local function place_target(t, from, who)
 	if not present(from, who) then return nil, "no_character_here" end
-	local id = X().wire_id(t.i)
+	local id = core.wire_id(t.i)
 	local se = id and alife_object(id)
 	if not (se and se.parent_id == who:id()) then return nil, "place_owner" end
 	local section = se:section_name()
@@ -159,8 +159,8 @@ local function undo_place(token)
 end
 
 local function install_placement(items)
-	if not C().fn(items, "use_place") then return end
-	X().serve(PLACE, {
+	if not core.fn(items, "use_place") then return end
+	xchg.serve(PLACE, {
 		check = function(t, from, who)
 			local token, why = place_target(t, from, who)
 			return token ~= nil, why
@@ -182,36 +182,36 @@ local function install_placement(items)
 		rollback = function(_, _, _, token) undo_place(token) end,
 		after_gone = function() return true end,
 	})
-	X().set_timeout(PLACE, 15000)
-	C().wrap(items, "use_place", "xchg_world.use_place", function(orig)
+	xchg.set_timeout(PLACE, 15000)
+	core.wrap(items, "use_place", "xchg_world.use_place", function(orig)
 		return function(obj, ...)
-			if not C().active() then return orig(obj, ...) end
+			if not core.active() then return orig(obj, ...) end
 			local actor = db.actor
 			local parent = obj and obj:parent()
 			if not (actor and parent and parent:id() == actor:id()) then return end
-			local key = C().hid(obj:id())
-			if not key or X().busy(PLACE, key) then return end
+			local key = core.hid(obj:id())
+			if not key or xchg.busy(PLACE, key) then return end
 			local pos = actor:position()
 			local height = pos.y
 			local dir = device().cam_dir
 			local heading = dir:getH()
 			pos:add(dir:mul(1.2))
 			pos.y = height + 1
-			X().ask(PLACE, { key = key, i = key, x = pos.x, y = pos.y, z = pos.z, h = heading })
+			xchg.ask(PLACE, { key = key, i = key, x = pos.x, y = pos.y, z = pos.z, h = heading })
 		end
 	end)
 end
 
 local installed = {}
+local function install_into(module, install)
+	local m = core.mod(module)
+	if not m then return end
+	install(m)
+	installed[module] = true
+end
+
 local function start_step(module, install)
-	if installed[module] then return end
-	local ok, err = pcall(function()
-		local m = C().mod(module)
-		if not m then return end
-		install(m)
-		installed[module] = true
-	end)
-	if not ok then printf("! [coop_mods_xchg_world] %s: %s", module, tostring(err)) end
+	if not installed[module] then core.install("xchg_world", module, install_into, module, install) end
 end
 
 function on_game_start()

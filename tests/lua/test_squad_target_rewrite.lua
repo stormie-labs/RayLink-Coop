@@ -5,7 +5,7 @@
 dofile("tests/lua/support/harness_npc.lua")
 local modes = dofile("tests/lua/support/modes.lua")
 
-local FIXTURE = "temp/lua/sim_squad_scripted.script" -- the file name is how the original is recognised
+local FIXTURE = dofile("tests/lua/support/scratch.lua") .. "sim_squad_scripted.script" -- the file name is how the original is recognised
 
 -- The shape of the GAMMA method: its header line and the faulty line are literal, the rest is reduced.
 local HEADER = "function sim_squad_scripted:get_script_target()"

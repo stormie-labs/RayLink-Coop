@@ -6,11 +6,11 @@
 ; Stock scripts the core scripts depend on keep their main-file rule: ui_mutant_loot (view, ui_*: the client asks the
 ; host before its loot window opens), game_statistics / actor_status_thirst / actor_status_sleep (owner: the client's
 ; own values, kept by the host through coop_core_player), treasure_manager and dynamic_news_manager (host: clients get
-; stash content and news from the host through coop_core_world). trade_manager has no rule: its handlers follow their
-; callbacks (clients only apply trade profiles through coop_core_world).
+; stash content and news from the host through coop_core_world_stash and coop_core_world_news). trade_manager has no
+; rule: its handlers follow their callbacks (clients only apply trade profiles through coop_core_world_trader).
 
 ; FDDA (Food, Drug and Drink Animations, third party, only if installed): item-use animations of the local actor.
-; Its HUD animation prefetch is switched off on clients by coop_core_world.
+; Its HUD animation prefetch is switched off on clients by coop_core_world_mloot.
 [route_scripts]
 enhanced_animations          = owner
 ea_*                         = owner

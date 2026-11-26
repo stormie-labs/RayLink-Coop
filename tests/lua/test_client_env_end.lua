@@ -6,11 +6,11 @@
 -- its 23rd; surge_manager.script L606 SetEvent("surge", "state", self.started). finish() (L193-245) and end_surge()
 -- (L328-394) never write them. The host and single player keep calling update() every second after the end
 -- (surge_manager.script L51-64 main_loop), so the next call writes "state" false. A client calls update() only inside the
--- mirror while the host's phase runs (coop_main client_env_tick); the stock loop is host (coop_route.ltx surge_manager /
+-- mirror while the host's phase runs (coop_env mirror_env_tick); the stock loop is host (coop_route.ltx surge_manager /
 -- psi_storm_manager = host). So on a client the flags stayed as the last mirror update left them: true.
 -- Their readers run on a client: dynamic_emission_cover_mcm.actor_on_update L129-131 / L144 / L250 (the cover bar: shown
 -- while either "state" is on), item_device L774 / L909 (NVG and PDA glitch), item_radio, ui_dosimeter, level_environment.
--- Real coop_main and mode layers; the stock managers are stand-ins that keep the stock's flag writes (line refs above).
+-- Real coop_main, coop_env and mode layers; the stock managers are stand-ins that keep the stock's flag writes (line refs above).
 -- Not shipped. Run: tools\test_lua.cmd client_env_end
 MODE = "client"
 dofile("tests/lua/support/stubs.lua")
@@ -133,6 +133,8 @@ local observer = from_script("actor_effects", [[return function(typ, obj, name)
 end]])
 RegisterScriptCallback("actor_on_interaction", observer)
 coop_main.on_game_start()
+coop_env.on_game_start()
+coop_route.on_game_start() -- the tick service runs the emission tick
 modes.live(coop_mode)
 coop_mode.on_game_start()
 coop_srv_world.on_game_start()
@@ -227,7 +229,7 @@ print("== 5. split maps: a client on a level the world's emission does not reach
 local NAME = "l01_escape"
 level.name = function() return NAME end
 level_weathers = { valid_levels = { l01_escape = true } }
-coop.levels = { split = function() return true end, on_host_level = function() return true end }
+coop.levels = { split = function() return true end }
 host_state({ s = false, sg = 0, p = true, pg = 40 * TF, tf = TF, c = false })
 tick(1)
 check(pm.started == true and cover_bar(), "on an open level the mirror runs")

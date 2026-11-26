@@ -34,7 +34,7 @@ local function boot(m)
 	env.xr_effects.reward_item = function()
 		if m == map then stock_runs = stock_runs + 1 end
 	end
-	env.coop_tasks = {
+	env.coop_tasks_items = {
 		give_to_peer = function(peer, _, items) paid[#paid + 1] = { peer = peer, item = items[1] } end,
 	}
 	local function load(name) return load_script(m, name) end

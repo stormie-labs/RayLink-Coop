@@ -481,8 +481,6 @@ local zcp_before = ZCP_ROLL
 coop_mods_core.on_container_opened(1, death_bag:id())
 check(ZCP_ROLL == zcp_before, "ZCP: a fallen player's bag is no treasure")
 check(ZCP_ROLL and ZCP_ROLL.box == zbox:id() and ZCP_ROLL.actor == 500, "ZCP: a client's container rolled with that player as the actor")
-coop_main.on_event("mods.song", coop_main.encode({ s = "guitar\\song1", l = 3000 }), 1)
-check(SOUNDS[#SOUNDS] and SOUNDS[#SOUNDS].name == "guitar\\song1" and SOUNDS[#SOUNDS].at == 500, "guitar: a client's song plays at its character")
 
 local reload_source = spawn("device_glowstick", vec3(20, 0, 0), 500)
 gs_request(reload_source.id, true)

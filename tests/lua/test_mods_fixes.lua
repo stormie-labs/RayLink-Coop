@@ -43,7 +43,15 @@ local function logged(pat)
 end
 coop = {}
 CLIENT = false
-coop_mods_core = { is_client = function() return CLIENT end }
+-- the real adapter core (its log, wrap and install), with the question of the machine kind answered by the test
+do
+	local f = assert(loadfile("gamedata/scripts/coop_mods_core.script"))
+	local m = setmetatable({}, { __index = _G })
+	setfenv(f, m)
+	f()
+	m.is_client = function() return CLIENT end
+	coop_mods_core = m
+end
 CALLBACKS = {}
 local intercepts = { actor_on_update = {}, actor_on_first_update = {} }
 local prio = 0
@@ -434,10 +442,10 @@ if type(F.guard_relations) == "function" then
 
 	-- a co-op client's table is the host's: nothing is written there (the stock reset would ask the host for every pair)
 	REL = {}
-	coop_mods_core = { is_client = function() return true end }
+	CLIENT = true
 	gr.reset_all_relations()
 	check(next(REL) == nil, "on a co-op client the reset writes nothing")
-	coop_mods_core = nil
+	CLIENT = false
 
 	-- a config that cannot be read: the stock reset, as before
 	REL = {}

@@ -1,5 +1,5 @@
--- World parity sound L2 (coop_main.script): a client that joins during an emission does not get every past stage at once.
--- Real coop_main.script over a stand-in of the stock stages. Run: tools\test_lua.cmd world_emission
+-- World parity sound L2 (coop_env.script): a client that joins during an emission does not get every past stage at once.
+-- Real coop_env.script over a stand-in of the stock stages. Run: tools\test_lua.cmd world_emission
 MODE = "client"
 dofile("tests/lua/support/stubs.lua")
 
@@ -62,6 +62,8 @@ psi_storm_manager = { CPsiStormManager = CPsi, get_psi_storm_manager = function(
 dofile("tests/lua/support/modes.lua").live(load_script_file("coop_mode"))
 load_coop_main()
 coop_main.on_game_start()
+coop_env.on_game_start()
+coop_route.on_game_start() -- the tick service runs the emission tick
 TF = 10
 
 local function tick(seconds)
@@ -83,7 +85,7 @@ check(sm.started == true, "the mirror runs")
 for _, name in ipairs({ "beginning", "siren", "impact", "1stwavesnd", "1stwave" }) do
 	check(not played(name), name .. ": over before this player came, not played now")
 end
-check(not played("quake20") and not played("quake100"), "the quake is coop_main's own ladder, not the stock's stages")
+check(not played("quake20") and not played("quake100"), "the quake is coop_env's own ladder, not the stock's stages")
 check(played("rumble"), "the rumble that is on now is started")
 check(not played("2ndwavesnd"), "what is still to come stays to come")
 host_state({ s = true, sg = 1570, p = false, pg = 0, tf = 10, c = false })

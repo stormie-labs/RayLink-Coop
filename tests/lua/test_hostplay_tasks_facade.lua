@@ -19,10 +19,10 @@ tasks.on_game_start()
 story.on_game_start()
 server_story.on_game_start()
 
-check(tasks._spoke_to(1, 777), "the host accepts its own recent dialogue lock")
+check(H.env.coop_tasks_requests.spoke_to(1, 777), "the host accepts its own recent dialogue lock")
 check(recent[1] == 1 and recent[2] == 777 and recent[3] == 15000, "the lock is for this player and this NPC")
-check(not tasks._spoke_to(1, 778), "a lock for a different NPC is insufficient")
-check(not tasks._talk_vague(1), "the co-op host uses the local lock, not a remote dialogue report")
+check(not H.env.coop_tasks_requests.spoke_to(1, 778), "a lock for a different NPC is insufficient")
+check(not H.env.coop_tasks_requests.talk_vague(1), "the co-op host uses the local lock, not a remote dialogue report")
 check(H.handlers["quests.share"] == nil, "the co-op host never registers the map reward event")
 
 local trust = load("coop_quests_trust")

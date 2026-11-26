@@ -463,8 +463,10 @@ function load_script(name)
 	LOADING[name] = nil
 	return rawget(_G, name)
 end
+LAZY_LOADED = {} -- name -> true: loaded on its first use (the engine's way), not by a test's load_script
 setmetatable(_G, { __index = function(t, k)
 	if type(k) == "string" and not LOADING[k] and k:match("^[%w_]+$") and file_exists(ROOT .. "scripts/" .. k .. ".script") then
+		LAZY_LOADED[k] = true
 		return load_script(k)
 	end
 	return nil
@@ -484,7 +486,12 @@ MODE_FILES = { "coop_hostplay_mode", "coop_mode", "coop_srv_mode" }
 function start_all()
 	load_script("coop_main")
 	for _, n in ipairs(MODE_FILES) do load_script(n) end
-	for _, n in ipairs(MODS_FILES) do load_script(n) end
+	-- a file another one already loaded on its first use is that one instance, as in the game (a script binds its
+	-- neighbours when it loads)
+	LAZY_LOADED = {}
+	for _, n in ipairs(MODS_FILES) do
+		if not LAZY_LOADED[n] then load_script(n) end
+	end
 	coop_main.on_game_start()
 	for _, n in ipairs(MODE_FILES) do _G[n].on_game_start() end
 	for _, n in ipairs(MODS_FILES) do _G[n].on_game_start() end

@@ -593,7 +593,7 @@ do
 	local zone = Hm.new_obj(701, "zone", vec(99, 0, 0))
 	Hm.env.xr_effects.give_task(Hm.actor, zone, { "t_e" })
 	check(Hm.env.coop_tasks.taker("t_e") == 1, "the zone of the effect counts as the giver")
-	local news_by = Hm.env.coop_tasks.news_actor("new", "t_e")
+	local news_by = Hm.env.coop_tasks_news.news_actor("new", "t_e")
 	check(news_by == nil, "the news still say nobody did it")
 	Hm.tm.task_info.t_e = nil
 	Hm.engine_tasks.t_e = nil
@@ -812,13 +812,13 @@ do
 	E.coop.money_of = function() return 700 end
 	Hm.players = {{id=0,is_self=true,avatar_id=0}, {id=1,avatar_id=501}}
 	E.coop.members = function() return {{id=500}, {id=501,peer=1,in_world=true}} end
-	if T.fine_character then
-		T.fine_character(500, 1500)
+	if Hm.env.coop_tasks_rewards.fine_character then
+		Hm.env.coop_tasks_rewards.fine_character(500, 1500)
 		check(#charged == 0, "offline fine is not charged to a reused peer slot")
 		local saved={}; T.save_effects(saved); T.load_effects(saved)
 		Hm.players = {{id=0,is_self=true,avatar_id=0}, {id=2,avatar_id=500}}
 		E.coop.members = function() return {{id=500,peer=2,in_world=true}} end
-		T.flush_fines(); T.flush_fines()
+		Hm.env.coop_tasks_rewards.flush_fines(); Hm.env.coop_tasks_rewards.flush_fines()
 		check(#charged == 1 and charged[1][1] == 2 and charged[1][2] == -700,
 			"saved fine follows character to new peer, capped by balance and charged once")
 	else check(false, "offline guide fine requires a persistent character recipient") end

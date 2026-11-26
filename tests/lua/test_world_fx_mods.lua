@@ -160,8 +160,8 @@ local function corpse_core()
 	local function on_mloot_close(_, from) return locks[from] end
 	return { on_game_start = function() return on_mloot_close end, locks = locks }
 end
-coop_core_world = corpse_core()
-coop_core_world.in_world_scope = function(f, ...) return f(...) end
+coop_core_world_mloot = corpse_core()
+coop_core_world_news = { in_world_scope = function(f, ...) return f(...) end }
 
 local function binder(name, class, prefix, door)
 	local cls = {}
@@ -271,7 +271,7 @@ if mode == "hostplay" or mode == "srv_map" then
 	SENT = {}
 	local corpse = object(701, "monster")
 	objects[701] = corpse
-	coop_core_world.locks[701] = { peer = 1 }
+	coop_core_world_mloot.locks[701] = { peer = 1 }
 	local old_mode = MODE
 	mirror, MODE, SELF = true, "client", 1
 	loot(701, true)

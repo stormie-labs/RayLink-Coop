@@ -1,9 +1,10 @@
 -- Execute actual stock parsing/picking/restock and the GAMMA supply-level helper for every profile.
 dofile("tests/lua/support/harness_economy.lua")
 dofile("tests/lua/support/mod_source.lua")
-local code = os.execute("python -B tests/lua/support/trader_catalog.py")
+local catalog_file = dofile("tests/lua/support/scratch.lua") .. "catalog.lua"
+local code = os.execute("python -B tests/lua/support/trader_catalog.py " .. catalog_file)
 assert(code == 0, "trader VFS catalog failed")
-local catalog = dofile("temp/trader_reputation/catalog.lua")
+local catalog = dofile(catalog_file)
 local W = make_world(0)
 W.AC_ID = 0
 W.db.actor.has_info = function() return false end
@@ -133,7 +134,7 @@ mod_chunk("../anomaly-ref/unpacked/scripts/trade_manager.script", {
 W.trade_manager = TRADER_MANAGER
 npc.buy_supplies = function(_, _, section) restocks = restocks + 1 npc.last_section = section end
 W.disable_info = function() end
-local gamma_scripts = os.getenv("GAMMA_SCRIPTS") or "E:/RayLink2/gamma/gamedata/scripts"
+local gamma_scripts = os.getenv("GAMMA_SCRIPTS") or "GAMMA_SCRIPTS-is-not-set"
 local file = assert(io.open(gamma_scripts .. "/trader_autoinject.script", "r"))
 local source = file:read("*a") file:close()
 local auto = setmetatable({}, { __index = W })

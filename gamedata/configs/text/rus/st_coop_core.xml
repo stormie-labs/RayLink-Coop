@@ -96,12 +96,6 @@
 	<string id="st_coop_core_save_off">
 		<text>’ост не разрешает игрокам быстрые сохранени€.</text>
 	</string>
-	<string id="st_coop_core_vote">
-		<text>%s стоит у перехода на другую локацию. Ќапишите /go в чате, чтобы перейти группой.</text>
-	</string>
-	<string id="st_coop_core_moving">
-		<text>√руппа переходит на другую локацию...</text>
-	</string>
 	<string id="st_coop_core_mloot_busy">
 		<text>Ёту тушу уже разделывает другой игрок.</text>
 	</string>

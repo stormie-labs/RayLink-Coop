@@ -3,7 +3,7 @@
 -- The co-op host stamps its copy of a magazined weapon on any spawn it writes (coop_requests.cpp -> write_clone_initial ->
 -- clone_export), a repair sent to one client included: the host and that client (clone_adopt) hold the stamp, the holder's copy
 -- (the save's weapon) holds none, its instance is the weapon's name. Before R2 the host's strict instance checks refused what the
--- holder sent (coop_mods_item_state.script dispatch_riders -> matches_instance "weapon instance changed"; coop_economy_mdata.script
+-- holder sent (coop_mods_item_state.script admit_riders -> matches_instance "weapon instance changed"; coop_economy_mdata.script
 -- on_se / on_imd). R2 (Core, no mode check; the server mode's test: test_srv_rider_stamp.lua): another stamp of the same item, or
 -- its bare name, names the same instance (coop_economy_mdata.same_item / item_alias: the same name, and in a stamp the item's host
 -- id); the holder check and a value for another item under the id are refused as before.
@@ -114,7 +114,7 @@ local function settle()
 end
 
 local function stamp_of(w, id) return w.MDATA.se_object[id] and w.MDATA.se_object[id]._coop_instance end
--- what the rider admission (coop_mods_item_state.script dispatch_riders -> matches_instance) refused for the instance: the log
+-- what the rider admission (coop_mods_item_state.script admit_riders -> matches_instance) refused for the instance: the log
 -- says "item_state_instance: item 800: weapon instance changed"
 local function refused(w, what)
 	local c = w.coop_trust.status()[what or "item_state_instance"]

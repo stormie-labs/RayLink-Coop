@@ -25,6 +25,7 @@ local function boot(M, mode)
 	end
 	-- Keep the harness transport, but exercise the production codec on both legs of a relay.
 	local main = M.env.coop_main
+	load_script(M, "coop_route") -- coop_main takes the router when it loads
 	local codec = load_script(M, "coop_main")
 	main.encode, main.decode = codec.encode, codec.decode
 	M.env.coop_main = main

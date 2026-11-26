@@ -1,7 +1,7 @@
 -- Useful Idiots' final player relation test: preserve guards, package side effects and callbacks.
 dofile("tests/lua/support/menu_stubs.lua")
 
-local DIR = "temp/lua/idiots_pkg/"
+local DIR = dofile("tests/lua/support/scratch.lua") .. "idiots_pkg/"
 os.execute('mkdir "' .. DIR:gsub("/", "\\") .. 'illish\\patches" 2>NUL')
 local SAMPLE = [[
 local PATCH = {}
@@ -53,7 +53,7 @@ local function npc(relation, flags)
 end
 PROXIES, HOST = { [501] = true }, true
 coop_npc_is_player_id = function(id) return id == 0 or PROXIES[id] == true end
-coop_npc_players = { host_with_clients = function() return HOST end, is_player_id = coop_npc_is_player_id }
+coop_npc_players = { host_on = function() return HOST end, is_player_id = coop_npc_is_player_id }
 local radius_calls = 0
 xr_danger = { danger_in_radius = function() radius_calls = radius_calls + 1; return "radius" end }
 

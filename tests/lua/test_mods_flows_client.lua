@@ -255,8 +255,7 @@ local sl = sent("mods.sleepy")
 check(sl and sl.v == 3000, "sleep: own tiredness reported when it changed (quantized)")
 SENT = {}
 guitar_anim.play_guitar()
-local song, sraw = sent("mods.song")
-check(song and song.s == "guitar_track_7" and sraw.target == -1, "guitar: the song is announced to everybody")
+check(sent("mods.song") == nil, "guitar: no Lua relay of the song (the engine carries the instrument, coop.instrument)")
 check(type(_G.sound_object) == "table" and getmetatable(_G.sound_object).__call ~= nil and sound_object.s3d == 2, "guitar: sound_object restored")
 local removed_rad_effects = {}
 level.remove_pp_effector = function(id) removed_rad_effects[id] = true end

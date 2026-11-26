@@ -192,7 +192,7 @@ end
 function on_game_start()
 	if not api then return end
 	coop_mode.when_srv(function()
-		coop_main.reserve_world_event(SAMPLE)
+		coop_world_events.reserve(SAMPLE)
 		local world = coop_mode.decides_world()
 		if not world and not coop_mode.leads_here() then return end
 		local mod = coop_mods_core.mod("dynamic_news_manager")

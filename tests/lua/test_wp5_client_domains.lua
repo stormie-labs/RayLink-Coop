@@ -8,6 +8,7 @@ function getFS()
 	return {
 		file_list_open = function() LISTED = LISTED + 1 return { Size = function() return 0 end, Free = function() end } end,
 		file_list_open_ex = function() LISTED = LISTED + 1 return { Size = function() return 0 end } end,
+		exist = function() return false end, -- coop_route asks for demonized_time_events.script: not there
 	}
 end
 dofile("tests/lua/test_wp5_client.lua")

@@ -9,14 +9,24 @@
 		logger(head) -> log(fmt, ...)       printf("<head> <line>"); a format error prints fmt itself
 		start_step(tag, what, f, ...) -> ok f(...) protected: on_game_start must not throw (axr_main runs every script's
 		                                    on_game_start in one unprotected loop); a fault is "! [<tag>] <what> failed: <e>"
-		add_status(name)                    module `name` prints its coop_status lines (its print_status); once per name,
-		                                    the order of the first registration
-		print_statuses(log)                 every registered module's print_status, protected; a fault goes to
-		                                    log("! %s.print_status: %s", name, e)
+		add_status(name[, place])           module `name` prints its coop_status lines (its print_status); once per name.
+		                                    place: a number, where its lines stand among the modules' (ascending); a
+		                                    module that names none prints after those that do. Equal places, and no
+		                                    places, keep the order of registration
+		print_statuses(log)                 every registered module's print_status in that order, protected; a fault goes
+		                                    to log("! %s.print_status: %s", name, e)
 	Engine:
 		active()                            a co-op session is running
 		call(f, ...) -> v                   the first result of f(...), nil when f is no function or raises (false stays false)
 		module(name) -> table | nil         a script module by name, loaded on first access; nil when the file is not there
+	Session roles (the facade's answers, asked only while a session runs: a world server's layer answers before its
+	session starts):
+		decides_in_session()                a session is running and this process decides in it: the world, or the map it
+		                                    has loaded (coop_mode.decides_world or leads_here). World logic runs here
+		live_mirror()                       a session is running, this process is a player's machine
+		                                    (coop_mode.is_player_mirror) and it is in the world (coop.is_live)
+		follows_world()                     a session is running and another process decides its world (not
+		                                    coop_mode.decides_world): a player's machine, or a map server
 	Text (each caller keeps its fallback):
 		tr(id, fallback)                    the string table's text; fallback (or id) when it has no such id. "" is a text
 		tr_nonempty(id, fallback)           as tr, an empty text counts as missing too
@@ -34,6 +44,10 @@
 		bare_faction(f) -> string | nil     "actor_stalker" and "stalker" are one faction: the name without "actor_"; nil for
 		                                    anything that is not a name (a non-string, "", "actor_")
 		level_of_gvid(gvid) -> number | nil the level id of a game vertex
+		option(name, def) -> v              the game option `name` (ui_options.get) once the options script is loaded; def
+		                                    when it is not, the read raises or the option has no value (false is a value)
+	Values:
+		in_range(v, min, max) -> bool       v is a number and min <= v <= max
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
@@ -60,17 +74,36 @@ function start_step(tag, what, f, ...)
 	return ok
 end
 
-local status_names = {}
-local status_known = {}
+local status_names = {} -- in the order of registration
+local status_known = {} -- name -> its number in that order
+local status_place = {} -- name -> the place its module named
+local status_printed = nil -- the names in the order coop_status prints them; nil: a registration changed it
 
-function add_status(name)
+function add_status(name, place)
 	if type(name) ~= "string" or status_known[name] then return end
-	status_known[name] = true
 	status_names[#status_names + 1] = name
+	status_known[name] = #status_names
+	if type(place) == "number" then status_place[name] = place end
+	status_printed = nil
+end
+
+local function status_before(a, b)
+	local pa, pb = status_place[a], status_place[b]
+	if pa ~= pb then
+		if pa == nil then return false end
+		if pb == nil then return true end
+		return pa < pb
+	end
+	return status_known[a] < status_known[b]
 end
 
 function print_statuses(log)
-	for _, name in ipairs(status_names) do
+	if not status_printed then
+		status_printed = {}
+		for i, name in ipairs(status_names) do status_printed[i] = name end
+		table_sort(status_printed, status_before)
+	end
+	for _, name in ipairs(status_printed) do
 		local m = rawget(_G, name)
 		if m and m.print_status then
 			local ok, err = pcall(m.print_status)
@@ -117,6 +150,23 @@ function module(name)
 		m = ok and r or nil
 	end
 	return type(m) == "table" and m or nil
+end
+
+-------------------------------------------------------------------------------
+-- Session roles
+-------------------------------------------------------------------------------
+function decides_in_session()
+	return active() and (coop_mode.decides_world() or coop_mode.leads_here())
+end
+
+function live_mirror()
+	return active() and coop_mode.is_player_mirror() and api.is_live()
+end
+
+-- Until a mode's layer is in the facade it answers as "none", where nobody decides the world: a process asked in its
+-- session before that follows one. The scripts start in the order of their file names, the server's layer among the last.
+function follows_world()
+	return active() and not coop_mode.decides_world()
 end
 
 -------------------------------------------------------------------------------
@@ -228,4 +278,23 @@ function level_of_gvid(gvid)
 	local ok, lid = pcall(level_id_of, gvid)
 	if ok then return lid end
 	return nil
+end
+
+local function read_option(options, name) return options.get(name) end
+
+-- rawget: asking for an option never loads the options script
+function option(name, def)
+	local options = rawget(_G, "ui_options")
+	if options then
+		local ok, v = pcall(read_option, options, name)
+		if ok and v ~= nil then return v end
+	end
+	return def
+end
+
+-------------------------------------------------------------------------------
+-- Values
+-------------------------------------------------------------------------------
+function in_range(v, min, max)
+	return type(v) == "number" and v >= min and v <= max
 end

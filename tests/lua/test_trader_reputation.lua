@@ -349,9 +349,10 @@ H.coop_trader_reputation.refresh()
 check(select(2, H.coop_trader_reputation.average("stalker")) == 2, "world sampling succeeds with unavailable real clock")
 
 section("production client relations reach the host's faction-goodwill readpoint")
-local native_code = os.execute("python -B tests/lua/support/trader_goodwill_native.py temp/trader_reputation/native-goodwill.lua")
+local goodwill_file = dofile("tests/lua/support/scratch.lua") .. "native-goodwill.lua"
+local native_code = os.execute("python -B tests/lua/support/trader_goodwill_native.py " .. goodwill_file)
 assert(native_code == 0, "production faction-goodwill transfer failed")
-local native = dofile("temp/trader_reputation/native-goodwill.lua")
+local native = dofile(goodwill_file)
 H, A, B = boot()
 for _, row in ipairs({ { "before", 700 }, { "changed", 800 }, { "set", 900 }, { "rejoined", 900 } }) do
 	H.GOODWILL.stalker = native[row[1]] -- values read by the real C++ Lua binding from the host registry

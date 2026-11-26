@@ -1,6 +1,6 @@
 -- Ядро: без проверок режима (docs/MODES.md)
 --[[
-	Anomaly Coop - radios (gamedata\scripts\coop_mods_radio.script), W4 "mods".
+	Anomaly Coop - radios (gamedata\scripts\coop_mods_radio.script).
 
 	RF receiver (stock item_radio)
 	  The host owns the RF sources: hidden stashes per level (RF_stashes) and task targets (RF_targets). A client
@@ -30,8 +30,8 @@ local api = rawget(_G, "coop")
 
 local tostring, tonumber, type, pairs, ipairs, pcall, next = tostring, tonumber, type, pairs, ipairs, pcall, next
 
-local function C() return coop_mods_core end
-local function log(fmt, ...) C().log("radio", fmt, ...) end
+local core = coop_mods_core
+local function log(fmt, ...) core.log("radio", fmt, ...) end
 
 local installed = {}
 local st = { rf_out = 0, rf_in = 0, fm_out = 0, fm_in = 0, fm_missing = 0, pkg_closed = 0 }
@@ -81,19 +81,19 @@ end
 local function rf_identity(id, se)
 	se = se or alife_object(id)
 	if not se then return nil end
-	local name = C().fn(se, "name") and se:name()
+	local name = core.fn(se, "name") and se:name()
 	local section = se:section_name()
 	if type(name) == "string" and name ~= "" and type(section) == "string" then return name, section end
 end
 
 local function rf_pda_frequency(orig, id, defs)
-	if not C().active() then return orig(id, defs) end
+	if not core.active() then return orig(id, defs) end
 	if not rf_number(id, 1, 65534) then return nil end
 	local name, section = rf_identity(id)
 	if not name then return nil end -- no stable identity yet: let the next scan try again
 	local IR = rf.IR
 	IR.stalker_pda_frequencies = IR.stalker_pda_frequencies or {}
-	local old = not coop_mode.decides_world() and rf.frequencies[C().hid(id)]
+	local old = not coop_mode.decides_world() and rf.frequencies[core.hid(id)]
 	if not (type(old) == "table" and old.name == name and (not old.section or old.section == section)) then
 		old = IR.stalker_pda_frequencies[id]
 	end
@@ -110,13 +110,13 @@ local function rf_pda_frequency(orig, id, defs)
 		return freq
 	end
 	if time_global() >= (rf.requested[id] or 0) then
-		if C().to_host("rf_freq", { i = C().hid(id) }) then rf.requested[id] = time_global() + 3000 end
+		if core.to_host("rf_freq", { i = core.hid(id) }) then rf.requested[id] = time_global() + 3000 end
 	end
 	return nil -- the scan can retry; a mirror never invents a frequency
 end
 
 local function rf_apply_frequency(hid, freq, name, section)
-	local id = C().lid(hid)
+	local id = core.lid(hid)
 	if not (id and type(name) == "string" and rf_number(freq, 1, 999)) then return end
 	local IR = rf.IR
 	IR.stalker_pda_frequencies = IR.stalker_pda_frequencies or {}
@@ -132,15 +132,15 @@ local function rf_frequency_request(t, from)
 	local hid = rf_number(t.i, 1, 65534)
 	if not coop_trust.pass("rf_frequency_id", hid ~= nil, "peer %s requested invalid RF frequency id", tostring(from)) then return end
 	if not hid then return end
-	local id = C().lid(hid)
+	local id = core.lid(hid)
 	local se = id and alife_object(id)
-	local class = se and C().fn(se, "clsid") and se:clsid()
+	local class = se and core.fn(se, "clsid") and se:clsid()
 	local stalker = class and (class == clsid.script_stalker or class == clsid.stalker)
 	if not coop_trust.pass("rf_frequency_object", stalker, "peer %s requested frequency for unavailable stalker %s", tostring(from), tostring(hid)) then return end
 	if not stalker then return end
 	local freq = rf.IR.init_or_get_stalker_pda_freq(id)
 	local v = (rf.IR.stalker_pda_frequencies or {})[id]
-	if freq and v then C().to_peer(from, "rf_freq_r", { i = hid, f = freq, n = v.name, c = v.section }) end
+	if freq and v then core.to_peer(from, "rf_freq_r", { i = hid, f = freq, n = v.name, c = v.section }) end
 end
 
 local function rf_forget_frequency(id, hid)
@@ -150,11 +150,11 @@ local function rf_forget_frequency(id, hid)
 end
 
 local function rf_frequency_reply(t, from)
-	if not (from == 0 and C().active() and not coop_mode.decides_world()) then return end
+	if not (from == 0 and core.active() and not coop_mode.decides_world()) then return end
 	local hid = rf_number(t.i, 1, 65534)
 	if not hid then return end
 	if t.x then
-		local id = C().lid(hid)
+		local id = core.lid(hid)
 		if id then rf_forget_frequency(id, hid) end
 	else
 		rf_apply_frequency(hid, t.f, t.n, t.c)
@@ -162,12 +162,12 @@ local function rf_frequency_reply(t, from)
 end
 
 local function rf_unregister(se)
-	if not (C().active() and se) then return end
+	if not (core.active() and se) then return end
 	local id = se.id
 	if not rf_number(id, 1, 65534) then return end
-	local hid = C().hid(id)
+	local hid = core.hid(id)
 	if coop_mode.decides_world() and (rf.IR.stalker_pda_frequencies or {})[id] then
-		C().to_all("rf_freq_r", { i = hid, x = true })
+		core.to_all("rf_freq_r", { i = hid, x = true })
 	end
 	rf_forget_frequency(id, hid)
 	rf.taken[hid], rf.changes[hid] = nil, nil
@@ -175,7 +175,7 @@ local function rf_unregister(se)
 end
 
 local function rf_load()
-	if not C().active() then return end
+	if not core.active() then return end
 	rf.sent_t, rf.sent_s = {}, {}
 	rf.pending, rf.frequencies, rf.requested, rf.taken, rf.changes = {}, {}, {}, {}, {}
 	rf.next_tick, rf.next_full = 0, 0
@@ -191,7 +191,7 @@ end
 
 local function rf_remove(id)
 	rf.IR.clear_target(id)
-	local hid = C().hid(id)
+	local hid = core.hid(id)
 	-- A quest event may have reached players before this source appeared in an RF snapshot.
 	if rf.sent_t[hid] == nil then rf.sent_t[hid] = false end
 end
@@ -206,7 +206,7 @@ local function rf_take(id, peer)
 	if coop_mode.decides_world() then
 		rf_remove(id)
 	else
-		local hid = C().hid(id)
+		local hid = core.hid(id)
 		local last = rf.taken[hid]
 		if last and last.target == target then return end
 		local name, section = rf_identity(id)
@@ -215,28 +215,28 @@ local function rf_take(id, peer)
 end
 
 local function rf_actor_take(item)
-	if C().active() and coop_mode.leads_here() and coop_mode.actor_is_player() and item then
-		rf_take(item:id(), C().self_peer())
+	if core.active() and coop_mode.leads_here() and coop_mode.actor_is_player() and item then
+		rf_take(item:id(), core.self_peer())
 	end
 end
 
 local function rf_npc_take(npc, item)
-	if C().active() and coop_mode.leads_here() and npc and item then
-		rf_take(item:id(), C().peer_of(npc:id()))
+	if core.active() and coop_mode.leads_here() and npc and item then
+		rf_take(item:id(), core.peer_of(npc:id()))
 	end
 end
 
 local function rf_pickups()
 	if not coop_mode.leads_here() then return end
-	for id in pairs(rf.IR.RF_targets or {}) do rf_take(id, C().holder_peer(id)) end
+	for id in pairs(rf.IR.RF_targets or {}) do rf_take(id, core.holder_peer(id)) end
 end
 
 local function rf_publish_pickups()
 	local budget = 16
 	for hid, fact in pairs(rf.taken) do
 		if fact.sent then
-			if not (rf.IR.RF_targets or {})[C().lid(hid)] then rf.taken[hid] = nil end
-		elseif not rf.changes[hid] and C().publish("rf_taken", { i = hid, n = fact.n, c = fact.c, l = fact.l }) then
+			if not (rf.IR.RF_targets or {})[core.lid(hid)] then rf.taken[hid] = nil end
+		elseif not rf.changes[hid] and core.publish("rf_taken", { i = hid, n = fact.n, c = fact.c, l = fact.l }) then
 			fact.sent = true
 			budget = budget - 1
 			if budget == 0 then break end
@@ -247,7 +247,7 @@ end
 local function rf_publish_changes()
 	local budget = 16
 	for hid, fact in pairs(rf.changes) do
-		if C().publish("rf_target", fact) then
+		if core.publish("rf_target", fact) then
 			rf.changes[hid] = nil
 			budget = budget - 1
 			if budget == 0 then break end
@@ -267,7 +267,7 @@ local function rf_reported_object(t, from)
 		and type(t.c) == "string" and #t.c > 0 and #t.c <= 256 and type(t.l) == "string" and #t.l > 0 and #t.l <= 128
 	if not coop_trust.pass("rf_source_fact", shape, "peer %s sent invalid RF inventory fact", tostring(from)) then return end
 	if not shape then return end -- malformed values cannot be indexed even in diagnostic mode
-	local id = C().lid(hid)
+	local id = core.lid(hid)
 	if not id then return end
 	local se = alife_object(id)
 	if not se then return end
@@ -277,7 +277,7 @@ end
 
 local function rf_on_taken(t, from)
 	local id = rf_reported_object(t, from)
-	if id and ((rf.IR.RF_targets or {})[id] or rf.sent_t[C().hid(id)] == nil) then rf_remove(id) end
+	if id and ((rf.IR.RF_targets or {})[id] or rf.sent_t[core.hid(id)] == nil) then rf_remove(id) end
 end
 
 local function rf_on_target(t, from)
@@ -286,7 +286,7 @@ local function rf_on_target(t, from)
 	if t.x == true then
 		rf_remove(id)
 	else
-		local snd = C().deser(t.s or "")
+		local snd = core.deser(t.s or "")
 		local target = rf_target({ freq = t.f, dist = t.d, snd = snd })
 		local valid = t.x == nil and target and (snd == false or target.snd)
 		if not coop_trust.pass("rf_source_target", valid, "peer %s sent invalid RF target", tostring(from)) then return end
@@ -317,7 +317,7 @@ local function rf_host_diff()
 	for id, v in pairs(targets) do
 		local target = rf_target(v)
 		if rf_number(id, 1, 65534) and target then
-			local hid = C().hid(id)
+			local hid = core.hid(id)
 			local row = string.format("%d:%d:%d", hid, target.freq, target.dist)
 			local sig = row .. ":" .. rf_sound_wire(target.snd)
 			now_t[hid] = sig
@@ -348,10 +348,10 @@ local function rf_host_diff()
 	end
 	if not full and #adds + #rems + #sadds + #srems == 0 then return end
 	local t = { a = table.concat(adds, ","), r = table.concat(rems, ","), s = table.concat(sadds, ","), x = table.concat(srems, ","),
-		d = C().ser(sounds), full = full }
+		d = core.ser(sounds), full = full }
 	local sent
-	if #coop_main.encode(t) < 15000 then sent = C().to_all("rf", t)
-	else sent = C().send_big("rf_big", C().ser(t), -1) end
+	if #coop_main.encode(t) < 15000 then sent = core.to_all("rf", t)
+	else sent = core.send_big("rf_big", core.ser(t), -1) end
 	if sent then
 		rf.sent_t, rf.sent_s = now_t, now_s
 		if full then rf.next_full = time_global() + 30000 end
@@ -380,17 +380,17 @@ local function rf_client_apply(t)
 		IR.RF_targets, IR.RF_stashes = {}, {}
 		rf.pending = {}
 	end
-	local sounds = C().deser(t.d or "")
+	local sounds = core.deser(t.d or "")
 	for e in tostring(t.a or ""):gmatch("[^,]+") do
 		local id, freq, dist = e:match("^(%d+):(%-?%d+):(%-?%d+)$")
 		local hid = rf_number(id, 1, 65534)
 		local value = rf_target({ freq = freq, dist = dist, snd = type(sounds) == "table" and sounds[hid] })
-		id = hid and C().lid(hid)
+		id = hid and core.lid(hid)
 		if id and value then rf.pending[id] = value end
 	end
 	for e in tostring(t.r or ""):gmatch("[^,]+") do
 		local hid = rf_number(e, 1, 65534)
-		local id = hid and C().lid(hid)
+		local id = hid and core.lid(hid)
 		if id then
 			rf.pending[id] = nil
 			IR.RF_targets[id] = nil
@@ -411,42 +411,42 @@ local function rf_client_apply(t)
 end
 
 local function rf_receive(t, from)
-	if from == 0 and C().active() and not coop_mode.decides_world()
+	if from == 0 and core.active() and not coop_mode.decides_world()
 		and (coop_mode.is_player_mirror() or coop_mode.leads_here()) then rf_client_apply(t) end
 end
 
 -- quests.rf predates mods.rf. Decorate its producer and the final event dispatch so load order cannot let its
 -- legacy receiver overwrite snd again. Both wrappers are inert outside a session and leave other events alone.
 local function install_rf_quests()
-	local qc = C().mod("coop_quests_core")
+	local qc = core.mod("coop_quests_core")
 	if qc then
-		C().wrap(qc, "send", "radio.quests.rf.send", function(orig)
+		core.wrap(qc, "send", "radio.quests.rf.send", function(orig)
 			return function(verb, t, ...)
-				if not (C().active() and verb == "rf" and type(t) == "table") then return orig(verb, t, ...) end
+				if not (core.active() and verb == "rf" and type(t) == "table") then return orig(verb, t, ...) end
 				local out = {}
 				for k, v in pairs(t) do out[k] = v end
 				local id = rf_number(t.i, 1, 65534)
 				if not id then return orig(verb, t, ...) end
-				out.i = C().hid(id)
+				out.i = core.hid(id)
 				local target = rf_target((rf.IR.RF_targets or {})[id])
-				out.s = C().ser(target and target.snd or false)
+				out.s = core.ser(target and target.snd or false)
 				rf_queue_map_target(id, out, target)
 				return orig(verb, out, ...)
 			end
 		end)
 	end
-	C().wrap(coop_main, "on_event", "radio.quests.rf.receive", function(orig)
+	core.wrap(coop_main, "on_event", "radio.quests.rf.receive", function(orig)
 		return function(verb, payload, from, ...)
 			local result = orig(verb, payload, from, ...)
-			if C().active() and verb == "quests.rf" and from == 0 and coop_mode.is_player_mirror() then
+			if core.active() and verb == "quests.rf" and from == 0 and coop_mode.is_player_mirror() then
 				local t = coop_main.decode(payload)
 				local hid = rf_number(t.i, 1, 65534)
-				local id = hid and C().lid(hid)
+				local id = hid and core.lid(hid)
 				if id then
 					rf.IR.RF_targets[id] = nil -- the legacy receiver installed its incomplete copy
 					if t.x then rf.pending[id] = nil
 					else
-						rf.pending[id] = rf_target({ freq = t.f, dist = t.d, snd = C().deser(t.s or "") })
+						rf.pending[id] = rf_target({ freq = t.f, dist = t.d, snd = core.deser(t.s or "") })
 					end
 					rf_client_reconcile()
 				end
@@ -456,21 +456,49 @@ local function install_rf_quests()
 	end)
 end
 
+-- A target quest code adds or clears goes out from here: the deciding process sends its diff at once, a map's leader
+-- queues the change for the world server (rf_publish_changes). The mod's payload is the stock one: freq and dist as the
+-- mod stored them, the sound serialized.
+local function rf_target_changed(id, cleared)
+	if not (core.active() and type(id) == "number") then return end
+	if coop_mode.decides_world() then
+		local ok, e = pcall(rf_host_diff)
+		if not ok then core.report("radio", "rf diff", e) end
+		return
+	end
+	local hid = core.hid(id)
+	if not hid then return end
+	local stored = not cleared and (rf.IR.RF_targets or {})[id] or nil
+	local target = stored and rf_target(stored)
+	local out = { i = hid, x = cleared or nil, f = stored and tonumber(stored.freq), d = stored and tonumber(stored.dist),
+		s = core.ser(target and target.snd or false) }
+	rf_queue_map_target(id, out, target)
+end
+
 local function install_rf()
-	local IR = C().mod("item_radio")
-	if not (IR and C().fn(IR, "add_target")) then return end
+	local IR = core.mod("item_radio")
+	if not (IR and core.fn(IR, "add_target")) then return end
 	rf.IR = IR
+	for _, key in ipairs({ "add_target", "clear_target" }) do
+		core.wrap(IR, key, "item_radio." .. key, function(orig)
+			return function(id, ...)
+				local r = orig(id, ...)
+				rf_target_changed(id, key == "clear_target")
+				return r
+			end
+		end)
+	end
 	installed[#installed + 1] = "item_radio"
-	C().on("rf", rf_receive)
-	C().on_big("rf_big", function(blob, from) local t = C().deser(blob) if type(t) == "table" then rf_receive(t, from) end end, "client")
-	C().set_limit("rf_taken", 16, 8)
-	C().on("rf_taken", rf_on_taken, "world")
-	C().set_limit("rf_target", 16, 8)
-	C().on("rf_target", rf_on_target, "world")
-	C().set_limit("rf_freq", 128, 64)
-	C().on("rf_freq", rf_frequency_request, "world")
-	C().on("rf_freq_r", rf_frequency_reply)
-	C().wrap(IR, "init_or_get_stalker_pda_freq", "radio.pda_frequency", function(orig)
+	core.on("rf", rf_receive)
+	core.on_big("rf_big", function(blob, from) local t = core.deser(blob) if type(t) == "table" then rf_receive(t, from) end end, "client")
+	core.set_limit("rf_taken", 16, 8)
+	core.on("rf_taken", rf_on_taken, "world")
+	core.set_limit("rf_target", 16, 8)
+	core.on("rf_target", rf_on_target, "world")
+	core.set_limit("rf_freq", 128, 64)
+	core.on("rf_freq", rf_frequency_request, "world")
+	core.on("rf_freq_r", rf_frequency_reply)
+	core.wrap(IR, "init_or_get_stalker_pda_freq", "radio.pda_frequency", function(orig)
 		return function(id, defs) return rf_pda_frequency(orig, id, defs) end
 	end)
 	RegisterScriptCallback("server_entity_on_unregister", rf_unregister)
@@ -485,19 +513,19 @@ local function rf_tick()
 	if tg < rf.next_tick then return end
 	rf.next_tick = tg + 2000
 	local ok, e = pcall(rf_pickups)
-	if not ok then C().report("radio", "rf pickups", e) end
+	if not ok then core.report("radio", "rf pickups", e) end
 	if coop_mode.leads_here() and not coop_mode.decides_world() then
 		local changed, change_err = pcall(rf_publish_changes)
-		if not changed then C().report("radio", "rf target changes", change_err) end
+		if not changed then core.report("radio", "rf target changes", change_err) end
 		local sent, err = pcall(rf_publish_pickups)
-		if not sent then C().report("radio", "rf confirmed pickups", err) end
+		if not sent then core.report("radio", "rf confirmed pickups", err) end
 	end
 	if coop_mode.decides_world() then
 		local ok, e = pcall(rf_host_diff)
-		if not ok then C().report("radio", "rf diff", e) end
+		if not ok then core.report("radio", "rf diff", e) end
 	elseif (coop_mode.is_player_mirror() or coop_mode.leads_here()) and next(rf.pending) then
 		local ok, e = pcall(rf_client_reconcile)
-		if not ok then C().report("radio", "rf reconcile", e) end
+		if not ok then core.report("radio", "rf reconcile", e) end
 	end
 end
 
@@ -510,7 +538,7 @@ local fm = { R = nil, loc = {}, names = {}, slots = {}, sent = {}, next_tick = 0
 local function fm_local(name)
 	local l = fm.loc[name]
 	if l == nil then
-		local _, holder, idx = C().find_local(fm.R, name)
+		local _, holder, idx = core.find_local(fm.R, name)
 		l = { holder = holder, idx = idx }
 		fm.loc[name] = l
 	end
@@ -580,7 +608,7 @@ local function fm_host_tick(full)
 		if kind and (key ~= fm.sent[ch] or full) then
 			if key ~= fm.sent[ch] then fm_cut_speakers(ch) end
 			fm.sent[ch] = key
-			C().to_all("fm", { ch = ch, k = kind, n = fm.names[ch][kind][idx] })
+			core.to_all("fm", { ch = ch, k = kind, n = fm.names[ch][kind][idx] })
 			st.fm_out = st.fm_out + 1
 		end
 	end
@@ -619,7 +647,7 @@ local function fm_client_apply(t)
 end
 
 local function install_fm()
-	local R = C().mod("ui_pda_radio_tab")
+	local R = core.mod("ui_pda_radio_tab")
 	if not R then return end
 	fm.R = R
 	local ok, built = pcall(fm_build)
@@ -628,7 +656,7 @@ local function install_fm()
 		return
 	end
 	installed[#installed + 1] = "zone_fm"
-	C().on("fm", fm_client_apply, "client")
+	core.on("fm", fm_client_apply, "client")
 end
 
 local function fm_tick()
@@ -639,7 +667,7 @@ local function fm_tick()
 	local full = tg >= fm.next_full
 	if full then fm.next_full = tg + 30000 end
 	local ok, e = pcall(fm_host_tick, full)
-	if not ok then C().report("radio", "fm", e) end
+	if not ok then core.report("radio", "fm", e) end
 end
 
 -------------------------------------------------------------------------------
@@ -727,9 +755,9 @@ local function pkg_host_check()
 	if not (tb.tb_package_active and id and id > 0 and id < 65535) then return end
 	local se = alife_object(id)
 	if not se then return end
-	local root = C().root_of(id)
-	if root == id or not C().is_remote_player(root) then return end
-	log("package %d picked up by player #%s, closed", id, tostring(C().peer_of(root)))
+	local root = core.root_of(id)
+	if root == id or not core.is_remote_player(root) then return end
+	log("package %d picked up by player #%s, closed", id, tostring(core.peer_of(root)))
 	if IR then IR.clear_target(id) end
 	RemoveTimeEvent(id, "remind_about_radio_package")
 	pkg_clear_local()
@@ -738,8 +766,8 @@ local function pkg_host_check()
 end
 
 local function pkg_show_news(t)
-	if not (C().active() and coop_mode.actor_is_player() and db.actor and type(t.m) == "string" and #t.m <= 2000
-		and type(t.i) == "string" and #t.i <= 128 and rf_number(t.c, 0, 65534) == C().hid(0)) then return end
+	if not (core.active() and coop_mode.actor_is_player() and db.actor and type(t.m) == "string" and #t.m <= 2000
+		and type(t.i) == "string" and #t.i <= 128 and rf_number(t.c, 0, 65534) == core.hid(0)) then return end
 	db.actor:give_game_news(game.translate_string("tb_anon_sender"), t.m, t.i, 0, 20000, 0)
 	utils_obj.play_sound("device\\pda\\pda_sos")
 	if t.note == true then pkg.TB.give_note() end
@@ -765,7 +793,7 @@ local function pkg_spawn_from_queue(orig, ...)
 	local character = row.character
 	if character == nil and coop_mode.actor_is_player() then return orig(...) end -- legacy queue in a host's save
 	local source = getfenv(orig)
-	local body = character == 0 and db.actor or (character ~= nil and coop_tasks.recipient_body(C().lid(character)))
+	local body = character == 0 and db.actor or (character ~= nil and coop_tasks.recipient_body(core.lid(character)))
 	local actor = {
 		object = function(_, section) return body and body:object(section) end,
 		give_game_news = function(_, _, message, icon)
@@ -798,7 +826,7 @@ local function pkg_goodwill()
 	local state = alife_storage_manager.get_state()
 	if type(state[PKG_GOODWILL]) ~= "table" then state[PKG_GOODWILL] = {} end
 	local records = state[PKG_GOODWILL]
-	for _, p in ipairs(C().players()) do
+	for _, p in ipairs(core.players()) do
 		local id = p.avatar_id
 		if rf_number(id, 0, 65534) and coop_mode.seat_plays(p.id) and coop_mode.where(p.id) ~= "joining" then
 			local se = alife_object(id)
@@ -806,7 +834,7 @@ local function pkg_goodwill()
 			local map = p.level and alife():level_name(p.level)
 			if not map and coop_mode.where(p.id) == "here" then map = level.name() end
 			if map and (id == 0 or se) then
-				local key = tostring(C().hid(id))
+				local key = tostring(core.hid(id))
 				local record = records[key] or {}
 				records[key] = record
 				for _, faction in ipairs(tb.tb_factions) do
@@ -814,7 +842,7 @@ local function pkg_goodwill()
 					local previous = record[faction] or (id == 0 and rel[1]) or pkg.baseline[faction]
 					local goodwill = coop_reputation.goodwill_of(faction, id)
 					if previous and goodwill >= previous + tb.tb_relation_diff then
-						tb.tb_package_queue[#tb.tb_package_queue + 1] = { map, rel[2], character = C().hid(id),
+						tb.tb_package_queue[#tb.tb_package_queue + 1] = { map, rel[2], character = core.hid(id),
 							community = se and se.community and se:community() or "stalker" }
 						record[faction] = goodwill
 					end
@@ -822,7 +850,7 @@ local function pkg_goodwill()
 						record.intro = true
 						if id ~= 0 or not tb.tb_sufficient_passed then
 							if id == 0 then tb.tb_sufficient_passed = true end
-							pkg_news(C().hid(id), game.translate_string("tb_sooner_rf"), rel[2], true)
+							pkg_news(core.hid(id), game.translate_string("tb_sooner_rf"), rel[2], true)
 						end
 					end
 				end
@@ -833,38 +861,38 @@ local function pkg_goodwill()
 end
 
 local function install_packages()
-	local tb = C().mod("tb_rf_receiver_packages")
+	local tb = core.mod("tb_rf_receiver_packages")
 	if not (tb and rf.IR) then return end
 	pkg.TB = tb
 	for faction, info in pairs(tb.tb_relations or {}) do pkg.baseline[faction] = info[1] end
 	installed[#installed + 1] = "rf_packages"
 	local function client_only(name, ret)
-		C().wrap(tb, name, "tb_rf_receiver_packages." .. name, function(orig)
+		core.wrap(tb, name, "tb_rf_receiver_packages." .. name, function(orig)
 			return function(...)
-				if C().world_client() then return ret end
+				if core.world_client() then return ret end
 				return orig(...)
 			end
 		end)
 	end
 	-- The spawning half is the host's.
-	C().wrap(tb, "tb_radio_thing", "tb_rf_receiver_packages.tb_radio_thing", function(orig)
+	core.wrap(tb, "tb_radio_thing", "tb_rf_receiver_packages.tb_radio_thing", function(orig)
 		return function(...)
-			if not C().active() then return orig(...) end
+			if not core.active() then return orig(...) end
 			if not coop_mode.decides_world() then return false end
 			return pkg_spawn_from_queue(orig, ...)
 		end
 	end)
 	client_only("failsafepackagespawn", false)
 	client_only("spawn_some_badguys", nil)
-	C().wrap(tb, "checkrelationchange", "g96.rf.checkrelationchange", function(orig)
+	core.wrap(tb, "checkrelationchange", "g96.rf.checkrelationchange", function(orig)
 		return function(...)
-			if not C().active() then return orig(...) end
+			if not core.active() then return orig(...) end
 			return true -- pkg_tick schedules the world-owner scan, also where the stock timer has no player
 		end
 	end)
 	client_only("remindaboutpackage", true) -- the host's reminders reach everybody as news
 	pkg.orig_take = tb.actor_on_item_take
-	C().on(PKG_NEWS, pkg_show_news, "player")
+	core.on(PKG_NEWS, pkg_show_news, "player")
 	RegisterScriptCallback("load_state", function() pkg.next_goodwill = 0 end)
 end
 
@@ -873,7 +901,7 @@ local function pkg_tick()
 	if not pkg.TB then return end
 	if coop_mode.is_player_mirror() and not pkg_rebound then
 		pkg_rebound = true
-		C().swap_callback("actor_on_item_take", pkg.orig_take, pkg_client_take)
+		core.swap_callback("actor_on_item_take", pkg.orig_take, pkg_client_take)
 		if custom_functor_autoinject and custom_functor_autoinject.remove_functor then
 			pcall(custom_functor_autoinject.remove_functor, "pda_package_cancel") -- cancelling is the host's
 		end
@@ -887,41 +915,36 @@ local function pkg_tick()
 		if tg >= pkg.next_goodwill then
 			pkg.next_goodwill = tg + 30000
 			local scanned, err = pcall(pkg_goodwill)
-			if not scanned then C().report("radio", "package goodwill", err) end
+			if not scanned then core.report("radio", "package goodwill", err) end
 		end
 	elseif coop_mode.is_player_mirror() then
 		ok, e = pcall(pkg_client_follow)
 	else
 		return
 	end
-	if not ok then C().report("radio", "packages", e) end
+	if not ok then core.report("radio", "packages", e) end
 end
 
 -------------------------------------------------------------------------------
 -- Start
 -------------------------------------------------------------------------------
 local function actor_on_update()
-	if not C().active() then return end
+	if not core.active() then return end
 	if rf.IR then rf_tick() end
 	fm_tick()
 	pkg_tick()
 end
 
 -- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
--- error here would skip all the scripts after this one, single player included (W5).
-local function start_step(what, f)
-	local ok, err = pcall(f)
-	if not ok then printf("! [coop_mods_radio] %s failed: %s", what, tostring(err)) end
-end
-
+-- error here would skip all the scripts after this one, single player included.
 function on_game_start()
 	if not api then return end
-	start_step("install_rf", install_rf)
-	start_step("install_fm", install_fm)
-	start_step("install_packages", install_packages)
+	core.install("radio", "install_rf", install_rf)
+	core.install("radio", "install_fm", install_fm)
+	core.install("radio", "install_packages", install_packages)
 	if #installed == 0 then return end
 	RegisterScriptCallback("actor_on_update", actor_on_update)
-	C().status_line("radio", function()
+	core.status_line("radio", function()
 		return string.format("%s | rf out %d in %d (pending %d) | fm out %d in %d (missing here %d) | packages closed for clients %d",
 			table.concat(installed, ", "), st.rf_out, st.rf_in, (function() local n = 0 for _ in pairs(rf.pending) do n = n + 1 end return n end)(),
 			st.fm_out, st.fm_in, st.fm_missing, st.pkg_closed)

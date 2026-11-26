@@ -92,7 +92,11 @@ bind_anomaly_field = { anomaly_field_binder = { update = function(self)
 end } }
 local _, zone = spawn("zone_mine_darkness", vec3(7, 0, 0))
 local anomaly = { object = zone, section = "zone_mine_darkness", radius_sqr = 100 }
-local function dao_update() bind_anomaly_field.anomaly_field_binder.update(anomaly, 0) end
+-- one binder update per frame: the leader's list of players on the map is built once a frame
+local function dao_update()
+	NOW = NOW + 1
+	bind_anomaly_field.anomaly_field_binder.update(anomaly, 0)
+end
 
 local pack = spawn("quest_tb_package_1", vec3(0, 0, 0), nil, { id = 70 })
 pack.name = function() return "quest_tb_package_10070" end
@@ -199,6 +203,13 @@ if role == "hostplay" or role == "srv_map" then
 	dao_time = 300
 	dao_update()
 	check(#created == 2 and dao_rolls == 2 and dao_updates == 4, "DAO rolls at cooldown expiry and keeps binder updates")
+	local everyone, built = coop_npc_players.everyone, 0
+	coop_npc_players.everyone = function(...) built = built + 1 return everyone(...) end
+	NOW = NOW + 1
+	bind_anomaly_field.anomaly_field_binder.update(anomaly, 0)
+	bind_anomaly_field.anomaly_field_binder.update(anomaly, 0)
+	coop_npc_players.everyone = everyone
+	check(built == 1, "darkness fields updated in one frame build the leader's list of players once")
 	created = {}
 end
 

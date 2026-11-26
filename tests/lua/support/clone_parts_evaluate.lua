@@ -13,7 +13,7 @@ end
 
 function clone_evaluate_parts(w, id)
 	local path = GAMMA_DIR .. "/item_parts.script"
-	assert(have_file(path), "actual GAMMA item_parts.script is required")
+	assert(have_file(path), "actual GAMMA item_parts.script is required (GAMMA_SCRIPTS)")
 	w.RANDOM_CALLS = w.RANDOM_CALLS or 0
 	local counted_math = {}
 	for key, value in pairs(math) do counted_math[key] = value end

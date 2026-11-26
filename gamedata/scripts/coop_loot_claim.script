@@ -659,6 +659,7 @@ function claim_count() return count end
 -- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an error here
 -- would skip all the scripts after this one, single player included.
 function on_game_start()
+	coop_util.add_status("coop_loot_claim", 210)
 	if not qc.engine() then return end
 	local ok, err = pcall(function()
 		qc.on_level("loot_ask", host_on_ask, TAG)

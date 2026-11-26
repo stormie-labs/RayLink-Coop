@@ -3,7 +3,7 @@
 MODE = "host"
 dofile("tests/lua/support/stubs.lua")
 dofile("tests/lua/support/modes.lua").live(load_script_file("coop_mode"))
-load_script_file("coop_main")
+load_coop_main()
 local m = coop_main
 
 local line = m.context_line({ role = "host", level = "l01_escape", players = 2, split = true, protocol = 25, quests = { "a_task", "b_task" } })

@@ -1,4 +1,4 @@
--- G8-5: the map leader has the bodies, restrictors and spawn vertices. The world owner keeps
+-- The map leader has the bodies, restrictors and spawn vertices. The world owner keeps
 -- the RF roll and the Swamps story flag. In co-op the same process has all of those answers.
 
 local TAG = "presence_gamma"
@@ -17,11 +17,8 @@ local rf_due, hint_due = 0, 0
 local pending_roll, map_results = nil, {}
 local started = false
 
-local function C() return coop_mods_core end
-
-local function object_id(id)
-	return type(id) == "number" and id >= 1 and id <= 65534 and id % 1 == 0
-end
+local core = coop_mods_core
+local object_id = core.object_id
 
 local function map_name(vertex)
 	local graph = game_graph()
@@ -40,6 +37,15 @@ local function players_here(map)
 		end
 	end
 	return players
+end
+
+-- The leader's players on his map, built once per frame for every darkness field on it.
+local on_map = { at = nil, list = nil }
+
+local function players_on_map()
+	local now = time_global()
+	if on_map.at ~= now then on_map.at, on_map.list = now, players_here(level.name()) end
+	return on_map.list
 end
 
 local function nearest(players, pos)
@@ -63,18 +69,13 @@ end
 
 local function assigned_to(character, map)
 	if not object_id(character) then return false end
-	local id = C().lid(character)
+	local id = core.lid(character)
 	if not id then return false end
-	for _, p in ipairs(C().players()) do
+	for _, p in ipairs(core.players()) do
 		if p.avatar_id == id and p.level ~= nil and coop_mode.seat_plays(p.id)
 			and coop_mode.where(p.id) ~= "joining" and alife():level_name(p.level) == map then return true end
 	end
 	return false
-end
-
-local function try_step(step, f)
-	local ok, err = pcall(f)
-	if not ok then C().report(TAG, step, err) end
 end
 
 -------------------------------------------------------------------------------
@@ -87,26 +88,26 @@ local function darkness_for(original, binder, player, distance)
 	setfenv(original, setmetatable({ alife = function() return sim end }, { __index = env, __newindex = env }))
 	local ok, err = pcall(original, binder, player, distance, binder.radius_sqr)
 	setfenv(original, env)
-	if not ok then C().report(TAG, "Darkness spawn", err) end
+	if not ok then core.report(TAG, "Darkness spawn", err) end
 end
 
 local function install_dao()
-	local dao = C().mod("drx_da_main")
-	local bind = dao and C().mod("bind_anomaly_field")
+	local dao = core.mod("drx_da_main")
+	local bind = dao and core.mod("bind_anomaly_field")
 	local class = bind and bind.anomaly_field_binder
-	if not C().fn(class, "update") then return end
-	local wrapped, effect = C().wrap(dao.anomalies_near_actor_functions, DARKNESS, TAG .. ".darkness_effect", function(orig)
+	if not core.fn(class, "update") then return end
+	local wrapped, effect = core.wrap(dao.anomalies_near_actor_functions, DARKNESS, TAG .. ".darkness_effect", function(orig)
 		return function(...)
-			if not C().active() then return orig(...) end
+			if not core.active() then return orig(...) end
 		end
 	end)
 	if not wrapped then return end
-	C().wrap(class, "update", TAG .. ".darkness_binder", function(orig)
+	core.wrap(class, "update", TAG .. ".darkness_binder", function(orig)
 		return function(self, ...)
-			if self.section ~= DARKNESS or not C().active() then return orig(self, ...) end
+			if self.section ~= DARKNESS or not core.active() then return orig(self, ...) end
 			orig(self, ...)
 			if not (coop_mode.leads_here() and self.object and self.radius_sqr) then return end
-			local player, distance = nearest(players_here(level.name()), self.object:position())
+			local player, distance = nearest(players_on_map(), self.object:position())
 			if player and distance <= self.radius_sqr then darkness_for(effect, self, player, distance) end
 		end
 	end)
@@ -168,14 +169,14 @@ end
 local function rf_fact(t, from)
 	local se, name, map
 	if map_reporter(from) and object_id(t.p) and object_id(t.c) then se, name, map = active_package() end
-	local valid = se and C().hid(se.id) == t.p and t.n == name and assigned_to(t.c, map)
+	local valid = se and core.hid(se.id) == t.p and t.n == name and assigned_to(t.c, map)
 	if not check_fact(RF_FACT, valid, from) then return end
 	if packages.tb_badguy_spawned then
-		C().to_peer(from, RF_ORDER, { p = t.p, n = name, a = false })
+		core.to_peer(from, RF_ORDER, { p = t.p, n = name, a = false })
 		return
 	end
 	local roll = reserve_roll(se, name, t.c)
-	if C().to_peer(from, RF_ORDER, { p = t.p, n = name, c = roll.character, a = roll.win }) then
+	if core.to_peer(from, RF_ORDER, { p = t.p, n = name, c = roll.character, a = roll.win }) then
 		packages.tb_badguy_spawned = true -- the stock save/load callbacks persist wins and losses
 		pending_roll = nil
 	end
@@ -186,18 +187,17 @@ local function rf_order(t, from)
 		and type(t.a) == "boolean" and (not t.a or object_id(t.c))
 	if not check_fact(RF_ORDER, valid, from) then return end
 	if not coop_mode.leads_here() or coop_mode.decides_world() then return end
-	local id = C().lid(t.p)
+	local id = core.lid(t.p)
 	local se, name, map = package_at(id)
 	if not (se and map == level.name() and map ~= BAR and name == t.n) or map_results[id] == name then return end
 	map_results[id] = name
 	if t.a then
-		local character = C().lid(t.c)
+		local character = core.lid(t.c)
 		if character then spawn_ambush(se, package_faction(character)) end
 	end
 end
 
 local function rf_scan(now, map)
-	if now <= rf_due then return end
 	rf_due = now + 2000
 	if map == BAR then return end
 	if coop_mode.decides_world() then
@@ -222,34 +222,34 @@ local function rf_scan(now, map)
 		if se and map == package_map and map_results[id] ~= name then
 			local player, distance = nearest(players, se.position)
 			if player and distance < 100 * 100 then
-				local package, character = C().hid(id), C().hid(player:id())
-				if package and character then C().publish(RF_FACT, { p = package, n = name, c = character }) end
+				local package, character = core.hid(id), core.hid(player:id())
+				if package and character then core.publish(RF_FACT, { p = package, n = name, c = character }) end
 			end
 		end
 	end
 end
 
 local function install_rf()
-	packages = C().mod("tb_rf_receiver_packages")
+	packages = core.mod("tb_rf_receiver_packages")
 	if not packages then return end
-	radio = C().mod("item_radio")
-	local wrapped, stock_update = C().wrap(packages, "actor_on_update", TAG .. ".rf_update", function(orig)
+	radio = core.mod("item_radio")
+	local wrapped, stock_update = core.wrap(packages, "actor_on_update", TAG .. ".rf_update", function(orig)
 		return function(...)
-			if not C().active() then return orig(...) end
+			if not core.active() then return orig(...) end
 			if not coop_mode.actor_is_player() then return end
 			-- Keep the original receiver update. Its actor-only ambush check has a separate timer.
 			local timer = packages.tb_tg_badguys
 			packages.tb_tg_badguys = math.huge
 			local ok, err = pcall(orig, ...)
 			packages.tb_tg_badguys = timer
-			if not ok then C().report(TAG, "RF receiver update", err) end
+			if not ok then core.report(TAG, "RF receiver update", err) end
 		end
 	end)
-	if wrapped then C().swap_callback("actor_on_update", stock_update, packages.actor_on_update) end
-	C().set_limit(RF_FACT, 4, 2)
-	C().on(RF_FACT, rf_fact, "world")
-	C().set_limit(RF_ORDER, 4, 2)
-	C().on(RF_ORDER, rf_order)
+	if wrapped then core.swap_callback("actor_on_update", stock_update, packages.actor_on_update) end
+	core.set_limit(RF_FACT, 4, 2)
+	core.on(RF_FACT, rf_fact, "world")
+	core.set_limit(RF_ORDER, 4, 2)
+	core.on(RF_ORDER, rf_order)
 end
 
 -------------------------------------------------------------------------------
@@ -260,7 +260,7 @@ local function hint_pending()
 end
 
 local function show_hint(t)
-	if not (C().active() and coop_mode.actor_is_player() and db.actor) then return end
+	if not (core.active() and coop_mode.actor_is_player() and db.actor) then return end
 	CreateTimeEvent(0, HINT_ORDER, 2, function()
 		local icon = t.i
 		news.send_tip(HINT_TEXT, t.n, nil, 7, icon, nil, icon and "npc" or nil)
@@ -272,7 +272,7 @@ local function send_hint()
 	if not hint_pending() then return end
 	local props = nta.get_sender_props_by_story_id(BARMAN) or {}
 	local t = { n = props.name, i = props.icon }
-	if C().to_all(HINT_ORDER, t) then
+	if core.to_all(HINT_ORDER, t) then
 		give_info(HINT_SENT) -- the stock info portion is the shared, persisted one-shot guard
 		if coop_mode.actor_is_player() then show_hint(t) end
 	end
@@ -282,19 +282,20 @@ local function hint_fact(t, from)
 	if check_fact(HINT_FACT, map_reporter(from) and assigned_to(t.c, BAR), from) then send_hint() end
 end
 
-local function hint_scan(now, map)
-	if map ~= BAR or has_alife_info(HINT_SENT) then return end
+local function hint_scan(now)
 	local world_here = coop_mode.decides_world()
-	if (world_here and not hint_pending()) or (not world_here and now <= hint_due) then return end
+	if not world_here and now <= hint_due then return end
+	if level.name() ~= BAR or has_alife_info(HINT_SENT) then return end
+	if world_here and not hint_pending() then return end
 	local zone = db.zone_by_name[BAR_ZONE]
 	if not zone then return end
-	for _, player in ipairs(players_here(map)) do
+	for _, player in ipairs(players_here(BAR)) do
 		if zone:inside(player:position()) then
 			if world_here then
 				send_hint()
 			else
-				local c = C().hid(player:id())
-				if c and C().publish(HINT_FACT, { c = c }) then hint_due = now + 2000 end
+				local c = core.hid(player:id())
+				if c and core.publish(HINT_FACT, { c = c }) then hint_due = now + 2000 end
 			end
 			return
 		end
@@ -303,37 +304,37 @@ end
 
 local function install_swamps_update()
 	-- The NPC compatibility adapter reloads the task module during game start. Wrap its final callback.
-	local wrapped, original = C().wrap(swamps, "actor_on_update", TAG .. ".swamps_update", function(orig)
+	local wrapped, original = core.wrap(swamps, "actor_on_update", TAG .. ".swamps_update", function(orig)
 		return function(...)
-			if not C().active() then return orig(...) end
+			if not core.active() then return orig(...) end
 		end
 	end)
-	if wrapped then C().swap_callback("actor_on_update", original, swamps.actor_on_update) end
+	if wrapped then core.swap_callback("actor_on_update", original, swamps.actor_on_update) end
 end
 
 local function install_swamps()
-	local mod = C().mod("tasks_mystery_of_the_swamps")
+	local mod = core.mod("tasks_mystery_of_the_swamps")
 	if not mod then return end
-	nta, news = C().mod("nta_utils"), C().mod("dynamic_news_helper")
-	if not (C().fn(nta, "get_sender_props_by_story_id") and C().fn(news, "send_tip")) then return end
+	nta, news = core.mod("nta_utils"), core.mod("dynamic_news_helper")
+	if not (core.fn(nta, "get_sender_props_by_story_id") and core.fn(news, "send_tip")) then return end
 	swamps = mod
 	local installed = false
 	RegisterScriptCallback("actor_on_first_update", function()
 		if not installed then
 			installed = true
-			try_step("Swamps callback", install_swamps_update)
+			core.install(TAG, "Swamps callback", install_swamps_update)
 		end
 	end)
-	C().set_limit(HINT_FACT, 4, 2)
-	C().on(HINT_FACT, hint_fact, "world")
-	C().on(HINT_ORDER, show_hint, "player")
+	core.set_limit(HINT_FACT, 4, 2)
+	core.on(HINT_FACT, hint_fact, "world")
+	core.on(HINT_ORDER, show_hint, "player")
 end
 
 local function actor_on_update()
-	if not (C().active() and coop_mode.leads_here()) then return end
-	local now, map = time_global(), level.name()
-	if packages then rf_scan(now, map) end
-	if swamps then hint_scan(now, map) end
+	if not (core.active() and coop_mode.leads_here()) then return end
+	local now = time_global()
+	if packages and now > rf_due then rf_scan(now, level.name()) end
+	if swamps then hint_scan(now) end
 end
 
 local function reset()
@@ -344,11 +345,11 @@ end
 function on_game_start()
 	if started or not rawget(_G, "coop") then return end
 	started = true
-	try_step("install DAO", install_dao)
-	try_step("install RF", install_rf)
-	try_step("install Swamps", install_swamps)
+	core.install(TAG, "install DAO", install_dao)
+	core.install(TAG, "install RF", install_rf)
+	core.install(TAG, "install Swamps", install_swamps)
 	if packages or swamps then
-		try_step("register updates", function()
+		core.install(TAG, "register updates", function()
 			RegisterScriptCallback("actor_on_update", actor_on_update)
 			RegisterScriptCallback("load_state", reset)
 		end)

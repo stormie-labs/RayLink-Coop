@@ -3,7 +3,7 @@
 local function allow_trip()
 	if not (coop_mode.group_travels() and coop_mode.is_player_mirror()) then return true end
 	local core = coop_economy_core
-	core.tip(core.tr("st_coop_core_go_host_only", "Only the host can move the group."))
+	core.tip(coop_util.tr("st_coop_core_go_host_only", "Only the host can move the group."))
 	return false
 end
 

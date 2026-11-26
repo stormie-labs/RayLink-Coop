@@ -126,7 +126,6 @@ coop.game = {
 		end
 		return n, refused
 	end,
-	release_cvars = function() return 0 end,
 	machine_cvar = function(name) return GAME.machine[name] end,
 	set_world_faction = function(f) GAME.faction = f; return true end,
 	world_faction = function() return GAME.faction end,

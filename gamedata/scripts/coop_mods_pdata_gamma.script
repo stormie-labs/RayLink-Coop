@@ -1,5 +1,5 @@
 -- Ядро: без проверок режима (docs/MODES.md).
--- Dev 57 G1-1: personal GAMMA progress/preferences, carried by coop_mods_pdata.
+-- Personal GAMMA progress/preferences, carried by coop_mods_pdata.
 -- Co-op's owner keeps client records; Server's world keeps the same records.
 -- Only the player's machine restores live mod variables. No world decisions or
 -- new messages: collect()/keep_for_load() already carry the registered keys.
@@ -13,17 +13,17 @@ local choices = {} -- host-numbered device id -> host-numbered trader id
 local pending_choices = nil
 local CHOICES = "coop_gamma_trading_choices"
 
-local function C() return coop_mods_core end
-local function P() return coop_mods_pdata end
+local core = coop_mods_core
+local pdata = coop_mods_pdata
 
 local function player_active()
-    return C().active() and coop_mode.actor_is_player()
+    return core.active() and coop_mode.actor_is_player()
 end
 
 -- Pdata replaces m_data before load_state callbacks. Hook that operation rather
 -- than depending on the registration order of another load_state callback.
 local function after_restore(name, restore)
-    C().wrap(P(), "apply_loaded", name .. ".pdata_restore", function(orig)
+    core.wrap(pdata, "apply_loaded", name .. ".pdata_restore", function(orig)
         return function(m, ...)
             local result = orig(m, ...)
             if player_active() and type(m) == "table" then restore(m) end
@@ -35,21 +35,21 @@ end
 local function install(name, step)
     if installed[name] then return end
     local ok, why = pcall(function()
-        local module = C().mod(name)
+        local module = core.mod(name)
         if not module then return end
         step(module)
         installed[name] = true
     end)
-    if not ok then C().report("pdata_gamma", name, why) end
+    if not ok then core.report("pdata_gamma", name, why) end
 end
 
 local function camo(module)
     local subs = { "unlocked_sections", "unlocked_ids", "unlocked_named_ids", "starting_faction" }
-    P().register("z_3dss_gamma_camo_system", {
+    pdata.register("z_3dss_gamma_camo_system", {
         subs = subs,
         prime = { "z_3dss_gamma_camo_system" },
     })
-    local wrapped, original = C().wrap(module, "load_state", "z_3dss_gamma_camo_system.load_state", function(orig)
+    local wrapped, original = core.wrap(module, "load_state", "z_3dss_gamma_camo_system.load_state", function(orig)
         return function(m, ...)
             local data = m.z_3dss_gamma_camo_system
             if player_active() and type(data) == "table" and not data.selections then
@@ -69,15 +69,15 @@ local function camo(module)
             return orig(m, ...)
         end
     end)
-    if wrapped then C().swap_callback("load_state", original, module.load_state) end
+    if wrapped then core.swap_callback("load_state", original, module.load_state) end
 end
 
 local function bones(module)
-    P().register("z_3dss_hide_bones", { prime = { "z_3dss_hide_bones" } })
+    pdata.register("z_3dss_hide_bones", { prime = { "z_3dss_hide_bones" } })
 end
 
 local function reticles(module)
-    P().register("z_3dss_reticle_profiles", { prime = { "z_3dss_reticle_profiles" } })
+    pdata.register("z_3dss_reticle_profiles", { prime = { "z_3dss_reticle_profiles" } })
 end
 
 local function bonus_count(value)
@@ -87,7 +87,7 @@ local function bonus_count(value)
 end
 
 local function rf(module)
-    P().register("tb_bonus_items", { get = function() return bonus_count(module.tb_bonus_items) end })
+    pdata.register("tb_bonus_items", { get = function() return bonus_count(module.tb_bonus_items) end })
     after_restore("tb_rf_receiver_packages", function(m)
         -- The mod otherwise loads nil when its version flag is set, or keeps the
         -- previous character's variable when that flag is absent.
@@ -97,7 +97,7 @@ local function rf(module)
 end
 
 local function dao(module)
-    P().register("drx_da_opened_articles", { get = function() return module.opened_articles end })
+    pdata.register("drx_da_opened_articles", { get = function() return module.opened_articles end })
     after_restore("drx_da_main", function(m)
         local articles = type(m.drx_da_opened_articles) == "table" and m.drx_da_opened_articles or {}
         if type(articles.encyclopedia_anomalies) ~= "table" then articles.encyclopedia_anomalies = {} end
@@ -109,34 +109,29 @@ local function dao(module)
 end
 
 local function lasers(module)
-    P().register("saved_lasers_id", { get = function()
-        local live = C().find_local(module, "saved_lasers")
+    pdata.register("saved_lasers_id", { get = function()
+        local live = core.find_local(module, "saved_lasers")
         return type(live) == "table" and live or {}
     end })
     -- Older saves used this name. Register it too, so a missing current key
     -- cannot make the mod fall back to the owner's table. Do not prime this mod:
     -- its save_state flushes the user's laser configuration to disk.
-    P().register("saved_lasers", { get = function() return {} end })
+    pdata.register("saved_lasers", { get = function() return {} end })
     after_restore("zzz_bas_laser_control", function(m)
         local live = type(m.saved_lasers_id) == "table" and m.saved_lasers_id
             or (type(m.saved_lasers) == "table" and m.saved_lasers or {})
         m.saved_lasers_id, m.saved_lasers = live, nil
-        local _, holder, index = C().find_local(module, "saved_lasers")
+        local _, holder, index = core.find_local(module, "saved_lasers")
         if holder then debug.setupvalue(holder, index, live) end
     end)
 end
 
 local function campfires(module)
-    P().register("visited_campfires", { get = function()
+    pdata.register("visited_campfires", { get = function()
         local scratch = {}
         module.save_state(scratch)
         return scratch.visited_campfires or {}
     end })
-end
-
-local function object_id(value)
-    return type(value) == "number" and value == value and value >= 1 and value <= 65534
-        and value == math.floor(value)
 end
 
 -- player_active(), first taking up the choices of a save loaded before the
@@ -148,42 +143,42 @@ local function own_choices()
 end
 
 local function computers(module)
-    P().register(CHOICES, { get = function() own_choices() return choices end })
+    pdata.register(CHOICES, { get = function() own_choices() return choices end })
     local function restore(m)
         local saved = type(m) == "table" and type(m[CHOICES]) == "table" and m[CHOICES] or {}
         if player_active() then choices = saved end
         -- No session yet: kept for it. Stand b57h: dropped here, the session fell
         -- back to the furniture's stale stock value, the next save wrote {}.
-        pending_choices = not C().active() and saved or nil
+        pending_choices = not core.active() and saved or nil
     end
     after_restore("bind_trading_computer", restore)
     RegisterScriptCallback("load_state", restore) -- also the co-op owner's ordinary save
     RegisterScriptCallback("save_state", function(m)
         if own_choices() then m[CHOICES] = choices end
     end)
-    C().wrap(module, "get_last_selected_trader", "bind_trading_computer.get_last_selected_trader", function(orig)
+    core.wrap(module, "get_last_selected_trader", "bind_trading_computer.get_last_selected_trader", function(orig)
         return function(id, ...)
             if not own_choices() then return orig(id, ...) end
-            if not object_id(id) then return nil end
-            local device = C().hid(id)
-            if not object_id(device) then return nil end
+            if not core.object_id(id) then return nil end
+            local device = core.hid(id)
+            if not core.object_id(device) then return nil end
             local trader = choices[device]
             -- Older saves kept the owner's choice on the furniture itself.
             if trader == nil and not coop_mode.is_player_mirror() then return orig(id, ...) end
-            if not object_id(trader) then return nil end
-            local local_id = C().lid(trader)
-            return object_id(local_id) and local_id or nil
+            if not core.object_id(trader) then return nil end
+            local local_id = core.lid(trader)
+            return core.object_id(local_id) and local_id or nil
         end
     end)
-    C().wrap(module, "set_last_selected_trader", "bind_trading_computer.set_last_selected_trader", function(orig)
+    core.wrap(module, "set_last_selected_trader", "bind_trading_computer.set_last_selected_trader", function(orig)
         return function(id, trader, ...)
             if not own_choices() then return orig(id, trader, ...) end
             -- Local UI preferences, not a client request or authority to trade.
             -- Both ids cross the save boundary in host numbering.
             trader = tonumber(trader)
-            if not object_id(id) or not object_id(trader) then return end
-            local device, selected = C().hid(id), C().hid(trader)
-            if object_id(device) and object_id(selected) then choices[device] = selected end
+            if not core.object_id(id) or not core.object_id(trader) then return end
+            local device, selected = core.hid(id), core.hid(trader)
+            if core.object_id(device) and core.object_id(selected) then choices[device] = selected end
         end
     end)
 end

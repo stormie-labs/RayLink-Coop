@@ -71,14 +71,14 @@ local N = { check = 0, reserve = 0, commit = 0, rollback = 0 }
 local served = X.serve("demo", {
 	check = function(t, from, who)
 		N.check = N.check + 1
-		local id = X.wire_id(t.i)
+		local id = coop_mods_core.wire_id(t.i)
 		local se = id and SE[id]
 		return se ~= nil and who ~= nil and se.parent_id == who:id(), "not his item"
 	end,
 	reserve = function(t, from, who)
 		N.reserve = N.reserve + 1
 		if t.fail_reserve then return nil, "busy" end
-		local id = X.wire_id(t.i)
+		local id = coop_mods_core.wire_id(t.i)
 		return { ids = { id }, spent = t.spend and { id } or nil, id = id }
 	end,
 	commit = function(t, from, who, token)
@@ -93,8 +93,8 @@ check(served == true, "serve accepts an exchange")
 check(X.serve("bad kind!", { commit = function() end }) == false and X.serve("nocommit", {}) == false,
 	"serve refuses a malformed kind and a spec without commit")
 
-check(X.wire_id(500) == 500 and X.wire_id(0 / 0) == nil and X.wire_id(1.5) == nil and X.wire_id(65535) == nil
-	and X.wire_id(-1) == nil and X.wire_id("500") == nil and X.wire_id(nil) == nil, "wire_id: whole numbers 1..65534 only")
+check(coop_mods_core.wire_id(500) == 500 and coop_mods_core.wire_id(0 / 0) == nil and coop_mods_core.wire_id(1.5) == nil and coop_mods_core.wire_id(65535) == nil
+	and coop_mods_core.wire_id(-1) == nil and coop_mods_core.wire_id("500") == nil and coop_mods_core.wire_id(nil) == nil, "wire_id: whole numbers 1..65534 only")
 
 if name == "hostplay" or name == "srv_map" then
 	if name == "srv_map" then

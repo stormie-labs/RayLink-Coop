@@ -386,8 +386,7 @@ end
 -- Run parser and guard regressions offline against the real PowerShell function bodies.
 -- Generate the native-shaped status log from the Lua entry points above.
 local function powershell_regressions()
-	local output = os.getenv("COOP_LUA_OUT") or "temp/lua/out"
-	local prefix = output .. "/s7_ps_regression"
+	local prefix = dofile("tests/lua/support/scratch.lua") .. "s7_ps_regression"
 	local log = assert(io.open(prefix .. ".log", "w"))
 	for i = log_before + 1, #world.log do log:write(world.log[i], "\n") end
 	log:close()

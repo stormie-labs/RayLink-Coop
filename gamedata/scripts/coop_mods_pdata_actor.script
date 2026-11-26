@@ -1,5 +1,5 @@
 -- Ядро: без проверок режима (docs/MODES.md).
--- Dev 57 G1-4: personal drug timers, base portrait and Lucifer state.
+-- Personal drug timers, base portrait and Lucifer state.
 -- Each player supplies their own pdata. A server ghost supplies none.
 
 local started = false
@@ -14,9 +14,8 @@ local MAX_REMAINING = 7 * 24 * 3600 -- game seconds, finite even with malformed 
 local converting = setmetatable({}, { __mode = "k" })
 local SPAWN_TIMEOUT_MS = 10000 -- the item request can still be in flight without a leased id
 
-local function C() return coop_mods_core end
-local function active() return C().active() end
-local function plays_actor() return active() and coop_mode.actor_is_player() end
+local core = coop_mods_core
+local function plays_actor() return core.active() and coop_mode.actor_is_player() end
 local function own_actor() return plays_actor() and db.actor end
 local function game_seconds() return utils_data.CTimeToSec(game.get_game_time()) end
 local function finite(n)
@@ -78,16 +77,16 @@ local function restore_actor(b)
 end
 
 local function install_stock()
-	local asm = C().mod("alife_storage_manager")
-	C().wrap(asm, "on_before_load_state", "pdata_actor.before_load", function(orig)
+	local asm = core.mod("alife_storage_manager")
+	core.wrap(asm, "on_before_load_state", "pdata_actor.before_load", function(orig)
 		return function(...)
 			local r = orig(...)
 			-- Script storage precedes actor spawn. Hold it even without db.actor;
 			-- only restore_actor, once the player's binder exists, may consume it.
-			if active() then
+			if core.active() then
 				loaded, pending = asm.get_state(), true
 				if coop_mode.is_player_mirror() then
-					local cid = C().hid(0)
+					local cid = core.hid(0)
 					if not finite(cid) or cid <= 0 or cid >= 65535 or cid % 1 ~= 0 then
 						loaded = {} -- pdata left the host's top-level keys in place
 					end
@@ -96,10 +95,10 @@ local function install_stock()
 			return r
 		end
 	end)
-	local bs = C().mod("bind_stalker")
+	local bs = core.mod("bind_stalker")
 	local class = bs and bs.actor_binder
 	for _, name in ipairs({ "load_state", "load" }) do
-		C().wrap(class, name, "pdata_actor.binder." .. name, function(orig)
+		core.wrap(class, name, "pdata_actor.binder." .. name, function(orig)
 			return function(b, ...)
 				if not plays_actor() then return orig(b, ...) end
 				capture_base(b)
@@ -109,14 +108,14 @@ local function install_stock()
 			end
 		end)
 	end
-	local ext = C().mod("bind_stalker_ext")
-	C().wrap(ext, "actor_on_reinit", "pdata_actor.reinit", function(orig)
+	local ext = core.mod("bind_stalker_ext")
+	core.wrap(ext, "actor_on_reinit", "pdata_actor.reinit", function(orig)
 		return function(b, ...)
 			if plays_actor() then capture_base(b) end
 			return orig(b, ...)
 		end
 	end)
-	C().wrap(ext, "actor_on_first_update", "pdata_actor.first_update", function(orig)
+	core.wrap(ext, "actor_on_first_update", "pdata_actor.first_update", function(orig)
 		return function(b, ...)
 			if plays_actor() then
 				capture_base(b)
@@ -126,8 +125,8 @@ local function install_stock()
 			return orig(b, ...)
 		end
 	end)
-	local sm = C().mod("surge_manager")
-	C().wrap(sm and sm.CSurgeManager, "hit_power", "pdata_actor.drug_protection", function(orig)
+	local sm = core.mod("surge_manager")
+	core.wrap(sm and sm.CSurgeManager, "hit_power", "pdata_actor.drug_protection", function(orig)
 		return function(self, ...)
 			if own_actor() then
 				restore_actor(db.actor_binder)
@@ -141,35 +140,35 @@ local function install_stock()
 end
 
 local function install_lucifer()
-	local M = C().mod("perk_based_artefacts")
+	local M = core.mod("perk_based_artefacts")
 	if not M then return end
 	coop_mods_pdata.register(LUCIFER_KEY, { get = current_lucifer })
 	local function read(orig)
 		return function(k, ...)
-			if k == "lucifer_active" and active() then return has_lucifer() end
+			if k == "lucifer_active" and core.active() then return has_lucifer() end
 			return orig(k, ...)
 		end
 	end
-	local original, holder, index = C().find_local(M, "has_alife_info")
+	local original, holder, index = core.find_local(M, "has_alife_info")
 	if type(original) == "function" and holder then
 		local probe = { read = original }
-		if C().wrap(probe, "read", "pdata_actor.pba.has_alife_info", read) then
+		if core.wrap(probe, "read", "pdata_actor.pba.has_alife_info", read) then
 			debug.setupvalue(holder, index, probe.read) -- the mod shares this upvalue between its perk functions
 		end
 	else
-		C().wrap(M, "has_alife_info", "pdata_actor.pba.has_alife_info", read)
+		core.wrap(M, "has_alife_info", "pdata_actor.pba.has_alife_info", read)
 	end
 	for _, name in ipairs({ "give_info", "disable_info" }) do
-		C().wrap(M, name, "pdata_actor.pba." .. name, function(orig)
+		core.wrap(M, name, "pdata_actor.pba." .. name, function(orig)
 			return function(k, ...)
-				if k == "lucifer_active" and active() then
+				if k == "lucifer_active" and core.active() then
 					return -- no shared info portion is written or removed
 				end
 				return orig(k, ...)
 			end
 		end)
 	end
-	C().wrap(M.artefact_on_equip_functions, "af_fire_loop", "pdata_actor.pba.fire_loop", function(orig)
+	core.wrap(M.artefact_on_equip_functions, "af_fire_loop", "pdata_actor.pba.fire_loop", function(orig)
 		return function(a, ...)
 			if a and a == own_actor() and not has_lucifer() then
 				local now = time_global()
@@ -186,18 +185,14 @@ local function save_state(m)
 	if not own_actor() then return end
 	m[TIMER_KEY], m[ICON_KEY], m[LUCIFER_KEY] = current_timers(), current_icon(), current_lucifer()
 end
-local function step(name, f)
-	local ok, err = pcall(f)
-	if not ok then C().report("pdata_actor", name, err) end
-end
 function on_game_start()
 	if started then return end
 	started = true
-	step("stock", function()
+	core.install("pdata_actor", "stock", function()
 		coop_mods_pdata.register(TIMER_KEY, { get = current_timers })
 		coop_mods_pdata.register(ICON_KEY, { get = current_icon })
 		install_stock()
 	end)
-	step("lucifer", install_lucifer)
-	step("save", function() RegisterScriptCallback("save_state", save_state) end)
+	core.install("pdata_actor", "lucifer", install_lucifer)
+	core.install("pdata_actor", "save", function() RegisterScriptCallback("save_state", save_state) end)
 end

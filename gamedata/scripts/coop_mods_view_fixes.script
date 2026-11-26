@@ -1,19 +1,16 @@
 -- Ядро: без проверок режима (docs/MODES.md)
 -- The world owner clears the Tasks Guide offer, and the level authority updates corpse search after drops.
 
-local function C() return coop_mods_core end
+local core = coop_mods_core
+local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
 
 local GUIDE_CLOSE = "view_guide_close"
 local TALK_WINDOW_MS = 5000
 
-local function npc_id_ok(id)
-	return type(id) == "number" and id > 0 and id < 65535 and id % 1 == 0
-end
-
 local function install_guide_close()
-	local mod = C().mod("zzz_tasks_guide")
-	local close = C().fn(mod, "actor_on_leave_dialog")
-	local _, holder, slot = C().find_local(mod, "previous_task")
+	local mod = core.mod("zzz_tasks_guide")
+	local close = core.fn(mod, "actor_on_leave_dialog")
+	local _, holder, slot = core.find_local(mod, "previous_task")
 	if not (close and holder) then return end
 
 	local function current_offer()
@@ -27,48 +24,46 @@ local function install_guide_close()
 		debug.setupvalue(holder, slot, nil)
 	end
 
-	C().on(GUIDE_CLOSE, function(t, from)
+	core.on(GUIDE_CLOSE, function(t, from)
 		-- Only a process with both the offer and the authoritative dialog record can clear the spot.
 		if not coop_mode.decides_world() or not coop_mode.leads_here() then return end
 		local id = tonumber(t.n)
-		local lid = npc_id_ok(id) and C().lid(id)
-		local api = C().engine()
-		local talked = lid and type(api.talk_recent) == "function"
-			and api.talk_recent(from, id, TALK_WINDOW_MS) == true
+		local lid = core.object_id(id) and core.lid(id)
+		local talked = lid and api.talk_recent(from, id, TALK_WINDOW_MS) == true
 		if not coop_trust.pass(GUIDE_CLOSE, talked, "peer %d closed an unverified guide dialog for NPC %s", from, tostring(id)) then
 			return
 		end
 		-- The removal still needs the engine's talk record when trust is in log mode.
 		if talked then clear_offer(lid) end
 	end, "host")
-	C().set_limit(GUIDE_CLOSE, 4, 2)
+	core.set_limit(GUIDE_CLOSE, 4, 2)
 
-	local wrapped, old = C().wrap(mod, "actor_on_leave_dialog", "zzz_tasks_guide.actor_on_leave_dialog", function(orig)
+	local wrapped, old = core.wrap(mod, "actor_on_leave_dialog", "zzz_tasks_guide.actor_on_leave_dialog", function(orig)
 		return function(id, ...)
-			if not C().active() then return orig(id, ...) end
+			if not core.active() then return orig(id, ...) end
 			if coop_mode.leads_here() and coop_mode.actor_is_player() then
 				return clear_offer(id, ...)
 			end
-			if coop_mode.is_player_mirror() and npc_id_ok(id) then
-				local hid = C().hid(id)
-				if npc_id_ok(hid) then C().to_host(GUIDE_CLOSE, { n = hid }) end
+			if coop_mode.is_player_mirror() and core.object_id(id) then
+				local hid = core.hid(id)
+				if core.object_id(hid) then core.to_host(GUIDE_CLOSE, { n = hid }) end
 			end
 		end
 	end)
-	if wrapped then C().swap_callback("actor_on_leave_dialog", old, mod.actor_on_leave_dialog) end
+	if wrapped then core.swap_callback("actor_on_leave_dialog", old, mod.actor_on_leave_dialog) end
 end
 
 local function install_corpse_drop()
-	local mod = C().mod("xr_corpse_detection")
-	local set_valuable_loot = C().fn(mod, "set_valuable_loot")
+	local mod = core.mod("xr_corpse_detection")
+	local set_valuable_loot = core.fn(mod, "set_valuable_loot")
 	if not set_valuable_loot then return end
 
 	RegisterScriptCallback("npc_on_item_drop", function(npc)
-		if not (C().active() and coop_mode.leads_here() and npc and IsStalker(npc) and not npc:alive()) then return end
+		if not (core.active() and coop_mode.leads_here() and npc and IsStalker(npc) and not npc:alive()) then return end
 		local id = npc:id()
 		-- Several drops in one transfer share this event. Look up the corpse again after the inventory changes.
 		CreateTimeEvent("coop_mods_view_fixes", "corpse_" .. id, 0, function()
-			if not (C().active() and coop_mode.leads_here()) then return true end
+			if not (core.active() and coop_mode.leads_here()) then return true end
 			local corpse = level.object_by_id(id)
 			local lootable = mod.lootable_table
 			if corpse and IsStalker(corpse) and not corpse:alive() and type(lootable) == "table" then
@@ -83,12 +78,7 @@ local function install_corpse_drop()
 	end)
 end
 
-local function start_step(name, install)
-	local ok, err = pcall(install)
-	if not ok then printf("! [coop_mods_view_fixes] %s failed: %s", name, tostring(err)) end
-end
-
 function on_game_start()
-	start_step("Tasks Guide", install_guide_close)
-	start_step("corpse loot", install_corpse_drop)
+	core.install("view_fixes", "Tasks Guide", install_guide_close)
+	core.install("view_fixes", "corpse loot", install_corpse_drop)
 end

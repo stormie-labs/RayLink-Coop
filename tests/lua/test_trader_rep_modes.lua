@@ -7,8 +7,9 @@
 dofile("tests/lua/support/harness_economy.lua")
 local modes = dofile("tests/lua/support/modes.lua")
 dofile("tests/lua/support/mod_source.lua")
-assert(os.execute("python -B tests/lua/support/trader_catalog.py") == 0, "trader VFS catalog failed")
-local catalog = dofile("temp/trader_reputation/catalog.lua")
+local catalog_file = dofile("tests/lua/support/scratch.lua") .. "catalog.lua"
+assert(os.execute("python -B tests/lua/support/trader_catalog.py " .. catalog_file) == 0, "trader VFS catalog failed")
+local catalog = dofile(catalog_file)
 
 -- GAMMA profiles with the four tiers of one faction
 local profiles, factions, seen_faction = {}, {}, {}

@@ -1,5 +1,5 @@
 -- Ядро: без проверок режима (docs/MODES.md)
--- Dev 57 G4-7: the stock portable container requests a hidden_box from the authority of the player's map.
+-- The stock portable container requests a hidden_box from the authority of the player's map.
 -- The playing host has both the inventory and the saved link. A map authority checks the same inventory,
 -- and economy.se carries the box's entity data to the world owner and the other maps.
 
@@ -12,8 +12,8 @@ local NEAR_SQ = 5 ^ 2 -- leave room within the engine's 15 m item-move reach
 local installed = false
 local latest
 
-local function C() return coop_mods_core end
-local function X() return coop_mods_xchg end
+local core = coop_mods_core
+local xchg = coop_mods_xchg
 
 local function item_section(section)
 	return ini_sys:r_string_ex(section, "use1_functor") == "bind_container.access_inventory"
@@ -27,9 +27,9 @@ local function hidden_box(id)
 end
 
 local function target(t, from, who)
-	local id = X().wire_id(t.i)
+	local id = core.wire_id(t.i)
 	local item = id and alife_object(id)
-	if not (who and coop_mode.where(from) == "here" and who:alive() and item and C().root_of(id) == who:id()) then
+	if not (who and coop_mode.where(from) == "here" and who:alive() and item and core.root_of(id) == who:id()) then
 		return nil, "stock_box_owner"
 	end
 	if not item_section(item:section_name()) then return nil, "stock_box_section" end
@@ -109,7 +109,7 @@ end
 local function complete(t, _, who, token)
 	local box_id, why = prepare_box(who, token)
 	if not box_id then return false, why end
-	local wire_box = C().hid(box_id)
+	local wire_box = core.hid(box_id)
 	if not wire_box then return false, "stock_box_id" end
 	if not token.linked then
 		se_save_var(box_id, nil, LINK, t.i)
@@ -128,7 +128,7 @@ end
 local function open_after_answer(binder, actor, item_id, opened, box_id)
 	local deadline = time_global() + OPEN_MS
 	CreateTimeEvent("coop_stock_box", "open", 0, function()
-		if latest ~= opened or not C().active() or db.actor ~= actor or not local_item(item_id, actor)
+		if latest ~= opened or not core.active() or db.actor ~= actor or not local_item(item_id, actor)
 			or time_global() >= deadline then
 			if latest == opened then latest = nil end
 			return true
@@ -145,9 +145,9 @@ local function open_after_answer(binder, actor, item_id, opened, box_id)
 end
 
 local function install()
-	local binder = C().mod("bind_container")
-	if not C().fn(binder, "access_inventory") or type(binder.containers) ~= "table" then return end
-	if not X().serve(KIND, {
+	local binder = core.mod("bind_container")
+	if not core.fn(binder, "access_inventory") or type(binder.containers) ~= "table" then return end
+	if not xchg.serve(KIND, {
 		check = function(t, from, who)
 			local token, why = target(t, from, who)
 			return token ~= nil, why
@@ -158,19 +158,19 @@ local function install()
 			if hidden_box(token.created) then alife_release_id(token.created) end
 		end,
 	}) then return end
-	C().wrap(binder, "access_inventory", "xchg_stock.access_inventory", function(original)
+	core.wrap(binder, "access_inventory", "xchg_stock.access_inventory", function(original)
 		return function(obj, ...)
-			if not C().active() then return original(obj, ...) end
+			if not core.active() then return original(obj, ...) end
 			local actor, id = db.actor, obj and obj:id()
 			if not (actor and id and local_item(id, actor)) then return end
-			local wire_id = C().hid(id)
-			if not wire_id or X().busy(KIND, wire_id) then return end
+			local wire_id = core.hid(id)
+			if not wire_id or xchg.busy(KIND, wire_id) then return end
 			local opened = {}
 			latest = opened
 			RemoveTimeEvent("coop_stock_box", "open")
-			local op = X().ask(KIND, { i = wire_id, key = wire_id }, function(ok, result)
+			local op = xchg.ask(KIND, { i = wire_id, key = wire_id }, function(ok, result)
 				if latest ~= opened then return end
-				local box_id = ok and type(result) == "table" and X().wire_id(result.b)
+				local box_id = ok and type(result) == "table" and core.wire_id(result.b)
 				if box_id then open_after_answer(binder, actor, id, opened, box_id) else latest = nil end
 			end)
 			if not op and latest == opened then latest = nil end
@@ -181,6 +181,5 @@ end
 
 function on_game_start()
 	if installed or not rawget(_G, "coop") then return end
-	local ok, err = pcall(install)
-	if not ok then printf("! [coop_mods_xchg_stock] install: %s", tostring(err)) end
+	core.install("xchg_stock", "install", install)
 end

@@ -17,7 +17,7 @@ do
 	local tasks = load_mode(M)
 	local calls = 0
 	M.env.xr_effects.test_map_task_fx = function() calls = calls + 1 end
-	tasks.forward_allow("test_map_task_fx")
+	M.env.coop_tasks_rewards.forward_allow("test_map_task_fx")
 	tasks.on_game_start()
 	M.ini.test_shared = {}
 	M.tm:give_task("test_shared", 777)
@@ -63,7 +63,7 @@ do
 	value, scoped = tasks.with_participants({}, 0, stock, "participants")
 	check(value == "participants" and not scoped, "startup keeps the stock participants callback outside a coop reward scope")
 	local money = W.actor._money
-	tasks.give_to_peer(0, -7)
+	W.env.coop_tasks_items.give_to_peer(0, -7)
 	check(W.actor._money == money, "startup does not give the world ghost a story payout")
 	W.active = true
 	W.players = { { id = 1, avatar_id = 500 } }

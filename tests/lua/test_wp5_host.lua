@@ -10,6 +10,8 @@ check(DEV_DEBUG == false, "host in a session: debug mode is off too (R-6.6 on ev
 local host_fn = from_script("sim_board", "return function() bump('host') end")
 RegisterScriptCallback("actor_on_update", host_fn)
 coop_main.on_game_start()
+coop_env.on_game_start()
+coop_route.on_game_start() -- the tick service runs the emission tick
 
 SendScriptCallback("actor_on_update")
 check(C.host == 1, "host callbacks are not filtered on the host")

@@ -120,7 +120,7 @@ do
 	local WH, WC = load_script(H, "coop_world_weather"), load_script(C, "coop_world_weather")
 	WH.on_game_start()
 	WC.on_game_start()
-	C.env.coop_main.set_env_policy = function() end -- this harness exercises weather only
+	C.env.coop_env = { set_policy = function() end } -- this harness exercises weather only
 	load_script(C, "coop_srv_world").on_game_start()
 	step(H, C)
 	H.hour, C.hour = 13, 13

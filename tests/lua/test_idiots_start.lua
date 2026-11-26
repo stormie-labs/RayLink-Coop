@@ -26,6 +26,7 @@ local function boot(mode)
 	dofile("tests/lua/support/stubs.lua")
 	PASSES, FAILS = passes, fails
 	RAN, CONFIG, EVAL, STOCK_HIT = {}, nil, 0, 0
+	dofile("tests/lua/support/modes.lua").live(load_script_file("coop_mode"))
 	load_coop_main()
 	-- z_idiots_patches.script, file scope
 	AddScriptCallback("idiots_on_start")

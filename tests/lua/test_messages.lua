@@ -245,10 +245,10 @@ check(#Hm.stock == 1 and #Am.stock == 1 and #Bm.stock == 1 and #Hm.feed + #Am.fe
 	"everybody gets the stock line, nobody is named")
 
 print("== who caused an event: one rule for the lines and for any other report")
-check(Hm.env.coop_tasks.news_actor("new", "nt_2") == 0, "a task given in the host's dialog: the host (0)")
-check(Hm.env.coop_tasks.news_actor("new", "nt_1") == 2, "a task a client asked for: that client")
-check(Hm.env.coop_tasks.news_actor("new", "nt_3") == nil, "a task a script gave: nobody")
-check(Bm.env.coop_tasks.news_actor("new", "nt_1") == nil, "a client does not know (host only)")
+check(Hm.env.coop_tasks_news.news_actor("new", "nt_2") == 0, "a task given in the host's dialog: the host (0)")
+check(Hm.env.coop_tasks_news.news_actor("new", "nt_1") == 2, "a task a client asked for: that client")
+check(Hm.env.coop_tasks_news.news_actor("new", "nt_3") == nil, "a task a script gave: nobody")
+check(Bm.env.coop_tasks_news.news_actor("new", "nt_1") == nil, "a client does not know (host only)")
 
 -- ---------------------------------------------------------------- tasks: complete
 print("== a client turns a task in")

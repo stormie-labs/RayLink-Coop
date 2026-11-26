@@ -329,6 +329,7 @@ end
 
 -- ------------------------------------------------------------------------------------------------ schema_party_defaults_match_rules
 do
+	SAFE.coop_util = SAFE.coop_util or load_module("coop_util", { printf = function() end })
 	local core, cerr = load_module("coop_economy_core", { printf = function() end })
 	check(core ~= nil and type(core.RULES) == "table", "coop_economy_core loads with stubs" .. (cerr and (": " .. tostring(cerr)) or ""))
 	if core and core.RULES then

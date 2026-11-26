@@ -1,5 +1,5 @@
 -- Ядро: без проверок режима (docs/MODES.md)
--- Dev 57 G10-4: keep shared mod data with its authority and derive prompts from the local player's view.
+-- Keep shared mod data with its authority and derive prompts from the local player's view.
 -- Co-op: the playing host creates the world's FFT zones and reads the confirmed workshop inventory.
 -- Server: the world owner creates FFT zones from the world graph. Each map that leads a box reports its
 -- inventory to the world owner, which saves and relays the result. Local views need only the player's map.
@@ -15,7 +15,7 @@ local fft, workshop
 local world, next_fft, next_workshop
 local pending_boxes = {}
 
-local function C() return coop_mods_core end
+local core = coop_mods_core
 
 local function bind_world(now)
 	local data = alife_storage_manager.get_state()
@@ -86,7 +86,7 @@ local function migrate_fft()
 		mod.spawned_travel_zones = old_zones
 		set_fft_version(old_version)
 		for _, id in ipairs(created) do alife_release_id(id) end
-		C().log("world views", "FFT migration incomplete: %s", tostring(err or "missing zones"))
+		core.log("world views", "FFT migration incomplete: %s", tostring(err or "missing zones"))
 		return false
 	end
 	for name, zone in pairs(old_zones or {}) do
@@ -100,7 +100,7 @@ local function fft_tick(now)
 	if not (fft and now >= next_fft) then return end
 	next_fft = now + 5000
 	if not coop_mode.decides_world() then
-		if coop_mode.is_player_mirror() and not fft.received then C().to_host(FFT_REQUEST, {}) end
+		if coop_mode.is_player_mirror() and not fft.received then core.to_host(FFT_REQUEST, {}) end
 		return
 	end
 	local mod = fft.mod
@@ -112,14 +112,14 @@ local function fft_tick(now)
 		fft.ready = existing or migrate_fft()
 	end
 	if fft.ready then
-		fft.packed = fft.packed or C().ser({ version = fft_version(), zones = mod.spawned_travel_zones })
-		if fft.packed and not fft.sent then fft.sent = C().send_big(FFT_EVENT, fft.packed, -1) end
+		fft.packed = fft.packed or core.ser({ version = fft_version(), zones = mod.spawned_travel_zones })
+		if fft.packed and not fft.sent then fft.sent = core.send_big(FFT_EVENT, fft.packed, -1) end
 	end
 end
 
 local function receive_fft(packed, from)
 	if from ~= 0 or coop_mode.decides_world() then return end
-	local snap = C().deser(packed)
+	local snap = core.deser(packed)
 	if type(snap) ~= "table" or not integer(snap.version, 1, 99999999) or type(snap.zones) ~= "table" then return end
 	for name, zone in pairs(snap.zones) do
 		if type(name) ~= "string" or type(zone) ~= "table" or type(zone.loc) ~= "string"
@@ -134,33 +134,33 @@ end
 local function fft_request(t, from)
 	local valid = coop_mode.seat_plays(from) and next(t) == nil
 	if not coop_trust.pass("wv_fft_request", valid, "peer %s sent an invalid FFT snapshot request", tostring(from)) then return end
-	if bind_world(time_global()) and fft.packed then C().send_big(FFT_EVENT, fft.packed, from) end
+	if bind_world(time_global()) and fft.packed then core.send_big(FFT_EVENT, fft.packed, from) end
 end
 
 local function install_fft()
-	local mod = C().mod("game_fast_travel")
-	local _, fn, idx = C().upvalue(C().fn(mod, "spawn_fast_travel_zones"), "zone_spawn_version")
+	local mod = core.mod("game_fast_travel")
+	local _, fn, idx = core.upvalue(core.fn(mod, "spawn_fast_travel_zones"), "zone_spawn_version")
 	if not fn then return end
-	local ok, spawn_zones = C().wrap(mod, "spawn_fast_travel_zones", "game_fast_travel.spawn_fast_travel_zones", function(orig)
+	local ok, spawn_zones = core.wrap(mod, "spawn_fast_travel_zones", "game_fast_travel.spawn_fast_travel_zones", function(orig)
 		return function(...)
-			if not C().active() then return orig(...) end
+			if not core.active() then return orig(...) end
 		end
 	end)
 	if not ok then return end
 	fft = { mod = mod, version_fn = fn, version_idx = idx, spawn = spawn_zones }
-	C().on_big(FFT_EVENT, receive_fft, "client")
-	C().on(FFT_REQUEST, fft_request, "world")
-	C().set_limit(FFT_REQUEST, 2, 0.2)
+	core.on_big(FFT_EVENT, receive_fft, "client")
+	core.on(FFT_REQUEST, fft_request, "world")
+	core.set_limit(FFT_REQUEST, 2, 0.2)
 end
 
 -------------------------------------------------------------------------------
 -- NPE. The board is populated when smart terrains register, including offline ones.
 -------------------------------------------------------------------------------
 local function install_npe()
-	local mod = C().mod("npe_events")
-	C().wrap(mod, "on_near_smart_terrain", "npe_events.on_near_smart_terrain", function(orig)
+	local mod = core.mod("npe_events")
+	core.wrap(mod, "on_near_smart_terrain", "npe_events.on_near_smart_terrain", function(orig)
 		return function(name, distance, ...)
-			if not C().active() then return orig(name, distance, ...) end
+			if not core.active() then return orig(name, distance, ...) end
 			local actor = coop_mode.actor_is_player() and db.actor
 			local smart = SIMBOARD and SIMBOARD.smarts_by_names and SIMBOARD.smarts_by_names[name]
 			if not (actor and smart and smart.position) then return false end
@@ -197,8 +197,8 @@ local function store_parts(data, id, parts)
 end
 
 local function send_parts(snap, target)
-	local packed = C().ser(snap)
-	return packed and C().send_big(WORKSHOP_EVENT, packed, target)
+	local packed = core.ser(snap)
+	return packed and core.send_big(WORKSHOP_EVENT, packed, target)
 end
 
 local function valid_parts(snap)
@@ -229,11 +229,11 @@ local function receive_parts(packed, from)
 		return
 	end
 
-	local snap = C().deser(packed)
+	local snap = core.deser(packed)
 	local valid = valid_parts(snap) and (not owns_world or snap.parts ~= false)
 	if owns_world and not coop_trust.pass("wv_workshop_snapshot", valid, "peer %s sent an invalid workshop snapshot", tostring(from)) then return end
 	if not valid then return end
-	local id = C().lid(snap.id)
+	local id = core.lid(snap.id)
 	local data = id and bind_world(time_global())
 	if not data then return end
 	if owns_world then
@@ -272,7 +272,7 @@ local function scan_workshops(data, owns_world)
 		local box = integer(local_id, 1, 65534) and level.object_by_id(local_id)
 		if box and box:section() == "workshop_stash" then
 			local parts = read_parts(box)
-			local id = C().hid(local_id)
+			local id = core.hid(local_id)
 			local se = id and alife_object(local_id)
 			if se and #parts <= PARTS_LIMIT and not same_parts(indexed[local_id], parts) then
 				local snap = { id = id, name = se:name(), parts = parts }
@@ -301,8 +301,8 @@ local function workshop_tick(now)
 end
 
 local function forget_box(se)
-	if not (se and C().active() and coop_mode.decides_world() and se:section_name() == "workshop_stash") then return end
-	local data, id = bind_world(time_global()), C().hid(se.id)
+	if not (se and core.active() and coop_mode.decides_world() and se:section_name() == "workshop_stash") then return end
+	local data, id = bind_world(time_global()), core.hid(se.id)
 	if data and data[PARTS_KEY] and data[PARTS_KEY][se.id] and id then
 		store_parts(data, se.id, false)
 		pending_boxes[id] = { id = id, name = se:name(), parts = false }
@@ -310,12 +310,12 @@ local function forget_box(se)
 end
 
 local function install_workshop_tooltip()
-	local ui = C().mod("utils_ui")
+	local ui = core.mod("utils_ui")
 	local seen = setmetatable({}, { __mode = "k" })
-	C().wrap(ui and ui.UIInfoItem, "Pass", "utils_ui.UIInfoItem.Pass (workshop)", function(orig)
+	core.wrap(ui and ui.UIInfoItem, "Pass", "utils_ui.UIInfoItem.Pass (workshop)", function(orig)
 		return function(info, obj, ...)
 			local show = orig(info, obj, ...)
-			if show and obj and C().active() then
+			if show and obj and core.active() then
 				local data = alife_storage_manager.get_state()
 				local index = data and data[PARTS_KEY]
 				-- Pass already accepted the same object. Clear its render cache without restarting the hover delay.
@@ -330,18 +330,18 @@ local function install_workshop_tooltip()
 end
 
 local function install_workshop()
-	local mod = C().mod("zone_keeper")
-	if not C().fn(mod, "LogItems") then return end
+	local mod = core.mod("zone_keeper")
+	if not core.fn(mod, "LogItems") then return end
 	local function leave_to_authority(orig)
 		return function(...)
-			if not C().active() then return orig(...) end
+			if not core.active() then return orig(...) end
 		end
 	end
-	C().wrap(mod, "LogItems", "zone_keeper.LogItems", leave_to_authority)
-	C().wrap(mod, "delete_store", "zone_keeper.delete_store", leave_to_authority)
+	core.wrap(mod, "LogItems", "zone_keeper.LogItems", leave_to_authority)
+	core.wrap(mod, "delete_store", "zone_keeper.delete_store", leave_to_authority)
 	coop_economy_mdata.register_world_key(PARTS_KEY)
-	C().set_limit(WORKSHOP_EVENT, 128, 64)
-	C().on_big(WORKSHOP_EVENT, receive_parts)
+	core.set_limit(WORKSHOP_EVENT, 128, 64)
+	core.on_big(WORKSHOP_EVENT, receive_parts)
 	RegisterScriptCallback("server_entity_on_unregister", forget_box)
 	workshop = true
 	install_workshop_tooltip()
@@ -351,23 +351,23 @@ end
 -- Dot Marks. Refresh the inventory before the existing marker code sets prompt visibility.
 -------------------------------------------------------------------------------
 local function install_dotmarks()
-	local dots = C().mod("dotmarks_main")
-	local hud = C().mod("ui_hud_dotmarks")
-	local read_items = C().fn(hud, "get_inventory_table")
-	if not (dots and read_items and C().fn(hud, "marker_loop_container_updates")) then return end
+	local dots = core.mod("dotmarks_main")
+	local hud = core.mod("ui_hud_dotmarks")
+	local read_items = core.fn(hud, "get_inventory_table")
+	if not (dots and read_items and core.fn(hud, "marker_loop_container_updates")) then return end
 	local scanned = setmetatable({}, { __mode = "k" })
 	local reading
 	-- The mod reads unsearched empty stashes again whenever its cache is nil. Reuse the same
 	-- observation during the marker update so their stock "unknown contents" prompt stays intact.
-	C().wrap(hud, "get_inventory_table", "ui_hud_dotmarks.get_inventory_table", function(orig)
+	core.wrap(hud, "get_inventory_table", "ui_hud_dotmarks.get_inventory_table", function(orig)
 		return function(obj, id, ...)
 			if reading and id == reading.id then return reading.items, reading.count end
 			return orig(obj, id, ...)
 		end
 	end)
-	C().wrap(hud, "marker_loop_container_updates", "ui_hud_dotmarks.marker_loop_container_updates", function(orig)
+	core.wrap(hud, "marker_loop_container_updates", "ui_hud_dotmarks.marker_loop_container_updates", function(orig)
 		return function(mark, obj, ...)
-			if not (C().active() and coop_mode.actor_is_player() and mark.can_display and obj
+			if not (core.active() and coop_mode.actor_is_player() and mark.can_display and obj
 				and not hud.is_body_claimed(mark)) then return orig(mark, obj, ...) end
 			local box = dots.init_inventory_box(mark.id)
 			if not box then return orig(mark, obj, ...) end
@@ -392,30 +392,25 @@ local function install_dotmarks()
 	end)
 end
 
-local function start_step(what, f, ...)
-	local ok, err = pcall(f, ...)
-	if not ok then C().report("world views", what, err) end
-end
-
 local function actor_on_update()
-	if not C().active() then
+	if not core.active() then
 		world = nil
 		return
 	end
 	if not coop_economy_core.live() then return end
 	local now = time_global()
 	if not bind_world(now) then return end
-	start_step("FFT tick", fft_tick, now)
-	start_step("workshop tick", workshop_tick, now)
+	core.install("world views", "FFT tick", fft_tick, now)
+	core.install("world views", "workshop tick", workshop_tick, now)
 end
 
 function on_game_start()
 	if not rawget(_G, "coop") then return end
-	start_step("install FFT", install_fft)
-	start_step("install NPE", install_npe)
-	start_step("install workshop", install_workshop)
-	start_step("install Dot Marks", install_dotmarks)
+	core.install("world views", "install FFT", install_fft)
+	core.install("world views", "install NPE", install_npe)
+	core.install("world views", "install workshop", install_workshop)
+	core.install("world views", "install Dot Marks", install_dotmarks)
 	if fft or workshop then
-		start_step("register tick", function() RegisterScriptCallback("actor_on_update", actor_on_update) end)
+		core.install("world views", "register tick", function() RegisterScriptCallback("actor_on_update", actor_on_update) end)
 	end
 end

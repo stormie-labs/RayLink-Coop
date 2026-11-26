@@ -235,7 +235,7 @@ check(m_calls:find("artefacts_off:k00_marsh", 1, true) and m_calls:find("artefac
 check(Hm.swapped and Hm.swapped[1] == "actor_on_interaction", "the handler in axr_main's table is the wrapped one")
 
 print("== a story reward of a condlist on a map server")
-Hm.env.coop_tasks.give_to_peer = function(peer, money) Hm.paid = { peer, money } end
+Hm.env.coop_tasks_items.give_to_peer = function(peer, money) Hm.paid = { peer, money } end
 -- the stock's shape: the map server names the reward by its condlist (R32 W7, coop_srv_quests_story)
 Ms.env.xr_logic.pick_section_from_condlist(Ms.actor, Ms.actor, stock_condlist("%=reward_money(500)%"))
 pump()

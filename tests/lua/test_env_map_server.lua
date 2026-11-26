@@ -61,6 +61,8 @@ load_script_file("coop_mode")
 load_script_file("coop_trust")
 load_script_file("coop_srv_world")
 coop_main.on_game_start()
+coop_env.on_game_start()
+coop_route.on_game_start() -- the tick service runs the emission tick
 modes.live(coop_mode)
 coop_mode.on_game_start()
 coop_srv_world.on_game_start()

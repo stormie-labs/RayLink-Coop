@@ -103,12 +103,23 @@ check(messages() - before == 1 and state(last()).condition == 0, name .. ": the 
 data[id].is_on = false
 check(frames(1) == 1 and state(last()).is_on == false, name .. ": switching off goes out at the same update")
 
--- Removal goes out at once, and the same record on a new object is not taken for the old one.
+-- Removal goes out at once, and the same record on a new object is not taken for the old one: removal forgets what
+-- went out (the record below is the one sent last, so only that forgetting lets it out within the repeat time).
+local kept = {}
+for k, v in pairs(data[id]) do kept[k] = v end
 before = messages()
 hf_obj_manager.delete_data(id)
 local gone = last()
 check(messages() - before == 1 and gone.x == true, name .. ": removal goes out at once")
-data[id] = { is_on = false, condition = 0 }
-check(frames(1) == 1, name .. ": a record after removal goes out at once")
+data[id] = kept
+check(frames(1) == 1, name .. ": the same record after removal goes out at once")
+check(frames(1) == 0, name .. ": and is not repeated on the next update")
+
+-- The end of the session forgets what went out: the next session sends the record again at once.
+local was = MODE
+MODE = "sp"
+frames(1)
+MODE = was
+check(frames(1) == 1, name .. ": after a session ends, the next one sends the unchanged record at once")
 
 done("mods_hf_lamp_data " .. name)

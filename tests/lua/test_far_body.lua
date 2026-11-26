@@ -115,14 +115,14 @@ ACTOR.object = function() return nil end
 IsItem = function() return nil end
 load_script_file("coop_tasks")
 local T = coop_tasks
-check(T.party_count("bandage") == 2, "party_count sees what a player on another level carries")
-check(T.party_count("nothing") == 0, "and not what he has not")
-check(T.party_object("quest_doc") and T.party_object("quest_doc"):id() == 901, "party_object finds his item")
-check(T.party_holds_id(901, "quest_doc") == true, "party_holds_id: the record of the item says who has it")
-check(T.party_holds_id(901, "other") == false, "of another section: no")
-check(T.party_holds_id(70) == false, "not an item of the group: no")
+check(coop_tasks_items.party_count("bandage") == 2, "party_count sees what a player on another level carries")
+check(coop_tasks_items.party_count("nothing") == 0, "and not what he has not")
+check(coop_tasks_items.party_object("quest_doc") and coop_tasks_items.party_object("quest_doc"):id() == 901, "party_object finds his item")
+check(coop_tasks_items.party_holds_id(901, "quest_doc") == true, "party_holds_id: the record of the item says who has it")
+check(coop_tasks_items.party_holds_id(901, "other") == false, "of another section: no")
+check(coop_tasks_items.party_holds_id(70) == false, "not an item of the group: no")
 local seen = 0
-T.party_inventory_walker(function() end)(ACTOR, function() seen = seen + 1 end, nil)
+coop_tasks_items.party_inventory_walker(function() end)(ACTOR, function() seen = seen + 1 end, nil)
 check(seen == 3, "the walker of tasks_multifetch goes through his inventory too")
 
 print("== Server: give_to_peer rolls a multi-use reward for a world-written body with no game object")
@@ -148,7 +148,7 @@ do
 	load_script_file("coop_item_entity_state").on_game_start()
 	local random = math.random
 	math.random = function(lo, hi) assert(lo == 1 and hi == 3); return 1 end
-	T.give_to_peer(1, 0, { "bandage" })
+	coop_tasks_items.give_to_peer(1, 0, { "bandage" })
 	math.random = random
 	check(created and created.parent == 500, "the reward is created under the player's record")
 	check(staged and staged.uses == 1 and processor.Uses[4000] == nil,
@@ -159,13 +159,13 @@ do
 	math.random = function(lo, hi) assert(lo == 1 and hi == 3); draws = draws + 1; return 2 end
 	for _, effect in ipairs({ "give_actor", "give_letter" }) do
 		staged, created = nil, nil
-		T.give_to_peer(1, 0, { "bandage" }, effect)
+		coop_tasks_items.give_to_peer(1, 0, { "bandage" }, effect)
 		check(created and created.parent == 500 and staged == nil and draws == 0,
 			"a reward shared from " .. effect .. " is made as that stock effect makes it: no roll")
 	end
 	for _, effect in ipairs({ "reward_item", "reward_random_item" }) do
 		staged, created = nil, nil
-		T.give_to_peer(1, 0, { "bandage" }, effect)
+		coop_tasks_items.give_to_peer(1, 0, { "bandage" }, effect)
 		check(created and staged and staged.uses == 2, "a reward shared from " .. effect .. " gets the stock roll")
 	end
 	math.random = random

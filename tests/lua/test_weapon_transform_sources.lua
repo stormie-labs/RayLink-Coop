@@ -4,7 +4,7 @@
 dofile("tests/lua/support/harness_npc.lua")
 local modes = dofile("tests/lua/support/modes.lua")
 
-local GAMMA = os.getenv("GAMMA_SCRIPTS") or "E:/RayLink2/gamma/gamedata/scripts"
+local GAMMA = os.getenv("GAMMA_SCRIPTS") or "GAMMA_SCRIPTS-is-not-set"
 local function read_source(name)
 	local path = GAMMA .. "/" .. name .. ".script"
 	local file = assert(io.open(path, "rb"), "GAMMA source required: " .. path)

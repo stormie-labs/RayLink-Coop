@@ -2,14 +2,9 @@
 -- Device intents go to the authority of the player's current map. The existing
 -- hf_data mirror carries the new state to the save and to the stock binders.
 
-local function object_id(id)
-	if type(id) == "number" and id > 0 and id < 65535 and id == math.floor(id) then
-		return id
-	end
-end
+local core = coop_mods_core
 
 local function install(module, method, verb)
-	local core = coop_mods_core
 	local binder = core.mod(module)
 	if not core.fn(binder, method) then return end
 	local manager = core.mod("hf_obj_manager")
@@ -19,8 +14,8 @@ local function install(module, method, verb)
 
 	local binding = module .. ".init"
 	local function toggle(t, from)
-		local wire_id = object_id(t.o)
-		local id = wire_id and object_id(core.lid(wire_id))
+		local wire_id = core.object_id(t.o)
+		local id = wire_id and core.object_id(core.lid(wire_id))
 		local obj = id and level.object_by_id(id)
 		local device = obj and ini_sys:r_string_ex(obj:section(), "script_binding") == binding
 		if not coop_trust.pass(verb .. "_target", device, "player #%s, object %s: no matching device",
@@ -44,7 +39,7 @@ local function install(module, method, verb)
 	core.wrap(binder, method, module .. "." .. method, function(orig)
 		return function(id, ...)
 			if not core.active() then return orig(id, ...) end
-			local wire_id = object_id(id) and object_id(core.hid(id))
+			local wire_id = core.object_id(id) and core.object_id(core.hid(id))
 			if not wire_id then return end
 			local t = { o = wire_id }
 			if coop_mode.leads_here() and coop_mode.actor_is_player() then
@@ -55,13 +50,8 @@ local function install(module, method, verb)
 	end)
 end
 
-local function start_step(module, method, verb)
-	local ok, err = pcall(install, module, method, verb)
-	if not ok then printf("! [coop_mods_hf_toggles] %s failed: %s", module, tostring(err)) end
-end
-
 function on_game_start()
 	if not rawget(_G, "coop") then return end
-	start_step("bind_alarm_system", "toggle_alarm_system", "hft_alarm")
-	start_step("bind_table_fan", "toggle_fan", "hft_fan")
+	core.install("hf_toggles", "bind_alarm_system", install, "bind_alarm_system", "toggle_alarm_system", "hft_alarm")
+	core.install("hf_toggles", "bind_table_fan", install, "bind_table_fan", "toggle_fan", "hft_fan")
 end

@@ -1,5 +1,5 @@
 -- Ядро: без проверок режима (docs/MODES.md)
--- Dev 57 G5-4. The level decider runs the cat's stock state machine and the engine relays its motions.
+-- The level decider runs the cat's stock state machine and the engine relays its motions.
 -- Lua sends sleep snapshots and individual meows to that map's players. Piano keys and autoplay share
 -- the same note event. The pianist hears the stock local playback while the decider routes other listeners.
 
@@ -9,7 +9,7 @@ local SNAPSHOT_MS = 3000
 local cat_state = setmetatable({}, { __mode = "k" }) -- tied to the lifetime of each binder wrapper
 local meow_serial = 0
 
-local function C() return coop_mods_core end
+local core = coop_mods_core
 
 local function in_range(value, low, high)
 	return type(value) == "number" and value >= low and value <= high
@@ -20,7 +20,7 @@ local function integer(value, low, high)
 end
 
 local function object_of(id, section)
-	local local_id = integer(id, 1, 65534) and C().lid(id)
+	local local_id = integer(id, 1, 65534) and core.lid(id)
 	local obj = local_id and level.object_by_id(local_id)
 	if obj and obj:section() == section then return obj end
 end
@@ -41,24 +41,24 @@ local function request_object(verb, t, from, section)
 	local obj = object_of(t.o, section)
 	local usable = obj and (section ~= CAT or cat_wrapper(obj) ~= nil)
 	if not checked(verb, "type", usable, from) or not usable then return end
-	local who = coop_mode.where(from) == "here" and C().avatar(from)
+	local who = coop_mode.where(from) == "here" and core.avatar(from)
 	if not checked(verb, "near", who and coop_mods_hf.near_ok(obj, who), from) or not who then return end
 	return obj
 end
 
 local function submit(verb, handler, data)
 	if coop_mode.leads_here() and coop_mode.actor_is_player() then
-		return handler(data, C().self_peer())
+		return handler(data, core.self_peer())
 	end
-	if coop_mode.is_player_mirror() then return C().to_host(verb, data) end
+	if coop_mode.is_player_mirror() then return core.to_host(verb, data) end
 end
 
 local function send_listeners(verb, data, except)
-	local me = C().self_peer()
-	for _, player in ipairs(C().players()) do
+	local me = core.self_peer()
+	for _, player in ipairs(core.players()) do
 		local peer = player.id
 		if peer ~= me and peer ~= except and coop_mode.where(peer) == "here" then
-			C().to_peer(peer, verb, data)
+			core.to_peer(peer, verb, data)
 		end
 	end
 end
@@ -86,7 +86,7 @@ local function publish_sleep(w)
 	if state.sleeping == s and state.refresh_at and now < state.refresh_at then return end
 	state.sleeping, state.refresh_at = s, now + SNAPSHOT_MS
 	-- Repeat the current state for late joiners and objects that were still coming online at the first send.
-	send_listeners("hf_cat_sleep", { o = C().hid(w.object:id()), s = s })
+	send_listeners("hf_cat_sleep", { o = core.hid(w.object:id()), s = s })
 end
 
 local function update_mirror(w, orig, ...)
@@ -116,25 +116,25 @@ local function cat_use(t, from)
 end
 
 local function install_cat()
-	local mod = C().mod("bind_hideout_cat")
+	local mod = core.mod("bind_hideout_cat")
 	local cls = mod and mod.hideout_cat_wrapper
-	if not (C().fn(mod, "toggle_hideout_cat") and C().fn(cls, "update") and C().fn(cls, "_enter_state")
-		and C().fn(cls, "_play_random_miau")) then return end
-	C().wrap(mod, "toggle_hideout_cat", "bind_hideout_cat.toggle_hideout_cat", function(orig)
+	if not (core.fn(mod, "toggle_hideout_cat") and core.fn(cls, "update") and core.fn(cls, "_enter_state")
+		and core.fn(cls, "_play_random_miau")) then return end
+	core.wrap(mod, "toggle_hideout_cat", "bind_hideout_cat.toggle_hideout_cat", function(orig)
 		return function(id, ...)
-			if not C().active() then return orig(id, ...) end
-			return submit("hf_cat_use", cat_use, { o = C().hid(id) })
+			if not core.active() then return orig(id, ...) end
+			return submit("hf_cat_use", cat_use, { o = core.hid(id) })
 		end
 	end)
-	C().wrap(cls, "_enter_state", "bind_hideout_cat.hideout_cat_wrapper._enter_state", function(orig)
+	core.wrap(cls, "_enter_state", "bind_hideout_cat.hideout_cat_wrapper._enter_state", function(orig)
 		return function(w, ...)
 			-- The constructor also enters idle. A mirror waits for the engine's authoritative motion.
-			if not C().active() or coop_mode.leads_here() then return orig(w, ...) end
+			if not core.active() or coop_mode.leads_here() then return orig(w, ...) end
 		end
 	end)
-	C().wrap(cls, "update", "bind_hideout_cat.hideout_cat_wrapper.update", function(orig)
+	core.wrap(cls, "update", "bind_hideout_cat.hideout_cat_wrapper.update", function(orig)
 		return function(w, ...)
-			if not C().active() then return orig(w, ...) end
+			if not core.active() then return orig(w, ...) end
 			if coop_mode.leads_here() then
 				local result = orig(w, ...)
 				if w.object then publish_sleep(w) end
@@ -143,23 +143,23 @@ local function install_cat()
 			if coop_mode.is_player_mirror() then return update_mirror(w, orig, ...) end
 		end
 	end)
-	C().wrap(cls, "_play_random_miau", "bind_hideout_cat.hideout_cat_wrapper._play_random_miau", function(orig)
+	core.wrap(cls, "_play_random_miau", "bind_hideout_cat.hideout_cat_wrapper._play_random_miau", function(orig)
 		return function(w, ...)
-			if not C().active() then return orig(w, ...) end
+			if not core.active() then return orig(w, ...) end
 			if not coop_mode.leads_here() then return end
 			local sample, pitch = math.random(1, 5), random_float(0.9, 1.1)
 			if coop_mode.actor_is_player() then play_meow(w, sample, pitch) end
 			meow_serial = meow_serial + 1
-			send_listeners("hf_cat_meow", { o = C().hid(w.object:id()), i = sample, p = pitch, n = meow_serial })
+			send_listeners("hf_cat_meow", { o = core.hid(w.object:id()), i = sample, p = pitch, n = meow_serial })
 		end
 	end)
-	C().set_limit("hf_cat_use", 6, 2)
-	C().on("hf_cat_use", cat_use, "host")
-	C().on("hf_cat_sleep", function(t)
+	core.set_limit("hf_cat_use", 6, 2)
+	core.on("hf_cat_use", cat_use, "host")
+	core.on("hf_cat_sleep", function(t)
 		local w = cat_wrapper(object_of(t.o, CAT))
 		if w and coop_mode.is_player_mirror() and type(t.s) == "boolean" then state_of(w).sleeping = t.s end
 	end, "player")
-	C().on("hf_cat_meow", function(t)
+	core.on("hf_cat_meow", function(t)
 		if not coop_mode.is_player_mirror() or not integer(t.i, 1, 5) or not in_range(t.p, 0.9, 1.1)
 			or not integer(t.n, 1, 2147483647) then return end
 		local w = cat_wrapper(object_of(t.o, CAT))
@@ -176,19 +176,19 @@ end
 -------------------------------------------------------------------------------
 
 local function install_piano()
-	local mod = C().mod("ui_furniture_piano")
-	local play = C().fn(mod, "PlaySound")
-	local get_sound = C().fn(mod, "get_safe_sound_object")
+	local mod = core.mod("ui_furniture_piano")
+	local play = core.fn(mod, "PlaySound")
+	local get_sound = core.fn(mod, "get_safe_sound_object")
 	if not (play and get_sound) then return end
 	-- Use the installed mod's catalog and the exact transposition/instrument it uses for local playback.
-	local instruments = C().upvalue(C().fn(mod.UIFurniturePiano, "OnInstrumentSelect"), "instruments")
-	local notes, note_indices = C().upvalue(play, "notes"), C().upvalue(play, "note2i")
-	local _, _, piano_id = C().upvalue(play, "playing_piano_id")
-	local _, _, transpose = C().upvalue(play, "transpose")
-	local _, _, volume = C().upvalue(play, "volume")
-	local _, _, selection = C().upvalue(play, "note2snd")
+	local instruments = core.upvalue(core.fn(mod.UIFurniturePiano, "OnInstrumentSelect"), "instruments")
+	local notes, note_indices = core.upvalue(play, "notes"), core.upvalue(play, "note2i")
+	local _, _, piano_id = core.upvalue(play, "playing_piano_id")
+	local _, _, transpose = core.upvalue(play, "transpose")
+	local _, _, volume = core.upvalue(play, "volume")
+	local _, _, selection = core.upvalue(play, "note2snd")
 	if not (instruments and notes and note_indices and piano_id and transpose and volume and selection) then
-		return C().log("hf_sounds", "piano catalog or playback settings not found")
+		return core.log("hf_sounds", "piano catalog or playback settings not found")
 	end
 	local instrument_ids = {}
 	for id, sounds in pairs(instruments) do
@@ -216,14 +216,14 @@ local function install_piano()
 		if not checked("hf_piano_play", "volume", in_range(gain, 0, 2), from)
 			or type(gain) ~= "number" or gain ~= gain then return end
 		gain = math.max(0, math.min(2, gain)) -- log mode can accept the note with a safe volume
-		if coop_mode.actor_is_player() and from ~= C().self_peer() then play_note(obj, path, gain) end
+		if coop_mode.actor_is_player() and from ~= core.self_peer() then play_note(obj, path, gain) end
 		send_listeners("hf_piano_note", { o = t.o, i = t.i, n = t.n, v = gain }, from)
 	end
-	C().wrap(mod, "PlaySound", "ui_furniture_piano.PlaySound", function(orig)
+	core.wrap(mod, "PlaySound", "ui_furniture_piano.PlaySound", function(orig)
 		return function(key, ...)
-			if not C().active() then return orig(key, ...) end
+			if not core.active() then return orig(key, ...) end
 			local index = note_indices[key]
-			local data = { o = C().hid(get_local(piano_id)), i = instrument_ids[get_local(selection)],
+			local data = { o = core.hid(get_local(piano_id)), i = instrument_ids[get_local(selection)],
 				n = index and index + get_local(transpose), v = get_local(volume) }
 			if not note_path(data) then return end
 			local result = orig(key, ...)
@@ -231,22 +231,17 @@ local function install_piano()
 			return result
 		end
 	end)
-	C().set_limit("hf_piano_play", 64, 20) -- enough burst for chords, matching the transport's ScriptEvent budget
-	C().on("hf_piano_play", piano_play, "host")
-	C().on("hf_piano_note", function(t)
+	core.set_limit("hf_piano_play", 64, 20) -- enough burst for chords, matching the transport's ScriptEvent budget
+	core.on("hf_piano_play", piano_play, "host")
+	core.on("hf_piano_note", function(t)
 		if not in_range(t.v, 0, 2) then return end
 		local path, obj = note_path(t), object_of(t.o, PIANO)
 		if path and obj then play_note(obj, path, t.v) end
 	end, "player")
 end
 
-local function start_step(name, install)
-	local ok, err = pcall(install)
-	if not ok then printf("! [coop_mods_hf_sounds] %s failed: %s", name, tostring(err)) end
-end
-
 function on_game_start()
 	if not rawget(_G, "coop") then return end
-	start_step("cat", install_cat)
-	start_step("piano", install_piano)
+	core.install("hf_sounds", "cat", install_cat)
+	core.install("hf_sounds", "piano", install_piano)
 end

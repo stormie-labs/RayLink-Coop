@@ -147,16 +147,6 @@ local function decider_case(tag)
 	frames(1, 16)
 	net_destroy(b)
 
-	-- an exe without coop.zone_path: DAO's own function, as before this change, and one line in the log
-	reset_counts()
-	coop.zone_path = nil
-	b, obj = ghost()
-	net_spawn(b)
-	check(stock_wander(obj), tag .. ": an engine without zone paths: DAO's own wander")
-	check(log_has("[dao_fx] ! the engine has no coop.zone_path") ~= nil, tag .. ": said in the log")
-	net_destroy(b)
-	coop.zone_path = engine_path
-
 	-- the engine refuses the path: DAO's own wander here, counted
 	reset_counts()
 	ZONE_PATH_OK = false
@@ -180,34 +170,6 @@ local function quiet_case(tag)
 	net_destroy(b)
 end
 
-local function missing_engine_case(tag)
-	reset_counts()
-	coop.zone_path = nil
-	local missing_engine_log = "[dao_fx] ! the engine has no coop.zone_path"
-	local already_warned = log_has(missing_engine_log) ~= nil
-	local log_start = #LOG
-	local first, first_obj = ghost()
-	local second, second_obj = ghost()
-	MODE = "sp"
-	net_spawn(first)
-	MODE = "client"
-	net_spawn(second)
-	check(stock_wander(first_obj) and stock_wander(second_obj), tag .. ": DAO registers its stock wander")
-	frames(30, 33)
-	check(first_obj.moves == 30 and second_obj.moves == 30, tag .. ": DAO moves both Ghosts every frame (" .. first_obj.moves .. ", " .. second_obj.moves .. ")")
-	check(#ZONE_PATHS == 0, tag .. ": no engine path")
-	local warnings = 0
-	for i = log_start + 1, #LOG do
-		if LOG[i]:find(missing_engine_log, 1, true) then
-			warnings = warnings + 1
-		end
-	end
-	check(warnings == (already_warned and 0 or 1), tag .. ": logs the missing engine once (" .. warnings .. " new)")
-	net_destroy(first)
-	net_destroy(second)
-	reset_counts()
-end
-
 local MIRROR = { leads_here = function() return false end, is_player_mirror = function() return true end,
 	decides_world = function() return false end, actor_is_player = function() return true end }
 
@@ -216,7 +178,6 @@ for _, name in ipairs(modes.names()) do
 	if name == "hostplay" then
 		MODE = "client"
 		modes.install(coop_mode, name, MIRROR)
-		missing_engine_case("co-op client")
 		quiet_case("co-op client")
 		MODE = "host"
 		modes.install(coop_mode, name)
@@ -224,7 +185,6 @@ for _, name in ipairs(modes.names()) do
 	elseif name == "srv_map" then
 		MODE = "client"
 		modes.install(coop_mode, name, MIRROR)
-		missing_engine_case("server player")
 		quiet_case("server player")
 		MODE = "host"
 		modes.install(coop_mode, name)

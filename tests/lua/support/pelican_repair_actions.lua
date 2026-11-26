@@ -21,8 +21,8 @@ return function(setup, load_source, read_gamma)
 	local gamma_action = gamma_source:sub(gamma_action_first,
 		assert(gamma_source:find("item_repair.UIRepair.OnCancel =", gamma_action_first, true)) - 1)
 
-	os.execute('if not exist "temp\\pelican_weapon_jam" mkdir "temp\\pelican_weapon_jam"')
-	local outcomes = assert(io.open("temp/pelican_weapon_jam/repair_outcomes.txt", "w"))
+	local outcomes_file = dofile("tests/lua/support/scratch.lua") .. "repair_outcomes.txt"
+	local outcomes = assert(io.open(outcomes_file, "w"))
 	local function snapshot(items)
 		local out = {}
 		for _, obj in ipairs(items) do out[obj:id()] = { obj:condition(), obj.uses } end
@@ -177,6 +177,6 @@ return function(setup, load_source, read_gamma)
 		native_outcome(items, before)
 	end
 	outcomes:close()
-	local code = os.execute('python -B tests/lua/support/pelican_repair_native.py temp/pelican_weapon_jam/repair_outcomes.txt')
+	local code = os.execute("python -B tests/lua/support/pelican_repair_native.py " .. outcomes_file)
 	check(code == 0, "actual native Cond/Uses owner-host-observer round trips pass for all Lua repair outcomes")
 end

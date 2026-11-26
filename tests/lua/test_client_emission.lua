@@ -5,7 +5,7 @@
 -- then the stock end_surge() runs on the client (statistic +5 rank, "emission_end"), the next tick sees "the host says
 -- running, mine is not" and starts a new mirror (more events, more rank), and so on every cycle until the host ends it.
 -- launch_rockets() (signal lights) was not disabled on the client either (the psi storm calls it unconditionally).
--- Real coop_main.script; the stock managers are stand-ins that keep the stock end/launch logic (line refs below).
+-- Real coop_env.script; the stock managers are stand-ins that keep the stock end/launch logic (line refs below).
 -- Not shipped. Run: tools\test_lua.cmd client_emission
 MODE = "client"
 dofile("tests/lua/support/stubs.lua")
@@ -116,6 +116,8 @@ local observer = from_script("actor_effects", [[return function(typ, obj, name)
 end]])
 RegisterScriptCallback("actor_on_interaction", observer)
 coop_main.on_game_start()
+coop_env.on_game_start()
+coop_route.on_game_start() -- the tick service runs the emission tick
 
 local sm = surge_manager.get_surge_manager()
 local pm = psi_storm_manager.get_psi_storm_manager()

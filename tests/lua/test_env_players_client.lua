@@ -2,7 +2,7 @@
 -- The people this player's wave / vortex reaches die on the host (the stock kill there): his machine sends where the
 -- wave / vortex is (coop_env_npc_kill) instead of killing nothing. His hide task is his own: the id is made personal
 -- (coop_tasks.set_local_task) and the stock update gives it here at its moment.
--- Real coop_main.script; the stock managers are stand-ins keeping the stock task and kill calls.
+-- Real coop_env.script; the stock managers are stand-ins keeping the stock task and kill calls.
 -- Not shipped. Run: tools\test_lua.cmd env_players_client
 MODE = "client"
 dofile("tests/lua/support/stubs.lua")
@@ -82,6 +82,8 @@ print("== env_players_client")
 dofile("tests/lua/support/modes.lua").live(load_script_file("coop_mode"))
 load_coop_main()
 coop_main.on_game_start()
+coop_env.on_game_start()
+coop_route.on_game_start() -- the tick service runs the emission tick
 local sm = surge_manager.get_surge_manager()
 local pm = psi_storm_manager.get_psi_storm_manager()
 TF = 10

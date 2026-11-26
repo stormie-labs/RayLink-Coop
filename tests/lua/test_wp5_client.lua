@@ -40,6 +40,8 @@ RegisterScriptCallback("load_state", load_host)
 RegisterScriptCallback("squad_on_update", squad_view)
 RegisterScriptCallback("actor_on_update", obj)
 coop_main.on_game_start()
+coop_env.on_game_start()
+coop_route.on_game_start() -- the tick service runs the emission tick
 
 SendScriptCallback("actor_on_update")
 check(C.pre_host == nil, "pre-registered host callback skipped")

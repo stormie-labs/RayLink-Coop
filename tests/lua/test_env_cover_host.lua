@@ -32,6 +32,8 @@ local function start(role, trust_mode)
 	load_script_file("coop_env_cover")
 	load_script_file("coop_srv_world").on_game_start()
 	coop_main.on_game_start()
+	coop_env.on_game_start()
+	coop_route.on_game_start() -- the tick service runs the emission tick
 	return sm
 end
 

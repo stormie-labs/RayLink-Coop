@@ -3,7 +3,7 @@
 dofile("tests/lua/support/harness_economy.lua")
 local modes = dofile("tests/lua/support/modes.lua")
 
-local gamma = os.getenv("GAMMA_SCRIPTS") or "E:/RayLink2/gamma-dev/gamedata/scripts"
+local gamma = os.getenv("GAMMA_SCRIPTS") or "GAMMA_SCRIPTS-is-not-set"
 local function read_gamma(name)
 	local f = io.open(gamma .. "/" .. name .. ".script", "r")
 	if not f then return nil end
