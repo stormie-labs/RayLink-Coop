@@ -1,0 +1,3201 @@
+{
+ "engine-game-features#0": [
+  "CPP-16"
+ ],
+ "engine-game-features#1": [
+  "OWN-12"
+ ],
+ "engine-game-features#2": [
+  "OWN-13",
+  "OWN-15"
+ ],
+ "engine-game-features#3": [
+  "OWN-12"
+ ],
+ "engine-game-features#4": [
+  "HOT-4"
+ ],
+ "engine-game-features#5": [
+  "HOT-5"
+ ],
+ "engine-game-features#6": [
+  "CPP-9"
+ ],
+ "engine-game-features#7": [
+  "CPP-15",
+  "BUG-10"
+ ],
+ "engine-game-features#8": [
+  "OWN-16"
+ ],
+ "engine-game-features#9": [
+  "OWN-10",
+  "OWN-16",
+  "CPP-1"
+ ],
+ "engine-game-features#10": [
+  "OWN-10",
+  "CPP-1",
+  "CPP-16"
+ ],
+ "engine-game-features#11": [
+  "OWN-13",
+  "CPP-16"
+ ],
+ "engine-game-features#12": [
+  "OWN-10",
+  "CPP-1"
+ ],
+ "engine-game-features#13": [
+  "OWN-11",
+  "CPP-2"
+ ],
+ "engine-game-features#14": [
+  "OWN-10",
+  "CPP-1",
+  "CPP-16"
+ ],
+ "engine-game-features#15": [
+  "OWN-10",
+  "CPP-1",
+  "HOT-5"
+ ],
+ "engine-game-features#16": [
+  "CPP-4"
+ ],
+ "engine-game-features#17": [
+  "OWN-12"
+ ],
+ "engine-game-features#18": [
+  "OWN-17",
+  "BUG-7"
+ ],
+ "engine-game-features#19": [
+  "OWN-17",
+  "LAYER-2",
+  "LAYER-3"
+ ],
+ "engine-game-features#20": [
+  "OWN-10",
+  "CPP-1"
+ ],
+ "engine-game-features#21": [
+  "OWN-14"
+ ],
+ "engine-game-features#22": [
+  "OWN-14"
+ ],
+ "engine-game-features#23": [
+  "DOC-1"
+ ],
+ "engine-game-features#24": [
+  "DOC-1"
+ ],
+ "engine-game-features#25": [
+  "LAYER-1",
+  "DOC-1",
+  "DOC-3"
+ ],
+ "engine-game-features#26": [
+  "OWN-13"
+ ],
+ "engine-game-features#27": [
+  "OWN-10",
+  "CPP-1",
+  "CPP-16"
+ ],
+ "engine-game-features#28": [
+  "OWN-10",
+  "CPP-1"
+ ],
+ "engine-game-features#29": [
+  "CPP-12"
+ ],
+ "engine-game-features#30": [
+  "HOT-3"
+ ],
+ "engine-game-features#31": [
+  "HOT-5"
+ ],
+ "engine-game-features#32": [
+  "HOT-1",
+  "HOT-4"
+ ],
+ "engine-game-features#33": [
+  "HOT-4"
+ ],
+ "engine-game-features#34": [
+  "HOT-5"
+ ],
+ "engine-game-features#35": [
+  "OWN-10",
+  "CPP-1"
+ ],
+ "engine-game-features#36": [
+  "CPP-3"
+ ],
+ "engine-game-features#37": [
+  "OWN-16",
+  "HOT-5"
+ ],
+ "engine-game-features#38": [
+  "CPP-13"
+ ],
+ "engine-game-features#39": [
+  "CPP-10"
+ ],
+ "engine-game-features#40": [
+  "CPP-10",
+  "CPP-13"
+ ],
+ "engine-game-features#41": [
+  "HOT-5"
+ ],
+ "engine-game-features#42": [
+  "OWN-17"
+ ],
+ "engine-net-core#0": [
+  "HOT-4"
+ ],
+ "engine-net-core#1": [
+  "OWN-10",
+  "OWN-14"
+ ],
+ "engine-net-core#2": [
+  "OWN-14"
+ ],
+ "engine-net-core#3": [
+  "OWN-10",
+  "CPP-1"
+ ],
+ "engine-net-core#4": [
+  "HOT-4"
+ ],
+ "engine-net-core#5": [
+  "HOT-4"
+ ],
+ "engine-net-core#6": [
+  "HOT-4"
+ ],
+ "engine-net-core#7": [
+  "HOT-1",
+  "HOT-3"
+ ],
+ "engine-net-core#8": [
+  "CPP-8",
+  "BUG-6",
+  "BUG-7",
+  "BUG-21"
+ ],
+ "engine-net-core#9": [
+  "CPP-12",
+  "BUG-7"
+ ],
+ "engine-net-core#10": [
+  "OWN-15",
+  "LAYER-1"
+ ],
+ "engine-net-core#11": [
+  "CPP-6"
+ ],
+ "engine-net-core#12": [
+  "OWN-10",
+  "CPP-1"
+ ],
+ "engine-net-core#13": [
+  "OWN-13",
+  "CPP-5"
+ ],
+ "engine-net-core#14": [
+  "OWN-13"
+ ],
+ "engine-net-core#15": [],
+ "engine-net-core#16": [
+  "HOT-6"
+ ],
+ "engine-net-core#17": [
+  "BUG-7"
+ ],
+ "engine-net-core#18": [
+  "OWN-10",
+  "CPP-1",
+  "CPP-8"
+ ],
+ "engine-net-core#19": [
+  "OWN-10",
+  "CPP-1"
+ ],
+ "engine-net-core#20": [
+  "OWN-10",
+  "CPP-1",
+  "HOT-5"
+ ],
+ "engine-net-core#21": [
+  "OWN-11"
+ ],
+ "engine-net-core#22": [
+  "OWN-12"
+ ],
+ "engine-net-core#23": [
+  "OWN-11",
+  "OWN-12"
+ ],
+ "engine-net-core#24": [
+  "LAYER-2",
+  "LAYER-3"
+ ],
+ "engine-net-core#25": [
+  "CPP-12"
+ ],
+ "engine-net-core#26": [
+  "OWN-14"
+ ],
+ "engine-net-core#27": [
+  "DOC-1"
+ ],
+ "engine-net-core#28": [
+  "HOT-4"
+ ],
+ "engine-net-core#29": [
+  "OWN-17",
+  "HOT-6"
+ ],
+ "engine-net-core#30": [
+  "HOT-4"
+ ],
+ "engine-net-core#31": [
+  "HOT-1",
+  "HOT-4"
+ ],
+ "engine-net-core#32": [
+  "HOT-3"
+ ],
+ "engine-net-core#33": [
+  "HOT-3"
+ ],
+ "engine-net-core#34": [
+  "OWN-10",
+  "CPP-1",
+  "CPP-5"
+ ],
+ "engine-net-core#35": [
+  "OWN-10",
+  "CPP-1"
+ ],
+ "engine-net-core#36": [
+  "OWN-13"
+ ],
+ "engine-net-core#37": [
+  "OWN-10",
+  "CPP-1"
+ ],
+ "engine-net-core#38": [
+  "OWN-11"
+ ],
+ "engine-net-core#39": [
+  "OWN-11"
+ ],
+ "engine-net-core#40": [
+  "OWN-11",
+  "OWN-12"
+ ],
+ "engine-net-core#41": [
+  "CPP-12"
+ ],
+ "engine-net-core#42": [
+  "OWN-10",
+  "CPP-1"
+ ],
+ "engine-net-core#43": [
+  "CPP-7"
+ ],
+ "engine-net-core#44": [
+  "OWN-10",
+  "CPP-1"
+ ],
+ "engine-net-core#45": [
+  "CPP-13"
+ ],
+ "engine-net-core#46": [
+  "CPP-10"
+ ],
+ "engine-net-core#47": [
+  "CPP-3"
+ ],
+ "engine-net-core#48": [
+  "CPP-9"
+ ],
+ "engine-net-core#49": [
+  "CPP-12",
+  "HOT-1"
+ ],
+ "engine-rules#0": [
+  "OWN-10",
+  "OWN-13",
+  "CPP-1"
+ ],
+ "engine-rules#1": [
+  "OWN-10",
+  "OWN-13",
+  "CPP-1"
+ ],
+ "engine-rules#2": [
+  "OWN-10",
+  "OWN-13",
+  "CPP-1"
+ ],
+ "engine-rules#3": [
+  "CPP-2"
+ ],
+ "engine-rules#4": [
+  "CPP-2"
+ ],
+ "engine-rules#5": [
+  "OWN-10",
+  "CPP-1",
+  "CPP-5"
+ ],
+ "engine-rules#6": [
+  "OWN-13",
+  "CPP-5"
+ ],
+ "engine-rules#7": [
+  "OWN-10",
+  "CPP-1"
+ ],
+ "engine-rules#8": [
+  "CPP-7",
+  "HOT-5"
+ ],
+ "engine-rules#9": [
+  "CPP-11"
+ ],
+ "engine-rules#10": [
+  "OWN-14"
+ ],
+ "engine-rules#11": [
+  "OWN-15",
+  "DOC-1"
+ ],
+ "engine-rules#12": [
+  "LAYER-1",
+  "LAYER-2"
+ ],
+ "engine-rules#13": [
+  "LAYER-1",
+  "LAYER-2",
+  "CPP-9"
+ ],
+ "engine-rules#14": [
+  "LAYER-1"
+ ],
+ "engine-rules#15": [
+  "OWN-12"
+ ],
+ "engine-rules#16": [
+  "OWN-12"
+ ],
+ "engine-rules#17": [
+  "OWN-12"
+ ],
+ "engine-rules#18": [
+  "CPP-4"
+ ],
+ "engine-rules#19": [
+  "OWN-12"
+ ],
+ "engine-rules#20": [
+  "OWN-12"
+ ],
+ "engine-rules#21": [
+  "OWN-12",
+  "OWN-14"
+ ],
+ "engine-rules#22": [
+  "DOC-1"
+ ],
+ "engine-rules#23": [
+  "CPP-4",
+  "DOC-1"
+ ],
+ "engine-rules#24": [
+  "OWN-8",
+  "DOC-1"
+ ],
+ "engine-rules#25": [
+  "CPP-13",
+  "DOC-1"
+ ],
+ "engine-rules#26": [
+  "OWN-10",
+  "CPP-1"
+ ],
+ "engine-rules#27": [
+  "OWN-10",
+  "CPP-1"
+ ],
+ "engine-rules#28": [
+  "OWN-10",
+  "CPP-1",
+  "HOT-4"
+ ],
+ "engine-rules#29": [
+  "HOT-2"
+ ],
+ "engine-rules#30": [
+  "OWN-10",
+  "OWN-11",
+  "CPP-1"
+ ],
+ "engine-rules#31": [
+  "OWN-14"
+ ],
+ "engine-rules#32": [
+  "CPP-2"
+ ],
+ "engine-rules#33": [
+  "CPP-13"
+ ],
+ "engine-stock-hooks#0": [
+  "CPP-7"
+ ],
+ "engine-stock-hooks#1": [
+  "CPP-9"
+ ],
+ "engine-stock-hooks#2": [
+  "CPP-7",
+  "HOT-5"
+ ],
+ "engine-stock-hooks#3": [
+  "CPP-6",
+  "CPP-7",
+  "CPP-10"
+ ],
+ "engine-stock-hooks#4": [
+  "OWN-15",
+  "CPP-10"
+ ],
+ "engine-stock-hooks#5": [
+  "OWN-10",
+  "CPP-1",
+  "CPP-14"
+ ],
+ "engine-stock-hooks#6": [
+  "CPP-14"
+ ],
+ "engine-stock-hooks#7": [
+  "CPP-14"
+ ],
+ "engine-stock-hooks#8": [
+  "OWN-12"
+ ],
+ "engine-stock-hooks#9": [
+  "OWN-12",
+  "CPP-14"
+ ],
+ "engine-stock-hooks#10": [
+  "CPP-14"
+ ],
+ "engine-stock-hooks#11": [
+  "CPP-14"
+ ],
+ "engine-stock-hooks#12": [
+  "OWN-17",
+  "CPP-14"
+ ],
+ "engine-stock-hooks#13": [
+  "OWN-17",
+  "CPP-18"
+ ],
+ "engine-stock-hooks#14": [
+  "OWN-17",
+  "CPP-7"
+ ],
+ "engine-stock-hooks#15": [
+  "HOT-3",
+  "HOT-5"
+ ],
+ "engine-stock-hooks#16": [
+  "OWN-8",
+  "DOC-1"
+ ],
+ "engine-stock-hooks#17": [
+  "DOC-1"
+ ],
+ "engine-stock-hooks#18": [
+  "CPP-14",
+  "DOC-1"
+ ],
+ "engine-stock-hooks#19": [
+  "CPP-13"
+ ],
+ "engine-stock-hooks#20": [
+  "CPP-10"
+ ],
+ "engine-stock-hooks#21": [
+  "CPP-9",
+  "BUG-15"
+ ],
+ "engine-stock-hooks#22": [
+  "CPP-14"
+ ],
+ "engine-stock-hooks#23": [
+  "CPP-15"
+ ],
+ "engine-stock-hooks#24": [
+  "CPP-9",
+  "CPP-15"
+ ],
+ "engine-stock-hooks#25": [
+  "LAYER-2",
+  "LAYER-3",
+  "CPP-14"
+ ],
+ "engine-stock-hooks#26": [
+  "LAYER-2",
+  "LAYER-3",
+  "CPP-11",
+  "CPP-14"
+ ],
+ "engine-stock-hooks#27": [
+  "LAYER-2",
+  "LAYER-3",
+  "CPP-6",
+  "CPP-14"
+ ],
+ "engine-stock-hooks#28": [
+  "CPP-3",
+  "CPP-14"
+ ],
+ "engine-stock-hooks#29": [
+  "OWN-10",
+  "CPP-1",
+  "CPP-14"
+ ],
+ "engine-stock-hooks#30": [
+  "OWN-17"
+ ],
+ "engine-stock-hooks#31": [
+  "CPP-10"
+ ],
+ "engine-stock-hooks#32": [
+  "HOT-3"
+ ],
+ "engine-stock-hooks#33": [
+  "OWN-10",
+  "OWN-12",
+  "CPP-1"
+ ],
+ "engine-stock-hooks#34": [
+  "CPP-9"
+ ],
+ "engine-stock-hooks#35": [
+  "OWN-17",
+  "CPP-7"
+ ],
+ "hotpaths-measure#0": [
+  "HOT-1",
+  "HOT-3",
+  "HOT-4"
+ ],
+ "hotpaths-measure#1": [
+  "HOT-1",
+  "HOT-7"
+ ],
+ "hotpaths-measure#2": [
+  "HOT-1",
+  "HOT-9"
+ ],
+ "hotpaths-measure#3": [
+  "HOT-9"
+ ],
+ "hotpaths-measure#4": [
+  "HOT-3",
+  "HOT-4"
+ ],
+ "hotpaths-measure#5": [
+  "HOT-2",
+  "TOOL-3"
+ ],
+ "hotpaths-measure#6": [
+  "HOT-2"
+ ],
+ "hotpaths-measure#7": [
+  "HOT-2"
+ ],
+ "hotpaths-measure#8": [
+  "HOT-2"
+ ],
+ "hotpaths-measure#9": [
+  "HOT-1"
+ ],
+ "hotpaths-measure#10": [
+  "HOT-4",
+  "HOT-7"
+ ],
+ "hotpaths-measure#11": [
+  "HOT-4"
+ ],
+ "hotpaths-measure#12": [
+  "OWN-6",
+  "BUG-5",
+  "BUG-6"
+ ],
+ "hotpaths-measure#13": [
+  "HOT-4"
+ ],
+ "hotpaths-measure#14": [
+  "HOT-3",
+  "HOT-4"
+ ],
+ "hotpaths-measure#15": [
+  "HOT-3",
+  "HOT-4"
+ ],
+ "hotpaths-measure#16": [
+  "HOT-9"
+ ],
+ "hotpaths-measure#17": [
+  "HOT-9"
+ ],
+ "hotpaths-measure#18": [
+  "HOT-1",
+  "HOT-8"
+ ],
+ "hotpaths-measure#19": [
+  "HOT-3",
+  "HOT-4"
+ ],
+ "hotpaths-measure#20": [
+  "HOT-3",
+  "HOT-4"
+ ],
+ "hotpaths-measure#21": [
+  "HOT-3",
+  "HOT-4",
+  "HOT-7"
+ ],
+ "hotpaths-measure#22": [
+  "HOT-1",
+  "HOT-8"
+ ],
+ "hotpaths-measure#23": [
+  "HOT-3",
+  "HOT-4"
+ ],
+ "hotpaths-measure#24": [
+  "HOT-1",
+  "HOT-3",
+  "HOT-4"
+ ],
+ "hotpaths-measure#25": [
+  "HOT-5",
+  "CPP-1"
+ ],
+ "hotpaths-measure#26": [
+  "HOT-2"
+ ],
+ "hotpaths-measure#27": [
+  "HOT-4"
+ ],
+ "lua-adapters#0": [
+  "LUA-3"
+ ],
+ "lua-adapters#1": [
+  "HOT-6",
+  "BUG-19"
+ ],
+ "lua-adapters#2": [
+  "HOT-3"
+ ],
+ "lua-adapters#3": [
+  "MOD-3",
+  "MOD-5",
+  "HOT-6"
+ ],
+ "lua-adapters#4": [
+  "MOD-3",
+  "MOD-4",
+  "LUA-3"
+ ],
+ "lua-adapters#5": [
+  "BUG-11",
+  "BUG-12"
+ ],
+ "lua-adapters#6": [
+  "OWN-10",
+  "LUA-5",
+  "BUG-19"
+ ],
+ "lua-adapters#7": [
+  "HOT-8"
+ ],
+ "lua-adapters#8": [
+  "HOT-8"
+ ],
+ "lua-adapters#9": [
+  "MOD-3",
+  "MOD-5",
+  "MOD-7"
+ ],
+ "lua-adapters#10": [
+  "MOD-3",
+  "MOD-4",
+  "MOD-5"
+ ],
+ "lua-adapters#11": [
+  "MOD-3",
+  "MOD-4",
+  "MOD-5"
+ ],
+ "lua-adapters#12": [
+  "OWN-11"
+ ],
+ "lua-adapters#13": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "lua-adapters#14": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "lua-adapters#15": [
+  "LUA-5"
+ ],
+ "lua-adapters#16": [
+  "DOC-1"
+ ],
+ "lua-adapters#17": [
+  "OWN-14",
+  "MOD-3",
+  "MOD-5"
+ ],
+ "lua-adapters#18": [
+  "OWN-17"
+ ],
+ "lua-adapters#19": [
+  "HOT-7"
+ ],
+ "lua-adapters#20": [
+  "HOT-3"
+ ],
+ "lua-adapters#21": [
+  "LUA-6",
+  "LUA-9"
+ ],
+ "lua-adapters#22": [
+  "LUA-6",
+  "BUG-21"
+ ],
+ "lua-adapters#23": [
+  "HOT-8"
+ ],
+ "lua-adapters#24": [
+  "HOT-7"
+ ],
+ "lua-adapters#25": [
+  "MOD-7"
+ ],
+ "lua-adapters#26": [
+  "MOD-7"
+ ],
+ "lua-adapters#27": [
+  "OWN-13"
+ ],
+ "lua-adapters#28": [
+  "LUA-7",
+  "DOC-3"
+ ],
+ "lua-adapters#29": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "lua-adapters#30": [
+  "BUG-20"
+ ],
+ "lua-adapters#31": [
+  "BUG-17"
+ ],
+ "lua-adapters#32": [
+  "HOT-4",
+  "BUG-6"
+ ],
+ "lua-adapters#33": [
+  "HOT-3"
+ ],
+ "lua-adapters#34": [
+  "HOT-4"
+ ],
+ "lua-adapters#35": [
+  "OWN-12",
+  "LUA-4",
+  "TEST-11"
+ ],
+ "lua-adapters#36": [
+  "HOT-1"
+ ],
+ "lua-core-net#0": [
+  "HOT-9"
+ ],
+ "lua-core-net#1": [
+  "HOT-7"
+ ],
+ "lua-core-net#2": [
+  "OWN-10",
+  "LUA-2"
+ ],
+ "lua-core-net#3": [
+  "OWN-10",
+  "LUA-2"
+ ],
+ "lua-core-net#4": [
+  "OWN-12"
+ ],
+ "lua-core-net#5": [
+  "BUG-20",
+  "BUG-21"
+ ],
+ "lua-core-net#6": [
+  "OWN-10",
+  "LAYER-1",
+  "LAYER-4",
+  "BUG-11"
+ ],
+ "lua-core-net#7": [
+  "LAYER-1",
+  "LAYER-5"
+ ],
+ "lua-core-net#8": [
+  "OWN-14",
+  "LUA-3"
+ ],
+ "lua-core-net#9": [
+  "OWN-14"
+ ],
+ "lua-core-net#10": [
+  "MOD-1",
+  "MOD-2"
+ ],
+ "lua-core-net#11": [
+  "MOD-1",
+  "MOD-2"
+ ],
+ "lua-core-net#12": [
+  "LAYER-1"
+ ],
+ "lua-core-net#13": [
+  "LAYER-1"
+ ],
+ "lua-core-net#14": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "lua-core-net#15": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "lua-core-net#16": [
+  "OWN-12",
+  "LAYER-5"
+ ],
+ "lua-core-net#17": [
+  "LUA-5"
+ ],
+ "lua-core-net#18": [
+  "DOC-1"
+ ],
+ "lua-core-net#19": [
+  "LUA-6",
+  "BUG-21"
+ ],
+ "lua-core-net#20": [
+  "OWN-10",
+  "LUA-10"
+ ],
+ "lua-core-net#21": [
+  "LUA-2",
+  "LUA-9"
+ ],
+ "lua-core-net#22": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "lua-core-net#23": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "lua-core-net#24": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "lua-core-net#25": [
+  "DOC-1"
+ ],
+ "lua-core-net#26": [
+  "LUA-7"
+ ],
+ "lua-core-net#27": [
+  "HOT-7"
+ ],
+ "lua-core-net#28": [
+  "HOT-3"
+ ],
+ "lua-core-net#29": [
+  "OWN-11",
+  "HOT-4"
+ ],
+ "lua-core-net#30": [
+  "BUG-4"
+ ],
+ "lua-core-net#31": [
+  "LUA-8"
+ ],
+ "lua-core-net#32": [
+  "OWN-11"
+ ],
+ "lua-core-net#33": [
+  "LUA-4"
+ ],
+ "lua-core-net#34": [
+  "OWN-13"
+ ],
+ "lua-core-net#35": [
+  "TEST-11"
+ ],
+ "lua-core-net#36": [
+  "OWN-11"
+ ],
+ "lua-core-net#37": [
+  "OWN-13"
+ ],
+ "lua-core-net#38": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "lua-items-ui#0": [
+  "OWN-12"
+ ],
+ "lua-items-ui#1": [
+  "HOT-3"
+ ],
+ "lua-items-ui#2": [
+  "HOT-7"
+ ],
+ "lua-items-ui#3": [
+  "HOT-4"
+ ],
+ "lua-items-ui#4": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "lua-items-ui#5": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "lua-items-ui#6": [
+  "MOD-1",
+  "MOD-2"
+ ],
+ "lua-items-ui#7": [
+  "MOD-1",
+  "MOD-2"
+ ],
+ "lua-items-ui#8": [
+  "MOD-1",
+  "MOD-2"
+ ],
+ "lua-items-ui#9": [
+  "LUA-2"
+ ],
+ "lua-items-ui#10": [
+  "OWN-10",
+  "LUA-1",
+  "HOT-4",
+  "LUA-11"
+ ],
+ "lua-items-ui#11": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "lua-items-ui#12": [
+  "OWN-10",
+  "OWN-13",
+  "LUA-1"
+ ],
+ "lua-items-ui#13": [
+  "HOT-4"
+ ],
+ "lua-items-ui#14": [
+  "HOT-4"
+ ],
+ "lua-items-ui#15": [
+  "HOT-7"
+ ],
+ "lua-items-ui#16": [
+  "DOC-1"
+ ],
+ "lua-items-ui#17": [
+  "DOC-1"
+ ],
+ "lua-items-ui#18": [
+  "OWN-12"
+ ],
+ "lua-items-ui#19": [
+  "OWN-12"
+ ],
+ "lua-items-ui#20": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "lua-items-ui#21": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "lua-items-ui#22": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "lua-items-ui#23": [
+  "DOC-1"
+ ],
+ "lua-items-ui#24": [
+  "LUA-7",
+  "DOC-1"
+ ],
+ "lua-items-ui#25": [
+  "OWN-14"
+ ],
+ "lua-items-ui#26": [
+  "OWN-14"
+ ],
+ "lua-items-ui#27": [
+  "MOD-7"
+ ],
+ "lua-items-ui#28": [
+  "OWN-10",
+  "OWN-13",
+  "LUA-1"
+ ],
+ "lua-items-ui#29": [
+  "BUG-5",
+  "BUG-18"
+ ],
+ "lua-items-ui#30": [
+  "HOT-4"
+ ],
+ "lua-world#0": [
+  "HOT-7"
+ ],
+ "lua-world#1": [
+  "HOT-3"
+ ],
+ "lua-world#2": [
+  "HOT-4"
+ ],
+ "lua-world#3": [
+  "HOT-4"
+ ],
+ "lua-world#4": [
+  "HOT-3"
+ ],
+ "lua-world#5": [
+  "HOT-3",
+  "BUG-6"
+ ],
+ "lua-world#6": [
+  "BUG-11"
+ ],
+ "lua-world#7": [
+  "LUA-5",
+  "BUG-20"
+ ],
+ "lua-world#8": [
+  "HOT-6"
+ ],
+ "lua-world#9": [
+  "HOT-8"
+ ],
+ "lua-world#10": [
+  "HOT-6",
+  "BUG-20"
+ ],
+ "lua-world#11": [
+  "HOT-6"
+ ],
+ "lua-world#12": [
+  "OWN-14",
+  "LUA-4"
+ ],
+ "lua-world#13": [
+  "LUA-3"
+ ],
+ "lua-world#14": [
+  "MOD-4",
+  "LUA-3"
+ ],
+ "lua-world#15": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "lua-world#16": [
+  "HOT-7"
+ ],
+ "lua-world#17": [
+  "HOT-8"
+ ],
+ "lua-world#18": [
+  "OWN-17"
+ ],
+ "lua-world#19": [
+  "OWN-17"
+ ],
+ "lua-world#20": [
+  "MOD-1",
+  "MOD-2",
+  "MOD-3",
+  "MOD-4"
+ ],
+ "lua-world#21": [
+  "MOD-6",
+  "MOD-7",
+  "DOC-3"
+ ],
+ "lua-world#22": [
+  "LAYER-1"
+ ],
+ "lua-world#23": [
+  "LAYER-4"
+ ],
+ "lua-world#24": [
+  "LUA-2"
+ ],
+ "lua-world#25": [
+  "LUA-2"
+ ],
+ "lua-world#26": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "lua-world#27": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "lua-world#28": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "lua-world#29": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "lua-world#30": [
+  "LUA-9"
+ ],
+ "lua-world#31": [
+  "LUA-8"
+ ],
+ "lua-world#32": [
+  "DOC-1",
+  "BUG-21"
+ ],
+ "lua-world#33": [
+  "OWN-14"
+ ],
+ "lua-world#34": [
+  "LUA-5"
+ ],
+ "lua-world#35": [
+  "HOT-6"
+ ],
+ "lua-world#36": [
+  "LUA-6"
+ ],
+ "lua-world#37": [
+  "BUG-11",
+  "BUG-18"
+ ],
+ "lua-world#38": [
+  "HOT-7"
+ ],
+ "lua-world#39": [
+  "TEST-11"
+ ],
+ "lua-world#40": [
+  "LAYER-5",
+  "DOC-1"
+ ],
+ "tools-tests#0": [
+  "TEST-6"
+ ],
+ "tools-tests#1": [
+  "TEST-6"
+ ],
+ "tools-tests#2": [
+  "OWN-6",
+  "TEST-1",
+  "TEST-3",
+  "TEST-5"
+ ],
+ "tools-tests#3": [
+  "TEST-2"
+ ],
+ "tools-tests#4": [
+  "TEST-7"
+ ],
+ "tools-tests#5": [
+  "TEST-6"
+ ],
+ "tools-tests#6": [
+  "OWN-10",
+  "TEST-1",
+  "TEST-3",
+  "TEST-5",
+  "TEST-7"
+ ],
+ "tools-tests#7": [
+  "TEST-3",
+  "TEST-6"
+ ],
+ "tools-tests#8": [
+  "TEST-1",
+  "TEST-3",
+  "TEST-5"
+ ],
+ "tools-tests#9": [
+  "TEST-5"
+ ],
+ "tools-tests#10": [
+  "TEST-7",
+  "TEST-8"
+ ],
+ "tools-tests#11": [
+  "TEST-3"
+ ],
+ "tools-tests#12": [
+  "TEST-5",
+  "TEST-6",
+  "TOOL-7"
+ ],
+ "tools-tests#13": [
+  "TEST-5",
+  "TEST-6"
+ ],
+ "tools-tests#14": [
+  "TEST-6",
+  "TOOL-9"
+ ],
+ "tools-tests#15": [
+  "TOOL-1"
+ ],
+ "tools-tests#16": [
+  "TOOL-1"
+ ],
+ "tools-tests#17": [
+  "TEST-4",
+  "TOOL-5"
+ ],
+ "tools-tests#18": [
+  "TOOL-5"
+ ],
+ "tools-tests#19": [
+  "TOOL-5"
+ ],
+ "tools-tests#20": [
+  "TOOL-5",
+  "TOOL-6"
+ ],
+ "tools-tests#21": [
+  "TOOL-3"
+ ],
+ "tools-tests#22": [
+  "TEST-3",
+  "TOOL-3"
+ ],
+ "tools-tests#23": [
+  "TOOL-5"
+ ],
+ "tools-tests#24": [
+  "TOOL-5"
+ ],
+ "tools-tests#25": [
+  "TOOL-3"
+ ],
+ "tools-tests#26": [
+  "TOOL-3"
+ ],
+ "tools-tests#27": [
+  "OWN-10",
+  "TEST-1",
+  "TEST-3",
+  "TEST-5",
+  "TOOL-4"
+ ],
+ "tools-tests#28": [
+  "TEST-7"
+ ],
+ "tools-tests#29": [
+  "TEST-4",
+  "TOOL-7"
+ ],
+ "tools-tests#30": [
+  "TOOL-5"
+ ],
+ "tools-tests#31": [
+  "TEST-9"
+ ],
+ "tools-tests#32": [
+  "TEST-9",
+  "TOOL-8",
+  "DOC-1"
+ ],
+ "tools-tests#33": [
+  "TEST-7"
+ ],
+ "tools-tests#34": [
+  "TEST-5"
+ ],
+ "tools-tests#35": [
+  "TEST-5"
+ ],
+ "tools-tests#36": [
+  "TEST-2"
+ ],
+ "tools-tests#37": [
+  "TOOL-4",
+  "DOC-3"
+ ],
+ "tools-tests#38": [
+  "TEST-9"
+ ],
+ "tools-tests#39": [
+  "TOOL-6"
+ ],
+ "tools-tests#40": [
+  "TEST-10"
+ ],
+ "tools-tests#41": [
+  "OWN-14",
+  "TOOL-4",
+  "TOOL-9"
+ ],
+ "tools-tests#42": [
+  "TEST-4"
+ ],
+ "tools-tests#43": [
+  "TEST-2",
+  "TEST-5"
+ ],
+ "tools-tests#44": [
+  "TOOL-8"
+ ],
+ "tools-tests#45": [
+  "TOOL-8"
+ ],
+ "AGENTS.md:1": [
+  "DOC-2"
+ ],
+ "AGENTS.md:13-15": [
+  "LAYER-1"
+ ],
+ "AGENTS.md:14-15": [
+  "LAYER-2",
+  "LAYER-3"
+ ],
+ "AGENTS.md:17-23": [
+  "OWN-2"
+ ],
+ "AGENTS.md:25-32": [
+  "OWN-8"
+ ],
+ "AGENTS.md:29-31": [
+  "DOC-2"
+ ],
+ "AGENTS.md:3-4": [
+  "OWN-2"
+ ],
+ "AGENTS.md:31": [
+  "TOOL-2"
+ ],
+ "AGENTS.md:32": [
+  "OWN-4"
+ ],
+ "AGENTS.md:34-39": [
+  "MOD-6",
+  "MOD-7"
+ ],
+ "AGENTS.md:5-7": [
+  "DOC-2"
+ ],
+ "AGENTS.md:9-11": [
+  "DOC-2"
+ ],
+ "CLAUDE.md «Моды, сборки и прослойки» п.1 (Р106: движок не знает модов)": [
+  "MOD-1"
+ ],
+ "CLAUDE.md «Моды, сборки и прослойки» п.2 (Р111: мод пишется один раз)": [
+  "MOD-4"
+ ],
+ "CLAUDE.md «Моды, сборки и прослойки» п.3 (Р111: никто не пишет прослоек)": [
+  "MOD-4",
+  "MOD-5"
+ ],
+ "CLAUDE.md «Моды, сборки и прослойки» п.4 (файлы модов не правим; адаптер встаёт громко)": [
+  "MOD-3",
+  "MOD-6",
+  "MOD-8"
+ ],
+ "CLAUDE.md «Моды, сборки и прослойки» п.5 (Р112: переписывать можно только сток Anomaly)": [
+  "MOD-6",
+  "MOD-9"
+ ],
+ "CLAUDE.md «Моды, сборки и прослойки» п.6 (Р113: общие, аномалевские, наборы сборок)": [
+  "MOD-2",
+  "MOD-9"
+ ],
+ "CLAUDE.md «Моды, сборки и прослойки» п.7 (мера успеха: тоньше обвязка)": [
+  "OWN-10",
+  "MOD-4"
+ ],
+ "CLAUDE.md «Моды, сборки и прослойки» п.8 (инструкция для авторов модов)": [
+  "DOC-3"
+ ],
+ "CLAUDE.md:13-16": [
+  "DOC-2"
+ ],
+ "CLAUDE.md:18-19": [
+  "DOC-2"
+ ],
+ "CLAUDE.md:29-30": [
+  "LAYER-1"
+ ],
+ "CLAUDE.md:31-32": [
+  "LAYER-2",
+  "LAYER-3"
+ ],
+ "CLAUDE.md:34-44": [
+  "OWN-2"
+ ],
+ "CLAUDE.md:40": [
+  "DOC-2"
+ ],
+ "CLAUDE.md:44": [
+  "OWN-3"
+ ],
+ "CLAUDE.md:46-51": [
+  "OWN-1",
+  "DOC-2"
+ ],
+ "CLAUDE.md:53-60": [
+  "OWN-3"
+ ],
+ "CLAUDE.md:6-8": [
+  "OWN-2"
+ ],
+ "CLAUDE.md:64-67": [
+  "TOOL-6",
+  "DOC-2"
+ ],
+ "CLAUDE.md:68": [
+  "TOOL-2"
+ ],
+ "CLAUDE.md:69-71": [
+  "MOD-6",
+  "MOD-7"
+ ],
+ "CLAUDE.md:72-73": [
+  "OWN-8",
+  "TOOL-2",
+  "DOC-2"
+ ],
+ "GLOBAL §0 «Не ломай чужое»": [
+  "OWN-8"
+ ],
+ "GLOBAL §0 «Не утверждай по памяти — проверь»": [
+  "OWN-4"
+ ],
+ "GLOBAL §0 правило 4": [
+  "OWN-1"
+ ],
+ "GLOBAL §2 «Временные файлы — только в temp/»": [
+  "OWN-8"
+ ],
+ "GLOBAL §2 «Проверяй результат»": [
+  "OWN-4"
+ ],
+ "GLOBAL §2 «правь конкретную причину бага»": [
+  "OWN-5"
+ ],
+ "GLOBAL §2 «строгая типизация: никакого any/@ts-ignore»": [],
+ "GLOBAL §2 сценарий разработки (тесты до кода)": [
+  "OWN-6",
+  "OWN-2"
+ ],
+ "GLOBAL §3 время и свежесть фактов": [
+  "OWN-4"
+ ],
+ "GLOBAL §6 дизайн (референсы, проверка в браузере, Opus на дизайн)": [],
+ "GLOBAL §8 (модели, квота, запуск Sol, перепроверка ведущей)": [
+  "OWN-9"
+ ],
+ "GLOBAL §8 «Точный перенос»": [
+  "OWN-7"
+ ],
+ "GLOBAL §8 «верно/совпадает только после сравнения»": [
+  "OWN-4"
+ ],
+ "GLOBAL §8 «оптимизированный»": [
+  "HOT-1"
+ ],
+ "GLOBAL §8 оптимизации задавать конкретно": [
+  "HOT-1"
+ ],
+ "GLOBAL §8 правила исполнителей (свои файлы, без git index/HEAD, без vault, без вложенных агентов, отчёт)": [
+  "OWN-8"
+ ],
+ "GLOBAL §8 формат отчёта": [
+  "OWN-4"
+ ],
+ "GLOBAL §9 universal-modder": [],
+ "MODES.md §5 пятое ревью B1": [
+  "TOOL-2"
+ ],
+ "MODES.md §5 пятое ревью B2": [
+  "TOOL-6"
+ ],
+ "MODES.md §5 четвёртое ревью B1": [
+  "TEST-5"
+ ],
+ "MODES.md §5 четвёртое ревью B5": [
+  "TEST-1"
+ ],
+ "R106-AD-1": [
+  "OWN-12",
+  "LAYER-1"
+ ],
+ "R106-AD-10": [
+  "MOD-4"
+ ],
+ "R106-AD-11": [
+  "MOD-4"
+ ],
+ "R106-AD-12": [
+  "MOD-4"
+ ],
+ "R106-AD-13 (ни один адаптер не пользуется coop.sync)": [],
+ "R106-AD-14": [
+  "LUA-7"
+ ],
+ "R106-AD-15": [
+  "MOD-2"
+ ],
+ "R106-AD-16": [
+  "MOD-2"
+ ],
+ "R106-AD-17": [
+  "MOD-6"
+ ],
+ "R106-AD-18": [
+  "LAYER-1"
+ ],
+ "R106-AD-19": [
+  "LUA-2"
+ ],
+ "R106-AD-2": [
+  "LAYER-1"
+ ],
+ "R106-AD-20": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "R106-AD-21": [
+  "MOD-4"
+ ],
+ "R106-AD-22": [
+  "LUA-2"
+ ],
+ "R106-AD-23 (движок зовёт адаптеры по имени: coop_requests.cpp:382/449/670/2964, coop_trade.cpp:305; модули coop_instrument, coop_zone_path_rules, coop_trade_permit)": [
+  "MOD-1",
+  "MOD-5"
+ ],
+ "R106-AD-3": [
+  "LAYER-1"
+ ],
+ "R106-AD-4": [
+  "BUG-11"
+ ],
+ "R106-AD-5": [
+  "LAYER-4"
+ ],
+ "R106-AD-6": [
+  "LAYER-1"
+ ],
+ "R106-AD-7": [
+  "LAYER-1"
+ ],
+ "R106-AD-8": [
+  "MOD-4"
+ ],
+ "R106-AD-9": [
+  "MOD-4"
+ ],
+ "R106-B7": [
+  "MOD-1"
+ ],
+ "R106-B8": [
+  "MOD-1"
+ ],
+ "R106-B9": [
+  "MOD-1"
+ ],
+ "R106-G1": [
+  "MOD-1"
+ ],
+ "R106-G2": [
+  "MOD-1"
+ ],
+ "R106-R1": [
+  "MOD-1"
+ ],
+ "R106-R2": [
+  "MOD-1"
+ ],
+ "R106-R3": [
+  "MOD-1"
+ ],
+ "R106-R4": [
+  "MOD-1"
+ ],
+ "R106-coop_rules.h:29-33": [
+  "DOC-1"
+ ],
+ "R106-script_engine.cpp:585": [
+  "MOD-1"
+ ],
+ "R29: launcher 'extra mods' warning on a linked GAMMA": [],
+ "R33: world server decides target-NPC tasks without the map": [
+  "BUG-11"
+ ],
+ "R34": [
+  "BUG-12"
+ ],
+ "R35": [
+  "BUG-13"
+ ],
+ "R38: exit code 1 after a normal close and the CUISequencer::Stop crash from deliver_inbox": [],
+ "R86: launcher freshness probe failure failed the mod instead of downloading again": [
+  "BUG-17"
+ ],
+ "R89: artefact gone from a stash in Coop": [],
+ "TZ 6.1 Dev 58 known: NPC transfer between squads": [],
+ "TZ 6.1 Dev 58 known: character of a disconnected player without an owner": [
+  "BUG-1"
+ ],
+ "TZ 6.1 Dev 58 known: crows and phantoms come back after a map server restart": [
+  "BUG-13"
+ ],
+ "TZ 6.1 Dev 58 known: object id blocks after a long session": [
+  "BUG-6"
+ ],
+ "TZ 6.1 Dev 58 known: tail of an item's initial state": [
+  "BUG-13"
+ ],
+ "TZ 6.1 исполнители": [
+  "OWN-9"
+ ],
+ "TZ 6.10 R43: delivery of host settings restarted every NPE tutorial": [
+  "BUG-8"
+ ],
+ "TZ 6.10 R45: kill_entity on a record with items": [
+  "BUG-15"
+ ],
+ "TZ 6.10 R46: G.A.M.M.A. line dropped a friendly hit after the wound sound": [
+  "BUG-15"
+ ],
+ "TZ 6.10 R46: wound sound of a hit client played at the host": [
+  "BUG-1"
+ ],
+ "TZ 6.10 R47": [
+  "BUG-16"
+ ],
+ "TZ 6.10 R48: transition window and party panel read distance, loading and death from different places": [
+  "OWN-10"
+ ],
+ "TZ 6.10 R49: debug menu not registered as a standard window": [
+  "BUG-16"
+ ],
+ "TZ 6.10 R50: each side pushed only its own actor, through walls": [
+  "BUG-25"
+ ],
+ "TZ 6.10 open: LevelSide::level_info_up has no caller": [
+  "BUG-11"
+ ],
+ "TZ 6.10 open: on resend (r=0) an old setting may arrive after a new one": [
+  "BUG-9"
+ ],
+ "TZ 6.10 open: one-frame window, record replay after the player's re-request": [
+  "BUG-9"
+ ],
+ "TZ 6.10 open: sound_object(path) on a stand-in owner in a far-map task": [
+  "BUG-15"
+ ],
+ "TZ 6.10 wave 3b R45: stream of kill orders": [
+  "BUG-8"
+ ],
+ "TZ 6.10 wave 3b: Weapon Showcase copy picked up by another player": [
+  "BUG-20"
+ ],
+ "TZ 6.10 wave 3b: ghost hit eaten by a sound error": [
+  "BUG-17"
+ ],
+ "TZ 6.10 wave 3b: replay of numbered operations between maps (Done records)": [
+  "BUG-8"
+ ],
+ "TZ 6.10 wave 3b: wear of a reward copy for a player on another map": [
+  "BUG-13"
+ ],
+ "TZ 6.11 #128/#63/#801: race of two THM loader threads": [
+  "CPP-6",
+  "CPP-7"
+ ],
+ "TZ 6.11 #444: client's trip to another map ate the fare": [
+  "BUG-10"
+ ],
+ "TZ 6.11 #5: game settings not read on every host level change": [
+  "BUG-9"
+ ],
+ "TZ 6.11 #6/#61: dialog or trade window holds a removed NPC": [
+  "BUG-18"
+ ],
+ "TZ 6.11 #804: F7 window holds a removed target": [
+  "BUG-18"
+ ],
+ "TZ 6.11 #9/#61/#41: removal of an item without a game object": [
+  "BUG-18"
+ ],
+ "TZ 6.11 #938: map server memory": [
+  "BUG-6"
+ ],
+ "TZ 6.11 need data: 0xC0000374 on a player, client hang at exit (the third item, 'Parent … no such object' on the world server, got its cause in TZ 6.32: see the NPC bolts entry)": [],
+ "TZ 6.11: '!' noise lines (inventory, F7 spawn, link, autosave, NPC moves, could not move)": [
+  "BUG-22"
+ ],
+ "TZ 6.11: Done records before Ready": [
+  "BUG-9"
+ ],
+ "TZ 6.11: NPC info portions from map-server logic": [
+  "BUG-11"
+ ],
+ "TZ 6.11: false coop-trust lines": [
+  "BUG-20"
+ ],
+ "TZ 6.11: mod fixes (mob_trade all_money, NTA waves, Keep Crafting Window, companions, PDA, arena, alive()) and base support #1576": [],
+ "TZ 6.11: not-ours list": [
+  "OWN-5"
+ ],
+ "TZ 6.11: not-ours list (FDDA, dotmarks, mosin, faction_stocks, ...)": [
+  "BUG-15"
+ ],
+ "TZ 6.11: npc:transfer_item to its own owner did nothing": [
+  "BUG-15"
+ ],
+ "TZ 6.12 R53/R54: cypress in the death bag": [],
+ "TZ 6.15 R68 p.1: non-weapon loot from corpses at 100%": [],
+ "TZ 6.15 R68 p.2/p.3: ownership generation differs, corpse pickup refused, quest stuck": [
+  "BUG-3"
+ ],
+ "TZ 6.15 R68 p.4: '75 m' rule does not work in single player either": [
+  "BUG-15"
+ ],
+ "TZ 6.15 R68 p.4: player's arrival lost while the decider still counts him incoming, not repeated": [
+  "BUG-5"
+ ],
+ "TZ 6.15 R68 p.5: ZCP 1.0 behaves as 0.7": [],
+ "TZ 6.15 R68: 'a million quests' — no defect, not fixed": [
+  "OWN-5"
+ ],
+ "TZ 6.15 R68: refusal line without both generations": [
+  "BUG-21"
+ ],
+ "TZ 6.15 R71": [
+  "BUG-14"
+ ],
+ "TZ 6.15 R71: copy set 'weapon hung' before its pistol left the hand": [
+  "BUG-9"
+ ],
+ "TZ 6.15 R75: per-machine collision zone with memory differs between machines": [
+  "BUG-3"
+ ],
+ "TZ 6.15 R75: players push each other after a transition": [
+  "BUG-14"
+ ],
+ "TZ 6.16 R74": [
+  "BUG-18"
+ ],
+ "TZ 6.16 R74: empty script file": [
+  "BUG-18",
+  "CPP-15",
+  "BUG-15"
+ ],
+ "TZ 6.19 R88 review: remove_fighter closed the gathering, the fight took one player without F": [
+  "BUG-7"
+ ],
+ "TZ 6.19 R88: 'No' still teleported (autostart without consent)": [
+  "BUG-23"
+ ],
+ "TZ 6.19 R88: TESTERS numbers collided with artefact items": [
+  "OWN-3"
+ ],
+ "TZ 6.19 R88: arena took the last arena_zone (bar_old_arena) instead of bar_arena": [
+  "BUG-4"
+ ],
+ "TZ 6.1: build-57 table (rest spots, wounded time, F2 log mode, layer check)": [],
+ "TZ 6.2, 6.5, 6.12 (R52), 6.13 (R55-R70), 6.14 (R58-R60: stereo files play flat is an engine limit), 6.17 (R80/R82), 6.18 (R83), 6.25 (R96), 6.27 (R98), 6.29 (R100), 6.35 (R111)": [],
+ "TZ 6.20 R87": [
+  "BUG-10",
+  "CPP-15",
+  "BUG-15"
+ ],
+ "TZ 6.20 R87: new-game choice saved before the world started, applied on a later load": [
+  "BUG-10"
+ ],
+ "TZ 6.21 R90 review: buttons bound once in InitCallbacks": [
+  "BUG-16"
+ ],
+ "TZ 6.21 R90: mirror's Lua trade window moved items and money locally": [
+  "BUG-10"
+ ],
+ "TZ 6.22 R91: WebView2 data folder without write access": [
+  "BUG-18"
+ ],
+ "TZ 6.23 R92: price recomputed on the decider under the player's identity": [
+  "BUG-12"
+ ],
+ "TZ 6.24 R95: 0xC0000005 of dl-cli on the player's PC": [],
+ "TZ 6.24 R95: dl-cli without timeout under the RESOLVER lock, 3 retries per mod": [
+  "BUG-19"
+ ],
+ "TZ 6.24 R95: exit code not decoded": [
+  "BUG-21"
+ ],
+ "TZ 6.26 R97: D3D used from other threads (checked)": [
+  "CPP-6",
+  "CPP-7"
+ ],
+ "TZ 6.26 R97: FATAL named the place where the loss was noticed, not the cause": [
+  "BUG-21"
+ ],
+ "TZ 6.26 R97: GPU device removed": [],
+ "TZ 6.27": [
+  "TOOL-2"
+ ],
+ "TZ 6.27 Р98": [
+  "TOOL-2"
+ ],
+ "TZ 6.28 R99 D1: world server did not know the stamp the map server set": [
+  "BUG-3"
+ ],
+ "TZ 6.28 R99 R2: jam/camo refused under another stamp of the same item": [
+  "BUG-3"
+ ],
+ "TZ 6.28 R99: NPC weapon without a parts table": [
+  "BUG-13"
+ ],
+ "TZ 6.28 R99: StateDumpRequest answered by world server and map server": [
+  "BUG-1"
+ ],
+ "TZ 6.28 R99: parts table refused under another process's stamp": [
+  "BUG-3"
+ ],
+ "TZ 6.28 R99: refusal of the parts table not sent back, player never asked again": [
+  "BUG-5"
+ ],
+ "TZ 6.29": [
+  "TOOL-2"
+ ],
+ "TZ 6.29 Р100": [
+  "TEST-3",
+  "TEST-4"
+ ],
+ "TZ 6.30 (b29, каналы анимации)": [
+  "OWN-7"
+ ],
+ "TZ 6.30 (К-350 как сбор данных)": [
+  "OWN-3"
+ ],
+ "TZ 6.30 R101 review: K-350 written as 'expected 0'": [
+  "OWN-3"
+ ],
+ "TZ 6.30 R101: 17 'talk refused: gone' on Cordon": [
+  "BUG-22"
+ ],
+ "TZ 6.30 R101: T-pose (death_init) on copies": [
+  "BUG-14"
+ ],
+ "TZ 6.30 R101: diagnostic line placed after drive_mirror's early return": [
+  "BUG-21"
+ ],
+ "TZ 6.30 R103: root motion applied twice": [
+  "BUG-14"
+ ],
+ "TZ 6.31 R102": [
+  "OWN-16"
+ ],
+ "TZ 6.32 (итог Р104: 1 пропущен, нет Pillow)": [
+  "TEST-10"
+ ],
+ "TZ 6.32 R104 new findings (detection: ~100 not-the-writer per leave, >=100 ItemFacts)": [
+  "BUG-22"
+ ],
+ "TZ 6.32 R104 new: 'talk refused: gone' without the NPC number": [
+  "BUG-21"
+ ],
+ "TZ 6.32 R104 new: >=100 ItemFacts refusals on map 1": [
+  "BUG-5"
+ ],
+ "TZ 6.32 R104 new: a failed far task still gives a reward": [],
+ "TZ 6.32 R104 new: fetch reward 'create on object 0' refused": [
+  "BUG-12"
+ ],
+ "TZ 6.32 R104 new: host relations hash lags the list, StoryResync loop on every join": [
+  "BUG-24"
+ ],
+ "TZ 6.32 R104 new: zzz_player_injuries and coop pull a downed player's health every frame": [
+  "BUG-1"
+ ],
+ "TZ 6.32 R104 new: ~100 'not the writer' per player leave": [
+  "BUG-8"
+ ],
+ "TZ 6.32 R104 not done: item fence reaching the world after the player is parked (W4.2)": [
+  "BUG-9"
+ ],
+ "TZ 6.32 R104 stand #1: ItemFacts uses cannot be stored": [
+  "BUG-5"
+ ],
+ "TZ 6.32 R104 stand #2 (detection of the new line kind)": [
+  "BUG-22"
+ ],
+ "TZ 6.32 R104 stand #2: Parent put-down of map-server-only objects (0x9000+ slice), only in Dev 65 runs": [
+  "BUG-2"
+ ],
+ "TZ 6.32 R104 stand #3: '[coop-hands] npc … held … waiting' over 600 ms": [
+  "BUG-21"
+ ],
+ "TZ 6.32 R104 stand #4: faction_stocks / magazine_binder nil at world start (cover_server, vehicle_server), coop_client_binders.script:147, coop_reputation.script:168": [
+  "TOOL-10"
+ ],
+ "TZ 6.32 R104: 'not the writer' refusals, Parent into the same holder on player leave": [
+  "BUG-8"
+ ],
+ "TZ 6.32 R104: client crash, GE_DESTROY and M_SPAWN of ids 19465/19468 in one frame": [
+  "BUG-2"
+ ],
+ "TZ 6.32 R104: quest_take trust refusals": [
+  "BUG-20"
+ ],
+ "TZ 6.32 R104: spairs(nil) in zzzz_arti_jamming_repairs": [
+  "BUG-13"
+ ],
+ "TZ 6.32 R104: world server died at 'Spawning artefacts'": [],
+ "TZ 6.32/6.28 R104/R99: TESTERS numbers K-340/S-310 collided": [
+  "OWN-3"
+ ],
+ "TZ 6.33": [
+  "LAYER-1",
+  "MOD-1",
+  "MOD-2"
+ ],
+ "TZ 6.33 (coop_mods_perks против P4)": [
+  "MOD-6",
+  "MOD-7"
+ ],
+ "TZ 6.33 L12": [
+  "MOD-1",
+  "MOD-2"
+ ],
+ "TZ 6.33 R1-R4, G1/G2": [
+  "MOD-1",
+  "MOD-2"
+ ],
+ "TZ 6.33 R106 R1-R4, G1/G2, coop_mods_perks rewriting PBA source": [
+  "MOD-1",
+  "MOD-6"
+ ],
+ "TZ 6.33 R106: coop_mods_view_fixes, zzz_tasks_guide hint never removed in Server": [
+  "BUG-11"
+ ],
+ "TZ 6.33 R106: ~16 hard-coded map server numbers and hidden mode forks in adapters": [
+  "LAYER-4",
+  "LAYER-1"
+ ],
+ "TZ 6.33 «правки кода": [],
+ "TZ 6.33 и 6.34 замеры и итоги (строки, проценты, 385 находок)": [],
+ "TZ 6.33 работа (1)-(3)": [
+  "MOD-3",
+  "MOD-4"
+ ],
+ "TZ 6.33 работа (3)": [
+  "DOC-3"
+ ],
+ "TZ 6.33 уточнение владельца": [
+  "MOD-1",
+  "MOD-2"
+ ],
+ "TZ 6.33: coop_mods_core.wrap молча возвращает false, адаптер не встал без строки": [
+  "MOD-8"
+ ],
+ "TZ 6.34 (43 проброса)": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "TZ 6.34 (P14)": [
+  "HOT-1"
+ ],
+ "TZ 6.34 (coop_mods_guard.script:588, 43 проброса)": [
+  "OWN-11"
+ ],
+ "TZ 6.34 (send_event вместо coop.sync)": [
+  "LUA-3"
+ ],
+ "TZ 6.34 («Ошибки»: отдельный пакет со своим тестом)": [
+  "OWN-6"
+ ],
+ "TZ 6.34 (Р107: оптимизация — только после замера)": [
+  "HOT-1"
+ ],
+ "TZ 6.34 2026-10-20": [
+  "MOD-4",
+  "LUA-3"
+ ],
+ "TZ 6.34 2026-10-20 (DLTX, DXML, уникальные coop_*)": [
+  "MOD-10"
+ ],
+ "TZ 6.34 2026-10-24 «ядро есть ядро, навесуха — отдельно»": [
+  "OWN-10"
+ ],
+ "TZ 6.34 2026-10-30": [
+  "MOD-1",
+  "MOD-2",
+  "MOD-4",
+  "LUA-3",
+  "CPP-19"
+ ],
+ "TZ 6.34 2026-10-30 (ограничение X-Ray — методом в движке)": [
+  "OWN-5",
+  "CPP-19"
+ ],
+ "TZ 6.34 2026-11-03": [
+  "HOT-1"
+ ],
+ "TZ 6.34 2026-11-18": [
+  "OWN-2",
+  "LAYER-1"
+ ],
+ "TZ 6.34 R107: bug fixes go in their own package, separate from cleanup": [
+  "OWN-6"
+ ],
+ "TZ 6.34 Красиво": [
+  "OWN-10",
+  "OWN-13"
+ ],
+ "TZ 6.34 Красиво (комментарии)": [
+  "DOC-1"
+ ],
+ "TZ 6.34 Ошибки": [
+  "OWN-6"
+ ],
+ "TZ 6.34 Порядок (4) новый промт": [
+  "DOC-2"
+ ],
+ "TZ 6.34 Р106": [
+  "MOD-1",
+  "MOD-2"
+ ],
+ "TZ 6.34 Р110 (выжимка в CLAUDE.md и AGENTS.md)": [
+  "DOC-2"
+ ],
+ "TZ 6.34 ТЗ v1 (coop.sync, а не send_event)": [
+  "MOD-4",
+  "LUA-3"
+ ],
+ "TZ 6.34 ТЗ v1 (протоколы coop_mods_* убрать)": [
+  "MOD-3",
+  "MOD-4"
+ ],
+ "TZ 6.34 замер 08:20 (43 обёртки, coop_mods_guard.script:588)": [
+  "OWN-11"
+ ],
+ "TZ 6.34 замер FPS (кандидаты не доказаны)": [
+  "HOT-1"
+ ],
+ "TZ 6.34 квота агентов": [
+  "OWN-9"
+ ],
+ "TZ 6.34 критик Р107 (Useful Idiots)": [
+  "MOD-6",
+  "MOD-7"
+ ],
+ "TZ 6.35": [
+  "MOD-4"
+ ],
+ "TZ 6.35 авторы не пишут прослоек": [
+  "MOD-3",
+  "MOD-4"
+ ],
+ "TZ 6.35 мера успеха (адаптеры без 96 сообщений, 233 обёрток, 27 подмен, 70 ручных проверок)": [],
+ "TZ 6.35 один раз, как для одиночной игры": [
+  "MOD-3",
+  "MOD-4"
+ ],
+ "TZ 6.35 содержание docs/modding": [
+  "DOC-3"
+ ],
+ "TZ 6.35 справочник API из кода": [
+  "DOC-3"
+ ],
+ "TZ 6.35 сторонние авторы (быстрый старт, пример мода, `coop.api_version`, граница «публичное/внутреннее», правило устаревания, упаковка MO2/fomod)": [],
+ "TZ 6.3: phantoms invisible, empty PDA board, tasks on other maps, feed lines, ally mark/weather, own PDA": [
+  "BUG-11"
+ ],
+ "TZ 6.4 F2 #1": [
+  "BUG-20"
+ ],
+ "TZ 6.4 F2 #12": [
+  "BUG-20"
+ ],
+ "TZ 6.4 F2 #13": [
+  "BUG-20"
+ ],
+ "TZ 6.4 F2 #2": [
+  "BUG-20"
+ ],
+ "TZ 6.4 F2 #3: a map server's launch does not reach the world's quest-item list": [
+  "BUG-11"
+ ],
+ "TZ 6.4 F2 #4": [
+  "BUG-20"
+ ],
+ "TZ 6.4 F2 #5: mine planted without spending the item": [
+  "BUG-10"
+ ],
+ "TZ 6.4 F2 #6: Hideout Furniture lists over 12 KB": [
+  "LUA-3"
+ ],
+ "TZ 6.4 F2 #7": [
+  "BUG-20"
+ ],
+ "TZ 6.4 F2 #8": [
+  "BUG-20"
+ ],
+ "TZ 6.4 F2 #9": [
+  "BUG-20"
+ ],
+ "TZ 6.4 правила (журнал, затем отказ; проверка на хосте)": [
+  "BUG-1",
+  "BUG-20"
+ ],
+ "TZ 6.4 правила (новое общее состояние — coop.sync)": [
+  "MOD-4",
+  "LUA-3"
+ ],
+ "TZ 6.6 DM audit: findings in mods disabled in the profile": [
+  "OWN-5"
+ ],
+ "TZ 6.6 G1": [
+  "BUG-13"
+ ],
+ "TZ 6.6 G10": [
+  "BUG-14"
+ ],
+ "TZ 6.6 G11": [
+  "BUG-1"
+ ],
+ "TZ 6.6 G13": [
+  "BUG-12"
+ ],
+ "TZ 6.6 G14": [
+  "BUG-11"
+ ],
+ "TZ 6.6 G15": [
+  "BUG-12"
+ ],
+ "TZ 6.6 G16": [
+  "BUG-13"
+ ],
+ "TZ 6.6 G17": [
+  "BUG-1",
+  "BUG-9"
+ ],
+ "TZ 6.6 G2": [
+  "BUG-13"
+ ],
+ "TZ 6.6 G3": [
+  "BUG-13"
+ ],
+ "TZ 6.6 G4": [
+  "BUG-10"
+ ],
+ "TZ 6.6 G5": [
+  "BUG-1"
+ ],
+ "TZ 6.6 G8": [
+  "BUG-12"
+ ],
+ "TZ 6.6 G9": [
+  "BUG-12"
+ ],
+ "TZ 6.6 G9-5: stock xrs_kill_wounded disabled by LSZ AI Tweaks": [
+  "OWN-5"
+ ],
+ "TZ 6.7 F5-REV-1: world server cannot see the player's disguise": [
+  "BUG-11"
+ ],
+ "TZ 6.8 R18: Dev settings folder seeded from Anomaly user.ltx": [],
+ "TZ 6.8 R25: installer showed 'download stopped', not the tool's error": [
+  "BUG-21"
+ ],
+ "TZ 6.8 R41 (and R80)": [],
+ "TZ 6.9 R30: '3 s' window on rewards": [
+  "BUG-8"
+ ],
+ "TZ 6.9 R30: '5 -> 10' was QoL Bundle's sum of uses": [
+  "OWN-5"
+ ],
+ "TZ 6.9 R30: create from a map server accepted on any map, release only on its own": [
+  "BUG-1"
+ ],
+ "TZ 6.9 R30: release of a just-created item discarded": [
+  "BUG-5",
+  "BUG-9"
+ ],
+ "TZ 6.9 R30: stale player inventory on the map server": [
+  "BUG-13"
+ ],
+ "TZ 6.9 R30: stashes and crates dropped again by a new map server": [
+  "BUG-13"
+ ],
+ "TZ 6.9 R30: world server and every map server run code that walks the whole world": [
+  "BUG-1"
+ ],
+ "TZ 6.9 R31: soldiers missing from a post": [],
+ "TZ 6.9 R32 W1/W2": [
+  "BUG-1"
+ ],
+ "TZ 6.9 R32 W10": [
+  "BUG-12"
+ ],
+ "TZ 6.9 R32 W3/W4": [
+  "BUG-9"
+ ],
+ "TZ 6.9 R32 W6/W8": [
+  "BUG-13"
+ ],
+ "TZ 6.9 R32 W7": [
+  "BUG-5"
+ ],
+ "TZ 6.9 R32 W7: one execution per operation number": [
+  "BUG-8"
+ ],
+ "TZ 6.9 R32 W9": [
+  "BUG-2"
+ ],
+ "TZ 6.9 R32: no patches on single paths": [
+  "OWN-5"
+ ],
+ "TZ 6.9 R36: not our bug, same in single player": [
+  "OWN-5"
+ ],
+ "TZ 6.9 R36: places that read the process's actor": [
+  "BUG-12"
+ ],
+ "TZ 6.9 R37": [
+  "BUG-15"
+ ],
+ "TZ 6.9 R37: sr_camp stays idle when the storyteller leaves mid-story": [
+  "BUG-7"
+ ],
+ "TZ P1": [
+  "MOD-4",
+  "LUA-3",
+  "BUG-1",
+  "BUG-20"
+ ],
+ "TZ P10": [
+  "MOD-10"
+ ],
+ "TZ P11": [
+  "OWN-1"
+ ],
+ "TZ P12": [
+  "LAYER-1"
+ ],
+ "TZ P13": [
+  "OWN-2"
+ ],
+ "TZ P13 (пункт тестеров)": [
+  "OWN-3"
+ ],
+ "TZ P14": [
+  "HOT-1"
+ ],
+ "TZ P15": [
+  "TOOL-6",
+  "DOC-2"
+ ],
+ "TZ P2": [
+  "MOD-4",
+  "LUA-3"
+ ],
+ "TZ P3": [
+  "MOD-6",
+  "MOD-7"
+ ],
+ "TZ P4": [
+  "MOD-6",
+  "MOD-7"
+ ],
+ "TZ P5": [
+  "MOD-6",
+  "MOD-7",
+  "DOC-3"
+ ],
+ "TZ P5 «Чужие файлы не правим»": [
+  "MOD-10"
+ ],
+ "TZ P6": [
+  "OWN-1"
+ ],
+ "TZ P7": [
+  "OWN-1"
+ ],
+ "TZ P8": [
+  "BUG-1",
+  "BUG-20"
+ ],
+ "TZ P9": [
+  "OWN-16"
+ ],
+ "TZ §10 п.3": [
+  "LAYER-2",
+  "LAYER-3"
+ ],
+ "TZ §3": [
+  "OWN-1"
+ ],
+ "TZ §4 защита (check_layers, check_gates, стенды)": [
+  "LAYER-2",
+  "LAYER-3"
+ ],
+ "TZ §4 п.1": [
+  "LAYER-1"
+ ],
+ "TZ §4 п.2": [
+  "LAYER-1"
+ ],
+ "TZ §4 п.3": [
+  "LAYER-1"
+ ],
+ "TZ §4 п.4": [
+  "LAYER-1"
+ ],
+ "TZ §4 п.5": [
+  "LAYER-1"
+ ],
+ "TZ §4 п.6": [
+  "LAYER-2",
+  "LAYER-3"
+ ],
+ "TZ §4 п.7": [
+  "LAYER-2",
+  "LAYER-3"
+ ],
+ "TZ §4 п.8": [
+  "LAYER-2",
+  "LAYER-3"
+ ],
+ "TZ §5 P14": [
+  "HOT-1"
+ ],
+ "TZ §7": [
+  "OWN-1"
+ ],
+ "TZ §8": [
+  "TOOL-6"
+ ],
+ "TZ §8 (TESTERS)": [
+  "OWN-3"
+ ],
+ "TZ §8 «Порядок работы (Р17)»": [
+  "OWN-1"
+ ],
+ "TZ Р21 (жёсткие ссылки)": [
+  "TOOL-2"
+ ],
+ "backlog 3.1": [
+  "HOT-1"
+ ],
+ "backlog 3.1 (пункт 10)": [
+  "HOT-8"
+ ],
+ "backlog 3.1 (пункт 6)": [
+  "HOT-10"
+ ],
+ "backlog 3.1 (пункт 6: троттлинг HF)": [
+  "HOT-1"
+ ],
+ "backlog 3.1 (пункты 1, 4, 5, 8, 9, 16)": [
+  "HOT-3",
+  "HOT-4"
+ ],
+ "backlog 3.1 (пункты 14, 15)": [
+  "HOT-4"
+ ],
+ "backlog 3.1 (пункты 3, 7, 13)": [
+  "HOT-9"
+ ],
+ "backlog 3.2": [
+  "HOT-1"
+ ],
+ "backlog 3.2 (шаг 4)": [
+  "HOT-10"
+ ],
+ "backlog 3.2 (шаг 5)": [
+  "HOT-2"
+ ],
+ "backlog 3.2 (шаги 2, 3, 5)": [
+  "HOT-2"
+ ],
+ "backlog 3.3": [
+  "HOT-1"
+ ],
+ "backlog 3.4": [
+  "HOT-1"
+ ],
+ "backlog 6.1#1": [
+  "LAYER-1"
+ ],
+ "backlog 6.1#10": [
+  "MOD-2",
+  "MOD-3",
+  "MOD-5",
+  "MOD-6"
+ ],
+ "backlog 6.1#11": [
+  "LUA-3"
+ ],
+ "backlog 6.1#13": [
+  "OWN-17"
+ ],
+ "backlog 6.1#15": [
+  "LUA-6"
+ ],
+ "backlog 6.1#16": [
+  "BUG-20"
+ ],
+ "backlog 6.1#18": [
+  "OWN-14"
+ ],
+ "backlog 6.1#2": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "backlog 6.1#20": [
+  "LUA-8"
+ ],
+ "backlog 6.1#3": [
+  "LAYER-4",
+  "CPP-2",
+  "LUA-1"
+ ],
+ "backlog 6.1#4": [
+  "DOC-1"
+ ],
+ "backlog 6.1#5": [
+  "OWN-12",
+  "TEST-11"
+ ],
+ "backlog 6.1#6": [
+  "OWN-11"
+ ],
+ "backlog 6.1#7": [
+  "HOT-3",
+  "HOT-4",
+  "HOT-7",
+  "HOT-8"
+ ],
+ "backlog 6.1#8": [
+  "HOT-1"
+ ],
+ "backlog 6.1#9": [
+  "LUA-5"
+ ],
+ "backlog 6.1.17": [
+  "TEST-4"
+ ],
+ "backlog 6.1.17 (имена по предмету)": [
+  "TEST-9"
+ ],
+ "backlog 6.1.17 (каждый движковый срез входит в ворота T)": [
+  "TEST-2"
+ ],
+ "backlog 6.1.17 (папки — через фикстуру, порты — через t::port)": [
+  "TEST-5"
+ ],
+ "backlog 6.1.7": [
+  "HOT-3",
+  "HOT-4",
+  "HOT-8"
+ ],
+ "backlog 6.1.8": [
+  "HOT-1"
+ ],
+ "backlog 6.2#1": [
+  "LAYER-1"
+ ],
+ "backlog 6.2#12": [
+  "LUA-7"
+ ],
+ "backlog 6.2#3": [
+  "LAYER-1",
+  "LAYER-4"
+ ],
+ "backlog 6.2#4": [
+  "MOD-2"
+ ],
+ "backlog 6.2#5": [
+  "MOD-3",
+  "MOD-5"
+ ],
+ "backlog 6.2#6": [
+  "DOC-1"
+ ],
+ "backlog 6.2#7": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "backlog 6.2#8": [
+  "HOT-8"
+ ],
+ "backlog 6.2.1": [
+  "TOOL-9"
+ ],
+ "backlog 6.2.10": [
+  "TOOL-9"
+ ],
+ "backlog 6.2.11": [
+  "TOOL-9"
+ ],
+ "backlog 6.2.11 (абсолютные пути, чтение temp/)": [
+  "TEST-4"
+ ],
+ "backlog 6.2.11 (коды ревью в именах тестов)": [
+  "TEST-9"
+ ],
+ "backlog 6.2.11 (литералы портов)": [
+  "TEST-5"
+ ],
+ "backlog 6.2.12": [
+  "TOOL-9"
+ ],
+ "backlog 6.2.13": [
+  "TEST-1",
+  "TEST-2",
+  "TOOL-9"
+ ],
+ "backlog 6.2.2": [
+  "TOOL-9"
+ ],
+ "backlog 6.2.3": [
+  "TOOL-9"
+ ],
+ "backlog 6.2.4": [
+  "TOOL-9"
+ ],
+ "backlog 6.2.5": [
+  "TOOL-9"
+ ],
+ "backlog 6.2.6": [
+  "TOOL-9"
+ ],
+ "backlog 6.2.7": [
+  "TOOL-9"
+ ],
+ "backlog 6.2.8": [
+  "HOT-8",
+  "TOOL-9"
+ ],
+ "backlog 6.2.9": [
+  "TOOL-9"
+ ],
+ "backlog 7#12": [
+  "LUA-10"
+ ],
+ "backlog 7#3": [
+  "MOD-7"
+ ],
+ "backlog 7#4": [
+  "MOD-7"
+ ],
+ "backlog 7#6": [
+  "LUA-5"
+ ],
+ "backlog 7#7": [
+  "LUA-8"
+ ],
+ "backlog 7#8": [
+  "LUA-7"
+ ],
+ "backlog P0 ER-30 (xrCoop в ProfiledDX11 без LTCG)": [
+  "HOT-2"
+ ],
+ "backlog §7.16 (трупы в снимках — после замера трафика)": [
+  "HOT-10"
+ ],
+ "critic A6": [
+  "HOT-7"
+ ],
+ "critic A6 (coop_core_chat сортирует список на месте)": [
+  "HOT-7"
+ ],
+ "critic B (GUI Optick в репозитории)": [
+  "HOT-2"
+ ],
+ "critic B (TT-18: coop_route_gamma.ltx, coop_route_stock.ltx, gen_route_world.lua)": [
+  "TOOL-7"
+ ],
+ "critic B (TT-18: mo2_stand.py:20, gen_route_world.lua)": [
+  "TOOL-5"
+ ],
+ "critic B (TT-18: mo2_stand.py:20, gen_route_world.lua:4, :146)": [
+  "TEST-4"
+ ],
+ "critic B (coop_npc_idiots, coop_srv_idiots)": [
+  "MOD-6"
+ ],
+ "critic B (coop_npc_idiots: история и абсолютный путь)": [
+  "DOC-1"
+ ],
+ "critic C10 (P1 и P2 делят tests/tools/conftest.py, pyproject.toml, check_layers.py; чужие незакоммиченные правки в tools/stand_common.ps1, tests/tools/test_stand_patterns.py, test_packaging.py, tests/test_hands_rules.cpp, test_srv_journal.cpp)": [
+  "OWN-9"
+ ],
+ "critic C12": [
+  "TEST-8"
+ ],
+ "critic C13 (ROTATE поручен двум пакетам, P24 и P34) и критик C (общие файлы пакетов)": [
+  "OWN-9"
+ ],
+ "critic C8": [
+  "OWN-10",
+  "LUA-1"
+ ],
+ "critic D": [
+  "HOT-1"
+ ],
+ "critic D (P24 кадровый кэш фасада, P5 общий ростер)": [
+  "HOT-7"
+ ],
+ "critic D (P5 roster, P24 facade cache)": [
+  "HOT-7"
+ ],
+ "critic D (P5, P24, P33, P32, P28, P6, LI-16)": [
+  "HOT-1"
+ ],
+ "critic E (Lua вне всех полос, ~3,6 тыс. строк: coop_newgame_*, coop_games, coop_game_schema, coop_rollback, coop_saves_journal, coop_ops_done, coop_tent_guard, coop_transition_fare, coop_vehicles, coop_warfare_flag, coop_campfire_compat, coop_hostplay_travel, coop_npc_stealth_facts, coop_npc_stats, coop_bounty_orders; srv-скрипты без находок; 8 modxml_coop_*.script)": [],
+ "critic E (coop_testplan.script)": [
+  "OWN-12"
+ ],
+ "critic E (большие Lua-файлы без оценки)": [
+  "OWN-14"
+ ],
+ "critic E (инструменты без находки: mo2_stand.py, parity_diff.py, gen_mod_names.py, ded_check.ps1, ded_probe.ps1, check_all.cmd)": [],
+ "critic E (сценарии без находки: ms_crash_server, save_handover_server, companions_*, weather_server, cover_server, allymark_server, soak_hour_server, creator10_server)": [
+  "TOOL-1"
+ ],
+ "critic F (загрузки, потоки — сначала замер)": [
+  "HOT-1"
+ ],
+ "critic F (история в тестах, тестовые файлы больше 3 тыс. строк)": [
+  "TEST-9"
+ ],
+ "critic F (мёртвые тесты помимо гибридных)": [
+  "OWN-12",
+  "TOOL-5"
+ ],
+ "critic F (один стиль для Python и PowerShell)": [
+  "TOOL-8"
+ ],
+ "critic F (работа главного потока, которую можно вынести в потоки; время входа, смены уровня и загрузки; старт 224 скриптов coop)": [],
+ "critic F (свежие версии инструментов и библиотек: форк LuaJIT, luabind, тулсет MSVC, Python/pytest)": [],
+ "critic-A1": [
+  "OWN-10",
+  "CPP-1"
+ ],
+ "critic-A4": [
+  "CPP-9"
+ ],
+ "critic-A5": [
+  "OWN-10",
+  "CPP-1",
+  "CPP-16"
+ ],
+ "critic-B-LogBudget": [
+  "CPP-8"
+ ],
+ "critic-B-stock-364": [
+  "CPP-14"
+ ],
+ "critic-C1 (P8 и P14 делят coop_session.*, coop_wire.*, coop_transport.cpp)": [
+  "OWN-9"
+ ],
+ "critic-C11": [
+  "OWN-14"
+ ],
+ "critic-C12": [
+  "OWN-14"
+ ],
+ "critic-C2 (P7 и P14 делят coop_calls.h, coop_routes.h)": [
+  "OWN-9"
+ ],
+ "critic-C3 (P15 ждёт TunnelMsg::write_raw из P14 в одной волне)": [
+  "OWN-9"
+ ],
+ "critic-C4 (P21 и P22 делят x_ray.cpp, IGame_Persistent.h, device.h, Rain.cpp, WallmarksEngine.cpp)": [
+  "OWN-9"
+ ],
+ "critic-C5 (P21 перечисляет комментарии alife_simulator_script.cpp, файл P7)": [
+  "OWN-9"
+ ],
+ "critic-D-ResizeBuffers": [
+  "CPP-15"
+ ],
+ "critic-D-SteamThread": [
+  "CPP-6"
+ ],
+ "critic-E-3rdparty": [
+  "CPP-14",
+  "DOC-1"
+ ],
+ "critic-E-large-files": [
+  "OWN-14"
+ ],
+ "critic-E-unowned-cpp": [
+  "CPP-2"
+ ],
+ "critic-F (не ревьюились: работа главного потока, которую можно вынести в потоки — сервис ENet, сборка снимков; время загрузки входа и перехода; старт 224 скриптов; свежесть LuaJIT/luabind/MSVC)": [],
+ "critic.md A5 (luafn::call уже есть)": [
+  "OWN-10"
+ ],
+ "critic.md A6": [
+  "OWN-6"
+ ],
+ "critic.md B (абсолютный путь coop_npc_idiots.script:5)": [
+  "OWN-8"
+ ],
+ "critic.md C (пакеты делят файлы)": [
+  "OWN-9"
+ ],
+ "critic.md D": [
+  "OWN-6",
+  "HOT-1"
+ ],
+ "critic.md F": [
+  "HOT-1"
+ ],
+ "critic.md F (история в доках и конфигах)": [
+  "DOC-1"
+ ],
+ "critic.md F (история в доках)": [
+  "DOC-3"
+ ],
+ "docs/COOP_API.md §1.1": [
+  "DOC-3"
+ ],
+ "docs/COOP_API.md §1.3": [
+  "MOD-4",
+  "LUA-3"
+ ],
+ "docs/COOP_API.md §2.7": [
+  "DOC-3"
+ ],
+ "docs/MODES.md §10": [
+  "LAYER-2",
+  "LAYER-3",
+  "DOC-3"
+ ],
+ "docs/MODES.md §10 (выпуск)": [
+  "TOOL-6"
+ ],
+ "docs/MODES.md §10 (отчёт по режимам)": [
+  "OWN-2"
+ ],
+ "docs/MODES.md §10 (стенд)": [
+  "TOOL-2"
+ ],
+ "docs/MODES.md §2 (метка первой строкой)": [
+  "DOC-3"
+ ],
+ "docs/MODES.md §3 «Где начинается новая фича»": [
+  "LAYER-2",
+  "LAYER-3"
+ ],
+ "docs/MODES.md §3 правила 1, 4": [
+  "DOC-2"
+ ],
+ "docs/MODES.md §3 правила 1-7": [
+  "LAYER-1"
+ ],
+ "docs/MODES.md §3 правила 8-10": [
+  "LAYER-2",
+  "LAYER-3"
+ ],
+ "docs/MODES.md §3 правило 4": [
+  "DOC-3"
+ ],
+ "docs/MODES.md §5": [
+  "DOC-3"
+ ],
+ "docs/MODES.md §5 L12": [
+  "MOD-1",
+  "MOD-2"
+ ],
+ "docs/MODES.md §5 «Жёсткие ссылки»": [
+  "TOOL-2"
+ ],
+ "docs/MODES.md §5 «Скрытые условия по данным» (`who:id() ~= db.actor:id()`, `link.plays`)": [
+  "LAYER-1",
+  "BUG-11"
+ ],
+ "docs/MODES.md §6": [
+  "MOD-10"
+ ],
+ "docs/MODES.md §6 (Тексты, Логи)": [
+  "OWN-16"
+ ],
+ "docs/MODES.md §7": [
+  "DOC-2"
+ ],
+ "docs/MODES.md §7 (ключи остаются как данные)": [
+  "LAYER-6"
+ ],
+ "docs/MODES.md §8": [
+  "LAYER-1"
+ ],
+ "docs/MODES.md §9": [
+  "OWN-1"
+ ],
+ "docs/MOD_LAYER.md §2.4": [
+  "DOC-3"
+ ],
+ "docs/MOD_LAYER.md §2.5": [
+  "MOD-3",
+  "MOD-4",
+  "DOC-3"
+ ],
+ "docs/MOD_LAYER.md §3": [
+  "DOC-3"
+ ],
+ "docs/MOD_LAYER.md §4": [
+  "DOC-3"
+ ],
+ "docs/MOD_LAYER.md §6 открытые вопросы (резерв id для `alife_create`, колбэки «на игрока» у хоста, цена снятия `m_data`, экспорты вне таблицы вызовов)": [],
+ "docs/MOD_REPLACEMENTS.md": [
+  "DOC-3"
+ ],
+ "lua-world#14 (поправка: зеркалу задач нужны ключи с адресатами по заданию)": [],
+ "tools/test_lua.cmd:10 (2026-11-23, падение test_credit_events 1 из 40)": [
+  "TEST-1"
+ ],
+ "tools/test_lua.cmd:10 (старая lua51.lib, барьер GC)": [
+  "TEST-3"
+ ],
+ "Р100": [
+  "TOOL-2"
+ ],
+ "Р102": [
+  "OWN-16"
+ ],
+ "Р105": [
+  "TOOL-2",
+  "DOC-2"
+ ],
+ "Р106": [
+  "MOD-1",
+  "MOD-2",
+  "MOD-3",
+  "MOD-4"
+ ],
+ "Р106 (мод описан дважды: перемирие сталкеров)": [
+  "OWN-7"
+ ],
+ "Р107": [
+  "OWN-10"
+ ],
+ "Р107 (комментарий — правило и почему, без истории)": [
+  "DOC-1"
+ ],
+ "Р107 (оптимизировать, не меняя видимого)": [
+  "HOT-1"
+ ],
+ "Р107 «def var (var): return var»": [
+  "OWN-11"
+ ],
+ "Р107 «найти даже ошибки»": [
+  "OWN-6"
+ ],
+ "Р108": [
+  "TOOL-6",
+  "DOC-2"
+ ],
+ "Р11": [
+  "TOOL-6"
+ ],
+ "Р111": [
+  "MOD-3",
+  "MOD-4",
+  "DOC-3"
+ ],
+ "Р112": [
+  "MOD-6",
+  "MOD-9"
+ ],
+ "Р113": [
+  "MOD-2",
+  "MOD-9"
+ ],
+ "Р14": [
+  "OWN-3"
+ ],
+ "Р15": [
+  "MOD-6",
+  "MOD-7"
+ ],
+ "Р16": [
+  "MOD-4",
+  "LUA-3",
+  "DOC-3"
+ ],
+ "Р17": [
+  "OWN-1"
+ ],
+ "Р19": [
+  "TOOL-6",
+  "DOC-2"
+ ],
+ "Р2": [
+  "LAYER-1"
+ ],
+ "Р20": [
+  "OWN-9"
+ ],
+ "Р21": [
+  "TOOL-2",
+  "DOC-2"
+ ],
+ "Р22": [
+  "MOD-6",
+  "MOD-7"
+ ],
+ "Р23": [
+  "TOOL-6"
+ ],
+ "Р23 (сборка при закрытой игре)": [
+  "TOOL-2"
+ ],
+ "Р24": [
+  "TOOL-6"
+ ],
+ "Р3": [
+  "LAYER-1"
+ ],
+ "Р32": [
+  "OWN-5"
+ ],
+ "Р34": [
+  "OWN-5"
+ ],
+ "Р4": [
+  "LAYER-1",
+  "MOD-10"
+ ],
+ "Р40": [
+  "TOOL-6"
+ ],
+ "Р5": [
+  "LAYER-1"
+ ],
+ "Р6": [
+  "OWN-2"
+ ],
+ "Р60": [
+  "OWN-5"
+ ],
+ "Р74": [
+  "TOOL-6"
+ ],
+ "Р81": [
+  "TOOL-6",
+  "DOC-2"
+ ],
+ "Р9": [
+  "LAYER-1"
+ ],
+ "Р92": [
+  "BUG-1",
+  "BUG-20"
+ ],
+ "Р98": [
+  "TOOL-2",
+  "DOC-2"
+ ],
+ "TZ 6.6 G6 (limits and far trade)": [
+  "BUG-20",
+  "BUG-11"
+ ],
+ "TZ 6.6 G7 (perks and healing)": [
+  "BUG-12",
+  "BUG-13"
+ ],
+ "TZ 6.6 G12 (companions)": [
+  "BUG-12"
+ ],
+ "TZ 6.6 G18 (Warfare and hunters)": [
+  "BUG-12",
+  "MOD-7"
+ ],
+ "backlog 6.1#12": [
+  "CPP-6"
+ ],
+ "backlog 6.1#14": [
+  "CPP-14",
+  "CPP-10",
+  "CPP-13"
+ ],
+ "backlog 6.1#19": [
+  "OWN-9",
+  "CPP-5"
+ ],
+ "backlog §7.1 (writer gate: оставить, комментарий честный)": [
+  "DOC-1",
+  "OWN-15"
+ ],
+ "backlog §7.2 (W6 carry: удалить с тестами)": [
+  "OWN-12"
+ ],
+ "backlog §7.3 (Tactical Compass: переименовать в coop_mods_tactical_compass)": [
+  "MOD-7"
+ ],
+ "backlog §7.4 (Mags Redux, Experience Framework, zzz_wounded_heal_anim: удалить)": [
+  "MOD-7",
+  "OWN-12"
+ ],
+ "backlog §7.5 (srv.* против coop.*: довести)": [
+  "LAYER-5",
+  "LAYER-2"
+ ],
+ "backlog §7.6 (минимальная сборка exe для пакета «только скрипты»)": [
+  "LUA-5"
+ ],
+ "backlog §7.7 (стиль отступов: табы)": [
+  "CPP-13",
+  "LUA-8"
+ ],
+ "backlog §7.8 (метка слоя: Lua — русская первая строка, C++ — каталог)": [
+  "LUA-7",
+  "CPP-13"
+ ],
+ "backlog §7.9 (ModelPool abandon_damaged оставлен)": [
+  "CPP-18"
+ ],
+ "backlog §7.10 (health ledger за переключателем)": [
+  "OWN-17"
+ ],
+ "backlog §7.11 (порядок колбэка торговца как в стоке)": [
+  "CPP-15"
+ ],
+ "backlog §7.12 (ответ оператору: только подсказка)": [
+  "LUA-10"
+ ],
+ "backlog §7.13 (Legacy ReqSpawn и «старый хост» в talks удалить)": [
+  "CPP-4"
+ ],
+ "backlog §7.14 (pack_unit и дробные id: одно правило, отдельные коммиты)": [
+  "CPP-5",
+  "CPP-16"
+ ],
+ "backlog §7.15 (потоки: хуки не во время coop frame(), флаг)": [
+  "CPP-6"
+ ],
+ "backlog §7.17 (метка стоковых правок «// coop:» одна на блок)": [
+  "CPP-14",
+  "DOC-1"
+ ],
+ "TZ 6.32 R104 stand #3: two 3.4 s [coop-hands] cases without a check of single copies (unexplained)": [],
+ "TZ 6.32 side finding: own_free_id takes pool ids every other one, its comment says otherwise": [
+  "BUG-2",
+  "DOC-1"
+ ],
+ "TZ 6.32 R104 stand #2 cause: NPC bolts (can_save false) never reach the world's ALife, their put-down Parent is refused 'no such object'": [
+  "BUG-2",
+  "BUG-11"
+ ],
+ "GLOBAL §8 «свои идеи агент пишет в отчёт, а не внедряет»": [
+  "OWN-8"
+ ],
+ "critic Р110 usability: periodic work before the P24 tick service (actor_on_update, CreateTimeEvent, AddUniqueCall, Update)": [
+  "HOT-8",
+  "OWN-18"
+ ],
+ "critic Р110 usability: coop.sync writers per scope, persistence, limits, host numbering; a map server cannot write World/Session": [
+  "LUA-3",
+  "BUG-4"
+ ],
+ "critic Р110 usability: executor when the only allowed mechanism is «будет»": [
+  "OWN-18"
+ ],
+ "critic Р110 usability: checklist of a new protocol message (msg_sender default Either, msg_name, handler tables, Lane, LevelJournal)": [
+  "CPP-17"
+ ],
+ "critic Р110 usability: Lua delivery APIs and their status": [
+  "LUA-3"
+ ],
+ "critic Р110 usability: two id numberings and where conversion happens": [
+  "BUG-4"
+ ],
+ "critic Р110 usability: who decides an item held by a player or moving between maps": [
+  "BUG-1"
+ ],
+ "critic Р110 usability: which processes build HUD windows": [
+  "LUA-11"
+ ],
+ "critic Р110 usability: who measures under HOT-1": [
+  "HOT-1"
+ ],
+ "critic Р110 usability: editing an allow-listed debt line inside a bug fix": [
+  "OWN-6"
+ ],
+ "critic Р110 usability: a G.A.M.M.A. mod that keeps state in local Lua tables": [
+  "BUG-13",
+  "OWN-18"
+ ],
+ "critic Р110 usability: register_world_key and periodic polls as approved mechanisms": [
+  "MOD-5",
+  "HOT-8"
+ ],
+ "critic Р110 usability: cheap check placed in a shared guard()": [
+  "HOT-3"
+ ],
+ "critic Р110 usability: per-callback frame cache before P24": [
+  "HOT-7",
+  "HOT-3"
+ ],
+ "critic Р110 usability: PowerShell and Python style": [
+  "TOOL-8"
+ ],
+ "critic Р110 contradiction: wraps of mod functions (MOD-3, MOD-8, LUA-9 against CLAUDE.md п.3 and TZ 6.35)": [
+  "MOD-3",
+  "MOD-4"
+ ],
+ "critic Р110 contradiction: layer of the adapters (Core for the mode rules, a modpack set for naming)": [
+  "LAYER-1",
+  "MOD-9"
+ ]
+}
