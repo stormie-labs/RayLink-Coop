@@ -32,7 +32,7 @@ local string_format, table_insert, table_remove = string.format, table.insert, t
 
 XML_FILE = "ui_coop_netgraph.xml"
 
--- thresholds (owner 2026-10-24: "green when everything is fine, red when loss is heavy or the ping is high")
+-- thresholds: green when everything is fine, red when loss is heavy or the ping is high
 PING_WARN, PING_BAD = 80, 150 -- ms: ok < 80, warn < 150, bad >= 150
 LOSS_WARN, LOSS_BAD = 1, 5 -- percent: ok < 1, warn < 5, bad >= 5
 FPS_OK, FPS_BAD = 50, 30 -- ok >= 50, warn >= 30, bad < 30
@@ -44,7 +44,7 @@ HOST_PEER = 0 -- the host's peer id: a client's ping and loss are the numbers of
 ROWS = 4 -- FPS, PING, LOSS and (the host) PLAYERS
 SHOWN_MAX = { ping = 999, fps = 999, loss = 100 } -- what the narrow number column can show
 
--- colours (the same palette as the rest of HUD v2: the compass bar's plate, the transition board's amber)
+-- colours (the same palette as the rest of the HUD: the compass bar's plate, the transition board's amber)
 local C_OK = { 104, 214, 118 } -- green
 local C_WARN = { 240, 176, 76 } -- amber
 local C_BAD = { 226, 58, 48 } -- red
@@ -68,21 +68,8 @@ local STR_NONE = "st_coop_netgraph_none"
 local ROWS_CLIENT = { "fps", "ping", "loss" }
 local ROWS_HOST = { "fps", "ping_max", "loss_max", "players" }
 
-local function log(fmt, ...)
-	local ok, line = pcall(string_format, fmt, ...)
-	printf("[coop-hud] %s", ok and line or tostring(fmt))
-end
-
-local function tr(id, fallback)
-	local ok, s = pcall(game.translate_string, id)
-	if not ok or type(s) ~= "string" or s == "" or s == id then return fallback end
-	return s
-end
-
-local function layout()
-	local m = rawget(_G, "coop_hud_layout") or coop_hud_layout
-	return m.get()
-end
+local log = coop_util.logger("[coop-hud]")
+local tr, argb, live, hud_visible = coop_util.tr_nonempty, coop_hud_kit.argb, coop_hud_kit.live, coop_hud_kit.hud_visible
 
 -------------------------------------------------------------------------------
 -- Pure helpers
@@ -135,7 +122,7 @@ end
 -- What the net graph shows of a coop.players() list: { players = count of everybody, ping = ms | nil, loss = percent | nil }.
 -- The host: the worst of its clients. A client: the host's entry only. An entry without `loss` (an older exe) counts as 0 %;
 -- garbage (no number, NaN, negative) is skipped.
--- link: a client's coop.server_link() (plan 2026-11-12: a world server's seat is in no row): its ping and loss are the numbers of
+-- link: a client's coop.server_link() (a world server's seat is in no row): its ping and loss are the numbers of
 -- that link; without it (an older engine) the host's row (HOST_PEER), as before.
 function summarize(list, host, link)
 	local out = { players = 0 }
@@ -184,34 +171,11 @@ end
 -------------------------------------------------------------------------------
 -- Engine glue
 -------------------------------------------------------------------------------
-local function live()
-	if not api then return false end
-	local ok, on = pcall(function() return api.is_active() and (coop_mode.decides_world() or api.is_live()) end)
-	return ok and on == true
-end
-
-local function players_list()
-	local ok, list = pcall(api.players)
-	if ok and type(list) == "table" then return list end
-	return nil
-end
-
 -- a client's link to the host / the world server (coop.server_link), nil on a host or an older engine
 local function server_link()
 	if type(api.server_link) ~= "function" then return nil end
 	local ok, link = pcall(api.server_link)
 	return ok and type(link) == "table" and link or nil
-end
-
-local function hud_visible()
-	local f = rawget(_G, "main_hud_shown")
-	if not f then return true end
-	local ok, v = pcall(f)
-	return not ok or v == true
-end
-
-local function argb(a, c)
-	return GetARGB(math_max(0, math_min(255, math_floor(a + 0.5))), c[1], c[2], c[3])
 end
 
 -------------------------------------------------------------------------------
@@ -260,7 +224,7 @@ end
 
 -- Geometry for the current screen and layout. Sizes are px at 768 high: units down, px * kx across.
 function UICoopNetgraph:Relayout()
-	local L = layout()
+	local L = coop_hud_layout.get()
 	local dev = device()
 	local W, H = dev.width, dev.height
 	local kx = 1024 * H / (768 * W)
@@ -350,7 +314,7 @@ function UICoopNetgraph:Refresh(tg)
 	local fps = fps_of(frames, ms)
 
 	local host = api.is_active() and coop_mode.decides_world()
-	local list = players_list()
+	local list = coop_util.players()
 	local sum = summarize(list, host, not host and server_link() or nil)
 	local none = tr(STR_NONE, "-")
 	local ids = host and ROWS_HOST or ROWS_CLIENT
@@ -395,7 +359,7 @@ function UICoopNetgraph:Frame(tg)
 			self.last_at, self.frames, self.buckets = nil, 0, {}
 		end
 		local dev = device()
-		if dev.width ~= self.g.W or dev.height ~= self.g.H or layout() ~= self.g.L then self:Relayout() end
+		if dev.width ~= self.g.W or dev.height ~= self.g.H or coop_hud_layout.get() ~= self.g.L then self:Relayout() end
 	end
 	if not self.vis then return end
 	self.frames = self.frames + 1

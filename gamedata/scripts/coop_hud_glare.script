@@ -1,5 +1,5 @@
 --[[
-	Anomaly Coop - HUD v2: the glare of another player's head torch (gamedata\scripts\coop_hud_glare.script).
+	Anomaly Coop - the HUD: the glare of another player's head torch (gamedata\scripts\coop_hud_glare.script).
 
 	A friend's head torch shining in my face dazzles a little: a soft warm spot at his head, over the world. A cosmetic: at
 	most 0.45 opaque, and it needs both of us to look at each other. The engine's own glow of the lamp (l->glow,
@@ -24,7 +24,6 @@ local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
 
 local tostring, type, ipairs, pairs, pcall = tostring, type, ipairs, pairs, pcall
 local math_floor, math_max, math_min, math_sqrt = math.floor, math.max, math.min, math.sqrt
-local string_format = string.format
 
 RANGE = 20 -- m: no glare from here on
 MAX_ALPHA = 0.45
@@ -43,16 +42,8 @@ local RAY_FLAGS = 3 -- rq_target: rqtObject + rqtStatic, a closed door counts to
 local RAY_SHORT = 0.3 -- m: the ray stops before his head
 local LIST_GAP_MS = 100 -- coop.players() builds a table: not on every frame
 
-local function log(fmt, ...)
-	local ok, line = pcall(string_format, fmt, ...)
-	printf("[coop-hud] %s", ok and line or tostring(fmt))
-end
-
-local function live()
-	if not api then return false end
-	local ok, on = pcall(function() return api.is_active() and (coop_mode.decides_world() or api.is_live()) end)
-	return ok and on == true
-end
+local log = coop_util.logger("[coop-hud]")
+local live, hud_visible = coop_hud_kit.live, coop_hud_kit.hud_visible
 
 -------------------------------------------------------------------------------
 -- The strength: pure
@@ -93,20 +84,13 @@ end
 -------------------------------------------------------------------------------
 -- What the game says
 -------------------------------------------------------------------------------
--- F5-SEAT-2: the most spots, one per other player the session can have: its seats without me (the co-op 7, a server 15).
+-- The most spots, one per other player the session can have: its seats without me (the co-op 7, a server 15).
 -- An engine that says no seats (outside a session, an older exe): nil, no limit but the players it lists.
 function spots_max()
 	local ok, info = pcall(api.session_info)
 	local n = ok and type(info) == "table" and tonumber(info.max_players) or nil
 	if n and n >= 1 and n == math_floor(n) then return n - 1 end
 	return nil
-end
-
-local function hud_visible()
-	local f = rawget(_G, "main_hud_shown")
-	if not f then return true end
-	local ok, v = pcall(f)
-	return not ok or v == true
 end
 
 -- Not down, dead or waiting to respawn; 0 = me.
@@ -118,11 +102,8 @@ end
 -- Local ids of the other players' characters.
 local function other_avatars()
 	local ids = {}
-	local ok, list = pcall(api.players)
-	if ok and type(list) == "table" then
-		for _, p in ipairs(list) do
-			if not p.is_self and type(p.avatar_id) == "number" and p.avatar_id ~= 0 then ids[#ids + 1] = p.avatar_id end
-		end
+	for _, p in ipairs(coop_util.players()) do
+		if not p.is_self and type(p.avatar_id) == "number" and p.avatar_id ~= 0 then ids[#ids + 1] = p.avatar_id end
 	end
 	return ids
 end
@@ -161,6 +142,7 @@ function UICoopGlare:__init() super()
 	self.glares = {} -- character id -> { value, lamp = {x, y, z}, beam = {x, y, z}, ray_at, clear }
 	self.ids = {}
 	self.point = vector()
+	self.v2 = vector2() -- the engine copies it: one for every size and place of the frame
 end
 
 function UICoopGlare:__finalize()
@@ -229,8 +211,8 @@ function UICoopGlare:DrawSpots(dev, tg, dt)
 				if used > #self.spots then self:AddSpots(used) end
 				local w = self.spots[used]
 				local size = spot_size(g.value)
-				w:SetWndSize(vector2():set(size * self.kx, size))
-				w:SetWndPos(vector2():set(s.x - size * self.kx / 2, s.y - size / 2))
+				w:SetWndSize(self.v2:set(size * self.kx, size))
+				w:SetWndPos(self.v2:set(s.x - size * self.kx / 2, s.y - size / 2))
 				w:SetTextureColor(GetARGB(math_floor(255 * opacity(g.value)), 255, 255, 255))
 				if not w:IsShown() then w:Show(true) end
 			end
@@ -257,7 +239,8 @@ function UICoopGlare:Frame(tg)
 	if db.actor and hud_visible() and upright(0) then
 		used = self:DrawSpots(dev, tg, dt)
 	else
-		self.glares, self.ids_at = {}, nil -- gone at once: nothing fades out of a menu
+		-- gone at once: nothing fades out of a menu
+		if self.ids_at or next(self.glares) ~= nil then self.glares, self.ids_at = {}, nil end
 	end
 	self:HideSpots(used + 1)
 end

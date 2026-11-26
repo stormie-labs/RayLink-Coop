@@ -211,12 +211,7 @@ DEFAULTS = {
 -------------------------------------------------------------------------------
 -- Resolving a theme over the defaults
 -------------------------------------------------------------------------------
-local function log(fmt, ...)
-	local pf = rawget(_G, "printf")
-	if not pf then return end
-	local ok, line = pcall(string.format, fmt, ...)
-	pcall(pf, "%s", "[coop-theme] " .. (ok and line or tostring(fmt)))
-end
+local log = coop_util.logger("[coop-theme]")
 
 local function copy(v)
 	if type(v) ~= "table" then return v end

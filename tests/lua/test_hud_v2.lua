@@ -4,7 +4,7 @@
 -- real ui_coop_core.xml / ui_coop_compass.xml paths, real mod_system_coop.ltx palette, real eng strings.
 -- Run: tools\test_lua.cmd hud_v2   (VERBOSE=1 for logs)
 local ROOT = "gamedata/"
-os.execute("mkdir temp\\lua 2>NUL")
+local SCRATCH = dofile("tests/lua/support/scratch.lua")
 
 FAILS, PASSES = 0, 0
 local function check(cond, what)
@@ -189,7 +189,7 @@ end
 local INI = ltx(ROOT .. "configs/mod_system_coop.ltx")
 
 -- ---------------------------------------------------------------- the machine
-local SCRIPTS = { "coop_mode", "coop_hostplay_mode", "coop_srv_mode", "coop_trust", "coop_hud_layout", "coop_allies", "coop_allies_map", "coop_core_hud", "coop_hud_markers", "coop_hud_compass", "coop_hud_ping",
+local SCRIPTS = { "coop_util", "coop_hud_kit", "coop_hud_hold", "coop_mode", "coop_hostplay_mode", "coop_srv_mode", "coop_trust", "coop_hud_layout", "coop_allies", "coop_allies_map", "coop_core_hud", "coop_hud_markers", "coop_hud_compass", "coop_hud_ping",
 	"coop_hud_tc", "coop_menu_options", "modxml_coop_hud" }
 local NET = {} -- machines of the session, by peer id
 local MOUSE_5, CHAT_TEAM = 341, 77
@@ -479,7 +479,7 @@ end
 -- Geometry dump for a visual check against docs\hud\hud_v2_mockup.png (temp\lua\hud_v2_<name>.txt, read by
 -- temp\hud_v2\render_dump.py): every visible static / text window under `root`, in 1024x768 units, tab separated.
 local function dump(name, windows)
-	local fh = io.open("temp/lua/hud_v2_" .. name .. ".txt", "wb")
+	local fh = io.open(SCRATCH .. "hud_v2_" .. name .. ".txt", "wb")
 	if not fh then return end
 	local TAB = string.char(9)
 	for _, w in ipairs(windows) do
@@ -1107,8 +1107,8 @@ if P then
 	check(near(r1.base.e.x, 18 * KX) and near(r1.base.e.y, 20) and near(r2.base.e.y, 20 + PITCH) and near(r3.base.e.y, 20 + 2 * PITCH)
 		and near(r2.base.e.x, r1.base.e.x) and near(r3.base.e.x, r1.base.e.x),
 		"top left, rows straight under each other 58 px apart (R61: no stair)")
-	check(r1.strip.e.tcolor % 16777216 == M.allies.argb(0) % 16777216 and r1.strip.e.texture == "coop_h3_bracket_l"
-		and near(r1.strip.e.w, 8 * U * KX) and near(r1.strip.e.h, 42 * U) and alpha_of(r1.strip.e.tcolor) == 255,
+	check(r1.bracket.e.tcolor % 16777216 == M.allies.argb(0) % 16777216 and r1.bracket.e.texture == "coop_h3_bracket_l"
+		and near(r1.bracket.e.w, 8 * U * KX) and near(r1.bracket.e.h, 42 * U) and alpha_of(r1.bracket.e.tcolor) == 255,
 		"the [ in his colour, full brightness")
 	local nr, ng, nb = rgb_of(r1.name.e.color)
 	check(nr == 247 and ng == 244 and nb == 236 and alpha_of(r1.name.e.color) == 255 and r1.name_sh.e.text == "player_a"
@@ -1163,7 +1163,7 @@ if P then
 	local hx = r2.head.e.x
 	local ta = alpha_of(r2.timer.e.color)
 	run(300, M)
-	check(hx ~= r2.head.e.x and ta ~= alpha_of(r2.timer.e.color) and alpha_of(r2.strip.e.tcolor) == 255,
+	check(hx ~= r2.head.e.x and ta ~= alpha_of(r2.timer.e.color) and alpha_of(r2.bracket.e.tcolor) == 255,
 		"the sweep runs, the timer pulses at 1 Hz, the bracket stays at full brightness")
 	run(10000, M)
 	status(M, 1, "down", 0.01, 32) -- he keeps reporting (a status older than 15 s is "no signal")
@@ -1189,7 +1189,7 @@ if P then
 	run(600, M)
 	r_, g_, b_ = rgb_of(r2.segs[1].fill.e.tcolor)
 	check(r_ == 120 and g_ == 120 and near(fill_w(r2), SEG * 4, 0.5) and r2.icon.e.texture == "coop_h3_ally_dead"
-		and select(1, rgb_of(r2.strip.e.tcolor)) == 142, "dead: grey segments and bracket, ally_dead")
+		and select(1, rgb_of(r2.bracket.e.tcolor)) == 142, "dead: grey segments and bracket, ally_dead")
 	check(not r2.timer.e.visible, "no respawn time known: no timer")
 	local resp_end = NOW + 21000
 	M.env.coop.respawn_left = function(id) return id == 501 and math.max(0, resp_end - NOW) or nil end
@@ -1735,8 +1735,9 @@ M.env.ui_options, M.env.ActorMenu = nil, nil
 local unk = {}
 for k in pairs(UNKNOWN or {}) do unk[#unk + 1] = tostring(k) end
 table.sort(unk)
+-- getFS: coop_util.module looks for a game script's file before it loads it
 local allowed = { axr_companions = true, profile_timer = true, task_manager = true, coop_checkpoints = true, tc_markers = true, tc_utils = true,
-	tasks_placeable_waypoints = true, tc_binder = true }
+	tasks_placeable_waypoints = true, tc_binder = true, getFS = true }
 local bad = {}
 for _, k in ipairs(unk) do if not allowed[k] then bad[#bad + 1] = k end end
 check(#bad == 0, "no reads of undefined globals (" .. table.concat(bad, ", ") .. ")")

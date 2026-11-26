@@ -141,7 +141,7 @@ local function class_stub(name)
 end
 local CUIScriptWnd = { Update = function() end }
 
-local SCRIPTS = { "coop_mode", "coop_hud_layout", "coop_allies", "coop_allies_map", "coop_core_hud", "coop_hud_glare",
+local SCRIPTS = { "coop_util", "coop_hud_kit", "coop_hud_hold", "coop_mode", "coop_hud_layout", "coop_allies", "coop_allies_map", "coop_core_hud", "coop_hud_glare",
 	"coop_economy_money", "coop_debug_cmds" }
 
 -- A process of a session.
@@ -243,6 +243,7 @@ local function machine(opts)
 	-- coop_economy_core stand-in: what coop_economy_money asks
 	local inv_cls = { InitProperties = function() return "stock" end }
 	M.inv_cls = inv_cls
+	env.ui_inventory = { UIInventory = inv_cls }
 	env.coop_economy_core = {
 		live = function() return opts.set ~= "none" end,
 		engine = function() return true end,
@@ -643,10 +644,8 @@ section("fallbacks: the menus follow the session, else the co-op's 8", function(
 	check(bare.max_players() == 8, "coop_menu.max_players: an engine without session_info: the co-op's 8")
 
 	-- the line under the main menu's Co-op button: "no games yet, up to <seats>"
-	local mm = load_alone("coop_main_menu", api, {
-		coop_menu = menu,
-		game = { translate_string = function(id) return id .. " %s" end },
-	})
+	menu.game = { translate_string = function(id) return id .. " %s" end } -- the main menu's words are coop_menu.tr's
+	local mm = load_alone("coop_main_menu", api, { coop_menu = menu })
 	local sub = local_of(mm, "coop_sub")
 	check(type(sub) == "function", "coop_main_menu's coop_sub found")
 	if not sub then return end

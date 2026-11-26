@@ -191,6 +191,7 @@ function utils_ui.UIHint() return { Update = function(_, txt) HINT = txt end } e
 
 local modes = dofile("tests/lua/support/modes.lua")
 modes.live(load_module("coop_mode"), load_module)
+load_module("coop_util") -- again, now that `coop` stands in: the engine has it before any script
 local mc = load_module("coop_menu_char")
 check(coop_main.handlers["menu.char_offer"] and coop_main.handlers["menu.new_character"]
 	and coop_main.handlers["menu.char_result"], "event handlers registered at load")
@@ -894,17 +895,18 @@ check(not gj.shown, "the session ended (kicked, host gone): the window closes")
 print("== client: where the character appears (owner, live test 2026-10-23: Clear Sky came up in the rookie village)")
 -- Until split levels (F3a) every player is on the host's map. GAMMA gives Clear Sky two starts: hidden_base on the Great
 -- Swamps and rookie_village on Cordon; the host was on Cordon, so the village was used, and the window did not say so.
+local STARTS_GAMMA = dofile("tests/lua/support/scratch.lua") .. "menu_char_gamma_starts.ltx"
 do
 	local fh = assert(io.open(STOCK_STARTS, "r"))
 	local stock_src = fh:read("*a")
 	fh:close()
 	local gamma_src, n_csky = stock_src:gsub("(%[csky_start_locations%][^\n]*\n)", "%1rookie_village = l01_escape\n")
 	check(n_csky == 1, "GAMMA start list for the test: Clear Sky also starts in the rookie village")
-	local out = assert(io.open("temp/menu_char_gamma_starts.ltx", "w"))
+	local out = assert(io.open(STARTS_GAMMA, "w"))
 	out:write(gamma_src)
 	out:close()
 end
-STARTS_FILE = "temp/menu_char_gamma_starts.ltx"
+STARTS_FILE = STARTS_GAMMA
 SESSION = { active = true, phase = "receiving-world", nick = "Guest" }
 db.actor = nil
 do

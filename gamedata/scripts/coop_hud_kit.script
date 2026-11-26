@@ -4,35 +4,65 @@
 	windows. A widget is the table el(e) makes around a window `e`; the kit remembers what it last set there and calls the
 	engine only when the value changes.
 
+	Widgets:
 		argb(a, rgb) -> color     alpha 0..255 rounded and clamped, rgb = { r, g, b }
-		el(e) -> widget           { e = e }
+		el(e[, x, y, w, h]) -> widget   { e = e }; x, y, w, h: where the window stands already (put skips that place)
 		put(t, x, y[, w, h])      position, and size when w is given
 		show(t, on)               shown or hidden by the widget's own flag (any value of `on` counts as a boolean)
 		tint(t, a, rgb)           the texture color argb(a, rgb)
+		color(t, c)               the texture color c (a ready argb)
+	A text with a 1 px shadow under it (the shadow black at SHADOW_ALPHA of the text's alpha):
+		new_text(xml, parent, node) -> { tx, sh }  two text windows of one xml node, the shadow first (it is drawn under)
+		text_set(t, s, a, rgb)    the string and its color
+		text_place(t, x, y, w, h, m)  the text at x, y and its shadow one screen pixel (m.px, m.py) right and down
+		text_show(t, on)
+	Screen and fades:
+		metrics() -> m            { W, H, kx, px, py } of the screen now: kx = px at 768 high -> units across, px / py =
+		                          one screen pixel in units. The same table while the resolution stays: read only
+		alpha_step(a, target, dt, in_ms, out_ms) -> a   a fade: `a` moves toward target (0 or 1) by dt ms (nil: 0); in_ms /
+		                          out_ms to go the whole way (0: at once)
+	Questions every overlay asks:
 		live() -> bool            the HUD of a session runs here: a session is active and this process decides the world
 		                          or has loaded it (coop.is_live)
+		hud_visible() -> bool     the stock main_hud_shown(): no inventory, PDA, dialog or scope on top (true without it or
+		                          when it raises)
+		my_peer() -> peer | nil   this process's peer id, nil outside a session
+		peer_color(peer, fallback) -> rgb   the player's slot of the palette ([coop_player_colors], coop_allies.color)
+		clean_nick(s) -> string   a nick fit for a label: no %, at most 24 characters ("?" for nil)
+		nick_labels(ms) -> nick_of(peer)    a board's own nick reader: the session's nicks read again when `ms` old;
+		                          nick_of(peer) -> clean_nick, "player <peer>" without a nick, "?" without a peer
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
 
-local pcall = pcall
+local pcall, rawget, tonumber, tostring, type, ipairs = pcall, rawget, tonumber, tostring, type, ipairs
 local math_max, math_min, math_floor = math.max, math.min, math.floor
 
+SHADOW_ALPHA = 0.7
+local C_SHADOW = { 0, 0, 0 }
+
+-------------------------------------------------------------------------------
+-- Widgets
+-------------------------------------------------------------------------------
 function argb(a, rgb)
 	return GetARGB(math_max(0, math_min(255, math_floor(a + 0.5))), rgb[1], rgb[2], rgb[3])
 end
 
-function el(e)
-	return { e = e }
+function el(e, x, y, w, h)
+	return { e = e, x = x, y = y, w = w, h = h }
 end
+
+local v2 = nil -- one vector2 for every place and size: the engine copies it (made on first use, after the engine's classes)
 
 function put(t, x, y, w, h)
 	if t.x ~= x or t.y ~= y then
-		t.e:SetWndPos(vector2():set(x, y))
+		v2 = v2 or vector2()
+		t.e:SetWndPos(v2:set(x, y))
 		t.x, t.y = x, y
 	end
 	if w and (t.w ~= w or t.h ~= h) then
-		t.e:SetWndSize(vector2():set(w, h))
+		v2 = v2 or vector2()
+		t.e:SetWndSize(v2:set(w, h))
 		t.w, t.h = w, h
 	end
 end
@@ -45,14 +75,72 @@ function show(t, on)
 	end
 end
 
-function tint(t, a, rgb)
-	local c = argb(a, rgb)
+function color(t, c)
 	if t.tinted ~= c then
 		t.tinted = c
 		t.e:SetTextureColor(c)
 	end
 end
 
+function tint(t, a, rgb)
+	color(t, argb(a, rgb))
+end
+
+-------------------------------------------------------------------------------
+-- Text with a shadow
+-------------------------------------------------------------------------------
+function new_text(xml, parent, node)
+	return { sh = el(xml:InitTextWnd(node, parent)), tx = el(xml:InitTextWnd(node, parent)) }
+end
+
+function text_set(t, s, a, rgb)
+	if t.text ~= s then
+		t.text = s
+		t.tx.e:SetText(s)
+		t.sh.e:SetText(s)
+	end
+	local c = argb(a, rgb)
+	if t.color ~= c then
+		t.color = c
+		t.tx.e:SetTextColor(c)
+		t.sh.e:SetTextColor(argb(a * SHADOW_ALPHA, C_SHADOW))
+	end
+end
+
+function text_place(t, x, y, w, h, m)
+	put(t.tx, x, y, w, h)
+	put(t.sh, x + m.px, y + m.py, w, h)
+end
+
+function text_show(t, on)
+	show(t.tx, on)
+	show(t.sh, on)
+end
+
+-------------------------------------------------------------------------------
+-- Screen and fades
+-------------------------------------------------------------------------------
+local screen = nil -- the last metrics(); input: device().width / height; a new table when either changes
+
+function metrics()
+	local dev = device()
+	local W, H = dev.width, dev.height
+	local m = screen
+	if m and m.W == W and m.H == H then return m end
+	m = { W = W, H = H, kx = 1024 * H / (768 * W), px = 1024 / W, py = 768 / H }
+	screen = m
+	return m
+end
+
+function alpha_step(a, target, dt, in_ms, out_ms)
+	dt = dt or 0
+	if target > a then return math_min(target, a + (in_ms > 0 and dt / in_ms or 1)) end
+	return math_max(target, a - (out_ms > 0 and dt / out_ms or 1))
+end
+
+-------------------------------------------------------------------------------
+-- Questions
+-------------------------------------------------------------------------------
 -- Called every frame by every overlay: no closure; an engine call that raises means "not live".
 function live()
 	if not api then return false end
@@ -61,4 +149,58 @@ function live()
 	if coop_mode.decides_world() then return true end
 	ok, on = pcall(api.is_live)
 	return ok and on == true
+end
+
+function hud_visible()
+	local f = rawget(_G, "main_hud_shown")
+	if not f then return true end
+	local ok, v = pcall(f)
+	return not ok or v == true
+end
+
+function my_peer()
+	if not api then return nil end
+	local ok, id = pcall(api.self_id)
+	id = ok and tonumber(id) or nil
+	if id and id >= 0 then return id end
+	return nil
+end
+
+function peer_color(peer, fallback)
+	local A = rawget(_G, "coop_allies")
+	if A and A.color and tonumber(peer) then
+		local ok, r, g, b = pcall(A.color, peer)
+		if ok and r then return { r, g, b } end
+	end
+	return fallback
+end
+
+function clean_nick(s)
+	s = tostring(s or "?"):gsub("%%", "")
+	if #s > 24 then s = s:sub(1, 23) .. "." end
+	return s
+end
+
+function nick_labels(ms)
+	local at, map = nil, {}
+	return function(peer)
+		peer = tonumber(peer)
+		if not peer then return "?" end
+		local tg = time_global()
+		if not at or tg - at > ms or tg < at then
+			at = tg
+			map = {}
+			if api and api.players then
+				local ok, list = pcall(api.players)
+				if ok and type(list) == "table" then
+					for _, p in ipairs(list) do
+						if type(p) == "table" and tonumber(p.id) then map[tonumber(p.id)] = tostring(p.nick or "") end
+					end
+				end
+			end
+		end
+		local nick = map[peer]
+		if nick and nick ~= "" then return clean_nick(nick) end
+		return "player " .. tostring(peer)
+	end
 end

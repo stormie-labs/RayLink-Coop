@@ -1,9 +1,8 @@
 --[[
-	Anomaly Coop - HUD v2: the marker data of the core (gamedata\scripts\coop_hud_markers.script). Spec: docs\HUD_V2.md.
+	Anomaly Coop - the HUD: the marker data of the core (gamedata\scripts\coop_hud_markers.script). Spec: docs\HUD_V2.md.
 
-	One module per machine. It gathers the things worth pointing at from its sources and hands out one list; how they are
-	drawn is somebody else's business (the default bar is coop_hud_compass.script, Tactical Compass gets them through
-	coop_hud_tc.script, a mod may draw its own). Distance and direction are worked out by the consumer from its own camera.
+	One module per machine gathers markers from its sources and hands out one list. The default bar is
+	coop_hud_compass.script. Each consumer works out distance and direction from its own camera.
 
 	For mods:
 		coop_hud_markers.list([tg]) -> array of markers, refreshed at most 10 times a second (the same table in between):
@@ -26,16 +25,15 @@
 		tasks   task_manager's tasks: kind "task", state active (priority 20) | other (10), at current_target when it is on
 		        this level, else at the object of the task's PDA spot (CGameTask:get_map_object_id) when that is here, else
 		        not shown. A client's task_info holds coop_tasks stubs without a target: its tasks come from the engine task
-		        (db.actor:get_task) and its replicated spot. Personal Adjustable Waypoint's task (task_placeable_waypoint) is
+		        (db.actor:get_task) and its replicated spot. The task with id task_placeable_waypoint is
 		        the player's own waypoint: kind "waypoint", white, priority 22.
-		pda     (v2.1, owner 2026-10-23) the PDA marks Tactical Compass shows: traders, mechanics, medics and the other
+		pda     the PDA marks for traders, mechanics, medics and the other
 		        people of the PDA (kind npc), stashes (stash: normal | unique | player | searched), sleeping places (sleep),
-		        level changers (transition, priority 5), the player's PAW pins (pin, with their name and custom colour).
-		        Found the way Tactical Compass finds them: level.map_get_object_spots_by_id over every object id - a fast
-		        round after a load (pda_scan_first ids a frame), then an endless slow one (pda_scan_frame ids a frame); PAW's
-		        pins at once from its own table; with Tactical Compass installed also its forwarded map_location_added (it
-		        holds the engine's one slot of that actor callback; we never take it). Label: the spot's hint. One marker
-		        per object.
+		        level changers (transition, priority 5), the player's pins (pin, with their name and custom colour).
+		        level.map_get_object_spots_by_id sweeps every object id after loading (pda_scan_first ids a frame), then
+		        repeats more slowly (pda_scan_frame ids a frame). Pin data comes from its own table.
+		        A forwarded map_location_added callback can supply new spots between sweeps. The spot's hint labels the
+		        marker. There is one marker per object.
 		deaths  death marks of the group (engine callback coop_death_marker on every machine): kind "death", state corpse |
 		        drop, the fallen player's nick. A mark lives while the host's PDA spot (secondary_task_location, replicated
 		        to the clients) is on the object. A spot that never came (a bag on a map server's level) does not take the
@@ -61,7 +59,7 @@ COLOR = {
 	death = { 176, 84, 72 }, -- muted red
 	ping = { 120, 225, 235 }, -- #78E1EB (the dot; the ring is the author's colour)
 	text = { 230, 225, 208 }, -- #E6E1D0
-	-- v2.1: the PDA marks (stash colours follow GAMMA's PDA: white, purple for the valuable ones, blue for the own one)
+	-- PDA stash colours distinguish ordinary, valuable, personal and searched stashes.
 	waypoint = { 244, 245, 246 }, -- #F4F5F6, the white of the scale
 	npc = { 230, 225, 208 }, -- #E6E1D0 cream
 	stash = { 215, 205, 180 }, -- #D7CDB4
@@ -72,10 +70,9 @@ COLOR = {
 	sleep = { 146, 190, 154 }, -- sage, like the camp
 	transition = { 184, 196, 204 }, -- #B8C4CC
 }
-WAYPOINT_TASK = "task_placeable_waypoint" -- Personal Adjustable Waypoint (GAMMA 330-): the player's own waypoint
+WAYPOINT_TASK = "task_placeable_waypoint" -- the player's own waypoint
 
--- v2.1: PDA spot type -> kind, state (Tactical Compass's tc_defs.spot_categories, the groups it shows by default:
--- unique NPCs, sleep zones, stashes, level changers, PAW pins). Task spots come with the tasks, death marks with deaths.
+-- PDA spot type -> kind and state. Task spots and death marks come from their own sources.
 SPOT_KINDS = {
 	ui_pda2_trader_location = { "npc", "trader" },
 	ui_pda2_mechanic_location = { "npc", "mechanic" },
@@ -95,7 +92,7 @@ SPOT_KINDS = {
 for _, d in ipairs({ "up", "up_right", "right", "right_down", "down", "down_left", "left", "left_up" }) do
 	SPOT_KINDS["level_changer_" .. d] = { "transition" }
 end
--- PAW's pins are its own spot types paw_*; these three are not pins (pings, the waypoint task's spot)
+-- The pin classifier skips the ping and waypoint task spot types.
 local PAW_SKIP = { paw_ping = true, paw_ping_alpha50 = true, paw_task_default = true }
 local KIND_RANK = { pin = 5, stash = 4, npc = 3, sleep = 2, transition = 1 } -- one marker per object: the most telling
 local MAX_ID = 65534
@@ -110,38 +107,9 @@ local GREY_STATES = { dead = true, spec = true, respawn = true }
 local ERROR_LOG_MS = 60000
 local EMPTY = {}
 
-local function log(fmt, ...)
-	local ok, line = pcall(string_format, fmt, ...)
-	printf("[coop-hud] %s", ok and line or tostring(fmt))
-end
+local log = coop_util.logger("[coop-hud]")
 
-local function in_session()
-	if not api then return false end
-	local ok, on = pcall(api.is_active)
-	return ok and on == true
-end
-
-local function live()
-	if not in_session() then return false end
-	local ok, on = pcall(function() return (coop_mode.decides_world() and api.is_active()) or api.is_live() end)
-	return ok and on == true
-end
-
-local function module_of(name)
-	return rawget(_G, name)
-end
-
--- A game script that may not be loaded yet (task_manager) or not installed at all (PAW's tasks_placeable_waypoints):
--- the engine's auto-load (_G's __index loads <name>.script) once; a missing file is not asked for again.
-local absent = {}
-local function game_module(name)
-	local m = rawget(_G, name)
-	if m ~= nil or absent[name] then return m end
-	local ok, v = pcall(function() return _G[name] end)
-	if ok and type(v) == "table" then return v end
-	absent[name] = true
-	return nil
-end
+local live = coop_hud_kit.live
 
 local function layout()
 	local m = rawget(_G, "coop_hud_layout")
@@ -154,10 +122,12 @@ local function finite(v)
 	return type(v) == "number" and v == v and v > -1e7 and v < 1e7
 end
 
+local function xyz(p) return p.x, p.y, p.z end
+
 -- A plain copy of a position (an engine vector is not kept between frames).
 local function copy_pos(p)
 	if p == nil then return nil end
-	local ok, x, y, z = pcall(function() return p.x, p.y, p.z end)
+	local ok, x, y, z = pcall(xyz, p)
 	if not (ok and finite(x) and finite(y) and finite(z)) then return nil end
 	return { x = x, y = y, z = z }
 end
@@ -313,7 +283,7 @@ end
 -------------------------------------------------------------------------------
 local function src_allies(tg)
 	if not live() then return EMPTY end
-	local hud, A = module_of("coop_core_hud"), module_of("coop_allies")
+	local hud, A = rawget(_G, "coop_core_hud"), rawget(_G, "coop_allies")
 	if not (hud and hud.views and A) then return EMPTY end
 	local out = {}
 	for _, v in ipairs(hud.views(tg)) do
@@ -351,7 +321,7 @@ local function engine_task(actor, id, info)
 	return ok and et or nil
 end
 
--- Where a task points (v2.1, owner 2026-10-23 "the bar shows almost nothing"): current_target when it is on this level
+-- Where a task points: current_target when it is on this level
 -- (the host's task_objects keeps it fresh; a client's stub answers with the target of the replicated spot), else the object
 -- of the task's PDA spot (what the PDA map shows), else nowhere.
 local function task_pos(t, info)
@@ -364,7 +334,7 @@ local function task_pos(t, info)
 end
 
 local function src_tasks()
-	local tm = game_module("task_manager")
+	local tm = coop_util.module("task_manager")
 	local actor = db.actor
 	if not (tm and tm.get_task_manager and actor) then return EMPTY end
 	local ok, mgr = pcall(tm.get_task_manager)
@@ -393,10 +363,8 @@ end
 local deaths = {} -- marker object id -> { kind, nick, since }
 
 local function nick_of(lid)
-	if not (api and type(lid) == "number") then return nil end
-	local ok, list_ = pcall(api.players)
-	if not (ok and type(list_) == "table") then return nil end
-	for _, p in ipairs(list_) do
+	if type(lid) ~= "number" then return nil end
+	for _, p in ipairs(coop_util.players()) do
 		if p.avatar_id == lid then return tostring(p.nick or "?") end
 	end
 	return nil
@@ -415,7 +383,7 @@ local function has_spot(id, spot)
 end
 
 local function src_deaths(tg)
-	if not in_session() then
+	if not coop_util.active() then
 		if next(deaths) then deaths = {} end
 		return EMPTY
 	end
@@ -468,7 +436,7 @@ local function src_camp()
 end
 
 local function src_pings(tg)
-	local P, A = module_of("coop_hud_ping"), module_of("coop_allies")
+	local P, A = rawget(_G, "coop_hud_ping"), rawget(_G, "coop_allies")
 	if not (P and P.active and A) then return EMPTY end
 	local out = {}
 	for _, p in ipairs(P.active(tg)) do
@@ -479,7 +447,7 @@ local function src_pings(tg)
 end
 
 -------------------------------------------------------------------------------
--- PDA marks (v2.1): what Tactical Compass shows, found the way it finds them
+-- PDA marks from object spots
 -------------------------------------------------------------------------------
 function spot_kind(spot)
 	local k = SPOT_KINDS[spot]
@@ -539,7 +507,7 @@ local function pda_note(id, spots)
 	pda.reg[id] = b
 end
 
--- One step of the sweep over every object id (Tactical Compass's load-time scan, tc_markers.scan_by_id, made endless).
+-- Scan a batch of object ids for PDA spots each frame to spread the cost of a full sweep.
 function pda_sweep(n)
 	local f = level and level.map_get_object_spots_by_id
 	if not f then return 0 end
@@ -570,7 +538,7 @@ function pda_sweep(n)
 	return n
 end
 
--- Tactical Compass's forwarded actor callback map_location_added (tc_binder.script): a new spot at once.
+-- A forwarded map_location_added event supplies a new spot before the next sweep.
 local function on_tc_spot(_, spot, id)
 	if type(id) ~= "number" or not spot_kind(spot) then return end
 	local ok, spots = pcall(level.map_get_object_spots_by_id, id)
@@ -601,8 +569,8 @@ end
 
 local function src_pda(tg)
 	local by_id = {}
-	-- PAW's pins: its own table, at once and with their names (and custom colours)
-	local paw = game_module("tasks_placeable_waypoints")
+	-- Read names and custom colours from the pin table without waiting for the object sweep.
+	local paw = coop_util.module("tasks_placeable_waypoints")
 	local pins = paw and type(paw.pins) == "table" and paw.pins
 	if pins then
 		for id, pin in pairs(pins) do
@@ -711,8 +679,7 @@ local function on_update()
 		death_cb = true
 		-- registered here, after every on_game_start: coop_death adds the callback in its own on_game_start
 		RegisterScriptCallback("coop_death_marker", on_death_marker)
-		-- Tactical Compass takes the engine's one slot of the actor callback map_location_added and forwards it to the
-		-- axr callback actor_map_location_added (tc_binder.script): listen there; without it the sweep finds new spots
+		-- Use the forwarded callback to leave the engine's single callback slot free. The sweep also finds spots.
 		if rawget(_G, "tc_binder") then RegisterScriptCallback("actor_map_location_added", on_tc_spot) end
 	end
 	local L = layout()

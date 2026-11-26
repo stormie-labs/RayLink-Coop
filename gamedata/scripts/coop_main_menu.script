@@ -23,25 +23,11 @@ local WIDGET_API = { "GetButtonCount", "GetButtonName", "GetButtonCaption", "Pre
 
 local K, G, UI -- coop_menu_kit, coop_games, coop_ui_kit: scripts, loaded by _G when the first view is built
 
-local function log(fmt, ...)
-	local pf = rawget(_G, "printf")
-	if not pf then return end
-	local ok, line = pcall(string.format, fmt, ...)
-	pcall(pf, "%s", "[coop-main-menu] " .. (ok and line or tostring(fmt)))
-end
+local log = coop_util.logger("[coop-main-menu]")
 
+-- the menus' translation (coop_menu.tr), asked late: coop_menu loads on its first use
 local function tr(id, ...)
-	local s = game and game.translate_string and game.translate_string(id) or id
-	s = tostring(s)
-	local n = select("#", ...)
-	if n > 0 then
-		local args, i = { ... }, 0
-		s = s:gsub("%%s", function()
-			i = i + 1
-			return tostring(args[i] == nil and "" or args[i])
-		end)
-	end
-	return s
+	return coop_menu.tr(id, ...)
 end
 
 local function level_loaded()
@@ -77,7 +63,7 @@ end
 
 local function coop_sub()
 	local games = #G.list()
-	-- F5-SEAT-2: the session's seats in a session, else the co-op's (coop_menu.max_players); no number of its own
+	-- the session's seats in a session, else the co-op's (coop_menu.max_players); no number of its own
 	local ok, most = pcall(function() return coop_menu.max_players() end)
 	if not (ok and type(most) == "number") then return "" end
 	if games == 0 then return tr("st_coop_mm_sub_coop_none", most) end

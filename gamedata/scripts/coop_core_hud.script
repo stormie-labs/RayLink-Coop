@@ -1,31 +1,31 @@
 --[[
-	Anomaly Coop - core group: who is where (gamedata\scripts\coop_core_hud.script). W4 core, reworked by W6 (allies UI)
-	and by HUD v2 (docs\HUD_V2.md: the team panel). Layout configs\ui\ui_coop_core.xml (party_card), textures
+	Anomaly Coop - core group: who is where (gamedata\scripts\coop_core_hud.script); the team panel is described in
+	docs\HUD_V2.md. Layout configs\ui\ui_coop_core.xml (party_card), textures
 	configs\ui\textures_descr\ui_coop_hud.xml. Colours and state rules: coop_allies.script. Map markers:
 	coop_allies_map.script (+ modxml_coop_allies.script). The compass bar, its marker data and the ping: coop_hud_*.script.
 
 	1. Status: every player sends its own health, state, community, portrait and bleed-out time to the others
 	   ("core.status", about once a second, more often on a change). Proxies are not harmed on the other machines,
 	   so their engine health tells nothing; this is the only source of a teammate's health. The engine's
-	   survival state (coop.life_of, W5 C1) wins over the reported state when it exists.
-	2. Team panel on the HUD ("Visor", TZ 6.13 / R61: the owner's v1 frame; HUD v2 variant B before): one row per other
+	   survival state (coop.life_of) wins over the reported state when it exists.
+	2. Team panel on the HUD ("Visor"): one row per other
 	   player, top left (coop_hud_layout team_x / team_top), sorted by peer id (host on top), rows straight under each other
 	   58 px apart at 1080 (no stair), the whole panel one root moved by coop_hud_depth.offset("near") (rows never move
-	   against each other). F5-SEAT-2: a row for every other player of the session (the co-op 7, a server 15); more than 7
+	   against each other). A row for every other player of the session (the co-op 7, a server 15); more than 7
 	   rows close up (row_pitch). Own sizes: the constants V (px at 1080). Full brightness always. A row: a "[" in his
 	   colour (coop_h3_bracket_l), nick white (coop_hud3_fonts "nick") with a 1 px shadow, host star, the metres ("small",
 	   tabular digits) ending at 222 px and an arrow to him turned relative to the camera (every frame); under the nick his
 	   health in 4 segments of 25 % (white, red under 30 %, the empty part white at 0.18). No state words - badge and colour;
-	   only a dying row moves (the owner 2026-11-23):
+	   only a dying row moves:
 	   - down: the segments are the bleed-out timer (red, melting), "0:42" in red and the ally_down badge at 1 Hz, and the
 	     heart beats over the segments at an uneven rhythm (coop_h3_pulse_0..7 frames on a 2.6 s sweep);
 	   - being revived (set_revive): the red fills in the reviver's colour, ally_revive, the timer steady, no beats;
 	   - dead / returning: grey segments and bracket, ally_dead; the engine's respawn countdown (coop.respawn_left) fills
 	     them back in white with "0:21"; spectating (hardcore): ally_spectator; status stopped coming: ally_offline, the
-	     nick dimmed (W8); resting / sleeping (coop.rest): the sleep badge; F3 T13: the camp badge for 10 s after his
+	     nick dimmed; resting / sleeping (coop.rest): the sleep badge; the camp badge for 10 s after his
 	     checkpoint changed.
-	   The Visor atlas (ui_coop_hud3) or font missing: the HUD v2 textures (a plain bar for the bracket, no beats) and the
-	   xml's font.
+	   If the Visor atlas (ui_coop_hud3) or font is missing, use the ui_coop_hud textures (plain bracket, no beats)
+	   and the XML font.
 	   Hidden with the main HUD (inventory, PDA, scope) at once and outside a session.
 	3. Minimap / PDA markers of other players: coop_allies_map (arrow in the player's colour turning with his
 	   heading, edge pointer, "needs help" overlay, grey marker when dead), updated 5 times a second.
@@ -34,12 +34,12 @@
 		coop_core_hud.status_of(peer) -> { h = 0..1, s = state, f = community, i = icon, b = bleed s | nil, at } | nil
 		coop_core_hud.views() -> list of other players { peer, slot, nick, host, state, bleed, hp, avatar, dist, icon,
 			pos = {x, y, z} of his avatar | nil, far = true for one on another map with a record in this world, far_id,
-			loading = true while his character is not in this world (TZ P48: no hp, no dist; the panel says "loading") }
+			loading = true while his character is not in this world (no hp, no dist; the panel says "loading") }
 		coop_core_hud.shared_views(tg) -> the list the team panel shows now (made at its refresh, or when PANEL_MS old)
-		coop_core_hud.distance_text(peer) -> the panel's metres from me to him ("29 m"), nil when it shows none (TZ P48: the
+		coop_core_hud.distance_text(peer) -> the panel's metres from me to him ("29 m"), nil when it shows none (the
 			transition board's rows show exactly this)
 		coop_core_hud.set_party_enabled(bool) / set_spots_enabled(bool)
-		coop_core_hud.set_revive(peer, frac | nil, by_peer)   revive part 2: his red segments fill in the reviver's colour
+		coop_core_hud.set_revive(peer, frac | nil, by_peer)   his red segments fill in the reviver's colour
 --]]
 
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
@@ -48,28 +48,27 @@ local string_format = string.format
 local tostring, tonumber, type, ipairs, pairs, pcall = tostring, tonumber, type, ipairs, pairs, pcall
 local math_max, math_min, math_floor = math.max, math.min, math.floor
 
+local K = coop_hud_kit
+local argb, el, put, show, color, metrics, hud_visible = K.argb, K.el, K.put, K.show, K.color, K.metrics, K.hud_visible
+local players = coop_util.players
+
 local EV_STATUS = "core.status"
 local STATUS_COORD_MAX = 1000000 -- same world coordinate bound as coop_main's environment reports
-local MAX_PLAYER_SLOT = 16 -- coop_protocol.h kMaxPlayers
 local STATUS_MS = 1000 -- check own status this often
 local STATUS_KEEPALIVE_MS = 5000 -- resend an unchanged status
 local PANEL_MS = 500 -- party panel refresh (2 Hz)
 local SPOTS_MS = 200 -- map markers (5 Hz)
--- F5-SEAT-2: the panel has a row for every other player the session can have (coop_allies.others_max: the co-op 7, a server
--- 15). Up to ROWS_FULL rows keep the HUD v2 pitch team_row; more rows close up to the height of one row (compact_pitch).
+-- The panel has a row for every other player the session can have (coop_allies.others_max: the co-op 7, a server 15). Up
+-- to ROWS_FULL rows keep the pitch of team_row; more rows close up to the height of one row (compact_pitch).
 local ROWS_FULL = 7
 local XML_FILE = "ui_coop_core.xml"
 
-local function log(fmt, ...)
-	local ok, line = pcall(string_format, fmt, ...)
-	printf("[coop-hud] %s", ok and line or tostring(fmt))
-end
+local log = coop_util.logger("[coop-hud]")
 
--- F3a task 6 (docs/plans/2026-10-24-f3a-split-levels.md 1.1, 1.2): the HUD, the team panel, the markers and the own status
--- belong to a PLAYER in the world - the host player (the host process is the world server and a client of it) or a live
--- remote client - so the question is the role (coop.is_player()), not "am I the host". The host is live as soon as its world
--- is up (coop.is_live()). A world server with no player has no actor to report. A build without coop.is_player() has only
--- players in a session.
+-- The HUD, the team panel, the markers and the own status belong to a PLAYER in the world - the host player (the host
+-- process is the world server and a client of it) or a live remote client - so the question is the role (coop.is_player()),
+-- not "am I the host". The host is live as soon as its world is up (coop.is_live()). A world server with no player has no
+-- actor to report. A build without coop.is_player() has only players in a session.
 local function live()
 	if not (api ~= nil and api.is_active()) then return false end
 	if type(api.is_player) == "function" then
@@ -79,14 +78,8 @@ local function live()
 	return api.is_live() == true
 end
 
-local function players()
-	if not api then return {} end
-	local ok, list = pcall(api.players)
-	return ok and type(list) == "table" and list or {}
-end
-
--- the host's star (plan 2026-11-12 s.1.3): the engine's is_host (the playing host, or the operator of a world server); a row
--- without the field (an older engine) is the host when it is peer 0, as before
+-- the host's star: the engine's is_host (the playing host, or the operator of a world server); a row without the field is
+-- the host when it is peer 0
 local function host_badge(p)
 	if p.is_host ~= nil then return p.is_host == true end
 	return p.id == 0
@@ -132,7 +125,7 @@ local status = {} -- peer id -> { h, s, f, i, b, at }
 local sent = { payload = nil, at = 0 }
 
 local function own_state(actor)
-	local s = allies().engine_state(0) -- engine survival state (W5 C1), when present
+	local s = allies().engine_state(0) -- engine survival state, when present
 	if s then return s end
 	if not actor:alive() then return "dead" end
 	return actor.health <= 0.011 and "down" or "alive" -- a player who is down is pinned at 1% health
@@ -183,7 +176,7 @@ local function status_text(value, limit, pattern, from, why)
 end
 
 local function on_status(payload, from)
-	if not (type(from) == "number" and from >= 0 and from <= MAX_PLAYER_SLOT and from == math_floor(from)) then
+	if not (type(from) == "number" and from >= 0 and from <= coop_util.MAX_PEER and from == math_floor(from)) then
 		return audit_status_refusal(from, "invalid sender")
 	end
 	if not allies() then return end
@@ -248,7 +241,7 @@ local function elsewhere_of(peer)
 	return text and text ~= "" and text or nil
 end
 
--- TZ P48: states the engine knows of a character that is in the world (his body lies or stands here, or he watches)
+-- states the engine knows of a character that is in the world (his body lies or stands here, or he watches)
 local LIFE_KNOWN = { down = true, dead = true, spec = true, respawn = true }
 
 function views(tg)
@@ -264,8 +257,8 @@ function views(tg)
 			local obj, id = avatar_of(p)
 			local away = coop_mode.where(p.id) == "away"
 			local far_id = not obj and away and far_avatar(p) or nil
-			-- TZ P48: his character is not in this world (he loads it, or chooses a character). The engine keeps a player's
-			-- character out of the world exactly while its player is not in it (coop_alife.cpp switch_vote, W9; coop_join.cpp
+			-- his character is not in this world (he loads it, or chooses a character). The engine keeps a player's
+			-- character out of the world exactly while its player is not in it (coop_alife.cpp switch_vote; coop_join.cpp
 			-- host_on_world_loaded brings it in), the fact the transition board's "loading" is made of (coop_transition.h
 			-- Mark::Loading). No health and no metres then: "loading", the board's word.
 			local loading = not obj and not away and not LIFE_KNOWN[state] or nil
@@ -281,8 +274,8 @@ function views(tg)
 				elsewhere = away and elsewhere_of(p.id) or nil, far = far_id and true or nil, far_id = far_id, loading = loading,
 			}
 			if obj then
-				local okp, p = pcall(obj.position, obj)
-				if okp and p then v.pos = { x = p.x, y = p.y, z = p.z } end
+				local ok, pos = pcall(obj.position, obj)
+				if ok and pos then v.pos = { x = pos.x, y = pos.y, z = pos.z } end
 			end
 			list[#list + 1] = v
 			if id or far_id then by_avatar[id or far_id] = v end
@@ -292,10 +285,10 @@ function views(tg)
 	return list, by_avatar
 end
 
--- TZ P48 (Dev 58, owner 2026-11-22: "wrong readings on the transition or on the players"): one view of the other players for
--- every window that shows them. The team panel makes it at its refresh (fresh), the transition board (coop_hud_transition, every
--- frame) reads that one, so a player has the same metres and the same "loading" in both windows in the same frame: two lists
--- made apart differ by what a runner covers between them. Without the panel's refresh it is made anew when it is PANEL_MS old.
+-- One view of the other players for every window that shows them. The team panel makes it at its refresh (fresh), the
+-- transition board (coop_hud_transition, every frame) reads that one, so a player has the same metres and the same "loading"
+-- in both windows in the same frame: two lists made apart differ by what a runner covers between them. Without the panel's
+-- refresh it is made anew when it is PANEL_MS old.
 local shared = { at = nil, list = nil, by_avatar = nil }
 
 function shared_views(tg, fresh)
@@ -352,15 +345,8 @@ function place_far(list)
 end
 
 -------------------------------------------------------------------------------
--- Team panel (HUD v2, variant B)
+-- Team panel
 -------------------------------------------------------------------------------
-local function hud_visible()
-	local f = rawget(_G, "main_hud_shown")
-	if not f then return true end
-	local ok, v = pcall(f)
-	return not ok or v == true
-end
-
 -- Why main_hud_shown() says no (status line only): the parts of the stock check (_g.script).
 local function hidden_why()
 	if not party_enabled then return "disabled by the player" end
@@ -384,13 +370,8 @@ local function hidden_why()
 	return #why > 0 and table.concat(why, ", ") or "?"
 end
 
-local function argb(a, rgb)
-	return GetARGB(math_max(0, math_min(255, math_floor(a + 0.5))), rgb[1], rgb[2], rgb[3])
-end
-
--- "Visor" panel (TZ 6.13, R61, the owner's v1 frame; the owner 2026-11-23: only a dying row moves). Sizes: px at 1080 high
--- (E:\coop-hud-design\vizor\hud_v2.js row()), units = px * U down and px * U * kx across. Own numbers, not coop_hud_layout:
--- that table gives only where the panel stands (team_x, team_top / team_bottom).
+-- "Visor" panel: only a dying row moves. Sizes: px at 1080 high, units = px * U down and px * U * kx across. Own numbers,
+-- not coop_hud_layout: that table gives only where the panel stands (team_x, team_top / team_bottom).
 local U = 768 / 1080
 local V = {
 	pitch = 58, -- row to row, straight down (no stair)
@@ -410,6 +391,8 @@ local V = {
 local SWEEP_MS = 2600 -- the dying heart's beats run over the segments in 2.6 s
 local PULSES = 8 -- beat statics per row (an uneven beat every 0.32..1.27 s, each fades over one sweep)
 local PULSE_FRAMES = 8 -- coop_h3_pulse_0..7: the beat drawn from 1/8 to whole
+local PULSE_TEX = {} -- frame -> its texture id
+for i = 0, PULSE_FRAMES - 1 do PULSE_TEX[i] = "coop_h3_pulse_" .. i end
 local EMPTY_A = 0.18 -- the empty part of the segments
 
 local CLR = {
@@ -419,7 +402,7 @@ local CLR = {
 	dim = { 168, 163, 152 }, -- #A8A398: the nick of a dead / spectating / silent player
 	dim_text = { 185, 180, 168 }, -- #B9B4A8: his returning timer, the spectator's eye
 	brk_dim = { 142, 138, 128 }, -- #8E8A80: bracket and badge of a dead / spectating / silent player
-	amber = { 224, 164, 60 }, -- #E0A43C: no signal (W8), "loading"
+	amber = { 224, 164, 60 }, -- #E0A43C: no signal, "loading"
 	grey = { 120, 120, 120 }, -- segments of a dead / spectating player
 	camp = { 146, 190, 154 }, -- sage #92BE9A: sleeping, a new checkpoint
 }
@@ -429,7 +412,7 @@ local SEGS = 4 -- 4 segments of 25 %
 local GREYED = { dead = true, spec = true, respawn = true }
 local RESTING = { resting = true, sleeping = true }
 
--- The Visor atlas (ui_coop_hud3, made by the lead) and its id -> the HUD v2 id while it is missing (nil: the static is skipped).
+-- The Visor atlas (ui_coop_hud3) and its id -> the older ui_coop_hud id while it is missing (nil: the static is skipped).
 local H3_FILES = { { "$game_textures$", "ui\\coop\\ui_coop_hud3.dds" } } -- the file coop_hud_compass looks for too
 local TEX_OLD = {
 	bracket_l = "coop_hud_white", host_star = "coop_hud_star", needle = "coop_hud_arrow",
@@ -479,11 +462,6 @@ local function markers()
 	return rawget(_G, "coop_hud_markers")
 end
 
-local function layout()
-	local m = rawget(_G, "coop_hud_layout") or coop_hud_layout
-	return m.get()
-end
-
 -- Seconds before a dead player stands up again, when the engine tells (coop.respawn_left, ms); nil otherwise.
 local function respawn_left(avatar)
 	if not (api and api.respawn_left and type(avatar) == "number") then return nil end
@@ -500,9 +478,8 @@ local function rest_state(avatar)
 	return ok and s or nil
 end
 
--- Revive part 2 (docs\HUD_V2.md, "Поднятие союзника"), the seam of the row: while player `peer` is being revived by
--- `by_peer`, frac 0..1 fills his red segments in the reviver's colour; frac nil ends it. Nothing calls it yet (the
--- engine export coop.revive_progress comes with part 2).
+-- The seam of the row while player `peer` is being revived by `by_peer`: frac 0..1 fills his red segments in the reviver's
+-- colour; frac nil ends it. coop_hud_revive feeds it while the local player holds USE on a downed ally.
 local reviving = {} -- peer -> { frac, by }
 function set_revive(peer, frac, by_peer)
 	if type(peer) ~= "number" then return end
@@ -511,44 +488,6 @@ function set_revive(peer, frac, by_peer)
 		reviving[peer] = { frac = math_max(0, math_min(1, frac)), by = tonumber(by_peer) }
 	else
 		reviving[peer] = nil
-	end
-end
-
--- Screen metrics: kx = px at 768 high -> units across; px / py = one screen pixel in units.
-local function metrics()
-	local dev = device()
-	local W, H = dev.width, dev.height
-	return { W = W, H = H, kx = 1024 * H / (768 * W), px = 1024 / W, py = 768 / H }
-end
-
-local function vec2(x, y)
-	return vector2():set(x, y)
-end
-
--- A window and where the script put it (tests and relayout read it as .e / .x / .y / .w / .h).
-local function el(e)
-	return { e = e, x = 0, y = 0, w = 0, h = 0 }
-end
-
-local function put(t, x, y, w, h)
-	if t.x ~= x or t.y ~= y then
-		t.e:SetWndPos(vec2(x, y))
-		t.x, t.y = x, y
-	end
-	if w and (t.w ~= w or t.h ~= h) then
-		t.e:SetWndSize(vec2(w, h))
-		t.w, t.h = w, h
-	end
-end
-
-local function show(t, on)
-	if t.e:IsShown() ~= on then t.e:Show(on) end
-end
-
-local function tint(t, c)
-	if t.c ~= c then
-		t.c = c
-		t.e:SetTextureColor(c)
 	end
 end
 
@@ -586,7 +525,6 @@ function UICoopParty:__init() super()
 	self.team_panel = true -- how status lines and tests tell this window from the chat feed (which has rows too)
 	self.next_at = 0
 	self.rows = {}
-	self.cards = self.rows -- the panel's entries (older name, kept for status lines and tests)
 	self.shown = {} -- rows in use since the last refresh
 	self.track = {} -- peer -> what the row remembers between refreshes (the down / respawn totals)
 	self.width_cache = {}
@@ -600,13 +538,13 @@ function UICoopParty:InitControls()
 	local xml = CScriptXmlInit()
 	xml:ParseFile(XML_FILE)
 	self.xml = xml
-	-- R61: one root for the whole panel; the depth spring moves only it, the rows never move against each other
-	self.root = el(xml:InitStatic("team_row", self))
+	-- one root for the whole panel; the depth spring moves only it, the rows never move against each other
+	self.root = el(xml:InitStatic("team_row", self), 0, 0, 0, 0) -- where the xml puts it
 	self:AddRows(allies().others_max())
 	self:Relayout()
 end
 
--- F5-SEAT-2: rows up to `want` (the session's other players); a row made later is laid out at once. Every static of a row is
+-- Rows up to `want` (the session's other players); a row made later is laid out at once. Every static of a row is
 -- made here (a pool): nothing is created in a frame.
 function UICoopParty:AddRows(want)
 	local xml = self.xml
@@ -615,7 +553,7 @@ function UICoopParty:AddRows(want)
 		local r = {}
 		r.base = el(xml:InitStatic("team_row", root))
 		local b = r.base.e
-		r.strip = el(xml:InitStatic("team_row:bracket", b)) -- the "[" in his colour (older name: strip)
+		r.bracket = el(xml:InitStatic("team_row:bracket", b)) -- the "[" in his colour
 		r.segs = {}
 		for k = 1, SEGS do
 			r.segs[k] = {
@@ -654,7 +592,7 @@ end
 
 -- Sizes of everything that does not depend on the texts; the atlas and the fonts are looked up here.
 function UICoopParty:Relayout()
-	self.m, self.L = metrics(), layout()
+	self.m, self.L = metrics(), coop_hud_layout.get()
 	self.width_cache = {}
 	self.h3 = atlas3()
 	self.fonts = { nick = font3("nick"), small = font3("small") }
@@ -675,9 +613,9 @@ function UICoopParty:LayoutRow(r)
 	for _, t in ipairs(r.pulses) do forget(t) end
 	put(r.base, 0, 0, 1, 1)
 	local brk = tex3("bracket_l")
-	set_tex(r.strip, brk)
-	show(r.strip, brk ~= nil)
-	put(r.strip, 0, 0, ux(m, self.h3 and V.brk_w or V.brk_line), uy(V.brk_h))
+	set_tex(r.bracket, brk)
+	show(r.bracket, brk ~= nil)
+	put(r.bracket, 0, 0, ux(m, self.h3 and V.brk_w or V.brk_line), uy(V.brk_h))
 	local sw = ux(m, V.seg_w)
 	for k = 1, SEGS do
 		local s = r.segs[k]
@@ -685,7 +623,7 @@ function UICoopParty:LayoutRow(r)
 		put(s.bg, x, uy(V.seg_y), sw, uy(V.seg_h))
 		put(s.fill, x, uy(V.seg_y), sw, uy(V.seg_h))
 		put(s.over, x, uy(V.seg_y), sw, uy(V.seg_h))
-		tint(s.bg, argb(255 * EMPTY_A, CLR.white))
+		color(s.bg, argb(255 * EMPTY_A, CLR.white))
 	end
 	r.seg_x0 = ux(m, V.seg_x)
 	r.seg_span = ux(m, SEGS * V.seg_w + (SEGS - 1) * V.seg_gap)
@@ -717,13 +655,13 @@ function UICoopParty:TextWidth(r, text, small)
 	return w
 end
 
--- F5-SEAT-2: the compact pitch, for more than ROWS_FULL rows (a server's 8..15 other players): one row's own height (the
+-- The compact pitch, for more than ROWS_FULL rows (a server's 8..15 other players): one row's own height (the
 -- bracket, 42 px) and a gap. 15 rows from team_top end well above the own HUD.
 function compact_pitch(L)
 	return V.pitch_compact * U
 end
 
--- From one row to the next, straight down (R61: no stair): 58 px at 1080 for up to ROWS_FULL rows, else the compact pitch.
+-- From one row to the next, straight down (no stair): 58 px at 1080 for up to ROWS_FULL rows, else the compact pitch.
 function row_pitch(L, n)
 	if n > ROWS_FULL then return compact_pitch(L) end
 	return V.pitch * U
@@ -777,10 +715,11 @@ function UICoopParty:Fill(r, v, tg)
 	end
 	tr_.state = v.state
 	r.view, r.at, r.track, r.left = v, tg, tr_, left
-	-- F3 T14: lying down for the shared sleep; F3 T13: his checkpoint changed < 10 s ago
+	-- lying down for the shared sleep; his checkpoint changed < 10 s ago
 	r.rest = v.state == "alive" and RESTING[rest_state(v.avatar) or ""] or false
 	r.camp = v.state == "alive" and A.checkpoint_mark(v.avatar) ~= nil
 	r.color = { A.color(v.peer) }
+	r.red = { A.state_color("down") } -- the bleed-out segments, a low health, the beats
 	-- nick (white, shadow), host star
 	local nx, ny, nh = ux(m, V.nick_x), uy(V.nick_y), uy(V.nick_h)
 	local nw = math_min(self:TextWidth(r, v.nick), ux(m, V.nick_max))
@@ -818,7 +757,7 @@ local function seg_share(frac, k)
 	return math_max(0, math_min(1, frac * SEGS - (k - 1)))
 end
 
--- The dying heart (the owner 2026-11-23: "only that he is dying, no other animation"): beats at an uneven rhythm where a
+-- The dying heart (only that he is dying, no other animation): beats at an uneven rhythm where a
 -- 2.6 s sweep stands on the segments, each a coop_h3_pulse_* frame drawn in as the sweep passes and fading over one sweep;
 -- a white cursor runs ahead. No Visor atlas: no beats (the statics stay hidden).
 function UICoopParty:Beat(r, tg, on)
@@ -853,7 +792,7 @@ function UICoopParty:Beat(r, tg, on)
 			put(ps[i], x0 + bx, uy(V.seg_y - V.lane - V.pulse_base * amp), pw, uy(V.pulse_h * amp))
 		end
 	end
-	local red = { allies().state_color("down") }
+	local red = r.red
 	for i = 1, PULSES do
 		local b, p = r.beats[i], ps[i]
 		local age = b and (tg - b.at) or SWEEP_MS
@@ -862,19 +801,19 @@ function UICoopParty:Beat(r, tg, on)
 		else
 			local drawn = age * span / SWEEP_MS
 			local frame = math_min(PULSE_FRAMES - 1, math_floor(drawn / pw * PULSE_FRAMES))
-			set_tex(p, "coop_h3_pulse_" .. frame)
-			tint(p, argb(255 * (1 - age / SWEEP_MS) ^ 1.25, red))
+			set_tex(p, PULSE_TEX[frame])
+			color(p, argb(255 * (1 - age / SWEEP_MS) ^ 1.25, red))
 			show(p, true)
 		end
 	end
 	local head = ((tg % SWEEP_MS) / SWEEP_MS) * span
 	put(r.head, x0 + head - ux(m, V.head_w) / 2, r.head.y)
-	tint(r.head, argb(230, CLR.white))
+	color(r.head, argb(230, CLR.white))
 	show(r.head, true)
 end
 
 -- Everything that changes between refreshes (every frame): segments, the state badge, the timer, the beats, the arrow.
--- Full brightness always (R61); only a dying row moves (the owner 2026-11-23).
+-- Full brightness always; only a dying row moves.
 function UICoopParty:Animate(r, tg, heading, cam)
 	local v, tr_ = r.view, r.track
 	local A, M = allies(), amap()
@@ -888,12 +827,12 @@ function UICoopParty:Animate(r, tg, heading, cam)
 	local dying = false
 	local since = (tg - (r.at or tg)) / 1000
 	if v.loading then
-		nick_a = 0.5 -- TZ P48: not in this world yet: no health to show, "loading" in amber where the metres stand
+		nick_a = 0.5 -- not in this world yet: no health to show, "loading" in amber where the metres stand
 	elseif v.state == "down" then
 		local left = v.bleed and math_max(0, v.bleed - since) or nil
 		local total = tr_.down_total
 		fill_frac = (left and total and total > 0) and math_min(1, left / total) or 1 -- the segments melt as his timer
-		fill_c = { A.state_color("down") }
+		fill_c = r.red
 		if left then timer, timer_c = M.format_time(math.ceil(left)), fill_c end
 		local rv = reviving[v.peer]
 		if rv then
@@ -925,7 +864,7 @@ function UICoopParty:Animate(r, tg, heading, cam)
 		fill_frac = v.hp or 0
 	else
 		fill_frac = v.hp or 0
-		if fill_frac < LOW_HP then fill_c = { A.state_color("down") } end
+		if fill_frac < LOW_HP then fill_c = r.red end
 		if r.rest then
 			icon, icon_c = "sleep", CLR.camp
 		elseif r.camp then
@@ -933,24 +872,24 @@ function UICoopParty:Animate(r, tg, heading, cam)
 		end
 	end
 	-- bracket, nick, distance, star
-	tint(r.strip, argb(255, brk_c))
+	color(r.bracket, argb(255, brk_c))
 	text_color(r.name, argb(255 * nick_a, nick_c))
 	text_color(r.name_sh, GetARGB(math_floor(255 * A_SHADOW * nick_a), 0, 0, 0))
 	text_color(r.dist, argb(255, v.loading and CLR.amber or CLR.ink))
 	text_color(r.dist_sh, GetARGB(math_floor(255 * A_SHADOW), 0, 0, 0))
-	if v.host then tint(r.host, argb(255, GREYED[v.state] and CLR.brk_dim or r.color)) end -- the host's star in his colour
+	if v.host then color(r.host, argb(255, GREYED[v.state] and CLR.brk_dim or r.color)) end -- the host's star in his colour
 	-- segments
 	for k = 1, SEGS do
 		local s = r.segs[k]
 		local f = seg_share(fill_frac, k)
 		put(s.fill, s.fill.x, s.fill.y, seg_w * f, s.fill.h)
-		tint(s.fill, argb(255, fill_c))
+		color(s.fill, argb(255, fill_c))
 		show(s.fill, f > 0)
 		local o = over_c and seg_share(over_frac, k) or 0
 		show(s.over, o > 0)
 		if o > 0 then
 			put(s.over, s.over.x, s.over.y, seg_w * o, s.over.h)
-			tint(s.over, argb(255, over_c))
+			color(s.over, argb(255, over_c))
 		end
 	end
 	self:Beat(r, tg, dying)
@@ -959,7 +898,7 @@ function UICoopParty:Animate(r, tg, heading, cam)
 	show(r.icon, itex ~= nil)
 	if itex then
 		set_tex(r.icon, itex)
-		tint(r.icon, argb(255 * icon_a, icon_c))
+		color(r.icon, argb(255 * icon_a, icon_c))
 	end
 	show(r.timer, timer ~= nil)
 	show(r.timer_sh, timer ~= nil)
@@ -983,14 +922,14 @@ function UICoopParty:Animate(r, tg, heading, cam)
 		local b = C.bearing(cam, r.pos)
 		if b then
 			r.arrow.e:SetHeading(-math.rad(C.rel_angle(b, heading)))
-			tint(r.arrow, argb(255, GREYED[v.state] and CLR.dim or CLR.ink))
+			color(r.arrow, argb(255, GREYED[v.state] and CLR.dim or CLR.ink))
 			on = true
 		end
 	end
 	show(r.arrow, on)
 end
 
--- R61 + Р67: the whole panel on the near depth layer (coop_hud_depth, units of 1024x768), in whole screen pixels; no module: 0.
+-- The whole panel on the near depth layer (coop_hud_depth, units of 1024x768), in whole screen pixels; no module: 0.
 function UICoopParty:Depth()
 	local dx, dy = 0, 0
 	local D = rawget(_G, "coop_hud_depth")
@@ -1010,10 +949,10 @@ function UICoopParty:Refresh(tg)
 	local list = {}
 	self.vis = party_enabled and hud_visible()
 	if self.vis and live() then
-		list = shared_views(tg, true) -- TZ P48: the list the transition board reads too
+		list = shared_views(tg, true) -- the list the transition board reads too
 	end
 	local m = metrics()
-	if not self.m or m.W ~= self.m.W or m.H ~= self.m.H or layout() ~= self.L
+	if not self.m or m.W ~= self.m.W or m.H ~= self.m.H or coop_hud_layout.get() ~= self.L
 		or (self.fonts_wait and rawget(_G, "coop_hud3_fonts") ~= nil) then
 		self:Relayout()
 	end
@@ -1182,7 +1121,7 @@ function print_status()
 	local A = allies()
 	if A then pcall(A.print_status) end
 	map_call("print_status")
-	-- HUD v2: frame time and marker sources, the compass, the ping, the Tactical Compass adapter
+	-- frame time and marker sources, the compass, the ping, the Tactical Compass adapter
 	for _, name in ipairs({ "coop_hud_markers", "coop_hud_compass", "coop_hud_ping", "coop_hud_tc", "coop_hud_revive" }) do
 		local m = rawget(_G, name)
 		if m and m.print_status then
@@ -1192,7 +1131,7 @@ function print_status()
 	end
 end
 
--- Live 2026-10-24: a resolution change brought the minimap back although video/hud/show_minimap is off. The engine
+-- A resolution change brings the minimap back although video/hud/show_minimap is off: the engine
 -- rebuilds the game UI then (CHUDManager::OnScreenResolutionChanged: UnLoad + Load), the new main window shows the
 -- minimap, and the game applies the option on the first update only (actor_effects.actor_on_first_update).
 local function on_screen_resolution_changed()
@@ -1207,6 +1146,7 @@ local function on_screen_resolution_changed()
 end
 
 function on_game_start()
+	coop_util.add_status("coop_core_hud", 50)
 	if not api then return end -- an exe without co-op: nothing of this runs
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("actor_on_net_destroy", actor_on_net_destroy)

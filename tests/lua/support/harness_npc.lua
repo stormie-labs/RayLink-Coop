@@ -123,11 +123,20 @@ end
 
 -- ---------------------------------------------------------------- machines
 MACHINES = {}
+CORE_HELPERS = { coop_util = true, coop_hud_kit = true, coop_hud_hold = true }
+CORE_HELPERS.coop_srv_roles = true -- the server's role helper: the server's scripts name it at load
+-- coop_tasks and its parts: the shared kit and the parts are loaded on the first use of their names too
+for _, n in ipairs({ "coop_tasks_base", "coop_tasks_items", "coop_tasks_mirror", "coop_tasks_news", "coop_tasks_requests",
+	"coop_tasks_rewards" }) do CORE_HELPERS[n] = true end
 
 -- role: "host" | "client" | "single"; peer: own peer id; avatars: { [peer] = local avatar id }
 function machine(role, peer, avatars)
 	local M = { role = role, peer = peer, log = {}, sent = {}, handlers = {}, objects = {}, callbacks = {} }
-	local E = setmetatable({}, { __index = _G })
+	-- the engine loads a script on the first use of its name: the Core's helper modules come that way here, into this machine
+	local E = setmetatable({}, { __index = function(_, k)
+		if CORE_HELPERS[k] then return load_script(M, k) end
+		return _G[k]
+	end })
 	E._G = E
 	M.env = E
 	MACHINES[peer] = M

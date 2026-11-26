@@ -1,5 +1,5 @@
 --[[
-	Anomaly Coop - HUD v2: the ping (gamedata\scripts\coop_hud_ping.script). Spec: docs\HUD_V2.md, Пинг.
+	Anomaly Coop - the HUD: the ping (gamedata\scripts\coop_hud_ping.script). Spec: docs\HUD_V2.md, Пинг.
 
 	The "Co-op: ping" key (engine action chat_team, an MP action the single-player game never uses; Options > Controls >
 	Common, entry added by modxml_coop_hud) marks the point the camera looks at: what level.get_target_pos() hits within
@@ -12,8 +12,8 @@
 	24 in all. Bad coordinates, another level, a relay that did not come from the host: dropped and counted.
 	On arrival: a quiet DA-2 beep. On the compass: coop_hud_markers' "pings" source. In the world: brackets in the author's
 	colour around a white dot or a red creature cross, with the distance, hidden off screen and with the HUD.
-	Default key: F8, set in a session with "bind chat_team kF8" when chat_team has no key and F8 does nothing; a key the player
-	chose stays. Not mouse 5: it is GAMMA's Free Zoom key (an MCM key, which dik_to_bind cannot see), H, comma and + are too.
+	Default key: F8, set in a session with "bind chat_team kF8" when chat_team has no key and F8 is free. The player's
+	binding takes precedence. Mouse 5, H, comma and + can have script bindings that dik_to_bind cannot see.
 
 	For other scripts:
 		coop_hud_ping.active([tg]) -> { { key, peer, n, pos = {x, y, z}, at, nick }, ... }   live pings
@@ -40,12 +40,11 @@ KEY_DEFAULT = "kF8"
 XML_FILE = "ui_coop_compass.xml"
 local COORD_MAX = 100000
 local LEVEL_NAME_MAX = 64 -- coop_transition.h kMaxLevelName
-local MAX_PLAYER_SLOT = 16 -- coop_protocol.h kMaxPlayers
 local MAX_OBJECT_ID = 65534 -- 0 is the local actor, 65535 is the engine's no-object id
 local TARGET_HEIGHT = 1.2
 local SERIAL_MAX = 0xffffffff
--- TZ Р64 (owner 2026-11-23: «короткий пик» of a device, not a fat one): the DA-2 "Otklik" detector beep, GAMMA's 80 ms
--- version (stock Anomaly has a longer one under the same name). Mono, ~1.8 kHz, quiet in the file itself.
+-- A short beep of a device, not a fat one: the DA-2 "Otklik" detector beep (a modpack may ship a shorter version under the
+-- same name). Mono, ~1.8 kHz, quiet in the file itself.
 local SOUND = "detectors\\da-2_beep1"
 local VOLUME = 0.5
 local WORLD_SLOTS = 12
@@ -58,16 +57,9 @@ local last_from = {} -- host: peer -> time of his last accepted ping
 local host_seq = 0
 local stats = { sent = 0, refused = 0, relayed = 0, received = 0, rate = 0, bad = 0, foreign = 0, frame_errors = 0 }
 
-local function log(fmt, ...)
-	local ok, line = pcall(string_format, fmt, ...)
-	printf("[coop-hud] %s", ok and line or tostring(fmt))
-end
+local log = coop_util.logger("[coop-hud]")
 
-local function live()
-	if not api then return false end
-	local ok, on = pcall(function() return api.is_active() and (coop_mode.decides_world() or api.is_live()) end)
-	return ok and on == true
-end
+local live = coop_hud_kit.live
 
 local function codec()
 	return rawget(_G, "coop_main") or coop_main
@@ -79,13 +71,8 @@ local function level_name()
 end
 
 local function nick_of(peer)
-	local ok, list = pcall(api.players)
-	if ok and type(list) == "table" then
-		for _, p in ipairs(list) do
-			if p.id == peer then return tostring(p.nick or "?") end
-		end
-	end
-	return nil
+	local p = coop_util.player_row(peer)
+	return p and tostring(p.nick or "?") or nil
 end
 
 local function r2(v)
@@ -291,7 +278,7 @@ function on_req(payload, from)
 	if not (api and api.is_active() and coop_mode.decides_world()) then
 		return audit_ping_refusal(EV_REQ, from, "no active world authority")
 	end
-	if not (whole(from, 1, MAX_PLAYER_SLOT) and coop_mode.seat_plays(from)) then
+	if not (whole(from, 1, coop_util.MAX_PEER) and coop_mode.seat_plays(from)) then
 		return audit_ping_refusal(EV_REQ, from, "sender is not a remote player")
 	end
 	if type(payload) ~= "string" then return audit_ping_refusal(EV_REQ, from, "invalid payload") end
@@ -325,7 +312,7 @@ function on_ping(payload, from)
 	local t = codec().decode(payload)
 	local x, y, z = coords(t)
 	local peer, n = tonumber(t.p), tonumber(t.n)
-	if not (x and wire_level(t.l) and whole(peer, 0, MAX_PLAYER_SLOT) and whole(n, 1, SERIAL_MAX)) then
+	if not (x and wire_level(t.l) and whole(peer, 0, coop_util.MAX_PEER) and whole(n, 1, SERIAL_MAX)) then
 		stats.bad = stats.bad + 1
 		return audit_ping_refusal(EV_PING, from, "invalid coordinates, level name, author or serial")
 	end
@@ -691,7 +678,7 @@ end
 
 -- The ping key on F8 when the action has no key and F8 does nothing. Keys live in user.ltx, one per profile, and
 -- axr_options.ltx is one file of the game folder: a "done once" flag there left every other profile with no key at all
--- (live 2026-11-01: the host's profile could not ping).
+-- (the host's profile could not ping).
 local function default_key()
 	local kb = key_bindings and key_bindings.kCHAT_TEAM
 	if not kb or not live() then return end

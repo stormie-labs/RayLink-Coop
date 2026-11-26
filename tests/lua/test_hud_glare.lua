@@ -194,7 +194,7 @@ local function machine(opts)
 		end
 		env.coop = api
 	end
-	for _, name in ipairs({ "coop_mode", "coop_hostplay_mode", "coop_srv_mode", "coop_hud_glare" }) do
+	for _, name in ipairs({ "coop_util", "coop_hud_kit", "coop_mode", "coop_hostplay_mode", "coop_srv_mode", "coop_hud_glare" }) do
 		local src = assert(readfile(ROOT .. "scripts/" .. name .. ".script"), "no " .. name .. ".script")
 		local mod = setmetatable({}, { __index = env })
 		env[name] = mod

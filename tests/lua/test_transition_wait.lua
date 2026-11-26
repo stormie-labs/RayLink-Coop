@@ -7,7 +7,7 @@
 -- Real scripts (coop_allies for the palette, coop_hud_transition), real ui_coop_transition.xml / strings / ltx.
 -- Run: tools\test_lua.cmd transition   (VERBOSE=1 for logs)
 local ROOT = "gamedata/"
-os.execute("mkdir temp\\lua 2>NUL")
+local SCRATCH = dofile("tests/lua/support/scratch.lua")
 
 FAILS, PASSES = 0, 0
 local function check(cond, what)
@@ -241,7 +241,7 @@ local function machine(self_peer, opts)
 	env.coop_hud_markers = {
 		add_source = function(name, fn, every) M.sources[name] = { fn = fn, every = every } return true end,
 	}
-	local scripts = { "coop_mode", "coop_hostplay_mode", "coop_srv_mode", "coop_allies", "coop_hud_transition" }
+	local scripts = { "coop_util", "coop_hud_kit", "coop_hud_hold", "coop_mode", "coop_hostplay_mode", "coop_srv_mode", "coop_allies", "coop_hud_transition" }
 	if opts.fare then scripts[#scripts + 1] = "coop_transition_fare" end
 	for _, name in ipairs(scripts) do
 		local src = readfile(ROOT .. "scripts/" .. name .. ".script")
@@ -1030,7 +1030,7 @@ check(win(M) == nil, "a level change (actor_on_net_destroy): the overlay is take
 -- temp/lua/hud_transition_<name>.txt, read by temp/transition_wait/render_dump.py: every visible static / text window under the
 -- overlay's root, in 1024x768 units, tab separated (path, x, y, w, h, texture colour, text colour, texture, text).
 local function dump(name, MM)
-	local fh = io.open("temp/lua/hud_transition_" .. name .. ".txt", "wb")
+	local fh = io.open(SCRATCH .. "hud_transition_" .. name .. ".txt", "wb")
 	if not fh then return end
 	local TAB, NL = string.char(9), string.char(10)
 	fh:write(("screen" .. TAB .. "%d" .. TAB .. "%d" .. NL):format(DEV.width, DEV.height))
@@ -1082,8 +1082,10 @@ check(per_frame < 0.5, "the Lua side of a frame is well under half a millisecond
 local unk = {}
 for k in pairs(UNKNOWN or {}) do unk[#unk + 1] = tostring(k) end
 table.sort(unk)
--- coop_transition_fare: a machine without that script (the HUD asks for it and goes on without)
-local allowed = { profile_timer = true, system_ini = true, coop_core_player = true, coop_hud_ping = true, coop_transition_fare = true }
+-- coop_transition_fare: a machine without that script (the HUD asks for it and goes on without); getFS: coop_util.module
+-- looks for the script's file first
+local allowed = { profile_timer = true, system_ini = true, coop_core_player = true, coop_hud_ping = true, coop_transition_fare = true,
+	getFS = true }
 local bad = {}
 for _, k in ipairs(unk) do if not allowed[k] then bad[#bad + 1] = k end end
 check(#bad == 0, "no reads of undefined globals (" .. table.concat(bad, ", ") .. ")")

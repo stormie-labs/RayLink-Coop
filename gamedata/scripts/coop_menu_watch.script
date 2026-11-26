@@ -1,7 +1,7 @@
 --[[
 	Anomaly Coop - what the next game has to say (gamedata\scripts\coop_menu_watch.script)
 
-	Two live bugs of 2026-10-31 the code alone did not prove. This file only speaks: lines in the log, no key and no window
+	Two faults the code alone does not explain. This file only speaks: lines in the log, no key and no window
 	behaves differently because of it.
 
 	"I can no longer click anywhere in the inventory" (the host, noticed after a load). GAMMA's inventory is the Lua window
@@ -22,9 +22,7 @@ local BLOCK_RECHECK_S = 3
 local MAX_CLICK_LINES = 3
 local clicks_said = 0
 
-local function log(fmt, ...)
-	printf("[coop-menu] " .. fmt, ...)
-end
+local log = coop_util.logger("[coop-menu]")
 
 -- Input flags are boolean; a window's registry entry identifies this particular registration.
 local function collect_blocks(guis)
@@ -49,12 +47,6 @@ local function collect_blocks(guis)
 		end
 	end
 	return why, sources
-end
-
--- What keeps clicks away from the inventory right now: a list of words, empty when nothing does.
-function blocks()
-	local why = collect_blocks(rawget(_G, "_GUIs"))
-	return why
 end
 
 local function window_visibility(entry)

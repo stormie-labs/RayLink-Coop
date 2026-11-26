@@ -255,7 +255,8 @@ end
 
 -- The engine's _G loads a script on the first use of its name. The window's own modules come the same way here; a test that
 -- wants a stand-in simply sets the global first (the loader never runs then).
-local AUTOLOAD = { coop_games = true, coop_menu_kit = true, coop_ui_kit = true, coop_menu_theme_base = true, coop_menu_theme = true }
+local AUTOLOAD = { coop_games = true, coop_menu_kit = true, coop_ui_kit = true, coop_menu_theme_base = true, coop_menu_theme = true,
+	coop_menu = true, coop_util = true }
 do
 	local mt = getmetatable(_G) or {} -- another harness may have a loader of its own: it stays behind this one
 	local before = mt.__index

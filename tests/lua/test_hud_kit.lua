@@ -215,4 +215,114 @@ local function run(name)
 end
 
 modes.each(facade, run)
+
+-- golden: the boards' copies the kit replaces (coop_hud_transition / coop_hud_arena / coop_hud_revive, the same bodies)
+local function old_alpha_step(a, target, dt, in_ms, out_ms)
+	dt = dt or 0
+	if target > a then return math.min(target, a + (in_ms > 0 and dt / in_ms or 1)) end
+	return math.max(target, a - (out_ms > 0 and dt / out_ms or 1))
+end
+local function old_nick_of(state, peer)
+	peer = tonumber(peer)
+	if not peer then return "?" end
+	local tg = time_global()
+	if not state.at or tg - state.at > 500 or tg < state.at then
+		state.at, state.map = tg, {}
+		local ok, list = pcall(coop.players)
+		if ok and type(list) == "table" then
+			for _, p in ipairs(list) do
+				if type(p) == "table" and tonumber(p.id) then state.map[tonumber(p.id)] = tostring(p.nick or "") end
+			end
+		end
+	end
+	local nick = state.map[peer]
+	if nick and nick ~= "" then
+		nick = nick:gsub("%%", "")
+		if #nick > 24 then nick = nick:sub(1, 23) .. "." end
+		return nick
+	end
+	return "player " .. tostring(peer)
+end
+
+print("== the kit's other parts")
+local same = true
+for _, a in ipairs({ 0, 0.25, 0.9, 1 }) do
+	for _, target in ipairs({ 0, 1 }) do
+		for _, dt in ipairs({ 0, 16, 60, 500 }) do
+			for _, ms in ipairs({ { 120, 200 }, { 0, 150 }, { 150, 0 } }) do
+				same = same and K.alpha_step(a, target, dt, ms[1], ms[2]) == old_alpha_step(a, target, dt, ms[1], ms[2])
+			end
+		end
+	end
+end
+check(same and K.alpha_step(0.5, 1, nil, 120, 200) == 0.5, "alpha_step: the boards' fades; no dt is no step")
+
+local W, H = 1920, 1080
+function device() return { width = W, height = H } end
+local m1 = K.metrics()
+local m2 = K.metrics()
+W = 2560
+local m3 = K.metrics()
+check(m1 == m2 and m1.W == 1920 and m1.H == 1080 and m1.kx == 1024 * 1080 / (768 * 1920) and m1.px == 1024 / 1920
+	and m1.py == 768 / 1080 and m3 ~= m1 and m3.W == 2560, "metrics: one table while the screen stays, a new one when it changes")
+
+local function text_window(log_)
+	local w = {}
+	function w:SetText(s) log_[#log_ + 1] = "text " .. s end
+	function w:SetTextColor(c) log_[#log_ + 1] = "tcolor " .. c end
+	function w:SetWndPos(v) log_[#log_ + 1] = "pos " .. v.x .. "," .. v.y end
+	function w:SetWndSize(v) log_[#log_ + 1] = "size " .. v.x .. "," .. v.y end
+	function w:Show(on) log_[#log_ + 1] = "show " .. tostring(on) end
+	return w
+end
+local tlog = {}
+local xml = { InitTextWnd = function() return text_window(tlog) end }
+local t = K.new_text(xml, nil, "node")
+K.text_set(t, "hi", 200, { 1, 2, 3 })
+K.text_set(t, "hi", 200, { 1, 2, 3 })
+K.text_place(t, 10, 20, 30, 40, { px = 0.5, py = 0.7 })
+K.text_show(t, true)
+K.text_show(t, true)
+local want = { "text hi", "text hi", "tcolor " .. GetARGB(200, 1, 2, 3), "tcolor " .. GetARGB(140, 0, 0, 0), "pos 10,20", "size 30,40",
+	"pos 10.5,20.7", "size 30,40", "show true", "show true" }
+same = #tlog == #want
+for i = 1, #want do same = same and tlog[i] == want[i] end
+check(same, "a text with its shadow: set once per change, the shadow black at 0.7 of the alpha, one pixel right and down")
+
+calls = {}
+local e = K.el(window(), 0, 0, 0, 0)
+K.put(e, 0, 0)
+K.color(e, 5)
+K.color(e, 5)
+K.put(e, 1, 0)
+check(#calls == 2 and calls[1] == "color 5" and calls[2] == "pos 1,0", "el with the place it stands at: put skips it; color once per value")
+
+local self_id = 3
+coop.self_id = function() return self_id end
+local mine = K.my_peer()
+self_id = -1
+local none = K.my_peer()
+coop.self_id = function() error("no session") end
+check(mine == 3 and none == nil and K.my_peer() == nil, "my_peer: the peer id, nil for a negative one or an engine fault")
+
+coop_allies = { color = function(peer) if peer == 9 then error("bad") end return 10 + peer, 20, 30 end }
+local c1, c2, c3 = K.peer_color(2, "fb"), K.peer_color(9, "fb"), K.peer_color("x", "fb")
+coop_allies = nil
+check(c1[1] == 12 and c1[2] == 20 and c1[3] == 30 and c2 == "fb" and c3 == "fb" and K.peer_color(1, "fb") == "fb",
+	"peer_color: the palette, else the caller's fallback")
+
+local roster = { { id = 1, nick = "Strelok" }, { id = 2, nick = "100%_" .. string.rep("x", 30) }, { id = 4, nick = "" } }
+coop.players = function() return roster end
+local kit_nick, state = K.nick_labels(500), {}
+same = true
+for _, step in ipairs({ 0, 100, 501, 0, 600 }) do
+	NOW = (NOW or 0) + step
+	if step == 501 then roster = { { id = 1, nick = "Renamed" } } end
+	for _, peer in ipairs({ 1, 2, 3, 4, "x", nil }) do same = same and kit_nick(peer) == old_nick_of(state, peer) end
+end
+check(same and kit_nick(1) == "Renamed" and K.clean_nick(nil) == "?", "nick_labels: the boards' nicks, read again when 500 ms old")
+
+dik_to_bind = function(dik) if dik == 1 then return 7 end if dik == 2 then error("no bind") end return 0 end
+key_bindings = { kUSE = 7 }
+check(Hd.is_use_key(1) and not Hd.is_use_key(2) and not Hd.is_use_key(3), "is_use_key: the key bound to use; a fault is not it")
 done("HUD_KIT")

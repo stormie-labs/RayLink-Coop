@@ -1,5 +1,5 @@
 -- Ядро: без проверок режима (docs/MODES.md)
--- HUD "Visor", TZ R67/R69. Springs run in 1080p design pixels at unit strength.
+-- HUD "Visor". Springs run in 1080p design pixels at unit strength.
 local REF_HEIGHT = 1080
 local MAX_DT = 0.05
 local MAX_STEP = 1 / 240
@@ -134,7 +134,7 @@ local function actor_on_update()
 end
 
 -- Scaling the target and the cap is equivalent to scaling the spring output.
--- Clamp visible displacement at the R67 cap while retaining the demo's underdamped spring state.
+-- Clamp visible displacement at the cap while retaining the demo's underdamped spring state.
 local function displacement(s, units)
 	return min(s.cap, max(-s.cap, s.x)) * units * strength
 end
@@ -165,12 +165,5 @@ function on_game_start()
 	RegisterScriptCallback("actor_on_first_update", refresh_options)
 	RegisterScriptCallback("on_option_change", refresh_options)
 
-	local main = rawget(_G, "coop_main")
-	local status = main and main.STATUS_MODULES
-	if status then
-		for _, name in ipairs(status) do
-			if name == "coop_hud_depth" then return end
-		end
-		status[#status + 1] = "coop_hud_depth"
-	end
+	coop_util.add_status("coop_hud_depth", 240)
 end

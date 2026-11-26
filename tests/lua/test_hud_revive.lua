@@ -4,7 +4,7 @@
 -- Real scripts (coop_allies for the palette, coop_hud_revive), real ui_coop_revive.xml / textures_descr / strings / ltx.
 -- Run: tools\test_lua.cmd hud_revive   (VERBOSE=1 for logs)
 local ROOT = "gamedata/"
-os.execute("mkdir temp\\lua 2>NUL")
+local SCRATCH = dofile("tests/lua/support/scratch.lua")
 
 FAILS, PASSES = 0, 0
 local function check(cond, what)
@@ -216,7 +216,7 @@ local function machine(self_peer, opts)
 		}
 	end
 	env.coop_core_hud = { set_revive = function(peer, frac, by) M.panel[#M.panel + 1] = { peer = peer, frac = frac, by = by } end }
-	for _, name in ipairs({ "coop_mode", "coop_hostplay_mode", "coop_srv_mode", "coop_allies", "coop_hud_revive" }) do
+	for _, name in ipairs({ "coop_util", "coop_hud_kit", "coop_hud_hold", "coop_mode", "coop_hostplay_mode", "coop_srv_mode", "coop_allies", "coop_hud_revive" }) do
 		local src = readfile(ROOT .. "scripts/" .. name .. ".script")
 		local mod = setmetatable({}, { __index = env })
 		env[name] = mod
@@ -263,7 +263,7 @@ local function win(M) return M.R.get_window() end
 -- Geometry dump for a visual check against docs\hud\revive_concept.png (temp\lua\hud_revive_<name>.txt, read by
 -- temp\revive\render_dump.py): every visible static / text window under the overlay's root, in 1024x768 units, tab separated.
 local function dump(name, M)
-	local fh = io.open("temp/lua/hud_revive_" .. name .. ".txt", "wb")
+	local fh = io.open(SCRATCH .. "hud_revive_" .. name .. ".txt", "wb")
 	if not fh then return end
 	local TAB, NL = string.char(9), string.char(10)
 	local function walk(node, ox, oy)
@@ -395,6 +395,7 @@ check(M0.R.PIECES == 60 and #M0.R.piece_table("full") == 60 and #M0.R.piece_tabl
 -- ================================================================ 2. the pure parts
 print("== pure parts")
 local R = M0.R
+local KIT = M0.env.coop_hud_kit
 check(R.seg_color(1)[1] == 232 and R.seg_color(2)[1] == 240 and R.seg_color(3)[1] == 244, "segments: red, amber, white")
 check(R.seg_of(0) == 1 and R.seg_of(0.33) == 1 and R.seg_of(0.34) == 2 and R.seg_of(0.67) == 3 and R.seg_of(1) == 3 and R.seg_of(5) == 3 and R.seg_of(-1) == 1,
 	"seg_of: a second each, clamped")
@@ -402,8 +403,8 @@ check(R.segments_done(0) == 0 and R.segments_done(0.33) == 0 and R.segments_done
 	"segments_done counts completed seconds")
 check(R.format_timer(42000) == "0:42" and R.format_timer(41001) == "0:42" and R.format_timer(60000) == "1:00" and R.format_timer(0) == "0:00"
 	and R.format_timer(-5) == "0:00" and R.format_timer(nil) == "0:00" and R.format_timer(125000) == "2:05", "timer: seconds rounded up, m:ss")
-check(near(R.alpha_step(0, 1, 60, 120, 200), 0.5) and R.alpha_step(0.9, 1, 60, 120, 200) == 1 and near(R.alpha_step(1, 0, 100, 120, 200), 0.5)
-	and R.alpha_step(0.1, 0, 100, 120, 200) == 0 and R.alpha_step(0.5, 1, 100, 0, 200) == 1, "alpha_step: 120 ms in, 200 ms out, never past the target")
+check(near(KIT.alpha_step(0, 1, 60, 120, 200), 0.5) and KIT.alpha_step(0.9, 1, 60, 120, 200) == 1 and near(KIT.alpha_step(1, 0, 100, 120, 200), 0.5)
+	and KIT.alpha_step(0.1, 0, 100, 120, 200) == 0 and KIT.alpha_step(0.5, 1, 100, 0, 200) == 1, "the kit's alpha_step (the overlay's fades): 120 ms in, 200 ms out, never past the target")
 check(near(R.piece_light(0, 3), 0.5) and R.piece_light(0, 6) == 1 and R.piece_light(0, 100) == 1 and R.piece_light(60, 30) == 0 and R.piece_light(60, 63) > 0.49,
 	"piece_light: the piece the fill passes blends in")
 local dx, dy = R.dot_offset(0, 26)

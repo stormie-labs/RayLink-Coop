@@ -1,5 +1,5 @@
 --[[
-	Anomaly Coop - HUD v2 part 2: reviving a teammate (gamedata\scripts\coop_hud_revive.script). Spec: docs\HUD_V2.md,
+	Anomaly Coop - the HUD: reviving a teammate (gamedata\scripts\coop_hud_revive.script). Spec: docs\HUD_V2.md,
 	"Revive an ally", the picture docs\hud\revive_concept.png. Layout: configs\ui\ui_coop_revive.xml (+ _16), textures
 	configs\ui\textures_descr\ui_coop_revive.xml (tools\make_revive_atlas.py), strings st_coop_revive_*, every size
 	[coop_hud_revive] in configs\mod_system_coop_revive.ltx (px at 768 high, never stretched; a missing or broken line keeps
@@ -40,9 +40,16 @@
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
 
 local tostring, tonumber, type, ipairs, pairs, pcall = tostring, tonumber, type, ipairs, pairs, pcall
-local math_floor, math_ceil, math_max, math_min = math.floor, math.ceil, math.max, math.min
+local math_floor, math_ceil = math.floor, math.ceil
 local math_sin, math_cos, math_rad = math.sin, math.cos, math.rad
 local string_format = string.format
+
+local K = coop_hud_kit
+local el, put, show, tint, new_text, text_set, text_place, text_show = K.el, K.put, K.show, K.tint, K.new_text,
+	K.text_set, K.text_place, K.text_show
+local alpha_step, metrics, live, hud_visible, my_peer, clean_nick = K.alpha_step, K.metrics, K.live, K.hud_visible, K.my_peer,
+	K.clean_nick
+local tr = coop_util.tr_nonempty
 
 XML_FILE = "ui_coop_revive.xml"
 SECTION = "coop_hud_revive"
@@ -60,13 +67,11 @@ local C_WHITE = { 244, 245, 246 } -- the third; also text
 local C_DOWN = { 226, 58, 48 } -- the bleed-out ring; the palette's `down` wins
 local C_GREY = { 150, 150, 150 } -- give-up
 local C_DIM = { 175, 177, 175 } -- the hint lines
-local C_SHADOW = { 0, 0, 0 }
-local A_SHADOW = 0.7
 local SEG_COLORS = { C_RED, C_AMBER, C_WHITE }
 
 local SOUND_CLICK = "interface\\inv_properties"
 local VOL_CLICK, VOL_DONE = 0.22, 0.5
--- the medkit sound of a revive that went through: GAMMA's FDDA one when the file is there, else a stock click
+-- A completed revive plays the item-use sound when available and falls back to a stock sound.
 local DONE_SOUNDS = {
 	medkit = { "interface\\item_usage\\medkit_use", "interface\\inv_attach_addon" },
 	stimpack = { "interface\\item_usage\\antirad_use", "interface\\item_usage\\injector_using", "interface\\inv_attach_addon" },
@@ -89,10 +94,7 @@ local done_at -- time of the last coop_revive_done on this machine
 local done_peer
 local done_kind
 
-local function log(fmt, ...)
-	local ok, line = pcall(string_format, fmt, ...)
-	printf("[coop-hud] %s", ok and line or tostring(fmt))
-end
+local log = coop_util.logger("[coop-hud]")
 
 -------------------------------------------------------------------------------
 -- Layout table
@@ -152,15 +154,6 @@ function format_timer(ms)
 	return string_format("%d:%02d", math_floor(s / 60), s % 60)
 end
 
--- A fade: alpha `a` moves toward `target` (0 or 1) by dt ms; in_ms / out_ms to go the whole way.
-function alpha_step(a, target, dt, in_ms, out_ms)
-	dt = dt or 0
-	if target > a then
-		return math_min(target, a + (in_ms > 0 and dt / in_ms or 1))
-	end
-	return math_max(target, a - (out_ms > 0 and dt / out_ms or 1))
-end
-
 -- The pieces of a ring: { a0 = where it starts (deg, clockwise from 12 o'clock), seg = 1..3 for the revive ring }.
 function piece_table(kind)
 	local t = {}
@@ -195,12 +188,6 @@ end
 -------------------------------------------------------------------------------
 -- Engine glue
 -------------------------------------------------------------------------------
-local function live()
-	if not api then return false end
-	local ok, on = pcall(function() return api.is_active() and (coop_mode.decides_world() or api.is_live()) end)
-	return ok and on == true
-end
-
 local function poll()
 	if not (api and api.revive_progress) then return nil end
 	local ok, p = pcall(api.revive_progress)
@@ -217,16 +204,6 @@ local function allies()
 	return rawget(_G, "coop_allies")
 end
 
--- A player's colour: his slot of the palette ([coop_player_colors]).
-local function peer_color(peer)
-	local A = allies()
-	if A and A.color and tonumber(peer) then
-		local ok, r, g, b = pcall(A.color, peer)
-		if ok and r then return { r, g, b } end
-	end
-	return C_WHITE
-end
-
 local function down_color()
 	local A = allies()
 	if A and A.state_color then
@@ -234,36 +211,6 @@ local function down_color()
 		if ok and r then return { r, g, b } end
 	end
 	return C_DOWN
-end
-
-local function hud_visible()
-	local f = rawget(_G, "main_hud_shown")
-	if not f then return true end
-	local ok, v = pcall(f)
-	return not ok or v == true
-end
-
-local function my_peer()
-	local ok, id = pcall(function() return api.self_id() end)
-	id = ok and tonumber(id) or nil
-	if id and id >= 0 then return id end
-	return nil
-end
-
-local function tr(id, fallback)
-	local ok, s = pcall(function() return game.translate_string(id) end)
-	if ok and type(s) == "string" and s ~= "" and s ~= id then return s end
-	return fallback or id
-end
-
-local function clean_nick(nick)
-	nick = tostring(nick or "?"):gsub("%%", "")
-	if #nick > 24 then nick = nick:sub(1, 23) .. "." end
-	return nick
-end
-
-local function argb(a, rgb)
-	return GetARGB(math_max(0, math_min(255, math_floor(a + 0.5))), rgb[1], rgb[2], rgb[3])
 end
 
 -- Sounds. A quiet stock click at each segment; the medkit sound when the revive went through.
@@ -319,67 +266,6 @@ end
 -------------------------------------------------------------------------------
 -- The overlay
 -------------------------------------------------------------------------------
-local function vec2(x, y)
-	return vector2():set(x, y)
-end
-
--- A window and where the script put it.
-local function el(e)
-	return { e = e, x = nil, y = nil, w = nil, h = nil }
-end
-
-local function put(t, x, y, w, h)
-	if t.x ~= x or t.y ~= y then
-		t.e:SetWndPos(vec2(x, y))
-		t.x, t.y = x, y
-	end
-	if w and (t.w ~= w or t.h ~= h) then
-		t.e:SetWndSize(vec2(w, h))
-		t.w, t.h = w, h
-	end
-end
-
-local function show(t, on)
-	on = on and true or false
-	if t.shown ~= on then
-		t.shown = on
-		t.e:Show(on)
-	end
-end
-
-local function tint(t, a, rgb)
-	local v = argb(a, rgb)
-	if t.tinted ~= v then
-		t.tinted = v
-		t.e:SetTextureColor(v)
-	end
-end
-
--- A text with a 1 px shadow under it.
-local function new_text(xml, parent, node)
-	local t = { sh = el(xml:InitTextWnd(node, parent)), tx = el(xml:InitTextWnd(node, parent)), text = nil, color = nil }
-	return t
-end
-
-local function text_set(t, s, a, rgb)
-	if t.text ~= s then
-		t.text = s
-		t.tx.e:SetText(s)
-		t.sh.e:SetText(s)
-	end
-	local c = argb(a, rgb)
-	if t.color ~= c then
-		t.color = c
-		t.tx.e:SetTextColor(c)
-		t.sh.e:SetTextColor(argb(a * A_SHADOW, C_SHADOW))
-	end
-end
-
-local function text_place(t, x, y, w, h, m)
-	put(t.tx, x, y, w, h)
-	put(t.sh, x + m.px, y + m.py, w, h)
-end
-
 -- A ring: a soft shadow ring, the dim track, the pieces. `kind` "segments" is the revive ring (3 x 19 pieces, three gaps
 -- in the track), else 60 pieces; `thin` the inner ring.
 local function new_ring(xml, parent, kind, thin)
@@ -525,12 +411,6 @@ function UICoopRevive:Relayout(m, L)
 	ring_place(self.give, CX, gy - L.give_gap - L.give_r, L.give_r, m)
 end
 
-local function metrics()
-	local dev = device()
-	local W, H = dev.width, dev.height
-	return { W = W, H = H, kx = 1024 * H / (768 * W), px = 1024 / W, py = 768 / H }
-end
-
 -- The reviver's view: what coop.revive_progress said about the hold (kept while it fades out).
 function UICoopRevive:FrameRevive(tg, dt, rev, flashing)
 	local L, m = self.L, self.m
@@ -581,7 +461,7 @@ function UICoopRevive:FrameRevive(tg, dt, rev, flashing)
 		if k == kind then tint(b, 255 * a, C_WHITE) end
 	end
 	local nick = clean_nick(rv.nick)
-	text_set(self.t_nick, nick, 255 * a, peer_color(rv.peer))
+	text_set(self.t_nick, nick, 255 * a, K.peer_color(rv.peer, C_WHITE))
 	local line = tr("st_coop_revive_doing", "reviving") .. " \183 " .. tr("st_coop_revive_item_" .. kind, kind)
 	text_set(self.t_line, line, 255 * a, C_WHITE)
 	text_set(self.t_hint, tr("st_coop_revive_hold", "hold [F]"), 200 * a, C_DIM)
@@ -627,7 +507,7 @@ function UICoopRevive:FrameDown(tg, dt, p)
 	self.a_by = alpha_step(self.a_by, by and 1 or 0, dt, L.fade_in_ms, L.fade_out_ms)
 	local ab = self.a_by * a
 	if ab > 0 and dv.by then
-		local c = peer_color(dv.by.peer)
+		local c = K.peer_color(dv.by.peer, C_WHITE)
 		if not self.lift_shown then
 			self.lift_shown = true
 			ring_show_base(self.lift)
@@ -635,19 +515,15 @@ function UICoopRevive:FrameDown(tg, dt, p)
 		ring_fill(self.lift, clamp01(dv.by.progress) * 360, ab, c, c, L.track_alpha)
 		text_set(self.t_by, clean_nick(dv.by.nick) .. "  " .. tr("st_coop_revive_you", "is reviving you"), 255 * ab, c)
 		text_set(self.t_hang, tr("st_coop_revive_hang_on", "hang on"), 230 * ab, C_WHITE)
-		show(self.t_by.tx, true)
-		show(self.t_by.sh, true)
-		show(self.t_hang.tx, true)
-		show(self.t_hang.sh, true)
+		text_show(self.t_by, true)
+		text_show(self.t_hang, true)
 	else
 		if self.lift_shown then
 			self.lift_shown = false
 			ring_hide(self.lift)
 		end
-		show(self.t_by.tx, false)
-		show(self.t_by.sh, false)
-		show(self.t_hang.tx, false)
-		show(self.t_hang.sh, false)
+		text_show(self.t_by, false)
+		text_show(self.t_hang, false)
 	end
 	-- the way out: hold the key to give up; the small grey ring fills while it is held
 	local give = bleed and p.give_up or nil

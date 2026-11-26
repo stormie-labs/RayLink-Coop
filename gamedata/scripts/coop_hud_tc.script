@@ -20,7 +20,6 @@
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
 
 local tostring, type, ipairs, pairs, pcall, next = tostring, type, ipairs, pairs, pcall, next
-local string_format = string.format
 
 SPOT_ALLY = "coop_hud_ally"
 SPOT_PING = "coop_hud_ping"
@@ -35,10 +34,7 @@ local fake_k = 0
 local wrapped -- the tc_markers table our wrappers are installed on
 local stats = { added = 0, removed = 0 }
 
-local function log(fmt, ...)
-	local ok, line = pcall(string_format, fmt, ...)
-	printf("[coop-hud] %s", ok and line or tostring(fmt))
-end
+local log = coop_util.logger("[coop-hud]")
 
 local function tc()
 	local m, u = rawget(_G, "tc_markers"), rawget(_G, "tc_utils")

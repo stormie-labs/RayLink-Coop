@@ -3,6 +3,9 @@
 	No engine call and no look here: numbers in, numbers out. The look is the theme's (coop_menu_theme), the data coop_games',
 	the window coop_menu's. Tested by tests\lua\test_menu_kit.lua.
 
+	cfg() -> ini | nil              this machine's axr_options.ltx (axr_main.config, readable in the cold-start main menu); nil
+	                                without axr_main
+
 	layout(W, H, dw, dh) -> L       the design of dw x dh pixels on a W x H screen: scale s = min(W / dw, H / dh), centred, and
 	                                the 1024 x 768 UI space on top (the engine scales it per axis, ui_core::OnDeviceReset), so
 	                                that a square of the design is a square on any screen.
@@ -22,7 +25,18 @@
 --]]
 
 local min, max, floor = math.min, math.max, math.floor
-local type = type
+local type, rawget, pcall = type, rawget, pcall
+
+local function axr_main_module() return axr_main end -- _G.__index loads the script
+
+function cfg()
+	local am = rawget(_G, "axr_main")
+	if am == nil then
+		local ok, m = pcall(axr_main_module)
+		am = ok and m or nil
+	end
+	return type(am) == "table" and am.config or nil
+end
 
 -------------------------------------------------------------------------------
 -- Numbers

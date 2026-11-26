@@ -1,6 +1,6 @@
 --[[
 	Anomaly Coop - the co-op window of the main menu, gamedata\scripts\coop_menu.script
-	Variant D "Chronicle + map" (docs\plans\2026-10-30-coop-chronicle-menu.md): the games on the left, the art of a level over the
+	"Chronicle + map": the games on the left, the art of a level over the
 	whole screen, the title, Play and a tile with the map; the tile opens into the whole map with the route of the saves, and a
 	timeline of the saves comes in from the right, to go back to any of them. At the bottom the status and the way to a friend.
 
@@ -38,7 +38,6 @@
 local api = rawget(_G, "coop") -- engine namespace, nil on an exe without co-op
 
 local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
-local string_format = string.format
 local floor, min, max = math.floor, math.min, math.max
 
 local CFG_SECTION = "coop_menu"
@@ -53,12 +52,7 @@ local UI_W, UI_H = 1024, 768
 
 local K, G, UI -- coop_menu_kit, coop_games, coop_ui_kit: scripts, loaded by _G when the first window is built
 
-local function log(fmt, ...)
-	local ok, line = pcall(string_format, fmt, ...)
-	line = "[coop-menu] " .. (ok and line or tostring(fmt))
-	local pf = rawget(_G, "printf")
-	if pf then pcall(pf, "%s", line) end
-end
+local log = coop_util.logger("[coop-menu]")
 
 -------------------------------------------------------------------------------
 -- Text helpers
@@ -134,17 +128,8 @@ end
 -------------------------------------------------------------------------------
 -- Per-player storage (axr_options.ltx, readable in the cold-start main menu)
 -------------------------------------------------------------------------------
-local function cfg()
-	local am = rawget(_G, "axr_main")
-	if am == nil then
-		local ok, m = pcall(function() return axr_main end)
-		am = ok and m or nil
-	end
-	return type(am) == "table" and am.config or nil
-end
-
 function get_port()
-	local c = cfg()
+	local c = coop_menu_kit.cfg()
 	local v = c and tonumber(c:r_value("options", PORT_KEY, 2, nil))
 	if v and v >= 1 and v <= 65535 then return math.floor(v) end
 	local info = api and api.session_info and api.session_info()
@@ -152,7 +137,7 @@ function get_port()
 end
 
 function get_recent()
-	local c = cfg()
+	local c = coop_menu_kit.cfg()
 	local raw = c and c:r_value(CFG_SECTION, "recent", 0, "") or ""
 	local out, seen = {}, {}
 	for a in tostring(raw):gmatch("[^|]+") do
@@ -167,7 +152,7 @@ end
 
 function remember_address(addr)
 	addr = check_address(addr)
-	local c = cfg()
+	local c = coop_menu_kit.cfg()
 	if not (addr and c) then return end
 	local list = { addr }
 	for _, a in ipairs(get_recent()) do
@@ -245,28 +230,18 @@ local function actor_alive()
 	return level_loaded() and db.actor:alive()
 end
 
--- A script module by name, nil if it is not there.
-local function module_of(name)
-	local m = rawget(_G, name)
-	if m == nil then
-		local ok, found = pcall(function() return _G[name] end)
-		m = ok and found or nil
-	end
-	return type(m) == "table" and m or nil
-end
-
 local function saves()
-	return module_of("coop_saves")
+	return coop_util.module("coop_saves")
 end
 
 -- The autosaves belong to a game (nil: the old ring). The engine keeps the choice, so every way into a game says it first.
 local function choose_ring(id)
-	local gs = module_of("coop_game_settings")
+	local gs = coop_util.module("coop_game_settings")
 	if gs and gs.autosave_game then gs.autosave_game(id) end
 end
 
 -------------------------------------------------------------------------------
--- The operator of a world server (plan 2026-11-12 s.2.3): his game is a client that holds the host's rights, the world and its
+-- The operator of a world server: his game is a client that holds the host's rights, the world and its
 -- autosaves are the server's. His window shows the server's autosaves of the running world (coop.operator_command("coop_restore"),
 -- the rows "[coop]   <n> <name> <YYYY-MM-DD HH:MM>" of coop_dedicated.cpp), never this machine's saves, and "go back here" sends
 -- "coop_restore <name>" after the host's question. The answer comes as coop.op.answer: coop_core_chat hands it to on_restore_answer.
@@ -351,7 +326,7 @@ function status_kind(info)
 	return "idle"
 end
 
--- F5-SEAT-2: the co-op's seats, the host and 7 (hostplay coop_hostplay_mode.cpp; the Steam lobby). Said only where the engine
+-- The co-op's seats, the host and 7 (hostplay coop_hostplay_mode.cpp; the Steam lobby). Said only where the engine
 -- gives no number: outside a session and before the Welcome. In a session it is coop.session_info().max_players (a server 16).
 COOP_SEATS = 8
 
@@ -899,7 +874,7 @@ function UICoopMenu:BuildModal()
 	self.ui:outline(p, 0, 0, B.w, B.h, "line")
 	-- A click on the dialog itself is the dialog's. The engine's edit box and statics pass a click on (UICustomEdit.cpp OnMouseAction
 	-- returns false), so a click into the field or on the dialog's body fell through to the whole-screen button under the dialog,
-	-- which closes it (owner, live 2026-11-16: "a click on this window and it is gone at once"). This button has no callback; made
+	-- which closes it (a click on this window would close it at once). This button has no callback; made
 	-- before the field and the two buttons, it lies under them.
 	self.ui:hit(p, 0, 0, B.w, B.h, "btn_modal_panel", false)
 	self.modal_title =self.ui:label(p, B.pad, B.pad, B.w - 2 * B.pad, B.title_h, "modal_title", "l")
@@ -978,7 +953,7 @@ function UICoopMenu:Reset()
 	self.edit_address:SetText(self.recent[1] or "")
 	for i, row in ipairs(self.recent_row) do row.text:SetText(self.recent[i] or "") end
 	self.recent_open = false
-	self.settings_win = module_of("coop_game_settings_window") -- the settings of a game, when there is such a window
+	self.settings_win = coop_util.module("coop_game_settings_window") -- the settings of a game, when there is such a window
 	self:CloseModal()
 	self:SetOpen(false, now, true)
 
@@ -1031,7 +1006,7 @@ function UICoopMenu:ChooseGame(info)
 		return
 	end
 	local running = nil
-	local gs = module_of("coop_game_settings")
+	local gs = coop_util.module("coop_game_settings")
 	if gs and gs.running_id then
 		local ok, id = pcall(gs.running_id)
 		if ok then running = id end
@@ -2071,7 +2046,7 @@ end
 function UICoopMenu:OnHostNow()
 	local port = self:PrepareHost()
 	if not port then return end
-	local gs = module_of("coop_game_settings")
+	local gs = coop_util.module("coop_game_settings")
 	local id = nil
 	if gs and gs.ensure_record then
 		local ok, res = pcall(gs.ensure_record)
@@ -2116,7 +2091,7 @@ local function launcher_world(record)
 end
 
 local function save_kind(id, stem)
-	local gs = module_of("coop_game_settings")
+	local gs = coop_util.module("coop_game_settings")
 	if not gs then return false, id end
 	if type(gs.game_of_save) == "function" then
 		local ok, save_id, record = pcall(gs.game_of_save, stem)
@@ -2158,7 +2133,7 @@ end
 
 local function attach_auto_host()
 	if auto_hooked then return end
-	local m = module_of("ui_main_menu")
+	local m = coop_util.module("ui_main_menu")
 	local cls = m and m.main_menu
 	if cls == nil or type(cls.Update) ~= "function" then return end
 	local stock = cls.Update
@@ -2293,7 +2268,7 @@ function UICoopMenu:Close()
 end
 
 function UICoopMenu:OnKeyboard(dik, keyboard_action)
-	-- before the edit box of a dialog: it takes both keys for itself (live 2026-10-30: the first Esc only took its focus away)
+	-- before the edit box of a dialog: it takes both keys for itself (else the first Esc only takes its focus away)
 	if self.modal and keyboard_action == ui_events.WINDOW_KEY_PRESSED then
 		if dik == DIK_keys.DIK_ESCAPE then
 			self:CloseModal()
@@ -2346,7 +2321,7 @@ function on_btn_coop(menu) open(menu) end
 
 -- The most players a session takes, for the line under the button of the main menu: in a session the session's own
 -- (coop.session_info().max_players: the co-op 8, a server 16), outside it (and before the Welcome) the co-op's COOP_SEATS,
--- which is what this menu starts (F5-SEAT-2).
+-- which is what this menu starts.
 function max_players()
 	local info = api and api.session_info and api.session_info()
 	return info and info.max_players or COOP_SEATS
@@ -2369,7 +2344,7 @@ function on_quit_win(menu)
 	return menu:OnMessageQuitWin()
 end
 
--- The big map costs one long frame the first time it is drawn (measured 2026-10-30, warm disk: 117 ms; building the window 27 ms). In
+-- The big map costs one long frame the first time it is drawn (on a warm disk about 117 ms; building the window 27 ms). In
 -- the cold-start menu that frame goes into the menu's own first frame, which takes seconds anyway: a static of no size and no
 -- alpha draws it there and holds it. Not in a running game: Esc must not pay for a window that may never open.
 local function touch_map(menu)

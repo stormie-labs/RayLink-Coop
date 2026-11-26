@@ -1,8 +1,8 @@
 --[[
-	Anomaly Coop - HUD v2: every size of the compass bar and the team panel, and the alphas of the bar, in one table
+	Anomaly Coop - the HUD: every size of the compass bar and the team panel, and the alphas of the bar, in one table
 	(gamedata\scripts\coop_hud_layout.script). Spec: docs\HUD_V2.md.
 
-	The owner's next "a bit smaller" is one line: configs\mod_system_coop.ltx [coop_hud_layout] <key> = <number> wins over
+	A change of size is one line: configs\mod_system_coop.ltx [coop_hud_layout] <key> = <number> wins over
 	the defaults below (a missing or broken line keeps the default). Read once per Lua state (a load / level change), or
 	again with reload().
 	Units: px at 768 high = 1024x768 UI units down; across, the scripts multiply by kx = 1024 * H / (768 * W), so nothing
@@ -18,10 +18,10 @@ local tonumber, type, pairs, pcall = tonumber, type, pairs, pcall
 
 SECTION = "coop_hud_layout"
 
--- Owner 2026-10-23 "in general a bit smaller", docs\hud\hud_v2_mockup.png
+-- docs\hud\hud_v2_mockup.png
 DEFAULTS = {
 	-- compass bar: look (0..1; the background and the line fade out on the last 16 % at each end, baked in the textures)
-	bar_bg_alpha = 0.33, -- #0C0D0A (owner 2026-10-23: "a bit less murky", was ~0.6)
+	bar_bg_alpha = 0.33, -- #0C0D0A
 	bar_line_alpha = 0.8, -- the white line #F4F5F6
 	-- compass bar: sizes
 	bar_width_pct = 38, -- of the screen width
@@ -48,9 +48,9 @@ DEFAULTS = {
 	label_h = 12,
 	world_ring = 16, -- a ping over its point in the world
 	world_dot = 6,
-	-- "Visor" compass arc (TZ 6.13, R56 / R61; E:\coop-hud-design\vizor hud_v2.js C = { y0 64, R 372, sag 21, half 82 }
-	-- px at 1080 -> units = px * 768 / 1080). Supersedes the bar_* / tick_* / notch_* / heading_* / icon / label_* lines
-	-- above for the compass (they stay for old ltx files). Rotated statics: sizes in square units (px at 768).
+	-- "Visor" compass arc (y0 64, R 372, sag 21 at 1080, half-angle 82 degrees). Convert pixels with px * 768 / 1080.
+	-- The compass uses arc settings. Bar, tick, notch, heading, icon and label settings support existing LTX files.
+	-- Rotated statics use square units (pixels at 768).
 	arc_r = 264.5, -- radius: x = cx + R sin th (across * kx)
 	arc_y0 = 45.5, -- the arc's top (its centre) from the top of the screen
 	arc_sag = 14.9, -- y = y0 + sag (1 - cos th)
@@ -91,7 +91,7 @@ DEFAULTS = {
 	look_fade_deg = 4, -- ... fading out over the last 4 deg
 	ping_fresh_s = 3, -- a fresh ping shows its distance this long
 	detail_tau_ms = 140, -- easing in / out of "detail"
-	-- v2.1 (owner 2026-10-23 19:40: "no intensity by distance"): a marker is at full alpha up to fade_near_pct % of its
+	-- no intensity by distance: a marker is at full alpha up to fade_near_pct % of its
 	-- kind's range, then smoothly (smoothstep) down to fade_far_alpha and its icon to fade_far_scale at the range; beyond
 	-- the range it is not shown (it fades out in 150 ms like any marker). A range of 0 = no limit: always shown, dimmed
 	-- the same way against fade_ref_m and staying at fade_far_alpha beyond it (allies, pings, the waypoint, the active task).
@@ -117,7 +117,7 @@ DEFAULTS = {
 	-- frame for the first round after a load, then per frame for the endless round (~11 s at 60 fps)
 	pda_scan_first = 2048,
 	pda_scan_frame = 96,
-	-- team panel (variant B, owner 2026-10-23): rows top left, the block grows downwards (bottom left covered the PDA
+	-- team panel: rows top left, the block grows downwards (bottom left covered the PDA
 	-- news, messages_window.xml sp_log_list 15..815 x 365..635, and the chat feed)
 	team_x = 18, -- from the left edge of the screen
 	team_top = 20, -- the top of the highest row; below 0: the rows hang from team_bottom upwards instead

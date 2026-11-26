@@ -1,8 +1,8 @@
 --[[
 	Anomaly Coop - the arena's board at Arnie (gamedata\scripts\coop_hud_arena.script).
 
-	Owner 2026-11-24 (TZ R88, 6.19): "make the accept window as at a transition: people walk up, and the one who decided to start
-	holds F to go with those near". A fight of the new arena taken with other players on the map waits at Arnie; this script
+	The accept window as at a transition: people walk up, and the one who decided to start holds F to go with those near. A
+	fight of the new arena taken with other players on the map waits at Arnie; this script
 	shows each player his part and gives the starter's held key back. It decides nothing: what it shows is coop_arena's
 	(coop_arena.gather_view(): what the authority of the Bar - the host, or the map server of the Bar - told this player), and
 	the key goes to coop_arena.start_pressed(), which asks the authority. The look is the transition's waiting point
@@ -17,7 +17,7 @@
 	            (coop_hud_markers source "arena")
 
 	The key is the use key (kUSE), held as the transition's (coop_hud_transition): its press or its hold events start it
-	(G.A.M.M.A. may hand the press to another script first); HOLD_GAP_MS without hold events is its release; the HUD hidden that
+	(a modpack may hand the press to another script first); HOLD_GAP_MS without hold events is its release; the HUD hidden that
 	long (the dialog with Arnie, the inventory, the PDA) ends it, and so does a board that changes under it. It goes once a hold.
 	It does not start while the crosshair is on Arnie: the use key talks to him (the hint says "not at Arnie").
 	A transition's placard wins: while coop_hud_transition shows one, this board is off and the key is the transition's.
@@ -33,11 +33,20 @@ local tostring, tonumber, type, ipairs, pcall = tostring, tonumber, type, ipairs
 local math_floor, math_max, math_min = math.floor, math.max, math.min
 local string_format = string.format
 
+local K = coop_hud_kit
+local el, put, show, tint, new_text, text_set, text_place, text_show = K.el, K.put, K.show, K.tint, K.new_text, K.text_set,
+	K.text_place, K.text_show
+local alpha_step, metrics, live, hud_visible, my_peer = K.alpha_step, K.metrics, K.live, K.hud_visible, K.my_peer
+local is_use_key = coop_hud_hold.is_use_key
+local module = coop_util.module
+local tr = coop_util.tr_nonempty
+local nick_of = K.nick_labels(500) -- the session's nicks, read twice a second
+
 XML_FILE = "ui_coop_transition.xml"
 CX = 512 -- the middle of the screen, in 1024x768 units
 MAX_ROWS = 8 -- the session's players
 HOLD_MS = 1000
-HOLD_GAP_MS = 300 -- as the transition's (coop_hud_transition.HOLD_GAP_MS): G.A.M.M.A.'s keys, a window flashing up
+HOLD_GAP_MS = 300 -- as the transition's (coop_hud_transition.HOLD_GAP_MS): a key taken by another script, a window flashing up
 MARK_PRIORITY = 35 -- on the compass: as the transition's exit mark
 -- the transition's sizes (coop_hud_transition.layout()) when it is not here
 local DEFAULTS = {
@@ -54,39 +63,20 @@ local DEFAULTS = {
 local C_WHITE = { 244, 245, 246 }
 local C_DIM = { 175, 177, 175 }
 local C_BG = { 12, 13, 10 }
-local C_SHADOW = { 0, 0, 0 }
-local A_SHADOW = 0.7
 
 local stats = { frames = 0, holds = 0, starts = 0, refused_arnie = 0, errors = 0 }
 local last_v -- the last view (gather_view)
 local WIN -- the overlay while it is on the HUD
-local hold -- { since, fired, hidden_at } the use key held under the starter's board
--- the use key as its events show it (as coop_hud_transition): down; events_at, seen (hold events came: their end is its
--- release); latched (a hold ended while it is still down: a new one only after it is let go)
-local key = { down = false, events_at = nil, seen = false, latched = false }
-local players_at, players_map = nil, {}
 
-local function log(fmt, ...)
-	local ok, line = pcall(string_format, fmt, ...)
-	printf("[coop-hud] %s", ok and line or tostring(fmt))
-end
+local log = coop_util.logger("[coop-hud]")
 
-local function tr(id, fallback)
-	local ok, s = pcall(function() return game.translate_string(id) end)
-	if ok and type(s) == "string" and s ~= "" and s ~= id then return s end
-	return fallback or id
-end
-
--- A script by name: loaded on access when it is not yet (as coop_hud_transition finds coop_transition_fare).
-local function module_of(name)
-	local m = rawget(_G, name)
-	if type(m) == "table" then return m end
-	local ok, v = pcall(function() return _G[name] end)
-	return ok and type(v) == "table" and v or nil
-end
+-- The use key held under the starter's board.
+local H = coop_hud_hold.new(HOLD_GAP_MS, function(hold, tg, why)
+	log("arena: the use key hold ended after %d ms, nothing sent: %s", tg - hold.since, why)
+end)
 
 local function layout()
-	local T = module_of("coop_hud_transition")
+	local T = module("coop_hud_transition")
 	if type(T) == "table" and type(T.layout) == "function" then
 		local ok, L = pcall(T.layout)
 		if ok and type(L) == "table" then return L end
@@ -97,18 +87,8 @@ end
 -------------------------------------------------------------------------------
 -- Glue
 -------------------------------------------------------------------------------
-local function live()
-	if not api then return false end
-	local ok, on = pcall(function() return api.is_active() and (coop_mode.decides_world() or api.is_live()) end)
-	return ok and on == true
-end
-
-local function arena()
-	return module_of("coop_arena")
-end
-
 local function view()
-	local A = arena()
+	local A = module("coop_arena")
 	if not (A and A.gather_view) then return nil end
 	local ok, v = pcall(A.gather_view)
 	if not ok then
@@ -120,17 +100,10 @@ end
 
 -- A transition's placard is up (coop_hud_transition): it wins, the key is its.
 local function transition_up()
-	local T = module_of("coop_hud_transition")
+	local T = module("coop_hud_transition")
 	if not (type(T) == "table" and T.current) then return false end
 	local ok, t = pcall(T.current)
 	return ok and type(t) == "table"
-end
-
-local function hud_visible()
-	local f = rawget(_G, "main_hud_shown")
-	if not f then return true end
-	local ok, v = pcall(f)
-	return not ok or v == true
 end
 
 -- The crosshair on Arnie: the use key talks to him.
@@ -141,46 +114,6 @@ local function at_arnie(v)
 	if not (ok and o) then return false end
 	local okid, id = pcall(o.id, o)
 	return okid and id == v.arnie
-end
-
-local function peer_color(peer)
-	local A = rawget(_G, "coop_allies")
-	if A and A.color and tonumber(peer) then
-		local ok, r, g, b = pcall(A.color, peer)
-		if ok and r then return { r, g, b } end
-	end
-	return C_WHITE
-end
-
-local function nick_of(peer)
-	peer = tonumber(peer)
-	if not peer then return "?" end
-	local tg = time_global()
-	if not players_at or tg - players_at > 500 or tg < players_at then
-		players_at = tg
-		players_map = {}
-		if api and api.players then
-			local ok, list = pcall(api.players)
-			if ok and type(list) == "table" then
-				for _, p in ipairs(list) do
-					if type(p) == "table" and tonumber(p.id) then players_map[tonumber(p.id)] = tostring(p.nick or "") end
-				end
-			end
-		end
-	end
-	local nick = players_map[peer]
-	if nick and nick ~= "" then
-		nick = nick:gsub("%%", "")
-		if #nick > 24 then nick = nick:sub(1, 23) .. "." end
-		return nick
-	end
-	return "player " .. tostring(peer)
-end
-
-local function my_peer()
-	if not api then return nil end
-	local ok, id = pcall(function() return api.self_id() end)
-	return ok and tonumber(id) or nil
 end
 
 local function metres(d)
@@ -249,7 +182,7 @@ function row_texts(v)
 				if type(H) == "table" and type(H.distance_text) == "function" then ok, s = pcall(H.distance_text, peer) end
 				text = ok and type(s) == "string" and s ~= "" and s or "..."
 			end
-			out[#out + 1] = { peer = peer, nick = nick_of(peer), rgb = peer_color(peer), text = text, ready = near }
+			out[#out + 1] = { peer = peer, nick = nick_of(peer), rgb = K.peer_color(peer, C_WHITE), text = text, ready = near }
 		end
 	end
 	return out
@@ -266,7 +199,7 @@ function reminder(v)
 	end
 	local text = m and string_format(tr("st_coop_arena_remind", "waits for you at Arnie: fight %s . %d m"), tostring(v.n or "?"), m)
 		or string_format(tr("st_coop_arena_remind_far", "waits for you at Arnie: fight %s"), tostring(v.n or "?"))
-	return { nick = tostring(v.w or "?"), rgb = peer_color(v.s), text = text }
+	return { nick = tostring(v.w or "?"), rgb = K.peer_color(v.s, C_WHITE), text = text }
 end
 
 -- The compass mark on Arnie of a player away from him (coop_hud_markers' shape), as a list.
@@ -274,84 +207,14 @@ function marks(v)
 	if kind_of(v) ~= "remind" or not v.pos then return {} end
 	local x, y, z = tonumber(v.pos.x), tonumber(v.pos.y), tonumber(v.pos.z)
 	if not (x and y and z) then return {} end
-	return { { key = "arnie", kind = "transition", pos = { x = x, y = y, z = z }, color = peer_color(v.s), label = tostring(v.w or "?"),
+	return { { key = "arnie", kind = "transition", pos = { x = x, y = y, z = z }, color = K.peer_color(v.s, C_WHITE),
+		label = tostring(v.w or "?"),
 		state = "waiting", priority = MARK_PRIORITY, range = 0 } }
 end
 
 -------------------------------------------------------------------------------
 -- The overlay (the transition's look: a soft panel, small caps head, the big line, the count, segments, rows, the bar, the hint)
 -------------------------------------------------------------------------------
-local function argb(a, rgb)
-	return GetARGB(math_max(0, math_min(255, math_floor(a + 0.5))), rgb[1], rgb[2], rgb[3])
-end
-
-local function el(e) return { e = e } end
-
-local function put(t, x, y, w, h)
-	if t.x ~= x or t.y ~= y then
-		t.e:SetWndPos(vector2():set(x, y))
-		t.x, t.y = x, y
-	end
-	if w and (t.w ~= w or t.h ~= h) then
-		t.e:SetWndSize(vector2():set(w, h))
-		t.w, t.h = w, h
-	end
-end
-
-local function show(t, on)
-	on = on and true or false
-	if t.shown ~= on then
-		t.shown = on
-		t.e:Show(on)
-	end
-end
-
-local function tint(t, a, rgb)
-	local c = argb(a, rgb)
-	if t.tinted ~= c then
-		t.tinted = c
-		t.e:SetTextureColor(c)
-	end
-end
-
-local function new_text(xml, parent, node)
-	return { sh = el(xml:InitTextWnd(node, parent)), tx = el(xml:InitTextWnd(node, parent)) }
-end
-
-local function text_set(t, s, a, rgb)
-	if t.text ~= s then
-		t.text = s
-		t.tx.e:SetText(s)
-		t.sh.e:SetText(s)
-	end
-	local c = argb(a, rgb)
-	if t.color ~= c then
-		t.color = c
-		t.tx.e:SetTextColor(c)
-		t.sh.e:SetTextColor(argb(a * A_SHADOW, C_SHADOW))
-	end
-end
-
-local function text_at(t, x, y, w, h, m)
-	put(t.tx, x, y, w, h)
-	put(t.sh, x + m.px, y + m.py, w, h)
-end
-
-local function text_show(t, on)
-	show(t.tx, on)
-	show(t.sh, on)
-end
-
-local function alpha_step(a, target, dt, in_ms, out_ms)
-	if target > a then return math_min(target, a + (in_ms > 0 and dt / in_ms or 1)) end
-	return math_max(target, a - (out_ms > 0 and dt / out_ms or 1))
-end
-
-local function hold_fraction(tg)
-	if not (hold and not hold.fired) then return 0 end
-	return math_max(0, math_min(1, (tg - hold.since) / HOLD_MS))
-end
-
 class "UICoopArena" (CUIScriptWnd)
 
 function UICoopArena:__init() super()
@@ -386,12 +249,6 @@ end
 function UICoopArena:__finalize()
 end
 
-local function metrics()
-	local dev = device()
-	local W, H = dev.width, dev.height
-	return { kx = 1024 * H / (768 * W), px = 1024 / W, py = 768 / H }
-end
-
 -- The group fades in and out; `v` nil fades it out (the last one shown is kept while it fades).
 local function fade(self, group, akey, vkey, v, dt, L)
 	if v then self[vkey] = v end
@@ -422,16 +279,16 @@ function UICoopArena:FrameBoard(tg, dt, v, m, L)
 	put(self.icon, x0, top, L.icon * kx, L.icon)
 	tint(self.icon, 204 * a, C_WHITE)
 	show(self.icon, true)
-	text_at(self.t_head, x0 + L.head_x * kx, top, 240 * kx, L.head_h, m)
+	text_place(self.t_head, x0 + L.head_x * kx, top, 240 * kx, L.head_h, m)
 	text_set(self.t_head, head_text(), 217 * a, C_DIM)
 	text_show(self.t_head, true)
-	text_at(self.t_title, x0, top + L.level_y, 240 * kx, L.level_h, m)
+	text_place(self.t_title, x0, top + L.level_y, 240 * kx, L.level_h, m)
 	text_set(self.t_title, title_text(bv), 255 * a, C_WHITE)
 	text_show(self.t_title, true)
-	text_at(self.t_count, x1 - L.slot_w * kx, top + L.slot_y, L.slot_w * kx, L.level_h, m)
+	text_place(self.t_count, x1 - L.slot_w * kx, top + L.slot_y, L.slot_w * kx, L.level_h, m)
 	text_set(self.t_count, count_text(bv), 255 * a, C_WHITE)
 	text_show(self.t_count, true)
-	text_at(self.t_status, x0, top + L.status_y, Wd, L.status_h, m)
+	text_place(self.t_status, x0, top + L.status_y, Wd, L.status_h, m)
 	text_set(self.t_status, status_text(bv), 217 * a, C_WHITE)
 	text_show(self.t_status, true)
 	-- a segment per player on the map, white for one near Arnie
@@ -454,10 +311,10 @@ function UICoopArena:FrameBoard(tg, dt, v, m, L)
 			put(row.stripe, x0, y + 1, L.stripe_w * kx, L.stripe_h)
 			tint(row.stripe, 255 * a * ra, r.rgb)
 			show(row.stripe, true)
-			text_at(row.nick, x0 + L.nick_x * kx, y, L.nick_w * kx, L.row_h - 1, m)
+			text_place(row.nick, x0 + L.nick_x * kx, y, L.nick_w * kx, L.row_h - 1, m)
 			text_set(row.nick, r.nick, 255 * a * ra, r.rgb)
 			text_show(row.nick, true)
-			text_at(row.state, x1 - L.state_w * kx, y, L.state_w * kx, L.row_h - 1, m)
+			text_place(row.state, x1 - L.state_w * kx, y, L.state_w * kx, L.row_h - 1, m)
 			text_set(row.state, r.text, 255 * a * (r.ready and 1 or L.text_dim_alpha), r.ready and C_WHITE or C_DIM)
 			text_show(row.state, true)
 		else
@@ -470,13 +327,13 @@ function UICoopArena:FrameBoard(tg, dt, v, m, L)
 		put(self.bar_track, x0, bar_y, Wd, L.bar_h)
 		tint(self.bar_track, 255 * a * L.track_alpha, C_WHITE)
 		show(self.bar_track, true)
-		local f = hold_fraction(tg)
+		local f = H:fraction(tg, HOLD_MS)
 		if f > 0 then
 			put(self.bar_fill, x0, bar_y, Wd * f, L.bar_h)
 			tint(self.bar_fill, 255 * a, C_WHITE)
 		end
 		show(self.bar_fill, f > 0)
-		text_at(self.t_hint, x0, hint_y, Wd, L.hint_h, m)
+		text_place(self.t_hint, x0, hint_y, Wd, L.hint_h, m)
 		text_set(self.t_hint, hint_text(kind), 217 * a, C_DIM)
 		text_show(self.t_hint, true)
 	else
@@ -494,46 +351,26 @@ function UICoopArena:FrameRemind(tg, dt, rem, m, L)
 	put(self.rbg, CX - w / 2 - L.remind_pad_x * kx, L.top - L.pad_y, w + 2 * L.remind_pad_x * kx, L.remind_nick_h + L.remind_line_h + 2 * L.pad_y)
 	tint(self.rbg, 255 * L.bg_alpha * a, C_BG)
 	show(self.rbg, true)
-	text_at(self.t_rnick, CX - w / 2, L.top, w, L.remind_nick_h, m)
+	text_place(self.t_rnick, CX - w / 2, L.top, w, L.remind_nick_h, m)
 	text_set(self.t_rnick, rv.nick, 255 * a, rv.rgb)
 	text_show(self.t_rnick, true)
-	text_at(self.t_rline, CX - w / 2, L.top + L.remind_nick_h, w, L.remind_line_h, m)
+	text_place(self.t_rline, CX - w / 2, L.top + L.remind_nick_h, w, L.remind_line_h, m)
 	text_set(self.t_rline, rv.text, 217 * a, C_WHITE)
 	text_show(self.t_rline, true)
 end
 
--- The hold ends; while the key is still down a new one waits for it to be let go.
-local function drop_hold(tg, why)
-	if not hold then return end
-	if not hold.fired and why then log("arena: the use key hold ended after %d ms, nothing sent: %s", tg - hold.since, why) end
-	hold = nil
-	if key.down then key.latched = true end
-end
-
 -- Every frame: the hold on what this player is told (not on what the HUD shows this frame).
 local function step_hold(tg, v)
-	if key.down and key.seen and key.events_at and tg - key.events_at > HOLD_GAP_MS then
-		key.down, key.seen, key.latched = false, false, false -- its release went to another script
-		drop_hold(tg, "the key's events stopped")
-	end
-	if not hold then return end
+	if not H:key_step(tg) then return end
 	if hint_of(v) ~= "start" or transition_up() then
-		drop_hold(tg, "the board is another now")
+		H:drop(tg, "the board is another now")
 		return
 	end
-	if hud_visible() then
-		hold.hidden_at = nil
-	elseif not hold.hidden_at then
-		hold.hidden_at = tg
-	elseif tg - hold.hidden_at > HOLD_GAP_MS then
-		drop_hold(tg, "the HUD is hidden (a dialog, an inventory, a menu)")
-		return
-	end
-	if not hold.fired and tg - hold.since >= HOLD_MS then
-		hold.fired = true
+	if H:hidden_step(tg, hud_visible(), "the HUD is hidden (a dialog, an inventory, a menu)") then return end
+	if H:due(tg, HOLD_MS) then
 		stats.starts = stats.starts + 1
-		log("arena: the use key held %d ms: the fight starts with those near Arnie", tg - hold.since)
-		local A = arena()
+		log("arena: the use key held %d ms: the fight starts with those near Arnie", tg - H.hold.since)
+		local A = module("coop_arena")
 		if A and A.start_pressed then
 			local ok, err = pcall(A.start_pressed)
 			if not ok then
@@ -596,27 +433,22 @@ local function win_off()
 	local w = WIN
 	WIN = nil
 	pcall(function() get_hud():RemoveDialogToRender(w) end)
-	last_v, hold = nil, nil
-	key.down, key.events_at, key.seen, key.latched = false, nil, false, false
+	last_v = nil
+	H:reset()
 end
 
 -------------------------------------------------------------------------------
 -- Callbacks
 -------------------------------------------------------------------------------
-local function is_use_key(dik)
-	local ok, bind = pcall(dik_to_bind, dik)
-	return ok and bind == key_bindings.kUSE
-end
-
 -- A hold starts with the key going down under the starter's board (the HUD on, the crosshair not on Arnie).
 local function start_hold(tg, how)
-	if hold or key.latched or not WIN or hint_of(last_v) ~= "start" or not hud_visible() then return end
+	if not H:may_start() or not WIN or hint_of(last_v) ~= "start" or not hud_visible() then return end
 	if at_arnie(last_v) then
-		key.latched = true -- this press talks to Arnie
+		H:latch() -- this press talks to Arnie
 		stats.refused_arnie = stats.refused_arnie + 1
 		return
 	end
-	hold = { since = tg, fired = false }
+	H:start(tg)
 	stats.holds = stats.holds + 1
 	log("arena: the use key held (from its %s)", how)
 end
@@ -624,25 +456,22 @@ end
 local function on_key_press(dik)
 	if not is_use_key(dik) then return end
 	local tg = time_global()
-	key.down, key.events_at, key.seen, key.latched = true, tg, false, false
+	H:press(tg)
 	start_hold(tg, "press")
 end
 
 local function on_key_hold(dik)
 	if not is_use_key(dik) then return end
 	local tg = time_global()
-	if not key.down then key.down, key.latched = true, false end -- the press never came here
-	key.events_at, key.seen = tg, true
+	H:hold_event(tg)
 	start_hold(tg, "hold events")
 end
 
 local function on_key_release(dik)
 	if not is_use_key(dik) then return end
-	key.down, key.seen, key.latched = false, false, false
-	if hold then
-		local tg = time_global()
-		drop_hold(tg, string_format("let go after %d ms", tg - hold.since))
-	end
+	local tg = time_global()
+	local hold = H.hold
+	H:release(tg, hold and string_format("let go after %d ms", tg - hold.since))
 end
 
 local function actor_on_update()
@@ -676,7 +505,7 @@ function on_game_start()
 	RegisterScriptCallback("on_key_press", on_key_press)
 	RegisterScriptCallback("on_key_release", on_key_release)
 	RegisterScriptCallback("on_key_hold", on_key_hold)
-	local M = module_of("coop_hud_markers")
+	local M = module("coop_hud_markers")
 	if M and M.add_source then
 		local ok, err = pcall(M.add_source, "arena", marker_source, 200)
 		if not ok then log("! arena: no compass source: %s", tostring(err)) end

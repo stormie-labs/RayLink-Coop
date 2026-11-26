@@ -32,7 +32,7 @@
 --]]
 
 local type, pairs, ipairs, pcall, tostring, rawget, rawequal = type, pairs, ipairs, pcall, tostring, rawget, rawequal
-local string_format, table_sort, math_max = string.format, table.sort, math.max
+local table_sort, math_max = table.sort, math.max
 
 local started = false -- the actor's first update ran: the addons have taken their windows
 local tracking = false -- ui_timed_prompt.show_tutorial_prompt is wrapped
@@ -40,10 +40,7 @@ local timed = setmetatable({}, { __mode = "k" }) -- the prompts ui_timed_prompt.
 local extra = {} -- name -> an adapter given to register()
 stats = { rebuilds = 0, errors = 0 }
 
-local function log(fmt, ...)
-	local ok, line = pcall(string_format, fmt, ...)
-	printf("[coop-hud-life] %s", ok and line or tostring(fmt))
-end
+local log = coop_util.logger("[coop-hud-life]")
 
 local reported = {}
 local function report(what, err)
@@ -52,8 +49,6 @@ local function report(what, err)
 	reported[what] = n
 	if n <= 3 then log("! %s failed: %s", what, tostring(err)) end
 end
-
-local function C() return coop_mods_core end
 
 -- A script module that is loaded, or nil: an addon that is not there holds nothing.
 local function loaded(name)
@@ -69,7 +64,7 @@ end
 -- A file local of an addon: the upvalue `name` of its own function `fname` (exact), else any function of the module that
 -- keeps it (coop_mods_core.find_local: also behind one wrapper). Returns value, holder, index.
 local function addon_local(m, fname, name)
-	local core = C()
+	local core = coop_mods_core
 	if not (core and m) then return nil end
 	local f = field(m, fname)
 	local val, holder, index = core.upvalue(f, name)
@@ -228,7 +223,7 @@ local KEY_WINDOWS = { "wnd", "drop", "frame", "textlabel", "text_bg", "text_fg",
 
 local function track_timed_prompts()
 	if tracking then return end
-	local core = C()
+	local core = coop_mods_core
 	local m = core and core.mod("ui_timed_prompt")
 	if not (m and type(m.show_tutorial_prompt) == "function") then return end
 	tracking = core.wrap(m, "show_tutorial_prompt", "ui_timed_prompt.show_tutorial_prompt (HUD rebuild)", function(orig)
@@ -431,7 +426,7 @@ local function on_screen_resolution_changed()
 end
 
 local function wrap_rebuild_entry()
-	local core = C()
+	local core = coop_mods_core
 	if entry_wrapped or not core then return end
 	local label = "CHUDManager_OnScreenResolutionChanged (HUD rebuild)"
 	entry_wrapped = core.wrap(_G, "CHUDManager_OnScreenResolutionChanged", label, function(orig)

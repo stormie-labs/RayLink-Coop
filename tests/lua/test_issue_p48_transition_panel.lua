@@ -131,7 +131,7 @@ local function class_stub(name)
 end
 local CUIScriptWnd = { Update = function() end }
 
-local SCRIPTS = { "coop_mode", "coop_hostplay_mode", "coop_srv_mode", "coop_hud_layout", "coop_allies", "coop_allies_map",
+local SCRIPTS = { "coop_util", "coop_hud_kit", "coop_hud_hold", "coop_mode", "coop_hostplay_mode", "coop_srv_mode", "coop_hud_layout", "coop_allies", "coop_allies_map",
 	"coop_core_hud", "coop_hud_transition" }
 
 -- A machine. opts.split: a player's machine of a server world (coop.levels.split() true); opts.active = false: single player.

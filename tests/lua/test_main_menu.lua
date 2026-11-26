@@ -60,7 +60,10 @@ coop_game_settings = {
 		return nil
 	end,
 }
-coop_menu = { get_nick = function() return "stormie" end, plain = function(s) return s end, max_players = function() return 8 end }
+-- the co-op window: its translation is the real one (the menus' tr), the rest stand-ins
+local menu_tr = load_module("coop_menu").tr
+coop_menu = { get_nick = function() return "stormie" end, plain = function(s) return s end, max_players = function() return 8 end,
+	tr = menu_tr }
 anomaly_flavor = { get_flavor = function() return "GAMMA" end }
 
 -- RegisterScriptCallback: the name of what the module asked for

@@ -5,7 +5,7 @@
 	cursor is free. The panel can be dragged by its title bar and resized by its edges and the corner grip, anywhere on the screen
 	and on any aspect; everything inside lays itself out again.
 
-	Input (TZ P49): the window takes the keys like a stock script window and gives them back when it closes. Two parts:
+	Input: the window takes the keys like a stock script window and gives them back when it closes. Two parts:
 	  - registered with the stock Register_UI while it is shown (_g.script): KEYS_UNLOCK goes false and bind_stalker_ext drops the
 	    level's on_key_press / on_key_release, which the engine calls before any dialog (Level_input.cpp 206 / 600), so no game
 	    or mod bind fires under it; stock hide_hud_all closes it like its own windows (module GUI:Close);
@@ -81,12 +81,7 @@ SCROLL_ROWS = 3
 local C -- coop_debug_client, resolved at the first window
 local win, key_closed_at = nil, -1e9
 
-local function log(fmt, ...)
-	local pf = rawget(_G, "printf")
-	if not pf then return end
-	local ok, line = pcall(string.format, fmt, ...)
-	pcall(pf, "%s", "[coop-dbg] " .. (ok and line or tostring(fmt)))
-end
+local log = coop_util.logger("[coop-dbg]")
 
 local function client()
 	if not C then C = rawget(_G, "coop_debug_client") or coop_debug_client end
@@ -96,7 +91,7 @@ end
 local function tr(id) return client().tr(id) end
 local function trf(id, ...) return client().trf(id, ...) end
 
--- A client that holds the host's rights on a world server (plan 2026-11-12 s.2.3, the operator): the server's debug is switched by
+-- A client that holds the host's rights on a world server (the operator): the server's debug is switched by
 -- an operator command, not this machine's console (coop.debug.is_operator is the world server's own process only).
 local function remote_operator()
 	local api = rawget(_G, "coop")
@@ -204,21 +199,12 @@ end
 -------------------------------------------------------------------------------
 -- Settings of this machine (axr_options [coop_debug_ui])
 -------------------------------------------------------------------------------
-local function cfg()
-	local am = rawget(_G, "axr_main")
-	if am == nil then
-		local ok, m = pcall(function() return axr_main end)
-		am = ok and m or nil
-	end
-	return type(am) == "table" and am.config or nil
-end
-
 local settings = nil
 
 function load_settings()
 	local s = {}
 	for k, v in pairs(DEFAULTS) do s[k] = v end
-	local c = cfg()
+	local c = coop_menu_kit.cfg()
 	if c then
 		for k, def in pairs(DEFAULTS) do
 			local typ = type(def) == "number" and 2 or (type(def) == "boolean" and 1 or 0)
@@ -238,7 +224,7 @@ function get_settings()
 end
 
 function save_settings()
-	local c = cfg()
+	local c = coop_menu_kit.cfg()
 	if not (c and settings) then return false end
 	return (pcall(function()
 		for k in pairs(DEFAULTS) do
@@ -785,7 +771,7 @@ function UICoopDebug:LayoutTitle(w)
 		self:PlaceBtn(self.toggle, x, y, tw, h)
 	end
 	self.title_drag_w = x - 4
-	-- the title, then a short state with its dot: no long line to cut (the owner, 2026-11-07); how to turn debug on is in Help
+	-- the title, then a short state with its dot: no long line to cut; how to turn debug on is in Help
 	local tw = min(text_w(self.title:GetText(), "small") + 8, max(60, x - 200))
 	ui:place(self.title, 14, 0, tw, TITLE_H)
 	ui:place(self.state_dot, 14 + tw + 10, floor(TITLE_H / 2) - 3, 6, 6)
@@ -1692,7 +1678,7 @@ function UICoopDebug:BindFeed()
 end
 
 -------------------------------------------------------------------------------
--- Settings popover (title bar): opacity, blur, density, walking while open, confirmations, reset
+-- Settings popover (title bar): opacity, blur, density, confirmations, reset
 -------------------------------------------------------------------------------
 function UICoopDebug:BuildPopover()
 	local ui, g = self.ui, self.g

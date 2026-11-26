@@ -1,7 +1,6 @@
 --[[
-	Anomaly Coop - HUD "Visor" (TZ.md 6.13, R55-R69): the compass arc (gamedata\scripts\coop_hud_compass.script).
-	Design: E:\coop-hud-design\vizor\spec_v2.md (the owner's corrections win), numbers from its hud_v2.js / demo_v2.js.
-	Previous look and the marker data: docs\HUD_V2.md. Layout configs\ui\ui_coop_compass.xml (+ _16, the same nodes),
+	Anomaly Coop - HUD "Visor": the compass arc (gamedata\scripts\coop_hud_compass.script).
+	Marker data: docs\HUD_V2.md. Layout configs\ui\ui_coop_compass.xml (+ _16, the same nodes),
 	icons: the atlas ui_coop_hud3 (coop_h3_<name>, white, tinted with SetTextureColor); the scale and the fallback icons:
 	ui_coop_hud (coop_hud_*). Every size and alpha: coop_hud_layout.get() ([coop_hud_layout] of mod_system_coop.ltx wins).
 
@@ -17,7 +16,7 @@
 	  above the arc; the heading in degrees on top (head font), a down chevron and a centre line; a dark plate (~0.25).
 	  Warm white #F1ECDF. Things fade towards the ends of the arc (smoothstep 50 deg .. arc_half + 2).
 	- Markers hang under the arc on a thin stem: allies 22 px at 1080 (alpha 1), the rest 19 px, scaled to 0.64 at the
-	  ends. Three levels (R56): always - allies, pings, the active task, the own waypoint (priority >= 20; out of the
+	  ends. Three levels: always - allies, pings, the active task, the own waypoint (priority >= 20; out of the
 	  field they are pinned to an end with an arrow); by look - every other kind only within +-20 deg of the heading
 	  (fading over 4 deg) and within its kind's range; detail (coop_hud_depth.detail(), Tab) - everything, with labels,
 	  numbers on the scale and 5 deg ticks. Labels (nick / name, then the distance) only in the focus +-12 deg; a downed
@@ -108,21 +107,8 @@ local FIELD_SLACK_DEG = 10 -- the same for a marker this far out of the field th
 local DIRS = { [0] = "n", [45] = "ne", [90] = "e", [135] = "se", [180] = "s", [225] = "sw", [270] = "w", [315] = "nw" }
 local DIR_DEFAULT = { n = "N", ne = "NE", e = "E", se = "SE", s = "S", sw = "SW", w = "W", nw = "NW" }
 
-local function log(fmt, ...)
-	local ok, line = pcall(string_format, fmt, ...)
-	printf("[coop-hud] %s", ok and line or tostring(fmt))
-end
-
-local function tr(id, fallback)
-	local ok, s = pcall(game.translate_string, id)
-	if not ok or type(s) ~= "string" or s == "" or s == id then return fallback end
-	return s
-end
-
-local function layout()
-	local m = rawget(_G, "coop_hud_layout") or coop_hud_layout
-	return m.get()
-end
+local log = coop_util.logger("[coop-hud]")
+local tr, argb, hud_visible = coop_util.tr_nonempty, coop_hud_kit.argb, coop_hud_kit.hud_visible
 
 -------------------------------------------------------------------------------
 -- Pure helpers (strip math)
@@ -249,7 +235,7 @@ function fov_of(v)
 	return DEFAULT_FOV
 end
 
--- v2.1 (owner 2026-10-23 "no intensity by distance"): alpha factor and icon scale of a marker `d` m away with range
+-- No intensity by distance: alpha factor and icon scale of a marker `d` m away with range
 -- `range` (0 = no limit) by the layout L: full up to fade_near_pct % of the range, smoothstep down to fade_far_alpha /
 -- fade_far_scale at it, 0 beyond it. No limit: the same curve against fade_ref_m, never below fade_far_alpha.
 function fade_of(d, range, L)
@@ -313,7 +299,7 @@ function arc_th(rel, fov_deg, half)
 	return rel * half / (fov_deg / 2)
 end
 
--- Level of a marker (R56): 1 = always (allies, pings, the active task, the waypoint: priority >= 20), 2 = by look.
+-- Level of a marker: 1 = always (allies, pings, the active task, the waypoint: priority >= 20), 2 = by look.
 function tier_of(m)
 	local t = tonumber(m.tier)
 	if t == 1 or t == 2 then return t end
@@ -430,17 +416,6 @@ local function format_timer(s)
 	return string_format("%d:%02d", math_floor(s / 60), s % 60)
 end
 
-local function hud_visible()
-	local f = rawget(_G, "main_hud_shown")
-	if not f then return true end
-	local ok, v = pcall(f)
-	return not ok or v == true
-end
-
-local function argb(a, c)
-	return GetARGB(math_max(0, math_min(255, math_floor(a + 0.5))), c[1], c[2], c[3])
-end
-
 local function shadow(a)
 	return GetARGB(math_max(0, math_min(255, math_floor(a * A_SHADOW + 0.5))), 0, 0, 0)
 end
@@ -517,6 +492,7 @@ function UICoopCompass:InitControls()
 		self.ticks[i]:Show(false)
 	end
 	self.letters, self.letter_shadows = {}, {}
+	self.letter_on = {} -- deg -> its letter is drawn at the scale's heading (cleared in place on every redraw)
 	for deg, id in pairs(DIRS) do
 		local text = tr("st_coop_hud_dir_" .. id, DIR_DEFAULT[id])
 		local sh = xml:InitTextWnd("coop_compass:letter", root)
@@ -567,7 +543,7 @@ end
 
 -- Geometry for the current screen and layout.
 function UICoopCompass:Relayout()
-	local L = layout()
+	local L = coop_hud_layout.get()
 	local dev = device()
 	local W, H = dev.width, dev.height
 	local kx = 1024 * H / (768 * W)
@@ -697,7 +673,8 @@ function UICoopCompass:DrawScale(heading, a_main, a_sec)
 	local R, y0, sag, kx, half = g.R, g.y0, g.sag, g.kx, g.half
 	local tilt = self.tilt
 	local n = tick_list(heading, fov, self.tick_buf)
-	local letter_on = {}
+	local letter_on = self.letter_on
+	for deg in pairs(letter_on) do letter_on[deg] = nil end
 	local nd, nt = 0, 0
 	for i = 1, n do
 		local t = self.tick_buf[i]
@@ -1075,7 +1052,7 @@ function UICoopCompass:Frame(tg)
 			self.root:Show(vis)
 		end
 		local dev = device()
-		if dev.width ~= self.g.W or dev.height ~= self.g.H or layout() ~= self.g.L then self:Relayout() end
+		if dev.width ~= self.g.W or dev.height ~= self.g.H or coop_hud_layout.get() ~= self.g.L then self:Relayout() end
 	end
 	if not self.vis then
 		self.last_tg = nil

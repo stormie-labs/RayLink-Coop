@@ -1,26 +1,26 @@
 --[[
 	Anomaly Coop - the waiting point of a level change (gamedata\scripts\coop_hud_transition.script). Picture:
-	docs\hud\transition_wait_mockup.png (HUD v2 style: white, flat, 1 px shadow, the players' palette colours). Layout:
+	docs\hud\transition_wait_mockup.png (the HUD's style: white, flat, 1 px shadow, the players' palette colours). Layout:
 	configs\ui\ui_coop_transition.xml (+ _16: textures and fonts only), strings st_coop_transition_*; every size is in DEFAULTS
 	below (px at 768 high, never stretched; a [coop_hud_transition] <key> = <number> line in any ltx wins).
 
-	Until the split levels (F3a) the whole group changes level together. A player who stands in the zone of an exit (or in a
+	The whole group changes level together. A player who stands in the zone of an exit (or in a
 	route restrictor that leads into it, scripts\coop_transition_route.script) is ready for it; the group goes the moment every
-	player who is in the world and alive is ready for the same exit, however long that takes (owner 2026-10-24: no waiting
+	player who is in the world and alive is ready for the same exit, however long that takes (no waiting
 	timer); a player who is still loading holds it for a minute at most. A player who is NOT at the exit may hold the use key:
 	he goes with the group from where he is. The rules and the host's board are the engine's (engine\src\xrCoop\
 	coop_transition.h, coop_join.cpp); this script only shows them and darkens the screen at the go:
 
 	  coop.transition() -> nil | { state "waiting" | "going", kind "exit" | "guide", level (stock name), changer, ready,
 	    total, load_ms (left of the loaders' minute), rows = { { peer, mark "ready" | "away" | "loading" | "down" |
-	    "elsewhere", dist (m), other (true: on another map, F3a), consent (true: he comes along from afar) }, ... },
+	    "elsewhere", dist (m), other (true: on another map), consent (true: he comes along from afar) }, ... },
 	    me = { peer, host, in_zone, ready, dist, confirm, consent }, pos = { x, y, z } }
 	  polled every frame; nil when nobody waits.
 
 	1. The board (me at the exit, coming along, a guide trip, or the go): top centre under the compass: the small caps head,
 	   the level's name, the count "2 / 3" on the right, the status line, a segment per player the count counts (white: ready;
-	   TZ P48: not one for a player who is not waited for), a row per player (a 2 px stripe and the nick in his palette colour,
-	   bright when ready, dimmer when not; on the right "here" / "comes along" / the team panel's metres from me to him (TZ P48:
+	   not one for a player who is not waited for), a row per player (a 2 px stripe and the nick in his palette colour,
+	   bright when ready, dimmer when not; on the right "here" / "comes along" / the team panel's metres from me to him (
 	   coop_core_hud.distance_text, the same words in the same frame; my own row: my metres to the exit) / "loading . 42 s" /
 	   "not waited for" / "at another exit"), and the hint of the
 	   key under a thin bar that fills while the key is held (1 s): coming along "hold [F] - cancel", a guide trip I have not
@@ -41,10 +41,10 @@
 		coop_hud_transition.get_window() -> the overlay while it is on the HUD
 		coop_hud_transition.layout() -> the sizes in force
 
-	Owner 2026-11-02: with somebody on another map his row says the map, nobody can say yes from afar (the hint says who and where, the
+	With somebody on another map his row says the map, nobody can say yes from afar (the hint says who and where, the
 	key does nothing), the group waits for him as long as it takes; the host's board is what decides, this only shows it.
 
-	Owner 2026-11-16: a yes from afar has a fare (scripts\coop_transition_fare.script, the world's rule transition_fare): the hint
+	A yes from afar has a fare (scripts\coop_transition_fare.script, the world's rule transition_fare): the hint
 	of "go with the group" / "agree" names the price, a player without the money cannot send the key's command, and the fare is
 	taken at the go. This script asks that one for the hint's text, before the command and every frame; without it nothing changes.
 --]]
@@ -55,14 +55,22 @@ local tostring, tonumber, type, ipairs, pairs, pcall = tostring, tonumber, type,
 local math_floor, math_ceil, math_max, math_min = math.floor, math.ceil, math.max, math.min
 local string_format = string.format
 
+local K = coop_hud_kit
+local el, put, show, tint, new_text, text_set, text_place, text_show = K.el, K.put, K.show, K.tint, K.new_text, K.text_set,
+	K.text_place, K.text_show
+local alpha_step, metrics, live, hud_visible, my_peer = K.alpha_step, K.metrics, K.live, K.hud_visible, K.my_peer
+local is_use_key = coop_hud_hold.is_use_key
+local tr = coop_util.tr_nonempty
+local nick_of = K.nick_labels(500) -- the session's nicks, read twice a second
+
 XML_FILE = "ui_coop_transition.xml"
 SECTION = "coop_hud_transition"
 MAX_ROWS = 8 -- the session's players (kMaxPlayers)
 CX = 512 -- the middle of the screen, in 1024x768 units
 FEED_GAP_MS = 10000 -- a player who steps in and out is announced once in this time
 HOLD_MS = { consent = 1000, cancel = 1000, confirm = 1000 }
--- Live 2026-10-24 (build 15, G.A.M.M.A.): "the key is not held, it is pressed once". G.A.M.M.A. hands every key to
--- on_before_key_press first (level_input.script) and a mod may take it there: then on_key_press never comes. The key's
+-- A modpack may hand every key to on_before_key_press first (level_input.script) and a mod may take it there: then
+-- on_key_press never comes ("the key is not held, it is pressed once"). The key's
 -- hold events (on_key_hold, every frame while it is down) start and keep the hold as well; when they stop this long
 -- (its release went to another script) the hold is over. A moment without the HUD under the held key (a window
 -- flashing up) is not the end of it either: only this long.
@@ -77,8 +85,6 @@ local C_DIM = { 175, 177, 175 } -- the head and the hint
 local C_AMBER = { 240, 176, 76 } -- a player who is loading
 local C_MUTED = { 150, 152, 146 }
 local C_BG = { 12, 13, 10 } -- the compass bar's panel
-local C_SHADOW = { 0, 0, 0 }
-local A_SHADOW = 0.7
 local TONE = { ready = C_WHITE, dim = C_DIM, amber = C_AMBER, muted = C_MUTED }
 
 -- Every size; configs\mod_system_*.ltx [coop_hud_transition] <key> = <number> wins (the same numbers).
@@ -97,20 +103,18 @@ local lay
 local stats = { polled = 0, shown = 0, spoken = 0, holds = 0, errors = 0, fades = 0 }
 local last_t -- the last coop.transition()
 local WIN -- the overlay while it is on the HUD
-local hold -- { kind, since, fired, hidden_at } the use key held (away from the exit, or a guide trip)
--- the use key as its events show it: down; events_at, seen (hold events came: their end is its release); latched (a hold
--- ended while it is still down: a new one only after it is let go)
-local key = { down = false, events_at = nil, seen = false, latched = false }
 local faded = false -- the screen darkened for the go that runs now
 local fare_failed = false -- the fare's step failed: logged once
 local feed_prev -- the board the feed lines were last made against
 local feed_rate = { at = {}, now = 0 }
-local players_at, players_map = nil, {}
 
-local function log(fmt, ...)
-	local ok, line = pcall(string_format, fmt, ...)
-	printf("[coop-hud] %s", ok and line or tostring(fmt))
-end
+local log = coop_util.logger("[coop-hud]")
+
+-- The use key held away from the exit, or in a guide trip (hold.kind: the hint it answers). A hold that ends before its
+-- command went out goes to the log (the live tests read it: "it is pressed once").
+local H = coop_hud_hold.new(HOLD_GAP_MS, function(hold, tg, why)
+	log("transition: the use key hold (%s) ended after %d ms, nothing sent: %s", hold.kind, tg - hold.since, why)
+end)
 
 -------------------------------------------------------------------------------
 -- Layout table
@@ -146,12 +150,6 @@ end
 -------------------------------------------------------------------------------
 -- Engine glue
 -------------------------------------------------------------------------------
-local function live()
-	if not api then return false end
-	local ok, on = pcall(function() return api.is_active() and (coop_mode.decides_world() or api.is_live()) end)
-	return ok and on == true
-end
-
 local function poll()
 	if not (api and api.transition) then return nil end
 	local ok, t = pcall(api.transition)
@@ -162,71 +160,6 @@ local function poll()
 	stats.polled = stats.polled + 1
 	if type(t) ~= "table" then return nil end
 	return t
-end
-
-local function tr(id, fallback)
-	local ok, s = pcall(function() return game.translate_string(id) end)
-	if ok and type(s) == "string" and s ~= "" and s ~= id then return s end
-	return fallback or id
-end
-
-local function my_peer()
-	if not api then return nil end
-	local ok, id = pcall(function() return api.self_id() end)
-	id = ok and tonumber(id) or nil
-	if id and id >= 0 then return id end
-	return nil
-end
-
-local function allies()
-	return rawget(_G, "coop_allies")
-end
-
--- A player's colour: his slot of the palette ([coop_player_colors]).
-local function peer_color(peer)
-	local A = allies()
-	if A and A.color and tonumber(peer) then
-		local ok, r, g, b = pcall(A.color, peer)
-		if ok and r then return { r, g, b } end
-	end
-	return C_WHITE
-end
-
--- Nicks of the session's players, asked twice a second.
-local function nick_of(peer)
-	peer = tonumber(peer)
-	if not peer then return "?" end
-	local tg = time_global()
-	if not players_at or tg - players_at > 500 or tg < players_at then
-		players_at = tg
-		players_map = {}
-		if api and api.players then
-			local ok, list = pcall(api.players)
-			if ok and type(list) == "table" then
-				for _, p in ipairs(list) do
-					if type(p) == "table" and tonumber(p.id) then players_map[tonumber(p.id)] = tostring(p.nick or "") end
-				end
-			end
-		end
-	end
-	local nick = players_map[peer]
-	if nick and nick ~= "" then
-		nick = nick:gsub("%%", "")
-		if #nick > 24 then nick = nick:sub(1, 23) .. "." end
-		return nick
-	end
-	return "player " .. tostring(peer)
-end
-
-local function hud_visible()
-	local f = rawget(_G, "main_hud_shown")
-	if not f then return true end
-	local ok, v = pcall(f)
-	return not ok or v == true
-end
-
-local function argb(a, rgb)
-	return GetARGB(math_max(0, math_min(255, math_floor(a + 0.5))), rgb[1], rgb[2], rgb[3])
 end
 
 local function say(text)
@@ -265,8 +198,7 @@ local function dist_text(d)
 	return string_format(tr("st_coop_transition_row_dist", "%d m"), math_floor(d + 0.5))
 end
 
--- TZ P48 (Dev 58, owner 2026-11-22: "wrong readings on the transition or on the players"; on his screenshot the board said 31 and
--- 82 m, the team panel 29 and 84 m for the same two players). The metres of a row are the team panel's: coop_core_hud.
+-- The metres of a row are the team panel's: coop_core_hud.
 -- distance_text, from me to him, from the panel's view of this frame and in its words, so the two windows never give two numbers
 -- for one player (the engine's row metres are to the exit's shapes, as the host sees him). My own row (in the zone before the
 -- board has me ready) has no row on the panel: my metres to the exit, this machine's (me.dist, the reminder line's). Without the
@@ -292,17 +224,11 @@ local function levels_module()
 	return ok and type(v) == "table" and v or nil
 end
 
--- The fare of a yes from afar (coop_transition_fare.script); nil on a build without it.
-local function fare_module()
-	local m = rawget(_G, "coop_transition_fare")
-	if type(m) == "table" then return m end
-	local ok, v = pcall(function() return coop_transition_fare end) -- loads the script
-	return ok and type(v) == "table" and v or nil
-end
+local FARE = "coop_transition_fare" -- the fare of a yes from afar
 
 -- text: the hint of "consent" / "confirm"; with a fare it names the price, or what the player lacks.
 local function with_fare(kind, t, text)
-	local F = fare_module()
+	local F = coop_util.module(FARE)
 	if not (F and F.hint) then return text end
 	local ok, s = pcall(F.hint, kind, t, text)
 	return ok and type(s) == "string" and s or text
@@ -362,8 +288,10 @@ function row_texts(t)
 		if #out >= MAX_ROWS then break end
 		if type(r) == "table" and tonumber(r.peer) then
 			local text, tone = row_state(r, t)
-			out[#out + 1] = { peer = tonumber(r.peer), nick = nick_of(r.peer), rgb = peer_color(r.peer), text = text, tone = tone,
-				ready = r.mark == "ready" }
+			out[#out + 1] = {
+				peer = tonumber(r.peer), nick = nick_of(r.peer), rgb = K.peer_color(r.peer, C_WHITE),
+				text = text, tone = tone, ready = r.mark == "ready",
+			}
 		end
 	end
 	return out
@@ -389,7 +317,7 @@ local function waiting_others(t)
 	return out
 end
 
--- The use key held (owner 2026-10-24: only by those who are NOT at the exit): "consent" (away from the exit somebody waits
+-- The use key held (only by those who are NOT at the exit): "consent" (away from the exit somebody waits
 -- at: go with the group), "cancel" (coming along, or agreed to a guide trip: not any more), "confirm" (a guide trip I have not
 -- answered), "blocked" (the same two while somebody is on another map: nothing to hold, the hint says who and where), nil (at the
 -- exit: he steps out to withdraw; the go; nobody waits).
@@ -445,14 +373,17 @@ function reminder(t)
 	else
 		text = string_format(tr("st_coop_transition_remind_far", "waits for you at the exit to %s"), level)
 	end
-	return { nick = nick, rgb = peer_color(others[1]), text = text }
+	return { nick = nick, rgb = K.peer_color(others[1], C_WHITE), text = text }
 end
 
 -- The feed lines this step makes: who got ready (at the exit, or coming along from afar). `rate` (the live feed): a player is
 -- announced once in FEED_GAP_MS ({ at = { [peer] = ms }, now = ms }); without it every news is told. No countdown, so nothing
--- is ever cancelled: a player who steps back is simply waited for again (the rows say it).
+-- is ever cancelled: a player who steps back is simply waited for again (the rows say it). No news: one shared empty list
+-- (read only).
+local NO_LINES = {}
+
 function feed_events(prev, cur, who, rate)
-	local out = {}
+	local out = NO_LINES
 	if type(cur) == "table" then
 		local same = type(prev) == "table" and prev.level == cur.level and prev.kind == cur.kind
 		for _, r in ipairs(cur.rows or {}) do
@@ -472,6 +403,7 @@ function feed_events(prev, cur, who, rate)
 					elseif r.consent == true then
 						id, fb = "st_coop_transition_feed_consent", "%s goes with the group to %s"
 					end
+					if out == NO_LINES then out = {} end
 					out[#out + 1] = string_format(tr(id, fb), nick_of(peer), level_title(cur.level))
 				end
 			end
@@ -487,88 +419,19 @@ function marks(t)
 	if #others == 0 then return {} end
 	local x, y, z = tonumber(t.pos.x), tonumber(t.pos.y), tonumber(t.pos.z)
 	if not (x and y and z) then return {} end
-	return { { key = "exit", kind = "transition", pos = { x = x, y = y, z = z }, color = peer_color(others[1]), label = nick_of(others[1]),
+	return { { key = "exit", kind = "transition", pos = { x = x, y = y, z = z }, color = K.peer_color(others[1], C_WHITE),
+		label = nick_of(others[1]),
 		state = "waiting", priority = MARK_PRIORITY, range = 0 } }
 end
 
 -------------------------------------------------------------------------------
 -- The overlay
 -------------------------------------------------------------------------------
-local function vec2(x, y)
-	return vector2():set(x, y)
-end
-
--- A window and where the script put it.
-local function el(e)
-	return { e = e }
-end
-
-local function put(t, x, y, w, h)
-	if t.x ~= x or t.y ~= y then
-		t.e:SetWndPos(vec2(x, y))
-		t.x, t.y = x, y
-	end
-	if w and (t.w ~= w or t.h ~= h) then
-		t.e:SetWndSize(vec2(w, h))
-		t.w, t.h = w, h
-	end
-end
-
-local function show(t, on)
-	on = on and true or false
-	if t.shown ~= on then
-		t.shown = on
-		t.e:Show(on)
-	end
-end
-
-local function tint(t, a, rgb)
-	local v = argb(a, rgb)
-	if t.tinted ~= v then
-		t.tinted = v
-		t.e:SetTextureColor(v)
-	end
-end
-
--- A text with a 1 px shadow under it.
-local function new_text(xml, parent, node)
-	return { sh = el(xml:InitTextWnd(node, parent)), tx = el(xml:InitTextWnd(node, parent)), text = nil, color = nil }
-end
-
-local function text_set(t, s, a, rgb)
-	if t.text ~= s then
-		t.text = s
-		t.tx.e:SetText(s)
-		t.sh.e:SetText(s)
-	end
-	local c = argb(a, rgb)
-	if t.color ~= c then
-		t.color = c
-		t.tx.e:SetTextColor(c)
-		t.sh.e:SetTextColor(argb(a * A_SHADOW, C_SHADOW))
-	end
-end
-
-local function text_place(t, x, y, w, h, m)
-	put(t.tx, x, y, w, h)
-	put(t.sh, x + m.px, y + m.py, w, h)
-end
-
-local function text_show(t, on)
-	show(t.tx, on)
-	show(t.sh, on)
-end
-
-local function alpha_step(a, target, dt, in_ms, out_ms)
-	dt = dt or 0
-	if target > a then return math_min(target, a + (in_ms > 0 and dt / in_ms or 1)) end
-	return math_max(target, a - (out_ms > 0 and dt / out_ms or 1))
-end
-
 -- How far the use key is held for the hint `kind`: 0..1 (0: not held, or its command went out already).
 local function hold_fraction(tg, kind)
-	if not (hold and not hold.fired and hold.kind == kind) then return 0 end
-	return math_max(0, math_min(1, (tg - hold.since) / hold_ms(kind)))
+	local hold = H.hold
+	if not (hold and hold.kind == kind) then return 0 end
+	return H:fraction(tg, hold_ms(kind))
 end
 
 class "UICoopTransition" (CUIScriptWnd)
@@ -614,12 +477,6 @@ function UICoopTransition:__init() super()
 end
 
 function UICoopTransition:__finalize()
-end
-
-local function metrics()
-	local dev = device()
-	local W, H = dev.width, dev.height
-	return { W = W, H = H, kx = 1024 * H / (768 * W), px = 1024 / W, py = 768 / H }
 end
 
 -- The board.
@@ -673,8 +530,8 @@ function UICoopTransition:FrameBoard(tg, dt, t, m, L)
 	text_place(self.t_status, x0, top + L.status_y, 240 * kx, L.status_h, m)
 	text_set(self.t_status, status_text(bv), 217 * a, C_WHITE)
 	text_show(self.t_status, true)
-	-- a segment per player the count counts (bv.total: the group waits for him), white when ready, dim when not. TZ P48: the
-	-- owner's screenshot had "1 / 4" over five segments, the fifth a dead player's whom the group does not wait for
+	-- a segment per player the count counts (bv.total: the group waits for him), white when ready, dim when not: none for
+	-- a dead player, whom the group does not wait for
 	local total = math_min(MAX_ROWS, math_max(0, math_floor(tonumber(bv.total) or 0)))
 	for i = 1, MAX_ROWS do
 		local s = self.segs[i]
@@ -751,7 +608,7 @@ function UICoopTransition:FrameRemind(tg, dt, rem, m, L)
 	end
 	local kx = m.kx
 	local w = L.remind_w * kx
-	local kind = rv.kind -- the key: hold to go with the group (2026-10-24)
+	local kind = rv.kind -- the key: hold to go with the group
 	local bar_y = L.top + L.remind_nick_h + L.remind_line_h + L.bar_gap
 	local hint_y = bar_y + L.bar_h + L.hint_gap
 	local h = kind and (hint_y + L.hint_h - L.top) or (L.remind_nick_h + L.remind_line_h)
@@ -787,31 +644,19 @@ function UICoopTransition:FrameRemind(tg, dt, rem, m, L)
 	end
 end
 
--- The hold ends; while the key is still down a new one waits for it to be let go. `why` goes to the log when nothing
--- went out (the live tests read it: "it is pressed once").
-local function drop_hold(tg, why)
-	if not hold then return end
-	if not hold.fired and why then
-		log("transition: the use key hold (%s) ended after %d ms, nothing sent: %s", hold.kind, tg - hold.since, why)
-	end
-	hold = nil
-	if key.down then key.latched = true end
-end
-
 -- The use key held: the command goes out when the hold is over, once.
 local function run_hold(tg, t)
-	if not hold then return end
+	local hold = H.hold
 	local kind = hint_kind(t)
 	if kind ~= hold.kind then
 		-- the board changed under the key (gone, I stepped in, the engine took it: the hint is another now)
-		drop_hold(tg, string_format("the hint is %s now", tostring(kind)))
+		H:drop(tg, string_format("the hint is %s now", tostring(kind)))
 		return
 	end
-	if not hold.fired and tg - hold.since >= hold_ms(kind) then
-		hold.fired = true
+	if H:due(tg, hold_ms(kind)) then
 		stats.holds = stats.holds + 1
 		-- a yes from afar has a fare: without the money the command does not go (the player is told there); a cancel forgets it
-		local F = fare_module()
+		local F = coop_util.module(FARE)
 		if F and (kind == "consent" or kind == "confirm") and F.agree then
 			local ok, go = pcall(F.agree, t)
 			if ok and go == false then
@@ -828,23 +673,12 @@ end
 
 -- Every frame: the hold on the board itself (not on what the HUD shows this frame).
 function step_hold(tg, raw)
-	if key.down and key.seen and key.events_at and tg - key.events_at > HOLD_GAP_MS then
-		key.down, key.seen, key.latched = false, false, false -- its release went to another script
-		drop_hold(tg, "the key's events stopped")
-	end
-	if not hold then return end
+	if not H:key_step(tg) then return end
 	if not (raw and (shows_board(raw) or reminder(raw))) then
-		drop_hold(tg, "the placard is gone")
+		H:drop(tg, "the placard is gone")
 		return
 	end
-	if hud_visible() then
-		hold.hidden_at = nil
-	elseif not hold.hidden_at then
-		hold.hidden_at = tg
-	elseif tg - hold.hidden_at > HOLD_GAP_MS then
-		drop_hold(tg, "the HUD is hidden (an inventory, a menu)")
-		return
-	end
+	if H:hidden_step(tg, hud_visible(), "the HUD is hidden (an inventory, a menu)") then return end
 	run_hold(tg, raw)
 end
 
@@ -879,7 +713,7 @@ function UICoopTransition:Frame(tg)
 	for _, line in ipairs(feed_events(feed_prev, raw, my_peer(), feed_rate)) do say(line) end
 	feed_prev = raw
 	-- the fare of a yes from afar is taken at the go (and forgotten when nobody waits any more)
-	local F = fare_module()
+	local F = coop_util.module(FARE)
 	if F and F.step then
 		local ok, err = pcall(F.step, raw)
 		if not ok and not fare_failed then
@@ -933,10 +767,11 @@ end
 
 -- The key being held: { kind, fraction 0..1 } or nil (nothing held, or the command went out already).
 function hold_state()
+	local hold = H.hold
 	if not hold or hold.fired then return nil end
 	local ms = hold_ms(hold.kind)
 	if not ms then return nil end
-	return { kind = hold.kind, fraction = math_max(0, math_min(1, (time_global() - hold.since) / ms)) }
+	return { kind = hold.kind, fraction = H:fraction(time_global(), ms) }
 end
 
 local function win_on()
@@ -956,32 +791,27 @@ local function win_off()
 	local w = WIN
 	WIN = nil
 	pcall(function() get_hud():RemoveDialogToRender(w) end)
-	last_t, feed_prev, hold, faded = nil, nil, nil, false
-	key.down, key.events_at, key.seen, key.latched = false, nil, false, false
+	last_t, feed_prev, faded = nil, nil, false
+	H:reset()
 end
 
 -------------------------------------------------------------------------------
 -- Callbacks
 -------------------------------------------------------------------------------
-local function is_use_key(dik)
-	local ok, bind = pcall(dik_to_bind, dik)
-	return ok and bind == key_bindings.kUSE
-end
-
 -- A hold starts with the key going down under a placard that names it (the HUD on: an inventory owns the key).
 local function start_hold(tg, how)
-	if hold or key.latched or not WIN or not last_t or not hud_visible() then return end
+	if not H:may_start() or not WIN or not last_t or not hud_visible() then return end
 	if not (shows_board(last_t) or reminder(last_t)) then return end -- a key only with a placard that names it
 	local kind = hint_kind(last_t)
 	if not (kind and hold_ms(kind)) then return end
-	hold = { kind = kind, since = tg, fired = false }
+	H:start(tg, kind)
 	log("transition: the use key held (%s, from its %s)", kind, how)
 end
 
 local function on_key_press(dik)
 	if not is_use_key(dik) then return end
 	local tg = time_global()
-	key.down, key.events_at, key.seen, key.latched = true, tg, false, false
+	H:press(tg)
 	start_hold(tg, "press")
 end
 
@@ -990,18 +820,15 @@ end
 local function on_key_hold(dik)
 	if not is_use_key(dik) then return end
 	local tg = time_global()
-	if not key.down then key.down, key.latched = true, false end -- the press never came here
-	key.events_at, key.seen = tg, true
+	H:hold_event(tg)
 	start_hold(tg, "hold events")
 end
 
 local function on_key_release(dik)
 	if not is_use_key(dik) then return end
-	key.down, key.seen, key.latched = false, false, false
-	if hold then
-		local tg = time_global()
-		drop_hold(tg, string_format("let go after %d ms", tg - hold.since))
-	end
+	local tg = time_global()
+	local hold = H.hold
+	H:release(tg, hold and string_format("let go after %d ms", tg - hold.since))
 end
 
 local function actor_on_update()
@@ -1027,13 +854,6 @@ function print_status()
 		last_t and (last_t.state .. " at " .. tostring(last_t.level) .. " " .. tostring(last_t.ready) .. "/" .. tostring(last_t.total)) or "-")
 end
 
-local function markers_module()
-	local m = rawget(_G, "coop_hud_markers")
-	if type(m) == "table" then return m end
-	local ok, v = pcall(function() return coop_hud_markers end) -- loads the script
-	return ok and type(v) == "table" and v or nil
-end
-
 function on_game_start()
 	if not api then return end -- an exe without co-op: nothing of this runs
 	RegisterScriptCallback("actor_on_update", actor_on_update)
@@ -1041,7 +861,7 @@ function on_game_start()
 	RegisterScriptCallback("on_key_press", on_key_press)
 	RegisterScriptCallback("on_key_release", on_key_release)
 	RegisterScriptCallback("on_key_hold", on_key_hold)
-	local M = markers_module()
+	local M = coop_util.module("coop_hud_markers")
 	if M and M.add_source then
 		local ok, err = pcall(M.add_source, "transition", marker_source, 200)
 		if not ok then log("! transition: no compass source: %s", tostring(err)) end

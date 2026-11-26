@@ -162,7 +162,7 @@ end
 local INI = ltx(ROOT .. "configs/mod_system_coop.ltx")
 
 -- ---------------------------------------------------------------- the machine
-local SCRIPTS = { "coop_mode", "coop_hostplay_mode", "coop_srv_mode", "coop_hud_layout", "coop_menu_options", "coop_hud_netgraph" }
+local SCRIPTS = { "coop_util", "coop_hud_kit", "coop_hud_hold", "coop_mode", "coop_hostplay_mode", "coop_srv_mode", "coop_hud_layout", "coop_menu_options", "coop_hud_netgraph" }
 
 local function machine(self_peer, opts)
 	opts = opts or {}

@@ -4,8 +4,7 @@
 -- Run: tools\test_lua.cmd allies   (VERBOSE=1 for logs)
 local ROOT = "gamedata/"
 local REF = "../anomaly-ref/unpacked/configs/ui/"
-local OUT = "temp/lua/" -- scratch dumps (temp/ is git-ignored); the runner creates it
-os.execute("mkdir temp\\lua 2>NUL")
+local OUT = dofile("tests/lua/support/scratch.lua") -- scratch dumps
 
 FAILS, PASSES = 0, 0
 local function check(cond, what)
@@ -136,7 +135,7 @@ STR = {}
 for id, text in readfile(ROOT .. "configs/text/eng/st_coop_allies.xml"):gmatch('<string id="([%w_]+)">%s*<text>(.-)</text>') do STR[id] = text end
 
 -- ---------------------------------------------------------------- the machine
-local SCRIPTS = { "coop_mode", "coop_hostplay_mode", "coop_srv_mode", "coop_trust", "coop_hud_layout", "coop_allies", "coop_allies_map", "coop_core_hud", "modxml_coop_allies" }
+local SCRIPTS = { "coop_util", "coop_hud_kit", "coop_hud_hold", "coop_mode", "coop_hostplay_mode", "coop_srv_mode", "coop_trust", "coop_hud_layout", "coop_allies", "coop_allies_map", "coop_core_hud", "modxml_coop_allies" }
 
 local function machine(self_peer)
 	local M = { log = {}, cb = {}, spots = {}, spot_ops = {}, hud = {}, players = {}, objects = {}, sent = {},
@@ -437,7 +436,7 @@ end
 local SEGW = 38 * 768 / 1080 * 1024 * 1080 / (768 * 1920) -- Visor: 38 px at 1080
 check(P.rows[1].name.e.text == "p0" and P.rows[2].name.e.text == "p1" and P.rows[3].name.e.text == "p3", "panel sorted by peer: host first (on top)")
 check(P.rows[1].host.e.visible and not P.rows[2].host.e.visible, "host star only on the host")
-check(P.rows[2].strip.e.tcolor % 16777216 == A.argb(1) % 16777216, "colour bar in the player's colour")
+check(P.rows[2].bracket.e.tcolor % 16777216 == A.argb(1) % 16777216, "colour bar in the player's colour")
 check(math.abs(seg_fill(P.rows[2]) - SEGW * 4 * 0.7) < 0.05 and P.rows[2].dist.e.text == "10 <st_coop_allies_m>", "health in segments + distance")
 -- F3 T13: for 10 s after his checkpoint changed (coop_checkpoints.last_update) a tent instead of nothing
 do
@@ -463,9 +462,9 @@ run(M, 300)
 local a1 = M.statics["mcoop_ally_down501"] and M.statics["mcoop_ally_down501"].tcolor
 check(a0 and a1 and a0 ~= a1 and math.floor(a1 / 16777216) >= 139, "minimap overlay pulses (alpha changes every frame)")
 check(M.statics["lcoop_ally_down501"] ~= nil, "PDA overlay pulses too")
-local b0, s0 = P.rows[2].timer.e.color, P.rows[2].strip.e.tcolor
+local b0, s0 = P.rows[2].timer.e.color, P.rows[2].bracket.e.tcolor
 run(M, 200)
-check(b0 ~= P.rows[2].timer.e.color and s0 == P.rows[2].strip.e.tcolor,
+check(b0 ~= P.rows[2].timer.e.color and s0 == P.rows[2].bracket.e.tcolor,
 	"a dying row: its timer pulses at 1 Hz, the bracket stays (full brightness)")
 -- countdown runs from the report time
 local before = P.rows[2].timer.e.text

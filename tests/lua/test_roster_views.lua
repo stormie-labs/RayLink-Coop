@@ -36,6 +36,7 @@ level.object_by_id = function() return nil end -- no avatars here: /players show
 local function set_roster(mode, roster, operator)
 	MODE, ROSTER, OPERATOR = mode, roster, operator
 	OPS = {}
+	NOW = NOW + 1 -- the roster changes between frames (coop_util.players keeps one list a frame)
 end
 
 local modes = dofile("tests/lua/support/modes.lua")
@@ -201,9 +202,38 @@ section("the HUD's group panel: the star", function()
 	coop.players = function()
 		return { { id = 1, nick = "op", is_self = false, is_host = true }, { id = 2, nick = "me", is_self = true, is_host = false } }
 	end
+	NOW = NOW + 1 -- a new frame: a new list
 	list = hud.views(NOW)
 	check(#list == 1 and list[1].peer == 1 and list[1].host == true, "the operator's row has the star")
 	coop.players = players0
+end)
+
+local function check_unavailable_position(avatar_id)
+	local hud = load_script_file("coop_core_hud")
+	local actor, object_by_id = db.actor, level.object_by_id
+	db.actor = nil
+	level.object_by_id = function(id)
+		if id == avatar_id then
+			return { position = function() error("avatar position unavailable") end }
+		end
+	end
+	local ok, list, by_avatar = pcall(hud.views, NOW)
+	db.actor, level.object_by_id = actor, object_by_id
+	check(ok, "an unavailable avatar position does not stop the roster: " .. tostring(ok and "" or list))
+	if not ok then return end
+	local view = list[1]
+	check(#list == 1 and view.avatar == avatar_id and by_avatar[avatar_id] == view
+		and view.pos == nil and view.dist == nil, "the avatar row remains without a position or distance")
+end
+
+section("Co-op roster with no local actor and an unavailable proxy position", function()
+	set_roster("host", nil, false)
+	check_unavailable_position(500)
+end)
+
+section("Server client roster with no local actor and an unavailable replica position", function()
+	set_roster("client", "world", false)
+	check_unavailable_position(502)
 end)
 
 print(string.format("%d passed, %d failed", PASSES, FAILS))

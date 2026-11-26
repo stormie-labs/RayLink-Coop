@@ -24,10 +24,16 @@
 		h:due(tg, ms) -> bool          true once, on the frame the hold has lasted `ms`: it fires
 		h:fraction(tg, ms) -> 0..1     how far the running hold is (0 when none or fired)
 		h:reset()                      the board is gone: no hold, the key up
+		is_use_key(dik) -> bool        the key is bound to "use" (the board's key)
 --]]
 
-local setmetatable = setmetatable
+local setmetatable, pcall = setmetatable, pcall
 local math_max, math_min = math.max, math.min
+
+function is_use_key(dik)
+	local ok, bind = pcall(dik_to_bind, dik)
+	return ok and bind == key_bindings.kUSE
+end
 
 local Hold = {}
 Hold.__index = Hold

@@ -21,8 +21,8 @@
 		menu.new_character   player -> host   { faction, buy = "sec,sec,..." } bought items only (the host player: from node 0)
 		menu.char_result     host -> player   { ok, faction, money, items } | { ok = false, reason }
 
-	Protocol 9 (owner, 2026-10-23, docs/GAME_SETTINGS.md section 8: "creating the faction is part of creating the world;
-	other clients must not choose it"): the faction is the world's, chosen by the host when it made the game. The window
+	The faction (docs/GAME_SETTINGS.md section 8: creating the faction is part of creating the world, other clients do not
+	choose it): the faction is the world's, chosen by the host when it made the game. The window
 	shows it (the offer names it; the faction button is off, a caption says whose it is) and lists the kit of that
 	faction only. The host never reads the faction a client sends or the engine passes: world_faction() (coop_game_settings
 	-> coop.game.world_faction() -> the community of the host's actor -> stalker) is the faction of the plan, of the kit
@@ -31,10 +31,9 @@
 	coop/coop_session/join_spawn (join_spawn()): "host" (default) gives no point and the engine puts the new player next to
 	the host, "faction_start" the start of the world's faction (host_start).
 
-	Protocol 8 (owner, live test 2026-10-23: "first choose the faction, then appear where needed, in my faction"):
-	a player whose key has no character chooses BEFORE the world, in the main menu, and the events above are left for
-	characters still marked new in an older save. The engine (coop_join.cpp, xrCoop/coop_newchar.h) carries the offer
-	and the choice (Msg::CharOffer / Msg::CharChoice) and calls, on the main thread:
+	A player whose key has no character chooses a faction and then its starting place in the main menu before joining
+	the world. The events above handle characters still marked new in a save. The engine (coop_join.cpp,
+	xrCoop/coop_newchar.h) carries Msg::CharOffer and Msg::CharChoice and calls on the main thread:
 		host:   join_terms() -> eco, points, story                the terms of the offer
 		        host_plan_character(peer, faction, buy) -> { ok, faction, money, where, x, y, z, lvid, gvid } |
 		                                                   { ok = false, reason }
@@ -94,7 +93,6 @@ end
 local function is_player() return role("is_player", "is_client") end
 
 local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
-local string_format = string.format
 
 local PROXY_SECTION = "coop_player_avatar"
 local NEW_VAR = "coop_new_char"
@@ -121,31 +119,11 @@ local function known_faction(f)
 	return nil
 end
 
--- A script module (coop_game_settings may not be there: an older game), loaded by the engine's _G on first use.
-local function module_of(name)
-	local m = rawget(_G, name)
-	if m == nil then
-		local ok, r = pcall(function() return _G[name] end)
-		m = ok and r or nil
-	end
-	return type(m) == "table" and m or nil
-end
+local log = coop_util.logger("[coop-char]")
 
-local function log(fmt, ...)
-	local ok, line = pcall(string_format, fmt, ...)
-	line = "[coop-char] " .. (ok and line or tostring(fmt))
-	local pf = rawget(_G, "printf")
-	if pf then pcall(pf, "%s", line) end
-end
-
+-- the menus' translation (coop_menu.tr), asked late: coop_menu loads on its first use
 local function tr(id, ...)
-	local cm = rawget(_G, "coop_menu")
-	if cm == nil then
-		local ok, m = pcall(function() return coop_menu end) -- _G.__index loads the script
-		cm = ok and m or nil
-	end
-	if type(cm) == "table" and cm.tr then return cm.tr(id, ...) end
-	return game.translate_string(id)
+	return coop_menu.tr(id, ...)
 end
 
 local function encode(t) return coop_main.encode(t) end
@@ -264,7 +242,7 @@ end
 -- memory (coop.game.world_faction, "" = none) -> the community of the host's actor, without actor_ -> stalker, as the
 -- engine's newchar::character_faction. A name that has no kit (zombied, junk) is passed over.
 function world_faction()
-	local gs = module_of("coop_game_settings")
+	local gs = coop_util.module("coop_game_settings")
 	if gs and type(gs.world_faction) == "function" then
 		local ok, f = pcall(gs.world_faction)
 		f = ok and known_faction(f)
@@ -293,13 +271,13 @@ end
 local JOIN_SPAWN_PATH = "coop/coop_session/join_spawn"
 function join_spawn()
 	local v
-	local gs = module_of("coop_game_settings")
+	local gs = coop_util.module("coop_game_settings")
 	if gs and type(gs.value) == "function" then
 		local ok, r = pcall(gs.value, "o", JOIN_SPAWN_PATH)
 		if ok then v = r end
 	end
 	if v == nil then
-		local am = module_of("axr_main")
+		local am = coop_util.module("axr_main")
 		local cfg = am and am.config
 		if cfg then
 			local ok, r = pcall(function() return cfg:r_value("options", JOIN_SPAWN_PATH, 0) end)
@@ -463,10 +441,8 @@ local function se_stalker_on_spawn(se)
 end
 
 local function nick_of(peer)
-	for _, p in ipairs(api.players()) do
-		if p.id == peer then return tostring(p.nick) end
-	end
-	return "?"
+	local p = coop_util.player_row(peer)
+	return p and tostring(p.nick) or "?"
 end
 
 -- Other groups' start kit of a new character (W5: Mags Redux magazines, coop_mods_core listeners). Needs the
@@ -647,7 +623,7 @@ end
 
 -- Plan 2026-11-12 stage 5: the creator of a world staged from coop_new_world.ltx (coop_game_settings.creator, the record's `creator`), nil.
 local function creator_record()
-	local gs = module_of("coop_game_settings")
+	local gs = coop_util.module("coop_game_settings")
 	if not (gs and type(gs.creator) == "function") then return nil end
 	local ok, c = pcall(gs.creator)
 	return ok and type(c) == "table" and c or nil
