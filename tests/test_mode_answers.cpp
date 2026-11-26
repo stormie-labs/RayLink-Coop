@@ -525,7 +525,9 @@ TEST(mode_frames_are_each_modes_own)
 	const std::string src = engine_src();
 	const std::string sync = code_of(read_text(src + "/xrGame/coop/coop_sync.cpp"));
 	REQUIRE(!sync.empty());
-	const std::string frame = body_of(sync, R"(void\s+frame)");
+	const size_t table = sync.find("kFrame[] = {"); // the frame pass of the module table
+	REQUIRE(table != std::string::npos);
+	const std::string frame = sync.substr(table, sync.find("};", table) - table);
 	CHECK(frame.find("mode().frame()") != std::string::npos);
 	CHECK(frame.find("levels::frame") == std::string::npos);
 	const std::string world = code_of(read_text(src + "/xrGame/coop/coop_worldstate.cpp"));

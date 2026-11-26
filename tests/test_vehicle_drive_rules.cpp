@@ -18,13 +18,33 @@ namespace v = coop::vehicles;
 
 namespace
 {
+const char* drive_key_name(v::DriveKey k)
+{
+	switch (k)
+	{
+	case v::DriveKey::Forward: return "forward";
+	case v::DriveKey::Back: return "back";
+	case v::DriveKey::Left: return "left";
+	case v::DriveKey::Right: return "right";
+	case v::DriveKey::Brake: return "brake";
+	case v::DriveKey::TransUp: return "trans_up";
+	case v::DriveKey::TransDown: return "trans_down";
+	case v::DriveKey::Fire: return "fire";
+	case v::DriveKey::WeaponSwitch: return "weapon_switch";
+	case v::DriveKey::Engine: return "engine";
+	case v::DriveKey::Lights: return "lights";
+	case v::DriveKey::Aim: return "aim";
+	}
+	return "?";
+}
+
 // "release forward, press back, aim": what plan_drive calls, readable in a failed CHECK_EQ.
 std::string calls_text(const std::vector<v::DriveCall>& calls)
 {
 	std::string out;
 	for (const v::DriveCall& c : calls)
 		out += (out.empty() ? "" : ", ") + std::string(c.key == v::DriveKey::Aim ? "" : (c.press ? "press " : "release ")) +
-		    v::drive_key_name(c.key);
+		    drive_key_name(c.key);
 	return out;
 }
 
@@ -458,9 +478,9 @@ std::string drive_body(const std::string& src, const std::string& head)
 // sync::reset() now tells the decider (vehicles::session_over): the cars parked as detach_Actor parks them, the table forgotten.
 TEST(vehicle_drive_session_end_forgets_the_seats)
 {
-	const std::string reset = drive_body(drive_project_file("engine/src/xrGame/coop/coop_sync.cpp"), "void reset()");
+	const std::string reset = drive_body(drive_project_file("engine/src/xrGame/coop/coop_sync.cpp"), "const Step kReset[]");
 	CHECK(!reset.empty());
-	CHECK(reset.find("vehicles::session_over();") != std::string::npos);
+	CHECK(reset.find("&vehicles::session_over,") != std::string::npos);
 
 	const std::string header = drive_project_file("engine/src/xrGame/coop/coop_vehicles.h");
 	CHECK(header.find("void session_over();") != std::string::npos);
@@ -480,7 +500,7 @@ TEST(vehicle_drive_session_end_forgets_the_seats)
 
 TEST(vehicle_drive_group_transition_releases_the_seats)
 {
-	const std::string join = drive_project_file("engine/src/xrGame/coop/coop_join.cpp");
+	const std::string join = drive_project_file("engine/src/xrGame/coop/coop_join_transition_load.cpp");
 	const std::string prepare = drive_body(join, "void host_prepare(const xr_vector<Mover>& movers, u16 level, const FILETIME& before, u64 save_ms)");
 	CHECK(!prepare.empty());
 	const size_t rel = prepare.find("vehicles::release_all_seats(vehicles::Release::LeftLevel);");

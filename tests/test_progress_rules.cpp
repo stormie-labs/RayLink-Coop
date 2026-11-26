@@ -871,17 +871,17 @@ TEST(progress_rules_engine_forgets_a_session)
 	const std::string reset = progress_body(src, "void reset()");
 	REQUIRE(!reset.empty());
 	CHECK(reset.find("g = State();") != std::string::npos);
-	const std::string sync = progress_body(progress_project_file("engine/src/xrGame/coop/coop_sync.cpp"), "void reset()");
+	const std::string sync = progress_body(progress_project_file("engine/src/xrGame/coop/coop_sync.cpp"), "const Step kReset[]");
 	REQUIRE(!sync.empty());
-	CHECK(sync.find("progress::reset();") != std::string::npos);
+	CHECK(sync.find("&progress::reset,") != std::string::npos);
 }
 
 // Note 4 of F5-REV-1: the keeper adds a fight's reputation to the stored report of a player who may have told any number ("log"): the
 // sum is made in 64 bits and kept in the int range, no signed overflow.
 TEST(progress_rules_engine_added_reputation_stays_in_range)
 {
-	const std::string story = progress_project_file("engine/src/xrGame/coop/coop_story.cpp");
-	// the definition, not the forward declaration above it in the same file
+	const std::string story = progress_project_file("engine/src/xrGame/coop/coop_story_progress.cpp");
+	// the definition, not a declaration
 	const std::string add = progress_body(story, std::string("void host_add_reported_reputation(PeerId peer, int delta)") + "\n{");
 	REQUIRE(!add.empty());
 	CHECK(add.find("it->second.reputation += delta") == std::string::npos);

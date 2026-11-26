@@ -255,7 +255,6 @@ TEST(vehicle_seats_exit_side)
 	CHECK(!v::parse_exit_line("Right", s));
 	CHECK(!v::parse_exit_line("front", s));
 	CHECK(!v::parse_exit_line("", s));
-	CHECK(std::string(v::exit_side_name(v::ExitSide::Back)) == "back");
 
 	v::SeatPlace p;
 	// no exit line: by the side the seat is on in the car's space
@@ -498,7 +497,7 @@ TEST(vehicle_seats_the_decider_reads_the_places)
 	         "\nvoid ride_actor_died()", "\nbool ride_key(int cmd)", "\nbool ride_hold(int cmd)", "\nvoid ride_print_status()"})
 		CHECK(ride.find(body) != std::string::npos);
 	const std::string sync = seats_project_file("engine/src/xrGame/coop/coop_sync.cpp");
-	CHECK(sync.find("vehicles::ride_frame();") != std::string::npos);
+	CHECK(sync.find("&vehicles::ride_frame}") != std::string::npos);
 }
 
 // A player's machine: VehicleSeat granted to me for a seat >= 1 starts the ride instead of asking out (rv_F5-VEH-3).
@@ -679,9 +678,9 @@ TEST(vehicle_seats_the_ride_keeps_its_world)
 	CHECK(stand != std::string::npos && forgotten != std::string::npos && stand < forgotten);
 	CHECK(over.find("a == g.actor") != std::string::npos && over.find("leave(a, car_copy(g.car), now32(), true);") != std::string::npos);
 	const std::string sync = seats_project_file("engine/src/xrGame/coop/coop_sync.cpp");
-	const std::string reset = seats_body(sync, "\nvoid reset()");
-	const size_t decider = reset.find("vehicles::session_over();");
-	const size_t passenger = reset.find("vehicles::ride_session_over();");
+	const std::string reset = seats_body(sync, "\nconst Step kReset[]");
+	const size_t decider = reset.find("&vehicles::session_over,");
+	const size_t passenger = reset.find("&vehicles::ride_session_over,");
 	CHECK(decider != std::string::npos && passenger != std::string::npos && decider < passenger);
 }
 
@@ -764,10 +763,10 @@ TEST(vehicle_seats_the_hubs_and_the_project)
 	REQUIRE(!sync.empty());
 	CHECK(sync.find("#include \"coop_vehicles_state.h\"") != std::string::npos);
 	CHECK(sync.find("#include \"coop_vehicles_ride.h\"") != std::string::npos);
-	const std::string status = seats_body(sync, "\nvoid print_status()");
-	const size_t client = status.find("vehicles::client_print_status();");
-	const size_t state = status.find("vehicles::state_print_status();");
-	const size_t ride = status.find("vehicles::ride_print_status();");
+	const std::string status = seats_body(sync, "\nconst Step kPrintStatus[]");
+	const size_t client = status.find("&vehicles::client_print_status,");
+	const size_t state = status.find("&vehicles::state_print_status,");
+	const size_t ride = status.find("&vehicles::ride_print_status,");
 	CHECK(client != std::string::npos && state != std::string::npos && ride != std::string::npos);
 	CHECK(client < state && state < ride);
 

@@ -297,7 +297,9 @@ TEST(srv_o6_ready_waits_for_the_replay)
 	CHECK(o6_has(gate, "if (!me.ready_said && mgr().is_live_client() && world_up() && !Device.dwPrecacheFrame && levels::xfer_replay_heard())"));
 	// the order of a frame the gate counts on: the script delivery before the mode's frame, the transfers before the map server's step
 	const std::string sync = o6_file("xrGame/coop/coop_sync.cpp");
-	CHECK(o6_before(o6_body(sync, R"(void\s+frame)"), "script::frame();", "mode().frame();"));
+	const size_t table = sync.find("kFrame[] = {"); // the frame pass of the module table
+	REQUIRE(table != std::string::npos);
+	CHECK(o6_before(sync.substr(table, sync.find("};", table) - table), "&script::frame}", "mode().frame();"));
 	const std::string script = o6_file("xrGame/coop/coop_script.cpp");
 	const std::string sframe = o6_body(script, R"(void\s+frame)");
 	CHECK(o6_before(sframe, "if (!lua_ready())", "deliver_engine();"));
@@ -393,7 +395,9 @@ TEST(srv_o6_info_up_coop_has_no_level_side)
 	// Coop: both co-op modes answer no level side, so the Core's hook does nothing there; their files never journal an info
 	const std::string hostplay = o6_file("xrGame/coop/hostplay/coop_hostplay_mode.cpp");
 	REQUIRE(!hostplay.empty());
-	CHECK_EQ(o6_count(hostplay, "LevelSide* level() override { return nullptr; }"), size_t(2));
+	// both co-op modes answer it in their common base (CoopModeBase)
+	CHECK_EQ(o6_count(hostplay, "LevelSide* level() override { return nullptr; }"), size_t(1));
+	CHECK_EQ(o6_count(hostplay, "final : public CoopModeBase"), size_t(2));
 	CHECK(!o6_has(hostplay, "level_info_up"));
 	for (const auto& f : std::filesystem::directory_iterator(o6_src() + "/xrGame/coop/hostplay"))
 		if (f.is_regular_file())

@@ -1545,9 +1545,9 @@ TEST(srv_journal_departure_flood_glue)
 	CHECK(before(manager_frame, "m_world.update(now_ms())", "m_session.update(now_ms())"));
 	CHECK(before(manager_frame, "m_session.update(now_ms())", "sync::frame()"));
 	const std::string sync = engine_code("xrGame/coop/coop_sync.cpp");
-	const auto sync_frame = body_of(sync, "void", "frame");
-	REQUIRE(!sync_frame.empty());
-	CHECK(sync_frame.find("mode().frame()") != std::string_view::npos);
+	const size_t table = sync.find("kFrame[] = {"); // the frame pass of the module table
+	REQUIRE(table != std::string::npos);
+	CHECK(sync.substr(table, sync.find("};", table) - table).find("mode().frame()") != std::string::npos);
 
 	const std::string alife = engine_code("xrGame/coop/srv/coop_levels_alife.cpp");
 	const auto fact = body_of(alife, "ApplyVerdict", "apply_entry");

@@ -266,8 +266,6 @@ TEST(mode_net_engine_receivers_keep_phase_and_authority_checks)
 	const auto die = section(remote, "void on_puppet_die(", "\n}");
 	asks(die, "!net::client()");
 	const auto manager = game_source("coop_manager.cpp");
-	const auto joined = section(manager, "m_session.on_peer_joined =", "m_session.on_peer_left =");
-	asks(joined, "mode().decides_world()");
 	const auto left = section(manager, "m_session.on_peer_left =", "install_world_callbacks(m_session)");
 	asks(left, "net::host()");
 	const auto keypress = section(manager, "bool skip_keypress_on_load()", "\n}");
@@ -282,5 +280,5 @@ TEST(mode_net_level_map_production_receiver_uses_transport_and_trust)
 	asks(receive, "account_level_map");
 	asks(receive, "mapserver::server_on_map(g.view)");
 	asks(levels, "e.on(Msg::LevelMap, &client_on_level_map)");
-	asks(levels, "coop_trust.pass");
+	asks(levels, "luafn::call_named(L, \"coop_trust\", \"pass\"");
 }

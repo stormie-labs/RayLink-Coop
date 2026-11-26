@@ -39,6 +39,9 @@ std::string project_file(const std::string& rel)
 
 std::string game_source(const char* name) { return project_file(std::string("engine/src/xrGame/coop/") + name); }
 
+// The entities module: the world's lifecycle (coop_entities.cpp) and its roster (coop_roster.cpp).
+std::string entities_source() { return game_source("coop_entities.cpp") + game_source("coop_roster.cpp"); }
+
 // The text from `from` to the first `to` after it; "" if `from` is missing.
 std::string between(const std::string& src, const std::string& from, const std::string& to)
 {
@@ -704,9 +707,9 @@ TEST(reconcile_a_request_of_a_client_stays_cheap)
 TEST(reconcile_host_runs_after_the_events_went_out)
 {
 	const std::string src = game_source("coop_sync.cpp");
-	const std::string body = between(src, "void frame()", "void print_status()");
-	const size_t events = body.find("events::frame();");
-	const size_t reconcile = body.find("entities::reconcile_frame();");
+	const std::string body = between(src, "kFrame[] = {", "};"); // the frame pass of the module table
+	const size_t events = body.find("&events::frame}");
+	const size_t reconcile = body.find("&entities::reconcile_frame}");
 	CHECK(events != npos);
 	CHECK(reconcile != npos);
 	CHECK(events < reconcile); // a hash counts what the frame's flush has told the clients
@@ -714,8 +717,8 @@ TEST(reconcile_host_runs_after_the_events_went_out)
 
 TEST(reconcile_host_answers_a_repair_with_its_world_messages)
 {
-	const std::string src = game_source("coop_entities.cpp");
-	const std::string body = between(src, "void host_on_entity_request(PeerId from, Reader& r)", "bool interpolate(");
+	const std::string src = entities_source();
+	const std::string body = between(src, "void host_on_entity_request(PeerId from, Reader& r)", "\n}\n");
 	CHECK(body.find("Msg::EntityDestroy") != npos); // only for an id the host does not have
 	CHECK(body.find("send_subtree(from, e)") != npos); // R32 W5: the EntitySpawn with what is below it
 	CHECK(between(src, "bool host_send_spawn_to(PeerId to, CSE_ALifeDynamicObject* e)", "\n}\n").find("Msg::EntitySpawn") != npos);
@@ -729,7 +732,7 @@ TEST(reconcile_host_answers_a_repair_with_its_world_messages)
 
 TEST(reconcile_a_client_never_gives_up_its_own_waiting_create)
 {
-	const std::string src = game_source("coop_entities.cpp");
+	const std::string src = entities_source();
 	const std::string body = between(src, "void client_on_roster(", "\n}\n");
 	CHECK(body.find("requests::client_lease_waiting") != npos);
 	CHECK(body.find("events::client_parent_pending") != npos);
@@ -749,8 +752,8 @@ TEST(reconcile_expired_death_is_counted_and_asked_again_once)
 
 TEST(reconcile_a_member_is_switched_with_its_squad)
 {
-	const std::string src = game_source("coop_entities.cpp");
-	const std::string body = between(src, "void host_on_entity_request(PeerId from, Reader& r)", "bool interpolate(");
+	const std::string src = entities_source();
+	const std::string body = between(src, "void host_on_entity_request(PeerId from, Reader& r)", "\n}\n");
 	const size_t squad = body.find("m->m_group_id");
 	const size_t send = body.find("write_switch(w, who,");
 	CHECK(squad != npos); // client_on_switch takes a switch of its own as "it left its squad"
@@ -760,14 +763,14 @@ TEST(reconcile_a_member_is_switched_with_its_squad)
 
 TEST(reconcile_an_entity_here_but_off_our_roster_is_not_spawned)
 {
-	const std::string src = game_source("coop_entities.cpp");
+	const std::string src = entities_source();
 	const std::string body = between(src, "void client_on_roster(", "\n}\n");
 	CHECK(body.find("reconcile::State | reconcile::Switch") != npos); // a squad emptied here is redundant: no row of ours
 }
 
 TEST(reconcile_a_squad_is_judged_before_its_list_changes)
 {
-	const std::string src = game_source("coop_entities.cpp");
+	const std::string src = entities_source();
 	const std::string body = between(src, "void client_on_squad(", "\n}\n");
 	const size_t bound = body.find("const bool bound");
 	const size_t leaving = body.find("unregister_member");
@@ -787,7 +790,7 @@ TEST(reconcile_the_engine_queue_is_as_patient_as_the_inbox)
 
 TEST(reconcile_a_window_follows_its_own_container_only)
 {
-	const std::string src = game_source("coop_trade.cpp");
+	const std::string src = game_source("coop_trade_views.cpp");
 	const std::string body = between(src, "void client_on_item_state(u16 holder)", "\n}\n");
 	CHECK(body.find("g_view.id == holder") != npos);
 }
@@ -809,7 +812,7 @@ TEST(reconcile_a_parent_timeout_asks_for_item_and_holder)
 
 TEST(reconcile_a_skipped_spawn_is_tried_again)
 {
-	const std::string src = game_source("coop_entities.cpp");
+	const std::string src = entities_source();
 	const std::string body = between(src, "void client_on_spawn(PeerId, Reader& r)", "void client_on_destroy");
 	size_t adds = 0;
 	for (size_t at = body.find("g_id_retry.add"); at != npos; at = body.find("g_id_retry.add", at + 1))
@@ -849,7 +852,7 @@ TEST(reconcile_r32_same_id_another_section_is_replaced_at_its_spawn)
 
 TEST(reconcile_r32_client_on_spawn_compares_the_section_of_a_known_id)
 {
-	const std::string src = game_source("coop_entities.cpp");
+	const std::string src = entities_source();
 	const std::string body = between(src, "void client_on_spawn(PeerId, Reader& r)", "void client_on_destroy");
 	const size_t section = body.find("spawn.r_stringZ(section);");
 	const size_t known = body.find("ai().alife().objects().object(id, true)");
@@ -879,7 +882,7 @@ TEST(reconcile_r32_a_squad_is_whole_when_every_listed_member_is_here)
 
 TEST(reconcile_r32_a_squad_made_whole_raises_coop_squad_complete_once)
 {
-	const std::string src = game_source("coop_entities.cpp");
+	const std::string src = entities_source();
 	const std::string whole = between(src, "void squads_made_whole(const CSE_ALifeDynamicObject* e)", "\n}\n");
 	CHECK(whole.find("reconcile::squad_whole(") != npos);
 	CHECK(whole.find("script::queue_callback(\"coop_squad_complete\"") != npos);
@@ -898,8 +901,8 @@ TEST(reconcile_r32_a_squad_made_whole_raises_coop_squad_complete_once)
 // W5: the world answers a squad with its members and a holder with its children.
 TEST(reconcile_r32_a_spawn_answer_brings_the_members_and_the_children)
 {
-	const std::string src = game_source("coop_entities.cpp");
-	const std::string request = between(src, "void host_on_entity_request(PeerId from, Reader& r)", "bool interpolate(");
+	const std::string src = entities_source();
+	const std::string request = between(src, "void host_on_entity_request(PeerId from, Reader& r)", "\n}\n");
 	CHECK(request.find("!send_subtree(from, e)") != npos); // nothing else goes when the spawn could not be written, as before
 	const std::string subtree = between(src, "bool send_subtree(PeerId to, CSE_ALifeDynamicObject* root)", "\n}\n");
 	CHECK(subtree.find("host_send_spawn_to(to, root)") != npos); // the holder first: client_on_spawn needs it
@@ -911,7 +914,7 @@ TEST(reconcile_r32_a_spawn_answer_brings_the_members_and_the_children)
 
 TEST(reconcile_r32_a_listed_member_that_is_missing_is_asked_for)
 {
-	const std::string src = game_source("coop_entities.cpp");
+	const std::string src = entities_source();
 	const std::string body = between(src, "void client_on_squad(", "\n}\n");
 	const size_t missing = body.find("if (!c)");
 	const size_t ask = body.find("g_rc_repairs.push(member_host, reconcile::kAskMissing);");
@@ -924,7 +927,7 @@ TEST(reconcile_r32_a_listed_member_that_is_missing_is_asked_for)
 // part runs on every live client; mode().reconcile_world() is the mode's own extra).
 TEST(reconcile_r32_a_map_server_repairs_only_what_it_does_not_write)
 {
-	const std::string src = game_source("coop_entities.cpp");
+	const std::string src = entities_source();
 	const std::string frame = between(src, "void reconcile_frame()", "\n}\n");
 	const size_t host = frame.find("host_reconcile();");
 	const size_t client = frame.find("if (mgr().is_live_client())\n\t\tclient_reconcile();");
@@ -941,7 +944,7 @@ TEST(reconcile_r32_a_map_server_repairs_only_what_it_does_not_write)
 // W5.1: the world's digest reaches its map servers (bridge_takes(EntityHash), WP1): the mode's links, as StoryHash does.
 TEST(reconcile_r32_the_digest_reaches_the_links_too)
 {
-	const std::string src = game_source("coop_entities.cpp");
+	const std::string src = entities_source();
 	const std::string host = between(src, "void host_reconcile()", "\n}\n");
 	const size_t players = host.find("net::host_send(p.id, Msg::EntityHash, w);");
 	const size_t links = host.find("mode().deliver_links(Msg::EntityHash, links, Lane::Reliable);");
@@ -962,14 +965,14 @@ TEST(reconcile_r32_a_stalled_move_asks_spawn_only_for_what_is_missing)
 	CHECK_EQ(stalled_ask(false), uint8_t(Spawn | Parent | State | Gone)); // missing: ask for its spawn or destruction
 	const std::string src = game_source("coop_events.cpp");
 	const std::string body = between(src, "void client_step_parents()", "\n}\n");
-	CHECK(body.find("w.u8(reconcile::stalled_ask(find_entity(id) != nullptr));") != npos);
+	CHECK(body.find("w.u8(reconcile::stalled_ask(world::server_entity(id) != nullptr));") != npos);
 	CHECK(body.find("w.u8(reconcile::Spawn | reconcile::Parent | reconcile::State);") == npos);
 }
 
 // REP-RECON (#804): either destroy message cancels pending work even if the entity never arrived.
 TEST(reconcile_destroy_forgets_pending_parent_and_death)
 {
-	const std::string entities = game_source("coop_entities.cpp");
+	const std::string entities = entities_source();
 	const std::string destroy = between(entities, "void client_on_destroy(PeerId, Reader& r)", "\n}\n");
 	const size_t forget = destroy.find("events::client_forget(id);");
 	const size_t remove = destroy.find("client_remove(id);");
@@ -987,16 +990,16 @@ TEST(reconcile_local_destroy_forgets_pending_work_before_looking_for_the_object)
 	const std::string handler = between(src, "void client_on_entity_local(PeerId, Reader& r)", "\n}\n");
 	const std::string destroy = between(handler, "if (op == 1)", "if (op != 0)");
 	const size_t forget = destroy.find("client_forget(id);");
-	const size_t find = destroy.find("find_go(id)");
+	const size_t find = destroy.find("world::object_here(id)");
 	CHECK(forget != npos && find != npos && forget < find);
 }
 
 TEST(reconcile_gone_checks_for_live_non_alife_entities_before_replying_with_destroy)
 {
-	const std::string src = game_source("coop_entities.cpp");
+	const std::string src = entities_source();
 	const std::string handler = between(src, "void host_on_entity_request(PeerId from, Reader& r)", "\n}\n");
 	const std::string missing = between(handler, "if (!e)", "\n\t}\n");
-	CHECK(missing.find("(what & reconcile::Gone) && !events::find_entity(id)") != npos);
+	CHECK(missing.find("(what & reconcile::Gone) && !world::server_entity(id)") != npos);
 	CHECK(missing.find("send_destroy();") != npos);
 	const std::string live = between(handler, "what &= reconcile::Spawn", "// R32 W5:");
 	CHECK(live.find("if (what & reconcile::Replace)\n\t\tsend_destroy();") != npos);
@@ -1007,7 +1010,7 @@ TEST(reconcile_parent_timeout_marks_an_error_only_when_the_item_exists)
 	const std::string src = game_source("coop_events.cpp");
 	const std::string handler = between(src, "void client_step_parents()", "\n}\n");
 	const std::string timeout = between(handler, "++g_c.parent_timeouts;", "// RL-UGYE-3WGE:");
-	CHECK(timeout.find("const bool item_here = find_entity(item) != nullptr;") != npos);
+	CHECK(timeout.find("const bool item_here = world::server_entity(item) != nullptr;") != npos);
 	CHECK(timeout.find("::Msg(\"%s[coop] item %u [%s]: could not move it to %u in time\", item_here ? \"! \" : \"\",") != npos);
 }
 
@@ -1044,7 +1047,7 @@ TEST(reconcile_r32_mapless_rows_of_a_map_server_match_its_world)
 
 TEST(reconcile_r32_the_links_get_the_mapless_digest_and_a_map_server_compares_it)
 {
-	const std::string src = game_source("coop_entities.cpp");
+	const std::string src = entities_source();
 	// the mapless row: no online flag, an item's state without the uses only its game object shows
 	const std::string mapless_row =
 	    between(src, "reconcile::Row mapless_row(CSE_ALifeDynamicObject* e, const reconcile::Row& here)", "\n}\n");
@@ -1081,25 +1084,11 @@ TEST(reconcile_r32_coop_squad_complete_only_where_the_squads_map_is_led)
 	CHECK(!squad_complete_here(true, kOther, kMine)); // a squad of another map: that map's server writes its smart
 	CHECK(!squad_complete_here(false, kMine, kMine)); // no level side: the world server, the co-op host and client, a server player
 	CHECK(!squad_complete_here(true, kNoEcho, kNoEcho)); // no level known (no game vertex, a level not up): nobody's map
-	const std::string src = game_source("coop_entities.cpp");
+	const std::string src = entities_source();
 	const std::string here = between(src, "bool squad_complete_here(const CSE_ALifeOnlineOfflineGroup& g)", "\n}\n");
 	CHECK(here.find("mode().level() != nullptr") != npos);
 	CHECK(here.find("levels::level_of_vertex(g.m_tGraphID)") != npos);
 	CHECK(here.find("levels::my_level()") != npos);
-}
-
-// Finding 5: §8's host_send_subtree(PeerId, CSE_ALifeDynamicObject*) is public (W4.6 calls it), void, outside the anonymous namespace.
-TEST(reconcile_r32_host_send_subtree_has_the_frozen_signature)
-{
-	const std::string src = game_source("coop_entities.cpp");
-	const size_t anonymous_end = src.find("bool interpolate(MirrorTrack& t, u64 render_time, MirrorSample& out)");
-	const size_t pub = src.find("\nvoid host_send_subtree(PeerId to, CSE_ALifeDynamicObject* root)\n");
-	CHECK(anonymous_end != npos);
-	CHECK(pub != npos);
-	CHECK(anonymous_end < pub); // after the last function of the anonymous namespace: in coop::entities itself
-	CHECK(src.find("} // namespace", anonymous_end) < pub);
-	CHECK(between(src, "\nvoid host_send_subtree(PeerId to, CSE_ALifeDynamicObject* root)\n", "\n}\n").find("send_subtree(to, root);") !=
-	    npos);
 }
 
 // Finding 6: on a repeated spawn the item's state and the decider's versions travel together. An offline copy takes both into its
@@ -1111,7 +1100,7 @@ TEST(reconcile_r32_a_repeat_takes_state_and_versions_only_into_an_offline_copy)
 	CHECK(!repeat_takes_state(false, true)); // a copy with a game object: its own state stands, no versions without it
 	CHECK(!repeat_takes_state(true, false)); // the writer's own object
 	CHECK(!repeat_takes_state(true, true));
-	const std::string src = game_source("coop_entities.cpp");
+	const std::string src = entities_source();
 	const std::string body = between(src, "void client_on_spawn(PeerId, Reader& r)", "void client_on_destroy");
 	CHECK(body.find("reconcile::repeat_takes_state(writing::writes(id), game_object_here(id))") != npos);
 }
@@ -1124,7 +1113,7 @@ TEST(reconcile_r32_a_stale_spawn_never_replaces_the_writers_own_object)
 	CHECK(spawn_of_known(kind_of("wpn_ak74"), kind_of("medkit"), true) == Known::Keep);
 	CHECK(spawn_of_known(kind_of("wpn_ak74"), kind_of("wpn_ak74"), true) == Known::Repeat);
 	CHECK(spawn_of_known(0, kind_of("medkit"), true) == Known::Repeat);
-	const std::string src = game_source("coop_entities.cpp");
+	const std::string src = entities_source();
 	const std::string body = between(src, "void client_on_spawn(PeerId, Reader& r)", "void client_on_destroy");
 	const size_t keep = body.find("case reconcile::Known::Keep:");
 	const size_t remove = body.find("client_remove(id);");

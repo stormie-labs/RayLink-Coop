@@ -74,9 +74,11 @@ TEST(save_contract_wrapper_and_last_save) {
     CHECK(guarded != std::string::npos && last != std::string::npos && guarded < last);
 }
 TEST(save_contract_prepare_at_startup) {
-    const auto init = body(source("coop/coop_sync.cpp"), "void init(");
-    REQUIRE(!init.empty());
-    CHECK(init.find("join::prepare_client_cache()") != std::string::npos);
+    const auto sync = source("coop/coop_sync.cpp");
+    const auto init = sync.find("kInit[] = {"); // the once-per-process pass of the module table
+    REQUIRE(init != std::string::npos);
+    const auto prepare = sync.find("&join::prepare_client_cache,", init);
+    CHECK(prepare != std::string::npos && prepare < sync.find("};", init));
 }
 TEST(save_contract_outer_loader_keeps_last_user_save) {
     const auto load = body(source("alife_update_manager.cpp"), "void CALifeUpdateManager::load(");
@@ -91,7 +93,7 @@ TEST(save_contract_malformed_and_scoc_failure_abort_load) {
     const auto malformed = s.find("!r.ok()");
     const auto malformed_return = s.find("return;", malformed);
     const auto scoc_write = s.find("write_file(scoc");
-    const auto load = s.find("g.load_issued = true");
+    const auto load = s.find("g_join.load_issued = true");
     CHECK(malformed != std::string::npos && malformed_return != std::string::npos && malformed_return < scoc_write);
     REQUIRE(scoc_write != std::string::npos && load != std::string::npos);
     const auto fail = s.rfind("!write_file(scoc", scoc_write);
