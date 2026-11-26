@@ -1,5 +1,5 @@
--- Anomaly Coop W8 temp test: coop_ui.script inventory envelope button (give money). Stand-ins for ui_inventory,
--- the cell properties box and coop_economy_money. Not shipped. Run: tools\test_lua.cmd ui_inventory
+-- Anomaly Coop: coop_ui.script inventory envelope button (give money; the amount list is coop_economy_money's, test_economy).
+-- Stand-ins for ui_inventory, the cell properties box and coop_economy_money. Run: tools\test_lua.cmd ui_inventory
 dofile("tests/lua/support/menu_stubs.lua")
 
 XML_FILES["ui_coop_inventory.xml"] = xml_paths(ROOT .. "configs/ui/ui_coop_inventory.xml")
@@ -21,8 +21,8 @@ coop = {
 	is_active = function() return ACTIVE end, is_host = function() return false end, is_live = function() return ACTIVE end,
 	players = function() return PLAYERS end,
 }
-GIVEN = {}
-coop_economy_money = { give_money = function(peer, amount) GIVEN[#GIVEN + 1] = { peer, amount }; return true end }
+OPENED = {} -- the amount lists asked of coop_economy_money: { ui, peer }
+coop_economy_money = { open_amounts = function(ui, peer) OPENED[#OPENED + 1] = { ui, peer } end }
 RULE = true
 coop_economy_core = { rule = function(k) if k == "money_transfer" then return RULE end end }
 db = { actor = { money = function() return 1200 end } }
@@ -45,6 +45,7 @@ local function new_inventory(mode)
 	return ui
 end
 
+load_module("coop_util")
 local modes = dofile("tests/lua/support/modes.lua")
 modes.live(load_module("coop_mode"), load_module)
 local ui_mod = load_module("coop_ui")
@@ -58,6 +59,7 @@ check(inv.coop_ui_money_btn == nil, "no session: no button (stock inventory)")
 
 ACTIVE = true
 PLAYERS = { { id = 0, nick = "Host", is_self = false }, { id = 1, nick = "Me", is_self = true } }
+NOW = NOW + 1 -- coop_util reads the player list once a frame
 inv:UpdateCharacter()
 local btn = inv.coop_ui_money_btn
 check(btn and btn.shown and #MISSING_PATHS == 0, "session: envelope button created from ui_coop_inventory.xml")
@@ -67,26 +69,23 @@ for p in pairs(XML_FILES["ui_coop_inventory.xml"]) do same = same and p16[p] == 
 for p in pairs(p16) do same = same and XML_FILES["ui_coop_inventory.xml"][p] == true end
 check(same, "4:3 and 16:9 layouts have the same nodes")
 
--- one other player: amounts right away
+-- one other player: coop_economy_money's amount list right away
 click(inv, "coop_ui_give_money")
-local m = inv.item_props.last
-check(m and #m.names == 4 and m.names[1] == "100 RU" and m.names[3] == "1000 RU" and m.names[4] == "All (1200 RU)" and m.actions[1] == "coop_ui_GiveAmount",
-	"one player: amounts up to the money in pocket + all")
-inv[m.actions[2]](inv, unpack(m.params[2]))
-check(GIVEN[1][1] == 0 and GIVEN[1][2] == 500 and ORIG_CALLS == 3, "amount given to the player, money readout refreshed")
+check(#OPENED == 1 and OPENED[1][1] == inv and OPENED[1][2] == 0 and inv.item_props.last == nil,
+	"one player: the amount list of coop_economy_money for him at once")
 
 -- two other players: choose the player first, the amounts open on the next update
 PLAYERS[#PLAYERS + 1] = { id = 2, nick = "Bob", is_self = false }
+NOW = NOW + 1
 inv.item_props.last = nil
 click(inv, "coop_ui_give_money")
-m = inv.item_props.last
-check(m and #m.names == 2 and m.names[2] == "Give money to Bob..." and m.actions[1] == "coop_ui_MoneyTo", "two players: who first")
-inv.item_props.last = nil
+local m = inv.item_props.last
+check(m and #m.names == 2 and m.names[2] == "Give money to Bob..." and m.actions[1] == "coop_ui_MoneyTo" and #OPENED == 1,
+	"two players: who first")
 inv[m.actions[2]](inv, unpack(m.params[2]))
-check(inv.item_props.last == nil and #EVENTS == 1, "amount list deferred (the box closes after an action)")
+check(#OPENED == 1 and #EVENTS == 1, "amount list deferred (the box closes after an action)")
 run_events()
-m = inv.item_props.last
-check(m and m.params[1][1] == 2, "amounts for Bob")
+check(#OPENED == 2 and OPENED[2][1] == inv and OPENED[2][2] == 2, "amounts for Bob")
 
 -- hidden: other modes, transfers off, alone
 local trade = new_inventory("trade")
@@ -97,6 +96,7 @@ inv:UpdateCharacter()
 check(not inv.coop_ui_money_btn.shown, "money transfers off by the host: hidden")
 RULE = true
 PLAYERS = { { id = 1, nick = "Me", is_self = true } }
+NOW = NOW + 1
 inv:UpdateCharacter()
 check(not inv.coop_ui_money_btn.shown, "alone: hidden")
 

@@ -1,21 +1,16 @@
 --[[
 	Anomaly Coop - PDA data that is the player's own and lives in the script storage (gamedata\scripts\coop_pda_player.script)
-	Plan: docs\plans\2026-11-16-pda-per-player.md (tab "Contacts", fix C1).
 
 	The "Contacts" tab with "show all" lists only the stalkers this player has talked to: m_data.actor_contacts[npc id] = true,
 	written by pda.actor_menu_mode when a talk opens (pda.script 106-109, "pda" is view: it runs on the talking player's
-	machine). A client never saves and loads the HOST's save at every join and level change, so his list was the host's and
-	what he added himself was gone at the next level change. The key travels here through the per-player channel of the mods
+	machine). A client loads the host's save at every join and level change, so its local contact list needs separate
+	per-player storage. The key travels here through the per-player channel of the mods
 	group (coop_mods_pdata: the host keeps each player's record in its save, a client gets his own back before any load_state;
 	a new player starts with none). The host's own list stays where the stock keeps it.
 	Single player and an exe without co-op: nothing is registered.
 --]]
 
 local KEY = "actor_contacts"
-
-local registered = false
-
-function is_registered() return registered end
 
 function on_game_start()
 	if not rawget(_G, "coop") then return end
@@ -24,6 +19,6 @@ function on_game_start()
 		printf("[coop-pda] ! coop_mods_pdata not found: a client's PDA contacts stay the host's")
 		return
 	end
-	registered = pd.register(KEY, {}) == true
+	local registered = pd.register(KEY, {}) == true
 	if not registered then printf("[coop-pda] ! %s not registered as per-player data", KEY) end
 end

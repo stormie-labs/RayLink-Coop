@@ -1,5 +1,5 @@
 --[[
-	Anomaly Coop - message windows that work in the main menu and in game (R-1.3, R-1.4)
+	Anomaly Coop - message windows for the main menu and in-game UI
 	gamedata\scripts\coop_ui.script, layout configs\ui\ui_coop_diff.xml
 
 	Called by the engine (coop_script.cpp, once a dialog can be opened):
@@ -15,8 +15,8 @@
 	Uses only engine classes and functions, nothing from a running level: the main menu has no actor.
 	Texts: configs\text\*\st_coop_menu.xml (st_coop_ui_*), the English text here when an id is missing.
 
-	In game (W8): an envelope button right of the player's money in the inventory (configs\ui\ui_coop_inventory.xml,
-	wraps ui_inventory.UIInventory:UpdateCharacter) - give money to another player via coop_economy_money.
+	In game: an envelope button right of the player's money in the inventory (configs\ui\ui_coop_inventory.xml,
+	wraps ui_inventory.UIInventory:UpdateCharacter) - give money to another player: coop_economy_money's amount list.
 --]]
 
 local MAX_PER_GROUP = 40 -- files listed per group, the rest is summed up by kind
@@ -38,23 +38,7 @@ local function log(fmt, ...)
 end
 
 -- Translated text with %s filled in order; the English fallback when the string table has no such id.
-local function T(id, fallback, ...)
-	local s
-	local g = rawget(_G, "game")
-	if g and g.translate_string then
-		local ok, r = pcall(g.translate_string, id)
-		if ok and type(r) == "string" and r ~= id and r ~= "" then s = r end
-	end
-	s = s or fallback
-	if select("#", ...) > 0 then
-		local args, i = { ... }, 0
-		s = s:gsub("%%s", function()
-			i = i + 1
-			return tostring(args[i])
-		end)
-	end
-	return s
-end
+local T = coop_util.trs
 
 local function argb(a, r, g, b)
 	return GetARGB(a, r, g, b)
@@ -270,7 +254,7 @@ local function content_mismatch(info)
 	return T("st_coop_ui_mods_title", "Your mod list differs from the host's"), summary, lines, footer
 end
 
--- R1 I2: the key equals the host's or that of a player in the session right now. No advice to delete the key: a
+-- The key equals the host's or that of a player in the session. No advice to delete the key: a
 -- character belongs to its key, and a deleted key on the wrong PC is a lost character.
 local function duplicate_key(info)
 	local c = colors()
@@ -369,13 +353,11 @@ function on_session_end(info)
 end
 
 -------------------------------------------------------------------------------
--- Inventory (W8): an envelope button right of the player's money gives money to another player.
--- The transfer itself is coop_economy_money.give_money (session rules, then the host ledger, coop.money_give); this is only the way in,
--- besides the item context menu "Give money to ...". Shown in the plain inventory mode of a live session with
--- somebody else in it and money transfers allowed by the host (economy/money_transfer).
+-- Inventory: an envelope button right of the player's money gives money to another player.
+-- The amount list and the transfer are coop_economy_money's (open_amounts; give_money: session rules, then the host ledger,
+-- coop.money_give); this is only the way in, besides the item context menu "Give money to ...". Shown in the plain inventory mode
+-- of a live session with somebody else in it and money transfers allowed by the host (economy/money_transfer).
 -------------------------------------------------------------------------------
-local GIVE_AMOUNTS = { 100, 500, 1000, 5000, 10000, 50000 }
-
 local function session_live()
 	local api = rawget(_G, "coop")
 	if not api then return false end
@@ -384,27 +366,15 @@ local function session_live()
 end
 
 local function other_players()
-	local api = rawget(_G, "coop")
 	local out = {}
-	local ok, list = pcall(function() return api and api.players() end)
-	for _, p in ipairs(ok and type(list) == "table" and list or {}) do
+	for _, p in ipairs(coop_util.players_by_id()) do
 		if not p.is_self and type(p.id) == "number" then out[#out + 1] = p end
 	end
-	table.sort(out, function(a, b) return a.id < b.id end)
 	return out
 end
 
-local function mod_of(name)
-	local m = rawget(_G, name)
-	if m == nil then
-		local ok, mm = pcall(function() return _G[name] end) -- _G.__index loads the script
-		m = ok and mm or nil
-	end
-	return type(m) == "table" and m or nil
-end
-
 local function money_allowed()
-	local ec = mod_of("coop_economy_core")
+	local ec = coop_util.module("coop_economy_core")
 	if ec and ec.rule then
 		local ok, v = pcall(ec.rule, "money_transfer")
 		if ok and v == false then return false end
@@ -412,40 +382,6 @@ local function money_allowed()
 	return true
 end
 
-local function give(peer, amount)
-	local em = mod_of("coop_economy_money")
-	if not (em and em.give_money) then return false end
-	local ok, res = pcall(em.give_money, peer, amount)
-	if not ok then log("! give_money: %s", tostring(res)) end
-	return ok and res == true
-end
-
-local function money_text(amount)
-	return tostring(amount) .. " " .. T("st_coop_eco_currency", "RU")
-end
-
--- Amount choice at the cursor (the cell properties box of the inventory).
-local function amounts_menu(ui, peer)
-	local have = db.actor and db.actor:money() or 0
-	local actions, names, params = {}, {}, {}
-	for _, a in ipairs(GIVE_AMOUNTS) do
-		if a <= have then
-			actions[#actions + 1] = "coop_ui_GiveAmount"
-			names[#names + 1] = money_text(a)
-			params[#params + 1] = { peer, a }
-		end
-	end
-	if have > 0 then
-		actions[#actions + 1] = "coop_ui_GiveAmount"
-		names[#names + 1] = T("st_coop_eco_money_all", "All (%s)", money_text(have))
-		params[#params + 1] = { peer, have }
-	end
-	if #names == 0 then
-		give(peer, 0) -- says "You have no money to give."
-		return
-	end
-	ui.item_props:Reset(GetCursorPosition(), actions, names, params)
-end
 
 -- The properties box closes itself after an action: the next list opens on the next update.
 local function later(ui, f)
@@ -463,7 +399,7 @@ local function on_money_button(ui)
 	local list = other_players()
 	if #list == 0 then return end
 	if #list == 1 then
-		amounts_menu(ui, list[1].id)
+		coop_economy_money.open_amounts(ui, list[1].id)
 		return
 	end
 	local actions, names, params = {}, {}, {}
@@ -477,7 +413,7 @@ end
 
 local function money_button(ui)
 	local want = session_live() and ui.mode == "inventory" and money_allowed() and #other_players() > 0
-		and mod_of("coop_economy_money") ~= nil
+		and coop_util.module("coop_economy_money") ~= nil
 	local btn = ui.coop_ui_money_btn
 	if not btn then
 		if not want then return end
@@ -498,7 +434,7 @@ end
 local patched_cls = nil
 
 function patch_inventory()
-	local inv = mod_of("ui_inventory")
+	local inv = coop_util.module("ui_inventory")
 	local cls = inv and inv.UIInventory
 	if not (cls and type(cls.UpdateCharacter) == "function") or patched_cls == cls then return false end
 	patched_cls = cls
@@ -510,10 +446,7 @@ function patch_inventory()
 		return r
 	end
 	function cls:coop_ui_MoneyTo(peer)
-		later(self, function(ui) amounts_menu(ui, peer) end)
-	end
-	function cls:coop_ui_GiveAmount(peer, amount)
-		if give(peer, amount) then pcall(function() self:UpdateCharacter() end) end
+		later(self, function(ui) coop_economy_money.open_amounts(ui, peer) end)
 	end
 	return true
 end

@@ -1,4 +1,4 @@
--- Anomaly Coop temp test (W4 menu): coop_ui refusal window with the Russian string table (smoke). Not shipped.
+-- Smoke-test the coop_ui refusal window with the Russian string table.
 dofile("tests/lua/support/menu_stubs.lua")
 XML_FILES["ui_coop_diff.xml"] = xml_paths(ROOT .. "configs/ui/ui_coop_diff.xml")
 local T = {}
@@ -8,6 +8,7 @@ fh:close()
 game = { translate_string = function(id) return T[id] or id end }
 local modes = dofile("tests/lua/support/modes.lua")
 modes.live(load_module("coop_mode"), load_module)
+load_module("coop_util") -- the engine loads it on the first use of its name
 local ui = load_module("coop_ui")
 local missing = {}
 for i = 1, 60 do missing[#missing + 1] = string.format("gamedata/textures/t%02d.dds", i) end
@@ -23,7 +24,7 @@ ui.on_rejected({ reason = "SessionFull", text = "full", missing = {}, extra = {}
 check(g.cap.text == T.st_coop_ui_title_SessionFull and g.footer.text:find("SessionFull", 1, true), "generic refusal translated")
 ui.on_rejected({ reason = "DuplicateKey", text = "dup", missing = {}, extra = {}, differ = {}, key_path = "C:/k.key" })
 check(g.cap.text == T.st_coop_ui_key_title, "duplicate key translated")
--- R1 I2: what the key means, no advice to delete it ("удал"/"Удал" in cp1251, as the string table is read raw)
+-- Explain what the key means without suggesting deletion ("удал"/"Удал" in cp1251 because the string table is read raw).
 local means, delete = false, false
 for _, r in ipairs(g.scroll.children) do
 	if r.text:find(T.st_coop_ui_key_what_text, 1, true) then means = true end

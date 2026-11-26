@@ -8,7 +8,6 @@ local installed = false
 local personal_goodwill = nil
 
 local function state() return coop_trader_state end
-local function active() return api and api.is_active() == true end
 
 local function storage()
 	local asm = rawget(_G, "alife_storage_manager")
@@ -38,7 +37,7 @@ local function key_of(id, player)
 end
 
 function refresh()
-	if not (active() and coop_mode.decides_world()) then return end
+	if not (coop_util.active() and coop_mode.decides_world()) then return end
 	local m, now = storage(), clock()
 	if not m then return end
 	book = state().restore(book or m[STORE], now)
@@ -86,7 +85,7 @@ function mode()
 end
 
 local function view_of()
-	if not active() then return nil end
+	if not coop_util.active() then return nil end
 	local m = storage()
 	local view = m and m[VIEW]
 	if type(view) ~= "table" or type(view.means) ~= "table" then return nil end
@@ -117,7 +116,7 @@ function info()
 end
 
 function goodwill_ge(actor, npc, params)
-	if not active() then return personal_goodwill(actor, npc, params) end
+	if not coop_util.active() then return personal_goodwill(actor, npc, params) end
 	local threshold = params and tonumber(params[2])
 	if not threshold or threshold ~= threshold or math.abs(threshold) == math.huge then return false end
 	local value, count = average(params[1])
@@ -125,7 +124,7 @@ function goodwill_ge(actor, npc, params)
 end
 
 function tier_ge(actor, npc, params)
-	if not active() then return true end
+	if not coop_util.active() then return true end
 	for i = 1, #(params or {}), 2 do
 		if goodwill_ge(actor, npc, { params[i], params[i + 1] }) then return true end
 	end
@@ -157,7 +156,7 @@ function rewrite_supplies(source)
 end
 
 function save_state(m)
-	if active() and not coop_mode.decides_world() then return end
+	if coop_util.active() and not coop_mode.decides_world() then return end
 	refresh()
 	if api and api.saving_for_join and api.saving_for_join() then
 		m[STORE] = nil
@@ -167,12 +166,12 @@ function save_state(m)
 end
 
 function load_state(m)
-	if active() and not coop_mode.decides_world() then return end
+	if coop_util.active() and not coop_mode.decides_world() then return end
 	book = state().restore(m[STORE])
 end
 
 local function update()
-	if not active() then return end
+	if not coop_util.active() then return end
 	local now = time_global()
 	if now >= next_poll then
 		next_poll = now + 1000

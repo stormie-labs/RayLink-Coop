@@ -1,21 +1,19 @@
 --[[
 	Anomaly Coop - group actions and the shared clock (gamedata\scripts\coop_economy_group.script)
-	SPEC R-10.2 (time skips by the group's rule), R-9.4 (travel as a group).
 
 	Time belongs to the host (coop_worldstate: a client's level.change_game_time is refused there and only
 	logged on the host). This script decides WHEN the host moves the clock for a player:
-	  - time-passing items (GAMMA Wait.script "wait.wait") are proposals. The host applies its rule (core rule
-	    sleep_rule, named for the sleep it once governed):
+	  - time-passing items (GAMMA Wait.script "wait.wait") are proposals. The host applies the sleep_rule:
 	        host          only the host may skip time; a client's wait is refused
 	        gather        everybody within sleep_radius of the waiter
 	        vote          every other player accepts in a message box (default; no answer = no)
 	        safe_or_vote  a player standing in a shelter (or at a tent) accepts by himself, the others vote
 	    On approval the waiter's machine runs the item; its level.change_game_time becomes an
 	    "economy.skip" with the approval ticket, and the host moves the clock (TimeSync reaches everybody).
-	  - the sleep (ui_sleep_dialog) is NOT a proposal any more (F3 T14): it is the shared rest of coop_rest.script and
+	  - sleep (ui_sleep_dialog) uses the shared rest of coop_rest.script and
 	    the engine (coop.rest), the time is skipped when every player rests. Nothing here wraps the sleep dialog.
-	  - travel (fast travel, backpack travel, guides): a trip takes no game time (owner 2026-11-16: "time must not run ahead
-	    on a travel, let only the move work"): its level.change_game_time is dropped on the traveller's machine, the host's
+	  - travel (fast travel, backpack travel, guides): by default a trip takes no game time. The traveller's machine drops
+	    its level.change_game_time call, the host's
 	    own trip included. With the world's rule travel_takes_time on, the time cost of a group travel lands once, on the host
 	    (coop_economy_travel arms it); a solo travel (party rule off, split levels) never moves the shared clock.
 	  - other players see a fade and a PDA line when the host skipped time for somebody.
@@ -23,7 +21,6 @@
 
 	For other scripts:
 		coop_economy_group.gather_radius() / party_fast_travel() / travel_as_group() / travel_takes_time()
-		coop_economy_group.veto_if_ungathered(radius, msg_id, fallback) -> true = blocked, tip shown
 		coop_economy_group.request_skip(kind, minutes, cont) -> true = proposal sent, cont() runs on approval
 		coop_economy_group.with_arm(kind, fn, ...)   run fn; a level.change_game_time inside goes to the host
 		coop_economy_group.subject(name, texts)   every machine: the lines of a vote about `name` (not a time skip):
@@ -48,7 +45,7 @@ local core = coop_economy_core
 local tostring, tonumber, type, pairs, ipairs, pcall = tostring, tonumber, type, pairs, ipairs, pcall
 local math_floor = math.floor
 
-local KINDS = { wait = true, travel = true } -- (sleep: the engine's coop.rest since F3 T14)
+local KINDS = { wait = true, travel = true } -- The engine's coop.rest handles sleep.
 local GRANT_MS = 120000 -- an approval is valid this long
 local ARM_MS = 60000 -- an approved skip must reach level.change_game_time within this time
 local TRAVEL_GAP_MS = 8000 -- travel skips: one per player per this time
@@ -85,21 +82,6 @@ function travel_as_group()
 end
 -- A trip takes game time only where the world's settings say so (off by default).
 function travel_takes_time() return core.rule("travel_takes_time") == true end
-
-local function my_pos()
-	return db.actor and core.position_of_id(0)
-end
-
--- True = blocked: somebody is not within `radius` of this player (tip shown).
-function veto_if_ungathered(radius, msg_id, fallback)
-	if not (core.live() and db.actor) then return false end
-	local r = radius or gather_radius()
-	local far = core.far_players(my_pos(), r, core.self_id())
-	if #far == 0 then return false end
-	core.tip(core.fmt(msg_id or "st_coop_eco_travel_far", fallback or "All players must be within %d m to travel (far: %s).",
-		math_floor(r + 0.5), table.concat(far, ", ")))
-	return true
-end
 
 local function minutes_of(d, h, m)
 	return ((tonumber(d) or 0) * 24 + (tonumber(h) or 0)) * 60 + (tonumber(m) or 0)
@@ -160,7 +142,7 @@ local function after_skip(kind, minutes, by_peer)
 	if by_peer ~= core.self_id() then
 		pcall(level.add_pp_effector, FADE_PPE, FADE_ID, false)
 		core.tip(core.fmt("st_coop_eco_time_skipped", "%s: %d h %02d min passed (%s).", nick,
-			math_floor(minutes / 60), math_floor(minutes % 60), core.tr("st_coop_eco_kind_" .. kind, kind)))
+			math_floor(minutes / 60), math_floor(minutes % 60), coop_util.tr("st_coop_eco_kind_" .. kind, kind)))
 	end
 end
 
@@ -244,7 +226,7 @@ function request_skip(kind, minutes, cont)
 	local t = st.seq
 	st.pending[t] = { kind = kind, minutes = minutes or 0, cont = cont, at = core.now() }
 	stats.proposals = stats.proposals + 1
-	core.tip(core.tr("st_coop_eco_waiting_group", "Asking the group..."), 3000)
+	core.tip(coop_util.tr("st_coop_eco_waiting_group", "Asking the group..."), 3000)
 	if core.owns_world() then
 		host_open(core.self_id(), t, kind, minutes or 0)
 	else
@@ -371,8 +353,7 @@ end
 
 -- Split levels: the authority of a level is its map server, and the ballots are the world server's (every player answers his
 -- host). A map server's proposal goes to the world server (propose_for), which runs the vote as its own and tells the map
--- server its end (verdict_for). Owner, live 2026-11-15: "no vote window at the arena when I played with the guys" - propose
--- answered nil there and the arena started with no vote.
+-- server the result (verdict_for), so an arena proposal on a map server has a ballot.
 local remote = {} -- map server: ticket -> { cb = on_result, until_ms = when the world server's silence is a no }
 local remote_seq = 0
 local MAX_VOTE_TICKET = 9007199254740991 -- largest safe integer in Lua
@@ -565,7 +546,7 @@ show_ballot = function(t)
 		text = core.fmt("st_coop_eco_vote_wait", "%s wants to pass time. Agree?", tostring(t.n))
 	end
 	st.ballot_for = ht
-	local box = rawget(_G, "ui_dyn_msg_box") or core.mod("ui_dyn_msg_box")
+	local box = rawget(_G, "ui_dyn_msg_box") or coop_util.module("ui_dyn_msg_box")
 	local shown = false
 	if box and box.msg_box_ui then
 		shown = pcall(function()
@@ -582,10 +563,10 @@ end
 -- Stock patches
 -------------------------------------------------------------------------------
 local function patch_wait()
-	-- GAMMA "Books Pass Time" (Wait.script); absent in stock. _g.script has a global FUNCTION wait(): only a
-	-- table is the mod (indexing the function threw here and broke every later on_game_start, W5).
+	-- GAMMA "Books Pass Time" provides a wait table (Wait.script). In stock, _g.script defines wait as a function.
+	-- Check the type before indexing it because an error stops later on_game_start callbacks.
 	local w = rawget(_G, "wait")
-	if type(w) ~= "table" then w = core.mod("wait") end
+	if type(w) ~= "table" then w = coop_util.module("wait") end
 	if not (type(w) == "table" and type(w.wait) == "function") then return end
 	local orig = w.wait
 	w.wait = function(obj, ...)
@@ -662,7 +643,7 @@ local function register_events()
 		if from ~= 0 or core.owns_world() then return end
 		local ticket = core.int(t.t)
 		if not ticket then return end
-		if ticket < 0 then -- a vote I was asked about ended
+		if ticket < 0 then -- a vote that included this player has ended
 			if st.ballot_for == -ticket then close_ballot() end
 			core.tip(verdict_text(t.r, t.n ~= "" and t.n or nil, type(t.g) == "string" and t.g ~= "" and t.g or nil))
 			return
@@ -676,7 +657,7 @@ local function register_events()
 		stats.fades = stats.fades + 1
 		pcall(level.add_pp_effector, FADE_PPE, FADE_ID, false)
 		core.tip(core.fmt("st_coop_eco_time_skipped", "%s: %d h %02d min passed (%s).", tostring(t.n),
-			math_floor(minutes / 60), math_floor(minutes % 60), core.tr("st_coop_eco_kind_" .. kind, kind)))
+			math_floor(minutes / 60), math_floor(minutes % 60), coop_util.tr("st_coop_eco_kind_" .. kind, kind)))
 	end)
 end
 
@@ -705,16 +686,9 @@ function print_status()
 		stats.approved, stats.denied, stats.skips, stats.refused, stats.trips_no_time, stats.fades, stats.errors, np)
 end
 
--- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
--- error here would skip all the scripts after this one, single player included (W5).
-local function start_step(what, f)
-	local ok, err = pcall(f)
-	if not ok then printf("! [coop_economy_group] %s failed: %s", what, tostring(err)) end
-end
-
 function on_game_start()
 	if not core.engine() then return end
-	start_step("install", install)
+	coop_util.start_step("coop_economy_group", "install", install)
 	register_events()
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 end

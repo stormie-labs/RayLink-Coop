@@ -1,4 +1,4 @@
--- G10-2: use the shipped mod functions against a map-spot and transport harness.
+-- Exercise the shipped functions against a map-spot and transport harness.
 local modes = dofile("tests/lua/support/modes.lua")
 local role = modes.names()[1]
 MODE = role == "none" and "sp" or "host"
@@ -122,6 +122,7 @@ AddScriptCallback("map_spot_menu_property_clicked")
 RegisterScriptCallback("map_spot_menu_property_clicked", tracker.map_spot_menu_property_clicked)
 local adapter = coop_pda_marks_local
 if adapter then adapter.on_game_start() end
+SendScriptCallback("actor_on_first_update") -- the actor of the level spawns
 
 -- DXML dispatches in registration order on the same DOM. Milspec and PAW append their definitions after our script.
 local callbacks = {}
@@ -280,6 +281,7 @@ else
 	if authority == "srv_map" then
 		local old_reply = request()
 		map = "l02_garbage"
+		SendScriptCallback("actor_on_first_update") -- a level change spawns the actor anew
 		local other = make_squad(30, 31, map)
 		make_npc(31, map)
 		make_npc(32, map)

@@ -1,18 +1,16 @@
 --[[
 	Anomaly Coop - travelling as a group (gamedata\scripts\coop_economy_travel.script)
-	SPEC R-4.4 (scripted teleports act on the group), R-9.4 (fast travel and guides move the group).
 
 	Who travels and what happens to the others:
 	  - Fast travel and backpack travel (PDA map menu), marsh guides (dialogs_mlr *_guid): with the party rule
 	    on (core rule party_fast_travel) the traveller moves as in single player and pays his fare alone, and
 	    the other players on the map, except listed arena fighters, are OFFERED the trip (a yes / no window, "economy.tp" with q): who says yes
-	    is moved to the destination for nothing, who says no or does not answer within the vote's time stays
-	    (owner 2026-11-16; before that a trip was refused until the group stood within gather_radius, and who
-	    stood there was moved unasked). Fair Fast Travel's rows count as well: fast travel, backpack travel and a
+	    travels to the destination for free. A player who declines or does not answer before the vote expires stays.
+	    Fair Fast Travel's rows count as well: fast travel, backpack travel and a
 	    hired guide. With split levels (coop.levels.split) every player walks his own map: one player travels and
 	    nobody is asked.
-	  - Time: a trip takes no game time in a session (owner 2026-11-16, "time must not run ahead on a travel, let only
-	    the move work, and hunger and the rest with it"): coop_economy_group drops the trip's level.change_game_time,
+	  - Time: by default a trip takes no game time and does not advance needs in a session.
+	    coop_economy_group drops the trip's level.change_game_time,
 	    and Fair Fast Travel is told before a trip that it is one without time (on_before_fast_travel, trip.notime: it
 	    then moves no clock, pauses no hunger, tells no surge that time ran and forces no weather). The fare, the
 	    cooldown and the wear of the gear are the mod's own and stay. With the world's rule travel_takes_time on, the
@@ -37,7 +35,7 @@
 
 	Visited places (a client): smart_terrain.script tells actor_on_interaction("smarts", smart, name) while the actor is
 	within 50 m of an online smart; game_statistics (the places visited) and Fair Fast Travel (state 1: only the points
-	visited) listen. A client's ALife is frozen, its smarts never update, so he visited nothing and had no points. The
+	visited) listen. A client's ALife is frozen and its smarts never update, so the stock visit callback does not fire. The
 	client counts it here: once a second, the fast travel points of his map (game_fast_travel.tsmarts) within 50 m.
 
 	Events:
@@ -61,11 +59,10 @@ local MAX_RADIUS = 200
 local ARRIVE_EPS = 3.0 -- m: a player already this close to the destination stays put
 local SPREAD = 1.0 -- m: arrivals are spread a little so the group does not stack
 local OFFER = -1 -- in place of a radius: no radius, every other player of the level is asked whether he comes along
--- TZ v2 6.4 row 7: the patrol paths a story teleport puts the actor on (point 0 of `walk`; xr_effects.teleport_actor). Read
--- from the callers in the build (temp\f2\story_points.py over the stock and G.A.M.M.A. configs): every "=teleport_actor(walk[:look])"
--- of a condlist, and every [sr_cutscene] "point" (sr_cutscene.script:269 teleports there). A mod's new story teleport is added
--- here when the hosts' logs show it (the check runs in "log" first). Only an install without coop_npc_logic reads them: with it
--- no honest client sends a story teleport at all (routed_by_npc_group), see story_point_verdict.
+-- Story teleports use point 0 of `walk` in xr_effects.teleport_actor. These paths come from stock and G.A.M.M.A.
+-- "=teleport_actor(walk[:look])" condlists and [sr_cutscene] "point" entries (sr_cutscene.script teleports there).
+-- Add new story paths once the host's logs identify them in "log" mode. When coop_npc_logic routes them, the
+-- client sends no story teleport (routed_by_npc_group); see story_point_verdict.
 local STORY_POINTS = {
 	"kat_teleport_to_dark_city_position", -- agroprom_underground\level_prefix_space_restrictor_0000.ltx
 	"lx8_actor_walk", -- labx8\lx8_lift_button.ltx
@@ -124,14 +121,14 @@ end
 
 -- The companions of this machine's player come after him (the authority of his level moves them; nothing without that script).
 local function bring_companions()
-	local nc = core.mod("coop_npc_companions")
+	local nc = coop_util.module("coop_npc_companions")
 	if not (nc and type(nc.bring_mine) == "function") then return end
 	local ok, err = pcall(nc.bring_mine)
 	if not ok then core.log("! the companions were not called after the trip: %s", tostring(err)) end
 end
 
 local function arena_blocks_trip(id)
-	local arena = core.mod("coop_arena")
+	local arena = coop_util.module("coop_arena")
 	return arena and arena.blocks_trip and arena.blocks_trip(id)
 end
 
@@ -140,7 +137,7 @@ end
 local function apply_tp(p, by, agreed)
 	local actor = db.actor
 	if not actor or p.l ~= level_name() then return false end
-	if agreed and arena_blocks_trip() then return false end -- he may have entered since he was asked
+	if agreed and arena_blocks_trip() then return false end -- recheck after the vote because the player can enter the arena
 	local mine = core.position_of_id(0)
 	if not mine then return false end
 	local dest = { x = p.x, y = p.y, z = p.z }
@@ -184,7 +181,7 @@ local function offer_tp(p, by)
 	local text = core.fmt(id, fallback, tostring(by or "?"), math.floor(away + 0.5))
 	local mine_now = { until_ms = core.now() + (core.rule("vote_timeout") or 30) * 1000 }
 	-- ui_dyn_msg_box.msg_box_ui is a luabind class: calling it makes the window
-	local box = rawget(_G, "ui_dyn_msg_box") or core.mod("ui_dyn_msg_box")
+	local box = rawget(_G, "ui_dyn_msg_box") or coop_util.module("ui_dyn_msg_box")
 	local class = box and box.msg_box_ui
 	if class == nil then
 		core.log("! ui_dyn_msg_box.msg_box_ui is not here: the trip of %s is not offered", tostring(by))
@@ -265,7 +262,7 @@ local function level_verdict(p, from)
 end
 
 -- True while the NPC group's restrictor logic sends the story teleports (coop_npc_logic.deliver): every client then lets
--- teleport_actor run alone (routed_by_npc_group), so no honest client sends a forced move. Both ends run the same package.
+-- teleport_actor run alone (routed_by_npc_group), so no honest client sends a forced move.
 local function npc_group_routes()
 	local nl = rawget(_G, "coop_npc_logic")
 	return nl ~= nil and type(nl.deliver) == "function"
@@ -304,15 +301,15 @@ local function host_on_tp(t, from)
 	local pl = p and core.player(from)
 	if not pl then return end
 	-- the sender stands at one end of that move (its character here may lag a snapshot): a made-up origin
-	-- at the host's feet would move the host (W5)
+	-- at the host's feet would move the host.
 	local at = pl.avatar_id and core.position_of_id(pl.avatar_id)
 	if not (at and (core.dist(at, { x = p.ox, y = p.oy, z = p.oz }) <= 30 or core.dist(at, p) <= 30)) then
 		stats.refused = (stats.refused or 0) + 1
 		return
 	end
-	-- TZ v2 6.4 row 7: a move nobody is asked about (a story teleport) only to a point the story teleports to, and none while the
+	-- A forced story teleport must target a story point and is disallowed while the
 	-- NPC group routes them; an offer only on the level the player stands on (its window opens for the players of that level)
-	local trust = core.mod("coop_trust")
+	local trust = coop_util.module("coop_trust")
 	if trust and not p.q then
 		local ok, why = story_point_verdict(p, from)
 		if not trust.pass("story_teleport_point", ok, "player %s (#%s) moved the players within %.0f m of him to %.1f %.1f %.1f on %s: %s",
@@ -389,9 +386,9 @@ local TRAVEL_ROWS = { "st_pda_fast_travel_to", "st_pda_backpack_travel_to", "st_
 -- "travel" | "guide" (a guide hired through the map menu) for a row that is a trip, nil for any other row.
 local function travel_kind(prop)
 	if type(prop) ~= "string" or prop == "" then return nil end
-	if prop == core.tr("bp_to", "\1") then return "travel" end
+	if prop == coop_util.tr("bp_to", "\1") then return "travel" end
 	for _, id in ipairs(TRAVEL_ROWS) do
-		local prefix = core.tr(id, "\1") .. " "
+		local prefix = coop_util.tr(id, "\1") .. " "
 		if prop:sub(1, #prefix) == prefix then return id == "st_fftd_mapspot_guideto" and "guide" or "travel" end
 	end
 	return nil
@@ -433,7 +430,7 @@ local function with_trip_on_map(f, ...)
 end
 
 local function patch_pda()
-	local pda = core.mod("pda")
+	local pda = coop_util.module("pda")
 	if not (pda and type(pda.property_box_clicked) == "function") then
 		core.log("! pda.property_box_clicked missing: fast travel is not a group travel")
 		return
@@ -454,7 +451,7 @@ local GUIDES = {
 
 local function patch_guides()
 	for modname, list in pairs(GUIDES) do
-		local m = core.mod(modname)
+		local m = coop_util.module(modname)
 		for _, fname in ipairs(list) do
 			local orig = m and m[fname]
 			if type(orig) == "function" then
@@ -466,7 +463,7 @@ local function patch_guides()
 		end
 	end
 	-- Guides to other levels (ka_travel): the level change is the host's; only the time cost is routed.
-	local ka = core.mod("ka_travel")
+	local ka = coop_util.module("ka_travel")
 	if ka then
 		local names = {}
 		for k, v in pairs(ka) do
@@ -493,7 +490,7 @@ local function routed_by_npc_group(npc)
 end
 
 local function patch_teleport_actor()
-	local xe = core.mod("xr_effects")
+	local xe = coop_util.module("xr_effects")
 	if not (xe and type(xe.teleport_actor) == "function") then
 		core.log("! xr_effects.teleport_actor missing: story teleports move one player")
 		return
@@ -530,7 +527,7 @@ local function open_route_local(a, b)
 end
 
 local function patch_routes()
-	local tr = core.mod("txr_routes")
+	local tr = coop_util.module("txr_routes")
 	if not (tr and type(tr.open_route) == "function") then return end
 	local orig = tr.open_route
 	orig_open_route = orig
@@ -601,7 +598,7 @@ local visits = { next_at = 0, level = nil, tsmarts = nil, list = nil, scan_at = 
 
 -- { { name, id }, ... }: the points of `tsmarts` on map `here`. The simulation board first (a script class: a userdata; the smarts of
 -- every map register there when their server object does): with anything on it its answer is final, a map with no point would be walked
--- every VISIT_RESCAN_MS for nothing. Before that the ALife copy: the objects of the current level of the smart clsid, else all.
+-- every VISIT_RESCAN_MS. Use the ALife copy as a fallback: the current level's objects of the smart clsid, or all objects.
 local function find_smarts(tsmarts, here)
 	local found = {}
 	local board = rawget(_G, "SIMBOARD")
@@ -639,7 +636,7 @@ local function visit_tick()
 	local fft = rawget(_G, "game_fast_travel")
 	if fft == nil and not visits.tried then
 		visits.tried = true
-		fft = core.mod("game_fast_travel")
+		fft = coop_util.module("game_fast_travel")
 	end
 	local tsmarts = fft and fft.tsmarts
 	if type(tsmarts) ~= "table" then return end
@@ -708,22 +705,15 @@ function print_status()
 		stats.routes_in)
 end
 
--- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
--- error here would skip all the scripts after this one, single player included (W5).
-local function start_step(what, f)
-	local ok, err = pcall(f)
-	if not ok then printf("! [coop_economy_travel] %s failed: %s", what, tostring(err)) end
-end
-
 function on_game_start()
 	if not core.engine() then return end
-	start_step("install", install)
+	coop_util.start_step("coop_economy_travel", "install", install)
 	register_events()
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	-- this script starts before game_fast_travel: a callback nobody has declared yet takes no listener (axr_main), so it is
 	-- declared here as well; without Fair Fast Travel nobody ever sends it
-	start_step("fair fast travel", function()
-		-- when game_fast_travel was loaded first it is declared already: no second declaration (coop_route.declare)
+	coop_util.start_step("coop_economy_travel", "fair fast travel", function()
+		-- If game_fast_travel loads first, coop_route.declare already knows the event.
 		local okr, route = pcall(function() return coop_route end)
 		if not (okr and type(route) == "table" and type(route.declare) == "function" and pcall(route.declare, "on_before_fast_travel")) then
 			if type(AddScriptCallback) == "function" then AddScriptCallback("on_before_fast_travel") end

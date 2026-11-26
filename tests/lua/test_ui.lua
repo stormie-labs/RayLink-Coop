@@ -1,4 +1,4 @@
--- Anomaly Coop temp test: coop_ui.script refusal window with stand-ins for the engine UI classes (W3d).
+-- Exercise the coop_ui.script refusal window with stand-ins for the engine UI classes.
 -- Checks that every XML path the script asks for exists in configs\ui\ui_coop_diff.xml.
 ROOT = "gamedata/"
 FAILS, PASSES = 0, 0
@@ -114,6 +114,7 @@ end
 print("== coop_ui")
 local modes = dofile("tests/lua/support/modes.lua")
 modes.live(load_module("coop_mode"), load_module)
+load_module("coop_util") -- the engine loads it on the first use of its name
 local ui = load_module("coop_ui")
 
 local function rows()
@@ -166,7 +167,7 @@ check(gui.cap.text:find("player key"), "duplicate key title")
 check(find(r, "D:\\Anomaly\\appdata\\coop_player.key", 1, true) ~= nil or (function()
 	for _, s in ipairs(r) do if tostring(s):find("D:\\Anomaly\\appdata\\coop_player.key", 1, true) then return true end end
 end)(), "exact key path shown")
--- R1 I2: what the key means instead of steps to delete it (a character belongs to its key)
+-- Explain what the key means: a character belongs to its key.
 check(find(r, "belongs to its key"), "what the key means shown")
 check(not find(r, "Delete"), "no advice to delete the key")
 check(find(r, "Host message"), "host text shown")

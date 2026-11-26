@@ -1,12 +1,12 @@
 --[[
-	Anomaly Coop - world rules that only knew the host's actor (gamedata\scripts\coop_economy_world.script)
+	Anomaly Coop - warfare capture and shared world loot (gamedata\scripts\coop_economy_world.script)
 
 	Host side (all of it runs only on the host; game_setup and warfare are host-domain scripts):
 	  - Warfare auto-capture (smart_terrain_warfare.process_manual_capture): stock measures only the host's
 	    actor. During that call every player's character counts: a smart is captured when ANY player stands
 	    near it, and the capture is cancelled only when ALL players left. The capture tip goes to everybody.
 	  - World loot of game_setup (random world items with a rolled condition / ammo count / uses): stock applies
-	    the roll in actor_on_item_take, which a client's pickup never fires on the host. The host now writes the
+	    the roll in actor_on_item_take, which a client's pickup never fires on the host. The host writes the
 	    roll onto the item as soon as it is online here (whoever picks it up gets those values through the
 	    item state sync, coop_items), and a client's pickup (npc_on_item_take of the player's character)
 	    releases the loot spot, spawns the next world item and removes the map mark everywhere.
@@ -45,8 +45,8 @@ local function other_player_positions()
 end
 
 local function patch_warfare()
-	local stw = core.mod("smart_terrain_warfare")
-	local wf = core.mod("warfare")
+	local stw = coop_util.module("smart_terrain_warfare")
+	local wf = coop_util.module("warfare")
 	if not (stw and wf and type(stw.process_manual_capture) == "function" and type(wf.distance_to_xz_sqr) == "function") then
 		return
 	end
@@ -88,7 +88,7 @@ local function patch_warfare()
 end
 
 local function show_capture_tip(smart_name)
-	local stw = core.mod("smart_terrain_warfare")
+	local stw = coop_util.module("smart_terrain_warfare")
 	local name = smart_name
 	if stw and stw.translate_smart_name then
 		local ok, n = pcall(stw.translate_smart_name, smart_name)
@@ -101,7 +101,7 @@ end
 -- game_setup world loot
 -------------------------------------------------------------------------------
 local function gs_ready()
-	local gs = core.mod("game_setup")
+	local gs = coop_util.module("game_setup")
 	if gs and type(gs.world_itm_on) == "table" and type(gs.world_itm_num) == "table" and type(gs.world_itm_off) == "table"
 		and type(gs.world_itm_info) == "table" and type(gs.limited_uses) == "table" then
 		return gs
@@ -111,7 +111,7 @@ end
 -- Writes a rolled value onto item `id`. True when done (ammo needs the item online here).
 local function bake(gs, id, section, num)
 	local obj = level.object_by_id(id)
-	local bi = core.mod("bind_item")
+	local bi = coop_util.module("bind_item")
 	if IsItem("ammo", section) then
 		if not obj then return false end
 		obj:ammo_set_count(num)
@@ -122,7 +122,7 @@ local function bake(gs, id, section, num)
 		return obj ~= nil or (bi ~= nil and type(bi.item_uses) == "table")
 	elseif utils_item.is_degradable(nil, section) then
 		if bi and type(bi.item_condition) == "table" then bi.item_condition[id] = num end
-		local dev = core.mod("item_device")
+		local dev = coop_util.module("item_device")
 		if dev and type(dev.dev_condition) == "table" then dev.dev_condition[id] = num end
 		if obj then obj:set_condition(num) end
 		return obj ~= nil or (bi ~= nil and type(bi.item_condition) == "table")
@@ -172,10 +172,10 @@ local function bake_taken(gs)
 			end
 			if roll.applied then
 				local delivered = true
-				if core.owns_world() then
+				if core.owns_world() and coop_util.active() then
 					-- The owner must apply it too: coop_items enforces the owner's state on its host copy.
 					roll.sent = roll.sent or {}
-					for _, p in ipairs(core.players()) do
+					for _, p in ipairs(coop_util.players()) do
 						if not p.is_self and not roll.sent[p.id] then
 							roll.sent[p.id] = core.send("loot_roll", { id = id, s = roll.s, n = roll.n }, p.id)
 							if not roll.sent[p.id] then delivered = false end
@@ -194,7 +194,7 @@ local function bake_pending()
 	use_saved_rolls()
 	local gs = gs_ready()
 	if not gs then return end
-	local spawned = {} -- point name -> the id of what stands there now
+	local spawned = {} -- point name -> id of the item at that point
 	for obj_id, point in pairs(gs.world_itm_on) do spawned[point] = obj_id end
 	for name, num in pairs(gs.world_itm_num) do
 		local id = spawned[name]
@@ -252,7 +252,7 @@ local function npc_on_item_take(npc, item)
 end
 
 local function patch_game_setup()
-	local gs = core.mod("game_setup")
+	local gs = coop_util.module("game_setup")
 	if not gs then return end
 	if not gs_ready() then
 		core.log("! game_setup locals not reachable (unlocalizer_coop_economy.ltx missing?): client pickups keep stock world loot rules")
@@ -310,7 +310,7 @@ local function register_events()
 		if from ~= 0 or core.owns_world() then return end
 		local id = core.int(t.id, 1, 65534)
 		local typ = core.word(t.t, 64)
-		local gs = core.mod("game_setup")
+		local gs = coop_util.module("game_setup")
 		if id and typ and gs and gs.remove_marker then pcall(gs.remove_marker, core.local_id(id), typ) end
 	end)
 end
@@ -335,17 +335,10 @@ function print_status()
 		stats.captures_checked, stats.capture_tips, stats.baked, stats.peer_takes, stats.loot_marks, stats.errors)
 end
 
--- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
--- error here would skip all the scripts after this one, single player included (W5).
-local function start_step(what, f)
-	local ok, err = pcall(f)
-	if not ok then printf("! [coop_economy_world] %s failed: %s", what, tostring(err)) end
-end
-
 function on_game_start()
 	if not core.engine() then return end
-	start_step("patch_warfare", patch_warfare)
-	start_step("patch_game_setup", patch_game_setup)
+	coop_util.start_step("coop_economy_world", "patch_warfare", patch_warfare)
+	coop_util.start_step("coop_economy_world", "patch_game_setup", patch_game_setup)
 	register_events()
 	RegisterScriptCallback("actor_on_update", actor_on_update)
 	RegisterScriptCallback("save_state", function(mdata)

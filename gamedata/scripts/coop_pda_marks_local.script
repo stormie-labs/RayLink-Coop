@@ -302,9 +302,16 @@ local function install_tracker()
 	tracker = mod
 end
 
+-- level.name() gives the loaded level. Its new actor spawn receives a first update before regular updates.
+local level_now = nil
+
+local function on_first_update()
+	level_now = level.name()
+end
+
 local function update()
 	if not C().active() or not db.actor or not coop_mode.actor_is_player() then return end
-	local name, now = level.name(), time_global()
+	local name, now = level_now, time_global()
 	if name ~= map_name then
 		map_name, snapshot, next_request, next_poll = name, nil, 0, 0
 	end
@@ -332,6 +339,7 @@ local function install_delivery()
 	C().set_limit(REQUEST, 2, 1)
 	C().on(REQUEST, reply, "host")
 	C().on_big(RESPONSE, receive, "player")
+	RegisterScriptCallback("actor_on_first_update", on_first_update)
 	RegisterScriptCallback("actor_on_update", update)
 end
 

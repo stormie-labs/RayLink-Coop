@@ -1,4 +1,4 @@
--- R32 W8: keep the ItemProcessor's stock roll when the item only has an ALife entity.
+-- Item state at birth: keep the ItemProcessor's stock roll when the item only has an ALife entity.
 local api = rawget(_G, "coop")
 local installed = false
 local born, born_frame = {}, nil
@@ -49,7 +49,7 @@ function roll_reward(section, entity, properties, requested_section)
 end
 
 -- The stock effects that roll what they give: xr_effects.reward_item, and reward_random_item through it. give_actor,
--- give_letter and give_reward make the item as it is (Dev 58 Lua fix).
+-- give_letter and give_reward create the item directly.
 local ROLLING_EFFECTS = { reward_item = true, reward_random_item = true }
 
 function effect_rolls(name)

@@ -1,5 +1,5 @@
 -- Ядро: без проверок режима (docs/MODES.md)
--- Dev 57 G9-2. The map owner supplies confirmed deaths, hits and loot rolls.
+-- Kill, hit and loot credit: the map owner supplies confirmed deaths, hits and loot rolls.
 -- coop_credit delivers to the character's player, who applies local tutorial and display settings.
 local NPE, SILENT = "credit_npe_kill", "credit_silent_kill"
 local ENEMY, HELI, ZCP = "credit_enemy_hit", "credit_heli_hit", "credit_zcp_loot"

@@ -1,6 +1,6 @@
 --[[
 	Anomaly Coop - giving items and money to other players (gamedata\scripts\coop_economy_money.script)
-	SPEC R-6.7: every player has his own money; money and items can be passed between players.
+	Every player has his own money. Players can give each other money and items.
 
 	Items: the inventory context menu (ui_inventory) gets "Give to <player>" for every player whose character
 	stands within give_radius. The action is the engine's own transfer to that character
@@ -13,14 +13,14 @@
 	window, whole boxes / items as above with u = units in economy.gift, and a split box made by the host, which then
 	tells the receiver itself (economy.gift { i, u, g = giver } from 0). Units of one name add up: "<nick> gave you: X x45."
 
-	Money: "Give money to <player>" opens a choice of amounts. The transfer itself is the engine's (F2 T1, the host
-	ledger): coop.money_give(peer, amount) takes the money from the giver at once, on a client as a pending change,
+	Money: "Give money to <player>" opens a choice of amounts. The engine's host ledger owns the transfer:
+	coop.money_give(peer, amount) takes the money from the giver at once, on a client as a pending change,
 	and the host checks it and credits the receiver, or gives it back with its next balance when it refuses. The
 	receiver must be a player who has joined (and the host itself): the engine refuses one who is still loading or has
 	left ("no such player"). This script checks the session rules (money_transfer, max_money_transfer) on the
-	giver's machine and tells the player what happened. Nothing of money goes over our own events any more.
+	giver's machine and tells the player what happened. The engine carries the money transfer.
 
-	F2 T6b (Ruling F2-19): the host enforces the rules itself. Its Lua pushes them into the ledger with
+	The host enforces the rules itself. Its Lua pushes them into the ledger with
 	coop.money_set_rules(enabled, max) (every 2 s and at once when an option changes), and the ledger refuses a transfer
 	against them whatever the client's Lua did. The host's answer comes back to the player as a note, which the engine
 	hands to the callback coop_money_note on the machine of that player:
@@ -33,6 +33,7 @@
 
 	For other scripts:
 		coop_economy_money.give_money(peer, amount) -> true when the engine accepted the transfer
+		coop_economy_money.open_amounts(ui, peer)   the amounts to give `peer`, at the cursor of inventory window `ui`
 --]]
 
 local core = coop_economy_core
@@ -48,7 +49,7 @@ local stats = { sent = 0, refused = 0, items_given = 0, host_refused = 0, gifts_
 	gifts_bad = 0 }
 
 local function money_text(amount)
-	return tostring(amount) .. " " .. core.tr("st_coop_eco_currency", "RU")
+	return tostring(amount) .. " " .. coop_util.tr("st_coop_eco_currency", "RU")
 end
 
 -- coop.money_give names a refusal in English; the player gets it in his language.
@@ -58,25 +59,25 @@ local WHY_ID = {
 	["no such player"] = "gone", -- the receiver has not joined or has left
 	["no character"] = "nochar", -- the GIVER has no character (the engine says nothing else about the receiver)
 	["not in the world"] = "world", -- the giver is a client that has not entered the host's world yet
-	["over the allowance"] = "allowance", -- F2 T6b: an income above what the host lets a player make by himself
-	["transfers are off"] = "off", -- F2 T6b: money_transfer is off on the host
-	["over the transfer limit"] = "limit", -- F2 T6b: above max_money_transfer of the host
-	["too many transfers"] = "rate", -- T6b review I1: the host's rate bucket of transfers is empty
+	["over the allowance"] = "allowance", -- income exceeds what the host allows a player to make independently
+	["transfers are off"] = "off", -- money_transfer is off on the host
+	["over the transfer limit"] = "limit", -- above the host's max_money_transfer
+	["too many transfers"] = "rate", -- the host's transfer rate bucket is empty
 }
 
 local function refusal_text(why)
 	local id = WHY_ID[why] or "bad"
-	return core.tr("st_coop_eco_money_why_" .. id, tostring(why))
+	return coop_util.tr("st_coop_eco_money_why_" .. id, tostring(why))
 end
 
--- The reason of a refusal the HOST told (F2 T6b). A verdict means something else by cause: "over the maximum" is the
+-- For a refusal from the host, interpret the reason according to its cause: "over the maximum" refers to the
 -- receiver's purse for a transfer and the player's own for an income; "malformed" for a transfer is a receiver who left.
 local function note_reason(why, cause)
 	if why == "over the maximum" and cause ~= "transfer" then
-		return core.tr("st_coop_eco_money_why_cap", "the host's money limit was reached")
+		return coop_util.tr("st_coop_eco_money_why_cap", "the host's money limit was reached")
 	end
 	if why == "malformed" and cause == "transfer" then
-		return core.tr("st_coop_eco_money_why_gone", "the receiver is not in the game")
+		return coop_util.tr("st_coop_eco_money_why_gone", "the receiver is not in the game")
 	end
 	return refusal_text(why)
 end
@@ -87,7 +88,7 @@ end
 function give_money(peer, amount)
 	if not (core.live() and db.actor) then return false end
 	if not core.rule("money_transfer") then
-		core.tip(core.tr("st_coop_eco_money_off", "Money transfers are off in this session."))
+		core.tip(coop_util.tr("st_coop_eco_money_off", "Money transfers are off in this session."))
 		return false
 	end
 	local n = core.num(amount) -- NaN and infinity are no amounts
@@ -97,12 +98,12 @@ function give_money(peer, amount)
 	local max = core.rule("max_money_transfer") or 1000000
 	if amount > max then amount = max end
 	if amount < 1 then
-		core.tip(core.tr("st_coop_eco_money_none", "You have no money to give."))
+		core.tip(coop_util.tr("st_coop_eco_money_none", "You have no money to give."))
 		return false
 	end
 	local p = core.player(peer)
 	if not p or p.is_self then
-		core.tip(core.tr("st_coop_eco_money_no_target", "That player is not here."))
+		core.tip(coop_util.tr("st_coop_eco_money_no_target", "That player is not here."))
 		return false
 	end
 	local api = core.engine()
@@ -124,14 +125,14 @@ function give_money(peer, amount)
 end
 
 -------------------------------------------------------------------------------
--- The host's rules into the ledger (F2 T6b)
+-- The host's rules for the ledger
 -------------------------------------------------------------------------------
 local RULES_EVERY_MS = 2000
 local MAX_TRANSFER = 4294967295 -- the most coop.money_set_rules takes
 local rules = { next_at = 0, missing_logged = false }
 
--- F3a task 6 (docs/plans/2026-10-24-f3a-split-levels.md 1.1, 1.2): the ledger belongs to the world server, so the rules go
--- into it from there. What a player does with money - give_money, the notes about gifts and refusals - is the same for the
+-- The ledger belongs to the world server, which applies the rules directly.
+-- give_money and the notes about gifts and refusals work the same way for the
 -- host player and a remote client (the host player's coop.money_give goes to the world server over the internal channel and
 -- is answered by a coop_money_note like any client's).
 
@@ -183,10 +184,10 @@ end
 -------------------------------------------------------------------------------
 local function who_text(peer)
 	local p = type(peer) == "number" and peer >= 0 and core.player(peer) or nil
-	return p and p.nick or core.tr("st_coop_eco_money_somebody", "another player")
+	return p and p.nick or coop_util.tr("st_coop_eco_money_somebody", "another player")
 end
 
--- Gifts (T6b review I1): a modified client can give 1 RU again and again, and every gift would be a news item, a log line
+-- Repeated gifts as small as 1 RU can each trigger a news item, a log line
 -- and a lookup of the players. The first gift after a quiet time is told at once; the ones that follow within GIFT_GAP_MS
 -- are collected (by giver) and told as one line: the giver, the sum and the number of gifts.
 local GIFT_GAP_MS = 3000
@@ -243,7 +244,7 @@ local function on_money_note_body(kind, peer, amount, why, cause)
 				core.tip(core.fmt("st_coop_eco_money_refused_to", "Transfer of %s to %s refused: %s.", money_text(math_abs(n)),
 					who_text(peer), reason))
 			else
-				-- the receiver is gone: no name to put in (T6b review M7)
+				-- The receiver has left, so no name is available.
 				core.tip(core.fmt("st_coop_eco_money_refused_amount", "Transfer of %s refused: %s.", money_text(math_abs(n)), reason))
 			end
 		elseif n > 0 then
@@ -288,8 +289,7 @@ end
 -- The game object of item `id` when it is in this actor's inventory, else nil. Id 0 is the actor himself.
 -- Both records must say so: the server entity's parent changes when the transfer is processed (xrServer ownership event) and
 -- the game object joins the inventory only when that event reaches the level (Actor_Events GE_OWNERSHIP_TAKE: H_SetParent, then
--- inventory().Take). Going by the record alone the gift "arrived" a frame early, with "0 of <section> here: none" in the log
--- (owner and host logs 2026-11-16, item 16228 quest_package_4).
+-- inventory().Take). Wait for the game object so the arrival log reflects what the receiver holds.
 local function own_item(id)
 	if id == 0 or not (db and db.actor) then return nil end
 	local obj = level.object_by_id(id)
@@ -313,10 +313,10 @@ local function forget(id)
 	end
 end
 
--- The item of gift `g` is here: into the line of its giver (a new line starts its ITEM_LINE_MS now).
+-- Add gift `g` to its giver's line. Start ITEM_LINE_MS for a new line.
 local function arrived(id, g, obj, t)
 	forget(id)
-	-- live 2026-11-08 ("I give 2, 4 are given"): each gift that came, and what this actor has of its section now
+	-- Log each arrival and the receiving actor's inventory for its section.
 	pcall(function()
 		local sec = obj:section()
 		local have = core.own_ids_of(sec)
@@ -469,8 +469,8 @@ end
 local slots = {} -- index -> { peer, nick, avatar_id } (players near enough for an item)
 local money_slots = {} -- index -> { peer, nick }
 
--- F5-SEAT-2: the most entries of each list = the session's seats (the co-op 8, a server 16); an engine that says no seats
--- (an older exe): nil, as many as it lists players.
+-- Limit each list to the session's seats (8 in Co-op, 16 in Server). If the engine reports no seats, return nil
+-- so the number of player rows determines the list size.
 function slots_max()
 	local api = rawget(_G, "coop")
 	local ok, info = pcall(function() return api.session_info() end)
@@ -496,8 +496,36 @@ local function refresh_slots()
 	end
 end
 
+local function reset_props(ui, actions, names, params)
+	ui.item_props:Reset(GetCursorPosition(), actions, names, params)
+end
+
+-- The amounts the player can give `peer`, at the cursor in inventory window `ui` (its cell properties box): the steps up to the money
+-- in his pocket, then all of it. With no money he is told so instead. Every way of giving money in the inventory opens this list.
+function open_amounts(ui, peer)
+	local actions, names, params = {}, {}, {}
+	local have = db.actor and db.actor:money() or 0
+	for _, a in ipairs(AMOUNTS) do
+		if a <= have then
+			actions[#actions + 1] = "coop_eco_GiveAmount"
+			names[#names + 1] = money_text(a)
+			params[#params + 1] = { peer, a }
+		end
+	end
+	if have > 0 then
+		actions[#actions + 1] = "coop_eco_GiveAmount"
+		names[#names + 1] = core.fmt("st_coop_eco_money_all", "All (%s)", money_text(have))
+		params[#params + 1] = { peer, have }
+	end
+	if #names == 0 then
+		core.tip(coop_util.tr("st_coop_eco_money_none", "You have no money to give."))
+	else
+		pcall(reset_props, ui, actions, names, params)
+	end
+end
+
 local function patch_inventory()
-	local inv = core.mod("ui_inventory")
+	local inv = coop_util.module("ui_inventory")
 	local cls = inv and inv.UIInventory
 	if not (cls and type(cls.InitProperties) == "function") then return end
 
@@ -514,13 +542,13 @@ local function patch_inventory()
 		local item = level.object_by_id(id)
 		local who = level.object_by_id(s.avatar_id)
 		if not (item and who) then
-			core.tip(core.tr("st_coop_eco_money_no_target", "That player is not here."))
+			core.tip(coop_util.tr("st_coop_eco_money_no_target", "That player is not here."))
 			return
 		end
 		local p = item:parent()
 		if not (p and p:id() == 0) then return end
 		-- More than one unit (rounds of ammo, a stack of items): the amount window of coop_economy_give gives them.
-		local give = core.mod("coop_economy_give")
+		local give = coop_util.module("coop_economy_give")
 		if give and type(give.offer) == "function" then
 			local ok, taken = pcall(give.offer, self, id, bag, s)
 			if ok and taken then return end
@@ -550,25 +578,7 @@ local function patch_inventory()
 		-- The menu closes itself after this action: open the amount list on the next update.
 		local ui = self
 		CreateTimeEvent("coop_economy_money", "amounts", 0, function()
-			local actions, names, params = {}, {}, {}
-			local have = db.actor and db.actor:money() or 0
-			for _, a in ipairs(AMOUNTS) do
-				if a <= have then
-					actions[#actions + 1] = "coop_eco_GiveAmount"
-					names[#names + 1] = money_text(a)
-					params[#params + 1] = { s.peer, a }
-				end
-			end
-			if have > 0 then
-				actions[#actions + 1] = "coop_eco_GiveAmount"
-				names[#names + 1] = core.fmt("st_coop_eco_money_all", "All (%s)", money_text(have))
-				params[#params + 1] = { s.peer, have }
-			end
-			if #names == 0 then
-				core.tip(core.tr("st_coop_eco_money_none", "You have no money to give."))
-			else
-				pcall(function() ui.item_props:Reset(GetCursorPosition(), actions, names, params) end)
-			end
+			open_amounts(ui, s.peer)
 			return true
 		end)
 	end
@@ -580,7 +590,7 @@ local function patch_inventory()
 	function cls:InitProperties(obj, bag, ...)
 		if core.live() then
 			refresh_slots()
-			-- F5-SEAT-2: an entry per seat of the session (a server 16; more when a later session has more seats). "Give money
+			-- Reserve an entry per session seat. "Give money
 			-- to" follows every "Give to": at 51.. while there are up to 10 (the co-op's 8 keep their places), else right after.
 			local want = math.max(slots_max() or 0, #slots, #money_slots)
 			if (tonumber(self.coop_eco_props) or 0) < want and type(self.properties) == "table" then
@@ -615,13 +625,6 @@ function print_status()
 		stats.gift_lines, items.n, stats.gifts_lost, stats.gifts_bad)
 end
 
--- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
--- error here would skip all the scripts after this one, single player included (W5).
-local function start_step(what, f)
-	local ok, err = pcall(f)
-	if not ok then printf("! [coop_economy_money] %s failed: %s", what, tostring(err)) end
-end
-
 local hooked = false
 local function hook_engine()
 	if hooked then return end
@@ -636,6 +639,6 @@ end
 
 function on_game_start()
 	if not core.engine() then return end
-	start_step("patch_inventory", patch_inventory)
-	start_step("hook_engine", hook_engine)
+	coop_util.start_step("coop_economy_money", "patch_inventory", patch_inventory)
+	coop_util.start_step("coop_economy_money", "hook_engine", hook_engine)
 end

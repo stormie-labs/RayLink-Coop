@@ -1,6 +1,6 @@
 -- Ядро: без проверок режима (docs/MODES.md)
 --[[
-	Anomaly Coop - who gets the credit of an action (gamedata\scripts\coop_credit.script), Dev 57 G9-1 (TZ R19).
+	Anomaly Coop - who gets the credit of an action (gamedata\scripts\coop_credit.script).
 
 	The stock credits ONE player: db.actor, AC_ID == 0. In a session the process that leads a map (the co-op host, a map
 	server) sees every other player as a stalker proxy, so stock credit code pays the host's own player or nobody, and a
@@ -38,7 +38,7 @@
 	coop_tasks.personal_character() run and name personal effects of a character; coop_reputation.responsible_character(obj)
 	names the player (or the companion's owner) responsible for an object; coop_reputation.for_actor(obj, fn, ...) runs fn
 	for him on the process that decides it.
-	Used by coop_reputation (G9-1: the heli box) and the units G9-2..G9-6.
+	coop_reputation uses these helpers for the heli box. Other personal rewards use the same credit API.
 	Wire: no event of its own (the callers' verbs, each with its own prefix). Saved keys: none. Security: a payload from
 	the network is never logged or formatted here; ids are whole numbers 0..65534.
 --]]
@@ -60,10 +60,7 @@ local VERB_MAX = 48 -- "mods." + verb within the engine's 64 characters
 
 stats = { sent = 0, held = 0, late = 0, dropped = 0, refused = 0 }
 
-local function log(fmt, ...)
-	local ok, line = pcall(string.format, fmt, ...)
-	printf("[coop-credit] %s", ok and line or tostring(fmt))
-end
+local log = coop_util.logger("[coop-credit]")
 
 local function session()
 	return coop_npc_players.active() == true
@@ -179,7 +176,7 @@ local function verb_ok(verb)
 	return type(verb) == "string" and #verb > 0 and #verb <= VERB_MAX and verb:find("^[%w_]+$") ~= nil
 end
 
--- His peer now, or nil: no player with that character here (yet)
+-- The peer for this character, or nil when no player with that character is here.
 local function peer_of_character(character)
 	if character == 0 then return coop_npc_players.self_peer() end
 	local peer = coop_npc_players.peer_of(character)

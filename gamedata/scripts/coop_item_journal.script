@@ -1,6 +1,6 @@
 --[[
 	Anomaly Coop - the item journal (gamedata\scripts\coop_item_journal.script). Diagnostics only: it changes nothing in the game.
-	Live 2026-11-07: the host (vanilla Anomaly) lost 2 of his 3 artefacts from the backpack and nobody could tell when or why.
+	Why: an item that leaves a player's inventory unseen (an artefact gone from the backpack) must be traceable to when and why.
 
 	Every machine journals its own player; the host (and a map server) also the characters of the clients, which are stalkers
 	with the stock binder there (npc_on_item_drop). One line in the game log whenever an item of a watched kind leaves:
@@ -287,7 +287,7 @@ local function difference(before, after)
 	return table_concat(lost, ", ")
 end
 
--- World entry: what is carried now, against what the last world had.
+-- World entry: compare the current inventory with the inventory from the previous world.
 local function settle_world()
 	settle_at = nil
 	local actor = db.actor
@@ -522,7 +522,7 @@ local on_item_take = guarded(function(item)
 	if not entered or not watched(item) then return end
 	local id = field(item, "id")
 	if type(id) ~= "number" then return end
-	if pending[id] and pending[id].owner == 0 then -- it came back before its cause was known
+	if pending[id] and pending[id].owner == 0 then -- the item returns before the cause arrives
 		pending[id] = nil
 		pending_count = pending_count - 1
 	end
@@ -632,13 +632,6 @@ local function wrap_releases()
 			return orig(se, ...)
 		end
 	end
-end
-
--------------------------------------------------------------------------------
--- For other scripts and coop_status
--------------------------------------------------------------------------------
-function counters()
-	return { lines = stats.lines, suppressed = stats.suppressed, errors = stats.errors, pending = pending_count }
 end
 
 function on_game_start()

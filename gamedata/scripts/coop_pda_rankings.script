@@ -1,22 +1,16 @@
 --[[
 	Anomaly Coop - the ranking list of the PDA "Statistics" tab on a client (gamedata\scripts\coop_pda_rankings.script)
-	Plan: docs\plans\2026-11-16-pda-per-player.md (tab "Statistics", fix R1).
 
-	Owner 2026-11-16 (build 51, a client of a host who plays): the list on the right of the tab appeared on his machine only
-	after the HOST opened its PDA. Two causes, both on the client:
-	  1. The list was asked of the host only from the info callback "ui_pda" (coop_world_compat.actor_on_info_callback). The
-	     engine fires it only when the actor gets "ui_pda" anew (inventory_owner_info.cpp OnReceiveInfo), and on a client
-	     nothing takes "ui_pda" away again: the stock does it from the callback of "ui_pda_hide" (info_portions.script 18,
-	     host-only; item_device.script 175-180), and "ui_pda_hide" is group story (xrCoop\coop_rules.h is_machine_info lists
-	     "ui_pda" only), so the client's copy has it already and its callback does not fire there. After one open (or with
-	     "ui_pda" in the join save) the client never asked again.
-	  2. The stock rows hide while the actor has "ui_pda_hide" (pda.script 510, coop_quests_pda's cached rows the same). On a
-	     client that info is the host's: it goes away only while the HOST's PDA is open (info_portions.script 17 on the host,
-	     coop_story pushes it). So the rows showed exactly while the host had its PDA up.
+	The client requests rankings from its own window. The "ui_pda" info callback
+	(coop_world_compat.actor_on_info_callback) fires only when the actor gains the info (inventory_owner_info.cpp
+	OnReceiveInfo). The stock removes it in the host's "ui_pda_hide" callback (info_portions.script, item_device.script).
+	"ui_pda_hide" is group story info (xrCoop\coop_rules.h is_machine_info lists "ui_pda" only), so coop_story mirrors
+	the host's PDA state. The stock pda.script and coop_quests_pda hide rows while the actor has "ui_pda_hide"; the
+	client's rankings need visibility based on its own window instead.
 	Here, on a live client only (the host and single player run the stock code untouched):
 	  - the ranking window itself asks for the list: the engine calls pda.coc_rankings_can_show(1..size+1) when the tab is
 	    shown and every 3 s while it stays shown (UIRankingWnd.cpp Show / Update); the first call of a pass after a pause
-	    (the tab was closed) asks the host at once, an open tab asks again every REFRESH_MS;
+	    (a closed tab) asks the host at once, an open tab asks again every REFRESH_MS;
 	  - "ui_pda_hide" (the host's PDA state) is not this machine's: the rows are asked without it;
 	  - no stock rows from the client's frozen ALife copy (its own row there is the join save's server object: an old
 	    faction, rank and reputation; the rest are the NPC ranks of the join): until the host's answer the list is empty,
@@ -31,7 +25,7 @@ local qc = coop_quests_core
 local tostring, tonumber, type, pcall = tostring, tonumber, type, pcall
 
 local TAG = "pda-rank"
-local GAP_MS = 4500 -- longer than the window's 3 s pass: the tab was closed meanwhile, ask again
+local GAP_MS = 4500 -- longer than the window's 3 s pass: a longer gap implies a closed tab, so ask again
 local REFRESH_MS = 30000 -- an open tab asks again this often (the host walks all of its ALife for one answer)
 local Q_BASE = 1000000 -- our request numbers, apart from coop_quests_pda's own (1, 2, ...)
 
@@ -135,8 +129,10 @@ local function install()
 	end
 end
 
+-- once, on the first update after coop_quests_pda's own wrappers
 local function on_update()
-	if not state.installed then install() end
+	UnregisterScriptCallback("actor_on_update", on_update)
+	install()
 end
 
 function print_status()

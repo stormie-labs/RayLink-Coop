@@ -1,6 +1,6 @@
 --[[
 	Anomaly Coop - "give how many" (gamedata\scripts\coop_economy_give.script)
-	Owner 2026-11-07: an item of more than one unit is given by an amount the player sets with a slider.
+	A player uses a slider to select how many units to give from a multi-unit item.
 
 	The menu entry stays "Give to <player>" (coop_economy_money, one per player within give_radius). On an item of one unit
 	it gives at once as before. Otherwise it opens the amount window (ui_coop_give.xml): the item's icon and name, the
@@ -131,7 +131,7 @@ local function cell_ids(ui, id, bag)
 	return ids
 end
 
--- What can be given of these ids now: { kind = "rounds" | "items", sec, max, first, objs = {...}, boxes = {...} } or nil.
+-- What these ids can give: { kind = "rounds" | "items", sec, max, first, objs = {...}, boxes = {...} } or nil.
 local function measure(ids)
 	local first = mine(ids[1])
 	if not first then return nil end
@@ -206,7 +206,7 @@ local function why_text(why)
 		box = "the box is no longer yours on the host", count = "more rounds than a box holds",
 		spawn = "the host could not make the box",
 	}
-	return core.tr("st_coop_eco_part_why_" .. why, en[why])
+	return coop_util.tr("st_coop_eco_part_why_" .. why, en[why])
 end
 
 -- The rounds of a refused request go back into this actor's boxes of that section: its own box first, then the others
@@ -323,7 +323,7 @@ end
 -- The receiver is told by the authority (from = 0); the host player hears it here.
 local function tell_receiver(to, id, n, giver)
 	if to == core.self_id() then
-		local money = core.mod("coop_economy_money")
+		local money = coop_util.module("coop_economy_money")
 		if money and type(money.expect_gift) == "function" then pcall(money.expect_gift, id, giver, n) end
 		return
 	end
@@ -400,7 +400,7 @@ end
 local function receiver_here(s)
 	local p = core.player(s.peer)
 	if not (p and not p.is_self and p.obj and p.pos) then
-		return nil, core.tr("st_coop_eco_money_no_target", "That player is not here.")
+		return nil, coop_util.tr("st_coop_eco_money_no_target", "That player is not here.")
 	end
 	local me = core.position_of_id(0)
 	if not (me and core.dist(me, p.pos) <= (core.rule("give_radius") or 5)) then
@@ -424,18 +424,18 @@ function give(ids, s, n)
 	if not (core.live() and db.actor) then return 0 end
 	local m = measure(ids)
 	if not m or m.max < 1 then
-		core.tip(core.tr("st_coop_eco_give_nothing", "There is nothing left to give."))
+		core.tip(coop_util.tr("st_coop_eco_give_nothing", "There is nothing left to give."))
 		return 0
 	end
 	local avatar, why = receiver_here(s)
 	local who = avatar and level.object_by_id(avatar)
 	if not who then
-		core.tip(why or core.tr("st_coop_eco_money_no_target", "That player is not here."))
+		core.tip(why or coop_util.tr("st_coop_eco_money_no_target", "That player is not here."))
 		return 0
 	end
 	n = core.int(n, 1, MAX_UNITS) or 1
 	if n > m.max then n = m.max end
-	-- live 2026-11-08 ("I give 2, 4 are given"; the window counted 20 of 10 spawned): the ids moved and what the cell held
+	-- Keep the moved ids and the contents of the cell for the transfer log.
 	local moved, cell, uses = {}, {}, nil
 	for _, o in ipairs(m.kind == "items" and m.objs or {}) do cell[#cell + 1] = o:id() end
 	for _, b in ipairs(m.boxes) do cell[#cell + 1] = b.id end
@@ -471,7 +471,7 @@ function window()
 	return win and win:IsShown() and win or nil
 end
 
--- No Lua window lives through a level change (live 2026-11-08, RL-AMY4-AZXY: heap corruption on the new level's script start).
+-- Close Lua windows before a level change to avoid heap corruption during script startup on the new level.
 function close_window()
 	local w = win
 	if w then pcall(function() w:Close() end) end
@@ -655,7 +655,7 @@ function print_status()
 		stats.refused)
 end
 
--- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop (W5).
+-- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop.
 local hooked = false
 function on_game_start()
 	if not core.engine() or hooked then return end

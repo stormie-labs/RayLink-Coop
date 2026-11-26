@@ -10,18 +10,16 @@
 	   write it (the item is in his inventory, or the var is a world flag players set), stores it and sends
 	   it to everybody else. Host changes go to all clients. Companion / death-drop / release flags are the
 	   host's (refused from clients). "pathpoint*" (companion walking) is not sent.
-	   Live 2026-11-08 (G.A.M.M.A., a scope on a client's SR-3M): a client makes its new weapons at once under ids the
-	   host lent it (a scope's or kit's clone, a detach), the host makes them when it answers - later, or after its
-	   budget queue. A client's change of such an id is held on the host (HOLD_MS) and checked and stored once the
-	   item is there, not refused: the parts GAMMA moved onto the clone were lost on the host, its save and the
-	   others. GAMMA's alife_clone_weapon copies the old id's table to the clone directly (only "parts" goes through
-	   se_save_var): after a clone its other vars go out too (after_clone). Item riders are held the same way.
-	   P99 (2026-11-25, TZ §6.28): each value carries the sender's instance of the item (its stamp _coop_instance, or its
-	   name). Processes stamp one weapon each its own way (a repair answered by the world server and by the map server, a
-	   repair sent to one co-op client), so a weapon's "parts" under another stamp that names this same item (name, and the
-	   host id in the stamp) are applied (item_alias); a value for another item under the id is still refused or waits.
-	   R2 (2026-11-26, Core): the same for every se var of the item and its riders (2.), and the bare name (an unstamped copy)
-	   names it too (same_item): an unstamped holder's jam and camo reach an authority that took another stamp.
+	   A client creates a weapon clone under a leased id. The host creates its copy when it answers the request,
+	   possibly after its budget queue. The host holds writes for that id for HOLD_MS and checks them once the item
+	   exists, so the host, its save and other players receive the state of the clone. GAMMA's alife_clone_weapon
+	   copies the source id's table directly and calls se_save_var only for "parts"; after_clone sends the other
+	   vars too. Item riders are held the same way.
+	   Each value carries the sender's instance of the item (its stamp _coop_instance, or its name). The world
+	   server and map server can stamp the same repair independently, and a co-op repair can target one client.
+	   item_alias accepts a matching item under another stamp or its bare name (same_item), for parts, every se var
+	   and item riders. An unstamped holder's jam and camo can reach a differently stamped authority. A value for
+	   another item under the same id waits or is refused.
 	2. Item riders (m_data[key][item_id]) of addons that keep per-item state in their own m_data table
 	   (Powered Exos, 3DSS marks, Meat Spoiling, GAMMA pouches ...): the machine that holds the item polls its
 	   inventory and sends changed entries; the host stores and relays them. Addons declare keys with
@@ -29,23 +27,23 @@
 	3. Per-player m_data of stock scripts (sleepiness, thirst, psy health of arszi_psy, disguise, detector,
 	   radio frequency, items at a mechanic: MANIFEST): a client never saves, and its world comes from the host's save, where these
 	   keys hold the HOST's values. The client sends its own values to the host every 15 s when they changed;
-	   the host keeps them in its m_data under coop_peer_mdata[<character id>] (inside the host save, P4).
+	   the host keeps them in its m_data under coop_peer_mdata[<character id>] in the host save.
 	   When a client loads the host's world, its own values replace the host's in m_data right after the
 	   save is read (alife_storage_manager.on_before_load_state), before any load_state callback (first
 	   visit: the keys are cleared, the scripts start from their defaults). Third-party mod keys (skills, XP,
 	   perks ...) are carried by coop_mods_pdata (mods group); a key it owns is skipped here.
 	   coop_economy_mdata.register_player_key(key, provider): provider() returns the current value on a
 	   client (default: the live m_data entry).
-	   Build 56 (live 2026-11-18): at the engine's word that a load continuing this world starts (coop_on_world_leaving)
+	   When the engine signals a load continuing this world (coop_on_world_leaving),
 	   a client keeps every key as it is then in the session stash for that load ("@load:<epoch>|..."); the load of that
 	   world reads it instead of the host's record (up to 15 s older), and the next look tells the host.
 	4. World m_data keys that only the host writes but clients read (player-made stashes of addons ...):
 	   polled on the host, sent to clients on change. coop_economy_mdata.register_world_key(key).
-	   Build 57 (stand b57g_ms_crash_server, "script event 'economy.se' from #2 dropped: sender is not in the world yet"): what a
-	   client sent of 1 and 2 in the last CARRY_MS before a load that continues this world, and what he had not sent yet, goes
-	   into the session stash with his keys of 3; the world drops what he sends between his trip request and the SessionReset of
-	   his rejoin (P6), the co-op host what a mover sends after its go, and the save he loads next is the world's. Once he is
-	   live in the next world, a kept value his save lacks is written back on his machine and sent again (carry_release).
+	   A client keeps the item values of 1 and 2 that it sends in the last CARRY_MS or has yet to send before a
+	   load continuing this world. The session stash holds them with the keys of 3. The world server drops
+	   writes between the player's trip request and the SessionReset of its rejoin. The co-op host drops writes
+	   from a mover after its go. Once the client is live in the next world, carry_release reapplies and resends
+	   a kept value that the save lacks.
 
 	Events (values are coop_economy_core.pack strings):
 		economy.se   any -> host -> others   { n, i1, v1, d1, ... }   id (host numbering), var, value; the world server passes
@@ -53,6 +51,7 @@
 		economy.imd  any -> host -> others   { n, i1, k1, d1, ... }   id, m_data key, value
 		economy.pmd  client -> host          { k, d }                 per-player key, value (nil = cleared)
 		economy.wmd  host -> clients         { k, d }                 world key, value
+	A script that checks received se and imd batches first registers coop_economy_mdata.admit(f) (see admit below).
 --]]
 
 local core = coop_economy_core
@@ -69,7 +68,7 @@ local PENDING_MS = 30000 -- a change for an entity that does not exist here yet 
 local HOLD_MS = 60000 -- host: a client's change of an item the host has not made yet (a leased create) waits this long
 local HOLD_MAX = 512 -- host: at most this many held changes (the oldest go first)
 local PEER_STORE = "coop_peer_mdata"
-local CARRY_MS = 5000 -- client: an item value sent this recently may not have reached the world before his load (Build 57)
+local CARRY_MS = 5000 -- client: a recently sent item value may not reach the world before the client's load
 local CARRY_MAX = 512 -- client: at most this many item values carried through one load
 local CARRY_BYTES = 128 * 1024 -- and this many bytes of them (a stash value holds 256 KiB)
 
@@ -83,13 +82,14 @@ local stats = {
 	imd_out = 0, imd_in = 0, imd_refused = 0, imd_held = 0, clones = 0,
 	pmd_out = 0, pmd_in = 0, pmd_applied = 0,
 	wmd_out = 0, wmd_in = 0, errors = 0, oversize = 0,
-	parts_alias = 0, parts_refused = 0, parts_parked = 0, -- P99: parts under another stamp of the same item / of another
-	se_alias = 0, imd_alias = 0, clone_alias = 0, -- P99 R2: se vars / item riders / an owner's clone source taken under another stamp of the same item (or its name)
+	parts_alias = 0, parts_refused = 0, parts_parked = 0, -- parts under another stamp of the same item or of another item
+	se_alias = 0, imd_alias = 0, clone_alias = 0, -- se vars, riders and clone sources accepted under another stamp or bare name
 }
 
+local function storage_state(asm) return asm.get_state() end
+
 local function m_data()
-	local asm = rawget(_G, "alife_storage_manager")
-	local ok, m = pcall(function() return asm.get_state() end)
+	local ok, m = pcall(storage_state, rawget(_G, "alife_storage_manager"))
 	return ok and type(m) == "table" and m or nil
 end
 
@@ -97,9 +97,7 @@ local clone_busy, clone_transactions, clone_retired = {}, {}, {}
 local clone_storage = nil
 
 local function item_instance(id)
-	for _, player in ipairs(core.players()) do
-		if player.avatar_id == id then return "player/" .. tostring(core.host_id(id)) end
-	end
+	if core.avatar_peer(id) ~= nil then return "player/" .. tostring(core.host_id(id)) end
 	local m = m_data()
 	local se = m and m.se_object and m.se_object[id]
 	if se and se._coop_instance then return se._coop_instance end
@@ -118,18 +116,17 @@ local function clone_is_retired(id)
 	return true
 end
 
--- P99 (TZ §6.28): the item an SE value's instance names. A weapon's stamp is "<name>/<host id>/<nonce>" (the engine's
--- replacement::token, engine/src/xrCoop/coop_replacement.h:69); an unstamped item's instance is its name. <name> is the item's own
--- name in a spawn's stamp (write_clone_initial), but the SOURCE's name in a clone transaction's stamp (prepare_local_clone /
--- host_replace -> clone_stage gives the target the token): item_alias wants the item's own name there, so a clone target's stamp
--- never aliases (review R2 finding 3: strict, as before R2).
+-- An SE value's weapon stamp is "<name>/<host id>/<nonce>" (replacement::token in engine/src/xrCoop/coop_replacement.h).
+-- An unstamped item's instance is its name. write_clone_initial stamps the item's own name on a spawn.
+-- prepare_local_clone / host_replace -> clone_stage stamps a clone target with the source's name, so item_alias
+-- cannot accept a different clone stamp as an alias for the target itself.
 local function named_by(instance)
 	local name, hid = instance:match("^(.+)/(%d+)/%d+$")
 	if name then return name, tonumber(hid) end
 	return instance, nil
 end
 
--- P99 R2 (TZ §6.28, Core: both modes, no mode check): do instances `a` and `b` of item `hid` (host numbering) name the same
+-- Do instances `a` and `b` of item `hid` (host numbering) name the same
 -- item? Equal, or the same name where every stamp among them carries the item's host id: another process's stamp of this item,
 -- or its bare name (a copy no process stamped). The processes stamp a weapon each its own way when each of them writes its
 -- EntitySpawn first (write_clone_initial -> clone_export): in the server mode a player's repair is answered by the world server
@@ -145,7 +142,7 @@ function same_item(a, b, hid)
 	return name_a == name_b and (hid_a == nil or hid_a == hid) and (hid_b == nil or hid_b == hid)
 end
 
--- P99: a value (a weapon's parts, any se var, an item rider) sent under another stamp of the item this process holds under
+-- A value (a weapon's parts, any se var, an item rider) sent under another stamp of the item this process holds under
 -- `lid`, or under its bare name: the instance names this item here (its object's name, and same_item with this process's own
 -- instance of it). A value for another item (another name, another host id) is still refused or waits; every other check of
 -- the value (holder, clone_busy / clone_retired, the item riders' id-reuse ticks) still applies after this one.
@@ -156,7 +153,7 @@ local function item_alias(lid, hid, instance)
 	return named_by(instance) == object:name() and same_item(instance, item_instance(lid), hid)
 end
 
--- P99: what the parts lane did with a value under another stamp, in the log: at most PARTS_SAY_MAX lines a minute
+-- Log parts received under another stamp, at most PARTS_SAY_MAX lines a minute.
 local PARTS_SAY_MAX = 30
 local parts_said = { n = 0, quiet = 0, until_ms = 0 }
 local function say_parts(fmt, ...)
@@ -219,13 +216,11 @@ local function send_batches(name, entries, target, except, bridges, skip)
 	flush()
 end
 
--- The world server passes the se vars a player or a map server wrote on to its map servers too (except the one they came
--- from): a map server is the authority of the bodies, boxes and characters of its level and acts on their vars (WPO strips a
--- weapon by its "parts"). Owner, live 2026-11-15: a client put the parts back on a stripped weapon in his bag, threw it into a
--- body, and the map server, which had heard only of the strip, found nothing to take off. Every map server gets every such
--- change, not only the sender's level's: an item moves between levels with its carrier, and a map server holds the entities
--- of the whole world (it loads the world server's save). What the world server's own scripts write stays as before (its
--- players only, unless a variable has directed delivery. Item riders (imd) do not go this way.
+-- The world server relays a player's or map server's se vars to every map server except the sender. A map server
+-- acts on the vars of the bodies, boxes and characters of its level (WPO strips a weapon by its "parts").
+-- An item can change levels with its carrier, so each map server needs its current vars for the entities it loads
+-- from the world save. The world server's own writes go to players unless a variable has directed delivery.
+-- Item riders (imd) do not go this way.
 local function relay_to_bridges(entries, except, local_write)
 	if not local_write then
 		local list = core.bridges()
@@ -242,6 +237,36 @@ local function relay_to_bridges(entries, except, local_write)
 		end
 	end
 	for target, batch in pairs(directed) do send_batches("se", batch, nil, nil, { target }) end
+end
+
+-- Admission of received batches: f(kind, t, from) runs on every "se" and "imd" batch (decoded, before this file reads it) and
+-- may take entries out of it (t["k"..i] = nil); a function it returns runs once this file has stored the batch.
+local admitters = {}
+
+function admit(f)
+	if type(f) ~= "function" then return end
+	for _, g in ipairs(admitters) do
+		if g == f then return end
+	end
+	admitters[#admitters + 1] = f
+end
+
+-- The handler of batch event `kind`: the admitters, `receive`, then what the admitters asked to run after it.
+local function admitted(kind, receive)
+	return function(t, from)
+		local after = nil
+		for _, f in ipairs(admitters) do
+			local then_run = f(kind, t, from)
+			if type(then_run) == "function" then
+				after = after or {}
+				after[#after + 1] = then_run
+			end
+		end
+		receive(t, from)
+		if after then
+			for _, f in ipairs(after) do f() end
+		end
+	end
 end
 
 local function read_batch(t)
@@ -288,20 +313,18 @@ local se_early_n = 0
 local SE_EARLY_MAX = 512
 local se_heard
 
--- Build 57: a player's machine keeps what it sent recently for a load that may come before it reached the world (a map server never
--- loads another world of this session: its process ends with its world).
+-- A player's machine keeps recently sent values in case a load starts before they reach the world.
+-- A map server never loads another world of this session: its process ends with its world.
 local function carries() return core.follows_world() and coop_mode.is_player_mirror() end
 
 local function not_sent(var)
 	return type(var) ~= "string" or var == "_coop_instance" or var:sub(1, 9) == "pathpoint"
 end
 
--- Is there nobody to tell? A host with no other player: yes. A client: never - its host is there even when coop.players() has no
--- other row. A world server's seat plays no character and is in no row, so the one player of such a world counted no "others" and
--- told his host nothing: his weapon's parts, his item riders, his thirst and sleep (stand, build 47: "player data out 0"; the owner's
--- log: "first visit: defaults" at every load of a level).
+-- A host with no other players has nobody to tell. A client always has a host: the world server's seat plays
+-- no character and has no row in coop.players(), even though it needs the client's parts, riders and player data.
 local function nobody_to_tell()
-	return core.others_count() == 0 and not core.follows_world()
+	return not core.follows_world() and core.others_count() == 0
 end
 
 local function parts_held_by(id, holder)
@@ -362,7 +385,7 @@ local function se_wrapper(id, name, varname, val, ...)
 	if varname == "parts" and not applying and core.live() then se_heard(id, varname) end
 end
 
--- The session is live: what was written while its world was being read is queued like any write made now.
+-- Release writes queued during the world read once the session is live.
 local function se_early_release()
 	if se_early_n == 0 then return end
 	local early = se_early
@@ -463,8 +486,8 @@ local function client_may_write(from, hid, var)
 	return p ~= nil and p.avatar_id ~= nil and core.root_of(hid) == p.avatar_id
 end
 
--- Host: a client's changes of items the host has not made yet (live 2026-11-08: a client's new weapon under a leased id
--- is made on the host when its request is answered). { from, e = entry, until_ms }, oldest first.
+-- Host: hold a client's changes for items it creates under a leased id until the host processes the request.
+-- Entries are { from, e = entry, until_ms }, oldest first.
 local se_hold = {}
 local imd_hold = {}
 
@@ -489,8 +512,8 @@ local function on_se(t, from)
 		local mismatch = alife_object(lid) and e.instance and e.instance ~= item_instance(lid)
 		local m = m_data()
 		local stamped = m and m.se_object and m.se_object[lid] and m.se_object[lid]._coop_instance
-		-- P99: a weapon's value under another stamp of this same item, or under its bare name, is its value (item_alias: its parts,
-		-- since R2 every se var of it - jam, camo ...); the checks below still apply
+		-- item_alias accepts another stamp or the bare name for the same weapon's se vars, including parts, jam and camo.
+		-- Holder and clone checks still apply.
 		local alias = mismatch and item_alias(lid, e.id, e.instance)
 		if alias then mismatch = false end
 		if clone_is_retired(lid) or clone_busy[lid] then
@@ -498,7 +521,7 @@ local function on_se(t, from)
 		elseif e.key == "parts" and mismatch and not stamped and (not host or from >= 0x100) then
 			-- An existing mirror can receive parts before it learns the
 			-- matching initial stamp. Never apply them under the old stamp.
-			-- (Here the value names another item: another stamp of this same item is no reason to wait, P99.)
+			-- A stamp of the same item passes item_alias and needs no wait.
 			se_parts_wait[lid] = e
 			stats.se_pending = stats.se_pending + 1
 			stats.parts_parked = stats.parts_parked + 1
@@ -556,7 +579,7 @@ local function on_se(t, from)
 	end
 end
 
--- Host: held changes whose item is here now are checked like a fresh one, stored and sent to the others.
+-- Host: held changes whose item exists here are checked like a fresh one, stored and sent to the others.
 local function se_release_held()
 	if #se_hold == 0 then return end
 	local keep, relay, t = {}, {}, core.now()
@@ -594,7 +617,7 @@ local function se_retry()
 		if not clone_busy[id] and alife_object(id) then
 			local stamp = item_instance(id)
 			local se = m and m.se_object and m.se_object[id]
-			-- P99: the item came with another stamp of itself (item_alias): its parts apply
+			-- item_alias accepts the parts under another stamp of the same item.
 			local same = stamp == e.instance or item_alias(id, e.id, e.instance)
 			if clone_is_retired(id) or (se and se._coop_instance and not same) then
 				se_parts_wait[id] = nil
@@ -677,7 +700,7 @@ local function item_poll()
 			local tbl = m[d.key]
 			local value
 			if type(tbl) == "table" then value = tbl[id] end -- preserve false; nil means removal
-			local packed = core.pack(value)
+			local packed = value == nil and "_" or core.pack(value)
 			if b[d.key] ~= packed or item_retry[id] then
 				b[d.key] = packed
 				if not silent or item_retry[id] then out[#out + 1] = { core.host_id(id), d.key, packed, item_instance(id) } end
@@ -711,7 +734,7 @@ local function on_imd(t, from)
 	for _, e in ipairs(read_batch(t)) do
 		local d = item_decl(e.key)
 		local lid = host and e.id or core.local_id(e.id)
-		-- P99 R2: a rider under another stamp of this same item, or under its bare name, is its rider (item_alias)
+		-- item_alias accepts the rider under another stamp of the same item or its bare name.
 		local mismatch = alife_object(lid) and e.instance and e.instance ~= item_instance(lid)
 		local alias = mismatch and item_alias(lid, e.id, e.instance)
 		if alias then mismatch = false end
@@ -742,7 +765,7 @@ local function on_imd(t, from)
 	if host and #relay > 0 then send_batches("imd", relay, nil, from) end
 end
 
--- Host: held riders whose item is here now go to their holder's check, the store and the others.
+-- Host: held riders whose item exists here go to their holder's check, the store and the others.
 local function imd_release_held()
 	if #imd_hold == 0 then return end
 	local m = m_data()
@@ -786,7 +809,7 @@ local function declare_builtin_item_keys()
 		{ "speed_loaders", "speed_loaders" },
 	}
 	for _, e in ipairs(list) do
-		if rawget(_G, e[1]) or core.mod(e[1]) then declare_item_key(e[2]) end
+		if rawget(_G, e[1]) or coop_util.module(e[1]) then declare_item_key(e[2]) end
 	end
 end
 
@@ -796,7 +819,7 @@ end
 -- Top-level m_data keys that belong to one player. provider(): the current value on this machine.
 local function from_save_state(modname, key)
 	return function()
-		local m = core.mod(modname)
+		local m = coop_util.module(modname)
 		if not (m and type(m.save_state) == "function") then return nil, false end
 		local t = {}
 		local ok = pcall(m.save_state, t)
@@ -804,14 +827,12 @@ local function from_save_state(modname, key)
 	end
 end
 
--- Build 56 (live 2026-11-18): a client never runs save_state (the engine saves only on the host), so a key that only a
--- mod's own local save_state writes never changed in m_data on a client: the disguise, the detector out and the radio
--- frequency were read from that dead entry and were lost at every load (disguise off, detector put away, a new random
--- frequency). These providers read the live module state the stock save_state would write.
+-- The engine saves only on the host. A client reads the live module state that save_state would write
+-- so its disguise, detector and radio frequency survive a load.
 -- A global accessor of a module: its value, or "not used" (the m_data entry stays) when the module or the function is missing.
 local function from_global(modname, fname)
 	return function()
-		local m = core.mod(modname)
+		local m = coop_util.module(modname)
 		local f = m and m[fname]
 		if type(f) ~= "function" then return nil, false end
 		local ok, v = pcall(f)
@@ -823,8 +844,8 @@ end
 -- A file local of a module (its save_state is local): found as an upvalue of its functions (coop_mods_core.find_local).
 local function from_local(modname, name)
 	return function()
-		local m = core.mod(modname)
-		local mc = core.mod("coop_mods_core")
+		local m = coop_util.module(modname)
+		local mc = coop_util.module("coop_mods_core")
 		if not (m and mc and type(mc.find_local) == "function") then return nil, false end
 		local ok, v, holder = pcall(mc.find_local, m, name)
 		if not (ok and holder) then return nil, false end
@@ -859,25 +880,22 @@ MANIFEST = {
 	detector_was_active = detector_out, -- actor_effects
 	RF_freq = from_global("item_radio", "get_freq"), -- item_radio frequency
 	RepairItemList = from_save_state("inventory_upgrades", "RepairItemList"), -- items lent to a mechanic, ids are the world's
-	-- The engine saves no bolt (CSE_ALifeItemBolt::can_save is false): the stock keeps their count here and makes them again at
-	-- the first update. In the host's save these are the HOST's counts, so after a level change a client had as many bolts as
-	-- the host, none when the host had none (owner 2026-11-14: "bolts get lost at a level change").
+	-- CSE_ALifeItemBolt::can_save is false: the stock keeps the counts here and creates the bolts at its first update.
+	-- The saved counts belong to the host, so clients carry their own bolts across a level change.
 	bolts = from_save_state("itms_manager", "bolts"),
 	bolt_slot = from_save_state("itms_manager", "bolt_slot"),
 }
 
--- Keys that stay the host's until the player told `told` at least once: a character of a world older than the key would lose what
--- the old way gave it (the host's bolts) at its first join. bolts is a table even when empty, so "none" is told apart from "never".
+-- Keep the host's values until the player supplies `told`. An empty bolts table reports zero bolts; a missing table
+-- means the player has yet to report a count.
 local KEEP_UNTIL_TOLD = { bolts = "bolts", bolt_slot = "bolts" }
 -- Sections whose take or drop is told soon (a second), not at the next 15 s look: a level change may come first.
 local TOLD_SOON = { bolt = true, bolt_bullet = true }
 
--- Owner's client log 2026-11-16 (b51): the stock makes the bolts of m_data at the first update (itms_manager
--- actor_on_first_update), while a client is still loading; the engine drops a create into its actor before it is live
--- (coop_requests.cpp lua_create -> take_lease: no leased id before live -> client_forward_spawn: "not live", nothing sent,
--- nil to Lua: "!ERROR [bolt] is not spawned by ItemProcessor"), and nothing asked again. So a client's own told bolts are
--- taken out of m_data before load_state (the stock makes none of them) and made here once it is live, a few a frame, in
--- its own actor (the leased create; the host checks it as any). Bolt sections only, a section at most at the stock's limit.
+-- itms_manager.actor_on_first_update makes bolts from m_data, which can run on a client before the session is live.
+-- coop_requests.cpp lua_create calls take_lease; client_forward_spawn drops the create when the client has no leased id.
+-- Remove the client's reported bolts from m_data before load_state so the stock makes none of them. Create them
+-- in the client's actor once live, a few per frame, using leased ids. Use only bolt sections and respect the stock limit.
 local BOLT_DELAY_MS = 1000 -- after live: the host's IdLease of the new world comes first
 local BOLT_BATCH = 10 -- creates a frame (the engine's own pace sends 20 in a row)
 local BOLT_QUIET_MS = 5000 -- after the last create: his hands are not told while the new items come online
@@ -885,8 +903,8 @@ local BOLT_MAX_DEFAULT = 99 -- itms_manager.ltx [settings] bolt_max_num (ish_fix
 local BOLT_MAX_CEIL = 500
 local bolts_hold = nil -- { bolts = {sec = n}, slot = sec | nil, at = ms, queue = {sec, ...} } a client's own bolts to make
 local bolts_quiet_until = 0
--- Build 56: his own bolts of this load ({ bolts, slot }) while they are made and come online: a load that starts then keeps
--- these, not his hands (empty or half made). Set with bolts_hold, read only while it or the quiet time lasts.
+-- While the bolts are created and come online, a load carries the full { bolts, slot } rather than an incomplete inventory.
+-- Set with bolts_hold and read while it or the quiet time lasts.
 local bolts_carry = nil
 
 function register_player_key(key, provider)
@@ -906,9 +924,9 @@ local function owned_elsewhere(key)
 end
 
 local pmd_sig = {} -- key -> packed value last sent
-local pmd_unsent = {} -- key -> a packed value over MAX_VALUE that was logged (not sent: the host would refuse it)
-local pmd_loaded_for = nil -- m_data table the surrogate was applied to
-local pmd_kept = false -- Build 56: the stash holds the keys a load starts with; nothing is told from the dying world
+local pmd_unsent = {} -- key -> the logged packed value over MAX_VALUE (the host would refuse it)
+local pmd_loaded_for = nil -- m_data table holding the applied surrogate
+local pmd_kept = false -- the stash holds the load's starting keys; skip sending from the departing world
 local pmd_kept_at = 0
 local PMD_KEPT_MS = 180000 -- ... unless that load never comes (a transition called off): the looks go on after this long
 
@@ -926,7 +944,7 @@ local function pmd_poll()
 	if not m then return end
 	if pmd_kept then
 		if core.now() - pmd_kept_at < PMD_KEPT_MS then return end
-		pmd_kept = false -- the load it was kept for never came: this world goes on
+		pmd_kept = false -- resume sending if the load does not start
 	end
 	local bolts_busy = bolts_hold ~= nil or core.now() < bolts_quiet_until
 	for key in pairs(MANIFEST) do
@@ -959,7 +977,7 @@ local function peer_store(m, avatar_id, create)
 	local se = alife_object(avatar_id)
 	local name = se and se:name()
 	local e = root[avatar_id]
-	if e and name and e.name ~= name then -- the id was reused by another entity
+	if e and name and e.name ~= name then -- another entity has reused the id
 		e = nil
 		root[avatar_id] = nil
 	end
@@ -993,19 +1011,17 @@ function player_value(avatar_id, key)
 end
 
 -------------------------------------------------------------------------------
--- Build 56 (live 2026-11-18, "everything a client has must come through a transition exactly as in a usual game"): the
--- host's record is the last 15 s look, so a drink, a sleep or a psy hit in the seconds before a level change came back
--- undone. The engine says when a load that continues this world starts, while the old world and the actor are still up
--- (coop_main.on_world_leaving -> script callback coop_on_world_leaving(epoch of the new world)): the keys go into the
--- session stash as they are that moment, "@load:<epoch>|<pack>", and the load of that world reads them instead of the
--- record (the same rule as coop_mods_pdata.stash_data). Nothing is sent then: the host is saving already. After the load
--- the normal look tells the host what its record lacks.
+-- The host's record can lag a client's drink, sleep or psy hit by 15 s. At the start of a load continuing this world,
+-- coop_main.on_world_leaving fires coop_on_world_leaving with the new world's epoch while the actor is available.
+-- Store the current keys as "@load:<epoch>|<pack>" in the session stash, using the same rule as coop_mods_pdata.stash_data.
+-- The load reads them instead of the host's record. The host is saving at this point; the client sends its next update
+-- after the load.
 -------------------------------------------------------------------------------
 local STASH_KEY = "coop_economy_mdata"
 
 local function world_epoch()
 	local api = core.engine()
-	if not (api and api.world_epoch) then return nil end -- an older exe: nothing kept is ever read
+	if not (api and api.world_epoch) then return nil end -- kept data requires a world epoch
 	local ok, e = pcall(api.world_epoch)
 	return ok and tonumber(e) or nil
 end
@@ -1056,8 +1072,8 @@ local function kept_for_load(key)
 end
 
 -------------------------------------------------------------------------------
--- Build 57: the item values of 1 and 2 that may not have reached the world before such a load (see the header). Kept beside
--- the keys above at the engine's word, read with them, put back once he is live in the next world.
+-- Stash item values of 1 and 2 that may not reach the world before a load. Read them with the player keys and
+-- reapply them once the player is live in the next world.
 -------------------------------------------------------------------------------
 local ITEMS_STASH_KEY = "coop_economy_mdata_items"
 local carry = nil -- client, the values kept for this load: { se = { {id, var, packed, instance}, ... }, imd = { ... } }
@@ -1107,7 +1123,7 @@ local function keep_items_for_load(epoch)
 				local tbl = m[d.key]
 				local value
 				if type(tbl) == "table" then value = tbl[id] end
-				local packed = core.pack(value)
+				local packed = value == nil and "_" or core.pack(value)
 				if b[d.key] ~= packed then carry_add(imd, seen_imd, { core.host_id(id), d.key, packed, item_instance(id) }, budget) end
 			end
 		end, db.actor)
@@ -1137,20 +1153,17 @@ local function mine_to_write(lid, world_var)
 	local own = db.actor and db.actor:id()
 	if root ~= nil and root == own then return true end
 	if not world_var then return false end
-	for _, p in ipairs(core.players()) do
-		if p.avatar_id ~= nil and p.avatar_id == root then return false end -- another player's: his to write
-	end
-	return true
+	return root == nil or core.avatar_peer(root) == nil -- another player's: his to write
 end
 
 local function same_instance(lid, instance)
-	-- P99 R2: or another stamp of this same item / its bare name (item_alias): the save he loads may hold the world's stamp
+	-- item_alias accepts another stamp of this item or its bare name because the save can hold the world's stamp.
 	return instance == nil or instance == "" or instance == item_instance(lid) or item_alias(lid, core.host_id(lid), instance)
 end
 
--- Client, his first live frame in the next world: a kept value his save lacks is written here and sent as a write of his own.
--- A value the save has reached the world before it was saved: nothing to do. A newer word of the world came after his own
--- send: on_se / on_imd took his send out of the recent ones then.
+-- At the client's first live frame, reapply and resend each kept value absent from the save.
+-- A value already in the save needs no resend. When a newer world value arrives, on_se / on_imd remove the client's
+-- send from the recent values.
 local function carry_release()
 	if not carry or not db.actor then return end
 	local c = carry
@@ -1198,7 +1211,7 @@ local function apply_surrogate(m)
 	pmd_loaded_for = m
 	pmd_kept = false -- a new world: the looks go on
 	bolts_hold, bolts_quiet_until, bolts_carry = nil, 0, nil -- a new world: what the last one had to make is void
-	se_recent, imd_recent = {}, {} -- what the last world was sent is in its save or in the kept item data
+	se_recent, imd_recent = {}, {} -- the save or the kept item data holds the preceding world's values
 	local items = kept_for_load(ITEMS_STASH_KEY)
 	carry = type(items) == "table" and items or nil
 	local my = core.host_id(0)
@@ -1234,7 +1247,7 @@ end
 -- alife_storage_manager.CALifeStorageManager_load reads the save's m_data, calls on_before_load_state(), then
 -- fires load_state: the client's own values go in between. Installed in on_game_start (before the load).
 local function patch_load_state()
-	local asm = core.mod("alife_storage_manager")
+	local asm = coop_util.module("alife_storage_manager")
 	if not (asm and type(asm.on_before_load_state) == "function") then
 		core.log("! alife_storage_manager.on_before_load_state missing: player data of clients is the host's")
 		return
@@ -1254,8 +1267,8 @@ end
 -- 4. World m_data keys (host -> clients)
 -------------------------------------------------------------------------------
 -- A value over MAX_VALUE goes in pieces (coop_mods_core.send_big, "mods.economy_wmd": "<key>\n<packed>"), up to that chunker's
--- 256 KiB (TZ v2 6.4 row 6, 2026-11-18: Hideout Furniture's lists over 12 KB never reached the clients again, silently).
--- Round 2 (F4): wmd_sig is the value the clients were sent; a client a send failed for (still loading, a full queue) is owed
+-- 256 KiB: a list over 12 KB must still reach the clients, and never fail silently.
+-- wmd_sig is the value the clients were sent; a client a send failed for (still loading, a full queue) is owed
 -- the key (wmd_owed[key][peer]) and gets the current value again alone, after a wait that doubles from one look to WMD_WAIT_MAX.
 -- The others are not sent it again. A value that did not reach every client is logged once per key and value (the sends here
 -- are quiet: coop_economy_core.send would log every try).
@@ -1264,7 +1277,7 @@ local wmd_sig = {}
 local wmd_seeded = false -- clients got the current values with the host's save
 local wmd_next_poll = 0
 local WMD_BIG = "economy_wmd"
-local wmd_unsent = {} -- key -> the packed value that was not sent (logged once per value)
+local wmd_unsent = {} -- key -> unsent packed value (logged once per value)
 local wmd_owed = {} -- key -> peer -> { at = next try (ms), wait = ms }
 local WMD_WAIT_MAX = 60000
 
@@ -1286,7 +1299,7 @@ local function wmd_send_to(key, packed, peer)
 		if ok and sent == true then return true end
 		return false, tostring(ok and why or sent)
 	end
-	local mc = core.mod("coop_mods_core")
+	local mc = coop_util.module("coop_mods_core")
 	if not (mc and type(mc.send_big) == "function") then return false, "no chunker (coop_mods_core)" end
 	if mc.send_big(WMD_BIG, key .. "\n" .. packed, peer) then
 		stats.wmd_big = (stats.wmd_big or 0) + 1
@@ -1504,10 +1517,9 @@ function clone_stage(source, target, name, packed, trust, token)
 	if source ~= 65535 and not original then return false end
 	if trust == 1 then
 		local host = m.se_object[source] or {}
-		-- P99 R2 (review 2026-11-26, Core): the owner's source under another stamp of this same item, or under its bare name, is
-		-- this source (item_alias): his unstamped copy while this process stamped its own (another player's repair), or his stamp
-		-- of it while this process holds none (the world's answer to his repair, the map server's copy from the save). Another
-		-- item (another name, a stamp of another host id) is refused as before; the engine has checked the source's name.
+		-- item_alias accepts the owner's source under another stamp of the same item or its bare name. Another
+		-- player's repair can leave the owner unstamped, and the world server's repair answer can reach an
+		-- unstamped map server copy. A different name or host id is refused; the engine checks the source name.
 		local theirs = snapshot.se._coop_instance
 		if theirs ~= host._coop_instance then
 			local object = alife_object(source)
@@ -1524,9 +1536,9 @@ function clone_stage(source, target, name, packed, trust, token)
 	end
 	local early = se_parts_wait[target]
 	if trust == 2 and early and snapshot.se.parts == nil and type(early.instance) == "string" then
-		-- P99 (review 2026-11-26): the waiting table applies under this item's own stamp, and also under another stamp of this same
-		-- item (its name, and in a stamp its host id - as item_alias): in the server mode the map server's answer waits under its
-		-- stamp while the gun arrives here with the world's, and the waiting entry is cleared below.
+		-- Accept waiting parts under the item's own stamp or another stamp matching its name and host id, as item_alias does.
+		-- In Server the map server's parts can wait under its stamp while the weapon arrives with the world's stamp.
+		-- Clear the waiting entry after applying it.
 		local same = early.instance == snapshot.se._coop_instance
 		if not same then
 			local early_name, early_hid = named_by(early.instance)
@@ -1644,7 +1656,7 @@ function clone_adopt(id, packed)
 	return true
 end
 
--- TZ 6.28 (P99, review D1 R1, 2026-11-26): the stamp alone of another process's spawn of a weapon this copy knows, while this copy
+-- Take only the stamp of another process's spawn of a weapon this copy knows, while this copy
 -- holds no stamp of it or the same one (the engine: coop_trunk.cpp world_takes_spawn_stamp -> requests::adopt_spawn_stamp). Stamped
 -- as clone_export does above; nothing else of the spawn: no SE_HOST_ONLY keys, no parts, no purge (held and pending changes of the
 -- item stay), no resend. clone_adopt is the whole adoption a player's copy does from its authority's spawn.
@@ -1729,7 +1741,7 @@ local function server_entity_on_unregister(se_obj)
 end
 
 local function bolt_max()
-	local im = core.mod("itms_manager")
+	local im = coop_util.module("itms_manager")
 	local ok, v = pcall(function() return im.ini_manager:r_float_ex("settings", "bolt_max_num") end)
 	v = ok and tonumber(v) or BOLT_MAX_DEFAULT
 	return math.max(0, math.min(math.floor(v), BOLT_MAX_CEIL))
@@ -1846,22 +1858,15 @@ end
 -- Tests only.
 function _stats() return stats end
 
--- on_game_start must not throw: axr_main runs every script's on_game_start in one unprotected loop, and an
--- error here would skip all the scripts after this one, single player included (W5).
-local function start_step(what, f)
-	local ok, err = pcall(f)
-	if not ok then printf("! [coop_economy_mdata] %s failed: %s", what, tostring(err)) end
-end
-
 function on_game_start()
 	if not core.engine() then return end
-	start_step("install", install)
-	core.on("se", on_se)
-	core.on("imd", on_imd)
+	coop_util.start_step("coop_economy_mdata", "install", install)
+	core.on("se", admitted("se", on_se))
+	core.on("imd", admitted("imd", on_imd))
 	core.on("pmd", on_pmd)
 	core.on("wmd", on_wmd)
-	start_step("big world keys", function()
-		local mc = core.mod("coop_mods_core")
+	coop_util.start_step("coop_economy_mdata", "big world keys", function()
+		local mc = coop_util.module("coop_mods_core")
 		if mc and type(mc.on_big) == "function" then mc.on_big(WMD_BIG, on_wmd_big, "client") end
 	end)
 	RegisterScriptCallback("actor_on_update", actor_on_update)
@@ -1875,15 +1880,15 @@ function on_game_start()
 		end)
 	end
 	RegisterScriptCallback("actor_on_first_update", function()
-		first_update_at = core.now() -- Build 56: the detector is read from 2 s after this (DETECTOR_SETTLE_MS)
-		start_step("clone hook", install_clone_hook)
+		first_update_at = core.now() -- start the detector's DETECTOR_SETTLE_MS wait
+		coop_util.start_step("coop_economy_mdata", "clone hook", install_clone_hook)
 	end)
-	-- Build 56 (live 2026-11-18): a client's keys as they are when a load that continues this world starts (coop_main creates
-	-- the callback name at its load; the core.on calls above loaded it). Client only, inside keep_for_load.
+	-- Keep a client's current keys when a load continuing this world starts. coop_main declares the callback on load;
+	-- the core.on calls above load it. keep_for_load checks that this is a client.
 	RegisterScriptCallback("coop_on_world_leaving", function(epoch)
 		local ok, err = pcall(keep_for_load, epoch)
 		if not ok then core.log("! player data for the load: %s", tostring(err)) end
-		ok, err = pcall(keep_items_for_load, epoch) -- Build 57: and what may not have reached the world of his items
+		ok, err = pcall(keep_items_for_load, epoch) -- Keep item values that may not reach the world before the load.
 		if not ok then core.log("! item data for the load: %s", tostring(err)) end
 	end)
 end

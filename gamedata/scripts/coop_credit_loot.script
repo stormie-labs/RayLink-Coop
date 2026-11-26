@@ -1,5 +1,5 @@
 -- Ядро: без проверок режима (docs/MODES.md)
--- Dev 57 G9-3. The map authority pairs base loot generation with a confirmed corpse window.
+-- Corpse loot credit: the map authority pairs base loot generation with a confirmed corpse window.
 -- Haru XP is personal. The bonus items and the progressive armour roll belong to the map.
 
 local XP = "g93_search_xp"
@@ -23,7 +23,7 @@ local function entry(id, name)
 	return current and current.name == name and current or nil
 end
 
--- Another process's word about corpse `id` (Dev 58 Lua fix, gap-mk F8 in Server). The flags only grow: a stale copy never
+-- Another process's word about corpse `id`. The flags only grow: a stale copy never
 -- reopens a settled corpse. On a name mismatch (an id used again) the writer's word wins (`theirs`), else ours stays.
 local function merge_search(id, e, theirs)
 	if not (uint(id, 65534) and type(e) == "table" and type(e.name) == "string") then return end
@@ -87,7 +87,7 @@ local function install_search()
 	if not (effect and increase and C().fn(death, "create_release_item")) then return end
 	-- A file local of haru_skills.script, or a module field where an unlocalizer has the engine (script_storage.cpp) turn
 	-- the local into one before the script compiles: G.A.M.M.A.'s configs\unlocalizers\dotmarks_unlocalizers.ltx lists
-	-- [haru_skills] rank_table (stand b57e: no searcher, no search XP on any machine).
+	-- [haru_skills] lists rank_table so the searcher can resolve it and award search XP.
 	local function haru_local(name)
 		local value = C().upvalue(effect, name)
 		if value == nil then value = rawget(haru, name) end

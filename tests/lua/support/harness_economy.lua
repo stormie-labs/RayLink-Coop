@@ -1,10 +1,10 @@
--- Anomaly Coop temp test harness (W4 economy). Not shipped.
+-- Anomaly Coop economy test harness.
 -- Several machines ("worlds") in one LuaJIT state: each has its own globals (engine/Anomaly stand-ins), its own
 -- copies of the coop_economy_* modules and a shared network bus that behaves like coop_script.cpp
 -- (client -> host relay rules, `from` = original sender).
 ROOT = os.getenv("ECO_ROOT") or "gamedata/"
 VERBOSE = os.getenv("VERBOSE") ~= nil
-dofile("tests/lua/support/stubs.d/money.lua") -- install_money_stubs: coop.money_* of the host ledger (F2 T1)
+dofile("tests/lua/support/stubs.d/money.lua") -- install_money_stubs provides coop.money_* for the host ledger
 
 -- real coop_main encode/decode (loaded once, outside the worlds)
 do
@@ -12,6 +12,14 @@ do
 	local src = fh:read("*a")
 	fh:close()
 	local env = setmetatable({ printf = function() end }, { __index = _G })
+	-- coop_main names coop_util (its logger) and coop_route (it declares its callbacks) when it loads
+	for _, name in ipairs({ "coop_util", "coop_route" }) do
+		local mh = assert(io.open(ROOT .. "scripts/" .. name .. ".script", "r"))
+		local module = setmetatable({}, { __index = env })
+		setfenv(assert(loadstring(mh:read("*a"), "@" .. name .. ".script")), module)()
+		mh:close()
+		env[name] = module
+	end
 	local f = assert(loadstring(src, "@coop_main.script"))
 	setfenv(f, env)
 	f()
@@ -150,7 +158,12 @@ end
 -- a machine
 -------------------------------------------------------------------------------
 function make_world(peer)
-	local W = setmetatable({}, { __index = _G })
+	local W
+	-- the engine loads a script on the first use of its name: the Core's helper module comes that way here, into this world
+	W = setmetatable({}, { __index = function(_, k)
+		if k == "coop_util" then return load_script(W, k) end
+		return _G[k]
+	end })
 	W._G = W
 	W.PEER = peer
 	W.ACTIVE = true
@@ -203,7 +216,7 @@ function make_world(peer)
 		stash_set = function(k, v) W.STASH[k] = v return true end,
 		stash_get = function(k) return W.STASH[k] end,
 	}
-	-- The host ledger (F2 T1): coop.money_give lowers the giver at once and the host credits the receiver.
+	-- The host ledger: coop.money_give lowers the giver at once and the host credits the receiver.
 	-- W.MONEY_REFUSE = "reason" makes the next calls fail.
 	W.MONEY_CALLS, W.RULE_CALLS = {}, {}
 	install_money_stubs(W.coop, {
@@ -382,7 +395,7 @@ function load_script(W, name)
 end
 
 ECON = { "coop_economy_core", "coop_economy_group", "coop_economy_travel", "coop_economy_world",
-	"coop_economy_mdata", "coop_economy_money", "coop_economy_intent" }
+	"coop_economy_mdata", "coop_economy_money" }
 
 function start_world(W)
 	for _, n in ipairs(ECON) do load_script(W, n) end

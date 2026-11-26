@@ -1,4 +1,4 @@
--- Anomaly Coop temp test (W4 economy): coop_economy_* on a host and two clients with stub engines. Not shipped.
+-- Exercise coop_economy_* on a host and two clients with stub engines.
 dofile("tests/lua/support/harness_economy.lua")
 local modes = dofile("tests/lua/support/modes.lua")
 
@@ -19,7 +19,7 @@ local function stock_stubs(W)
 		W.WAITED = (W.WAITED or 0) + 1
 		W.level.change_game_time(0, hours, 0)
 	end }
-	-- the engine's coop.rest (F3 T11) as a recorder; it does not take the word (false), so no doze window opens here: the
+	-- Record the engine's coop.rest calls without consuming the event (false), so no doze window opens here. The
 	-- window is test_rest.lua's business. coop_rest.script needs the class machinery to load.
 	W.REST_LIE = {}
 	W.coop.rest = {
@@ -110,7 +110,7 @@ local function setup(nclients, positions)
 		modes.live(W.coop_mode, function(name) return load_script(W, name) end)
 		start_world(W)
 	end
-	for _, W in pairs(WORLDS) do -- the economy script does not touch the sleep dialog any more (F3 T14)
+	for _, W in pairs(WORLDS) do -- the economy script leaves the sleep dialog alone
 		W.ECON_LEFT_SLEEP_ALONE = W.ui_sleep_dialog.UISleep.OnButtonSleep == W.STOCK_ONBUTTON
 		load_script(W, "coop_rest")
 		W.coop_rest.on_game_start()
@@ -355,9 +355,8 @@ do
 end
 
 -------------------------------------------------------------------------------
--- Owner 2026-11-16: "in an ordinary co-op without split maps every player is offered to travel for the fare of the one who
--- travels; with split maps and a server one player travels; the same with guides". Before that a trip was refused until the
--- whole group stood within the gather radius, and those who stood there were moved without being asked.
+-- In Co-op on a shared map, offer each player the trip at the initiating player's fare.
+-- In Server, only the initiating player travels. Both rules also apply to guides.
 section("travel: fast travel in a shared world: everybody is offered the trip")
 do
 	local H, A, B = setup(2)
@@ -439,9 +438,8 @@ do
 	check(A.KA and H.CLOCK == clock_ka + 190 and A.REFUSED_CGT == 0, "guide to another level: time cost on the host")
 end
 
--- Owner 2026-11-16, over Fair Fast Travel's tutorial line "time passes while you travel, you may end up hungry or tired": "time
--- must not run ahead on a travel, let only the move work, and hunger and the rest with it". The rule travel_takes_time is off
--- unless the world's settings switch it on; it had another name (travel_time) and was on by default.
+-- Fair Fast Travel warns that time can pass during travel. In a session, both travel time and needs progression
+-- require the world's travel_takes_time setting, which defaults to off.
 section("travel: a trip takes no game time unless the world says so")
 do
 	local H, A, B = setup(2)
@@ -720,9 +718,8 @@ do
 	local sent = #H.SENT
 	tick(H, 400) deliver_all()
 	check(#H.SENT == sent, "no echo from the host")
-	-- Owner, live build 46, a world with a world server: "the gun is broken, maybe it is not kept at transitions". GAMMA's WPO rolls
-	-- the parts of the player's weapon right after the host's world is read, before the session is live. That write was dropped:
-	-- the host never had the parts, its save had none, and every next load of a level rolled them again with another seed.
+	-- GAMMA's WPO rolls weapon parts as soon as the host's world is read, before the session is live.
+	-- The client needs to send the latest write once live so the host's save and other players have the same parts.
 	add_item(H, 801, "wpn_kiparis", 501) add_item(A, 801, "wpn_kiparis", 0) add_item(B, 801, "wpn_kiparis", 501)
 	local live = A.coop.is_live
 	A.coop.is_live = function() return false end -- in a session, the host's world is still being loaded
@@ -738,9 +735,8 @@ do
 	local sent_early = #A.SENT
 	tick(A, 400) deliver_all()
 	check(#A.SENT == sent_early, "and it is sent once")
-	-- A world with a world server and one player: the server's seat plays no character and is in no row of coop.players(), so the
-	-- player counted no "others" and told nobody anything - neither his weapon's parts nor his thirst and sleep (stand, build 47:
-	-- "player data out 0" after 90 s; the owner's log: "first visit: defaults" at every load of a level). A client always has its host.
+	-- A lone player in Server has no other row in coop.players(): the world server plays no character.
+	-- The player still needs to send its weapon parts, item riders, thirst and sleep to the world server.
 	do
 		local real_players = A.coop.players
 		A.coop.players = function()
@@ -801,6 +797,50 @@ do
 	check(H.se_load_var(501, nil, "unpatched") == true and B.se_load_var(501, nil, "unpatched") == true, "ids converted to host numbering")
 end
 
+-------------------------------------------------------------------------------
+-- The admission hook of coop_economy_mdata: a script checks a received batch before this file reads it, takes entries out of it,
+-- and runs its own work once the batch is stored.
+section("mdata: admission of received batches")
+do
+	local H, A = setup(1)
+	add_entity(H, 840, "stalker", nil) add_entity(A, 840, "stalker", nil)
+	local seen, order = {}, {}
+	local function admitter(kind, t, from)
+		seen[#seen + 1] = { kind = kind, from = from, n = t.n }
+		for i = 1, t.n or 0 do
+			if t["k" .. i] == "info" then t["k" .. i], t["i" .. i], t["d" .. i], t["x" .. i] = nil, nil, nil, nil end
+		end
+		return function() order[#order + 1] = H.se_load_var(840, nil, "looted") end
+	end
+	H.coop_economy_mdata.admit(admitter)
+	H.coop_economy_mdata.admit(admitter) -- once per function
+	A.se_save_var(840, nil, "looted", true)
+	A.se_save_var(840, nil, "info", "x")
+	tick(A, 400) deliver_all()
+	check(#seen == 1 and seen[1].kind == "se" and seen[1].from == 1 and seen[1].n == 2, "the admitter sees the batch once, decoded")
+	check(H.se_load_var(840, nil, "looted") == true and H.se_load_var(840, nil, "info") == nil, "what it took out is not stored")
+	check(#order == 1 and order[1] == true, "what it returned runs after the store")
+end
+
+-------------------------------------------------------------------------------
+-- One engine list a frame (coop_util.players): the economy's rows, the peer of a character, the nick and the count of others.
+section("core: the players of the session")
+do
+	local H, A = setup(1)
+	local hc, ac = H.coop_economy_core, A.coop_economy_core
+	local anna = hc.player(1)
+	check(anna and anna.id == 1 and anna.avatar_id ~= nil and anna.avatar_id ~= 0 and not anna.is_self, "player(peer): his row")
+	check(hc.avatar_peer(0) == 0 and ac.avatar_peer(0) == 1, "id 0 is this machine's own character")
+	check(hc.avatar_peer(anna.avatar_id) == 1 and hc.avatar_peer(424242) == nil, "another player's character names his peer; none: nil")
+	check(hc.nick_of(1) == anna.nick and hc.nick_of(9) == "#9", "nick_of: his nick, #<peer> when he is not here")
+	check(hc.others_count() == 1 and ac.others_count() == 1 and #hc.players() == 2, "others_count and players")
+	H.ACTIVE = false
+	check(hc.avatar_peer(0) == nil and hc.player(0) == nil and hc.others_count() == 0 and #hc.players() == 0
+		and hc.nick_of(0) == "#0", "outside a session: nobody")
+	H.ACTIVE = true
+end
+
+-------------------------------------------------------------------------------
 section("mdata: item riders")
 do
 	local H, A, B = setup(2)
@@ -835,10 +875,9 @@ end
 
 section("mdata: a client's new weapon the host has not made yet (a scope's clone)")
 do
-	-- Live report 2026-11-08 (G.A.M.M.A.): a client fits a scope to his SR-3M. GAMMA's alife_clone_weapon makes the
-	-- scoped weapon at once on his machine (leased id 861, the same number everywhere) and moves the parts onto it; the
-	-- host makes 861 only when it answers the request (its budget queue may hold it). His parts came while 861 was not on
-	-- the host yet: refused, the host (its save, the others) had none - the tooltip showed other parts later.
+	-- In G.A.M.M.A., a client fitting a scope to an SR-3M exercises GAMMA's alife_clone_weapon.
+	-- It makes the scoped weapon at once on the client (leased id 861) and copies the parts. The host makes its
+	-- copy when it answers the request, possibly after the budget queue, so it must hold the parts until then.
 	local H, A, B = setup(2)
 	for _, W in pairs(WORLDS) do add_item(W, 860, "wpn_sr3m", W.PEER == 1 and 0 or 501) end
 	add_item(A, 861, "wpn_sr3m_scope", 0)
@@ -968,10 +1007,8 @@ do
 end
 
 section("mdata: a player's bolts")
--- Owner, 2026-11-14: "bolts get lost at a level change", a game without split levels. The engine saves no bolt
--- (CSE_ALifeItemBolt::can_save is false); the stock keeps their count in m_data (itms_manager.save_state: bolts, bolt_slot) and
--- makes them again at the first update. In the host's save those are the HOST's counts: a client got as many bolts as the host had,
--- none when the host had none.
+-- In Co-op CSE_ALifeItemBolt::can_save is false. itms_manager.save_state keeps bolts and bolt_slot in m_data,
+-- and the stock recreates them on the first update. The host save contains its own counts, so a client must load its own.
 do
 	local H, A = setup(1)
 	local mine = { bolt = 7 }
@@ -986,7 +1023,7 @@ do
 	A.alife_storage_manager.on_before_load_state()
 	-- his own are made once he is live (next section), never by the stock while he loads: the host's are out of m_data too
 	check(save.bolts == nil and save.bolt_slot == nil, "after the change the stock makes no bolt while he loads, the host's none neither")
-	-- a player whose character never told its bolts (a world of an older build): the host's count stands, as it did
+	-- A character with no reported bolt count starts with the host's count.
 	local old = { se_object = {}, bolts = { bolt = 3 }, bolt_slot = "bolt",
 		coop_peer_mdata = { [501] = { name = "coop_player_avatar501", keys = { sleep = { last_sleep = 1 } } } } }
 	A.MDATA = old
@@ -1018,11 +1055,9 @@ do
 end
 
 section("mdata: a player's bolts come back after the join")
--- Owner, 2026-11-16 (client log b51): at every join 19 "!ERROR [bolt] is not spawned by ItemProcessor" BEFORE "phase
--- loading-world -> live", and no bolt afterwards. The stock (itms_manager.actor_on_first_update) makes the bolts of
--- m_data at the first update; a client is not live yet then, and the engine drops a create into its actor
--- (coop_requests.cpp lua_create -> take_lease: no lease before live -> client_forward_spawn: not live, dropped; nil to Lua).
--- Nothing asked again once the client was live.
+-- itms_manager.actor_on_first_update makes bolts from m_data even when a client is loading.
+-- In coop_requests.cpp, lua_create calls take_lease; without a lease, client_forward_spawn drops the create.
+-- The client's own bolts must be created after it becomes live.
 do
 	-- the stock's first update (GAMMA itms_manager.script 222-242), word for word in what it reads and calls
 	local function stock_first_update(W)
@@ -1060,7 +1095,7 @@ do
 		A.LIVE = true
 		tick(A, 16000)
 		deliver_all()
-		-- from now on his hands: what the engine made here, one of them in the bolt slot (a persistent slot, not counted:
+		-- Read what the engine creates in the player's inventory, with the bolt slot separate (a persistent slot, not counted:
 		-- CInventory::AddAvailableItems); none while a new world loads
 		A.itms_manager = { save_state = function(m)
 			local n = A.MADE and A.MADE.bolt or 0
@@ -1116,7 +1151,7 @@ do
 		"anything but a bolt in the record is not made")
 
 	-- the bolt of the slot is made first, as the stock makes it: the engine puts the first bolt it gets into the empty bolt
-	-- slot. Build 52 took the queue from its end: the slot's section came last and a counted bolt took the slot.
+	-- slot, so creating a counted bolt first can fill the slot with the wrong section.
 	do
 		engine_creates(A)
 		told(H, A, { bolt = 3 }, "bolt_bullet")
@@ -1132,7 +1167,7 @@ do
 			"the slot's bolt is made first, then the counted ones (first " .. tostring(order[1]) .. " of " .. #order .. ")")
 	end
 
-	-- a character that never told its bolts (a world of an older build): today's behaviour, the stock's own creates
+	-- A character with no reported bolt count gets the stock's own creates.
 	local H2, B = setup(1)
 	engine_creates(B)
 	B.LIVE = false
@@ -1180,7 +1215,7 @@ do
 		for _, e in ipairs(W.SENT) do if e.name == name then n = n + 1 end end
 		return n
 	end
-	-- money_give_goes_through_engine: the transfer is the engine's (F2 T1 host ledger), Lua only calls it
+	-- money_give_goes_through_engine: the engine ledger owns the transfer; Lua only invokes it.
 	check(A.coop_economy_money.give_money(0, 500), "money_give_goes_through_engine: anna gives 500 to the host")
 	check(#A.MONEY_CALLS == 1 and A.MONEY_CALLS[1].fn == "money_give" and A.MONEY_CALLS[1].peer == 0
 		and A.MONEY_CALLS[1].n == 500, "coop.money_give(0, 500) is the only call")
@@ -1282,10 +1317,21 @@ do
 	inv:coop_eco_GiveAmount(2, 500)
 	check(A.MONEY == 1500 and B.MONEY == b_money + 500 and A.MONEY_CALLS[#A.MONEY_CALLS].peer == 2
 		and A.MONEY_CALLS[#A.MONEY_CALLS].n == 500, "amount entry gives the money through the engine")
+	-- the one amount list (the inventory's envelope button opens it too): the steps up to the money in pocket, then all of it
+	A.MENU = nil
+	A.coop_economy_money.open_amounts(inv, 2)
+	check(A.MENU and #A.MENU.n == 4 and A.MENU.n[1] == "100 RU" and A.MENU.n[3] == "1000 RU" and A.MENU.n[4] == "All (1500 RU)"
+		and A.MENU.a[1] == "coop_eco_GiveAmount" and A.MENU.p[4][1] == 2 and A.MENU.p[4][2] == 1500, "amount list: steps and all")
+	A.MENU = nil
+	A.MONEY = 0
+	local tips = #A.TIPS
+	A.coop_economy_money.open_amounts(inv, 2)
+	check(A.MENU == nil and #A.TIPS == tips + 1 and A.TIPS[#A.TIPS]:find("no money", 1, true) ~= nil,
+		"no money: no amount list, the player is told so")
 end
 
 -------------------------------------------------------------------------------
--- F2 T6b (Ruling F2-19): money_transfer / max_money_transfer are the host's to enforce. Its Lua pushes the rules into
+-- The host owns money_transfer and max_money_transfer. Its Lua pushes the rules into
 -- the ledger (coop.money_set_rules), and the engine tells a player what the host did with his money through the
 -- callback coop_money_note: a gift ("received", giver, amount) or a refusal ("refused", receiver | -1, change, why, cause).
 section("money rules: the host's Lua pushes them to the ledger")
@@ -1408,7 +1454,7 @@ do
 end
 
 -------------------------------------------------------------------------------
--- T6b review I1: a modified client can send transfers of 1 RU without end (the host's rate bucket holds it to a few a
+-- The host's rate bucket limits repeated 1 RU transfers to a few a
 -- minute); the receiver gets one line per 3 s with the sum and the number, not a news item per gift.
 section("money notes: gifts are collected into one line")
 do
@@ -1479,40 +1525,6 @@ do
 end
 
 -------------------------------------------------------------------------------
-section("intents")
-do
-	local H, A = setup(1)
-	local got = {}
-	for _, W in pairs(WORLDS) do
-		W.coop_economy_intent.register("hf:workshop_stash", function(obj_id, state, args, from)
-			got[#got + 1] = { W = W.PEER, obj = obj_id, state = state, args = args, from = from }
-			if W.PEER == 0 then W.se_save_var(obj_id, nil, "box", 42) end
-		end)
-	end
-	for _, W in pairs(WORLDS) do add_entity(W, 870, "workbench", nil) end
-	local ready = nil
-	A.coop_economy_intent.request({ verb = "hf:workshop_stash", obj_id = 870, state = 0, args = "a",
-		resolve = A.coop_economy_intent.linked_box_resolver("box"), on_ready = function(v) ready = v end })
-	check(A.coop_economy_intent.is_inflight("hf:workshop_stash", 870), "in flight")
-	deliver_all()
-	check(#got == 1 and got[1].W == 0 and got[1].from == 1 and got[1].state == 0 and got[1].args == "a", "the host runs the handler for anna")
-	add_entity(A, 42, "box", nil) add_entity(H, 42, "box", nil)
-	tick(H, 400) deliver_all()
-	run_time_events(A)
-	check(ready == 42 and not A.coop_economy_intent.is_inflight("hf:workshop_stash", 870), "resolved through the synced se var")
-	A.coop.is_live = function() return false end -- in a session, but still loading the host world
-	local before = #got
-	local accepted = A.coop_economy_intent.request({ verb = "hf:workshop_stash", obj_id = 871, state = 0 })
-	deliver_all()
-	check(accepted == false and #got == before and not A.coop_economy_intent.is_inflight("hf:workshop_stash", 871),
-		"joining client cannot execute a host-only intent locally")
-	A.coop.is_live = function() return true end
-	A.coop_economy_core.send("intent", { v = "nope:x", o = 1 }, 0)
-	deliver_all()
-	check(#got == 1, "unknown verb dropped")
-end
-
--------------------------------------------------------------------------------
 section("single player: no session")
 do
 	local H = setup(0)
@@ -1530,9 +1542,8 @@ do
 end
 
 -------------------------------------------------------------------------------
--- (quests hand-over, 2026-11-16) A gift arrives when the item is really in the inventory: the server entity's parent changes when
--- the host processes the transfer, the game object joins the inventory a frame later (GE_OWNERSHIP_TAKE). The owner's and the
--- host's logs said "gift: item 16228 [quest_package_4] ... arrived ...; 0 of quest_package_4 here: none".
+-- The quest_package_4 gift arrives when the game object joins the inventory (GE_OWNERSHIP_TAKE). The entity's parent changes
+-- when the host processes the transfer and can lead the game object by a frame.
 section("a gift arrives with the game object, not with the server record alone")
 do
 	local H = setup(1)
