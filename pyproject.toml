@@ -1,0 +1,16 @@
+# The Python tests of this repository: tools/ and tests/tools/ (pytest). There is no package to build.
+# The dependencies the tests import (pytest itself, Pillow for the asset tests) are named here; they install into the user's
+# Python (python -m pip install --user pytest Pillow). tools\run_all_tests.cmd runs pytest as python -B -m pytest because
+# python -I would hide the user's site-packages.
+[project]
+name = "raylink-coop-tests"
+version = "0"
+requires-python = ">=3.12"
+
+[project.optional-dependencies]
+test = ["pytest", "Pillow"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/tools"]
+# the cache folder would be written next to the tests; every run starts clean
+addopts = "-p no:cacheprovider"

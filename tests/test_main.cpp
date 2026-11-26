@@ -2,8 +2,12 @@
 // Usage: coop_tests.exe [name-substring ...]   (no argument = run everything)
 #include "test_util.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <exception>
+
+#define NOMINMAX
+#include <winsock2.h>
 
 namespace t
 {
@@ -47,6 +51,63 @@ std::vector<uint8_t> random_bytes(size_t size, uint64_t seed)
 		v[i] = uint8_t(s >> 24);
 	}
 	return v;
+}
+
+// The port windows a process can take: the offsets keep every window below 49152, where Windows starts its own
+// ephemeral ports. A process holds its window by binding TCP on the window's first port (the tests bind UDP only, so
+// the claim never takes a test's port); the claim lasts until the process exits. When every window is held, it waits:
+// at most kPortWaitS seconds, then it stops, because a run that shares ports judges another run's traffic.
+static const int kPortOffsets[] = {0, 3000, 6000, 9000, -3000, -6000};
+static const int kPortWaitS = 900;
+
+static int claim_port_window()
+{
+	WSADATA wsa;
+	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
+	{
+		std::printf("[coop_tests] WSAStartup failed: no port window\n");
+		std::exit(2);
+	}
+	for (int waited = 0;; ++waited)
+	{
+		for (int offset : kPortOffsets)
+		{
+			const SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+			BOOL exclusive = TRUE;
+			setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&exclusive), sizeof(exclusive));
+			sockaddr_in at{};
+			at.sin_family = AF_INET;
+			at.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+			at.sin_port = htons(uint16_t(kPortFirst + offset));
+			if (s != INVALID_SOCKET && bind(s, reinterpret_cast<const sockaddr*>(&at), sizeof(at)) == 0)
+			{
+				if (offset != 0)
+					std::printf("[coop_tests] another coop_tests.exe holds the first port window: ports moved by %+d\n", offset);
+				return offset; // the socket stays open: it is the claim
+			}
+			closesocket(s);
+		}
+		if (waited == 0)
+			std::printf("[coop_tests] every port window is held by another coop_tests.exe: waiting\n");
+		if (waited >= kPortWaitS)
+		{
+			std::printf("[coop_tests] no port window after %d s: stop\n", kPortWaitS);
+			std::exit(2);
+		}
+		std::this_thread::sleep_for(std::chrono::seconds(1));
+	}
+}
+
+uint16_t port(uint16_t n)
+{
+	if (n < kPortFirst || n >= kPortFirst + kPortSpan)
+	{
+		std::printf("[coop_tests] t::port(%u): a test port is in [%u, %u)\n", unsigned(n), unsigned(kPortFirst),
+			unsigned(kPortFirst + kPortSpan));
+		std::exit(2);
+	}
+	static const int offset = claim_port_window();
+	return uint16_t(n + offset);
 }
 
 Node::Node(const std::string& nick, uint16_t port)

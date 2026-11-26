@@ -90,6 +90,13 @@ inline void pump_for(std::initializer_list<coop::Session*> sessions, uint32_t ms
 
 coop::Manifest sample_manifest();
 
+// The UDP port a test binds, for its fixed number n in [kPortFirst, kPortFirst + kPortSpan). Two coop_tests.exe running
+// at once (agents with their own COOP_TEST_OUT) would bind the same numbers, so every process takes a window of its own
+// and gets n moved by the window's offset; the first process gets n itself.
+constexpr uint16_t kPortFirst = 37000;
+constexpr uint16_t kPortSpan = 3000;
+uint16_t port(uint16_t n);
+
 // A session plus a recorder of everything its callbacks report.
 struct Node
 {
