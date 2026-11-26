@@ -72,6 +72,8 @@ std::string body_of(const std::string& code, const std::string& head)
 
 std::string events_code() { return code_of(project_file("engine/src/xrGame/coop/coop_events.cpp")); }
 std::string group_code() { return code_of(project_file("engine/src/xrGame/alife_online_offline_group.cpp")); }
+std::string members_code() { return code_of(project_file("engine/src/xrGame/coop/coop_squad_members.cpp")); }
+std::string squad_journal_code() { return code_of(project_file("engine/src/xrGame/coop/srv/coop_squad_journal.cpp")); }
 } // namespace
 
 // ---------------------------------------------------------------- the rule (xrCoop/coop_reconcile.h)
@@ -133,11 +135,14 @@ TEST(relay_echo_the_flush_sends_under_the_echo_it_kept)
 	CHECK(flush.find("net::host_broadcast(Msg::EntityParent") == npos); // every parent and death goes through relay
 	CHECK(flush.find("net::host_broadcast(Msg::EntityDied") == npos);
 	const std::string relay = body_of(events, "void relay(Msg type, const Writer& w, u16 echo)");
-	const size_t none = relay.find("echo == reconcile::kNoEcho");
-	const size_t scope = relay.find("const levels::EchoOf scope(echo);");
+	CHECK(relay.find("levels::with_echo(echo, [&] { net::host_broadcast(type, w); });") != npos);
+	// no echo: the broadcast goes out untouched (levels::with_echo opens no scope for wire::kNoLevel)
+	const std::string with = project_file("engine/src/xrGame/coop/coop_levels.h");
+	const size_t none = with.find("if (echo == wire::kNoLevel)");
+	const size_t scope = with.find("const EchoOf scope(echo);");
 	CHECK(none != npos);
 	CHECK(scope != npos);
-	CHECK(none < scope); // no echo: the broadcast of today, untouched
+	CHECK(none < scope);
 }
 
 // ---------------------------------------------------------------- the relay end to end on the world server (D finding 1, A10)
@@ -240,7 +245,11 @@ TEST(relay_echo_is_inert_in_coop_no_core_or_hostplay_file_makes_an_echo_up)
 			openers.push_back(f.path().filename().string() + ":" + (*it)[1].str());
 	}
 	std::sort(openers.begin(), openers.end());
-	const std::vector<std::string> expected = {"coop_entities.cpp:ev.echo", "coop_events.cpp:echo"};
+	// the Core opens it in one place, levels::with_echo (coop_levels.h); its two callers pass the echo they recorded
+	const std::vector<std::string> expected = {};
+	CHECK(project_file("engine/src/xrGame/coop/coop_levels.h").find("const EchoOf scope(echo);") != npos);
+	CHECK(project_file("engine/src/xrGame/coop/coop_entities.cpp").find("levels::with_echo(ev.echo, ") != npos);
+	CHECK(project_file("engine/src/xrGame/coop/coop_events.cpp").find("levels::with_echo(echo, ") != npos);
 	CHECK_EQ(openers.size(), expected.size());
 	for (size_t i = 0; i < openers.size() && i < expected.size(); ++i)
 		CHECK_EQ(openers[i], expected[i]);
@@ -249,14 +258,14 @@ TEST(relay_echo_is_inert_in_coop_no_core_or_hostplay_file_makes_an_echo_up)
 	CHECK(levels.find("LevelId echo = wire::kNoLevel; // EchoOf") != npos);
 }
 
-// ---------------------------------------------------------------- the member hook (alife_online_offline_group.cpp)
+// ---------------------------------------------------------------- the member hook (alife_online_offline_group.cpp -> coop_squad_members.cpp)
 
 TEST(member_hook_register_and_unregister_raise_joined_and_left)
 {
 	const std::string group = group_code();
 	const std::string reg = body_of(group, "void CSE_ALifeOnlineOfflineGroup::register_member(ALife::_OBJECT_ID member_id)");
 	const size_t insert = reg.find("m_members.insert(std::make_pair(member_id, monster));");
-	const size_t joined = reg.find("coop_member_up(ID, member_id, true);");
+	const size_t joined = reg.find("coop::squad::member_up(ID, member_id, true);");
 	const size_t first = reg.find("if (!empty)");
 	CHECK(insert != npos);
 	CHECK(joined != npos);
@@ -264,21 +273,20 @@ TEST(member_hook_register_and_unregister_raise_joined_and_left)
 	CHECK(joined < first); // before the early return of a squad that had members
 	const std::string unreg = body_of(group, "void CSE_ALifeOnlineOfflineGroup::unregister_member(ALife::_OBJECT_ID member_id)");
 	size_t lefts = 0;
-	for (size_t at = unreg.find("coop_member_up(ID, member_id, false);"); at != npos;
-	     at = unreg.find("coop_member_up(ID, member_id, false);", at + 1))
+	for (size_t at = unreg.find("coop::squad::member_up(ID, member_id, false);"); at != npos;
+	     at = unreg.find("coop::squad::member_up(ID, member_id, false);", at + 1))
 		++lefts;
 	CHECK_EQ(lefts, size_t(2)); // an id never bound (a squad from the wire) and a bound member alike
-	CHECK(unreg.find("m_members.erase(I);") < unreg.rfind("coop_member_up(ID, member_id, false);"));
+	CHECK(unreg.find("m_members.erase(I);") < unreg.rfind("coop::squad::member_up(ID, member_id, false);"));
 }
 
 TEST(member_hook_goes_up_through_the_level_side_only)
 {
-	const std::string group = group_code();
-	const std::string hook = body_of(group, "void coop_member_up(ALife::_OBJECT_ID squad, ALife::_OBJECT_ID member, bool joined)");
-	const size_t quiet = hook.find("if (g_coop_member_quiet)");
-	const size_t applying = hook.find("coop::entities::client_applying()");
-	const size_t side = hook.find("coop::LevelSide* side = coop::mode().level()");
-	const size_t up = hook.find("side->level_entity_up(joined ? coop::EntityUp::Joined : coop::EntityUp::Left, squad, member);");
+	const std::string hook = body_of(members_code(), "void member_up(ALife::_OBJECT_ID squad, ALife::_OBJECT_ID member, bool joined)");
+	const size_t quiet = hook.find("if (g_quiet)");
+	const size_t applying = hook.find("entities::client_applying()");
+	const size_t side = hook.find("LevelSide* side = mode().level()");
+	const size_t up = hook.find("side->level_entity_up(joined ? EntityUp::Joined : EntityUp::Left, squad, member);");
 	CHECK(quiet != npos);
 	CHECK(applying != npos);
 	CHECK(side != npos);
@@ -294,17 +302,21 @@ TEST(member_hook_goes_up_through_the_level_side_only)
 TEST(member_hook_is_quiet_where_members_are_bound_again_or_the_world_applies_a_journal_entry)
 {
 	const std::string group = group_code();
+	const std::string journal = squad_journal_code();
 	for (const char* head : {"void CSE_ALifeOnlineOfflineGroup::on_after_game_load()",
 	         "bool CSE_ALifeOnlineOfflineGroup::coop_bind_members(bool forget)",
 	         "bool CSE_ALifeOnlineOfflineGroup::coop_join_member(ALife::_OBJECT_ID member_id)",
 	         "bool CSE_ALifeOnlineOfflineGroup::coop_leave_member(ALife::_OBJECT_ID member_id)"})
 	{
-		const std::string body = body_of(group, head);
-		CHECK_EQ(std::string(head) + (body.find("const CoopMemberQuiet quiet;") != npos ? " is quiet" : " raises"),
+		const std::string body = body_of(group.find(head) != npos ? group : journal, head);
+		CHECK_EQ(std::string(head) + (body.find("const coop::squad::MemberQuiet quiet;") != npos ? " is quiet" : " raises"),
 		    std::string(head) + " is quiet");
 	}
 	// per thread: the ALife's thread and the main thread do not quiet each other
-	CHECK(group.find("thread_local int g_coop_member_quiet = 0;") != npos);
+	const std::string members = members_code();
+	CHECK(members.find("thread_local int g_quiet = 0;") != npos);
+	CHECK(members.find("MemberQuiet::MemberQuiet() { ++g_quiet; }") != npos);
+	CHECK(members.find("MemberQuiet::~MemberQuiet() { --g_quiet; }") != npos);
 }
 
 // Package A's finding 2 (fix round 2, proposal for the bind): the world binds a member a map server's new squad lists (that squad's
@@ -312,8 +324,8 @@ TEST(member_hook_is_quiet_where_members_are_bound_again_or_the_world_applies_a_j
 // list first, as coop_join_member does, so it is never listed in two squads, also when the old squad's Left is refused later.
 TEST(member_bind_takes_a_member_out_of_its_old_squad_first)
 {
-	const std::string group = group_code();
-	const std::string bind = body_of(group, "bool CSE_ALifeOnlineOfflineGroup::coop_bind_members(bool forget)");
+	const std::string journal = squad_journal_code();
+	const std::string bind = body_of(journal, "bool CSE_ALifeOnlineOfflineGroup::coop_bind_members(bool forget)");
 	const size_t other = bind.find("if (monster->m_group_id != 0xffff && monster->m_group_id != ID)");
 	const size_t leave = bind.find("old->coop_leave_member(monster->ID);");
 	const size_t bound = bind.find("monster->m_group_id = ID;");
@@ -323,7 +335,7 @@ TEST(member_bind_takes_a_member_out_of_its_old_squad_first)
 	CHECK(other < leave && leave < bound); // out of the old list, then into this one
 	CHECK(bind.find("alife().scheduled().remove(monster, true);") > leave); // its registries are this squad's after the leave
 	// a creature already gone from the old squad's list (coop_join_member left it first) is not left twice: the old squad id is gone
-	const std::string join = body_of(group, "bool CSE_ALifeOnlineOfflineGroup::coop_join_member(ALife::_OBJECT_ID member_id)");
+	const std::string join = body_of(journal, "bool CSE_ALifeOnlineOfflineGroup::coop_join_member(ALife::_OBJECT_ID member_id)");
 	CHECK(join.find("old->coop_leave_member(member_id);") < join.find("coop_bind_members(false);"));
 }
 
