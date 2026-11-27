@@ -597,6 +597,7 @@ NOT_A_GATED_SCENARIO = {
     "perf": "a measurement (docs/MEASURE.md), run by hand before and after an optimization: it measures, it judges nothing",
     "run_guarded": "the guard every scenario runs under (tools/stand_common.ps1 Invoke-Scenario)",
     "hybrid_save": "the hybrid's save scenario: the hybrid is removed (docs/plans/2026-11-18-two-modes.md), so is it",
+    "stand_dump": "a helper scenarios dot-source (the dump of a process that hangs), not a scenario",
 }
 
 
@@ -1341,9 +1342,11 @@ def test_run_all_tests_cmd_writes_tests_ok_only_when_both_suites_pass(repos):
     write(root, "tools/build_tests.cmd", "@exit /b 0\n")
     write(root, "tools/test_lua.cmd", "@exit /b %STUB_LUA%\n")
     write(root, "tools/test_luajit.cmd", "@exit /b %STUB_LUAJIT%\n")
-    # every engine slice of this repository as a stub that fails when STUB_SLICE names it (run by pytest or as a script)
+    write(root, "tools/persisted_keys.txt", "# no saved names in this tree\n")
+    # every engine slice of this repository, and every other test file the runner names, as a stub that fails when
+    # STUB_SLICE names it (run by pytest or as a script)
     slices = engine_slices()
-    for rel in slices:
+    for rel in sorted(set(slices) | gate_slices()):
         fails = f"os.environ.get('STUB_SLICE') == {posixpath.basename(rel)[:-3]!r}"
         write(root, rel, f"import os\nimport sys\n\n\ndef test_slice():\n    assert not {fails}\n\n\n"
                          f"if __name__ == '__main__':\n    sys.exit(3 if {fails} else 0)\n")

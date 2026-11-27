@@ -290,6 +290,40 @@ function Remove-StandFile {
     }
 }
 
+function Remove-StandTree {
+    # Deletes files through Remove-StandFile and prunes empty folders so the next run has less to walk.
+    # A file that cannot go (a process still maps or holds it) does not stop the others: the files left are said in one line
+    # and stay for the next run's cleanup. Junctions are refused before walking or deleting a folder.
+    param([Parameter(Mandatory = $true)][string]$Dir)
+    $left = [System.Collections.Generic.List[string]]::new()
+    $dirs = [System.Collections.Generic.Stack[string]]::new()
+    $visited = [System.Collections.Generic.Stack[string]]::new()
+    $dirs.Push((Get-StandFullPath $Dir))
+    while ($dirs.Count) {
+        $dir = $dirs.Pop()
+        Assert-NoJunction -Dir $dir
+        if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+        $visited.Push($dir)
+        foreach ($entry in @(Get-ChildItem -LiteralPath $dir -Force)) {
+            if ($entry.PSIsContainer) { $dirs.Push($entry.FullName); continue }
+            try { Remove-StandFile -Path $entry.FullName }
+            catch { $left.Add("$($entry.FullName): $($_.Exception.Message)") }
+        }
+    }
+    if ($left.Count) {
+        Write-Host "left for the next run's cleanup: $($left.Count) file(s) under $Dir (first: $($left[0]))"
+    }
+    while ($visited.Count) {
+        $dir = $visited.Pop()
+        Assert-NoJunction -Dir $dir
+        # A non-recursive delete also leaves a folder alone if it fills during cleanup.
+        try { [IO.Directory]::Delete($dir, $false) }
+        catch [IO.IOException] {
+            if ($_.Exception.HResult -ne 0x80070091) { throw } # ERROR_DIR_NOT_EMPTY
+        }
+    }
+}
+
 function Assert-NoJunction {
     # review 5 (S14): a stand folder that is a junction or symlink into a mod's folder; a write through it would delete
     # the mod's own file and put ours into the mod's folder. Review 6 (B1, round 7): not only $Dir itself but every
@@ -447,9 +481,21 @@ function Invoke-Scenario {
     $guardArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $guard, '-Script', $Scenario.Script, '-Out', $out,
         '-Stand', $Stand, '-OutDir', $script:StandDir)
     if ($scArgs.Trim()) { $guardArgs += @('-ScriptArgs', $scArgs.Trim()) }  # an empty argument would vanish on the way
-    $guardOut = @(& powershell.exe @guardArgs)
-    $guardCode = $LASTEXITCODE
+    # The guard's stderr is this scenario's problem and never reaches the runner's own stderr: a caller that redirects the
+    # runner's streams under $ErrorActionPreference Stop (Windows PowerShell 5.1 turns each stderr line into an error record)
+    # ends at the first such line, and the scenarios after this one would never run.
+    $guardOut = [System.Collections.Generic.List[string]]::new()
+    $guardErr = [System.Collections.Generic.List[string]]::new()
+    $eap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & powershell.exe @guardArgs 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) { $guardErr.Add("$_") } else { $guardOut.Add("$_") }
+        }
+        $guardCode = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $eap }
     if ($guardCode -ne 0) { $problems.Add("run_guarded.ps1 failed (exit $guardCode)") }
+    if ($guardErr.Count) { $problems.Add('run_guarded.ps1 wrote to stderr: ' + (Hide-Hex $guardErr[0])) }
     $guardStop = $guardOut | Where-Object { $_ -match '^GUARD:' } | Select-Object -First 1
     if ($guardStop) { $problems.Add($guardStop) }
     if (-not ($guardOut | Where-Object { $_ -eq 'run finished' })) { $problems.Add("run_guarded.ps1 did not report 'run finished'") }
@@ -581,7 +627,15 @@ function Invoke-Stand {
         Write-Host '*****************************************************************************************************'
     }
     $results = @()
-    foreach ($s in $picked) { $results += Invoke-Scenario -Scenario $s -Tag $Tag -Stand $Stand }
+    foreach ($s in $picked) {
+        # A scenario that throws here fails alone: the run goes on to the next one.
+        try { $results += Invoke-Scenario -Scenario $s -Tag $Tag -Stand $Stand }
+        catch {
+            $why = 'the runner failed on it: ' + (Hide-Hex "$_")
+            Write-Host "  FAIL $($s.Name)"; Write-Host "    $why"
+            $results += [pscustomobject]@{ Name = $s.Name; Ok = $false; Problems = @($why); Out = $null }
+        }
+    }
     $failed = @($results | Where-Object { -not $_.Ok })
     Write-Host ''
     foreach ($r in $results) { Write-Host ("{0,-14} {1}" -f $r.Name, $(if ($r.Ok) { 'PASS' } else { 'FAIL' })) }

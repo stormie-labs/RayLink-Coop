@@ -69,6 +69,21 @@ local function players()
 	return ok and type(l) == "table" and #l or 0
 end
 
+-- The host's steps start when the other player is in the world, not when he is listed: the group's trip waits a minute for
+-- everybody's yes, and a player who still loads cannot say it.
+local function others_in_world()
+	local ok, l = pcall(coop.members)
+	if not (ok and type(l) == "table") then return false end
+	local any = false
+	for _, m in ipairs(l) do
+		if m.peer then
+			if not m.in_world then return false end
+			any = true
+		end
+	end
+	return any
+end
+
 local function stage() return tostring(try(coop.stash_get, "carry_stage") or "") end
 local function set_stage(s) pcall(coop.stash_set, "carry_stage", s) end
 
@@ -193,6 +208,8 @@ local function actor_on_update()
 			local st = try(function() return coop.debug.state() end)
 			local on = st == true or (type(st) == "table" and st.on == true)
 			if not (try(coop.is_live) and on) then return end
+		elseif not others_in_world() then
+			return
 		end
 		t0 = time_global()
 		out("two players: the steps start (stage '%s')", stage())

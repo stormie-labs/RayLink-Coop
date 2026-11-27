@@ -263,4 +263,3 @@ L8|gamedata/scripts/coop_menu.script|function UICoopMenu:OnSteamInvite()|1
 L8|gamedata/scripts/coop_menu.script|self.invite = action("btn_steam_invite", "st_coop_menu_btn_steam_invite", B.field_x)|1
 L8|gamedata/scripts/coop_menu.script|self:AddCallback("btn_steam_invite", E, self.OnSteamInvite, self)|1
 L8|gamedata/scripts/coop_menu.script|set_control(self.invite, active and api.is_host() and type(api.steam_invite_ready) == "function" and api.steam_invite_ready() == true, true)|1
-L9C|engine/src/xrGame/coop/srv/coop_host_console.cpp|coop::world_server::OutputQueue g_queue;|1

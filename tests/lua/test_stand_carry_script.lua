@@ -14,7 +14,7 @@ local function check(ok, label)
 end
 
 local function fixture(role, stash)
-	local f = { now = 0, live = false, debug_on = false, log = {}, callbacks = {}, stash = stash or {}, asks = {} }
+	local f = { now = 0, live = false, debug_on = false, other_in_world = true, log = {}, callbacks = {}, stash = stash or {}, asks = {} }
 	local e = setmetatable({
 		command_line = function() return "-coop_probe " .. role end,
 		RegisterScriptCallback = function(name, fn) f.callbacks[name] = fn end,
@@ -27,6 +27,7 @@ local function fixture(role, stash)
 			is_active = function() return true end,
 			is_live = function() return f.live end,
 			players = function() return { {}, {} } end,
+			members = function() return { { id = 30464, peer = 1, in_world = f.other_in_world }, { id = 30470, in_world = false } } end,
 			world_epoch = function() return 0 end,
 			stash_get = function(k) return f.stash[k] end,
 			stash_set = function(k, v) f.stash[k] = v end,
@@ -64,9 +65,16 @@ client.debug_on = true
 client.tick()
 check(client.has("ag two players: the steps start"), "live with the debug on: the steps start")
 
+-- The host started its steps when the other player was listed, and asked for the trip 46 s later: a client that loaded for
+-- longer than the trip waits for a yes never said it, and the trip lapsed. The host starts when he is in the world; a
+-- character of a player who left (no peer) is nobody to wait for.
 local host = fixture("h")
+host.other_in_world = false
+for _ = 1, 240 do host.tick() end -- two minutes of the other player's load
+check(not host.has("the steps start") and host.jumped == nil, "the other player still loads: the host does not start, no trip")
+host.other_in_world = true
 host.tick()
-check(host.has("h two players: the steps start"), "the host runs the debug itself: it starts as before")
+check(host.has("h two players: the steps start"), "the other player is in the world: the host starts")
 
 -- b57l carry_group: the host's jump set the stage "moved" while its old world went on until the group's transition (it waits
 -- for the client): the same Lua state ran the moved steps by the old start and said "h done" 60 s after it, 44 s before the

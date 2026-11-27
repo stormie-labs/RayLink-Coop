@@ -4,8 +4,14 @@ local FROM = "stand.weather_from"
 -- A client of a map server goes live before that server's online set (its level changers) reaches it: the map server sends
 -- it after the client's WorldLoaded (join::server_player_in_world -> entities::host_send_online_to). Co-op has them in the save.
 local EXIT_WAIT_MS = 45000
-local role, travel, ready, forecast_seen, active
+-- The online set comes in a burst that can stall the client and delay world messages. Measure the emission once a level
+-- changer is online and SETTLE_MS have passed without a long frame or a change in the online count.
+local SETTLE_MS, LONG_FRAME_MS = 5000, 1000
+-- A joined player's map comes online in the first seconds in the world, so wait at least ARRIVAL_MS after ready.
+local ARRIVAL_MS = 12000
+local role, travel, ready, settled, forecast_seen, active
 local next_poll, exit_wait, failed = 0, nil, false
+local last_frame, quiet_since, has_exit, ready_since, last_online_count
 
 local function out(fmt, ...)
 	printf("%s", "[weather-stand] " .. string.format(fmt, ...))
@@ -85,6 +91,16 @@ local function update()
 	local actor = db.actor
 	if failed or not (actor and coop.is_live() and coop_mode.is_player_mirror()) then return end
 	local now = time_global()
+	if not last_frame or now - last_frame > LONG_FRAME_MS then quiet_since = now end
+	last_frame = now
+	if not settled then
+		local online_count = 0
+		for _ in pairs(db.storage) do
+			online_count = online_count + 1
+		end
+		if online_count ~= last_online_count then quiet_since = now end
+		last_online_count = online_count
+	end
 	if now < next_poll then return end
 	next_poll = now + 250
 
@@ -107,11 +123,24 @@ local function update()
 			out("FAIL: expected an open emission map, got %s", here)
 			return
 		end
-		ready = here
+		ready, ready_since = here, now
+		exit_wait = now + EXIT_WAIT_MS
 		out("ready map=%s", here)
 	elseif ready ~= here then
 		out("FAIL: player left %s for %s", ready, here)
 		return
+	end
+	if not settled then
+		has_exit = has_exit or nearest_exit(actor) ~= nil
+		if not has_exit then
+			quiet_since = now
+			if now < exit_wait then return end
+			failed = true
+			return out("FAIL: the online set of %s never came", here)
+		end
+		if now - ready_since < ARRIVAL_MS or now - quiet_since < SETTLE_MS then return end
+		settled = true
+		out("settled map=%s", here)
 	end
 
 	local wm = level_weathers.get_weather_manager()

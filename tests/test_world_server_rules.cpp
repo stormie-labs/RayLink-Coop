@@ -245,6 +245,18 @@ TEST(world_server_queue_bounds_rl_lines_too)
 	CHECK_EQ(s, std::string("@rl players n=3"));
 }
 
+TEST(world_server_queue_note_names_its_sink)
+{
+	OutputQueue q(1, 1, "console", "the window's output was paused");
+	q.push("a", false);
+	q.push("b", false);
+	std::string s;
+	CHECK(q.pop(s));
+	CHECK_EQ(s, std::string("[coop] console: 1 line(s) of the log dropped, the window's output was paused"));
+	CHECK(q.pop(s));
+	CHECK_EQ(s, std::string("b"));
+}
+
 // ---------------------------------------------------------------- the folders
 
 TEST(world_server_world_dir_stands_next_to_the_games)

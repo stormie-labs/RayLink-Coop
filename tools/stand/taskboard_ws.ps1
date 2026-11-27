@@ -77,6 +77,7 @@ if ($CheckVerdict) {
 }
 
 . (Join-Path $PSScriptRoot '..\stand_common.ps1')  # Write-Stand*, Copy-Stand*, Remove-StandFile: never write through a hard link (TZ R21)
+. (Join-Path $PSScriptRoot 'stand_dump.ps1')  # Save-StandDump: the stacks of a server that hangs, before the kill
 # Tracked in tools\stand (docs/MODES.md section 10): the probes come from this folder; logs and the stand's
 # settings kept for the restore go to the repository's temp\stand (ignored: the run history).
 $OutDir = Join-Path $PSScriptRoot '..\..\temp\stand'
@@ -154,7 +155,11 @@ finally {
     if (-not $server.HasExited) {
         Start-Sleep -Seconds 4
         try { $in.WriteLine('quit'); $in.Close() } catch { }
-        if (-not $server.WaitForExit(150000)) { Write-Host '! the server did not quit in 150 s: stopped by force'; Stop-Process -Id $server.Id -Force }
+        if (-not $server.WaitForExit(150000)) {
+            Write-Host '! the server did not quit in 150 s: stopped by force'
+            $null = Save-StandDump -Process $server -Name "${Tag}_taskboard_ws_hung"
+            Stop-Process -Id $server.Id -Force
+        }
     }
     Start-Sleep -Seconds 2
     Get-Process -Name 'AnomalyCoop*' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($Stand, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { Write-Host "! left running: $($_.Id), stopped"; Stop-Process -Id $_.Id -Force }

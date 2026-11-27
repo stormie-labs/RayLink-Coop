@@ -500,3 +500,119 @@ TEST(accept_unchanged_parent_is_a_repeat)
 	CHECK(!acc::sender_writes(f));
 	CHECK(refused_for(acc::accepts(f), jr::NotWriter));
 }
+
+// A body report of a player's character from the map server he has just left. The world parked him at his move (nobody plays him:
+// the world writes him), and the report that map server journaled before it heard of the move arrived after it. The acceptance
+// still refuses it as not the writer, and hands it to his seat (wire::body_report_verdict), which drops it as a crossing; without
+// that it was refused with a "!" line on every departure whose report crossed the move. Other reasons and other objects stay
+// refusals.
+TEST(accept_body_report_of_a_character_its_sender_left_goes_to_his_seat)
+{
+	acc::Facts f = from_a(H::State, character(2001, w::kNoLevel, kUnled)); // parked: the world's
+	f.character = true;
+	CHECK(f.writer == w::this_process());
+	acc::Verdict v = acc::accepts(f);
+	CHECK(refused_for(v, jr::NotWriter));
+	CHECK(acc::body_report_by_seat(f, v));
+	f.writer = character(2001, kB, kLedB); // seated on map B already
+	v = acc::accepts(f);
+	CHECK(refused_for(v, jr::NotWriter) && acc::body_report_by_seat(f, v));
+	// taken from the map server that writes him: no hand-over
+	f.writer = character(2001, kA, kLedA);
+	v = acc::accepts(f);
+	CHECK(v.ok && !acc::body_report_by_seat(f, v));
+	// not a character, not a State, or another reason: the refusal stands
+	f.writer = character(2001, kB, kLedB);
+	f.character = false;
+	CHECK(!acc::body_report_by_seat(f, acc::accepts(f)));
+	f.character = true;
+	f.op = H::Item;
+	CHECK(!acc::body_report_by_seat(f, acc::accepts(f)));
+	f.op = H::State;
+	f.same = false;
+	v = acc::accepts(f);
+	CHECK(refused_for(v, jr::Identity) && !acc::body_report_by_seat(f, v));
+	f.same = true;
+	f.exists = false;
+	v = acc::accepts(f);
+	CHECK(refused_for(v, jr::Unknown) && !acc::body_report_by_seat(f, v));
+}
+
+// The one decision on a State (body_report), as host_take_body asks it: a body of map A's level reported by map server A.
+namespace
+{
+acc::BodyFacts body_on_a(uint16_t seat)
+{
+	acc::BodyFacts b;
+	b.read = true;
+	b.known = true;
+	b.player_character = true;
+	b.body_level = kA;
+	b.sender_level = kA;
+	b.seat_level = seat;
+	b.position_valid = true;
+	return b;
+}
+
+bool decided(const acc::BodyDecision& d, acc::BodyOutcome outcome, uint8_t why, bool by_acceptance)
+{
+	return d.outcome == outcome && d.why == why && d.by_acceptance == by_acceptance;
+}
+} // namespace
+
+// The writer's report is taken. A report of a character his sender no longer writes (the seat's rule made the world or the new
+// map's server his writer at his move: parked, or seated on map B) crossed his move: Crossed, no refusal, within the grace; after
+// the grace, a fault of its sender (Refused by the body verdict, journal::Refused). A report of his seat's own level from a sender
+// that does not write him is no crossing: Refused.
+TEST(accept_body_report_taken_crossed_or_refused)
+{
+	namespace lw = coop::levels::wire;
+	lw::BodyCrossing run;
+	acc::Facts f = from_a(H::State, character(2001, kA, kLedA));
+	f.character = true;
+	CHECK(decided(acc::body_report(f, body_on_a(kA), run, 1000), acc::BodyOutcome::Taken, 0, false));
+
+	for (const uint16_t seat : {w::kNoLevel, kB})
+	{
+		// parked (the world writes him), or seated on map B (map server B writes him)
+		f.writer = seat == w::kNoLevel ? character(2001, w::kNoLevel, kUnled) : character(2001, kB, kLedB);
+		CHECK(!acc::sender_writes(f));
+		lw::BodyCrossing r;
+		uint64_t now = 1000;
+		for (; now <= 1000 + lw::kBodyCrossedGraceMs; now += 1000)
+			CHECK(decided(acc::body_report(f, body_on_a(seat), r, now), acc::BodyOutcome::Crossed, 0, false));
+		const acc::BodyDecision late = acc::body_report(f, body_on_a(seat), r, now);
+		CHECK(decided(late, acc::BodyOutcome::Refused, uint8_t(jr::Refused), false));
+		CHECK(late.crossed_ms > lw::kBodyCrossedGraceMs);
+	}
+
+	// of the level of his seat, from a sender that does not write him (another server leads his seat's map)
+	f.writer = character(2001, kA, kLedB);
+	CHECK(!acc::sender_writes(f));
+	lw::BodyCrossing r;
+	CHECK(decided(acc::body_report(f, body_on_a(kA), r, 1000), acc::BodyOutcome::Refused, uint8_t(jr::Refused), false));
+}
+
+// A State of what is no player's character, and every reason but NotWriter, stays the acceptance's refusal, its reason unchanged.
+TEST(accept_body_report_other_refusals_unchanged)
+{
+	namespace lw = coop::levels::wire;
+	lw::BodyCrossing run;
+	acc::Facts f = from_a(H::State, resident(300, kB, kLedB)); // no character: not the writer
+	CHECK(decided(acc::body_report(f, body_on_a(w::kNoLevel), run, 1000), acc::BodyOutcome::Refused, uint8_t(jr::NotWriter), true));
+
+	f = from_a(H::State, character(2001, kB, kLedB));
+	f.character = true;
+	f.exists = false;
+	CHECK(decided(acc::body_report(f, body_on_a(kB), run, 1000), acc::BodyOutcome::Refused, uint8_t(jr::Unknown), true));
+	f.exists = true;
+	f.ghost = true;
+	CHECK(decided(acc::body_report(f, body_on_a(kB), run, 1000), acc::BodyOutcome::Refused, uint8_t(jr::Ghost), true));
+	f.ghost = false;
+	f.same = false;
+	CHECK(decided(acc::body_report(f, body_on_a(kB), run, 1000), acc::BodyOutcome::Refused, uint8_t(jr::Identity), true));
+	f.same = true;
+	f.fence = 6;
+	CHECK(decided(acc::body_report(f, body_on_a(kB), run, 1000), acc::BodyOutcome::Refused, uint8_t(jr::PastFence), true));
+	CHECK(run.since == 0 && run.last == 0); // no acceptance refusal starts a run of crossings
+}

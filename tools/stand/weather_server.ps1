@@ -12,6 +12,7 @@ $prefix = '\[weather-stand\] '
 $stamp = '\d{8}T\d{6}'
 $patterns = @{
     ready = "${prefix}ready map=(\w+)\s*$"
+    settled = "${prefix}settled map=(\w+)\s*$"
     forecast = "${prefix}forecast map=(\w+) weather=(\S+)\s*$"
     start = "${prefix}start map=(\w+) clock=($stamp) seen=($stamp)\s*$"
     end = "${prefix}end map=(\w+) seen=($stamp)\s*$"
@@ -172,6 +173,10 @@ try {
     $moveClient = Start-Mirror $moveExe 'fsgame_weather.ltx' 'weathermove'
     $null = Wait-Line $logs.mover '\[coop\] phase loading-world -> live' $JoinTimeoutS    $stay = @{ ready = Wait-Line $logs.stay $patterns.ready $StepsTimeoutS }
     $move = @{ ready = Wait-Line $logs.mover $patterns.ready $StepsTimeoutS }
+    # A player's process takes his map's online set in one burst after joining and stands still meanwhile; the emission
+    # is measured once both have it and run on (the probe's 'settled' line), not across that standstill.
+    $null = Wait-Line $logs.stay $patterns.settled $StepsTimeoutS
+    $null = Wait-Line $logs.mover $patterns.settled $StepsTimeoutS
     $server.StandardInput.WriteLine('run_string coop_zz_weather.select_forecast()')
     $world = @{ forecast = Wait-Line $logs.world $patterns.worldForecast $StepsTimeoutS }
     $file = [regex]::Escape($world.forecast.Groups[1].Value)    $rendered = "${prefix}forecast map=(\w+) weather=($file)\s*$"    $stay.forecast = Wait-Line $logs.stay $rendered $StepsTimeoutS    $move.forecast = Wait-Line $logs.mover $rendered $StepsTimeoutS    $server.StandardInput.WriteLine('run_string coop_zz_weather.start_emission()')

@@ -44,8 +44,33 @@ function Assert-S7Logs($Context) {
         }
         $bad = Select-StandLogLine $file $s7Bad -Live | Where-Object { -not $expected -or $_.LineNumber -ne $expected.LineNumber } |
             Select-Object -First 1
-        if ($bad) { throw (Hide-Hex "$($bad.Path):$($bad.LineNumber) $($bad.Line)") }
+        if ($bad) { throw (Hide-Hex ((Get-S7LossNote $file $bad) + "$($bad.Path):$($bad.LineNumber) $($bad.Line)")) }
     }
+}
+
+function Get-S7LossNote([string]$File, $Bad) {
+    # A map server lost that the scenario did not kill (the expected loss is the one after its own fault injection): the
+    # world's lines before it tell how. "its process ended with code" is a process that died; "left: connection lost"
+    # with no such line is a process alive and silent past the world's peer timeout, which the world then ended; the last
+    # memory line tells a machine short of memory.
+    if ($Bad.Line -notmatch '\[coop\] map server of level (\d+) is gone: ') { return '' }
+    $level = $Matches[1]
+    $before = @(Get-Content -LiteralPath $File -TotalCount ($Bad.LineNumber - 1))
+    $leaderPattern = "\[coop\] (?:levels: )?map server ([1-7]) leads (?:no level now\b|level $level\s*$)"
+    $leader = $before | Where-Object { $_ -match $leaderPattern } | Select-Object -Last 1
+    $how = 'no line says how'
+    if ($leader -match $leaderPattern) {
+        $slot = $Matches[1]
+        # A slot can be reused, so a new start cuts off the previous process's cause.
+        $causePattern = "\[coop\] map server $slot(?:: its process ended with code | left: )"
+        $event = $before | Where-Object { $_ -match $causePattern -or $_ -match "\[coop\] map server $slot starts for level " } |
+            Select-Object -Last 1
+        if ($event -match $causePattern) { $how = $event.Trim() }
+    }
+    $memory = $before | Where-Object { $_ -match '\[coop\] map servers: .* running of a cap' } | Select-Object -Last 1
+    $parts = @('a map server the scenario did not kill was lost', $how)
+    if ($memory -and $memory -match '(memory \d+ MB free of \d+ MB.*)$') { $parts += $Matches[1].Trim() }
+    return ($parts -join '; ') + ': '
 }
 
 function Assert-S7Running($Context) {
@@ -132,14 +157,53 @@ function Start-S7World($Context, [string]$Load = '') {
 }
 
 function Stop-S7Clients($Context) {
-    foreach ($proc in $Context.Clients.Values) {
-        if (-not $proc.HasExited) {
-            $proc.Kill()
-            if (-not $proc.WaitForExit(15000)) { throw "client $($proc.Id) did not stop" }
-        }
+    # Every client is killed before any is waited for, and one that does not stop leaves no other running: a client that
+    # stays up keeps its exe mapped, and the run's files could not go.
+    $clients = @($Context.Clients.Values)
+    foreach ($proc in $clients) {
+        try { if (-not $proc.HasExited) { $proc.Kill() } } catch { } # one that ends meanwhile; the wait below decides
+    }
+    $stuck = @()
+    foreach ($proc in $clients) {
+        if (-not $proc.WaitForExit(15000)) { $stuck += "client $($proc.Id) did not stop in 15 s" }
         $proc.Dispose()
     }
     $Context.Clients.Clear()
+    if ($stuck.Count) { throw ($stuck -join '; ') }
+}
+
+function Stop-S7RunProcesses($Context) {
+    # Whatever still runs of this run (a map server of the world, a client the stops before missed) is killed and waited for
+    # before the run's files go. Each process of the run names the run's folder in its -fsltx, and runs an exe of the stand.
+    $mark = "$($Context.Leaf)\"
+    $root = $Context.Stand.TrimEnd('\') + '\'
+    $stuck = @()
+    $found = @(Get-CimInstance -ClassName Win32_Process -Filter "Name LIKE 'Anomaly%'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($mark, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
+    foreach ($entry in $found) {
+        try {
+            $proc = Get-Process -Id $entry.ProcessId -ErrorAction SilentlyContinue
+            if (-not $proc) { continue }
+            try {
+                # Call the getter so a failed path read reaches the catch. PowerShell property access can turn it into null.
+                $path = $proc.get_MainModule().FileName
+                if (-not $path -or -not $path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { continue }
+                try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
+                if (-not $proc.WaitForExit(15000)) { $stuck += "process $($proc.Id) of the run did not stop in 15 s" }
+            } finally { $proc.Dispose() }
+        } catch { $stuck += "process $($entry.ProcessId): $($_.Exception.Message)" }
+    }
+    if ($stuck.Count) { throw ($stuck -join '; ') }
+}
+
+function Stop-S7Run($Context) {
+    # The end of a run: the clients, the world, then whatever else of the run still runs. Each step runs whatever the one
+    # before it threw; what went wrong is returned, every item, so no later error hides an earlier one.
+    $problems = [System.Collections.Generic.List[string]]::new()
+    foreach ($step in @({ Stop-S7Clients $Context }, { Stop-S7World $Context }, { Stop-S7RunProcesses $Context })) {
+        try { & $step } catch { $problems.Add("$_") }
+    }
+    return $problems.ToArray()
 }
 
 function Stop-S7World($Context) {
@@ -155,7 +219,7 @@ function Stop-S7World($Context) {
         if (-not $world.HasExited) {
             # A world that does not quit hangs: its threads' stacks before the kill (stand_dump.ps1), and how long its log was silent.
             Write-Host "world server $($world.Id) is still up: $(Get-StandLogAge $Context.Logs.world)"
-            $null = Save-StandDump -Process $world -Path (Join-Path $script:StandDir "$($Context.Tag)_$($Context.Name)_world_hung.dmp")
+            $null = Save-StandDump -Process $world -Name "$($Context.Tag)_$($Context.Name)_world_hung"
             $world.Kill()
             $null = $world.WaitForExit(15000)
         }
@@ -498,6 +562,16 @@ function Save-S7Logs($Context, [string]$Suffix = '') {
             $out = Join-Path $script:StandDir "$($Context.Tag)_$($Context.Name)_$key$Suffix.log"
             Copy-StandFile -From $file -To $out
         }
+        # A process started again in the same profile (a map server after a loss) keeps the log of the one before it in
+        # logs\old: that log is the only account of how the first one ended, and the run's folder goes after the run.
+        $old = Join-Path ([IO.Path]::GetDirectoryName($file)) 'old'
+        if (Test-Path -LiteralPath $old -PathType Container) {
+            $n = 0
+            foreach ($kept in @(Get-ChildItem -LiteralPath $old -File -Filter '*.log' | Sort-Object Name)) {
+                $n++
+                Copy-StandFile -From $kept.FullName -To (Join-Path $script:StandDir "$($Context.Tag)_$($Context.Name)_${key}_old$n$Suffix.log")
+            }
+        }
     }
 }
 
@@ -513,6 +587,11 @@ function Invoke-S7Run([string]$Name, [scriptblock]$Body) {
     Assert-NoJunction -Dir (Join-Path $standPath 'bin')
     if (Get-Process -Name 'AnomalyCoop*','AnomalyDX*','RayLinkServer*' -ErrorAction SilentlyContinue) { throw 'a game is running' }
     if (Get-NetUDPEndpoint -LocalPort $Port -ErrorAction SilentlyContinue) { throw "UDP port $Port is taken" }
+    # What an earlier run left (a file its process still held at its cleanup) goes now: no game of the stand runs, and the
+    # S7 mutex keeps any other S7 run out.
+    foreach ($earlier in @(Get-ChildItem -LiteralPath $standPath -Directory -Force | Where-Object { $_.Name -cmatch '^zz_s7_[a-f0-9]{12}$' })) {
+        Remove-StandTree -Dir $earlier.FullName
+    }
 
     $leaf = 'zz_s7_' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
     $run = Join-Path $standPath $leaf
@@ -555,20 +634,28 @@ function Invoke-S7Run([string]$Name, [scriptblock]$Body) {
             Write-Host 'the processes stay up 17 s after the failure (the health ledger, flushed logs)'
             Start-Sleep -Seconds 17
         }
+        # Every process of the run is stopped and waited for before its files go; what the stop met is said, and fails a run
+        # that had passed. A failed run keeps its own error: nothing here throws over it.
+        $stopProblems = @(Stop-S7Run $ctx)
+        foreach ($p in $stopProblems) { Write-Host ('cleanup: ' + (Hide-Hex $p)) }
         try {
-            try { Stop-S7Clients $ctx } finally { Stop-S7World $ctx }
+            try { Save-S7Logs $ctx }
+            catch {
+                Write-Host ('cleanup: ' + (Hide-Hex $_.Exception.Message))
+                if ($finished) { throw }
+            }
+            if ($finished) { Assert-S7Logs $ctx }
         } finally {
-            try {
-                Save-S7Logs $ctx
-                if ($finished) { Assert-S7Logs $ctx }
-            } finally {
-                foreach ($path in @($probe, $stepFile)) { Remove-StandFile -Path $path }
-                if (Test-Path -LiteralPath $run -PathType Container) {
-                    Assert-NoJunction -Dir $run
-                    Get-ChildItem -LiteralPath $run -Recurse -File -Force | ForEach-Object { Remove-StandFile -Path $_.FullName }
-                }
+            foreach ($path in @($probe, $stepFile)) {
+                try { Remove-StandFile -Path $path } catch { Write-Host "left for the next run's cleanup: $path ($($_.Exception.Message))" }
+            }
+            try { Remove-StandTree -Dir $run }
+            catch {
+                Write-Host ('cleanup: ' + (Hide-Hex $_.Exception.Message))
+                if ($finished) { throw }
             }
         }
+        if ($finished -and $stopProblems.Count) { throw "cleanup: $($stopProblems[0])" }
     }
     Write-Host "$Name`: PASS"
 }

@@ -28,6 +28,7 @@ $clientLog = Join-Path $Stand "appdata_t\$logName"
 $logs = @($hostLog, $clientLog)
 $authorityProcess = $client = $null
 $installedHostFs = $installedProbe = $installedStep = $backedUpOptions = $started = $false
+$stepFailure = $null   # the text of the step that failed: stopping the games afterwards never replaces it
 $scenario = 'vehicle_group'
 $step = 'setup'
 $mark = '\[vehicle-stand\] '
@@ -261,18 +262,27 @@ try {
             throw "expected disconnect 1 for the released seat, got '$reasons'"
         }
     }
+    catch {
+        $stepFailure = "$_"
+        throw
+    }
     finally {
         try {
+            # A killed game that is slow to leave must not replace the step's own failure or cost the logs: both games are
+            # told to stop, the logs are kept, and a process that still runs fails the scenario only when nothing else did.
+            $stuck = @()
             foreach ($proc in @($client, $authorityProcess)) {
-                if ($proc -and -not $proc.HasExited) {
-                    Stop-Process -Id $proc.Id -Force
-                    if (-not $proc.WaitForExit(5000)) { throw "stand process $($proc.Id) did not stop" }
-                }
+                if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+            }
+            foreach ($proc in @($client, $authorityProcess)) {
+                if ($proc -and -not $proc.WaitForExit(30000)) { $stuck += $proc.Id }
             }
             if ($started) {
                 Keep-VehicleLog $hostLog 'host'
                 Keep-VehicleLog $clientLog 'client'
             }
+            if ($stuck -and $stepFailure) { Write-Host "! stand process $($stuck -join ', ') did not stop in 30 s" }
+            elseif ($stuck) { throw "stand process $($stuck -join ', ') did not stop in 30 s" }
         }
         finally {
             if ($installedHostFs) { Remove-StandFile -Path $hostFs }

@@ -28,7 +28,8 @@ def test_dump_of_a_live_process(tmp_path):
     script = (
         "$ErrorActionPreference = 'Stop'; . .\\tools\\stand\\stand_dump.ps1; "
         "$p = Start-Process -FilePath $env:ComSpec -ArgumentList '/c','ping -n 30 127.0.0.1 >nul' -WindowStyle Hidden -PassThru; "
-        "try { $ok = Save-StandDump -Process $p -Path '" + str(dump) + "' } finally { $p.Kill(); $null = $p.WaitForExit(10000) }; "
+        "$script:StandDumpDir = '" + str(tmp_path) + "'; "
+        "try { $ok = Save-StandDump -Process $p -Name 'live' } finally { $p.Kill(); $null = $p.WaitForExit(10000) }; "
         "Write-Output \"result=$ok\""
     )
     done = run_ps(script)
@@ -45,7 +46,8 @@ def test_no_dump_of_an_exited_process(tmp_path):
         "$ErrorActionPreference = 'Stop'; . .\\tools\\stand\\stand_dump.ps1; "
         "$p = Start-Process -FilePath $env:ComSpec -ArgumentList '/c','exit 0' -WindowStyle Hidden -PassThru; "
         "$null = $p.WaitForExit(10000); "
-        "$ok = Save-StandDump -Process $p -Path '" + str(dump) + "'; Write-Output \"result=$ok\""
+        "$script:StandDumpDir = '" + str(tmp_path) + "'; "
+        "$ok = Save-StandDump -Process $p -Name 'gone'; Write-Output \"result=$ok\""
     )
     done = run_ps(script)
     assert done.returncode == 0, done.stderr

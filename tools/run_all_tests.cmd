@@ -51,13 +51,17 @@ python -B -m pytest -q -p no:cacheprovider ^
 	"%ROOT%\tests\tools\test_client_ammo_reload.py" ^
 	"%ROOT%\tests\tools\test_clone_pending_fire.py" ^
 	"%ROOT%\tests\tools\test_clone_placement_hooks.py" ^
+	"%ROOT%\tests\tools\test_console_writer_wiring.py" ^
 	"%ROOT%\tests\tools\test_container_reject.py" ^
+	"%ROOT%\tests\tools\test_exit_reason.py" ^
 	"%ROOT%\tests\tools\test_items_gift_late.py" ^
+	"%ROOT%\tests\tools\test_levels_body_wiring.py" ^
 	"%ROOT%\tests\tools\test_local_zone_release.py" ^
 	"%ROOT%\tests\tools\test_move_admission_wiring.py" ^
 	"%ROOT%\tests\tools\test_proxy_ammo_supply.py" ^
 	"%ROOT%\tests\tools\test_script_relay_slice.py" ^
 	"%ROOT%\tests\tools\test_silencer_detach.py" ^
+	"%ROOT%\tests\tools\test_sound_core_start.py" ^
 	"%ROOT%\tests\tools\test_texture_descr_slice.py" ^
 	"%ROOT%\tests\tools\test_trade_delivery.py" ^
 	"%ROOT%\tests\tools\test_trader_identity_api.py" ^
@@ -65,6 +69,15 @@ python -B -m pytest -q -p no:cacheprovider ^
 	"%ROOT%\tests\tools\test_weapon_clone_wgl.py" ^
 	"%ROOT%\tests\tools\test_native_build.py" ^
 	"%ROOT%\tests\tools\test_world_events_slice.py"
+if errorlevel 1 set "SRC=1"
+rem The tools' own tests that nothing else runs: the layer check and the stand's scripts. A stand script or an allow-list row
+rem that breaks its rule is found here, not at the next stand run. tests\tools\test_gates.py stays out: it takes 20 minutes.
+python -B -m pytest -q -p no:cacheprovider ^
+	"%ROOT%\tests\tools\test_layers.py" ^
+	"%ROOT%\tests\tools\test_stand_cleanup.py" ^
+	"%ROOT%\tests\tools\test_stand_dump.py" ^
+	"%ROOT%\tests\tools\test_stand_guard.py" ^
+	"%ROOT%\tests\tools\test_stand_patterns.py"
 if errorlevel 1 set "SRC=1"
 python -I "%ROOT%\tests\test_s6_hub_paths.py"
 if errorlevel 1 set "SRC=1"

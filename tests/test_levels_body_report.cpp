@@ -14,9 +14,9 @@ constexpr uint16_t kEscape = 2;
 constexpr uint16_t kGarbage = 3;
 
 BodyReport verdict(uint16_t seat, bool online_here = false, bool player = true, uint16_t body = kEscape,
-    uint16_t sender = kEscape, bool read = true, bool known = true, bool position = true)
+    uint16_t sender = kEscape, bool read = true, bool known = true, bool position = true, bool sender_writes = true)
 {
-	return body_report_verdict(read, known, online_here, player, body, sender, seat, position);
+	return body_report_verdict(read, known, online_here, player, body, sender, seat, position, sender_writes);
 }
 } // namespace
 
@@ -71,4 +71,16 @@ TEST(levels_body_report_a_new_run_starts_over)
 	CHECK(body_crossing_age(c, kGarbage, kNoLevel, 11000) == 0);                        // another sender
 	CHECK(body_crossing_age(c, kGarbage, kNoLevel, 11000 + kBodyCrossedGraceMs + 1) == 0); // a long gap
 	CHECK(body_crossing_age(c, kGarbage, kNoLevel, 5000) == 0);                         // time went back
+}
+
+// The acceptance hands over a report whose sender does not write the character any more (accept::body_report_by_seat): his
+// player left that map, so the world parked him or seated him elsewhere before the report arrived. It is a crossing, never a
+// placement; a sender that reports the level of his seat without writing him is at fault.
+TEST(levels_body_report_of_a_sender_that_does_not_write_him)
+{
+	const bool writes = false;
+	CHECK(verdict(kNoLevel, false, true, kEscape, kEscape, true, true, true, writes) == BodyReport::Crossed); // parked, rejoining
+	CHECK(verdict(kGarbage, false, true, kEscape, kEscape, true, true, true, writes) == BodyReport::Crossed); // seated elsewhere
+	CHECK(verdict(kEscape, false, true, kEscape, kEscape, true, true, true, writes) == BodyReport::Refused);  // never taken
+	CHECK(verdict(kNoLevel, true, true, kEscape, kEscape, true, true, true, writes) == BodyReport::Refused);  // a fault still wins
 }

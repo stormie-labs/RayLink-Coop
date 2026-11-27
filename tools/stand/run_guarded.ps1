@@ -157,19 +157,7 @@ function Clear-S7GuardClaim([string]$Stand, [string]$Claim) {
         "gamedata\scripts\.coop_zz_s7.script.$ownerPid.new", ".zz_s7_step.txt.$ownerPid.new")) {
         Remove-StandFile -Path (Join-Path $Stand $file)
     }
-    if (Test-Path -LiteralPath $runDir -PathType Container) {
-        # Walk ordinary folders only. Remove-StandFile unlinks names without opening shared hard links for write.
-        $dirs = [Collections.Generic.Stack[string]]::new()
-        $dirs.Push($runDir)
-        while ($dirs.Count) {
-            $dir = $dirs.Pop()
-            Assert-NoJunction -Dir $dir
-            foreach ($entry in Get-ChildItem -LiteralPath $dir -Force) {
-                if ($entry.PSIsContainer) { $dirs.Push($entry.FullName) }
-                else { Remove-StandFile -Path $entry.FullName }
-            }
-        }
-    }
+    Remove-StandTree -Dir $runDir
     Remove-StandFile -Path $Claim
 }
 
@@ -183,6 +171,7 @@ $claim = ''
 $mutex = $job = $admit = $run = $null
 $locked = $false
 $stopped = $false
+$cleanup = ''
 try {
     if ([IO.Path]::GetFileName($Script) -in @('ms_crash_server.ps1','save_handover_server.ps1','soak_hour_server.ps1','creator10_server.ps1')) {
         if ((Get-StandFullPath $Stand).TrimEnd('\') -ne 'E:\RayLinkGames\GAMMA\game-dev') { throw 'use the game-dev stand for S7' }
@@ -211,9 +200,16 @@ try {
         Start-Sleep -Seconds 3
     }
 } finally {
+    # The guard's own cleanup never throws: a process of the scenario that outlives the job's kill, or a claim it cannot clear,
+    # is this scenario's GUARD line (its runner fails it) and the stand run goes on.
     try {
-        if ($job) { $job.Stop() }
-        if ($claim) { Clear-S7GuardClaim $Stand $claim }
+        if ($job) {
+            try { $job.Stop() } catch { $cleanup = "the scenario's processes did not stop: $($_.Exception.Message)" }
+        }
+        if ($claim) {
+            try { Clear-S7GuardClaim $Stand $claim }
+            catch { if (-not $cleanup) { $cleanup = "the S7 claim was not cleared: $($_.Exception.Message)" } }
+        }
     } finally {
         if ($admit) { $admit.Dispose() }
         if ($job) { $job.Dispose() }
@@ -227,6 +223,7 @@ else {
     # the runner (tools\stand_common.ps1 Invoke-Scenario) fails a scenario that threw or exited non-zero (review 4, B1)
     Write-Host "scenario exit code: $($run.ExitCode)"
 }
+if ($cleanup) { Write-Host "GUARD: cleanup: $cleanup" }
 $run.Dispose()
 Get-Content -LiteralPath $outPath -Encoding UTF8 | Select-Object -Last 150
 if ((Test-Path -LiteralPath $errPath) -and (Get-Item -LiteralPath $errPath).Length -gt 0) { Write-Host '--- stderr ---'; Get-Content -LiteralPath $errPath | Select-Object -Last 30 }
