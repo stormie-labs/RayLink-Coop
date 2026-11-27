@@ -26,6 +26,7 @@ using coop::kHostPeer;
 using u8 = uint8_t;
 using u16 = uint16_t;
 using u32 = uint32_t;
+using LPCSTR = const char*;
 using string64 = char[64];
 template <typename T> using xr_vector = std::vector<T>;
 namespace wire = coop::levels::wire;
@@ -60,6 +61,7 @@ struct CSE_ALifeDynamicObject : CSE_Abstract
 	std::string s_name = "fixture";
 	Fvector o_Position, o_Angle;
 	xr_vector<u16> children;
+	virtual LPCSTR __stdcall name() const { return s_name.c_str(); }
 	const char* name_replace() const { return "fixture"; }
 	void Spawn_Read(NET_Packet&) {}
 };
@@ -144,6 +146,7 @@ namespace levels
 {
 namespace journal = coop::levels::journal;
 namespace wire = npc_fixture::wire;
+constexpr u32 kWithHolderLines = 8;
 struct State
 {
 	// PRODUCTION_UP_RECORD
@@ -152,6 +155,7 @@ struct State
 	std::set<u16> quiet;
 	journal::ReleasesUnderWay releasing;
 	u32 parents_unregistered = 0;
+	u32 destroys_with_holder = 0;
 	xrCriticalSection lock;
 } g;
 // The fixture's objects are no creatures of a squad: the head carries the id alone, a death or a release goes at the end

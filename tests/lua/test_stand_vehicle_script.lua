@@ -67,6 +67,16 @@ local function fixture(role, wrong_authority)
 			vertex_id = function(pos) f.vertex = pos; return 1 end,
 			vertex_position = function() return f.vertex end,
 			vertex_game_vertex_id = function() return 2 end,
+			-- f.anomalies: {x, z, r} spheres; inside(p, eps) as CSpaceRestrictor::inside of a sphere of radius eps.
+			iterate_nearest = function(pos, radius, fn)
+				for _, a in ipairs(f.anomalies or {}) do
+					if math.sqrt((pos.x - a.x) ^ 2 + (pos.z - a.z) ^ 2) <= a.r + radius then
+						local zone = {is_anomaly = function() return true end,
+							inside = function(_, p, eps) return math.sqrt((p.x - a.x) ^ 2 + (p.z - a.z) ^ 2) < a.r + eps end}
+						if fn(zone) then return end
+					end
+				end
+			end,
 			ray_pick = function(pos, dir, _, _, result)
 				if dir.y == -1 then result.range = pos.y; return true end
 				return f.wall and f.wall(pos, dir) or false
@@ -315,6 +325,32 @@ case("A client in a house moves itself to open ground before it reports ready", 
 	assert(math.abs(f.actor_pos.x - 10) < 0.01 and math.abs(f.actor_pos.z) < 0.01)
 	f:tick()
 	assert(f:has("client placed pos=10.000 0.000 0.000") and f:has("client ready map=l01_escape"))
+end)
+
+case("A client spot in an anomaly is passed over for the next candidate", function()
+	-- dev66b: the client stood in a gravitational mine, was pulled off the spot it printed and the authority's copy followed.
+	local f = fixture("ag")
+	f.anomalies = {{x = 0, z = 0, r = 3}}
+	f:tick("ready")
+	assert(#f.commands == 0 and not f:has("client placed"))
+	f:tick()
+	assert(f.commands[1] == "teleport" and math.abs(f.actor_pos.x - 10) < 0.01)
+	f:tick()
+	assert(f:has("client placed pos=10.000 0.000 0.000"))
+end)
+
+case("A client body pulled off its placed spot says so once before the car comes", function()
+	local f = fixture("ag")
+	f:tick("ready")
+	assert(f:has("client placed pos=0.000 0.000 0.000"))
+	f:tick()
+	assert(not f:has("left its placed spot"))
+	f.actor_pos = {x = -1.1, y = 0, z = 0.2}
+	f:tick()
+	f:tick()
+	local text, n = table.concat(f.lines, "|"), 0
+	for _ in text:gmatch("left its placed spot by 1%.118 m") do n = n + 1 end
+	assert(n == 1 and not f:has("FAIL"))
 end)
 
 case("No open ground within 50 m fails the client ready step", function()

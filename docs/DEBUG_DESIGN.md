@@ -660,7 +660,7 @@ F7 у любого игрока, у игрока-хоста тоже, откры
 
 Контракт для всех пакетов — этот документ:
 - имена `coop.dbg.*`, форма `args`, коды отказов (§B.5);
-- Lua API движка: `coop.debug.state()`, `flags(peer)`, `set_flags(peer, t)`, `is_operator()`, `say(line)`, колбэк `coop_debug_changed`;
+- Lua API движка: `coop.debug.state()` (поле `actor` — биты, которые сейчас стоят на акторе этого процесса: 1 бессмертие, 2 патроны; консольная `g_god` есть только с ключом `-dbg`, у игрока её нет), `flags(peer)`, `set_flags(peer, t)`, `is_operator()`, `say(line)`, колбэк `coop_debug_changed`;
 - формат `DebugState` (§B.3);
 - реестр команд (§C).
 

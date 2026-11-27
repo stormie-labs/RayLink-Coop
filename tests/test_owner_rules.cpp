@@ -812,3 +812,29 @@ TEST(owner_rules_uses_staged_before_the_owner_joined_reach_him)
 	CHECK(!d.last_rebased);
 	CHECK_EQ(int(d.baseline.uses), 1);
 }
+
+TEST(owner_rules_a_foreign_report_never_names_a_living_holders_thing)
+{
+	// Server companions_server (and the same path in Coop): a companion's kit spawned on the player's copy has its uses staged set on
+	// its object the first frame it exists (apply_staged_uses touches it). Its game object has no parent yet, its server entity
+	// names the companion: the report went out as "a world item he changed" and the decider refused it ("not owner").
+	using owner::Holder;
+	CHECK(!owner::reports_foreign(Holder::Nobody, Holder::Living)); // the companion's kit, a frame after its spawn
+	CHECK(!owner::reports_foreign(Holder::Living, Holder::Living)); // an NPC's gun
+	CHECK(!owner::reports_foreign(Holder::Nobody, Holder::Me)); // his own item: his scan reports it
+	CHECK(!owner::reports_foreign(Holder::Me, Holder::Me));
+	CHECK(owner::reports_foreign(Holder::Other, Holder::Other)); // a corpse's gun he unloaded
+	CHECK(owner::reports_foreign(Holder::Nobody, Holder::Other)); // a gun in a box, its game object not taken yet
+	CHECK(owner::reports_foreign(Holder::Nobody, Holder::Nobody)); // on the ground
+}
+
+TEST(owner_glue_a_foreign_report_asks_both_chains)
+{
+	const std::string& code = items_code();
+	at("send_foreign", body_of(code, R"(void\s+send_foreign)"),
+	    "if (!item || !owner::reports_foreign(holder_by_object(item, actor), holder_by_entity(id, actor))) continue;");
+	const std::string entity = body_of(code, R"(owner::Holder\s+holder_by_entity)");
+	at("holder_by_entity", entity, "const u16 root = entity_root(e);");
+	before("holder_by_entity", entity, "if (const CObject* o = g_pGameLevel ? Level().Objects.net_Find(root) : nullptr) return holder_of(o);",
+	    "smart_cast<CSE_ALifeCreatureAbstract*>(world::alife_entity(root));");
+}

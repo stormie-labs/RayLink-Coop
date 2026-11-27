@@ -41,6 +41,8 @@ local function fixture(role)
 			to_host_id = function(id) assert(id == 0); return 71 end,
 			server_link = function() return f.link end,
 			life_of = function(id) assert(id == 0); return f.life end,
+			-- actor: the bits on this process's actor (1 god), coop_debug.cpp l_state
+			debug = { state = function() return { on = true, source = "key", mine = 0, actor = f.god and 1 or 0, flags = {} } end },
 			levels = { my_level = function()
 				if not f.unmapped then return f.map == "l01_escape" and 1 or 2 end
 			end,
@@ -74,7 +76,8 @@ local function fixture(role)
 			return not f.reject
 		end,
 		printf = function(fmt, ...) f.log[#f.log + 1] = string.format(fmt, ...) end,
-		get_console = function() return { get_bool = function(_, name) assert(name == "g_god"); return f.god == true end,
+		-- A player's machine has no -dbg: the console registers no g_god there and get_bool("g_god") is false whatever the actor has.
+		get_console = function() return { get_bool = function() return false end,
 			execute = function(_, cmd)
 			f.commands[#f.commands + 1] = cmd
 			if cmd == "srv_levels_audit" then
@@ -153,7 +156,7 @@ client.map, client.live = "l02_garbage", false
 client.tick()
 check(not client.has("arrival seq=3"), "target map must be live")
 client.live = true
-client.god = true -- the server's god stays on the actor through the trip (flags_taken_at_reset)
+client.god = true -- the server's god stays on the actor through the trip (flags_taken_at_reset); read from coop.debug, not g_god
 client.tick()
 check(client.has("arrival seq=3 role=s7move map=l02_garbage peer=2 operator=1 alive=1 kits=1"), "observes live arrival")
 check(client.has("arrival seq=3 role=s7move map=l02_garbage peer=2 operator=1 alive=1 kits=1 character=71 levelid=2 god=1"),

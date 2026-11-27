@@ -148,12 +148,28 @@ local function place_candidate(home, n)
 	return vector():set(home.x + radius * math.cos(angle), home.y, home.z + radius * math.sin(angle))
 end
 
--- Walkable open ground: an AI node with static ground under it.
+-- dev66b (l01_escape): the 10 m candidate -228.9 -172.2 lies in a gravitational mine of the save (b57j/b57l: a weak one struck
+-- the client there 0.4 s after it was placed; dev66b: a strong one, strike 1.090 at 6 s). The mine pulls a living body to its
+-- centre (GraviZone.cpp AffectPullAlife), the client left its printed spot and the authority's copy followed it 1.1 m away.
+-- Metres of clearance a spot keeps from the shape of any anomaly.
+local ANOMALY_CLEAR = 2
+
+local function in_anomaly(p)
+	local found = false
+	level.iterate_nearest(p, ANOMALY_CLEAR, function(obj)
+		found = obj:is_anomaly() and obj:inside(p, ANOMALY_CLEAR)
+		return found
+	end)
+	return found
+end
+
+-- Walkable open ground: an AI node with static ground under it and no anomaly at it.
 local function stand_spot(near)
 	local lv = level.vertex_id(near)
 	if not (lv and lv >= 0 and lv < 4294967295) then return end
 	local node = level.vertex_position(lv)
 	if math.abs(node.x - near.x) > 1 or math.abs(node.z - near.z) > 1 or math.abs(node.y - near.y) > 6 then return end
+	if in_anomaly(node) then return end
 	local gap = ground_gap(node, db.actor)
 	if gap and math.abs(gap) <= 0.6 then return vector():set(node.x, node.y - gap, node.z) end
 end
@@ -352,6 +368,7 @@ function client_steps.ready(_, now)
 	local at = vector():set(tonumber(string.format("%.3f", p.x)), tonumber(string.format("%.3f", p.y)),
 		tonumber(string.format("%.3f", p.z)))
 	if not find_lane(at, db.actor) then state.place = nil; return end
+	state.placed_at = copy(at)
 	out("client placed pos=%.3f %.3f %.3f", at.x, at.y, at.z)
 	out("client ready map=%s", level.name())
 	return true
@@ -480,6 +497,17 @@ local function update()
 	local now = time_global()
 	if now < state.next_poll then return end
 	state.next_poll = now + POLL_MS
+	if role == "client" and state.placed_at and not state.left_spot and mirror_steps[state.index] == "online" then
+		-- Probe (once): the client's own body leaves the spot it printed before the car comes, so the authority's
+		-- "never reached" is the client's move, not its copy's.
+		local p = db.actor:position()
+		local off = flat(p, state.placed_at)
+		if off > 0.3 then
+			state.left_spot = true
+			out("client body left its placed spot by %.3f m: now %.3f %.3f %.3f, health %.3f", off, p.x, p.y, p.z,
+				db.actor.health or -1)
+		end
+	end
 	local step
 	local ok, err = pcall(function()
 		local arg

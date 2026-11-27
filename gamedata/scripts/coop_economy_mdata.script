@@ -1650,8 +1650,14 @@ function clone_adopt(id, packed)
 	clone_retired[id] = nil
 	clone_purge(id)
 	if not local_parts then se_sig[parts_key] = parts_sig end
+	-- A player's copy resends only what it may write (mine_to_write): a repeat spawn of an NPC's weapon (a roster repair sends
+	-- the holder's subtree again) must not echo the riders its save gave it back to the world as this player's word.
+	local mirror = coop_mode.is_player_mirror()
 	for key, value in pairs(m.se_object[id]) do
-		if key ~= "name" and not SE_HOST_ONLY[key] and (key ~= "parts" or local_parts) then se_queue(id, key, value) end
+		if key ~= "name" and not SE_HOST_ONLY[key] and (key ~= "parts" or local_parts)
+			and (not mirror or mine_to_write(id, SE_WORLD_VARS[key])) then
+			se_queue(id, key, value)
+		end
 	end
 	return true
 end

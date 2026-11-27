@@ -640,6 +640,21 @@ struct Registry
 		get(squad)->members.insert(member);
 		get(member)->squad = squad;
 	}
+	// CALifeSimulatorBase::release: the object with everything it holds, out of its holder and its squad
+	void erase_tree(uint16_t id)
+	{
+		Obj* o = get(id);
+		if (!o)
+			return;
+		const std::vector<uint16_t> children = o->children;
+		for (const uint16_t child : children)
+			erase_tree(child);
+		leave(id);
+		if (o->parent != kNo)
+			if (Obj* p = get(o->parent))
+				p->children.erase(std::remove(p->children.begin(), p->children.end(), id), p->children.end());
+		objs.erase(id);
+	}
 };
 
 uint16_t crc_of(const Obj& o) { return jr::section_crc(o.section.c_str()); }
@@ -785,6 +800,8 @@ struct World
 			o->alive = false;
 			reg.leave(h.id); // the world's own death chain: remove_npc -> unregister_member
 		}
+		else if (e.op == Head::Destroy)
+			reg.erase_tree(h.id); // release_here: the stock release takes what it holds with it
 	}
 	void apply_all(const std::vector<jr::Entry>& es)
 	{
@@ -817,6 +834,8 @@ struct MapServer
 	// taking them back; their Parent "put down" and their Destroy follow
 	std::set<uint16_t> unsaveable;
 	bool departure_guard = true; // false: client_flush_up as it was before journal::journals_move_out_of_character
+	bool release_guard = true; // false: xfer_on_released as it was before journal::journals_destroy (a child's Destroy too)
+	std::set<uint16_t> releasing; // g.releasing: whose release is under way
 	std::set<uint16_t> departed; // g.departed: left out with a departed character, their Destroy too
 
 	uint32_t gen(uint16_t unit) const
@@ -953,6 +972,20 @@ struct MapServer
 		if (p.squad != kNo)
 			u.head.gen = gen(p.squad);
 		ups.insert(ups.begin() + ptrdiff_t(p.at), u);
+	}
+	// CALifeSimulatorBase::release: the object's Released hook (xfer_on_released) first, then each child's release, then it goes
+	void release(uint16_t id)
+	{
+		Obj* o = reg.get(id);
+		REQUIRE(o != nullptr);
+		releasing.insert(id);
+		const bool with_holder = o->parent != kNo && releasing.count(o->parent) != 0;
+		if (!release_guard || jr::journals_destroy(false, with_holder))
+			ups.push_back(Up{Head::Destroy, id, kNo, head_of(id), {}}); // the head now, while it is still there
+		const std::vector<uint16_t> children = o->children;
+		for (const uint16_t child : children)
+			release(child);
+		reg.erase_tree(id);
 	}
 	void spawn(uint16_t id, uint16_t parent)
 	{
@@ -1485,6 +1518,64 @@ TEST(srv_journal_a_departing_players_bolt_sends_neither_parent_nor_destroy)
 	CHECK(!jr::journals_move_out_of_character(true, false));
 }
 
+// The emission's end on a map server (weather_server and cover_server, Dev 66: "Destroy of object 28722 from map server 1 refused:
+// no such object; not here, its entry names section crc 0x799c", device_pda, then wpn_vz61). kill_all_unhided turns an NPC of a held
+// squad to a zombie; remove_npc releases him. The stock release raises his hook first and then releases his PDA and pistol, so his
+// Destroy went up before theirs; the world's release of him took them with it, and each of their Destroys found nothing there. Left
+// out (journal::journals_destroy), one Destroy goes up and both sides end without him and his things.
+TEST(srv_journal_a_holders_release_sends_no_destroy_of_what_it_held)
+{
+	constexpr uint16_t kPda = 0x9310;
+	for (const bool guard : {true, false})
+	{
+		World world;
+		MapServer ms;
+		same_world(world, ms);
+		for (Registry* r : {&world.reg, &ms.reg})
+		{
+			r->objs[kPda].section = "device_pda";
+			r->attach(kPda, kN1);
+		}
+		ms.remember();
+		ms.release_guard = guard;
+		ms.release(kN1);
+		CHECK(ms.reg.get(kN1) == nullptr);
+		CHECK(ms.reg.get(kGun) == nullptr);
+		const std::vector<jr::Entry> es = ms.flush();
+		world.apply_all(es);
+		CHECK(world.reg.get(kN1) == nullptr);
+		CHECK(world.reg.get(kGun) == nullptr);
+		CHECK(world.reg.get(kPda) == nullptr);
+		CHECK(world.reg.get(kS)->members.count(kN1) == 0);
+		if (guard)
+		{
+			REQUIRE(es.size() == 1u);
+			CHECK_EQ(es[0].op, uint8_t(Head::Destroy));
+			all_taken(world, 1);
+			continue;
+		}
+		// before the fix: the stand's lines, one per thing he held
+		REQUIRE(es.size() == 3u);
+		REQUIRE(world.refused.size() == 2u);
+		for (const uint8_t why : world.refused)
+			CHECK_EQ(why, uint8_t(jr::Unknown));
+	}
+	// an item released by itself still goes up: its holder stays
+	World world;
+	MapServer ms;
+	same_world(world, ms);
+	ms.release(kGun);
+	const std::vector<jr::Entry> es = ms.flush();
+	REQUIRE(es.size() == 1u);
+	world.apply_all(es);
+	all_taken(world, 1);
+	CHECK(world.reg.get(kGun) == nullptr);
+	CHECK(world.reg.get(kN1) != nullptr);
+	CHECK(jr::journals_destroy(false, false));
+	CHECK(!jr::journals_destroy(true, false));
+	CHECK(!jr::journals_destroy(false, true));
+}
+
 // Flow C (a pick-up from a body in the frame of his departure): one Parent goes up, the body's ring into him, its head the body's root
 // (a resident, gen 0); his other items are left out. While the world still seats him there it takes it. Parked before the entry arrives,
 // the world still refuses it as not the writer and the map server's repair puts the ring back into the body there: the departure race
@@ -1587,6 +1678,9 @@ TEST(srv_journal_engine_glue)
 	CHECK(body_of(code, "void", "up_died").find("place_of_creature(victim, u.head)") != std::string_view::npos);
 	const auto released = body_of(code, "void", "xfer_on_released");
 	CHECK(before(released, "g.quiet.count(local_id)", "place_of_creature(local_id, u.head)"));
+	// a child released with its holder: the holder's mark is set before its children's hooks run, and the rule decides first
+	CHECK(before(released, "g.releasing.released(local_id)", "g.releasing.under_way(released->ID_Parent)"));
+	CHECK(before(released, "journal::journals_destroy(", "place_of_creature(local_id, u.head)"));
 	CHECK(flush.find("journal_object(Head::Parent, u.head, w)") != std::string_view::npos);
 	CHECK(flush.find("journal_object(Head::Died, u.head, w)") != std::string_view::npos);
 	CHECK(before(flush, "net.send(u.a, u.before, holder)", "journal_object(Head::Parent"));
