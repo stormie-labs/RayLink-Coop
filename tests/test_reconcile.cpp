@@ -1121,3 +1121,31 @@ TEST(reconcile_r32_a_stale_spawn_never_replaces_the_writers_own_object)
 	CHECK(keep < remove);
 	CHECK(between(body, "case reconcile::Known::Keep:", "case reconcile::Known::Replace:").find("return;") != npos);
 }
+
+// A map server's repair of an item row its world writes is answered with the world's ItemState on the map server's link to its world.
+// That answer is the writer's word, taken as a copy takes it; it is no player's report: taken as one (host_on_state) it was refused
+// "no character" with an error line (peer 0, the world, has no character on a map server). An item the map server has come to write
+// meanwhile keeps its own state; an ammo spawn on that link is nobody's.
+TEST(reconcile_a_map_servers_item_repair_is_taken_as_its_copy_not_as_a_players_report)
+{
+	CHECK(link_state_mirrors(true, false)); // the world's item: the map server's copy takes it
+	CHECK(!link_state_mirrors(true, true)); // the map server's own by now: its state stands
+	CHECK(!link_state_mirrors(false, false)); // an ammo spawn on the link: no player's
+	CHECK(!link_state_mirrors(false, true));
+	const std::string items = game_source("coop_items.cpp");
+	// the link's handler is its own: a deciding process never takes the link's ItemState as a player's report
+	CHECK(items.find("void install_client(Endpoint& e) { e.on(Msg::ItemState, &on_link_item_state); }") != npos);
+	const std::string link = between(items, "void on_link_item_state(PeerId from, Reader& r)", "\n}\n");
+	CHECK(link.find("on_link_item_state_deciding(r, op)") != npos);
+	// a process that decides nothing (a player's game, in both modes) is the host's client as before
+	CHECK(link.find("if (!mode().decides_here())\n\t{\n\t\ton_item_state(from, r);\n\t\treturn;") != npos);
+	CHECK(link.find("host_on_state") == npos);
+	const std::string deciding = between(items, "void on_link_item_state_deciding(Reader& r, Op op)", "\n}\n");
+	CHECK(deciding.find("reconcile::link_state_mirrors(op == Op::State, writes_here)") != npos);
+	CHECK(deciding.find("writing::writes(id)") != npos);
+	CHECK(deciding.find("client_on_state(r)") != npos);
+	CHECK(deciding.find("host_on_state") == npos);
+	// the world answers a State repair of an item with that ItemState (the message the map server's link now takes)
+	CHECK(between(entities_source(), "void host_on_entity_request(PeerId from, Reader& r)", "\nvoid on_peer_left")
+	          .find("items::host_send_state(from, id)") != npos);
+}

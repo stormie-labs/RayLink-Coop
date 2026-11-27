@@ -10,6 +10,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..\stand_common.ps1')
+. (Join-Path $PSScriptRoot 'stand_dump.ps1')
 
 $s7Live = '\[coop\] phase loading-world -> live\b'
 $s7Load = 'host replaced the world|phase .* -> (?:receiving-world|loading-world)\b|\[coop\] load: the group moves to '
@@ -152,6 +153,9 @@ function Stop-S7World($Context) {
         if ($world.ExitCode -ne 0) { throw "world server exited with $($world.ExitCode)" }
     } finally {
         if (-not $world.HasExited) {
+            # A world that does not quit hangs: its threads' stacks before the kill (stand_dump.ps1), and how long its log was silent.
+            Write-Host "world server $($world.Id) is still up: $(Get-StandLogAge $Context.Logs.world)"
+            $null = Save-StandDump -Process $world -Path (Join-Path $script:StandDir "$($Context.Tag)_$($Context.Name)_world_hung.dmp")
             $world.Kill()
             $null = $world.WaitForExit(15000)
         }

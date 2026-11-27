@@ -15,6 +15,7 @@
 #include "coop_writer_rules.h"
 #include "coop_mode.h"
 #include "support/fake_mode.h"
+#include "srv/coop_levels_accept.h"
 
 #include <filesystem>
 #include <fstream>
@@ -290,9 +291,10 @@ TEST(writer_gate_map_server_rows)
 			{
 				const c::WriteDecision d = c::decide_writer_gate(c::WriteFacts{kind, world, s, false, false, true}, op, c::Gate::Run, setting);
 				CHECK(d.verdict == w::GateVerdict::Refuse);
-				// a create there is refused under Log as well: the world refuses its Spawn anyway (calls::world_refuses_anyway)
+				// a create or a release there is refused under Log as well: the world refuses its Spawn or Destroy anyway
+				// (calls::refused_in_both_settings)
 				GATE_EQ(std::string("another map ") + w::op_name(op), d.gate,
-				    enforce || op == w::WriteOp::Create ? c::Gate::Refuse : c::Gate::Run);
+				    enforce || op == w::WriteOp::Create || op == w::WriteOp::Release ? c::Gate::Refuse : c::Gate::Run);
 			}
 			// what it writes: run
 			for (w::WriteOp op : {w::WriteOp::Create, w::WriteOp::Release, w::WriteOp::State, w::WriteOp::Info})
@@ -327,8 +329,8 @@ TEST(writer_gate_map_server_create_on_another_map_is_refused_in_both_settings)
 			ACT_EQ("create " + at, cr.act, c::WriteAct::Refuse);
 			GATE_EQ("create " + at, cr.gate, c::Gate::Refuse);
 			CHECK(c::census_note(kind, elsewhere, w::WriteOp::Create, s, cr.verdict).counted); // still counted in coop_status
-			// release, state, info there: Log keeps today's code (the gate's rule of those is the enforce step's)
-			for (w::WriteOp op : {w::WriteOp::Release, w::WriteOp::State, w::WriteOp::Info})
+			// state, info there: Log keeps today's code (the gate's rule of those is the enforce step's); a release: the next test
+			for (w::WriteOp op : {w::WriteOp::State, w::WriteOp::Info})
 			{
 				const c::WriteDecision d = c::decide_writer_gate(f, op, c::Gate::Run, setting);
 				GATE_EQ(std::string(w::op_name(op)) + " " + at, d.gate,
@@ -347,13 +349,100 @@ TEST(writer_gate_map_server_create_on_another_map_is_refused_in_both_settings)
 	for (const w::ProcessKind other : {w::ProcessKind::World, w::ProcessKind::Whole, w::ProcessKind::Mirror})
 	{
 		const c::WriteFacts f{other, elsewhere, w::CodeScope::LevelCode, false, false, true};
-		CHECK(!c::world_refuses_anyway(f, w::WriteOp::Create, w::GateVerdict::Refuse));
+		CHECK(!c::refused_in_both_settings(f, w::WriteOp::Create, w::GateVerdict::Refuse));
 	}
 	// the engine fills it from the root's map (coop_router.cpp writer_refuses)
 	const std::string router = read_engine("xrGame/coop/coop_router.cpp");
 	CHECK(router.find("const bool on_other_level = kind == writer::ProcessKind::Level && root.level != writer::kNoLevel && root.level != own;") !=
 	    std::string::npos);
-	CHECK(router.find("calls::is_ghost(root, mode().actor_is_player()), on_other_level};") != std::string::npos);
+	CHECK(router.find("calls::is_ghost(root, mode().actor_is_player()), on_other_level,\n\t    target.kind != calls::Target::Object};") !=
+	    std::string::npos);
+}
+
+// cover_server (Dev 66): after the surge the map server of l05_bar ran the mod's release of its markers on every map (level code,
+// safe_release_manager), and under Log the release of each marker on another map ran: the world, which made and writes those markers,
+// refused each Destroy as not the writer ("Destroy of object 29710 from map server 1 refused: not the writer"), and released them
+// itself. A release on another map is refused in both settings; one on its own map of an object it does not write stays an ask.
+TEST(writer_gate_map_server_release_on_another_map_is_refused_in_both_settings)
+{
+	t::FakeMode m(t::mode_case("map_server"));
+	m.own_level(kA);
+	m.lead(kA, w::Lead::Leads);
+	const w::ProcessKind kind = m.process().kind;
+	const w::Writer elsewhere = m.writer_of(w::RootFacts{w::RootKind::Resident, 0x710, kB}); // a marker on another map
+	CHECK(elsewhere.is == w::WriterIs::Other && elsewhere.peer == coop::kHostPeer);
+	for (c::WriterGate setting : kSettings)
+		for (w::CodeScope s : kScopes)
+		{
+			const std::string at = std::string(c::writer_gate_name(setting)) + " " + c::scope_name(s);
+			const c::WriteDecision d =
+			    c::decide_writer_gate(c::WriteFacts{kind, elsewhere, s, false, false, true}, w::WriteOp::Release, c::Gate::Run, setting);
+			CHECK(d.verdict == w::GateVerdict::Refuse);
+			ACT_EQ("release " + at, d.act, c::WriteAct::Refuse);
+			GATE_EQ("release " + at, d.gate, c::Gate::Refuse);
+			CHECK(c::census_note(kind, elsewhere, w::WriteOp::Release, s, d.verdict).counted); // still counted in coop_status
+			// the world's object on its own map: an ask, today's code under Log
+			const w::Writer world = m.writer_of(w::RootFacts{w::RootKind::Unit, 0x300, kA});
+			const c::WriteDecision ask =
+			    c::decide_writer_gate(c::WriteFacts{kind, world, s, true, false, false}, w::WriteOp::Release, c::Gate::Run, setting);
+			CHECK(ask.verdict == w::GateVerdict::Ask);
+			GATE_EQ("own map ask " + at, ask.gate, c::Gate::Run);
+		}
+	// the world's acceptance refuses that Destroy whatever the map server says of itself: it never writes another map's root
+	coop::levels::accept::Facts f;
+	f.op = coop::levels::wire::LevelEntityHead::Destroy;
+	f.sender = kBridgeA;
+	f.sender_level = kA;
+	f.epoch = 1;
+	f.exists = true;
+	f.writer = w::this_process();
+	CHECK(!coop::levels::accept::accepts(f).ok);
+	CHECK_EQ(int(coop::levels::accept::accepts(f).why), int(coop::levels::journal::NotWriter));
+}
+
+// cover_server (Dev 65 and 66): the world server ran the same script during the surge and, under Log, made the markers of l05_bar too
+// ("alife:create create [tb_tiny_cube] with no parent (a new root on map 7) of world: refuse ... level code ... counted only") while the
+// map server of l05_bar made its own: two of each. The world's level-code create of a new root on a led map is refused in both settings;
+// a new unit there stays the world's own (new_root_writer: runs, counted run into led), a create under an object there keeps Log, and a
+// decision or an unknown scope still runs (the spawn goes down).
+TEST(writer_gate_world_level_code_new_root_on_a_led_map_is_refused_in_both_settings)
+{
+	t::FakeMode m(t::mode_case("world_server"));
+	m.lead(kA, w::Lead::Leads, kBridgeA);
+	const w::ProcessKind kind = m.process().kind;
+	const w::Writer mk = m.writer_of(w::RootFacts{w::RootKind::Resident, w::kNoId, kA}); // a new root on the led map
+	CHECK(mk.is == w::WriterIs::Other && mk.peer == kBridgeA);
+	for (c::WriterGate setting : kSettings)
+	{
+		const std::string sn = c::writer_gate_name(setting);
+		const bool enforce = setting == c::WriterGate::Enforce;
+		c::WriteFacts root{kind, mk, w::CodeScope::LevelCode, false, false, false, true};
+		const c::WriteDecision cr = c::decide_writer_gate(root, w::WriteOp::Create, c::Gate::Run, setting);
+		CHECK(cr.verdict == w::GateVerdict::Refuse);
+		ACT_EQ(sn + " new root", cr.act, c::WriteAct::Refuse);
+		GATE_EQ(sn + " new root", cr.gate, c::Gate::Refuse);
+		CHECK(c::census_note(kind, mk, w::WriteOp::Create, w::CodeScope::LevelCode, cr.verdict).counted);
+		// a new unit there: the world's own
+		root.writer = c::new_root_writer(kind, c::Target::NewUnit, false, mk);
+		GATE_EQ(sn + " new unit", c::decide_writer_gate(root, w::WriteOp::Create, c::Gate::Run, setting).gate, c::Gate::Run);
+		// a create under an object of the led map: Log keeps today's code
+		const c::WriteDecision under =
+		    c::decide_writer_gate(c::WriteFacts{kind, mk, w::CodeScope::LevelCode, false, false, false}, w::WriteOp::Create, c::Gate::Run, setting);
+		GATE_EQ(sn + " under an object", under.gate, enforce ? c::Gate::Refuse : c::Gate::Run);
+		// a release there from level code: Log keeps today's code (that map server releases what it writes)
+		const c::WriteDecision rel =
+		    c::decide_writer_gate(c::WriteFacts{kind, mk, w::CodeScope::LevelCode, false, false, false, true}, w::WriteOp::Release,
+		        c::Gate::Run, setting);
+		GATE_EQ(sn + " release", rel.gate, enforce ? c::Gate::Refuse : c::Gate::Run);
+		// a decision or an unknown scope: the spawn goes down
+		for (w::CodeScope s : {w::CodeScope::Decision, w::CodeScope::Unknown})
+			GATE_EQ(sn + " " + c::scope_name(s), c::decide_writer_gate(c::WriteFacts{kind, mk, s, false, false, false, true}, w::WriteOp::Create,
+			    c::Gate::Run, setting).gate, c::Gate::Run);
+	}
+	// the co-op host and a player's machine never take it
+	for (const w::ProcessKind other : {w::ProcessKind::Whole, w::ProcessKind::Mirror})
+		CHECK(!c::refused_in_both_settings(c::WriteFacts{other, mk, w::CodeScope::LevelCode, false, false, false, true}, w::WriteOp::Create,
+		    w::GateVerdict::Refuse));
 }
 
 TEST(writer_gate_the_ghost)
